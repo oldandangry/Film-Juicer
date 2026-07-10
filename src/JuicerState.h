@@ -329,21 +329,8 @@ inline void sample_negative_densities(
         D_out_local[2] = layerD[0];
     };
 
-#if 0
-    if (mode == DirSampleMode::ApplyRuntime && dirRT.active) {
-        float layerPre[3];
-        sample_layers(ws.densB, ws.densG, ws.densR, logE, layerPre);
-        Couplers::ApplyInputLogE io{{logE[0], logE[1], logE[2]}, {layerPre[0], layerPre[1], layerPre[2]}};
-        Couplers::apply_runtime_logE_with_curves(io, dirRT, ws.densB, ws.densG, ws.densR);
-        float layerPost[3];
-        sample_layers(precorrectedB, precorrectedG, precorrectedR, io.logE, layerPost);
-        write_cmy(layerPost, D_out);
-        return;
-    }
-#else
     (void)dirRT;
     (void)mode;
-#endif
 
     float layerD[3];
     sample_layers(ws.densB, ws.densG, ws.densR, logE, layerD);
@@ -378,10 +365,15 @@ struct ParamSnapshot {
     double glareBlurSigmaPx = 0.5;
     double printDminFactor = 0.4;
     int couplersActive = 1;
-    int dirTailMode = 0;
     double couplersAmount = 1.0;
-    double ratioR = 1.0, ratioG = 1.0, ratioB = 1.0;
-    double sigma = 2.0, high = 0.0;
+    double couplersInhibitionSameLayer = 1.0;
+    double couplersInhibitionInterlayer = 1.0;
+    double couplersDiffusionSizeUm = 20.0;
+    int couplersGammaUseStock = 1;
+    std::array<double, 3> couplersGammaSameLayerRgb{{0.336, 0.319, 0.273}};
+    std::array<double, 2> couplersGammaInterlayerRToGb{{0.353, 0.302}};
+    std::array<double, 2> couplersGammaInterlayerGToRb{{0.154, 0.353}};
+    std::array<double, 2> couplersGammaInterlayerBToRg{{0.168, 0.226}};
     int inputColorSpace = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut);
     int inputCctfDecoding = 0;
     int cameraAutoExposureEnabled = 1;
@@ -397,7 +389,6 @@ struct ParamSnapshot {
     double scannerWhiteLevel = 0.98;
     int scannerUseLut = 1;
     int scannerLutResolution = 17;
-    double spatialSigmaMicrometers = 10.0;
     int outputColorSpace = OutputEncoding::toIndex(OutputEncoding::ColorSpace::sRGB);
     int outputCctfEncoding = 1;
     int outputLinearPassThrough = 0;
@@ -406,15 +397,6 @@ struct ParamSnapshot {
     std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
     Profiles::GrainMetadata grainControls;
 };
-
-constexpr int kFactoryCouplersActive = 1;
-constexpr double kFactoryCouplersAmount = 1.0;
-constexpr double kFactoryCouplersRatioR = 1.0;
-constexpr double kFactoryCouplersRatioG = 1.0;
-constexpr double kFactoryCouplersRatioB = 1.0;
-constexpr double kFactoryCouplersSigma = 2.0;
-constexpr double kFactoryCouplersHigh = 0.0;
-constexpr double kFactoryCouplersSpatialSigma = 10.0;
 
 uint64_t hash_params(const ParamSnapshot& p);
 uint64_t hash_params_core(const ParamSnapshot& p);
@@ -469,17 +451,6 @@ struct InstanceState {
     std::atomic<std::uint64_t> submissionSnapshotIdNext{1};
 
     IlluminantOverrideFlags illuminantOverride;
-
-    bool couplerProfileSpatialSigmaValid = false;
-    double couplerProfileSpatialSigmaMicrometers = 0.0;
-
-    // Cache for DIR spatial sigma conversion (canonical project dimensions)
-    std::atomic<bool> spatialSigmaCacheValid{false};
-    std::atomic<double> spatialSigmaCanonicalWidth{0.0};
-    std::atomic<double> spatialSigmaCanonicalHeight{0.0};
-    std::atomic<double> spatialSigmaCameraFilmMm{0.0};
-    std::atomic<float> spatialSigmaMicrometers{0.0f};
-    std::atomic<float> spatialSigmaPixelsCanonical{0.0f};
 
     std::string filmReferenceIlluminant;
 

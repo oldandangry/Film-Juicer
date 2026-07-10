@@ -1354,7 +1354,6 @@ namespace Profiles {
             const auto surfaceIt = data.find("hanatos2025_adaptation_surface_params");
             out.hasHanatos2025AdaptationSurfaceParams = false;
             if (surfaceIt != data.end() && surfaceIt->is_array() && !surfaceIt->empty()) {
-                std::vector<std::array<float, 3>> unusedTriplets;
                 if (!require_array_size(*surfaceIt, 3u, ctx, "data.hanatos2025_adaptation_surface_params", error)) {
                     return false;
                 }

@@ -189,7 +189,6 @@ namespace JuicerCuda {
             SubmissionTransaction& transaction,
             JuicerCuda::Resources& resources,
             const ScratchRequestDescriptor& scratchRequest,
-            bool usesSpatialDirFft,
             void* cudaStreamOpaque,
             const char* commandName,
             std::string& outError);
@@ -267,27 +266,11 @@ namespace JuicerCuda {
             void* cudaStreamOpaque,
             std::string& outError);
 
-        bool command_preflight_spatial_dir_fft_peak(
-            SubmissionTransaction& transaction,
-            JuicerCuda::Resources& resources,
-            const Spektrafilm::SpatialDirDescriptor& descriptor,
-            const ScratchRequestDescriptor& scratchRequest,
-            void* cudaStreamOpaque,
-            std::string& outError);
-
         bool command_ensure_spatial_dir_kernel(
             SubmissionTransaction& transaction,
             JuicerCuda::Resources& resources,
             JuicerCuda::Resources::DeviceGaussianKernel& kernel,
             float sigma,
-            void* cudaStreamOpaque,
-            std::string& outError);
-
-        bool command_ensure_spatial_dir_fft(
-            SubmissionTransaction& transaction,
-            JuicerCuda::Resources& resources,
-            const Spektrafilm::SpatialDirDescriptor& descriptor,
-            const ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
             std::string& outError);
 

@@ -470,37 +470,12 @@ namespace JuicerCuda {
             float* filterTemp = nullptr;
             float* filterTempM = nullptr;
             float* filterTempC = nullptr;
-            float* iirForwardTemp = nullptr;
-            float* iirForwardTempM = nullptr;
-            float* iirForwardTempC = nullptr;
             float* logRawB = nullptr;
             float* logRawG = nullptr;
             float* logRawR = nullptr;
             int width = 0;
             int height = 0;
             std::size_t capacityElements = 0;
-        };
-
-        struct DeviceSpatialDirFft {
-            int forwardPlan = 0;
-            int inversePlan = 0;
-            float* realBuffer = nullptr;
-            void* spectrum = nullptr;
-            void* transfer = nullptr;
-            void* workArea = nullptr;
-            int width = 0;
-            int height = 0;
-            int padPixels = 0;
-            int complexWidth = 0;
-            std::uint64_t descriptorHash = 0;
-            std::size_t realBufferBytes = 0;
-            std::size_t spectrumBytes = 0;
-            std::size_t transferBytes = 0;
-            std::size_t workAreaBytes = 0;
-            std::size_t forwardWorkBytes = 0;
-            std::size_t inverseWorkBytes = 0;
-            double lastSetupMs = 0.0;
-            bool lastSetupCreated = false;
         };
 
         DeviceGaussianKernel scannerLensBlurKernel;
@@ -515,7 +490,6 @@ namespace JuicerCuda {
         DeviceOpticsScratch scannerScratch;
         std::array<DeviceGaussianKernel, 4> spatialDirKernels{};
         DeviceSpatialDirScratch spatialDirScratch;
-        DeviceSpatialDirFft spatialDirFft;
         std::uint64_t retainedScratchLeaseGeneration = 0;
 
         std::uint8_t* stbnData = nullptr;
@@ -730,7 +704,6 @@ namespace JuicerCuda {
         std::size_t pendingScratchBytesBefore = 0;
         std::size_t rawCorrectionRetiredBytes = 0;
         std::size_t filterTempRetiredBytes = 0;
-        std::size_t iirForwardTempRetiredBytes = 0;
         std::size_t sharedTmpRetiredBytes = 0;
         std::size_t reclaimedBytes = 0;
     };
@@ -751,7 +724,6 @@ namespace JuicerCuda {
         std::size_t opticsRetiredBytes = 0;
         std::size_t spatialDirRetiredBytes = 0;
         std::size_t sharedTmpRetiredBytes = 0;
-        std::size_t fftReleasedBytes = 0;
         std::size_t reclaimedBytes = 0;
     };
 
@@ -767,7 +739,6 @@ namespace JuicerCuda {
         std::size_t opticsRetiredBytes = 0;
         std::size_t spatialDirRetiredBytes = 0;
         std::size_t sharedTmpRetiredBytes = 0;
-        std::size_t fftReleasedBytes = 0;
         std::size_t reclaimedBytes = 0;
     };
 
@@ -799,7 +770,6 @@ namespace JuicerCuda {
     bool reclaim_large_scratch_transition(
         Resources& resources,
         const ResourceManager::ScratchRequestDescriptor& scratchRequest,
-        bool usesSpatialDirFft,
         void* cudaStreamOpaque,
         LargeScratchTransitionReclaimStats& outStats,
         std::string& outError);

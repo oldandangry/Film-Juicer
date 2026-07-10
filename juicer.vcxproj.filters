@@ -46,9 +46,6 @@
     <ClCompile Include="src\ProfileCatalog.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\NeutralFilters.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\mainProcessing.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

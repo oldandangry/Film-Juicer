@@ -88,16 +88,6 @@ namespace {
         return index >= 0 && index <= 6;
     }
 
-    bool dir_tail_mode_valid(Spektrafilm::DirTailMode value) noexcept {
-        switch (value) {
-            case Spektrafilm::DirTailMode::SpektrafilmStrict:
-            case Spektrafilm::DirTailMode::AcceptedFftReplicatePadSmooth:
-                return true;
-            default:
-                return false;
-        }
-    }
-
     std::array<float, 3> copy_filter_triplet(const std::array<double, 3>& values, bool active) {
         std::array<float, 3> out{{active ? static_cast<float>(values[0]) : 0.0f,
                                   static_cast<float>(values[1]),
@@ -688,8 +678,6 @@ namespace {
             roles.filteredCorrectionPlanes = 3;
             roles.filterTempPlanes =
                 scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels ? 3 : 1;
-            roles.iirForwardTempPlanes =
-                scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels ? 3 : 0;
             if (scratchTier == Spektrafilm::DirScratchTier::Tier2) {
                 roles.cachedLogRawPlanes = 3;
             }
@@ -700,35 +688,7 @@ namespace {
     Spektrafilm::DirScratchPlaneRoles strict_yvv_channels_aliased_forward_plane_roles() noexcept {
         Spektrafilm::DirScratchPlaneRoles roles =
             dir_target_plane_roles_for_tier(Spektrafilm::DirScratchTier::Tier1IChannels);
-        roles.iirForwardTempPlanes = 0;
         roles.cachedLogRawPlanes = 0;
-        return roles;
-    }
-
-    Spektrafilm::DirScratchPlaneRoles dir_accepted_fft_build_plane_roles() noexcept {
-        Spektrafilm::DirScratchPlaneRoles roles{};
-        roles.rawCorrectionPlanes = 1;
-        roles.filteredCorrectionPlanes = 3;
-        roles.filterTempPlanes = 0;
-        roles.iirForwardTempPlanes = 0;
-        roles.cachedLogRawPlanes = 0;
-        return roles;
-    }
-
-    Spektrafilm::DirScratchPlaneRoles dir_accepted_fft_target_plane_roles() noexcept {
-        Spektrafilm::DirScratchPlaneRoles roles = dir_accepted_fft_build_plane_roles();
-        roles.cachedLogRawPlanes = 3;
-        return roles;
-    }
-
-    [[maybe_unused]] Spektrafilm::DirScratchPlaneRoles dir_compact_sequential_plane_roles_for_tier(
-        Spektrafilm::DirScratchTier scratchTier) noexcept {
-        Spektrafilm::DirScratchPlaneRoles roles = dir_target_plane_roles_for_tier(scratchTier);
-        if (scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels ||
-            scratchTier == Spektrafilm::DirScratchTier::Tier2) {
-            roles.filterTempPlanes = 1;
-            roles.iirForwardTempPlanes = 1;
-        }
         return roles;
     }
 
@@ -752,11 +712,8 @@ namespace {
             const Spektrafilm::DirGaussianComponentPlan& componentPlan =
                 plan.components[static_cast<std::size_t>(component)];
             if (componentPlan.weight > 0.0f &&
-                (componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvChannels ||
-                 componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvChannelsAliasedForward ||
-                 componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvLowScratch ||
-                 componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvComponentStreamed ||
-                 componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvCompactSequential)) {
+                componentPlan.targetBackend ==
+                    Spektrafilm::DirFilterBackend::StrictYvvChannelsAliasedForward) {
                 return true;
             }
         }
@@ -781,10 +738,6 @@ namespace {
 
     Spektrafilm::DirScratchPlaneRoles dir_target_plane_roles_for_descriptor(
         const SpatialDirDescriptor& descriptor) noexcept {
-        if (descriptor.approximation ==
-            Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
-            return dir_accepted_fft_target_plane_roles();
-        }
         if (descriptor.targetScratchTier == Spektrafilm::DirScratchTier::Tier2) {
             if (dir_filter_plan_targets_aliased_forward_yvv(descriptor.filterPlan)) {
                 Spektrafilm::DirScratchPlaneRoles roles =
@@ -800,10 +753,6 @@ namespace {
 
     Spektrafilm::DirScratchTier dir_build_scratch_tier_for_descriptor(
         const SpatialDirDescriptor& descriptor) noexcept {
-        if (descriptor.approximation ==
-            Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
-            return Spektrafilm::DirScratchTier::Tier1F;
-        }
         if (descriptor.targetScratchTier == Spektrafilm::DirScratchTier::Tier2) {
             return dir_cached_log_raw_base_tier_for_descriptor(descriptor);
         }
@@ -812,101 +761,11 @@ namespace {
 
     Spektrafilm::DirScratchPlaneRoles dir_build_plane_roles_for_descriptor(
         const SpatialDirDescriptor& descriptor) noexcept {
-        if (descriptor.approximation ==
-            Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
-            return dir_accepted_fft_build_plane_roles();
-        }
         if (dir_filter_plan_targets_aliased_forward_yvv(descriptor.filterPlan)) {
             return strict_yvv_channels_aliased_forward_plane_roles();
         }
         return dir_target_plane_roles_for_tier(
             dir_build_scratch_tier_for_descriptor(descriptor));
-    }
-
-    bool dir_tail_mode_is_accepted_fft(Spektrafilm::DirTailMode value) noexcept {
-        return value == Spektrafilm::DirTailMode::AcceptedFftReplicatePadSmooth;
-    }
-
-    bool integer_has_only_fft_smooth_factors(int value) noexcept {
-        if (value <= 0) {
-            return false;
-        }
-        for (int factor : {2, 3, 5, 7}) {
-            while ((value % factor) == 0) {
-                value /= factor;
-            }
-        }
-        return value == 1;
-    }
-
-    int next_fft_smooth_size(int requested) noexcept {
-        constexpr int kMaxTransform = 1 << 30;
-        if (requested <= 0 || requested > kMaxTransform) {
-            return 0;
-        }
-        for (int value = requested; value <= kMaxTransform; ++value) {
-            if (integer_has_only_fft_smooth_factors(value)) {
-                return value;
-            }
-        }
-        return 0;
-    }
-
-    bool configure_accepted_fft_descriptor(SpatialDirDescriptor& descriptor) noexcept {
-        float maxSigma = 0.0f;
-        for (int component = 0; component < descriptor.filterPlan.componentCount; ++component) {
-            const Spektrafilm::DirGaussianComponentPlan& plan =
-                descriptor.filterPlan.components[static_cast<std::size_t>(component)];
-            if (plan.weight > 0.0f) {
-                maxSigma = std::max(maxSigma, plan.sigmaPixels);
-            }
-        }
-        if (!(std::isfinite(maxSigma) && maxSigma > 0.0f)) {
-            return false;
-        }
-        const double requestedPad =
-            static_cast<double>(SpatialDirDescriptor::kAcceptedFftPadSigma) *
-                static_cast<double>(maxSigma) +
-            0.5;
-        if (!(std::isfinite(requestedPad) && requestedPad > 0.0 &&
-              requestedPad <= static_cast<double>(std::numeric_limits<int>::max() / 2))) {
-            return false;
-        }
-        const int padPixels = static_cast<int>(requestedPad);
-        const long long paddedWidth =
-            static_cast<long long>(descriptor.fullFrameExtent.width) +
-            2ll * static_cast<long long>(padPixels);
-        const long long paddedHeight =
-            static_cast<long long>(descriptor.fullFrameExtent.height) +
-            2ll * static_cast<long long>(padPixels);
-        if (paddedWidth <= 0 || paddedHeight <= 0 ||
-            paddedWidth > static_cast<long long>(std::numeric_limits<int>::max()) ||
-            paddedHeight > static_cast<long long>(std::numeric_limits<int>::max())) {
-            return false;
-        }
-        const int fftWidth = next_fft_smooth_size(static_cast<int>(paddedWidth));
-        const int fftHeight = next_fft_smooth_size(static_cast<int>(paddedHeight));
-        if (fftWidth <= 0 || fftHeight <= 0) {
-            return false;
-        }
-
-        descriptor.approximation = Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth;
-        descriptor.fftPadPixels = padPixels;
-        descriptor.fftWidth = fftWidth;
-        descriptor.fftHeight = fftHeight;
-        descriptor.fftComplexWidth = (fftWidth / 2) + 1;
-        descriptor.fftPadSigma = SpatialDirDescriptor::kAcceptedFftPadSigma;
-        descriptor.targetScratchTier = Spektrafilm::DirScratchTier::Tier2;
-        for (int component = 0; component < descriptor.filterPlan.componentCount; ++component) {
-            Spektrafilm::DirGaussianComponentPlan& plan =
-                descriptor.filterPlan.components[static_cast<std::size_t>(component)];
-            if (plan.weight > 0.0f) {
-                plan.backend = Spektrafilm::DirFilterBackend::AcceptedFftReplicatePadSmooth;
-                plan.targetBackend = Spektrafilm::DirFilterBackend::AcceptedFftReplicatePadSmooth;
-                plan.targetScratchTier = Spektrafilm::DirScratchTier::Tier2;
-            }
-        }
-        return true;
     }
 
     void configure_cached_log_raw_descriptor(SpatialDirDescriptor& descriptor) noexcept {
@@ -963,11 +822,7 @@ namespace {
         hash_value(hash, roles.rawCorrectionPlanes);
         hash_value(hash, roles.filteredCorrectionPlanes);
         hash_value(hash, roles.filterTempPlanes);
-        hash_value(hash, roles.iirForwardTempPlanes);
         hash_value(hash, roles.cachedLogRawPlanes);
-        hash_value(hash, roles.SF_TEMP_BRIDGE_corrPlanes);
-        hash_value(hash, roles.SF_TEMP_BRIDGE_mixPlanes);
-        hash_value(hash, roles.SF_TEMP_BRIDGE_tmpPlanes);
     }
 
     void hash_dir_filter_plan(std::uint64_t& hash, const Spektrafilm::DirFilterPlan& plan) {
@@ -1029,7 +884,6 @@ namespace {
             hash_value(hash, recipe.diffusionTailWeight);
             if (recipe.diffusionTailWeight > 0.0f) {
                 hash_value(hash, recipe.diffusionTailUm);
-                hash_value(hash, recipe.tailMode);
             }
         }
         return hash;
@@ -1044,11 +898,27 @@ namespace {
         if (!finite_nonnegative(controls.amount) ||
             !finite_nonnegative(controls.inhibitionSameLayer) ||
             !finite_nonnegative(controls.inhibitionInterlayer) ||
-            !finite_nonnegative(controls.diffusionSizeUm) ||
-            !finite_nonnegative(controls.diffusionTailUm) ||
-            !std::isfinite(controls.diffusionTailWeight) ||
-            controls.diffusionTailWeight < 0.0f || controls.diffusionTailWeight > 1.0f ||
-            !dir_tail_mode_valid(controls.tailMode)) {
+            !finite_nonnegative(controls.diffusionSizeUm)) {
+            return false;
+        }
+
+        const std::array<float, 3>& gammaSameLayerRgb =
+            controls.gammaUseStock ? profile.digest.gammaSamelayerRgb : controls.gammaSameLayerRgb;
+        const std::array<float, 2>& gammaInterlayerRToGb =
+            controls.gammaUseStock ? profile.digest.gammaInterlayerRToGb : controls.gammaInterlayerRToGb;
+        const std::array<float, 2>& gammaInterlayerGToRb =
+            controls.gammaUseStock ? profile.digest.gammaInterlayerGToRb : controls.gammaInterlayerGToRb;
+        const std::array<float, 2>& gammaInterlayerBToRg =
+            controls.gammaUseStock ? profile.digest.gammaInterlayerBToRg : controls.gammaInterlayerBToRg;
+        const auto finiteNonnegativeArray = [](const auto& values) {
+            return std::all_of(values.begin(), values.end(), [](float value) {
+                return finite_nonnegative(value);
+            });
+        };
+        if (!finiteNonnegativeArray(gammaSameLayerRgb) ||
+            !finiteNonnegativeArray(gammaInterlayerRToGb) ||
+            !finiteNonnegativeArray(gammaInterlayerGToRb) ||
+            !finiteNonnegativeArray(gammaInterlayerBToRg)) {
             return false;
         }
 
@@ -1060,14 +930,13 @@ namespace {
         out.amount = controls.amount;
         out.inhibitionSameLayer = controls.inhibitionSameLayer;
         out.inhibitionInterlayer = controls.inhibitionInterlayer;
-        out.gammaSameLayerRgb = profile.digest.gammaSamelayerRgb;
-        out.gammaInterlayerRToGb = profile.digest.gammaInterlayerRToGb;
-        out.gammaInterlayerGToRb = profile.digest.gammaInterlayerGToRb;
-        out.gammaInterlayerBToRg = profile.digest.gammaInterlayerBToRg;
+        out.gammaSameLayerRgb = gammaSameLayerRgb;
+        out.gammaInterlayerRToGb = gammaInterlayerRToGb;
+        out.gammaInterlayerGToRb = gammaInterlayerGToRb;
+        out.gammaInterlayerBToRg = gammaInterlayerBToRg;
         out.diffusionSizeUm = controls.diffusionSizeUm;
-        out.diffusionTailUm = controls.diffusionTailUm;
-        out.diffusionTailWeight = controls.diffusionTailWeight;
-        out.tailMode = controls.tailMode;
+        out.diffusionTailUm = 200.0f;
+        out.diffusionTailWeight = 0.06f;
 
         out.matrixRgb[0][0] = out.gammaSameLayerRgb[0] * out.inhibitionSameLayer;
         out.matrixRgb[1][1] = out.gammaSameLayerRgb[1] * out.inhibitionSameLayer;
@@ -1889,8 +1758,7 @@ namespace Spektrafilm {
         }
         if (!(std::isfinite(pixelSizeUm) && pixelSizeUm > 0.0f) ||
             !dir_extent_valid(renderExtent) ||
-            !dir_extent_valid(fullFrameExtent) ||
-            !dir_tail_mode_valid(recipe.tailMode)) {
+            !dir_extent_valid(fullFrameExtent)) {
             return false;
         }
         out.support = Spektrafilm::DirDescriptorSupport::Supported;
@@ -1898,7 +1766,6 @@ namespace Spektrafilm {
         out.sourceContract = Spektrafilm::DirSourceContract::FilmLogRawToInitialDensityCmy;
         out.boundaryMode = Spektrafilm::DirBoundaryMode::SpektrafilmReferencePerOperator;
         out.approximation = Spektrafilm::DirApproximationMarker::SpektrafilmStrict;
-        out.tailMode = recipe.tailMode;
         out.renderExtent = renderExtent;
         out.fullFrameExtent = fullFrameExtent;
         out.filterDomainExtent = fullFrameExtent;
@@ -1955,22 +1822,10 @@ namespace Spektrafilm {
             out.support = Spektrafilm::DirDescriptorSupport::UnsupportedScratchTier;
             return false;
         }
-        if (dir_tail_mode_is_accepted_fft(recipe.tailMode) &&
-            !configure_accepted_fft_descriptor(out)) {
-            return false;
-        }
         configure_cached_log_raw_descriptor(out);
         out.targetPlaneRoles = dir_target_plane_roles_for_descriptor(out);
         out.scratchTier = dir_build_scratch_tier_for_descriptor(out);
         out.planeRoles = dir_build_plane_roles_for_descriptor(out);
-
-        std::uint64_t legacyHash = Hash::kFnvOffset;
-        hash_value(legacyHash, out.dirRecipeHash);
-        hash_value(legacyHash, out.gaussianSigmaPixels);
-        hash_value(legacyHash, out.gaussianWeight);
-        Hash::hash_bytes_update(legacyHash, out.exponentialSigmaPixels.data(), sizeof(out.exponentialSigmaPixels));
-        Hash::hash_bytes_update(legacyHash, out.exponentialWeights.data(), sizeof(out.exponentialWeights));
-        out.legacyCompatibilityHash = legacyHash;
 
         std::uint64_t hash = Hash::kFnvOffset;
         hash_value(hash, out.dirRecipeHash);
@@ -1980,7 +1835,6 @@ namespace Spektrafilm {
         hash_value(hash, out.scratchTier);
         hash_value(hash, out.targetScratchTier);
         hash_value(hash, out.approximation);
-        hash_value(hash, out.tailMode);
         hash_value(hash, out.support);
         hash_dir_extent(hash, out.renderExtent);
         hash_dir_extent(hash, out.fullFrameExtent);
@@ -1992,12 +1846,6 @@ namespace Spektrafilm {
         hash_value(hash, out.gaussianWeight);
         Hash::hash_bytes_update(hash, out.exponentialSigmaPixels.data(), sizeof(out.exponentialSigmaPixels));
         Hash::hash_bytes_update(hash, out.exponentialWeights.data(), sizeof(out.exponentialWeights));
-        hash_value(hash, out.fftPadPixels);
-        hash_value(hash, out.fftWidth);
-        hash_value(hash, out.fftHeight);
-        hash_value(hash, out.fftComplexWidth);
-        hash_value(hash, out.fftPadSigma);
-        hash_value(hash, out.legacyCompatibilityHash);
         out.hash = hash;
         return out.hash != 0;
     }

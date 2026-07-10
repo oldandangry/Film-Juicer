@@ -24,7 +24,6 @@
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
 #include <cuda.h>
-#include <cufft.h>
 #if defined(_WIN32)
 #include <windows.h>
 #endif
@@ -508,7 +507,6 @@ namespace JuicerCuda {
     static void free_auto_exposure(Resources& resources) noexcept;
     static void free_optics_scratch(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque) noexcept;
     static void free_spatial_dir_scratch(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque) noexcept;
-    static void free_spatial_dir_fft(Resources& resources, Resources::DeviceSpatialDirFft& fft, void* cudaStreamOpaque) noexcept;
     static void free_shared_tmp_plane(Resources& resources) noexcept;
 
 } // namespace JuicerCuda
@@ -932,9 +930,6 @@ namespace JuicerCuda {
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.filteredCorrectionC != nullptr, spatialDirPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.filterTempM != nullptr, spatialDirPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.filterTempC != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.iirForwardTemp != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.iirForwardTempM != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.iirForwardTempC != nullptr, spatialDirPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.logRawB != nullptr, spatialDirPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.logRawG != nullptr, spatialDirPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.logRawR != nullptr, spatialDirPlaneBytes);
@@ -2149,7 +2144,6 @@ namespace JuicerCuda {
                 free_gaussian_kernel(kernel);
             }
             free_spatial_dir_scratch(*this, spatialDirScratch, nullptr);
-            free_spatial_dir_fft(*this, spatialDirFft, nullptr);
             free_shared_tmp_plane(*this);
             free_stbn(*this);
             free_wang(*this);
@@ -4833,9 +4827,6 @@ namespace JuicerCuda {
         free_tracked_device_ptr_locked(resources, s.filteredCorrectionC, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.filterTempM, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.filterTempC, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, s.iirForwardTemp, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, s.iirForwardTempM, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, s.iirForwardTempC, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.logRawB, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.logRawG, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.logRawR, cudaStreamOpaque);
@@ -4844,29 +4835,6 @@ namespace JuicerCuda {
         s.width = 0;
         s.height = 0;
         s.capacityElements = 0;
-    }
-
-    static void free_spatial_dir_fft(Resources& resources, Resources::DeviceSpatialDirFft& fft, void* cudaStreamOpaque = nullptr) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (fft.forwardPlan != 0) {
-            (void)cufftDestroy(static_cast<cufftHandle>(fft.forwardPlan));
-        }
-        if (fft.inversePlan != 0) {
-            (void)cufftDestroy(static_cast<cufftHandle>(fft.inversePlan));
-        }
-        void* aliasedSpectrum = fft.spectrum;
-        if (aliasedSpectrum == fft.realBuffer) {
-            aliasedSpectrum = nullptr;
-        }
-        free_tracked_device_ptr_locked(resources, fft.realBuffer, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, aliasedSpectrum, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, fft.transfer, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, fft.workArea, cudaStreamOpaque);
-#else
-        (void)resources;
-        (void)cudaStreamOpaque;
-#endif
-        fft = Resources::DeviceSpatialDirFft{};
     }
 
     static bool retire_spatial_dir_scratch_locked(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque, const char* label, std::string& outError) {
@@ -4918,21 +4886,6 @@ namespace JuicerCuda {
             if (!retire_ptr_locked(resources, s.filterTempC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
                 return false;
             s.filterTempC = nullptr;
-        }
-        if (s.iirForwardTemp) {
-            if (!retire_ptr_locked(resources, s.iirForwardTemp, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
-                return false;
-            s.iirForwardTemp = nullptr;
-        }
-        if (s.iirForwardTempM) {
-            if (!retire_ptr_locked(resources, s.iirForwardTempM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
-                return false;
-            s.iirForwardTempM = nullptr;
-        }
-        if (s.iirForwardTempC) {
-            if (!retire_ptr_locked(resources, s.iirForwardTempC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
-                return false;
-            s.iirForwardTempC = nullptr;
         }
         if (s.logRawB) {
             if (!retire_ptr_locked(resources, s.logRawB, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
@@ -5012,7 +4965,6 @@ namespace JuicerCuda {
         return scratch.rawCorrectionY || scratch.rawCorrectionM || scratch.rawCorrectionC ||
                scratch.filteredCorrectionY || scratch.filteredCorrectionM ||
                scratch.filteredCorrectionC || scratch.filterTempM || scratch.filterTempC ||
-               scratch.iirForwardTemp || scratch.iirForwardTempM || scratch.iirForwardTempC ||
                scratch.logRawB || scratch.logRawG || scratch.logRawR;
     }
 
@@ -5033,30 +4985,9 @@ namespace JuicerCuda {
         add_plane(scratch.filteredCorrectionC);
         add_plane(scratch.filterTempM);
         add_plane(scratch.filterTempC);
-        add_plane(scratch.iirForwardTemp);
-        add_plane(scratch.iirForwardTempM);
-        add_plane(scratch.iirForwardTempC);
         add_plane(scratch.logRawB);
         add_plane(scratch.logRawG);
         add_plane(scratch.logRawR);
-        return bytes;
-    }
-
-    static std::size_t spatial_dir_fft_live_bytes_locked(
-        const Resources::DeviceSpatialDirFft& fft) noexcept {
-        std::size_t bytes = 0;
-        if (fft.realBuffer) {
-            bytes += fft.realBufferBytes;
-        }
-        if (fft.spectrum && fft.spectrum != fft.realBuffer) {
-            bytes += fft.spectrumBytes;
-        }
-        if (fft.transfer) {
-            bytes += fft.transferBytes;
-        }
-        if (fft.workArea) {
-            bytes += fft.workAreaBytes;
-        }
         return bytes;
     }
 
@@ -5076,32 +5007,16 @@ namespace JuicerCuda {
         if (!tier1Base) {
             return false;
         }
-        const bool hasChannelTemps =
-            scratch.filterTempM && scratch.filterTempC &&
-            scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
         const bool hasAliasedForwardTemps =
-            scratch.filterTempM && scratch.filterTempC &&
-            scratch.iirForwardTemp == nullptr && scratch.iirForwardTempM == nullptr &&
-            scratch.iirForwardTempC == nullptr;
-        const bool hasCompactSequentialTemps =
-            scratch.iirForwardTemp &&
-            scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
-            scratch.iirForwardTempM == nullptr && scratch.iirForwardTempC == nullptr;
+            scratch.filterTempM && scratch.filterTempC;
         const bool hasLowScratchPairTemps =
-            scratch.filterTempM && scratch.filterTempC == nullptr &&
-            scratch.iirForwardTemp == nullptr && scratch.iirForwardTempM == nullptr &&
-            scratch.iirForwardTempC == nullptr;
+            scratch.filterTempM && scratch.filterTempC == nullptr;
         const bool hasNoChannelTemps =
-            scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
-            scratch.iirForwardTemp == nullptr && scratch.iirForwardTempM == nullptr &&
-            scratch.iirForwardTempC == nullptr;
+            scratch.filterTempM == nullptr && scratch.filterTempC == nullptr;
         const bool channelTempsMatch =
-            (planeRoles.filterTempPlanes == 0 && planeRoles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
-            (planeRoles.filterTempPlanes == 1 && planeRoles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
-            (planeRoles.filterTempPlanes == 1 && planeRoles.iirForwardTempPlanes == 1 && hasCompactSequentialTemps) ||
-            (planeRoles.filterTempPlanes == 2 && planeRoles.iirForwardTempPlanes == 0 && hasLowScratchPairTemps) ||
-            (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 0 && hasAliasedForwardTemps) ||
-            (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 3 && hasChannelTemps);
+            (planeRoles.filterTempPlanes == 1 && hasNoChannelTemps) ||
+            (planeRoles.filterTempPlanes == 2 && hasLowScratchPairTemps) ||
+            (planeRoles.filterTempPlanes == 3 && hasAliasedForwardTemps);
         const bool cachedLogRawMatch =
             (planeRoles.cachedLogRawPlanes == 0 &&
              scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr) ||
@@ -5131,12 +5046,7 @@ namespace JuicerCuda {
             planeRoles.filterTempPlanes == 3 ||
             (planeRoles.filterTempPlanes == 2 && !scratch.filterTempC) ||
             (!scratch.filterTempM && !scratch.filterTempC);
-        const bool iirForwardTempsCompatible =
-            planeRoles.iirForwardTempPlanes == 3 ||
-            (planeRoles.iirForwardTempPlanes == 1 &&
-             scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC) ||
-            (!scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC);
-        return filterTempsCompatible && iirForwardTempsCompatible;
+        return filterTempsCompatible;
     }
 
     static bool spatial_dir_request_needs_shared_tmp_plane(
@@ -5302,19 +5212,7 @@ namespace JuicerCuda {
             !retire_plane(
                 scratch.filterTempC,
                 "retained spatial DIR build filterTempC",
-                outStats.filterTempRetiredBytes) ||
-            !retire_plane(
-                scratch.iirForwardTemp,
-                "retained spatial DIR build iirForwardTemp",
-                outStats.iirForwardTempRetiredBytes) ||
-            !retire_plane(
-                scratch.iirForwardTempM,
-                "retained spatial DIR build iirForwardTempM",
-                outStats.iirForwardTempRetiredBytes) ||
-            !retire_plane(
-                scratch.iirForwardTempC,
-                "retained spatial DIR build iirForwardTempC",
-                outStats.iirForwardTempRetiredBytes)) {
+                outStats.filterTempRetiredBytes)) {
             return false;
         }
 
@@ -5650,37 +5548,6 @@ namespace JuicerCuda {
                 *tempPlane = nullptr;
             }
         }
-        if (scratch.iirForwardTemp) {
-            if (!retire_ptr_locked(
-                    resources,
-                    scratch.iirForwardTemp,
-                    bytes,
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    "scratch normalization spatial dir iir forward temp",
-                    outError,
-                    true)) {
-                return false;
-            }
-            scratch.iirForwardTemp = nullptr;
-        }
-        float** forwardTempPlanes[2] = {&scratch.iirForwardTempM, &scratch.iirForwardTempC};
-        for (float** forwardPlane : forwardTempPlanes) {
-            if (*forwardPlane) {
-                if (!retire_ptr_locked(
-                        resources,
-                        *forwardPlane,
-                        bytes,
-                        Resources::RetireKind::DeviceFree,
-                        cudaStreamOpaque,
-                        "scratch normalization spatial dir channel iir forward temp",
-                        outError,
-                        true)) {
-                    return false;
-                }
-                *forwardPlane = nullptr;
-            }
-        }
         float** logRawPlanes[3] = {&scratch.logRawB, &scratch.logRawG, &scratch.logRawR};
         for (float** logRawPlane : logRawPlanes) {
             if (*logRawPlane) {
@@ -5988,7 +5855,6 @@ namespace JuicerCuda {
                 outStats.pendingScratchBytesBefore > 0 ||
                 outStats.rawCorrectionRetiredBytes > 0 ||
                 outStats.filterTempRetiredBytes > 0 ||
-                outStats.iirForwardTempRetiredBytes > 0 ||
                 outStats.sharedTmpRetiredBytes > 0;
         }
 
@@ -6229,14 +6095,12 @@ namespace JuicerCuda {
     bool reclaim_large_scratch_transition(
         Resources& resources,
         const ResourceManager::ScratchRequestDescriptor& scratchRequest,
-        bool usesSpatialDirFft,
         void* cudaStreamOpaque,
         LargeScratchTransitionReclaimStats& outStats,
         std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)scratchRequest;
-        (void)usesSpatialDirFft;
         (void)cudaStreamOpaque;
         outStats = LargeScratchTransitionReclaimStats{};
         outError = "CUDA is not enabled";
@@ -6248,11 +6112,6 @@ namespace JuicerCuda {
             outError = "large scratch transition request descriptor is invalid";
             return false;
         }
-        if (usesSpatialDirFft && !scratchRequest.needSpatialDir) {
-            outError = "large scratch transition FFT request requires spatial DIR scratch";
-            return false;
-        }
-
         const std::size_t requestedWidth = static_cast<std::size_t>(scratchRequest.requestedWidth);
         const std::size_t requestedHeight = static_cast<std::size_t>(scratchRequest.requestedHeight);
         if (requestedHeight != 0 &&
@@ -6333,23 +6192,11 @@ namespace JuicerCuda {
                 outStats.sharedTmpRetiredBytes = sharedTmpBytesBefore;
             }
 
-            if (!usesSpatialDirFft) {
-                outStats.fftReleasedBytes =
-                    spatial_dir_fft_live_bytes_locked(resources.spatialDirFft);
-                if (outStats.fftReleasedBytes > 0) {
-                    free_spatial_dir_fft(
-                        resources,
-                        resources.spatialDirFft,
-                        cudaStreamOpaque);
-                }
-            }
-
             syncBeforeReap =
                 outStats.pendingScratchBytesBefore > 0 ||
                 outStats.opticsRetiredBytes > 0 ||
                 outStats.spatialDirRetiredBytes > 0 ||
-                outStats.sharedTmpRetiredBytes > 0 ||
-                outStats.fftReleasedBytes > 0;
+                outStats.sharedTmpRetiredBytes > 0;
         }
 
         if (!syncBeforeReap) {
@@ -6527,21 +6374,11 @@ namespace JuicerCuda {
                 outStats.sharedTmpRetiredBytes = sharedTmpBytesBefore;
             }
 
-            outStats.fftReleasedBytes =
-                spatial_dir_fft_live_bytes_locked(resources.spatialDirFft);
-            if (outStats.fftReleasedBytes > 0) {
-                free_spatial_dir_fft(
-                    resources,
-                    resources.spatialDirFft,
-                    cudaStreamOpaque);
-            }
-
             syncBeforeReap =
                 outStats.pendingScratchBytesBefore > 0 ||
                 outStats.opticsRetiredBytes > 0 ||
                 outStats.spatialDirRetiredBytes > 0 ||
-                outStats.sharedTmpRetiredBytes > 0 ||
-                outStats.fftReleasedBytes > 0;
+                outStats.sharedTmpRetiredBytes > 0;
         }
 
         if (!syncBeforeReap) {
@@ -7117,7 +6954,7 @@ namespace JuicerCuda {
             outError = "spatial DIR scratch dimensions invalid";
             return false;
         }
-        if (!ResourceManager::spatial_dir_roles_match_tier(scratchTier, planeRoles)) {
+        if (!Spektrafilm::spatial_dir_roles_match_tier(scratchTier, planeRoles)) {
             outError = "spatial DIR scratch request tier/roles invalid";
             return false;
         }
@@ -7172,17 +7009,11 @@ namespace JuicerCuda {
                 (planeRoles.rawCorrectionPlanes == 3 &&
                  (!ensure_plane(scratch.rawCorrectionM, "spatial DIR rawCorrectionM") ||
                   !ensure_plane(scratch.rawCorrectionC, "spatial DIR rawCorrectionC"))) ||
-                (planeRoles.iirForwardTempPlanes == 1 &&
-                 !ensure_plane(scratch.iirForwardTemp, "spatial DIR iirForwardTemp")) ||
                 (planeRoles.filterTempPlanes == 2 &&
                  !ensure_plane(scratch.filterTempM, "spatial DIR filterTempM")) ||
                 (planeRoles.filterTempPlanes == 3 &&
                  (!ensure_plane(scratch.filterTempM, "spatial DIR filterTempM") ||
                   !ensure_plane(scratch.filterTempC, "spatial DIR filterTempC"))) ||
-                (planeRoles.iirForwardTempPlanes == 3 &&
-                 (!ensure_plane(scratch.iirForwardTemp, "spatial DIR iirForwardTemp") ||
-                  !ensure_plane(scratch.iirForwardTempM, "spatial DIR iirForwardTempM") ||
-                  !ensure_plane(scratch.iirForwardTempC, "spatial DIR iirForwardTempC"))) ||
                 (planeRoles.cachedLogRawPlanes >= 1 &&
                  !ensure_plane(scratch.logRawB, "spatial DIR logRawB")) ||
                 (planeRoles.cachedLogRawPlanes >= 2 &&
@@ -7216,7 +7047,6 @@ namespace JuicerCuda {
         if (scratch.rawCorrectionY || scratch.rawCorrectionM || scratch.rawCorrectionC ||
             scratch.filteredCorrectionY || scratch.filteredCorrectionM ||
             scratch.filteredCorrectionC || scratch.filterTempM || scratch.filterTempC ||
-            scratch.iirForwardTemp || scratch.iirForwardTempM || scratch.iirForwardTempC ||
             scratch.logRawB || scratch.logRawG || scratch.logRawR) {
             if (!capacityMatch || !haveRequiredRoles) {
                 if (!retire_spatial_dir_scratch_locked(resources, scratch, cudaStreamOpaque, "spatial DIR scratch", outError)) {
@@ -7321,35 +7151,6 @@ namespace JuicerCuda {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
-        if (planeRoles.iirForwardTempPlanes >= 1 &&
-            !allocate_scratch_device_ptr_locked(
-                resources,
-                scratch.iirForwardTemp,
-                bytes,
-                cudaStreamOpaque,
-                "spatial DIR iirForwardTemp",
-                outError)) {
-            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
-            return false;
-        }
-        if (planeRoles.iirForwardTempPlanes == 3 &&
-            (!allocate_scratch_device_ptr_locked(
-                 resources,
-                 scratch.iirForwardTempM,
-                 bytes,
-                 cudaStreamOpaque,
-                 "spatial DIR iirForwardTempM",
-                 outError) ||
-             !allocate_scratch_device_ptr_locked(
-                 resources,
-                 scratch.iirForwardTempC,
-                 bytes,
-                 cudaStreamOpaque,
-                 "spatial DIR iirForwardTempC",
-                 outError))) {
-            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
-            return false;
-        }
         if (planeRoles.cachedLogRawPlanes >= 1 &&
             !allocate_scratch_device_ptr_locked(
                 resources,
@@ -7402,479 +7203,6 @@ namespace JuicerCuda {
         scratch.width = width;
         scratch.height = height;
         scratch.capacityElements = requiredElements;
-        return true;
-#endif
-    }
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    static const char* cufft_status_name(cufftResult status) noexcept {
-        switch (status) {
-            case CUFFT_SUCCESS:
-                return "CUFFT_SUCCESS";
-            case CUFFT_INVALID_PLAN:
-                return "CUFFT_INVALID_PLAN";
-            case CUFFT_ALLOC_FAILED:
-                return "CUFFT_ALLOC_FAILED";
-            case CUFFT_INVALID_TYPE:
-                return "CUFFT_INVALID_TYPE";
-            case CUFFT_INVALID_VALUE:
-                return "CUFFT_INVALID_VALUE";
-            case CUFFT_INTERNAL_ERROR:
-                return "CUFFT_INTERNAL_ERROR";
-            case CUFFT_EXEC_FAILED:
-                return "CUFFT_EXEC_FAILED";
-            case CUFFT_SETUP_FAILED:
-                return "CUFFT_SETUP_FAILED";
-            case CUFFT_INVALID_SIZE:
-                return "CUFFT_INVALID_SIZE";
-            case CUFFT_UNALIGNED_DATA:
-                return "CUFFT_UNALIGNED_DATA";
-            case CUFFT_INVALID_DEVICE:
-                return "CUFFT_INVALID_DEVICE";
-            case CUFFT_NO_WORKSPACE:
-                return "CUFFT_NO_WORKSPACE";
-            case CUFFT_NOT_IMPLEMENTED:
-                return "CUFFT_NOT_IMPLEMENTED";
-            case CUFFT_NOT_SUPPORTED:
-                return "CUFFT_NOT_SUPPORTED";
-            default:
-                return "CUFFT_UNKNOWN";
-        }
-    }
-
-    static bool checked_size_mul(std::size_t a, std::size_t b, std::size_t& out) noexcept {
-        if (a != 0 && b > std::numeric_limits<std::size_t>::max() / a) {
-            return false;
-        }
-        out = a * b;
-        return true;
-    }
-
-    static bool checked_fft_byte_count(
-        int width,
-        int height,
-        std::size_t elementBytes,
-        std::size_t& out) noexcept {
-        if (width <= 0 || height <= 0 || elementBytes == 0) {
-            return false;
-        }
-        std::size_t elements = 0;
-        if (!checked_size_mul(
-                static_cast<std::size_t>(width),
-                static_cast<std::size_t>(height),
-                elements)) {
-            return false;
-        }
-        return checked_size_mul(elements, elementBytes, out);
-    }
-
-    static int spatial_dir_fft_real_stride(
-        const Spektrafilm::SpatialDirDescriptor& descriptor) noexcept {
-        if (descriptor.fftComplexWidth <= 0 ||
-            descriptor.fftComplexWidth > (std::numeric_limits<int>::max() / 2)) {
-            return 0;
-        }
-        const int stride = descriptor.fftComplexWidth * 2;
-        return stride >= descriptor.fftWidth ? stride : 0;
-    }
-
-    static std::vector<cufftComplex> build_spatial_dir_fft_transfer_host(
-        const Spektrafilm::SpatialDirDescriptor& descriptor) {
-        constexpr double kPi = 3.141592653589793238462643383279502884;
-        std::vector<cufftComplex> transfer(
-            static_cast<std::size_t>(descriptor.fftHeight) *
-            static_cast<std::size_t>(descriptor.fftComplexWidth));
-
-        for (int y = 0; y < descriptor.fftHeight; ++y) {
-            const int fy = y <= descriptor.fftHeight / 2 ? y : y - descriptor.fftHeight;
-            const double omegaY =
-                2.0 * kPi * static_cast<double>(fy) / static_cast<double>(descriptor.fftHeight);
-            for (int x = 0; x < descriptor.fftComplexWidth; ++x) {
-                const double omegaX =
-                    2.0 * kPi * static_cast<double>(x) / static_cast<double>(descriptor.fftWidth);
-                const double radius2 = omegaX * omegaX + omegaY * omegaY;
-                double response = 0.0;
-                for (int component = 0; component < descriptor.filterPlan.componentCount; ++component) {
-                    const Spektrafilm::DirGaussianComponentPlan& plan =
-                        descriptor.filterPlan.components[static_cast<std::size_t>(component)];
-                    if (!(plan.weight > 0.0f)) {
-                        continue;
-                    }
-                    if (!(plan.sigmaPixels > 0.0f)) {
-                        response += static_cast<double>(plan.weight);
-                    } else {
-                        const double sigma = static_cast<double>(plan.sigmaPixels);
-                        response += static_cast<double>(plan.weight) *
-                                    std::exp(-0.5 * sigma * sigma * radius2);
-                    }
-                }
-                transfer[static_cast<std::size_t>(y) *
-                             static_cast<std::size_t>(descriptor.fftComplexWidth) +
-                         static_cast<std::size_t>(x)] =
-                    cufftComplex{static_cast<float>(response), 0.0f};
-            }
-        }
-        return transfer;
-    }
-#endif
-
-    bool estimate_spatial_dir_fft_growth_bytes(
-        Resources& resources,
-        const Spektrafilm::SpatialDirDescriptor& descriptor,
-        void* cudaStreamOpaque,
-        std::size_t& outGrowthBytes,
-        std::string& outError) {
-        outGrowthBytes = 0;
-        outError.clear();
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)descriptor;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        (void)cudaStreamOpaque;
-        if (descriptor.approximation != Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
-            return true;
-        }
-        if (descriptor.hash == 0 || descriptor.fftWidth <= 0 || descriptor.fftHeight <= 0 ||
-            descriptor.fftComplexWidth <= 0 || descriptor.fftPadPixels < 0 ||
-            descriptor.filterPlan.componentCount <= 0) {
-            outError = "spatial DIR FFT descriptor is invalid";
-            return false;
-        }
-
-        std::lock_guard<std::mutex> lock(resources.m);
-        if (!validate_resource_owner_locked(resources, outError, true)) {
-            return false;
-        }
-
-        const Resources::DeviceSpatialDirFft& fft = resources.spatialDirFft;
-        const bool descriptorHit =
-            fft.descriptorHash == descriptor.hash &&
-            fft.forwardPlan != 0 &&
-            fft.inversePlan != 0 &&
-            fft.realBuffer &&
-            fft.spectrum == fft.realBuffer &&
-            fft.transfer &&
-            fft.width == descriptor.fftWidth &&
-            fft.height == descriptor.fftHeight &&
-            fft.padPixels == descriptor.fftPadPixels &&
-            fft.complexWidth == descriptor.fftComplexWidth;
-        if (descriptorHit) {
-            return true;
-        }
-
-        const int realStride = spatial_dir_fft_real_stride(descriptor);
-        if (realStride <= 0) {
-            outError = "spatial DIR FFT in-place real stride is invalid";
-            return false;
-        }
-
-        std::size_t realBytes = 0;
-        std::size_t spectrumBytes = 0;
-        if (!checked_fft_byte_count(
-                realStride,
-                descriptor.fftHeight,
-                sizeof(float),
-                realBytes) ||
-            !checked_fft_byte_count(
-                descriptor.fftComplexWidth,
-                descriptor.fftHeight,
-                sizeof(cufftComplex),
-                spectrumBytes)) {
-            outError = "spatial DIR FFT byte count overflow";
-            return false;
-        }
-
-        cufftHandle forwardPlan = 0;
-        cufftHandle inversePlan = 0;
-        cufftResult status = cufftCreate(&forwardPlan);
-        if (status == CUFFT_SUCCESS) {
-            status = cufftCreate(&inversePlan);
-        }
-        if (status == CUFFT_SUCCESS) {
-            status = cufftSetAutoAllocation(forwardPlan, 0);
-        }
-        if (status == CUFFT_SUCCESS) {
-            status = cufftSetAutoAllocation(inversePlan, 0);
-        }
-        std::size_t forwardWorkBytes = 0;
-        std::size_t inverseWorkBytes = 0;
-        if (status == CUFFT_SUCCESS) {
-            status = cufftMakePlan2d(
-                forwardPlan,
-                descriptor.fftHeight,
-                descriptor.fftWidth,
-                CUFFT_R2C,
-                &forwardWorkBytes);
-        }
-        if (status == CUFFT_SUCCESS) {
-            status = cufftMakePlan2d(
-                inversePlan,
-                descriptor.fftHeight,
-                descriptor.fftWidth,
-                CUFFT_C2R,
-                &inverseWorkBytes);
-        }
-        if (forwardPlan != 0) {
-            (void)cufftDestroy(forwardPlan);
-        }
-        if (inversePlan != 0) {
-            (void)cufftDestroy(inversePlan);
-        }
-        if (status != CUFFT_SUCCESS) {
-            outError = std::string("spatial DIR FFT plan sizing failed: ") +
-                       cufft_status_name(status);
-            return false;
-        }
-
-        std::size_t newBytes = 0;
-        auto add_bytes = [&](std::size_t bytes) noexcept {
-            if (newBytes > std::numeric_limits<std::size_t>::max() - bytes) {
-                newBytes = std::numeric_limits<std::size_t>::max();
-                return;
-            }
-            newBytes += bytes;
-        };
-        add_bytes(std::max(forwardWorkBytes, inverseWorkBytes));
-        add_bytes(realBytes);
-        add_bytes(spectrumBytes);
-        if (newBytes == std::numeric_limits<std::size_t>::max()) {
-            outError = "spatial DIR FFT growth byte count overflow";
-            return false;
-        }
-
-        std::size_t currentBytes = 0;
-        auto add_current = [&](bool live, std::size_t bytes) noexcept {
-            if (!live) {
-                return;
-            }
-            if (currentBytes > std::numeric_limits<std::size_t>::max() - bytes) {
-                currentBytes = std::numeric_limits<std::size_t>::max();
-                return;
-            }
-            currentBytes += bytes;
-        };
-        add_current(fft.workArea != nullptr, fft.workAreaBytes);
-        add_current(fft.realBuffer != nullptr, fft.realBufferBytes);
-        add_current(fft.spectrum != nullptr && fft.spectrum != fft.realBuffer, fft.spectrumBytes);
-        add_current(fft.transfer != nullptr, fft.transferBytes);
-        if (currentBytes == std::numeric_limits<std::size_t>::max()) {
-            outError = "spatial DIR FFT resident byte count overflow";
-            return false;
-        }
-
-        outGrowthBytes = (newBytes > currentBytes) ? (newBytes - currentBytes) : 0;
-        return true;
-#endif
-    }
-
-    bool ensure_spatial_dir_fft(
-        Resources& resources,
-        const Spektrafilm::SpatialDirDescriptor& descriptor,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)descriptor;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        if (descriptor.approximation != Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
-            return true;
-        }
-        if (descriptor.hash == 0 || descriptor.fftWidth <= 0 || descriptor.fftHeight <= 0 ||
-            descriptor.fftComplexWidth <= 0 || descriptor.fftPadPixels < 0 ||
-            descriptor.filterPlan.componentCount <= 0) {
-            outError = "spatial DIR FFT descriptor is invalid";
-            return false;
-        }
-
-        const cudaStream_t stream =
-            cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-        std::lock_guard<std::mutex> lock(resources.m);
-        if (!validate_resource_owner_locked(resources, outError, true)) {
-            return false;
-        }
-
-        Resources::DeviceSpatialDirFft& fft = resources.spatialDirFft;
-        const bool descriptorHit =
-            fft.descriptorHash == descriptor.hash &&
-            fft.forwardPlan != 0 &&
-            fft.inversePlan != 0 &&
-            fft.realBuffer &&
-            fft.spectrum == fft.realBuffer &&
-            fft.transfer &&
-            fft.width == descriptor.fftWidth &&
-            fft.height == descriptor.fftHeight &&
-            fft.padPixels == descriptor.fftPadPixels &&
-            fft.complexWidth == descriptor.fftComplexWidth;
-        if (descriptorHit) {
-            cufftResult status = cufftSetStream(static_cast<cufftHandle>(fft.forwardPlan), stream);
-            if (status == CUFFT_SUCCESS) {
-                status = cufftSetStream(static_cast<cufftHandle>(fft.inversePlan), stream);
-            }
-            if (status != CUFFT_SUCCESS) {
-                outError = std::string("spatial DIR FFT stream bind failed: ") +
-                           cufft_status_name(status);
-                return false;
-            }
-            fft.lastSetupCreated = false;
-            fft.lastSetupMs = 0.0;
-            return true;
-        }
-
-        const auto setupStart = std::chrono::steady_clock::now();
-        free_spatial_dir_fft(resources, fft, cudaStreamOpaque);
-
-        const int realStride = spatial_dir_fft_real_stride(descriptor);
-        if (realStride <= 0) {
-            outError = "spatial DIR FFT in-place real stride is invalid";
-            return false;
-        }
-
-        std::size_t realBytes = 0;
-        std::size_t spectrumBytes = 0;
-        if (!checked_fft_byte_count(
-                realStride,
-                descriptor.fftHeight,
-                sizeof(float),
-                realBytes) ||
-            !checked_fft_byte_count(
-                descriptor.fftComplexWidth,
-                descriptor.fftHeight,
-                sizeof(cufftComplex),
-                spectrumBytes)) {
-            outError = "spatial DIR FFT byte count overflow";
-            return false;
-        }
-
-        cufftHandle forwardPlan = 0;
-        cufftHandle inversePlan = 0;
-        cufftResult status = cufftCreate(&forwardPlan);
-        if (status == CUFFT_SUCCESS) {
-            status = cufftCreate(&inversePlan);
-        }
-        if (status == CUFFT_SUCCESS) {
-            status = cufftSetAutoAllocation(forwardPlan, 0);
-        }
-        if (status == CUFFT_SUCCESS) {
-            status = cufftSetAutoAllocation(inversePlan, 0);
-        }
-        std::size_t forwardWorkBytes = 0;
-        std::size_t inverseWorkBytes = 0;
-        if (status == CUFFT_SUCCESS) {
-            status = cufftMakePlan2d(
-                forwardPlan,
-                descriptor.fftHeight,
-                descriptor.fftWidth,
-                CUFFT_R2C,
-                &forwardWorkBytes);
-        }
-        if (status == CUFFT_SUCCESS) {
-            status = cufftMakePlan2d(
-                inversePlan,
-                descriptor.fftHeight,
-                descriptor.fftWidth,
-                CUFFT_C2R,
-                &inverseWorkBytes);
-        }
-        if (status != CUFFT_SUCCESS) {
-            if (forwardPlan != 0) {
-                (void)cufftDestroy(forwardPlan);
-            }
-            if (inversePlan != 0) {
-                (void)cufftDestroy(inversePlan);
-            }
-            outError = std::string("spatial DIR FFT plan creation failed: ") +
-                       cufft_status_name(status);
-            return false;
-        }
-
-        fft.forwardPlan = static_cast<int>(forwardPlan);
-        fft.inversePlan = static_cast<int>(inversePlan);
-        fft.forwardWorkBytes = forwardWorkBytes;
-        fft.inverseWorkBytes = inverseWorkBytes;
-        fft.workAreaBytes = std::max(forwardWorkBytes, inverseWorkBytes);
-
-        if (fft.workAreaBytes > 0 &&
-            !allocate_scratch_device_ptr_locked(
-                resources,
-                fft.workArea,
-                fft.workAreaBytes,
-                cudaStreamOpaque,
-                "spatial DIR FFT cuFFT work area",
-                outError)) {
-            free_spatial_dir_fft(resources, fft, cudaStreamOpaque);
-            return false;
-        }
-        if (fft.workArea) {
-            status = cufftSetWorkArea(static_cast<cufftHandle>(fft.forwardPlan), fft.workArea);
-            if (status == CUFFT_SUCCESS) {
-                status = cufftSetWorkArea(static_cast<cufftHandle>(fft.inversePlan), fft.workArea);
-            }
-        }
-        if (status == CUFFT_SUCCESS) {
-            status = cufftSetStream(static_cast<cufftHandle>(fft.forwardPlan), stream);
-        }
-        if (status == CUFFT_SUCCESS) {
-            status = cufftSetStream(static_cast<cufftHandle>(fft.inversePlan), stream);
-        }
-        if (status != CUFFT_SUCCESS) {
-            outError = std::string("spatial DIR FFT plan setup failed: ") +
-                       cufft_status_name(status);
-            free_spatial_dir_fft(resources, fft, cudaStreamOpaque);
-            return false;
-        }
-
-        if (!allocate_scratch_device_ptr_locked(
-                resources,
-                fft.realBuffer,
-                realBytes,
-                cudaStreamOpaque,
-                "spatial DIR FFT real buffer",
-                outError) ||
-            !allocate_scratch_device_ptr_locked(
-                resources,
-                fft.transfer,
-                spectrumBytes,
-                cudaStreamOpaque,
-                "spatial DIR FFT transfer",
-                outError)) {
-            free_spatial_dir_fft(resources, fft, cudaStreamOpaque);
-            return false;
-        }
-        fft.spectrum = fft.realBuffer;
-
-        const std::vector<cufftComplex> transferHost =
-            build_spatial_dir_fft_transfer_host(descriptor);
-        const cudaError_t copyErr = cudaMemcpy(
-            fft.transfer,
-            transferHost.data(),
-            spectrumBytes,
-            cudaMemcpyHostToDevice);
-        if (copyErr != cudaSuccess) {
-            outError = std::string("spatial DIR FFT transfer upload failed: ") +
-                       cudaGetErrorString(copyErr);
-            free_spatial_dir_fft(resources, fft, cudaStreamOpaque);
-            return false;
-        }
-
-        fft.width = descriptor.fftWidth;
-        fft.height = descriptor.fftHeight;
-        fft.padPixels = descriptor.fftPadPixels;
-        fft.complexWidth = descriptor.fftComplexWidth;
-        fft.descriptorHash = descriptor.hash;
-        fft.realBufferBytes = realBytes;
-        fft.spectrumBytes = 0;
-        fft.transferBytes = spectrumBytes;
-        fft.lastSetupCreated = true;
-        fft.lastSetupMs =
-            std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - setupStart)
-                .count();
         return true;
 #endif
     }

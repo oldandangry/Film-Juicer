@@ -42,7 +42,6 @@ namespace Print {
         float glareCompensationDensity = 1.2f;
         float glareCompensationTransition = 0.3f;
         Profiles::ProfileGlare glare;
-        float logEOffC = 0.0f, logEOffM = 0.0f, logEOffY = 0.0f; // retained per-channel logE offsets (unused)
         std::array<float, 3> gammaFactor{{1.0f, 1.0f, 1.0f}};
 
         // Optional neutral density target for mid-scale metameric patch (agx parity)

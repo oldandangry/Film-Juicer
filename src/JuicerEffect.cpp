@@ -10,7 +10,6 @@
 #include <mutex>
 #include <stdexcept>
 #include <limits>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -371,7 +370,21 @@ namespace {
     inline bool is_coupler_param_name(const char* changedName) {
         return param_name_is(changedName, JuicerParams::kDirCouplersActive) ||
                param_name_is(changedName, JuicerParams::kDirCouplersAmount) ||
-               param_name_is(changedName, JuicerParams::kDirTailMode);
+               param_name_is(changedName, JuicerParams::kDirCouplersInhibitionSameLayer) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersInhibitionInterlayer) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersDiffusionSizeUm) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersGammaUseStock) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersGammaSameLayerRgb) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersGammaInterlayerRToGb) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersGammaInterlayerGToRb) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersGammaInterlayerBToRg);
+    }
+
+    inline bool is_coupler_gamma_numeric_param_name(const std::string& paramName) {
+        return param_name_is(paramName, JuicerParams::kDirCouplersGammaSameLayerRgb) ||
+               param_name_is(paramName, JuicerParams::kDirCouplersGammaInterlayerRToGb) ||
+               param_name_is(paramName, JuicerParams::kDirCouplersGammaInterlayerGToRb) ||
+               param_name_is(paramName, JuicerParams::kDirCouplersGammaInterlayerBToRg);
     }
 
     inline bool halation_revert_param_changed(const std::string& paramName) {
@@ -1098,11 +1111,32 @@ namespace {
     inline void read_coupler_snapshot_values(
         OFX::BooleanParam* couplersActiveParam,
         OFX::DoubleParam* couplersAmountParam,
-        OFX::ChoiceParam* dirTailModeParam,
+        OFX::DoubleParam* inhibitionSameLayerParam,
+        OFX::DoubleParam* inhibitionInterlayerParam,
+        OFX::DoubleParam* diffusionSizeUmParam,
+        OFX::BooleanParam* gammaUseStockParam,
+        OFX::Double3DParam* gammaSameLayerRgbParam,
+        OFX::Double2DParam* gammaInterlayerRToGbParam,
+        OFX::Double2DParam* gammaInterlayerGToRbParam,
+        OFX::Double2DParam* gammaInterlayerBToRgParam,
         ParamSnapshot& snapshot) {
         snapshot.couplersActive = read_bool_param_as_i32(couplersActiveParam, true);
         snapshot.couplersAmount = read_double_param_or(couplersAmountParam, snapshot.couplersAmount);
-        snapshot.dirTailMode = read_choice_param_or(dirTailModeParam, snapshot.dirTailMode);
+        snapshot.couplersInhibitionSameLayer =
+            read_double_param_or(inhibitionSameLayerParam, snapshot.couplersInhibitionSameLayer);
+        snapshot.couplersInhibitionInterlayer =
+            read_double_param_or(inhibitionInterlayerParam, snapshot.couplersInhibitionInterlayer);
+        snapshot.couplersDiffusionSizeUm =
+            read_double_param_or(diffusionSizeUmParam, snapshot.couplersDiffusionSizeUm);
+        snapshot.couplersGammaUseStock = read_bool_param_as_i32(gammaUseStockParam, true);
+        snapshot.couplersGammaSameLayerRgb =
+            read_double3_param_or(gammaSameLayerRgbParam, snapshot.couplersGammaSameLayerRgb);
+        snapshot.couplersGammaInterlayerRToGb =
+            read_double2_param_or(gammaInterlayerRToGbParam, snapshot.couplersGammaInterlayerRToGb);
+        snapshot.couplersGammaInterlayerGToRb =
+            read_double2_param_or(gammaInterlayerGToRbParam, snapshot.couplersGammaInterlayerGToRb);
+        snapshot.couplersGammaInterlayerBToRg =
+            read_double2_param_or(gammaInterlayerBToRgParam, snapshot.couplersGammaInterlayerBToRg);
     }
 
     template <size_t N>
@@ -1799,6 +1833,55 @@ OutputEncoding::Params JuicerEffect::gatherOutputEncodingParams() const {
     return params;
 }
 
+void JuicerEffect::applyDirGammaProfileDefaults() {
+    if (!_state || !read_bool_param_or(_pCouplersGammaUseStock, true)) {
+        return;
+    }
+
+    JuicerProcess::root().ensure_bootstrap();
+    const std::string filmKey =
+        read_str_choice_param_or(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
+    const std::shared_ptr<const Profiles::ValidatedFilmProfile> profile =
+        JuicerProcess::root().assets().selected_film_profile_for_key(filmKey);
+    if (!profile) {
+        JTRACE("SPEKTRAFILM", "MissingRequiredResource field=dir_gamma_profile_defaults");
+        return;
+    }
+
+    const Profiles::ProfileDigest& digest = profile->digest;
+    const auto finiteNonnegative = [](float value) {
+        return std::isfinite(value) && value >= 0.0f;
+    };
+    const bool valid =
+        std::all_of(digest.gammaSamelayerRgb.begin(), digest.gammaSamelayerRgb.end(), finiteNonnegative) &&
+        std::all_of(digest.gammaInterlayerRToGb.begin(), digest.gammaInterlayerRToGb.end(), finiteNonnegative) &&
+        std::all_of(digest.gammaInterlayerGToRb.begin(), digest.gammaInterlayerGToRb.end(), finiteNonnegative) &&
+        std::all_of(digest.gammaInterlayerBToRg.begin(), digest.gammaInterlayerBToRg.end(), finiteNonnegative);
+    if (!valid) {
+        JTRACE("SPEKTRAFILM", "MalformedRequiredProfileData field=dir_gamma_profile_defaults");
+        return;
+    }
+
+    const ScopedParamEventSuppression suppressEvents(_state.get());
+    set_double3_param_if(
+        _pCouplersGammaSameLayerRgb,
+        digest.gammaSamelayerRgb[0],
+        digest.gammaSamelayerRgb[1],
+        digest.gammaSamelayerRgb[2]);
+    set_double2_param_if(
+        _pCouplersGammaInterlayerRToGb,
+        digest.gammaInterlayerRToGb[0],
+        digest.gammaInterlayerRToGb[1]);
+    set_double2_param_if(
+        _pCouplersGammaInterlayerGToRb,
+        digest.gammaInterlayerGToRb[0],
+        digest.gammaInterlayerGToRb[1]);
+    set_double2_param_if(
+        _pCouplersGammaInterlayerBToRg,
+        digest.gammaInterlayerBToRg[0],
+        digest.gammaInterlayerBToRg[1]);
+}
+
 JuicerEffect::WorkingStateInfo JuicerEffect::prepareWorkingState() const {
     WorkingStateInfo info{};
     if (!has_loaded_base_state(_state.get())) {
@@ -1853,7 +1936,22 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
 
         _pCouplersActive = fetchBooleanParam(JuicerParams::kDirCouplersActive);
         _pCouplersAmount = fetchDoubleParam(JuicerParams::kDirCouplersAmount);
-        _pDirTailMode = fetchChoiceParam(JuicerParams::kDirTailMode);
+        _pCouplersInhibitionSameLayer =
+            fetchDoubleParam(JuicerParams::kDirCouplersInhibitionSameLayer);
+        _pCouplersInhibitionInterlayer =
+            fetchDoubleParam(JuicerParams::kDirCouplersInhibitionInterlayer);
+        _pCouplersDiffusionSizeUm =
+            fetchDoubleParam(JuicerParams::kDirCouplersDiffusionSizeUm);
+        _pCouplersGammaUseStock =
+            fetchBooleanParam(JuicerParams::kDirCouplersGammaUseStock);
+        _pCouplersGammaSameLayerRgb =
+            fetchDouble3DParam(JuicerParams::kDirCouplersGammaSameLayerRgb);
+        _pCouplersGammaInterlayerRToGb =
+            fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerRToGb);
+        _pCouplersGammaInterlayerGToRb =
+            fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerGToRb);
+        _pCouplersGammaInterlayerBToRg =
+            fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerBToRg);
 
         _pScannerLensBlur = fetchDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
         _pScannerUnsharp = fetchDouble2DParam(JuicerParams::kScannerUnsharpMask);
@@ -2020,14 +2118,6 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     if (!cudaRoute) {
         throw_spektrafilm_phase1a_render_cutoff(args);
     }
-#if JUICER_DIAGNOSTICS_COMPILED
-    if (JTRACE_ENABLED(1)) {
-        std::string msg = "plugin=com.juicer.Juicer render backend=cuda route=";
-        msg += Spektrafilm::scan_route_key(requestedRoute);
-        JTRACE("PHASE3D", msg);
-    }
-#endif
-
     auto framePreparation = JuicerProcess::root().begin_frame_preparation();
     if (!framePreparation.active()) {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2140,7 +2230,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         msg += std::to_string(printRoute ? printState->buildCounter : directState->buildCounter);
         msg += " recipe_hash=";
         msg += std::to_string(focusedRecipe.hash);
-        JTRACE_VERBOSE("PHASE3D", msg);
+        JTRACE_VERBOSE("RENDER", msg);
     }
 
     // Tile-based multithreaded processing via OFX::ImageProcessor
@@ -2205,6 +2295,15 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     };
 
     const bool userEdit = (args.reason == OFX::eChangeUserEdit);
+
+    if (userEdit && is_coupler_gamma_numeric_param_name(paramName)) {
+        const ScopedParamEventSuppression suppressEvents(_state.get());
+        set_bool_param_if(_pCouplersGammaUseStock, false);
+    }
+    if (param_name_is(paramName, JuicerParams::kDirCouplersGammaUseStock) &&
+        read_bool_param_or(_pCouplersGammaUseStock, true)) {
+        applyDirGammaProfileDefaults();
+    }
 
     if (param_name_is(paramName, JuicerParams::kFilmProfileKey)) {
         const std::string filmKey =
@@ -2695,7 +2794,18 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     P.cameraFilmFormatLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
     P.exactScatterHalationActive = read_bool_param_or(_pHalationActive, false) ? 1 : 0;
     P.grainControls = gatherGrainUi();
-    read_coupler_snapshot_values(_pCouplersActive, _pCouplersAmount, _pDirTailMode, P);
+    read_coupler_snapshot_values(
+        _pCouplersActive,
+        _pCouplersAmount,
+        _pCouplersInhibitionSameLayer,
+        _pCouplersInhibitionInterlayer,
+        _pCouplersDiffusionSizeUm,
+        _pCouplersGammaUseStock,
+        _pCouplersGammaSameLayerRgb,
+        _pCouplersGammaInterlayerRToGb,
+        _pCouplersGammaInterlayerGToRb,
+        _pCouplersGammaInterlayerBToRg,
+        P);
     read_scanner_snapshot_values(
         _pScannerLensBlur,
         _pScannerUnsharp,
@@ -2721,12 +2831,13 @@ void JuicerEffect::bootstrap_after_attach() {
     const ScopedBootstrapState bootstrapState(_state.get());
     ParamSnapshot P = snapshotParams();
     const bool printRoute = Spektrafilm::scan_route_is_print(P.scanRoute);
-    store_pending_hashes_for_snapshot(*_state, P);
 
     // Both accepted routes consume the selected validated Spektrafilm film payload.
     load_direct_film_profile_into_base_locked(P, *_state);
     if (has_loaded_base_state(_state.get())) {
+        applyDirGammaProfileDefaults();
         applyHalationProfileDefaults();
+        P = snapshotParams();
     }
 
     if (printRoute) {
@@ -2751,418 +2862,6 @@ void JuicerEffect::bootstrap_after_attach() {
     }
 }
 
-#if 0
-// Phase 4C hard block: accepted print bootstrap/publication owns neutral policy in RenderRecipe.
-void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& runtime) {
-    if (!_state) {
-        return;
-    }
-#if JUICER_DIAGNOSTICS_COMPILED
-    const bool traceInfo = JTRACE_ENABLED(1);
-#endif
-
-    const JuicerAssets::PrintRuntimeAssetSet printAssets =
-        JuicerProcess::root().assets().print_runtime_assets_for_profile_keys(
-            JuicerAssets::PrintRuntimeProfileKeyChoices{
-                P.filmProfileKey,
-                P.printProfileKey,
-                P.enlDichroicSet});
-    const char* printProfileKey = printAssets.printPaper.jsonKey.empty()
-                               ? nullptr
-                               : printAssets.printPaper.jsonKey.c_str();
-    const char* filmProfileKey = printAssets.filmStock.jsonKey.empty()
-                                  ? nullptr
-                                  : printAssets.filmStock.jsonKey.c_str();
-    const std::vector<std::string> illumKeys = enlarger_illuminant_keys_for_choice(P.enlIll);
-
-    if (!(printProfileKey && filmProfileKey && !illumKeys.empty())) {
-#if JUICER_DIAGNOSTICS_COMPILED
-        if (traceInfo) {
-            JTRACE(
-                "PRINT",
-                "Neutral filter lookup prerequisites missing: " + neutral_filter_prereq_context(printProfileKey, filmProfileKey, join_keys_csv_or_none(illumKeys)));
-        }
-#endif
-        throw std::runtime_error("Neutral filter metadata incomplete for current selection");
-    }
-
-    float neutralY = Print::kSpektrafilmNeutralYCC;
-    float neutralM = Print::kSpektrafilmNeutralMCC;
-    float neutralC = Print::kSpektrafilmNeutralCCC;
-    bool loaded = false;
-
-    const JuicerAssets::NeutralFilterDatabaseAsset& neutralDb = printAssets.neutralFilters;
-    std::tuple<float, float, float> cmyCc{};
-    std::string selectedDbVersionHash;
-    const std::string* illumKeyData = illumKeys.data();
-    const size_t illumKeyCount = illumKeys.size();
-    for (size_t i = 0; i < illumKeyCount; ++i, ++illumKeyData) {
-        const std::string& illumKey = *illumKeyData;
-        if (illumKey.empty()) {
-            continue;
-        }
-        const JuicerAssets::NeutralFilterLookupResult lookup =
-            JuicerProcess::root().assets().lookup_neutral_filters(
-                neutralDb,
-                JuicerAssets::NeutralFilterLookupKey{
-                    printAssets.printPaper.jsonKey,
-                    illumKey,
-                    printAssets.filmStock.jsonKey},
-                JuicerAssets::NeutralFilterLookupThread::Control);
-        if (lookup.found) {
-            cmyCc = lookup.cmyCc;
-            selectedDbVersionHash = lookup.selectedDbVersionHash;
-            neutralC = std::get<0>(cmyCc);
-            neutralM = std::get<1>(cmyCc);
-            neutralY = std::get<2>(cmyCc);
-            loaded = true;
-#if JUICER_DIAGNOSTICS_COMPILED
-            if (traceInfo) {
-                std::string msg;
-                msg.reserve(192);
-                msg = "Neutral filters loaded for ";
-                msg += illumKey;
-                msg += " C/M/Ycc=";
-                msg += std::to_string(neutralC);
-                msg += "/";
-                msg += std::to_string(neutralM);
-                msg += "/";
-                msg += std::to_string(neutralY);
-                msg += " db_version_hash=";
-                msg += cstr_or_default_if_empty(selectedDbVersionHash, "none");
-                JTRACE("PRINT", msg);
-            }
-#endif
-            break;
-        }
-    }
-
-    if (!loaded) {
-#if JUICER_DIAGNOSTICS_COMPILED
-        if (traceInfo) {
-            JTRACE(
-                "PRINT",
-                "Neutral filters missing for " + neutral_filter_missing_context(printProfileKey, filmProfileKey, join_keys_csv_or_none(illumKeys)) + "; aborting print path");
-        }
-#endif
-        throw std::runtime_error("Neutral filter database entry not found");
-    }
-
-    std::uint64_t neutralFilterHash = Print::kNeutralCalibrationHashSeed;
-    if (!selectedDbVersionHash.empty()) {
-        neutralFilterHash = Hash::hash_bytes(selectedDbVersionHash.data(), selectedDbVersionHash.size());
-        if (neutralFilterHash == 0) {
-            neutralFilterHash = Print::kNeutralCalibrationHashSeed;
-        }
-    }
-
-    runtime.neutralY = neutralY;
-    runtime.neutralM = neutralM;
-    runtime.neutralC = neutralC;
-    runtime.neutralFilterHash = neutralFilterHash;
-    // Preserve user-entered enlarger offsets and exposure toggle; neutral baselines update independently.
-}
-
-bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P, const Print::Runtime& runtime) {
-    if (!_state) {
-        return false;
-    }
-
-    bool changed = false;
-
-    const std::string& filmRef = !_state->filmReferenceIlluminant.empty()
-                                     ? _state->filmReferenceIlluminant
-                                     : _state->base.referenceIlluminant;
-    const std::string& printRef = runtime.referenceIlluminant;
-    const std::string& printView = runtime.viewingIlluminant;
-
-    const std::string refSource = first_nonempty_or(filmRef, printRef, printView);
-    const std::string enlSource = first_nonempty_or(printRef, filmRef, printView);
-
-    const ScopedParamEventSuppression suppressEvents(_state.get());
-    changed = apply_illuminant_choice_from_source(
-                  _pRefIll,
-                  P.refIll,
-                  _state->illuminantOverride.reference,
-                  refSource) ||
-              changed;
-    changed = apply_illuminant_choice_from_source(
-                  _pEnlIll,
-                  P.enlIll,
-                  _state->illuminantOverride.enlarger,
-                  enlSource) ||
-              changed;
-
-    if (changed) {
-        P = snapshotParams();
-    }
-
-    return changed;
-}
-#endif
-
-#if 0
-void JuicerEffect::initializeCouplerParamsFromProfileIfNeeded(ParamSnapshot& P) {
-    if (!_state) {
-        return;
-    }
-
-    const int initVersion = read_int_param_or(_pCouplersInitVersion, 0);
-    if (initVersion >= kDirCouplersInitVersionCurrent) {
-        return;
-    }
-
-    const ScopedParamEventSuppression suppressEvents(_state.get());
-
-    const Profiles::DirProfile& dirCfg = _state->base.dirCouplers;
-    CouplerProfileDefaults factoryDefaults{};
-    factoryDefaults.active = (kFactoryCouplersActive != 0);
-    factoryDefaults.amount = kFactoryCouplersAmount;
-    factoryDefaults.ratioB = kFactoryCouplersRatioB;
-    factoryDefaults.ratioG = kFactoryCouplersRatioG;
-    factoryDefaults.ratioR = kFactoryCouplersRatioR;
-    factoryDefaults.sigma = kFactoryCouplersSigma;
-    factoryDefaults.high = kFactoryCouplersHigh;
-    factoryDefaults.spatialSigmaMicrometers = kFactoryCouplersSpatialSigma;
-
-    if (!dirCfg.hasData) {
-        set_int_param_if(_pCouplersFollowMask, infer_coupler_follow_stock_mask(P, factoryDefaults));
-        set_int_param_if(_pCouplersInitVersion, kDirCouplersInitVersionCurrent);
-        return;
-    }
-
-    const CouplerProfileDefaults profileDefaults = build_coupler_profile_defaults(
-        dirCfg,
-        _state->couplerProfileSpatialSigmaValid,
-        _state->couplerProfileSpatialSigmaMicrometers,
-        P);
-
-    const int profileFollowMask = infer_coupler_follow_stock_mask(P, profileDefaults);
-    const bool matchesProfileDefaults = profileFollowMask == kCouplerFollowStockAllMask;
-    const bool matchesFactoryDefaults =
-        infer_coupler_follow_stock_mask(P, factoryDefaults) == kCouplerFollowStockAllMask;
-
-    int followMask = profileFollowMask;
-    // Legacy instances without the init-version param can only be distinguished by their
-    // visible values: untouched factory defaults get the stock-profile initialization once,
-    // while any other restored values are preserved as authored state.
-    if (!matchesProfileDefaults && matchesFactoryDefaults) {
-        applyCouplerProfileDefaults(P);
-        followMask = kCouplerFollowStockAllMask;
-    }
-
-    set_int_param_if(_pCouplersFollowMask, sanitize_coupler_follow_stock_mask(followMask));
-    set_int_param_if(_pCouplersInitVersion, kDirCouplersInitVersionCurrent);
-}
-
-void JuicerEffect::syncCouplerParamsFromProfileFollowMask(ParamSnapshot& P) {
-    if (!_state) {
-        return;
-    }
-
-    const Profiles::DirProfile& dirCfg = _state->base.dirCouplers;
-    if (!dirCfg.hasData) {
-        return;
-    }
-
-    const int followMask = sanitize_coupler_follow_stock_mask(
-        read_int_param_or(_pCouplersFollowMask, kCouplerFollowStockAllMask));
-    if (followMask == 0) {
-        return;
-    }
-
-    const ScopedParamEventSuppression suppressEvents(_state.get());
-    const CouplerProfileDefaults profileDefaults = build_coupler_profile_defaults(
-        dirCfg,
-        _state->couplerProfileSpatialSigmaValid,
-        _state->couplerProfileSpatialSigmaMicrometers,
-        P);
-
-    auto apply_if_following = [&](CouplerParamKind kind,
-                                  double source,
-                                  double fallback,
-                                  double lo,
-                                  double hi,
-                                  OFX::DoubleParam* param,
-                                  double& target) {
-        if (!coupler_follow_stock_enabled(followMask, kind)) {
-            return;
-        }
-        const double value = sanitize_finite_clamped(source, fallback, lo, hi);
-        set_double_param_if(param, value);
-        target = value;
-    };
-
-    if (coupler_follow_stock_enabled(followMask, CouplerParamKind::Active)) {
-        set_bool_param_if(_pCouplersActive, profileDefaults.active);
-        P.couplersActive = bool_to_i32(profileDefaults.active);
-    }
-
-    apply_if_following(
-        CouplerParamKind::Amount,
-        profileDefaults.amount,
-        P.couplersAmount,
-        0.0,
-        2.0,
-        _pCouplersAmount,
-        P.couplersAmount);
-    apply_if_following(
-        CouplerParamKind::RatioB,
-        profileDefaults.ratioB,
-        P.ratioB,
-        0.0,
-        1.0,
-        _pCouplersAmountB,
-        P.ratioB);
-    apply_if_following(
-        CouplerParamKind::RatioG,
-        profileDefaults.ratioG,
-        P.ratioG,
-        0.0,
-        1.0,
-        _pCouplersAmountG,
-        P.ratioG);
-    apply_if_following(
-        CouplerParamKind::RatioR,
-        profileDefaults.ratioR,
-        P.ratioR,
-        0.0,
-        1.0,
-        _pCouplersAmountR,
-        P.ratioR);
-    apply_if_following(
-        CouplerParamKind::Sigma,
-        profileDefaults.sigma,
-        P.sigma,
-        0.0,
-        4.0,
-        _pCouplersSigma,
-        P.sigma);
-    apply_if_following(
-        CouplerParamKind::High,
-        profileDefaults.high,
-        P.high,
-        0.0,
-        1.0,
-        _pCouplersHigh,
-        P.high);
-    apply_if_following(
-        CouplerParamKind::SpatialSigma,
-        profileDefaults.spatialSigmaMicrometers,
-        P.spatialSigmaMicrometers,
-        0.0,
-        50.0,
-        _pCouplersSpatialSigma,
-        P.spatialSigmaMicrometers);
-}
-
-void JuicerEffect::clearCouplerFollowStockForParam(const char* changedNameOrNull) {
-    if (!_state || !_pCouplersFollowMask) {
-        return;
-    }
-
-    const CouplerParamKind kind = coupler_param_kind(changedNameOrNull);
-    const int bit = coupler_follow_stock_bit(kind);
-    if (bit == 0) {
-        return;
-    }
-
-    const int followMask = sanitize_coupler_follow_stock_mask(read_int_param_or(_pCouplersFollowMask, 0));
-    if ((followMask & bit) == 0) {
-        return;
-    }
-
-    const ScopedParamEventSuppression suppressEvents(_state.get());
-    set_int_param_if(_pCouplersFollowMask, followMask & ~bit);
-}
-
-void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
-    if (!_state) {
-        return;
-    }
-
-    const Profiles::DirProfile& dirCfg = _state->base.dirCouplers;
-    if (!dirCfg.hasData) {
-        return;
-    }
-
-    const ScopedParamEventSuppression suppressEvents(_state.get());
-
-    auto apply_profile_double = [&](double source,
-                                    double fallback,
-                                    double lo,
-                                    double hi,
-                                    OFX::DoubleParam* param,
-                                    double& target) {
-        const double value = sanitize_finite_clamped(source, fallback, lo, hi);
-        set_double_param_if(param, value);
-        target = value;
-    };
-
-    const bool active = dirCfg.active;
-    set_bool_param_if(_pCouplersActive, active);
-    P.couplersActive = bool_to_i32(active);
-
-    apply_profile_double(
-        static_cast<double>(dirCfg.amount),
-        P.couplersAmount,
-        0.0,
-        2.0,
-        _pCouplersAmount,
-        P.couplersAmount);
-
-    apply_profile_double(
-        static_cast<double>(dirCfg.ratioRGB[0]),
-        P.ratioB,
-        0.0,
-        1.0,
-        _pCouplersAmountB,
-        P.ratioB);
-
-    apply_profile_double(
-        static_cast<double>(dirCfg.ratioRGB[1]),
-        P.ratioG,
-        0.0,
-        1.0,
-        _pCouplersAmountG,
-        P.ratioG);
-
-    apply_profile_double(
-        static_cast<double>(dirCfg.ratioRGB[2]),
-        P.ratioR,
-        0.0,
-        1.0,
-        _pCouplersAmountR,
-        P.ratioR);
-
-    apply_profile_double(
-        static_cast<double>(dirCfg.diffusionInterlayer),
-        P.sigma,
-        0.0,
-        4.0,
-        _pCouplersSigma,
-        P.sigma);
-
-    apply_profile_double(
-        static_cast<double>(dirCfg.highExposureShift),
-        P.high,
-        0.0,
-        1.0,
-        _pCouplersHigh,
-        P.high);
-
-    const float profileSpatialSigma = _state->couplerProfileSpatialSigmaValid
-                                          ? static_cast<float>(_state->couplerProfileSpatialSigmaMicrometers)
-                                          : dirCfg.diffusionSizeUm;
-    apply_profile_double(
-        static_cast<double>(profileSpatialSigma),
-        P.spatialSigmaMicrometers,
-        0.0,
-        50.0,
-        _pCouplersSpatialSigma,
-        P.spatialSigmaMicrometers);
-}
-#endif
 
 void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     if (!_state)
@@ -3189,8 +2888,12 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     const bool filmReloaded =
         reload_film_stock_if_requested(changed.filmProfile, P, *_state);
     apply_when_film_reloaded(filmReloaded, [&]() {
+        applyDirGammaProfileDefaults();
         applyHalationProfileDefaults();
     });
+    if (filmReloaded) {
+        P = snapshotParams();
+    }
 
     if (Spektrafilm::scan_route_is_print(P.scanRoute)) {
         JTRACE_VERBOSE(

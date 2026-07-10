@@ -453,16 +453,12 @@ namespace {
     inline void publish_rebuilt_working_state(
         InstanceState& state,
         const ParamSnapshot& params,
-        std::shared_ptr<WorkingState> next,
-        bool invalidateSpatialSigmaCache) {
+        std::shared_ptr<WorkingState> next) {
         const std::uint64_t buildCounter = next ? next->buildCounter : 0;
         const std::uint64_t fullHash = next ? next->fullHash : 0;
         const std::shared_ptr<const DirectRenderState> directState =
             next ? make_direct_render_state(*next) : nullptr;
         std::lock_guard<std::mutex> lock(state.m);
-        if (invalidateSpatialSigmaCache) {
-            state.spatialSigmaCacheValid.store(false, std::memory_order_release);
-        }
         JuicerAtomic::store_shared_ptr(&state.activeWorkingState, std::shared_ptr<const WorkingState>(std::move(next)));
         JuicerAtomic::store_shared_ptr(&state.activeDirectState, directState);
         JuicerAtomic::store_shared_ptr(&state.activePrintState, std::shared_ptr<const PrintRenderState>{});
@@ -482,14 +478,6 @@ namespace {
     inline double clamp_finite_or(double value, double fallback, double lo, double hi) {
         const double candidate = is_finite(value) ? value : fallback;
         return std::clamp(candidate, lo, hi);
-    }
-
-    inline float clamp_coupler_ratio(double value) {
-        return static_cast<float>(clamp_finite_or(value, 0.0, 0.0, 1.0));
-    }
-
-    inline float clamp_coupler_amount(double value) {
-        return static_cast<float>(clamp_finite_or(value, 0.0, 0.0, 2.0));
     }
 
     inline bool is_positive_finite(float value);
@@ -756,8 +744,23 @@ namespace {
     template <typename MixFn>
     inline void mix_coupler_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
         mix_hash_field(h, p.couplersActive, mix);
-        mix_hash_field_scaled(h, p.couplersAmount, 10000.0, mix);
-        mix_hash_field(h, p.dirTailMode, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, p.couplersAmount, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, p.couplersInhibitionSameLayer, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, p.couplersInhibitionInterlayer, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, p.couplersDiffusionSizeUm, 10000.0, mix);
+        mix_hash_field(h, p.couplersGammaUseStock, mix);
+        for (double value : p.couplersGammaSameLayerRgb) {
+            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+        }
+        for (double value : p.couplersGammaInterlayerRToGb) {
+            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+        }
+        for (double value : p.couplersGammaInterlayerGToRb) {
+            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+        }
+        for (double value : p.couplersGammaInterlayerBToRg) {
+            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+        }
     }
 
     Spektrafilm::GrainContract focused_grain_contract_from_snapshot(const ParamSnapshot& p) {
@@ -783,6 +786,30 @@ namespace {
         contract.visualBreathingDebug = grain.breathingDebug;
         contract.visualDebugView = grain.debugView;
         return contract;
+    }
+
+    Spektrafilm::DirCouplersControls focused_dir_couplers_controls_from_snapshot(const ParamSnapshot& p) {
+        Spektrafilm::DirCouplersControls controls{};
+        controls.active = p.couplersActive != 0;
+        controls.amount = static_cast<float>(p.couplersAmount);
+        controls.inhibitionSameLayer = static_cast<float>(p.couplersInhibitionSameLayer);
+        controls.inhibitionInterlayer = static_cast<float>(p.couplersInhibitionInterlayer);
+        controls.diffusionSizeUm = static_cast<float>(p.couplersDiffusionSizeUm);
+        controls.gammaUseStock = p.couplersGammaUseStock != 0;
+        controls.gammaSameLayerRgb = {
+            static_cast<float>(p.couplersGammaSameLayerRgb[0]),
+            static_cast<float>(p.couplersGammaSameLayerRgb[1]),
+            static_cast<float>(p.couplersGammaSameLayerRgb[2])};
+        controls.gammaInterlayerRToGb = {
+            static_cast<float>(p.couplersGammaInterlayerRToGb[0]),
+            static_cast<float>(p.couplersGammaInterlayerRToGb[1])};
+        controls.gammaInterlayerGToRb = {
+            static_cast<float>(p.couplersGammaInterlayerGToRb[0]),
+            static_cast<float>(p.couplersGammaInterlayerGToRb[1])};
+        controls.gammaInterlayerBToRg = {
+            static_cast<float>(p.couplersGammaInterlayerBToRg[0]),
+            static_cast<float>(p.couplersGammaInterlayerBToRg[1])};
+        return controls;
     }
 
     inline void sanitize_dir_matrix(float matrix[3][3]) {
@@ -1409,10 +1436,7 @@ namespace {
         input.scanRoute = params.scanRoute;
         input.filmProfile = selected.filmProfile;
         input.grainContract = focused_grain_contract_from_snapshot(params);
-        // Phase 3D-3 direct production consumes only typed recipe controls.
-        input.dirCouplers.active = params.couplersActive != 0;
-        input.dirCouplers.amount = static_cast<float>(params.couplersAmount);
-        input.dirCouplers.tailMode = static_cast<Spektrafilm::DirTailMode>(params.dirTailMode);
+        input.dirCouplers = focused_dir_couplers_controls_from_snapshot(params);
         input.spatialOptics.scatterHalationActive = params.exactScatterHalationActive != 0;
         input.directRoutePrintProfileExcluded = selected.directRoutePrintProfileExcluded;
         input.directRouteNeutralCalibrationExcluded =
@@ -1540,9 +1564,7 @@ namespace {
         input.filmFoundation.cameraFilterOverride = params.cameraFilterOverride;
         input.filmFoundation.cameraFilterUV = params.cameraFilterUV;
         input.filmFoundation.cameraFilterIR = params.cameraFilterIR;
-        input.filmFoundation.dirCouplers.active = params.couplersActive != 0;
-        input.filmFoundation.dirCouplers.amount = static_cast<float>(params.couplersAmount);
-        input.filmFoundation.dirCouplers.tailMode = static_cast<Spektrafilm::DirTailMode>(params.dirTailMode);
+        input.filmFoundation.dirCouplers = focused_dir_couplers_controls_from_snapshot(params);
         input.filmFoundation.spatialOptics.scatterHalationActive =
             params.exactScatterHalationActive != 0;
         if (selected.filmProfile) {
@@ -1856,8 +1878,6 @@ bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceStat
     S.base.cameraFilterUV = profile.cameraFilterUV;
     S.base.cameraFilterIR = profile.cameraFilterIR;
     S.base.cameraFilterDefined = profile.hasCameraFilterUV || profile.hasCameraFilterIR;
-    S.couplerProfileSpatialSigmaMicrometers = 0.0;
-    S.couplerProfileSpatialSigmaValid = false;
     S.base.maskingCouplers = profile.maskingCouplers;
     S.base.grain = profile.grain;
     S.base.halation = profile.halation;
@@ -2142,8 +2162,6 @@ bool load_selected_spektrafilm_film_profile_into_base(
 
     S.base = std::move(next);
     S.filmReferenceIlluminant = S.base.referenceIlluminant;
-    S.couplerProfileSpatialSigmaMicrometers = 0.0;
-    S.couplerProfileSpatialSigmaValid = false;
     JTRACE_VERBOSE("SPEKTRAFILM", "phase=3A direct bootstrap consumed selected validated Spektrafilm film payload");
     return true;
 }
@@ -2186,7 +2204,6 @@ bool rebuild_print_render_state(InstanceState& S, const ParamSnapshot& P) {
     const std::uint64_t fullHash = hash_params(P);
     {
         std::lock_guard<std::mutex> stateLock(S.m);
-        S.spatialSigmaCacheValid.store(false, std::memory_order_release);
         JuicerAtomic::store_shared_ptr(
             &S.activeWorkingState,
             std::shared_ptr<const WorkingState>{});
@@ -2519,68 +2536,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     const Profiles::DirProfile& dirCfg = base.dirCouplers;
 
-    const int effectiveCouplersActive = (P.couplersActive != 0) ? 1 : 0;
-    const double effectiveCouplersAmount = clamp_finite_or(P.couplersAmount, kFactoryCouplersAmount, 0.0, 2.0);
-    const double effectiveRatioB = clamp_finite_or(P.ratioB, kFactoryCouplersRatioB, 0.0, 1.0);
-    const double effectiveRatioG = clamp_finite_or(P.ratioG, kFactoryCouplersRatioG, 0.0, 1.0);
-    const double effectiveRatioR = clamp_finite_or(P.ratioR, kFactoryCouplersRatioR, 0.0, 1.0);
-    const double effectiveCouplersSigma = clamp_finite_or(P.sigma, kFactoryCouplersSigma, 0.0, 4.0);
-    const double effectiveCouplersHigh = clamp_finite_or(P.high, kFactoryCouplersHigh, 0.0, 1.0);
-    const double effectiveSpatialSigma =
-        clamp_finite_or(P.spatialSigmaMicrometers, kFactoryCouplersSpatialSigma, 0.0, 50.0);
-
     bool precorrectApplied = false;
     Couplers::Runtime dirRT{};
-    dirRT.active = (effectiveCouplersActive != 0);
-    {
-        const float amountScale = clamp_coupler_amount(effectiveCouplersAmount);
-        const float amount[3] = {
-            amountScale * clamp_coupler_ratio(effectiveRatioB),
-            amountScale * clamp_coupler_ratio(effectiveRatioG),
-            amountScale * clamp_coupler_ratio(effectiveRatioR)};
-#if 0
-        Couplers::build_dir_matrix(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
-#else
-        build_dir_matrix_fallback(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
-#endif
-        dirRT.highShift = static_cast<float>(effectiveCouplersHigh);
-        dirRT.spatialSigmaMicrometers = static_cast<float>(effectiveSpatialSigma);
-        dirRT.spatialSigmaPixels = 0.0f;
-
-#if 0
-        if (dirRT.active) {
-            // agx-emulsion parity: density curves may contain intentional toe NaNs. DIR pre-correction
-            // must not "heal" them into 0 densities; if authored NaNs exist, skip pre-correction and
-            // let NaNs propagate through sampling to "0 transmitted light" downstream.
-            if (curve_has_nonfinite_samples(densB) ||
-                curve_has_nonfinite_samples(densG) ||
-                curve_has_nonfinite_samples(densR)) {
-                precorrectApplied = false;
-                JTRACE("BUILD", "precorrect: skipped (density curves contain non-finite samples; NaN toe parity)");
-            } else {
-                Spectral::Curve densB_corr, densG_corr, densR_corr;
-                Couplers::precorrect_density_curves_before_DIR_into(
-                    dirRT.M, dirRT.highShift, densB, densG, densR, densB_corr, densG_corr, densR_corr);
-                dirDensB = std::move(densB_corr);
-                dirDensG = std::move(densG_corr);
-                dirDensR = std::move(densR_corr);
-                precorrectApplied = true;
-            }
-        }
-#else
-        (void)dirRT;
-#endif
-
-        copy_float3(dirRT.dMax, densityMaxPostDir.data());
-        if (buildTraceEnabled) {
-            std::ostringstream oss;
-            oss << "DIR active=" << (dirRT.active ? 1 : 0)
-                << " sigma=" << static_cast<float>(effectiveCouplersSigma) << " high=" << static_cast<float>(effectiveCouplersHigh)
-                << " dMax=" << dirRT.dMax[0] << "," << dirRT.dMax[1] << "," << dirRT.dMax[2]
-                << " precorrect=" << (precorrectApplied ? 1 : 0);
-            JTRACE("BUILD", oss.str());
-        }
-    }
+    dirRT.active = target->recipe.dirCouplers.active;
     copy_float3(dirRT.dMax, densityMaxPostDir.data());
 
     Spectral::NegativeCouplerParams negParams{};
@@ -2638,11 +2596,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         }
 
         float dirMatrix[3][3] = {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}};
-#if 0
-        Couplers::build_dir_matrix(dirMatrix, amountRGB, dirCfg.hasData ? dirCfg.diffusionInterlayer : 0.0f);
-#else
         build_dir_matrix_fallback(dirMatrix, amountRGB, dirCfg.hasData ? dirCfg.diffusionInterlayer : 0.0f);
-#endif
 
         std::array<float, 3> maskScaleCh{{1.0f, 1.0f, 1.0f}};
         std::array<float, 3> maskOffsetCh{{0.0f, 0.0f, 0.0f}};
@@ -3272,7 +3226,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE("BUILD", oss.str());
     }
 
-    publish_rebuilt_working_state(S, P, next, /*invalidateSpatialSigmaCache*/ true);
+    publish_rebuilt_working_state(S, P, next);
     if (buildTraceEnabled) {
         std::ostringstream oss;
         oss << "activeWorkingState swapped; buildCounter=" << static_cast<long long>(target->buildCounter);

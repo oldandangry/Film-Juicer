@@ -171,8 +171,7 @@ bool is_allocator_oom_error(const std::string& error) noexcept {
         return false;
     }
     return contains_ascii_case_insensitive(error, "out of memory") ||
-           contains_ascii_case_insensitive(error, "memory allocation") ||
-           contains_ascii_case_insensitive(error, "CUFFT_ALLOC_FAILED");
+           contains_ascii_case_insensitive(error, "memory allocation");
 }
 
 bool tier_circuit_should_count_failure(const std::string& error) noexcept {
@@ -916,7 +915,6 @@ bool run_large_scratch_transition_checkpoint(
     JuicerCuda::Resources& resources,
     const char* commandName,
     const ScratchRequestDescriptor& scratchRequest,
-    bool usesSpatialDirFft,
     void* cudaStreamOpaque,
     std::string& outError) {
     outError.clear();
@@ -925,7 +923,6 @@ bool run_large_scratch_transition_checkpoint(
     if (!JuicerCuda::reclaim_large_scratch_transition(
             resources,
             scratchRequest,
-            usesSpatialDirFft,
             cudaStreamOpaque,
             reclaimStats,
             outError)) {
@@ -933,7 +930,6 @@ bool run_large_scratch_transition_checkpoint(
             transaction,
             commandName,
             scratchRequest,
-            usesSpatialDirFft,
             reclaimStats,
             "large_scratch_transition_checkpoint_failed");
         return false;
@@ -943,14 +939,12 @@ bool run_large_scratch_transition_checkpoint(
         transaction,
         commandName,
         scratchRequest,
-        usesSpatialDirFft,
         reclaimStats,
         "large_scratch_transition_checkpoint");
 
     if (reclaimStats.opticsRetiredBytes > 0 ||
         reclaimStats.spatialDirRetiredBytes > 0 ||
         reclaimStats.sharedTmpRetiredBytes > 0 ||
-        reclaimStats.fftReleasedBytes > 0 ||
         reclaimStats.reclaimedBytes > 0) {
         publish_manager_memory_snapshot(snapshot_manager_memory(resources));
     }
@@ -2390,31 +2384,16 @@ std::size_t estimate_spatial_dir_growth_bytes(
     const bool haveFiltered = scratch.filteredCorrectionY && scratch.filteredCorrectionM &&
                               scratch.filteredCorrectionC;
     const bool haveBase = haveRaw && haveFiltered;
-    const bool hasChannelTemps =
-        scratch.filterTempM && scratch.filterTempC &&
-        scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
     const bool hasAliasedForwardTemps =
-        scratch.filterTempM && scratch.filterTempC &&
-        !scratch.iirForwardTemp && !scratch.iirForwardTempM &&
-        !scratch.iirForwardTempC;
-    const bool hasCompactSequentialTemps =
-        scratch.iirForwardTemp &&
-        !scratch.filterTempM && !scratch.filterTempC &&
-        !scratch.iirForwardTempM && !scratch.iirForwardTempC;
+        scratch.filterTempM && scratch.filterTempC;
     const bool hasLowScratchPairTemps =
-        scratch.filterTempM && !scratch.filterTempC &&
-        !scratch.iirForwardTemp && !scratch.iirForwardTempM &&
-        !scratch.iirForwardTempC;
+        scratch.filterTempM && !scratch.filterTempC;
     const bool hasNoChannelTemps =
-        !scratch.filterTempM && !scratch.filterTempC &&
-        !scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC;
+        !scratch.filterTempM && !scratch.filterTempC;
     const bool channelTempsMatch =
-        (planeRoles.filterTempPlanes == 0 && planeRoles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
-        (planeRoles.filterTempPlanes == 1 && planeRoles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
-        (planeRoles.filterTempPlanes == 1 && planeRoles.iirForwardTempPlanes == 1 && hasCompactSequentialTemps) ||
-        (planeRoles.filterTempPlanes == 2 && planeRoles.iirForwardTempPlanes == 0 && hasLowScratchPairTemps) ||
-        (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 0 && hasAliasedForwardTemps) ||
-        (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 3 && hasChannelTemps);
+        (planeRoles.filterTempPlanes == 1 && hasNoChannelTemps) ||
+        (planeRoles.filterTempPlanes == 2 && hasLowScratchPairTemps) ||
+        (planeRoles.filterTempPlanes == 3 && hasAliasedForwardTemps);
     const bool cachedLogRawMatch =
         (planeRoles.cachedLogRawPlanes == 0 &&
          !scratch.logRawB && !scratch.logRawG && !scratch.logRawR) ||
@@ -2428,16 +2407,13 @@ std::size_t estimate_spatial_dir_growth_bytes(
         planeRoles.filterTempPlanes == 3 ||
         (planeRoles.filterTempPlanes == 2 && !scratch.filterTempC) ||
         (!scratch.filterTempM && !scratch.filterTempC);
-    const bool iirForwardTempsCompatible =
-        planeRoles.iirForwardTempPlanes == 3 ||
-        (!scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC);
     const bool cachedLogRawCompatible =
         (planeRoles.cachedLogRawPlanes == 0 &&
          !scratch.logRawB && !scratch.logRawG && !scratch.logRawR) ||
         (planeRoles.cachedLogRawPlanes == 2 && !scratch.logRawR) ||
         (planeRoles.cachedLogRawPlanes == 3);
     const bool haveRetainedFinalRoles =
-        haveFiltered && cachedLogRawCompatible && filterTempsCompatible && iirForwardTempsCompatible;
+        haveFiltered && cachedLogRawCompatible && filterTempsCompatible;
     const bool needSharedTmp = planeRoles.filterTempPlanes > 0;
     const bool sharedTmpMatch =
         !needSharedTmp ||
@@ -2449,7 +2425,6 @@ std::size_t estimate_spatial_dir_growth_bytes(
             planeRoles.rawCorrectionPlanes +
             planeRoles.filteredCorrectionPlanes +
             std::max(0, planeRoles.filterTempPlanes - 1) +
-            planeRoles.iirForwardTempPlanes +
             planeRoles.cachedLogRawPlanes;
         for (int plane = 0; plane < dedicatedPlanes; ++plane) {
             std::size_t next = 0;
@@ -2475,17 +2450,11 @@ std::size_t estimate_spatial_dir_growth_bytes(
                 (planeRoles.rawCorrectionPlanes == 3 &&
                  (!addMissingPlane(scratch.rawCorrectionM) ||
                   !addMissingPlane(scratch.rawCorrectionC))) ||
-                (planeRoles.iirForwardTempPlanes == 1 &&
-                 !addMissingPlane(scratch.iirForwardTemp)) ||
                 (planeRoles.filterTempPlanes == 2 &&
                  !addMissingPlane(scratch.filterTempM)) ||
                 (planeRoles.filterTempPlanes == 3 &&
                  (!addMissingPlane(scratch.filterTempM) ||
                   !addMissingPlane(scratch.filterTempC))) ||
-                (planeRoles.iirForwardTempPlanes == 3 &&
-                 (!addMissingPlane(scratch.iirForwardTemp) ||
-                  !addMissingPlane(scratch.iirForwardTempM) ||
-                  !addMissingPlane(scratch.iirForwardTempC))) ||
                 (planeRoles.cachedLogRawPlanes >= 1 &&
                  !addMissingPlane(scratch.logRawB)) ||
                 (planeRoles.cachedLogRawPlanes >= 2 &&
@@ -2499,7 +2468,6 @@ std::size_t estimate_spatial_dir_growth_bytes(
                 planeRoles.rawCorrectionPlanes +
                 planeRoles.filteredCorrectionPlanes +
                 std::max(0, planeRoles.filterTempPlanes - 1) +
-                planeRoles.iirForwardTempPlanes +
                 planeRoles.cachedLogRawPlanes;
             for (int plane = 0; plane < dedicatedPlanes; ++plane) {
                 std::size_t next = 0;
@@ -2627,7 +2595,6 @@ std::size_t estimate_scratch_request_allocation_bytes(
         add_plane(roles.rawCorrectionPlanes);
         add_plane(roles.filteredCorrectionPlanes);
         add_plane(std::max(0, roles.filterTempPlanes - 1)); // filterTemp aliases shared tmp.
-        add_plane(roles.iirForwardTempPlanes);
         add_plane(roles.cachedLogRawPlanes);
     }
 

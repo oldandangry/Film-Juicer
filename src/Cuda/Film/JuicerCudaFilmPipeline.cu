@@ -1,7 +1,6 @@
 // Cuda/Film/JuicerCudaFilmPipeline.cu
 // Pipeline-aligned CUDA TU for film exposure, development, and spatial DIR kernels.
 #include <cuda_runtime.h>
-#include <cufft.h>
 
 #include <cmath>
 #include <cstddef>
@@ -242,8 +241,7 @@ namespace {
     __device__ __forceinline__ void compute_dir_corrections_device(
         const JuicerCuda::DirPayload& dir,
         const float layerDensities[3],
-        float outLayerCorrections[3],
-        unsigned int* clampHits) {
+        float outLayerCorrections[3]) {
         if (!outLayerCorrections) {
             return;
         }
@@ -253,8 +251,6 @@ namespace {
             outLayerCorrections[2] = 0.0f;
             return;
         }
-        (void)clampHits;
-
         auto silver_density = [&](float density, float dmax) -> float {
             return dir.positive ? dmax - density : density;
         };
@@ -280,8 +276,7 @@ namespace {
         float* rawCorrectionC,
         float* logRawB,
         float* logRawG,
-        float* logRawR,
-        unsigned int* clampHits) {
+        float* logRawR) {
         if (!params.src || params.srcRowBytes == 0) {
             return;
         }
@@ -322,7 +317,7 @@ namespace {
                 const float layerDensities[3] = {D_cmy[2], D_cmy[1], D_cmy[0]};
 
                 float outCorr[3] = {0.0f, 0.0f, 0.0f};
-                compute_dir_corrections_device(params.filmDevelop.dir, layerDensities, outCorr, clampHits);
+                compute_dir_corrections_device(params.filmDevelop.dir, layerDensities, outCorr);
 
                 const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
                 rawCorrectionY[idx] = outCorr[0];
@@ -347,8 +342,7 @@ namespace {
     __global__ void dir_raw_correction_channel_source_build_kernel(
         Params params,
         int correctionChannel,
-        float* rawCorrection,
-        unsigned int* clampHits) {
+        float* rawCorrection) {
         if (!params.src || params.srcRowBytes == 0 || !rawCorrection) {
             return;
         }
@@ -392,7 +386,7 @@ namespace {
                 const float layerDensities[3] = {D_cmy[2], D_cmy[1], D_cmy[0]};
 
                 float outCorr[3] = {0.0f, 0.0f, 0.0f};
-                compute_dir_corrections_device(params.filmDevelop.dir, layerDensities, outCorr, clampHits);
+                compute_dir_corrections_device(params.filmDevelop.dir, layerDensities, outCorr);
 
                 const size_t idx =
                     static_cast<size_t>(y) * static_cast<size_t>(params.width) +
@@ -709,81 +703,6 @@ namespace {
     }
     // NOLINTEND(bugprone-easily-swappable-parameters)
 
-    __global__ void spatial_dir_fft_pad_replicate_kernel(
-        const float* JUICER_RESTRICT in,
-        float* out,
-        int srcWidth,
-        int srcHeight,
-        int fftWidth,
-        int fftHeight,
-        int fftRealStride,
-        int padPixels) {
-        const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-        const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
-        if (x >= fftWidth || y >= fftHeight || !in || !out ||
-            srcWidth <= 0 || srcHeight <= 0 || fftWidth <= 0 || fftHeight <= 0 ||
-            fftRealStride < fftWidth || padPixels < 0) {
-            return;
-        }
-        int sx = x - padPixels;
-        int sy = y - padPixels;
-        sx = sx < 0 ? 0 : (sx >= srcWidth ? srcWidth - 1 : sx);
-        sy = sy < 0 ? 0 : (sy >= srcHeight ? srcHeight - 1 : sy);
-        out[static_cast<std::size_t>(y) * static_cast<std::size_t>(fftRealStride) +
-            static_cast<std::size_t>(x)] =
-            in[static_cast<std::size_t>(sy) * static_cast<std::size_t>(srcWidth) +
-               static_cast<std::size_t>(sx)];
-    }
-
-    __global__ void spatial_dir_fft_multiply_transfer_kernel(
-        cufftComplex* spectrum,
-        const cufftComplex* transfer,
-        int count) {
-        for (int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-             idx < count;
-             idx += static_cast<int>(blockDim.x * gridDim.x)) {
-            if (!spectrum || !transfer) {
-                return;
-            }
-            const cufftComplex a = spectrum[idx];
-            const cufftComplex b = transfer[idx];
-            spectrum[idx] = cufftComplex{
-                a.x * b.x - a.y * b.y,
-                a.x * b.y + a.y * b.x};
-        }
-    }
-
-    __global__ void spatial_dir_fft_crop_normalize_kernel(
-        const float* JUICER_RESTRICT in,
-        float* out,
-        int srcWidth,
-        int srcHeight,
-        int fftWidth,
-        int fftHeight,
-        int fftRealStride,
-        int padPixels,
-        float normalization) {
-        const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-        const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
-        if (x >= srcWidth || y >= srcHeight || !in || !out ||
-            srcWidth <= 0 || srcHeight <= 0 || fftWidth <= 0 || fftHeight <= 0 ||
-            fftRealStride < fftWidth || padPixels < 0) {
-            return;
-        }
-        const int sx = x + padPixels;
-        const int sy = y + padPixels;
-        if (sx < 0 || sx >= fftWidth || sy < 0 || sy >= fftHeight) {
-            return;
-        }
-        const float value =
-            in[static_cast<std::size_t>(sy) * static_cast<std::size_t>(fftRealStride) +
-               static_cast<std::size_t>(sx)] *
-            normalization;
-        out[static_cast<std::size_t>(y) * static_cast<std::size_t>(srcWidth) +
-            static_cast<std::size_t>(x)] =
-            isfinite(value) ? value : 0.0f;
-    }
-
 } // namespace
 
 template <typename Params>
@@ -798,9 +717,6 @@ cudaError_t build_spatial_dir_impl(
     float* filterTemp,
     float* filterTempM,
     float* filterTempC,
-    float* iirForwardTemp,
-    float* iirForwardTempM,
-    float* iirForwardTempC,
     float* logRawB,
     float* logRawG,
     float* logRawR,
@@ -820,16 +736,6 @@ cudaError_t build_spatial_dir_impl(
     int tailRadius2, // NOLINT(bugprone-easily-swappable-parameters)
     float tailSigma2,
     float tailWeight2,
-    int acceptedFftActive,
-    int fftForwardPlan,
-    int fftInversePlan,
-    float* fftRealBuffer,
-    void* fftSpectrum,
-    const void* fftTransfer,
-    int fftWidth,
-    int fftHeight,
-    int fftPadPixels,
-    int fftComplexWidth,
     void* cudaStreamOpaque,
     JuicerCuda::SpatialDirBuildProfile* profile) {
     if (!params.src || params.srcRowBytes == 0) {
@@ -844,37 +750,25 @@ cudaError_t build_spatial_dir_impl(
     const bool haveComponentStreamedYvvScratch =
         rawCorrectionY && !rawCorrectionM && !rawCorrectionC &&
         filteredCorrectionY && filteredCorrectionM && filteredCorrectionC && filterTemp &&
-        !filterTempM && !filterTempC && !iirForwardTemp && !iirForwardTempM && !iirForwardTempC;
-    const bool haveFftComponentStreamedScratch =
-        acceptedFftActive && rawCorrectionY && !rawCorrectionM && !rawCorrectionC &&
-        filteredCorrectionY && filteredCorrectionM && filteredCorrectionC && !filterTemp &&
-        !filterTempM && !filterTempC && !iirForwardTemp && !iirForwardTempM && !iirForwardTempC;
-    const bool haveComponentStreamedScratch =
-        haveComponentStreamedYvvScratch || haveFftComponentStreamedScratch;
+        !filterTempM && !filterTempC;
+    const bool haveComponentStreamedScratch = haveComponentStreamedYvvScratch;
     if (!rawCorrectionY || (!haveComponentStreamedScratch && (!rawCorrectionM || !rawCorrectionC)) ||
         !filteredCorrectionY || !filteredCorrectionM || !filteredCorrectionC ||
-        (!haveFftComponentStreamedScratch && !filterTemp) ||
+        !filterTemp ||
         !(gaussianSigma > 0.0f) || !(gaussianWeight >= 0.0f)) {
         return cudaErrorInvalidValue;
     }
-    const bool haveChannelYvvScratch =
-        filterTempM && filterTempC && iirForwardTemp && iirForwardTempM && iirForwardTempC;
     const bool haveAliasedForwardYvvScratch =
-        filterTempM && filterTempC && !iirForwardTemp && !iirForwardTempM && !iirForwardTempC;
+        filterTempM && filterTempC;
     const bool haveLowScratchPairYvvScratch =
-        filterTempM && !filterTempC && !iirForwardTemp && !iirForwardTempM && !iirForwardTempC;
+        filterTempM && !filterTempC;
     const bool haveSingleTempSequentialYvvScratch =
         rawCorrectionY && rawCorrectionM && rawCorrectionC &&
         filteredCorrectionY && filteredCorrectionM && filteredCorrectionC &&
-        filterTemp && !filterTempM && !filterTempC &&
-        !iirForwardTemp && !iirForwardTempM && !iirForwardTempC;
-    const bool haveCompactSequentialYvvScratch =
-        filterTemp && iirForwardTemp && !filterTempM && !filterTempC &&
-        !iirForwardTempM && !iirForwardTempC;
+        filterTemp && !filterTempM && !filterTempC;
 
     cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
     cudaError_t err = cudaSuccess;
-    unsigned int* dClampHits = nullptr;
     CudaProfileStageTimer totalTimer;
     if (profile) {
         *profile = JuicerCuda::SpatialDirBuildProfile{};
@@ -892,22 +786,8 @@ cudaError_t build_spatial_dir_impl(
         profile->tailWeight[0] = tailWeight0;
         profile->tailWeight[1] = tailWeight1;
         profile->tailWeight[2] = tailWeight2;
-        profile->fftActive = acceptedFftActive ? 1 : 0;
-        profile->fftPadPixels = fftPadPixels;
-        profile->fftWidth = fftWidth;
-        profile->fftHeight = fftHeight;
-        profile->fftComplexWidth = fftComplexWidth;
         err = totalTimer.begin(stream);
         if (err != cudaSuccess) {
-            return err;
-        }
-        err = cudaMalloc(&dClampHits, sizeof(unsigned int));
-        if (err != cudaSuccess) {
-            return err;
-        }
-        err = cudaMemsetAsync(dClampHits, 0, sizeof(unsigned int), stream);
-        if (err != cudaSuccess) {
-            cudaFree(dClampHits);
             return err;
         }
     }
@@ -919,28 +799,6 @@ cudaError_t build_spatial_dir_impl(
             profile->total.launches = profile->totalLaunches;
             if (finalErr == cudaSuccess && totalErr != cudaSuccess) {
                 finalErr = totalErr;
-            }
-            if (dClampHits) {
-                unsigned int clampHits = 0;
-                cudaError_t copyErr = cudaMemcpyAsync(
-                    &clampHits,
-                    dClampHits,
-                    sizeof(clampHits),
-                    cudaMemcpyDeviceToHost,
-                    stream);
-                if (copyErr == cudaSuccess) {
-                    copyErr = cudaStreamSynchronize(stream);
-                }
-                if (copyErr == cudaSuccess) {
-                    profile->correctionClampHits = clampHits;
-                } else if (finalErr == cudaSuccess) {
-                    finalErr = copyErr;
-                }
-                const cudaError_t freeErr = cudaFree(dClampHits);
-                dClampHits = nullptr;
-                if (finalErr == cudaSuccess && freeErr != cudaSuccess) {
-                    finalErr = freeErr;
-                }
             }
         }
         return finalErr;
@@ -979,8 +837,7 @@ cudaError_t build_spatial_dir_impl(
             rawCorrectionC,
             logRawB,
             logRawG,
-            logRawR,
-            dClampHits);
+            logRawR);
         mark_launch(
             profile ? &profile->correction : nullptr,
             profile ? &profile->correctionLaunches : nullptr);
@@ -1002,8 +859,7 @@ cudaError_t build_spatial_dir_impl(
         dir_raw_correction_channel_source_build_kernel<<<blocks2D, threads2D, 0, stream>>>(
             params,
             channel,
-            rawCorrectionY,
-            dClampHits);
+            rawCorrectionY);
         mark_launch(
             profile ? &profile->correction : nullptr,
             profile ? &profile->correctionLaunches : nullptr);
@@ -1019,124 +875,6 @@ cudaError_t build_spatial_dir_impl(
         if (err != cudaSuccess) {
             return finish_profile(err);
         }
-    }
-
-    if (acceptedFftActive) {
-        if (haveComponentStreamedYvvScratch) {
-            return finish_profile(cudaErrorInvalidValue);
-        }
-        if (fftForwardPlan == 0 || fftInversePlan == 0 || !fftRealBuffer ||
-            !fftSpectrum || !fftTransfer || fftWidth <= 0 || fftHeight <= 0 ||
-            fftComplexWidth <= 0 || fftPadPixels < 0 ||
-            fftWidth < params.width + 2 * fftPadPixels ||
-            fftHeight < params.height + 2 * fftPadPixels) {
-            return finish_profile(cudaErrorInvalidValue);
-        }
-        if (fftComplexWidth > (std::numeric_limits<int>::max() / 2)) {
-            return finish_profile(cudaErrorInvalidValue);
-        }
-        const int fftRealStride = fftComplexWidth * 2;
-        if (fftRealStride < fftWidth) {
-            return finish_profile(cudaErrorInvalidValue);
-        }
-        const float* rawCorrectionsFft[3] = {rawCorrectionY, rawCorrectionM, rawCorrectionC};
-        float* filteredCorrectionsFft[3] = {
-            filteredCorrectionY,
-            filteredCorrectionM,
-            filteredCorrectionC};
-        const dim3 threadsFft2D(32, 8);
-        const dim3 blocksFft2D(
-            static_cast<unsigned int>((fftWidth + threadsFft2D.x - 1) / threadsFft2D.x),
-            static_cast<unsigned int>((fftHeight + threadsFft2D.y - 1) / threadsFft2D.y));
-        const dim3 blocksCrop2D(
-            static_cast<unsigned int>((params.width + threadsFft2D.x - 1) / threadsFft2D.x),
-            static_cast<unsigned int>((params.height + threadsFft2D.y - 1) / threadsFft2D.y));
-        const int spectrumCount = fftHeight * fftComplexWidth;
-        const int threads1D = 256;
-        const int blocks1D = (spectrumCount + threads1D - 1) / threads1D;
-        const float normalization =
-            1.0f / (static_cast<float>(fftWidth) * static_cast<float>(fftHeight));
-        cufftHandle forwardPlan = static_cast<cufftHandle>(fftForwardPlan);
-        cufftHandle inversePlan = static_cast<cufftHandle>(fftInversePlan);
-        cufftComplex* spectrum = reinterpret_cast<cufftComplex*>(fftSpectrum);
-        const cufftComplex* transfer = reinterpret_cast<const cufftComplex*>(fftTransfer);
-        auto mark_fft_launch = [&]() {
-            mark_launch(
-                profile ? &profile->fftFilter : nullptr,
-                profile ? &profile->fftFilterLaunches : nullptr);
-        };
-        for (int channel = 0; channel < 3; ++channel) {
-            if (haveFftComponentStreamedScratch) {
-                err = launch_streamed_channel_corrections(channel);
-                if (err != cudaSuccess) {
-                    return finish_profile(err);
-                }
-            }
-            CudaProfileStageTimer timer;
-            if (profile) {
-                err = timer.begin(stream);
-                if (err != cudaSuccess) {
-                    return finish_profile(err);
-                }
-            }
-            const float* rawCorrectionForFft =
-                haveFftComponentStreamedScratch ? rawCorrectionY : rawCorrectionsFft[channel];
-            spatial_dir_fft_pad_replicate_kernel<<<blocksFft2D, threadsFft2D, 0, stream>>>(
-                rawCorrectionForFft,
-                fftRealBuffer,
-                params.width,
-                params.height,
-                fftWidth,
-                fftHeight,
-                fftRealStride,
-                fftPadPixels);
-            mark_fft_launch();
-            err = cudaGetLastError();
-            if (err != cudaSuccess) {
-                return finish_profile(err);
-            }
-            cufftResult fftStatus = cufftExecR2C(forwardPlan, fftRealBuffer, spectrum);
-            mark_fft_launch();
-            if (fftStatus != CUFFT_SUCCESS) {
-                return finish_profile(cudaErrorUnknown);
-            }
-            spatial_dir_fft_multiply_transfer_kernel<<<blocks1D, threads1D, 0, stream>>>(
-                spectrum,
-                transfer,
-                spectrumCount);
-            mark_fft_launch();
-            err = cudaGetLastError();
-            if (err != cudaSuccess) {
-                return finish_profile(err);
-            }
-            fftStatus = cufftExecC2R(inversePlan, spectrum, fftRealBuffer);
-            mark_fft_launch();
-            if (fftStatus != CUFFT_SUCCESS) {
-                return finish_profile(cudaErrorUnknown);
-            }
-            spatial_dir_fft_crop_normalize_kernel<<<blocksCrop2D, threadsFft2D, 0, stream>>>(
-                fftRealBuffer,
-                filteredCorrectionsFft[channel],
-                params.width,
-                params.height,
-                fftWidth,
-                fftHeight,
-                fftRealStride,
-                fftPadPixels,
-                normalization);
-            mark_fft_launch();
-            err = cudaGetLastError();
-            if (err != cudaSuccess) {
-                return finish_profile(err);
-            }
-            if (profile) {
-                err = timer.finish(stream, &profile->fftFilter);
-                if (err != cudaSuccess) {
-                    return finish_profile(err);
-                }
-            }
-        }
-        return finish_profile(cudaGetLastError());
     }
 
     auto accumulate_fir_plane = [&](const float* rawCorrection, float* filteredCorrection, const float* k, int r, float sigma, // NOLINT(bugprone-easily-swappable-parameters)
@@ -1186,7 +924,7 @@ cudaError_t build_spatial_dir_impl(
     auto accumulate_yvv_channels = [&](const float* raw0, const float* raw1, const float* raw2, float* filtered0, float* filtered1, float* filtered2, float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter) -> cudaError_t {
         if (!raw0 || !raw1 || !raw2 || !filtered0 || !filtered1 || !filtered2 ||
             !(sigma > 0.0f) || !(weight >= 0.0f) ||
-            !(haveChannelYvvScratch || haveAliasedForwardYvvScratch)) {
+            !haveAliasedForwardYvvScratch) {
             return cudaErrorInvalidValue;
         }
         CudaProfileStageTimer timer;
@@ -1230,9 +968,6 @@ cudaError_t build_spatial_dir_impl(
         if (e != cudaSuccess) {
             return e;
         }
-        float* forwardTempY = haveAliasedForwardYvvScratch ? filterTemp : iirForwardTemp;
-        float* forwardTempM = haveAliasedForwardYvvScratch ? filterTempM : iirForwardTempM;
-        float* forwardTempC = haveAliasedForwardYvvScratch ? filterTempC : iirForwardTempC;
         spatial_dir_iir_vertical_accumulate_channels_kernel<<<
             dim3(static_cast<unsigned int>((params.width + threads - 1) / threads), 3),
             threads,
@@ -1241,9 +976,9 @@ cudaError_t build_spatial_dir_impl(
             filterTemp,
             filterTempM,
             filterTempC,
-            forwardTempY,
-            forwardTempM,
-            forwardTempC,
+            filterTemp,
+            filterTempM,
+            filterTempC,
             filtered0,
             filtered1,
             filtered2,
@@ -1394,7 +1129,7 @@ cudaError_t build_spatial_dir_impl(
 
     auto accumulate_yvv_sequential_single_channel = [&](float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter) -> cudaError_t {
         if (!(sigma > 0.0f) || !(weight >= 0.0f) ||
-            !(haveSingleTempSequentialYvvScratch || haveCompactSequentialYvvScratch)) {
+            !haveSingleTempSequentialYvvScratch) {
             return cudaErrorInvalidValue;
         }
         CudaProfileStageTimer timer;
@@ -1420,8 +1155,6 @@ cudaError_t build_spatial_dir_impl(
             static_cast<unsigned int>((params.height + threads - 1) / threads));
         const dim3 verticalBlocks(
             static_cast<unsigned int>((params.width + threads - 1) / threads));
-        float* verticalForwardTemp =
-            haveSingleTempSequentialYvvScratch ? filterTemp : iirForwardTemp;
         for (int channel = 0; channel < 3; ++channel) {
             spatial_dir_iir_horizontal_single_kernel<<<
                 horizontalBlocks,
@@ -1447,7 +1180,7 @@ cudaError_t build_spatial_dir_impl(
                 0,
                 stream>>>(
                 filterTemp,
-                verticalForwardTemp,
+                filterTemp,
                 filteredCorrections[channel],
                 params.width,
                 params.height,
@@ -1539,7 +1272,7 @@ cudaError_t build_spatial_dir_impl(
     auto accumulate_component = [&](const float* k, int r, float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter)
         -> cudaError_t {
         if (sigma >= 3.0f) {
-            if (haveChannelYvvScratch || haveAliasedForwardYvvScratch) {
+            if (haveAliasedForwardYvvScratch) {
                 return accumulate_yvv_channels(
                     rawCorrectionY,
                     rawCorrectionM,
@@ -1748,107 +1481,6 @@ cudaError_t build_spatial_dir_cached_log_raw_impl(
     return cudaGetLastError();
 }
 
-extern "C" cudaError_t juicer_cuda_build_spatial_dir(
-    const JuicerCuda::PipelineRunParams* hParams,
-    float* rawCorrectionY,
-    float* rawCorrectionM,
-    float* rawCorrectionC,
-    float* filteredCorrectionY,
-    float* filteredCorrectionM,
-    float* filteredCorrectionC,
-    float* filterTemp,
-    float* filterTempM,
-    float* filterTempC,
-    float* iirForwardTemp,
-    float* iirForwardTempM,
-    float* iirForwardTempC,
-    float* logRawB,
-    float* logRawG,
-    float* logRawR,
-    const float* dGaussianKernel,
-    int gaussianRadius,
-    float gaussianSigma,
-    float gaussianWeight,
-    const float* dTailKernel0,
-    int tailRadius0,
-    float tailSigma0,
-    float tailWeight0,
-    const float* dTailKernel1,
-    int tailRadius1,
-    float tailSigma1,
-    float tailWeight1,
-    const float* dTailKernel2,
-    int tailRadius2,
-    float tailSigma2,
-    float tailWeight2,
-    int acceptedFftActive,
-    int fftForwardPlan,
-    int fftInversePlan,
-    float* fftRealBuffer,
-    void* fftSpectrum,
-    const void* fftTransfer,
-    int fftWidth,
-    int fftHeight,
-    int fftPadPixels,
-    int fftComplexWidth,
-    void* cudaStreamOpaque,
-    JuicerCuda::SpatialDirBuildProfile* profile) {
-    if (!hParams) {
-        return cudaErrorInvalidValue;
-    }
-    // SF_TEMP_BRIDGE_build_spatial_dir: Phase 5 removes this generic wrapper
-    // after host call sites use split source/filter/final-develop helpers.
-    cudaError_t result = build_spatial_dir_impl(
-        *hParams,
-        rawCorrectionY,
-        rawCorrectionM,
-        rawCorrectionC,
-        filteredCorrectionY,
-        filteredCorrectionM,
-        filteredCorrectionC,
-        filterTemp,
-        filterTempM,
-        filterTempC,
-        iirForwardTemp,
-        iirForwardTempM,
-        iirForwardTempC,
-        logRawB,
-        logRawG,
-        logRawR,
-        dGaussianKernel,
-        gaussianRadius,
-        gaussianSigma,
-        gaussianWeight,
-        dTailKernel0,
-        tailRadius0,
-        tailSigma0,
-        tailWeight0,
-        dTailKernel1,
-        tailRadius1,
-        tailSigma1,
-        tailWeight1,
-        dTailKernel2,
-        tailRadius2,
-        tailSigma2,
-        tailWeight2,
-        acceptedFftActive,
-        fftForwardPlan,
-        fftInversePlan,
-        fftRealBuffer,
-        fftSpectrum,
-        fftTransfer,
-        fftWidth,
-        fftHeight,
-        fftPadPixels,
-        fftComplexWidth,
-        cudaStreamOpaque,
-        profile);
-    if (profile) {
-        profile->SF_TEMP_BRIDGE_name = "SF_TEMP_BRIDGE_build_spatial_dir";
-    }
-    return result;
-}
-
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(
     const JuicerCuda::DirectPipelineRunParams* hParams,
     float* logRawB,
@@ -1866,107 +1498,6 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(
         cudaStreamOpaque);
 }
 
-cudaError_t SF_TEMP_BRIDGE_build_direct_spatial_dir(
-    const JuicerCuda::DirectPipelineRunParams* hParams,
-    float* rawCorrectionY,
-    float* rawCorrectionM,
-    float* rawCorrectionC,
-    float* filteredCorrectionY,
-    float* filteredCorrectionM,
-    float* filteredCorrectionC,
-    float* filterTemp,
-    float* filterTempM,
-    float* filterTempC,
-    float* iirForwardTemp,
-    float* iirForwardTempM,
-    float* iirForwardTempC,
-    float* logRawB,
-    float* logRawG,
-    float* logRawR,
-    const float* dGaussianKernel,
-    int gaussianRadius,
-    float gaussianSigma,
-    float gaussianWeight,
-    const float* dTailKernel0,
-    int tailRadius0,
-    float tailSigma0,
-    float tailWeight0,
-    const float* dTailKernel1,
-    int tailRadius1,
-    float tailSigma1,
-    float tailWeight1,
-    const float* dTailKernel2,
-    int tailRadius2,
-    float tailSigma2,
-    float tailWeight2,
-    int acceptedFftActive,
-    int fftForwardPlan,
-    int fftInversePlan,
-    float* fftRealBuffer,
-    void* fftSpectrum,
-    const void* fftTransfer,
-    int fftWidth,
-    int fftHeight,
-    int fftPadPixels,
-    int fftComplexWidth,
-    void* cudaStreamOpaque,
-    JuicerCuda::SpatialDirBuildProfile* profile) {
-    if (!hParams) {
-        return cudaErrorInvalidValue;
-    }
-    // SF_TEMP_BRIDGE_build_direct_spatial_dir: Phase 5 removes this wrapper
-    // after direct route calls the split source/filter/final-develop helpers.
-    cudaError_t result = build_spatial_dir_impl(
-        *hParams,
-        rawCorrectionY,
-        rawCorrectionM,
-        rawCorrectionC,
-        filteredCorrectionY,
-        filteredCorrectionM,
-        filteredCorrectionC,
-        filterTemp,
-        filterTempM,
-        filterTempC,
-        iirForwardTemp,
-        iirForwardTempM,
-        iirForwardTempC,
-        logRawB,
-        logRawG,
-        logRawR,
-        dGaussianKernel,
-        gaussianRadius,
-        gaussianSigma,
-        gaussianWeight,
-        dTailKernel0,
-        tailRadius0,
-        tailSigma0,
-        tailWeight0,
-        dTailKernel1,
-        tailRadius1,
-        tailSigma1,
-        tailWeight1,
-        dTailKernel2,
-        tailRadius2,
-        tailSigma2,
-        tailWeight2,
-        acceptedFftActive,
-        fftForwardPlan,
-        fftInversePlan,
-        fftRealBuffer,
-        fftSpectrum,
-        fftTransfer,
-        fftWidth,
-        fftHeight,
-        fftPadPixels,
-        fftComplexWidth,
-        cudaStreamOpaque,
-        profile);
-    if (profile) {
-        profile->SF_TEMP_BRIDGE_name = "SF_TEMP_BRIDGE_build_direct_spatial_dir";
-    }
-    return result;
-}
-
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     const JuicerCuda::DirectPipelineRunParams* hParams,
     float* rawCorrectionY,
@@ -1978,9 +1509,6 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     float* filterTemp,
     float* filterTempM,
     float* filterTempC,
-    float* iirForwardTemp,
-    float* iirForwardTempM,
-    float* iirForwardTempC,
     float* logRawB,
     float* logRawG,
     float* logRawR,
@@ -2000,116 +1528,12 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     int tailRadius2,
     float tailSigma2,
     float tailWeight2,
-    int acceptedFftActive,
-    int fftForwardPlan,
-    int fftInversePlan,
-    float* fftRealBuffer,
-    void* fftSpectrum,
-    const void* fftTransfer,
-    int fftWidth,
-    int fftHeight,
-    int fftPadPixels,
-    int fftComplexWidth,
-    void* cudaStreamOpaque,
-    JuicerCuda::SpatialDirBuildProfile* profile) {
-    return SF_TEMP_BRIDGE_build_direct_spatial_dir(
-        hParams,
-        rawCorrectionY,
-        rawCorrectionM,
-        rawCorrectionC,
-        filteredCorrectionY,
-        filteredCorrectionM,
-        filteredCorrectionC,
-        filterTemp,
-        filterTempM,
-        filterTempC,
-        iirForwardTemp,
-        iirForwardTempM,
-        iirForwardTempC,
-        logRawB,
-        logRawG,
-        logRawR,
-        dGaussianKernel,
-        gaussianRadius,
-        gaussianSigma,
-        gaussianWeight,
-        dTailKernel0,
-        tailRadius0,
-        tailSigma0,
-        tailWeight0,
-        dTailKernel1,
-        tailRadius1,
-        tailSigma1,
-        tailWeight1,
-        dTailKernel2,
-        tailRadius2,
-        tailSigma2,
-        tailWeight2,
-        acceptedFftActive,
-        fftForwardPlan,
-        fftInversePlan,
-        fftRealBuffer,
-        fftSpectrum,
-        fftTransfer,
-        fftWidth,
-        fftHeight,
-        fftPadPixels,
-        fftComplexWidth,
-        cudaStreamOpaque,
-        profile);
-}
-
-cudaError_t SF_TEMP_BRIDGE_build_print_spatial_dir(
-    const JuicerCuda::PrintPipelineRunParams* hParams,
-    float* rawCorrectionY,
-    float* rawCorrectionM,
-    float* rawCorrectionC,
-    float* filteredCorrectionY,
-    float* filteredCorrectionM,
-    float* filteredCorrectionC,
-    float* filterTemp,
-    float* filterTempM,
-    float* filterTempC,
-    float* iirForwardTemp,
-    float* iirForwardTempM,
-    float* iirForwardTempC,
-    float* logRawB,
-    float* logRawG,
-    float* logRawR,
-    const float* dGaussianKernel,
-    int gaussianRadius,
-    float gaussianSigma,
-    float gaussianWeight,
-    const float* dTailKernel0,
-    int tailRadius0,
-    float tailSigma0,
-    float tailWeight0,
-    const float* dTailKernel1,
-    int tailRadius1,
-    float tailSigma1,
-    float tailWeight1,
-    const float* dTailKernel2,
-    int tailRadius2,
-    float tailSigma2,
-    float tailWeight2,
-    int acceptedFftActive,
-    int fftForwardPlan,
-    int fftInversePlan,
-    float* fftRealBuffer,
-    void* fftSpectrum,
-    const void* fftTransfer,
-    int fftWidth,
-    int fftHeight,
-    int fftPadPixels,
-    int fftComplexWidth,
     void* cudaStreamOpaque,
     JuicerCuda::SpatialDirBuildProfile* profile) {
     if (!hParams) {
         return cudaErrorInvalidValue;
     }
-    // SF_TEMP_BRIDGE_build_print_spatial_dir: Phase 5 removes this wrapper
-    // after print route calls the split source/filter/final-develop helpers.
-    cudaError_t result = build_spatial_dir_impl(
+    return build_spatial_dir_impl(
         *hParams,
         rawCorrectionY,
         rawCorrectionM,
@@ -2120,9 +1544,6 @@ cudaError_t SF_TEMP_BRIDGE_build_print_spatial_dir(
         filterTemp,
         filterTempM,
         filterTempC,
-        iirForwardTemp,
-        iirForwardTempM,
-        iirForwardTempC,
         logRawB,
         logRawG,
         logRawR,
@@ -2142,22 +1563,77 @@ cudaError_t SF_TEMP_BRIDGE_build_print_spatial_dir(
         tailRadius2,
         tailSigma2,
         tailWeight2,
-        acceptedFftActive,
-        fftForwardPlan,
-        fftInversePlan,
-        fftRealBuffer,
-        fftSpectrum,
-        fftTransfer,
-        fftWidth,
-        fftHeight,
-        fftPadPixels,
-        fftComplexWidth,
         cudaStreamOpaque,
         profile);
-    if (profile) {
-        profile->SF_TEMP_BRIDGE_name = "SF_TEMP_BRIDGE_build_print_spatial_dir";
+}
+
+extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* rawCorrectionY,
+    float* rawCorrectionM,
+    float* rawCorrectionC,
+    float* filteredCorrectionY,
+    float* filteredCorrectionM,
+    float* filteredCorrectionC,
+    float* filterTemp,
+    float* filterTempM,
+    float* filterTempC,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
+    const float* dGaussianKernel,
+    int gaussianRadius,
+    float gaussianSigma,
+    float gaussianWeight,
+    const float* dTailKernel0,
+    int tailRadius0,
+    float tailSigma0,
+    float tailWeight0,
+    const float* dTailKernel1,
+    int tailRadius1,
+    float tailSigma1,
+    float tailWeight1,
+    const float* dTailKernel2,
+    int tailRadius2,
+    float tailSigma2,
+    float tailWeight2,
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirBuildProfile* profile) {
+    if (!hParams) {
+        return cudaErrorInvalidValue;
     }
-    return result;
+    return build_spatial_dir_impl(
+        *hParams,
+        rawCorrectionY,
+        rawCorrectionM,
+        rawCorrectionC,
+        filteredCorrectionY,
+        filteredCorrectionM,
+        filteredCorrectionC,
+        filterTemp,
+        filterTempM,
+        filterTempC,
+        logRawB,
+        logRawG,
+        logRawR,
+        dGaussianKernel,
+        gaussianRadius,
+        gaussianSigma,
+        gaussianWeight,
+        dTailKernel0,
+        tailRadius0,
+        tailSigma0,
+        tailWeight0,
+        dTailKernel1,
+        tailRadius1,
+        tailSigma1,
+        tailWeight1,
+        dTailKernel2,
+        tailRadius2,
+        tailSigma2,
+        tailWeight2,
+        cudaStreamOpaque,
+        profile);
 }
 
 extern "C" cudaError_t juicer_cuda_build_print_spatial_dir_cached_log_raw(
@@ -2175,98 +1651,6 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir_cached_log_raw(
         logRawG,
         logRawR,
         cudaStreamOpaque);
-}
-
-extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
-    const JuicerCuda::PrintPipelineRunParams* hParams,
-    float* rawCorrectionY,
-    float* rawCorrectionM,
-    float* rawCorrectionC,
-    float* filteredCorrectionY,
-    float* filteredCorrectionM,
-    float* filteredCorrectionC,
-    float* filterTemp,
-    float* filterTempM,
-    float* filterTempC,
-    float* iirForwardTemp,
-    float* iirForwardTempM,
-    float* iirForwardTempC,
-    float* logRawB,
-    float* logRawG,
-    float* logRawR,
-    const float* dGaussianKernel,
-    int gaussianRadius,
-    float gaussianSigma,
-    float gaussianWeight,
-    const float* dTailKernel0,
-    int tailRadius0,
-    float tailSigma0,
-    float tailWeight0,
-    const float* dTailKernel1,
-    int tailRadius1,
-    float tailSigma1,
-    float tailWeight1,
-    const float* dTailKernel2,
-    int tailRadius2,
-    float tailSigma2,
-    float tailWeight2,
-    int acceptedFftActive,
-    int fftForwardPlan,
-    int fftInversePlan,
-    float* fftRealBuffer,
-    void* fftSpectrum,
-    const void* fftTransfer,
-    int fftWidth,
-    int fftHeight,
-    int fftPadPixels,
-    int fftComplexWidth,
-    void* cudaStreamOpaque,
-    JuicerCuda::SpatialDirBuildProfile* profile) {
-    return SF_TEMP_BRIDGE_build_print_spatial_dir(
-        hParams,
-        rawCorrectionY,
-        rawCorrectionM,
-        rawCorrectionC,
-        filteredCorrectionY,
-        filteredCorrectionM,
-        filteredCorrectionC,
-        filterTemp,
-        filterTempM,
-        filterTempC,
-        iirForwardTemp,
-        iirForwardTempM,
-        iirForwardTempC,
-        logRawB,
-        logRawG,
-        logRawR,
-        dGaussianKernel,
-        gaussianRadius,
-        gaussianSigma,
-        gaussianWeight,
-        dTailKernel0,
-        tailRadius0,
-        tailSigma0,
-        tailWeight0,
-        dTailKernel1,
-        tailRadius1,
-        tailSigma1,
-        tailWeight1,
-        dTailKernel2,
-        tailRadius2,
-        tailSigma2,
-        tailWeight2,
-        acceptedFftActive,
-        fftForwardPlan,
-        fftInversePlan,
-        fftRealBuffer,
-        fftSpectrum,
-        fftTransfer,
-        fftWidth,
-        fftHeight,
-        fftPadPixels,
-        fftComplexWidth,
-        cudaStreamOpaque,
-        profile);
 }
 
 namespace {

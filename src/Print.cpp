@@ -1187,9 +1187,6 @@ namespace Print {
         apply_baseline_to_profile(baselineCurves, out);
         recompute_mid_neutral(out, runtime);
 
-        out.logEOffC = 0.0f;
-        out.logEOffM = 0.0f;
-        out.logEOffY = 0.0f;
 
         if (!densityCurvesOk) {
             std::ostringstream fatal;

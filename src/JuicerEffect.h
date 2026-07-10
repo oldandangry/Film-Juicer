@@ -89,6 +89,7 @@ private:
     Profiles::GrainMetadata gatherGrainUi() const;
     Profiles::ProfileGlare gatherGlareUi() const;
     OutputEncoding::Params gatherOutputEncodingParams() const;
+    void applyDirGammaProfileDefaults();
     void applyHalationProfileDefaults();
     void applyGrainPresetDefaults(int presetIndex);
     void resetGrainAdvancedControls();
@@ -125,7 +126,14 @@ private:
 
     OFX::BooleanParam* _pCouplersActive = nullptr;
     OFX::DoubleParam* _pCouplersAmount = nullptr;
-    OFX::ChoiceParam* _pDirTailMode = nullptr;
+    OFX::DoubleParam* _pCouplersInhibitionSameLayer = nullptr;
+    OFX::DoubleParam* _pCouplersInhibitionInterlayer = nullptr;
+    OFX::DoubleParam* _pCouplersDiffusionSizeUm = nullptr;
+    OFX::BooleanParam* _pCouplersGammaUseStock = nullptr;
+    OFX::Double3DParam* _pCouplersGammaSameLayerRgb = nullptr;
+    OFX::Double2DParam* _pCouplersGammaInterlayerRToGb = nullptr;
+    OFX::Double2DParam* _pCouplersGammaInterlayerGToRb = nullptr;
+    OFX::Double2DParam* _pCouplersGammaInterlayerBToRg = nullptr;
 
     // Scanner and print params
     OFX::DoubleParam* _pScannerLensBlur = nullptr;

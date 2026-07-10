@@ -168,52 +168,6 @@ extern "C" cudaError_t juicer_cuda_build_gate_defect_mask(
     int gateHeight,
     void* cudaStreamOpaque);
 
-extern "C" cudaError_t juicer_cuda_build_spatial_dir(
-    const JuicerCuda::PipelineRunParams* hParams,
-    float* rawCorrectionY,
-    float* rawCorrectionM,
-    float* rawCorrectionC,
-    float* filteredCorrectionY,
-    float* filteredCorrectionM,
-    float* filteredCorrectionC,
-    float* filterTemp,
-    float* filterTempM,
-    float* filterTempC,
-    float* iirForwardTemp,
-    float* iirForwardTempM,
-    float* iirForwardTempC,
-    float* logRawB,
-    float* logRawG,
-    float* logRawR,
-    const float* dGaussianKernel,
-    int gaussianRadius,
-    float gaussianSigma,
-    float gaussianWeight,
-    const float* dTailKernel0,
-    int tailRadius0,
-    float tailSigma0,
-    float tailWeight0,
-    const float* dTailKernel1,
-    int tailRadius1,
-    float tailSigma1,
-    float tailWeight1,
-    const float* dTailKernel2,
-    int tailRadius2,
-    float tailSigma2,
-    float tailWeight2,
-    int acceptedFftActive,
-    int fftForwardPlan,
-    int fftInversePlan,
-    float* fftRealBuffer,
-    void* fftSpectrum,
-    const void* fftTransfer,
-    int fftWidth,
-    int fftHeight,
-    int fftPadPixels,
-    int fftComplexWidth,
-    void* cudaStreamOpaque,
-    JuicerCuda::SpatialDirBuildProfile* profile);
-
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     const JuicerCuda::DirectPipelineRunParams* hParams,
     float* rawCorrectionY,
@@ -225,9 +179,6 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     float* filterTemp,
     float* filterTempM,
     float* filterTempC,
-    float* iirForwardTemp,
-    float* iirForwardTempM,
-    float* iirForwardTempC,
     float* logRawB,
     float* logRawG,
     float* logRawR,
@@ -247,16 +198,6 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     int tailRadius2,
     float tailSigma2,
     float tailWeight2,
-    int acceptedFftActive,
-    int fftForwardPlan,
-    int fftInversePlan,
-    float* fftRealBuffer,
-    void* fftSpectrum,
-    const void* fftTransfer,
-    int fftWidth,
-    int fftHeight,
-    int fftPadPixels,
-    int fftComplexWidth,
     void* cudaStreamOpaque,
     JuicerCuda::SpatialDirBuildProfile* profile);
 
@@ -271,9 +212,6 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
     float* filterTemp,
     float* filterTempM,
     float* filterTempC,
-    float* iirForwardTemp,
-    float* iirForwardTempM,
-    float* iirForwardTempC,
     float* logRawB,
     float* logRawG,
     float* logRawR,
@@ -293,16 +231,6 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
     int tailRadius2,
     float tailSigma2,
     float tailWeight2,
-    int acceptedFftActive,
-    int fftForwardPlan,
-    int fftInversePlan,
-    float* fftRealBuffer,
-    void* fftSpectrum,
-    const void* fftTransfer,
-    int fftWidth,
-    int fftHeight,
-    int fftPadPixels,
-    int fftComplexWidth,
     void* cudaStreamOpaque,
     JuicerCuda::SpatialDirBuildProfile* profile);
 
@@ -394,10 +322,6 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
 #include "OutputColor.h"
 #include "Couplers.h"
 #include "mainProcessing.h"
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)
-bool juicer_cuda_runtime_self_check(void* cudaStreamOpaque, const char** outError);
-#endif
 
 namespace JuicerProcScanner {
 
@@ -529,34 +453,6 @@ namespace {
         }
     }
 
-    void trace_spatial_dir_profile_diagnostics_smoke_once(const std::filesystem::path& profilePath) {
-#if JUICER_DIAGNOSTICS_COMPILED
-        if (!JTRACE_ENABLED(1)) {
-            return;
-        }
-        static std::mutex smokeMutex;
-        static bool smokeWritten = false;
-        std::lock_guard<std::mutex> lock(smokeMutex);
-        if (smokeWritten) {
-            return;
-        }
-        smokeWritten = true;
-
-        std::string msg =
-            "event=dir_profile_diagnostics_smoke diagnostics_compiled=1 diagnostics_level=";
-        msg += std::to_string(JuicerLogging::diagnostics_level());
-        msg += " dir_profile_path=";
-        try {
-            msg += profilePath.string();
-        } catch (...) {
-            msg += "unavailable";
-        }
-        JTRACE("DSMOKE", msg);
-#else
-        (void)profilePath;
-#endif
-    }
-
     void write_spatial_dir_profile_line(const std::string& line) {
         static std::mutex profileMutex;
         static bool headerWritten = false;
@@ -583,7 +479,6 @@ namespace {
                     std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
                 out << "INIT | dir_profile enabled time_s=" << secs << '\n';
                 headerWritten = true;
-                trace_spatial_dir_profile_diagnostics_smoke_once(path);
             }
             out << "DIR_PROFILE | " << line << '\n';
             out.flush();
@@ -723,31 +618,25 @@ namespace {
             return "none";
         }
         if (roles.filterTempPlanes == 3 &&
-            roles.iirForwardTempPlanes == 0 &&
             roles.cachedLogRawPlanes == 3) {
             return "strict_yvv_channels_aliased_forward_cached_lograw";
         }
         if (roles.filterTempPlanes == 3 &&
-            roles.iirForwardTempPlanes == 0 &&
             roles.cachedLogRawPlanes == 2) {
             return "strict_yvv_channels_aliased_forward_cached_lograw_bg";
         }
-        if (roles.filterTempPlanes == 3 && roles.iirForwardTempPlanes == 3) {
-            return "strict_yvv_channels";
-        }
-        if (roles.filterTempPlanes == 3 && roles.iirForwardTempPlanes == 0) {
+        if (roles.filterTempPlanes == 3) {
             return "strict_yvv_channels_aliased_forward";
         }
-        if (roles.filterTempPlanes == 2 && roles.iirForwardTempPlanes == 0) {
+        if (roles.filterTempPlanes == 2) {
             return "strict_yvv_low_scratch_pair";
         }
         if (roles.rawCorrectionPlanes == 1 &&
-            roles.filterTempPlanes == 1 &&
-            roles.iirForwardTempPlanes == 0) {
+            roles.filterTempPlanes == 1) {
             return "strict_yvv_component_streamed";
         }
-        if (roles.filterTempPlanes == 1 && roles.iirForwardTempPlanes == 1) {
-            return "strict_yvv_compact_sequential";
+        if (roles.filterTempPlanes == 1) {
+            return "strict_yvv_single_temp_sequential";
         }
         return "unknown";
     }
@@ -911,34 +800,13 @@ namespace {
         request.spatialDirTargetPlaneRoles.cachedLogRawPlanes = 0;
     }
 
-    void copy_spatial_dir_fft_profile_details(
-        JuicerCuda::SpatialDirBuildProfile& profile,
-        const JuicerProcess::Root::PreparedCudaFrame::SpatialDirPreparedView& resources) {
-        profile.fftActive = resources.fftActive ? 1 : 0;
-        profile.fftPadPixels = resources.fftPadPixels;
-        profile.fftWidth = resources.fftWidth;
-        profile.fftHeight = resources.fftHeight;
-        profile.fftComplexWidth = resources.fftComplexWidth;
-        profile.fftRealBufferBytes = static_cast<std::uint64_t>(resources.fftRealBufferBytes);
-        profile.fftSpectrumBytes = static_cast<std::uint64_t>(resources.fftSpectrumBytes);
-        profile.fftTransferBytes = static_cast<std::uint64_t>(resources.fftTransferBytes);
-        profile.fftWorkAreaBytes = static_cast<std::uint64_t>(resources.fftWorkAreaBytes);
-        profile.fftForwardWorkBytes = static_cast<std::uint64_t>(resources.fftForwardWorkBytes);
-        profile.fftInverseWorkBytes = static_cast<std::uint64_t>(resources.fftInverseWorkBytes);
-        profile.fftSetupMs = resources.fftSetupMs;
-        profile.fftSetupCreated = resources.fftSetupCreated ? 1 : 0;
-    }
-
-    // SF_TEMP_BRIDGE_bind_spatial_dir_final_develop_to_payload: Phase 5 removes
-    // this once FilmDevelopPayload stops exposing corr* aliases for spatial DIR
-    // and cached log raw.
-    void SF_TEMP_BRIDGE_bind_spatial_dir_final_develop_to_payload(
+    void bind_spatial_dir_final_develop_to_payload(
         JuicerCuda::FilmDevelopPayload& payload,
         const JuicerProcess::Root::PreparedCudaFrame::SpatialDirScratchView& scratch) {
         payload.spatialDir.active = 1;
-        payload.spatialDir.corrY = scratch.filteredCorrectionY;
-        payload.spatialDir.corrM = scratch.filteredCorrectionM;
-        payload.spatialDir.corrC = scratch.filteredCorrectionC;
+        payload.spatialDir.filteredCorrectionY = scratch.filteredCorrectionY;
+        payload.spatialDir.filteredCorrectionM = scratch.filteredCorrectionM;
+        payload.spatialDir.filteredCorrectionC = scratch.filteredCorrectionC;
         payload.spatialDir.logRawB = scratch.logRawB;
         payload.spatialDir.logRawG = scratch.logRawG;
         payload.spatialDir.logRawR = scratch.logRawR;
@@ -962,8 +830,6 @@ namespace {
         msg += nonempty_cstr_or(route, "unknown");
         msg += " descriptor_hash=";
         msg += std::to_string(static_cast<unsigned long long>(descriptor.hash));
-        msg += " legacy_compatibility_hash=";
-        msg += std::to_string(static_cast<unsigned long long>(descriptor.legacyCompatibilityHash));
         msg += " dir_recipe_hash=";
         msg += std::to_string(static_cast<unsigned long long>(descriptor.dirRecipeHash));
         msg += " support=";
@@ -978,22 +844,6 @@ namespace {
         msg += Spektrafilm::to_cstr(descriptor.targetScratchTier);
         msg += " approximation=";
         msg += Spektrafilm::to_cstr(descriptor.approximation);
-        msg += " dir_tail_mode=";
-        msg += Spektrafilm::to_cstr(descriptor.tailMode);
-        msg += " fft_mode=";
-        msg += descriptor.approximation == Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth
-                   ? "accepted_fft_replicate_pad_smooth"
-                   : "none";
-        msg += " fft_pad_pixels=";
-        msg += std::to_string(descriptor.fftPadPixels);
-        msg += " fft_pad_sigma=";
-        msg += std::to_string(descriptor.fftPadSigma);
-        msg += " fft_width=";
-        msg += std::to_string(descriptor.fftWidth);
-        msg += " fft_height=";
-        msg += std::to_string(descriptor.fftHeight);
-        msg += " fft_complex_width=";
-        msg += std::to_string(descriptor.fftComplexWidth);
         msg += " component_count=";
         msg += std::to_string(descriptor.filterPlan.componentCount);
         msg += " render_extent=";
@@ -1017,24 +867,14 @@ namespace {
         msg += std::to_string(roles.filteredCorrectionPlanes);
         msg += " filter_temp_planes=";
         msg += std::to_string(roles.filterTempPlanes);
-        msg += " iir_forward_temp_planes=";
-        msg += std::to_string(roles.iirForwardTempPlanes);
         msg += " cached_log_raw_planes=";
         msg += std::to_string(roles.cachedLogRawPlanes);
-        msg += " SF_TEMP_BRIDGE_corr_planes=";
-        msg += std::to_string(roles.SF_TEMP_BRIDGE_corrPlanes);
-        msg += " SF_TEMP_BRIDGE_mix_planes=";
-        msg += std::to_string(roles.SF_TEMP_BRIDGE_mixPlanes);
-        msg += " SF_TEMP_BRIDGE_tmp_planes=";
-        msg += std::to_string(roles.SF_TEMP_BRIDGE_tmpPlanes);
         msg += " target_raw_correction_planes=";
         msg += std::to_string(targetRoles.rawCorrectionPlanes);
         msg += " target_filtered_correction_planes=";
         msg += std::to_string(targetRoles.filteredCorrectionPlanes);
         msg += " target_filter_temp_planes=";
         msg += std::to_string(targetRoles.filterTempPlanes);
-        msg += " target_iir_forward_temp_planes=";
-        msg += std::to_string(targetRoles.iirForwardTempPlanes);
         msg += " target_cached_log_raw_planes=";
         msg += std::to_string(targetRoles.cachedLogRawPlanes);
         for (int component = 0; component < Spektrafilm::DirFilterPlan::kMaxComponents; ++component) {
@@ -1072,50 +912,6 @@ namespace {
 #endif
     }
 
-    void trace_spatial_dir_bridge_use(
-        const char* route,
-        const char* bridgeName,
-        const Spektrafilm::SpatialDirDescriptor& descriptor) {
-#if JUICER_DIAGNOSTICS_COMPILED
-        if (!JTRACE_ENABLED(1)) {
-            return;
-        }
-        std::string msg = "event=spatial_dir_bridge_use route=";
-        msg += nonempty_cstr_or(route, "unknown");
-        msg += " bridge=";
-        msg += nonempty_cstr_or(bridgeName, "none");
-        msg += " descriptor_hash=";
-        msg += std::to_string(static_cast<unsigned long long>(descriptor.hash));
-        msg += " dir_recipe_hash=";
-        msg += std::to_string(static_cast<unsigned long long>(descriptor.dirRecipeHash));
-        msg += " support=";
-        msg += Spektrafilm::to_cstr(descriptor.support);
-        msg += " source_contract=";
-        msg += Spektrafilm::to_cstr(descriptor.sourceContract);
-        msg += " scratch_tier=";
-        msg += Spektrafilm::to_cstr(descriptor.scratchTier);
-        msg += " dir_tail_mode=";
-        msg += Spektrafilm::to_cstr(descriptor.tailMode);
-        msg += " fft_mode=";
-        msg += descriptor.approximation == Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth
-                   ? "accepted_fft_replicate_pad_smooth"
-                   : "none";
-        msg += " fft_pad_pixels=";
-        msg += std::to_string(descriptor.fftPadPixels);
-        msg += " fft_width=";
-        msg += std::to_string(descriptor.fftWidth);
-        msg += " fft_height=";
-        msg += std::to_string(descriptor.fftHeight);
-        msg += " component_count=";
-        msg += std::to_string(descriptor.filterPlan.componentCount);
-        JTRACE("DIR_BRIDGE", msg);
-#else
-        (void)route;
-        (void)bridgeName;
-        (void)descriptor;
-#endif
-    }
-
     void trace_spatial_dir_profile(
         const char* route,
         int width,
@@ -1138,11 +934,6 @@ namespace {
         const int admittedPlaneCount = dirActive ? admittedRoles.roles.total_float_planes() : 0;
         const std::uint64_t scratchBytesApprox =
             dirActive ? pixels * static_cast<std::uint64_t>(std::max(0, admittedPlaneCount)) * sizeof(float) : 0ull;
-        const std::uint64_t fftScratchBytes =
-            profile.fftRealBufferBytes + profile.fftSpectrumBytes;
-        const std::uint64_t fftRetainedBytes =
-            profile.fftRealBufferBytes + profile.fftSpectrumBytes +
-            profile.fftTransferBytes + profile.fftWorkAreaBytes;
         const int activeTails = active_tail_component_count(profile);
         const Spektrafilm::DirScratchPlaneRoles& roles = admittedRoles.roles;
         const Spektrafilm::DirScratchPlaneRoles& targetRoles = admittedRoles.targetRoles;
@@ -1194,12 +985,9 @@ namespace {
         oss << std::fixed << std::setprecision(3);
         oss << "route=" << nonempty_cstr_or(route, "unknown")
             << " dir_active=" << bool_to_i32(dirActive)
-            << " spatial_dir_bridge="
-            << (dirActive ? nonempty_cstr_or(profile.SF_TEMP_BRIDGE_name, "unreported") : "none")
             << " width=" << width
             << " height=" << height
             << " descriptor_hash=" << descriptor.hash
-            << " legacy_compatibility_hash=" << descriptor.legacyCompatibilityHash
             << " dir_recipe_hash=" << descriptor.dirRecipeHash
             << " descriptor_support=" << Spektrafilm::to_cstr(descriptor.support)
             << " source_contract=" << Spektrafilm::to_cstr(descriptor.sourceContract)
@@ -1207,7 +995,6 @@ namespace {
             << " scratch_tier=" << Spektrafilm::to_cstr(descriptor.scratchTier)
             << " target_scratch_tier=" << Spektrafilm::to_cstr(admittedTargetScratchTier)
             << " approximation_marker=" << Spektrafilm::to_cstr(descriptor.approximation)
-            << " dir_tail_mode=" << Spektrafilm::to_cstr(descriptor.tailMode)
             << " strict_yvv_shape=" << strict_yvv_shape_label(descriptor, roles)
             << " final_develop_lograw_source="
             << final_develop_lograw_source_label(
@@ -1249,29 +1036,6 @@ namespace {
             << scannerPostDensityIntermediatePlanes
             << " scanner_post_density_intermediate_bytes_approx="
             << scannerPostDensityIntermediateBytes
-            << " fft_mode="
-            << (descriptor.approximation == Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth
-                    ? "accepted_fft_replicate_pad_smooth"
-                    : "none")
-            << " fft_setup_status="
-            << (profile.fftActive ? (profile.fftSetupCreated ? "created" : "reused") : "none")
-            << " fft_setup_ms=" << profile.fftSetupMs
-            << " fft_pad_pixels=" << descriptor.fftPadPixels
-            << " fft_pad_sigma=" << descriptor.fftPadSigma
-            << " fft_width=" << descriptor.fftWidth
-            << " fft_height=" << descriptor.fftHeight
-            << " fft_complex_width=" << descriptor.fftComplexWidth
-            << " fft_profile_width=" << profile.fftWidth
-            << " fft_profile_height=" << profile.fftHeight
-            << " fft_profile_complex_width=" << profile.fftComplexWidth
-            << " fft_workspace_bytes=" << profile.fftWorkAreaBytes
-            << " fft_forward_work_bytes=" << profile.fftForwardWorkBytes
-            << " fft_inverse_work_bytes=" << profile.fftInverseWorkBytes
-            << " fft_scratch_bytes=" << fftScratchBytes
-            << " fft_real_buffer_bytes=" << profile.fftRealBufferBytes
-            << " fft_spectrum_bytes=" << profile.fftSpectrumBytes
-            << " fft_transfer_bytes=" << profile.fftTransferBytes
-            << " fft_retained_bytes=" << fftRetainedBytes
             << " component_count=" << descriptor.filterPlan.componentCount
             << " render_origin=" << descriptor.renderExtent.x << "," << descriptor.renderExtent.y
             << " render_extent=" << descriptor.renderExtent.width << "x" << descriptor.renderExtent.height
@@ -1308,12 +1072,10 @@ namespace {
             << " dir_source_ms=" << profile.correction.elapsedMs
             << " dir_filter_bank_launches="
             << (profile.baseFilterLaunches + profile.tailFilterLaunches[0] +
-                profile.tailFilterLaunches[1] + profile.tailFilterLaunches[2] +
-                profile.fftFilterLaunches)
+                profile.tailFilterLaunches[1] + profile.tailFilterLaunches[2])
             << " dir_filter_bank_ms="
             << (profile.baseFilter.elapsedMs + profile.tailFilter[0].elapsedMs +
-                profile.tailFilter[1].elapsedMs + profile.tailFilter[2].elapsedMs +
-                profile.fftFilter.elapsedMs)
+                profile.tailFilter[1].elapsedMs + profile.tailFilter[2].elapsedMs)
             << " pipeline_cuda_ms=" << pipelineCudaMs
             << " pipeline_launch_host_ms=" << pipelineLaunchHostMs
             << " composite_profile_captured=" << compositeProfile.captured
@@ -1378,7 +1140,6 @@ namespace {
             << " total_launches=" << profile.totalLaunches
             << " correction_launches=" << profile.correctionLaunches
             << " correction_ms=" << profile.correction.elapsedMs
-            << " correction_clamp_hits=" << profile.correctionClampHits
             << " base_filter_launches=" << profile.baseFilterLaunches
             << " base_filter_ms=" << profile.baseFilter.elapsedMs
             << " tail0_filter_launches=" << profile.tailFilterLaunches[0]
@@ -1387,27 +1148,16 @@ namespace {
             << " tail1_filter_ms=" << profile.tailFilter[1].elapsedMs
             << " tail2_filter_launches=" << profile.tailFilterLaunches[2]
             << " tail2_filter_ms=" << profile.tailFilter[2].elapsedMs
-            << " fft_filter_launches=" << profile.fftFilterLaunches
-            << " fft_filter_ms=" << profile.fftFilter.elapsedMs
-            << " scale_copy_launches=" << profile.scaleCopyLaunches
-            << " scale_copy_ms=" << profile.scaleCopy.elapsedMs
-            << " add_scaled_launches=" << profile.addScaledLaunches
-            << " add_scaled_ms=" << profile.addScaled.elapsedMs
             << " scratch_source=" << (dirActive ? (scratchOverflow ? "overflow" : "retained") : "none")
             << " raw_correction_planes=" << (dirActive ? roles.rawCorrectionPlanes : 0)
             << " filtered_correction_planes=" << (dirActive ? roles.filteredCorrectionPlanes : 0)
             << " filter_temp_planes=" << (dirActive ? roles.filterTempPlanes : 0)
-            << " iir_forward_temp_planes=" << (dirActive ? roles.iirForwardTempPlanes : 0)
             << " cached_log_raw_planes=" << (dirActive ? roles.cachedLogRawPlanes : 0)
-            << " SF_TEMP_BRIDGE_corr_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_corrPlanes : 0)
-            << " SF_TEMP_BRIDGE_mix_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_mixPlanes : 0)
-            << " SF_TEMP_BRIDGE_tmp_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_tmpPlanes : 0)
             << " spatial_dir_planes=" << (dirActive ? roles.total_float_planes() : 0)
             << " shared_tmp_planes=" << (dirActive && roles.filterTempPlanes > 0 ? 1 : 0)
             << " target_raw_correction_planes=" << (dirActive ? targetRoles.rawCorrectionPlanes : 0)
             << " target_filtered_correction_planes=" << (dirActive ? targetRoles.filteredCorrectionPlanes : 0)
             << " target_filter_temp_planes=" << (dirActive ? targetRoles.filterTempPlanes : 0)
-            << " target_iir_forward_temp_planes=" << (dirActive ? targetRoles.iirForwardTempPlanes : 0)
             << " target_cached_log_raw_planes=" << (dirActive ? targetRoles.cachedLogRawPlanes : 0)
             << " scratch_bytes_approx=" << scratchBytesApprox;
         for (int component = 0; component < Spektrafilm::DirFilterPlan::kMaxComponents; ++component) {
@@ -1896,116 +1646,6 @@ namespace {
     const char* submission_snapshot_action_label(bool reusingSnapshotLatch) {
         return reusingSnapshotLatch ? "reuse" : "new";
     }
-#endif
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) &&                                    \
-    ((defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)) || \
-     (defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)))
-    struct DiagnosticsHookPolicy {
-        bool diagnosticsMode = false;
-        bool validatePrimitives = false;
-        bool runtimeSelfCheck = false;
-    };
-
-    inline const char* diagnostics_mode_label(bool modeEnabled) {
-        return modeEnabled ? "diagnostics" : "serving";
-    }
-
-    bool parse_env_toggle(const char* name, bool fallback) {
-        return JuicerLogging::parse_env_int(name, bool_to_i32(fallback)) != 0;
-    }
-
-    const DiagnosticsHookPolicy& diagnostics_hook_policy() {
-        static const DiagnosticsHookPolicy policy = []() {
-            DiagnosticsHookPolicy out{};
-            out.diagnosticsMode = parse_env_toggle("JUICER_DIAGNOSTICS_MODE", false);
-            out.validatePrimitives = parse_env_toggle("JUICER_DIAGNOSTICS_VALIDATE", true);
-            out.runtimeSelfCheck = parse_env_toggle("JUICER_DIAGNOSTICS_SELF_CHECK", true);
-            return out;
-        }();
-        return policy;
-    }
-
-#if defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
-    void trace_validation_hook_state_once(
-        bool compiled,
-        bool modeEnabled,
-        bool toggleEnabled,
-        bool verboseEnabled,
-        bool active) {
-        static std::once_flag once;
-        std::call_once(once, [&]() {
-            if (!JTRACE_ENABLED(2)) {
-                return;
-            }
-            const char* reason = "active";
-            if (!compiled) {
-                reason = "compile_disabled";
-            } else if (!modeEnabled) {
-                reason = "diagnostics_mode_disabled";
-            } else if (!toggleEnabled) {
-                reason = "validation_toggle_disabled";
-            } else if (!verboseEnabled) {
-                reason = "diagnostics_level_below_verbose";
-            }
-            std::string msg;
-            msg.reserve(160);
-            msg = "event=diagnostics_hook";
-            msg += " hook=validation";
-            msg += " mode=";
-            msg += diagnostics_mode_label(modeEnabled);
-            msg += " compiled=";
-            msg += std::to_string(bool_to_i32(compiled));
-            msg += " toggle_enabled=";
-            msg += std::to_string(bool_to_i32(toggleEnabled));
-            msg += " verbose_enabled=";
-            msg += std::to_string(bool_to_i32(verboseEnabled));
-            msg += " active=";
-            msg += std::to_string(bool_to_i32(active));
-            msg += " reason=";
-            msg += reason;
-            JTRACE("MSDBG", msg);
-        });
-    }
-#endif
-
-#if defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)
-    void trace_self_check_hook_state_once(
-        bool compiled,
-        bool modeEnabled,
-        bool toggleEnabled,
-        bool active) {
-        static std::once_flag once;
-        std::call_once(once, [&]() {
-            if (!JTRACE_ENABLED(2)) {
-                return;
-            }
-            const char* reason = "active";
-            if (!compiled) {
-                reason = "compile_disabled";
-            } else if (!modeEnabled) {
-                reason = "diagnostics_mode_disabled";
-            } else if (!toggleEnabled) {
-                reason = "self_check_toggle_disabled";
-            }
-            std::string msg;
-            msg.reserve(144);
-            msg = "event=diagnostics_hook";
-            msg += " hook=self_check";
-            msg += " mode=";
-            msg += diagnostics_mode_label(modeEnabled);
-            msg += " compiled=";
-            msg += std::to_string(bool_to_i32(compiled));
-            msg += " toggle_enabled=";
-            msg += std::to_string(bool_to_i32(toggleEnabled));
-            msg += " active=";
-            msg += std::to_string(bool_to_i32(active));
-            msg += " reason=";
-            msg += reason;
-            JTRACE("MSDBG", msg);
-        });
-    }
-#endif
 #endif
 
 } // namespace
@@ -2855,7 +2495,6 @@ void JuicerProcessor::processImagesCUDA() {
         if (!(_nComponents == 3 || _nComponents == 4)) {
             throw_direct_restriction("UnsupportedDirectComponentCountForPhase3C");
         }
-        JTRACE("PHASE3D", "direct_negative branch accepted; restrictions=clear");
         const bool dirProfileEnabled = spatial_dir_profile_enabled();
 
         Scanner::ScannerSpectralLutDescriptor scannerDescriptor{};
@@ -3042,13 +2681,9 @@ void JuicerProcessor::processImagesCUDA() {
                 request_spatial_dir_filtered_rgb_alias(request);
             }
             focusedWorkspace = preparedFrame.bind_workspace_request(request);
-            const bool directUsesSpatialDirFft =
-                directSpatialDir.approximation ==
-                Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth;
             std::string transitionError;
             if (!preparedFrame.checkpoint_large_scratch_transition(
                     focusedWorkspace,
-                    directUsesSpatialDirFft,
                     _pCudaStream,
                     "direct_large_scratch_transition",
                     transitionError)) {
@@ -3099,24 +2734,6 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_direct_restriction(
                     "MissingRequiredResource phase=3D-3 field=prepared_spatial_dir");
             }
-            // SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrection: Phase 5 removes
-            // these old wrapper arguments after source/filter/final-develop split lands.
-            float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY = scratch.rawCorrectionY;
-            float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionM = scratch.rawCorrectionM;
-            float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionC = scratch.rawCorrectionC;
-            // SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrection: Phase 5 removes this alias.
-            float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionY = scratch.filteredCorrectionY;
-            float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM = scratch.filteredCorrectionM;
-            float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC = scratch.filteredCorrectionC;
-            float* SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp = scratch.filterTemp;
-            float* SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempM = scratch.filterTempM;
-            float* SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempC = scratch.filterTempC;
-            float* SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp =
-                scratch.iirForwardTemp;
-            float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempM =
-                scratch.iirForwardTempM;
-            float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC =
-                scratch.iirForwardTempC;
             directDirScratchOverflow = scratch.overflow;
             directDirAdmittedRoles = scratch.planeRoles;
             directDirAdmittedTargetRoles = scratch.targetPlaneRoles;
@@ -3140,24 +2757,17 @@ void JuicerProcessor::processImagesCUDA() {
             float* cachedLogRawR =
                 directDirUsesSourceBuildCachedLogRaw ? scratch.logRawR : nullptr;
             const auto directDirBuildStart = std::chrono::steady_clock::now();
-            trace_spatial_dir_bridge_use(
-                "direct",
-                "SF_TEMP_BRIDGE_build_direct_spatial_dir",
-                directSpatialDir);
             const cudaError_t dirError = juicer_cuda_build_direct_spatial_dir(
                 &run,
-                SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY,
-                SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionM,
-                SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionC,
-                SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionY,
-                SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM,
-                SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC,
-                SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp,
-                SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempM,
-                SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempC,
-                SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp,
-                SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempM,
-                SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC,
+                scratch.rawCorrectionY,
+                scratch.rawCorrectionM,
+                scratch.rawCorrectionC,
+                scratch.filteredCorrectionY,
+                scratch.filteredCorrectionM,
+                scratch.filteredCorrectionC,
+                scratch.filterTemp,
+                scratch.filterTempM,
+                scratch.filterTempC,
                 cachedLogRawB,
                 cachedLogRawG,
                 cachedLogRawR,
@@ -3177,21 +2787,8 @@ void JuicerProcessor::processImagesCUDA() {
                 resources.exponential[2].radius,
                 resources.exponential[2].sigma,
                 directSpatialDir.exponentialWeights[2],
-                resources.fftActive ? 1 : 0,
-                resources.fftForwardPlan,
-                resources.fftInversePlan,
-                resources.fftRealBuffer,
-                resources.fftSpectrum,
-                resources.fftTransfer,
-                resources.fftWidth,
-                resources.fftHeight,
-                resources.fftPadPixels,
-                resources.fftComplexWidth,
                 _pCudaStream,
                 dirProfileEnabled ? &directDirProfile : nullptr);
-            if (dirProfileEnabled) {
-                copy_spatial_dir_fft_profile_details(directDirProfile, resources);
-            }
             if (dirProfileEnabled) {
                 directDirBuildHostMs = elapsed_ms_since(directDirBuildStart);
             }
@@ -3260,7 +2857,7 @@ void JuicerProcessor::processImagesCUDA() {
                         logRawError);
                 }
             }
-            SF_TEMP_BRIDGE_bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
+            bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
             if (scannerPostEffects.active() && !directUseFusedScannerPostSpatialDirHandoff) {
                 directSpatialDirDensityC = finalScratch.filteredCorrectionC;
                 directSpatialDirDensityM = finalScratch.filteredCorrectionM;
@@ -3566,7 +3163,6 @@ void JuicerProcessor::processImagesCUDA() {
                 directCompositeProfile,
                 scannerPostEffects.active());
         }
-        JTRACE("PHASE3D", "direct_negative kernel launch accepted");
         if (!preparedFrame.finalize_scan_error_stage(run.scanStage.scanErrorFlag, _pCudaStream, scanError)) {
             preparedFrame.abort("direct_scan_error_finalize_failed");
             throw_submission_fatal("direct_scan_error_finalize", "direct scan error finalize failed", scanError);
@@ -3576,7 +3172,6 @@ void JuicerProcessor::processImagesCUDA() {
         if (!preparedFrame.finish(_pCudaStream, finishError)) {
             throw_submission_fatal("direct_prepared_frame_finish", "direct prepared frame finish failed", finishError);
         }
-        JTRACE("PHASE3D", "direct_negative destination submission completed");
         JuicerCuda::LaunchGraphCounters::record_frame_completed();
         return;
     }
@@ -3835,13 +3430,9 @@ void JuicerProcessor::processImagesCUDA() {
                 request_spatial_dir_filtered_rgb_alias(request);
             }
             focusedWorkspace = preparedFrame.bind_workspace_request(request);
-            const bool printUsesSpatialDirFft =
-                spatialDir.approximation ==
-                Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth;
             std::string transitionError;
             if (!preparedFrame.checkpoint_large_scratch_transition(
                     focusedWorkspace,
-                    printUsesSpatialDirFft,
                     _pCudaStream,
                     "print_large_scratch_transition",
                     transitionError)) {
@@ -3892,24 +3483,6 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_print_restriction(
                     "MissingRequiredResource phase=4C field=prepared_spatial_dir");
             }
-            // SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrection: Phase 5 removes
-            // these old wrapper arguments after source/filter/final-develop split lands.
-            float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY = scratch.rawCorrectionY;
-            float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionM = scratch.rawCorrectionM;
-            float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionC = scratch.rawCorrectionC;
-            // SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrection: Phase 5 removes this alias.
-            float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionY = scratch.filteredCorrectionY;
-            float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM = scratch.filteredCorrectionM;
-            float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC = scratch.filteredCorrectionC;
-            float* SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp = scratch.filterTemp;
-            float* SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempM = scratch.filterTempM;
-            float* SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempC = scratch.filterTempC;
-            float* SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp =
-                scratch.iirForwardTemp;
-            float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempM =
-                scratch.iirForwardTempM;
-            float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC =
-                scratch.iirForwardTempC;
             printDirScratchOverflow = scratch.overflow;
             printDirAdmittedRoles = scratch.planeRoles;
             printDirAdmittedTargetRoles = scratch.targetPlaneRoles;
@@ -3933,24 +3506,17 @@ void JuicerProcessor::processImagesCUDA() {
             float* cachedLogRawR =
                 printDirUsesSourceBuildCachedLogRaw ? scratch.logRawR : nullptr;
             const auto printDirBuildStart = std::chrono::steady_clock::now();
-            trace_spatial_dir_bridge_use(
-                "print",
-                "SF_TEMP_BRIDGE_build_print_spatial_dir",
-                spatialDir);
             const cudaError_t dirError = juicer_cuda_build_print_spatial_dir(
                 &run,
-                SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY,
-                SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionM,
-                SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionC,
-                SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionY,
-                SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM,
-                SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC,
-                SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp,
-                SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempM,
-                SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempC,
-                SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp,
-                SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempM,
-                SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC,
+                scratch.rawCorrectionY,
+                scratch.rawCorrectionM,
+                scratch.rawCorrectionC,
+                scratch.filteredCorrectionY,
+                scratch.filteredCorrectionM,
+                scratch.filteredCorrectionC,
+                scratch.filterTemp,
+                scratch.filterTempM,
+                scratch.filterTempC,
                 cachedLogRawB,
                 cachedLogRawG,
                 cachedLogRawR,
@@ -3970,21 +3536,8 @@ void JuicerProcessor::processImagesCUDA() {
                 resources.exponential[2].radius,
                 resources.exponential[2].sigma,
                 spatialDir.exponentialWeights[2],
-                resources.fftActive ? 1 : 0,
-                resources.fftForwardPlan,
-                resources.fftInversePlan,
-                resources.fftRealBuffer,
-                resources.fftSpectrum,
-                resources.fftTransfer,
-                resources.fftWidth,
-                resources.fftHeight,
-                resources.fftPadPixels,
-                resources.fftComplexWidth,
                 _pCudaStream,
                 dirProfileEnabled ? &printDirProfile : nullptr);
-            if (dirProfileEnabled) {
-                copy_spatial_dir_fft_profile_details(printDirProfile, resources);
-            }
             if (dirProfileEnabled) {
                 printDirBuildHostMs = elapsed_ms_since(printDirBuildStart);
             }
@@ -4053,7 +3606,7 @@ void JuicerProcessor::processImagesCUDA() {
                         logRawError);
                 }
             }
-            SF_TEMP_BRIDGE_bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
+            bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
             if (scannerPostEffects.active() && !printUseFusedScannerPostSpatialDirHandoff) {
                 printSpatialDirDensityC = finalScratch.filteredCorrectionC;
                 printSpatialDirDensityM = finalScratch.filteredCorrectionM;
@@ -4414,7 +3967,6 @@ void JuicerProcessor::processImagesCUDA() {
                 "print prepared frame finish failed",
                 finishError);
         }
-        JTRACE("PHASE4C", "focused print destination submission completed");
         JuicerCuda::LaunchGraphCounters::record_frame_completed();
         return;
     }

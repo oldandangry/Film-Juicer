@@ -518,81 +518,6 @@ namespace JuicerCuda {
             }
         };
 
-        inline bool spatial_dir_roles_match_tier(
-            Spektrafilm::DirScratchTier tier,
-            const Spektrafilm::DirScratchPlaneRoles& roles) noexcept {
-            switch (tier) {
-                case Spektrafilm::DirScratchTier::Tier0:
-                    return roles.total_float_planes() == 0;
-                case Spektrafilm::DirScratchTier::Tier1F:
-                    return roles.filteredCorrectionPlanes == 3 &&
-                           ((roles.rawCorrectionPlanes == 1 &&
-                             roles.filterTempPlanes == 0 &&
-                             roles.iirForwardTempPlanes == 0) ||
-                            (roles.rawCorrectionPlanes == 3 &&
-                             roles.filterTempPlanes == 1 &&
-                             roles.iirForwardTempPlanes == 0)) &&
-                           roles.cachedLogRawPlanes == 0 &&
-                           roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
-                           roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
-                           roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
-                case Spektrafilm::DirScratchTier::Tier1IChannels:
-                    return roles.filteredCorrectionPlanes == 3 &&
-                           ((roles.rawCorrectionPlanes == 1 &&
-                             roles.filterTempPlanes == 1 &&
-                             roles.iirForwardTempPlanes == 0) ||
-                            (roles.rawCorrectionPlanes == 3 &&
-                             ((roles.filterTempPlanes == 1 &&
-                               roles.iirForwardTempPlanes == 0) ||
-                              (roles.filterTempPlanes == 1 &&
-                               roles.iirForwardTempPlanes == 1) ||
-                              (roles.filterTempPlanes == 2 &&
-                               roles.iirForwardTempPlanes == 0) ||
-                              (roles.filterTempPlanes == 3 &&
-                               roles.iirForwardTempPlanes == 0) ||
-                              (roles.filterTempPlanes == 3 &&
-                               roles.iirForwardTempPlanes == 3)))) &&
-                           roles.cachedLogRawPlanes == 0 &&
-                           roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
-                           roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
-                           roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
-                case Spektrafilm::DirScratchTier::Tier2: {
-                    const bool aliasedForwardYvv =
-                        roles.rawCorrectionPlanes == 3 &&
-                        roles.filterTempPlanes == 3 &&
-                        roles.iirForwardTempPlanes == 0;
-                    const bool cachedLogRawMatch =
-                        roles.cachedLogRawPlanes == 3 ||
-                        (roles.cachedLogRawPlanes == 2 && aliasedForwardYvv);
-                    return roles.filteredCorrectionPlanes == 3 &&
-                           ((roles.rawCorrectionPlanes == 1 &&
-                             (roles.filterTempPlanes == 0 ||
-                              roles.filterTempPlanes == 1) &&
-                             roles.iirForwardTempPlanes == 0) ||
-                            (roles.rawCorrectionPlanes == 3 &&
-                             ((roles.filterTempPlanes == 1 &&
-                               roles.iirForwardTempPlanes == 0) ||
-                              (roles.filterTempPlanes == 1 &&
-                               roles.iirForwardTempPlanes == 1) ||
-                              (roles.filterTempPlanes == 2 &&
-                               roles.iirForwardTempPlanes == 0) ||
-                              (roles.filterTempPlanes == 3 &&
-                               roles.iirForwardTempPlanes == 0) ||
-                              (roles.filterTempPlanes == 3 &&
-                               roles.iirForwardTempPlanes == 3)))) &&
-                           cachedLogRawMatch &&
-                           roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
-                           roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
-                           roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
-                }
-                case Spektrafilm::DirScratchTier::Tier3:
-                case Spektrafilm::DirScratchTier::Unsupported:
-                case Spektrafilm::DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch:
-                    return false;
-            }
-            return false;
-        }
-
         inline bool scratch_request_descriptor_is_valid(const ScratchRequestDescriptor& descriptor) noexcept {
             if (!descriptor.has_any_family()) {
                 return false;
@@ -657,19 +582,11 @@ namespace JuicerCuda {
             mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.rawCorrectionPlanes));
             mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.filteredCorrectionPlanes));
             mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.filterTempPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.iirForwardTempPlanes));
             mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.cachedLogRawPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.SF_TEMP_BRIDGE_corrPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.SF_TEMP_BRIDGE_mixPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.SF_TEMP_BRIDGE_tmpPlanes));
             mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.rawCorrectionPlanes));
             mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.filteredCorrectionPlanes));
             mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.filterTempPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.iirForwardTempPlanes));
             mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.SF_TEMP_BRIDGE_corrPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.SF_TEMP_BRIDGE_mixPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.SF_TEMP_BRIDGE_tmpPlanes));
             mix(static_cast<std::uint64_t>(descriptor.requestedWidth));
             mix(static_cast<std::uint64_t>(descriptor.requestedHeight));
             mix(descriptor.needBlurred ? 1ull : 0ull);

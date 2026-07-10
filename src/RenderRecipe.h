@@ -101,11 +101,6 @@ namespace Spektrafilm {
         NormalizeBaseThenAddPreflashThenScaleExposureAndCorrection
     };
 
-    enum class DirTailMode : std::uint8_t {
-        SpektrafilmStrict = 0,
-        AcceptedFftReplicatePadSmooth = 1
-    };
-
     enum class SpatialOpticsDomain : std::uint8_t {
         FilmLinearExposure,
         PrintLinearExposure
@@ -345,19 +340,20 @@ struct FilmDevelopRecipe {
 struct DirCouplersControls {
     bool active = true;
     float amount = 1.0f;
-    Spektrafilm::DirTailMode tailMode = Spektrafilm::DirTailMode::SpektrafilmStrict;
     float inhibitionSameLayer = 1.0f;
     float inhibitionInterlayer = 1.0f;
     float diffusionSizeUm = 20.0f;
-    float diffusionTailUm = 200.0f;
-    float diffusionTailWeight = 0.06f;
+    bool gammaUseStock = true;
+    std::array<float, 3> gammaSameLayerRgb{{0.336f, 0.319f, 0.273f}};
+    std::array<float, 2> gammaInterlayerRToGb{{0.353f, 0.302f}};
+    std::array<float, 2> gammaInterlayerGToRb{{0.154f, 0.353f}};
+    std::array<float, 2> gammaInterlayerBToRg{{0.168f, 0.226f}};
 };
 
 struct DirCouplersRecipe {
     Spektrafilm::ProfilePolarity polarity = Spektrafilm::ProfilePolarity::Unsupported;
     bool active = false;
     float amount = 1.0f;
-    Spektrafilm::DirTailMode tailMode = Spektrafilm::DirTailMode::SpektrafilmStrict;
     float inhibitionSameLayer = 1.0f;
     float inhibitionInterlayer = 1.0f;
     std::array<float, 3> gammaSameLayerRgb{};
@@ -393,17 +389,10 @@ namespace Spektrafilm {
         SpektrafilmLargeYvvReplicate
     };
 
-    // SF_TEMP_BRIDGE_* DIR markers classify the current CUDA spatial path until Phase 5 removes it.
     enum class DirFilterBackend : std::uint8_t {
         None,
         SmallFir,
-        StrictYvvChannels,
-        StrictYvvChannelsAliasedForward,
-        StrictYvvLowScratch,
-        StrictYvvComponentStreamed,
-        StrictYvvCompactSequential,
-        AcceptedFftReplicatePadSmooth,
-        SF_TEMP_BRIDGE_LegacySigmaThreshold
+        StrictYvvChannelsAliasedForward
     };
 
     enum class DirScratchTier : std::uint8_t {
@@ -411,16 +400,12 @@ namespace Spektrafilm {
         Tier1F,
         Tier1IChannels,
         Tier2,
-        Tier3,
-        Unsupported,
-        SF_TEMP_BRIDGE_LegacySpatialDirScratch
+        Unsupported
     };
 
     enum class DirApproximationMarker : std::uint8_t {
         None,
-        SpektrafilmStrict,
-        AcceptedFftReplicatePadSmooth,
-        SF_TEMP_BRIDGE_CurrentCudaSpatialDir
+        SpektrafilmStrict
     };
 
     enum class DirDescriptorSupport : std::uint8_t {
@@ -457,23 +442,50 @@ namespace Spektrafilm {
         int rawCorrectionPlanes = 0;
         int filteredCorrectionPlanes = 0;
         int filterTempPlanes = 0;
-        int iirForwardTempPlanes = 0;
         int cachedLogRawPlanes = 0;
-        int SF_TEMP_BRIDGE_corrPlanes = 0;
-        int SF_TEMP_BRIDGE_mixPlanes = 0;
-        int SF_TEMP_BRIDGE_tmpPlanes = 0;
 
         int total_float_planes() const noexcept {
             return rawCorrectionPlanes +
                    filteredCorrectionPlanes +
                    filterTempPlanes +
-                   iirForwardTempPlanes +
-                   cachedLogRawPlanes +
-                   SF_TEMP_BRIDGE_corrPlanes +
-                   SF_TEMP_BRIDGE_mixPlanes +
-                   SF_TEMP_BRIDGE_tmpPlanes;
+                   cachedLogRawPlanes;
         }
     };
+
+    inline bool spatial_dir_roles_match_tier(
+        DirScratchTier tier,
+        const DirScratchPlaneRoles& roles) noexcept {
+        if (tier == DirScratchTier::Tier0) {
+            return roles.total_float_planes() == 0;
+        }
+        if (roles.filteredCorrectionPlanes != 3) {
+            return false;
+        }
+        if (tier == DirScratchTier::Tier1F) {
+            return roles.rawCorrectionPlanes == 3 &&
+                   roles.filterTempPlanes == 1 &&
+                   roles.cachedLogRawPlanes == 0;
+        }
+        if (tier == DirScratchTier::Tier1IChannels) {
+            return roles.cachedLogRawPlanes == 0 &&
+                   ((roles.rawCorrectionPlanes == 3 &&
+                     roles.filterTempPlanes >= 1 &&
+                     roles.filterTempPlanes <= 3) ||
+                    (roles.rawCorrectionPlanes == 1 &&
+                     roles.filterTempPlanes == 1));
+        }
+        if (tier == DirScratchTier::Tier2) {
+            if (roles.cachedLogRawPlanes == 2) {
+                return roles.rawCorrectionPlanes == 3 &&
+                       roles.filterTempPlanes == 3;
+            }
+            return roles.cachedLogRawPlanes == 3 &&
+                   roles.rawCorrectionPlanes == 3 &&
+                   roles.filterTempPlanes >= 1 &&
+                   roles.filterTempPlanes <= 3;
+        }
+        return false;
+    }
 
     inline const char* to_cstr(DirSourceContract value) noexcept {
         switch (value) {
@@ -518,20 +530,8 @@ namespace Spektrafilm {
                 return "none";
             case DirFilterBackend::SmallFir:
                 return "small_fir";
-            case DirFilterBackend::StrictYvvChannels:
-                return "strict_yvv_channels";
             case DirFilterBackend::StrictYvvChannelsAliasedForward:
                 return "strict_yvv_channels_aliased_forward";
-            case DirFilterBackend::StrictYvvLowScratch:
-                return "strict_yvv_low_scratch_pair";
-            case DirFilterBackend::StrictYvvComponentStreamed:
-                return "strict_yvv_component_streamed";
-            case DirFilterBackend::StrictYvvCompactSequential:
-                return "strict_yvv_compact_sequential";
-            case DirFilterBackend::AcceptedFftReplicatePadSmooth:
-                return "accepted_fft_replicate_pad_smooth";
-            case DirFilterBackend::SF_TEMP_BRIDGE_LegacySigmaThreshold:
-                return "SF_TEMP_BRIDGE_LegacySigmaThreshold";
             default:
                 return "unknown";
         }
@@ -547,12 +547,8 @@ namespace Spektrafilm {
                 return "Tier1IChannels";
             case DirScratchTier::Tier2:
                 return "Tier2";
-            case DirScratchTier::Tier3:
-                return "Tier3";
             case DirScratchTier::Unsupported:
                 return "unsupported";
-            case DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch:
-                return "SF_TEMP_BRIDGE_LegacySpatialDirScratch";
             default:
                 return "unknown";
         }
@@ -564,21 +560,6 @@ namespace Spektrafilm {
                 return "none";
             case DirApproximationMarker::SpektrafilmStrict:
                 return "spektrafilm_strict";
-            case DirApproximationMarker::AcceptedFftReplicatePadSmooth:
-                return "accepted_fft_replicate_pad_smooth";
-            case DirApproximationMarker::SF_TEMP_BRIDGE_CurrentCudaSpatialDir:
-                return "SF_TEMP_BRIDGE_CurrentCudaSpatialDir";
-            default:
-                return "unknown";
-        }
-    }
-
-    inline const char* to_cstr(DirTailMode value) noexcept {
-        switch (value) {
-            case DirTailMode::SpektrafilmStrict:
-                return "spektrafilm_strict";
-            case DirTailMode::AcceptedFftReplicatePadSmooth:
-                return "accepted_fft_replicate_pad_smooth";
             default:
                 return "unknown";
         }
@@ -604,14 +585,11 @@ namespace Spektrafilm {
 struct SpatialDirDescriptor {
     static constexpr std::array<float, 3> kExponentialAmplitudes{{0.1633f, 0.6496f, 0.1870f}};
     static constexpr std::array<float, 3> kExponentialSigmaRatios{{0.5360f, 1.5236f, 2.7684f}};
-    static constexpr float kAcceptedFftPadSigma = 3.0f;
-
     std::uint64_t dirRecipeHash = 0;
     Spektrafilm::DirSourceContract sourceContract = Spektrafilm::DirSourceContract::None;
     Spektrafilm::DirBoundaryMode boundaryMode = Spektrafilm::DirBoundaryMode::None;
     Spektrafilm::DirScratchTier scratchTier = Spektrafilm::DirScratchTier::Tier0;
     Spektrafilm::DirApproximationMarker approximation = Spektrafilm::DirApproximationMarker::None;
-    Spektrafilm::DirTailMode tailMode = Spektrafilm::DirTailMode::SpektrafilmStrict;
     Spektrafilm::DirDescriptorSupport support = Spektrafilm::DirDescriptorSupport::Inactive;
     Spektrafilm::DirFrameExtent renderExtent{};
     Spektrafilm::DirFrameExtent fullFrameExtent{};
@@ -625,12 +603,6 @@ struct SpatialDirDescriptor {
     std::array<float, 3> exponentialSigmaPixels{};
     float gaussianWeight = 0.0f;
     std::array<float, 3> exponentialWeights{};
-    int fftPadPixels = 0;
-    int fftWidth = 0;
-    int fftHeight = 0;
-    int fftComplexWidth = 0;
-    float fftPadSigma = 0.0f;
-    std::uint64_t legacyCompatibilityHash = 0;
     std::uint64_t hash = 0;
 };
 

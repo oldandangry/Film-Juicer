@@ -2157,8 +2157,8 @@ cudaError_t launch_focused_spatial_dir_final_develop_density(
         }
     }();
     const JuicerCuda::SpatialDirPayload& spatialDir = params.filmDevelop.spatialDir;
-    if (!spatialDir.active || !spatialDir.corrY || !spatialDir.corrM ||
-        !spatialDir.corrC) {
+    if (!spatialDir.active || !spatialDir.filteredCorrectionY ||
+        !spatialDir.filteredCorrectionM || !spatialDir.filteredCorrectionC) {
         return cudaErrorInvalidValue;
     }
 

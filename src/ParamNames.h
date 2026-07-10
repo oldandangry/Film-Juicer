@@ -11,7 +11,14 @@ namespace JuicerParams {
     inline constexpr const char kDirCouplersGroup[] = "Couplers";
     inline constexpr const char kDirCouplersActive[] = "CouplersActive";
     inline constexpr const char kDirCouplersAmount[] = "CouplersAmount";
-    inline constexpr const char kDirTailMode[] = "DirTailMode";
+    inline constexpr const char kDirCouplersInhibitionSameLayer[] = "CouplersInhibitionSameLayer";
+    inline constexpr const char kDirCouplersInhibitionInterlayer[] = "CouplersInhibitionInterlayer";
+    inline constexpr const char kDirCouplersDiffusionSizeUm[] = "CouplersDiffusionSizeUm";
+    inline constexpr const char kDirCouplersGammaUseStock[] = "CouplersGammaUseStock";
+    inline constexpr const char kDirCouplersGammaSameLayerRgb[] = "CouplersGammaSameLayerRgb";
+    inline constexpr const char kDirCouplersGammaInterlayerRToGb[] = "CouplersGammaInterlayerRToGb";
+    inline constexpr const char kDirCouplersGammaInterlayerGToRb[] = "CouplersGammaInterlayerGToRb";
+    inline constexpr const char kDirCouplersGammaInterlayerBToRg[] = "CouplersGammaInterlayerBToRg";
     inline constexpr const char kHalationActive[] = "HalationActive";
     inline constexpr const char kHalationStrengthMaster[] = "HalationStrengthMaster";
     inline constexpr const char kHalationSizeUmMaster[] = "HalationSizeUmMaster";

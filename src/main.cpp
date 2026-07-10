@@ -202,7 +202,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setEvaluateOnChange(true);
     }
 
-    // Recipe-owned DIR controls. Gamma and spatial policy come from the selected profile digest.
+    // Recipe-owned spektrafilm DIR controls.
     {
         OFX::GroupParamDescriptor* grpCouplers = desc.defineGroupParam(JuicerParams::kDirCouplersGroup);
         if (grpCouplers)
@@ -218,22 +218,127 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kDirCouplersAmount);
-            p->setLabel("Couplers amount");
+            p->setLabel("Amount");
+            p->setHint("Global multiplier on the DIR inhibition matrix.");
             p->setDefault(1.0);
             p->setRange(0.0, 2.0);
             p->setDisplayRange(0.0, 2.0);
+            p->setIncrement(0.05);
             if (grpCouplers)
                 p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(JuicerParams::kDirTailMode);
-            p->setLabel("DIR quality");
-            p->appendOption("Full Quality (Spektrafilm)");
-            p->appendOption("Fast (Padded FFT Approximation)");
-            p->setDefault(0);
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kDirCouplersInhibitionSameLayer);
+            p->setLabel("Inhibition_samelayer");
+            p->setHint("Multiplier on same-layer DIR inhibition.");
+            p->setDefault(1.0);
+            p->setRange(0.0, 2.0);
+            p->setDisplayRange(0.0, 2.0);
+            p->setIncrement(0.05);
             if (grpCouplers)
                 p->setParent(*grpCouplers);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kDirCouplersInhibitionInterlayer);
+            p->setLabel("Inhibition_interlayer");
+            p->setHint("Multiplier on cross-layer DIR inhibition.");
+            p->setDefault(1.0);
+            p->setRange(0.0, 2.0);
+            p->setDisplayRange(0.0, 2.0);
+            p->setIncrement(0.05);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kDirCouplersDiffusionSizeUm);
+            p->setLabel("Diffusion_size_um");
+            p->setHint("Sigma in micrometers for spatial diffusion of the DIR correction.");
+            p->setDefault(20.0);
+            p->setRange(0.0, 200.0);
+            p->setDisplayRange(0.0, 200.0);
+            p->setIncrement(5.0);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
+            p->setEvaluateOnChange(true);
+        }
+
+        OFX::GroupParamDescriptor* grpCouplersAdvanced = desc.defineGroupParam("CouplersAdvancedGroup");
+        if (grpCouplersAdvanced) {
+            grpCouplersAdvanced->setLabel("Advanced");
+            grpCouplersAdvanced->setOpen(false);
+            if (grpCouplers)
+                grpCouplersAdvanced->setParent(*grpCouplers);
+        }
+        {
+            OFX::BooleanParamDescriptor* p =
+                desc.defineBooleanParam(JuicerParams::kDirCouplersGammaUseStock);
+            p->setLabel("Gamma_use_stock");
+            p->setHint("Use the selected film profile's DIR gamma values.");
+            p->setDefault(true);
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::Double3DParamDescriptor* p =
+                desc.defineDouble3DParam(JuicerParams::kDirCouplersGammaSameLayerRgb);
+            p->setLabel("Gamma_samelayer_rgb");
+            p->setHint("Same-layer DIR gamma in donor RGB order.");
+            p->setDefault(0.336, 0.319, 0.273);
+            p->setRange(0.0, 0.0, 0.0, 4.0, 4.0, 4.0);
+            p->setDisplayRange(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
+            p->setIncrement(0.02);
+            p->setDimensionLabels("R", "G", "B");
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::Double2DParamDescriptor* p =
+                desc.defineDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerRToGb);
+            p->setLabel("Gamma_interlayer_r_to_gb");
+            p->setHint("DIR inhibition from the R layer onto G and B.");
+            p->setDefault(0.353, 0.302);
+            p->setRange(0.0, 0.0, 4.0, 4.0);
+            p->setDisplayRange(0.0, 0.0, 1.0, 1.0);
+            p->setIncrement(0.02);
+            p->setDimensionLabels("G", "B");
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::Double2DParamDescriptor* p =
+                desc.defineDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerGToRb);
+            p->setLabel("Gamma_interlayer_g_to_rb");
+            p->setHint("DIR inhibition from the G layer onto R and B.");
+            p->setDefault(0.154, 0.353);
+            p->setRange(0.0, 0.0, 4.0, 4.0);
+            p->setDisplayRange(0.0, 0.0, 1.0, 1.0);
+            p->setIncrement(0.02);
+            p->setDimensionLabels("R", "B");
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::Double2DParamDescriptor* p =
+                desc.defineDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerBToRg);
+            p->setLabel("Gamma_interlayer_b_to_rg");
+            p->setHint("DIR inhibition from the B layer onto R and G.");
+            p->setDefault(0.168, 0.226);
+            p->setRange(0.0, 0.0, 4.0, 4.0);
+            p->setDisplayRange(0.0, 0.0, 1.0, 1.0);
+            p->setIncrement(0.02);
+            p->setDimensionLabels("R", "G");
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
             p->setEvaluateOnChange(true);
         }
     }

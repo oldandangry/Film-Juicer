@@ -3259,7 +3259,6 @@ bool command_checkpoint_large_scratch_transition(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
     const ScratchRequestDescriptor& scratchRequest,
-    bool usesSpatialDirFft,
     void* cudaStreamOpaque,
     const char* commandName,
     std::string& outError) {
@@ -3281,7 +3280,6 @@ bool command_checkpoint_large_scratch_transition(
         resources,
         stageName,
         scratchRequest,
-        usesSpatialDirFft,
         cudaStreamOpaque,
         outError);
 }
@@ -3439,8 +3437,6 @@ bool command_release_spatial_dir_build_scratch_stage(
         msg += std::to_string(static_cast<unsigned long long>(outStats.rawCorrectionRetiredBytes));
         msg += " filter_temp_retired_bytes=";
         msg += std::to_string(static_cast<unsigned long long>(outStats.filterTempRetiredBytes));
-        msg += " iir_forward_temp_retired_bytes=";
-        msg += std::to_string(static_cast<unsigned long long>(outStats.iirForwardTempRetiredBytes));
         msg += " shared_tmp_retired_bytes=";
         msg += std::to_string(static_cast<unsigned long long>(outStats.sharedTmpRetiredBytes));
         msg += " reclaimed_bytes=";
@@ -3713,8 +3709,6 @@ void trace_post_frame_scratch_shed(
         std::to_string(static_cast<unsigned long long>(stats.spatialDirRetiredBytes)) +
         " shared_tmp_retired_bytes=" +
         std::to_string(static_cast<unsigned long long>(stats.sharedTmpRetiredBytes)) +
-        " fft_released_bytes=" +
-        std::to_string(static_cast<unsigned long long>(stats.fftReleasedBytes)) +
         " reclaimed_bytes=" +
         std::to_string(static_cast<unsigned long long>(stats.reclaimedBytes)) +
         trace_device_context_fields(transaction) +
@@ -4039,155 +4033,6 @@ bool command_ensure_spatial_dir_scratch(
     return preferredOk;
 }
 
-bool command_preflight_spatial_dir_fft_peak(
-    SubmissionTransaction& transaction,
-    JuicerCuda::Resources& resources,
-    const Spektrafilm::SpatialDirDescriptor& descriptor,
-    const ScratchRequestDescriptor& scratchRequest,
-    void* cudaStreamOpaque,
-    std::string& outError) {
-    const char* stageName = "command_preflight_spatial_dir_fft_peak";
-    if (!ensure_active_for_command(transaction, outError, stageName)) {
-        return false;
-    }
-    if (!validate_scratch_request_for_family(
-            scratchRequest,
-            stageName,
-            ScratchWorkClass::SpatialDir,
-            outError)) {
-        return false;
-    }
-    if (descriptor.approximation != Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
-        return true;
-    }
-
-    const bool captureMemorySnapshots =
-        should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-
-    const std::size_t scratchGrowthBytes = estimate_spatial_dir_growth_bytes(
-        resources,
-        scratchRequest.requestedWidth,
-        scratchRequest.requestedHeight,
-        scratchRequest.spatialDirScratchTier,
-        scratchRequest.spatialDirPlaneRoles);
-    if (scratchGrowthBytes == std::numeric_limits<std::size_t>::max()) {
-        outError = "spatial DIR FFT peak preflight scratch growth byte estimation overflow";
-        return false;
-    }
-
-    std::size_t fftGrowthBytes = 0;
-    if (!JuicerCuda::estimate_spatial_dir_fft_growth_bytes(
-            resources,
-            descriptor,
-            cudaStreamOpaque,
-            fftGrowthBytes,
-            outError)) {
-        if (is_allocator_oom_error(outError)) {
-            outError = commands_scratch_exhausted_error(
-                stageName,
-                "fft_plan_sizing_allocator_failure",
-                outError);
-        }
-        return false;
-    }
-
-    std::size_t combinedGrowthBytes = 0;
-    if (!add_bytes_checked(scratchGrowthBytes, fftGrowthBytes, combinedGrowthBytes)) {
-        outError = "spatial DIR FFT peak preflight byte count overflow";
-        return false;
-    }
-
-    auto trace_peak_preflight = [&](bool ok, const char* reason, const std::string& error) {
-#if JUICER_DIAGNOSTICS_COMPILED
-        if ((ok && error.empty()) ? !JTRACE_ENABLED(2) : !JTRACE_ENABLED(1)) {
-            return;
-        }
-        std::string msg = trace_event_prefix(
-            "spatial_dir_fft_peak_preflight",
-            transaction,
-            stageName);
-        msg += " ok=";
-        msg += ok ? "1" : "0";
-        msg += " descriptor_hash=";
-        msg += std::to_string(static_cast<unsigned long long>(descriptor.hash));
-        msg += " approximation=";
-        msg += Spektrafilm::to_cstr(descriptor.approximation);
-        msg += " requested_width=";
-        msg += std::to_string(scratchRequest.requestedWidth);
-        msg += " requested_height=";
-        msg += std::to_string(scratchRequest.requestedHeight);
-        msg += " request_kind=exact_fft_peak";
-        msg += " failure_action=";
-        msg += ok ? "none" : "hard_fail_current_request";
-        msg += " scratch_growth_bytes=";
-        msg += std::to_string(static_cast<unsigned long long>(scratchGrowthBytes));
-        msg += " fft_growth_bytes=";
-        msg += std::to_string(static_cast<unsigned long long>(fftGrowthBytes));
-        msg += " combined_growth_bytes=";
-        msg += std::to_string(static_cast<unsigned long long>(combinedGrowthBytes));
-        if (!error.empty()) {
-            msg += " error=";
-            msg += error;
-        }
-        msg += " reason=";
-        msg += trace_or_unspecified(reason);
-        JTRACE("MSADM", msg);
-#else
-        (void)ok;
-        (void)reason;
-        (void)error;
-#endif
-    };
-
-    if (combinedGrowthBytes == 0) {
-        trace_peak_preflight(true, "cached", outError);
-        return true;
-    }
-
-    bool usedRetry = false;
-    if (!admit_active_frame_vram_growth(
-            transaction,
-            resources,
-            stageName,
-            combinedGrowthBytes,
-            &scratchRequest,
-            false,
-            ActiveFrameAdmissionHeadroom::AllocatorEffective,
-            outError)) {
-        const std::string admissionError = outError;
-        if (!try_reclaim_retained_optics_for_admission_retry(
-                transaction,
-                resources,
-                stageName,
-                ScratchWorkClass::SpatialDir,
-                scratchRequest,
-                admissionError,
-                cudaStreamOpaque,
-                captureMemorySnapshots,
-                outError)) {
-            trace_peak_preflight(false, "admission_denied", outError);
-            return false;
-        }
-        usedRetry = true;
-        if (!admit_active_frame_vram_growth(
-                transaction,
-                resources,
-                stageName,
-                combinedGrowthBytes,
-                &scratchRequest,
-                true,
-                ActiveFrameAdmissionHeadroom::AllocatorEffective,
-                outError)) {
-            trace_peak_preflight(false, "retry_admission_denied", outError);
-            return false;
-        }
-    }
-
-    trace_peak_preflight(true, usedRetry ? "admitted_after_retry" : "admitted", outError);
-    return true;
-}
-
 bool command_ensure_spatial_dir_kernel(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
@@ -4210,100 +4055,6 @@ bool command_ensure_spatial_dir_kernel(
                 actionError);
         },
         outError);
-}
-
-bool command_ensure_spatial_dir_fft(
-    SubmissionTransaction& transaction,
-    JuicerCuda::Resources& resources,
-    const Spektrafilm::SpatialDirDescriptor& descriptor,
-    const ScratchRequestDescriptor& scratchRequest,
-    void* cudaStreamOpaque,
-    std::string& outError) {
-    const char* stageName = "command_ensure_spatial_dir_fft";
-    if (!ensure_active_for_command(transaction, outError, stageName)) {
-        return false;
-    }
-    if (!validate_scratch_request_for_family(
-            scratchRequest,
-            stageName,
-            ScratchWorkClass::SpatialDir,
-            outError)) {
-        return false;
-    }
-    const bool captureMemorySnapshots =
-        should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    std::size_t growthBytes = 0;
-    if (!JuicerCuda::estimate_spatial_dir_fft_growth_bytes(
-            resources,
-            descriptor,
-            cudaStreamOpaque,
-            growthBytes,
-            outError)) {
-        if (is_allocator_oom_error(outError)) {
-            outError = commands_scratch_exhausted_error(
-                stageName,
-                "fft_plan_sizing_allocator_failure",
-                outError);
-        }
-        return false;
-    }
-    if (growthBytes > 0 &&
-        !admit_active_frame_vram_growth(
-            transaction,
-            resources,
-            stageName,
-            growthBytes,
-            &scratchRequest,
-            false,
-            ActiveFrameAdmissionHeadroom::AllocatorEffective,
-            outError)) {
-        const std::string admissionError = outError;
-        if (!try_reclaim_retained_optics_for_admission_retry(
-                transaction,
-                resources,
-                stageName,
-                ScratchWorkClass::SpatialDir,
-                scratchRequest,
-                admissionError,
-                cudaStreamOpaque,
-                captureMemorySnapshots,
-                outError)) {
-            return false;
-        }
-        if (!admit_active_frame_vram_growth(
-                transaction,
-                resources,
-                stageName,
-                growthBytes,
-                &scratchRequest,
-                true,
-                ActiveFrameAdmissionHeadroom::AllocatorEffective,
-                outError)) {
-            return false;
-        }
-    }
-    std::string actionError;
-    const bool ok = execute_snapshot_wrapped_command(
-        transaction,
-        resources,
-        [&](std::string& actionError) {
-            return JuicerCuda::ensure_spatial_dir_fft(
-                resources,
-                descriptor,
-                cudaStreamOpaque,
-                actionError);
-        },
-        actionError);
-    if (!ok && is_allocator_oom_error(actionError)) {
-        outError = commands_scratch_exhausted_error(
-            stageName,
-            "fft_workspace_allocator_failure",
-            actionError);
-        return false;
-    }
-    outError = actionError;
-    return ok;
 }
 
 bool command_ensure_gaussian_kernel(

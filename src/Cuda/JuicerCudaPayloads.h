@@ -102,9 +102,9 @@ namespace JuicerCuda {
 
     struct SpatialDirPayload {
         int active = 0;
-        const float* corrY = nullptr;
-        const float* corrM = nullptr;
-        const float* corrC = nullptr;
+        const float* filteredCorrectionY = nullptr;
+        const float* filteredCorrectionM = nullptr;
+        const float* filteredCorrectionC = nullptr;
         const float* JUICER_RESTRICT logRawB = nullptr;
         const float* JUICER_RESTRICT logRawG = nullptr;
         const float* JUICER_RESTRICT logRawR = nullptr;

@@ -1613,9 +1613,9 @@ static __device__ __forceinline__ void apply_dir_runtime_logE_device(
 static __device__ __forceinline__ bool juicer_cuda_spatial_dir_filtered_correction_active_device(
     const JuicerCuda::FilmDevelopPayload& develop) {
     return develop.spatialDir.active &&
-           develop.spatialDir.corrY &&
-           develop.spatialDir.corrM &&
-           develop.spatialDir.corrC;
+           develop.spatialDir.filteredCorrectionY &&
+           develop.spatialDir.filteredCorrectionM &&
+           develop.spatialDir.filteredCorrectionC;
 }
 
 static __device__ __forceinline__ bool juicer_cuda_spatial_dir_cached_log_raw_active_device(
@@ -1639,10 +1639,12 @@ static __device__ __forceinline__ void juicer_cuda_develop_dir_final_device(
     const float logRawBgr[3],
     std::size_t pixelIndex,
     float densityCmy[3]) {
-    // Phase 2 bridge: spatialDir.corrY/M/C are aliases for filteredCorrectionY/M/C only.
-    const float filteredCorrectionY = ldg_f(develop.spatialDir.corrY + pixelIndex);
-    const float filteredCorrectionM = ldg_f(develop.spatialDir.corrM + pixelIndex);
-    const float filteredCorrectionC = ldg_f(develop.spatialDir.corrC + pixelIndex);
+    const float filteredCorrectionY =
+        ldg_f(develop.spatialDir.filteredCorrectionY + pixelIndex);
+    const float filteredCorrectionM =
+        ldg_f(develop.spatialDir.filteredCorrectionM + pixelIndex);
+    const float filteredCorrectionC =
+        ldg_f(develop.spatialDir.filteredCorrectionC + pixelIndex);
 
     float correctedLogRawB = logRawBgr[0] - filteredCorrectionY;
     float correctedLogRawG = logRawBgr[1] - filteredCorrectionM;
