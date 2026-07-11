@@ -220,6 +220,7 @@ namespace JuicerCuda {
         float densityMax[3] = {0.0f, 0.0f, 0.0f};
         float nParticles[3] = {0.0f, 0.0f, 0.0f};
         float odParticle[3] = {0.0f, 0.0f, 0.0f};
+        float sizeMixWeightFine = 1.0f;
         float sizeMixWeight = 0.0f;
         float sizeMixWeightMid = 0.0f;
         float sizeMixScale = 1.0f;
@@ -230,6 +231,7 @@ namespace JuicerCuda {
         float chromaIndWeight = 1.0f;
         float debugScale = 1.0f;
 
+        DeviceCurveView densityCurveCmy[3] = {};
         float densityMaxLayers[3][3] = {{0.0f, 0.0f, 0.0f},
                                         {0.0f, 0.0f, 0.0f},
                                         {0.0f, 0.0f, 0.0f}};

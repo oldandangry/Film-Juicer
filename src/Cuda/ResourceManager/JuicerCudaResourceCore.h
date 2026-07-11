@@ -197,7 +197,7 @@ namespace JuicerCuda {
             OpticsBase = 0,
             OpticsBlurred = 1,
             OpticsAux = 2,
-            OpticsGrainTriplet = 3,
+            OpticsGrainLayerWork = 3,
             OpticsGrainShared = 4,
             OpticsGateMask = 5,
             SpatialDirBase = 6,
@@ -222,7 +222,7 @@ namespace JuicerCuda {
             ScratchPolicyCandidate::OpticsBase,
             ScratchPolicyCandidate::OpticsBlurred,
             ScratchPolicyCandidate::OpticsAux,
-            ScratchPolicyCandidate::OpticsGrainTriplet,
+            ScratchPolicyCandidate::OpticsGrainLayerWork,
             ScratchPolicyCandidate::OpticsGrainShared,
             ScratchPolicyCandidate::OpticsGateMask,
             ScratchPolicyCandidate::SpatialDirBase};
@@ -241,9 +241,9 @@ namespace JuicerCuda {
                 "OpticsAux",
                 "optics_aux_bytes"},
             ScratchPolicyCandidateContractEntry{
-                ScratchPolicyCandidate::OpticsGrainTriplet,
-                "OpticsGrainTriplet",
-                "optics_grain_triplet_bytes"},
+                ScratchPolicyCandidate::OpticsGrainLayerWork,
+                "OpticsGrainLayerWork",
+                "optics_grain_layer_work_bytes"},
             ScratchPolicyCandidateContractEntry{
                 ScratchPolicyCandidate::OpticsGrainShared,
                 "OpticsGrainShared",
@@ -260,7 +260,7 @@ namespace JuicerCuda {
         constexpr std::array<ScratchPolicyCandidate, 7> kScratchPolicySheddingOrder = {
             ScratchPolicyCandidate::OpticsGateMask,
             ScratchPolicyCandidate::OpticsGrainShared,
-            ScratchPolicyCandidate::OpticsGrainTriplet,
+            ScratchPolicyCandidate::OpticsGrainLayerWork,
             ScratchPolicyCandidate::OpticsAux,
             ScratchPolicyCandidate::OpticsBlurred,
             ScratchPolicyCandidate::SpatialDirBase,
@@ -479,7 +479,8 @@ namespace JuicerCuda {
             bool needBlurred = false;
             bool aliasScannerRgbFromSpatialDirFiltered = false;
             bool needAux = false;
-            bool needGrainTriplet = false;
+            bool needSharedTmp = false;
+            bool needGrainLayerWork = false;
             bool needGrainShared = false;
             bool needGateMask = false;
         };
@@ -508,7 +509,8 @@ namespace JuicerCuda {
             bool needBlurred = false;
             bool aliasScannerRgbFromSpatialDirFiltered = false;
             bool needAux = false;
-            bool needGrainTriplet = false;
+            bool needSharedTmp = false;
+            bool needGrainLayerWork = false;
             bool needGrainShared = false;
             bool needGateMask = false;
             std::uint64_t generation = 0;
@@ -549,9 +551,18 @@ namespace JuicerCuda {
                 (descriptor.needBlurred ||
                  descriptor.aliasScannerRgbFromSpatialDirFiltered ||
                  descriptor.needAux ||
-                 descriptor.needGrainTriplet ||
+                 descriptor.needGrainLayerWork ||
                  descriptor.needGrainShared ||
                  descriptor.needGateMask)) {
+                return false;
+            }
+            const bool spatialDirNeedsSharedTmp =
+                descriptor.needSpatialDir &&
+                descriptor.spatialDirPlaneRoles.filterTempPlanes > 0;
+            if ((spatialDirNeedsSharedTmp && !descriptor.needSharedTmp) ||
+                (descriptor.needSharedTmp &&
+                 !descriptor.needOptics &&
+                 !spatialDirNeedsSharedTmp)) {
                 return false;
             }
             if (descriptor.aliasScannerRgbFromSpatialDirFiltered &&
@@ -592,7 +603,8 @@ namespace JuicerCuda {
             mix(descriptor.needBlurred ? 1ull : 0ull);
             mix(descriptor.aliasScannerRgbFromSpatialDirFiltered ? 1ull : 0ull);
             mix(descriptor.needAux ? 1ull : 0ull);
-            mix(descriptor.needGrainTriplet ? 1ull : 0ull);
+            mix(descriptor.needSharedTmp ? 1ull : 0ull);
+            mix(descriptor.needGrainLayerWork ? 1ull : 0ull);
             mix(descriptor.needGrainShared ? 1ull : 0ull);
             mix(descriptor.needGateMask ? 1ull : 0ull);
             return hash;
@@ -621,7 +633,8 @@ namespace JuicerCuda {
                 request.families.needSpatialDir &&
                 request.attachments.aliasScannerRgbFromSpatialDirFiltered;
             descriptor.needAux = request.families.needOptics && request.attachments.needAux;
-            descriptor.needGrainTriplet = request.families.needOptics && request.attachments.needGrainTriplet;
+            descriptor.needSharedTmp = request.attachments.needSharedTmp;
+            descriptor.needGrainLayerWork = request.families.needOptics && request.attachments.needGrainLayerWork;
             descriptor.needGrainShared = request.families.needOptics && request.attachments.needGrainShared;
             descriptor.needGateMask = request.families.needOptics && request.attachments.needGateMask;
             descriptor.generation = hash_scratch_request_descriptor(descriptor);

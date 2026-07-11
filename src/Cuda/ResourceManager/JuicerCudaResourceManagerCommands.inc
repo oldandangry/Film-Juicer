@@ -210,7 +210,8 @@ bool resolve_optional_active_scratch_request(
         if (scratchRequest.needBlurred ||
             scratchRequest.aliasScannerRgbFromSpatialDirFiltered ||
             scratchRequest.needAux ||
-            scratchRequest.needGrainTriplet ||
+            scratchRequest.needSharedTmp ||
+            scratchRequest.needGrainLayerWork ||
             scratchRequest.needGrainShared ||
             scratchRequest.needGateMask) {
             outError = std::string(trace_or_non_empty(commandName, "scratch_request")) + ": invalid scratch request descriptor";
@@ -3921,7 +3922,8 @@ bool command_ensure_optics_scratch(
         scratchRequest.needBlurred,
         scratchRequest.aliasScannerRgbFromSpatialDirFiltered,
         scratchRequest.needAux,
-        scratchRequest.needGrainTriplet,
+        scratchRequest.needSharedTmp,
+        scratchRequest.needGrainLayerWork,
         scratchRequest.needGrainShared,
         scratchRequest.needGateMask);
     if (growthBytes == std::numeric_limits<std::size_t>::max()) {
@@ -3939,7 +3941,8 @@ bool command_ensure_optics_scratch(
             scratchRequest.needBlurred,
             scratchRequest.aliasScannerRgbFromSpatialDirFiltered,
             scratchRequest.needAux,
-            scratchRequest.needGrainTriplet,
+            scratchRequest.needSharedTmp,
+            scratchRequest.needGrainLayerWork,
             scratchRequest.needGrainShared,
             scratchRequest.needGateMask,
             cudaStreamOpaque,
@@ -3962,7 +3965,8 @@ bool command_ensure_optics_scratch(
                 scratchRequest.needBlurred,
                 scratchRequest.aliasScannerRgbFromSpatialDirFiltered,
                 scratchRequest.needAux,
-                scratchRequest.needGrainTriplet,
+                scratchRequest.needSharedTmp,
+                scratchRequest.needGrainLayerWork,
                 scratchRequest.needGrainShared,
                 scratchRequest.needGateMask,
                 cudaStreamOpaque,

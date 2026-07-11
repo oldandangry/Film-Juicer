@@ -236,9 +236,7 @@ namespace JuicerProcess {
 
         bool workspace_request_needs_shared_tmp_plane(
             const Root::PreparedCudaFrame::WorkspaceRequest& request) noexcept {
-            return request.needOptics ||
-                   (request.needSpatialDir &&
-                    request.spatialDirPlaneRoles.filterTempPlanes > 0);
+            return request.needSharedTmp;
         }
 #endif
 
@@ -435,7 +433,8 @@ namespace JuicerProcess {
             request.attachments.aliasScannerRgbFromSpatialDirFiltered =
                 workspace.aliasScannerRgbFromSpatialDirFiltered;
             request.attachments.needAux = workspace.needAux;
-            request.attachments.needGrainTriplet = workspace.needGrainTriplet;
+            request.attachments.needSharedTmp = workspace.needSharedTmp;
+            request.attachments.needGrainLayerWork = workspace.needGrainLayerWork;
             request.attachments.needGrainShared = workspace.needGrainShared;
             request.attachments.needGateMask = workspace.needGateMask;
             return JuicerCuda::ResourceManager::make_scratch_request_descriptor(
@@ -499,7 +498,8 @@ namespace JuicerProcess {
                 "alias_scanner_rgb_from_spatial_dir_filtered",
                 request.aliasScannerRgbFromSpatialDirFiltered);
             append_bool("need_aux", request.needAux);
-            append_bool("need_grain_triplet", request.needGrainTriplet);
+            append_bool("need_shared_tmp", request.needSharedTmp);
+            append_bool("need_grain_layer_work", request.needGrainLayerWork);
             append_bool("need_grain_shared", request.needGrainShared);
             append_bool("need_gate_mask", request.needGateMask);
         }
@@ -719,8 +719,16 @@ namespace JuicerProcess {
         ScanErrorFrameStage scanErrorStage{};
         AutoExposureFrameWorkspace autoExposureWorkspace{};
         FrameScratchWorkspace scratchWorkspace{};
+        WorkspaceRequest workspaceRequest{};
         Spektrafilm::SpatialDirDescriptor spatialDirDescriptor{};
         Scanner::ScannerPostEffectsDescriptor scannerPostEffectsDescriptor{};
+        Spektrafilm::ProfilePolarity capturePolarity =
+            Spektrafilm::ProfilePolarity::Unsupported;
+        std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
+        std::array<PreparedGaussianView, 3> preparedGrainCorrelation{};
+        PreparedGaussianView preparedGrainDyeCloud[3][3] = {};
+        PreparedDensityLayersView preparedGrainDensityLayers{};
+        bool visualGrainPrepared = false;
         void* lastCudaStreamOpaque = nullptr;
         bool frameUseEventSubmitted = false;
         const char* failureStageTag = "prepare_frame";
@@ -780,6 +788,153 @@ namespace JuicerProcess {
         void free_auto_exposure_workspace_now() noexcept;
         void free_scratch_workspace_now() noexcept;
     };
+
+    bool validate_visual_grain_descriptor(
+        const Spektrafilm::RenderRecipe* recipe,
+        const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& descriptor,
+        std::string& outError) {
+        if (!recipe) {
+            outError =
+                "MissingRequiredResource phase=grain_descriptor field=render_recipe";
+            return false;
+        }
+        const Spektrafilm::VisualGrainRecipe& visualGrain =
+            recipe->visualGrain;
+        if (!visualGrain.active) {
+            if (descriptor.has_value()) {
+                outError =
+                    "ResourceDescriptorMismatch phase=grain_descriptor field=inactive_descriptor";
+                return false;
+            }
+            return true;
+        }
+        if (!descriptor.has_value()) {
+            outError =
+                "MissingRequiredResource phase=grain_descriptor field=active_descriptor";
+            return false;
+        }
+        const Spektrafilm::VisualGrainFrameDescriptor& frame = *descriptor;
+        if (!frame.active ||
+            frame.hash == 0 ||
+            frame.recipeHash != visualGrain.hash ||
+            frame.capturePolarity != recipe->profileRoute.capturePolarity ||
+            frame.densityCurvesLayersHash !=
+                visualGrain.densityCurvesLayersHash ||
+            frame.staticNoiseVersion == 0 ||
+            frame.scratchShape ==
+                Spektrafilm::VisualGrainScratchShape::None) {
+            outError =
+                "ResourceDescriptorMismatch phase=grain_descriptor field=identity";
+            return false;
+        }
+        return true;
+    }
+
+    bool derive_visual_grain_workspace_request(
+        const Spektrafilm::VisualGrainFrameDescriptor& descriptor,
+        Root::PreparedCudaFrame::WorkspaceRequest& request,
+        std::string& outError) {
+        if (!descriptor.active || descriptor.hash == 0 ||
+            descriptor.scratchShape == Spektrafilm::VisualGrainScratchShape::None) {
+            outError =
+                "ResourceDescriptorMismatch phase=grain_workspace field=descriptor";
+            return false;
+        }
+        request.needOptics = true;
+        request.needSharedTmp = true;
+        request.needBlurred = true;
+        request.needAux = true;
+        switch (descriptor.scratchShape) {
+            case Spektrafilm::VisualGrainScratchShape::Streamed:
+                break;
+            case Spektrafilm::VisualGrainScratchShape::StreamedShared:
+                request.needGrainShared = true;
+                break;
+            case Spektrafilm::VisualGrainScratchShape::StreamedLayers:
+                request.needGrainLayerWork = true;
+                break;
+            case Spektrafilm::VisualGrainScratchShape::StreamedLayersShared:
+                request.needGrainLayerWork = true;
+                request.needGrainShared = true;
+                break;
+            case Spektrafilm::VisualGrainScratchShape::None:
+            default:
+                outError =
+                    "ResourceDescriptorMismatch phase=grain_workspace field=scratch_shape";
+                return false;
+        }
+        return true;
+    }
+
+    bool derive_workspace_request(
+        const Spektrafilm::SpatialDirDescriptor* spatialDir,
+        const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects,
+        const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& visualGrain,
+        int requestedWidth,
+        int requestedHeight,
+        bool needCompositeProfileWorkspace,
+        Root::PreparedCudaFrame::WorkspaceRequest& out,
+        std::string& outError) {
+        out = Root::PreparedCudaFrame::WorkspaceRequest{};
+        if (requestedWidth <= 0 || requestedHeight <= 0) {
+            outError = "ResourceDescriptorMismatch phase=workspace field=extent";
+            return false;
+        }
+        out.requestedWidth = requestedWidth;
+        out.requestedHeight = requestedHeight;
+
+        if (spatialDir && spatialDir->hash != 0) {
+            if (spatialDir->renderExtent.width != requestedWidth ||
+                spatialDir->renderExtent.height != requestedHeight) {
+                outError =
+                    "ResourceDescriptorMismatch phase=workspace field=spatial_dir_extent";
+                return false;
+            }
+            out.needSpatialDir = true;
+            out.spatialDirDescriptorHash = spatialDir->hash;
+            out.spatialDirScratchTier = spatialDir->scratchTier;
+            out.spatialDirPlaneRoles = spatialDir->planeRoles;
+            out.spatialDirTargetScratchTier = spatialDir->targetScratchTier;
+            out.spatialDirTargetPlaneRoles = spatialDir->targetPlaneRoles;
+            out.needSharedTmp = spatialDir->planeRoles.filterTempPlanes > 0;
+        }
+        if (visualGrain.has_value()) {
+            if (visualGrain->renderExtent.width != requestedWidth ||
+                visualGrain->renderExtent.height != requestedHeight) {
+                outError =
+                    "ResourceDescriptorMismatch phase=workspace field=grain_extent";
+                return false;
+            }
+            if (!derive_visual_grain_workspace_request(
+                    *visualGrain,
+                    out,
+                    outError)) {
+                return false;
+            }
+        }
+        if (scannerPostEffects && scannerPostEffects->active()) {
+            out.needOptics = true;
+            out.needSharedTmp = true;
+            out.needBlurred =
+                out.needBlurred ||
+                (scannerPostEffects->glareActive &&
+                 scannerPostEffects->glareBlurSigmaPx > 0.0f);
+        }
+        if (needCompositeProfileWorkspace) {
+            out.needOptics = true;
+            out.needSharedTmp = true;
+        }
+        if (out.needOptics && out.needSpatialDir) {
+            out.aliasScannerRgbFromSpatialDirFiltered = true;
+            out.spatialDirTargetScratchTier = out.spatialDirScratchTier;
+            out.spatialDirTargetPlaneRoles = out.spatialDirPlaneRoles;
+            out.spatialDirTargetPlaneRoles.cachedLogRawPlanes = 0;
+        }
+        if (!out.has_any_family()) {
+            out = Root::PreparedCudaFrame::WorkspaceRequest{};
+        }
+        return true;
+    }
 
     bool Root::PreparedCudaFrame::State::allocate_scan_error_stage(std::string& outError) {
         outError.clear();
@@ -1095,36 +1250,66 @@ namespace JuicerProcess {
         }
         remember_stream(cudaStreamOpaque);
 
-        cudaEvent_t ev = nullptr;
-        const cudaError_t createErr = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
-        if (createErr != cudaSuccess || !ev) {
-            outError = std::string("cudaEventCreateWithFlags(frame use) failed: ") +
-                       (cudaGetErrorString(createErr) ? cudaGetErrorString(createErr) : "(unknown)");
-            return false;
-        }
-
         const cudaStream_t stream = cudaStreamOpaque
                                         ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
                                         : nullptr;
-        const cudaError_t recordErr = cudaEventRecord(ev, stream);
-        if (recordErr != cudaSuccess) {
-            cudaEventDestroy(ev);
-            outError = std::string("cudaEventRecord(frame use) failed: ") +
-                       (cudaGetErrorString(recordErr) ? cudaGetErrorString(recordErr) : "(unknown)");
+        auto retain_use_event = [&](JuicerCuda::Resources& target,
+                                    const char* label) {
+            cudaEvent_t event = nullptr;
+            const cudaError_t createErr =
+                cudaEventCreateWithFlags(&event, cudaEventDisableTiming);
+            if (createErr != cudaSuccess || !event) {
+                outError = std::string("cudaEventCreateWithFlags(") + label +
+                           ") failed: " +
+                           (cudaGetErrorString(createErr)
+                                ? cudaGetErrorString(createErr)
+                                : "(unknown)");
+                return false;
+            }
+            const cudaError_t recordErr = cudaEventRecord(event, stream);
+            if (recordErr != cudaSuccess) {
+                cudaEventDestroy(event);
+                outError = std::string("cudaEventRecord(") + label +
+                           ") failed: " +
+                           (cudaGetErrorString(recordErr)
+                                ? cudaGetErrorString(recordErr)
+                                : "(unknown)");
+                return false;
+            }
+            void* eventOpaque = reinterpret_cast<void*>(event);
+            if (!JuicerCuda::retain_frame_use_event(
+                    target,
+                    eventOpaque,
+                    outError)) {
+                if (eventOpaque) {
+                    cudaEventDestroy(
+                        reinterpret_cast<cudaEvent_t>(eventOpaque));
+                }
+                if (outError.empty()) {
+                    outError = std::string(label) + " retention failed";
+                }
+                return false;
+            }
+            return true;
+        };
+
+        if (!retain_use_event(*resources, "frame use")) {
             return false;
         }
-
-        void* eventOpaque = reinterpret_cast<void*>(ev);
-        if (!JuicerCuda::retain_frame_use_event(*resources, eventOpaque, outError)) {
-            if (eventOpaque) {
-                cudaEventDestroy(reinterpret_cast<cudaEvent_t>(eventOpaque));
+        if (grainStaticResources && visualGrainPrepared) {
+            if (!retain_use_event(*grainStaticResources, "grain-static use")) {
+                return false;
             }
-            if (outError.empty()) {
-                outError = "frame use event retention failed";
-            }
-            return false;
         }
         frameUseEventSubmitted = true;
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (grainStaticResources && visualGrainPrepared &&
+            JTRACE_ENABLED(1)) {
+            JTRACE(
+                "GRAINLIFE",
+                "event=grain_static_use_event_recorded before_owner_reset=1");
+        }
+#endif
         return true;
     }
 
@@ -1193,7 +1378,8 @@ namespace JuicerProcess {
                    a.aliasScannerRgbFromSpatialDirFiltered ==
                        b.aliasScannerRgbFromSpatialDirFiltered &&
                    a.needAux == b.needAux &&
-                   a.needGrainTriplet == b.needGrainTriplet &&
+                   a.needSharedTmp == b.needSharedTmp &&
+                   a.needGrainLayerWork == b.needGrainLayerWork &&
                    a.needGrainShared == b.needGrainShared &&
                    a.needGateMask == b.needGateMask;
         };
@@ -1283,7 +1469,7 @@ namespace JuicerProcess {
 
         if (request.needOptics) {
             JuicerCuda::Resources::DeviceOpticsScratch& optics = next.optics;
-            if (!next.sharedTmpPlane) {
+            if (request.needSharedTmp && !next.sharedTmpPlane) {
                 outError = "frame optics scratch requires shared tmp plane";
                 return fail_after_partial_alloc();
             }
@@ -1306,10 +1492,8 @@ namespace JuicerProcess {
                 !alloc_float(optics.aux, planeBytes, "frame scannerScratch.aux")) {
                 return fail_after_partial_alloc();
             }
-            if (request.needGrainTriplet) {
-                if (!alloc_float(optics.grainTmp, planeBytes, "frame scannerScratch.grainTmp") ||
-                    !alloc_float(optics.grainTmpMid, planeBytes, "frame scannerScratch.grainTmpMid") ||
-                    !alloc_float(optics.grainTmpCoarse, planeBytes, "frame scannerScratch.grainTmpCoarse")) {
+            if (request.needGrainLayerWork) {
+                if (!alloc_float(optics.grainTmp, planeBytes, "frame scannerScratch.grainTmp")) {
                     return fail_after_partial_alloc();
                 }
             }
@@ -1498,8 +1682,7 @@ namespace JuicerProcess {
             sharedTmp && workspace.optics.tmp == sharedTmp &&
             (workspace.optics.rgbR || workspace.optics.rgbG || workspace.optics.rgbB ||
              workspace.optics.blurred || workspace.optics.aux || workspace.optics.grainTmp ||
-             workspace.optics.grainTmpShared || workspace.optics.grainTmpMid ||
-             workspace.optics.grainTmpCoarse || workspace.optics.gateMask);
+             workspace.optics.grainTmpShared || workspace.optics.gateMask);
         if (sharedTmp && !opticsKeepsSharedTmp) {
             void* raw = workspace.sharedTmpPlane;
             std::string localError;
@@ -1865,8 +2048,6 @@ namespace JuicerProcess {
         retire_ptr(workspace.optics.aux, planeBytes, "frame scannerScratch.aux");
         retire_ptr(workspace.optics.grainTmp, planeBytes, "frame scannerScratch.grainTmp");
         retire_ptr(workspace.optics.grainTmpShared, planeBytes, "frame scannerScratch.grainTmpShared");
-        retire_ptr(workspace.optics.grainTmpMid, planeBytes, "frame scannerScratch.grainTmpMid");
-        retire_ptr(workspace.optics.grainTmpCoarse, planeBytes, "frame scannerScratch.grainTmpCoarse");
         retire_ptr(
             workspace.optics.gateMask,
             workspace.optics.gateMaskCapacityElements * sizeof(float),
@@ -1934,12 +2115,6 @@ namespace JuicerProcess {
         }
         if (workspace.optics.grainTmpShared) {
             cudaFree(workspace.optics.grainTmpShared);
-        }
-        if (workspace.optics.grainTmpMid) {
-            cudaFree(workspace.optics.grainTmpMid);
-        }
-        if (workspace.optics.grainTmpCoarse) {
-            cudaFree(workspace.optics.grainTmpCoarse);
         }
         if (workspace.optics.gateMask) {
             cudaFree(workspace.optics.gateMask);
@@ -2028,6 +2203,11 @@ namespace JuicerProcess {
                !_state->transaction.committed;
     }
 
+    Root::PreparedCudaFrame::WorkspaceRequest
+    Root::PreparedCudaFrame::workspace_request() const noexcept {
+        return active() ? _state->workspaceRequest : WorkspaceRequest{};
+    }
+
     JuicerCuda::ResourceManager::ScratchRequestDescriptor
     Root::PreparedCudaFrame::State::post_frame_scratch_request_descriptor() const noexcept {
         if (!scratchWorkspace.retainedLeaseActive && !scratchWorkspace.overflowActive) {
@@ -2041,7 +2221,15 @@ namespace JuicerProcess {
 
     Root::PreparedCudaFrame::WorkspaceLeaseMarker Root::PreparedCudaFrame::bind_workspace_request(
         const WorkspaceRequest& request) const noexcept {
-        if (!active()) {
+        if (!active() || !request.has_any_family()) {
+            return WorkspaceLeaseMarker{};
+        }
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor expected =
+            make_workspace_scratch_request_descriptor(_state->workspaceRequest);
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor actual =
+            make_workspace_scratch_request_descriptor(request);
+        if (expected.generation == 0 ||
+            expected.generation != actual.generation) {
             return WorkspaceLeaseMarker{};
         }
         return WorkspaceLeaseMarker(request, _state->transaction.leaseGeneration);
@@ -2136,6 +2324,18 @@ namespace JuicerProcess {
         if (!_state->root->commit_submission(_state->transaction, cudaStreamOpaque, outError)) {
             return false;
         }
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (_state->grainStaticOwner && JTRACE_ENABLED(1)) {
+            const std::string message =
+                std::string("event=grain_static_finish_owner_reset use_event_recorded=") +
+                (_state->frameUseEventSubmitted ? "1" : "0");
+            JTRACE("GRAINLIFE", message);
+        }
+#endif
+        _state->resources = nullptr;
+        _state->grainStaticResources = nullptr;
+        _state->resourceOwner.reset();
+        _state->grainStaticOwner.reset();
         return true;
     }
 
@@ -2205,6 +2405,20 @@ namespace JuicerProcess {
         }
         if (_state && _state->root && _state->transaction.active && !_state->transaction.committed) {
             _state->root->rollback_submission(_state->transaction, reason);
+        }
+        if (_state) {
+#if JUICER_DIAGNOSTICS_COMPILED
+            if (_state->grainStaticOwner && JTRACE_ENABLED(1)) {
+                const std::string message =
+                    std::string("event=grain_static_abort_owner_reset use_event_recorded=") +
+                    (_state->frameUseEventSubmitted ? "1" : "0");
+                JTRACE("GRAINLIFE", message);
+            }
+#endif
+            _state->resources = nullptr;
+            _state->grainStaticResources = nullptr;
+            _state->resourceOwner.reset();
+            _state->grainStaticOwner.reset();
         }
     }
 
@@ -3271,75 +3485,254 @@ namespace JuicerProcess {
             outError);
     }
 
-    bool Root::PreparedCudaFrame::prepare_grain_blur_kernel(
-        float sigma,
+    bool Root::PreparedCudaFrame::prepare_visual_grain_resources(
+        Root& root,
+        const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         void* cudaStreamOpaque,
         std::string& outError) {
-        if (!_state || !_state->resources) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active ||
+            _state->transaction.committed) {
             outError = "prepared frame is not active";
             return false;
         }
-        return build_gaussian_kernel_slot(
-            _state->resources->grainBlurKernel,
-            sigma,
-            cudaStreamOpaque,
-            outError);
-    }
 
-    bool Root::PreparedCudaFrame::prepare_grain_blur_mid_kernel(
-        float sigma,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        if (!_state || !_state->resources) {
-            outError = "prepared frame is not active";
+        const bool active = _state->visualGrainDescriptor.has_value();
+        std::shared_ptr<const JuicerAssets::StaticNoisePayloadSet> payloads;
+        if (active) {
+            payloads = root.assets().static_noise_payloads();
+            if (!payloads || !payloads->stbn.valid || !payloads->wang.valid) {
+                outError = payloads
+                               ? (!payloads->stbn.valid
+                                      ? payloads->stbn.error
+                                      : payloads->wang.error)
+                               : "MissingRequiredResource phase=grain_static field=payloads";
+                return false;
+            }
+            const Spektrafilm::VisualGrainFrameDescriptor& descriptor =
+                *_state->visualGrainDescriptor;
+            if (payloads->version != descriptor.staticNoiseVersion ||
+                payloads->stbn.version != descriptor.staticNoiseVersion ||
+                payloads->wang.version != descriptor.staticNoiseVersion ||
+                payloads->stbn.width <= 0 || payloads->stbn.height <= 0 ||
+                payloads->stbn.frames <= 0 || payloads->wang.width <= 0 ||
+                payloads->wang.height <= 0 || payloads->wang.count <= 0 ||
+                payloads->wang.colors <= 0) {
+                outError =
+                    "ResourceDescriptorMismatch phase=grain_static field=asset_identity";
+                return false;
+            }
+        }
+
+        const auto& snapshot = _state->transaction.snapshot;
+        detail::GrainStaticMembershipChange membershipChange;
+        if (!root.apply_grain_static_membership_and_copy_owner(
+                deviceContextKey,
+                snapshot.contextEpoch,
+                snapshot.instanceToken.value,
+                snapshot.registryGeneration,
+                snapshot.snapshotId,
+                active,
+                membershipChange,
+                _state->grainStaticOwner,
+                _state->grainStaticResources,
+                outError)) {
             return false;
         }
-        return build_gaussian_kernel_slot(
-            _state->resources->grainBlurKernelMid,
-            sigma,
-            cudaStreamOpaque,
-            outError);
-    }
-
-    bool Root::PreparedCudaFrame::prepare_grain_blur_coarse_kernel(
-        float sigma,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        if (!_state || !_state->resources) {
-            outError = "prepared frame is not active";
-            return false;
+        if (!active) {
+            return true;
         }
-        return build_gaussian_kernel_slot(
-            _state->resources->grainBlurKernelCoarse,
-            sigma,
-            cudaStreamOpaque,
-            outError);
-    }
 
-    bool Root::PreparedCudaFrame::prepare_grain_dye_kernel(
-        int layer,
-        int channel,
-        float sigma,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        if (!_state || !_state->resources) {
-            outError = "prepared frame is not active";
+        const ContextCudaResourceKey contextKey{
+            deviceContextKey,
+            snapshot.contextEpoch};
+        auto fail_preparation = [&](const char* stageTag,
+                                    const char* failurePrefix) {
+            root.rollback_grain_static_membership(
+                contextKey,
+                membershipChange);
+            _state->grainStaticResources = nullptr;
+            _state->grainStaticOwner.reset();
+            _state->set_failure(stageTag, failurePrefix);
             return false;
-        }
-        if (layer < 0 || layer >= 3 || channel < 0 || channel >= 3) {
-            outError = "invalid grain dye kernel slot";
-            _state->set_failure(
-                "prepare_grain_dye_kernel",
-                "CUDA grain dye-cloud kernel upload failed");
-            return false;
-        }
-        return build_gaussian_kernel_slot(
-            _state->resources->grainDyeKernel[layer][channel],
-            sigma,
-            cudaStreamOpaque,
-            outError);
-    }
+        };
 
+        const Spektrafilm::VisualGrainFrameDescriptor& descriptor =
+            *_state->visualGrainDescriptor;
+        if (!JuicerCuda::ensure_grain_static_assets_uploaded(
+                *_state->grainStaticResources,
+                descriptor.staticNoiseVersion,
+                cudaStreamOpaque,
+                outError)) {
+            return fail_preparation(
+                "ensure_grain_static_assets_uploaded",
+                "CUDA grain-static upload failed");
+        }
+
+        const JuicerCuda::Resources& staticResources =
+            *_state->grainStaticResources;
+        if (!staticResources.stbnData || !staticResources.wangTilesData ||
+            !staticResources.wangLutData ||
+            staticResources.grainStaticAssetVersion !=
+                descriptor.staticNoiseVersion ||
+            staticResources.stbnWidth != payloads->stbn.width ||
+            staticResources.stbnHeight != payloads->stbn.height ||
+            staticResources.stbnFrames != payloads->stbn.frames ||
+            staticResources.wangWidth != payloads->wang.width ||
+            staticResources.wangHeight != payloads->wang.height ||
+            staticResources.wangCount != payloads->wang.count ||
+            staticResources.wangColors != payloads->wang.colors) {
+            outError =
+                "ResourceDescriptorMismatch phase=grain_static field=prepared_identity";
+            return fail_preparation(
+                "validate_grain_static_resources",
+                "CUDA grain-static identity validation failed");
+        }
+
+        std::array<PreparedGaussianView, 12> preparedByIdentity{};
+        std::array<std::uint64_t, 12> preparedIdentityHashes{};
+        std::size_t preparedIdentityCount = 0;
+        auto prepare_gaussian =
+            [&](const Spektrafilm::VisualGrainGaussian& gaussian,
+                JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+                PreparedGaussianView& outView) {
+                outView = PreparedGaussianView{};
+                if (gaussian.radius <= 0) {
+                    return gaussian.hash == 0;
+                }
+                if (gaussian.hash == 0) {
+                    outError =
+                        "ResourceDescriptorMismatch phase=grain_gaussian field=descriptor";
+                    return false;
+                }
+                for (std::size_t index = 0;
+                     index < preparedIdentityCount;
+                     ++index) {
+                    if (preparedIdentityHashes[index] == gaussian.hash) {
+                        outView = preparedByIdentity[index];
+                        return true;
+                    }
+                }
+                if (!build_gaussian_kernel_slot(
+                        kernel,
+                        gaussian.sigmaPx,
+                        cudaStreamOpaque,
+                        outError) ||
+                    !kernel.weights || kernel.radius != gaussian.radius ||
+                    kernel.sigma != gaussian.sigmaPx ||
+                    kernel.sharedKernelId == 0) {
+                    if (outError.empty()) {
+                        outError =
+                            "ResourceDescriptorMismatch phase=grain_gaussian field=prepared_identity";
+                    }
+                    return false;
+                }
+                outView.kernel = {
+                    kernel.weights,
+                    kernel.radius,
+                    kernel.sigma};
+                outView.descriptorHash = gaussian.hash;
+                outView.active = true;
+                preparedIdentityHashes[preparedIdentityCount] =
+                    gaussian.hash;
+                preparedByIdentity[preparedIdentityCount] = outView;
+                ++preparedIdentityCount;
+                return true;
+            };
+
+        std::array<JuicerCuda::Resources::DeviceGaussianKernel*, 3>
+            correlationSlots{
+                &_state->resources->grainBlurKernel,
+                &_state->resources->grainBlurKernelMid,
+                &_state->resources->grainBlurKernelCoarse};
+        for (std::size_t index = 0;
+             index < correlationSlots.size();
+             ++index) {
+            if (!prepare_gaussian(
+                    descriptor.correlation[index],
+                    *correlationSlots[index],
+                    _state->preparedGrainCorrelation[index])) {
+                return fail_preparation(
+                    "prepare_visual_grain_correlation",
+                    "CUDA grain correlation Gaussian preparation failed");
+            }
+        }
+        for (int layer = 0; layer < 3; ++layer) {
+            for (int channel = 0; channel < 3; ++channel) {
+                if (!prepare_gaussian(
+                        descriptor.dyeCloud[static_cast<std::size_t>(layer)]
+                                           [static_cast<std::size_t>(channel)],
+                        _state->resources->grainDyeKernel[layer][channel],
+                        _state->preparedGrainDyeCloud[layer][channel])) {
+                    return fail_preparation(
+                        "prepare_visual_grain_dye_cloud",
+                        "CUDA grain dye-cloud Gaussian preparation failed");
+                }
+            }
+        }
+
+        _state->preparedGrainDensityLayers =
+            PreparedDensityLayersView{};
+        if (descriptor.densityCurvesLayersHash != 0) {
+            JuicerCuda::Resources& resources = *_state->resources;
+            if (!resources.hasDensityCurvesLayers ||
+                resources.directDensityLayersHash !=
+                    descriptor.densityCurvesLayersHash) {
+                outError =
+                    "MissingRequiredResource phase=grain_density_layers field=prepared_identity";
+                return fail_preparation(
+                    "prepare_visual_grain_density_layers",
+                    "CUDA grain density-layer preparation failed");
+            }
+            const JuicerCuda::DeviceCurve* baseCurvesCmy[3] = {
+                &resources.densR,
+                &resources.densG,
+                &resources.densB};
+            for (int channel = 0; channel < 3; ++channel) {
+                const JuicerCuda::DeviceCurve& baseCurve =
+                    *baseCurvesCmy[channel];
+                if (!baseCurve.x || !baseCurve.y || baseCurve.n <= 0 ||
+                    baseCurve.domainBegin < 0 ||
+                    baseCurve.domainEnd < baseCurve.domainBegin ||
+                    baseCurve.domainEnd >= baseCurve.n ||
+                    resources.densityCurvesLayersChannelN[channel] !=
+                        baseCurve.n) {
+                    outError =
+                        "ResourceDescriptorMismatch phase=grain_density_layers field=base_curve";
+                    return fail_preparation(
+                        "prepare_visual_grain_density_layers",
+                        "CUDA grain density-layer preparation failed");
+                }
+                _state->preparedGrainDensityLayers
+                    .baseCurvesCmy[channel] = {
+                    baseCurve.x,
+                    baseCurve.y,
+                    baseCurve.n,
+                    baseCurve.domainBegin,
+                    baseCurve.domainEnd};
+            }
+            for (int layer = 0; layer < 3; ++layer) {
+                for (int channel = 0; channel < 3; ++channel) {
+                    const float* curve =
+                        resources.densityCurvesLayers[layer][channel];
+                    if (!curve) {
+                        outError =
+                            "MissingRequiredResource phase=grain_density_layers field=curve";
+                        return fail_preparation(
+                            "prepare_visual_grain_density_layers",
+                            "CUDA grain density-layer preparation failed");
+                    }
+                    _state->preparedGrainDensityLayers
+                        .curves[layer][channel] = curve;
+                }
+            }
+            _state->preparedGrainDensityLayers.hash =
+                descriptor.densityCurvesLayersHash;
+            _state->preparedGrainDensityLayers.active = true;
+        }
+        _state->visualGrainPrepared = true;
+        return true;
+    }
     bool Root::PreparedCudaFrame::build_halation_kernel(
         int channel,
         float sigma,
@@ -3451,30 +3844,238 @@ namespace JuicerProcess {
             outError);
     }
 
-    Root::PreparedCudaFrame::GrainStaticAssets Root::PreparedCudaFrame::grain_static_assets() const noexcept {
-        GrainStaticAssets assets{};
-        if (!_state || !_state->grainStaticResources || !_state->transaction.active || _state->transaction.committed) {
-            return assets;
+    Root::PreparedCudaFrame::PreparedVisualGrainView
+    Root::PreparedCudaFrame::visual_grain_resources() const noexcept {
+        PreparedVisualGrainView view{};
+        if (!_state || !_state->visualGrainPrepared ||
+            !_state->visualGrainDescriptor.has_value() ||
+            !_state->grainStaticResources ||
+            !_state->transaction.active ||
+            _state->transaction.committed) {
+            return view;
         }
 
-        const JuicerCuda::Resources& resources = *_state->grainStaticResources;
-        if (resources.stbnData && resources.stbnWidth > 0 && resources.stbnHeight > 0 && resources.stbnFrames > 0) {
-            assets.stbn = resources.stbnData;
-            assets.stbnWidth = resources.stbnWidth;
-            assets.stbnHeight = resources.stbnHeight;
-            assets.stbnFrames = resources.stbnFrames;
+        const Spektrafilm::VisualGrainFrameDescriptor& descriptor =
+            *_state->visualGrainDescriptor;
+        const JuicerCuda::Resources& staticResources =
+            *_state->grainStaticResources;
+        view.staticNoise.stbn = staticResources.stbnData;
+        view.staticNoise.stbnWidth = staticResources.stbnWidth;
+        view.staticNoise.stbnHeight = staticResources.stbnHeight;
+        view.staticNoise.stbnFrames = staticResources.stbnFrames;
+        view.staticNoise.wangTiles = staticResources.wangTilesData;
+        view.staticNoise.wangLut = staticResources.wangLutData;
+        view.staticNoise.wangWidth = staticResources.wangWidth;
+        view.staticNoise.wangHeight = staticResources.wangHeight;
+        view.staticNoise.wangCount = staticResources.wangCount;
+        view.staticNoise.wangColors = staticResources.wangColors;
+        view.staticNoise.version =
+            staticResources.grainStaticAssetVersion;
+        view.correlation = _state->preparedGrainCorrelation;
+        for (int layer = 0; layer < 3; ++layer) {
+            for (int channel = 0; channel < 3; ++channel) {
+                view.dyeCloud[layer][channel] =
+                    _state->preparedGrainDyeCloud[layer][channel];
+            }
         }
-        if (resources.wangTilesData && resources.wangLutData &&
-            resources.wangWidth > 0 && resources.wangHeight > 0 &&
-            resources.wangCount > 0 && resources.wangColors > 0) {
-            assets.wangTiles = resources.wangTilesData;
-            assets.wangLut = resources.wangLutData;
-            assets.wangWidth = resources.wangWidth;
-            assets.wangHeight = resources.wangHeight;
-            assets.wangCount = resources.wangCount;
-            assets.wangColors = resources.wangColors;
+        view.densityLayers = _state->preparedGrainDensityLayers;
+        view.descriptor = &descriptor;
+
+        bool ready =
+            descriptor.active && descriptor.hash != 0 &&
+            view.staticNoise.stbn &&
+            view.staticNoise.stbnWidth > 0 &&
+            view.staticNoise.stbnHeight > 0 &&
+            view.staticNoise.stbnFrames > 0 &&
+            view.staticNoise.wangTiles &&
+            view.staticNoise.wangLut &&
+            view.staticNoise.wangWidth > 0 &&
+            view.staticNoise.wangHeight > 0 &&
+            view.staticNoise.wangCount > 0 &&
+            view.staticNoise.wangColors > 0 &&
+            view.staticNoise.version == descriptor.staticNoiseVersion;
+        auto gaussian_ready =
+            [](const Spektrafilm::VisualGrainGaussian& gaussian,
+               const PreparedGaussianView& prepared) {
+                if (gaussian.radius <= 0) {
+                    return gaussian.hash == 0 && !prepared.active &&
+                           !prepared.kernel.weights &&
+                           prepared.kernel.radius == 0 &&
+                           prepared.descriptorHash == 0;
+                }
+                return gaussian.hash != 0 && prepared.active &&
+                       prepared.descriptorHash == gaussian.hash &&
+                       prepared.kernel.weights &&
+                       prepared.kernel.radius == gaussian.radius &&
+                       prepared.kernel.sigma == gaussian.sigmaPx;
+            };
+        for (std::size_t index = 0;
+             index < descriptor.correlation.size();
+             ++index) {
+            ready = ready &&
+                    gaussian_ready(
+                        descriptor.correlation[index],
+                        view.correlation[index]);
         }
-        return assets;
+        for (std::size_t layer = 0; layer < 3; ++layer) {
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                ready = ready &&
+                        gaussian_ready(
+                            descriptor.dyeCloud[layer][channel],
+                            view.dyeCloud[layer][channel]);
+            }
+        }
+        if (descriptor.densityCurvesLayersHash != 0) {
+            ready =
+                ready && view.densityLayers.active &&
+                view.densityLayers.hash ==
+                    descriptor.densityCurvesLayersHash;
+            for (int layer = 0; layer < 3; ++layer) {
+                for (int channel = 0; channel < 3; ++channel) {
+                    ready = ready &&
+                            view.densityLayers
+                                .curves[layer][channel];
+                }
+            }
+            for (int channel = 0; channel < 3; ++channel) {
+                const JuicerCuda::DeviceCurveView& baseCurve =
+                    view.densityLayers.baseCurvesCmy[channel];
+                ready = ready && baseCurve.x && baseCurve.y &&
+                        baseCurve.n > 0 && baseCurve.domainBegin >= 0 &&
+                        baseCurve.domainEnd >= baseCurve.domainBegin &&
+                        baseCurve.domainEnd < baseCurve.n;
+            }
+        } else {
+            ready = ready && !view.densityLayers.active &&
+                    view.densityLayers.hash == 0;
+        }
+
+        view.active = ready;
+        return view.active ? view : PreparedVisualGrainView{};
+    }
+
+    Root::PreparedCudaFrame::VisualGrainWorkspaceView
+    Root::PreparedCudaFrame::visual_grain_workspace(
+        const WorkspaceLeaseMarker& workspace) const noexcept {
+        VisualGrainWorkspaceView view{};
+        if (!_state || !_state->visualGrainPrepared ||
+            !_state->visualGrainDescriptor.has_value() ||
+            !workspace_marker_matches_current_frame(workspace) ||
+            (!_state->scratchWorkspace.retainedLeaseActive &&
+             !_state->scratchWorkspace.overflowActive)) {
+            return view;
+        }
+        const WorkspaceRequest& request =
+            active_workspace_request(workspace);
+        if (!request.needOptics) {
+            return view;
+        }
+        const JuicerCuda::Resources::DeviceOpticsScratch& scratch =
+            _state->scratchWorkspace.overflowActive
+                ? _state->scratchWorkspace.optics
+                : _state->resources->scannerScratch;
+        view.filterTemp =
+            request.needSharedTmp ? scratch.tmp : nullptr;
+        view.scaleWork =
+            request.needBlurred ? scratch.blurred : nullptr;
+        view.deltaAccum = request.needAux ? scratch.aux : nullptr;
+        view.layerWork =
+            request.needGrainLayerWork ? scratch.grainTmp : nullptr;
+        view.sharedDelta =
+            request.needGrainShared ? scratch.grainTmpShared : nullptr;
+        view.scratchShape =
+            _state->visualGrainDescriptor->scratchShape;
+        view.overflow = _state->scratchWorkspace.overflowActive;
+
+        bool ready =
+            view.filterTemp && view.scaleWork && view.deltaAccum;
+        switch (view.scratchShape) {
+            case Spektrafilm::VisualGrainScratchShape::Streamed:
+                ready = ready && !view.layerWork &&
+                        !view.sharedDelta &&
+                        !request.needGrainLayerWork &&
+                        !request.needGrainShared;
+                break;
+            case Spektrafilm::VisualGrainScratchShape::StreamedShared:
+                ready = ready && !view.layerWork &&
+                        view.sharedDelta &&
+                        !request.needGrainLayerWork &&
+                        request.needGrainShared;
+                break;
+            case Spektrafilm::VisualGrainScratchShape::StreamedLayers:
+                ready = ready && view.layerWork &&
+                        !view.sharedDelta &&
+                        request.needGrainLayerWork &&
+                        !request.needGrainShared;
+                break;
+            case Spektrafilm::VisualGrainScratchShape::StreamedLayersShared:
+                ready = ready && view.layerWork &&
+                        view.sharedDelta &&
+                        request.needGrainLayerWork &&
+                        request.needGrainShared;
+                break;
+            case Spektrafilm::VisualGrainScratchShape::None:
+            default:
+                ready = false;
+                break;
+        }
+        view.active = ready;
+        return view.active ? view : VisualGrainWorkspaceView{};
+    }
+
+    Root::PreparedCudaFrame::CaptureFilmDensityWorkspaceView
+    Root::PreparedCudaFrame::capture_film_density_workspace(
+        const WorkspaceLeaseMarker& workspace) const noexcept {
+        CaptureFilmDensityWorkspaceView view{};
+        if (!_state || !workspace_marker_matches_current_frame(workspace) ||
+            (!_state->scratchWorkspace.retainedLeaseActive &&
+             !_state->scratchWorkspace.overflowActive) ||
+            (_state->capturePolarity !=
+                 Spektrafilm::ProfilePolarity::Negative &&
+             _state->capturePolarity !=
+                 Spektrafilm::ProfilePolarity::Positive)) {
+            return view;
+        }
+        const WorkspaceRequest& request = active_workspace_request(workspace);
+        if (!request.needOptics) {
+            return view;
+        }
+        const ScannerWorkspaceView shared = scanner_workspace(workspace);
+        if (!shared.active) {
+            return view;
+        }
+        view.c = shared.rgbR;
+        view.m = shared.rgbG;
+        view.y = shared.rgbB;
+        view.polarity = _state->capturePolarity;
+        view.overflow = _state->scratchWorkspace.overflowActive;
+        view.active = view.c && view.m && view.y;
+        return view.active ? view : CaptureFilmDensityWorkspaceView{};
+    }
+
+    Root::PreparedCudaFrame::FocusedRgbWorkspaceView
+    Root::PreparedCudaFrame::focused_rgb_workspace(
+        const WorkspaceLeaseMarker& workspace) const noexcept {
+        FocusedRgbWorkspaceView view{};
+        if (!_state || !workspace_marker_matches_current_frame(workspace) ||
+            (!_state->scratchWorkspace.retainedLeaseActive &&
+             !_state->scratchWorkspace.overflowActive)) {
+            return view;
+        }
+        const WorkspaceRequest& request = active_workspace_request(workspace);
+        if (!request.needOptics) {
+            return view;
+        }
+        const ScannerWorkspaceView shared = scanner_workspace(workspace);
+        if (!shared.active) {
+            return view;
+        }
+        view.r = shared.rgbR;
+        view.g = shared.rgbG;
+        view.b = shared.rgbB;
+        view.overflow = _state->scratchWorkspace.overflowActive;
+        view.active = view.r && view.g && view.b;
+        return view.active ? view : FocusedRgbWorkspaceView{};
     }
 
     Root::PreparedCudaFrame::DurableBundleView Root::PreparedCudaFrame::durable_bundle() const noexcept {
@@ -3550,16 +4151,6 @@ namespace JuicerProcess {
         kernels.scannerLensBlur = {resources.scannerLensBlurKernel.weights, resources.scannerLensBlurKernel.radius};
         kernels.scannerUnsharp = {resources.scannerUnsharpKernel.weights, resources.scannerUnsharpKernel.radius};
         kernels.scannerGlare = {resources.scannerGlareKernel.weights, resources.scannerGlareKernel.radius};
-        kernels.grainBlur = {resources.grainBlurKernel.weights, resources.grainBlurKernel.radius};
-        kernels.grainBlurMid = {resources.grainBlurKernelMid.weights, resources.grainBlurKernelMid.radius};
-        kernels.grainBlurCoarse = {resources.grainBlurKernelCoarse.weights, resources.grainBlurKernelCoarse.radius};
-        for (int layer = 0; layer < 3; ++layer) {
-            for (int ch = 0; ch < 3; ++ch) {
-                kernels.grainDye[layer][ch] = {
-                    resources.grainDyeKernel[layer][ch].weights,
-                    resources.grainDyeKernel[layer][ch].radius};
-            }
-        }
         for (int i = 0; i < 3; ++i) {
             kernels.halation[i] = {resources.halationKernel[i].weights, resources.halationKernel[i].radius};
             kernels.halationScatter[i] = {
@@ -3660,15 +4251,6 @@ namespace JuicerProcess {
         view.film.hanatosNIntegrated = resources.hanatosNIntegrated;
         view.film.mallettBasis = resources.mallettBasis;
         view.film.mallettBasisK = resources.mallettBasisK;
-        if (resources.hasDensityCurvesLayers && resources.directDensityLayersHash != 0) {
-            view.film.hasDensityCurvesLayers = true;
-            view.film.densityCurvesLayersHash = resources.directDensityLayersHash;
-            for (int layer = 0; layer < 3; ++layer) {
-                for (int ch = 0; ch < 3; ++ch) {
-                    view.film.densityCurvesLayers[layer][ch] = resources.densityCurvesLayers[layer][ch];
-                }
-            }
-        }
         std::copy_n(_state->focusedFilmRawConfig->inputRGBToXYZ.m, 9, view.film.inputRGBToXYZ);
         std::copy_n(_state->focusedFilmRawConfig->inputXYZAdapt.m, 9, view.film.inputXYZAdapt);
         view.film.applyInputChromaticAdapt = _state->focusedFilmRawConfig->applyInputChromaticAdapt ? 1 : 0;
@@ -3717,15 +4299,6 @@ namespace JuicerProcess {
         view.film.hanatosNIntegrated = resources.hanatosNIntegrated;
         view.film.mallettBasis = resources.mallettBasis;
         view.film.mallettBasisK = resources.mallettBasisK;
-        if (resources.hasDensityCurvesLayers && resources.directDensityLayersHash != 0) {
-            view.film.hasDensityCurvesLayers = true;
-            view.film.densityCurvesLayersHash = resources.directDensityLayersHash;
-            for (int layer = 0; layer < 3; ++layer) {
-                for (int ch = 0; ch < 3; ++ch) {
-                    view.film.densityCurvesLayers[layer][ch] = resources.densityCurvesLayers[layer][ch];
-                }
-            }
-        }
         std::copy_n(_state->focusedFilmRawConfig->inputRGBToXYZ.m, 9, view.film.inputRGBToXYZ);
         std::copy_n(_state->focusedFilmRawConfig->inputXYZAdapt.m, 9, view.film.inputXYZAdapt);
         view.film.applyInputChromaticAdapt = _state->focusedFilmRawConfig->applyInputChromaticAdapt ? 1 : 0;
@@ -3936,13 +4509,11 @@ namespace JuicerProcess {
         view.aux = scratch.aux;
         view.grainTmp = scratch.grainTmp;
         view.grainTmpShared = scratch.grainTmpShared;
-        view.grainTmpMid = scratch.grainTmpMid;
-        view.grainTmpCoarse = scratch.grainTmpCoarse;
         view.gateMask = scratch.gateMask;
         view.gateMaskWidth = scratch.gateWidth;
         view.gateMaskHeight = scratch.gateHeight;
         view.gateMaskHash = scratch.gateMaskHash;
-        view.active = view.rgbR && view.rgbG && view.rgbB && view.tmp;
+        view.active = view.rgbR && view.rgbG && view.rgbB;
         view.hasGateMask = view.gateMask && view.gateMaskWidth > 0 && view.gateMaskHeight > 0;
         return view;
     }
@@ -4189,6 +4760,34 @@ namespace JuicerProcess {
         }
     }
 
+    void Root::retire_grain_static_instance(
+        std::uint64_t instanceToken) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (instanceToken == 0) {
+            return;
+        }
+        try {
+            std::vector<CudaResourceOwner> retiredOwners;
+            {
+                std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+                for (auto& item : _grainStaticByContext) {
+                    GrainStaticContextEntry& entry = item.second;
+                    entry.instances.erase(instanceToken);
+                    if (!detail::grain_static_has_active_instance(
+                            entry.instances) &&
+                        entry.owner) {
+                        retiredOwners.emplace_back(std::move(entry.owner));
+                    }
+                }
+            }
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+#else
+        (void)instanceToken;
+#endif
+    }
+
     JuicerAssets::Library& Root::assets() noexcept {
         return _assets;
     }
@@ -4211,7 +4810,14 @@ namespace JuicerProcess {
         JuicerCuda::ResourceManager::DeviceContextKey key{};
         key.deviceId = deviceId;
         key.contextOpaque = contextOpaque;
-        return JuicerCuda::ResourceManager::command_retire_context_idle(key, outError);
+        const bool retired =
+            JuicerCuda::ResourceManager::command_retire_context_idle(
+                key,
+                outError);
+        if (retired) {
+            retire_grain_static_context_activity(key);
+        }
+        return retired;
 #else
         (void)deviceId;
         (void)contextOpaque;
@@ -4225,7 +4831,14 @@ namespace JuicerProcess {
         JuicerCuda::ResourceManager::DeviceContextKey key{};
         key.deviceId = deviceId;
         key.contextOpaque = contextOpaque;
-        return JuicerCuda::ResourceManager::command_retire_context_reset(key, outError);
+        const bool retired =
+            JuicerCuda::ResourceManager::command_retire_context_reset(
+                key,
+                outError);
+        if (retired) {
+            retire_grain_static_context_activity(key);
+        }
+        return retired;
 #else
         (void)deviceId;
         (void)contextOpaque;
@@ -4321,21 +4934,209 @@ namespace JuicerProcess {
             outError);
     }
 
-    bool Root::resolve_cuda_grain_static_resources(
+    bool Root::apply_grain_static_membership_and_copy_owner(
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         std::uint64_t contextEpoch,
-        CudaResourceOwner& outResourceOwner,
+        std::uint64_t instanceToken,
+        std::uint64_t registryGeneration,
+        std::uint64_t snapshotId,
+        bool active,
+        detail::GrainStaticMembershipChange& outChange,
+        CudaResourceOwner& outOwner,
         JuicerCuda::Resources*& outResources,
         std::string& outError) {
-        return resolve_context_cuda_resources(
+        outChange = detail::GrainStaticMembershipChange{};
+        outOwner.reset();
+        outResources = nullptr;
+        outError.clear();
+        if (deviceContextKey.deviceId < 0 || !deviceContextKey.contextOpaque ||
+            contextEpoch == 0 || instanceToken == 0 ||
+            registryGeneration == 0 || snapshotId == 0) {
+            outError =
+                "ResourceDescriptorMismatch phase=grain_static field=membership_identity";
+            return false;
+        }
+
+        const ContextCudaResourceKey contextKey{
             deviceContextKey,
-            contextEpoch,
-            _cudaGrainStaticByContext,
-            outResourceOwner,
-            outResources,
-            outError);
+            contextEpoch};
+        CudaResourceOwner retiredOwner;
+#if JUICER_DIAGNOSTICS_COMPILED
+        bool ownerCopied = false;
+        bool rootOwnerRetired = false;
+#endif
+        {
+            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+            GrainStaticContextEntry& entry = _grainStaticByContext[contextKey];
+            detail::GrainStaticMembershipChange change;
+            const detail::GrainStaticMembershipResult result =
+                detail::apply_grain_static_membership(
+                    entry.instances,
+                    instanceToken,
+                    registryGeneration,
+                    snapshotId,
+                    active,
+                    change);
+            switch (result) {
+                case detail::GrainStaticMembershipResult::Applied:
+                case detail::GrainStaticMembershipResult::Idempotent:
+                    break;
+                case detail::GrainStaticMembershipResult::StaleRegistryGeneration:
+                    outError =
+                        "ResourceDescriptorMismatch phase=grain_static field=stale_registry_generation";
+                    return false;
+                case detail::GrainStaticMembershipResult::StaleSnapshot:
+                    outError =
+                        "ResourceDescriptorMismatch phase=grain_static field=stale_snapshot";
+                    return false;
+                case detail::GrainStaticMembershipResult::ConflictingEqualSnapshot:
+                    outError =
+                        "ResourceDescriptorMismatch phase=grain_static field=equal_snapshot_conflict";
+                    return false;
+                case detail::GrainStaticMembershipResult::InvalidInput:
+                default:
+                    outError =
+                        "ResourceDescriptorMismatch phase=grain_static field=membership_update";
+                    return false;
+            }
+
+            if (active) {
+                if (!entry.owner) {
+                    CudaResourceOwner resources(
+                        JuicerCuda::create(),
+                        CudaResourcesDeleter{});
+                    if (!resources) {
+                        if (change.applied) {
+                            (void)detail::rollback_grain_static_membership(
+                                entry.instances,
+                                change);
+                        }
+                        if (entry.instances.empty()) {
+                            _grainStaticByContext.erase(contextKey);
+                        }
+                        outError = "failed to allocate grain-static CUDA resources";
+                        return false;
+                    }
+                    resources->deviceId = deviceContextKey.deviceId;
+                    resources->ownerContextOpaque =
+                        deviceContextKey.contextOpaque;
+                    entry.owner = std::move(resources);
+                }
+                if (entry.owner->deviceId != deviceContextKey.deviceId ||
+                    entry.owner->ownerContextOpaque !=
+                        deviceContextKey.contextOpaque) {
+                    if (change.applied) {
+                        (void)detail::rollback_grain_static_membership(
+                            entry.instances,
+                            change);
+                    }
+                    outError =
+                        "grain-static CUDA resources resolved for a different context";
+                    return false;
+                }
+                outOwner = entry.owner;
+#if JUICER_DIAGNOSTICS_COMPILED
+                ownerCopied = static_cast<bool>(outOwner);
+#endif
+            } else if (!detail::grain_static_has_active_instance(
+                           entry.instances)) {
+                retiredOwner = std::move(entry.owner);
+#if JUICER_DIAGNOSTICS_COMPILED
+                rootOwnerRetired = static_cast<bool>(retiredOwner);
+#endif
+            }
+            outChange = change;
+        }
+
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (JTRACE_ENABLED(1)) {
+            std::string message =
+                "event=grain_static_membership active=";
+            message += active ? "1" : "0";
+            message += " owner_copied_before_unlock=";
+            message += ownerCopied ? "1" : "0";
+            message += " root_owner_retired_after_unlock=";
+            message += rootOwnerRetired ? "1" : "0";
+            message += " snapshot_id=";
+            message += std::to_string(
+                static_cast<unsigned long long>(snapshotId));
+            JTRACE("GRAINLIFE", message);
+        }
+#endif
+
+        outResources = outOwner.get();
+        if (active && !outResources) {
+            outError =
+                "grain-static CUDA resources missing after owner copy";
+            return false;
+        }
+        return true;
     }
 
+    void Root::rollback_grain_static_membership(
+        const ContextCudaResourceKey& contextKey,
+        const detail::GrainStaticMembershipChange& change) noexcept {
+        if (!change.applied) {
+            return;
+        }
+        try {
+            CudaResourceOwner retiredOwner;
+#if JUICER_DIAGNOSTICS_COMPILED
+            bool rolledBack = false;
+#endif
+            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+            const auto entryIt = _grainStaticByContext.find(contextKey);
+            if (entryIt == _grainStaticByContext.end() ||
+                !detail::rollback_grain_static_membership(
+                    entryIt->second.instances,
+                    change)) {
+                return;
+            }
+#if JUICER_DIAGNOSTICS_COMPILED
+            rolledBack = true;
+#endif
+            if (!detail::grain_static_has_active_instance(
+                    entryIt->second.instances)) {
+                retiredOwner = std::move(entryIt->second.owner);
+            }
+            if (entryIt->second.instances.empty()) {
+                _grainStaticByContext.erase(entryIt);
+            }
+#if JUICER_DIAGNOSTICS_COMPILED
+            if (rolledBack && JTRACE_ENABLED(1)) {
+                JTRACE(
+                    "GRAINLIFE",
+                    "event=grain_static_conditional_rollback applied=1");
+            }
+#endif
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+    }
+
+    void Root::retire_grain_static_context_activity(
+        const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey) noexcept {
+        try {
+            std::vector<CudaResourceOwner> retiredOwners;
+            {
+                std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+                for (auto it = _grainStaticByContext.begin();
+                     it != _grainStaticByContext.end();) {
+                    if (it->first.deviceContextKey == deviceContextKey) {
+                        if (it->second.owner) {
+                            retiredOwners.emplace_back(
+                                std::move(it->second.owner));
+                        }
+                        it = _grainStaticByContext.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+    }
     Root::PreparedCudaFrame Root::prepare_cuda_frame(
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
@@ -4434,6 +5235,25 @@ namespace JuicerProcess {
             outError = "MissingRequiredResource phase=4B field=print_recipe";
             return frame;
         }
+        if (!validate_visual_grain_descriptor(
+                request.recipe,
+                request.visualGrainDescriptor,
+                outError)) {
+            return frame;
+        }
+        frame._state->visualGrainDescriptor =
+            request.visualGrainDescriptor;
+        if (!derive_workspace_request(
+                request.spatialDirDescriptor,
+                request.scannerPostEffects,
+                request.visualGrainDescriptor,
+                request.requestedWidth,
+                request.requestedHeight,
+                request.needCompositeProfileWorkspace,
+                frame._state->workspaceRequest,
+                outError)) {
+            return frame;
+        }
         if (!JuicerCuda::build_print_resource_descriptors(
                 *request.recipe,
                 frame._state->printDescriptors,
@@ -4501,6 +5321,8 @@ namespace JuicerProcess {
             return frame;
         }
         frame._state->printRecipe = &request.recipe->print;
+        frame._state->capturePolarity =
+            request.recipe->profileRoute.capturePolarity;
         frame._state->focusedFilmRawConfig = request.filmRawConfig;
         frame._state->focusedScannerColor = request.scannerColor;
         if (request.scannerPostEffects) {
@@ -4533,6 +5355,14 @@ namespace JuicerProcess {
             frame.abort("print_phase4C_auto_exposure_failed");
             return frame;
         }
+        if (!frame.prepare_visual_grain_resources(
+                *this,
+                deviceContextKey,
+                cudaStreamOpaque,
+                outError)) {
+            frame.abort("print_visual_grain_preparation_failed");
+            return frame;
+        }
         return frame;
     }
 
@@ -4556,6 +5386,25 @@ namespace JuicerProcess {
         frame._state->root = this;
         frame._state->remember_stream(cudaStreamOpaque);
         frame._state->set_failure("prepare_cuda_frame_direct", "CUDA direct prepared frame failed");
+        if (!validate_visual_grain_descriptor(
+                request.recipe,
+                request.visualGrainDescriptor,
+                outError)) {
+            return frame;
+        }
+        frame._state->visualGrainDescriptor =
+            request.visualGrainDescriptor;
+        if (!derive_workspace_request(
+                request.spatialDirDescriptor,
+                request.scannerPostEffects,
+                request.visualGrainDescriptor,
+                request.requestedWidth,
+                request.requestedHeight,
+                request.needCompositeProfileWorkspace,
+                frame._state->workspaceRequest,
+                outError)) {
+            return frame;
+        }
         if (!begin_submission(frame._state->transaction, snapshot, outError)) {
             frame._state->set_failure("begin_submission_direct", "direct begin_submission failed");
             return frame;
@@ -4593,6 +5442,8 @@ namespace JuicerProcess {
             frame.abort("direct_prepared_frame_upload_failed");
             return frame;
         }
+        frame._state->capturePolarity =
+            request.recipe->profileRoute.capturePolarity;
         frame._state->focusedFilmRawConfig = request.filmRawConfig;
         frame._state->focusedScannerColor = request.scannerColor;
         if (request.scannerPostEffects) {
@@ -4617,6 +5468,14 @@ namespace JuicerProcess {
             !frame._state->allocate_auto_exposure_workspace(autoExposureBufferRequest.descriptor, outError)) {
             frame._state->set_failure("allocate_direct_auto_exposure_workspace", "CUDA direct auto-exposure workspace allocation failed");
             frame.abort("direct_prepared_frame_auto_exposure_failed");
+            return frame;
+        }
+        if (!frame.prepare_visual_grain_resources(
+                *this,
+                deviceContextKey,
+                cudaStreamOpaque,
+                outError)) {
+            frame.abort("direct_visual_grain_preparation_failed");
             return frame;
         }
         return frame;
@@ -4688,10 +5547,10 @@ namespace JuicerProcess {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         try {
             ContextCudaResourceMap frameResources;
-            ContextCudaResourceMap grainStaticResources;
+            GrainStaticContextMap grainStaticResources;
             std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
             frameResources.swap(_cudaResourcesByContext);
-            grainStaticResources.swap(_cudaGrainStaticByContext);
+            grainStaticResources.swap(_grainStaticByContext);
         } catch (...) {
             JuicerLogging::discard_current_exception();
         }

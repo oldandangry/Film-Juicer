@@ -5,11 +5,14 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
 #include "RenderRecipe.h"
 #include "ResourceAssetLibrary.h"
+#include "GrainStaticActivityState.h"
+#include "VisualGrainFrameDescriptor.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/JuicerCudaDirectFilmPayloads.h"
@@ -72,6 +75,7 @@ namespace JuicerProcess {
         const std::string& data_dir() const noexcept;
         void ensure_bootstrap();
         void shutdown() noexcept;
+        void retire_grain_static_instance(std::uint64_t instanceToken) noexcept;
         FramePreparationToken begin_frame_preparation() noexcept;
         bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
         bool retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
@@ -92,6 +96,10 @@ namespace JuicerProcess {
             const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
+            std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
+            int requestedWidth = 0;
+            int requestedHeight = 0;
+            bool needCompositeProfileWorkspace = false;
         };
 
         struct PrintCudaPreparationRequest {
@@ -104,6 +112,10 @@ namespace JuicerProcess {
             const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
+            std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
+            int requestedWidth = 0;
+            int requestedHeight = 0;
+            bool needCompositeProfileWorkspace = false;
         };
 
         class PreparedCudaFrame final {
@@ -128,9 +140,14 @@ namespace JuicerProcess {
                 bool needBlurred = false;
                 bool aliasScannerRgbFromSpatialDirFiltered = false;
                 bool needAux = false;
-                bool needGrainTriplet = false;
+                bool needSharedTmp = false;
+                bool needGrainLayerWork = false;
                 bool needGrainShared = false;
                 bool needGateMask = false;
+
+                [[nodiscard]] bool has_any_family() const noexcept {
+                    return needOptics || needSpatialDir;
+                }
             };
 
             class WorkspaceLeaseMarker final {
@@ -162,6 +179,7 @@ namespace JuicerProcess {
                 int wangHeight = 0;
                 int wangCount = 0;
                 int wangColors = 0;
+                std::uint64_t version = 0;
             };
 
             struct DurableBundleView {
@@ -232,16 +250,67 @@ namespace JuicerProcess {
                 float sigma = 0.0f;
             };
 
+            struct PreparedGaussianView {
+                KernelView kernel{};
+                std::uint64_t descriptorHash = 0;
+                bool active = false;
+            };
+
+            struct CaptureFilmDensityWorkspaceView {
+                float* c = nullptr;
+                float* m = nullptr;
+                float* y = nullptr;
+                Spektrafilm::ProfilePolarity polarity =
+                    Spektrafilm::ProfilePolarity::Unsupported;
+                bool overflow = false;
+                bool active = false;
+            };
+
+            struct FocusedRgbWorkspaceView {
+                float* r = nullptr;
+                float* g = nullptr;
+                float* b = nullptr;
+                bool overflow = false;
+                bool active = false;
+            };
+
+            struct VisualGrainWorkspaceView {
+                float* filterTemp = nullptr;
+                float* scaleWork = nullptr;
+                float* deltaAccum = nullptr;
+                float* layerWork = nullptr;
+                float* sharedDelta = nullptr;
+                Spektrafilm::VisualGrainScratchShape scratchShape =
+                    Spektrafilm::VisualGrainScratchShape::None;
+                bool overflow = false;
+                bool active = false;
+            };
+
+            struct PreparedDensityLayersView {
+                JuicerCuda::DeviceCurveView baseCurvesCmy[3] = {};
+                const float* curves[3][3] = {
+                    {nullptr, nullptr, nullptr},
+                    {nullptr, nullptr, nullptr},
+                    {nullptr, nullptr, nullptr}};
+                std::uint64_t hash = 0;
+                bool active = false;
+            };
+
+            struct PreparedVisualGrainView {
+                GrainStaticAssets staticNoise{};
+                std::array<PreparedGaussianView, 3> correlation{};
+                PreparedGaussianView dyeCloud[3][3] = {};
+                PreparedDensityLayersView densityLayers{};
+                const Spektrafilm::VisualGrainFrameDescriptor* descriptor = nullptr;
+                bool active = false;
+            };
+
             // Kernel views expose only prepared-frame-owned device memory for the current launch.
             struct OpticsKernelView {
                 KernelView spatialDir{};
                 KernelView scannerLensBlur{};
                 KernelView scannerUnsharp{};
                 KernelView scannerGlare{};
-                KernelView grainBlur{};
-                KernelView grainBlurMid{};
-                KernelView grainBlurCoarse{};
-                KernelView grainDye[3][3] = {};
                 KernelView halation[3] = {};
                 KernelView halationScatter[3] = {};
             };
@@ -337,8 +406,6 @@ namespace JuicerProcess {
                 float* aux = nullptr;
                 float* grainTmp = nullptr;
                 float* grainTmpShared = nullptr;
-                float* grainTmpMid = nullptr;
-                float* grainTmpCoarse = nullptr;
                 float* gateMask = nullptr;
                 int gateMaskWidth = 0;
                 int gateMaskHeight = 0;
@@ -361,8 +428,15 @@ namespace JuicerProcess {
             PreparedCudaFrame& operator=(PreparedCudaFrame&& other) noexcept;
 
             bool active() const noexcept;
+            WorkspaceRequest workspace_request() const noexcept;
             WorkspaceLeaseMarker bind_workspace_request(const WorkspaceRequest& request) const noexcept;
-            GrainStaticAssets grain_static_assets() const noexcept;
+            CaptureFilmDensityWorkspaceView capture_film_density_workspace(
+                const WorkspaceLeaseMarker& workspace) const noexcept;
+            FocusedRgbWorkspaceView focused_rgb_workspace(
+                const WorkspaceLeaseMarker& workspace) const noexcept;
+            PreparedVisualGrainView visual_grain_resources() const noexcept;
+            VisualGrainWorkspaceView visual_grain_workspace(
+                const WorkspaceLeaseMarker& workspace) const noexcept;
             DurableBundleView durable_bundle() const noexcept;
             OpticsKernelView optics_kernels() const noexcept;
             AutoExposureBufferView auto_exposure_buffers() const noexcept;
@@ -471,24 +545,6 @@ namespace JuicerProcess {
                 float sigma,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            bool prepare_grain_blur_kernel(
-                float sigma,
-                void* cudaStreamOpaque,
-                std::string& outError);
-            bool prepare_grain_blur_mid_kernel(
-                float sigma,
-                void* cudaStreamOpaque,
-                std::string& outError);
-            bool prepare_grain_blur_coarse_kernel(
-                float sigma,
-                void* cudaStreamOpaque,
-                std::string& outError);
-            bool prepare_grain_dye_kernel(
-                int layer,
-                int channel,
-                float sigma,
-                void* cudaStreamOpaque,
-                std::string& outError);
             bool build_halation_kernel(
                 int channel,
                 float sigma,
@@ -548,6 +604,11 @@ namespace JuicerProcess {
                 std::string& outError);
             bool prepare_scanner_post_effects(
                 const Scanner::ScannerPostEffectsDescriptor& descriptor,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool prepare_visual_grain_resources(
+                Root& root,
+                const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
                 void* cudaStreamOpaque,
                 std::string& outError);
 
@@ -672,6 +733,33 @@ namespace JuicerProcess {
             CudaResourceOwner,
             ContextCudaResourceKeyHash>;
 
+        struct GrainStaticContextEntry final {
+            CudaResourceOwner owner;
+            detail::GrainStaticInstanceMap instances;
+        };
+
+        using GrainStaticContextMap = std::unordered_map<
+            ContextCudaResourceKey,
+            GrainStaticContextEntry,
+            ContextCudaResourceKeyHash>;
+
+        bool apply_grain_static_membership_and_copy_owner(
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+            std::uint64_t contextEpoch,
+            std::uint64_t instanceToken,
+            std::uint64_t registryGeneration,
+            std::uint64_t snapshotId,
+            bool active,
+            detail::GrainStaticMembershipChange& outChange,
+            CudaResourceOwner& outOwner,
+            JuicerCuda::Resources*& outResources,
+            std::string& outError);
+        void rollback_grain_static_membership(
+            const ContextCudaResourceKey& contextKey,
+            const detail::GrainStaticMembershipChange& change) noexcept;
+        void retire_grain_static_context_activity(
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey) noexcept;
+
         bool resolve_context_cuda_resources(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             std::uint64_t contextEpoch,
@@ -685,12 +773,6 @@ namespace JuicerProcess {
             CudaResourceOwner& outResourceOwner,
             JuicerCuda::Resources*& outResources,
             std::string& outError);
-        bool resolve_cuda_grain_static_resources(
-            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
-            std::uint64_t contextEpoch,
-            CudaResourceOwner& outResourceOwner,
-            JuicerCuda::Resources*& outResources,
-            std::string& outError);
 #endif
 
         bool _acceptFramePreparation = true;
@@ -698,7 +780,7 @@ namespace JuicerProcess {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         std::mutex _cudaResourcesMutex;
         ContextCudaResourceMap _cudaResourcesByContext;
-        ContextCudaResourceMap _cudaGrainStaticByContext;
+        GrainStaticContextMap _grainStaticByContext;
 #endif
     };
 

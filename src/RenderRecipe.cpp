@@ -531,30 +531,8 @@ namespace {
     }
 
     std::uint64_t hash_grain_contract(const GrainContract& contract) {
-        if (!contract.visualActive) {
-            return 0;
-        }
         std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, contract.visualActive);
-        hash_value(hash, contract.sublayersActive);
-        hash_value(hash, contract.agxParticleAreaUm2);
-        Hash::hash_bytes_update(hash, contract.agxParticleScale.data(), sizeof(contract.agxParticleScale));
-        Hash::hash_bytes_update(hash, contract.agxParticleScaleLayers.data(), sizeof(contract.agxParticleScaleLayers));
         Hash::hash_bytes_update(hash, contract.densityMinCmy.data(), sizeof(contract.densityMinCmy));
-        Hash::hash_bytes_update(hash, contract.uniformity.data(), sizeof(contract.uniformity));
-        hash_value(hash, contract.blur);
-        hash_value(hash, contract.blurDyeCloudsUm);
-        Hash::hash_bytes_update(hash, contract.microStructure.data(), sizeof(contract.microStructure));
-        hash_value(hash, contract.nSubLayers);
-        hash_value(hash, contract.visualAmplitude);
-        hash_value(hash, contract.visualChroma);
-        hash_value(hash, contract.visualSizeMixWeight);
-        hash_value(hash, contract.visualSizeMixWeightMid);
-        hash_value(hash, contract.visualSizeMixScale);
-        hash_value(hash, contract.visualClumpTemporalMix);
-        hash_value(hash, contract.visualClumpMorphPeriodSec);
-        hash_value(hash, contract.visualBreathingDebug);
-        hash_value(hash, contract.visualDebugView);
         return hash;
     }
 
@@ -563,33 +541,131 @@ namespace {
         if (!finite_nonnegative_grain_triplet(out.densityMinCmy)) {
             return false;
         }
-        if (!out.visualActive) {
-            out.hash = 0;
-            return true;
-        }
-        if (!std::isfinite(out.agxParticleAreaUm2) || out.agxParticleAreaUm2 <= 0.0f ||
-            !finite_positive_triplet(out.agxParticleScale) ||
-            !finite_positive_triplet(out.agxParticleScaleLayers) ||
-            !finite_nonnegative_grain_triplet(out.uniformity) ||
-            !std::isfinite(out.blur) || out.blur < 0.0f ||
-            !std::isfinite(out.blurDyeCloudsUm) || out.blurDyeCloudsUm < 0.0f ||
-            !finite_nonnegative_pair(out.microStructure) ||
-            out.nSubLayers <= 0 ||
-            !std::isfinite(out.visualAmplitude) || out.visualAmplitude < 0.0f ||
-            !std::isfinite(out.visualChroma) || out.visualChroma < 0.0f ||
-            !std::isfinite(out.visualSizeMixWeight) || out.visualSizeMixWeight < 0.0f ||
-            !std::isfinite(out.visualSizeMixWeightMid) || out.visualSizeMixWeightMid < 0.0f ||
-            !std::isfinite(out.visualSizeMixScale) || out.visualSizeMixScale < 1.0f ||
-            !std::isfinite(out.visualClumpTemporalMix) || out.visualClumpTemporalMix < 0.0f ||
-            !std::isfinite(out.visualClumpMorphPeriodSec) || out.visualClumpMorphPeriodSec < 0.0f) {
-            return false;
+        for (float& value : out.densityMinCmy) {
+            value = std::clamp(value, 0.0f, 1.0f);
         }
         out.hash = hash_grain_contract(out);
         return out.hash != 0;
     }
 
-    bool grain_contract_requires_density_layers(const GrainContract& contract) {
-        return contract.visualActive && contract.sublayersActive;
+    std::uint64_t hash_visual_grain_recipe(const VisualGrainRecipe& recipe) {
+        if (!recipe.active) {
+            return 0;
+        }
+        std::uint64_t hash = Hash::kFnvOffset;
+        hash_value(hash, recipe.active);
+        hash_value(hash, recipe.sublayersActive);
+        hash_value(hash, recipe.particleAreaUm2);
+        Hash::hash_bytes_update(hash, recipe.particleScaleCmy.data(), sizeof(recipe.particleScaleCmy));
+        Hash::hash_bytes_update(
+            hash,
+            recipe.particleScaleLayers.data(),
+            sizeof(recipe.particleScaleLayers));
+        Hash::hash_bytes_update(
+            hash,
+            recipe.visualParticleDensityMinCmy.data(),
+            sizeof(recipe.visualParticleDensityMinCmy));
+        Hash::hash_bytes_update(hash, recipe.uniformityCmy.data(), sizeof(recipe.uniformityCmy));
+        hash_value(hash, recipe.correlationSigmaPx);
+        hash_value(hash, recipe.dyeCloudBlurUm);
+        Hash::hash_bytes_update(hash, recipe.microStructure.data(), sizeof(recipe.microStructure));
+        hash_value(hash, recipe.nSubLayers);
+        hash_value(hash, recipe.amplitude);
+        hash_value(hash, recipe.chromaMix);
+        hash_value(hash, recipe.chromaSharedWeight);
+        hash_value(hash, recipe.chromaIndependentWeight);
+        hash_value(hash, recipe.fineWeight);
+        hash_value(hash, recipe.midWeight);
+        hash_value(hash, recipe.coarseWeight);
+        hash_value(hash, recipe.sizeMixScale);
+        hash_value(hash, recipe.clumpTemporalMix);
+        hash_value(hash, recipe.clumpMorphPeriodSec);
+        hash_value(hash, recipe.breathingDebug);
+        hash_value(hash, recipe.debugView);
+        hash_value(hash, recipe.densityCurvesLayersHash);
+        return hash;
+    }
+
+    bool build_visual_grain_recipe(
+        const VisualGrainControls& input,
+        std::uint64_t densityCurvesLayersHash,
+        VisualGrainRecipe& out) {
+        out = VisualGrainRecipe{};
+        if (!input.active) {
+            out.hash = 0;
+            return true;
+        }
+        if (!std::isfinite(input.particleAreaUm2) || input.particleAreaUm2 <= 0.0f ||
+            !finite_positive_triplet(input.particleScaleCmy) ||
+            !finite_positive_triplet(input.particleScaleLayers) ||
+            !finite_nonnegative_grain_triplet(input.visualParticleDensityMinCmy) ||
+            !finite_nonnegative_grain_triplet(input.uniformityCmy) ||
+            !std::isfinite(input.correlationSigmaPx) || input.correlationSigmaPx < 0.0f ||
+            !std::isfinite(input.dyeCloudBlurUm) || input.dyeCloudBlurUm < 0.0f ||
+            !finite_nonnegative_pair(input.microStructure) ||
+            input.nSubLayers <= 0 ||
+            !std::isfinite(input.amplitude) || input.amplitude < 0.0f ||
+            !std::isfinite(input.chromaMix) ||
+            !std::isfinite(input.chromaSharedWeight) || input.chromaSharedWeight < 0.0f ||
+            !std::isfinite(input.chromaIndependentWeight) ||
+            input.chromaIndependentWeight < 0.0f ||
+            !std::isfinite(input.coarseWeight) || input.coarseWeight < 0.0f ||
+            !std::isfinite(input.midWeight) || input.midWeight < 0.0f ||
+            !std::isfinite(input.sizeMixScale) || input.sizeMixScale < 1.0f ||
+            !std::isfinite(input.clumpTemporalMix) || input.clumpTemporalMix < 0.0f ||
+            !std::isfinite(input.clumpMorphPeriodSec) || input.clumpMorphPeriodSec < 0.0f ||
+            (input.sublayersActive && densityCurvesLayersHash == 0)) {
+            return false;
+        }
+
+        out.active = true;
+        out.sublayersActive = input.sublayersActive;
+        out.particleAreaUm2 = input.particleAreaUm2;
+        out.particleScaleCmy = input.particleScaleCmy;
+        out.particleScaleLayers = input.particleScaleLayers;
+        out.visualParticleDensityMinCmy = input.visualParticleDensityMinCmy;
+        out.uniformityCmy = input.uniformityCmy;
+        for (float& value : out.visualParticleDensityMinCmy) {
+            value = std::clamp(value, 0.0f, 1.0f);
+        }
+        for (float& value : out.uniformityCmy) {
+            value = std::clamp(value, 0.0f, 1.0f);
+        }
+        out.correlationSigmaPx = input.correlationSigmaPx;
+        out.dyeCloudBlurUm = input.dyeCloudBlurUm;
+        out.microStructure = input.microStructure;
+        out.nSubLayers = input.nSubLayers;
+        out.amplitude = input.amplitude;
+        out.chromaMix = std::clamp(input.chromaMix, 0.0f, 1.0f);
+        out.chromaSharedWeight = std::clamp(input.chromaSharedWeight, 0.0f, 1.0f);
+        out.chromaIndependentWeight =
+            std::clamp(input.chromaIndependentWeight, 0.0f, 1.0f);
+
+        out.midWeight = std::clamp(input.midWeight, 0.0f, 1.0f);
+        out.coarseWeight = std::clamp(input.coarseWeight, 0.0f, 1.0f);
+        out.fineWeight = std::max(0.0f, 1.0f - out.midWeight - out.coarseWeight);
+        const float weightSum = out.fineWeight + out.midWeight + out.coarseWeight;
+        if (!(weightSum > 0.0f) || !std::isfinite(weightSum)) {
+            return false;
+        }
+        const float inverseWeightSum = 1.0f / weightSum;
+        out.fineWeight *= inverseWeightSum;
+        out.midWeight *= inverseWeightSum;
+        out.coarseWeight *= inverseWeightSum;
+
+        out.sizeMixScale = input.sizeMixScale;
+        out.clumpTemporalMix = std::clamp(input.clumpTemporalMix, 0.0f, 0.30f);
+        out.clumpMorphPeriodSec = std::clamp(input.clumpMorphPeriodSec, 5.0f, 60.0f);
+        out.breathingDebug = input.breathingDebug;
+        out.debugView = std::clamp(input.debugView, 0, 6);
+        out.densityCurvesLayersHash =
+            out.sublayersActive ? densityCurvesLayersHash : 0;
+        out.hash = hash_visual_grain_recipe(out);
+        return out.hash != 0;
+    }
+
+    bool visual_grain_requires_density_layers(const VisualGrainControls& controls) {
+        return controls.active && controls.sublayersActive;
     }
 
     std::uint64_t hash_density_curves_layers(
@@ -1384,7 +1460,7 @@ namespace Spektrafilm {
             &filmDevelop.normalizedDensityCurves[0][0],
             filmDevelop.normalizedDensityCurves.size() * 3u);
         filmDevelop.densityCurvesLayersRequired =
-            grain_contract_requires_density_layers(result.recipe.grainContract);
+            visual_grain_requires_density_layers(input.visualGrain);
         if (filmDevelop.densityCurvesLayersRequired) {
             if (profile.data.densityCurvesLayersMalformed) {
                 result.diagnostic =
@@ -1416,6 +1492,13 @@ namespace Spektrafilm {
             filmDevelop.normalizedDensityCurvesHash == 0 ||
             filmDevelop.hash == 0) {
             result.diagnostic = "MalformedRequiredProfileData phase=3A field=data.density_curves hash";
+            return result;
+        }
+        if (!build_visual_grain_recipe(
+                input.visualGrain,
+                filmDevelop.densityCurvesLayersHash,
+                result.recipe.visualGrain)) {
+            result.diagnostic = "MalformedRequiredProfileData phase=9A field=visual_grain";
             return result;
         }
 
@@ -1484,9 +1567,9 @@ namespace Spektrafilm {
             result.recipe.hash =
                 Hash::hash_uint64_values({result.recipe.hash, result.recipe.spatialOptics.hash});
         }
-        if (result.recipe.grainContract.hash != 0) {
+        if (result.recipe.visualGrain.hash != 0) {
             result.recipe.hash =
-                Hash::hash_uint64_values({result.recipe.hash, result.recipe.grainContract.hash});
+                Hash::hash_uint64_values({result.recipe.hash, result.recipe.visualGrain.hash});
         }
         result.valid = result.recipe.hash != 0;
         if (!result.valid) {
@@ -1567,6 +1650,7 @@ namespace Spektrafilm {
         }
         result.recipe.filmDevelop = foundation.recipe.filmDevelop;
         result.recipe.dirCouplers = foundation.recipe.dirCouplers;
+        result.recipe.visualGrain = foundation.recipe.visualGrain;
         result.recipe.grainContract = foundation.recipe.grainContract;
         result.recipe.enlargerFilmBounds = foundation.recipe.densityBounds;
         result.recipe.enlargerFilmBounds.route = input.scanRoute;
@@ -1706,9 +1790,9 @@ namespace Spektrafilm {
             result.recipe.hash =
                 Hash::hash_uint64_values({result.recipe.hash, result.recipe.spatialOptics.hash});
         }
-        if (result.recipe.grainContract.hash != 0) {
+        if (result.recipe.visualGrain.hash != 0) {
             result.recipe.hash =
-                Hash::hash_uint64_values({result.recipe.hash, result.recipe.grainContract.hash});
+                Hash::hash_uint64_values({result.recipe.hash, result.recipe.visualGrain.hash});
         }
         result.valid = route.hash != 0 && print.filters.hash != 0 &&
                        print.exposure.hash != 0 && print.illuminant.hash != 0 &&

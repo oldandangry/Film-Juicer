@@ -13,6 +13,7 @@ struct StbnCpuCache {
     int width = 512;
     int height = 512;
     int frames = 256;
+    std::uint64_t version = 0;
     std::uint32_t activeUsers = 0;
     std::uint64_t lastTouchedMs = 0;
     bool loaded = false;
@@ -30,6 +31,7 @@ struct WangCpuCache {
     int height = 0;
     int count = 0;
     int colors = 0;
+    std::uint64_t version = 0;
     std::uint32_t activeUsers = 0;
     std::uint64_t lastTouchedMs = 0;
     bool loaded = false;
@@ -153,6 +155,7 @@ static std::size_t trim_host_cache_locked(
         stbn.loaded = false;
         stbn.valid = false;
         stbn.state = HostCacheLoadState::Uninitialized;
+        stbn.version = 0;
         stbn.failureReason.clear();
         stbn.lastTouchedMs = nowMs;
         return bytes;
@@ -168,6 +171,7 @@ static std::size_t trim_host_cache_locked(
         wang.height = 0;
         wang.count = 0;
         wang.colors = 0;
+        wang.version = 0;
         wang.loaded = false;
         wang.valid = false;
         wang.state = HostCacheLoadState::Uninitialized;
@@ -1009,6 +1013,7 @@ struct StbnCpuView {
     int width = 0;
     int height = 0;
     int frames = 0;
+    std::uint64_t version = 0;
 };
 
 struct WangCpuView {
@@ -1020,6 +1025,7 @@ struct WangCpuView {
     int height = 0;
     int count = 0;
     int colors = 0;
+    std::uint64_t version = 0;
 };
 
 static bool acquire_stbn_cpu_view(StbnCpuCache& cache, StbnCpuView& outView, std::string& outError) {
@@ -1035,6 +1041,7 @@ static bool acquire_stbn_cpu_view(StbnCpuCache& cache, StbnCpuView& outView, std
     outView.width = cache.width;
     outView.height = cache.height;
     outView.frames = cache.frames;
+    outView.version = cache.version;
     return true;
 }
 
@@ -1062,6 +1069,7 @@ static bool acquire_wang_cpu_view(WangCpuCache& cache, WangCpuView& outView, std
     outView.height = cache.height;
     outView.count = cache.count;
     outView.colors = cache.colors;
+    outView.version = cache.version;
     return true;
 }
 
@@ -1078,6 +1086,7 @@ struct StbnCpuLoadedData {
     int width = 0;
     int height = 0;
     int frames = 0;
+    std::uint64_t version = 0;
 };
 
 static bool load_stbn_cpu_from_assets(StbnCpuLoadedData& outData, std::string& outError) {
@@ -1091,6 +1100,7 @@ static bool load_stbn_cpu_from_assets(StbnCpuLoadedData& outData, std::string& o
     outData.width = payloads->stbn.width;
     outData.height = payloads->stbn.height;
     outData.frames = payloads->stbn.frames;
+    outData.version = payloads->stbn.version;
     return true;
 }
 
@@ -1101,6 +1111,7 @@ struct WangCpuLoadedData {
     int height = 0;
     int count = 0;
     int colors = 0;
+    std::uint64_t version = 0;
 };
 
 static bool load_wang_cpu_from_assets(WangCpuLoadedData& outData, std::string& outError) {
@@ -1116,6 +1127,7 @@ static bool load_wang_cpu_from_assets(WangCpuLoadedData& outData, std::string& o
     outData.height = payloads->wang.height;
     outData.count = payloads->wang.count;
     outData.colors = payloads->wang.colors;
+    outData.version = payloads->wang.version;
     return true;
 }
 
@@ -1159,6 +1171,7 @@ static bool load_stbn_cpu(StbnCpuCache& cache, std::string& outError) {
             cache.width = loadedData.width;
             cache.height = loadedData.height;
             cache.frames = loadedData.frames;
+            cache.version = loadedData.version;
             cache.failureReason.clear();
             cache.state = HostCacheLoadState::Ready;
             cache.lastTouchedMs = host_asset_now_ms();
@@ -1218,6 +1231,7 @@ static bool load_wang_cpu(WangCpuCache& cache, std::string& outError) {
             cache.height = loadedData.height;
             cache.count = loadedData.count;
             cache.colors = loadedData.colors;
+            cache.version = loadedData.version;
             cache.failureReason.clear();
             cache.state = HostCacheLoadState::Ready;
             cache.lastTouchedMs = host_asset_now_ms();
@@ -1250,6 +1264,7 @@ static void free_stbn(Resources& resources) noexcept {
     resources.stbnWidth = 0;
     resources.stbnHeight = 0;
     resources.stbnFrames = 0;
+    resources.grainStaticAssetVersion = 0;
 }
 
 static void free_wang(Resources& resources) noexcept {
@@ -1267,6 +1282,7 @@ static void free_wang(Resources& resources) noexcept {
     resources.wangHeight = 0;
     resources.wangCount = 0;
     resources.wangColors = 0;
+    resources.grainStaticAssetVersion = 0;
 }
 
 static void release_scan_error_readback_entry(
@@ -1408,10 +1424,12 @@ bool poll_scan_error_readbacks(
 
 bool ensure_grain_static_assets_uploaded(
     Resources& resources,
+    std::uint64_t expectedAssetVersion,
     void* cudaStreamOpaque,
     std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
     (void)resources;
+    (void)expectedAssetVersion;
     (void)cudaStreamOpaque;
     outError = "CUDA is not enabled";
     return false;
@@ -1423,9 +1441,22 @@ bool ensure_grain_static_assets_uploaded(
         return false;
     }
 
+    if (expectedAssetVersion == 0) {
+        outError = "grain static asset version is invalid";
+        return false;
+    }
+
     const bool needStbnUpload = !resources.stbnData;
     const bool needWangUpload = !resources.wangTilesData || !resources.wangLutData;
     if (!needStbnUpload && !needWangUpload) {
+        if (resources.grainStaticAssetVersion != expectedAssetVersion ||
+            resources.stbnWidth <= 0 || resources.stbnHeight <= 0 ||
+            resources.stbnFrames <= 0 || resources.wangWidth <= 0 ||
+            resources.wangHeight <= 0 || resources.wangCount <= 0 ||
+            resources.wangColors <= 0) {
+            outError = "grain static resource identity mismatch";
+            return false;
+        }
         return true;
     }
     lock.unlock();
@@ -1452,6 +1483,18 @@ bool ensure_grain_static_assets_uploaded(
             acquire_wang_cpu_view(cache, wangView, wangError)) {
             wangCache = &cache;
         }
+    }
+
+    if ((stbnCache && stbnView.version != expectedAssetVersion) ||
+        (wangCache && wangView.version != expectedAssetVersion)) {
+        if (stbnCache) {
+            release_stbn_cpu_view(*stbnCache);
+        }
+        if (wangCache) {
+            release_wang_cpu_view(*wangCache);
+        }
+        outError = "grain static host asset identity mismatch";
+        return false;
     }
 
     std::string resourceOwnerError;
@@ -1560,7 +1603,21 @@ bool ensure_grain_static_assets_uploaded(
     }
     lock.lock();
     reap_retire_queue_locked(resources);
-    return validate_resource_owner_locked(resources, outError, true);
+    if (!validate_resource_owner_locked(resources, outError, true)) {
+        return false;
+    }
+    const bool ready =
+        resources.stbnData && resources.stbnWidth > 0 &&
+        resources.stbnHeight > 0 && resources.stbnFrames > 0 &&
+        resources.wangTilesData && resources.wangLutData &&
+        resources.wangWidth > 0 && resources.wangHeight > 0 &&
+        resources.wangCount > 0 && resources.wangColors > 0;
+    if (!ready) {
+        outError = !stbnError.empty() ? stbnError : (!wangError.empty() ? wangError : "grain static resource upload incomplete");
+        return false;
+    }
+    resources.grainStaticAssetVersion = expectedAssetVersion;
+    return true;
 #endif
 }
 

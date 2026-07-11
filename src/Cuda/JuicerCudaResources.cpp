@@ -917,9 +917,7 @@ namespace JuicerCuda {
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsBase, resources.scannerScratch.rgbB != nullptr, opticsPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsBlurred, resources.scannerScratch.blurred != nullptr, opticsPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsAux, resources.scannerScratch.aux != nullptr, opticsPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGrainTriplet, resources.scannerScratch.grainTmp != nullptr, opticsPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGrainTriplet, resources.scannerScratch.grainTmpMid != nullptr, opticsPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGrainTriplet, resources.scannerScratch.grainTmpCoarse != nullptr, opticsPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGrainLayerWork, resources.scannerScratch.grainTmp != nullptr, opticsPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGrainShared, resources.scannerScratch.grainTmpShared != nullptr, opticsPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGateMask, resources.scannerScratch.gateMask != nullptr, gateMaskBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.rawCorrectionY != nullptr, spatialDirPlaneBytes);
@@ -2501,7 +2499,7 @@ namespace JuicerCuda {
         const DirCouplersRecipe& dirCouplers = recipe.dirCouplers;
         const DensityBoundsRecipe& densityBounds = recipe.densityBounds;
         const bool wantDensityLayers =
-            recipe.grainContract.visualActive && recipe.grainContract.sublayersActive;
+            recipe.visualGrain.active && recipe.visualGrain.sublayersActive;
         const Scanner::ScannerSpectralLutDescriptor& scannerDescriptor =
             *request.scannerLutDescriptor;
         if ((printRoute ? !recipe.printStructuralReady : !recipe.directStructuralReady) ||
@@ -4728,8 +4726,6 @@ namespace JuicerCuda {
         free_tracked_device_ptr_locked(resources, s.aux, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.grainTmp, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.grainTmpShared, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, s.grainTmpMid, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, s.grainTmpCoarse, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.gateMask, cudaStreamOpaque);
 #endif
         s.tmp = nullptr;
@@ -4787,17 +4783,6 @@ namespace JuicerCuda {
                 return false;
             s.grainTmpShared = nullptr;
         }
-        if (s.grainTmpMid) {
-            if (!retire_ptr_locked(resources, s.grainTmpMid, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
-                return false;
-            s.grainTmpMid = nullptr;
-        }
-        if (s.grainTmpCoarse) {
-            if (!retire_ptr_locked(resources, s.grainTmpCoarse, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
-                return false;
-            s.grainTmpCoarse = nullptr;
-        }
-
         const size_t gateBytes = s.gateMaskCapacityElements * sizeof(float);
         if (s.gateMask) {
             if (!retire_ptr_locked(resources, s.gateMask, gateBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
@@ -4932,7 +4917,6 @@ namespace JuicerCuda {
         return scratch.rgbR || scratch.rgbG || scratch.rgbB ||
                scratch.blurred || scratch.aux ||
                scratch.grainTmp || scratch.grainTmpShared ||
-               scratch.grainTmpMid || scratch.grainTmpCoarse ||
                scratch.gateMask;
     }
 
@@ -4952,8 +4936,6 @@ namespace JuicerCuda {
         add_plane(scratch.aux);
         add_plane(scratch.grainTmp);
         add_plane(scratch.grainTmpShared);
-        add_plane(scratch.grainTmpMid);
-        add_plane(scratch.grainTmpCoarse);
         if (scratch.gateMask) {
             bytes += scratch.gateMaskCapacityElements * sizeof(float);
         }
@@ -5335,7 +5317,7 @@ namespace JuicerCuda {
 #endif
     }
 
-    static bool retire_optics_grain_triplet_candidate_locked(
+    static bool retire_optics_grain_layer_work_candidate_locked(
         Resources& resources,
         void* cudaStreamOpaque,
         std::string& outError) {
@@ -5354,40 +5336,12 @@ namespace JuicerCuda {
                     bytes,
                     Resources::RetireKind::DeviceFree,
                     cudaStreamOpaque,
-                    "scratch normalization optics grain triplet",
+                    "scratch normalization optics grain layer work",
                     outError,
                     true)) {
                 return false;
             }
             scratch.grainTmp = nullptr;
-        }
-        if (scratch.grainTmpMid) {
-            if (!retire_ptr_locked(
-                    resources,
-                    scratch.grainTmpMid,
-                    bytes,
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    "scratch normalization optics grain triplet",
-                    outError,
-                    true)) {
-                return false;
-            }
-            scratch.grainTmpMid = nullptr;
-        }
-        if (scratch.grainTmpCoarse) {
-            if (!retire_ptr_locked(
-                    resources,
-                    scratch.grainTmpCoarse,
-                    bytes,
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    "scratch normalization optics grain triplet",
-                    outError,
-                    true)) {
-                return false;
-            }
-            scratch.grainTmpCoarse = nullptr;
         }
         return true;
 #endif
@@ -5676,8 +5630,8 @@ namespace JuicerCuda {
                 return retire_optics_gate_mask_candidate_locked(resources, cudaStreamOpaque, outError);
             case ResourceManager::ScratchPolicyCandidate::OpticsGrainShared:
                 return retire_optics_grain_shared_candidate_locked(resources, cudaStreamOpaque, outError);
-            case ResourceManager::ScratchPolicyCandidate::OpticsGrainTriplet:
-                return retire_optics_grain_triplet_candidate_locked(resources, cudaStreamOpaque, outError);
+            case ResourceManager::ScratchPolicyCandidate::OpticsGrainLayerWork:
+                return retire_optics_grain_layer_work_candidate_locked(resources, cudaStreamOpaque, outError);
             case ResourceManager::ScratchPolicyCandidate::OpticsAux:
                 return retire_optics_aux_candidate_locked(resources, cudaStreamOpaque, outError);
             case ResourceManager::ScratchPolicyCandidate::OpticsBlurred:
@@ -6642,7 +6596,7 @@ namespace JuicerCuda {
 #endif
     }
 
-    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool aliasScannerRgbFromSpatialDirFiltered, bool needAuxScratch, bool needGrainScratch, bool needGrainSharedScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError) {
+    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool aliasScannerRgbFromSpatialDirFiltered, bool needAuxScratch, bool needSharedTmpScratch, bool needGrainLayerWorkScratch, bool needGrainSharedScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)width;
@@ -6650,7 +6604,8 @@ namespace JuicerCuda {
         (void)needBlurredScratch;
         (void)aliasScannerRgbFromSpatialDirFiltered;
         (void)needAuxScratch;
-        (void)needGrainScratch;
+        (void)needSharedTmpScratch;
+        (void)needGrainLayerWorkScratch;
         (void)needGrainSharedScratch;
         (void)needGateMask;
         (void)cudaStreamOpaque;
@@ -6679,8 +6634,7 @@ namespace JuicerCuda {
         if (!capacityMatch || !haveBase) {
             if (resources.scannerScratch.rgbR || resources.scannerScratch.rgbG || resources.scannerScratch.rgbB ||
                 resources.scannerScratch.blurred || resources.scannerScratch.aux || resources.scannerScratch.grainTmp ||
-                resources.scannerScratch.grainTmpShared || resources.scannerScratch.grainTmpMid ||
-                resources.scannerScratch.grainTmpCoarse || resources.scannerScratch.gateMask) {
+                resources.scannerScratch.grainTmpShared || resources.scannerScratch.gateMask) {
                 if (!retire_optics_scratch_locked(resources, resources.scannerScratch, cudaStreamOpaque, "optics scratch", outError)) {
                     return false;
                 }
@@ -6730,11 +6684,13 @@ namespace JuicerCuda {
             resources.scannerScratch.gateMaskHash = 0;
         }
 
-        if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
-            free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
-            return false;
+        if (needSharedTmpScratch) {
+            if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
+                free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
+                return false;
+            }
         }
-        resources.scannerScratch.tmp = resources.sharedTmpPlane;
+        resources.scannerScratch.tmp = needSharedTmpScratch ? resources.sharedTmpPlane : nullptr;
         const size_t planeBytes = resources.scannerScratch.capacityElements * sizeof(float);
 
         if (!needScannerRgbScratch) {
@@ -6805,7 +6761,7 @@ namespace JuicerCuda {
             }
         }
 
-        if (needGrainScratch) {
+        if (needGrainLayerWorkScratch) {
             if (!resources.scannerScratch.grainTmp) {
                 if (!allocate_scratch_device_ptr_locked(
                         resources,
@@ -6817,46 +6773,12 @@ namespace JuicerCuda {
                     return false;
                 }
             }
-            if (!resources.scannerScratch.grainTmpMid) {
-                if (!allocate_scratch_device_ptr_locked(
-                        resources,
-                        resources.scannerScratch.grainTmpMid,
-                        planeBytes,
-                        cudaStreamOpaque,
-                        "scannerScratch.grainTmpMid",
-                        outError)) {
-                    return false;
-                }
-            }
-            if (!resources.scannerScratch.grainTmpCoarse) {
-                if (!allocate_scratch_device_ptr_locked(
-                        resources,
-                        resources.scannerScratch.grainTmpCoarse,
-                        planeBytes,
-                        cudaStreamOpaque,
-                        "scannerScratch.grainTmpCoarse",
-                        outError)) {
-                    return false;
-                }
-            }
         } else {
             if (resources.scannerScratch.grainTmp) {
                 if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmp, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix scratch", outError, true)) {
                     return false;
                 }
                 resources.scannerScratch.grainTmp = nullptr;
-            }
-            if (resources.scannerScratch.grainTmpMid) {
-                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpMid, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix mid scratch", outError, true)) {
-                    return false;
-                }
-                resources.scannerScratch.grainTmpMid = nullptr;
-            }
-            if (resources.scannerScratch.grainTmpCoarse) {
-                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpCoarse, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix coarse scratch", outError, true)) {
-                    return false;
-                }
-                resources.scannerScratch.grainTmpCoarse = nullptr;
             }
         }
 

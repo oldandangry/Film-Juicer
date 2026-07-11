@@ -31,12 +31,6 @@ namespace JuicerCuda {
         int hanatosNIntegrated = 0;
         const float* mallettBasis = nullptr;
         int mallettBasisK = 0;
-        bool hasDensityCurvesLayers = false;
-        const float* densityCurvesLayers[3][3] = {
-            {nullptr, nullptr, nullptr},
-            {nullptr, nullptr, nullptr},
-            {nullptr, nullptr, nullptr}};
-        std::uint64_t densityCurvesLayersHash = 0;
         float inputRGBToXYZ[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
         float inputXYZAdapt[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
         int applyInputChromaticAdapt = 0;
@@ -69,7 +63,6 @@ namespace JuicerCuda {
         const FilmRawRecipe& filmRaw,
         const FilmDevelopRecipe& filmDevelop,
         const DirCouplersRecipe& dirCouplers,
-        const GrainContract& grainContract,
         const DensityBoundsRecipe& densityBounds,
         const DirectFilmPreparedView& prepared,
         const float* autoExposureScaleDevice,
@@ -89,27 +82,6 @@ namespace JuicerCuda {
         }
         if (densityBounds.hash == 0) {
             diagnostic = "ResourceDescriptorMismatch phase=3B field=density_bounds";
-            return false;
-        }
-        const bool wantDensityLayers = grainContract.visualActive && grainContract.sublayersActive;
-        if (wantDensityLayers) {
-            if (!filmDevelop.densityCurvesLayersRequired ||
-                filmDevelop.densityCurvesLayersHash == 0 ||
-                prepared.densityCurvesLayersHash != filmDevelop.densityCurvesLayersHash ||
-                !prepared.hasDensityCurvesLayers) {
-                diagnostic = "MissingRequiredResource phase=9B field=density_curves_layers";
-                return false;
-            }
-            for (int layer = 0; layer < 3; ++layer) {
-                for (int ch = 0; ch < 3; ++ch) {
-                    if (!prepared.densityCurvesLayers[layer][ch]) {
-                        diagnostic = "MissingRequiredResource phase=9B field=density_curves_layers_binding";
-                        return false;
-                    }
-                }
-            }
-        } else if (prepared.hasDensityCurvesLayers || prepared.densityCurvesLayersHash != 0) {
-            diagnostic = "ResourceDescriptorMismatch phase=9C field=inactive_density_layers";
             return false;
         }
         const int densitySamples = static_cast<int>(filmDevelop.logExposure.size());

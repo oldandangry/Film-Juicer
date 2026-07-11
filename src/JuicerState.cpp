@@ -730,6 +730,9 @@ namespace {
         for (float value : grain.agxParticleScaleLayers) {
             mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
         }
+        for (float value : grain.densityMin) {
+            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+        }
         for (float value : grain.uniformity) {
             mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
         }
@@ -740,7 +743,8 @@ namespace {
         }
         mix_hash_field(h, grain.nSubLayers, mix);
         mix_hash_field_scaled_rounded_if_finite(h, grain.amplitude, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, grain.chroma, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, grain.chromaSharedWeight, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, grain.chromaIndWeight, 10000.0, mix);
         mix_hash_field_scaled_rounded_if_finite(h, grain.sizeMixWeight, 10000.0, mix);
         mix_hash_field_scaled_rounded_if_finite(h, grain.sizeMixWeightMid, 10000.0, mix);
         mix_hash_field_scaled_rounded_if_finite(h, grain.sizeMixScale, 10000.0, mix);
@@ -772,29 +776,33 @@ namespace {
         }
     }
 
-    Spektrafilm::GrainContract focused_grain_contract_from_snapshot(const ParamSnapshot& p) {
-        Spektrafilm::GrainContract contract{};
+    Spektrafilm::VisualGrainControls focused_visual_grain_controls_from_snapshot(
+        const ParamSnapshot& p) {
+        Spektrafilm::VisualGrainControls controls{};
         const Profiles::GrainMetadata& grain = p.grainControls;
-        contract.visualActive = grain.active;
-        contract.sublayersActive = grain.sublayersActive;
-        contract.agxParticleAreaUm2 = grain.agxParticleAreaUm2;
-        contract.agxParticleScale = grain.agxParticleScale;
-        contract.agxParticleScaleLayers = grain.agxParticleScaleLayers;
-        contract.uniformity = grain.uniformity;
-        contract.blur = grain.blur;
-        contract.blurDyeCloudsUm = grain.blurDyeCloudsUm;
-        contract.microStructure = grain.microStructure;
-        contract.nSubLayers = grain.nSubLayers;
-        contract.visualAmplitude = grain.amplitude;
-        contract.visualChroma = grain.chroma;
-        contract.visualSizeMixWeight = grain.sizeMixWeight;
-        contract.visualSizeMixWeightMid = grain.sizeMixWeightMid;
-        contract.visualSizeMixScale = grain.sizeMixScale;
-        contract.visualClumpTemporalMix = grain.clumpTemporalMix;
-        contract.visualClumpMorphPeriodSec = grain.clumpMorphPeriodSec;
-        contract.visualBreathingDebug = grain.breathingDebug;
-        contract.visualDebugView = grain.debugView;
-        return contract;
+        controls.active = grain.active;
+        controls.sublayersActive = grain.sublayersActive;
+        controls.particleAreaUm2 = grain.agxParticleAreaUm2;
+        controls.particleScaleCmy = grain.agxParticleScale;
+        controls.particleScaleLayers = grain.agxParticleScaleLayers;
+        controls.visualParticleDensityMinCmy = grain.densityMin;
+        controls.uniformityCmy = grain.uniformity;
+        controls.correlationSigmaPx = grain.blur;
+        controls.dyeCloudBlurUm = grain.blurDyeCloudsUm;
+        controls.microStructure = grain.microStructure;
+        controls.nSubLayers = grain.nSubLayers;
+        controls.amplitude = grain.amplitude;
+        controls.chromaMix = grain.chroma;
+        controls.chromaSharedWeight = grain.chromaSharedWeight;
+        controls.chromaIndependentWeight = grain.chromaIndWeight;
+        controls.coarseWeight = grain.sizeMixWeight;
+        controls.midWeight = grain.sizeMixWeightMid;
+        controls.sizeMixScale = grain.sizeMixScale;
+        controls.clumpTemporalMix = grain.clumpTemporalMix;
+        controls.clumpMorphPeriodSec = grain.clumpMorphPeriodSec;
+        controls.breathingDebug = grain.breathingDebug;
+        controls.debugView = grain.debugView;
+        return controls;
     }
 
     Spektrafilm::DirCouplersControls focused_dir_couplers_controls_from_snapshot(const ParamSnapshot& p) {
@@ -1444,7 +1452,7 @@ namespace {
         input.printProfileKey = params.printProfileKey;
         input.scanRoute = params.scanRoute;
         input.filmProfile = selected.filmProfile;
-        input.grainContract = focused_grain_contract_from_snapshot(params);
+        input.visualGrain = focused_visual_grain_controls_from_snapshot(params);
         input.dirCouplers = focused_dir_couplers_controls_from_snapshot(params);
         input.spatialOptics.scatterHalationActive = params.exactScatterHalationActive != 0;
         input.directRoutePrintProfileExcluded = selected.directRoutePrintProfileExcluded;
@@ -1562,7 +1570,8 @@ namespace {
         input.filmProfile = selected.filmProfile;
         input.printProfile = selected.printProfile;
         input.filmFoundation.filmProfile = selected.filmProfile;
-        input.filmFoundation.grainContract = focused_grain_contract_from_snapshot(params);
+        input.filmFoundation.visualGrain =
+            focused_visual_grain_controls_from_snapshot(params);
         input.filmFoundation.spectralUpsamplingMode = params.spectralUpsamplingMode;
         input.filmFoundation.inputColorSpace = params.inputColorSpace;
         input.filmFoundation.inputCctfDecoding = params.inputCctfDecoding != 0;

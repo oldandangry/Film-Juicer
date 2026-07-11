@@ -21,7 +21,8 @@
 //   and print-medium handoff identity. Print preparation and launch remain downstream owners.
 // - ScannerOutputRecipe owns scanner/output policy; scanner LUT resources own their descriptor.
 // - OpticsRecipe owns lens, halation, scattering, and diffusion behavior when Phase 6 introduces it.
-// - GrainContract owns density_min and focused renderer behavior; density_min is not profile digest data.
+// - GrainContract owns Spektrafilm density_min; VisualGrainRecipe owns Film-Juicer grain behavior.
+//   The visual particle density minimum is independent of scanner/enlarger density bounds.
 // - FrameRequest owns frame-local extent, pixel size, temporal tokens, and metering request facts.
 // - PreparedCudaFrame/context resource internals own durable GPU handles, scratch, staging, and views.
 // This is source-adjacent orientation, not a runtime registry.
@@ -606,27 +607,61 @@ struct SpatialDirDescriptor {
     std::uint64_t hash = 0;
 };
 
-struct GrainContract {
-    bool visualActive = false;
+struct VisualGrainControls {
+    bool active = false;
     bool sublayersActive = true;
-    float agxParticleAreaUm2 = 0.2f;
-    std::array<float, 3> agxParticleScale{{0.8f, 1.0f, 2.0f}};
-    std::array<float, 3> agxParticleScaleLayers{{2.5f, 1.0f, 0.5f}};
-    std::array<float, 3> densityMinCmy{{0.07f, 0.08f, 0.12f}};
-    std::array<float, 3> uniformity{{0.97f, 0.97f, 0.99f}};
-    float blur = 0.65f;
-    float blurDyeCloudsUm = 1.0f;
+    float particleAreaUm2 = 0.2f;
+    std::array<float, 3> particleScaleCmy{{0.8f, 1.0f, 2.0f}};
+    std::array<float, 3> particleScaleLayers{{2.5f, 1.0f, 0.5f}};
+    std::array<float, 3> visualParticleDensityMinCmy{{0.07f, 0.08f, 0.12f}};
+    std::array<float, 3> uniformityCmy{{0.97f, 0.97f, 0.99f}};
+    float correlationSigmaPx = 0.65f;
+    float dyeCloudBlurUm = 1.0f;
     std::array<float, 2> microStructure{{0.2f, 30.0f}};
     int nSubLayers = 1;
-    float visualAmplitude = 1.0f;
-    float visualChroma = 0.0f;
-    float visualSizeMixWeight = 0.0f;
-    float visualSizeMixWeightMid = 0.0f;
-    float visualSizeMixScale = 1.0f;
-    float visualClumpTemporalMix = 0.0f;
-    float visualClumpMorphPeriodSec = 0.0f;
-    bool visualBreathingDebug = false;
-    int visualDebugView = 0;
+    float amplitude = 1.0f;
+    float chromaMix = 0.0f;
+    float chromaSharedWeight = 1.0f;
+    float chromaIndependentWeight = 0.0f;
+    float coarseWeight = 0.0f;
+    float midWeight = 0.0f;
+    float sizeMixScale = 1.0f;
+    float clumpTemporalMix = 0.0f;
+    float clumpMorphPeriodSec = 8.0f;
+    bool breathingDebug = false;
+    int debugView = 0;
+};
+
+struct VisualGrainRecipe {
+    bool active = false;
+    bool sublayersActive = false;
+    float particleAreaUm2 = 0.0f;
+    std::array<float, 3> particleScaleCmy{};
+    std::array<float, 3> particleScaleLayers{};
+    std::array<float, 3> visualParticleDensityMinCmy{};
+    std::array<float, 3> uniformityCmy{};
+    float correlationSigmaPx = 0.0f;
+    float dyeCloudBlurUm = 0.0f;
+    std::array<float, 2> microStructure{};
+    int nSubLayers = 0;
+    float amplitude = 0.0f;
+    float chromaMix = 0.0f;
+    float chromaSharedWeight = 0.0f;
+    float chromaIndependentWeight = 0.0f;
+    float fineWeight = 0.0f;
+    float midWeight = 0.0f;
+    float coarseWeight = 0.0f;
+    float sizeMixScale = 1.0f;
+    float clumpTemporalMix = 0.0f;
+    float clumpMorphPeriodSec = 0.0f;
+    bool breathingDebug = false;
+    int debugView = 0;
+    std::uint64_t densityCurvesLayersHash = 0;
+    std::uint64_t hash = 0;
+};
+
+struct GrainContract {
+    std::array<float, 3> densityMinCmy{{0.07f, 0.08f, 0.12f}};
     std::uint64_t hash = 0;
 };
 
@@ -755,6 +790,7 @@ struct RenderRecipe {
     SpatialOptics spatialOptics;
     FilmDevelopRecipe filmDevelop;
     DirCouplersRecipe dirCouplers;
+    VisualGrainRecipe visualGrain;
     GrainContract grainContract;
     DensityBoundsRecipe enlargerFilmBounds;
     DensityBoundsRecipe densityBounds;
@@ -784,6 +820,8 @@ namespace Spektrafilm {
     using ::SpatialDirDescriptor;
     using ::SpatialOptics;
     using ::SpatialOpticsComponentPolicy;
+    using ::VisualGrainControls;
+    using ::VisualGrainRecipe;
 
     struct SpatialOpticsControls {
         bool cameraDiffusionActive = false;
@@ -803,6 +841,7 @@ namespace Spektrafilm {
         std::string printProfileKey;
         ScanRoute scanRoute = kDefaultScanRoute;
         std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
+        VisualGrainControls visualGrain;
         GrainContract grainContract;
         DirCouplersControls dirCouplers;
         SpatialOpticsControls spatialOptics;

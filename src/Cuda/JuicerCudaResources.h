@@ -448,8 +448,6 @@ namespace JuicerCuda {
             float* aux = nullptr;
             float* grainTmp = nullptr;
             float* grainTmpShared = nullptr;
-            float* grainTmpMid = nullptr;
-            float* grainTmpCoarse = nullptr;
             float* gateMask = nullptr;
             int width = 0;
             int height = 0;
@@ -502,6 +500,7 @@ namespace JuicerCuda {
         int wangHeight = 0;
         int wangCount = 0;
         int wangColors = 0;
+        std::uint64_t grainStaticAssetVersion = 0;
 
         // Print-route payloads.
         DeviceCurve printDcC;
@@ -606,7 +605,11 @@ namespace JuicerCuda {
     void destroy(Resources* resources) noexcept;
 
     // Narrow context-static serving helper used by the process-owned Root grain slots.
-    bool ensure_grain_static_assets_uploaded(Resources& resources, void* cudaStreamOpaque, std::string& outError);
+    bool ensure_grain_static_assets_uploaded(
+        Resources& resources,
+        std::uint64_t expectedAssetVersion,
+        void* cudaStreamOpaque,
+        std::string& outError);
 
     struct DirectResourcePreparation {
         const RenderRecipe* recipe = nullptr;

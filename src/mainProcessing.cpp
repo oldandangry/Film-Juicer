@@ -16,8 +16,10 @@
 #include <sstream>
 #include <mutex>
 #include <limits>
+#include <optional>
 
 #include "GaussianSciPy.h"
+#include "VisualGrainFrameDescriptor.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
@@ -30,6 +32,7 @@
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/JuicerCudaDirProfile.h"
 #include "Cuda/JuicerCudaDirectFilmPayloads.h"
+#include "Cuda/JuicerCudaFilmFoundationPayloads.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
@@ -90,14 +93,21 @@ extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_rgb(
     JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque);
 
-extern "C" cudaError_t juicer_cuda_direct_focused_spatial_dir_final_develop_density(
+extern "C" cudaError_t juicer_cuda_direct_focused_capture_density(
     const JuicerCuda::DirectPipelineRunParams* hParams,
     float* dDensityC,
     float* dDensityM,
     float* dDensityY,
     void* cudaStreamOpaque);
 
-extern "C" cudaError_t juicer_cuda_print_focused_spatial_dir_final_develop_density(
+extern "C" cudaError_t juicer_cuda_print_focused_capture_density(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* dDensityC,
+    float* dDensityM,
+    float* dDensityY,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_print_focused_continue_from_capture_density(
     const JuicerCuda::PrintPipelineRunParams* hParams,
     float* dDensityC,
     float* dDensityM,
@@ -159,6 +169,21 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
     int unsharpRadius,
     float unsharpAmount,
     JuicerCuda::CompositePipelineProfile* aliasProfile,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_apply_visual_grain(
+    const JuicerCuda::GrainPayload* grain,
+    const JuicerCuda::GrainKernelPayload* kernels,
+    int width,
+    int height,
+    float* densityC,
+    float* densityM,
+    float* densityY,
+    float* filterTemp,
+    float* scaleWork,
+    float* deltaAccum,
+    float* layerWork,
+    float* sharedDelta,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_build_gate_defect_mask(
@@ -248,60 +273,8 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir_cached_log_raw(
     float* logRawR,
     void* cudaStreamOpaque);
 
-extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
-    const JuicerCuda::PipelineRunParams* hParams,
-    float* dRgbR,
-    float* dRgbG,
-    float* dRgbB,
-    float* dTmp,
-    float* dScratchBlurred,
-    float* dAux,
-    float* dGrainTmp,
-    float* dGrainTmpShared,
-    float* dGrainTmpMid,
-    float* dGrainTmpCoarse,
-    const float* dLensBlurKernel,
-    int lensBlurRadius,
-    const float* dUnsharpKernel,
-    int unsharpRadius,
-    float unsharpAmount,
-    int glareOriginX,
-    int glareOriginY,
-    std::uint64_t glareSeed,
-    float glarePercent,
-    float glareRoughness,
-    const float* dGlareKernel,
-    int glareRadius,
-    void* cudaStreamOpaque);
-
 extern "C" cudaError_t juicer_cuda_print_pipeline(
     const JuicerCuda::PipelineRunParams* hParams,
-    void* cudaStreamOpaque);
-
-extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
-    const JuicerCuda::PipelineRunParams* hParams,
-    float* dRgbR,
-    float* dRgbG,
-    float* dRgbB,
-    float* dTmp,
-    float* dScratchBlurred,
-    float* dAux,
-    float* dGrainTmp,
-    float* dGrainTmpShared,
-    float* dGrainTmpMid,
-    float* dGrainTmpCoarse,
-    const float* dLensBlurKernel,
-    int lensBlurRadius,
-    const float* dUnsharpKernel,
-    int unsharpRadius,
-    float unsharpAmount,
-    int glareOriginX,
-    int glareOriginY,
-    std::uint64_t glareSeed,
-    float glarePercent,
-    float glareRoughness,
-    const float* dGlareKernel,
-    int glareRadius,
     void* cudaStreamOpaque);
 #endif
 
@@ -776,28 +749,6 @@ namespace {
             return kEmpty;
         }
         return descriptor.filterPlan.components[static_cast<std::size_t>(index)];
-    }
-
-    void bind_spatial_dir_workspace_metadata(
-        const Spektrafilm::SpatialDirDescriptor& descriptor,
-        JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest& request) {
-        if (descriptor.hash == 0) {
-            return;
-        }
-        request.needSpatialDir = true;
-        request.spatialDirDescriptorHash = descriptor.hash;
-        request.spatialDirScratchTier = descriptor.scratchTier;
-        request.spatialDirPlaneRoles = descriptor.planeRoles;
-        request.spatialDirTargetScratchTier = descriptor.targetScratchTier;
-        request.spatialDirTargetPlaneRoles = descriptor.targetPlaneRoles;
-    }
-
-    void request_spatial_dir_filtered_rgb_alias(
-        JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest& request) {
-        request.aliasScannerRgbFromSpatialDirFiltered = true;
-        request.spatialDirTargetScratchTier = request.spatialDirScratchTier;
-        request.spatialDirTargetPlaneRoles = request.spatialDirPlaneRoles;
-        request.spatialDirTargetPlaneRoles.cachedLogRawPlanes = 0;
     }
 
     void bind_spatial_dir_final_develop_to_payload(
@@ -1640,6 +1591,73 @@ namespace {
 
     std::uint64_t instance_token_or_session_seed(std::uint64_t instanceToken, std::uint64_t sessionSeed) {
         return (instanceToken != 0) ? instanceToken : session_seed_or_default(sessionSeed);
+    }
+
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters) Both route call sites share this fixed descriptor context order.
+    bool build_visual_grain_descriptor_for_frame(
+        const Spektrafilm::VisualGrainRecipe& recipe,
+        const Spektrafilm::FilmDevelopRecipe& filmDevelop,
+        Spektrafilm::ProfilePolarity capturePolarity,
+        const Spektrafilm::VisualGrainFrameExtent& renderExtent,
+        const Spektrafilm::VisualGrainFrameExtent& fullFrameExtent,
+        float pixelSizeUm,
+        double frameTime,
+        double frameRate,
+        std::uint64_t sessionSeed,
+        std::uint64_t clipToken,
+        std::optional<Spektrafilm::VisualGrainFrameDescriptor>& out,
+        std::string& diagnostic) {
+        out.reset();
+        diagnostic.clear();
+        if (!recipe.active) {
+            return true;
+        }
+        Spektrafilm::VisualGrainFrameDescriptorInput input{};
+        input.recipe = &recipe;
+        input.filmDevelop = &filmDevelop;
+        input.capturePolarity = capturePolarity;
+        input.renderExtent = renderExtent;
+        input.fullFrameExtent = fullFrameExtent;
+        input.pixelSizeUm = pixelSizeUm;
+        input.frameTime = frameTime;
+        input.frameRate = frameRate;
+        input.sessionSeed = sessionSeed;
+        input.clipToken = clipToken;
+        input.staticNoiseVersion =
+            JuicerAssets::Library::kProcessAssetVersion;
+        Spektrafilm::VisualGrainFrameDescriptor descriptor{};
+        if (!Spektrafilm::build_visual_grain_frame_descriptor(
+                input,
+                descriptor,
+                diagnostic)) {
+            return false;
+        }
+        out = descriptor;
+        return true;
+    }
+
+    // NOLINTEND(bugprone-easily-swappable-parameters)
+    bool visual_grain_full_frame_preflight(
+        const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& descriptor,
+        const OfxRectI& renderWindow,
+        const OfxRectI& sourceBounds,
+        const OfxRectI& fullFrameBounds) {
+        if (!descriptor.has_value() || !descriptor->requiresFullFrame) {
+            return true;
+        }
+        const Spektrafilm::VisualGrainFrameExtent& full =
+            descriptor->fullFrameExtent;
+        const auto matches = [&full](const OfxRectI& rect) {
+            return rect.x1 == full.x && rect.y1 == full.y &&
+                   rect.x2 - rect.x1 == full.width &&
+                   rect.y2 - rect.y1 == full.height;
+        };
+        return descriptor->renderExtent.x == full.x &&
+               descriptor->renderExtent.y == full.y &&
+               descriptor->renderExtent.width == full.width &&
+               descriptor->renderExtent.height == full.height &&
+               matches(renderWindow) && matches(sourceBounds) &&
+               matches(fullFrameBounds);
     }
 
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -2545,6 +2563,43 @@ void JuicerProcessor::processImagesCUDA() {
         const double directSpatialDirDescriptorMs =
             dirProfileEnabled ? elapsed_ms_since(directSpatialDirDescriptorStart) : 0.0;
 
+        std::optional<Spektrafilm::VisualGrainFrameDescriptor>
+            directVisualGrainDescriptor;
+        std::string directGrainDescriptorDiagnostic;
+        if (!build_visual_grain_descriptor_for_frame(
+                directRecipe->visualGrain,
+                directRecipe->filmDevelop,
+                directRecipe->profileRoute.capturePolarity,
+                {win.x1, win.y1, width, height},
+                {directFullFrameRect.x1,
+                 directFullFrameRect.y1,
+                 directFullFrameRect.x2 - directFullFrameRect.x1,
+                 directFullFrameRect.y2 - directFullFrameRect.y1},
+                _pixelSizeUm,
+                _timeFrames,
+                _frameRate,
+                _sessionSeed,
+                static_cast<std::uint64_t>(_clipToken),
+                directVisualGrainDescriptor,
+                directGrainDescriptorDiagnostic)) {
+            throw_direct_restriction(
+                directGrainDescriptorDiagnostic.c_str());
+        }
+        if (!visual_grain_full_frame_preflight(
+                directVisualGrainDescriptor,
+                win,
+                srcBounds,
+                directFullFrameRect)) {
+            throw_direct_restriction(
+                "ResourceDescriptorMismatch phase=grain_preflight field=full_frame_extent");
+        }
+        const bool grainStageActive =
+            directVisualGrainDescriptor.has_value();
+        const bool grainDebugActive =
+            grainStageActive && directRecipe->visualGrain.debugView != 0;
+        const bool useFocusedSplit =
+            scannerPostEffects.active() || grainStageActive;
+
         JuicerProcess::Root::DirectCudaPreparationRequest directPreparation{};
         directPreparation.recipe = directRecipe;
         directPreparation.exposureTables = &directPayload->exposureTables;
@@ -2555,6 +2610,11 @@ void JuicerProcessor::processImagesCUDA() {
         directPreparation.scannerLutDescriptor = &scannerDescriptor;
         directPreparation.scannerPostEffects = &scannerPostEffects;
         directPreparation.spatialDirDescriptor = &directSpatialDir;
+        directPreparation.visualGrainDescriptor =
+            directVisualGrainDescriptor;
+        directPreparation.requestedWidth = width;
+        directPreparation.requestedHeight = height;
+        directPreparation.needCompositeProfileWorkspace = dirProfileEnabled;
 
         std::string directPrepareError;
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
@@ -2650,7 +2710,6 @@ void JuicerProcessor::processImagesCUDA() {
                 directRecipe->filmRaw,
                 directRecipe->filmDevelop,
                 directRecipe->dirCouplers,
-                directRecipe->grainContract,
                 directRecipe->densityBounds,
                 prepared.film,
                 autoExposureScaleDevice,
@@ -2667,20 +2726,14 @@ void JuicerProcessor::processImagesCUDA() {
         const bool directCompositeProfileRequested = dirProfileEnabled;
         const bool directUseFusedScannerPostSpatialDirHandoff =
             directSpatialDir.hash != 0 && scannerPostEffects.active() &&
-            directSpatialDir.approximation == Spektrafilm::DirApproximationMarker::SpektrafilmStrict;
+            directSpatialDir.approximation ==
+                Spektrafilm::DirApproximationMarker::SpektrafilmStrict &&
+            !grainStageActive;
         JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace{};
-        if (directSpatialDir.hash != 0 || scannerPostEffects.active() || directCompositeProfileRequested) {
-            JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest request{};
-            bind_spatial_dir_workspace_metadata(directSpatialDir, request);
-            request.needOptics = scannerPostEffects.active() || directCompositeProfileRequested;
-            request.requestedWidth = width;
-            request.requestedHeight = height;
-            request.needBlurred =
-                scannerPostEffects.glareActive && scannerPostEffects.glareBlurSigmaPx > 0.0f;
-            if (directUseFusedScannerPostSpatialDirHandoff) {
-                request_spatial_dir_filtered_rgb_alias(request);
-            }
-            focusedWorkspace = preparedFrame.bind_workspace_request(request);
+        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest workspaceRequest =
+            preparedFrame.workspace_request();
+        if (workspaceRequest.has_any_family()) {
+            focusedWorkspace = preparedFrame.bind_workspace_request(workspaceRequest);
             std::string transitionError;
             if (!preparedFrame.checkpoint_large_scratch_transition(
                     focusedWorkspace,
@@ -2705,10 +2758,7 @@ void JuicerProcessor::processImagesCUDA() {
         double directPipelineLaunchHostMs = 0.0;
         float directPipelineCudaMs = -1.0f;
         JuicerCuda::CompositePipelineProfile directCompositeProfile{};
-        float* directSpatialDirDensityC = nullptr;
-        float* directSpatialDirDensityM = nullptr;
-        float* directSpatialDirDensityY = nullptr;
-        bool directSpatialDirDensityReady = false;
+        bool directCaptureDensityReady = false;
         if (directSpatialDir.hash != 0) {
             std::string spatialError;
             const auto directDirPrepareStart = std::chrono::steady_clock::now();
@@ -2726,6 +2776,64 @@ void JuicerProcessor::processImagesCUDA() {
             if (dirProfileEnabled) {
                 directDirPrepareMs = elapsed_ms_since(directDirPrepareStart);
             }
+        }
+        JuicerProcess::Root::PreparedCudaFrame::CaptureFilmDensityWorkspaceView
+            directCaptureDensity{};
+        JuicerProcess::Root::PreparedCudaFrame::FocusedRgbWorkspaceView
+            directFocusedRgb{};
+        JuicerProcess::Root::PreparedCudaFrame::VisualGrainWorkspaceView
+            directGrainWorkspace{};
+        JuicerProcess::Root::PreparedCudaFrame::PreparedVisualGrainView
+            directGrainResources{};
+        JuicerCuda::GrainPayload directGrainPayload{};
+        JuicerCuda::GrainKernelPayload directGrainKernels{};
+        if (useFocusedSplit) {
+            std::string focusedWorkspaceError;
+            if (!preparedFrame.stage_optical_workspace(
+                    focusedWorkspace,
+                    _pCudaStream,
+                    focusedWorkspaceError)) {
+                preparedFrame.abort("direct_focused_workspace_stage_failed");
+                throw_submission_fatal(
+                    "direct_focused_workspace_stage",
+                    "direct focused workspace staging failed",
+                    focusedWorkspaceError);
+            }
+            directCaptureDensity =
+                preparedFrame.capture_film_density_workspace(
+                    focusedWorkspace);
+            directFocusedRgb = preparedFrame.focused_rgb_workspace(
+                focusedWorkspace);
+            if (!directCaptureDensity.active || !directFocusedRgb.active ||
+                directCaptureDensity.c != directFocusedRgb.r ||
+                directCaptureDensity.m != directFocusedRgb.g ||
+                directCaptureDensity.y != directFocusedRgb.b) {
+                preparedFrame.abort("direct_focused_triplet_binding_failed");
+                throw_direct_restriction(
+                    "MissingRequiredResource phase=grain_route field=focused_triplet");
+            }
+        }
+        if (grainStageActive) {
+            directGrainResources = preparedFrame.visual_grain_resources();
+            directGrainWorkspace = preparedFrame.visual_grain_workspace(
+                focusedWorkspace);
+            std::string grainPayloadDiagnostic;
+            if (!directGrainResources.active ||
+                !directGrainWorkspace.active ||
+                !JuicerCuda::pack_visual_grain_payload(
+                    directRecipe->visualGrain,
+                    directGrainResources,
+                    directGrainPayload,
+                    directGrainKernels,
+                    grainPayloadDiagnostic)) {
+                preparedFrame.abort("direct_visual_grain_payload_pack_failed");
+                throw_direct_restriction(
+                    grainPayloadDiagnostic.empty()
+                        ? "MissingRequiredResource phase=grain_route field=grain_binding"
+                        : grainPayloadDiagnostic.c_str());
+            }
+        }
+        if (directSpatialDir.hash != 0) {
             const auto scratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
             const auto resources =
                 preparedFrame.spatial_dir_resources(focusedWorkspace, directSpatialDir.hash);
@@ -2858,45 +2966,6 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
             bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
-            if (scannerPostEffects.active() && !directUseFusedScannerPostSpatialDirHandoff) {
-                directSpatialDirDensityC = finalScratch.filteredCorrectionC;
-                directSpatialDirDensityM = finalScratch.filteredCorrectionM;
-                directSpatialDirDensityY = finalScratch.filteredCorrectionY;
-                if (!directSpatialDirDensityC || !directSpatialDirDensityM ||
-                    !directSpatialDirDensityY) {
-                    preparedFrame.abort("direct_spatial_dir_density_binding_failed");
-                    throw_direct_restriction(
-                        "MissingRequiredResource phase=3D-3 field=spatial_dir_density_planes");
-                }
-                const cudaError_t finalDevelopError =
-                    juicer_cuda_direct_focused_spatial_dir_final_develop_density(
-                        &run,
-                        directSpatialDirDensityC,
-                        directSpatialDirDensityM,
-                        directSpatialDirDensityY,
-                        _pCudaStream);
-                if (finalDevelopError != cudaSuccess) {
-                    preparedFrame.abort("direct_spatial_dir_final_develop_density_launch_failed");
-                    throw_cuda_stage_fatal(
-                        "direct_spatial_dir_final_develop_density_launch",
-                        "direct spatial DIR final-develop density launch failed",
-                        finalDevelopError);
-                }
-                if (!preparedFrame.release_spatial_dir_cached_log_raw_after_final_develop(
-                        focusedWorkspace,
-                        _pCudaStream,
-                        releaseError)) {
-                    preparedFrame.abort("direct_spatial_dir_cached_log_raw_release_failed");
-                    throw_submission_fatal(
-                        "direct_spatial_dir_cached_log_raw_release",
-                        "direct spatial DIR cached log raw release failed",
-                        releaseError);
-                }
-                run.filmDevelop.spatialDir.logRawB = nullptr;
-                run.filmDevelop.spatialDir.logRawG = nullptr;
-                run.filmDevelop.spatialDir.logRawR = nullptr;
-                directSpatialDirDensityReady = true;
-            }
             directDirProfileCaptured = dirProfileEnabled;
         }
 
@@ -2982,69 +3051,126 @@ void JuicerProcessor::processImagesCUDA() {
         if (dirProfileEnabled) {
             directPipelineCudaTimer.begin(_pCudaStream);
         }
-        if (scannerPostEffects.active()) {
-            std::string scannerWorkspaceError;
-            if (!preparedFrame.stage_optical_workspace(
-                    focusedWorkspace,
-                    _pCudaStream,
-                    scannerWorkspaceError)) {
-                preparedFrame.abort("direct_scanner_workspace_stage_failed");
-                throw_submission_fatal(
-                    "direct_scanner_workspace_stage",
-                    "direct scanner workspace staging failed",
-                    scannerWorkspaceError);
+        if (useFocusedSplit &&
+            !directUseFusedScannerPostSpatialDirHandoff) {
+            launchError = juicer_cuda_direct_focused_capture_density(
+                &run,
+                directCaptureDensity.c,
+                directCaptureDensity.m,
+                directCaptureDensity.y,
+                _pCudaStream);
+            if (launchError != cudaSuccess) {
+                preparedFrame.abort("direct_capture_density_launch_failed");
+                throw_cuda_stage_fatal(
+                    "direct_capture_density_launch",
+                    "direct capture-film density launch failed",
+                    launchError);
             }
-            const auto post = preparedFrame.scanner_post_effects_resources(
-                focusedWorkspace,
-                scannerPostEffects.hash);
-            if (!post.active) {
-                preparedFrame.abort("direct_scanner_post_effects_view_failed");
-                throw_direct_restriction(
-                    "MissingRequiredResource phase=8C field=scanner_post_effects");
+            directCaptureDensityReady = true;
+            if (directSpatialDir.hash != 0) {
+                std::string releaseError;
+                if (!preparedFrame.release_spatial_dir_cached_log_raw_after_final_develop(
+                        focusedWorkspace,
+                        _pCudaStream,
+                        releaseError)) {
+                    preparedFrame.abort("direct_spatial_dir_cached_log_raw_release_failed");
+                    throw_submission_fatal(
+                        "direct_spatial_dir_cached_log_raw_release",
+                        "direct spatial DIR cached log raw release failed",
+                        releaseError);
+                }
+                run.filmDevelop.spatialDir.logRawB = nullptr;
+                run.filmDevelop.spatialDir.logRawG = nullptr;
+                run.filmDevelop.spatialDir.logRawR = nullptr;
+            }
+            if (grainStageActive) {
+                launchError = juicer_cuda_apply_visual_grain(
+                    &directGrainPayload,
+                    &directGrainKernels,
+                    width,
+                    height,
+                    directCaptureDensity.c,
+                    directCaptureDensity.m,
+                    directCaptureDensity.y,
+                    directGrainWorkspace.filterTemp,
+                    directGrainWorkspace.scaleWork,
+                    directGrainWorkspace.deltaAccum,
+                    directGrainWorkspace.layerWork,
+                    directGrainWorkspace.sharedDelta,
+                    _pCudaStream);
+                if (launchError != cudaSuccess) {
+                    preparedFrame.abort("direct_visual_grain_launch_failed");
+                    throw_cuda_stage_fatal(
+                        "direct_visual_grain_launch",
+                        "direct visual grain launch failed",
+                        launchError);
+                }
+            }
+        }
+
+        if (useFocusedSplit) {
+            JuicerProcess::Root::PreparedCudaFrame::ScannerPostEffectsPreparedView
+                post{};
+            if (scannerPostEffects.active() && !grainDebugActive) {
+                post = preparedFrame.scanner_post_effects_resources(
+                    focusedWorkspace,
+                    scannerPostEffects.hash);
+                if (!post.active ||
+                    post.scratch.rgbR != directFocusedRgb.r ||
+                    post.scratch.rgbG != directFocusedRgb.g ||
+                    post.scratch.rgbB != directFocusedRgb.b) {
+                    preparedFrame.abort("direct_scanner_post_effects_view_failed");
+                    throw_direct_restriction(
+                        "MissingRequiredResource phase=8C field=scanner_post_effects");
+                }
             }
             const bool directAliasProfileActive =
-                dirProfileEnabled && directUseFusedScannerPostSpatialDirHandoff;
-            if (directSpatialDir.hash != 0 && !directUseFusedScannerPostSpatialDirHandoff) {
-                if (!directSpatialDirDensityReady) {
-                    preparedFrame.abort("direct_spatial_dir_density_not_ready");
-                    throw_direct_restriction(
-                        "MissingRequiredResource phase=8C field=spatial_dir_density_planes");
-                }
-                launchError = juicer_cuda_direct_focused_scan_linear_density_rgb(
-                    &run,
-                    directSpatialDirDensityC,
-                    directSpatialDirDensityM,
-                    directSpatialDirDensityY,
-                    post.scratch.rgbR,
-                    post.scratch.rgbG,
-                    post.scratch.rgbB,
-                    _pCudaStream);
-            } else {
-                CudaEventElapsedTimer directAliasScanLinearTimer;
-                if (directAliasProfileActive) {
-                    directAliasScanLinearTimer.begin(_pCudaStream);
-                }
-                launchError = juicer_cuda_direct_focused_scan_linear_rgb(
-                    &run,
-                    post.scratch.rgbR,
-                    post.scratch.rgbG,
-                    post.scratch.rgbB,
-                    directAliasProfileActive ? &directCompositeProfile : nullptr,
-                    _pCudaStream);
-                if (launchError == cudaSuccess && directAliasProfileActive) {
-                    record_alias_route_stage(
-                        directCompositeProfile,
-                        directCompositeProfile.aliasFusedScanLinear,
-                        directAliasScanLinearTimer,
+                dirProfileEnabled &&
+                directUseFusedScannerPostSpatialDirHandoff &&
+                !grainDebugActive;
+            if (!grainDebugActive) {
+                if (directUseFusedScannerPostSpatialDirHandoff) {
+                    CudaEventElapsedTimer directAliasScanLinearTimer;
+                    if (directAliasProfileActive) {
+                        directAliasScanLinearTimer.begin(_pCudaStream);
+                    }
+                    launchError = juicer_cuda_direct_focused_scan_linear_rgb(
+                        &run,
+                        directFocusedRgb.r,
+                        directFocusedRgb.g,
+                        directFocusedRgb.b,
+                        directAliasProfileActive ? &directCompositeProfile : nullptr,
+                        _pCudaStream);
+                    if (launchError == cudaSuccess && directAliasProfileActive) {
+                        record_alias_route_stage(
+                            directCompositeProfile,
+                            directCompositeProfile.aliasFusedScanLinear,
+                            directAliasScanLinearTimer,
+                            _pCudaStream);
+                    }
+                } else {
+                    if (!directCaptureDensityReady) {
+                        preparedFrame.abort("direct_capture_density_not_ready");
+                        throw_direct_restriction(
+                            "MissingRequiredResource phase=grain_route field=capture_density");
+                    }
+                    launchError = juicer_cuda_direct_focused_scan_linear_density_rgb(
+                        &run,
+                        directCaptureDensity.c,
+                        directCaptureDensity.m,
+                        directCaptureDensity.y,
+                        directFocusedRgb.r,
+                        directFocusedRgb.g,
+                        directFocusedRgb.b,
                         _pCudaStream);
                 }
-            }
-            if (launchError != cudaSuccess) {
-                preparedFrame.abort("direct_scanner_linear_launch_failed");
-                throw_cuda_stage_fatal(
-                    "direct_scanner_linear_launch",
-                    "direct scanner-linear launch failed",
-                    launchError);
+                if (launchError != cudaSuccess) {
+                    preparedFrame.abort("direct_scanner_linear_launch_failed");
+                    throw_cuda_stage_fatal(
+                        "direct_scanner_linear_launch",
+                        "direct scanner-linear launch failed",
+                        launchError);
+                }
             }
             if (directDirUsesSourceBuildCachedLogRaw) {
                 std::string releaseError;
@@ -3062,7 +3188,7 @@ void JuicerProcessor::processImagesCUDA() {
                 run.filmDevelop.spatialDir.logRawG = nullptr;
                 run.filmDevelop.spatialDir.logRawR = nullptr;
             }
-            if (directSpatialDir.hash != 0 && !directUseFusedScannerPostSpatialDirHandoff) {
+            if (directSpatialDir.hash != 0) {
                 std::string releaseError;
                 if (!preparedFrame.release_spatial_dir_stage_after_scan_linear(
                         focusedWorkspace,
@@ -3082,15 +3208,15 @@ void JuicerProcessor::processImagesCUDA() {
             }
             launchError = juicer_cuda_direct_focused_scanner_post_output(
                 &run,
-                post.scratch.rgbR,
-                post.scratch.rgbG,
-                post.scratch.rgbB,
-                post.scratch.tmp,
-                post.lensBlur.weights,
-                post.lensBlur.radius,
-                post.unsharp.weights,
-                post.unsharp.radius,
-                scannerPostEffects.unsharpAmount,
+                directFocusedRgb.r,
+                directFocusedRgb.g,
+                directFocusedRgb.b,
+                post.active ? post.scratch.tmp : nullptr,
+                post.active ? post.lensBlur.weights : nullptr,
+                post.active ? post.lensBlur.radius : 0,
+                post.active ? post.unsharp.weights : nullptr,
+                post.active ? post.unsharp.radius : 0,
+                post.active ? scannerPostEffects.unsharpAmount : 0.0f,
                 directAliasProfileActive ? &directCompositeProfile : nullptr,
                 _pCudaStream);
             if (launchError == cudaSuccess && directAliasProfileActive) {
@@ -3099,22 +3225,6 @@ void JuicerProcessor::processImagesCUDA() {
                     directCompositeProfile.aliasScannerPostOutput,
                     directAliasPostOutputTimer,
                     _pCudaStream);
-            }
-            if (launchError == cudaSuccess &&
-                directSpatialDir.hash != 0 &&
-                directUseFusedScannerPostSpatialDirHandoff) {
-                std::string releaseError;
-                if (!preparedFrame.release_spatial_dir_stage_after_scan_linear(
-                        focusedWorkspace,
-                        _pCudaStream,
-                        releaseError)) {
-                    preparedFrame.abort("direct_spatial_dir_stage_release_failed");
-                    throw_submission_fatal(
-                        "direct_spatial_dir_stage_release",
-                        "direct spatial DIR stage release failed",
-                        releaseError);
-                }
-                clear_spatial_dir_final_develop_payload_bindings(run.filmDevelop);
             }
         } else {
             launchError = juicer_cuda_negative_direct_pipeline(&run, _pCudaStream);
@@ -3129,7 +3239,7 @@ void JuicerProcessor::processImagesCUDA() {
             preparedFrame.abort("direct_negative_pipeline_launch_failed");
             throw_cuda_stage_fatal("direct_negative_pipeline_launch", "direct negative pipeline launch failed", launchError);
         }
-        if (directSpatialDir.hash != 0 && !scannerPostEffects.active()) {
+        if (directSpatialDir.hash != 0 && !useFocusedSplit) {
             std::string releaseError;
             if (!preparedFrame.release_spatial_dir_cached_log_raw_after_final_develop(
                     focusedWorkspace,
@@ -3228,6 +3338,43 @@ void JuicerProcessor::processImagesCUDA() {
         const double spatialDirDescriptorMs =
             dirProfileEnabled ? elapsed_ms_since(spatialDirDescriptorStart) : 0.0;
 
+        std::optional<Spektrafilm::VisualGrainFrameDescriptor>
+            printVisualGrainDescriptor;
+        std::string printGrainDescriptorDiagnostic;
+        if (!build_visual_grain_descriptor_for_frame(
+                printRecipe->visualGrain,
+                printRecipe->filmDevelop,
+                printRecipe->profileRoute.capturePolarity,
+                {win.x1, win.y1, width, height},
+                {printFullFrameRect.x1,
+                 printFullFrameRect.y1,
+                 printFullFrameRect.x2 - printFullFrameRect.x1,
+                 printFullFrameRect.y2 - printFullFrameRect.y1},
+                _pixelSizeUm,
+                _timeFrames,
+                _frameRate,
+                _sessionSeed,
+                static_cast<std::uint64_t>(_clipToken),
+                printVisualGrainDescriptor,
+                printGrainDescriptorDiagnostic)) {
+            throw_print_restriction(
+                printGrainDescriptorDiagnostic.c_str());
+        }
+        if (!visual_grain_full_frame_preflight(
+                printVisualGrainDescriptor,
+                win,
+                srcBounds,
+                printFullFrameRect)) {
+            throw_print_restriction(
+                "ResourceDescriptorMismatch phase=grain_preflight field=full_frame_extent");
+        }
+        const bool grainStageActive =
+            printVisualGrainDescriptor.has_value();
+        const bool grainDebugActive =
+            grainStageActive && printRecipe->visualGrain.debugView != 0;
+        const bool useFocusedSplit =
+            scannerPostEffects.active() || grainStageActive;
+
         JuicerProcess::Root::PrintCudaPreparationRequest preparation{};
         preparation.recipe = printRecipe;
         preparation.exposureTables = &printPayload->exposureTables;
@@ -3238,6 +3385,11 @@ void JuicerProcessor::processImagesCUDA() {
         preparation.scannerLutDescriptor = &scannerDescriptor;
         preparation.scannerPostEffects = &scannerPostEffects;
         preparation.spatialDirDescriptor = &spatialDir;
+        preparation.visualGrainDescriptor =
+            printVisualGrainDescriptor;
+        preparation.requestedWidth = width;
+        preparation.requestedHeight = height;
+        preparation.needCompositeProfileWorkspace = dirProfileEnabled;
 
         std::string prepareError;
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
@@ -3388,7 +3540,6 @@ void JuicerProcessor::processImagesCUDA() {
                 printRecipe->filmRaw,
                 printRecipe->filmDevelop,
                 printRecipe->dirCouplers,
-                printRecipe->grainContract,
                 printRecipe->enlargerFilmBounds,
                 prepared.film,
                 autoExposureScaleDevice,
@@ -3416,20 +3567,14 @@ void JuicerProcessor::processImagesCUDA() {
         const bool printCompositeProfileRequested = dirProfileEnabled;
         const bool printUseFusedScannerPostSpatialDirHandoff =
             spatialDir.hash != 0 && scannerPostEffects.active() &&
-            spatialDir.approximation == Spektrafilm::DirApproximationMarker::SpektrafilmStrict;
+            spatialDir.approximation ==
+                Spektrafilm::DirApproximationMarker::SpektrafilmStrict &&
+            !grainStageActive;
         JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace{};
-        if (spatialDir.hash != 0 || scannerPostEffects.active() || printCompositeProfileRequested) {
-            JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest request{};
-            bind_spatial_dir_workspace_metadata(spatialDir, request);
-            request.needOptics = scannerPostEffects.active() || printCompositeProfileRequested;
-            request.requestedWidth = width;
-            request.requestedHeight = height;
-            request.needBlurred =
-                scannerPostEffects.glareActive && scannerPostEffects.glareBlurSigmaPx > 0.0f;
-            if (printUseFusedScannerPostSpatialDirHandoff) {
-                request_spatial_dir_filtered_rgb_alias(request);
-            }
-            focusedWorkspace = preparedFrame.bind_workspace_request(request);
+        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest workspaceRequest =
+            preparedFrame.workspace_request();
+        if (workspaceRequest.has_any_family()) {
+            focusedWorkspace = preparedFrame.bind_workspace_request(workspaceRequest);
             std::string transitionError;
             if (!preparedFrame.checkpoint_large_scratch_transition(
                     focusedWorkspace,
@@ -3454,10 +3599,7 @@ void JuicerProcessor::processImagesCUDA() {
         double printPipelineLaunchHostMs = 0.0;
         float printPipelineCudaMs = -1.0f;
         JuicerCuda::CompositePipelineProfile printCompositeProfile{};
-        float* printSpatialDirDensityC = nullptr;
-        float* printSpatialDirDensityM = nullptr;
-        float* printSpatialDirDensityY = nullptr;
-        bool printSpatialDirDensityReady = false;
+        bool printCaptureDensityReady = false;
         if (spatialDir.hash != 0) {
             std::string spatialError;
             const auto printDirPrepareStart = std::chrono::steady_clock::now();
@@ -3475,6 +3617,64 @@ void JuicerProcessor::processImagesCUDA() {
             if (dirProfileEnabled) {
                 printDirPrepareMs = elapsed_ms_since(printDirPrepareStart);
             }
+        }
+        JuicerProcess::Root::PreparedCudaFrame::CaptureFilmDensityWorkspaceView
+            printCaptureDensity{};
+        JuicerProcess::Root::PreparedCudaFrame::FocusedRgbWorkspaceView
+            printFocusedRgb{};
+        JuicerProcess::Root::PreparedCudaFrame::VisualGrainWorkspaceView
+            printGrainWorkspace{};
+        JuicerProcess::Root::PreparedCudaFrame::PreparedVisualGrainView
+            printGrainResources{};
+        JuicerCuda::GrainPayload printGrainPayload{};
+        JuicerCuda::GrainKernelPayload printGrainKernels{};
+        if (useFocusedSplit) {
+            std::string focusedWorkspaceError;
+            if (!preparedFrame.stage_optical_workspace(
+                    focusedWorkspace,
+                    _pCudaStream,
+                    focusedWorkspaceError)) {
+                preparedFrame.abort("print_focused_workspace_stage_failed");
+                throw_submission_fatal(
+                    "print_focused_workspace_stage",
+                    "print focused workspace staging failed",
+                    focusedWorkspaceError);
+            }
+            printCaptureDensity =
+                preparedFrame.capture_film_density_workspace(
+                    focusedWorkspace);
+            printFocusedRgb = preparedFrame.focused_rgb_workspace(
+                focusedWorkspace);
+            if (!printCaptureDensity.active || !printFocusedRgb.active ||
+                printCaptureDensity.c != printFocusedRgb.r ||
+                printCaptureDensity.m != printFocusedRgb.g ||
+                printCaptureDensity.y != printFocusedRgb.b) {
+                preparedFrame.abort("print_focused_triplet_binding_failed");
+                throw_print_restriction(
+                    "MissingRequiredResource phase=grain_route field=focused_triplet");
+            }
+        }
+        if (grainStageActive) {
+            printGrainResources = preparedFrame.visual_grain_resources();
+            printGrainWorkspace = preparedFrame.visual_grain_workspace(
+                focusedWorkspace);
+            std::string grainPayloadDiagnostic;
+            if (!printGrainResources.active ||
+                !printGrainWorkspace.active ||
+                !JuicerCuda::pack_visual_grain_payload(
+                    printRecipe->visualGrain,
+                    printGrainResources,
+                    printGrainPayload,
+                    printGrainKernels,
+                    grainPayloadDiagnostic)) {
+                preparedFrame.abort("print_visual_grain_payload_pack_failed");
+                throw_print_restriction(
+                    grainPayloadDiagnostic.empty()
+                        ? "MissingRequiredResource phase=grain_route field=grain_binding"
+                        : grainPayloadDiagnostic.c_str());
+            }
+        }
+        if (spatialDir.hash != 0) {
             const auto scratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
             const auto resources =
                 preparedFrame.spatial_dir_resources(focusedWorkspace, spatialDir.hash);
@@ -3607,45 +3807,6 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
             bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
-            if (scannerPostEffects.active() && !printUseFusedScannerPostSpatialDirHandoff) {
-                printSpatialDirDensityC = finalScratch.filteredCorrectionC;
-                printSpatialDirDensityM = finalScratch.filteredCorrectionM;
-                printSpatialDirDensityY = finalScratch.filteredCorrectionY;
-                if (!printSpatialDirDensityC || !printSpatialDirDensityM ||
-                    !printSpatialDirDensityY) {
-                    preparedFrame.abort("print_spatial_dir_density_binding_failed");
-                    throw_print_restriction(
-                        "MissingRequiredResource phase=4C field=spatial_dir_density_planes");
-                }
-                const cudaError_t finalDevelopError =
-                    juicer_cuda_print_focused_spatial_dir_final_develop_density(
-                        &run,
-                        printSpatialDirDensityC,
-                        printSpatialDirDensityM,
-                        printSpatialDirDensityY,
-                        _pCudaStream);
-                if (finalDevelopError != cudaSuccess) {
-                    preparedFrame.abort("print_spatial_dir_final_develop_density_launch_failed");
-                    throw_cuda_stage_fatal(
-                        "print_spatial_dir_final_develop_density_launch",
-                        "print spatial DIR final-develop density launch failed",
-                        finalDevelopError);
-                }
-                if (!preparedFrame.release_spatial_dir_cached_log_raw_after_final_develop(
-                        focusedWorkspace,
-                        _pCudaStream,
-                        releaseError)) {
-                    preparedFrame.abort("print_spatial_dir_cached_log_raw_release_failed");
-                    throw_submission_fatal(
-                        "print_spatial_dir_cached_log_raw_release",
-                        "print spatial DIR cached log raw release failed",
-                        releaseError);
-                }
-                run.filmDevelop.spatialDir.logRawB = nullptr;
-                run.filmDevelop.spatialDir.logRawG = nullptr;
-                run.filmDevelop.spatialDir.logRawR = nullptr;
-                printSpatialDirDensityReady = true;
-            }
             printDirProfileCaptured = dirProfileEnabled;
         }
 
@@ -3741,25 +3902,94 @@ void JuicerProcessor::processImagesCUDA() {
         if (dirProfileEnabled) {
             printPipelineCudaTimer.begin(_pCudaStream);
         }
-        if (scannerPostEffects.active()) {
-            std::string scannerWorkspaceError;
-            if (!preparedFrame.stage_optical_workspace(
-                    focusedWorkspace,
-                    _pCudaStream,
-                    scannerWorkspaceError)) {
-                preparedFrame.abort("print_scanner_workspace_stage_failed");
-                throw_submission_fatal(
-                    "print_scanner_workspace_stage",
-                    "print scanner workspace staging failed",
-                    scannerWorkspaceError);
+        if (useFocusedSplit &&
+            !printUseFusedScannerPostSpatialDirHandoff) {
+            launchError = juicer_cuda_print_focused_capture_density(
+                &run,
+                printCaptureDensity.c,
+                printCaptureDensity.m,
+                printCaptureDensity.y,
+                _pCudaStream);
+            if (launchError != cudaSuccess) {
+                preparedFrame.abort("print_capture_density_launch_failed");
+                throw_cuda_stage_fatal(
+                    "print_capture_density_launch",
+                    "print capture-film density launch failed",
+                    launchError);
             }
-            const auto post = preparedFrame.scanner_post_effects_resources(
-                focusedWorkspace,
-                scannerPostEffects.hash);
-            if (!post.active) {
-                preparedFrame.abort("print_scanner_post_effects_view_failed");
-                throw_print_restriction(
-                    "MissingRequiredResource phase=8C field=scanner_post_effects");
+            printCaptureDensityReady = true;
+            if (spatialDir.hash != 0) {
+                std::string releaseError;
+                if (!preparedFrame.release_spatial_dir_cached_log_raw_after_final_develop(
+                        focusedWorkspace,
+                        _pCudaStream,
+                        releaseError)) {
+                    preparedFrame.abort("print_spatial_dir_cached_log_raw_release_failed");
+                    throw_submission_fatal(
+                        "print_spatial_dir_cached_log_raw_release",
+                        "print spatial DIR cached log raw release failed",
+                        releaseError);
+                }
+                run.filmDevelop.spatialDir.logRawB = nullptr;
+                run.filmDevelop.spatialDir.logRawG = nullptr;
+                run.filmDevelop.spatialDir.logRawR = nullptr;
+            }
+            if (grainStageActive) {
+                launchError = juicer_cuda_apply_visual_grain(
+                    &printGrainPayload,
+                    &printGrainKernels,
+                    width,
+                    height,
+                    printCaptureDensity.c,
+                    printCaptureDensity.m,
+                    printCaptureDensity.y,
+                    printGrainWorkspace.filterTemp,
+                    printGrainWorkspace.scaleWork,
+                    printGrainWorkspace.deltaAccum,
+                    printGrainWorkspace.layerWork,
+                    printGrainWorkspace.sharedDelta,
+                    _pCudaStream);
+                if (launchError != cudaSuccess) {
+                    preparedFrame.abort("print_visual_grain_launch_failed");
+                    throw_cuda_stage_fatal(
+                        "print_visual_grain_launch",
+                        "print visual grain launch failed",
+                        launchError);
+                }
+            }
+            if (!grainDebugActive) {
+                launchError =
+                    juicer_cuda_print_focused_continue_from_capture_density(
+                        &run,
+                        printCaptureDensity.c,
+                        printCaptureDensity.m,
+                        printCaptureDensity.y,
+                        _pCudaStream);
+                if (launchError != cudaSuccess) {
+                    preparedFrame.abort("print_continuation_from_capture_density_launch_failed");
+                    throw_cuda_stage_fatal(
+                        "print_continuation_from_capture_density_launch",
+                        "print continuation from capture density launch failed",
+                        launchError);
+                }
+            }
+        }
+
+        if (useFocusedSplit) {
+            JuicerProcess::Root::PreparedCudaFrame::ScannerPostEffectsPreparedView
+                post{};
+            if (scannerPostEffects.active() && !grainDebugActive) {
+                post = preparedFrame.scanner_post_effects_resources(
+                    focusedWorkspace,
+                    scannerPostEffects.hash);
+                if (!post.active ||
+                    post.scratch.rgbR != printFocusedRgb.r ||
+                    post.scratch.rgbG != printFocusedRgb.g ||
+                    post.scratch.rgbB != printFocusedRgb.b) {
+                    preparedFrame.abort("print_scanner_post_effects_view_failed");
+                    throw_print_restriction(
+                        "MissingRequiredResource phase=8C field=scanner_post_effects");
+                }
             }
             const std::uint64_t glareSeed = Hash::hash_uint64_values(
                 {printRecipe->hash,
@@ -3767,66 +3997,70 @@ void JuicerProcessor::processImagesCUDA() {
                  static_cast<std::uint64_t>(srcBounds.x1),
                  static_cast<std::uint64_t>(srcBounds.y1)});
             const bool printAliasProfileActive =
-                dirProfileEnabled && printUseFusedScannerPostSpatialDirHandoff;
-            if (spatialDir.hash != 0 && !printUseFusedScannerPostSpatialDirHandoff) {
-                if (!printSpatialDirDensityReady) {
-                    preparedFrame.abort("print_spatial_dir_density_not_ready");
-                    throw_print_restriction(
-                        "MissingRequiredResource phase=8C field=spatial_dir_density_planes");
-                }
-                launchError = juicer_cuda_print_focused_scan_linear_density_rgb(
-                    &run,
-                    printSpatialDirDensityC,
-                    printSpatialDirDensityM,
-                    printSpatialDirDensityY,
-                    post.scratch.rgbR,
-                    post.scratch.rgbG,
-                    post.scratch.rgbB,
-                    post.scratch.tmp,
-                    post.scratch.blurred,
-                    srcBounds.x1,
-                    srcBounds.y1,
-                    glareSeed,
-                    scannerPostEffects.glarePercent,
-                    scannerPostEffects.glareRoughness,
-                    post.glare.weights,
-                    post.glare.radius,
-                    _pCudaStream);
-            } else {
-                CudaEventElapsedTimer printAliasScanLinearTimer;
-                if (printAliasProfileActive) {
-                    printAliasScanLinearTimer.begin(_pCudaStream);
-                }
-                launchError = juicer_cuda_print_focused_scan_linear_rgb(
-                    &run,
-                    post.scratch.rgbR,
-                    post.scratch.rgbG,
-                    post.scratch.rgbB,
-                    post.scratch.tmp,
-                    post.scratch.blurred,
-                    srcBounds.x1,
-                    srcBounds.y1,
-                    glareSeed,
-                    scannerPostEffects.glarePercent,
-                    scannerPostEffects.glareRoughness,
-                    post.glare.weights,
-                    post.glare.radius,
-                    printAliasProfileActive ? &printCompositeProfile : nullptr,
-                    _pCudaStream);
-                if (launchError == cudaSuccess && printAliasProfileActive) {
-                    record_alias_route_stage(
-                        printCompositeProfile,
-                        printCompositeProfile.aliasFusedScanLinear,
-                        printAliasScanLinearTimer,
+                dirProfileEnabled &&
+                printUseFusedScannerPostSpatialDirHandoff &&
+                !grainDebugActive;
+            if (!grainDebugActive) {
+                if (printUseFusedScannerPostSpatialDirHandoff) {
+                    CudaEventElapsedTimer printAliasScanLinearTimer;
+                    if (printAliasProfileActive) {
+                        printAliasScanLinearTimer.begin(_pCudaStream);
+                    }
+                    launchError = juicer_cuda_print_focused_scan_linear_rgb(
+                        &run,
+                        printFocusedRgb.r,
+                        printFocusedRgb.g,
+                        printFocusedRgb.b,
+                        post.scratch.tmp,
+                        post.scratch.blurred,
+                        srcBounds.x1,
+                        srcBounds.y1,
+                        glareSeed,
+                        scannerPostEffects.glarePercent,
+                        scannerPostEffects.glareRoughness,
+                        post.glare.weights,
+                        post.glare.radius,
+                        printAliasProfileActive ? &printCompositeProfile : nullptr,
+                        _pCudaStream);
+                    if (launchError == cudaSuccess && printAliasProfileActive) {
+                        record_alias_route_stage(
+                            printCompositeProfile,
+                            printCompositeProfile.aliasFusedScanLinear,
+                            printAliasScanLinearTimer,
+                            _pCudaStream);
+                    }
+                } else {
+                    if (!printCaptureDensityReady) {
+                        preparedFrame.abort("print_capture_density_not_ready");
+                        throw_print_restriction(
+                            "MissingRequiredResource phase=grain_route field=capture_density");
+                    }
+                    launchError = juicer_cuda_print_focused_scan_linear_density_rgb(
+                        &run,
+                        printCaptureDensity.c,
+                        printCaptureDensity.m,
+                        printCaptureDensity.y,
+                        printFocusedRgb.r,
+                        printFocusedRgb.g,
+                        printFocusedRgb.b,
+                        post.active ? post.scratch.tmp : nullptr,
+                        post.active ? post.scratch.blurred : nullptr,
+                        srcBounds.x1,
+                        srcBounds.y1,
+                        glareSeed,
+                        post.active ? scannerPostEffects.glarePercent : 0.0f,
+                        post.active ? scannerPostEffects.glareRoughness : 0.0f,
+                        post.active ? post.glare.weights : nullptr,
+                        post.active ? post.glare.radius : 0,
                         _pCudaStream);
                 }
-            }
-            if (launchError != cudaSuccess) {
-                preparedFrame.abort("print_scanner_linear_launch_failed");
-                throw_cuda_stage_fatal(
-                    "print_scanner_linear_launch",
-                    "print scanner-linear launch failed",
-                    launchError);
+                if (launchError != cudaSuccess) {
+                    preparedFrame.abort("print_scanner_linear_launch_failed");
+                    throw_cuda_stage_fatal(
+                        "print_scanner_linear_launch",
+                        "print scanner-linear launch failed",
+                        launchError);
+                }
             }
             if (printDirUsesSourceBuildCachedLogRaw) {
                 std::string releaseError;
@@ -3844,7 +4078,7 @@ void JuicerProcessor::processImagesCUDA() {
                 run.filmDevelop.spatialDir.logRawG = nullptr;
                 run.filmDevelop.spatialDir.logRawR = nullptr;
             }
-            if (spatialDir.hash != 0 && !printUseFusedScannerPostSpatialDirHandoff) {
+            if (spatialDir.hash != 0) {
                 std::string releaseError;
                 if (!preparedFrame.release_spatial_dir_stage_after_scan_linear(
                         focusedWorkspace,
@@ -3864,15 +4098,15 @@ void JuicerProcessor::processImagesCUDA() {
             }
             launchError = juicer_cuda_print_focused_scanner_post_output(
                 &run,
-                post.scratch.rgbR,
-                post.scratch.rgbG,
-                post.scratch.rgbB,
-                post.scratch.tmp,
-                post.lensBlur.weights,
-                post.lensBlur.radius,
-                post.unsharp.weights,
-                post.unsharp.radius,
-                scannerPostEffects.unsharpAmount,
+                printFocusedRgb.r,
+                printFocusedRgb.g,
+                printFocusedRgb.b,
+                post.active ? post.scratch.tmp : nullptr,
+                post.active ? post.lensBlur.weights : nullptr,
+                post.active ? post.lensBlur.radius : 0,
+                post.active ? post.unsharp.weights : nullptr,
+                post.active ? post.unsharp.radius : 0,
+                post.active ? scannerPostEffects.unsharpAmount : 0.0f,
                 printAliasProfileActive ? &printCompositeProfile : nullptr,
                 _pCudaStream);
             if (launchError == cudaSuccess && printAliasProfileActive) {
@@ -3881,22 +4115,6 @@ void JuicerProcessor::processImagesCUDA() {
                     printCompositeProfile.aliasScannerPostOutput,
                     printAliasPostOutputTimer,
                     _pCudaStream);
-            }
-            if (launchError == cudaSuccess &&
-                spatialDir.hash != 0 &&
-                printUseFusedScannerPostSpatialDirHandoff) {
-                std::string releaseError;
-                if (!preparedFrame.release_spatial_dir_stage_after_scan_linear(
-                        focusedWorkspace,
-                        _pCudaStream,
-                        releaseError)) {
-                    preparedFrame.abort("print_spatial_dir_stage_release_failed");
-                    throw_submission_fatal(
-                        "print_spatial_dir_stage_release",
-                        "print spatial DIR stage release failed",
-                        releaseError);
-                }
-                clear_spatial_dir_final_develop_payload_bindings(run.filmDevelop);
             }
         } else {
             launchError = juicer_cuda_print_focused_pipeline(&run, _pCudaStream);
@@ -3914,7 +4132,7 @@ void JuicerProcessor::processImagesCUDA() {
                 "focused print pipeline launch failed",
                 launchError);
         }
-        if (spatialDir.hash != 0 && !scannerPostEffects.active()) {
+        if (spatialDir.hash != 0 && !useFocusedSplit) {
             std::string releaseError;
             if (!preparedFrame.release_spatial_dir_cached_log_raw_after_final_develop(
                     focusedWorkspace,

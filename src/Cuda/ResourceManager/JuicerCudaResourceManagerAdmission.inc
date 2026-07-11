@@ -486,8 +486,8 @@ bool scratch_candidate_required_by_request(
             return descriptor.needOptics && descriptor.needBlurred;
         case ScratchPolicyCandidate::OpticsAux:
             return descriptor.needOptics && descriptor.needAux;
-        case ScratchPolicyCandidate::OpticsGrainTriplet:
-            return descriptor.needOptics && descriptor.needGrainTriplet;
+        case ScratchPolicyCandidate::OpticsGrainLayerWork:
+            return descriptor.needOptics && descriptor.needGrainLayerWork;
         case ScratchPolicyCandidate::OpticsGrainShared:
             return descriptor.needOptics && descriptor.needGrainShared;
         case ScratchPolicyCandidate::OpticsGateMask:
@@ -2275,7 +2275,8 @@ std::size_t estimate_optics_growth_bytes(
     bool needBlurredScratch,
     bool aliasScannerRgbFromSpatialDirFiltered,
     bool needAuxScratch,
-    bool needGrainScratch,
+    bool needSharedTmpScratch,
+    bool needGrainLayerWorkScratch,
     bool needGrainSharedScratch,
     bool needGateMask) noexcept {
     const std::size_t planeBytes = plane_bytes_for_extent(width, height);
@@ -2315,7 +2316,7 @@ std::size_t estimate_optics_growth_bytes(
                                 scratch.tmp == resources.sharedTmpPlane &&
                                 resources.sharedTmpPlane &&
                                 resources.sharedTmpCapacityElements >= requiredElements;
-    if (!sharedTmpMatch) {
+    if (needSharedTmpScratch && !sharedTmpMatch) {
         addPlane(); // shared tmp plane
     }
 
@@ -2325,14 +2326,8 @@ std::size_t estimate_optics_growth_bytes(
     if (needAuxScratch && (fullRebuild || !scratch.aux)) {
         addPlane();
     }
-    if (needGrainScratch) {
+    if (needGrainLayerWorkScratch) {
         if (fullRebuild || !scratch.grainTmp) {
-            addPlane();
-        }
-        if (fullRebuild || !scratch.grainTmpMid) {
-            addPlane();
-        }
-        if (fullRebuild || !scratch.grainTmpCoarse) {
             addPlane();
         }
     }
@@ -2559,8 +2554,10 @@ std::size_t estimate_scratch_request_allocation_bytes(
         }
     };
 
+    if (descriptor.needSharedTmp) {
+        add_plane(1);
+    }
     if (descriptor.needOptics) {
-        add_plane(1); // shared tmp plane used by optics tmp.
         if (!descriptor.aliasScannerRgbFromSpatialDirFiltered) {
             add_plane(3); // rgbR/rgbG/rgbB
         }
@@ -2570,8 +2567,8 @@ std::size_t estimate_scratch_request_allocation_bytes(
         if (descriptor.needAux) {
             add_plane(1);
         }
-        if (descriptor.needGrainTriplet) {
-            add_plane(3);
+        if (descriptor.needGrainLayerWork) {
+            add_plane(1);
         }
         if (descriptor.needGrainShared) {
             add_plane(1);
@@ -2589,9 +2586,6 @@ std::size_t estimate_scratch_request_allocation_bytes(
 
     if (descriptor.needSpatialDir) {
         const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.spatialDirPlaneRoles;
-        if (!descriptor.needOptics && spatial_dir_request_needs_shared_tmp_plane(descriptor)) {
-            add_plane(1); // filterTemp aliases shared tmp.
-        }
         add_plane(roles.rawCorrectionPlanes);
         add_plane(roles.filteredCorrectionPlanes);
         add_plane(std::max(0, roles.filterTempPlanes - 1)); // filterTemp aliases shared tmp.

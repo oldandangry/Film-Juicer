@@ -2095,6 +2095,10 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
 
 JuicerEffect::~JuicerEffect() {
     try {
+        if (_state) {
+            JuicerProcess::root().retire_grain_static_instance(
+                _state->instanceToken);
+        }
         _state.reset();
     } catch (...) {
         JuicerLogging::discard_current_exception();

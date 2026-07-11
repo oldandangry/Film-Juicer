@@ -2320,18 +2320,6 @@ namespace {
         return y0 + t * (y1 - y0);
     }
 
-    __device__ __forceinline__ JuicerCuda::DeviceCurveView curve_for_channel_device(
-        const JuicerCuda::FilmDevelopPayload& dev,
-        int channel) {
-        if (channel == 0) {
-            return dev.densR;
-        }
-        if (channel == 1) {
-            return dev.densG;
-        }
-        return dev.densB;
-    }
-
 } // namespace
 
 __global__ void develop_film_density_kernel(
@@ -2436,6 +2424,47 @@ __global__ void grain_accumulate_kernel(float* dst, const float* src, int n) {
     dst[idx] = device_isfinite(v) ? v : 0.0f;
 }
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) Focused CUDA kernels use fixed launch bindings.
+__global__ void grain_accumulate_weighted_kernel(
+    float* dst,
+    const float* src,
+    int n,
+    float weight) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n || !dst || !src) {
+        return;
+    }
+    const float w = device_isfinite(weight) ? weight : 0.0f;
+    const float v = dst[idx] + w * src[idx];
+    dst[idx] = device_isfinite(v) ? v : 0.0f;
+}
+
+__global__ void grain_scale_kernel(float* inOut, int n, float scale) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n || !inOut) {
+        return;
+    }
+    const float s = device_isfinite(scale) ? scale : 0.0f;
+    const float v = inOut[idx] * s;
+    inOut[idx] = device_isfinite(v) ? v : 0.0f;
+}
+
+__global__ void grain_reconstruct_kernel(
+    float* inOutMean,
+    const float* delta,
+    int n,
+    float scale,
+    int addMean) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n || !inOutMean || !delta) {
+        return;
+    }
+    const float s = device_isfinite(scale) ? scale : 0.0f;
+    const float mean = addMean ? inOutMean[idx] : 0.0f;
+    const float v = mean + s * delta[idx];
+    inOutMean[idx] = device_isfinite(v) ? v : 0.0f;
+}
+
 __global__ void grain_add_bias_kernel(float* inOut, int n, float bias) {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) {
@@ -2445,18 +2474,6 @@ __global__ void grain_add_bias_kernel(float* inOut, int n, float bias) {
         return;
     }
     const float v = inOut[idx] + bias;
-    inOut[idx] = device_isfinite(v) ? v : 0.0f;
-}
-
-__global__ void grain_multiply_kernel(float* inOut, const float* mult, int n) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
-    if (!inOut || !mult) {
-        return;
-    }
-    const float v = inOut[idx] * mult[idx];
     inOut[idx] = device_isfinite(v) ? v : 0.0f;
 }
 
@@ -2475,64 +2492,7 @@ __global__ void grain_subtract_kernel(float* inOut, const float* sub, int n, flo
     const float v = (inOut[idx] - sub[idx]) * a;
     inOut[idx] = device_isfinite(v) ? v : 0.0f;
 }
-
-__global__ void grain_mix_delta_kernel(
-    float* outDelta,
-    const float* fineDelta,
-    const float* coarseDelta,
-    int n,
-    float wCoarse,
-    float gain) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
-    if (!outDelta || !fineDelta || !coarseDelta) {
-        return;
-    }
-    const float w = fminf(fmaxf(wCoarse, 0.0f), 1.0f);
-    const float g = device_isfinite(gain) ? gain : 1.0f;
-    const float fine = fineDelta[idx];
-    const float coarse = coarseDelta[idx];
-    const float v = g * ((1.0f - w) * fine + w * coarse);
-    outDelta[idx] = device_isfinite(v) ? v : 0.0f;
-}
-
-__global__ void grain_mix_delta3_kernel(
-    float* outDelta,
-    const float* fineDelta,
-    const float* midDelta,
-    const float* coarseDelta,
-    int n,
-    float wMid,
-    float wCoarse,
-    float gain,
-    float amplitude) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
-    if (!outDelta || !fineDelta || !midDelta || !coarseDelta) {
-        return;
-    }
-    const float wM = fminf(fmaxf(wMid, 0.0f), 1.0f);
-    const float wC = fminf(fmaxf(wCoarse, 0.0f), 1.0f);
-    float wF = 1.0f - wM - wC;
-    if (!device_isfinite(wF) || wF < 0.0f) {
-        wF = 0.0f;
-    }
-    const float g = device_isfinite(gain) ? gain : 1.0f;
-    float a = device_isfinite(amplitude) ? amplitude : 1.0f;
-    if (a < 0.0f) {
-        a = 0.0f;
-    }
-    const float fine = fineDelta[idx];
-    const float mid = midDelta[idx];
-    const float coarse = coarseDelta[idx];
-    const float v = a * g * (wF * fine + wM * mid + wC * coarse);
-    outDelta[idx] = device_isfinite(v) ? v : 0.0f;
-}
-
+// NOLINTEND(bugprone-easily-swappable-parameters)
 __global__ void grain_mix_shared_kernel(
     float* outDelta,
     const float* indDelta,
@@ -2593,25 +2553,26 @@ __global__ void grain_debug_encode_avg3_kernel(
 }
 
 __global__ void grain_apply_simple_kernel(
-    JuicerCuda::PipelineRunParams params,
-    float* inOut,
+    JuicerCuda::GrainPayload grain,
+    int width,
+    int height,
+    const float* inDensity,
+    float* outGrain,
     int channelIndex) {
-    const JuicerCuda::GrainPayload& grain = params.grain;
-
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= params.width || y >= params.height) {
+    if (x >= width || y >= height) {
         return;
     }
-    if (!inOut) {
+    if (!inDensity || !outGrain) {
         return;
     }
     if (channelIndex < 0 || channelIndex > 2) {
         return;
     }
 
-    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-    float density = inOut[idx];
+    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+    float density = inDensity[idx];
 
     const float densityMin = grain.densityMin[channelIndex];
     const float densityMax = grain.densityMax[channelIndex];
@@ -2686,21 +2647,20 @@ __global__ void grain_apply_simple_kernel(
         const float norm = rsqrtf(denom);
         acc = density + blend * norm;
     }
-    inOut[idx] = device_isfinite(acc) ? acc : 0.0f;
+    outGrain[idx] = device_isfinite(acc) ? acc : 0.0f;
 }
 
 __global__ void grain_layer_kernel(
-    JuicerCuda::PipelineRunParams params,
+    JuicerCuda::GrainPayload grain,
+    int width,
+    int height,
     const float* inDensity,
     float* outGrain,
     int channelIndex,
     int sublayerIndex) {
-    const JuicerCuda::GrainPayload& grain = params.grain;
-    const JuicerCuda::FilmDevelopPayload& dev = params.filmDevelop;
-
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= params.width || y >= params.height) {
+    if (x >= width || y >= height) {
         return;
     }
     if (!inDensity || !outGrain) {
@@ -2713,7 +2673,7 @@ __global__ void grain_layer_kernel(
         return;
     }
 
-    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
     float density = inDensity[idx];
 
     const float densityMin = grain.densityMinLayers[sublayerIndex][channelIndex];
@@ -2737,7 +2697,7 @@ __global__ void grain_layer_kernel(
     const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
     const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
 
-    const JuicerCuda::DeviceCurveView curve = curve_for_channel_device(dev, channelIndex);
+    const JuicerCuda::DeviceCurveView curve = grain.densityCurveCmy[channelIndex];
     const float* layerCurve = grain.densityCurvesLayers[sublayerIndex][channelIndex];
     density = interp_density_layer_device(density, curve.y, layerCurve, curve.n);
     density += densityMin;

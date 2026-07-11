@@ -277,6 +277,8 @@
     <ClCompile Include="src\ProfileJSONLoader.cpp" />
     <ClCompile Include="src\ProcessRoot.cpp" />
     <ClCompile Include="src\RenderRecipe.cpp" />
+    <ClCompile Include="src\Cuda\JuicerCudaFilmFoundationPayloads.cpp" />
+    <ClCompile Include="src\VisualGrainFrameDescriptor.cpp" />
     <ClCompile Include="src\ResourceAssetLibrary.cpp" />
     <ClCompile Include="src\Scanner.cpp" />
     <ClCompile Include="src\ScannerOptics.cpp" />
@@ -293,6 +295,7 @@
     <ClInclude Include="src\Couplers.h" />
     <ClInclude Include="src\Cuda\JuicerCudaPayloads.h" />
     <ClInclude Include="src\Cuda\JuicerCudaDirectFilmPayloads.h" />
+    <ClInclude Include="src\Cuda\JuicerCudaFilmFoundationPayloads.h" />
     <ClInclude Include="src\Cuda\JuicerCudaDirProfile.h" />
     <ClInclude Include="src\Cuda\JuicerCudaDeviceHelpers.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaResources.h" />
@@ -300,6 +303,7 @@
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceCore.h" />
     <ClInclude Include="src\FilmProcessing.h" />
     <ClInclude Include="src\GaussianSciPy.h" />
+    <ClInclude Include="src\GrainStaticActivityState.h" />
     <ClInclude Include="src\Hash.h" />
     <ClInclude Include="src\Illuminants.h" />
     <ClInclude Include="src\JuicerEffect.h" />
@@ -317,6 +321,7 @@
     <ClInclude Include="src\ProcessRoot.h" />
     <ClInclude Include="src\RenderFrameRequest.h" />
     <ClInclude Include="src\RenderRecipe.h" />
+    <ClInclude Include="src\VisualGrainFrameDescriptor.h" />
     <ClInclude Include="src\ResourceAssetLibrary.h" />
     <ClInclude Include="src\ScanRoute.h" />
     <ClInclude Include="src\Scanner.h" />

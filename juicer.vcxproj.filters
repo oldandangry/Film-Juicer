@@ -67,6 +67,12 @@
     <ClCompile Include="src\RenderRecipe.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\Cuda\JuicerCudaFilmFoundationPayloads.cpp">
+      <Filter>Cuda</Filter>
+    </ClCompile>
+    <ClCompile Include="src\VisualGrainFrameDescriptor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\ResourceAssetLibrary.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -116,6 +122,9 @@
     <ClInclude Include="src\Cuda\JuicerCudaDirectFilmPayloads.h">
       <Filter>Cuda</Filter>
     </ClInclude>
+    <ClInclude Include="src\Cuda\JuicerCudaFilmFoundationPayloads.h">
+      <Filter>Cuda</Filter>
+    </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaDirProfile.h">
       <Filter>Cuda</Filter>
     </ClInclude>
@@ -144,6 +153,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\GaussianSciPy.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GrainStaticActivityState.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\Hash.h">
@@ -195,6 +207,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\RenderRecipe.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\VisualGrainFrameDescriptor.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\ResourceAssetLibrary.h">
