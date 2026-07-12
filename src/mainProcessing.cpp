@@ -154,6 +154,11 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
+    const JuicerCuda::GrainPayload* gateDefects,
+    const JuicerCuda::GateWeavePayload* weave,
+    const float* gateMask,
+    int gateMaskWidth,
+    int gateMaskHeight,
     JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque);
 
@@ -168,6 +173,11 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
+    const JuicerCuda::GrainPayload* gateDefects,
+    const JuicerCuda::GateWeavePayload* weave,
+    const float* gateMask,
+    int gateMaskWidth,
+    int gateMaskHeight,
     JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque);
 
@@ -186,11 +196,20 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     float* sharedDelta,
     void* cudaStreamOpaque);
 
-extern "C" cudaError_t juicer_cuda_build_gate_defect_mask(
-    const JuicerCuda::PipelineRunParams* hParams,
-    float* dGateMask,
-    int gateWidth,
-    int gateHeight,
+extern "C" cudaError_t juicer_cuda_apply_film_defects(
+    const JuicerCuda::GrainPayload* defects,
+    int width,
+    int height,
+    float* densityC,
+    float* densityM,
+    float* densityY,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_build_gate_defect_mask_focused(
+    const JuicerCuda::GrainPayload* defects,
+    float* gateMask,
+    int gateMaskWidth,
+    int gateMaskHeight,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
@@ -1636,6 +1655,40 @@ namespace {
         return true;
     }
 
+    bool build_film_juicer_effects_descriptor_for_frame(
+        const Spektrafilm::FilmJuicerEffectsRecipe& recipe,
+        const Spektrafilm::FilmJuicerEffectsFrameExtent& renderExtent,
+        const Spektrafilm::FilmJuicerEffectsFrameExtent& fullFrameExtent,
+        float pixelSizeUm,
+        double frameTime,
+        double frameRate,
+        std::uint64_t sessionSeed,
+        std::uint64_t clipToken,
+        std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& out,
+        std::string& diagnostic) {
+        out.reset();
+        diagnostic.clear();
+        if (!recipe.active) {
+            return true;
+        }
+        Spektrafilm::FilmJuicerEffectsFrameDescriptor descriptor{};
+        if (!Spektrafilm::build_film_juicer_effects_frame_descriptor(
+                {&recipe,
+                 renderExtent,
+                 fullFrameExtent,
+                 pixelSizeUm,
+                 frameTime,
+                 frameRate,
+                 sessionSeed,
+                 clipToken},
+                descriptor,
+                diagnostic)) {
+            return false;
+        }
+        out = descriptor;
+        return true;
+    }
+
     // NOLINTEND(bugprone-easily-swappable-parameters)
     bool visual_grain_full_frame_preflight(
         const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& descriptor,
@@ -1657,6 +1710,25 @@ namespace {
                descriptor->renderExtent.width == full.width &&
                descriptor->renderExtent.height == full.height &&
                matches(renderWindow) && matches(sourceBounds) &&
+               matches(fullFrameBounds);
+    }
+
+    bool film_juicer_effects_full_frame_preflight(
+        const std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& descriptor,
+        const OfxRectI& renderWindow,
+        const OfxRectI& sourceBounds,
+        const OfxRectI& fullFrameBounds) {
+        if (!descriptor.has_value() || !descriptor->requiresFullFrame) {
+            return true;
+        }
+        const Spektrafilm::FilmJuicerEffectsFrameExtent& full =
+            descriptor->fullFrameExtent;
+        const auto matches = [&full](const OfxRectI& rect) {
+            return rect.x1 == full.x && rect.y1 == full.y &&
+                   rect.x2 - rect.x1 == full.width &&
+                   rect.y2 - rect.y1 == full.height;
+        };
+        return matches(renderWindow) && matches(sourceBounds) &&
                matches(fullFrameBounds);
     }
 
@@ -1893,7 +1965,7 @@ bool curve_ok(const Spectral::Curve& c) {
 // JuicerProcessor method definitions matching JuicerProcessing.h
 
 JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect)
-    : OFX::ImageProcessor(effect), _srcImg(nullptr), _nComponents(0), _scannerOptions{}, _scannerSettings{}, _printParams{}, _halationOverride{}, _hasHalationOverride(false), _grainOverride{}, _hasGrainOverride(false), _printGlareOverride{}, _hasPrintGlareOverride(false), _dirRT{}, _prt(nullptr), _ws(nullptr), _wsReady(false), _printReady(false), _exposureScale(1.0f), _outputEncoding{}, _frameBoundsVersion(0), _pixelSizeUm(0.0f) {
+    : OFX::ImageProcessor(effect), _srcImg(nullptr), _nComponents(0), _scannerOptions{}, _scannerSettings{}, _printParams{}, _halationOverride{}, _hasHalationOverride(false), _printGlareOverride{}, _hasPrintGlareOverride(false), _dirRT{}, _prt(nullptr), _ws(nullptr), _wsReady(false), _printReady(false), _exposureScale(1.0f), _outputEncoding{}, _frameBoundsVersion(0), _pixelSizeUm(0.0f) {
 }
 
 void JuicerProcessor::setSrcDst(const SourceDestinationImages& images) {
@@ -1951,8 +2023,6 @@ void JuicerProcessor::setFrameRequest(const FrameRequest& request) {
     _printParams = request.printParams;
     _halationOverride = request.halationOverride;
     _hasHalationOverride = request.hasHalationOverride;
-    _grainOverride = request.grainOverride;
-    _hasGrainOverride = request.hasGrainOverride;
     _printGlareOverride = request.printGlareOverride;
     if (request.hasPrintGlareOverride) {
         clear_glare_compensation_fields(_printGlareOverride);
@@ -1976,7 +2046,6 @@ void JuicerProcessor::setFrameRequest(const FrameRequest& request) {
     _outputEncoding = request.outputEncoding;
     setSessionTokens(SessionTokens{request.sessionSeed, request.instanceToken});
     setClipToken(request.clipToken);
-    setGateWeaveAmount(request.gateWeaveAmount);
     setFrameTime(request.frameTime);
     setFrameRate(request.frameRate);
     setFrameBoundsVersion(request.frameBoundsVersion);
@@ -2005,10 +2074,6 @@ void JuicerProcessor::setPrintParams(const Print::Params& p) {
 void JuicerProcessor::setHalationOverride(const Profiles::HalationMetadata& halation) {
     _halationOverride = halation;
     _hasHalationOverride = true;
-}
-void JuicerProcessor::setGrainOverride(const Profiles::GrainMetadata& grain) {
-    _grainOverride = grain;
-    _hasGrainOverride = true;
 }
 void JuicerProcessor::setPrintGlareOverride(const Profiles::ProfileGlare& glare) {
     _printGlareOverride = glare;
@@ -2064,10 +2129,6 @@ void JuicerProcessor::setSessionTokens(const SessionTokens& tokens) {
 
 void JuicerProcessor::setClipToken(std::uintptr_t token) {
     _clipToken = token;
-}
-
-void JuicerProcessor::setGateWeaveAmount(double amount) {
-    _gateWeaveAmount = finite_or(amount, _gateWeaveAmount);
 }
 
 void JuicerProcessor::setFrameTime(double time) {
@@ -2593,12 +2654,49 @@ void JuicerProcessor::processImagesCUDA() {
             throw_direct_restriction(
                 "ResourceDescriptorMismatch phase=grain_preflight field=full_frame_extent");
         }
+        std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>
+            directEffectsDescriptor;
+        std::string directEffectsDescriptorDiagnostic;
+        if (!build_film_juicer_effects_descriptor_for_frame(
+                directRecipe->filmJuicerEffects,
+                {win.x1, win.y1, width, height},
+                {directFullFrameRect.x1,
+                 directFullFrameRect.y1,
+                 directFullFrameRect.x2 - directFullFrameRect.x1,
+                 directFullFrameRect.y2 - directFullFrameRect.y1},
+                _pixelSizeUm,
+                _timeFrames,
+                _frameRate,
+                _sessionSeed,
+                static_cast<std::uint64_t>(_clipToken),
+                directEffectsDescriptor,
+                directEffectsDescriptorDiagnostic)) {
+            throw_direct_restriction(
+                directEffectsDescriptorDiagnostic.c_str());
+        }
+        if (!film_juicer_effects_full_frame_preflight(
+                directEffectsDescriptor,
+                win,
+                srcBounds,
+                directFullFrameRect)) {
+            throw_direct_restriction(
+                "ResourceDescriptorMismatch phase=effects_preflight field=full_frame_extent");
+        }
         const bool grainStageActive =
             directVisualGrainDescriptor.has_value();
         const bool grainDebugActive =
             grainStageActive && directRecipe->visualGrain.debugView != 0;
+        const bool filmEffectsActive =
+            directEffectsDescriptor.has_value() &&
+            directEffectsDescriptor->filmActive;
+        const bool gateOutputActive =
+            directEffectsDescriptor.has_value() &&
+            directEffectsDescriptor->gateOutputActive;
         const bool useFocusedSplit =
-            scannerPostEffects.active() || grainStageActive;
+            scannerPostEffects.active() || grainStageActive ||
+            filmEffectsActive || gateOutputActive;
+        const bool captureDensityConsumerActive =
+            grainStageActive || filmEffectsActive;
 
         JuicerProcess::Root::DirectCudaPreparationRequest directPreparation{};
         directPreparation.recipe = directRecipe;
@@ -2612,6 +2710,7 @@ void JuicerProcessor::processImagesCUDA() {
         directPreparation.spatialDirDescriptor = &directSpatialDir;
         directPreparation.visualGrainDescriptor =
             directVisualGrainDescriptor;
+        directPreparation.effectsDescriptor = directEffectsDescriptor;
         directPreparation.requestedWidth = width;
         directPreparation.requestedHeight = height;
         directPreparation.needCompositeProfileWorkspace = dirProfileEnabled;
@@ -2724,14 +2823,14 @@ void JuicerProcessor::processImagesCUDA() {
         run.filmDevelop = directFilmPayloads.filmDevelop;
 
         const bool directCompositeProfileRequested = dirProfileEnabled;
+        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest workspaceRequest =
+            preparedFrame.workspace_request();
         const bool directUseFusedScannerPostSpatialDirHandoff =
             directSpatialDir.hash != 0 && scannerPostEffects.active() &&
             directSpatialDir.approximation ==
                 Spektrafilm::DirApproximationMarker::SpektrafilmStrict &&
-            !grainStageActive;
+            !captureDensityConsumerActive;
         JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace{};
-        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest workspaceRequest =
-            preparedFrame.workspace_request();
         if (workspaceRequest.has_any_family()) {
             focusedWorkspace = preparedFrame.bind_workspace_request(workspaceRequest);
             std::string transitionError;
@@ -2785,8 +2884,34 @@ void JuicerProcessor::processImagesCUDA() {
             directGrainWorkspace{};
         JuicerProcess::Root::PreparedCudaFrame::PreparedVisualGrainView
             directGrainResources{};
+        JuicerProcess::Root::PreparedCudaFrame::ScannerWorkspaceView
+            directEffectsWorkspace{};
         JuicerCuda::GrainPayload directGrainPayload{};
         JuicerCuda::GrainKernelPayload directGrainKernels{};
+        JuicerCuda::GrainPayload directEffectsPayload{};
+        JuicerCuda::GateWeavePayload directWeavePayload{};
+        const Spektrafilm::FilmJuicerEffectsFrameDescriptor*
+            preparedDirectEffectsDescriptor =
+                preparedFrame.film_juicer_effects_descriptor();
+        if (directEffectsDescriptor.has_value()) {
+            std::string effectsPayloadDiagnostic;
+            if (!preparedDirectEffectsDescriptor ||
+                !JuicerCuda::pack_film_juicer_effects_payload(
+                    *preparedDirectEffectsDescriptor,
+                    directEffectsPayload,
+                    directWeavePayload,
+                    effectsPayloadDiagnostic)) {
+                preparedFrame.abort("direct_effects_payload_pack_failed");
+                throw_direct_restriction(
+                    effectsPayloadDiagnostic.empty()
+                        ? "MissingRequiredResource phase=effects_route field=effects_binding"
+                        : effectsPayloadDiagnostic.c_str());
+            }
+        } else if (preparedDirectEffectsDescriptor) {
+            preparedFrame.abort("direct_inactive_effects_descriptor_present");
+            throw_direct_restriction(
+                "ResourceDescriptorMismatch phase=effects_route field=inactive_descriptor");
+        }
         if (useFocusedSplit) {
             std::string focusedWorkspaceError;
             if (!preparedFrame.stage_optical_workspace(
@@ -2811,6 +2936,16 @@ void JuicerProcessor::processImagesCUDA() {
                 preparedFrame.abort("direct_focused_triplet_binding_failed");
                 throw_direct_restriction(
                     "MissingRequiredResource phase=grain_route field=focused_triplet");
+            }
+            directEffectsWorkspace =
+                preparedFrame.scanner_workspace(focusedWorkspace);
+            if (!directEffectsWorkspace.active ||
+                (directEffectsDescriptor.has_value() &&
+                 directEffectsDescriptor->gateMaskActive &&
+                 !directEffectsWorkspace.hasGateMask)) {
+                preparedFrame.abort("direct_effects_workspace_binding_failed");
+                throw_direct_restriction(
+                    "MissingRequiredResource phase=effects_route field=effects_workspace");
             }
         }
         if (grainStageActive) {
@@ -3012,7 +3147,9 @@ void JuicerProcessor::processImagesCUDA() {
             preparedFrame.abort("direct_scan_error_stage_failed");
             throw_submission_fatal("direct_scan_error_stage", "direct scan error stage failed", scanError);
         }
-        if (directCompositeProfileRequested && directUseFusedScannerPostSpatialDirHandoff) {
+        if (directCompositeProfileRequested &&
+            directUseFusedScannerPostSpatialDirHandoff &&
+            workspaceRequest.aliasScannerRgbFromSpatialDirFiltered) {
             initialize_spatial_dir_rgb_alias_profile(
                 directCompositeProfile,
                 AliasRouteProfileExtent{width, height});
@@ -3106,6 +3243,42 @@ void JuicerProcessor::processImagesCUDA() {
                         launchError);
                 }
             }
+            if (filmEffectsActive && !grainDebugActive) {
+                launchError = juicer_cuda_apply_film_defects(
+                    &directEffectsPayload,
+                    width,
+                    height,
+                    directCaptureDensity.c,
+                    directCaptureDensity.m,
+                    directCaptureDensity.y,
+                    _pCudaStream);
+                if (launchError != cudaSuccess) {
+                    preparedFrame.abort("direct_film_effects_launch_failed");
+                    throw_cuda_stage_fatal(
+                        "direct_film_effects_launch",
+                        "direct film defects launch failed",
+                        launchError);
+                }
+            }
+        }
+
+        if (gateOutputActive && !grainDebugActive &&
+            directEffectsDescriptor->gateMaskActive) {
+            launchError = juicer_cuda_build_gate_defect_mask_focused(
+                &directEffectsPayload,
+                directEffectsWorkspace.gateMask,
+                directEffectsWorkspace.gateMaskWidth,
+                directEffectsWorkspace.gateMaskHeight,
+                _pCudaStream);
+            if (launchError != cudaSuccess) {
+                preparedFrame.abort("direct_gate_mask_launch_failed");
+                throw_cuda_stage_fatal(
+                    "direct_gate_mask_launch",
+                    "direct gate defect mask launch failed",
+                    launchError);
+            }
+            preparedFrame.mark_gate_mask_built(
+                directEffectsDescriptor->hash);
         }
 
         if (useFocusedSplit) {
@@ -3127,6 +3300,7 @@ void JuicerProcessor::processImagesCUDA() {
             const bool directAliasProfileActive =
                 dirProfileEnabled &&
                 directUseFusedScannerPostSpatialDirHandoff &&
+                workspaceRequest.aliasScannerRgbFromSpatialDirFiltered &&
                 !grainDebugActive;
             if (!grainDebugActive) {
                 if (directUseFusedScannerPostSpatialDirHandoff) {
@@ -3217,6 +3391,24 @@ void JuicerProcessor::processImagesCUDA() {
                 post.active ? post.unsharp.weights : nullptr,
                 post.active ? post.unsharp.radius : 0,
                 post.active ? scannerPostEffects.unsharpAmount : 0.0f,
+                gateOutputActive && !grainDebugActive
+                    ? &directEffectsPayload
+                    : nullptr,
+                gateOutputActive && !grainDebugActive
+                    ? &directWeavePayload
+                    : nullptr,
+                gateOutputActive && !grainDebugActive &&
+                        directEffectsDescriptor->gateMaskActive
+                    ? directEffectsWorkspace.gateMask
+                    : nullptr,
+                gateOutputActive && !grainDebugActive &&
+                        directEffectsDescriptor->gateMaskActive
+                    ? directEffectsWorkspace.gateMaskWidth
+                    : 0,
+                gateOutputActive && !grainDebugActive &&
+                        directEffectsDescriptor->gateMaskActive
+                    ? directEffectsWorkspace.gateMaskHeight
+                    : 0,
                 directAliasProfileActive ? &directCompositeProfile : nullptr,
                 _pCudaStream);
             if (launchError == cudaSuccess && directAliasProfileActive) {
@@ -3368,12 +3560,49 @@ void JuicerProcessor::processImagesCUDA() {
             throw_print_restriction(
                 "ResourceDescriptorMismatch phase=grain_preflight field=full_frame_extent");
         }
+        std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>
+            printEffectsDescriptor;
+        std::string printEffectsDescriptorDiagnostic;
+        if (!build_film_juicer_effects_descriptor_for_frame(
+                printRecipe->filmJuicerEffects,
+                {win.x1, win.y1, width, height},
+                {printFullFrameRect.x1,
+                 printFullFrameRect.y1,
+                 printFullFrameRect.x2 - printFullFrameRect.x1,
+                 printFullFrameRect.y2 - printFullFrameRect.y1},
+                _pixelSizeUm,
+                _timeFrames,
+                _frameRate,
+                _sessionSeed,
+                static_cast<std::uint64_t>(_clipToken),
+                printEffectsDescriptor,
+                printEffectsDescriptorDiagnostic)) {
+            throw_print_restriction(
+                printEffectsDescriptorDiagnostic.c_str());
+        }
+        if (!film_juicer_effects_full_frame_preflight(
+                printEffectsDescriptor,
+                win,
+                srcBounds,
+                printFullFrameRect)) {
+            throw_print_restriction(
+                "ResourceDescriptorMismatch phase=effects_preflight field=full_frame_extent");
+        }
         const bool grainStageActive =
             printVisualGrainDescriptor.has_value();
         const bool grainDebugActive =
             grainStageActive && printRecipe->visualGrain.debugView != 0;
+        const bool filmEffectsActive =
+            printEffectsDescriptor.has_value() &&
+            printEffectsDescriptor->filmActive;
+        const bool gateOutputActive =
+            printEffectsDescriptor.has_value() &&
+            printEffectsDescriptor->gateOutputActive;
         const bool useFocusedSplit =
-            scannerPostEffects.active() || grainStageActive;
+            scannerPostEffects.active() || grainStageActive ||
+            filmEffectsActive || gateOutputActive;
+        const bool captureDensityConsumerActive =
+            grainStageActive || filmEffectsActive;
 
         JuicerProcess::Root::PrintCudaPreparationRequest preparation{};
         preparation.recipe = printRecipe;
@@ -3387,6 +3616,7 @@ void JuicerProcessor::processImagesCUDA() {
         preparation.spatialDirDescriptor = &spatialDir;
         preparation.visualGrainDescriptor =
             printVisualGrainDescriptor;
+        preparation.effectsDescriptor = printEffectsDescriptor;
         preparation.requestedWidth = width;
         preparation.requestedHeight = height;
         preparation.needCompositeProfileWorkspace = dirProfileEnabled;
@@ -3565,14 +3795,14 @@ void JuicerProcessor::processImagesCUDA() {
         run.printDevelop = printPayloads.develop;
 
         const bool printCompositeProfileRequested = dirProfileEnabled;
+        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest workspaceRequest =
+            preparedFrame.workspace_request();
         const bool printUseFusedScannerPostSpatialDirHandoff =
             spatialDir.hash != 0 && scannerPostEffects.active() &&
             spatialDir.approximation ==
                 Spektrafilm::DirApproximationMarker::SpektrafilmStrict &&
-            !grainStageActive;
+            !captureDensityConsumerActive;
         JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace{};
-        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest workspaceRequest =
-            preparedFrame.workspace_request();
         if (workspaceRequest.has_any_family()) {
             focusedWorkspace = preparedFrame.bind_workspace_request(workspaceRequest);
             std::string transitionError;
@@ -3626,8 +3856,34 @@ void JuicerProcessor::processImagesCUDA() {
             printGrainWorkspace{};
         JuicerProcess::Root::PreparedCudaFrame::PreparedVisualGrainView
             printGrainResources{};
+        JuicerProcess::Root::PreparedCudaFrame::ScannerWorkspaceView
+            printEffectsWorkspace{};
         JuicerCuda::GrainPayload printGrainPayload{};
         JuicerCuda::GrainKernelPayload printGrainKernels{};
+        JuicerCuda::GrainPayload printEffectsPayload{};
+        JuicerCuda::GateWeavePayload printWeavePayload{};
+        const Spektrafilm::FilmJuicerEffectsFrameDescriptor*
+            preparedPrintEffectsDescriptor =
+                preparedFrame.film_juicer_effects_descriptor();
+        if (printEffectsDescriptor.has_value()) {
+            std::string effectsPayloadDiagnostic;
+            if (!preparedPrintEffectsDescriptor ||
+                !JuicerCuda::pack_film_juicer_effects_payload(
+                    *preparedPrintEffectsDescriptor,
+                    printEffectsPayload,
+                    printWeavePayload,
+                    effectsPayloadDiagnostic)) {
+                preparedFrame.abort("print_effects_payload_pack_failed");
+                throw_print_restriction(
+                    effectsPayloadDiagnostic.empty()
+                        ? "MissingRequiredResource phase=effects_route field=effects_binding"
+                        : effectsPayloadDiagnostic.c_str());
+            }
+        } else if (preparedPrintEffectsDescriptor) {
+            preparedFrame.abort("print_inactive_effects_descriptor_present");
+            throw_print_restriction(
+                "ResourceDescriptorMismatch phase=effects_route field=inactive_descriptor");
+        }
         if (useFocusedSplit) {
             std::string focusedWorkspaceError;
             if (!preparedFrame.stage_optical_workspace(
@@ -3652,6 +3908,16 @@ void JuicerProcessor::processImagesCUDA() {
                 preparedFrame.abort("print_focused_triplet_binding_failed");
                 throw_print_restriction(
                     "MissingRequiredResource phase=grain_route field=focused_triplet");
+            }
+            printEffectsWorkspace =
+                preparedFrame.scanner_workspace(focusedWorkspace);
+            if (!printEffectsWorkspace.active ||
+                (printEffectsDescriptor.has_value() &&
+                 printEffectsDescriptor->gateMaskActive &&
+                 !printEffectsWorkspace.hasGateMask)) {
+                preparedFrame.abort("print_effects_workspace_binding_failed");
+                throw_print_restriction(
+                    "MissingRequiredResource phase=effects_route field=effects_workspace");
             }
         }
         if (grainStageActive) {
@@ -3863,7 +4129,9 @@ void JuicerProcessor::processImagesCUDA() {
                 "print scan error stage failed",
                 scanError);
         }
-        if (printCompositeProfileRequested && printUseFusedScannerPostSpatialDirHandoff) {
+        if (printCompositeProfileRequested &&
+            printUseFusedScannerPostSpatialDirHandoff &&
+            workspaceRequest.aliasScannerRgbFromSpatialDirFiltered) {
             initialize_spatial_dir_rgb_alias_profile(
                 printCompositeProfile,
                 AliasRouteProfileExtent{width, height});
@@ -3957,6 +4225,23 @@ void JuicerProcessor::processImagesCUDA() {
                         launchError);
                 }
             }
+            if (filmEffectsActive && !grainDebugActive) {
+                launchError = juicer_cuda_apply_film_defects(
+                    &printEffectsPayload,
+                    width,
+                    height,
+                    printCaptureDensity.c,
+                    printCaptureDensity.m,
+                    printCaptureDensity.y,
+                    _pCudaStream);
+                if (launchError != cudaSuccess) {
+                    preparedFrame.abort("print_film_effects_launch_failed");
+                    throw_cuda_stage_fatal(
+                        "print_film_effects_launch",
+                        "print film defects launch failed",
+                        launchError);
+                }
+            }
             if (!grainDebugActive) {
                 launchError =
                     juicer_cuda_print_focused_continue_from_capture_density(
@@ -3973,6 +4258,25 @@ void JuicerProcessor::processImagesCUDA() {
                         launchError);
                 }
             }
+        }
+
+        if (gateOutputActive && !grainDebugActive &&
+            printEffectsDescriptor->gateMaskActive) {
+            launchError = juicer_cuda_build_gate_defect_mask_focused(
+                &printEffectsPayload,
+                printEffectsWorkspace.gateMask,
+                printEffectsWorkspace.gateMaskWidth,
+                printEffectsWorkspace.gateMaskHeight,
+                _pCudaStream);
+            if (launchError != cudaSuccess) {
+                preparedFrame.abort("print_gate_mask_launch_failed");
+                throw_cuda_stage_fatal(
+                    "print_gate_mask_launch",
+                    "print gate defect mask launch failed",
+                    launchError);
+            }
+            preparedFrame.mark_gate_mask_built(
+                printEffectsDescriptor->hash);
         }
 
         if (useFocusedSplit) {
@@ -3999,6 +4303,7 @@ void JuicerProcessor::processImagesCUDA() {
             const bool printAliasProfileActive =
                 dirProfileEnabled &&
                 printUseFusedScannerPostSpatialDirHandoff &&
+                workspaceRequest.aliasScannerRgbFromSpatialDirFiltered &&
                 !grainDebugActive;
             if (!grainDebugActive) {
                 if (printUseFusedScannerPostSpatialDirHandoff) {
@@ -4107,6 +4412,24 @@ void JuicerProcessor::processImagesCUDA() {
                 post.active ? post.unsharp.weights : nullptr,
                 post.active ? post.unsharp.radius : 0,
                 post.active ? scannerPostEffects.unsharpAmount : 0.0f,
+                gateOutputActive && !grainDebugActive
+                    ? &printEffectsPayload
+                    : nullptr,
+                gateOutputActive && !grainDebugActive
+                    ? &printWeavePayload
+                    : nullptr,
+                gateOutputActive && !grainDebugActive &&
+                        printEffectsDescriptor->gateMaskActive
+                    ? printEffectsWorkspace.gateMask
+                    : nullptr,
+                gateOutputActive && !grainDebugActive &&
+                        printEffectsDescriptor->gateMaskActive
+                    ? printEffectsWorkspace.gateMaskWidth
+                    : 0,
+                gateOutputActive && !grainDebugActive &&
+                        printEffectsDescriptor->gateMaskActive
+                    ? printEffectsWorkspace.gateMaskHeight
+                    : 0,
                 printAliasProfileActive ? &printCompositeProfile : nullptr,
                 _pCudaStream);
             if (launchError == cudaSuccess && printAliasProfileActive) {

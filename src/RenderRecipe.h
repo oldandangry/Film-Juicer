@@ -628,7 +628,6 @@ struct VisualGrainControls {
     float sizeMixScale = 1.0f;
     float clumpTemporalMix = 0.0f;
     float clumpMorphPeriodSec = 8.0f;
-    bool breathingDebug = false;
     int debugView = 0;
 };
 
@@ -654,9 +653,18 @@ struct VisualGrainRecipe {
     float sizeMixScale = 1.0f;
     float clumpTemporalMix = 0.0f;
     float clumpMorphPeriodSec = 0.0f;
-    bool breathingDebug = false;
     int debugView = 0;
     std::uint64_t densityCurvesLayersHash = 0;
+    std::uint64_t hash = 0;
+};
+
+struct FilmJuicerEffectsRecipe final {
+    float filmDustAmount = 0.0f;
+    float filmScratchAmount = 0.0f;
+    float gateDustAmount = 0.0f;
+    float gateScratchAmount = 0.0f;
+    double gateWeaveAmount = 0.0;
+    bool active = false;
     std::uint64_t hash = 0;
 };
 
@@ -791,6 +799,7 @@ struct RenderRecipe {
     FilmDevelopRecipe filmDevelop;
     DirCouplersRecipe dirCouplers;
     VisualGrainRecipe visualGrain;
+    FilmJuicerEffectsRecipe filmJuicerEffects;
     GrainContract grainContract;
     DensityBoundsRecipe enlargerFilmBounds;
     DensityBoundsRecipe densityBounds;
@@ -811,6 +820,7 @@ namespace Spektrafilm {
     using ::ExactOpticsExecutionPlan;
     using ::ExactOpticsFrameExtent;
     using ::FilmDevelopRecipe;
+    using ::FilmJuicerEffectsRecipe;
     using ::FilmRawRecipe;
     using ::GrainContract;
     using ::PrintRecipe;
@@ -842,6 +852,11 @@ namespace Spektrafilm {
         ScanRoute scanRoute = kDefaultScanRoute;
         std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
         VisualGrainControls visualGrain;
+        float filmDustAmount = 0.0f;
+        float filmScratchAmount = 0.0f;
+        float gateDustAmount = 0.0f;
+        float gateScratchAmount = 0.0f;
+        double gateWeaveAmount = 0.0;
         GrainContract grainContract;
         DirCouplersControls dirCouplers;
         SpatialOpticsControls spatialOptics;

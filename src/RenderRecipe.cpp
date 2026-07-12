@@ -580,10 +580,55 @@ namespace {
         hash_value(hash, recipe.sizeMixScale);
         hash_value(hash, recipe.clumpTemporalMix);
         hash_value(hash, recipe.clumpMorphPeriodSec);
-        hash_value(hash, recipe.breathingDebug);
         hash_value(hash, recipe.debugView);
         hash_value(hash, recipe.densityCurvesLayersHash);
         return hash;
+    }
+
+    float normalize_effect_amount(float value) {
+        return std::isfinite(value)
+                   ? std::clamp(value, 0.0f, 10.0f)
+                   : 0.0f;
+    }
+
+    double normalize_effect_amount(double value) {
+        return std::isfinite(value)
+                   ? std::clamp(value, 0.0, 10.0)
+                   : 0.0;
+    }
+
+    std::uint64_t hash_film_juicer_effects_recipe(
+        const FilmJuicerEffectsRecipe& recipe) {
+        if (!recipe.active) {
+            return 0;
+        }
+        std::uint64_t hash = Hash::kFnvOffset;
+        hash_value(hash, recipe.filmDustAmount);
+        hash_value(hash, recipe.filmScratchAmount);
+        hash_value(hash, recipe.gateDustAmount);
+        hash_value(hash, recipe.gateScratchAmount);
+        hash_value(hash, recipe.gateWeaveAmount);
+        hash_value(hash, recipe.active);
+        return hash;
+    }
+
+    void build_film_juicer_effects_recipe(
+        const Spektrafilm::DirectRecipeBuildInput& input,
+        FilmJuicerEffectsRecipe& out) {
+        out = FilmJuicerEffectsRecipe{};
+        out.filmDustAmount = normalize_effect_amount(input.filmDustAmount);
+        out.filmScratchAmount =
+            normalize_effect_amount(input.filmScratchAmount);
+        out.gateDustAmount = normalize_effect_amount(input.gateDustAmount);
+        out.gateScratchAmount =
+            normalize_effect_amount(input.gateScratchAmount);
+        out.gateWeaveAmount = normalize_effect_amount(input.gateWeaveAmount);
+        out.active = out.filmDustAmount > 0.0f ||
+                     out.filmScratchAmount > 0.0f ||
+                     out.gateDustAmount > 0.0f ||
+                     out.gateScratchAmount > 0.0f ||
+                     out.gateWeaveAmount > 0.0;
+        out.hash = hash_film_juicer_effects_recipe(out);
     }
 
     bool build_visual_grain_recipe(
@@ -656,7 +701,6 @@ namespace {
         out.sizeMixScale = input.sizeMixScale;
         out.clumpTemporalMix = std::clamp(input.clumpTemporalMix, 0.0f, 0.30f);
         out.clumpMorphPeriodSec = std::clamp(input.clumpMorphPeriodSec, 5.0f, 60.0f);
-        out.breathingDebug = input.breathingDebug;
         out.debugView = std::clamp(input.debugView, 0, 6);
         out.densityCurvesLayersHash =
             out.sublayersActive ? densityCurvesLayersHash : 0;
@@ -1501,6 +1545,9 @@ namespace Spektrafilm {
             result.diagnostic = "MalformedRequiredProfileData phase=9A field=visual_grain";
             return result;
         }
+        build_film_juicer_effects_recipe(
+            input,
+            result.recipe.filmJuicerEffects);
 
         if (!build_dir_couplers_recipe(
                 profile,
@@ -1570,6 +1617,10 @@ namespace Spektrafilm {
         if (result.recipe.visualGrain.hash != 0) {
             result.recipe.hash =
                 Hash::hash_uint64_values({result.recipe.hash, result.recipe.visualGrain.hash});
+        }
+        if (result.recipe.filmJuicerEffects.hash != 0) {
+            result.recipe.hash = Hash::hash_uint64_values(
+                {result.recipe.hash, result.recipe.filmJuicerEffects.hash});
         }
         result.valid = result.recipe.hash != 0;
         if (!result.valid) {
@@ -1651,6 +1702,8 @@ namespace Spektrafilm {
         result.recipe.filmDevelop = foundation.recipe.filmDevelop;
         result.recipe.dirCouplers = foundation.recipe.dirCouplers;
         result.recipe.visualGrain = foundation.recipe.visualGrain;
+        result.recipe.filmJuicerEffects =
+            foundation.recipe.filmJuicerEffects;
         result.recipe.grainContract = foundation.recipe.grainContract;
         result.recipe.enlargerFilmBounds = foundation.recipe.densityBounds;
         result.recipe.enlargerFilmBounds.route = input.scanRoute;
@@ -1793,6 +1846,10 @@ namespace Spektrafilm {
         if (result.recipe.visualGrain.hash != 0) {
             result.recipe.hash =
                 Hash::hash_uint64_values({result.recipe.hash, result.recipe.visualGrain.hash});
+        }
+        if (result.recipe.filmJuicerEffects.hash != 0) {
+            result.recipe.hash = Hash::hash_uint64_values(
+                {result.recipe.hash, result.recipe.filmJuicerEffects.hash});
         }
         result.valid = route.hash != 0 && print.filters.hash != 0 &&
                        print.exposure.hash != 0 && print.illuminant.hash != 0 &&

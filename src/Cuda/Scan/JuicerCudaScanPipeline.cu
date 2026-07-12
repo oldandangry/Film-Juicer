@@ -92,7 +92,6 @@ namespace {
         out.filmExpose = params.filmExpose;
         out.filmDevelop = params.filmDevelop;
         out.scanStage = params.scanStage;
-        out.scanStage.scanErrorFlag = nullptr;
         out.filmRaw = params.filmRaw;
         return out;
     }
@@ -1556,12 +1555,15 @@ namespace {
         }
     }
 
-    [[maybe_unused]] __global__ void apply_film_defects_kernel(
-        JuicerCuda::PipelineRunParams params,
+    // CUDA dimensions and C/M/Y planes follow the focused ABI.
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    __global__ void apply_film_defects_kernel(
+        JuicerCuda::GrainPayload grain,
+        int width,
+        int height,
         float* ioC,
         float* ioM,
         float* ioY) {
-        const JuicerCuda::GrainPayload& grain = params.grain;
         if (!ioC || !ioM || !ioY) {
             return;
         }
@@ -1603,8 +1605,12 @@ namespace {
         const float dustCellMm = kDustCellUm * 0.001f;
         const float scratchCellMmX = kScratchCellUmX * 0.001f;
         const float scratchCellMmY = kScratchCellUmY * 0.001f;
-        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
-            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+        for (int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
+             y < height;
+             y += static_cast<int>(blockDim.y * gridDim.y)) {
+            for (int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+                 x < width;
+                 x += static_cast<int>(blockDim.x * gridDim.x)) {
                 const float absX = static_cast<float>(grain.originX + x);
                 const float absY = static_cast<float>(grain.originY + y);
                 const float rollY = absY + rollPx * time;
@@ -1620,7 +1626,7 @@ namespace {
                     delta = 0.0f;
                 }
                 if (delta != 0.0f) {
-                    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+                    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
                     ioC[idx] = ioC[idx] + delta;
                     ioM[idx] = ioM[idx] + delta;
                     ioY[idx] = ioY[idx] + delta;
@@ -1628,13 +1634,13 @@ namespace {
             }
         }
     }
+    // NOLINTEND(bugprone-easily-swappable-parameters)
 
     __global__ void gate_defect_mask_kernel(
-        JuicerCuda::PipelineRunParams params,
+        JuicerCuda::GrainPayload grain,
         float* outMask,
         int maskWidth,
         int maskHeight) {
-        const JuicerCuda::GrainPayload& grain = params.grain;
         if (!outMask) {
             return;
         }
@@ -1675,112 +1681,17 @@ namespace {
         }
     }
 
-    [[maybe_unused]] __global__ void scan_output_encode_kernel(
-        JuicerCuda::PipelineRunParams params,
-        const float* rgbR,
-        const float* rgbG,
-        const float* rgbB) {
-        const JuicerCuda::ScanStagePayload& scan = params.scanStage;
-        const JuicerCuda::GateWeavePayload& weave = params.gateWeave;
-        const JuicerCuda::GrainPayload& grain = params.grain;
-
-        if (!params.src || !params.dst || params.srcRowBytes == 0 || params.dstRowBytes == 0) {
-            return;
-        }
-        if (!rgbR || !rgbG || !rgbB) {
-            return;
-        }
-
-        const int nC = params.nComponents;
-        if (!(nC == 3 || nC == 4)) {
-            return;
-        }
-        const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
-        const int debugView = grain.debugView;
-        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
-            char* dstRow = reinterpret_cast<char*>(params.dst) + static_cast<std::size_t>(y) * params.dstRowBytes;
-            const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
-            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
-                const float absX = static_cast<float>(grain.originX + x);
-                const float absY = static_cast<float>(grain.originY + y);
-                double rgbOut[3];
-                if (debugView != 0) {
-                    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-                    rgbOut[0] = static_cast<double>(rgbR[idx]);
-                    rgbOut[1] = static_cast<double>(rgbG[idx]);
-                    rgbOut[2] = static_cast<double>(rgbB[idx]);
-                } else if (weave.active != 0) {
-                    const float cx = 0.5f * static_cast<float>(params.width - 1);
-                    const float cy = 0.5f * static_cast<float>(params.height - 1);
-                    const float fx = static_cast<float>(x) - cx;
-                    const float fy = static_cast<float>(y) - cy;
-                    const float c = weave.cosRot;
-                    const float s = weave.sinRot;
-                    const float srcX = c * fx - s * fy + cx + weave.dxPx;
-                    const float srcY = s * fx + c * fy + cy + weave.dyPx;
-                    rgbOut[0] = static_cast<double>(sample_plane_mitchell_device(rgbR, params.width, params.height, srcX, srcY));
-                    rgbOut[1] = static_cast<double>(sample_plane_mitchell_device(rgbG, params.width, params.height, srcX, srcY));
-                    rgbOut[2] = static_cast<double>(sample_plane_mitchell_device(rgbB, params.width, params.height, srcX, srcY));
-                } else {
-                    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-                    rgbOut[0] = static_cast<double>(rgbR[idx]);
-                    rgbOut[1] = static_cast<double>(rgbG[idx]);
-                    rgbOut[2] = static_cast<double>(rgbB[idx]);
-                }
-                if (debugView == 0) {
-                    const std::uint64_t sessionSeed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
-                    const std::uint64_t seedGateDust = splitmix64_device(sessionSeed ^ 0xA1B2C3D4E5F60718ULL);
-                    const std::uint64_t seedGateScratch = splitmix64_device(sessionSeed ^ 0xC6A4A7935BD1E995ULL);
-                    const float pixelToMm = grain.pixelSizeUm * 0.001f;
-                    const float xMm = absX * pixelToMm;
-                    const float yMm = absY * pixelToMm;
-                    const bool gateActive = (grain.gateDustAmount > 0.0f) || (grain.gateScratchAmount > 0.0f);
-                    if (gateActive) {
-                        float gateMask = 0.0f;
-                        if (grain.gateMask && grain.gateMaskWidth > 0 && grain.gateMaskHeight > 0) {
-                            const float maskX = (absX - static_cast<float>(grain.originX)) * 0.5f;
-                            const float maskY = (absY - static_cast<float>(grain.originY)) * 0.5f;
-                            gateMask = sample_gate_mask_device(grain.gateMask, grain.gateMaskWidth, grain.gateMaskHeight, maskX, maskY);
-                        } else {
-                            gateMask = gate_mask_device(
-                                grain.gateDustAmount,
-                                grain.gateScratchAmount,
-                                xMm,
-                                yMm,
-                                grain.pixelSizeUm,
-                                seedGateDust,
-                                seedGateScratch);
-                        }
-                        if (device_isfinite(gateMask) && gateMask != 0.0f) {
-                            gateMask = fminf(fmaxf(gateMask, -0.5f), 0.95f);
-                            const float trans = 1.0f - gateMask;
-                            rgbOut[0] *= static_cast<double>(trans);
-                            rgbOut[1] *= static_cast<double>(trans);
-                            rgbOut[2] *= static_cast<double>(trans);
-                        }
-                    }
-                    apply_output_encoding_device(scan.scanColor.encoding, rgbOut);
-                }
-
-                float* dstPix = reinterpret_cast<float*>(dstRow + static_cast<std::size_t>(x) * pixelBytes);
-                dstPix[0] = static_cast<float>(rgbOut[0]);
-                dstPix[1] = static_cast<float>(rgbOut[1]);
-                dstPix[2] = static_cast<float>(rgbOut[2]);
-
-                if (nC == 4) {
-                    const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
-                    dstPix[3] = srcPix ? srcPix[3] : 1.0f;
-                }
-            }
-        }
-    }
-
     template <typename Params>
     __global__ void focused_scan_output_encode_kernel(
         Params params,
         const float* rgbR,
         const float* rgbG,
-        const float* rgbB) {
+        const float* rgbB,
+        JuicerCuda::GrainPayload gateDefects,
+        JuicerCuda::GateWeavePayload weave,
+        const float* gateMask,
+        int gateMaskWidth,
+        int gateMaskHeight) {
         if (!params.src || !params.dst || !rgbR || !rgbG || !rgbB ||
             params.srcRowBytes == 0 || params.dstRowBytes == 0) {
             return;
@@ -1795,13 +1706,58 @@ namespace {
             y >= static_cast<unsigned int>(params.height)) {
             return;
         }
-        const std::size_t idx =
-            static_cast<std::size_t>(y) * static_cast<std::size_t>(params.width) +
-            static_cast<std::size_t>(x);
-        double rgbOut[3] = {
-            static_cast<double>(rgbR[idx]),
-            static_cast<double>(rgbG[idx]),
-            static_cast<double>(rgbB[idx])};
+        const std::size_t idx = static_cast<std::size_t>(y) *
+                                    static_cast<std::size_t>(params.width) +
+                                static_cast<std::size_t>(x);
+        double rgbOut[3]{};
+        if (weave.active != 0) {
+            const float centerX = 0.5f * static_cast<float>(params.width - 1);
+            const float centerY = 0.5f * static_cast<float>(params.height - 1);
+            const float offsetX = static_cast<float>(x) - centerX;
+            const float offsetY = static_cast<float>(y) - centerY;
+            const float sourceX = weave.cosRot * offsetX -
+                                  weave.sinRot * offsetY +
+                                  centerX + weave.dxPx;
+            const float sourceY = weave.sinRot * offsetX +
+                                  weave.cosRot * offsetY +
+                                  centerY + weave.dyPx;
+            rgbOut[0] = sample_plane_mitchell_device(
+                rgbR, params.width, params.height, sourceX, sourceY);
+            rgbOut[1] = sample_plane_mitchell_device(
+                rgbG, params.width, params.height, sourceX, sourceY);
+            rgbOut[2] = sample_plane_mitchell_device(
+                rgbB, params.width, params.height, sourceX, sourceY);
+        } else {
+            rgbOut[0] = static_cast<double>(rgbR[idx]);
+            rgbOut[1] = static_cast<double>(rgbG[idx]);
+            rgbOut[2] = static_cast<double>(rgbB[idx]);
+        }
+        if (gateMask && gateMaskWidth > 0 && gateMaskHeight > 0) {
+            const float absoluteX =
+                static_cast<float>(gateDefects.originX) +
+                static_cast<float>(x);
+            const float absoluteY =
+                static_cast<float>(gateDefects.originY) +
+                static_cast<float>(y);
+            const float maskX =
+                (absoluteX - static_cast<float>(gateDefects.originX)) * 0.5f;
+            const float maskY =
+                (absoluteY - static_cast<float>(gateDefects.originY)) * 0.5f;
+            float mask = sample_gate_mask_device(
+                gateMask,
+                gateMaskWidth,
+                gateMaskHeight,
+                maskX,
+                maskY);
+            if (device_isfinite(mask) && mask != 0.0f) {
+                mask = fminf(fmaxf(mask, -0.5f), 0.95f);
+                const double transmittance =
+                    static_cast<double>(1.0f - mask);
+                rgbOut[0] *= transmittance;
+                rgbOut[1] *= transmittance;
+                rgbOut[2] *= transmittance;
+            }
+        }
         apply_output_encoding_device(params.scanStage.scanColor.encoding, rgbOut);
 
         const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
@@ -1824,28 +1780,56 @@ namespace {
 
 } // namespace
 
-extern "C" cudaError_t juicer_cuda_build_gate_defect_mask(
-    const JuicerCuda::PipelineRunParams* hParams,
-    float* dGateMask,
-    int gateWidth,
-    int gateHeight,
+extern "C" cudaError_t juicer_cuda_apply_film_defects(
+    const JuicerCuda::GrainPayload* defects,
+    int width,
+    int height,
+    float* densityC,
+    float* densityM,
+    float* densityY,
     void* cudaStreamOpaque) {
-    if (!hParams || !dGateMask) {
+    if (!defects || !densityC || !densityM || !densityY ||
+        width <= 0 || height <= 0) {
         return cudaErrorInvalidValue;
     }
-
-    if (gateWidth <= 0 || gateHeight <= 0) {
-        return cudaSuccess;
-    }
-
-    const JuicerCuda::PipelineRunParams params = *hParams;
-    cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-
+    cudaStream_t stream = cudaStreamOpaque
+                              ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+                              : nullptr;
     dim3 threads(32, 8);
     dim3 blocks(
-        static_cast<unsigned int>((gateWidth + threads.x - 1) / threads.x),
-        static_cast<unsigned int>((gateHeight + threads.y - 1) / threads.y));
-    gate_defect_mask_kernel<<<blocks, threads, 0, stream>>>(params, dGateMask, gateWidth, gateHeight);
+        (static_cast<unsigned int>(width) + threads.x - 1) / threads.x,
+        (static_cast<unsigned int>(height) + threads.y - 1) / threads.y);
+    apply_film_defects_kernel<<<blocks, threads, 0, stream>>>(
+        *defects,
+        width,
+        height,
+        densityC,
+        densityM,
+        densityY);
+    return cudaGetLastError();
+}
+
+extern "C" cudaError_t juicer_cuda_build_gate_defect_mask_focused(
+    const JuicerCuda::GrainPayload* defects,
+    float* gateMask,
+    int gateMaskWidth,
+    int gateMaskHeight,
+    void* cudaStreamOpaque) {
+    if (!defects || !gateMask || gateMaskWidth <= 0 || gateMaskHeight <= 0) {
+        return cudaErrorInvalidValue;
+    }
+    cudaStream_t stream = cudaStreamOpaque
+                              ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+                              : nullptr;
+    dim3 threads(32, 8);
+    dim3 blocks(
+        (static_cast<unsigned int>(gateMaskWidth) + threads.x - 1) / threads.x,
+        (static_cast<unsigned int>(gateMaskHeight) + threads.y - 1) / threads.y);
+    gate_defect_mask_kernel<<<blocks, threads, 0, stream>>>(
+        *defects,
+        gateMask,
+        gateMaskWidth,
+        gateMaskHeight);
     return cudaGetLastError();
 }
 
@@ -2299,6 +2283,11 @@ cudaError_t launch_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
+    const JuicerCuda::GrainPayload* gateDefects,
+    const JuicerCuda::GateWeavePayload* weave,
+    const float* gateMask,
+    int gateMaskWidth,
+    int gateMaskHeight,
     JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     if (!hParams || !hParams->src || !hParams->dst || !rgb.r || !rgb.g || !rgb.b) {
@@ -2310,6 +2299,11 @@ cudaError_t launch_focused_scanner_post_output(
     }
     if (!(params.nComponents == 3 || params.nComponents == 4) ||
         params.srcRowBytes == 0 || params.dstRowBytes == 0) {
+        return cudaErrorInvalidValue;
+    }
+    if ((gateMask != nullptr) !=
+            (gateMaskWidth > 0 && gateMaskHeight > 0) ||
+        (gateMask && !gateDefects)) {
         return cudaErrorInvalidValue;
     }
     cudaStream_t stream =
@@ -2442,7 +2436,16 @@ cudaError_t launch_focused_scanner_post_output(
     if (profileError != cudaSuccess) {
         return profileError;
     }
-    focused_scan_output_encode_kernel<<<blocks, threads, 0, stream>>>(params, rgb.r, rgb.g, rgb.b);
+    focused_scan_output_encode_kernel<<<blocks, threads, 0, stream>>>(
+        params,
+        rgb.r,
+        rgb.g,
+        rgb.b,
+        gateDefects ? *gateDefects : JuicerCuda::GrainPayload{},
+        weave ? *weave : JuicerCuda::GateWeavePayload{},
+        gateMask,
+        gateMaskWidth,
+        gateMaskHeight);
     error = cudaGetLastError();
     if (error != cudaSuccess) {
         return error;
@@ -2845,6 +2848,11 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
+    const JuicerCuda::GrainPayload* gateDefects,
+    const JuicerCuda::GateWeavePayload* weave,
+    const float* gateMask,
+    int gateMaskWidth,
+    int gateMaskHeight,
     JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     return launch_focused_scanner_post_output(
@@ -2856,6 +2864,11 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
         dUnsharpKernel,
         unsharpRadius,
         unsharpAmount,
+        gateDefects,
+        weave,
+        gateMask,
+        gateMaskWidth,
+        gateMaskHeight,
         aliasProfile,
         cudaStreamOpaque);
 }
@@ -2871,6 +2884,11 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
+    const JuicerCuda::GrainPayload* gateDefects,
+    const JuicerCuda::GateWeavePayload* weave,
+    const float* gateMask,
+    int gateMaskWidth,
+    int gateMaskHeight,
     JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     return launch_focused_scanner_post_output(
@@ -2882,6 +2900,11 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
         dUnsharpKernel,
         unsharpRadius,
         unsharpAmount,
+        gateDefects,
+        weave,
+        gateMask,
+        gateMaskWidth,
+        gateMaskHeight,
         aliasProfile,
         cudaStreamOpaque);
 }

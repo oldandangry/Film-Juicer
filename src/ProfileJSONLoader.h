@@ -45,7 +45,6 @@ namespace Profiles {
         float sizeMixScale = 3.0f;
         float clumpTemporalMix = 0.30f;
         float clumpMorphPeriodSec = 8.0f;
-        bool breathingDebug = false;
         int debugView = 0;
         std::array<float, 2> microStructure{{0.0f, 0.0f}}; // [cell_um, clump_sigma_x1e-3]
         int nSubLayers = 1;

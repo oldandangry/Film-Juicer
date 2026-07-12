@@ -892,15 +892,6 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kGrainBreathingDebug);
-            p->setLabel("Breathing debug");
-            p->setHint("Debug view for the breathing field.");
-            p->setDefault(false);
-            if (grpGrainAdvanced)
-                p->setParent(*grpGrainAdvanced);
-            p->setEvaluateOnChange(true);
-        }
-        {
             OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(JuicerParams::kGrainDebugView);
             p->setLabel("Grain debug view");
             p->appendOption("Off");

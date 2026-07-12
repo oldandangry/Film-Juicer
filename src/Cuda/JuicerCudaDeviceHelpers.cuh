@@ -1639,12 +1639,14 @@ static __device__ __forceinline__ void juicer_cuda_develop_dir_final_device(
     const float logRawBgr[3],
     std::size_t pixelIndex,
     float densityCmy[3]) {
+    // The focused schedule overwrites these correction planes with density.
+    // They are mutable for this kernel and must not use the read-only __ldg path.
     const float filteredCorrectionY =
-        ldg_f(develop.spatialDir.filteredCorrectionY + pixelIndex);
+        develop.spatialDir.filteredCorrectionY[pixelIndex];
     const float filteredCorrectionM =
-        ldg_f(develop.spatialDir.filteredCorrectionM + pixelIndex);
+        develop.spatialDir.filteredCorrectionM[pixelIndex];
     const float filteredCorrectionC =
-        ldg_f(develop.spatialDir.filteredCorrectionC + pixelIndex);
+        develop.spatialDir.filteredCorrectionC[pixelIndex];
 
     float correctedLogRawB = logRawBgr[0] - filteredCorrectionY;
     float correctedLogRawG = logRawBgr[1] - filteredCorrectionM;

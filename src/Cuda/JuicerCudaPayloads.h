@@ -170,6 +170,7 @@ namespace JuicerCuda {
     struct GrainPayload {
         int active = 0;
         int sublayersActive = 0;
+        int positiveFilm = 0;
         int nSubLayers = 1;
         int originX = 0;
         int originY = 0;
@@ -199,12 +200,9 @@ namespace JuicerCuda {
         float breathingCellUmLarge = 0.0f;
         float breathingMix = 0.0f;
         float breathingDriftUmPerFrame = 0.0f;
-        int breathingDebug = 0;
         int debugView = 0;
         float pixelSizeUm = 0.0f; // Pixel size in micrometers.
         int pitchPx = 0;
-        float blurSigmaPx = 0.0f;               // Grain blur sigma in pixels.
-        float blurDyeCloudsUm = 0.0f;           // Dye-cloud blur sigma scale in pixels.
         float microStructure[2] = {0.0f, 0.0f}; // [cell_um, clump_sigma_x1e-3]
         float clumpTemporalMix = 0.0f;
         int clumpMorphPeriodFrames = 0;
@@ -212,9 +210,6 @@ namespace JuicerCuda {
         float gateDustAmount = 0.0f;
         float filmScratchAmount = 0.0f;
         float gateScratchAmount = 0.0f;
-        const float* JUICER_RESTRICT gateMask = nullptr;
-        int gateMaskWidth = 0;
-        int gateMaskHeight = 0;
         float densityMin[3] = {0.0f, 0.0f, 0.0f};
         float uniformity[3] = {0.0f, 0.0f, 0.0f};
         float densityMax[3] = {0.0f, 0.0f, 0.0f};
@@ -256,7 +251,6 @@ namespace JuicerCuda {
         float dyPx = 0.0f;
         float cosRot = 1.0f;
         float sinRot = 0.0f;
-        float debugScalePx = 1.0f;
     };
 
     struct GrainKernelPayload {
@@ -379,9 +373,6 @@ namespace JuicerCuda {
         FilmDevelopPayload filmDevelop{};
         HalationPayload halation{};
         HalationKernelPayload halationKernels{};
-        GrainPayload grain{};
-        GrainKernelPayload grainKernels{};
-        GateWeavePayload gateWeave{};
         PrintExposePayload printExpose{};
         PrintDevelopPayload printDevelop{};
         ScanStagePayload scanStage{};

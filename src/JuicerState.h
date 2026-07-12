@@ -398,6 +398,7 @@ struct ParamSnapshot {
     std::array<double, 3> cameraFilterUV{{1.0, 410.0, 8.0}};
     std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
     Profiles::GrainMetadata grainControls;
+    double gateWeaveAmount = 1.0;
 };
 
 uint64_t hash_params(const ParamSnapshot& p);

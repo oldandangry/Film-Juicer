@@ -2264,41 +2264,47 @@ namespace {
         float density,
         const float* JUICER_RESTRICT x,
         const float* JUICER_RESTRICT y,
-        int n) {
+        int n,
+        bool positiveFilm) {
         if (!x || !y || n <= 0) {
             return density;
         }
         if (!device_isfinite(density)) {
             return y[0];
         }
+        const float query = positiveFilm ? -density : density;
+        const auto axis_at = [x, positiveFilm](int index) {
+            const float axisValue = ldg_f(x + index);
+            return positiveFilm ? -axisValue : axisValue;
+        };
 
         int domainBegin = 0;
-        while (domainBegin < n && !device_isfinite(ldg_f(x + domainBegin))) {
+        while (domainBegin < n && !device_isfinite(axis_at(domainBegin))) {
             ++domainBegin;
         }
         if (domainBegin >= n) {
             return density;
         }
         int domainEnd = n - 1;
-        while (domainEnd > domainBegin && !device_isfinite(ldg_f(x + domainEnd))) {
+        while (domainEnd > domainBegin && !device_isfinite(axis_at(domainEnd))) {
             --domainEnd;
         }
 
-        const float xmin = ldg_f(x + domainBegin);
-        const float xmax = ldg_f(x + domainEnd);
+        const float xmin = axis_at(domainBegin);
+        const float xmax = axis_at(domainEnd);
         if (!device_isfinite(xmin) || !device_isfinite(xmax) || !(xmax >= xmin)) {
             return ldg_f(y + domainBegin);
         }
 
-        if (density <= xmin) {
+        if (query <= xmin) {
             return ldg_f(y + domainBegin);
         }
-        if (density >= xmax) {
+        if (query >= xmax) {
             return ldg_f(y + domainEnd);
         }
 
         int i1 = domainBegin + 1;
-        while (i1 <= domainEnd && ldg_f(x + i1) < density) {
+        while (i1 <= domainEnd && axis_at(i1) < query) {
             ++i1;
         }
         if (i1 > domainEnd) {
@@ -2306,8 +2312,8 @@ namespace {
         }
 
         const int i0 = i1 - 1;
-        const float x0 = ldg_f(x + i0);
-        const float x1 = ldg_f(x + i1);
+        const float x0 = axis_at(i0);
+        const float x1 = axis_at(i1);
         const float y0 = ldg_f(y + i0);
         const float y1 = ldg_f(y + i1);
 
@@ -2316,7 +2322,7 @@ namespace {
             return y0;
         }
 
-        const float t = (density - x0) / denom;
+        const float t = (query - x0) / denom;
         return y0 + t * (y1 - y0);
     }
 
@@ -2699,7 +2705,12 @@ __global__ void grain_layer_kernel(
 
     const JuicerCuda::DeviceCurveView curve = grain.densityCurveCmy[channelIndex];
     const float* layerCurve = grain.densityCurvesLayers[sublayerIndex][channelIndex];
-    density = interp_density_layer_device(density, curve.y, layerCurve, curve.n);
+    density = interp_density_layer_device(
+        density,
+        curve.y,
+        layerCurve,
+        curve.n,
+        grain.positiveFilm != 0);
     density += densityMin;
 
     const std::uint64_t seed = grain.seedBase ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);

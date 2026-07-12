@@ -157,9 +157,7 @@ namespace {
         hash_extent(hash, descriptor.fullFrameExtent);
         hash_value(hash, descriptor.pixelSizeUm);
         hash_value(hash, descriptor.frame0);
-        hash_value(hash, descriptor.frame1);
         hash_value(hash, descriptor.frameAlpha);
-        hash_value(hash, descriptor.timeSeconds);
         hash_value(hash, descriptor.seedBase);
         hash_value(hash, descriptor.seedBaseNext);
         hash_value(hash, descriptor.sessionSeed);
@@ -278,15 +276,14 @@ namespace Spektrafilm {
         out.fullFrameExtent = input.fullFrameExtent;
         out.pixelSizeUm = input.pixelSizeUm;
         out.frame0 = static_cast<std::int64_t>(frameFloor);
-        out.frame1 = out.frame0 + 1;
         out.frameAlpha = static_cast<float>(
             std::clamp(input.frameTime - frameFloor, 0.0, 1.0));
-        out.timeSeconds = input.frameTime / input.frameRate;
+        const std::int64_t frame1 = out.frame0 + 1;
         out.sessionSeed = input.sessionSeed != 0 ? input.sessionSeed : 1;
         out.clipToken = input.clipToken;
         out.seedBase = make_seed_base(out.clipToken, out.frame0, out.sessionSeed);
         out.seedBaseNext =
-            make_seed_base(out.clipToken, out.frame1, out.sessionSeed);
+            make_seed_base(out.clipToken, frame1, out.sessionSeed);
         out.pitchPx = input.fullFrameExtent.height;
         out.breathingPeriodFrames = std::max(
             1,

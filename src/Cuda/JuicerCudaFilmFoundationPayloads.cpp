@@ -54,6 +54,48 @@ namespace {
                prepared.kernel.sigma == descriptor.sigmaPx;
     }
 
+    template <typename T>
+    void hash_value(std::uint64_t& hash, const T& value) {
+        Hash::hash_bytes_update(hash, &value, sizeof(value));
+    }
+
+    void hash_effects_extent(
+        std::uint64_t& hash,
+        const Spektrafilm::FilmJuicerEffectsFrameExtent& extent) {
+        hash_value(hash, extent.x);
+        hash_value(hash, extent.y);
+        hash_value(hash, extent.width);
+        hash_value(hash, extent.height);
+    }
+
+    std::uint64_t hash_effects_descriptor(
+        const Spektrafilm::FilmJuicerEffectsFrameDescriptor& descriptor) {
+        std::uint64_t hash = Hash::kFnvOffset;
+        hash_effects_extent(hash, descriptor.renderExtent);
+        hash_effects_extent(hash, descriptor.fullFrameExtent);
+        hash_value(hash, descriptor.pixelSizeUm);
+        hash_value(hash, descriptor.frame0);
+        hash_value(hash, descriptor.frameAlpha);
+        hash_value(hash, descriptor.sessionSeed);
+        hash_value(hash, descriptor.clipToken);
+        hash_value(hash, descriptor.pitchPx);
+        hash_value(hash, descriptor.filmDustAmount);
+        hash_value(hash, descriptor.filmScratchAmount);
+        hash_value(hash, descriptor.gateDustAmount);
+        hash_value(hash, descriptor.gateScratchAmount);
+        hash_value(hash, descriptor.weaveActive);
+        hash_value(hash, descriptor.weaveDxPx);
+        hash_value(hash, descriptor.weaveDyPx);
+        hash_value(hash, descriptor.weaveCosRot);
+        hash_value(hash, descriptor.weaveSinRot);
+        hash_value(hash, descriptor.filmActive);
+        hash_value(hash, descriptor.gateMaskActive);
+        hash_value(hash, descriptor.gateOutputActive);
+        hash_value(hash, descriptor.requiresFullFrame);
+        hash_value(hash, descriptor.recipeHash);
+        return hash;
+    }
+
 } // namespace
 
 namespace JuicerCuda {
@@ -180,6 +222,11 @@ namespace JuicerCuda {
 
         outGrain.active = 1;
         outGrain.sublayersActive = recipe.sublayersActive ? 1 : 0;
+        outGrain.positiveFilm =
+            descriptor.capturePolarity ==
+                    Spektrafilm::ProfilePolarity::Positive
+                ? 1
+                : 0;
         outGrain.nSubLayers = recipe.nSubLayers;
         outGrain.originX = descriptor.renderExtent.x;
         outGrain.originY = descriptor.renderExtent.y;
@@ -215,12 +262,9 @@ namespace JuicerCuda {
         outGrain.breathingMix = descriptor.breathingMix;
         outGrain.breathingDriftUmPerFrame =
             descriptor.breathingDriftUmPerFrame;
-        outGrain.breathingDebug = recipe.breathingDebug ? 1 : 0;
         outGrain.debugView = recipe.debugView;
         outGrain.pixelSizeUm = descriptor.pixelSizeUm;
         outGrain.pitchPx = descriptor.pitchPx;
-        outGrain.blurSigmaPx = recipe.correlationSigmaPx;
-        outGrain.blurDyeCloudsUm = recipe.dyeCloudBlurUm;
         outGrain.microStructure[0] = recipe.microStructure[0];
         outGrain.microStructure[1] = recipe.microStructure[1];
         outGrain.clumpTemporalMix = recipe.clumpTemporalMix;
@@ -278,6 +322,67 @@ namespace JuicerCuda {
             prepared.correlation[2].kernel.weights;
         outKernels.blurRadiusCoarse =
             prepared.correlation[2].kernel.radius;
+        return true;
+    }
+
+    bool pack_film_juicer_effects_payload(
+        const Spektrafilm::FilmJuicerEffectsFrameDescriptor& descriptor,
+        GrainPayload& outDefects,
+        GateWeavePayload& outWeave,
+        std::string& diagnostic) {
+        std::memset(&outDefects, 0, sizeof(outDefects));
+        std::memset(&outWeave, 0, sizeof(outWeave));
+        diagnostic.clear();
+
+        if (!descriptor.filmActive && !descriptor.gateOutputActive) {
+            if (descriptor.hash != 0 || descriptor.recipeHash != 0) {
+                diagnostic =
+                    "ResourceDescriptorMismatch phase=effects_payload field=inactive_descriptor";
+                return false;
+            }
+            return true;
+        }
+        const bool predicatesMatch =
+            descriptor.filmActive ==
+                (descriptor.filmDustAmount > 0.0f ||
+                 descriptor.filmScratchAmount > 0.0f) &&
+            descriptor.gateMaskActive ==
+                (descriptor.gateDustAmount > 0.0f ||
+                 descriptor.gateScratchAmount > 0.0f) &&
+            descriptor.gateOutputActive ==
+                (descriptor.weaveActive || descriptor.gateMaskActive) &&
+            descriptor.requiresFullFrame == descriptor.gateOutputActive;
+        if (descriptor.hash == 0 || descriptor.recipeHash == 0 ||
+            descriptor.renderExtent.width <= 0 ||
+            descriptor.renderExtent.height <= 0 ||
+            descriptor.fullFrameExtent.width <= 0 ||
+            descriptor.fullFrameExtent.height <= 0 ||
+            !(descriptor.pixelSizeUm > 0.0f) || descriptor.pitchPx <= 0 ||
+            descriptor.sessionSeed == 0 || !predicatesMatch ||
+            descriptor.hash != hash_effects_descriptor(descriptor)) {
+            diagnostic =
+                "ResourceDescriptorMismatch phase=effects_payload field=descriptor";
+            return false;
+        }
+
+        outDefects.originX = descriptor.renderExtent.x;
+        outDefects.originY = descriptor.renderExtent.y;
+        outDefects.frameIndex = descriptor.frame0;
+        outDefects.timeAlpha = descriptor.frameAlpha;
+        outDefects.stbnSessionSeed = descriptor.sessionSeed;
+        outDefects.clipToken = descriptor.clipToken;
+        outDefects.pixelSizeUm = descriptor.pixelSizeUm;
+        outDefects.pitchPx = descriptor.pitchPx;
+        outDefects.filmDustAmount = descriptor.filmDustAmount;
+        outDefects.filmScratchAmount = descriptor.filmScratchAmount;
+        outDefects.gateDustAmount = descriptor.gateDustAmount;
+        outDefects.gateScratchAmount = descriptor.gateScratchAmount;
+
+        outWeave.active = descriptor.weaveActive ? 1 : 0;
+        outWeave.dxPx = descriptor.weaveDxPx;
+        outWeave.dyPx = descriptor.weaveDyPx;
+        outWeave.cosRot = descriptor.weaveCosRot;
+        outWeave.sinRot = descriptor.weaveSinRot;
         return true;
     }
 

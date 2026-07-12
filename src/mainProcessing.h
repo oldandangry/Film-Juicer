@@ -84,7 +84,6 @@ public:
     void setScannerSettings(const Scanner::Settings& s);
     void setPrintParams(const Print::Params& p);
     void setHalationOverride(const Profiles::HalationMetadata& halation);
-    void setGrainOverride(const Profiles::GrainMetadata& grain);
     void setPrintGlareOverride(const Profiles::ProfileGlare& glare);
     void setWorkingState(const WorkingState* ws, bool wsReady);
     void setPrintRuntime(const Print::Runtime* prt, bool printReady);
@@ -95,7 +94,6 @@ public:
     void setInstanceState(InstanceState* s);
     void setSessionTokens(const SessionTokens& tokens);
     void setClipToken(std::uintptr_t token);
-    void setGateWeaveAmount(double amount);
     void setFrameTime(double time);
     void setFrameRate(double frameRate);
     void setFrameBoundsVersion(std::uint32_t v);
@@ -114,8 +112,6 @@ private:
     Print::Params _printParams;
     Profiles::HalationMetadata _halationOverride{};
     bool _hasHalationOverride = false;
-    Profiles::GrainMetadata _grainOverride{};
-    bool _hasGrainOverride = false;
     Profiles::ProfileGlare _printGlareOverride{};
     bool _hasPrintGlareOverride = false;
     Couplers::Runtime _dirRT;
@@ -144,7 +140,6 @@ private:
     std::int64_t _frameIndex = 0;
     double _timeFrames = 0.0;
     double _frameRate = 0.0;
-    double _gateWeaveAmount = 1.0;
     bool _renderInteractiveStatus = false;
     bool _renderQualityDraft = false;
     bool _renderSequentialStatus = false;

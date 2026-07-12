@@ -725,6 +725,7 @@ namespace JuicerProcess {
         Spektrafilm::ProfilePolarity capturePolarity =
             Spektrafilm::ProfilePolarity::Unsupported;
         std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
+        std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor;
         std::array<PreparedGaussianView, 3> preparedGrainCorrelation{};
         PreparedGaussianView preparedGrainDyeCloud[3][3] = {};
         PreparedDensityLayersView preparedGrainDensityLayers{};
@@ -830,6 +831,44 @@ namespace JuicerProcess {
         return true;
     }
 
+    bool validate_film_juicer_effects_descriptor(
+        const Spektrafilm::RenderRecipe* recipe,
+        const std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& descriptor,
+        std::string& outError) {
+        if (!recipe) {
+            outError =
+                "MissingRequiredResource phase=effects_descriptor field=render_recipe";
+            return false;
+        }
+        const Spektrafilm::FilmJuicerEffectsRecipe& effects =
+            recipe->filmJuicerEffects;
+        if (!effects.active) {
+            if (effects.hash != 0 || descriptor.has_value()) {
+                outError =
+                    "ResourceDescriptorMismatch phase=effects_descriptor field=inactive_descriptor";
+                return false;
+            }
+            return true;
+        }
+        if (!descriptor.has_value()) {
+            outError =
+                "MissingRequiredResource phase=effects_descriptor field=active_descriptor";
+            return false;
+        }
+        const Spektrafilm::FilmJuicerEffectsFrameDescriptor& frame =
+            *descriptor;
+        if (frame.hash == 0 || frame.recipeHash != effects.hash ||
+            (!frame.filmActive && !frame.gateOutputActive) ||
+            frame.gateOutputActive !=
+                (frame.weaveActive || frame.gateMaskActive) ||
+            frame.requiresFullFrame != frame.gateOutputActive) {
+            outError =
+                "ResourceDescriptorMismatch phase=effects_descriptor field=identity";
+            return false;
+        }
+        return true;
+    }
+
     bool derive_visual_grain_workspace_request(
         const Spektrafilm::VisualGrainFrameDescriptor& descriptor,
         Root::PreparedCudaFrame::WorkspaceRequest& request,
@@ -870,6 +909,8 @@ namespace JuicerProcess {
         const Spektrafilm::SpatialDirDescriptor* spatialDir,
         const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects,
         const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& visualGrain,
+        const std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& effects,
+        Spektrafilm::ProfilePolarity capturePolarity,
         int requestedWidth,
         int requestedHeight,
         bool needCompositeProfileWorkspace,
@@ -912,6 +953,17 @@ namespace JuicerProcess {
                 return false;
             }
         }
+        if (effects.has_value()) {
+            if (effects->renderExtent.width != requestedWidth ||
+                effects->renderExtent.height != requestedHeight ||
+                (!effects->filmActive && !effects->gateOutputActive)) {
+                outError =
+                    "ResourceDescriptorMismatch phase=effects_workspace field=descriptor";
+                return false;
+            }
+            out.needOptics = true;
+            out.needGateMask = effects->gateMaskActive;
+        }
         if (scannerPostEffects && scannerPostEffects->active()) {
             out.needOptics = true;
             out.needSharedTmp = true;
@@ -924,7 +976,9 @@ namespace JuicerProcess {
             out.needOptics = true;
             out.needSharedTmp = true;
         }
-        if (out.needOptics && out.needSpatialDir) {
+        // Positive final develop retains DIR correction as an input while the scanner writes RGB.
+        if (out.needOptics && out.needSpatialDir &&
+            capturePolarity != Spektrafilm::ProfilePolarity::Positive) {
             out.aliasScannerRgbFromSpatialDirFiltered = true;
             out.spatialDirTargetScratchTier = out.spatialDirScratchTier;
             out.spatialDirTargetPlaneRoles = out.spatialDirPlaneRoles;
@@ -3954,6 +4008,14 @@ namespace JuicerProcess {
         return view.active ? view : PreparedVisualGrainView{};
     }
 
+    const Spektrafilm::FilmJuicerEffectsFrameDescriptor*
+    Root::PreparedCudaFrame::film_juicer_effects_descriptor() const noexcept {
+        if (!active() || !_state->effectsDescriptor.has_value()) {
+            return nullptr;
+        }
+        return &*_state->effectsDescriptor;
+    }
+
     Root::PreparedCudaFrame::VisualGrainWorkspaceView
     Root::PreparedCudaFrame::visual_grain_workspace(
         const WorkspaceLeaseMarker& workspace) const noexcept {
@@ -5241,12 +5303,21 @@ namespace JuicerProcess {
                 outError)) {
             return frame;
         }
+        if (!validate_film_juicer_effects_descriptor(
+                request.recipe,
+                request.effectsDescriptor,
+                outError)) {
+            return frame;
+        }
         frame._state->visualGrainDescriptor =
             request.visualGrainDescriptor;
+        frame._state->effectsDescriptor = request.effectsDescriptor;
         if (!derive_workspace_request(
                 request.spatialDirDescriptor,
                 request.scannerPostEffects,
                 request.visualGrainDescriptor,
+                request.effectsDescriptor,
+                request.recipe->profileRoute.capturePolarity,
                 request.requestedWidth,
                 request.requestedHeight,
                 request.needCompositeProfileWorkspace,
@@ -5392,12 +5463,21 @@ namespace JuicerProcess {
                 outError)) {
             return frame;
         }
+        if (!validate_film_juicer_effects_descriptor(
+                request.recipe,
+                request.effectsDescriptor,
+                outError)) {
+            return frame;
+        }
         frame._state->visualGrainDescriptor =
             request.visualGrainDescriptor;
+        frame._state->effectsDescriptor = request.effectsDescriptor;
         if (!derive_workspace_request(
                 request.spatialDirDescriptor,
                 request.scannerPostEffects,
                 request.visualGrainDescriptor,
+                request.effectsDescriptor,
+                request.recipe->profileRoute.capturePolarity,
                 request.requestedWidth,
                 request.requestedHeight,
                 request.needCompositeProfileWorkspace,

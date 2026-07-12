@@ -1649,8 +1649,6 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     microStructure = read_sanitized_double2(_pGrainMicroStructure, microStructure, 0.0, 1000.0);
     cast_array(grain.microStructure, microStructure);
 
-    grain.breathingDebug = read_bool_param_or(_pGrainBreathingDebug, false);
-
     grain.debugView = read_choice_param_clamped(_pGrainDebugView, 0, 0, 6);
 
     const GrainSurfaceArtifacts artifacts = read_grain_surface_artifacts(
@@ -2015,7 +2013,6 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pGrainSizeMixScale = fetchDoubleParam(JuicerParams::kGrainSizeMixScale);
         _pGrainClumpTemporalMix = fetchDoubleParam(JuicerParams::kGrainClumpTemporalMix);
         _pGrainClumpMorphPeriodSec = fetchDoubleParam(JuicerParams::kGrainClumpMorphPeriodSec);
-        _pGrainBreathingDebug = fetchBooleanParam(JuicerParams::kGrainBreathingDebug);
         _pGrainDebugView = fetchChoiceParam(JuicerParams::kGrainDebugView);
         _pGrainMicroStructure = fetchDouble2DParam(JuicerParams::kGrainMicroStructure);
         _pGrainResetAdvanced = fetchPushButtonParam(JuicerParams::kGrainResetAdvanced);
@@ -2813,6 +2810,8 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     P.cameraFilmFormatLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
     P.exactScatterHalationActive = read_bool_param_or(_pHalationActive, false) ? 1 : 0;
     P.grainControls = gatherGrainUi();
+    P.gateWeaveAmount =
+        read_sanitized_double(_pGateWeaveAmount, 1.0, 0.0, 10.0);
     read_coupler_snapshot_values(
         _pCouplersActive,
         _pCouplersAmount,

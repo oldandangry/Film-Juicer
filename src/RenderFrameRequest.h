@@ -30,8 +30,6 @@ struct FrameRequest {
     Print::Params printParams;
     Profiles::HalationMetadata halationOverride{};
     bool hasHalationOverride = false;
-    Profiles::GrainMetadata grainOverride{};
-    bool hasGrainOverride = false;
     Profiles::ProfileGlare printGlareOverride{};
     bool hasPrintGlareOverride = false;
     float exposureScale = 1.0f;
@@ -44,7 +42,6 @@ struct FrameRequest {
     std::uint64_t sessionSeed = 1;
     std::uint64_t instanceToken = 1;
     std::uintptr_t clipToken = 0;
-    double gateWeaveAmount = 1.0;
     double frameTime = 0.0;
     double frameRate = 0.0;
     std::uint32_t frameBoundsVersion = 0;

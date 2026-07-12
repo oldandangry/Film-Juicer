@@ -3,6 +3,7 @@
 #include <string>
 
 #include "Cuda/JuicerCudaPayloads.h"
+#include "FilmJuicerEffectsFrameDescriptor.h"
 #include "ProcessRoot.h"
 #include "RenderRecipe.h"
 
@@ -13,6 +14,12 @@ namespace JuicerCuda {
         const JuicerProcess::Root::PreparedCudaFrame::PreparedVisualGrainView& prepared,
         GrainPayload& outGrain,
         GrainKernelPayload& outKernels,
+        std::string& diagnostic);
+
+    bool pack_film_juicer_effects_payload(
+        const Spektrafilm::FilmJuicerEffectsFrameDescriptor& descriptor,
+        GrainPayload& outDefects,
+        GateWeavePayload& outWeave,
         std::string& diagnostic);
 
 } // namespace JuicerCuda

@@ -278,6 +278,7 @@
     <ClCompile Include="src\ProcessRoot.cpp" />
     <ClCompile Include="src\RenderRecipe.cpp" />
     <ClCompile Include="src\Cuda\JuicerCudaFilmFoundationPayloads.cpp" />
+    <ClCompile Include="src\FilmJuicerEffectsFrameDescriptor.cpp" />
     <ClCompile Include="src\VisualGrainFrameDescriptor.cpp" />
     <ClCompile Include="src\ResourceAssetLibrary.cpp" />
     <ClCompile Include="src\Scanner.cpp" />
@@ -296,6 +297,7 @@
     <ClInclude Include="src\Cuda\JuicerCudaPayloads.h" />
     <ClInclude Include="src\Cuda\JuicerCudaDirectFilmPayloads.h" />
     <ClInclude Include="src\Cuda\JuicerCudaFilmFoundationPayloads.h" />
+    <ClInclude Include="src\FilmJuicerEffectsFrameDescriptor.h" />
     <ClInclude Include="src\Cuda\JuicerCudaDirProfile.h" />
     <ClInclude Include="src\Cuda\JuicerCudaDeviceHelpers.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaResources.h" />

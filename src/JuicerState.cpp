@@ -750,8 +750,51 @@ namespace {
         mix_hash_field_scaled_rounded_if_finite(h, grain.sizeMixScale, 10000.0, mix);
         mix_hash_field_scaled_rounded_if_finite(h, grain.clumpTemporalMix, 10000.0, mix);
         mix_hash_field_scaled_rounded_if_finite(h, grain.clumpMorphPeriodSec, 10000.0, mix);
-        mix_hash_field(h, grain.breathingDebug ? 1 : 0, mix);
         mix_hash_field(h, grain.debugView, mix);
+    }
+
+    template <typename MixFn>
+    inline void mix_film_juicer_effects_hash_fields(
+        uint64_t& h,
+        const ParamSnapshot& p,
+        const MixFn& mix) {
+        const Profiles::GrainMetadata& grain = p.grainControls;
+        const auto positive_finite = [](auto value) {
+            return std::isfinite(value) && value > 0;
+        };
+        if (!positive_finite(grain.filmDustAmount) &&
+            !positive_finite(grain.filmScratchAmount) &&
+            !positive_finite(grain.gateDustAmount) &&
+            !positive_finite(grain.gateScratchAmount) &&
+            !positive_finite(p.gateWeaveAmount)) {
+            return;
+        }
+        mix_hash_field(h, 1, mix);
+        mix_hash_field_scaled_rounded_if_finite(
+            h,
+            grain.filmDustAmount,
+            10000.0,
+            mix);
+        mix_hash_field_scaled_rounded_if_finite(
+            h,
+            grain.filmScratchAmount,
+            10000.0,
+            mix);
+        mix_hash_field_scaled_rounded_if_finite(
+            h,
+            grain.gateDustAmount,
+            10000.0,
+            mix);
+        mix_hash_field_scaled_rounded_if_finite(
+            h,
+            grain.gateScratchAmount,
+            10000.0,
+            mix);
+        mix_hash_field_scaled_rounded_if_finite(
+            h,
+            p.gateWeaveAmount,
+            10000.0,
+            mix);
     }
 
     template <typename MixFn>
@@ -800,7 +843,6 @@ namespace {
         controls.sizeMixScale = grain.sizeMixScale;
         controls.clumpTemporalMix = grain.clumpTemporalMix;
         controls.clumpMorphPeriodSec = grain.clumpMorphPeriodSec;
-        controls.breathingDebug = grain.breathingDebug;
         controls.debugView = grain.debugView;
         return controls;
     }
@@ -1453,6 +1495,11 @@ namespace {
         input.scanRoute = params.scanRoute;
         input.filmProfile = selected.filmProfile;
         input.visualGrain = focused_visual_grain_controls_from_snapshot(params);
+        input.filmDustAmount = params.grainControls.filmDustAmount;
+        input.filmScratchAmount = params.grainControls.filmScratchAmount;
+        input.gateDustAmount = params.grainControls.gateDustAmount;
+        input.gateScratchAmount = params.grainControls.gateScratchAmount;
+        input.gateWeaveAmount = params.gateWeaveAmount;
         input.dirCouplers = focused_dir_couplers_controls_from_snapshot(params);
         input.spatialOptics.scatterHalationActive = params.exactScatterHalationActive != 0;
         input.directRoutePrintProfileExcluded = selected.directRoutePrintProfileExcluded;
@@ -1572,6 +1619,15 @@ namespace {
         input.filmFoundation.filmProfile = selected.filmProfile;
         input.filmFoundation.visualGrain =
             focused_visual_grain_controls_from_snapshot(params);
+        input.filmFoundation.filmDustAmount =
+            params.grainControls.filmDustAmount;
+        input.filmFoundation.filmScratchAmount =
+            params.grainControls.filmScratchAmount;
+        input.filmFoundation.gateDustAmount =
+            params.grainControls.gateDustAmount;
+        input.filmFoundation.gateScratchAmount =
+            params.grainControls.gateScratchAmount;
+        input.filmFoundation.gateWeaveAmount = params.gateWeaveAmount;
         input.filmFoundation.spectralUpsamplingMode = params.spectralUpsamplingMode;
         input.filmFoundation.inputColorSpace = params.inputColorSpace;
         input.filmFoundation.inputCctfDecoding = params.inputCctfDecoding != 0;
@@ -1726,6 +1782,7 @@ uint64_t hash_params(const ParamSnapshot& p) {
     mix_camera_filter_hash(h, p, hash_mix);
     mix_direct_phase3a_recipe_hash_fields(h, p, hash_mix);
     mix_focused_grain_hash_fields(h, p, hash_mix);
+    mix_film_juicer_effects_hash_fields(h, p, hash_mix);
     return h;
 }
 
@@ -1738,6 +1795,7 @@ uint64_t hash_params_core(const ParamSnapshot& p) {
     mix_camera_filter_hash(h, p, hash_mix);
     mix_direct_phase3a_recipe_hash_fields(h, p, hash_mix);
     mix_focused_grain_hash_fields(h, p, hash_mix);
+    mix_film_juicer_effects_hash_fields(h, p, hash_mix);
     return h;
 }
 

@@ -70,6 +70,9 @@
     <ClCompile Include="src\Cuda\JuicerCudaFilmFoundationPayloads.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
+    <ClCompile Include="src\FilmJuicerEffectsFrameDescriptor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\VisualGrainFrameDescriptor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -124,6 +127,9 @@
     </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaFilmFoundationPayloads.h">
       <Filter>Cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\FilmJuicerEffectsFrameDescriptor.h">
+      <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaDirProfile.h">
       <Filter>Cuda</Filter>

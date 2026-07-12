@@ -11,6 +11,7 @@
 
 #include "RenderRecipe.h"
 #include "ResourceAssetLibrary.h"
+#include "FilmJuicerEffectsFrameDescriptor.h"
 #include "GrainStaticActivityState.h"
 #include "VisualGrainFrameDescriptor.h"
 
@@ -97,6 +98,7 @@ namespace JuicerProcess {
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
             std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
+            std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor;
             int requestedWidth = 0;
             int requestedHeight = 0;
             bool needCompositeProfileWorkspace = false;
@@ -113,6 +115,7 @@ namespace JuicerProcess {
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
             std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
+            std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor;
             int requestedWidth = 0;
             int requestedHeight = 0;
             bool needCompositeProfileWorkspace = false;
@@ -435,6 +438,8 @@ namespace JuicerProcess {
             FocusedRgbWorkspaceView focused_rgb_workspace(
                 const WorkspaceLeaseMarker& workspace) const noexcept;
             PreparedVisualGrainView visual_grain_resources() const noexcept;
+            const Spektrafilm::FilmJuicerEffectsFrameDescriptor*
+            film_juicer_effects_descriptor() const noexcept;
             VisualGrainWorkspaceView visual_grain_workspace(
                 const WorkspaceLeaseMarker& workspace) const noexcept;
             DurableBundleView durable_bundle() const noexcept;

@@ -36,9 +36,7 @@ namespace Spektrafilm {
         VisualGrainFrameExtent fullFrameExtent{};
         float pixelSizeUm = 0.0f;
         std::int64_t frame0 = 0;
-        std::int64_t frame1 = 0;
         float frameAlpha = 0.0f;
-        double timeSeconds = 0.0;
         std::uint64_t seedBase = 0;
         std::uint64_t seedBaseNext = 0;
         std::uint64_t sessionSeed = 0;
