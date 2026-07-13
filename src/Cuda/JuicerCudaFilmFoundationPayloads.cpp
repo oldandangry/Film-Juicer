@@ -5,6 +5,7 @@
 
 #include "Hash.h"
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 namespace {
 
     // NOLINTBEGIN(bugprone-easily-swappable-parameters) STBN helpers mirror the reviewed seed formula.
@@ -387,3 +388,4 @@ namespace JuicerCuda {
     }
 
 } // namespace JuicerCuda
+#endif

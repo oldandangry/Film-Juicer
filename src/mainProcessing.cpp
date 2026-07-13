@@ -1877,6 +1877,7 @@ namespace JuicerProcScanner {
 
 } // namespace JuicerProcScanner
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 namespace {
 
     JuicerCuda::AutoExposurePreviewDescriptor make_auto_exposure_preview_descriptor(
@@ -1935,6 +1936,7 @@ namespace {
     }
 
 } // namespace
+#endif
 
 // --- Spatial DIR: defensive curve utilities (monotonic + robust interpolation) ---
 

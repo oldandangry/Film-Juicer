@@ -7,6 +7,7 @@
 #include "ProcessRoot.h"
 #include "RenderRecipe.h"
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 namespace JuicerCuda {
 
     bool pack_visual_grain_payload(
@@ -23,3 +24,4 @@ namespace JuicerCuda {
         std::string& diagnostic);
 
 } // namespace JuicerCuda
+#endif

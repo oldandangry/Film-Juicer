@@ -29,20 +29,27 @@ namespace JuicerLogging {
 #endif
 
     inline int clamp_level(int level) {
-        if (level < 0) return 0;
-        if (level > 3) return 3;
+        if (level < 0)
+            return 0;
+        if (level > 3)
+            return 3;
         return level;
     }
 
     inline int parse_env_int(const char* name, int fallback) {
-        if (!name) return fallback;
+        if (!name)
+            return fallback;
         const char* v = std::getenv(name);
-        if (!v || !*v) return fallback;
+        if (!v || !*v)
+            return fallback;
         char* end = nullptr;
         long parsed = std::strtol(v, &end, 10);
-        if (end == v) return fallback;
-        if (parsed < static_cast<long>(std::numeric_limits<int>::min())) return fallback;
-        if (parsed > static_cast<long>(std::numeric_limits<int>::max())) return fallback;
+        if (end == v)
+            return fallback;
+        if (parsed < static_cast<long>(std::numeric_limits<int>::min()))
+            return fallback;
+        if (parsed > static_cast<long>(std::numeric_limits<int>::max()))
+            return fallback;
         return static_cast<int>(parsed);
     }
 
@@ -51,7 +58,7 @@ namespace JuicerLogging {
     }
 
     inline std::atomic<int>& diagnostics_level_storage() {
-        static std::atomic<int> level{ -1 };
+        static std::atomic<int> level{-1};
         return level;
     }
 
@@ -72,8 +79,7 @@ namespace JuicerLogging {
             base /= "juicer_trace.txt";
             base.make_preferred();
             return base;
-        }
-        catch (...) {
+        } catch (...) {
             return fs::path();
         }
     }
@@ -100,8 +106,7 @@ namespace JuicerLogging {
                         p.make_preferred();
                         configured_path_storage() = std::move(p);
                     }
-                }
-                catch (...) {
+                } catch (...) {
                     discard_current_exception();
                     configured_path_storage().reset();
                 }
@@ -196,8 +201,7 @@ namespace JuicerLogging {
                     std::filesystem::rename(s.path, dst, ec);
                 }
             }
-        }
-        else {
+        } else {
             std::error_code ec;
             if (std::filesystem::exists(s.path, ec)) {
                 std::filesystem::remove(s.path, ec);
@@ -239,8 +243,7 @@ namespace JuicerLogging {
         // One-line header on first enable to make logs self-identifying.
         const auto now = std::chrono::system_clock::now();
         const auto secs = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
-        std::string header = "INIT | diagnostics enabled level=" + std::to_string(diagnostics_level())
-            + " time_s=" + std::to_string(secs);
+        std::string header = "INIT | diagnostics enabled level=" + std::to_string(diagnostics_level()) + " time_s=" + std::to_string(secs);
         s.stream << header << '\n';
         s.sizeBytes += static_cast<std::uint64_t>(header.size()) + 1ull;
         ++s.linesSinceFlush;
@@ -314,8 +317,7 @@ namespace JuicerLogging {
                 if (active) {
                     write(tag, "END   " + name);
                 }
-            }
-            catch (...) {
+            } catch (...) {
                 discard_current_exception();
             }
         }
@@ -325,11 +327,11 @@ namespace JuicerLogging {
 
 #if JUICER_DIAGNOSTICS_COMPILED
 #define JTRACE_ENABLED(level) (::JuicerLogging::enabled((level)))
-#define JTRACE_LEVEL(level, tag, msg) \
-    do {                              \
-        if (::JuicerLogging::enabled((level))) { \
+#define JTRACE_LEVEL(level, tag, msg)             \
+    do {                                          \
+        if (::JuicerLogging::enabled((level))) {  \
             ::JuicerLogging::write((tag), (msg)); \
-        }                             \
+        }                                         \
     } while (0)
 #define JTRACE(tag, msg) JTRACE_LEVEL(1, (tag), (msg))
 #define JTRACE_VERBOSE(tag, msg) JTRACE_LEVEL(3, (tag), (msg))

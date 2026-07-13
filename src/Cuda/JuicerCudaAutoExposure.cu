@@ -184,7 +184,7 @@ namespace {
                 }
                 const float* pix = reinterpret_cast<const float*>(rowPtr + static_cast<std::size_t>(px - srcBoundsX1) * pixelStrideBytes);
 
-                float inRgb[3] = { pix[0], pix[1], pix[2] };
+                float inRgb[3] = {pix[0], pix[1], pix[2]};
                 float lin[3];
                 apply_input_cctf_decoding_device(inputColorSpaceIndex, applyCctfDecoding, inRgb, lin);
 
@@ -257,7 +257,7 @@ namespace {
                 }
                 const float* pix = reinterpret_cast<const float*>(rowPtr + static_cast<std::size_t>(px - srcBoundsX1) * pixelStrideBytes);
 
-                float inRgb[3] = { pix[0], pix[1], pix[2] };
+                float inRgb[3] = {pix[0], pix[1], pix[2]};
                 float lin[3];
                 apply_input_cctf_decoding_device(inputColorSpaceIndex, applyCctfDecoding, inRgb, lin);
 
@@ -319,7 +319,7 @@ namespace {
                 }
                 const float* pix = reinterpret_cast<const float*>(rowPtr + static_cast<std::size_t>(px - srcBoundsX1) * pixelStrideBytes);
 
-                float inRgb[3] = { pix[0], pix[1], pix[2] };
+                float inRgb[3] = {pix[0], pix[1], pix[2]};
                 float lin[3];
                 apply_input_cctf_decoding_device(inputColorSpaceIndex, applyCctfDecoding, inRgb, lin);
 
@@ -452,7 +452,7 @@ namespace {
                 }
                 const float* pix = reinterpret_cast<const float*>(rowPtr + static_cast<std::size_t>(px - srcBoundsX1) * pixelStrideBytes);
 
-                float inRgb[3] = { pix[0], pix[1], pix[2] };
+                float inRgb[3] = {pix[0], pix[1], pix[2]};
                 float lin[3];
                 apply_input_cctf_decoding_device(inputColorSpaceIndex, applyCctfDecoding, inRgb, lin);
 
@@ -679,7 +679,7 @@ namespace {
                 }
                 const float* pix = reinterpret_cast<const float*>(rowPtr + static_cast<std::size_t>(px - srcBoundsX1) * pixelStrideBytes);
 
-                float inRgb[3] = { pix[0], pix[1], pix[2] };
+                float inRgb[3] = {pix[0], pix[1], pix[2]};
                 float lin[3];
                 apply_input_cctf_decoding_device(inputColorSpaceIndex, applyCctfDecoding, inRgb, lin);
 

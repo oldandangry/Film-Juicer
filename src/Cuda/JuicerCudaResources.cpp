@@ -503,7 +503,9 @@ namespace JuicerCuda {
     static void free_gaussian_kernel(Resources::DeviceGaussianKernel& k) noexcept;
     static bool is_async_device_ptr_tracked_locked(const Resources& resources, const void* ptr) noexcept;
     static void untrack_async_device_ptr_locked(Resources& resources, void* ptr) noexcept;
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static cudaError_t device_free_async_compat(void* ptr, void* cudaStreamOpaque) noexcept;
+#endif
     static void free_auto_exposure(Resources& resources) noexcept;
     static void free_optics_scratch(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque) noexcept;
     static void free_spatial_dir_scratch(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque) noexcept;
