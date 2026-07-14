@@ -7,6 +7,5 @@
   <ItemGroup />
 
 	<PropertyGroup>
-		<JuicerCudaValidatePrimitives>0</JuicerCudaValidatePrimitives>
 	</PropertyGroup>	
 </Project>

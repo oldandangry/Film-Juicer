@@ -46,7 +46,7 @@ namespace Pipeline {
         float v[3] = {0.0f, 0.0f, 0.0f}; // C/M/Y order
     };
 
-    enum class DensityMedium {
+    enum class DensityMedium : std::uint8_t {
         Negative,
         Print
     };

@@ -110,17 +110,10 @@ namespace JuicerCuda {
         const float* JUICER_RESTRICT logRawR = nullptr;
     };
 
-    struct HighlightBoostPayload {
-        float boostEv = 0.0f;
-        float boostRange = 0.3f;
-        float protectEv = 4.0f;
-    };
-
     struct FilmExposurePayload {
         float manualExposureScale = 1.0f;
         float routeCorrectionScale = 1.0f;
         const float* JUICER_RESTRICT exposureScaleDevice = nullptr;
-        HighlightBoostPayload highlightBoost{};
         DeviceCurveView sensB{};
         DeviceCurveView sensG{};
         DeviceCurveView sensR{};

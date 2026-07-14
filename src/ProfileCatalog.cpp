@@ -1,6 +1,7 @@
 #include "ProfileCatalog.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <system_error>
@@ -73,7 +74,7 @@ namespace Spektrafilm {
             return ProfilePolarity::Unsupported;
         }
 
-        enum class EntryReadDisposition {
+        enum class EntryReadDisposition : std::uint8_t {
             Profile,
             NonProfile,
             Unavailable
@@ -99,18 +100,22 @@ namespace Spektrafilm {
                 });
         }
 
+        struct BoundedMetadataField {
+            const char* key;
+            const char* defaultValue;
+        };
+
         template <typename ValueT, typename ParseFn>
         ValueT read_bounded_metadata(
             const Json& info,
-            const char* key,
-            const char* defaultValue,
+            BoundedMetadataField field,
             ValueT unsupportedValue,
             bool& defaulted,
             ParseFn&& parse) {
-            const auto it = info.find(key);
+            const auto it = info.find(field.key);
             defaulted = it == info.end();
             if (defaulted) {
-                return parse(defaultValue);
+                return parse(field.defaultValue);
             }
             if (!it->is_string()) {
                 return unsupportedValue;
@@ -153,22 +158,19 @@ namespace Spektrafilm {
             entry.sourcePath = path.generic_string();
             entry.support = read_bounded_metadata(
                 info,
-                "support",
-                "film",
+                {"support", "film"},
                 ProfileSupport::Unsupported,
                 entry.supportDefaulted,
                 parse_support);
             entry.stage = read_bounded_metadata(
                 info,
-                "stage",
-                "filming",
+                {"stage", "filming"},
                 ProfileStage::Unsupported,
                 entry.stageDefaulted,
                 parse_stage);
             entry.polarity = read_bounded_metadata(
                 info,
-                "type",
-                "negative",
+                {"type", "negative"},
                 ProfilePolarity::Unsupported,
                 entry.polarityDefaulted,
                 parse_polarity);

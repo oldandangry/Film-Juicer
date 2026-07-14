@@ -66,6 +66,7 @@ namespace JuicerCuda {
         const DensityBoundsRecipe& densityBounds,
         const DirectFilmPreparedView& prepared,
         const float* autoExposureScaleDevice,
+        float routeCorrectionScale,
         DirectFilmPayloadPack& out,
         std::string& diagnostic) {
         diagnostic.clear();
@@ -130,6 +131,32 @@ namespace JuicerCuda {
             return false;
         }
 
+        const double manualScale64 =
+            std::exp2(static_cast<double>(filmRaw.manualExposureCompensationEv));
+        const float manualScale = static_cast<float>(manualScale64);
+        if (!std::isfinite(filmRaw.manualExposureCompensationEv) ||
+            !std::isfinite(manualScale64) || !std::isfinite(manualScale) ||
+            !(manualScale > 0.0f) ||
+            !std::isfinite(routeCorrectionScale) ||
+            !(routeCorrectionScale > 0.0f)) {
+            diagnostic =
+                "ResourceDescriptorMismatch phase=3B field=film_exposure_scale";
+            return false;
+        }
+        if (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019 &&
+            (!std::isfinite(filmRaw.mallettGreenMidgrayScale) ||
+             !(filmRaw.mallettGreenMidgrayScale > 0.0f))) {
+            diagnostic =
+                "ResourceDescriptorMismatch phase=3B field=mallett_midgray_scale";
+            return false;
+        }
+        for (float gamma : filmDevelop.densityCurveGamma) {
+            if (!std::isfinite(gamma) || !(gamma > 0.0f)) {
+                diagnostic =
+                    "ResourceDescriptorMismatch phase=3B field=density_curve_gamma";
+                return false;
+            }
+        }
         out.filmRaw.inputColorSpaceIndex = filmRaw.inputColorSpace;
         out.filmRaw.applyCctfDecoding = filmRaw.inputCctfDecoding ? 1 : 0;
         out.filmRaw.applyInputChromaticAdapt = prepared.applyInputChromaticAdapt;
@@ -140,13 +167,9 @@ namespace JuicerCuda {
         copy_direct_film_floats(out.filmRaw.inputXYZAdapt, prepared.inputXYZAdapt, 9);
         copy_direct_film_floats(out.filmRaw.refIllumWhiteXYZ, prepared.refIllumWhiteXYZ, 3);
 
-        const double manualScale = std::exp2(static_cast<double>(filmRaw.manualExposureCompensationEv));
-        out.filmExposure.manualExposureScale =
-            std::isfinite(manualScale) && manualScale > 0.0 ? static_cast<float>(manualScale) : 1.0f;
+        out.filmExposure.manualExposureScale = manualScale;
+        out.filmExposure.routeCorrectionScale = routeCorrectionScale;
         out.filmExposure.exposureScaleDevice = autoExposureScaleDevice;
-        out.filmExposure.highlightBoost.boostEv = filmRaw.highlightBoost.boostEv;
-        out.filmExposure.highlightBoost.boostRange = filmRaw.highlightBoost.boostRange;
-        out.filmExposure.highlightBoost.protectEv = filmRaw.highlightBoost.protectEv;
         out.filmExposure.sensB = prepared.finalSensB;
         out.filmExposure.sensG = prepared.finalSensG;
         out.filmExposure.sensR = prepared.finalSensR;

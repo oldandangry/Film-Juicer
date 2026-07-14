@@ -74,17 +74,22 @@ namespace Spectral {
     // --------------------------
     // Physics: Planck blackbody
     // --------------------------
-    inline float planck_blackbody(float lambda_nm, float T_kelvin) {
+    struct PlanckBlackbodySample {
+        float wavelengthNm = 0.0f;
+        float temperatureKelvin = 0.0f;
+    };
+
+    inline float planck_blackbody(const PlanckBlackbodySample& sample) {
         // Spectral radiance up to a scale factor; we normalize later.
         // lambda in meters
-        const double lambda_m = static_cast<double>(lambda_nm) * 1e-9;
+        const double lambda_m = static_cast<double>(sample.wavelengthNm) * 1e-9;
         const double c = 2.99792458e8;
         const double h = 6.62607015e-34;
         const double k = 1.380649e-23;
 
         const double c1 = 2.0 * h * c * c;
         const double c2 = h * c / k;
-        const double denom = std::exp(c2 / (lambda_m * static_cast<double>(T_kelvin))) - 1.0;
+        const double denom = std::exp(c2 / (lambda_m * static_cast<double>(sample.temperatureKelvin))) - 1.0;
         const double L = (denom > 0.0) ? c1 / (std::pow(lambda_m, 5) * denom) : 0.0;
         return static_cast<float>(L);
     }
@@ -341,7 +346,10 @@ namespace Spectral {
         // 1) 3200K blackbody
         std::vector<float> bb(Spectral::gShape.K);
         for (int i = 0; i < Spectral::gShape.K; ++i) {
-            bb[i] = planck_blackbody(Spectral::gShape.wavelengths[i], 3200.0f);
+            PlanckBlackbodySample sample{};
+            sample.wavelengthNm = Spectral::gShape.wavelengths[i];
+            sample.temperatureKelvin = 3200.0f;
+            bb[i] = planck_blackbody(sample);
         }
 
         // 2) KG3 filter (resampled, no fallback)
@@ -427,8 +435,11 @@ namespace Spectral {
 
         std::vector<float> combined(static_cast<std::size_t>(Spectral::gShape.K));
         for (int i = 0; i < Spectral::gShape.K; ++i) {
+            PlanckBlackbodySample sample{};
+            sample.wavelengthNm = Spectral::gShape.wavelengths[i];
+            sample.temperatureKelvin = 3400.0f;
             combined[static_cast<std::size_t>(i)] =
-                planck_blackbody(Spectral::gShape.wavelengths[i], 3400.0f) *
+                planck_blackbody(sample) *
                 kg3_pinned[static_cast<std::size_t>(i)].second;
         }
         Spectral::mean_power_normalize(combined);

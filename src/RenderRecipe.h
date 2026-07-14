@@ -197,12 +197,6 @@ struct HanatosAdaptationRecipe {
     std::string referenceIlluminant;
 };
 
-struct HighlightBoostRecipe {
-    float boostEv = 0.0f;
-    float boostRange = 0.3f;
-    float protectEv = 4.0f;
-};
-
 struct SpatialOpticsComponentPolicy {
     Spektrafilm::SpatialOpticsDomain domain = Spektrafilm::SpatialOpticsDomain::FilmLinearExposure;
     Spektrafilm::SpatialOpticsBackend requestedBackend = Spektrafilm::SpatialOpticsBackend::Off;
@@ -310,7 +304,6 @@ struct FilmRawRecipe {
     float filmFormatLongEdgeMm = 36.0f;
     CameraBandPassRecipe cameraBandPass;
     HanatosAdaptationRecipe hanatos;
-    HighlightBoostRecipe highlightBoost;
     // Loader-linear sensitivity is retained as provenance. finalSensitivity is the only
     // sensitivity payload/resource identity consumed by direct film-raw processing.
     std::array<std::array<float, 3>, 81> linearSensitivity{};

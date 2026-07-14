@@ -241,21 +241,4 @@ namespace Print {
         }
     }
 
-    inline void load_dichroic_filters_from_assets(
-        const JuicerAssets::DichroicFilterCurveSet& curves,
-        Runtime& rt) {
-        rt.filterY = curves.filterY;
-        rt.filterM = curves.filterM;
-        rt.filterC = curves.filterC;
-
-        {
-            std::ostringstream oss;
-            oss << "DICHROICS loaded K=" << Spectral::gShape.K
-                << " Y/M/C first="
-                << (rt.filterY.linear.empty() ? -1.0f : rt.filterY.linear.front()) << "/"
-                << (rt.filterM.linear.empty() ? -1.0f : rt.filterM.linear.front()) << "/"
-                << (rt.filterC.linear.empty() ? -1.0f : rt.filterC.linear.front());
-            JTRACE("PRINT", oss.str());
-        }
-    }
 } // namespace Print

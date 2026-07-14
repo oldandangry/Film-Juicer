@@ -27,6 +27,36 @@ namespace JuicerCuda {
         SpatialDirStageProfile tailFilter[3]{};
     };
 
+    struct SpatialDirPlanes {
+        float* rawCorrectionY = nullptr;
+        float* rawCorrectionM = nullptr;
+        float* rawCorrectionC = nullptr;
+        float* filteredCorrectionY = nullptr;
+        float* filteredCorrectionM = nullptr;
+        float* filteredCorrectionC = nullptr;
+        float* filterTemp = nullptr;
+        float* filterTempM = nullptr;
+        float* filterTempC = nullptr;
+        float* logRawB = nullptr;
+        float* logRawG = nullptr;
+        float* logRawR = nullptr;
+    };
+
+    struct SpatialDirFilterSpec {
+        const float* kernel = nullptr;
+        int radius = 0;
+        float sigma = 0.0f;
+        float weight = 0.0f;
+    };
+
+    struct SpatialDirBuildRequest {
+        SpatialDirPlanes planes{};
+        SpatialDirFilterSpec gaussian{};
+        SpatialDirFilterSpec tails[3]{};
+        void* streamOpaque = nullptr;
+        SpatialDirBuildProfile* profile = nullptr;
+    };
+
     struct PrintDevelopBreakdownProfile {
         int captured = 0;
         const char* profileKind = nullptr;

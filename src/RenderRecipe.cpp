@@ -125,9 +125,6 @@ namespace {
         hash_value(hash, recipe.cameraBandPass.active);
         Hash::hash_bytes_update(hash, recipe.cameraBandPass.uv.data(), sizeof(recipe.cameraBandPass.uv));
         Hash::hash_bytes_update(hash, recipe.cameraBandPass.ir.data(), sizeof(recipe.cameraBandPass.ir));
-        hash_value(hash, recipe.highlightBoost.boostEv);
-        hash_value(hash, recipe.highlightBoost.boostRange);
-        hash_value(hash, recipe.highlightBoost.protectEv);
         hash_value(hash, recipe.finalSensitivityHash);
         if (recipe.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025) {
             hash_value(hash, recipe.hanatosLutHash);
@@ -483,10 +480,15 @@ namespace {
                 0.184 * static_cast<double>(referenceIlluminant[wavelengthIndex]) *
                 static_cast<double>(recipe.finalSensitivity[wavelengthIndex][1]);
         }
+        if (!(std::isfinite(greenMidgray) && greenMidgray > 0.0)) {
+            return false;
+        }
         recipe.mallettGreenMidgrayScale =
-            (std::isfinite(greenMidgray) && greenMidgray > 0.0)
-                ? static_cast<float>(1.0 / greenMidgray)
-                : 1.0f;
+            static_cast<float>(1.0 / greenMidgray);
+        if (!std::isfinite(recipe.mallettGreenMidgrayScale) ||
+            !(recipe.mallettGreenMidgrayScale > 0.0f)) {
+            return false;
+        }
         return recipe.finalSensitivityHash != 0;
     }
 

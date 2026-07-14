@@ -35,7 +35,6 @@ namespace JuicerCuda {
 
         // Optional runtime counters for graph-eligible submissions, graph replays, and the
         // total CUDA kernel launches emitted by the render path.
-        bool compiled_enabled() noexcept;
         bool runtime_enabled() noexcept;
         Snapshot snapshot() noexcept;
         double kernel_launches_per_frame(const Snapshot& snapshot) noexcept;
@@ -98,7 +97,6 @@ namespace JuicerCuda {
         bool registry_get_snapshot_generations(
             const DeviceContextKey& key,
             RegistrySnapshotGenerations& outGenerations) noexcept;
-        bool registry_get_lifecycle_state(const DeviceContextKey& key, ContextLifecycleState& outState) noexcept;
         bool registry_validate_lifecycle_stage(
             const DeviceContextKey& key,
             bool allowNonActiveRelease,
@@ -117,8 +115,6 @@ namespace JuicerCuda {
             RegistryHandle handle,
             RegistryRetireReason reason,
             const DeviceContextKey* managerKey = nullptr) noexcept;
-
-        bool query_submission_active(const SubmissionTransaction& transaction) noexcept;
 
         // Read-only query surface; these helpers must not mutate manager state.
         AllocatorBackendMode query_allocator_backend_mode(const DeviceContextKey& key) noexcept;
@@ -287,23 +283,6 @@ namespace JuicerCuda {
             JuicerCuda::Resources& resources,
             JuicerCuda::Resources::DeviceGaussianKernel& kernel,
             float sigma,
-            void* cudaStreamOpaque,
-            std::string& outError);
-
-        struct AutoExposureMeterExtent {
-            int width = 0;
-            int height = 0;
-        };
-
-        struct AutoExposureBufferRequest {
-            AutoExposureMeterExtent meter{};
-            std::uint64_t keyHash = 0;
-        };
-
-        bool command_ensure_auto_exposure_buffers(
-            SubmissionTransaction& transaction,
-            JuicerCuda::Resources& resources,
-            const AutoExposureBufferRequest& request,
             void* cudaStreamOpaque,
             std::string& outError);
 

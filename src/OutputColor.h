@@ -10,7 +10,7 @@
 
 namespace OutputEncoding {
 
-    enum class ColorSpace {
+    enum class ColorSpace : std::uint8_t {
         sRGB = 0,
         DCI_P3,
         DisplayP3,
@@ -72,7 +72,7 @@ namespace OutputEncoding {
 
 namespace GeneratedColorSpaces {
 
-    enum class CctfKind {
+    enum class CctfKind : std::uint8_t {
         Linear = 0,
         Gamma,
         SRGB,
@@ -311,18 +311,18 @@ namespace OutputEncoding {
             return 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
         }
 
-        inline float encode_BT2020(float v, float a, float b) {
-            if (v < b) {
+        inline float encode_BT2020(float v, const GeneratedColorSpaces::CctfParams& cctf) {
+            if (v < cctf.b) {
                 return v * 4.5f;
             }
-            return a * std::pow(v, 0.45f) - (a - 1.0f);
+            return cctf.a * std::pow(v, 0.45f) - (cctf.a - 1.0f);
         }
 
-        inline float encode_ProPhoto(float v, float threshold, float exponent) {
-            if (v < threshold) {
+        inline float encode_ProPhoto(float v, const GeneratedColorSpaces::CctfParams& cctf) {
+            if (v < cctf.linearCutoff) {
                 return v * 16.0f;
             }
-            return std::pow(v, exponent);
+            return std::pow(v, cctf.gamma);
         }
 
         inline float encode_DaVinciIntermediate(float v, const GeneratedColorSpaces::CctfParams& cctf) {
@@ -343,9 +343,9 @@ namespace OutputEncoding {
                 case Kind::SRGB:
                     return encode_sRGB(v);
                 case Kind::BT2020:
-                    return encode_BT2020(v, cctf.a, cctf.b);
+                    return encode_BT2020(v, cctf);
                 case Kind::ProPhoto:
-                    return encode_ProPhoto(v, cctf.linearCutoff, cctf.gamma);
+                    return encode_ProPhoto(v, cctf);
                 case Kind::DaVinciIntermediate:
                     return encode_DaVinciIntermediate(v, cctf);
                 default:
@@ -373,18 +373,18 @@ namespace OutputEncoding {
             return 1.055 * std::pow(v, 1.0 / 2.4) - 0.055;
         }
 
-        inline double encode_BT2020d(double v, double a, double b) {
-            if (v < b) {
+        inline double encode_BT2020d(double v, const GeneratedColorSpaces::CctfParams& cctf) {
+            if (v < static_cast<double>(cctf.b)) {
                 return v * 4.5;
             }
-            return a * std::pow(v, 0.45) - (a - 1.0);
+            return static_cast<double>(cctf.a) * std::pow(v, 0.45) - (static_cast<double>(cctf.a) - 1.0);
         }
 
-        inline double encode_ProPhotod(double v, double threshold, double exponent) {
-            if (v < threshold) {
+        inline double encode_ProPhotod(double v, const GeneratedColorSpaces::CctfParams& cctf) {
+            if (v < static_cast<double>(cctf.linearCutoff)) {
                 return v * 16.0;
             }
-            return std::pow(v, exponent);
+            return std::pow(v, static_cast<double>(cctf.gamma));
         }
 
         inline double encode_DaVinciIntermediated(double v, const GeneratedColorSpaces::CctfParams& cctf) {
@@ -406,9 +406,9 @@ namespace OutputEncoding {
                 case Kind::SRGB:
                     return encode_sRGBd(v);
                 case Kind::BT2020:
-                    return encode_BT2020d(v, static_cast<double>(cctf.a), static_cast<double>(cctf.b));
+                    return encode_BT2020d(v, cctf);
                 case Kind::ProPhoto:
-                    return encode_ProPhotod(v, static_cast<double>(cctf.linearCutoff), static_cast<double>(cctf.gamma));
+                    return encode_ProPhotod(v, cctf);
                 case Kind::DaVinciIntermediate:
                     return encode_DaVinciIntermediated(v, cctf);
                 default:

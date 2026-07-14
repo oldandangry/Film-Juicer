@@ -71,11 +71,13 @@ static HostAssetCachePolicyState& host_asset_cache_policy_state() {
     return state;
 }
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 static const ResourceManager::ResourceManagerConfigEffective& host_asset_cache_config() {
     static const ResourceManager::ResourceManagerConfigEffective cfg =
         ResourceManager::sanitize_config(ResourceManager::ResourceManagerConfigRaw{});
     return cfg;
 }
+#endif
 
 static std::uint64_t host_asset_now_ms() {
     using Clock = std::chrono::steady_clock;
@@ -187,6 +189,7 @@ struct HostCacheIdleTrimQuery {
     std::uint32_t idleTrimMs = 0;
 };
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 static bool is_idle_trim_candidate(
     const StbnCpuCache& stbn,
     const WangCpuCache& wang,
@@ -208,6 +211,7 @@ static bool is_idle_trim_candidate(
     }
     return false;
 }
+#endif
 
 static const char* host_asset_cache_name(HostAssetCacheId which) {
     switch (which) {
@@ -240,6 +244,7 @@ static void trace_host_asset_trim(
     JTRACE("MSHST", oss.str());
 }
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 static void trace_host_asset_cap(
     const char* stage,
     std::size_t totalBytes,
@@ -257,7 +262,9 @@ static void trace_host_asset_cap(
         << " trimmed_bytes=" << trimmedBytes;
     JTRACE("MSHCP", oss.str());
 }
+#endif
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 static void trace_host_asset_event(
     const char* cacheName,
     const char* op,
@@ -275,7 +282,9 @@ static void trace_host_asset_event(
     }
     JTRACE("MSHST", oss.str());
 }
+#endif
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 static void enforce_host_asset_cache_policy(const char* stage) {
     const ResourceManager::ResourceManagerConfigEffective& cfg = host_asset_cache_config();
     const std::uint64_t nowMs = host_asset_now_ms();
@@ -342,6 +351,7 @@ static void enforce_host_asset_cache_policy(const char* stage) {
 
     publish_host_asset_cache_bytes(stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang));
 }
+#endif
 
 void purge_host_asset_caches_if_registry_idle(const char* stage) noexcept {
     try {
@@ -1007,6 +1017,7 @@ static bool enqueue_host_to_device_copy(
 
 #endif // defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 struct StbnCpuView {
     const std::uint8_t* data = nullptr;
     std::size_t bytes = 0;
@@ -1253,6 +1264,7 @@ static bool load_wang_cpu(WangCpuCache& cache, std::string& outError) {
     cache.cv.notify_all();
     return ok;
 }
+#endif
 
 static void free_stbn(Resources& resources) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -1757,7 +1769,6 @@ bool ensure_uploaded(
     // and only retire/reallocate when the existing buffers are no longer compatible.
 
     if (!coreUpToDate) {
-        resources.validatedBuildCounter = 0;
         resources.uploadedBuildCounter = 0;
         resources.uploadedCoreHash = 0;
         resources.uploadedDirHash = 0;

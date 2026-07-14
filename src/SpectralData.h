@@ -378,12 +378,6 @@ inline T nan_to_num_agx(T v) {
     return v;
 }
 
-template <typename T>
-inline T fmax_agx(T a, T b) {
-    // Match NumPy np.fmax: prefer the non-NaN operand when only one side is NaN.
-    return std::fmax(a, b);
-}
-
 inline float density_to_light_sample_agx(float density, float illuminant) {
     const double transmitted = std::pow(10.0, -static_cast<double>(density)) * static_cast<double>(illuminant);
     const float out = static_cast<float>(transmitted);
@@ -490,7 +484,10 @@ inline std::vector<std::pair<float, float>> akima_resample_agx(
     }
 
     Interpolation::AkimaInterpolator akima;
-    if (!akima.build(xs, ys)) {
+    Interpolation::AkimaInterpolator::FloatSamples samples{};
+    samples.abscissas = &xs;
+    samples.ordinates = &ys;
+    if (!akima.build(samples)) {
         return out;
     }
 
@@ -629,7 +626,7 @@ namespace Spectral {
 
     // Spectral upsampling / SPD reconstruction selection.
     // Note: "Mallett" refers to the Mallett 2019 sRGB basis reconstruction (when Hanatos LUT is not selected/available).
-    enum class SpectralUpsamplingMode : int {
+    enum class SpectralUpsamplingMode : std::uint8_t {
         PreferHanatos = 0,
         ForceMallett = 1
     };
@@ -762,7 +759,7 @@ namespace Spectral {
         return y0 + t * (y1 - y0);
     }
 
-    enum class ReferenceResampleKernel {
+    enum class ReferenceResampleKernel : std::uint8_t {
         Linear,
         Akima
     };

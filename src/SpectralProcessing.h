@@ -352,7 +352,8 @@ namespace Spectral {
         return hash_float_span_digest_sp(values, 3);
     }
 
-    inline float sanitize_signed_width(float width, float minMagnitude = 1e-6f) {
+    inline float sanitize_signed_width(float width) {
+        constexpr float minMagnitude = 1e-6f;
         float safeWidth = width;
         if (!is_finite_sp(safeWidth)) {
             safeWidth = (safeWidth < 0.0f) ? -minMagnitude : minMagnitude;
@@ -402,10 +403,16 @@ namespace Spectral {
         matrix[8] = 1.0f;
     }
 
-    inline void store_scaled_xyz(double X, double Y, double Z, float scale, float XYZ[3]) {
-        XYZ[0] = static_cast<float>(X * scale);
-        XYZ[1] = static_cast<float>(Y * scale);
-        XYZ[2] = static_cast<float>(Z * scale);
+    struct XyzAccumulator {
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+    };
+
+    inline void store_scaled_xyz(const XyzAccumulator& value, float scale, float XYZ[3]) {
+        XYZ[0] = static_cast<float>(value.x * scale);
+        XYZ[1] = static_cast<float>(value.y * scale);
+        XYZ[2] = static_cast<float>(value.z * scale);
     }
 
     struct RowMajor3x3d {
@@ -440,9 +447,15 @@ namespace Spectral {
     // 1. MATH UTILITIES (~100 lines)
     // -------------------------------------------------------------------------
 
-    inline float sigmoid_erf(float x, float center, float width) {
-        const float w = sanitize_signed_width(width);
-        const float arg = (x - center) / w;
+    struct SigmoidErfSample {
+        float value = 0.0f;
+        float center = 0.0f;
+        float width = 1.0f;
+    };
+
+    inline float sigmoid_erf(const SigmoidErfSample& sample) {
+        const float w = sanitize_signed_width(sample.width);
+        const float arg = (sample.value - sample.center) / w;
         const float val = static_cast<float>(std::erf(static_cast<double>(arg)));
         return val * 0.5f + 0.5f;
     }
@@ -482,8 +495,16 @@ namespace Spectral {
 
         for (int i = 0; i < K; ++i) {
             const float wl = wavelengths[i];
-            const float filter_uv = 1.0f - ampUV + ampUV * sigmoid_erf(wl, wlUV, widthUV);
-            const float filter_ir = 1.0f - ampIR + ampIR * sigmoid_erf(wl, wlIR, widthIR);
+            SigmoidErfSample uvSample{};
+            uvSample.value = wl;
+            uvSample.center = wlUV;
+            uvSample.width = widthUV;
+            SigmoidErfSample irSample{};
+            irSample.value = wl;
+            irSample.center = wlIR;
+            irSample.width = widthIR;
+            const float filter_uv = 1.0f - ampUV + ampUV * sigmoid_erf(uvSample);
+            const float filter_ir = 1.0f - ampIR + ampIR * sigmoid_erf(irSample);
             outData[i] = filter_uv * filter_ir;
         }
 
@@ -911,7 +932,10 @@ namespace Spectral {
         // Apply CAT02 chromatic adaptation from D65 to reference illuminant.
         // This matches Python: colour.RGB_to_XYZ(..., illuminant=ref_illum, chromatic_adaptation_transform='CAT02')
         float adaptedXYZ[3];
-        chromatic_adapt_XYZ_CAT02(XYZ, gDWG_WhitePoint_XYZ, refWhiteXYZ, adaptedXYZ);
+        ChromaticAdaptationWhites whites{};
+        whites.source = gDWG_WhitePoint_XYZ;
+        whites.destination = refWhiteXYZ;
+        chromatic_adapt_XYZ_CAT02(XYZ, whites, adaptedXYZ);
         spd_probe_record_cat02(XYZ, adaptedXYZ, gDWG_WhitePoint_XYZ, refWhiteXYZ);
 
         // agx-emulsion parity:
@@ -1235,7 +1259,11 @@ namespace Spectral {
         }
         T.invYn = (Yn > 0.0) ? (1.0f / (float)Yn) : 1.0f;
         const double scale = static_cast<double>(T.invYn);
-        store_scaled_xyz(sumAx, sumAy, sumAz, static_cast<float>(scale), T.whiteXYZ);
+        XyzAccumulator whiteAccumulator{};
+        whiteAccumulator.x = sumAx;
+        whiteAccumulator.y = sumAy;
+        whiteAccumulator.z = sumAz;
+        store_scaled_xyz(whiteAccumulator, static_cast<float>(scale), T.whiteXYZ);
 
         // Illuminant white point used for chromatic adaptation (normalized to Y=1).
         copy_triplet3(T.whiteXYZ, T.refIllumWhiteXYZ);
@@ -1298,7 +1326,10 @@ namespace Spectral {
         }
 
         float adaptedXYZ[3];
-        chromatic_adapt_XYZ_CAT02(sanitizedXYZ, gDWG_WhitePoint_XYZ, refWhite, adaptedXYZ);
+        ChromaticAdaptationWhites whites{};
+        whites.source = gDWG_WhitePoint_XYZ;
+        whites.destination = refWhite;
+        chromatic_adapt_XYZ_CAT02(sanitizedXYZ, whites, adaptedXYZ);
         spd_probe_record_cat02(sanitizedXYZ, adaptedXYZ, gDWG_WhitePoint_XYZ, refWhite);
 
         clamp_triplet_nonnegative(adaptedXYZ);
@@ -1341,12 +1372,7 @@ namespace Spectral {
         spd_probe_record_spectrum(Ee_out);
     }
 
-    // Forward declarations for exposure functions
-    inline void layerExposures_from_sceneSPD(
-        const std::vector<float>& Ee,
-        float E[3],
-        float exposureScale,
-        bool applyDeltaLambda = true);
+    // Per-instance SPD integration used by host preparation and CUDA parity probes.
     inline void layerExposures_from_sceneSPD_with_curves(
         const std::vector<float>& Ee,
         const Curve& sB,
@@ -1354,7 +1380,48 @@ namespace Spectral {
         const Curve& sR,
         float E[3],
         float exposureScale,
-        bool applyDeltaLambda = true);
+        bool applyDeltaLambda = true) {
+        const int K = gShape.K;
+        double exposureBlue = 0.0;
+        double exposureGreen = 0.0;
+        double exposureRed = 0.0;
+        spd_probe_record_delta_lambda(applyDeltaLambda);
+        for (int i = 0; i < K; ++i) {
+            const float irradiance =
+                i < static_cast<int>(Ee.size()) ? Ee[i] : 0.0f;
+            if (!std::isfinite(irradiance)) {
+                continue;
+            }
+
+            const double irradiance64 = static_cast<double>(irradiance);
+            const float blue = sB.linear.empty() ? 0.0f : sB.linear[i];
+            const float green = sG.linear.empty() ? 0.0f : sG.linear[i];
+            const float red = sR.linear.empty() ? 0.0f : sR.linear[i];
+
+            if (std::isfinite(blue)) {
+                exposureBlue += irradiance64 * static_cast<double>(blue);
+            }
+            if (std::isfinite(green)) {
+                exposureGreen += irradiance64 * static_cast<double>(green);
+            }
+            if (std::isfinite(red)) {
+                exposureRed += irradiance64 * static_cast<double>(red);
+            }
+        }
+        const float safeScale = std::max(0.0f, exposureScale);
+        const double delta =
+            applyDeltaLambda ? static_cast<double>(gDeltaLambda) : 1.0;
+        const double scale = delta * static_cast<double>(safeScale);
+        E[0] = std::max(
+            0.0f,
+            static_cast<float>(exposureBlue * scale));
+        E[1] = std::max(
+            0.0f,
+            static_cast<float>(exposureGreen * scale));
+        E[2] = std::max(
+            0.0f,
+            static_cast<float>(exposureRed * scale));
+    }
 
     // Per-instance SPD exposure using per-instance sensitivity curves
     inline void rgbDWG_to_layerExposures_from_tables_with_curves(
@@ -1406,7 +1473,11 @@ namespace Spectral {
         }
 
         const float s = Spectral::gInvYn;
-        store_scaled_xyz(X, Y, Z, s, XYZ);
+        XyzAccumulator accumulator{};
+        accumulator.x = X;
+        accumulator.y = Y;
+        accumulator.z = Z;
+        store_scaled_xyz(accumulator, s, XYZ);
     }
 
     // Integrate spectral irradiance with per-instance tables (viewing axis and normalization)
@@ -1429,7 +1500,11 @@ namespace Spectral {
             Z += static_cast<double>(e) * static_cast<double>(*zData);
         }
         const float s = T.invYn;
-        store_scaled_xyz(X, Y, Z, s, XYZ);
+        XyzAccumulator accumulator{};
+        accumulator.x = X;
+        accumulator.y = Y;
+        accumulator.z = Z;
+        store_scaled_xyz(accumulator, s, XYZ);
     }
 
     // -------------------------------------------------------------------------

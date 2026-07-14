@@ -42,8 +42,7 @@ static __device__ __forceinline__ float sample_density_at_logE_device(
         return nanf("");
     }
 
-    const float gammaSafe = (device_isfinite(gammaFactor) && gammaFactor > 0.0f) ? gammaFactor : 1.0f;
-    const float xq = logE * gammaSafe;
+    const float xq = logE * gammaFactor;
 
     int domainBegin = curve.domainBegin;
     int domainEnd = curve.domainEnd;
@@ -102,32 +101,6 @@ static __device__ __forceinline__ float sample_density_at_logE_device(
     return y0 + t * (y1 - y0);
 }
 
-static __device__ __forceinline__ float sample_density_at_logE_device(
-    const float* JUICER_RESTRICT x,
-    const float* JUICER_RESTRICT y,
-    int n,
-    float logE,
-    float gammaFactor) {
-    if (!x || !y || n <= 0) {
-        return 0.0f;
-    }
-
-    int domainBegin = 0;
-    while (domainBegin < n && !device_isfinite(ldg_f(x + domainBegin))) {
-        ++domainBegin;
-    }
-    if (domainBegin >= n) {
-        return 0.0f;
-    }
-    int domainEnd = n - 1;
-    while (domainEnd > domainBegin && !device_isfinite(ldg_f(x + domainEnd))) {
-        --domainEnd;
-    }
-
-    const JuicerCuda::DeviceCurveView curve = {x, y, n, domainBegin, domainEnd};
-    return sample_density_at_logE_device(curve, logE, gammaFactor);
-}
-
 static __device__ __forceinline__ float sanitize_inf_logE_for_curve_device(float logE, const JuicerCuda::DeviceCurveView& curve) {
     if (device_isfinite(logE) || isnan(logE)) {
         return logE;
@@ -184,6 +157,23 @@ struct Mat3 {
     float m[9];
 };
 
+struct ChromaticAdaptationDeviceInput {
+    const float* xyz = nullptr;
+    const float* sourceWhiteXYZ = nullptr;
+    const float* destinationWhiteXYZ = nullptr;
+};
+
+struct InputCctfDecodingDevice {
+    int inputColorSpaceIndex = 0;
+    int applyCctfDecoding = 0;
+};
+
+struct FilmDevelopIntermediatesDevice {
+    float* logERaw = nullptr;
+    float* logESanitized = nullptr;
+    float* layerPre = nullptr;
+};
+
 static __device__ __forceinline__ void mul3(const float m[9], const float v[3], float dst[3]) {
     dst[0] = m[0] * v[0] + m[1] * v[1] + m[2] * v[2];
     dst[1] = m[3] * v[0] + m[4] * v[1] + m[5] * v[2];
@@ -191,9 +181,7 @@ static __device__ __forceinline__ void mul3(const float m[9], const float v[3], 
 }
 
 static __device__ __forceinline__ void chromatic_adapt_XYZ_CAT02_device(
-    const float XYZ[3],
-    const float srcWhiteXYZ[3],
-    const float dstWhiteXYZ[3],
+    ChromaticAdaptationDeviceInput input,
     float outXYZ[3]) {
     const float M[9] = {
         0.7328000f, 0.4296000f, -0.1624000f, -0.7036000f, 1.6975000f, 0.0061000f, 0.0030000f, 0.0136000f, 0.9834000f};
@@ -201,13 +189,13 @@ static __device__ __forceinline__ void chromatic_adapt_XYZ_CAT02_device(
         1.0961238f, -0.2788690f, 0.1827452f, 0.4543690f, 0.4735332f, 0.0720978f, -0.0096276f, -0.0056980f, 1.0153256f};
 
     float srcWhite[3] = {
-        device_sanitize_nonneg(srcWhiteXYZ[0]),
-        device_sanitize_nonneg(srcWhiteXYZ[1]),
-        device_sanitize_nonneg(srcWhiteXYZ[2])};
+        device_sanitize_nonneg(input.sourceWhiteXYZ[0]),
+        device_sanitize_nonneg(input.sourceWhiteXYZ[1]),
+        device_sanitize_nonneg(input.sourceWhiteXYZ[2])};
     float dstWhite[3] = {
-        device_sanitize_nonneg(dstWhiteXYZ[0]),
-        device_sanitize_nonneg(dstWhiteXYZ[1]),
-        device_sanitize_nonneg(dstWhiteXYZ[2])};
+        device_sanitize_nonneg(input.destinationWhiteXYZ[0]),
+        device_sanitize_nonneg(input.destinationWhiteXYZ[1]),
+        device_sanitize_nonneg(input.destinationWhiteXYZ[2])};
 
     const float srcY = (srcWhite[1] > 0.0f) ? srcWhite[1] : 1.0f;
     const float dstY = (dstWhite[1] > 0.0f) ? dstWhite[1] : 1.0f;
@@ -225,7 +213,7 @@ static __device__ __forceinline__ void chromatic_adapt_XYZ_CAT02_device(
     float XYZ_LMS[3];
     mul3(M, srcWhite, srcLMS);
     mul3(M, dstWhite, dstLMS);
-    mul3(M, XYZ, XYZ_LMS);
+    mul3(M, input.xyz, XYZ_LMS);
 
     const float scale0 = (srcLMS[0] > 1e-6f) ? (dstLMS[0] / srcLMS[0]) : 1.0f;
     const float scale1 = (srcLMS[1] > 1e-6f) ? (dstLMS[1] / srcLMS[1]) : 1.0f;
@@ -258,24 +246,23 @@ static __device__ __forceinline__ float decode_srgb_channel_device(float v) {
 }
 
 static __device__ __forceinline__ void apply_input_cctf_decoding_device(
-    int inputColorSpaceIndex,
-    int applyCctfDecoding,
+    InputCctfDecodingDevice config,
     const float inRgb[3],
     float outRgb[3]) {
-    if (!applyCctfDecoding) {
+    if (!config.applyCctfDecoding) {
         outRgb[0] = device_sanitize_channel(inRgb[0]);
         outRgb[1] = device_sanitize_channel(inRgb[1]);
         outRgb[2] = device_sanitize_channel(inRgb[2]);
         return;
     }
 
-    if (inputColorSpaceIndex == 1) {
+    if (config.inputColorSpaceIndex == 1) {
         outRgb[0] = decode_bt2020_channel_device(inRgb[0]);
         outRgb[1] = decode_bt2020_channel_device(inRgb[1]);
         outRgb[2] = decode_bt2020_channel_device(inRgb[2]);
         return;
     }
-    if (inputColorSpaceIndex == 3) {
+    if (config.inputColorSpaceIndex == 3) {
         outRgb[0] = decode_srgb_channel_device(inRgb[0]);
         outRgb[1] = decode_srgb_channel_device(inRgb[1]);
         outRgb[2] = decode_srgb_channel_device(inRgb[2]);
@@ -665,7 +652,10 @@ static __device__ __forceinline__ void convert_input_to_DWG_device(
     float rgbDWG[3],
     bool clampNonNegative) {
     float linear[3];
-    apply_input_cctf_decoding_device(cfg.inputColorSpaceIndex, cfg.applyCctfDecoding, rgbIn, linear);
+    InputCctfDecodingDevice decoding{};
+    decoding.inputColorSpaceIndex = cfg.inputColorSpaceIndex;
+    decoding.applyCctfDecoding = cfg.applyCctfDecoding;
+    apply_input_cctf_decoding_device(decoding, rgbIn, linear);
 
     float XYZ[3];
     mat3_mul9_device(cfg.inputRGBToXYZ, linear, XYZ);
@@ -693,7 +683,10 @@ static __device__ __forceinline__ void convert_input_to_sRGB_device(
     const float rgbIn[3],
     float rgbSRGB[3]) {
     float linear[3];
-    apply_input_cctf_decoding_device(cfg.inputColorSpaceIndex, cfg.applyCctfDecoding, rgbIn, linear);
+    InputCctfDecodingDevice decoding{};
+    decoding.inputColorSpaceIndex = cfg.inputColorSpaceIndex;
+    decoding.applyCctfDecoding = cfg.applyCctfDecoding;
+    apply_input_cctf_decoding_device(decoding, rgbIn, linear);
 
     float XYZ[3];
     mat3_mul9_device(cfg.inputRGBToXYZ, linear, XYZ);
@@ -721,7 +714,10 @@ static __device__ __forceinline__ void convert_input_to_working_xyz_device(
     const float rgbIn[3],
     float workingXYZ[3]) {
     float linear[3];
-    apply_input_cctf_decoding_device(cfg.inputColorSpaceIndex, cfg.applyCctfDecoding, rgbIn, linear);
+    InputCctfDecodingDevice decoding{};
+    decoding.inputColorSpaceIndex = cfg.inputColorSpaceIndex;
+    decoding.applyCctfDecoding = cfg.applyCctfDecoding;
+    apply_input_cctf_decoding_device(decoding, rgbIn, linear);
 
     float inputXYZ[3];
     mat3_mul9_device(cfg.inputRGBToXYZ, linear, inputXYZ);
@@ -774,7 +770,11 @@ static __device__ void hanatos_layer_exposures_device(
     }
 
     float adaptedXYZ[3];
-    chromatic_adapt_XYZ_CAT02_device(XYZ, D65, refWhite, adaptedXYZ);
+    ChromaticAdaptationDeviceInput adaptation{};
+    adaptation.xyz = XYZ;
+    adaptation.sourceWhiteXYZ = D65;
+    adaptation.destinationWhiteXYZ = refWhite;
+    chromatic_adapt_XYZ_CAT02_device(adaptation, adaptedXYZ);
     adaptedXYZ[0] = device_sanitize_channel(adaptedXYZ[0]);
     adaptedXYZ[1] = device_sanitize_channel(adaptedXYZ[1]);
     adaptedXYZ[2] = device_sanitize_channel(adaptedXYZ[2]);
@@ -852,7 +852,11 @@ static __device__ void hanatos_integrated_exposures_device(
     }
 
     float adaptedXYZ[3];
-    chromatic_adapt_XYZ_CAT02_device(XYZ, D65, refWhite, adaptedXYZ);
+    ChromaticAdaptationDeviceInput adaptation{};
+    adaptation.xyz = XYZ;
+    adaptation.sourceWhiteXYZ = D65;
+    adaptation.destinationWhiteXYZ = refWhite;
+    chromatic_adapt_XYZ_CAT02_device(adaptation, adaptedXYZ);
     adaptedXYZ[0] = device_sanitize_channel(adaptedXYZ[0]);
     adaptedXYZ[1] = device_sanitize_channel(adaptedXYZ[1]);
     adaptedXYZ[2] = device_sanitize_channel(adaptedXYZ[2]);
@@ -928,7 +932,11 @@ static __device__ void tables_layer_exposures_device(
     }
 
     float adaptedXYZ[3];
-    chromatic_adapt_XYZ_CAT02_device(sanitizedXYZ, D65, refWhite, adaptedXYZ);
+    ChromaticAdaptationDeviceInput adaptation{};
+    adaptation.xyz = sanitizedXYZ;
+    adaptation.sourceWhiteXYZ = D65;
+    adaptation.destinationWhiteXYZ = refWhite;
+    chromatic_adapt_XYZ_CAT02_device(adaptation, adaptedXYZ);
     adaptedXYZ[0] = fmaxf(0.0f, adaptedXYZ[0]);
     adaptedXYZ[1] = fmaxf(0.0f, adaptedXYZ[1]);
     adaptedXYZ[2] = fmaxf(0.0f, adaptedXYZ[2]);
@@ -1143,19 +1151,10 @@ static __device__ __forceinline__ void compute_film_raw_device(
             E_raw);
     }
 
-    float mallettGreenMidgrayScale = params.filmRaw.mallettGreenMidgrayScale;
-    if (!isfinite(mallettGreenMidgrayScale) || !(mallettGreenMidgrayScale > 0.0f)) {
-        mallettGreenMidgrayScale = 1.0f;
-    }
-
-    float manualExposureScale = expose.manualExposureScale;
-    if (!isfinite(manualExposureScale) || !(manualExposureScale > 0.0f)) {
-        manualExposureScale = 1.0f;
-    }
-    float routeCorrectionScale = expose.routeCorrectionScale;
-    if (!isfinite(routeCorrectionScale) || !(routeCorrectionScale > 0.0f)) {
-        routeCorrectionScale = 1.0f;
-    }
+    const float mallettGreenMidgrayScale =
+        params.filmRaw.mallettGreenMidgrayScale;
+    const float manualExposureScale = expose.manualExposureScale;
+    const float routeCorrectionScale = expose.routeCorrectionScale;
     for (int i = 0; i < 3; ++i) {
         float v = E_raw[i];
         if (!isfinite(v) || v < 0.0f)
@@ -1274,7 +1273,11 @@ static __device__ __forceinline__ bool compute_logE_raw_selected_hanatos_integra
     }
 
     float adaptedXYZ[3];
-    chromatic_adapt_XYZ_CAT02_device(XYZ, D65, refWhite, adaptedXYZ);
+    ChromaticAdaptationDeviceInput adaptation{};
+    adaptation.xyz = XYZ;
+    adaptation.sourceWhiteXYZ = D65;
+    adaptation.destinationWhiteXYZ = refWhite;
+    chromatic_adapt_XYZ_CAT02_device(adaptation, adaptedXYZ);
     adaptedXYZ[0] = device_sanitize_channel(adaptedXYZ[0]);
     adaptedXYZ[1] = device_sanitize_channel(adaptedXYZ[1]);
     adaptedXYZ[2] = device_sanitize_channel(adaptedXYZ[2]);
@@ -1290,14 +1293,8 @@ static __device__ __forceinline__ bool compute_logE_raw_selected_hanatos_integra
     float qy = 0.0f;
     tri2quad_device(x, y, qx, qy);
 
-    float manualExposureScale = expose.manualExposureScale;
-    if (!isfinite(manualExposureScale) || !(manualExposureScale > 0.0f)) {
-        manualExposureScale = 1.0f;
-    }
-    float routeCorrectionScale = expose.routeCorrectionScale;
-    if (!isfinite(routeCorrectionScale) || !(routeCorrectionScale > 0.0f)) {
-        routeCorrectionScale = 1.0f;
-    }
+    const float manualExposureScale = expose.manualExposureScale;
+    const float routeCorrectionScale = expose.routeCorrectionScale;
     const float scale = manualExposureScale * routeCorrectionScale;
 
     if (channelMask & kJuicerLogRawMaskB) {
@@ -1345,32 +1342,31 @@ template <typename Params>
 static __device__ __forceinline__ void compute_logE_from_film_raw_device(
     const Params& params,
     const float filmRaw[3],
-    float logE_raw[3],
-    float logE_sanitized[3],
-    float layerPre[3]) {
+    FilmDevelopIntermediatesDevice outputs) {
     const JuicerCuda::FilmDevelopPayload& develop = params.filmDevelop;
 
-    compute_logE_raw_from_film_raw_device(params, filmRaw, logE_raw);
+    compute_logE_raw_from_film_raw_device(params, filmRaw, outputs.logERaw);
 
-    logE_sanitized[0] = sanitize_inf_logE_for_curve_device(logE_raw[0], develop.densB);
-    logE_sanitized[1] = sanitize_inf_logE_for_curve_device(logE_raw[1], develop.densG);
-    logE_sanitized[2] = sanitize_inf_logE_for_curve_device(logE_raw[2], develop.densR);
+    outputs.logESanitized[0] = sanitize_inf_logE_for_curve_device(outputs.logERaw[0], develop.densB);
+    outputs.logESanitized[1] = sanitize_inf_logE_for_curve_device(outputs.logERaw[1], develop.densG);
+    outputs.logESanitized[2] = sanitize_inf_logE_for_curve_device(outputs.logERaw[2], develop.densR);
 
-    layerPre[0] = sample_density_at_logE_device(develop.densB, logE_sanitized[0], develop.gammaFactorB);
-    layerPre[1] = sample_density_at_logE_device(develop.densG, logE_sanitized[1], develop.gammaFactorG);
-    layerPre[2] = sample_density_at_logE_device(develop.densR, logE_sanitized[2], develop.gammaFactorR);
+    outputs.layerPre[0] =
+        sample_density_at_logE_device(develop.densB, outputs.logESanitized[0], develop.gammaFactorB);
+    outputs.layerPre[1] =
+        sample_density_at_logE_device(develop.densG, outputs.logESanitized[1], develop.gammaFactorG);
+    outputs.layerPre[2] =
+        sample_density_at_logE_device(develop.densR, outputs.logESanitized[2], develop.gammaFactorR);
 }
 
 template <typename Params>
 static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
     const Params& params,
     const float rgbIn[3],
-    float logE_raw[3],
-    float logE_sanitized[3],
-    float layerPre[3]) {
+    FilmDevelopIntermediatesDevice outputs) {
     float filmRaw[3] = {0.0f, 0.0f, 0.0f};
     compute_film_raw_device(params, rgbIn, filmRaw);
-    compute_logE_from_film_raw_device(params, filmRaw, logE_raw, logE_sanitized, layerPre);
+    compute_logE_from_film_raw_device(params, filmRaw, outputs);
 }
 
 static __device__ __forceinline__ float density_to_light_sample_agx_device(float density, float illuminant) {
@@ -1455,18 +1451,8 @@ static __device__ __forceinline__ void print_apply_exposure_scale_device(
         return;
     }
 
-    float expPrint = expose.printExposure;
-    if (!isfinite(expPrint)) {
-        expPrint = 1.0f;
-    }
-    if (expPrint < 0.0f) {
-        expPrint = 0.0f;
-    }
-
-    float kMid = expose.printMidgrayFactor;
-    if (!isfinite(kMid) || !(kMid > 0.0f)) {
-        kMid = 1.0f;
-    }
+    const float expPrint = expose.printExposure;
+    const float kMid = expose.printMidgrayFactor;
 
     rawPrint[0] *= kMid;
     rawPrint[1] *= kMid;
@@ -1483,10 +1469,7 @@ static __device__ __forceinline__ void print_apply_exposure_scale_device(
     rawPrint[1] *= expPrint;
     rawPrint[2] *= expPrint;
 
-    float routeCorrectionScale = expose.routeCorrectionScale;
-    if (!isfinite(routeCorrectionScale) || !(routeCorrectionScale > 0.0f)) {
-        routeCorrectionScale = 1.0f;
-    }
+    const float routeCorrectionScale = expose.routeCorrectionScale;
     rawPrint[0] *= routeCorrectionScale;
     rawPrint[1] *= routeCorrectionScale;
     rawPrint[2] *= routeCorrectionScale;

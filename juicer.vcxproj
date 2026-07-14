@@ -119,8 +119,11 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     <Import Project="UserOverrides.props" />
   </ImportGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Clang|x64' and '$(JuicerEnableCudaBuild)'=='0'">
+    <OutDir>$(SolutionDir)x64\Release-Clang-NoCuda\</OutDir>
+    <IntDir>$(ProjectDir)juicer\x64\Release-Clang-NoCuda\</IntDir>
+  </PropertyGroup>
   <PropertyGroup Label="UserMacros">
-    <JuicerCudaValidatePrimitives Condition="'$(JuicerCudaValidatePrimitives)'==''">0</JuicerCudaValidatePrimitives>
     <JuicerDiagnosticsCompiled Condition="'$(JuicerDiagnosticsCompiled)'=='' and '$(JuicerIsDebugBuild)'=='1'">1</JuicerDiagnosticsCompiled>
     <JuicerDiagnosticsCompiled Condition="'$(JuicerDiagnosticsCompiled)'=='' and '$(JuicerIsReleaseBuild)'=='1'">0</JuicerDiagnosticsCompiled>
     <JuicerSpdDebug Condition="'$(JuicerSpdDebug)'==''">0</JuicerSpdDebug>
@@ -196,7 +199,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'=='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_CUDA=1;JUICER_CUDA_VALIDATE_PRIMITIVES=$(JuicerCudaValidatePrimitives);JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'=='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_CUDA=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'!='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -226,7 +229,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'=='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_CUDA=1;JUICER_CUDA_VALIDATE_PRIMITIVES=$(JuicerCudaValidatePrimitives);JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'=='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_CUDA=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'!='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -256,7 +259,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\OFXS\Support\Library\ofxsCore.cpp" />
-    <ClCompile Include="..\OFXS\Support\Library\ofxsImageEffect.cpp" />
+    <ClCompile Include="..\OFXS\Support\Library\ofxsImageEffect.cpp">
+      <PreprocessorDefinitions>DEBUG_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <ClCompile Include="..\OFXS\Support\Library\ofxsInteract.cpp" />
     <ClCompile Include="..\OFXS\Support\Library\ofxsLog.cpp" />
     <ClCompile Include="..\OFXS\Support\Library\ofxsMultiThread.cpp" />
@@ -333,7 +338,6 @@
   <ItemGroup Condition="'$(JuicerEnableCudaBuild)'=='1'">
     <CudaCompile Include="src\Cuda\Film\JuicerCudaFilmPipeline.cu" />
     <CudaCompile Include="src\Cuda\JuicerCudaAutoExposure.cu" />
-    <CudaCompile Include="src\Cuda\JuicerCudaValidation.cu" />
     <CudaCompile Include="src\Cuda\Scan\JuicerCudaScanPipeline.cu" />
   </ItemGroup>
   <ItemGroup Condition="'$(JuicerUseManualNvcc)'=='1'">
@@ -349,7 +353,7 @@
     <Error Condition="'$(JuicerNvccHostCompilerBin)'=='' or !Exists('$(JuicerNvccHostCompilerBin)\cl.exe')" Text="Juicer manual CUDA build requires MSVC cl.exe. Set JuicerNvccHostCompilerBin to the Hostx64\x64 compiler directory." />
     <MakeDir Directories="$(IntDir)manual_cuda" />
     <Message Importance="High" Text="Compiling CUDA with nvcc: %(JuicerManualCudaCompile.Identity)" />
-    <Exec Command="set &quot;CL=&quot; &amp;&amp; set &quot;INCLUDE=$(JuicerNvccHostIncludePath)&quot; &amp;&amp; &quot;$(CudaToolkitDir)bin\nvcc.exe&quot; -c &quot;%(JuicerManualCudaCompile.FullPath)&quot; --std=c++20 --cudart hybrid $(JuicerNvccReleaseDeviceOptions) $(JuicerNvccFastMathOptions) -ccbin &quot;$(JuicerNvccHostCompilerBin)&quot; -I&quot;$(ProjectDir)src&quot; -I&quot;$(ProjectDir)third_party&quot; -I&quot;$(CudaToolkitDir)include&quot; -DWIN32 -DNOMINMAX -D_CRT_SECURE_NO_WARNINGS -DJUICER_ENABLE_CUDA=1 -DJUICER_CUDA_VALIDATE_PRIMITIVES=$(JuicerCudaValidatePrimitives) -DJUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled) -DJUICER_SPD_DEBUG=$(JuicerSpdDebug) -DJUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples) -DJUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled) -DJUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled) -gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_75,code=compute_75 -Xcompiler &quot;$(JuicerNvccHostCompilerOptions)&quot; -o &quot;%(JuicerManualCudaCompile.ObjectFile)&quot;" />
+    <Exec Command="set &quot;CL=&quot; &amp;&amp; set &quot;INCLUDE=$(JuicerNvccHostIncludePath)&quot; &amp;&amp; &quot;$(CudaToolkitDir)bin\nvcc.exe&quot; -c &quot;%(JuicerManualCudaCompile.FullPath)&quot; --std=c++20 --cudart hybrid $(JuicerNvccReleaseDeviceOptions) $(JuicerNvccFastMathOptions) -ccbin &quot;$(JuicerNvccHostCompilerBin)&quot; -I&quot;$(ProjectDir)src&quot; -I&quot;$(ProjectDir)third_party&quot; -I&quot;$(CudaToolkitDir)include&quot; -DWIN32 -DNOMINMAX -D_CRT_SECURE_NO_WARNINGS -DJUICER_ENABLE_CUDA=1 -DJUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled) -DJUICER_SPD_DEBUG=$(JuicerSpdDebug) -DJUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples) -DJUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled) -DJUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled) -gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_75,code=compute_75 -Xcompiler &quot;$(JuicerNvccHostCompilerOptions)&quot; -o &quot;%(JuicerManualCudaCompile.ObjectFile)&quot;" />
   </Target>
   <Target Name="JuicerManualCudaLinkInputs"
           Condition="'$(JuicerUseManualNvcc)'=='1'"

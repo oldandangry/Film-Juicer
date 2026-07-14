@@ -469,7 +469,9 @@ namespace JuicerProcess {
             void mark_auto_exposure_weights_built(const AutoExposureWeightsExtent& weights) noexcept;
             void mark_auto_exposure_metered(const AutoExposureMeteredResult& result) noexcept;
             void mark_gate_mask_built(std::uint64_t gateMaskHash) noexcept;
-            void record_use(void* cudaStreamOpaque) noexcept;
+            bool record_use(
+                void* cudaStreamOpaque,
+                std::string& outError);
             bool finish(void* cudaStreamOpaque, std::string& outError);
             void abort(const char* reason) noexcept;
             // Broad medium/LUT preparation remains internal to prepared-frame ownership.
@@ -566,18 +568,6 @@ namespace JuicerProcess {
                 void* cudaStreamOpaque,
                 int& outCudaErrorCode,
                 std::string& outError);
-            bool validate_density_primitives(
-                const WorkingState& workingState,
-                void* cudaStreamOpaque,
-                std::string& outError);
-            bool validate_print_primitives(
-                const WorkingState& workingState,
-                const Print::Runtime& printRt,
-                const Print::Params& printParams,
-                float midgrayFactor,
-                void* cudaStreamOpaque,
-                std::string& outError);
-
             const char* failure_stage_tag() const noexcept;
             const char* failure_prefix() const noexcept;
             bool failure_marks_context_loss() const noexcept;

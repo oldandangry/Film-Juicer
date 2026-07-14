@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cstddef>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -24,7 +23,7 @@ struct RenderRecipe;
 
 namespace Scanner {
 
-    enum class ScannerMedium : int {
+    enum class ScannerMedium : std::uint8_t {
         Negative = 0,
         Print = 1
     };
@@ -39,21 +38,6 @@ namespace Scanner {
         bool useLut = true;
         std::uint32_t lutResolution = 17;
     };
-
-    struct DensityBuffer {
-        // CMY dye densities in SoA form; `medium` tags whether the slab holds negative or print data.
-        ScannerMedium medium = ScannerMedium::Negative;
-        std::vector<float> c; // cyan dye density (from red layer)
-        std::vector<float> m; // magenta dye density (from green layer)
-        std::vector<float> y; // yellow dye density (from blue layer)
-        int originX = 0;
-        int originY = 0;
-        int width = 0;
-        int height = 0;
-        std::ptrdiff_t stride = 0;
-    };
-
-    using ScannerDensityBuffer = DensityBuffer;
 
     struct ScannerIlluminant {
         Spectral::Curve curve;
@@ -95,13 +79,6 @@ namespace Scanner {
         ScannerRuntimeEffectsKey effectsKey;
         ScannerRuntimeKey runtimeKey;
         std::uint64_t hash = 0;
-    };
-
-    struct SpectralLutBuffer {
-        std::vector<double> cpu;
-        std::uint64_t hash = 0;
-        std::uint32_t res = 0;
-        bool valid = false;
     };
 
     struct ColorRuntime {

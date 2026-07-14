@@ -56,8 +56,6 @@ struct JuicerCudaAutoExposureScratch {
 // Device-side outputs for metering. All pointers are CUDA device pointers.
 struct JuicerCudaAutoExposureDeviceState {
     float* exposureScale = nullptr; // float scalar
-    double* autoEV = nullptr;       // double scalar
-    int* valid = nullptr;           // int scalar (0/1)
 };
 
 namespace JuicerCuda {
@@ -205,57 +203,22 @@ namespace JuicerCuda {
         std::uint64_t hash = 0;
     };
 
+    struct AutoExposureSourceFormat {
+        int componentCount = 0;
+        int inputColorSpaceIndex = 0;
+        int applyCctfDecoding = 0;
+    };
+
 } // namespace JuicerCuda
 
-// Returns 0 on success, non-zero on failure; on failure outErrorMsg points to a stable message.
-extern "C" int juicer_cuda_measure_center_weighted_Y(
-    const void* srcDeviceBase,
-    std::size_t srcRowBytes,
-    int srcBoundsX1,
-    int srcBoundsY1,
-    int srcBoundsX2,
-    int srcBoundsY2,
-    int meterX1,
-    int meterY1,
-    int meterX2,
-    int meterY2,
-    int nComponents,
-    int inputColorSpaceIndex,
-    int applyCctfDecoding,
-    const float* rgbToXYZ9,
-    double* outY,
-    void* cudaStreamOpaque,
-    const char** outErrorMsg);
-
-extern "C" int juicer_cuda_measure_median_Y(
-    const void* srcDeviceBase,
-    std::size_t srcRowBytes,
-    int srcBoundsX1,
-    int srcBoundsY1,
-    int srcBoundsX2,
-    int srcBoundsY2,
-    int meterX1,
-    int meterY1,
-    int meterX2,
-    int meterY2,
-    int nComponents,
-    int inputColorSpaceIndex,
-    int applyCctfDecoding,
-    const float* rgbToXYZ9,
-    double* outY,
-    void* cudaStreamOpaque,
-    const char** outErrorMsg);
-
-// Enqueues auto-exposure metering and writes autoEV/exposureScale to device outputs. This
+// Enqueues auto-exposure metering and writes the exposure scale to device output. This
 // function does not synchronize; it only enqueues work on the given stream.
 // Returns 0 on success, non-zero on failure; on failure outErrorMsg points to a stable message.
 extern "C" int juicer_cuda_auto_exposure_meter_to_device(
     const void* srcDeviceBase,
     std::size_t srcRowBytes,
     JuicerCuda::AutoExposurePreviewDescriptor descriptor,
-    int nComponents,
-    int inputColorSpaceIndex,
-    int applyCctfDecoding,
+    JuicerCuda::AutoExposureSourceFormat sourceFormat,
     const float* rgbToXYZ9,
     JuicerCudaAutoExposureScratch scratch,
     JuicerCudaAutoExposureDeviceState outState,
@@ -284,42 +247,11 @@ namespace JuicerCuda {
     };
 
     struct Resources {
-        // Serializes multi-step serving mutations (`ensure_uploaded`, `ensure_scan_lut`,
-        // `ensure_print_illuminant_filtered`) so `m` can remain a short-lived leaf lock for
-        // individual resource-state access/update phases. Always take this mutex before `m`.
-        std::mutex servingUpdateMutex;
-        // Leaf lock for per-device CUDA resource state. Do not hold InstanceState locks or
-        // resource-manager admission/cache bookkeeping locks while taking this mutex, and do not
-        // sleep or wait on external work while it is held. Multi-phase serving updates should use
-        // `servingUpdateMutex` to serialize the transaction and take `m` only around leaf work.
-        std::mutex m;
-        int deviceId = -1;
-        // CUcontext identity captured from the render slot key; used by teardown safety checks.
-        void* ownerContextOpaque = nullptr;
-        std::uint64_t uploadedBuildCounter = 0;
-        std::uint64_t uploadedCoreHash = 0;
-        std::uint64_t uploadedDirHash = 0;
-        std::uint64_t validatedBuildCounter = 0;
-        std::uint64_t validatedPrintBuildCounter = 0;
-        std::uint64_t validatedPrintParamsHash = 0;
-        std::uint64_t directFinalSensitivityHash = 0;
-        std::uint64_t directDensityCurvesHash = 0;
-        std::uint64_t directDensityLayersHash = 0;
-        std::uint64_t directDirHash = 0;
-        std::uint64_t directDensityBoundsHash = 0;
-        std::uint64_t directScannerDescriptorHash = 0;
-        Spektrafilm::RgbToRawMethod directSelectedMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
-        std::uint64_t directUploadCounter = 0;
-
         struct PendingFrameUseEvent {
             void* eventOpaque = nullptr;
         };
 
-        // Submitted prepared-frame use events retained until reuse-gating waits can observe
-        // completion. These events are never recorded again after insertion.
-        std::vector<PendingFrameUseEvent> pendingFrameUseEvents;
-
-        enum class RetireKind : int {
+        enum class RetireKind : std::uint8_t {
             DeviceFree = 0,
             HostPinnedFree = 1,
             EventDestroy = 2,
@@ -334,14 +266,6 @@ namespace JuicerCuda {
             void* doneEventOpaque = nullptr; // cudaEvent_t recorded once for this entry.
         };
 
-        // Deferred frees to avoid blocking synchronize/free in hot paths.
-        std::vector<RetireEntry> retireQueue;
-        std::vector<void*> retireEventPoolOpaque; // cudaEvent_t pool (cudaEventDisableTiming)
-        std::size_t retireBytes = 0;
-        std::size_t retireScratchBytes = 0;
-        // Tracks pointers allocated with cudaMallocAsync so free/retire uses cudaFreeAsync.
-        std::unordered_set<void*> asyncDeviceAllocPointers;
-
         struct ScratchResidencyState {
             std::array<std::uint64_t, ResourceManager::kScratchPolicyCandidateCount> candidateLiveBytes{};
             std::array<std::uint64_t, ResourceManager::kScratchHelperNonPolicyAllocationCount> helperNonPolicyBytes{};
@@ -352,35 +276,6 @@ namespace JuicerCuda {
             std::uint64_t retainedGeneration = 1;
             bool overflow = false;
         };
-
-        DeviceCurve densB;
-        DeviceCurve densG;
-        DeviceCurve densR;
-        float* densityCurvesLayers[3][3] = {{nullptr, nullptr, nullptr},
-                                            {nullptr, nullptr, nullptr},
-                                            {nullptr, nullptr, nullptr}};
-        int densityCurvesLayersChannelN[3] = {0, 0, 0};
-        int hasDensityCurvesLayers = 0;
-
-        DeviceCurve dirDensB;
-        DeviceCurve dirDensG;
-        DeviceCurve dirDensR;
-
-        DeviceCurve sensB;
-        DeviceCurve sensG;
-        DeviceCurve sensR;
-
-        // SPD reconstruction (reference illuminant tables; Mallett basis uses illum + sensitivities).
-        float* tablesAx = nullptr;
-        float* tablesAy = nullptr;
-        float* tablesAz = nullptr;
-        float* tablesIllum = nullptr;
-        int tablesK = 0;
-        float spdSInv[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-        float refIllumWhiteXYZ[3] = {0.950455f, 1.0f, 1.089058f};
-
-        float* mallettBasis = nullptr;
-        int mallettBasisK = 0;
 
         struct DeviceSpectralTables {
             float* epsC = nullptr;
@@ -402,9 +297,6 @@ namespace JuicerCuda {
             float inv_max_cmy[3] = {1.0f, 1.0f, 1.0f};
         };
 
-        DeviceScanMedium scanNegative;
-        DeviceScanMedium scanPrint;
-
         struct DeviceSpectralLut {
             float* log2PchipXYZ = nullptr; // canonical layout: ((C*res + M)*res + Y) * 3 + XYZ
             float* slopeC = nullptr;
@@ -420,9 +312,6 @@ namespace JuicerCuda {
             }
         };
 
-        DeviceSpectralLut scanNegativeLut;
-        DeviceSpectralLut scanPrintLut;
-
         struct DeviceGaussianKernel {
             float* weights = nullptr;
             int radius = 0;
@@ -431,13 +320,6 @@ namespace JuicerCuda {
             // Non-zero when this kernel points to the process-shared immutable Gaussian cache.
             std::uint64_t sharedKernelId = 0;
         };
-
-        // Shared single-plane W×H float scratch used as a blur/unsharp intermediate.
-        // Spatial DIR and scanner optics reuse this to reduce peak VRAM.
-        float* sharedTmpPlane = nullptr;
-        int sharedTmpWidth = 0;
-        int sharedTmpHeight = 0;
-        std::size_t sharedTmpCapacityElements = 0;
 
         struct DeviceOpticsScratch {
             float* rgbR = nullptr;
@@ -476,73 +358,52 @@ namespace JuicerCuda {
             std::size_t capacityElements = 0;
         };
 
-        DeviceGaussianKernel scannerLensBlurKernel;
-        DeviceGaussianKernel scannerUnsharpKernel;
-        DeviceGaussianKernel scannerGlareKernel;
-        DeviceGaussianKernel grainBlurKernel;
-        DeviceGaussianKernel grainBlurKernelMid;
-        DeviceGaussianKernel grainBlurKernelCoarse;
-        DeviceGaussianKernel grainDyeKernel[3][3];
-        DeviceGaussianKernel halationKernel[3];
-        DeviceGaussianKernel halationScatterKernel[3];
-        DeviceOpticsScratch scannerScratch;
-        std::array<DeviceGaussianKernel, 4> spatialDirKernels{};
-        DeviceSpatialDirScratch spatialDirScratch;
+        struct PendingScanErrorReadback {
+            int* host = nullptr;
+            void* eventOpaque = nullptr;
+        };
+
+        // Eight-byte-aligned identity, residency, pointer, and container state is grouped first
+        // so the per-context resource object does not pay repeated alignment gaps between its
+        // narrower counters and flags.
+        void* ownerContextOpaque = nullptr;
+        std::uint64_t uploadedBuildCounter = 0;
+        std::uint64_t uploadedCoreHash = 0;
+        std::uint64_t uploadedDirHash = 0;
+        std::uint64_t directFinalSensitivityHash = 0;
+        std::uint64_t directDensityCurvesHash = 0;
+        std::uint64_t directDensityLayersHash = 0;
+        std::uint64_t directDirHash = 0;
+        std::uint64_t directDensityBoundsHash = 0;
+        std::uint64_t directScannerDescriptorHash = 0;
+        std::uint64_t directUploadCounter = 0;
+        std::size_t retireBytes = 0;
+        std::size_t retireScratchBytes = 0;
+
+        // SPD reconstruction (reference illuminant tables; Mallett basis uses illum + sensitivities).
+        float* tablesAx = nullptr;
+        float* tablesAy = nullptr;
+        float* tablesAz = nullptr;
+        float* tablesIllum = nullptr;
+        float* mallettBasis = nullptr;
+
+        // Shared single-plane W×H float scratch used as a blur/unsharp intermediate.
+        // Spatial DIR and scanner optics reuse this to reduce peak VRAM.
+        float* sharedTmpPlane = nullptr;
+        std::size_t sharedTmpCapacityElements = 0;
         std::uint64_t retainedScratchLeaseGeneration = 0;
 
         std::uint8_t* stbnData = nullptr;
-        int stbnWidth = 0;
-        int stbnHeight = 0;
-        int stbnFrames = 0;
         std::uint8_t* wangTilesData = nullptr;
         std::uint8_t* wangLutData = nullptr;
-        int wangWidth = 0;
-        int wangHeight = 0;
-        int wangCount = 0;
-        int wangColors = 0;
         std::uint64_t grainStaticAssetVersion = 0;
 
-        // Print-route payloads.
-        DeviceCurve printDcC;
-        DeviceCurve printDcM;
-        DeviceCurve printDcY;
-
-        DeviceCurve printSensC;
-        DeviceCurve printSensM;
-        DeviceCurve printSensY;
-
-        float printGammaC = 1.0f;
-        float printGammaM = 1.0f;
-        float printGammaY = 1.0f;
-
-        float printPreflashRaw[3] = {0.0f, 0.0f, 0.0f};
-        bool printPreflashValid = false;
         std::uint64_t printPreflashKeyHash = 0;
-        int printPreflashShapeK = 0;
-
-        // Cached enlarger illuminant filtered by dichroic Y/M/C for the current print params.
         float* printIllumFiltered = nullptr;
-        int printIllumK = 0;
-        float printIllumYShiftSteps = 0.0f;
-        float printIllumMShiftSteps = 0.0f;
-        float printIllumCShiftSteps = 0.0f;
         std::uint64_t printIllumNeutralFilterHash = 0;
-        int printIllumShapeK = 0;
         std::uint64_t printIllumBuildCounter = 0;
         std::uint64_t printIllumCoreHash = 0;
-
-        // Focused Phase 4B print resources. Legacy fields above are confined to the hard-blocked
-        // broad launch path; these descriptor identities are the accepted preparation contract.
-        DeviceSpectralTables printFilmDensityTables;
         float* printPreflashIllumFiltered = nullptr;
-        int printPreflashIllumK = 0;
-        std::array<float, 81> printIllumFilteredHost{};
-        std::array<float, 81> printPreflashIllumFilteredHost{};
-        bool printIllumFilteredHostValid = false;
-        bool printPreflashIllumFilteredHostValid = false;
-        float printBalanceFactorMidgray = 1.0f;
-        float printBalanceFactorMidgrayComp = 1.0f;
-        float printBalanceNormalizer = 1.0f;
         std::uint64_t printFilmDensityTablesDescriptorHash = 0;
         std::uint64_t printProfileTablesDescriptorHash = 0;
         std::uint64_t printMainIlluminantDescriptorHash = 0;
@@ -552,47 +413,112 @@ namespace JuicerCuda {
         std::uint64_t printPreparationDescriptorHash = 0;
         std::uint64_t printPreparationCounter = 0;
 
-        // Hanatos LUT (process-global on CPU, uploaded on demand).
-        // Layout matches NpySpectraLUT: ((x*N + y) * K + k), K=81.
+        // Hanatos LUTs are process-global on CPU and uploaded on demand.
         float* hanatosLut = nullptr;
-        int hanatosN = 0;
-
-        // Hanatos LUT preintegrated with recipe sensitivities.
-        // Layout: ((x*N + y) * 4 + c), c=0..2 (RGB), c=3 unused/padding.
         float* hanatosLutIntegrated = nullptr;
-        int hanatosNIntegrated = 0;
         std::uint64_t hanatosIntegratedKeyHash = 0;
 
-        struct PendingScanErrorReadback {
-            int* host = nullptr;
-            void* eventOpaque = nullptr;
-        };
-
+        // Submitted prepared-frame use events retained until reuse-gating waits can observe
+        // completion. These events are never recorded again after insertion.
+        std::vector<PendingFrameUseEvent> pendingFrameUseEvents;
+        // Deferred frees to avoid blocking synchronize/free in hot paths.
+        std::vector<RetireEntry> retireQueue;
+        std::vector<void*> retireEventPoolOpaque; // cudaEvent_t pool (cudaEventDisableTiming)
         // Submitted readbacks retained after a prepared frame releases its exclusive scan-error
         // stage. These entries are not reusable workspace.
         std::vector<PendingScanErrorReadback> pendingScanErrorReadbacks;
 
-        struct DeviceAutoExposureScratch {
-            JuicerCudaAutoExposurePartial* partialsA = nullptr;
-            JuicerCudaAutoExposurePartial* partialsB = nullptr;
-            int partialCapacity = 0;
-            unsigned int* maxYBits = nullptr;
-            unsigned int* histogram = nullptr;
-            float* weightsX = nullptr;
-            float* weightsY = nullptr;
-            int weightsXCapacity = 0;
-            int weightsYCapacity = 0;
-            int weightsWidth = 0;
-            int weightsHeight = 0;
-        };
+        DeviceCurve densB;
+        DeviceCurve densG;
+        DeviceCurve densR;
+        DeviceCurve dirDensB;
+        DeviceCurve dirDensG;
+        DeviceCurve dirDensR;
+        DeviceCurve sensB;
+        DeviceCurve sensG;
+        DeviceCurve sensR;
 
-        DeviceAutoExposureScratch autoExposureScratch;
-        float* autoExposureExposureScale = nullptr;
-        double* autoExposureAutoEV = nullptr;
-        int* autoExposureValid = nullptr;
-        std::uint64_t autoExposureKeyHash = 0;
-        double autoExposureSliderEV = std::numeric_limits<double>::quiet_NaN();
+        DeviceGaussianKernel scannerLensBlurKernel;
+        DeviceGaussianKernel scannerUnsharpKernel;
+        DeviceGaussianKernel scannerGlareKernel;
+        DeviceGaussianKernel grainBlurKernel;
+        DeviceGaussianKernel grainBlurKernelMid;
+        DeviceGaussianKernel grainBlurKernelCoarse;
+
+        // Print-route payloads.
+        DeviceCurve printDcC;
+        DeviceCurve printDcM;
+        DeviceCurve printDcY;
+        DeviceCurve printSensC;
+        DeviceCurve printSensM;
+        DeviceCurve printSensY;
+
+        // Tracks pointers allocated with cudaMallocAsync so free/retire uses cudaFreeAsync.
+        std::unordered_set<void*> asyncDeviceAllocPointers;
+        DeviceSpectralLut scanNegativeLut;
+        DeviceSpectralLut scanPrintLut;
+        float* densityCurvesLayers[3][3] = {{nullptr, nullptr, nullptr},
+                                            {nullptr, nullptr, nullptr},
+                                            {nullptr, nullptr, nullptr}};
+
+        // Focused print resources carry the accepted preparation descriptor identities.
+        DeviceSpectralTables printFilmDensityTables;
+
+        // Serializes multi-step serving mutations. Always take this mutex before `m`.
+        std::mutex servingUpdateMutex;
+        // Leaf lock for per-device CUDA resource state. Do not wait on external work while held.
+        std::mutex m;
+
+        DeviceGaussianKernel halationKernel[3];
+        DeviceGaussianKernel halationScatterKernel[3];
+        DeviceScanMedium scanNegative;
+        DeviceScanMedium scanPrint;
+        DeviceOpticsScratch scannerScratch;
+        DeviceSpatialDirScratch spatialDirScratch;
         ScratchResidencyState scratchResidency{};
+        std::array<DeviceGaussianKernel, 4> spatialDirKernels{};
+        DeviceGaussianKernel grainDyeKernel[3][3];
+
+        // Four-byte scalar and fixed-array state follows the aligned resource owners.
+        int deviceId = -1;
+        int hasDensityCurvesLayers = 0;
+        int tablesK = 0;
+        int mallettBasisK = 0;
+        int sharedTmpWidth = 0;
+        int sharedTmpHeight = 0;
+        int stbnWidth = 0;
+        int stbnHeight = 0;
+        int stbnFrames = 0;
+        int wangWidth = 0;
+        int wangHeight = 0;
+        int wangCount = 0;
+        int wangColors = 0;
+        float printGammaC = 1.0f;
+        float printGammaM = 1.0f;
+        float printGammaY = 1.0f;
+        int printPreflashShapeK = 0;
+        int printIllumK = 0;
+        float printIllumYShiftSteps = 0.0f;
+        float printIllumMShiftSteps = 0.0f;
+        float printIllumCShiftSteps = 0.0f;
+        int printIllumShapeK = 0;
+        int printPreflashIllumK = 0;
+        float printBalanceFactorMidgray = 1.0f;
+        float printBalanceFactorMidgrayComp = 1.0f;
+        float printBalanceNormalizer = 1.0f;
+        int hanatosN = 0;
+        int hanatosNIntegrated = 0;
+        int densityCurvesLayersChannelN[3] = {0, 0, 0};
+        float refIllumWhiteXYZ[3] = {0.950455f, 1.0f, 1.089058f};
+        float printPreflashRaw[3] = {0.0f, 0.0f, 0.0f};
+        float spdSInv[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        std::array<float, 81> printIllumFilteredHost{};
+        std::array<float, 81> printPreflashIllumFilteredHost{};
+
+        Spektrafilm::RgbToRawMethod directSelectedMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
+        bool printPreflashValid = false;
+        bool printIllumFilteredHostValid = false;
+        bool printPreflashIllumFilteredHostValid = false;
 
         Resources() = default;
         Resources(const Resources&) = delete;
@@ -651,22 +577,12 @@ namespace JuicerCuda {
     bool pack_print_cuda_payloads(
         const PrintRecipe& recipe,
         const PrintPreparedView& prepared,
+        float routeCorrectionScale,
         PrintCudaPayloadPack& out,
         std::string& diagnostic);
 
     // Runtime serving acquisition/rebuild calls are intentionally manager-only via
     // ResourceManager::command_* wrappers.
-
-    // Optional debug validation of primitives, kept in the production CUDA validation surface.
-    bool validate_density_primitives(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError);
-    bool validate_print_primitives(
-        Resources& resources,
-        const WorkingState& ws,
-        const Print::Runtime& prt,
-        const Print::Params& prm,
-        float midgrayFactor,
-        void* cudaStreamOpaque,
-        std::string& outError);
 
     // Reaps deferred retire entries that are ready and returns reclaimed bytes.
     bool reap_retired_allocations(Resources& resources, std::size_t& reclaimedBytes, std::string& outError);

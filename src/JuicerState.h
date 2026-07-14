@@ -2,10 +2,8 @@
 
 #include <atomic>
 #include <array>
-#include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <memory>
@@ -28,81 +26,10 @@
 #include "SpectralData.h"
 #include "ofxImageEffect.h"
 
-namespace OFX {
-    class Image;
-}
-
 namespace ScannerOptics {
-
-    struct PlaneView {
-        float* r = nullptr;
-        float* g = nullptr;
-        float* b = nullptr;
-        float* a = nullptr;
-        int width = 0;
-        int height = 0;
-        std::ptrdiff_t strideBytes = 0;
-        int originX = 0;
-        int originY = 0;
-    };
-
-    struct GlareCache {
-        // Single glare scalar per pixel, blurred once and shared across XYZ.
-        std::vector<float> amount;
-        std::vector<float> tmp;
-        Scanner::ScannerKey key{};
-        std::uint64_t seedHash = 0;
-        int width = 0;
-        int height = 0;
-        bool valid = false;
-    };
-
-    struct Runtime {
-        Scanner::SpectralLutBuffer lut;
-        std::vector<double> blurKernel;
-        std::vector<double> unsharpKernel;
-        float unsharpAmount = 0.0f;
-        std::vector<double> rgbR;
-        std::vector<double> rgbG;
-        std::vector<double> rgbB;
-        std::vector<double> scratchTmp;
-        std::vector<double> scratchBlurred;
-        GlareCache glare;
-        Scanner::ScannerKey key{};
-    };
-
-    struct RenderAbortHandle {
-        std::function<bool()> shouldAbort;
-        bool abortRequested() const {
-            return shouldAbort && shouldAbort();
-        }
-    };
-
-    struct RenderContext {
-        const Scanner::ScannerMediumRuntime* medium = nullptr;
-        const Scanner::ScannerDensityBuffer* density = nullptr;
-        Runtime* runtime = nullptr;
-        OFX::Image* srcImage = nullptr;
-        const Scanner::ColorRuntime* color = nullptr;
-        int nComponents = 0;
-        OfxRectI bounds{};
-        PlaneView dstView{};
-        Scanner::Options options{};
-        Scanner::Settings settings{};
-        Scanner::ScannerRuntimeKey runtimeKey{};
-        Scanner::ScannerKey scannerKey{};
-        std::uint64_t seedBase = 0;
-        bool hasBaseline = false;
-        unsigned int threadCount = 1;
-        bool copyAlpha = false;
-        RenderAbortHandle abort{};
-    };
-
     Scanner::ColorRuntime build_color_runtime(
         const Scanner::ScannerMediumRuntime& medium,
         const OutputEncoding::Params& outputEncoding);
-
-    void render_density_to_rgb(const RenderContext& ctx);
 
 } // namespace ScannerOptics
 
@@ -302,7 +229,7 @@ struct WorkingState {
     std::uint64_t buildCounter = 0;
 };
 
-enum class DirSampleMode {
+enum class DirSampleMode : std::uint8_t {
     ApplyRuntime,
     BypassRuntime
 };
@@ -338,67 +265,72 @@ inline void sample_negative_densities(
 }
 
 struct ParamSnapshot {
-    std::string filmProfileKey = Spektrafilm::kDefaultFilmProfileKey;
-    std::string printProfileKey = Spektrafilm::kDefaultPrintProfileKey;
-    Spektrafilm::ScanRoute scanRoute = Spektrafilm::kDefaultScanRoute;
     std::uint64_t filmProfileAssetVersionToken = 0;
     std::uint64_t printProfileAssetVersionToken = 0;
-    bool directRoutePrintProfileExcluded = false;
-    bool directRouteNeutralCalibrationExcluded = false;
-    int spectralUpsamplingMode = 0;
-    int refIll = 0;
-    int enlIll = 3;
-    int enlDichroicSet = 0;
+
     double printExposure = 1.0;
     double printPreflashExposure = 0.0;
-    int normalizePrintExposure = 1;
-    int printExposureCompensation = 1;
-    std::array<double, 3> printUiYmcCc{};
     double preflashMFilterCc = 0.0;
     double preflashYFilterCc = 0.0;
     double printShadowCompensationFactor = 0.0;
     double printShadowCompensationDensity = 1.2;
     double printShadowCompensationTransition = 0.3;
-    bool glareActive = true;
     double glarePercent = 0.03;
     double glareRoughness = 0.7;
     double glareBlurSigmaPx = 0.5;
     double printDminFactor = 0.4;
-    int couplersActive = 1;
     double couplersAmount = 1.0;
     double couplersInhibitionSameLayer = 1.0;
     double couplersInhibitionInterlayer = 1.0;
     double couplersDiffusionSizeUm = 20.0;
-    int couplersGammaUseStock = 1;
-    std::array<double, 3> couplersGammaSameLayerRgb{{0.336, 0.319, 0.273}};
+    double cameraExposureCompensationEv = 0.0;
+    double cameraFilmFormatLongEdgeMm = 36.0;
+    double scannerLensBlurSigmaPx = 0.0;
+    double scannerBlackLevel = 0.01;
+    double scannerWhiteLevel = 0.98;
+    double gateWeaveAmount = 1.0;
+
     std::array<double, 2> couplersGammaInterlayerRToGb{{0.353, 0.302}};
     std::array<double, 2> couplersGammaInterlayerGToRb{{0.154, 0.353}};
     std::array<double, 2> couplersGammaInterlayerBToRg{{0.168, 0.226}};
+    std::array<double, 2> scannerUnsharpMask{{0.7, 0.7}};
+    std::array<double, 3> printUiYmcCc{};
+    std::array<double, 3> couplersGammaSameLayerRgb{{0.336, 0.319, 0.273}};
+    std::array<double, 3> cameraFilterUV{{1.0, 410.0, 8.0}};
+    std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
+
+    std::string filmProfileKey = Spektrafilm::kDefaultFilmProfileKey;
+    std::string printProfileKey = Spektrafilm::kDefaultPrintProfileKey;
+
+    int spectralUpsamplingMode = 0;
+    int refIll = 0;
+    int enlIll = 3;
+    int enlDichroicSet = 0;
+    int normalizePrintExposure = 1;
+    int printExposureCompensation = 1;
+    int couplersActive = 1;
+    int couplersGammaUseStock = 1;
     int inputColorSpace = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut);
     int inputCctfDecoding = 0;
     int hanatos2025AdaptationWindow = 1;
     int hanatos2025AdaptationSurface = 0;
     int cameraAutoExposureEnabled = 1;
     int cameraMeteringMethod = 0;
-    double cameraExposureCompensationEv = 0.0;
-    double cameraFilmFormatLongEdgeMm = 36.0;
     int exactScatterHalationActive = 0;
-    double scannerLensBlurSigmaPx = 0.0;
-    std::array<double, 2> scannerUnsharpMask{{0.7, 0.7}};
     int scannerBlackCorrection = 0;
     int scannerWhiteCorrection = 0;
-    double scannerBlackLevel = 0.01;
-    double scannerWhiteLevel = 0.98;
     int scannerUseLut = 1;
     int scannerLutResolution = 17;
     int outputColorSpace = OutputEncoding::toIndex(OutputEncoding::ColorSpace::sRGB);
     int outputCctfEncoding = 1;
     int outputLinearPassThrough = 0;
-    bool cameraFilterOverride = false;
-    std::array<double, 3> cameraFilterUV{{1.0, 410.0, 8.0}};
-    std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
     Profiles::GrainMetadata grainControls;
-    double gateWeaveAmount = 1.0;
+    Spektrafilm::ScanRoute scanRoute = Spektrafilm::kDefaultScanRoute;
+
+    bool directRoutePrintProfileExcluded = false;
+    bool directRouteNeutralCalibrationExcluded = false;
+    bool glareActive = true;
+    bool cameraFilterOverride = false;
 };
 
 uint64_t hash_params(const ParamSnapshot& p);
@@ -456,11 +388,6 @@ struct InstanceState {
     IlluminantOverrideFlags illuminantOverride;
 
     std::string filmReferenceIlluminant;
-
-    ScannerOptics::Runtime scannerRuntimeA;
-    ScannerOptics::Runtime scannerRuntimeB;
-    std::atomic<bool> scannerRuntimeAInUse{false};
-    std::atomic<bool> scannerRuntimeBInUse{false};
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     // Snapshot latch: all submissions for the same frame token reuse one immutable snapshot payload.

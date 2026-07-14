@@ -254,78 +254,6 @@ bool validate_scratch_request_for_family(
     return true;
 }
 
-struct AutoExposureOwnershipObservation {
-    ShadowHistoryKey ownershipKey{};
-    bool hadPrevious = false;
-    bool metadataHit = false;
-};
-
-struct AutoExposureOwnershipMetadata {
-    std::uint64_t normalizedKeyHash = 0;
-    AutoExposureMeterExtent meter{};
-};
-
-AutoExposureOwnershipObservation observe_auto_exposure_ownership(
-    const SubmissionTransaction& transaction,
-    const AutoExposureOwnershipMetadata& metadata) {
-    AutoExposureOwnershipObservation observation{};
-    observation.ownershipKey = ShadowHistoryKey{
-        transaction.snapshot.instanceToken.value,
-        transaction.snapshot.deviceContextKey};
-
-    AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
-    std::lock_guard<std::mutex> lock(ownershipState.mutex);
-    auto it = ownershipState.bySubmissionKey.find(observation.ownershipKey);
-    if (it == ownershipState.bySubmissionKey.end() || !it->second.valid) {
-        return observation;
-    }
-
-    observation.hadPrevious = true;
-    const AutoExposureOwnershipEntry& previous = it->second;
-    observation.metadataHit =
-        previous.keySchemaVersion == transaction.snapshot.keySchemaVersion &&
-        previous.keyHash == metadata.normalizedKeyHash &&
-        previous.meterWidth == metadata.meter.width &&
-        previous.meterHeight == metadata.meter.height;
-    return observation;
-}
-
-void publish_auto_exposure_ownership(
-    const SubmissionTransaction& transaction,
-    const ShadowHistoryKey& ownershipKey,
-    const AutoExposureOwnershipMetadata& metadata) {
-    AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
-    std::lock_guard<std::mutex> lock(ownershipState.mutex);
-    AutoExposureOwnershipEntry& entry = ownershipState.bySubmissionKey[ownershipKey];
-    entry.valid = true;
-    entry.keyHash = metadata.normalizedKeyHash;
-    entry.meterWidth = metadata.meter.width;
-    entry.meterHeight = metadata.meter.height;
-    entry.keySchemaVersion = transaction.snapshot.keySchemaVersion;
-}
-
-void trace_auto_exposure_ownership_event(
-    const SubmissionTransaction& transaction,
-    const AutoExposureOwnershipObservation& observation,
-    const AutoExposureOwnershipMetadata& metadata,
-    const char* action,
-    const char* reason) {
-    telemetry_trace_auto_exposure_ownership(
-        TelemetryAutoExposureOwnershipTrace{
-            .context = TelemetryTraceContext{
-                .transactionId = transaction.transactionId,
-                .snapshotId = transaction.snapshot.snapshotId,
-                .traceSchemaVersion = transaction.snapshot.traceSchemaVersion},
-            .mode = "ManagerOnly",
-            .eventName = action,
-            .reason = reason,
-            .keyHash = metadata.normalizedKeyHash,
-            .meterWidth = metadata.meter.width,
-            .meterHeight = metadata.meter.height,
-            .hit = observation.metadataHit,
-            .hadPrevious = observation.hadPrevious});
-}
-
 void complete_tier_circuit_attempt(
     const SubmissionTransaction& transaction,
     const char* commandName,
@@ -638,12 +566,14 @@ bool execute_scratch_growth_command(
     BuilderReservationGuard builderGuard(builderClaim);
 
     ScratchPolicyClaim scratchClaim{};
+    const ScratchBucketKey scratchBucketKey = make_scratch_bucket_key(
+        scratchRequest.requestedWidth,
+        scratchRequest.requestedHeight,
+        workClass);
     if (!acquire_scratch_policy_claim_with_wait(
             transaction,
             commandName,
-            workClass,
-            scratchRequest.requestedWidth,
-            scratchRequest.requestedHeight,
+            scratchBucketKey,
             growthBytes,
             true,
             scratchClaim,
@@ -871,12 +801,26 @@ void complete_tier_circuit_attempt(
         "ignored_policy_failure");
 }
 
-void add_estimate_bytes_u64(std::uint64_t bytes, std::uint64_t& total, bool& overflow) noexcept {
+struct UploadEstimateBytes {
+    std::uint64_t value = 0;
+};
+
+struct UploadEstimateAccumulator {
+    std::uint64_t* total = nullptr;
+    bool* overflow = nullptr;
+};
+
+void add_estimate_bytes_u64(UploadEstimateBytes bytes, UploadEstimateAccumulator accumulator) noexcept {
+    if (!accumulator.total || !accumulator.overflow) {
+        return;
+    }
+    std::uint64_t& total = *accumulator.total;
+    bool& overflow = *accumulator.overflow;
     if (overflow) {
         return;
     }
     std::uint64_t next = 0;
-    if (!add_u64_checked(total, bytes, next)) {
+    if (!add_u64_checked(total, bytes.value, next)) {
         total = std::numeric_limits<std::uint64_t>::max();
         overflow = true;
         return;
@@ -898,7 +842,7 @@ void add_count_upload_estimate_bytes(
         overflow = true;
         return;
     }
-    add_estimate_bytes_u64(bytes, total, overflow);
+    add_estimate_bytes_u64(UploadEstimateBytes{bytes}, UploadEstimateAccumulator{&total, &overflow});
 }
 
 std::uint64_t commands_preferred_upload_core_hash(const WorkingState& ws) noexcept {
@@ -958,14 +902,11 @@ std::uint64_t commands_elapsed_ms_since(std::uint64_t nowMs, std::uint64_t earli
 
 UploadWorkEstimate commands_uncached_upload_work(
     bool cached,
-    std::uint64_t growthBytes,
-    std::uint64_t reservationBytes) noexcept {
-    UploadWorkEstimate estimate{};
+    UploadWorkEstimate uncachedWork) noexcept {
     if (!cached) {
-        estimate.growthBytes = growthBytes;
-        estimate.reservationBytes = reservationBytes;
+        return uncachedWork;
     }
-    return estimate;
+    return {};
 }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -1003,7 +944,7 @@ void add_vector_upload_estimate_bytes(
         overflow = true;
         return;
     }
-    add_estimate_bytes_u64(bytes, total, overflow);
+    add_estimate_bytes_u64(UploadEstimateBytes{bytes}, UploadEstimateAccumulator{&total, &overflow});
 }
 
 void add_curve_upload_estimate_bytes(
@@ -1020,7 +961,7 @@ void add_curve_upload_estimate_bytes(
         overflow = true;
         return;
     }
-    add_estimate_bytes_u64(bytes, total, overflow);
+    add_estimate_bytes_u64(UploadEstimateBytes{bytes}, UploadEstimateAccumulator{&total, &overflow});
 }
 
 void add_scan_medium_upload_estimate_bytes(
@@ -1063,7 +1004,7 @@ void add_curve_growth_estimate_bytes(
         overflow = true;
         return;
     }
-    add_estimate_bytes_u64(bytes, total, overflow);
+    add_estimate_bytes_u64(UploadEstimateBytes{bytes}, UploadEstimateAccumulator{&total, &overflow});
 }
 
 void add_array_growth_estimate_bytes(
@@ -1580,10 +1521,10 @@ UploadWorkEstimate estimate_scan_lut_upload_bytes(
         cached = dst.canonical_ready() && dst.res == res && dst.hash == expectedHash;
         canOverwriteInPlace = dst.canonical_ready() && dst.res == res;
     }
-    return commands_uncached_upload_work(
-        cached,
-        canOverwriteInPlace ? 0 : bytes,
-        bytes);
+    UploadWorkEstimate uncachedWork{};
+    uncachedWork.growthBytes = canOverwriteInPlace ? 0 : bytes;
+    uncachedWork.reservationBytes = bytes;
+    return commands_uncached_upload_work(cached, uncachedWork);
 }
 
 bool command_scan_lut_is_cached(
@@ -1691,44 +1632,6 @@ bool command_print_illuminant_filtered_is_cached(
            resources.printIllumNeutralFilterHash == neutralFilterHash;
 }
 
-bool command_auto_exposure_buffers_ready(
-    JuicerCuda::Resources& resources,
-    const AutoExposureMeterExtent& meter,
-    std::string& outError) {
-    if (meter.width <= 0 || meter.height <= 0) {
-        outError = "auto-exposure meter dimensions invalid";
-        return false;
-    }
-
-    const int blockX = 16;
-    const int blockY = 16;
-    const int gridX = (meter.width + blockX - 1) / blockX;
-    const int gridY = (meter.height + blockY - 1) / blockY;
-    const int neededPartials = gridX * gridY;
-    if (neededPartials <= 0) {
-        outError = "auto-exposure partial count invalid";
-        return false;
-    }
-
-    std::lock_guard<std::mutex> lock(resources.m);
-    if (!validate_resource_owner_locked(resources, outError, true)) {
-        return false;
-    }
-
-    return resources.autoExposureExposureScale &&
-           resources.autoExposureAutoEV &&
-           resources.autoExposureValid &&
-           resources.autoExposureScratch.maxYBits &&
-           resources.autoExposureScratch.histogram &&
-           resources.autoExposureScratch.weightsX &&
-           resources.autoExposureScratch.weightsY &&
-           resources.autoExposureScratch.partialsA &&
-           resources.autoExposureScratch.partialsB &&
-           resources.autoExposureScratch.weightsXCapacity >= meter.width &&
-           resources.autoExposureScratch.weightsYCapacity >= meter.height &&
-           resources.autoExposureScratch.partialCapacity >= neededPartials;
-}
-
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 struct BaseGraphKey {
     int width = 0;
@@ -1829,17 +1732,21 @@ void sub_graph_large_entry_resident_bytes_global(std::uint64_t bytes) noexcept {
     telemetry_counter_subtract_saturating(global_state().graphLargeEntryResidentBytes, bytes);
 }
 
+struct GraphLargeEntryResidentSnapshot {
+    std::uint64_t bytes = 0;
+    std::uint32_t entries = 0;
+};
+
 void publish_graph_large_entry_resident_snapshot_locked(
     BaseGraphBucketState& bucket,
-    std::uint64_t residentBytes,
-    std::uint32_t residentEntries) noexcept {
-    if (residentBytes > bucket.largeEntryResidentBytes) {
-        add_graph_large_entry_resident_bytes_global(residentBytes - bucket.largeEntryResidentBytes);
-    } else if (bucket.largeEntryResidentBytes > residentBytes) {
-        sub_graph_large_entry_resident_bytes_global(bucket.largeEntryResidentBytes - residentBytes);
+    GraphLargeEntryResidentSnapshot snapshot) noexcept {
+    if (snapshot.bytes > bucket.largeEntryResidentBytes) {
+        add_graph_large_entry_resident_bytes_global(snapshot.bytes - bucket.largeEntryResidentBytes);
+    } else if (bucket.largeEntryResidentBytes > snapshot.bytes) {
+        sub_graph_large_entry_resident_bytes_global(bucket.largeEntryResidentBytes - snapshot.bytes);
     }
-    bucket.largeEntryResidentBytes = residentBytes;
-    bucket.largeEntryResidentEntries = residentEntries;
+    bucket.largeEntryResidentBytes = snapshot.bytes;
+    bucket.largeEntryResidentEntries = snapshot.entries;
 }
 
 std::uint64_t estimate_base_graph_request_bytes(const BaseGraphKey& key) noexcept {
@@ -1881,55 +1788,37 @@ BaseGraphEntry* find_base_graph_entry(
     BaseGraphBucketState& bucket,
     const BaseGraphKey& key) noexcept;
 
-BaseGraphEntry* build_base_graph_entry(
-    BaseGraphBucketState& bucket,
-    const BaseGraphKey& key,
-    BasePipelineLaunchFn launchFn,
-    JuicerCuda::PipelineRunParams& run,
-    cudaStream_t stream,
-    std::uint64_t largeEntryThresholdBytes,
-    std::uint32_t keepHotMs,
-    std::uint64_t& outKeepHotBypassEvents,
-    std::uint64_t& outKeepHotForcedEvictEvents) noexcept;
-
-BaseGraphEntry* build_base_graph_entry_impl(
-    BaseGraphBucketState& bucket,
-    const BaseGraphKey& key,
-    BasePipelineLaunchFn launchFn,
-    JuicerCuda::PipelineRunParams& run,
-    cudaStream_t stream,
-    std::uint64_t largeEntryThresholdBytes,
-    std::uint32_t keepHotMs,
-    std::uint64_t& outKeepHotBypassEvents,
-    std::uint64_t& outKeepHotForcedEvictEvents);
+struct GraphLargeEntryPolicyPoint {
+    std::uint64_t thresholdBytes = 0;
+    std::uint64_t nowMs = 0;
+    std::uint32_t keepHotMs = 0;
+};
 
 bool graph_entry_in_keep_hot_window(
     const BaseGraphEntry& entry,
-    std::uint32_t keepHotMs,
-    std::uint64_t nowMs) noexcept {
-    if (keepHotMs == 0 || entry.lastUseMs == 0) {
+    const GraphLargeEntryPolicyPoint& policy) noexcept {
+    if (policy.keepHotMs == 0 || entry.lastUseMs == 0) {
         return false;
     }
-    const std::uint64_t ageMs = commands_elapsed_ms_since(nowMs, entry.lastUseMs);
-    return ageMs < static_cast<std::uint64_t>(keepHotMs);
+    const std::uint64_t ageMs = commands_elapsed_ms_since(policy.nowMs, entry.lastUseMs);
+    return ageMs < static_cast<std::uint64_t>(policy.keepHotMs);
 }
 
 void note_large_entry_evicted_for_readmit_locked(
     BaseGraphBucketState& bucket,
     const BaseGraphEntry& entry,
-    std::uint64_t thresholdBytes,
-    std::uint64_t nowMs) noexcept {
+    const GraphLargeEntryPolicyPoint& policy) noexcept {
     try {
-        if (thresholdBytes == 0 || !base_graph_entry_live(entry)) {
+        if (policy.thresholdBytes == 0 || !base_graph_entry_live(entry)) {
             return;
         }
         const std::uint64_t entryBytes = estimate_base_graph_request_bytes(entry.key);
-        if (entryBytes < thresholdBytes) {
+        if (entryBytes < policy.thresholdBytes) {
             return;
         }
         const std::uint64_t digest = base_graph_key_digest(entry.key);
         GraphLargeEntryReadmitState& state = bucket.largeEntryReadmitByDigest[digest];
-        state.lastEvictedMs = nowMs;
+        state.lastEvictedMs = policy.nowMs;
         state.ghostHits = 0;
     } catch (...) {
         JuicerLogging::discard_current_exception();
@@ -1977,7 +1866,7 @@ std::shared_ptr<BaseGraphBucketState> get_or_create_base_graph_bucket(
 }
 
 void clear_base_graph_bucket(BaseGraphBucketState& bucket) noexcept {
-    publish_graph_large_entry_resident_snapshot_locked(bucket, 0, 0);
+    publish_graph_large_entry_resident_snapshot_locked(bucket, {});
     for (auto& entry : bucket.entries) {
         destroy_base_graph_entry(entry);
     }
@@ -2160,57 +2049,6 @@ void clear_graph_admission_state(
     std::uint64_t keyDigest) noexcept {
     bucket.probationHitsByDigest.erase(keyDigest);
     bucket.largeEntryReadmitByDigest.erase(keyDigest);
-}
-
-template <typename PolicyReplay>
-BaseGraphEntry* build_admitted_graph_entry(
-    const SubmissionTransaction& transaction,
-    BaseGraphBucketState& bucket,
-    const BaseGraphKey& key,
-    std::uint64_t keyDigest,
-    BasePipelineLaunchFn launchFn,
-    JuicerCuda::PipelineRunParams& run,
-    cudaStream_t stream,
-    std::uint64_t graphLargeThresholdBytes,
-    std::uint32_t keepHotMs,
-    ResourceManagerState& managerState,
-    PolicyReplay&& replayPolicy) {
-    clear_graph_admission_state(bucket, keyDigest);
-
-    std::uint64_t keepHotBypassEvents = 0;
-    std::uint64_t keepHotForcedEvictEvents = 0;
-    BaseGraphEntry* found = build_base_graph_entry(
-        bucket,
-        key,
-        launchFn,
-        run,
-        stream,
-        graphLargeThresholdBytes,
-        keepHotMs,
-        keepHotBypassEvents,
-        keepHotForcedEvictEvents);
-    if (keepHotBypassEvents > 0) {
-        telemetry_counter_add(managerState.keepHotBypassEvents, keepHotBypassEvents);
-    }
-    if (keepHotForcedEvictEvents > 0) {
-        telemetry_counter_add(managerState.keepHotForcedEvictEvents, keepHotForcedEvictEvents);
-    }
-    if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
-        trace_keep_hot_decision(
-            transaction,
-            KeepHotDecisionTrace{
-                .commandName = "command_launch_base_pipeline_graph",
-                .reason = "base_graph_cap",
-                .keepHotMs = keepHotMs,
-                .bypassEvents = keepHotBypassEvents,
-                .forcedEvictEvents = keepHotForcedEvictEvents});
-    }
-    if (!found) {
-        return nullptr;
-    }
-
-    replayPolicy("post_build");
-    return find_base_graph_entry(bucket, key);
 }
 
 template <typename PolicyReplay>
@@ -2408,28 +2246,57 @@ std::uint64_t estimate_base_graph_bucket_large_entry_bytes_locked(
     return totalBytes;
 }
 
+struct GraphLargeEntryTrimPolicy {
+    std::uint64_t thresholdBytes = 0;
+    std::uint64_t capBytes = 0;
+    std::uint64_t nowMs = 0;
+    std::uint32_t capEntries = 0;
+    std::uint32_t keepHotMs = 0;
+};
+
+struct GraphLargeEntryTrimStats {
+    std::uint64_t decayEvictedEntries = 0;
+    std::uint64_t capTrimEvictedEntries = 0;
+    std::uint64_t keepHotBypassEvents = 0;
+    std::uint64_t keepHotForcedEvictEvents = 0;
+    bool capHit = false;
+    std::uint32_t residentEntries = 0;
+};
+
+struct GraphLargeSnapshotSelection {
+    std::size_t oldestIndex = std::numeric_limits<std::size_t>::max();
+    std::size_t oldestNonHotIndex = std::numeric_limits<std::size_t>::max();
+    bool hasKeepHotCandidates = false;
+};
+
 std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
     BaseGraphBucketState& bucket,
-    std::uint64_t thresholdBytes,
-    std::uint64_t capBytes,
-    std::uint32_t capEntries,
-    std::uint32_t keepHotMs,
-    std::uint64_t nowMs,
-    std::uint64_t& outDecayEvictedEntries,
-    std::uint64_t& outCapTrimEvictedEntries,
-    std::uint64_t& outKeepHotBypassEvents,
-    std::uint64_t& outKeepHotForcedEvictEvents,
-    bool& outCapHit,
-    std::uint32_t& outResidentEntries) noexcept {
+    const GraphLargeEntryTrimPolicy& trimPolicy,
+    GraphLargeEntryTrimStats& stats) noexcept {
+    const std::uint64_t thresholdBytes = trimPolicy.thresholdBytes;
+    const std::uint64_t capBytes = trimPolicy.capBytes;
+    const std::uint32_t capEntries = trimPolicy.capEntries;
+    const std::uint32_t keepHotMs = trimPolicy.keepHotMs;
+    const std::uint64_t nowMs = trimPolicy.nowMs;
+    std::uint64_t& outDecayEvictedEntries = stats.decayEvictedEntries;
+    std::uint64_t& outCapTrimEvictedEntries = stats.capTrimEvictedEntries;
+    std::uint64_t& outKeepHotBypassEvents = stats.keepHotBypassEvents;
+    std::uint64_t& outKeepHotForcedEvictEvents = stats.keepHotForcedEvictEvents;
+    bool& outCapHit = stats.capHit;
+    std::uint32_t& outResidentEntries = stats.residentEntries;
     outDecayEvictedEntries = 0;
     outCapTrimEvictedEntries = 0;
     outKeepHotBypassEvents = 0;
     outKeepHotForcedEvictEvents = 0;
     outCapHit = false;
     outResidentEntries = 0;
+    GraphLargeEntryPolicyPoint policy{};
+    policy.thresholdBytes = thresholdBytes;
+    policy.nowMs = nowMs;
+    policy.keepHotMs = keepHotMs;
 
     if (thresholdBytes == 0) {
-        publish_graph_large_entry_resident_snapshot_locked(bucket, 0, 0);
+        publish_graph_large_entry_resident_snapshot_locked(bucket, {});
         return 0;
     }
 
@@ -2453,25 +2320,14 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
         note_large_entry_evicted_for_readmit_locked(
             bucket,
             entry,
-            thresholdBytes,
-            nowMs);
+            policy);
         destroy_base_graph_entry(entry);
         bucket.entries.erase(bucket.entries.begin() + static_cast<std::ptrdiff_t>(index));
         ++outDecayEvictedEntries;
     }
 
-    auto recompute_large_snapshot = [&](std::size_t* outOldestIndex,
-                                        std::size_t* outOldestNonHotIndex,
-                                        bool* outHasKeepHotCandidates) noexcept -> std::uint64_t {
-        if (outOldestIndex) {
-            *outOldestIndex = std::numeric_limits<std::size_t>::max();
-        }
-        if (outOldestNonHotIndex) {
-            *outOldestNonHotIndex = std::numeric_limits<std::size_t>::max();
-        }
-        if (outHasKeepHotCandidates) {
-            *outHasKeepHotCandidates = false;
-        }
+    auto recompute_large_snapshot = [&](GraphLargeSnapshotSelection& selection) noexcept -> std::uint64_t {
+        selection = GraphLargeSnapshotSelection{};
         outResidentEntries = 0;
         std::uint64_t residentBytes = 0;
         std::uint64_t oldestUseMs = std::numeric_limits<std::uint64_t>::max();
@@ -2500,9 +2356,9 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
                 ++outResidentEntries;
             }
 
-            const bool inKeepHotWindow = graph_entry_in_keep_hot_window(entry, keepHotMs, nowMs);
-            if (inKeepHotWindow && outHasKeepHotCandidates) {
-                *outHasKeepHotCandidates = true;
+            const bool inKeepHotWindow = graph_entry_in_keep_hot_window(entry, policy);
+            if (inKeepHotWindow) {
+                selection.hasKeepHotCandidates = true;
             }
 
             const bool older = (entry.lastUseMs < oldestUseMs) ||
@@ -2510,9 +2366,7 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
             if (older) {
                 oldestUseMs = entry.lastUseMs;
                 oldestUseTick = entry.lastUseTick;
-                if (outOldestIndex) {
-                    *outOldestIndex = i;
-                }
+                selection.oldestIndex = i;
             }
 
             if (!inKeepHotWindow) {
@@ -2521,31 +2375,24 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
                 if (olderNonHot) {
                     oldestNonHotUseMs = entry.lastUseMs;
                     oldestNonHotUseTick = entry.lastUseTick;
-                    if (outOldestNonHotIndex) {
-                        *outOldestNonHotIndex = i;
-                    }
+                    selection.oldestNonHotIndex = i;
                 }
             }
         }
         return residentBytes;
     };
 
-    std::size_t oldestIndex = std::numeric_limits<std::size_t>::max();
-    std::size_t oldestNonHotIndex = std::numeric_limits<std::size_t>::max();
-    bool hasKeepHotCandidates = false;
-    std::uint64_t residentBytes = recompute_large_snapshot(
-        &oldestIndex,
-        &oldestNonHotIndex,
-        &hasKeepHotCandidates);
+    GraphLargeSnapshotSelection selection{};
+    std::uint64_t residentBytes = recompute_large_snapshot(selection);
     const std::uint32_t allowedEntries = std::max<std::uint32_t>(1u, capEntries);
-    while (oldestIndex != std::numeric_limits<std::size_t>::max() &&
+    while (selection.oldestIndex != std::numeric_limits<std::size_t>::max() &&
            (outResidentEntries > allowedEntries || residentBytes > capBytes)) {
         outCapHit = true;
-        std::size_t victimIndex = oldestIndex;
-        if (keepHotMs > 0 && hasKeepHotCandidates) {
-            if (oldestNonHotIndex != std::numeric_limits<std::size_t>::max()) {
-                victimIndex = oldestNonHotIndex;
-                if (victimIndex != oldestIndex) {
+        std::size_t victimIndex = selection.oldestIndex;
+        if (keepHotMs > 0 && selection.hasKeepHotCandidates) {
+            if (selection.oldestNonHotIndex != std::numeric_limits<std::size_t>::max()) {
+                victimIndex = selection.oldestNonHotIndex;
+                if (victimIndex != selection.oldestIndex) {
                     ++outKeepHotBypassEvents;
                 }
             } else {
@@ -2556,88 +2403,71 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
         note_large_entry_evicted_for_readmit_locked(
             bucket,
             victim,
-            thresholdBytes,
-            nowMs);
+            policy);
         destroy_base_graph_entry(victim);
         bucket.entries.erase(bucket.entries.begin() + static_cast<std::ptrdiff_t>(victimIndex));
         ++outCapTrimEvictedEntries;
-        residentBytes = recompute_large_snapshot(
-            &oldestIndex,
-            &oldestNonHotIndex,
-            &hasKeepHotCandidates);
+        residentBytes = recompute_large_snapshot(selection);
     }
 
-    publish_graph_large_entry_resident_snapshot_locked(bucket, residentBytes, outResidentEntries);
+    GraphLargeEntryResidentSnapshot snapshot{};
+    snapshot.bytes = residentBytes;
+    snapshot.entries = outResidentEntries;
+    publish_graph_large_entry_resident_snapshot_locked(bucket, snapshot);
     return residentBytes;
 }
 
 void replay_graph_large_entry_policy(
     const SubmissionTransaction& transaction,
     BaseGraphBucketState& bucket,
-    std::uint64_t graphLargeThresholdBytes,
-    std::uint64_t graphLargeCapBytes,
-    std::uint32_t graphLargeCapEntries,
-    std::uint32_t keepHotMs,
+    GraphLargeEntryTrimPolicy trimPolicy,
     ResourceManagerState& managerState,
     const char* reason) {
-    std::uint64_t decayEvictedEntries = 0;
-    std::uint64_t capTrimEvictedEntries = 0;
-    std::uint64_t keepHotBypassEvents = 0;
-    std::uint64_t keepHotForcedEvictEvents = 0;
-    bool capHit = false;
-    std::uint32_t residentEntries = 0;
+    trimPolicy.nowMs = monotonic_time_ms();
+    GraphLargeEntryTrimStats trimStats{};
     const std::uint64_t residentBytes = trim_graph_large_entry_decay_and_caps_locked(
         bucket,
-        graphLargeThresholdBytes,
-        graphLargeCapBytes,
-        graphLargeCapEntries,
-        keepHotMs,
-        monotonic_time_ms(),
-        decayEvictedEntries,
-        capTrimEvictedEntries,
-        keepHotBypassEvents,
-        keepHotForcedEvictEvents,
-        capHit,
-        residentEntries);
-    if (decayEvictedEntries > 0) {
-        telemetry_counter_add(managerState.graphLargeEntryDecayEvents, decayEvictedEntries);
+        trimPolicy,
+        trimStats);
+    if (trimStats.decayEvictedEntries > 0) {
+        telemetry_counter_add(managerState.graphLargeEntryDecayEvents, trimStats.decayEvictedEntries);
     }
-    if (capTrimEvictedEntries > 0) {
-        telemetry_counter_add(managerState.graphLargeEntryTrimEvents, capTrimEvictedEntries);
+    if (trimStats.capTrimEvictedEntries > 0) {
+        telemetry_counter_add(managerState.graphLargeEntryTrimEvents, trimStats.capTrimEvictedEntries);
     }
-    if (capHit) {
+    if (trimStats.capHit) {
         telemetry_counter_add(managerState.graphLargeEntryCapHits, 1);
     }
-    if (keepHotBypassEvents > 0) {
-        telemetry_counter_add(managerState.keepHotBypassEvents, keepHotBypassEvents);
+    if (trimStats.keepHotBypassEvents > 0) {
+        telemetry_counter_add(managerState.keepHotBypassEvents, trimStats.keepHotBypassEvents);
     }
-    if (keepHotForcedEvictEvents > 0) {
-        telemetry_counter_add(managerState.keepHotForcedEvictEvents, keepHotForcedEvictEvents);
+    if (trimStats.keepHotForcedEvictEvents > 0) {
+        telemetry_counter_add(managerState.keepHotForcedEvictEvents, trimStats.keepHotForcedEvictEvents);
     }
-    if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
+    if (trimStats.keepHotBypassEvents > 0 || trimStats.keepHotForcedEvictEvents > 0) {
         trace_keep_hot_decision(
             transaction,
             KeepHotDecisionTrace{
                 .commandName = "command_launch_base_pipeline_graph",
                 .reason = trace_or(reason, "policy"),
-                .keepHotMs = keepHotMs,
-                .bypassEvents = keepHotBypassEvents,
-                .forcedEvictEvents = keepHotForcedEvictEvents});
+                .keepHotMs = trimPolicy.keepHotMs,
+                .bypassEvents = trimStats.keepHotBypassEvents,
+                .forcedEvictEvents = trimStats.keepHotForcedEvictEvents});
     }
-    if (decayEvictedEntries > 0 || capTrimEvictedEntries > 0 || capHit) {
+    if (trimStats.decayEvictedEntries > 0 || trimStats.capTrimEvictedEntries > 0 || trimStats.capHit) {
         trace_graph_large_entry_quarantine(
             transaction,
             GraphLargeEntryQuarantineTrace{
                 .commandName = "command_launch_base_pipeline_graph",
                 .reason = trace_or(reason, "policy"),
-                .thresholdBytes = graphLargeThresholdBytes,
-                .capBytes = graphLargeCapBytes,
+                .thresholdBytes = trimPolicy.thresholdBytes,
+                .capBytes = trimPolicy.capBytes,
                 .residentBytes = residentBytes,
-                .decayEvictedEntries = decayEvictedEntries,
-                .capTrimEvictedEntries = capTrimEvictedEntries,
-                .capEntries = graphLargeCapEntries,
-                .residentEntries = residentEntries,
-                .capHit = capHit});
+                .decayEvictedEntries = trimStats.decayEvictedEntries,
+                .capTrimEvictedEntries = trimStats.capTrimEvictedEntries,
+                .capEntries = trimPolicy.capEntries,
+                .residentEntries = trimStats.residentEntries,
+                .capHit = trimStats.capHit});
     }
 }
 
@@ -2725,16 +2555,35 @@ BaseGraphEntry* find_base_graph_entry(
     return nullptr;
 }
 
+struct BaseGraphBuildRequest {
+    const BaseGraphKey* key = nullptr;
+    BasePipelineLaunchFn launch = nullptr;
+    JuicerCuda::PipelineRunParams* run = nullptr;
+    cudaStream_t stream = nullptr;
+    std::uint64_t largeEntryThresholdBytes = 0;
+    std::uint32_t keepHotMs = 0;
+};
+
+struct BaseGraphBuildStats {
+    std::uint64_t keepHotBypassEvents = 0;
+    std::uint64_t keepHotForcedEvictEvents = 0;
+};
+
 BaseGraphEntry* build_base_graph_entry_impl(
     BaseGraphBucketState& bucket,
-    const BaseGraphKey& key,
-    BasePipelineLaunchFn launchFn,
-    JuicerCuda::PipelineRunParams& run,
-    cudaStream_t stream,
-    std::uint64_t largeEntryThresholdBytes,
-    std::uint32_t keepHotMs,
-    std::uint64_t& outKeepHotBypassEvents,
-    std::uint64_t& outKeepHotForcedEvictEvents) {
+    const BaseGraphBuildRequest& request,
+    BaseGraphBuildStats& stats) {
+    if (!request.key || !request.run) {
+        return nullptr;
+    }
+    const BaseGraphKey& key = *request.key;
+    BasePipelineLaunchFn launchFn = request.launch;
+    JuicerCuda::PipelineRunParams& run = *request.run;
+    const cudaStream_t stream = request.stream;
+    const std::uint64_t largeEntryThresholdBytes = request.largeEntryThresholdBytes;
+    const std::uint32_t keepHotMs = request.keepHotMs;
+    std::uint64_t& outKeepHotBypassEvents = stats.keepHotBypassEvents;
+    std::uint64_t& outKeepHotForcedEvictEvents = stats.keepHotForcedEvictEvents;
     outKeepHotBypassEvents = 0;
     outKeepHotForcedEvictEvents = 0;
     if (!launchFn) {
@@ -2744,6 +2593,10 @@ BaseGraphEntry* build_base_graph_entry_impl(
     constexpr std::size_t kBaseGraphCap = 4;
     if (bucket.entries.size() >= kBaseGraphCap && !bucket.entries.empty()) {
         const std::uint64_t nowMs = monotonic_time_ms();
+        GraphLargeEntryPolicyPoint policy{};
+        policy.thresholdBytes = largeEntryThresholdBytes;
+        policy.nowMs = nowMs;
+        policy.keepHotMs = keepHotMs;
         std::size_t oldestAny = 0;
         std::uint64_t bestTick = bucket.entries[0].lastUseTick;
         for (std::size_t i = 1; i < bucket.entries.size(); ++i) {
@@ -2760,7 +2613,7 @@ BaseGraphEntry* build_base_graph_entry_impl(
             bool hasKeepHotCandidates = false;
             for (std::size_t i = 0; i < bucket.entries.size(); ++i) {
                 const BaseGraphEntry& entry = bucket.entries[i];
-                const bool inKeepHotWindow = graph_entry_in_keep_hot_window(entry, keepHotMs, nowMs);
+                const bool inKeepHotWindow = graph_entry_in_keep_hot_window(entry, policy);
                 if (inKeepHotWindow) {
                     hasKeepHotCandidates = true;
                     continue;
@@ -2787,8 +2640,7 @@ BaseGraphEntry* build_base_graph_entry_impl(
         note_large_entry_evicted_for_readmit_locked(
             bucket,
             bucket.entries[victim],
-            largeEntryThresholdBytes,
-            nowMs);
+            policy);
         destroy_base_graph_entry(bucket.entries[victim]);
         bucket.entries.erase(bucket.entries.begin() + static_cast<std::ptrdiff_t>(victim));
     }
@@ -2888,29 +2740,13 @@ BaseGraphEntry* build_base_graph_entry_impl(
 
 BaseGraphEntry* build_base_graph_entry(
     BaseGraphBucketState& bucket,
-    const BaseGraphKey& key,
-    BasePipelineLaunchFn launchFn,
-    JuicerCuda::PipelineRunParams& run,
-    cudaStream_t stream,
-    std::uint64_t largeEntryThresholdBytes,
-    std::uint32_t keepHotMs,
-    std::uint64_t& outKeepHotBypassEvents,
-    std::uint64_t& outKeepHotForcedEvictEvents) noexcept {
+    const BaseGraphBuildRequest& request,
+    BaseGraphBuildStats& stats) noexcept {
     try {
-        return build_base_graph_entry_impl(
-            bucket,
-            key,
-            launchFn,
-            run,
-            stream,
-            largeEntryThresholdBytes,
-            keepHotMs,
-            outKeepHotBypassEvents,
-            outKeepHotForcedEvictEvents);
+        return build_base_graph_entry_impl(bucket, request, stats);
     } catch (...) {
         JuicerLogging::discard_current_exception();
-        outKeepHotBypassEvents = 0;
-        outKeepHotForcedEvictEvents = 0;
+        stats = BaseGraphBuildStats{};
         return nullptr;
     }
 }
@@ -3936,15 +3772,7 @@ bool command_ensure_optics_scratch(
     if (growthBytes == 0) {
         return JuicerCuda::ensure_optics_scratch(
             resources,
-            scratchRequest.requestedWidth,
-            scratchRequest.requestedHeight,
-            scratchRequest.needBlurred,
-            scratchRequest.aliasScannerRgbFromSpatialDirFiltered,
-            scratchRequest.needAux,
-            scratchRequest.needSharedTmp,
-            scratchRequest.needGrainLayerWork,
-            scratchRequest.needGrainShared,
-            scratchRequest.needGateMask,
+            scratchRequest,
             cudaStreamOpaque,
             outError);
     }
@@ -3960,15 +3788,7 @@ bool command_ensure_optics_scratch(
         [&](std::string& actionError) {
             return JuicerCuda::ensure_optics_scratch(
                 resources,
-                scratchRequest.requestedWidth,
-                scratchRequest.requestedHeight,
-                scratchRequest.needBlurred,
-                scratchRequest.aliasScannerRgbFromSpatialDirFiltered,
-                scratchRequest.needAux,
-                scratchRequest.needSharedTmp,
-                scratchRequest.needGrainLayerWork,
-                scratchRequest.needGrainShared,
-                scratchRequest.needGateMask,
+                scratchRequest,
                 cudaStreamOpaque,
                 actionError);
         },
@@ -4007,10 +3827,7 @@ bool command_ensure_spatial_dir_scratch(
     if (growthBytes == 0) {
         return JuicerCuda::ensure_spatial_dir_scratch(
             resources,
-            scratchRequest.requestedWidth,
-            scratchRequest.requestedHeight,
-            scratchRequest.spatialDirScratchTier,
-            scratchRequest.spatialDirPlaneRoles,
+            scratchRequest,
             cudaStreamOpaque,
             outError);
     }
@@ -4026,10 +3843,7 @@ bool command_ensure_spatial_dir_scratch(
         [&](std::string& actionError) {
             return JuicerCuda::ensure_spatial_dir_scratch(
                 resources,
-                scratchRequest.requestedWidth,
-                scratchRequest.requestedHeight,
-                scratchRequest.spatialDirScratchTier,
-                scratchRequest.spatialDirPlaneRoles,
+                scratchRequest,
                 cudaStreamOpaque,
                 actionError);
         },
@@ -4109,88 +3923,6 @@ bool command_ensure_halation_kernel(
         outError);
 }
 
-bool command_ensure_auto_exposure_buffers(
-    SubmissionTransaction& transaction,
-    JuicerCuda::Resources& resources,
-    const AutoExposureBufferRequest& request,
-    void* cudaStreamOpaque,
-    std::string& outError) {
-    if (!ensure_active_for_command(transaction, outError, "command_ensure_auto_exposure_buffers")) {
-        return false;
-    }
-    const bool captureMemorySnapshots =
-        should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    AutoExposureOwnershipMetadata ownershipMetadata{};
-    ownershipMetadata.normalizedKeyHash = normalize_key_u64(request.keyHash);
-    ownershipMetadata.meter = request.meter;
-    const AutoExposureOwnershipObservation ownershipObservation =
-        observe_auto_exposure_ownership(transaction, ownershipMetadata);
-    AutoExposureOwnershipObservation failedOwnershipObservation = ownershipObservation;
-    failedOwnershipObservation.metadataHit = false;
-
-    trace_auto_exposure_ownership_event(
-        transaction,
-        ownershipObservation,
-        ownershipMetadata,
-        "acquire",
-        bool_reason(ownershipObservation.metadataHit, "metadata_hit", "metadata_miss"));
-
-    if (command_auto_exposure_buffers_ready(resources, request.meter, outError)) {
-        publish_auto_exposure_ownership(
-            transaction,
-            ownershipObservation.ownershipKey,
-            ownershipMetadata);
-        trace_auto_exposure_ownership_event(
-            transaction,
-            ownershipObservation,
-            ownershipMetadata,
-            "publish",
-            bool_reason(ownershipObservation.metadataHit, "reuse", "refresh"));
-        return true;
-    }
-    if (!outError.empty()) {
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-        trace_auto_exposure_ownership_event(
-            transaction,
-            failedOwnershipObservation,
-            ownershipMetadata,
-            "ensure_fail",
-            commands_error_or_cstr(outError, "ensure_failed"));
-        return false;
-    }
-    outError.clear();
-
-    if (!JuicerCuda::ensure_auto_exposure_buffers(
-            resources,
-            request.meter.width,
-            request.meter.height,
-            cudaStreamOpaque,
-            outError)) {
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-        trace_auto_exposure_ownership_event(
-            transaction,
-            failedOwnershipObservation,
-            ownershipMetadata,
-            "ensure_fail",
-            commands_error_or_cstr(outError, "ensure_failed"));
-        return false;
-    }
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-
-    publish_auto_exposure_ownership(
-        transaction,
-        ownershipObservation.ownershipKey,
-        ownershipMetadata);
-    trace_auto_exposure_ownership_event(
-        transaction,
-        ownershipObservation,
-        ownershipMetadata,
-        "publish",
-        bool_reason(ownershipObservation.metadataHit, "reuse", "refresh"));
-    return true;
-}
-
 bool command_launch_base_pipeline_graph(
     SubmissionTransaction& transaction,
     JuicerCuda::PipelineRunParams& run,
@@ -4235,6 +3967,11 @@ bool command_launch_base_pipeline_graph(
     const std::uint64_t graphLargeThresholdBytes = graph_large_entry_threshold_bytes(cfg);
     const std::uint64_t graphLargeCapBytes = graph_large_entry_quarantine_cap_bytes(cfg);
     const std::uint32_t graphLargeCapEntries = graph_large_entry_quarantine_cap_entries(cfg);
+    GraphLargeEntryTrimPolicy graphTrimPolicy{};
+    graphTrimPolicy.thresholdBytes = graphLargeThresholdBytes;
+    graphTrimPolicy.capBytes = graphLargeCapBytes;
+    graphTrimPolicy.capEntries = graphLargeCapEntries;
+    graphTrimPolicy.keepHotMs = cfg.keepHotMs;
     auto launch_graph_direct = [&](bool countNonResidentServe) -> bool {
         return launch_base_pipeline_direct_fallback(
             managerState,
@@ -4259,10 +3996,7 @@ bool command_launch_base_pipeline_graph(
         replay_graph_large_entry_policy(
             transaction,
             bucket,
-            graphLargeThresholdBytes,
-            graphLargeCapBytes,
-            graphLargeCapEntries,
-            cfg.keepHotMs,
+            graphTrimPolicy,
             managerState,
             reason);
     };

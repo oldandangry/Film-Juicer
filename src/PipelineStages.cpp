@@ -10,6 +10,7 @@
 #include "PipelineTypes.h"
 #include "Print.h"
 #include "JuicerState.h"
+#include "SpectralProcessing.h"
 
 namespace Pipeline {
 
@@ -201,9 +202,7 @@ namespace Pipeline {
         void ensure_cached_enlarger_illuminant_filtered(
             const Print::Runtime& rt,
             std::uint64_t wsBuildCounter,
-            float yShiftSteps,
-            float mShiftSteps,
-            float cShiftSteps,
+            const std::array<float, 3>& ymcShiftSteps,
             PrintPipelineScratch& scratch) {
             const int shapeK = Spectral::gShape.K;
             if (shapeK <= 0) {
@@ -217,6 +216,9 @@ namespace Pipeline {
 
             // Match compose_dichroic_amount behavior: treat non-finite delta CC as 0 so cache keys
             // do not thrash on NaN inputs (NaN != NaN).
+            const float yShiftSteps = ymcShiftSteps[0];
+            const float mShiftSteps = ymcShiftSteps[1];
+            const float cShiftSteps = ymcShiftSteps[2];
             const float yKey = std::isfinite(yShiftSteps) ? yShiftSteps : 0.0f;
             const float mKey = std::isfinite(mShiftSteps) ? mShiftSteps : 0.0f;
             const float cKey = std::isfinite(cShiftSteps) ? cShiftSteps : 0.0f;
@@ -375,9 +377,11 @@ namespace Pipeline {
         FilmLogRaw out{};
 
         constexpr float kEps = 1e-10f;
-        out.v[0] = std::log10(fmax_agx(filmRaw.v[0], 0.0f) + kEps);
-        out.v[1] = std::log10(fmax_agx(filmRaw.v[1], 0.0f) + kEps);
-        out.v[2] = std::log10(fmax_agx(filmRaw.v[2], 0.0f) + kEps);
+        // std::fmax matches the NumPy fmax behavior required here: a finite
+        // zero wins when the reconstructed channel is NaN.
+        out.v[0] = std::log10(std::fmax(filmRaw.v[0], 0.0f) + kEps);
+        out.v[1] = std::log10(std::fmax(filmRaw.v[1], 0.0f) + kEps);
+        out.v[2] = std::log10(std::fmax(filmRaw.v[2], 0.0f) + kEps);
 
         return out;
     }
@@ -533,9 +537,7 @@ namespace Pipeline {
         ensure_cached_enlarger_illuminant_filtered(
             prt,
             ws.buildCounter,
-            prm.yFilter,
-            prm.mFilter,
-            prm.cFilter,
+            std::array<float, 3>{prm.yFilter, prm.mFilter, prm.cFilter},
             scratch);
 
         negative_density_spectral_from_dyes(ws, D_cmy, scratch.Tneg);
@@ -668,21 +670,26 @@ namespace Pipeline {
 
         const Print::Profile& p = in.printRt->profile;
 
-        auto interpolate_density_gamma = [](const Spectral::Curve& dc, float logE, float gammaFactor) {
-            if (dc.lambda_nm.empty()) {
+        struct PrintDensitySample {
+            const Spectral::Curve& curve;
+            float logExposure;
+            float gammaFactor;
+        };
+        auto interpolate_density_gamma = [](const PrintDensitySample& sample) {
+            if (sample.curve.lambda_nm.empty()) {
                 return 0.0f;
             }
 
-            const float gammaSafe = (std::isfinite(gammaFactor) && gammaFactor > 0.0f)
-                                        ? gammaFactor
+            const float gammaSafe = (std::isfinite(sample.gammaFactor) && sample.gammaFactor > 0.0f)
+                                        ? sample.gammaFactor
                                         : 1.0f;
 
-            return Spectral::sample_density_at_logE(dc, logE, gammaSafe);
+            return Spectral::sample_density_at_logE(sample.curve, sample.logExposure, gammaSafe);
         };
 
-        out.printDensity.v[0] = interpolate_density_gamma(p.dcC, in.printLogRaw.v[0], p.gammaFactor[0]);
-        out.printDensity.v[1] = interpolate_density_gamma(p.dcM, in.printLogRaw.v[1], p.gammaFactor[1]);
-        out.printDensity.v[2] = interpolate_density_gamma(p.dcY, in.printLogRaw.v[2], p.gammaFactor[2]);
+        out.printDensity.v[0] = interpolate_density_gamma({p.dcC, in.printLogRaw.v[0], p.gammaFactor[0]});
+        out.printDensity.v[1] = interpolate_density_gamma({p.dcM, in.printLogRaw.v[1], p.gammaFactor[1]});
+        out.printDensity.v[2] = interpolate_density_gamma({p.dcY, in.printLogRaw.v[2], p.gammaFactor[2]});
         return true;
     }
 

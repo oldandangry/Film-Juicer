@@ -21,6 +21,15 @@ namespace JuicerCuda {
     namespace ResourceManager {
         namespace {
 
+            template <typename TraceAction>
+            void run_registry_trace_noexcept(TraceAction&& action) noexcept {
+                try {
+                    action();
+                } catch (...) {
+                    JuicerLogging::discard_current_exception();
+                }
+            }
+
             struct RegistryEntry {
                 RegistryHandle handle{};
                 ContextLifecycleState lifecycleState = ContextLifecycleState::Unbound;
@@ -513,17 +522,19 @@ namespace JuicerCuda {
                 const char* reason,
                 std::uint64_t idleMs) noexcept {
                 ResourceManagerState& rmState = global_state();
-                trace_registry_event(
-                    RegistryEventTrace{
-                        .key = key,
-                        .entry = entry,
-                        .eventName = eventName,
-                        .reason = reason,
-                        .idleMs = idleMs,
-                        .liveManagers = rmState.registryLiveManagers.load(std::memory_order_relaxed),
-                        .maxLiveManagers = static_cast<std::uint64_t>(registry_policy_config().maxLiveManagersPerProcess),
-                        .reapEvents = rmState.registryReapEvents.load(std::memory_order_relaxed),
-                        .accepted = accepted});
+                run_registry_trace_noexcept([&]() {
+                    trace_registry_event(
+                        RegistryEventTrace{
+                            .key = key,
+                            .entry = entry,
+                            .eventName = eventName,
+                            .reason = reason,
+                            .idleMs = idleMs,
+                            .liveManagers = rmState.registryLiveManagers.load(std::memory_order_relaxed),
+                            .maxLiveManagers = static_cast<std::uint64_t>(registry_policy_config().maxLiveManagersPerProcess),
+                            .reapEvents = rmState.registryReapEvents.load(std::memory_order_relaxed),
+                            .accepted = accepted});
+                });
             }
 
             void trace_registry_missing_entry(const DeviceContextKey& key, const char* eventName) noexcept {
@@ -647,16 +658,18 @@ namespace JuicerCuda {
                 const std::uint64_t prevRegistryGeneration = entry.registryGeneration;
                 const std::uint64_t prevContextEpoch = entry.contextEpoch;
                 assign_entry_generations(entry);
-                trace_lifecycle_bump(
-                    LifecycleBumpTrace{
-                        .key = &key,
-                        .reason = reason,
-                        .handle = entry.handle,
-                        .previousRegistryGeneration = prevRegistryGeneration,
-                        .newRegistryGeneration = entry.registryGeneration,
-                        .previousContextEpoch = prevContextEpoch,
-                        .newContextEpoch = entry.contextEpoch,
-                        .accepted = accepted});
+                run_registry_trace_noexcept([&]() {
+                    trace_lifecycle_bump(
+                        LifecycleBumpTrace{
+                            .key = &key,
+                            .reason = reason,
+                            .handle = entry.handle,
+                            .previousRegistryGeneration = prevRegistryGeneration,
+                            .newRegistryGeneration = entry.registryGeneration,
+                            .previousContextEpoch = prevContextEpoch,
+                            .newContextEpoch = entry.contextEpoch,
+                            .accepted = accepted});
+                });
             }
 
             struct LifecycleTimeoutTrace {
@@ -671,12 +684,14 @@ namespace JuicerCuda {
 
             void trace_lifecycle_timeout(const LifecycleTimeoutTrace& trace) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-                if (!JTRACE_ENABLED(1)) {
-                    return;
-                }
-                const DeviceContextKey key = trace.key ? *trace.key : DeviceContextKey{};
-                const std::string msg = registry_trace_handle_prefix(trace.handle, key) + " action=watchdog_timeout" + " observed_state=" + to_cstr(trace.observedState) + " state_age_ms=" + std::to_string(trace.stateAgeMs) + " timeout_ms=" + std::to_string(trace.timeoutMs) + " escalated=" + std::to_string(registry_bool_u32(trace.escalated)) + " reason=" + registry_trace_or_unspecified(trace.reason);
-                JTRACE("MSLCY", msg);
+                run_registry_trace_noexcept([&]() {
+                    if (!JTRACE_ENABLED(1)) {
+                        return;
+                    }
+                    const DeviceContextKey key = trace.key ? *trace.key : DeviceContextKey{};
+                    const std::string msg = registry_trace_handle_prefix(trace.handle, key) + " action=watchdog_timeout" + " observed_state=" + to_cstr(trace.observedState) + " state_age_ms=" + std::to_string(trace.stateAgeMs) + " timeout_ms=" + std::to_string(trace.timeoutMs) + " escalated=" + std::to_string(registry_bool_u32(trace.escalated)) + " reason=" + registry_trace_or_unspecified(trace.reason);
+                    JTRACE("MSLCY", msg);
+                });
 #endif
             }
 
@@ -1332,24 +1347,6 @@ namespace JuicerCuda {
             } catch (...) {
                 JuicerLogging::discard_current_exception();
                 outGenerations = RegistrySnapshotGenerations{};
-                return false;
-            }
-        }
-
-        bool registry_get_lifecycle_state(const DeviceContextKey& key, ContextLifecycleState& outState) noexcept {
-            try {
-                RegistryState& state = registry_state();
-                std::lock_guard<std::mutex> lock(state.mutex);
-                auto it = state.byDeviceContext.find(key);
-                if (it == state.byDeviceContext.end()) {
-                    outState = ContextLifecycleState::Unbound;
-                    return false;
-                }
-                outState = it->second.lifecycleState;
-                return true;
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-                outState = ContextLifecycleState::Unbound;
                 return false;
             }
         }

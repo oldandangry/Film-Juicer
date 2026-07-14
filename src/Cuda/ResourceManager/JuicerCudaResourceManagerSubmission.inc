@@ -374,12 +374,12 @@ void trace_async_mempool_release_policy(
     bool applied,
     bool changed,
     const char* reason,
-    const char* detail) {
+    std::string_view detail) {
 #if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
-    const std::string msg = trace_event_identity_prefix("mempool_release_policy", transaction) + trace_device_context_fields(transaction) + " pressure_state=" + to_cstr(pressureState) + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(thresholdBytes)) + " applied=" + std::to_string(submission_bool_u32(applied)) + " changed=" + std::to_string(submission_bool_u32(changed)) + " reason=" + trace_or_unspecified(reason) + " detail=" + trace_or(detail, "none");
+    const std::string msg = trace_event_identity_prefix("mempool_release_policy", transaction) + trace_device_context_fields(transaction) + " pressure_state=" + to_cstr(pressureState) + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(thresholdBytes)) + " applied=" + std::to_string(submission_bool_u32(applied)) + " changed=" + std::to_string(submission_bool_u32(changed)) + " reason=" + trace_or_unspecified(reason) + " detail=" + trace_or(detail.data(), "none");
     JTRACE("MSALC", msg);
 #endif
 }
@@ -829,12 +829,6 @@ bool run_fragmentation_recovery_once(
             .attempt = attempt,
             .success = true});
     return true;
-}
-
-bool query_submission_active(const SubmissionTransaction& transaction) noexcept {
-    QueryReadOnlyGuard queryGuard("query_submission_active");
-    (void)queryGuard;
-    return transaction.active;
 }
 
 AllocatorBackendMode query_allocator_backend_mode(const DeviceContextKey& key) noexcept {

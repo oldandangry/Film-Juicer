@@ -27,12 +27,19 @@ __global__ void expose_film_raw_kernel(
     if (!(nC == 3 || nC == 4)) {
         return;
     }
+    if (params.width <= 0 || params.height <= 0) {
+        return;
+    }
 
     const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
-    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
-        const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
-        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
-            const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
+    const std::size_t width = static_cast<std::size_t>(params.width);
+    const std::size_t height = static_cast<std::size_t>(params.height);
+    const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+    const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+    for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
+        const char* srcRow = reinterpret_cast<const char*>(params.src) + y * params.srcRowBytes;
+        for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
+            const float* srcPix = reinterpret_cast<const float*>(srcRow + x * pixelBytes);
             if (!srcPix) {
                 continue;
             }
@@ -41,103 +48,11 @@ __global__ void expose_film_raw_kernel(
             float filmRaw[3] = {0.0f, 0.0f, 0.0f};
             compute_film_raw_device(params, rgbIn, filmRaw);
 
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+            const std::size_t idx = y * width + x;
             outB[idx] = filmRaw[0];
             outG[idx] = filmRaw[1];
             outR[idx] = filmRaw[2];
         }
-    }
-}
-
-__global__ void film_raw_max_kernel(
-    const float* inB,
-    const float* inG,
-    const float* inR,
-    int n,
-    unsigned int* outMaxBits) {
-    if (!inB || !inG || !inR || !outMaxBits) {
-        return;
-    }
-    const int threadIndex = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-    const int gridStride = static_cast<int>(blockDim.x * gridDim.x);
-    float localMax = 0.0f;
-    for (int idx = threadIndex; idx < n; idx += gridStride) {
-        localMax = fmaxf(localMax, fmaxf(inB[idx], fmaxf(inG[idx], inR[idx])));
-    }
-
-    __shared__ float sMax[256];
-    sMax[threadIdx.x] = localMax;
-    __syncthreads();
-    for (int stride = static_cast<int>(blockDim.x / 2); stride > 0; stride /= 2) {
-        if (threadIdx.x < stride) {
-            sMax[threadIdx.x] = fmaxf(sMax[threadIdx.x], sMax[threadIdx.x + stride]);
-        }
-        __syncthreads();
-    }
-    if (threadIdx.x == 0) {
-        atomicMax(outMaxBits, __float_as_uint(sMax[0]));
-    }
-}
-
-__global__ void highlight_boost_film_raw_kernel(
-    JuicerCuda::HighlightBoostPayload boost,
-    const unsigned int* maxRawBits,
-    float* inOutB,
-    float* inOutG,
-    float* inOutR,
-    int n) {
-    if (!maxRawBits || !inOutB || !inOutG || !inOutR || !(boost.boostEv > 0.0f)) {
-        return;
-    }
-    const float maxRaw = __uint_as_float(*maxRawBits);
-    if (!(maxRaw > 0.0f) || !isfinite(maxRaw)) {
-        return;
-    }
-
-    const float rawX0 = fminf(fmaxf(0.184f * exp2f(boost.protectEv), 0.0f), maxRaw);
-    if (!(rawX0 < maxRaw)) {
-        return;
-    }
-    const float boostRange = fminf(fmaxf(boost.boostRange, 0.0f), 1.0f);
-    const float a = powf(28.0f, 1.0f - boostRange);
-    const float oneMinusX0 = 1.0f - rawX0 / maxRaw;
-    const float denom = expf(a * oneMinusX0) - a * oneMinusX0 - 1.0f;
-    if (!(denom > 0.0f) || !isfinite(denom)) {
-        return;
-    }
-    const float boostScale = ((exp2f(boost.boostEv) - 1.0f) / denom) * maxRaw;
-    const float invMaxRaw = 1.0f / maxRaw;
-    const int threadIndex = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-    const int gridStride = static_cast<int>(blockDim.x * gridDim.x);
-
-    for (int idx = threadIndex; idx < n; idx += gridStride) {
-        float* channels[3] = {inOutB, inOutG, inOutR};
-        for (int channel = 0; channel < 3; ++channel) {
-            const float x = channels[channel][idx];
-            if (x > rawX0) {
-                const float dx = (x - rawX0) * invMaxRaw;
-                const float delta = boostScale * (expf(a * dx) - a * dx - 1.0f);
-                channels[channel][idx] = x + delta;
-            }
-        }
-    }
-}
-
-__global__ void halation_apply_kernel(float* inOut, const float* blurred, int n, float strength) {
-    if (!inOut || !blurred) {
-        return;
-    }
-
-    const float s = strength;
-    if (!(s > 0.0f)) {
-        return;
-    }
-
-    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += blockDim.x * gridDim.x) {
-        const double a = static_cast<double>(inOut[idx]);
-        const double b = static_cast<double>(blurred[idx]);
-        const double out = (a + static_cast<double>(s) * b) / (1.0 + static_cast<double>(s));
-        inOut[idx] = (isfinite(out) && !isnan(out)) ? static_cast<float>(out) : 0.0f;
     }
 }
 
@@ -268,22 +183,26 @@ namespace {
         outLayerCorrections[2] = aC;
     }
 
+    struct DirRawCorrectionOutputs {
+        float* correctionY = nullptr;
+        float* correctionM = nullptr;
+        float* correctionC = nullptr;
+        float* logRawB = nullptr;
+        float* logRawG = nullptr;
+        float* logRawR = nullptr;
+    };
+
     template <typename Params>
     __global__ void dir_raw_correction_source_build_kernel(
         Params params,
-        float* rawCorrectionY,
-        float* rawCorrectionM,
-        float* rawCorrectionC,
-        float* logRawB,
-        float* logRawG,
-        float* logRawR) {
+        DirRawCorrectionOutputs outputs) {
         if (!params.src || params.srcRowBytes == 0) {
             return;
         }
-        if (!rawCorrectionY || !rawCorrectionM || !rawCorrectionC) {
+        if (!outputs.correctionY || !outputs.correctionM || !outputs.correctionC) {
             return;
         }
-        const bool cacheLogRaw = logRawB || logRawG || logRawR;
+        const bool cacheLogRaw = outputs.logRawB || outputs.logRawG || outputs.logRawR;
 
         const int nC = params.nComponents;
         if (!(nC == 3 || nC == 4)) {
@@ -311,7 +230,11 @@ namespace {
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
                 float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
                 float layerPre[3] = {0.0f, 0.0f, 0.0f};
-                compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+                FilmDevelopIntermediatesDevice intermediates{};
+                intermediates.logERaw = logE_raw;
+                intermediates.logESanitized = logE_sanitized;
+                intermediates.layerPre = layerPre;
+                compute_logE_and_layer_pre_device(params, rgbIn, intermediates);
 
                 const float D_cmy[3] = {layerPre[2], layerPre[1], layerPre[0]};
                 const float layerDensities[3] = {D_cmy[2], D_cmy[1], D_cmy[0]};
@@ -320,18 +243,18 @@ namespace {
                 compute_dir_corrections_device(params.filmDevelop.dir, layerDensities, outCorr);
 
                 const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-                rawCorrectionY[idx] = outCorr[0];
-                rawCorrectionM[idx] = outCorr[1];
-                rawCorrectionC[idx] = outCorr[2];
+                outputs.correctionY[idx] = outCorr[0];
+                outputs.correctionM[idx] = outCorr[1];
+                outputs.correctionC[idx] = outCorr[2];
                 if (cacheLogRaw) {
-                    if (logRawB) {
-                        logRawB[idx] = logE_raw[0];
+                    if (outputs.logRawB) {
+                        outputs.logRawB[idx] = logE_raw[0];
                     }
-                    if (logRawG) {
-                        logRawG[idx] = logE_raw[1];
+                    if (outputs.logRawG) {
+                        outputs.logRawG[idx] = logE_raw[1];
                     }
-                    if (logRawR) {
-                        logRawR[idx] = logE_raw[2];
+                    if (outputs.logRawR) {
+                        outputs.logRawR[idx] = logE_raw[2];
                     }
                 }
             }
@@ -380,7 +303,11 @@ namespace {
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
                 float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
                 float layerPre[3] = {0.0f, 0.0f, 0.0f};
-                compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+                FilmDevelopIntermediatesDevice intermediates{};
+                intermediates.logERaw = logE_raw;
+                intermediates.logESanitized = logE_sanitized;
+                intermediates.layerPre = layerPre;
+                compute_logE_and_layer_pre_device(params, rgbIn, intermediates);
 
                 const float D_cmy[3] = {layerPre[2], layerPre[1], layerPre[0]};
                 const float layerDensities[3] = {D_cmy[2], D_cmy[1], D_cmy[0]};
@@ -432,7 +359,11 @@ namespace {
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
                 float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
                 float layerPre[3] = {0.0f, 0.0f, 0.0f};
-                compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+                FilmDevelopIntermediatesDevice intermediates{};
+                intermediates.logERaw = logE_raw;
+                intermediates.logESanitized = logE_sanitized;
+                intermediates.layerPre = layerPre;
+                compute_logE_and_layer_pre_device(params, rgbIn, intermediates);
 
                 const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
                 logRawB[idx] = logE_raw[0];
@@ -708,36 +639,37 @@ namespace {
 template <typename Params>
 cudaError_t build_spatial_dir_impl(
     const Params& params,
-    float* rawCorrectionY,
-    float* rawCorrectionM,
-    float* rawCorrectionC,
-    float* filteredCorrectionY,
-    float* filteredCorrectionM,
-    float* filteredCorrectionC,
-    float* filterTemp,
-    float* filterTempM,
-    float* filterTempC,
-    float* logRawB,
-    float* logRawG,
-    float* logRawR,
-    const float* dGaussianKernel,
-    int gaussianRadius,
-    float gaussianSigma,
-    float gaussianWeight,
-    const float* dTailKernel0,
-    int tailRadius0, // NOLINT(bugprone-easily-swappable-parameters)
-    float tailSigma0,
-    float tailWeight0,
-    const float* dTailKernel1,
-    int tailRadius1, // NOLINT(bugprone-easily-swappable-parameters)
-    float tailSigma1,
-    float tailWeight1,
-    const float* dTailKernel2,
-    int tailRadius2, // NOLINT(bugprone-easily-swappable-parameters)
-    float tailSigma2,
-    float tailWeight2,
-    void* cudaStreamOpaque,
-    JuicerCuda::SpatialDirBuildProfile* profile) {
+    JuicerCuda::SpatialDirBuildRequest request) {
+    float* rawCorrectionY = request.planes.rawCorrectionY;
+    float* rawCorrectionM = request.planes.rawCorrectionM;
+    float* rawCorrectionC = request.planes.rawCorrectionC;
+    float* filteredCorrectionY = request.planes.filteredCorrectionY;
+    float* filteredCorrectionM = request.planes.filteredCorrectionM;
+    float* filteredCorrectionC = request.planes.filteredCorrectionC;
+    float* filterTemp = request.planes.filterTemp;
+    float* filterTempM = request.planes.filterTempM;
+    float* filterTempC = request.planes.filterTempC;
+    float* logRawB = request.planes.logRawB;
+    float* logRawG = request.planes.logRawG;
+    float* logRawR = request.planes.logRawR;
+    const float* dGaussianKernel = request.gaussian.kernel;
+    const int gaussianRadius = request.gaussian.radius;
+    const float gaussianSigma = request.gaussian.sigma;
+    const float gaussianWeight = request.gaussian.weight;
+    const float* dTailKernel0 = request.tails[0].kernel;
+    const int tailRadius0 = request.tails[0].radius;
+    const float tailSigma0 = request.tails[0].sigma;
+    const float tailWeight0 = request.tails[0].weight;
+    const float* dTailKernel1 = request.tails[1].kernel;
+    const int tailRadius1 = request.tails[1].radius;
+    const float tailSigma1 = request.tails[1].sigma;
+    const float tailWeight1 = request.tails[1].weight;
+    const float* dTailKernel2 = request.tails[2].kernel;
+    const int tailRadius2 = request.tails[2].radius;
+    const float tailSigma2 = request.tails[2].sigma;
+    const float tailWeight2 = request.tails[2].weight;
+    void* cudaStreamOpaque = request.streamOpaque;
+    JuicerCuda::SpatialDirBuildProfile* profile = request.profile;
     if (!params.src || params.srcRowBytes == 0) {
         return cudaErrorInvalidValue;
     }
@@ -830,14 +762,16 @@ cudaError_t build_spatial_dir_impl(
                 return e;
             }
         }
+        DirRawCorrectionOutputs outputs{};
+        outputs.correctionY = rawCorrectionY;
+        outputs.correctionM = rawCorrectionM;
+        outputs.correctionC = rawCorrectionC;
+        outputs.logRawB = logRawB;
+        outputs.logRawG = logRawG;
+        outputs.logRawR = logRawR;
         dir_raw_correction_source_build_kernel<<<blocks2D, threads2D, 0, stream>>>(
             params,
-            rawCorrectionY,
-            rawCorrectionM,
-            rawCorrectionC,
-            logRawB,
-            logRawG,
-            logRawR);
+            outputs);
         mark_launch(
             profile ? &profile->correction : nullptr,
             profile ? &profile->correctionLaunches : nullptr);
@@ -1500,140 +1434,20 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(
 
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     const JuicerCuda::DirectPipelineRunParams* hParams,
-    float* rawCorrectionY,
-    float* rawCorrectionM,
-    float* rawCorrectionC,
-    float* filteredCorrectionY,
-    float* filteredCorrectionM,
-    float* filteredCorrectionC,
-    float* filterTemp,
-    float* filterTempM,
-    float* filterTempC,
-    float* logRawB,
-    float* logRawG,
-    float* logRawR,
-    const float* dGaussianKernel,
-    int gaussianRadius,
-    float gaussianSigma,
-    float gaussianWeight,
-    const float* dTailKernel0,
-    int tailRadius0,
-    float tailSigma0,
-    float tailWeight0,
-    const float* dTailKernel1,
-    int tailRadius1,
-    float tailSigma1,
-    float tailWeight1,
-    const float* dTailKernel2,
-    int tailRadius2,
-    float tailSigma2,
-    float tailWeight2,
-    void* cudaStreamOpaque,
-    JuicerCuda::SpatialDirBuildProfile* profile) {
+    JuicerCuda::SpatialDirBuildRequest request) {
     if (!hParams) {
         return cudaErrorInvalidValue;
     }
-    return build_spatial_dir_impl(
-        *hParams,
-        rawCorrectionY,
-        rawCorrectionM,
-        rawCorrectionC,
-        filteredCorrectionY,
-        filteredCorrectionM,
-        filteredCorrectionC,
-        filterTemp,
-        filterTempM,
-        filterTempC,
-        logRawB,
-        logRawG,
-        logRawR,
-        dGaussianKernel,
-        gaussianRadius,
-        gaussianSigma,
-        gaussianWeight,
-        dTailKernel0,
-        tailRadius0,
-        tailSigma0,
-        tailWeight0,
-        dTailKernel1,
-        tailRadius1,
-        tailSigma1,
-        tailWeight1,
-        dTailKernel2,
-        tailRadius2,
-        tailSigma2,
-        tailWeight2,
-        cudaStreamOpaque,
-        profile);
+    return build_spatial_dir_impl(*hParams, request);
 }
 
 extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
     const JuicerCuda::PrintPipelineRunParams* hParams,
-    float* rawCorrectionY,
-    float* rawCorrectionM,
-    float* rawCorrectionC,
-    float* filteredCorrectionY,
-    float* filteredCorrectionM,
-    float* filteredCorrectionC,
-    float* filterTemp,
-    float* filterTempM,
-    float* filterTempC,
-    float* logRawB,
-    float* logRawG,
-    float* logRawR,
-    const float* dGaussianKernel,
-    int gaussianRadius,
-    float gaussianSigma,
-    float gaussianWeight,
-    const float* dTailKernel0,
-    int tailRadius0,
-    float tailSigma0,
-    float tailWeight0,
-    const float* dTailKernel1,
-    int tailRadius1,
-    float tailSigma1,
-    float tailWeight1,
-    const float* dTailKernel2,
-    int tailRadius2,
-    float tailSigma2,
-    float tailWeight2,
-    void* cudaStreamOpaque,
-    JuicerCuda::SpatialDirBuildProfile* profile) {
+    JuicerCuda::SpatialDirBuildRequest request) {
     if (!hParams) {
         return cudaErrorInvalidValue;
     }
-    return build_spatial_dir_impl(
-        *hParams,
-        rawCorrectionY,
-        rawCorrectionM,
-        rawCorrectionC,
-        filteredCorrectionY,
-        filteredCorrectionM,
-        filteredCorrectionC,
-        filterTemp,
-        filterTempM,
-        filterTempC,
-        logRawB,
-        logRawG,
-        logRawR,
-        dGaussianKernel,
-        gaussianRadius,
-        gaussianSigma,
-        gaussianWeight,
-        dTailKernel0,
-        tailRadius0,
-        tailSigma0,
-        tailWeight0,
-        dTailKernel1,
-        tailRadius1,
-        tailSigma1,
-        tailWeight1,
-        dTailKernel2,
-        tailRadius2,
-        tailSigma2,
-        tailWeight2,
-        cudaStreamOpaque,
-        profile);
+    return build_spatial_dir_impl(*hParams, request);
 }
 
 extern "C" cudaError_t juicer_cuda_build_print_spatial_dir_cached_log_raw(
@@ -1655,13 +1469,64 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir_cached_log_raw(
 
 namespace {
 
-    __device__ __forceinline__ float lognormal_from_mean_std_device(float mean, float stddev, float normalSample) {
-        const float m2 = mean * mean;
-        const float s2 = stddev * stddev;
+    struct LognormalSampleDevice {
+        float mean = 0.0f;
+        float standardDeviation = 0.0f;
+        float normalSample = 0.0f;
+    };
+
+    struct WangLutEdgesDevice {
+        int left = 0;
+        int right = 0;
+        int top = 0;
+        int bottom = 0;
+        int colorCount = 0;
+    };
+
+    struct NoiseCoordinateDevice {
+        float x = 0.0f;
+        float y = 0.0f;
+    };
+
+    struct StbnSampleLocationDevice {
+        std::uint64_t absoluteX = 0;
+        std::uint64_t absoluteY = 0;
+        int offsetX = 0;
+        int offsetY = 0;
+        int frameOffset = 0;
+    };
+
+    struct GrainRngInitializationDevice {
+        std::uint64_t seed = 0;
+        std::uint32_t counterX = 0;
+        std::uint32_t counterY = 0;
+        std::uint64_t absoluteX = 0;
+        std::uint64_t absoluteY = 0;
+        int useStbn = 0;
+        int frameOffset = 0;
+    };
+
+    struct LayerParticleModelSampleDevice {
+        float density = 0.0f;
+        float densityMaximum = 0.0f;
+        float particleCount = 0.0f;
+        float particleOpticalDensity = 0.0f;
+        float uniformity = 0.0f;
+        std::uint64_t seed = 0;
+        std::uint64_t absoluteX = 0;
+        std::uint64_t absoluteY = 0;
+        const JuicerCuda::GrainPayload* grain = nullptr;
+        int useStbn = 0;
+        int frameOffset = 0;
+    };
+
+    __device__ __forceinline__ float lognormal_from_mean_std_device(LognormalSampleDevice sample) {
+        const float m2 = sample.mean * sample.mean;
+        const float s2 = sample.standardDeviation * sample.standardDeviation;
         const float sigmaSq = logf(1.0f + (s2 / m2));
         const float sigma = sqrtf(fmaxf(0.0f, sigmaSq));
-        const float mu = logf(fmaxf(1e-12f, mean)) - 0.5f * sigmaSq;
-        return expf(mu + sigma * normalSample);
+        const float mu = logf(fmaxf(1e-12f, sample.mean)) - 0.5f * sigmaSq;
+        return expf(mu + sigma * sample.normalSample);
     }
 
     __device__ __forceinline__ std::uint64_t splitmix64_device(std::uint64_t v) {
@@ -1723,12 +1588,12 @@ namespace {
         return static_cast<std::uint32_t>(h & 0xFFFFFFFFu);
     }
 
-    __device__ __forceinline__ std::size_t wang_lut_index_device(int l, int r, int t, int b, int colors) {
-        const std::size_t c = static_cast<std::size_t>(colors);
-        return (((static_cast<std::size_t>(l) * c + static_cast<std::size_t>(r)) * c +
-                 static_cast<std::size_t>(t)) *
+    __device__ __forceinline__ std::size_t wang_lut_index_device(WangLutEdgesDevice edges) {
+        const std::size_t c = static_cast<std::size_t>(edges.colorCount);
+        return (((static_cast<std::size_t>(edges.left) * c + static_cast<std::size_t>(edges.right)) * c +
+                 static_cast<std::size_t>(edges.top)) *
                     c +
-                static_cast<std::size_t>(b));
+                static_cast<std::size_t>(edges.bottom));
     }
 
     __device__ __forceinline__ int wang_tile_id_device(const JuicerCuda::GrainPayload& grain, std::int64_t mx, std::int64_t my) {
@@ -1742,7 +1607,13 @@ namespace {
         const std::uint32_t r = hash_u32_device(static_cast<int>(mx + 1), static_cast<int>(my), baseSeed, 0x5A5A5A5Au) % colors;
         const std::uint32_t t = hash_u32_device(static_cast<int>(mx), static_cast<int>(my), baseSeed, 0xC3C3C3C3u) % colors;
         const std::uint32_t b = hash_u32_device(static_cast<int>(mx), static_cast<int>(my + 1), baseSeed, 0x3C3C3C3Cu) % colors;
-        const std::size_t idx = wang_lut_index_device(static_cast<int>(l), static_cast<int>(r), static_cast<int>(t), static_cast<int>(b), colors);
+        WangLutEdgesDevice edges{};
+        edges.left = static_cast<int>(l);
+        edges.right = static_cast<int>(r);
+        edges.top = static_cast<int>(t);
+        edges.bottom = static_cast<int>(b);
+        edges.colorCount = colors;
+        const std::size_t idx = wang_lut_index_device(edges);
         return static_cast<int>(grain.wangLut[idx]);
     }
 
@@ -1820,11 +1691,13 @@ namespace {
         outY = static_cast<int>(floorf((v1 - 0.5f) * 2.0f * static_cast<float>(warpY)));
     }
 
-    __device__ __forceinline__ float value_noise_device(float x, float y, std::uint64_t seed) {
-        const int ix = static_cast<int>(floorf(x));
-        const int iy = static_cast<int>(floorf(y));
-        const float fx = x - static_cast<float>(ix);
-        const float fy = y - static_cast<float>(iy);
+    __device__ __forceinline__ float value_noise_device(
+        NoiseCoordinateDevice coordinate,
+        std::uint64_t seed) {
+        const int ix = static_cast<int>(floorf(coordinate.x));
+        const int iy = static_cast<int>(floorf(coordinate.y));
+        const float fx = coordinate.x - static_cast<float>(ix);
+        const float fy = coordinate.y - static_cast<float>(iy);
         const float sx = smoothstep_device(fx);
         const float sy = smoothstep_device(fy);
 
@@ -1893,10 +1766,16 @@ namespace {
         const float xLarge = baseX / cellLargePx;
         const float yLarge = baseY / cellLargePx;
 
-        const float noiseSmallA = value_noise_device(xSmall, ySmall, seedA ^ 0x9E3779B97F4A7C15ULL);
-        const float noiseSmallB = value_noise_device(xSmall, ySmall, seedB ^ 0x9E3779B97F4A7C15ULL);
-        const float noiseLargeA = value_noise_device(xLarge, yLarge, seedA ^ 0xBF58476D1CE4E5B9ULL);
-        const float noiseLargeB = value_noise_device(xLarge, yLarge, seedB ^ 0xBF58476D1CE4E5B9ULL);
+        NoiseCoordinateDevice smallCoordinate{};
+        smallCoordinate.x = xSmall;
+        smallCoordinate.y = ySmall;
+        NoiseCoordinateDevice largeCoordinate{};
+        largeCoordinate.x = xLarge;
+        largeCoordinate.y = yLarge;
+        const float noiseSmallA = value_noise_device(smallCoordinate, seedA ^ 0x9E3779B97F4A7C15ULL);
+        const float noiseSmallB = value_noise_device(smallCoordinate, seedB ^ 0x9E3779B97F4A7C15ULL);
+        const float noiseLargeA = value_noise_device(largeCoordinate, seedA ^ 0xBF58476D1CE4E5B9ULL);
+        const float noiseLargeB = value_noise_device(largeCoordinate, seedB ^ 0xBF58476D1CE4E5B9ULL);
 
         const float noiseSmall = noiseSmallA + (noiseSmallB - noiseSmallA) * t;
         const float noiseLarge = noiseLargeA + (noiseLargeB - noiseLargeA) * t;
@@ -1940,8 +1819,14 @@ namespace {
         if (staticSeed == 0) {
             staticSeed = 1ULL;
         }
-        const float u1S = value_noise_device(xStatic, yStatic, staticSeed ^ 0x9E3779B97F4A7C15ULL);
-        const float u2S = value_noise_device(xStatic + 19.19f, yStatic + 7.23f, staticSeed ^ 0xBF58476D1CE4E5B9ULL);
+        NoiseCoordinateDevice primaryCoordinate{};
+        primaryCoordinate.x = xStatic;
+        primaryCoordinate.y = yStatic;
+        NoiseCoordinateDevice secondaryCoordinate{};
+        secondaryCoordinate.x = xStatic + 19.19f;
+        secondaryCoordinate.y = yStatic + 7.23f;
+        const float u1S = value_noise_device(primaryCoordinate, staticSeed ^ 0x9E3779B97F4A7C15ULL);
+        const float u2S = value_noise_device(secondaryCoordinate, staticSeed ^ 0xBF58476D1CE4E5B9ULL);
         float u1 = fminf(fmaxf(u1S, 1e-6f), 1.0f - 1e-6f);
         float u2 = fminf(fmaxf(u2S, 0.0f), 1.0f);
         const float r = sqrtf(-2.0f * logf(u1));
@@ -1950,7 +1835,11 @@ namespace {
 
         const float mix = fminf(fmaxf(grain.clumpTemporalMix, 0.0f), 1.0f);
         if (!(mix > 0.0f)) {
-            float staticVal = lognormal_from_mean_std_device(1.0f, stddevSpatial, nStatic);
+            LognormalSampleDevice staticSample{};
+            staticSample.mean = 1.0f;
+            staticSample.standardDeviation = stddevSpatial;
+            staticSample.normalSample = nStatic;
+            float staticVal = lognormal_from_mean_std_device(staticSample);
             if (!device_isfinite(staticVal)) {
                 staticVal = 1.0f;
             }
@@ -1986,7 +1875,11 @@ namespace {
 
         constexpr float kClumpStrengthStdScale = 0.23597824f;
         const float strengthStd = mix * kClumpStrengthStdScale;
-        float strength = lognormal_from_mean_std_device(1.0f, strengthStd, nTemporal);
+        LognormalSampleDevice strengthSample{};
+        strengthSample.mean = 1.0f;
+        strengthSample.standardDeviation = strengthStd;
+        strengthSample.normalSample = nTemporal;
+        float strength = lognormal_from_mean_std_device(strengthSample);
         const float strengthNorm = rsqrtf(1.0f + strengthStd * strengthStd);
         strength *= strengthNorm;
         const float stddev = stddevSpatial * strength;
@@ -1994,7 +1887,11 @@ namespace {
         const float numer = 1.0f + stddevSpatial * stddevSpatial;
         const float clumpRmsNorm = (denom > 0.0f) ? sqrtf(numer / denom) : 1.0f;
 
-        float clumpVal = lognormal_from_mean_std_device(1.0f, stddev, nStatic);
+        LognormalSampleDevice clumpSample{};
+        clumpSample.mean = 1.0f;
+        clumpSample.standardDeviation = stddev;
+        clumpSample.normalSample = nStatic;
+        float clumpVal = lognormal_from_mean_std_device(clumpSample);
         if (!device_isfinite(clumpVal)) {
             clumpVal = 1.0f;
         }
@@ -2005,21 +1902,20 @@ namespace {
 
     __device__ __forceinline__ float stbn_sample_device(
         const JuicerCuda::GrainPayload& grain,
-        std::uint64_t absX,
-        std::uint64_t absY,
-        int offsetX,
-        int offsetY,
-        int frameOffset) {
+        StbnSampleLocationDevice location) {
         if (!grain.stbn || grain.stbnWidth <= 0 || grain.stbnHeight <= 0 || grain.stbnFrames <= 0) {
             return 0.0f;
         }
 
-        const int t = grain.stbnFrame + frameOffset;
-        std::int64_t x64 = static_cast<std::int64_t>(absX) + static_cast<std::int64_t>(offsetX);
-        std::int64_t y64 = static_cast<std::int64_t>(absY) + static_cast<std::int64_t>(offsetY);
+        const int t = grain.stbnFrame + location.frameOffset;
+        std::int64_t x64 =
+            static_cast<std::int64_t>(location.absoluteX) + static_cast<std::int64_t>(location.offsetX);
+        std::int64_t y64 =
+            static_cast<std::int64_t>(location.absoluteY) + static_cast<std::int64_t>(location.offsetY);
         if (grain.pitchPx > 0) {
             y64 += static_cast<std::int64_t>(grain.pitchPx) *
-                   (static_cast<std::int64_t>(grain.frameIndex) + static_cast<std::int64_t>(frameOffset));
+                   (static_cast<std::int64_t>(grain.frameIndex) +
+                    static_cast<std::int64_t>(location.frameOffset));
         }
 
         if (grain.stbnWidth > 0) {
@@ -2053,21 +1949,19 @@ namespace {
         int wangOffsetY = 0;
 
         __device__ GrainRngDevice(
-            std::uint64_t seed_,
-            std::uint32_t ctr0,
-            std::uint32_t ctr1,
             const JuicerCuda::GrainPayload* grain_,
-            std::uint64_t absX_,
-            std::uint64_t absY_,
-            int useStbn_,
-            int frameOffset_)
-            : rng(seed_, ctr0, openrand::DEFAULT_GLOBAL_SEED, ctr1),
+            GrainRngInitializationDevice initialization)
+            : rng(
+                  initialization.seed,
+                  initialization.counterX,
+                  openrand::DEFAULT_GLOBAL_SEED,
+                  initialization.counterY),
               grain(grain_),
-              absX(absX_),
-              absY(absY_),
-              seed(seed_),
-              useStbn(useStbn_),
-              frameOffset(frameOffset_) {
+              absX(initialization.absoluteX),
+              absY(initialization.absoluteY),
+              seed(initialization.seed),
+              useStbn(initialization.useStbn),
+              frameOffset(initialization.frameOffset) {
             if (useStbn && grain) {
                 wang_offsets_device(*grain, absX, absY, wangOffsetX, wangOffsetY);
             }
@@ -2079,7 +1973,13 @@ namespace {
                 const std::uint64_t h = splitmix64_device(seed + static_cast<std::uint64_t>(draw) * 0x9E3779B97F4A7C15ULL);
                 const int offsetX = static_cast<int>(h & 0xFFFFu) + wangOffsetX;
                 const int offsetY = static_cast<int>((h >> 16) & 0xFFFFu) + wangOffsetY;
-                return stbn_sample_device(*grain, absX, absY, offsetX, offsetY, frameOffset);
+                StbnSampleLocationDevice location{};
+                location.absoluteX = absX;
+                location.absoluteY = absY;
+                location.offsetX = offsetX;
+                location.offsetY = offsetY;
+                location.frameOffset = frameOffset;
+                return stbn_sample_device(*grain, location);
             }
             return rng.rand<float>();
         }
@@ -2209,17 +2109,16 @@ namespace {
     }
 
     __device__ __forceinline__ float layer_particle_model_device(
-        float density,
-        float densityMax,
-        float nParticles,
-        float odParticle,
-        float uniformity,
-        std::uint64_t seed,
-        std::uint64_t absX,
-        std::uint64_t absY,
-        const JuicerCuda::GrainPayload& grain,
-        int useStbn,
-        int frameOffset) {
+        LayerParticleModelSampleDevice sample) {
+        if (!sample.grain) {
+            return 0.0f;
+        }
+        float density = sample.density;
+        const float densityMax = sample.densityMaximum;
+        const float nParticles = sample.particleCount;
+        const float odParticle = sample.particleOpticalDensity;
+        const float uniformity = sample.uniformity;
+        const JuicerCuda::GrainPayload& grain = *sample.grain;
         if (!device_isfinite(density) || density < 0.0f) {
             density = 0.0f;
         }
@@ -2242,14 +2141,15 @@ namespace {
             saturation = 1e-6f;
         }
 
-        GrainRngDevice rng(seed,
-                           static_cast<std::uint32_t>(absX),
-                           static_cast<std::uint32_t>(absY),
-                           &grain,
-                           absX,
-                           absY,
-                           useStbn,
-                           frameOffset);
+        GrainRngInitializationDevice initialization{};
+        initialization.seed = sample.seed;
+        initialization.counterX = static_cast<std::uint32_t>(sample.absoluteX);
+        initialization.counterY = static_cast<std::uint32_t>(sample.absoluteY);
+        initialization.absoluteX = sample.absoluteX;
+        initialization.absoluteY = sample.absoluteY;
+        initialization.useStbn = sample.useStbn;
+        initialization.frameOffset = sample.frameOffset;
+        GrainRngDevice rng(&grain, initialization);
         const float lambda = nParticles / saturation;
         const int seeds = poisson_sample_device(lambda, rng);
         const int grainCount = binomial_sample_device(seeds, probability, rng);
@@ -2346,13 +2246,20 @@ __global__ void develop_film_density_kernel(
     if (!(nC == 3 || nC == 4)) {
         return;
     }
+    if (params.width <= 0 || params.height <= 0) {
+        return;
+    }
 
     const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
     const bool useSpatialDir = juicer_cuda_spatial_dir_filtered_correction_active_device(dev);
-    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
-        const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
-        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
-            const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
+    const std::size_t width = static_cast<std::size_t>(params.width);
+    const std::size_t height = static_cast<std::size_t>(params.height);
+    const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+    const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+    for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
+        const char* srcRow = reinterpret_cast<const char*>(params.src) + y * params.srcRowBytes;
+        for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
+            const float* srcPix = reinterpret_cast<const float*>(srcRow + x * pixelBytes);
             if (!srcPix) {
                 continue;
             }
@@ -2360,21 +2267,29 @@ __global__ void develop_film_density_kernel(
             const float rgbIn[3] = {srcPix[0], srcPix[1], srcPix[2]};
             float D_cmy[3] = {0.0f, 0.0f, 0.0f};
             if (useSpatialDir) {
-                const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+                const std::size_t idx = y * width + x;
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
                 if (juicer_cuda_spatial_dir_cached_log_raw_active_device(dev)) {
                     juicer_cuda_load_spatial_dir_cached_log_raw_device(dev, idx, logE_raw);
                 } else {
                     float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
                     float layerPre[3] = {0.0f, 0.0f, 0.0f};
-                    compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+                    FilmDevelopIntermediatesDevice intermediates{};
+                    intermediates.logERaw = logE_raw;
+                    intermediates.logESanitized = logE_sanitized;
+                    intermediates.layerPre = layerPre;
+                    compute_logE_and_layer_pre_device(params, rgbIn, intermediates);
                 }
                 juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, D_cmy);
             } else {
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
                 float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
                 float layerPre[3] = {0.0f, 0.0f, 0.0f};
-                compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+                FilmDevelopIntermediatesDevice intermediates{};
+                intermediates.logERaw = logE_raw;
+                intermediates.logESanitized = logE_sanitized;
+                intermediates.layerPre = layerPre;
+                compute_logE_and_layer_pre_device(params, rgbIn, intermediates);
 
                 if (dev.dir.active) {
                     float logE_corr[3] = {logE_sanitized[0], logE_sanitized[1], logE_sanitized[2]};
@@ -2399,7 +2314,7 @@ __global__ void develop_film_density_kernel(
                 }
             }
 
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+            const std::size_t idx = y * width + x;
             outC[idx] = D_cmy[0];
             outM[idx] = D_cmy[1];
             outY[idx] = D_cmy[2];
@@ -2408,8 +2323,11 @@ __global__ void develop_film_density_kernel(
 }
 
 __global__ void grain_clear_kernel(float* out, int n) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
+    if (n <= 0) {
+        return;
+    }
+    const std::size_t idx = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+    if (idx >= static_cast<std::size_t>(n)) {
         return;
     }
     if (!out) {
@@ -2419,8 +2337,11 @@ __global__ void grain_clear_kernel(float* out, int n) {
 }
 
 __global__ void grain_accumulate_kernel(float* dst, const float* src, int n) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
+    if (n <= 0) {
+        return;
+    }
+    const std::size_t idx = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+    if (idx >= static_cast<std::size_t>(n)) {
         return;
     }
     if (!dst || !src) {
@@ -2436,8 +2357,11 @@ __global__ void grain_accumulate_weighted_kernel(
     const float* src,
     int n,
     float weight) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n || !dst || !src) {
+    if (n <= 0) {
+        return;
+    }
+    const std::size_t idx = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+    if (idx >= static_cast<std::size_t>(n) || !dst || !src) {
         return;
     }
     const float w = device_isfinite(weight) ? weight : 0.0f;
@@ -2446,8 +2370,11 @@ __global__ void grain_accumulate_weighted_kernel(
 }
 
 __global__ void grain_scale_kernel(float* inOut, int n, float scale) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n || !inOut) {
+    if (n <= 0) {
+        return;
+    }
+    const std::size_t idx = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+    if (idx >= static_cast<std::size_t>(n) || !inOut) {
         return;
     }
     const float s = device_isfinite(scale) ? scale : 0.0f;
@@ -2461,8 +2388,11 @@ __global__ void grain_reconstruct_kernel(
     int n,
     float scale,
     int addMean) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n || !inOutMean || !delta) {
+    if (n <= 0) {
+        return;
+    }
+    const std::size_t idx = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+    if (idx >= static_cast<std::size_t>(n) || !inOutMean || !delta) {
         return;
     }
     const float s = device_isfinite(scale) ? scale : 0.0f;
@@ -2472,8 +2402,11 @@ __global__ void grain_reconstruct_kernel(
 }
 
 __global__ void grain_add_bias_kernel(float* inOut, int n, float bias) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
+    if (n <= 0) {
+        return;
+    }
+    const std::size_t idx = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+    if (idx >= static_cast<std::size_t>(n)) {
         return;
     }
     if (!inOut) {
@@ -2484,8 +2417,11 @@ __global__ void grain_add_bias_kernel(float* inOut, int n, float bias) {
 }
 
 __global__ void grain_subtract_kernel(float* inOut, const float* sub, int n, float amplitude) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
+    if (n <= 0) {
+        return;
+    }
+    const std::size_t idx = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+    if (idx >= static_cast<std::size_t>(n)) {
         return;
     }
     if (!inOut || !sub) {
@@ -2499,65 +2435,6 @@ __global__ void grain_subtract_kernel(float* inOut, const float* sub, int n, flo
     inOut[idx] = device_isfinite(v) ? v : 0.0f;
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
-__global__ void grain_mix_shared_kernel(
-    float* outDelta,
-    const float* indDelta,
-    const float* sharedDelta,
-    int n,
-    float wShared,
-    float wInd,
-    float amplitude) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
-    if (!outDelta) {
-        return;
-    }
-    const float ws = fminf(fmaxf(wShared, 0.0f), 1.0f);
-    const float wi = fminf(fmaxf(wInd, 0.0f), 1.0f);
-    float a = device_isfinite(amplitude) ? amplitude : 1.0f;
-    if (a < 0.0f) {
-        a = 0.0f;
-    }
-    const float shared = (sharedDelta && ws > 0.0f) ? sharedDelta[idx] : 0.0f;
-    const float ind = (indDelta && wi > 0.0f) ? indDelta[idx] : 0.0f;
-    const float v = a * (ws * shared + wi * ind);
-    outDelta[idx] = device_isfinite(v) ? v : 0.0f;
-}
-
-__global__ void grain_debug_encode_avg3_kernel(
-    float* outR,
-    float* outG,
-    float* outB,
-    const float* in0,
-    const float* in1,
-    const float* in2,
-    int n,
-    float offset,
-    float scale) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
-    if (!outR || !outG || !outB || !in0 || !in1 || !in2) {
-        return;
-    }
-    const float s = device_isfinite(scale) ? scale : 1.0f;
-    const float o = device_isfinite(offset) ? offset : 0.0f;
-    const float v0 = in0[idx];
-    const float v1 = in1[idx];
-    const float v2 = in2[idx];
-    float avg = (v0 + v1 + v2) * (1.0f / 3.0f);
-    if (!device_isfinite(avg)) {
-        avg = 0.0f;
-    }
-    const float out = o + avg * s;
-    outR[idx] = out;
-    outG[idx] = out;
-    outB[idx] = out;
-}
-
 __global__ void grain_apply_simple_kernel(
     JuicerCuda::GrainPayload grain,
     int width,
@@ -2565,9 +2442,12 @@ __global__ void grain_apply_simple_kernel(
     const float* inDensity,
     float* outGrain,
     int channelIndex) {
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= width || y >= height) {
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+    const std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+    const std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y);
+    if (x >= static_cast<std::size_t>(width) || y >= static_cast<std::size_t>(height)) {
         return;
     }
     if (!inDensity || !outGrain) {
@@ -2577,7 +2457,7 @@ __global__ void grain_apply_simple_kernel(
         return;
     }
 
-    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+    const std::size_t idx = y * static_cast<std::size_t>(width) + x;
     float density = inDensity[idx];
 
     const float densityMin = grain.densityMin[channelIndex];
@@ -2598,8 +2478,10 @@ __global__ void grain_apply_simple_kernel(
         return;
     }
 
-    const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
-    const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
+    const std::int64_t absXSigned = static_cast<std::int64_t>(grain.originX) + static_cast<std::int64_t>(x);
+    const std::int64_t absYSigned = static_cast<std::int64_t>(grain.originY) + static_cast<std::int64_t>(y);
+    const std::uint64_t absX = static_cast<std::uint64_t>(absXSigned);
+    const std::uint64_t absY = static_cast<std::uint64_t>(absYSigned);
 
     density += densityMin;
 
@@ -2614,23 +2496,49 @@ __global__ void grain_apply_simple_kernel(
     for (int sl = 0; sl < nSubLayers; ++sl) {
         const std::uint64_t seed = grain.seedBase ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sl) * 10ULL);
         const std::uint64_t seedNext = grain.seedBaseNext ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sl) * 10ULL);
+        LayerParticleModelSampleDevice sample{};
+        sample.density = density;
+        sample.densityMaximum = densityMax;
+        sample.uniformity = uniformity;
+        sample.absoluteX = absX;
+        sample.absoluteY = absY;
+        sample.grain = &grain;
+        sample.useStbn = useStbn;
         if (!useMix) {
-            acc += layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, useStbn, 0);
+            sample.particleCount = nParticles;
+            sample.particleOpticalDensity = odParticle;
+            sample.seed = seed;
+            sample.frameOffset = 0;
+            acc += layer_particle_model_device(sample);
             if (wantNext) {
-                accNext += layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seedNext, absX, absY, grain, useStbn, 1);
+                sample.seed = seedNext;
+                sample.frameOffset = 1;
+                accNext += layer_particle_model_device(sample);
             }
         } else {
             if (wFine > 0.0f) {
-                acc += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seed, absX, absY, grain, useStbn, 0);
+                sample.particleCount = nParticles;
+                sample.particleOpticalDensity = odParticle * wFine;
+                sample.seed = seed;
+                sample.frameOffset = 0;
+                acc += layer_particle_model_device(sample);
                 if (wantNext) {
-                    accNext += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seedNext, absX, absY, grain, useStbn, 1);
+                    sample.seed = seedNext;
+                    sample.frameOffset = 1;
+                    accNext += layer_particle_model_device(sample);
                 }
             }
             const float nParticlesCoarse = nParticles / mixScale;
             if (nParticlesCoarse > 0.0f) {
-                acc += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seed, absX, absY, grain, useStbn, 0);
+                sample.particleCount = nParticlesCoarse;
+                sample.particleOpticalDensity = odParticle * wCoarse * mixScale;
+                sample.seed = seed;
+                sample.frameOffset = 0;
+                acc += layer_particle_model_device(sample);
                 if (wantNext) {
-                    accNext += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seedNext, absX, absY, grain, useStbn, 1);
+                    sample.seed = seedNext;
+                    sample.frameOffset = 1;
+                    accNext += layer_particle_model_device(sample);
                 }
             }
         }
@@ -2664,9 +2572,12 @@ __global__ void grain_layer_kernel(
     float* outGrain,
     int channelIndex,
     int sublayerIndex) {
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= width || y >= height) {
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+    const std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+    const std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y);
+    if (x >= static_cast<std::size_t>(width) || y >= static_cast<std::size_t>(height)) {
         return;
     }
     if (!inDensity || !outGrain) {
@@ -2679,7 +2590,7 @@ __global__ void grain_layer_kernel(
         return;
     }
 
-    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+    const std::size_t idx = y * static_cast<std::size_t>(width) + x;
     float density = inDensity[idx];
 
     const float densityMin = grain.densityMinLayers[sublayerIndex][channelIndex];
@@ -2700,8 +2611,10 @@ __global__ void grain_layer_kernel(
         return;
     }
 
-    const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
-    const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
+    const std::int64_t absXSigned = static_cast<std::int64_t>(grain.originX) + static_cast<std::int64_t>(x);
+    const std::int64_t absYSigned = static_cast<std::int64_t>(grain.originY) + static_cast<std::int64_t>(y);
+    const std::uint64_t absX = static_cast<std::uint64_t>(absXSigned);
+    const std::uint64_t absY = static_cast<std::uint64_t>(absYSigned);
 
     const JuicerCuda::DeviceCurveView curve = grain.densityCurveCmy[channelIndex];
     const float* layerCurve = grain.densityCurvesLayers[sublayerIndex][channelIndex];
@@ -2722,26 +2635,52 @@ __global__ void grain_layer_kernel(
 
     float grainSample = 0.0f;
     float grainSampleNext = 0.0f;
+    LayerParticleModelSampleDevice sample{};
+    sample.density = density;
+    sample.densityMaximum = densityMax;
+    sample.uniformity = uniformity;
+    sample.absoluteX = absX;
+    sample.absoluteY = absY;
+    sample.grain = &grain;
+    sample.useStbn = useStbn;
     if (!useMix) {
-        grainSample = layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, useStbn, 0);
+        sample.particleCount = nParticles;
+        sample.particleOpticalDensity = odParticle;
+        sample.seed = seed;
+        sample.frameOffset = 0;
+        grainSample = layer_particle_model_device(sample);
         if (wantNext) {
             const std::uint64_t seedNext = grain.seedBaseNext ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);
-            grainSampleNext = layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seedNext, absX, absY, grain, useStbn, 1);
+            sample.seed = seedNext;
+            sample.frameOffset = 1;
+            grainSampleNext = layer_particle_model_device(sample);
         }
     } else {
         if (wFine > 0.0f) {
-            grainSample += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seed, absX, absY, grain, useStbn, 0);
+            sample.particleCount = nParticles;
+            sample.particleOpticalDensity = odParticle * wFine;
+            sample.seed = seed;
+            sample.frameOffset = 0;
+            grainSample += layer_particle_model_device(sample);
             if (wantNext) {
                 const std::uint64_t seedNext = grain.seedBaseNext ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);
-                grainSampleNext += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seedNext, absX, absY, grain, useStbn, 1);
+                sample.seed = seedNext;
+                sample.frameOffset = 1;
+                grainSampleNext += layer_particle_model_device(sample);
             }
         }
         const float nParticlesCoarse = nParticles / mixScale;
         if (nParticlesCoarse > 0.0f) {
-            grainSample += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seed, absX, absY, grain, useStbn, 0);
+            sample.particleCount = nParticlesCoarse;
+            sample.particleOpticalDensity = odParticle * wCoarse * mixScale;
+            sample.seed = seed;
+            sample.frameOffset = 0;
+            grainSample += layer_particle_model_device(sample);
             if (wantNext) {
                 const std::uint64_t seedNext = grain.seedBaseNext ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);
-                grainSampleNext += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seedNext, absX, absY, grain, useStbn, 1);
+                sample.seed = seedNext;
+                sample.frameOffset = 1;
+                grainSampleNext += layer_particle_model_device(sample);
             }
         }
     }
@@ -2780,11 +2719,18 @@ __global__ void develop_film_density_from_raw_kernel(
     if (!(nC == 3 || nC == 4)) {
         return;
     }
+    if (params.width <= 0 || params.height <= 0) {
+        return;
+    }
 
     const bool useSpatialDir = juicer_cuda_spatial_dir_filtered_correction_active_device(dev);
-    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
-        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+    const std::size_t width = static_cast<std::size_t>(params.width);
+    const std::size_t height = static_cast<std::size_t>(params.height);
+    const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+    const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+    for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
+        for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
+            const std::size_t idx = y * width + x;
             const float filmRaw[3] = {inB[idx], inG[idx], inR[idx]};
 
             float D_cmy[3] = {0.0f, 0.0f, 0.0f};
@@ -2795,14 +2741,22 @@ __global__ void develop_film_density_from_raw_kernel(
                 } else {
                     float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
                     float layerPre[3] = {0.0f, 0.0f, 0.0f};
-                    compute_logE_from_film_raw_device(params, filmRaw, logE_raw, logE_sanitized, layerPre);
+                    FilmDevelopIntermediatesDevice intermediates{};
+                    intermediates.logERaw = logE_raw;
+                    intermediates.logESanitized = logE_sanitized;
+                    intermediates.layerPre = layerPre;
+                    compute_logE_from_film_raw_device(params, filmRaw, intermediates);
                 }
                 juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, D_cmy);
             } else {
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
                 float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
                 float layerPre[3] = {0.0f, 0.0f, 0.0f};
-                compute_logE_from_film_raw_device(params, filmRaw, logE_raw, logE_sanitized, layerPre);
+                FilmDevelopIntermediatesDevice intermediates{};
+                intermediates.logERaw = logE_raw;
+                intermediates.logESanitized = logE_sanitized;
+                intermediates.layerPre = layerPre;
+                compute_logE_from_film_raw_device(params, filmRaw, intermediates);
 
                 if (dev.dir.active) {
                     float logE_corr[3] = {logE_sanitized[0], logE_sanitized[1], logE_sanitized[2]};

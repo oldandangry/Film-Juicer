@@ -329,16 +329,7 @@ namespace JuicerCuda {
         enum class ScratchHelperNonPolicyAllocation : std::uint8_t {
             ScanErrorFlag = 0,
             ScanErrorHost = 1,
-            AutoExposureExposureScale = 2,
-            AutoExposureAutoEV = 3,
-            AutoExposureValid = 4,
-            AutoExposureMaxYBits = 5,
-            AutoExposureHistogram = 6,
-            AutoExposureWeightsX = 7,
-            AutoExposureWeightsY = 8,
-            AutoExposurePartialsA = 9,
-            AutoExposurePartialsB = 10,
-            Count = 11
+            Count = 2
         };
 
         struct ScratchHelperNonPolicyContractEntry {
@@ -358,20 +349,11 @@ namespace JuicerCuda {
                        : kScratchHelperNonPolicyAllocationCount;
         }
 
-        constexpr std::array<ScratchHelperNonPolicyAllocation, 11> kScratchHelperNonPolicyOrder = {
+        constexpr std::array<ScratchHelperNonPolicyAllocation, 2> kScratchHelperNonPolicyOrder = {
             ScratchHelperNonPolicyAllocation::ScanErrorFlag,
-            ScratchHelperNonPolicyAllocation::ScanErrorHost,
-            ScratchHelperNonPolicyAllocation::AutoExposureExposureScale,
-            ScratchHelperNonPolicyAllocation::AutoExposureAutoEV,
-            ScratchHelperNonPolicyAllocation::AutoExposureValid,
-            ScratchHelperNonPolicyAllocation::AutoExposureMaxYBits,
-            ScratchHelperNonPolicyAllocation::AutoExposureHistogram,
-            ScratchHelperNonPolicyAllocation::AutoExposureWeightsX,
-            ScratchHelperNonPolicyAllocation::AutoExposureWeightsY,
-            ScratchHelperNonPolicyAllocation::AutoExposurePartialsA,
-            ScratchHelperNonPolicyAllocation::AutoExposurePartialsB};
+            ScratchHelperNonPolicyAllocation::ScanErrorHost};
 
-        constexpr std::array<ScratchHelperNonPolicyContractEntry, 11> kScratchHelperNonPolicyContract = {
+        constexpr std::array<ScratchHelperNonPolicyContractEntry, 2> kScratchHelperNonPolicyContract = {
             ScratchHelperNonPolicyContractEntry{
                 ScratchHelperNonPolicyAllocation::ScanErrorFlag,
                 "ScanErrorFlag",
@@ -379,43 +361,7 @@ namespace JuicerCuda {
             ScratchHelperNonPolicyContractEntry{
                 ScratchHelperNonPolicyAllocation::ScanErrorHost,
                 "ScanErrorHost",
-                "scan_error_host_bytes"},
-            ScratchHelperNonPolicyContractEntry{
-                ScratchHelperNonPolicyAllocation::AutoExposureExposureScale,
-                "AutoExposureExposureScale",
-                "auto_exposure_scale_bytes"},
-            ScratchHelperNonPolicyContractEntry{
-                ScratchHelperNonPolicyAllocation::AutoExposureAutoEV,
-                "AutoExposureAutoEV",
-                "auto_exposure_ev_bytes"},
-            ScratchHelperNonPolicyContractEntry{
-                ScratchHelperNonPolicyAllocation::AutoExposureValid,
-                "AutoExposureValid",
-                "auto_exposure_valid_bytes"},
-            ScratchHelperNonPolicyContractEntry{
-                ScratchHelperNonPolicyAllocation::AutoExposureMaxYBits,
-                "AutoExposureMaxYBits",
-                "auto_exposure_max_y_bits_bytes"},
-            ScratchHelperNonPolicyContractEntry{
-                ScratchHelperNonPolicyAllocation::AutoExposureHistogram,
-                "AutoExposureHistogram",
-                "auto_exposure_histogram_bytes"},
-            ScratchHelperNonPolicyContractEntry{
-                ScratchHelperNonPolicyAllocation::AutoExposureWeightsX,
-                "AutoExposureWeightsX",
-                "auto_exposure_weights_x_bytes"},
-            ScratchHelperNonPolicyContractEntry{
-                ScratchHelperNonPolicyAllocation::AutoExposureWeightsY,
-                "AutoExposureWeightsY",
-                "auto_exposure_weights_y_bytes"},
-            ScratchHelperNonPolicyContractEntry{
-                ScratchHelperNonPolicyAllocation::AutoExposurePartialsA,
-                "AutoExposurePartialsA",
-                "auto_exposure_partials_a_bytes"},
-            ScratchHelperNonPolicyContractEntry{
-                ScratchHelperNonPolicyAllocation::AutoExposurePartialsB,
-                "AutoExposurePartialsB",
-                "auto_exposure_partials_b_bytes"}};
+                "scan_error_host_bytes"}};
 
         constexpr bool scratch_helper_non_policy_contract_is_valid() noexcept {
             if (kScratchHelperNonPolicyOrder.size() != kScratchHelperNonPolicyAllocationCount ||
@@ -747,7 +693,6 @@ namespace JuicerCuda {
         constexpr std::uint32_t kScanLutResolutionMax = 128u;
 
         std::uint64_t normalize_key_u64(std::uint64_t value) noexcept;
-        std::uint64_t normalize_key_float(double value, double scale) noexcept;
         std::uint32_t normalize_scan_lut_resolution(std::uint32_t value) noexcept;
 
         std::uint64_t make_scan_lut_key_digest(
@@ -962,11 +907,6 @@ namespace JuicerCuda {
         SupersededBuilderCancelDecision classify_superseded_builder_cancel(
             const SupersededBuilderCancelInput& input) noexcept;
 
-        AcquireDecision default_acquire_decision() noexcept;
-        PressureDecision default_pressure_decision() noexcept;
-        ReservationDecision default_reservation_decision() noexcept;
-        CacheAdmissionDecision default_cache_admission_decision() noexcept;
-
         // Phase-0 config scaffolding for ResourceManager.
         struct ResourceManagerConfigRaw {
             std::uint64_t managerSoftTargetBytes = 0;
@@ -1100,7 +1040,7 @@ namespace JuicerCuda {
             bool cancelSupersededBuilders = false;
         };
 
-        ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& raw);
+        ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& raw) noexcept;
 
     } // namespace ResourceManager
 } // namespace JuicerCuda

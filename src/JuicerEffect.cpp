@@ -22,12 +22,13 @@
 #include "ProcessRoot.h"
 #include "Scanner.h"
 #include "SpectralData.h"
+#include "SpectralProcessing.h"
 #include "Logging.h"
 #include "Hash.h"
 #include "mainProcessing.h"
 
 namespace {
-    enum class MeteringMethod : int {
+    enum class MeteringMethod : std::uint8_t {
         CenterWeighted = 0,
         Average = 1,
         Median = 2,
@@ -71,9 +72,11 @@ namespace {
     }
 #endif
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     inline bool requires_nonfloat_copy(OFX::BitDepthEnum depth, int nComponents) {
         return depth != OFX::eBitDepthFloat || nComponents == 0;
     }
+#endif
 
     inline bool param_events_suppressed(const InstanceState* state) {
         return state && state->suppressParamEvents;
@@ -319,7 +322,7 @@ namespace {
                param_name_is(paramName, JuicerParams::kGrainClumpMorphPeriodSec);
     }
 
-    enum class GrainRatioMasterSelector {
+    enum class GrainRatioMasterSelector : std::uint8_t {
         None = 0,
         Scale,
         ScaleLayers,
@@ -343,7 +346,7 @@ namespace {
         return GrainRatioMasterSelector::None;
     }
 
-    enum class HalationMasterSelector {
+    enum class HalationMasterSelector : std::uint8_t {
         None = 0,
         Strength,
         SizeUm,
@@ -567,12 +570,6 @@ namespace {
         std::forward<ApplyFn>(applyFn)();
     }
 
-    inline double sanitize_finite_clamped(double value, double fallback, double minValue, double maxValue) {
-        if (!is_finite(value))
-            return fallback;
-        return std::clamp(value, minValue, maxValue);
-    }
-
     inline double sanitize_finite_or(double value, double fallback) {
         return is_finite(value) ? value : fallback;
     }
@@ -613,16 +610,23 @@ namespace {
         return is_finite(value) && value > 0.0;
     }
 
+    struct SanitizedDoubleRange {
+        double minimum = 0.0;
+        double maximum = 0.0;
+    };
+
     inline double read_sanitized_double(
         OFX::DoubleParam* param,
         double fallback,
-        double minValue,
-        double maxValue) {
+        const SanitizedDoubleRange& range) {
         double value = fallback;
         if (param) {
             param->getValue(value);
         }
-        return sanitize_finite_clamped(value, fallback, minValue, maxValue);
+        if (!is_finite(value)) {
+            return fallback;
+        }
+        return std::clamp(value, range.minimum, range.maximum);
     }
 
     inline float read_sanitized_float(
@@ -633,12 +637,11 @@ namespace {
         return static_cast<float>(read_sanitized_double(
             param,
             static_cast<double>(fallback),
-            minValue,
-            maxValue));
+            SanitizedDoubleRange{minValue, maxValue}));
     }
 
     inline double read_sanitized_unit_double(OFX::DoubleParam* param, double fallback) {
-        return read_sanitized_double(param, fallback, 0.0, 1.0);
+        return read_sanitized_double(param, fallback, SanitizedDoubleRange{0.0, 1.0});
     }
 
     inline float read_sanitized_unit_float(OFX::DoubleParam* param, float fallback) {
@@ -696,14 +699,18 @@ namespace {
         float transition = 0.3f;
     };
 
+    struct GlareCompensationParams {
+        OFX::DoubleParam* factor = nullptr;
+        OFX::DoubleParam* density = nullptr;
+        OFX::DoubleParam* transition = nullptr;
+    };
+
     inline GlareCompensationUiValues read_glare_compensation_ui_values(
-        OFX::DoubleParam* factorParam,
-        OFX::DoubleParam* densityParam,
-        OFX::DoubleParam* transitionParam) {
+        const GlareCompensationParams& params) {
         GlareCompensationUiValues values{};
-        values.factor = read_sanitized_unit_float(factorParam, 0.0f);
-        values.density = read_sanitized_float(densityParam, 1.2f, 0.0, 3.0);
-        values.transition = read_sanitized_float(transitionParam, 0.3f, 0.0, 2.0);
+        values.factor = read_sanitized_unit_float(params.factor, 0.0f);
+        values.density = read_sanitized_float(params.density, 1.2f, 0.0, 3.0);
+        values.transition = read_sanitized_float(params.transition, 0.3f, 0.0, 2.0);
         return values;
     }
 
@@ -714,16 +721,18 @@ namespace {
     };
 
     inline GlareCompensationSnapshotValues read_glare_compensation_snapshot_values(
-        OFX::DoubleParam* factorParam,
-        OFX::DoubleParam* densityParam,
-        OFX::DoubleParam* transitionParam,
-        double factorFallback,
-        double densityFallback,
-        double transitionFallback) {
+        const GlareCompensationParams& params,
+        const GlareCompensationSnapshotValues& fallback) {
         GlareCompensationSnapshotValues values{};
-        values.factor = read_sanitized_unit_double(factorParam, factorFallback);
-        values.density = read_sanitized_double(densityParam, densityFallback, 0.0, 3.0);
-        values.transition = read_sanitized_double(transitionParam, transitionFallback, 0.0, 2.0);
+        values.factor = read_sanitized_unit_double(params.factor, fallback.factor);
+        values.density = read_sanitized_double(
+            params.density,
+            fallback.density,
+            SanitizedDoubleRange{0.0, 3.0});
+        values.transition = read_sanitized_double(
+            params.transition,
+            fallback.transition,
+            SanitizedDoubleRange{0.0, 2.0});
         return values;
     }
 
@@ -735,7 +744,7 @@ namespace {
         if (!is_finite(valueOut)) {
             return false;
         }
-        valueOut = sanitize_finite_clamped(valueOut, fallback, 0.0, 1.0);
+        valueOut = std::clamp(valueOut, 0.0, 1.0);
         return true;
     }
 
@@ -750,9 +759,16 @@ namespace {
                sourceParam;
     }
 
-    inline void set_grain_chroma_weights(float chroma, float& sharedWeightOut, float& indWeightOut) {
-        sharedWeightOut = std::sqrt(std::max(0.0f, 1.0f - chroma));
-        indWeightOut = std::sqrt(std::max(0.0f, chroma));
+    struct GrainChromaWeights {
+        float shared = 0.0f;
+        float independent = 0.0f;
+    };
+
+    inline GrainChromaWeights compute_grain_chroma_weights(float chroma) {
+        GrainChromaWeights weights{};
+        weights.shared = std::sqrt(std::max(0.0f, 1.0f - chroma));
+        weights.independent = std::sqrt(std::max(0.0f, chroma));
+        return weights;
     }
 
     inline bool read_bool_param_or(OFX::BooleanParam* param, bool fallback) {
@@ -850,11 +866,8 @@ namespace {
     };
 
     inline float read_scanner_blur_sigma_px_or_default(OFX::DoubleParam* param, float fallback) {
-        const double blur = sanitize_finite_clamped(
-            read_double_param_or(param, static_cast<double>(fallback)),
-            0.0,
-            0.0,
-            10.0);
+        const double value = read_double_param_or(param, static_cast<double>(fallback));
+        const double blur = is_finite(value) ? std::clamp(value, 0.0, 10.0) : 0.0;
         return static_cast<float>(blur);
     }
 
@@ -865,8 +878,8 @@ namespace {
         const std::array<double, 2> unsharp = read_double2_param_or(
             param,
             {{static_cast<double>(sigmaFallback), static_cast<double>(amountFallback)}});
-        const double sigma = sanitize_finite_clamped(unsharp[0], 0.7, 0.0, 5.0);
-        const double amount = sanitize_finite_clamped(unsharp[1], 0.7, 0.0, 3.0);
+        const double sigma = is_finite(unsharp[0]) ? std::clamp(unsharp[0], 0.0, 5.0) : 0.7;
+        const double amount = is_finite(unsharp[1]) ? std::clamp(unsharp[1], 0.0, 3.0) : 0.7;
         ScannerUnsharpPair out{};
         out.sigmaPx = static_cast<float>(sigma);
         out.amount = static_cast<float>(amount);
@@ -954,23 +967,29 @@ namespace {
         double* valueIt = values.data();
         const double* defaultIt = defaults.data();
         for (int i = 0; i < 3; ++i, ++valueIt, ++defaultIt) {
-            *valueIt = sanitize_finite_clamped(*valueIt, *defaultIt, minValue, maxValue);
+            if (!is_finite(*valueIt)) {
+                *valueIt = *defaultIt;
+            } else {
+                *valueIt = std::clamp(*valueIt, minValue, maxValue);
+            }
         }
         return values;
     }
 
-    inline std::array<double, 3> read_sanitized_triplet_from_master(
+    inline std::array<double, 3> read_sanitized_grain_scale_triplet(
         OFX::Double3DParam* param,
-        double masterValue,
-        double minValue,
-        double maxValue) {
+        double masterValue) {
         std::array<double, 3> defaults{};
         defaults.fill(masterValue);
-        return read_sanitized_double3(
-            param,
-            defaults,
-            minValue,
-            maxValue);
+        return read_sanitized_double3(param, defaults, 0.0, 10.0);
+    }
+
+    inline std::array<double, 3> read_sanitized_grain_unit_triplet(
+        OFX::Double3DParam* param,
+        double masterValue) {
+        std::array<double, 3> defaults{};
+        defaults.fill(masterValue);
+        return read_sanitized_double3(param, defaults, 0.0, 1.0);
     }
 
     inline std::array<double, 2> read_sanitized_double2(
@@ -985,7 +1004,11 @@ namespace {
         double* valueIt = values.data();
         const double* defaultIt = defaults.data();
         for (int i = 0; i < 2; ++i, ++valueIt, ++defaultIt) {
-            *valueIt = sanitize_finite_clamped(*valueIt, *defaultIt, minValue, maxValue);
+            if (!is_finite(*valueIt)) {
+                *valueIt = *defaultIt;
+            } else {
+                *valueIt = std::clamp(*valueIt, minValue, maxValue);
+            }
         }
         return values;
     }
@@ -1059,22 +1082,26 @@ namespace {
         snapshot.outputLinearPassThrough = read_bool_param_as_i32(outputLinearPassThroughParam, false);
     }
 
+    struct ProfileSnapshotChoiceParams {
+        OFX::StrChoiceParam* filmProfileKey = nullptr;
+        OFX::StrChoiceParam* printProfileKey = nullptr;
+        OFX::StrChoiceParam* scanRoute = nullptr;
+        OFX::ChoiceParam* spectralMode = nullptr;
+        OFX::ChoiceParam* referenceIlluminant = nullptr;
+        OFX::ChoiceParam* enlargerIlluminant = nullptr;
+        OFX::ChoiceParam* enlargerDichroicSet = nullptr;
+    };
+
     inline void read_profile_snapshot_choices(
-        OFX::StrChoiceParam* filmProfileKeyParam,
-        OFX::StrChoiceParam* printProfileKeyParam,
-        OFX::StrChoiceParam* scanRouteParam,
-        OFX::ChoiceParam* spectralModeParam,
-        OFX::ChoiceParam* refIlluminantParam,
-        OFX::ChoiceParam* enlargerIlluminantParam,
-        OFX::ChoiceParam* enlargerDichroicSetParam,
+        const ProfileSnapshotChoiceParams& params,
         ParamSnapshot& snapshot) {
-        snapshot.filmProfileKey = read_str_choice_param_or(filmProfileKeyParam, snapshot.filmProfileKey);
-        snapshot.printProfileKey = read_str_choice_param_or(printProfileKeyParam, snapshot.printProfileKey);
-        snapshot.scanRoute = read_resolved_scan_route(scanRouteParam, snapshot.filmProfileKey);
-        snapshot.spectralUpsamplingMode = read_choice_param_or(spectralModeParam, snapshot.spectralUpsamplingMode);
-        snapshot.refIll = read_choice_param_or(refIlluminantParam, snapshot.refIll);
-        snapshot.enlIll = read_choice_param_or(enlargerIlluminantParam, snapshot.enlIll);
-        snapshot.enlDichroicSet = read_choice_param_or(enlargerDichroicSetParam, snapshot.enlDichroicSet);
+        snapshot.filmProfileKey = read_str_choice_param_or(params.filmProfileKey, snapshot.filmProfileKey);
+        snapshot.printProfileKey = read_str_choice_param_or(params.printProfileKey, snapshot.printProfileKey);
+        snapshot.scanRoute = read_resolved_scan_route(params.scanRoute, snapshot.filmProfileKey);
+        snapshot.spectralUpsamplingMode = read_choice_param_or(params.spectralMode, snapshot.spectralUpsamplingMode);
+        snapshot.refIll = read_choice_param_or(params.referenceIlluminant, snapshot.refIll);
+        snapshot.enlIll = read_choice_param_or(params.enlargerIlluminant, snapshot.enlIll);
+        snapshot.enlDichroicSet = read_choice_param_or(params.enlargerDichroicSet, snapshot.enlDichroicSet);
     }
 
     inline void read_print_recipe_snapshot_values(
@@ -1157,20 +1184,33 @@ namespace {
     }
 
     template <size_t N>
-    inline std::array<double, N> sanitize_scaled_float_array_to_double(
+    inline std::array<double, N> sanitize_halation_percent_array_to_double(
         const std::array<float, N>& src,
-        const std::array<double, N>& fallback,
-        double scale,
-        double minValue,
-        double maxValue) {
+        const std::array<double, N>& fallback) {
         std::array<double, N> out{};
         double* outIt = out.data();
         const double* fallbackIt = fallback.data();
         const float* srcIt = src.data();
         const float* const srcEnd = srcIt + N;
         for (; srcIt < srcEnd; ++srcIt, ++outIt, ++fallbackIt) {
-            const double scaled = static_cast<double>(*srcIt) * scale;
-            *outIt = sanitize_finite_clamped(scaled, *fallbackIt, minValue, maxValue);
+            const double scaled = static_cast<double>(*srcIt) * 100.0;
+            *outIt = is_finite(scaled) ? std::clamp(scaled, 0.0, 100.0) : *fallbackIt;
+        }
+        return out;
+    }
+
+    template <size_t N>
+    inline std::array<double, N> sanitize_halation_size_array_to_double(
+        const std::array<float, N>& src,
+        const std::array<double, N>& fallback) {
+        std::array<double, N> out{};
+        double* outIt = out.data();
+        const double* fallbackIt = fallback.data();
+        const float* srcIt = src.data();
+        const float* const srcEnd = srcIt + N;
+        for (; srcIt < srcEnd; ++srcIt, ++outIt, ++fallbackIt) {
+            const double value = static_cast<double>(*srcIt);
+            *outIt = is_finite(value) ? std::clamp(value, 0.0, 1000.0) : *fallbackIt;
         }
         return out;
     }
@@ -1344,30 +1384,18 @@ void JuicerEffect::applyHalationProfileDefaults() {
     const std::array<double, 3> currentSecondarySize =
         read_double3_param_or(_pHalationSecondarySizeUm, {{0.0, 0.0, 0.0}});
 
-    const std::array<double, 3> primaryAmountPct = sanitize_scaled_float_array_to_double(
+    const std::array<double, 3> primaryAmountPct = sanitize_halation_percent_array_to_double(
         halationCfg.primaryAmount,
-        currentPrimaryAmount,
-        100.0,
-        0.0,
-        100.0);
-    const std::array<double, 3> sizeUm = sanitize_scaled_float_array_to_double(
+        currentPrimaryAmount);
+    const std::array<double, 3> sizeUm = sanitize_halation_size_array_to_double(
         halationCfg.sizeUm,
-        currentSize,
-        1.0,
-        0.0,
-        1000.0);
-    const std::array<double, 3> secondaryAmountPct = sanitize_scaled_float_array_to_double(
+        currentSize);
+    const std::array<double, 3> secondaryAmountPct = sanitize_halation_percent_array_to_double(
         halationCfg.secondaryAmount,
-        currentSecondaryAmount,
-        100.0,
-        0.0,
-        100.0);
-    const std::array<double, 3> secondarySizeUm = sanitize_scaled_float_array_to_double(
+        currentSecondaryAmount);
+    const std::array<double, 3> secondarySizeUm = sanitize_halation_size_array_to_double(
         halationCfg.secondarySizeUm,
-        currentSecondarySize,
-        1.0,
-        0.0,
-        1000.0);
+        currentSecondarySize);
 
     const double primaryAmountMaster = mean_array(primaryAmountPct);
     const double sizeMaster = mean_array(sizeUm);
@@ -1582,7 +1610,10 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
 
     grain.sublayersActive = read_bool_param_or(_pGrainSublayersActive, preset.sublayersActive);
 
-    const double amountEV = read_sanitized_double(_pGrainAmplitude, preset.amountEV, -3.0, 3.0);
+    const double amountEV = read_sanitized_double(
+        _pGrainAmplitude,
+        preset.amountEV,
+        SanitizedDoubleRange{-3.0, 3.0});
     const double amplitude = std::exp2(amountEV);
     grain.amplitude = static_cast<float>(amplitude);
 
@@ -1620,18 +1651,17 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
         static_cast<float>(advancedDefaults.blurDyeClouds));
 
     grain.chroma = static_cast<float>(chroma);
-    set_grain_chroma_weights(
-        grain.chroma,
-        grain.chromaSharedWeight,
-        grain.chromaIndWeight);
+    const GrainChromaWeights chromaWeights = compute_grain_chroma_weights(grain.chroma);
+    grain.chromaSharedWeight = chromaWeights.shared;
+    grain.chromaIndWeight = chromaWeights.independent;
     const std::array<double, 3> particleScale =
-        read_sanitized_triplet_from_master(_pGrainParticleScale, preset.particleScaleMaster, 0.0, 10.0);
+        read_sanitized_grain_scale_triplet(_pGrainParticleScale, preset.particleScaleMaster);
     const std::array<double, 3> particleScaleLayers =
-        read_sanitized_triplet_from_master(_pGrainParticleScaleLayers, preset.particleScaleLayersMaster, 0.0, 10.0);
+        read_sanitized_grain_scale_triplet(_pGrainParticleScaleLayers, preset.particleScaleLayersMaster);
     const std::array<double, 3> densityMin =
-        read_sanitized_triplet_from_master(_pGrainDensityMin, preset.densityMinMaster, 0.0, 1.0);
+        read_sanitized_grain_unit_triplet(_pGrainDensityMin, preset.densityMinMaster);
     const std::array<double, 3> uniformity =
-        read_sanitized_triplet_from_master(_pGrainUniformity, preset.uniformityMaster, 0.0, 1.0);
+        read_sanitized_grain_unit_triplet(_pGrainUniformity, preset.uniformityMaster);
     assign_grain_triplet_controls(
         grain,
         particleScale,
@@ -1813,10 +1843,12 @@ Profiles::ProfileGlare JuicerEffect::gatherGlareUi() const {
 
     glare.blur = read_sanitized_0_to_10_float(_pGlareBlurSigmaPx, 0.5f);
 
-    const GlareCompensationUiValues compensation = read_glare_compensation_ui_values(
-        _pGlareCompRemovalFactor,
-        _pGlareCompRemovalDensity,
-        _pGlareCompRemovalTransition);
+    GlareCompensationParams compensationParams{};
+    compensationParams.factor = _pGlareCompRemovalFactor;
+    compensationParams.density = _pGlareCompRemovalDensity;
+    compensationParams.transition = _pGlareCompRemovalTransition;
+    const GlareCompensationUiValues compensation =
+        read_glare_compensation_ui_values(compensationParams);
     glare.printShadowCompensationFactor = compensation.factor;
     glare.printShadowCompensationDensity = compensation.density;
     glare.printShadowCompensationTransition = compensation.transition;
@@ -2148,14 +2180,13 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     }
 #endif
 
-    // Components and depth
+    // Components
     const OFX::PixelComponentEnum comps = srcImg->getPixelComponents();
-    const OFX::BitDepthEnum depth = srcImg->getPixelDepth();
-
     const int nComponents = pixel_component_count(comps);
     const bool traceVerbose = JTRACE_ENABLED(3);
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    const OFX::BitDepthEnum depth = srcImg->getPixelDepth();
     if (args.isEnabledCudaRender) {
         // CUDA renders use device pointers; avoid host-side image reads for metering or copy paths.
         if (requires_nonfloat_copy(depth, nComponents)) {
@@ -2394,7 +2425,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
     auto sanitize_triplet_values = [&](std::array<double, 3>& values, double fallback, double lo, double hi) {
         for (double& value : values) {
-            value = sanitize_finite_clamped(value, fallback, lo, hi);
+            value = is_finite(value) ? std::clamp(value, lo, hi) : fallback;
         }
     };
 
@@ -2749,15 +2780,15 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
 ParamSnapshot JuicerEffect::snapshotParams() const {
     ParamSnapshot P;
-    read_profile_snapshot_choices(
-        _pFilmProfileKey,
-        _pPrintProfileKey,
-        _pScanRoute,
-        _pSpectralMode,
-        _pRefIll,
-        _pEnlIll,
-        _pEnlDichroicSet,
-        P);
+    ProfileSnapshotChoiceParams profileChoiceParams{};
+    profileChoiceParams.filmProfileKey = _pFilmProfileKey;
+    profileChoiceParams.printProfileKey = _pPrintProfileKey;
+    profileChoiceParams.scanRoute = _pScanRoute;
+    profileChoiceParams.spectralMode = _pSpectralMode;
+    profileChoiceParams.referenceIlluminant = _pRefIll;
+    profileChoiceParams.enlargerIlluminant = _pEnlIll;
+    profileChoiceParams.enlargerDichroicSet = _pEnlDichroicSet;
+    read_profile_snapshot_choices(profileChoiceParams, P);
     read_print_recipe_snapshot_values(
         _pPrintExposure,
         _pPrintPreflash,
@@ -2780,13 +2811,16 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     P.directRouteNeutralCalibrationExcluded =
         selectedProfiles.directRouteNeutralCalibrationExcluded;
 
-    const GlareCompensationSnapshotValues compensation = read_glare_compensation_snapshot_values(
-        _pGlareCompRemovalFactor,
-        _pGlareCompRemovalDensity,
-        _pGlareCompRemovalTransition,
-        P.printShadowCompensationFactor,
-        P.printShadowCompensationDensity,
-        P.printShadowCompensationTransition);
+    GlareCompensationParams compensationParams{};
+    compensationParams.factor = _pGlareCompRemovalFactor;
+    compensationParams.density = _pGlareCompRemovalDensity;
+    compensationParams.transition = _pGlareCompRemovalTransition;
+    GlareCompensationSnapshotValues compensationFallback{};
+    compensationFallback.factor = P.printShadowCompensationFactor;
+    compensationFallback.density = P.printShadowCompensationDensity;
+    compensationFallback.transition = P.printShadowCompensationTransition;
+    const GlareCompensationSnapshotValues compensation =
+        read_glare_compensation_snapshot_values(compensationParams, compensationFallback);
     P.printShadowCompensationFactor = compensation.factor;
     P.printShadowCompensationDensity = compensation.density;
     P.printShadowCompensationTransition = compensation.transition;
@@ -2810,8 +2844,10 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     P.cameraFilmFormatLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
     P.exactScatterHalationActive = read_bool_param_or(_pHalationActive, false) ? 1 : 0;
     P.grainControls = gatherGrainUi();
-    P.gateWeaveAmount =
-        read_sanitized_double(_pGateWeaveAmount, 1.0, 0.0, 10.0);
+    P.gateWeaveAmount = read_sanitized_double(
+        _pGateWeaveAmount,
+        1.0,
+        SanitizedDoubleRange{0.0, 10.0});
     read_coupler_snapshot_values(
         _pCouplersActive,
         _pCouplersAmount,
@@ -2858,6 +2894,7 @@ void JuicerEffect::bootstrap_after_attach() {
         P = snapshotParams();
     }
 
+#if JUICER_DIAGNOSTICS_COMPILED
     if (printRoute) {
         JTRACE_VERBOSE(
             "SPEKTRAFILM",
@@ -2867,6 +2904,7 @@ void JuicerEffect::bootstrap_after_attach() {
             "SPEKTRAFILM",
             "phase=3A direct route excludes print profile, dichroic, and neutral-calibration bootstrap");
     }
+#endif
 
     if (has_loaded_base_state(_state.get())) {
         store_pending_hashes_for_snapshot(*_state, P);

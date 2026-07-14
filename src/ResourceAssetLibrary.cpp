@@ -31,14 +31,6 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
-    struct Library::DichroicFilterAssetSet {
-        std::string directory;
-        std::string filterCPath;
-        std::string filterMPath;
-        std::string filterYPath;
-        std::uint64_t version = 0;
-    };
-
     struct Library::IlluminantFilterAssetSet {
         std::string d65Path;
         std::string d55Path;
@@ -64,7 +56,6 @@ namespace JuicerAssets {
         constexpr std::uint64_t kFnvOffsetBasis64 = 1469598103934665603ull;
         constexpr std::uint64_t kFnvPrime64 = 1099511628211ull;
         constexpr int kNeutralFilterDatabaseCount = 3;
-        constexpr int kDichroicFilterSetCount = 3;
 
         struct NeutralFilterFileStamp {
             bool valid = false;
@@ -94,11 +85,6 @@ namespace JuicerAssets {
             std::shared_ptr<const ParsedNeutralFilterDb> db;
             Clock::time_point lastDiagnosticsReloadCheck;
             bool hasDiagnosticsReloadCheck = false;
-        };
-
-        struct DichroicFilterCurveCacheEntry {
-            DichroicFilterCurveSet curves;
-            bool ready = false;
         };
 
         struct IlluminantFilterCurveCacheEntry {
@@ -471,12 +457,17 @@ namespace JuicerAssets {
         FilterDbRead get_filter_db(
             std::mutex& cacheMutex,
             std::unordered_map<std::string, NeutralFilterCacheEntry>& cacheEntries,
-            const std::string& cacheKey,
             const std::string& jsonPath,
             NeutralFilterLookupThread threadClass,
             bool diagnosticsReload,
             Clock::time_point now) {
             FilterDbRead read;
+            const std::string cacheKey = normalize_path_for_cache_key(jsonPath);
+            if (cacheKey.empty()) {
+                trace_neutral_filter_event("miss", "none", threadClass, "empty_path", &jsonPath);
+                read.stop = true;
+                return read;
+            }
 
             std::lock_guard<std::mutex> lock(cacheMutex);
             auto cacheIt = cacheEntries.find(cacheKey);
@@ -666,22 +657,6 @@ namespace JuicerAssets {
                 return {};
             }
             return data_path_string(dataDir, segments);
-        }
-
-        std::string data_directory_path(const std::string& dataDir, std::initializer_list<const char*> segments) {
-            if (dataDir.empty()) {
-                return {};
-            }
-            std::string result = data_path_string(dataDir, segments);
-#ifdef _WIN32
-            const char separator = '\\';
-#else
-            const char separator = '/';
-#endif
-            if (!result.empty() && result.back() != separator) {
-                result.push_back(separator);
-            }
-            return result;
         }
 
         struct FilmProfileAssetRequest {
@@ -915,67 +890,6 @@ namespace JuicerAssets {
             return payloads;
         }
 
-        Library::DichroicFilterAssetSet make_dichroic_filter_set(const std::string& dataDir, const char* folderName) {
-            Library::DichroicFilterAssetSet asset;
-            asset.directory = data_directory_path(dataDir, {"filters", "dichroics", folderName});
-            asset.filterCPath = data_path_string(dataDir, {"filters", "dichroics", folderName, "filter_c.csv"});
-            asset.filterMPath = data_path_string(dataDir, {"filters", "dichroics", folderName, "filter_m.csv"});
-            asset.filterYPath = data_path_string(dataDir, {"filters", "dichroics", folderName, "filter_y.csv"});
-            asset.version = Library::kProcessAssetVersion;
-            return asset;
-        }
-
-        std::vector<std::pair<float, float>> load_pairs_silent(const std::string& path) {
-            try {
-                return Spectral::load_csv_pairs(path);
-            } catch (...) {
-                return {};
-            }
-        }
-
-        void prepare_identity_dichroic_curve(Spectral::Curve& curve) {
-            Spectral::assign_reference_axis(curve.lambda_nm);
-            curve.linear.assign(static_cast<size_t>(Spectral::gShape.K), 1.0f);
-        }
-
-        void apply_dichroic_channel(
-            const std::vector<std::pair<float, float>>& pairs,
-            Spectral::Curve& dst) {
-            if (pairs.size() < 2) {
-                return;
-            }
-
-            // Match agx-emulsion's Akima path: no extrapolation outside measured samples.
-            const std::vector<std::pair<float, float>> resampled =
-                Spectral::resample_pairs_akima_to_reference_axis(pairs);
-            if (resampled.empty() || resampled.size() != static_cast<size_t>(Spectral::gShape.K)) {
-                return;
-            }
-
-            for (size_t i = 0; i < resampled.size(); ++i) {
-                dst.linear[i] = resampled[i].second * 0.01f;
-            }
-        }
-
-        DichroicFilterCurveSet load_dichroic_filter_curves(const Library::DichroicFilterAssetSet& asset) {
-            DichroicFilterCurveSet curves;
-            curves.version = asset.version;
-            prepare_identity_dichroic_curve(curves.filterY);
-            prepare_identity_dichroic_curve(curves.filterM);
-            prepare_identity_dichroic_curve(curves.filterC);
-
-            if (asset.directory.empty()) {
-                return curves;
-            }
-
-            apply_dichroic_channel(load_pairs_silent(asset.filterYPath), curves.filterY);
-            apply_dichroic_channel(load_pairs_silent(asset.filterMPath), curves.filterM);
-            apply_dichroic_channel(load_pairs_silent(asset.filterCPath), curves.filterC);
-            // Phase 2B inventory token for the future selected measured-filter preflight:
-            // SelectedDichroicResourceMissing phase=2.
-            return curves;
-        }
-
         Library::IlluminantFilterAssetSet make_illuminant_filter_assets(const std::string& dataDir) {
             Library::IlluminantFilterAssetSet asset;
             asset.d65Path = data_path_string(dataDir, {"illuminants", "D65.csv"});
@@ -1033,11 +947,6 @@ namespace JuicerAssets {
         std::shared_ptr<const StaticNoisePayloadSet> payloads;
     };
 
-    struct Library::DichroicFilterCurveCacheState {
-        std::mutex mutex;
-        std::array<DichroicFilterCurveCacheEntry, 3> entries{};
-    };
-
     struct Library::IlluminantFilterCurveCacheState {
         std::mutex mutex;
         IlluminantFilterCurveCacheEntry entry;
@@ -1052,11 +961,9 @@ namespace JuicerAssets {
         : _dataDir(std::move(dataDir)),
           _neutralFilterDatabasePaths(std::make_unique<NeutralFilterDatabasePathSet[]>(kNeutralFilterDatabaseCount)),
           _staticNoiseAssets(std::make_unique<StaticNoiseAssetSet>()),
-          _dichroicFilterSets(std::make_unique<DichroicFilterAssetSet[]>(kDichroicFilterSetCount)),
           _illuminantFilterAssets(std::make_unique<IlluminantFilterAssetSet>()),
           _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()),
           _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
-          _dichroicFilterCurveCache(std::make_unique<DichroicFilterCurveCacheState>()),
           _illuminantFilterCurveCache(std::make_unique<IlluminantFilterCurveCacheState>()),
           _profileCache(std::make_unique<ProfileCacheState>()),
           _selectedProfileAssets(std::make_unique<Profiles::ProfileAssetStore>()) {
@@ -1079,12 +986,6 @@ namespace JuicerAssets {
     void Library::ensure_static_noise_assets() {
         std::call_once(_staticNoiseOnce, [this]() {
             load_static_noise_assets();
-        });
-    }
-
-    void Library::ensure_dichroic_filter_sets() {
-        std::call_once(_dichroicFilterOnce, [this]() {
-            load_dichroic_filter_sets();
         });
     }
 
@@ -1156,19 +1057,12 @@ namespace JuicerAssets {
         }
 
         const std::string lookupKey = make_lookup_key(key.printProfileKey, key.illuminantKey, key.filmProfileKey);
-        const std::string cacheKey = normalize_path_for_cache_key(lookup.jsonPath);
-        if (cacheKey.empty()) {
-            trace_neutral_filter_event("miss", "none", lookup.threadClass, "empty_path", &lookup.jsonPath);
-            return result;
-        }
-
         const bool diagnosticsReload = diagnostics_reload_enabled();
         const Clock::time_point now = Clock::now();
 
         FilterDbRead dbRead = get_filter_db(
             _neutralFilterCache->mutex,
             _neutralFilterCache->entries,
-            cacheKey,
             lookup.jsonPath,
             lookup.threadClass,
             diagnosticsReload,
@@ -1205,12 +1099,6 @@ namespace JuicerAssets {
 
     void Library::load_static_noise_assets() {
         *_staticNoiseAssets = make_static_noise_assets(_dataDir);
-    }
-
-    void Library::load_dichroic_filter_sets() {
-        _dichroicFilterSets[0] = make_dichroic_filter_set(_dataDir, "durst_digital_light");
-        _dichroicFilterSets[1] = make_dichroic_filter_set(_dataDir, "thorlabs");
-        _dichroicFilterSets[2] = make_dichroic_filter_set(_dataDir, "edmund_optics");
     }
 
     void Library::load_illuminant_filter_assets() {
@@ -1277,22 +1165,6 @@ namespace JuicerAssets {
                 std::make_shared<StaticNoisePayloadSet>(load_static_noise_payloads(*_staticNoiseAssets));
         }
         return _staticNoisePayloadCache->payloads;
-    }
-
-    const DichroicFilterCurveSet& Library::dichroic_filter_curves_for_choice(int dichroicSetChoice) {
-        ensure_dichroic_filter_sets();
-        if (dichroicSetChoice < 0 || dichroicSetChoice >= kDichroicFilterSetCount) {
-            dichroicSetChoice = 0;
-        }
-
-        const size_t index = static_cast<size_t>(dichroicSetChoice);
-        std::lock_guard<std::mutex> lock(_dichroicFilterCurveCache->mutex);
-        DichroicFilterCurveCacheEntry& entry = _dichroicFilterCurveCache->entries[index];
-        if (!entry.ready) {
-            entry.curves = load_dichroic_filter_curves(_dichroicFilterSets[index]);
-            entry.ready = true;
-        }
-        return entry.curves;
     }
 
     const IlluminantFilterCurveSet& Library::illuminant_filter_curves() {
@@ -1506,12 +1378,6 @@ namespace JuicerAssets {
             if (_staticNoisePayloadCache) {
                 std::lock_guard<std::mutex> lock(_staticNoisePayloadCache->mutex);
                 _staticNoisePayloadCache->payloads.reset();
-            }
-            if (_dichroicFilterCurveCache) {
-                std::lock_guard<std::mutex> lock(_dichroicFilterCurveCache->mutex);
-                for (DichroicFilterCurveCacheEntry& entry : _dichroicFilterCurveCache->entries) {
-                    entry = DichroicFilterCurveCacheEntry{};
-                }
             }
             if (_illuminantFilterCurveCache) {
                 std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);

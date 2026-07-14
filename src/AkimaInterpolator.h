@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <limits>
 #include <numeric>
@@ -14,18 +15,19 @@
 
 namespace Interpolation {
 
+    struct DerivativeOrder {
+        unsigned value = 1;
+    };
+
+    struct IntegrationInterval {
+        double lower = 0.0;
+        double upper = 0.0;
+    };
+
     namespace detail {
 
         constexpr double kEpsilon = 1e-12;
         constexpr double kPi = 3.141592653589793238462643383279502884;
-
-        inline double power(double base, unsigned exponent) {
-            double result = 1.0;
-            for (unsigned i = 0; i < exponent; ++i) {
-                result *= base;
-            }
-            return result;
-        }
 
         inline double evaluate_cubic(const double* coeffs, double dx) {
             double result = coeffs[3];
@@ -35,8 +37,11 @@ namespace Interpolation {
             return result;
         }
 
-        inline double evaluate_cubic_derivative(const double* coeffs, double dx, unsigned order) {
-            switch (order) {
+        inline double evaluate_cubic_derivative(
+            const double* coeffs,
+            double dx,
+            DerivativeOrder order) {
+            switch (order.value) {
                 case 0:
                     return evaluate_cubic(coeffs, dx);
                 case 1:
@@ -50,8 +55,11 @@ namespace Interpolation {
             }
         }
 
-        inline double antiderivative_polynomial(const double* coeffs, double dx, unsigned order) {
-            if (order == 0) {
+        inline double antiderivative_polynomial(
+            const double* coeffs,
+            double dx,
+            DerivativeOrder order) {
+            if (order.value == 0) {
                 return evaluate_cubic(coeffs, dx);
             }
             double result = 0.0;
@@ -61,10 +69,13 @@ namespace Interpolation {
                     continue;
                 }
                 double denom = 1.0;
-                for (unsigned m = 1; m <= order; ++m) {
+                for (unsigned m = 1; m <= order.value; ++m) {
                     denom *= static_cast<double>(k + m);
                 }
-                const double powValue = power(dx, k + order);
+                double powValue = 1.0;
+                for (unsigned exponent = 0; exponent < k + order.value; ++exponent) {
+                    powValue *= dx;
+                }
                 result += coeff * powValue / denom;
             }
             return result;
@@ -142,13 +153,13 @@ namespace Interpolation {
 
     class AkimaInterpolator {
     public:
-        enum class Method {
+        enum class Method : std::uint8_t {
             Akima,
             Makima
         };
 
         struct StridedConstView {
-            enum class ValueType {
+            enum class ValueType : std::uint8_t {
                 Float32,
                 Float64
             };
@@ -216,10 +227,20 @@ namespace Interpolation {
             }
         };
 
-        bool build(const std::vector<float>& x, const std::vector<float>& y, bool extrapolate = false, Method method = Method::Akima);
-        bool build(const std::vector<float>& x, const std::vector<float>& y, bool extrapolate, const std::string& methodName);
-        bool build(const std::vector<double>& x, const std::vector<double>& y, bool extrapolate = false, Method method = Method::Akima);
-        bool build(const std::vector<double>& x, const std::vector<double>& y, bool extrapolate, const std::string& methodName);
+        struct FloatSamples {
+            const std::vector<float>* abscissas = nullptr;
+            const std::vector<float>* ordinates = nullptr;
+        };
+
+        struct DoubleSamples {
+            const std::vector<double>* abscissas = nullptr;
+            const std::vector<double>* ordinates = nullptr;
+        };
+
+        bool build(const FloatSamples& samples, bool extrapolate = false, Method method = Method::Akima);
+        bool build(const FloatSamples& samples, bool extrapolate, const std::string& methodName);
+        bool build(const DoubleSamples& samples, bool extrapolate = false, Method method = Method::Akima);
+        bool build(const DoubleSamples& samples, bool extrapolate, const std::string& methodName);
         bool build(const std::vector<float>& x,
                    const StridedConstView& y,
                    int axis,
@@ -236,18 +257,16 @@ namespace Interpolation {
         void evaluate_many(const std::vector<double>& xs, std::vector<double>& out) const;
         void evaluate_vector(float x, std::vector<float>& out) const;
         void evaluate_vector(double x, std::vector<double>& out) const;
-        float derivative(float x, unsigned order = 1) const;
-        double derivative(double x, unsigned order = 1) const;
-        void derivative_vector(float x, std::vector<float>& out, unsigned order = 1) const;
-        void derivative_vector(double x, std::vector<double>& out, unsigned order = 1) const;
-        float antiderivative(float x, unsigned order = 1) const;
-        double antiderivative(double x, unsigned order = 1) const;
-        void antiderivative_vector(float x, std::vector<float>& out, unsigned order = 1) const;
-        void antiderivative_vector(double x, std::vector<double>& out, unsigned order = 1) const;
-        float integrate(float a, float b) const;
-        double integrate(double a, double b) const;
-        void integrate_vector(float a, float b, std::vector<float>& out) const;
-        void integrate_vector(double a, double b, std::vector<double>& out) const;
+        float derivative(float x, DerivativeOrder order = {}) const;
+        double derivative(double x, DerivativeOrder order = {}) const;
+        void derivative_vector(float x, std::vector<float>& out, DerivativeOrder order = {}) const;
+        void derivative_vector(double x, std::vector<double>& out, DerivativeOrder order = {}) const;
+        float antiderivative(float x, DerivativeOrder order = {}) const;
+        double antiderivative(double x, DerivativeOrder order = {}) const;
+        void antiderivative_vector(float x, std::vector<float>& out, DerivativeOrder order = {}) const;
+        void antiderivative_vector(double x, std::vector<double>& out, DerivativeOrder order = {}) const;
+        double integrate(const IntegrationInterval& interval) const;
+        void integrate_vector(const IntegrationInterval& interval, std::vector<double>& out) const;
         std::vector<float> roots(size_t channel = 0) const;
         std::vector<double> roots_double(size_t channel = 0) const;
 
@@ -266,9 +285,15 @@ namespace Interpolation {
         static bool try_parse_method(const std::string& methodName, Method& outMethod);
 
     private:
+        struct AntiderivativeRequest {
+            size_t channel = 0;
+            double x = 0.0;
+            DerivativeOrder order{};
+        };
+
         bool select_segment(double x, size_t& i0, size_t& i1) const;
         void reset();
-        double antiderivative_internal(size_t channel, double x, unsigned order) const;
+        double antiderivative_internal(const AntiderivativeRequest& request) const;
 
         std::vector<double> _xs;
         std::vector<double> _ys;
@@ -342,41 +367,49 @@ namespace Interpolation {
         return false;
     }
 
-    inline bool AkimaInterpolator::build(const std::vector<float>& x,
-                                         const std::vector<float>& y,
+    inline bool AkimaInterpolator::build(const FloatSamples& samples,
                                          bool extrapolate,
                                          Method method) {
+        if (!samples.abscissas || !samples.ordinates) {
+            reset();
+            return false;
+        }
+        const std::vector<float>& x = *samples.abscissas;
+        const std::vector<float>& y = *samples.ordinates;
         std::vector<double> xDouble(x.begin(), x.end());
         return build(xDouble, StridedConstView::contiguous(y), 0, extrapolate, method);
     }
 
-    inline bool AkimaInterpolator::build(const std::vector<float>& x,
-                                         const std::vector<float>& y,
+    inline bool AkimaInterpolator::build(const FloatSamples& samples,
                                          bool extrapolate,
                                          const std::string& methodName) {
         Method parsedMethod = Method::Akima;
         if (!try_parse_method(methodName, parsedMethod)) {
             return false;
         }
-        return build(x, y, extrapolate, parsedMethod);
+        return build(samples, extrapolate, parsedMethod);
     }
 
-    inline bool AkimaInterpolator::build(const std::vector<double>& x,
-                                         const std::vector<double>& y,
+    inline bool AkimaInterpolator::build(const DoubleSamples& samples,
                                          bool extrapolate,
                                          Method method) {
+        if (!samples.abscissas || !samples.ordinates) {
+            reset();
+            return false;
+        }
+        const std::vector<double>& x = *samples.abscissas;
+        const std::vector<double>& y = *samples.ordinates;
         return build(x, StridedConstView::contiguous(y), 0, extrapolate, method);
     }
 
-    inline bool AkimaInterpolator::build(const std::vector<double>& x,
-                                         const std::vector<double>& y,
+    inline bool AkimaInterpolator::build(const DoubleSamples& samples,
                                          bool extrapolate,
                                          const std::string& methodName) {
         Method parsedMethod = Method::Akima;
         if (!try_parse_method(methodName, parsedMethod)) {
             return false;
         }
-        return build(x, y, extrapolate, parsedMethod);
+        return build(samples, extrapolate, parsedMethod);
     }
 
     inline bool AkimaInterpolator::build(const std::vector<float>& x,
@@ -609,7 +642,12 @@ namespace Interpolation {
         std::vector<double> f12(n, 0.0);
         constexpr double break_mult = 1e-9;
 
-        auto processChannel = [&](size_t channel, double cutoff, bool assignSlopes) {
+        struct ChannelSlopePass {
+            double cutoff = 0.0;
+            bool assignSlopes = false;
+        };
+
+        auto processChannel = [&](size_t channel, const ChannelSlopePass& pass) {
             std::fill(m.begin(), m.end(), 0.0);
             for (size_t i = 0; i + 1 < n; ++i) {
                 const double y0 = _ys[i * _channelCount + channel];
@@ -645,9 +683,9 @@ namespace Interpolation {
                 }
                 f12[i] = f1[i] + f2[i];
                 channelMaxF12 = std::max(channelMaxF12, f12[i]);
-                if (assignSlopes) {
+                if (pass.assignSlopes) {
                     double slopeValue = t[i];
-                    if (f12[i] > cutoff) {
+                    if (f12[i] > pass.cutoff) {
                         const double numer = f2[i] * (m[i + 2] - m[i + 1]);
                         slopeValue = m[i + 1] + numer / f12[i];
                     }
@@ -658,12 +696,16 @@ namespace Interpolation {
         };
 
         double globalMaxF12 = 0.0;
+        ChannelSlopePass measurementPass{};
         for (size_t channel = 0; channel < _channelCount; ++channel) {
-            globalMaxF12 = std::max(globalMaxF12, processChannel(channel, 0.0, false));
+            globalMaxF12 = std::max(globalMaxF12, processChannel(channel, measurementPass));
         }
         const double cutoff = break_mult * globalMaxF12;
+        ChannelSlopePass assignmentPass{};
+        assignmentPass.cutoff = cutoff;
+        assignmentPass.assignSlopes = true;
         for (size_t channel = 0; channel < _channelCount; ++channel) {
-            processChannel(channel, cutoff, true);
+            processChannel(channel, assignmentPass);
         }
         const size_t segmentCount = n > 0 ? (n - 1) : 0;
         _coeffs.assign(segmentCount * _channelCount * 4, 0.0);
@@ -689,7 +731,10 @@ namespace Interpolation {
         return true;
     }
 
-    inline double AkimaInterpolator::antiderivative_internal(size_t channel, double x, unsigned order) const {
+    inline double AkimaInterpolator::antiderivative_internal(const AntiderivativeRequest& request) const {
+        const size_t channel = request.channel;
+        const double x = request.x;
+        const unsigned order = request.order.value;
         if (channel >= _channelCount || _coeffs.empty()) {
             return std::numeric_limits<double>::quiet_NaN();
         }
@@ -701,7 +746,10 @@ namespace Interpolation {
             }
             const double dx = x - static_cast<double>(_xs[segStart]);
             const size_t coeffIndex = (segStart * _channelCount + channel) * 4;
-            return detail::evaluate_cubic_derivative(&_coeffs[coeffIndex], dx, 0);
+            return detail::evaluate_cubic_derivative(
+                &_coeffs[coeffIndex],
+                dx,
+                DerivativeOrder{0});
         }
 
         size_t segStart = 0;
@@ -727,7 +775,7 @@ namespace Interpolation {
                     value += cumulative[r - m] * dxPower / factorials[m];
                     dxPower *= h;
                 }
-                value += detail::antiderivative_polynomial(coeff, h, r);
+                value += detail::antiderivative_polynomial(coeff, h, DerivativeOrder{r});
                 next[r] = value;
             }
             for (unsigned r = 1; r <= order; ++r) {
@@ -743,7 +791,7 @@ namespace Interpolation {
             result += cumulative[order - m] * dxPower / factorials[m];
             dxPower *= dx;
         }
-        result += detail::antiderivative_polynomial(coeff, dx, order);
+        result += detail::antiderivative_polynomial(coeff, dx, request.order);
         return result;
     }
 
@@ -755,7 +803,10 @@ namespace Interpolation {
         }
         const size_t coeffIndex = (i0 * _channelCount) * 4;
         const double dx = x - _xs[i0];
-        return detail::evaluate_cubic_derivative(&_coeffs[coeffIndex], dx, 0);
+        return detail::evaluate_cubic_derivative(
+            &_coeffs[coeffIndex],
+            dx,
+            DerivativeOrder{0});
     }
 
     inline float AkimaInterpolator::evaluate(float x) const {
@@ -780,7 +831,10 @@ namespace Interpolation {
         const double dx = x - _xs[i0];
         for (size_t channel = 0; channel < channelCount; ++channel) {
             const size_t coeffIndex = (i0 * channelCount + channel) * 4;
-            out[channel] = detail::evaluate_cubic_derivative(&_coeffs[coeffIndex], dx, 0);
+            out[channel] = detail::evaluate_cubic_derivative(
+                &_coeffs[coeffIndex],
+                dx,
+                DerivativeOrder{0});
         }
     }
 
@@ -833,7 +887,7 @@ namespace Interpolation {
         }
     }
 
-    inline double AkimaInterpolator::derivative(double x, unsigned order) const {
+    inline double AkimaInterpolator::derivative(double x, DerivativeOrder order) const {
         size_t i0 = 0;
         size_t i1 = 0;
         if (!select_segment(x, i0, i1) || _channelCount == 0 || _coeffs.empty()) {
@@ -844,12 +898,15 @@ namespace Interpolation {
         return detail::evaluate_cubic_derivative(&_coeffs[coeffIndex], dx, order);
     }
 
-    inline float AkimaInterpolator::derivative(float x, unsigned order) const {
+    inline float AkimaInterpolator::derivative(float x, DerivativeOrder order) const {
         const double value = derivative(static_cast<double>(x), order);
         return static_cast<float>(value);
     }
 
-    inline void AkimaInterpolator::derivative_vector(double x, std::vector<double>& out, unsigned order) const {
+    inline void AkimaInterpolator::derivative_vector(
+        double x,
+        std::vector<double>& out,
+        DerivativeOrder order) const {
         const size_t channelCount = _channelCount;
         out.resize(channelCount);
         if (channelCount == 0) {
@@ -868,7 +925,10 @@ namespace Interpolation {
         }
     }
 
-    inline void AkimaInterpolator::derivative_vector(float x, std::vector<float>& out, unsigned order) const {
+    inline void AkimaInterpolator::derivative_vector(
+        float x,
+        std::vector<float>& out,
+        DerivativeOrder order) const {
         std::vector<double> temp;
         derivative_vector(static_cast<double>(x), temp, order);
         out.resize(temp.size());
@@ -877,19 +937,25 @@ namespace Interpolation {
         }
     }
 
-    inline double AkimaInterpolator::antiderivative(double x, unsigned order) const {
+    inline double AkimaInterpolator::antiderivative(double x, DerivativeOrder order) const {
         if (_channelCount == 0 || _coeffs.empty()) {
             return std::numeric_limits<double>::quiet_NaN();
         }
-        return antiderivative_internal(0, x, order);
+        AntiderivativeRequest request{};
+        request.x = x;
+        request.order = order;
+        return antiderivative_internal(request);
     }
 
-    inline float AkimaInterpolator::antiderivative(float x, unsigned order) const {
+    inline float AkimaInterpolator::antiderivative(float x, DerivativeOrder order) const {
         const double value = antiderivative(static_cast<double>(x), order);
         return static_cast<float>(value);
     }
 
-    inline void AkimaInterpolator::antiderivative_vector(double x, std::vector<double>& out, unsigned order) const {
+    inline void AkimaInterpolator::antiderivative_vector(
+        double x,
+        std::vector<double>& out,
+        DerivativeOrder order) const {
         const size_t channelCount = _channelCount;
         out.resize(channelCount);
         if (channelCount == 0 || _coeffs.empty()) {
@@ -897,11 +963,18 @@ namespace Interpolation {
             return;
         }
         for (size_t channel = 0; channel < channelCount; ++channel) {
-            out[channel] = antiderivative_internal(channel, x, order);
+            AntiderivativeRequest request{};
+            request.channel = channel;
+            request.x = x;
+            request.order = order;
+            out[channel] = antiderivative_internal(request);
         }
     }
 
-    inline void AkimaInterpolator::antiderivative_vector(float x, std::vector<float>& out, unsigned order) const {
+    inline void AkimaInterpolator::antiderivative_vector(
+        float x,
+        std::vector<float>& out,
+        DerivativeOrder order) const {
         std::vector<double> temp;
         antiderivative_vector(static_cast<double>(x), temp, order);
         out.resize(temp.size());
@@ -910,24 +983,26 @@ namespace Interpolation {
         }
     }
 
-    inline double AkimaInterpolator::integrate(double a, double b) const {
+    inline double AkimaInterpolator::integrate(const IntegrationInterval& interval) const {
         if (_channelCount == 0 || _coeffs.empty()) {
             return std::numeric_limits<double>::quiet_NaN();
         }
-        const double upper = antiderivative_internal(0, b, 1);
-        const double lower = antiderivative_internal(0, a, 1);
+        AntiderivativeRequest upperRequest{};
+        upperRequest.x = interval.upper;
+        upperRequest.order = DerivativeOrder{1};
+        AntiderivativeRequest lowerRequest = upperRequest;
+        lowerRequest.x = interval.lower;
+        const double upper = antiderivative_internal(upperRequest);
+        const double lower = antiderivative_internal(lowerRequest);
         if (!std::isfinite(upper) || !std::isfinite(lower)) {
             return std::numeric_limits<double>::quiet_NaN();
         }
         return upper - lower;
     }
 
-    inline float AkimaInterpolator::integrate(float a, float b) const {
-        const double value = integrate(static_cast<double>(a), static_cast<double>(b));
-        return static_cast<float>(value);
-    }
-
-    inline void AkimaInterpolator::integrate_vector(double a, double b, std::vector<double>& out) const {
+    inline void AkimaInterpolator::integrate_vector(
+        const IntegrationInterval& interval,
+        std::vector<double>& out) const {
         const size_t channelCount = _channelCount;
         out.resize(channelCount);
         if (channelCount == 0 || _coeffs.empty()) {
@@ -935,22 +1010,19 @@ namespace Interpolation {
             return;
         }
         for (size_t channel = 0; channel < channelCount; ++channel) {
-            const double upper = antiderivative_internal(channel, b, 1);
-            const double lower = antiderivative_internal(channel, a, 1);
+            AntiderivativeRequest upperRequest{};
+            upperRequest.channel = channel;
+            upperRequest.x = interval.upper;
+            upperRequest.order = DerivativeOrder{1};
+            AntiderivativeRequest lowerRequest = upperRequest;
+            lowerRequest.x = interval.lower;
+            const double upper = antiderivative_internal(upperRequest);
+            const double lower = antiderivative_internal(lowerRequest);
             if (!std::isfinite(upper) || !std::isfinite(lower)) {
                 out[channel] = std::numeric_limits<double>::quiet_NaN();
             } else {
                 out[channel] = upper - lower;
             }
-        }
-    }
-
-    inline void AkimaInterpolator::integrate_vector(float a, float b, std::vector<float>& out) const {
-        std::vector<double> temp;
-        integrate_vector(static_cast<double>(a), static_cast<double>(b), temp);
-        out.resize(temp.size());
-        for (size_t i = 0; i < temp.size(); ++i) {
-            out[i] = static_cast<float>(temp[i]);
         }
     }
 

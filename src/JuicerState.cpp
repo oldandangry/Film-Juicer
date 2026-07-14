@@ -3,6 +3,7 @@
 #include "Couplers.h"
 #include "Logging.h"
 #include "ProcessRoot.h"
+#include "SpectralProcessing.h"
 
 namespace RebuildWorkingState {
 
@@ -475,11 +476,6 @@ namespace {
         return std::isfinite(value);
     }
 
-    inline double clamp_finite_or(double value, double fallback, double lo, double hi) {
-        const double candidate = is_finite(value) ? value : fallback;
-        return std::clamp(candidate, lo, hi);
-    }
-
     inline bool is_positive_finite(float value);
     inline bool is_positive_finite(double value);
 
@@ -495,34 +491,41 @@ namespace {
         return is_finite(value) && value > 0.0;
     }
 
-    inline float sanitize_nonnegative_or(float value, float fallback) {
+    inline float sanitize_nonnegative_or_zero(float value) {
         if (!is_finite(value)) {
-            return fallback;
+            return 0.0f;
         }
         return std::max(0.0f, value);
     }
 
-    inline float sanitize_nonnegative_clamped_or(float value, float fallback, float hi) {
-        return std::clamp(sanitize_nonnegative_or(value, fallback), 0.0f, hi);
+    inline float sanitize_nonnegative_or_one(float value) {
+        if (!is_finite(value)) {
+            return 1.0f;
+        }
+        return std::max(0.0f, value);
+    }
+
+    inline float sanitize_unit_interval_or_zero(float value) {
+        return std::min(sanitize_nonnegative_or_zero(value), 1.0f);
     }
 
     inline float finite_or_fallback(float value, float fallback) {
         return is_finite(value) ? value : fallback;
     }
 
-    inline float sanitize_abs_positive_or_nan(float value, float minMagnitude = 1e-6f) {
+    inline float sanitize_abs_positive_or_nan(float value) {
         if (!is_finite(value)) {
             return std::numeric_limits<float>::quiet_NaN();
         }
+        constexpr float kMinMagnitude = 1e-6f;
         const float magnitude = std::fabs(value);
-        return (magnitude > minMagnitude) ? magnitude : std::numeric_limits<float>::quiet_NaN();
+        return (magnitude > kMinMagnitude) ? magnitude : std::numeric_limits<float>::quiet_NaN();
     }
 
-    inline float curve_max_clamped_or_default(
-        const Spectral::Curve& curve,
-        float fallback = 1.0f,
-        float minValue = 1e-4f,
-        float maxValue = 1000.0f) {
+    inline float curve_max_clamped_or_default(const Spectral::Curve& curve) {
+        constexpr float kFallback = 1.0f;
+        constexpr float kMinValue = 1e-4f;
+        constexpr float kMaxValue = 1000.0f;
         float maximum = 0.0f;
         const float* values = curve.linear.data();
         const float* const valuesEnd = values + curve.linear.size();
@@ -532,10 +535,10 @@ namespace {
                 maximum = value;
             }
         }
-        if (!is_finite(maximum) || maximum <= minValue) {
-            maximum = fallback;
+        if (!is_finite(maximum) || maximum <= kMinValue) {
+            maximum = kFallback;
         }
-        return std::min(maximum, maxValue);
+        return std::min(maximum, kMaxValue);
     }
 
     inline void clamp_negative_finite_curve_samples(Spectral::Curve& curve) {
@@ -886,9 +889,9 @@ namespace {
         }
     }
 
-    inline void sanitize_dir_dmax(float dMax[3], float mirror[3]) {
-        float* valueIt = dMax;
-        float* mirrorIt = mirror;
+    inline void sanitize_dir_dmax(WorkingState& target) {
+        float* valueIt = target.dMax;
+        float* mirrorIt = target.dirRT.dMax;
         const float* const valueEnd = valueIt + 3;
         for (; valueIt < valueEnd; ++valueIt, ++mirrorIt) {
             float value = *valueIt;
@@ -902,12 +905,12 @@ namespace {
     }
 
     inline void build_dir_matrix_fallback(float matrix[3][3], const float amountValues[3], float layerSigma) {
-        const float sigma = sanitize_nonnegative_or(layerSigma, 0.0f);
+        const float sigma = sanitize_nonnegative_or_zero(layerSigma);
         float amount[3] = {amountValues[0], amountValues[1], amountValues[2]};
         const float sigmaCapped = std::min(sigma, 3.0f);
         float* amountIt = amount;
         for (int i = 0; i < 3; ++i, ++amountIt) {
-            *amountIt = sanitize_nonnegative_clamped_or(*amountIt, 0.0f, 1.0f);
+            *amountIt = sanitize_unit_interval_or_zero(*amountIt);
         }
 
         auto gauss = [sigmaCapped](int dx) -> float {
@@ -1075,9 +1078,10 @@ namespace {
         const float* wavelengths = Spectral::gShape.wavelengths.data();
         float* outLinear = curve.linear.data();
         for (int i = 0; i < K; ++i) {
-            outLinear[i] = Spectral::planck_blackbody(
-                wavelengths[i],
-                temperature);
+            Spectral::PlanckBlackbodySample sample{};
+            sample.wavelengthNm = wavelengths[i];
+            sample.temperatureKelvin = temperature;
+            outLinear[i] = Spectral::planck_blackbody(sample);
         }
         Spectral::mean_power_normalize(curve.linear);
         return curve;
@@ -1330,16 +1334,20 @@ namespace {
         }
     }
 
+    struct DensityRangeFailureMessages {
+        const char* invalidRange;
+        const char* hashFailure;
+    };
+
     inline bool finalize_density_range(
         Scanner::ScannerDensityRange& range,
-        const char* invalidRangeMessage,
-        const char* hashFailMessage) {
+        const DensityRangeFailureMessages& messages) {
         const float* maxCmyIt = range.max_cmy;
         float* invMaxCmyIt = range.inv_max_cmy;
         for (int i = 0; i < 3; ++i, ++maxCmyIt, ++invMaxCmyIt) {
             const float v = *maxCmyIt;
             if (!is_positive_finite(v)) {
-                JTRACE("BUILD", invalidRangeMessage);
+                JTRACE("BUILD", messages.invalidRange);
                 return false;
             }
             *invMaxCmyIt = 1.0f / v;
@@ -1349,7 +1357,7 @@ namespace {
             range.min_cmy[0], range.min_cmy[1], range.min_cmy[2], range.max_cmy[0], range.max_cmy[1], range.max_cmy[2]};
         range.digest = Hash::hash_float_span(hashVals, std::size(hashVals));
         if (range.digest == 0) {
-            JTRACE("HASH", hashFailMessage);
+            JTRACE("HASH", messages.hashFailure);
             return false;
         }
         return true;
@@ -1386,8 +1394,9 @@ namespace {
         add_triplet(outRange.max_cmy, maxCmy, outRange.min_cmy);
         return finalize_density_range(
             outRange,
-            "FATAL: invalid negative density range (non-positive max)",
-            "FATAL: failed to hash negative density range");
+            DensityRangeFailureMessages{
+                "FATAL: invalid negative density range (non-positive max)",
+                "FATAL: failed to hash negative density range"});
     }
 
     static bool direct_density_range_from_recipe(
@@ -1425,8 +1434,9 @@ namespace {
         copy_float3(outRange.max_cmy, maxCmy);
         return finalize_density_range(
             outRange,
-            "FATAL: invalid print density range (non-positive max)",
-            "FATAL: failed to hash print density range");
+            DensityRangeFailureMessages{
+                "FATAL: invalid print density range (non-positive max)",
+                "FATAL: failed to hash print density range"});
     }
 
     Spektrafilm::DichroicFilterSet dichroic_filter_set_from_choice(int choice) {
@@ -2320,7 +2330,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         const float* const valuesEnd = values + c.linear.size();
         for (; values < valuesEnd; ++values) {
             float& v = *values;
-            v = sanitize_nonnegative_or(v, 0.0f);
+            v = sanitize_nonnegative_or_zero(v);
         }
     };
 
@@ -2396,7 +2406,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         float* outData = result.data();
         for (int i = 0; i < 3; ++i, ++outData) {
             float v = static_cast<float>(mat[i][3]);
-            *outData = sanitize_nonnegative_or(v, 0.0f);
+            *outData = sanitize_nonnegative_or_zero(v);
         }
 
         return result;
@@ -2671,11 +2681,11 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     if (dirCfg.hasData || hasMaskingData) {
         float amountRGB[3] = {1.0f, 1.0f, 1.0f};
         if (dirCfg.hasData) {
-            const float amount = sanitize_nonnegative_or(static_cast<float>(dirCfg.amount), 1.0f);
+            const float amount = sanitize_nonnegative_or_one(static_cast<float>(dirCfg.amount));
             float* amountRgbIt = amountRGB;
             const float* ratioIt = dirCfg.ratioRGB.data();
             for (int i = 0; i < 3; ++i, ++amountRgbIt, ++ratioIt) {
-                const float ratio = sanitize_nonnegative_or(*ratioIt, 1.0f);
+                const float ratio = sanitize_nonnegative_or_one(*ratioIt);
                 *amountRgbIt = std::clamp(amount * ratio, 0.0f, 1.0f);
             }
         }
@@ -2746,7 +2756,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                     float scaleAvg = static_cast<float>(scaleSum / weightSum);
                     float offsetAvg = static_cast<float>(offsetSum / weightSum);
                     scaleAvg = sanitize_positive_or(scaleAvg, 1.0f);
-                    offsetAvg = sanitize_nonnegative_or(offsetAvg, 0.0f);
+                    offsetAvg = sanitize_nonnegative_or_zero(offsetAvg);
                     maskScaleCh[ch] = scaleAvg;
                     maskOffsetCh[ch] = offsetAvg;
                 }
@@ -2759,7 +2769,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         float* offsetDst = negParams.maskOffset;
         for (int i = 0; i < 3; ++i, ++scaleSrc, ++offsetSrc, ++scaleDst, ++offsetDst) {
             float scale = sanitize_positive_or(*scaleSrc, 1.0f);
-            float offset = sanitize_nonnegative_or(*offsetSrc, 0.0f);
+            float offset = sanitize_nonnegative_or_zero(*offsetSrc);
             *scaleDst = scale;
             *offsetDst = offset;
         }
@@ -2770,9 +2780,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             float maskStrength = hasMaskingData
                                      ? ((1.0f - maskScaleCh[r]) + maskOffsetCh[r])
                                      : 0.0f;
-            maskStrength = sanitize_nonnegative_or(maskStrength, 0.0f);
-            float amountRow = sanitize_nonnegative_clamped_or(
-                dirCfg.hasData ? amountRGB[r] : 1.0f, 0.0f, 1.0f);
+            maskStrength = sanitize_nonnegative_or_zero(maskStrength);
+            float amountRow = sanitize_unit_interval_or_zero(
+                dirCfg.hasData ? amountRGB[r] : 1.0f);
             float scale = maskScaleBase * (maskStrength + maskScaleOffset);
             if (dirCfg.hasData) {
                 scale *= amountRow;
@@ -2784,7 +2794,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 const float val = finite_or_fallback(*dirRow, (r == c) ? 1.0f : 0.0f);
                 const float delta = scale * val;
                 if (r == c) {
-                    const float diag = sanitize_nonnegative_or(1.0f - delta, 1.0f);
+                    const float diag = sanitize_nonnegative_or_one(1.0f - delta);
                     *maskRow = diag;
                 } else {
                     const float off = std::clamp(finite_or_fallback(-delta, 0.0f), -1.0f, 1.0f);
@@ -2895,9 +2905,18 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                           !printCurves.yellow.empty();
     bool printRtOk = false;
     if (printDensityOk) {
-        const float factor = static_cast<float>(clamp_finite_or(P.printShadowCompensationFactor, 0.0, 0.0, 1.0));
-        const float density = static_cast<float>(clamp_finite_or(P.printShadowCompensationDensity, 1.2, 0.0, 3.0));
-        const float transition = static_cast<float>(clamp_finite_or(P.printShadowCompensationTransition, 0.3, 0.0, 2.0));
+        const double factorValue = is_finite(P.printShadowCompensationFactor)
+                                       ? P.printShadowCompensationFactor
+                                       : 0.0;
+        const double densityValue = is_finite(P.printShadowCompensationDensity)
+                                        ? P.printShadowCompensationDensity
+                                        : 1.2;
+        const double transitionValue = is_finite(P.printShadowCompensationTransition)
+                                           ? P.printShadowCompensationTransition
+                                           : 0.3;
+        const float factor = static_cast<float>(std::clamp(factorValue, 0.0, 1.0));
+        const float density = static_cast<float>(std::clamp(densityValue, 0.0, 3.0));
+        const float transition = static_cast<float>(std::clamp(transitionValue, 0.0, 2.0));
 
         printProfile.glare.printShadowCompensationFactor = factor;
         printProfile.glare.printShadowCompensationDensity = density;
@@ -2929,7 +2948,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     if (printDensityOk &&
         Print::profile_is_valid(printProfile) &&
         printRtCopy->illumView.linear.size() == static_cast<size_t>(Spectral::gShape.K)) {
-        const float printDminFactor = static_cast<float>(clamp_finite_or(P.printDminFactor, 0.4, 0.0, 1.0));
+        const double printDminValue = is_finite(P.printDminFactor) ? P.printDminFactor : 0.4;
+        const float printDminFactor = static_cast<float>(std::clamp(printDminValue, 0.0, 1.0));
         if (printProfile.hasBaseline && !approx_equal(printDminFactor, 1.0f)) {
             scale_finite_curve_samples(printProfile.baseDensityMin, printDminFactor);
         }
@@ -3243,7 +3263,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     {
         sanitize_dir_matrix(target->dirRT.M);
-        sanitize_dir_dmax(target->dMax, target->dirRT.dMax);
+        sanitize_dir_dmax(*target);
     }
 
     target->filmRaw = Spectral::FilmRawConfig{};

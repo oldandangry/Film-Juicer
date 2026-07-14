@@ -32,14 +32,6 @@ namespace Print {
             return std::isfinite(value);
         }
 
-        inline void accumulate_if_finite(double value, double& sum, int& count) {
-            if (!is_finite(value)) {
-                return;
-            }
-            sum += value;
-            ++count;
-        }
-
         void reset_profile_state(Profile& out, Runtime* runtime) {
             const float nanDensity = std::numeric_limits<float>::quiet_NaN();
             out.gammaFactor = {1.0f, 1.0f, 1.0f};
@@ -792,14 +784,21 @@ namespace Print {
                 }
                 double sum = 0.0;
                 int count = 0;
+                const auto accumulateIfFinite = [&sum, &count](double value) {
+                    if (!is_finite(value)) {
+                        return;
+                    }
+                    sum += value;
+                    ++count;
+                };
                 if (i < cyanCount) {
-                    accumulate_if_finite(cyanData[i].second, sum, count);
+                    accumulateIfFinite(cyanData[i].second);
                 }
                 if (i < magentaCount) {
-                    accumulate_if_finite(magentaData[i].second, sum, count);
+                    accumulateIfFinite(magentaData[i].second);
                 }
                 if (i < yellowCount) {
-                    accumulate_if_finite(yellowData[i].second, sum, count);
+                    accumulateIfFinite(yellowData[i].second);
                 }
                 if (count > 0) {
                     const double mean = sum / static_cast<double>(count);

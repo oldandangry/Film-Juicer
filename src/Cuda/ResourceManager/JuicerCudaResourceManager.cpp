@@ -8,6 +8,7 @@
 #include "Logging.h"
 #include "Print.h"
 #include "JuicerState.h"
+#include "SpectralProcessing.h"
 
 #include <algorithm>
 #include <array>
@@ -47,14 +48,6 @@ extern "C" cudaError_t juicer_cuda_print_pipeline(
 namespace JuicerCuda {
 
     namespace LaunchGraphCounters {
-
-        bool compiled_enabled() noexcept {
-#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
-            return true;
-#else
-            return false;
-#endif
-        }
 
 #if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
         namespace {
@@ -137,6 +130,7 @@ namespace JuicerCuda {
                         std::error_code ec;
                         std::filesystem::create_directories(path.parent_path(), ec);
                     } catch (...) {
+                        JuicerLogging::discard_current_exception();
                     }
                 });
             }
@@ -169,6 +163,7 @@ namespace JuicerCuda {
                     out << "kernel_launches_per_frame=" << kernel_launches_per_frame(current) << "\n";
                     out << "cuda_graph_replay_hit_rate=" << cuda_graph_replay_hit_rate(current) << "\n";
                 } catch (...) {
+                    JuicerLogging::discard_current_exception();
                 }
             }
 
@@ -271,14 +266,14 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         std::string& outError);
     bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError);
-    bool ensure_auto_exposure_buffers(Resources& resources, int meterWidth, int meterHeight, void* cudaStreamOpaque, std::string& outError);
-    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool aliasScannerRgbFromSpatialDirFiltered, bool needAuxScratch, bool needSharedTmpScratch, bool needGrainLayerWorkScratch, bool needGrainSharedScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError);
+    bool ensure_optics_scratch(
+        Resources& resources,
+        const ResourceManager::ScratchRequestDescriptor& request,
+        void* cudaStreamOpaque,
+        std::string& outError);
     bool ensure_spatial_dir_scratch(
         Resources& resources,
-        int width,
-        int height,
-        Spektrafilm::DirScratchTier scratchTier,
-        const Spektrafilm::DirScratchPlaneRoles& planeRoles,
+        const ResourceManager::ScratchRequestDescriptor& request,
         void* cudaStreamOpaque,
         std::string& outError);
     bool ensure_spatial_dir_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
@@ -307,6 +302,15 @@ namespace JuicerCuda {
         bool pressure_policy_enabled(const ResolvedPressurePolicy& policy) noexcept;
 
         namespace {
+
+            template <typename TraceAction>
+            void run_telemetry_trace_noexcept(TraceAction&& action) noexcept {
+                try {
+                    action();
+                } catch (...) {
+                    JuicerLogging::discard_current_exception();
+                }
+            }
 
             struct ShadowHistoryKey {
                 std::uint64_t instanceToken = 0;
@@ -340,24 +344,6 @@ namespace JuicerCuda {
 
             ShadowHistoryState& shadow_history_state() {
                 static ShadowHistoryState state{};
-                return state;
-            }
-
-            struct AutoExposureOwnershipEntry {
-                bool valid = false;
-                std::uint64_t keyHash = 0;
-                int meterWidth = 0;
-                int meterHeight = 0;
-                std::uint32_t keySchemaVersion = kSubmissionKeySchemaVersion;
-            };
-
-            struct AutoExposureOwnershipState {
-                std::mutex mutex;
-                std::unordered_map<ShadowHistoryKey, AutoExposureOwnershipEntry, ShadowHistoryKeyHasher> bySubmissionKey;
-            };
-
-            AutoExposureOwnershipState& auto_exposure_ownership_state() {
-                static AutoExposureOwnershipState state{};
                 return state;
             }
 
@@ -660,13 +646,13 @@ namespace JuicerCuda {
             }
 
             std::string trace_reason_class_field_if_known(
-                const char* fieldName,
+                std::string_view fieldName,
                 const char* token) {
                 const char* normalizedClass = failure_reason_class(token);
                 if (!normalizedClass) {
                     return {};
                 }
-                return std::string(" ") + trace_or_non_empty(fieldName, "reason_class") + "=" + normalizedClass;
+                return std::string(" ") + trace_or_non_empty(fieldName.data(), "reason_class") + "=" + normalizedClass;
             }
 
             std::string trace_event_prefix(
@@ -1129,7 +1115,9 @@ namespace JuicerCuda {
             constexpr std::size_t kLargeFrameQuarantineMaxBytes = static_cast<std::size_t>(1024ull * 1024ull * 1024ull);
             constexpr std::size_t kLargeFrameQuarantineMaxEntries = 2;
             constexpr std::uint64_t kLargeFrameQuarantineDecayMs = 2000;
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
             constexpr std::uint64_t kGraphLargeEntryDecayMs = 2000;
+#endif
             constexpr std::uint64_t kGraphLargeEntryThresholdDefaultBytes = 128ull * 1024ull * 1024ull;
             constexpr std::uint64_t kGraphLargeEntryQuarantineMaxBytesDefault = 512ull * 1024ull * 1024ull;
             constexpr std::uint32_t kGraphLargeEntryQuarantineMaxEntriesDefault = 2;
@@ -1372,7 +1360,9 @@ namespace JuicerCuda {
                 static const ResourceManagerConfigEffective cfg = []() {
                     const FiveXEnvOverrides overrides = load_5x_env_overrides();
                     const ResourceManagerConfigEffective effective = sanitize_config(overrides.raw);
-                    trace_5x_env_overrides(overrides, effective);
+                    run_telemetry_trace_noexcept([&]() {
+                        trace_5x_env_overrides(overrides, effective);
+                    });
                     return effective;
                 }();
                 return cfg;
@@ -1965,64 +1955,6 @@ namespace JuicerCuda {
                 add_snapshot_bytes(
                     snapshot,
                     static_cast<std::uint64_t>(resources.pendingScanErrorReadbacks.size()) * sizeof(int));
-
-                if (resources.autoExposureExposureScale)
-                    add_snapshot_bytes(snapshot, sizeof(float));
-                if (resources.autoExposureAutoEV)
-                    add_snapshot_bytes(snapshot, sizeof(double));
-                if (resources.autoExposureValid)
-                    add_snapshot_bytes(snapshot, sizeof(int));
-
-                if (resources.autoExposureScratch.maxYBits) {
-                    add_snapshot_bytes(snapshot, sizeof(unsigned int));
-                }
-                if (resources.autoExposureScratch.histogram) {
-                    add_snapshot_bytes(snapshot, static_cast<std::uint64_t>(2048u) * sizeof(unsigned int));
-                }
-                if (resources.autoExposureScratch.weightsX && resources.autoExposureScratch.weightsXCapacity > 0) {
-                    bool overflow = false;
-                    const std::uint64_t bytes = bytes_for_count_u64(
-                        non_negative_u64(resources.autoExposureScratch.weightsXCapacity),
-                        sizeof(float),
-                        overflow);
-                    if (overflow) {
-                        snapshot.overflow = true;
-                    }
-                    add_snapshot_bytes(snapshot, bytes);
-                }
-                if (resources.autoExposureScratch.weightsY && resources.autoExposureScratch.weightsYCapacity > 0) {
-                    bool overflow = false;
-                    const std::uint64_t bytes = bytes_for_count_u64(
-                        non_negative_u64(resources.autoExposureScratch.weightsYCapacity),
-                        sizeof(float),
-                        overflow);
-                    if (overflow) {
-                        snapshot.overflow = true;
-                    }
-                    add_snapshot_bytes(snapshot, bytes);
-                }
-                if (resources.autoExposureScratch.partialsA && resources.autoExposureScratch.partialCapacity > 0) {
-                    bool overflow = false;
-                    const std::uint64_t bytes = bytes_for_count_u64(
-                        non_negative_u64(resources.autoExposureScratch.partialCapacity),
-                        sizeof(JuicerCudaAutoExposurePartial),
-                        overflow);
-                    if (overflow) {
-                        snapshot.overflow = true;
-                    }
-                    add_snapshot_bytes(snapshot, bytes);
-                }
-                if (resources.autoExposureScratch.partialsB && resources.autoExposureScratch.partialCapacity > 0) {
-                    bool overflow = false;
-                    const std::uint64_t bytes = bytes_for_count_u64(
-                        non_negative_u64(resources.autoExposureScratch.partialCapacity),
-                        sizeof(JuicerCudaAutoExposurePartial),
-                        overflow);
-                    if (overflow) {
-                        snapshot.overflow = true;
-                    }
-                    add_snapshot_bytes(snapshot, bytes);
-                }
             }
 
             void add_scratch_tier_bytes_locked(
@@ -2047,64 +1979,6 @@ namespace JuicerCuda {
                 add_snapshot_bytes(
                     scratchSnapshot,
                     static_cast<std::uint64_t>(resources.pendingScanErrorReadbacks.size()) * sizeof(int));
-
-                if (resources.autoExposureExposureScale)
-                    add_snapshot_bytes(scratchSnapshot, sizeof(float));
-                if (resources.autoExposureAutoEV)
-                    add_snapshot_bytes(scratchSnapshot, sizeof(double));
-                if (resources.autoExposureValid)
-                    add_snapshot_bytes(scratchSnapshot, sizeof(int));
-
-                if (resources.autoExposureScratch.maxYBits) {
-                    add_snapshot_bytes(scratchSnapshot, sizeof(unsigned int));
-                }
-                if (resources.autoExposureScratch.histogram) {
-                    add_snapshot_bytes(scratchSnapshot, static_cast<std::uint64_t>(2048u) * sizeof(unsigned int));
-                }
-                if (resources.autoExposureScratch.weightsX && resources.autoExposureScratch.weightsXCapacity > 0) {
-                    bool localOverflow = false;
-                    const std::uint64_t bytes = bytes_for_count_u64(
-                        non_negative_u64(resources.autoExposureScratch.weightsXCapacity),
-                        sizeof(float),
-                        localOverflow);
-                    if (localOverflow) {
-                        scratchSnapshot.overflow = true;
-                    }
-                    add_snapshot_bytes(scratchSnapshot, bytes);
-                }
-                if (resources.autoExposureScratch.weightsY && resources.autoExposureScratch.weightsYCapacity > 0) {
-                    bool localOverflow = false;
-                    const std::uint64_t bytes = bytes_for_count_u64(
-                        non_negative_u64(resources.autoExposureScratch.weightsYCapacity),
-                        sizeof(float),
-                        localOverflow);
-                    if (localOverflow) {
-                        scratchSnapshot.overflow = true;
-                    }
-                    add_snapshot_bytes(scratchSnapshot, bytes);
-                }
-                if (resources.autoExposureScratch.partialsA && resources.autoExposureScratch.partialCapacity > 0) {
-                    bool localOverflow = false;
-                    const std::uint64_t bytes = bytes_for_count_u64(
-                        non_negative_u64(resources.autoExposureScratch.partialCapacity),
-                        sizeof(JuicerCudaAutoExposurePartial),
-                        localOverflow);
-                    if (localOverflow) {
-                        scratchSnapshot.overflow = true;
-                    }
-                    add_snapshot_bytes(scratchSnapshot, bytes);
-                }
-                if (resources.autoExposureScratch.partialsB && resources.autoExposureScratch.partialCapacity > 0) {
-                    bool localOverflow = false;
-                    const std::uint64_t bytes = bytes_for_count_u64(
-                        non_negative_u64(resources.autoExposureScratch.partialCapacity),
-                        sizeof(JuicerCudaAutoExposurePartial),
-                        localOverflow);
-                    if (localOverflow) {
-                        scratchSnapshot.overflow = true;
-                    }
-                    add_snapshot_bytes(scratchSnapshot, bytes);
-                }
             }
 
             void fill_tier_budget_snapshot(
@@ -2493,7 +2367,7 @@ namespace JuicerCuda {
             };
 
             const ResolvedPressurePolicy& policy = transaction.resolvedPressurePolicy;
-            const std::string msg = trace_event_prefix("scratch_checkpoint", transaction, commandName) + " invocation=" + to_cstr(invocation) + " request_active=" + std::to_string(observation.requestActive ? 1 : 0) + " pressure_policy_enabled=" + std::to_string(pressure_policy_enabled(policy) ? 1 : 0) + " policy_source=" + std::string(to_cstr(policy.policySource)) + " policy_device_id=" + std::to_string(policy.policyDeviceId) + " soft_target_bytes=" + std::to_string(static_cast<unsigned long long>(policy.softTargetBytes)) + " reserve_bytes=" + std::to_string(static_cast<unsigned long long>(policy.reserveBytes)) + " reader_matches_submission_policy=1" + " stage1_over_target=" + std::to_string(observation.stage1OverTarget ? 1 : 0) + " stage2_evaluated=" + std::to_string(observation.stage2Evaluated ? 1 : 0) + " stage2_skipped_no_shed_cache=" + std::to_string(observation.stage2SkippedByNoShedCache ? 1 : 0) + " over_target_not_reducible=" + std::to_string(observation.overTargetButNotReducible ? 1 : 0) + " shedding_attempted=" + std::to_string(observation.sheddingAttempted ? 1 : 0) + " shedding_progressed=" + std::to_string(observation.sheddingProgressed ? 1 : 0) + " shedding_partial_failure=" + std::to_string(observation.sheddingPartialFailure ? 1 : 0) + " shedding_target_reached=" + std::to_string(observation.sheddingTargetReached ? 1 : 0) + " shedding_orphaned_shared_tmp_retired=" + std::to_string(observation.sheddingOrphanedSharedTmpRetired ? 1 : 0) + " request_generation=" + std::to_string(static_cast<unsigned long long>(observation.requestDescriptorGeneration)) + " retained_generation=" + std::to_string(static_cast<unsigned long long>(observation.retainedScratchGeneration)) + " scratch_target_bytes=" + std::to_string(static_cast<unsigned long long>(observation.scratchTargetBytes)) + " hysteresis_bytes=" + std::to_string(static_cast<unsigned long long>(observation.hysteresisBytes)) + " policy_live_retained_bytes=" + std::to_string(static_cast<unsigned long long>(observation.policyLiveRetainedBytes)) + " reclaimable_live_bytes=" + std::to_string(static_cast<unsigned long long>(observation.reclaimableLiveBytes)) + " shed_retired_action_count=" + std::to_string(static_cast<unsigned long long>(observation.shedRetiredActionCount)) + " shed_retired_live_bytes=" + std::to_string(static_cast<unsigned long long>(observation.shedRetiredLiveBytes)) + " total_live_retained_bytes=" + std::to_string(static_cast<unsigned long long>(observation.residency.totalLiveRetainedBytes)) + " retire_pending_scratch_bytes=" + std::to_string(static_cast<unsigned long long>(observation.residency.retirePendingScratchBytes)) + " helper_shared_bytes=" + std::to_string(static_cast<unsigned long long>(observation.residency.helperSharedBytes)) + " helper_non_policy_bytes=" + std::to_string(static_cast<unsigned long long>(observation.residency.helperNonPolicyTotalBytes)) + " optics_base_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsBase))) + " optics_blurred_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsBlurred))) + " optics_aux_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsAux))) + " optics_grain_layer_work_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsGrainLayerWork))) + " optics_grain_shared_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsGrainShared))) + " optics_gate_mask_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsGateMask))) + " spatial_dir_base_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::SpatialDirBase))) + " optics_base_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsBase)) + " optics_blurred_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsBlurred)) + " optics_aux_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsAux)) + " optics_grain_layer_work_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsGrainLayerWork)) + " optics_grain_shared_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsGrainShared)) + " optics_gate_mask_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsGateMask)) + " spatial_dir_base_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::SpatialDirBase)) + " shared_tmp_eligible_now=" + std::to_string(observation.eligibility.sharedTmpEligibleNow ? 1 : 0) + " scan_error_flag_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::ScanErrorFlag))) + " scan_error_host_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::ScanErrorHost))) + " auto_exposure_scale_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureExposureScale))) + " auto_exposure_ev_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureAutoEV))) + " auto_exposure_valid_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureValid))) + " auto_exposure_max_y_bits_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureMaxYBits))) + " auto_exposure_histogram_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureHistogram))) + " auto_exposure_weights_x_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureWeightsX))) + " auto_exposure_weights_y_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureWeightsY))) + " auto_exposure_partials_a_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposurePartialsA))) + " auto_exposure_partials_b_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposurePartialsB))) + trace_device_context_fields(transaction) + " reason=" + trace_or_unspecified(reason);
+            const std::string msg = trace_event_prefix("scratch_checkpoint", transaction, commandName) + " invocation=" + to_cstr(invocation) + " request_active=" + std::to_string(observation.requestActive ? 1 : 0) + " pressure_policy_enabled=" + std::to_string(pressure_policy_enabled(policy) ? 1 : 0) + " policy_source=" + std::string(to_cstr(policy.policySource)) + " policy_device_id=" + std::to_string(policy.policyDeviceId) + " soft_target_bytes=" + std::to_string(static_cast<unsigned long long>(policy.softTargetBytes)) + " reserve_bytes=" + std::to_string(static_cast<unsigned long long>(policy.reserveBytes)) + " reader_matches_submission_policy=1" + " stage1_over_target=" + std::to_string(observation.stage1OverTarget ? 1 : 0) + " stage2_evaluated=" + std::to_string(observation.stage2Evaluated ? 1 : 0) + " stage2_skipped_no_shed_cache=" + std::to_string(observation.stage2SkippedByNoShedCache ? 1 : 0) + " over_target_not_reducible=" + std::to_string(observation.overTargetButNotReducible ? 1 : 0) + " shedding_attempted=" + std::to_string(observation.sheddingAttempted ? 1 : 0) + " shedding_progressed=" + std::to_string(observation.sheddingProgressed ? 1 : 0) + " shedding_partial_failure=" + std::to_string(observation.sheddingPartialFailure ? 1 : 0) + " shedding_target_reached=" + std::to_string(observation.sheddingTargetReached ? 1 : 0) + " shedding_orphaned_shared_tmp_retired=" + std::to_string(observation.sheddingOrphanedSharedTmpRetired ? 1 : 0) + " request_generation=" + std::to_string(static_cast<unsigned long long>(observation.requestDescriptorGeneration)) + " retained_generation=" + std::to_string(static_cast<unsigned long long>(observation.retainedScratchGeneration)) + " scratch_target_bytes=" + std::to_string(static_cast<unsigned long long>(observation.scratchTargetBytes)) + " hysteresis_bytes=" + std::to_string(static_cast<unsigned long long>(observation.hysteresisBytes)) + " policy_live_retained_bytes=" + std::to_string(static_cast<unsigned long long>(observation.policyLiveRetainedBytes)) + " reclaimable_live_bytes=" + std::to_string(static_cast<unsigned long long>(observation.reclaimableLiveBytes)) + " shed_retired_action_count=" + std::to_string(static_cast<unsigned long long>(observation.shedRetiredActionCount)) + " shed_retired_live_bytes=" + std::to_string(static_cast<unsigned long long>(observation.shedRetiredLiveBytes)) + " total_live_retained_bytes=" + std::to_string(static_cast<unsigned long long>(observation.residency.totalLiveRetainedBytes)) + " retire_pending_scratch_bytes=" + std::to_string(static_cast<unsigned long long>(observation.residency.retirePendingScratchBytes)) + " helper_shared_bytes=" + std::to_string(static_cast<unsigned long long>(observation.residency.helperSharedBytes)) + " helper_non_policy_bytes=" + std::to_string(static_cast<unsigned long long>(observation.residency.helperNonPolicyTotalBytes)) + " optics_base_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsBase))) + " optics_blurred_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsBlurred))) + " optics_aux_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsAux))) + " optics_grain_layer_work_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsGrainLayerWork))) + " optics_grain_shared_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsGrainShared))) + " optics_gate_mask_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsGateMask))) + " spatial_dir_base_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::SpatialDirBase))) + " optics_base_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsBase)) + " optics_blurred_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsBlurred)) + " optics_aux_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsAux)) + " optics_grain_layer_work_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsGrainLayerWork)) + " optics_grain_shared_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsGrainShared)) + " optics_gate_mask_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsGateMask)) + " spatial_dir_base_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::SpatialDirBase)) + " shared_tmp_eligible_now=" + std::to_string(observation.eligibility.sharedTmpEligibleNow ? 1 : 0) + " scan_error_flag_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::ScanErrorFlag))) + " scan_error_host_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::ScanErrorHost))) + trace_device_context_fields(transaction) + " reason=" + trace_or_unspecified(reason);
             JTRACE("MSSCP", msg);
 #endif
         }
@@ -2795,6 +2669,7 @@ namespace JuicerCuda {
 #endif
         }
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         struct AdmissionChurnSampleInput {
             std::uint64_t entryDigest = 0;
             std::uint32_t observedProbationHits = 0;
@@ -2875,6 +2750,7 @@ namespace JuicerCuda {
             telemetry_counter_add(global_state().admissionChurnSampleEvents, 1);
             return out;
         }
+#endif
 
         void trace_keep_hot_surface(
             const SubmissionTransaction& transaction,
@@ -3021,6 +2897,7 @@ namespace JuicerCuda {
 #endif
         }
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         std::uint32_t effective_probation_hits_required(
             std::uint32_t baseRequired,
             const AdmissionChurnSnapshot& churnSnapshot) noexcept {
@@ -3136,6 +3013,7 @@ namespace JuicerCuda {
             JTRACE("MSADM", msg);
 #endif
         }
+#endif
 
         void trace_reap_pass(
             const SubmissionTransaction& transaction,
@@ -3629,25 +3507,8 @@ namespace JuicerCuda {
             return out;
         }
 
-        AcquireDecision default_acquire_decision() noexcept {
-            return AcquireDecision{};
-        }
-
-        PressureDecision default_pressure_decision() noexcept {
-            return PressureDecision{};
-        }
-
-        ReservationDecision default_reservation_decision() noexcept {
-            return ReservationDecision{};
-        }
-
-        CacheAdmissionDecision default_cache_admission_decision() noexcept {
-            return CacheAdmissionDecision{};
-        }
-
-
         // Former RM foundation implementation now owned by the RM TU.
-        ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& raw) {
+        ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& raw) noexcept {
             constexpr std::uint64_t kBasisPointsDenom = 10000ull;
             constexpr std::uint32_t kMinLiveManagers = 8u;
             constexpr std::uint32_t kMaxLiveManagers = 32u;
@@ -3985,19 +3846,6 @@ namespace JuicerCuda {
             return value;
         }
 
-        std::uint64_t normalize_key_float(double value, double scale) noexcept {
-            if (!std::isfinite(value) || !std::isfinite(scale) || scale <= 0.0) {
-                return 1;
-            }
-            const double scaled = value * scale;
-            if (!std::isfinite(scaled)) {
-                return 1;
-            }
-            const long long quantized = std::llround(scaled);
-            const std::uint64_t raw = static_cast<std::uint64_t>(quantized);
-            return normalize_key_u64(raw);
-        }
-
         std::uint32_t normalize_scan_lut_resolution(std::uint32_t value) noexcept {
             return std::clamp(value, kScanLutResolutionMin, kScanLutResolutionMax);
         }
@@ -4024,7 +3872,13 @@ namespace JuicerCuda {
                 densityRangeHash,
                 static_cast<std::uint64_t>(normalize_scan_lut_resolution(lutResolution)),
                 static_cast<std::uint64_t>(lutFormatVersion)};
-            return Hash::hash_bytes(fields, sizeof(fields));
+            std::uint64_t digest = Hash::kFnvOffset;
+            const auto* bytes = reinterpret_cast<const std::uint8_t*>(fields);
+            for (std::size_t index = 0; index < sizeof(fields); ++index) {
+                digest ^= static_cast<std::uint64_t>(bytes[index]);
+                digest *= Hash::kFnvPrime;
+            }
+            return digest;
         }
 
         KeyDigests make_key_digests(
@@ -4512,13 +4366,15 @@ namespace JuicerCuda {
 
         void telemetry_trace_schema_announcement(const TelemetryTraceContext& context) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            const std::string msg =
-                telemetry_trace_txn_snapshot_schema_prefix(context) +
-                " expected_schema=" + std::to_string(kTraceSchemaVersion);
-            JTRACE("MSTRC", msg);
+            run_telemetry_trace_noexcept([&]() {
+                if (!JTRACE_ENABLED(1)) {
+                    return;
+                }
+                const std::string msg =
+                    telemetry_trace_txn_snapshot_schema_prefix(context) +
+                    " expected_schema=" + std::to_string(kTraceSchemaVersion);
+                JTRACE("MSTRC", msg);
+            });
 #endif
         }
 
@@ -4530,17 +4386,19 @@ namespace JuicerCuda {
 
         void telemetry_trace_schema_mismatch(const TelemetrySchemaMismatchTrace& trace) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            const std::string msg =
-                telemetry_trace_txn_snapshot_prefix(TelemetryTraceContext{
-                    .transactionId = trace.transactionId,
-                    .snapshotId = trace.snapshotId}) +
-                " observed_schema=" + std::to_string(trace.observedTraceSchemaVersion) +
-                " expected_schema=" + std::to_string(kTraceSchemaVersion) +
-                " reason=trace_schema_mismatch";
-            JTRACE("MSTRC", msg);
+            run_telemetry_trace_noexcept([&]() {
+                if (!JTRACE_ENABLED(1)) {
+                    return;
+                }
+                const std::string msg =
+                    telemetry_trace_txn_snapshot_prefix(TelemetryTraceContext{
+                        .transactionId = trace.transactionId,
+                        .snapshotId = trace.snapshotId}) +
+                    " observed_schema=" + std::to_string(trace.observedTraceSchemaVersion) +
+                    " expected_schema=" + std::to_string(kTraceSchemaVersion) +
+                    " reason=trace_schema_mismatch";
+                JTRACE("MSTRC", msg);
+            });
 #endif
         }
 
@@ -4552,23 +4410,25 @@ namespace JuicerCuda {
 
         void telemetry_trace_key_normalization(const TelemetryKeyNormalizationTrace& trace) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            const KeyDigests& before = *trace.before;
-            const KeyDigests& after = *trace.after;
-            const std::string msg =
-                telemetry_trace_txn_snapshot_schema_prefix(trace.context) +
-                " upload_before=" + std::to_string(before.uploadCoreHash) +
-                " upload_after=" + std::to_string(after.uploadCoreHash) +
-                " dir_before=" + std::to_string(before.dirHash) +
-                " dir_after=" + std::to_string(after.dirHash) +
-                " scanner_before=" + std::to_string(before.scannerHash) +
-                " scanner_after=" + std::to_string(after.scannerHash) +
-                " auto_exposure_before=" + std::to_string(before.autoExposureHash) +
-                " auto_exposure_after=" + std::to_string(after.autoExposureHash) +
-                " reason=canonical_normalization";
-            JTRACE("MSNORM", msg);
+            run_telemetry_trace_noexcept([&]() {
+                if (!JTRACE_ENABLED(1)) {
+                    return;
+                }
+                const KeyDigests& before = *trace.before;
+                const KeyDigests& after = *trace.after;
+                const std::string msg =
+                    telemetry_trace_txn_snapshot_schema_prefix(trace.context) +
+                    " upload_before=" + std::to_string(before.uploadCoreHash) +
+                    " upload_after=" + std::to_string(after.uploadCoreHash) +
+                    " dir_before=" + std::to_string(before.dirHash) +
+                    " dir_after=" + std::to_string(after.dirHash) +
+                    " scanner_before=" + std::to_string(before.scannerHash) +
+                    " scanner_after=" + std::to_string(after.scannerHash) +
+                    " auto_exposure_before=" + std::to_string(before.autoExposureHash) +
+                    " auto_exposure_after=" + std::to_string(after.autoExposureHash) +
+                    " reason=canonical_normalization";
+                JTRACE("MSNORM", msg);
+            });
 #endif
         }
 
@@ -4582,16 +4442,18 @@ namespace JuicerCuda {
 
         void telemetry_trace_invalidation(const TelemetryInvalidationTrace& trace) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            const std::string msg =
-                telemetry_trace_txn_snapshot_schema_prefix(trace.context) +
-                " lane=" + trace_token_or(trace.lane, kTraceTokenUnknown) +
-                " previous_hash=" + std::to_string(trace.previousHash) +
-                " current_hash=" + std::to_string(trace.currentHash) +
-                " reason=" + trace_token_or(trace.reason, kTraceTokenUnknown);
-            JTRACE("MSINV", msg);
+            run_telemetry_trace_noexcept([&]() {
+                if (!JTRACE_ENABLED(1)) {
+                    return;
+                }
+                const std::string msg =
+                    telemetry_trace_txn_snapshot_schema_prefix(trace.context) +
+                    " lane=" + trace_token_or(trace.lane, kTraceTokenUnknown) +
+                    " previous_hash=" + std::to_string(trace.previousHash) +
+                    " current_hash=" + std::to_string(trace.currentHash) +
+                    " reason=" + trace_token_or(trace.reason, kTraceTokenUnknown);
+                JTRACE("MSINV", msg);
+            });
 #endif
         }
 
@@ -4605,16 +4467,18 @@ namespace JuicerCuda {
 
         void telemetry_trace_dag_edge(const TelemetryDagEdgeTrace& trace) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            const std::string msg =
-                telemetry_trace_txn_snapshot_schema_prefix(trace.context) +
-                " from=" + trace_token_or(trace.fromNode, kTraceTokenUnknown) +
-                " to=" + trace_token_or(trace.toNode, kTraceTokenUnknown) +
-                " allowed=" + std::to_string(foundation_bool_u32(trace.allowed)) +
-                " reason=" + trace_token_or(trace.reason, kTraceTokenUnspecified);
-            JTRACE("MSDAG", msg);
+            run_telemetry_trace_noexcept([&]() {
+                if (!JTRACE_ENABLED(1)) {
+                    return;
+                }
+                const std::string msg =
+                    telemetry_trace_txn_snapshot_schema_prefix(trace.context) +
+                    " from=" + trace_token_or(trace.fromNode, kTraceTokenUnknown) +
+                    " to=" + trace_token_or(trace.toNode, kTraceTokenUnknown) +
+                    " allowed=" + std::to_string(foundation_bool_u32(trace.allowed)) +
+                    " reason=" + trace_token_or(trace.reason, kTraceTokenUnspecified);
+                JTRACE("MSDAG", msg);
+            });
 #endif
         }
 
@@ -4625,33 +4489,37 @@ namespace JuicerCuda {
 
         void telemetry_trace_module_boundary_violation(const TelemetryModuleBoundaryViolationTrace& trace) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            const std::string msg =
-                telemetry_trace_txn_snapshot_schema_prefix(trace.context) +
-                " reason=" + trace_token_or(trace.reason, kTraceTokenUnknown);
-            JTRACE("MSCMD", msg);
+            run_telemetry_trace_noexcept([&]() {
+                if (!JTRACE_ENABLED(1)) {
+                    return;
+                }
+                const std::string msg =
+                    telemetry_trace_txn_snapshot_schema_prefix(trace.context) +
+                    " reason=" + trace_token_or(trace.reason, kTraceTokenUnknown);
+                JTRACE("MSCMD", msg);
+            });
 #endif
         }
 
         void telemetry_trace_query_mutation_violation(const TelemetryQueryMutationTrace& trace) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            const std::string msg =
-                telemetry_trace_event_prefix("query_mutation_violation") +
-                " query=" + trace_token_or(trace.queryName, kTraceTokenUnknown) +
-                " reason=" + trace_token_or(trace.reason, kTraceTokenUnknown) +
-                telemetry_trace_device_context_fields(trace.key) +
-                " before_thread_mutation_depth=" + std::to_string(trace.beforeThreadMutationDepth) +
-                " after_thread_mutation_depth=" + std::to_string(trace.afterThreadMutationDepth) +
-                " before_thread_mutation_ticket=" + std::to_string(trace.beforeThreadMutationTicket) +
-                " after_thread_mutation_ticket=" + std::to_string(trace.afterThreadMutationTicket) +
-                " before_thread_mutation_begin_count=" + std::to_string(trace.beforeThreadMutationBeginCount) +
-                " after_thread_mutation_begin_count=" + std::to_string(trace.afterThreadMutationBeginCount);
-            JTRACE("MSCMD", msg);
+            run_telemetry_trace_noexcept([&]() {
+                if (!JTRACE_ENABLED(1)) {
+                    return;
+                }
+                const std::string msg =
+                    telemetry_trace_event_prefix("query_mutation_violation") +
+                    " query=" + trace_token_or(trace.queryName, kTraceTokenUnknown) +
+                    " reason=" + trace_token_or(trace.reason, kTraceTokenUnknown) +
+                    telemetry_trace_device_context_fields(trace.key) +
+                    " before_thread_mutation_depth=" + std::to_string(trace.beforeThreadMutationDepth) +
+                    " after_thread_mutation_depth=" + std::to_string(trace.afterThreadMutationDepth) +
+                    " before_thread_mutation_ticket=" + std::to_string(trace.beforeThreadMutationTicket) +
+                    " after_thread_mutation_ticket=" + std::to_string(trace.afterThreadMutationTicket) +
+                    " before_thread_mutation_begin_count=" + std::to_string(trace.beforeThreadMutationBeginCount) +
+                    " after_thread_mutation_begin_count=" + std::to_string(trace.afterThreadMutationBeginCount);
+                JTRACE("MSCMD", msg);
+            });
 #endif
         }
 
@@ -4664,16 +4532,18 @@ namespace JuicerCuda {
 
         void telemetry_trace_frame_snapshot_mismatch(const TelemetryFrameSnapshotMismatchTrace& trace) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            const std::string msg =
-                telemetry_trace_txn_snapshot_schema_prefix(trace.context) +
-                " frame_token=" + std::to_string(trace.frameToken) +
-                " expected_snapshot_id=" + std::to_string(trace.expectedSnapshotId) +
-                " observed_snapshot_id=" + std::to_string(trace.observedSnapshotId) +
-                " reason=mixed_snapshot_id_for_frame";
-            JTRACE("MSSNP", msg);
+            run_telemetry_trace_noexcept([&]() {
+                if (!JTRACE_ENABLED(1)) {
+                    return;
+                }
+                const std::string msg =
+                    telemetry_trace_txn_snapshot_schema_prefix(trace.context) +
+                    " frame_token=" + std::to_string(trace.frameToken) +
+                    " expected_snapshot_id=" + std::to_string(trace.expectedSnapshotId) +
+                    " observed_snapshot_id=" + std::to_string(trace.observedSnapshotId) +
+                    " reason=mixed_snapshot_id_for_frame";
+                JTRACE("MSSNP", msg);
+            });
 #endif
         }
 
@@ -4686,56 +4556,62 @@ namespace JuicerCuda {
 
         void telemetry_trace_stale_decision(const TelemetryStaleDecisionTrace& trace) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            const StaleInput& input = *trace.input;
-            const StaleDecision& decision = *trace.decision;
-            const std::string msg =
-                telemetry_trace_txn_snapshot_schema_prefix(trace.context) +
-                " stage=" + trace_token_or(trace.stage, kTraceTokenUnknown) +
-                " expected_registry_generation=" + std::to_string(input.expectedRegistryGeneration) +
-                " observed_registry_generation=" + std::to_string(input.observedRegistryGeneration) +
-                " expected_context_epoch=" + std::to_string(input.expectedContextEpoch) +
-                " observed_context_epoch=" + std::to_string(input.observedContextEpoch) +
-                " expected_lease_generation=" + std::to_string(input.expectedLeaseGeneration) +
-                " observed_lease_generation=" + std::to_string(input.observedLeaseGeneration) +
-                " key_schema_mismatch=" + std::to_string(foundation_bool_u32(input.keySchemaMismatch)) +
-                " hard_stale=" + std::to_string(foundation_bool_u32(decision.hardStale)) +
-                " hard_miss=" + std::to_string(foundation_bool_u32(decision.hardMiss)) +
-                " reason=" + to_cstr(decision.reason);
-            JTRACE("MSSTL", msg);
+            run_telemetry_trace_noexcept([&]() {
+                if (!JTRACE_ENABLED(1)) {
+                    return;
+                }
+                const StaleInput& input = *trace.input;
+                const StaleDecision& decision = *trace.decision;
+                const std::string msg =
+                    telemetry_trace_txn_snapshot_schema_prefix(trace.context) +
+                    " stage=" + trace_token_or(trace.stage, kTraceTokenUnknown) +
+                    " expected_registry_generation=" + std::to_string(input.expectedRegistryGeneration) +
+                    " observed_registry_generation=" + std::to_string(input.observedRegistryGeneration) +
+                    " expected_context_epoch=" + std::to_string(input.expectedContextEpoch) +
+                    " observed_context_epoch=" + std::to_string(input.observedContextEpoch) +
+                    " expected_lease_generation=" + std::to_string(input.expectedLeaseGeneration) +
+                    " observed_lease_generation=" + std::to_string(input.observedLeaseGeneration) +
+                    " key_schema_mismatch=" + std::to_string(foundation_bool_u32(input.keySchemaMismatch)) +
+                    " hard_stale=" + std::to_string(foundation_bool_u32(decision.hardStale)) +
+                    " hard_miss=" + std::to_string(foundation_bool_u32(decision.hardMiss)) +
+                    " reason=" + to_cstr(decision.reason);
+                JTRACE("MSSTL", msg);
+            });
 #endif
         }
 
         void telemetry_trace_metadata_mutation(const TelemetryMetadataMutationTrace& trace) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            const std::string msg =
-                telemetry_trace_phase_stage_prefix(TelemetryPhaseStageTrace{.phase = trace.phase, .stage = trace.stage}) +
-                " sequence=" + std::to_string(trace.sequence) +
-                " expected_sequence=" + std::to_string(trace.expectedSequence) +
-                " accepted=" + std::to_string(foundation_bool_u32(trace.accepted)) +
-                " reason=" + trace_token_or(trace.reason, kTraceTokenUnspecified);
-            JTRACE("MSMUT", msg);
+            run_telemetry_trace_noexcept([&]() {
+                if (!JTRACE_ENABLED(1)) {
+                    return;
+                }
+                const std::string msg =
+                    telemetry_trace_phase_stage_prefix(TelemetryPhaseStageTrace{.phase = trace.phase, .stage = trace.stage}) +
+                    " sequence=" + std::to_string(trace.sequence) +
+                    " expected_sequence=" + std::to_string(trace.expectedSequence) +
+                    " accepted=" + std::to_string(foundation_bool_u32(trace.accepted)) +
+                    " reason=" + trace_token_or(trace.reason, kTraceTokenUnspecified);
+                JTRACE("MSMUT", msg);
+            });
 #endif
         }
 
         void telemetry_trace_metadata_queue(const TelemetryMetadataQueueTrace& trace) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            const std::string msg =
-                telemetry_trace_event_stage_prefix(TelemetryEventStageTrace{.eventName = trace.eventName, .stage = trace.stage}) +
-                " ticket=" + std::to_string(trace.ticket) +
-                " depth=" + std::to_string(trace.depth) +
-                " waited_ms=" + std::to_string(trace.waitedMs) +
-                " accepted=" + std::to_string(foundation_bool_u32(trace.accepted)) +
-                " reason=" + trace_token_or(trace.reason, kTraceTokenUnspecified);
-            JTRACE("MSMQ", msg);
+            run_telemetry_trace_noexcept([&]() {
+                if (!JTRACE_ENABLED(1)) {
+                    return;
+                }
+                const std::string msg =
+                    telemetry_trace_event_stage_prefix(TelemetryEventStageTrace{.eventName = trace.eventName, .stage = trace.stage}) +
+                    " ticket=" + std::to_string(trace.ticket) +
+                    " depth=" + std::to_string(trace.depth) +
+                    " waited_ms=" + std::to_string(trace.waitedMs) +
+                    " accepted=" + std::to_string(foundation_bool_u32(trace.accepted)) +
+                    " reason=" + trace_token_or(trace.reason, kTraceTokenUnspecified);
+                JTRACE("MSMQ", msg);
+            });
 #endif
         }
 
@@ -4749,61 +4625,31 @@ namespace JuicerCuda {
 
         void telemetry_trace_acquire(const TelemetryAcquireTrace& trace) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            const ResourcePlan& plan = *trace.plan;
-            std::string msg;
-            msg.reserve(192u + (kResourceKindOrder.size() * 96u));
-            msg =
-                std::string("acquire_id=") + std::to_string(trace.acquireId) +
-                " transaction_id=" + std::to_string(trace.context.transactionId) +
-                " snapshot_id=" + std::to_string(trace.context.snapshotId) +
-                " trace_schema=" + std::to_string(trace.context.traceSchemaVersion) +
-                " final_status=" + to_cstr(trace.finalStatus) +
-                " had_previous=" + std::to_string(foundation_bool_u32(trace.hadPreviousSnapshot));
-            for (ResourceKind kind : kResourceKindOrder) {
-                const ResourcePlanEntry& entry = resource_plan_entry(plan, kind);
-                const ResourceKindContractEntry& contract = resource_kind_contract_entry(kind);
-                msg += std::string(" ") + contract.acquireStatusField + "=" + to_cstr(entry.acquire.status);
-                msg += std::string(" ") + contract.invalidationLane + "_invalidated=" +
-                       std::to_string(foundation_bool_u32(entry.invalidated));
-            }
-            JTRACE("MSACQ", msg);
+            run_telemetry_trace_noexcept([&]() {
+                if (!JTRACE_ENABLED(1)) {
+                    return;
+                }
+                const ResourcePlan& plan = *trace.plan;
+                std::string msg;
+                msg.reserve(192u + (kResourceKindOrder.size() * 96u));
+                msg =
+                    std::string("acquire_id=") + std::to_string(trace.acquireId) +
+                    " transaction_id=" + std::to_string(trace.context.transactionId) +
+                    " snapshot_id=" + std::to_string(trace.context.snapshotId) +
+                    " trace_schema=" + std::to_string(trace.context.traceSchemaVersion) +
+                    " final_status=" + to_cstr(trace.finalStatus) +
+                    " had_previous=" + std::to_string(foundation_bool_u32(trace.hadPreviousSnapshot));
+                for (ResourceKind kind : kResourceKindOrder) {
+                    const ResourcePlanEntry& entry = resource_plan_entry(plan, kind);
+                    const ResourceKindContractEntry& contract = resource_kind_contract_entry(kind);
+                    msg += std::string(" ") + contract.acquireStatusField + "=" + to_cstr(entry.acquire.status);
+                    msg += std::string(" ") + contract.invalidationLane + "_invalidated=" +
+                           std::to_string(foundation_bool_u32(entry.invalidated));
+                }
+                JTRACE("MSACQ", msg);
+            });
 #endif
         }
-
-        struct TelemetryAutoExposureOwnershipTrace {
-            TelemetryTraceContext context{};
-            const char* mode = nullptr;
-            const char* eventName = nullptr;
-            const char* reason = nullptr;
-            std::uint64_t keyHash = 0;
-            int meterWidth = 0;
-            int meterHeight = 0;
-            bool hit = false;
-            bool hadPrevious = false;
-        };
-
-        void telemetry_trace_auto_exposure_ownership(const TelemetryAutoExposureOwnershipTrace& trace) noexcept {
-#if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            const std::string msg =
-                telemetry_trace_txn_snapshot_schema_prefix(trace.context) +
-                " mode=" + trace_token_or(trace.mode, kTraceTokenUnknown) +
-                " event=" + trace_token_or(trace.eventName, kTraceTokenUnknown) +
-                " hit=" + std::to_string(foundation_bool_u32(trace.hit)) +
-                " key_hash=" + std::to_string(trace.keyHash) +
-                " meter_w=" + std::to_string(trace.meterWidth) +
-                " meter_h=" + std::to_string(trace.meterHeight) +
-                " had_previous=" + std::to_string(foundation_bool_u32(trace.hadPrevious)) +
-                " reason=" + trace_token_or(trace.reason, kTraceTokenUnspecified);
-            JTRACE("MSAEX", msg);
-#endif
-        }
-
 
 // Split implementation sections (single-TU include model to preserve exact behavior while
 // reducing monolithic file size and keeping ownership boundaries explicit).

@@ -157,18 +157,18 @@ namespace {
         return copysign(mag, v);
     }
 
-    __device__ __forceinline__ double encode_BT2020d_device(double v, double a, double b) {
-        if (v < b) {
+    __device__ __forceinline__ double encode_BT2020d_device(double v, const JuicerCuda::CctfPayload& cctf) {
+        if (v < static_cast<double>(cctf.b)) {
             return v * 4.5;
         }
-        return a * pow(v, 0.45) - (a - 1.0);
+        return static_cast<double>(cctf.a) * pow(v, 0.45) - (static_cast<double>(cctf.a) - 1.0);
     }
 
-    __device__ __forceinline__ double encode_ProPhotod_device(double v, double threshold, double exponent) {
-        if (v < threshold) {
+    __device__ __forceinline__ double encode_ProPhotod_device(double v, const JuicerCuda::CctfPayload& cctf) {
+        if (v < static_cast<double>(cctf.linearCutoff)) {
             return v * 16.0;
         }
-        return pow(v, exponent);
+        return pow(v, static_cast<double>(cctf.gamma));
     }
 
     __device__ __forceinline__ double encode_DaVinciIntermediated_device(double v, const JuicerCuda::CctfPayload& cctf) {
@@ -188,9 +188,9 @@ namespace {
             case 2:
                 return encode_sRGBd_device(v);
             case 3:
-                return encode_BT2020d_device(v, static_cast<double>(cctf.a), static_cast<double>(cctf.b));
+                return encode_BT2020d_device(v, cctf);
             case 4:
-                return encode_ProPhotod_device(v, static_cast<double>(cctf.linearCutoff), static_cast<double>(cctf.gamma));
+                return encode_ProPhotod_device(v, cctf);
             case 5:
                 return encode_DaVinciIntermediated_device(v, cctf);
             default:
@@ -283,28 +283,56 @@ namespace {
         }
     };
 
-    __device__ __forceinline__ float lognormal_from_mean_std_device(float mean, float stddev, float normalSample) {
-        const float m2 = mean * mean;
-        const float s2 = stddev * stddev;
+    struct LognormalSampleDevice {
+        float mean = 0.0f;
+        float standardDeviation = 0.0f;
+        float normalSample = 0.0f;
+    };
+
+    struct GlareGenerationInput {
+        float* output = nullptr;
+        int width = 0;
+        int height = 0;
+        std::uint64_t seed = 0;
+        std::uint64_t mediumId = 0;
+        int originX = 0;
+        int originY = 0;
+        float percent = 0.0f;
+        float roughness = 0.0f;
+    };
+
+    __device__ __forceinline__ float lognormal_from_mean_std_device(LognormalSampleDevice sample) {
+        const float m2 = sample.mean * sample.mean;
+        const float s2 = sample.standardDeviation * sample.standardDeviation;
         const float sigmaSq = logf(1.0f + (s2 / m2));
         const float sigma = sqrtf(fmaxf(0.0f, sigmaSq));
-        const float mu = logf(fmaxf(1e-12f, mean)) - 0.5f * sigmaSq;
-        return expf(mu + sigma * normalSample);
+        const float mu = logf(fmaxf(1e-12f, sample.mean)) - 0.5f * sigmaSq;
+        return expf(mu + sigma * sample.normalSample);
+    }
+
+    __device__ __forceinline__ int reflect_index_repeat_wide_device(std::int64_t idx, int size) {
+        if (size <= 1) {
+            return 0;
+        }
+        while (idx < 0 || idx >= static_cast<std::int64_t>(size)) {
+            if (idx < 0) {
+                idx = -idx;
+            } else {
+                idx = 2 * static_cast<std::int64_t>(size) - idx - 2;
+            }
+        }
+        return static_cast<int>(idx);
     }
 
 } // namespace
 
-__global__ void optics_glare_generate_kernel(
-    float* out,
-    int width,
-    int height,
-    std::uint64_t glareSeed,
-    std::uint64_t mediumId,
-    int originX,
-    int originY,
-    float percent,
-    float roughness) {
-    if (!out) {
+__global__ void optics_glare_generate_kernel(GlareGenerationInput input) {
+    float* out = input.output;
+    const int width = input.width;
+    const int height = input.height;
+    const float percent = input.percent;
+    const float roughness = input.roughness;
+    if (!out || width <= 0 || height <= 0) {
         return;
     }
     if (!device_isfinite(percent) || !(percent > 0.0f) || !device_isfinite(roughness)) {
@@ -313,18 +341,28 @@ __global__ void optics_glare_generate_kernel(
 
     const float mean = fmaxf(0.0f, percent);
     const float stddev = fmaxf(0.0f, roughness * percent);
-    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < height; y += blockDim.y * gridDim.y) {
-        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < width; x += blockDim.x * gridDim.x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
-            const std::uint64_t absX = static_cast<std::uint64_t>(originX + x);
-            const std::uint64_t absY = static_cast<std::uint64_t>(originY + y);
+    const std::size_t widthCount = static_cast<std::size_t>(width);
+    const std::size_t heightCount = static_cast<std::size_t>(height);
+    const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+    const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+    for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < heightCount; y += yStep) {
+        for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < widthCount; x += xStep) {
+            const std::size_t idx = y * widthCount + x;
+            const std::int64_t absXSigned = static_cast<std::int64_t>(input.originX) + static_cast<std::int64_t>(x);
+            const std::int64_t absYSigned = static_cast<std::int64_t>(input.originY) + static_cast<std::int64_t>(y);
+            const std::uint64_t absX = static_cast<std::uint64_t>(absXSigned);
+            const std::uint64_t absY = static_cast<std::uint64_t>(absYSigned);
 
-            GlareRngDevice rng(glareSeed,
+            GlareRngDevice rng(input.seed,
                                static_cast<std::uint32_t>(absX),
                                static_cast<std::uint32_t>(absY),
-                               static_cast<std::uint32_t>(mediumId));
+                               static_cast<std::uint32_t>(input.mediumId));
             const float n = rng.normal();
-            const float glare = lognormal_from_mean_std_device(mean, stddev, n);
+            LognormalSampleDevice sample{};
+            sample.mean = mean;
+            sample.standardDeviation = stddev;
+            sample.normalSample = n;
+            const float glare = lognormal_from_mean_std_device(sample);
 
             out[idx] = (device_isfinite(glare) && !isnan(glare)) ? glare : 0.0f;
         }
@@ -338,37 +376,42 @@ __global__ void optics_blur_horizontal_kernel(
     int height,
     const float* JUICER_RESTRICT k,
     int radius) {
-    if (!in || !out || !k || radius <= 0) {
+    if (!in || !out || !k || radius <= 0 || width <= 0 || height <= 0) {
         return;
     }
 
-    const int kLen = 2 * radius + 1;
-    const int tileW = blockDim.x + 2 * radius;
+    const std::size_t radiusCount = static_cast<std::size_t>(radius);
+    const std::size_t kLen = 2U * radiusCount + 1U;
+    const std::size_t tileW = static_cast<std::size_t>(blockDim.x) + 2U * radiusCount;
 
-    extern __shared__ float shared[];
-    float* sWeights = shared;
-    float* sTile = shared + kLen;
+    extern __shared__ float horizontalShared[];
+    float* sWeights = horizontalShared;
+    float* sTile = horizontalShared + kLen;
 
-    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
-    const int tcount = blockDim.x * blockDim.y;
-    const int yLocal = threadIdx.y;
+    const std::size_t tid = static_cast<std::size_t>(threadIdx.y) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+    const std::size_t tcount = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(blockDim.y);
+    const std::size_t yLocal = static_cast<std::size_t>(threadIdx.y);
 
-    for (int i = tid; i < kLen; i += tcount) {
+    for (std::size_t i = tid; i < kLen; i += tcount) {
         sWeights[i] = k[i];
     }
     __syncthreads();
 
-    for (int blockY = blockIdx.y * blockDim.y; blockY < height; blockY += blockDim.y * gridDim.y) {
-        for (int blockX = blockIdx.x * blockDim.x; blockX < width; blockX += blockDim.x * gridDim.x) {
-            const int x = blockX + threadIdx.x;
-            const int y = blockY + threadIdx.y;
-            const bool inBounds = (x < width && y < height);
-            const int yLoad = blockY + yLocal;
-            if (yLoad < height) {
-                const size_t rowBase = static_cast<size_t>(yLoad) * static_cast<size_t>(width);
-                for (int i = threadIdx.x; i < tileW; i += blockDim.x) {
-                    const int xLoad = blockX + i - radius;
-                    const int xx = reflect_index_repeat_device(xLoad, width);
+    const std::size_t widthCount = static_cast<std::size_t>(width);
+    const std::size_t heightCount = static_cast<std::size_t>(height);
+    const std::size_t blockYStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+    const std::size_t blockXStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+    for (std::size_t blockY = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y); blockY < heightCount; blockY += blockYStep) {
+        for (std::size_t blockX = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x); blockX < widthCount; blockX += blockXStep) {
+            const std::size_t x = blockX + static_cast<std::size_t>(threadIdx.x);
+            const std::size_t y = blockY + static_cast<std::size_t>(threadIdx.y);
+            const bool inBounds = (x < widthCount && y < heightCount);
+            const std::size_t yLoad = blockY + yLocal;
+            if (yLoad < heightCount) {
+                const std::size_t rowBase = yLoad * widthCount;
+                for (std::size_t i = static_cast<std::size_t>(threadIdx.x); i < tileW; i += static_cast<std::size_t>(blockDim.x)) {
+                    const std::int64_t xLoad = static_cast<std::int64_t>(blockX) + static_cast<std::int64_t>(i) - static_cast<std::int64_t>(radius);
+                    const int xx = reflect_index_repeat_wide_device(xLoad, width);
                     sTile[yLocal * tileW + i] = in[rowBase + static_cast<size_t>(xx)];
                 }
             }
@@ -377,15 +420,15 @@ __global__ void optics_blur_horizontal_kernel(
 
             if (inBounds) {
                 double acc = 0.0;
-                const int tileX = threadIdx.x + radius;
-                const int tileRow = threadIdx.y * tileW;
-                for (int j = -radius; j <= radius; ++j) {
-                    const float v = sTile[tileRow + tileX + j];
-                    const float w = sWeights[j + radius];
+                const std::size_t tileRow = static_cast<std::size_t>(threadIdx.y) * tileW;
+                for (std::size_t kernelOffset = 0; kernelOffset < kLen; ++kernelOffset) {
+                    const std::size_t tileX = static_cast<std::size_t>(threadIdx.x) + kernelOffset;
+                    const float v = sTile[tileRow + tileX];
+                    const float w = sWeights[kernelOffset];
                     acc += static_cast<double>(v) * static_cast<double>(w);
                 }
 
-                out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] =
+                out[y * widthCount + x] =
                     (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
             }
 
@@ -401,39 +444,44 @@ __global__ void optics_blur_vertical_kernel(
     int height,
     const float* JUICER_RESTRICT k,
     int radius) {
-    if (!in || !out || !k || radius <= 0) {
+    if (!in || !out || !k || radius <= 0 || width <= 0 || height <= 0) {
         return;
     }
 
-    const int kLen = 2 * radius + 1;
-    const int tileW = blockDim.x;
-    const int tileH = blockDim.y + 2 * radius;
+    const std::size_t radiusCount = static_cast<std::size_t>(radius);
+    const std::size_t kLen = 2U * radiusCount + 1U;
+    const std::size_t tileW = static_cast<std::size_t>(blockDim.x);
+    const std::size_t tileH = static_cast<std::size_t>(blockDim.y) + 2U * radiusCount;
 
-    extern __shared__ float shared[];
-    float* sWeights = shared;
-    float* sTile = shared + kLen;
+    extern __shared__ float verticalShared[];
+    float* sWeights = verticalShared;
+    float* sTile = verticalShared + kLen;
 
-    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
-    const int tcount = blockDim.x * blockDim.y;
-    const int xLocal = threadIdx.x;
+    const std::size_t tid = static_cast<std::size_t>(threadIdx.y) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+    const std::size_t tcount = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(blockDim.y);
+    const std::size_t xLocal = static_cast<std::size_t>(threadIdx.x);
 
-    for (int i = tid; i < kLen; i += tcount) {
+    for (std::size_t i = tid; i < kLen; i += tcount) {
         sWeights[i] = k[i];
     }
     __syncthreads();
 
-    for (int blockY = blockIdx.y * blockDim.y; blockY < height; blockY += blockDim.y * gridDim.y) {
-        for (int blockX = blockIdx.x * blockDim.x; blockX < width; blockX += blockDim.x * gridDim.x) {
-            const int x = blockX + threadIdx.x;
-            const int y = blockY + threadIdx.y;
-            const bool inBounds = (x < width && y < height);
-            const int xLoad = blockX + xLocal;
-            if (xLoad < width) {
-                for (int i = threadIdx.y; i < tileH; i += blockDim.y) {
-                    const int yLoad = blockY + i - radius;
-                    const int yy = reflect_index_repeat_device(yLoad, height);
+    const std::size_t widthCount = static_cast<std::size_t>(width);
+    const std::size_t heightCount = static_cast<std::size_t>(height);
+    const std::size_t blockYStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+    const std::size_t blockXStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+    for (std::size_t blockY = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y); blockY < heightCount; blockY += blockYStep) {
+        for (std::size_t blockX = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x); blockX < widthCount; blockX += blockXStep) {
+            const std::size_t x = blockX + static_cast<std::size_t>(threadIdx.x);
+            const std::size_t y = blockY + static_cast<std::size_t>(threadIdx.y);
+            const bool inBounds = (x < widthCount && y < heightCount);
+            const std::size_t xLoad = blockX + xLocal;
+            if (xLoad < widthCount) {
+                for (std::size_t i = static_cast<std::size_t>(threadIdx.y); i < tileH; i += static_cast<std::size_t>(blockDim.y)) {
+                    const std::int64_t yLoad = static_cast<std::int64_t>(blockY) + static_cast<std::int64_t>(i) - static_cast<std::int64_t>(radius);
+                    const int yy = reflect_index_repeat_wide_device(yLoad, height);
                     sTile[i * tileW + xLocal] =
-                        in[static_cast<size_t>(yy) * static_cast<size_t>(width) + static_cast<size_t>(xLoad)];
+                        in[static_cast<std::size_t>(yy) * widthCount + xLoad];
                 }
             }
 
@@ -441,14 +489,14 @@ __global__ void optics_blur_vertical_kernel(
 
             if (inBounds) {
                 double acc = 0.0;
-                const int tileY = threadIdx.y + radius;
-                for (int j = -radius; j <= radius; ++j) {
-                    const float v = sTile[(tileY + j) * tileW + xLocal];
-                    const float w = sWeights[j + radius];
+                for (std::size_t kernelOffset = 0; kernelOffset < kLen; ++kernelOffset) {
+                    const std::size_t tileY = static_cast<std::size_t>(threadIdx.y) + kernelOffset;
+                    const float v = sTile[tileY * tileW + xLocal];
+                    const float w = sWeights[kernelOffset];
                     acc += static_cast<double>(v) * static_cast<double>(w);
                 }
 
-                out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] =
+                out[y * widthCount + x] =
                     (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
             }
 
@@ -457,60 +505,62 @@ __global__ void optics_blur_vertical_kernel(
     }
 }
 
-__global__ void optics_unsharp_combine_kernel(float* inOut, const float* JUICER_RESTRICT blurred, int n, float amount) {
-    if (!inOut || !blurred) {
-        return;
-    }
-    const double a = static_cast<double>(amount);
-    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += blockDim.x * gridDim.x) {
-        const double v0 = static_cast<double>(inOut[idx]);
-        const double vb = static_cast<double>(blurred[idx]);
-        const double v = v0 + a * (v0 - vb);
-        inOut[idx] = (isfinite(v) && !isnan(v)) ? static_cast<float>(v) : 0.0f;
-    }
-}
+struct VerticalUnsharpInput {
+    float* output = nullptr;
+    const float* horizontalBlur = nullptr;
+    int width = 0;
+    int height = 0;
+    const float* kernel = nullptr;
+    int radius = 0;
+    float amount = 0.0f;
+};
 
-__global__ void optics_unsharp_vertical_combine_kernel(
-    float* inOut,
-    const float* JUICER_RESTRICT in,
-    int width,
-    int height,
-    const float* JUICER_RESTRICT k,
-    int radius,
-    float amount) {
-    if (!inOut || !in || !k || radius <= 0) {
+__global__ void optics_unsharp_vertical_combine_kernel(VerticalUnsharpInput input) {
+    float* inOut = input.output;
+    const float* JUICER_RESTRICT in = input.horizontalBlur;
+    const int width = input.width;
+    const int height = input.height;
+    const float* JUICER_RESTRICT k = input.kernel;
+    const int radius = input.radius;
+    const float amount = input.amount;
+    if (!inOut || !in || !k || radius <= 0 || width <= 0 || height <= 0) {
         return;
     }
 
-    const int kLen = 2 * radius + 1;
-    const int tileW = blockDim.x;
-    const int tileH = blockDim.y + 2 * radius;
+    const std::size_t radiusCount = static_cast<std::size_t>(radius);
+    const std::size_t kLen = 2U * radiusCount + 1U;
+    const std::size_t tileW = static_cast<std::size_t>(blockDim.x);
+    const std::size_t tileH = static_cast<std::size_t>(blockDim.y) + 2U * radiusCount;
 
-    extern __shared__ float shared[];
-    float* sWeights = shared;
-    float* sTile = shared + kLen;
+    extern __shared__ float unsharpShared[];
+    float* sWeights = unsharpShared;
+    float* sTile = unsharpShared + kLen;
 
-    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
-    const int tcount = blockDim.x * blockDim.y;
-    const int xLocal = threadIdx.x;
+    const std::size_t tid = static_cast<std::size_t>(threadIdx.y) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+    const std::size_t tcount = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(blockDim.y);
+    const std::size_t xLocal = static_cast<std::size_t>(threadIdx.x);
 
-    for (int i = tid; i < kLen; i += tcount) {
+    for (std::size_t i = tid; i < kLen; i += tcount) {
         sWeights[i] = k[i];
     }
     __syncthreads();
 
-    for (int blockY = blockIdx.y * blockDim.y; blockY < height; blockY += blockDim.y * gridDim.y) {
-        for (int blockX = blockIdx.x * blockDim.x; blockX < width; blockX += blockDim.x * gridDim.x) {
-            const int x = blockX + threadIdx.x;
-            const int y = blockY + threadIdx.y;
-            const bool inBounds = (x < width && y < height);
-            const int xLoad = blockX + xLocal;
-            if (xLoad < width) {
-                for (int i = threadIdx.y; i < tileH; i += blockDim.y) {
-                    const int yLoad = blockY + i - radius;
-                    const int yy = reflect_index_repeat_device(yLoad, height);
+    const std::size_t widthCount = static_cast<std::size_t>(width);
+    const std::size_t heightCount = static_cast<std::size_t>(height);
+    const std::size_t blockYStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+    const std::size_t blockXStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+    for (std::size_t blockY = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y); blockY < heightCount; blockY += blockYStep) {
+        for (std::size_t blockX = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x); blockX < widthCount; blockX += blockXStep) {
+            const std::size_t x = blockX + static_cast<std::size_t>(threadIdx.x);
+            const std::size_t y = blockY + static_cast<std::size_t>(threadIdx.y);
+            const bool inBounds = (x < widthCount && y < heightCount);
+            const std::size_t xLoad = blockX + xLocal;
+            if (xLoad < widthCount) {
+                for (std::size_t i = static_cast<std::size_t>(threadIdx.y); i < tileH; i += static_cast<std::size_t>(blockDim.y)) {
+                    const std::int64_t yLoad = static_cast<std::int64_t>(blockY) + static_cast<std::int64_t>(i) - static_cast<std::int64_t>(radius);
+                    const int yy = reflect_index_repeat_wide_device(yLoad, height);
                     sTile[i * tileW + xLocal] =
-                        in[static_cast<size_t>(yy) * static_cast<size_t>(width) + static_cast<size_t>(xLoad)];
+                        in[static_cast<std::size_t>(yy) * widthCount + xLoad];
                 }
             }
 
@@ -518,93 +568,19 @@ __global__ void optics_unsharp_vertical_combine_kernel(
 
             if (inBounds) {
                 double acc = 0.0;
-                const int tileY = threadIdx.y + radius;
-                for (int j = -radius; j <= radius; ++j) {
-                    const float v = sTile[(tileY + j) * tileW + xLocal];
-                    const float w = sWeights[j + radius];
+                for (std::size_t kernelOffset = 0; kernelOffset < kLen; ++kernelOffset) {
+                    const std::size_t tileY = static_cast<std::size_t>(threadIdx.y) + kernelOffset;
+                    const float v = sTile[tileY * tileW + xLocal];
+                    const float w = sWeights[kernelOffset];
                     acc += static_cast<double>(v) * static_cast<double>(w);
                 }
                 const float blurred = (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
 
-                const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+                const std::size_t idx = y * widthCount + x;
                 const double v0 = static_cast<double>(inOut[idx]);
                 const double vb = static_cast<double>(blurred);
                 const double a = static_cast<double>(amount);
                 const double outV = v0 + a * (v0 - vb);
-                inOut[idx] = (isfinite(outV) && !isnan(outV)) ? static_cast<float>(outV) : 0.0f;
-            }
-
-            __syncthreads();
-        }
-    }
-}
-
-__global__ void optics_halation_vertical_apply_kernel(
-    float* inOut,
-    const float* JUICER_RESTRICT in,
-    int width,
-    int height,
-    const float* JUICER_RESTRICT k,
-    int radius,
-    float strength) {
-    if (!inOut || !in || !k || radius <= 0) {
-        return;
-    }
-
-    const float s = strength;
-    if (!(s > 0.0f)) {
-        return;
-    }
-
-    const int kLen = 2 * radius + 1;
-    const int tileW = blockDim.x;
-    const int tileH = blockDim.y + 2 * radius;
-
-    extern __shared__ float shared[];
-    float* sWeights = shared;
-    float* sTile = shared + kLen;
-
-    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
-    const int tcount = blockDim.x * blockDim.y;
-    const int xLocal = threadIdx.x;
-
-    for (int i = tid; i < kLen; i += tcount) {
-        sWeights[i] = k[i];
-    }
-    __syncthreads();
-
-    for (int blockY = blockIdx.y * blockDim.y; blockY < height; blockY += blockDim.y * gridDim.y) {
-        for (int blockX = blockIdx.x * blockDim.x; blockX < width; blockX += blockDim.x * gridDim.x) {
-            const int x = blockX + threadIdx.x;
-            const int y = blockY + threadIdx.y;
-            const bool inBounds = (x < width && y < height);
-            const int xLoad = blockX + xLocal;
-            if (xLoad < width) {
-                for (int i = threadIdx.y; i < tileH; i += blockDim.y) {
-                    const int yLoad = blockY + i - radius;
-                    const int yy = reflect_index_repeat_device(yLoad, height);
-                    sTile[i * tileW + xLocal] =
-                        in[static_cast<size_t>(yy) * static_cast<size_t>(width) + static_cast<size_t>(xLoad)];
-                }
-            }
-
-            __syncthreads();
-
-            if (inBounds) {
-                double acc = 0.0;
-                const int tileY = threadIdx.y + radius;
-                for (int j = -radius; j <= radius; ++j) {
-                    const float v = sTile[(tileY + j) * tileW + xLocal];
-                    const float w = sWeights[j + radius];
-                    acc += static_cast<double>(v) * static_cast<double>(w);
-                }
-                const float blurred = (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
-
-                const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
-                const double a = static_cast<double>(inOut[idx]);
-                const double b = static_cast<double>(blurred);
-                const double sd = static_cast<double>(s);
-                const double outV = (a + sd * b) / (1.0 + sd);
                 inOut[idx] = (isfinite(outV) && !isnan(outV)) ? static_cast<float>(outV) : 0.0f;
             }
 
@@ -619,19 +595,6 @@ __global__ void expose_film_raw_kernel(
     float* outB,
     float* outG,
     float* outR);
-__global__ void film_raw_max_kernel(
-    const float* inB,
-    const float* inG,
-    const float* inR,
-    int n,
-    unsigned int* outMaxBits);
-__global__ void highlight_boost_film_raw_kernel(
-    JuicerCuda::HighlightBoostPayload boost,
-    const unsigned int* maxRawBits,
-    float* inOutB,
-    float* inOutG,
-    float* inOutR,
-    int n);
 __global__ void develop_film_density_kernel(
     JuicerCuda::PipelineRunParams params,
     float* outC,
@@ -661,24 +624,81 @@ __global__ void grain_reconstruct_kernel(
     int addMean);
 __global__ void grain_add_bias_kernel(float* inOut, int n, float bias);
 __global__ void grain_subtract_kernel(float* inOut, const float* sub, int n, float amplitude);
-__global__ void grain_mix_shared_kernel(
-    float* outDelta,
-    const float* indDelta,
-    const float* sharedDelta,
-    int n,
-    float wShared,
-    float wInd,
-    float amplitude);
-__global__ void grain_debug_encode_avg3_kernel(
-    float* outR,
-    float* outG,
-    float* outB,
-    const float* in0,
-    const float* in1,
-    const float* in2,
-    int n,
-    float offset,
-    float scale);
+
+struct GrainMixSharedInput {
+    float* outputDelta = nullptr;
+    const float* independentDelta = nullptr;
+    const float* sharedDelta = nullptr;
+    int count = 0;
+    float sharedWeight = 0.0f;
+    float independentWeight = 0.0f;
+    float amplitude = 0.0f;
+};
+
+__global__ void grain_mix_shared_kernel(GrainMixSharedInput input) {
+    if (input.count <= 0) {
+        return;
+    }
+    const std::size_t index =
+        static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) +
+        static_cast<std::size_t>(threadIdx.x);
+    if (index >= static_cast<std::size_t>(input.count) || !input.outputDelta) {
+        return;
+    }
+    const float sharedWeight = fminf(fmaxf(input.sharedWeight, 0.0f), 1.0f);
+    const float independentWeight = fminf(fmaxf(input.independentWeight, 0.0f), 1.0f);
+    float amplitude = device_isfinite(input.amplitude) ? input.amplitude : 1.0f;
+    if (amplitude < 0.0f) {
+        amplitude = 0.0f;
+    }
+    const float shared =
+        (input.sharedDelta && sharedWeight > 0.0f) ? input.sharedDelta[index] : 0.0f;
+    const float independent =
+        (input.independentDelta && independentWeight > 0.0f) ? input.independentDelta[index] : 0.0f;
+    const float value = amplitude * (sharedWeight * shared + independentWeight * independent);
+    input.outputDelta[index] = device_isfinite(value) ? value : 0.0f;
+}
+
+struct GrainDebugAverageInput {
+    float* outputR = nullptr;
+    float* outputG = nullptr;
+    float* outputB = nullptr;
+    const float* input0 = nullptr;
+    const float* input1 = nullptr;
+    const float* input2 = nullptr;
+    int count = 0;
+    float offset = 0.0f;
+    float scale = 0.0f;
+};
+
+__global__ void grain_debug_encode_avg3_kernel(GrainDebugAverageInput input) {
+    if (input.count <= 0) {
+        return;
+    }
+    const std::size_t index =
+        static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) +
+        static_cast<std::size_t>(threadIdx.x);
+    if (index >= static_cast<std::size_t>(input.count)) {
+        return;
+    }
+    if (!input.outputR || !input.outputG || !input.outputB ||
+        !input.input0 || !input.input1 || !input.input2) {
+        return;
+    }
+    const float scale = device_isfinite(input.scale) ? input.scale : 1.0f;
+    const float offset = device_isfinite(input.offset) ? input.offset : 0.0f;
+    const float value0 = input.input0[index];
+    const float value1 = input.input1[index];
+    const float value2 = input.input2[index];
+    float average = (value0 + value1 + value2) * (1.0f / 3.0f);
+    if (!device_isfinite(average)) {
+        average = 0.0f;
+    }
+    const float output = offset + average * scale;
+    input.outputR[index] = output;
+    input.outputG[index] = output;
+    input.outputB[index] = output;
+}
 __global__ void grain_apply_simple_kernel(
     JuicerCuda::GrainPayload grain,
     int width,
@@ -718,18 +738,57 @@ namespace {
         return t * t * (3.0f - 2.0f * t);
     }
 
+    struct DefectSampleLocation {
+        float xMm = 0.0f;
+        float yMm = 0.0f;
+        float pixelSizeUm = 0.0f;
+    };
+
+    struct DustMaskParams {
+        float amount = 0.0f;
+        std::uint64_t seed = 0;
+        float cellMm = 0.0f;
+        float lambdaPerMm2 = 0.0f;
+        float sizeUm = 0.0f;
+        float strength = 0.0f;
+        float brightMix = 0.0f;
+        float brightScale = 0.0f;
+    };
+
+    struct ScratchMaskParams {
+        float amount = 0.0f;
+        std::uint64_t seed = 0;
+        float cellMmX = 0.0f;
+        float cellMmY = 0.0f;
+        float lambdaPerMm = 0.0f;
+        float widthUm = 0.0f;
+        float strength = 0.0f;
+        float maxAngleRad = 0.0f;
+        float brightMix = 0.0f;
+        float brightScale = 0.0f;
+    };
+
+    struct GateMaskParams {
+        float dustAmount = 0.0f;
+        float scratchAmount = 0.0f;
+        std::uint64_t dustSeed = 0;
+        std::uint64_t scratchSeed = 0;
+    };
+
     __device__ __forceinline__ float dust_mask_device(
-        float amount,
-        float x,
-        float y,
-        float pixelSizeUm,
-        std::uint64_t seed,
-        float cellMm,
-        float lambdaPerMm2,
-        float sizeUm,
-        float strength,
-        float brightMix,
-        float brightScale) {
+        DefectSampleLocation location,
+        DustMaskParams params) {
+        const float amount = params.amount;
+        const float x = location.xMm;
+        const float y = location.yMm;
+        const float pixelSizeUm = location.pixelSizeUm;
+        const std::uint64_t seed = params.seed;
+        const float cellMm = params.cellMm;
+        const float lambdaPerMm2 = params.lambdaPerMm2;
+        const float sizeUm = params.sizeUm;
+        const float strength = params.strength;
+        const float brightMix = params.brightMix;
+        const float brightScale = params.brightScale;
         if (!(amount > 0.0f) || !(pixelSizeUm > 0.0f) || !(cellMm > 0.0f)) {
             return 0.0f;
         }
@@ -770,19 +829,21 @@ namespace {
     }
 
     __device__ __forceinline__ float scratch_mask_device(
-        float amount,
-        float x,
-        float y,
-        float pixelSizeUm,
-        std::uint64_t seed,
-        float cellMmX,
-        float cellMmY,
-        float lambdaPerMm,
-        float widthUm,
-        float strength,
-        float maxAngleRad,
-        float brightMix,
-        float brightScale) {
+        DefectSampleLocation location,
+        ScratchMaskParams params) {
+        const float amount = params.amount;
+        const float x = location.xMm;
+        const float y = location.yMm;
+        const float pixelSizeUm = location.pixelSizeUm;
+        const std::uint64_t seed = params.seed;
+        const float cellMmX = params.cellMmX;
+        const float cellMmY = params.cellMmY;
+        const float lambdaPerMm = params.lambdaPerMm;
+        const float widthUm = params.widthUm;
+        const float strength = params.strength;
+        const float maxAngleRad = params.maxAngleRad;
+        const float brightMix = params.brightMix;
+        const float brightScale = params.brightScale;
         if (!(amount > 0.0f) || !(pixelSizeUm > 0.0f) || !(cellMmX > 0.0f) || !(cellMmY > 0.0f)) {
             return 0.0f;
         }
@@ -831,14 +892,9 @@ namespace {
     }
 
     __device__ __forceinline__ float gate_mask_device(
-        float dustAmount,
-        float scratchAmount,
-        float x,
-        float y,
-        float pixelSizeUm,
-        std::uint64_t seedDust,
-        std::uint64_t seedScratch) {
-        if (!(pixelSizeUm > 0.0f)) {
+        DefectSampleLocation location,
+        GateMaskParams params) {
+        if (!(location.pixelSizeUm > 0.0f)) {
             return 0.0f;
         }
         constexpr float kGateDustCellUm = 600.0f;
@@ -861,10 +917,29 @@ namespace {
         const float gateScratchCellMmX = kGateScratchCellUmX * 0.001f;
         const float gateScratchCellMmY = kGateScratchCellUmY * 0.001f;
 
-        const float gateDust = dust_mask_device(
-            dustAmount, x, y, pixelSizeUm, seedDust, gateDustCellMm, kGateDustBaseProb, kGateDustSizeUm, kGateDustStrength, kGateDustBrightMix, kGateDustBrightScale);
-        const float gateScratch = scratch_mask_device(
-            scratchAmount, x, y, pixelSizeUm, seedScratch, gateScratchCellMmX, gateScratchCellMmY, kGateScratchBaseProb, kGateScratchWidthUm, kGateScratchStrength, kGateScratchMaxAngle, kGateScratchBrightMix, kGateScratchBrightScale);
+        DustMaskParams dustParams{};
+        dustParams.amount = params.dustAmount;
+        dustParams.seed = params.dustSeed;
+        dustParams.cellMm = gateDustCellMm;
+        dustParams.lambdaPerMm2 = kGateDustBaseProb;
+        dustParams.sizeUm = kGateDustSizeUm;
+        dustParams.strength = kGateDustStrength;
+        dustParams.brightMix = kGateDustBrightMix;
+        dustParams.brightScale = kGateDustBrightScale;
+        const float gateDust = dust_mask_device(location, dustParams);
+
+        ScratchMaskParams scratchParams{};
+        scratchParams.amount = params.scratchAmount;
+        scratchParams.seed = params.scratchSeed;
+        scratchParams.cellMmX = gateScratchCellMmX;
+        scratchParams.cellMmY = gateScratchCellMmY;
+        scratchParams.lambdaPerMm = kGateScratchBaseProb;
+        scratchParams.widthUm = kGateScratchWidthUm;
+        scratchParams.strength = kGateScratchStrength;
+        scratchParams.maxAngleRad = kGateScratchMaxAngle;
+        scratchParams.brightMix = kGateScratchBrightMix;
+        scratchParams.brightScale = kGateScratchBrightScale;
+        const float gateScratch = scratch_mask_device(location, scratchParams);
         float gateMask = gateDust + gateScratch;
         if (!device_isfinite(gateMask)) {
             gateMask = 0.0f;
@@ -872,12 +947,20 @@ namespace {
         return gateMask;
     }
 
-    __device__ __forceinline__ float sample_gate_mask_device(
-        const float* mask,
-        int width,
-        int height,
-        float x,
-        float y) {
+    struct GateMaskSample {
+        const float* mask = nullptr;
+        int width = 0;
+        int height = 0;
+        float x = 0.0f;
+        float y = 0.0f;
+    };
+
+    __device__ __forceinline__ float sample_gate_mask_device(GateMaskSample sample) {
+        const float* mask = sample.mask;
+        const int width = sample.width;
+        const int height = sample.height;
+        const float x = sample.x;
+        const float y = sample.y;
         if (!mask || width <= 0 || height <= 0) {
             return 0.0f;
         }
@@ -917,13 +1000,17 @@ __global__ void develop_print_density_kernel(
         return;
     }
 
-    if (!ioC || !ioM || !ioY) {
+    if (!ioC || !ioM || !ioY || params.width <= 0 || params.height <= 0) {
         return;
     }
 
-    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
-        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+    const std::size_t width = static_cast<std::size_t>(params.width);
+    const std::size_t height = static_cast<std::size_t>(params.height);
+    const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+    const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+    for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
+        for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
+            const std::size_t idx = y * width + x;
             float D_cmy[3] = {ioC[idx], ioM[idx], ioY[idx]};
             apply_print_pipeline_device(params.printExpose, params.printDevelop, D_cmy);
             ioC[idx] = D_cmy[0];
@@ -942,13 +1029,17 @@ __global__ void profile_print_develop_spectral_integrate_kernel(
         return;
     }
 
-    if (!ioC || !ioM || !ioY) {
+    if (!ioC || !ioM || !ioY || params.width <= 0 || params.height <= 0) {
         return;
     }
 
-    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
-        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+    const std::size_t width = static_cast<std::size_t>(params.width);
+    const std::size_t height = static_cast<std::size_t>(params.height);
+    const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+    const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+    for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
+        for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
+            const std::size_t idx = y * width + x;
             float D_cmy[3] = {ioC[idx], ioM[idx], ioY[idx]};
             float rawPrint[3] = {0.0f, 0.0f, 0.0f};
             (void)print_spectral_integrate_device(params.printExpose, D_cmy, rawPrint);
@@ -968,13 +1059,17 @@ __global__ void profile_print_develop_exposure_scale_kernel(
         return;
     }
 
-    if (!ioC || !ioM || !ioY) {
+    if (!ioC || !ioM || !ioY || params.width <= 0 || params.height <= 0) {
         return;
     }
 
-    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
-        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+    const std::size_t width = static_cast<std::size_t>(params.width);
+    const std::size_t height = static_cast<std::size_t>(params.height);
+    const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+    const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+    for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
+        for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
+            const std::size_t idx = y * width + x;
             float rawPrint[3] = {ioC[idx], ioM[idx], ioY[idx]};
             print_apply_exposure_scale_device(params.printExpose, rawPrint);
             ioC[idx] = rawPrint[0];
@@ -993,13 +1088,17 @@ __global__ void profile_print_develop_log_encode_kernel(
         return;
     }
 
-    if (!ioC || !ioM || !ioY) {
+    if (!ioC || !ioM || !ioY || params.width <= 0 || params.height <= 0) {
         return;
     }
 
-    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
-        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+    const std::size_t width = static_cast<std::size_t>(params.width);
+    const std::size_t height = static_cast<std::size_t>(params.height);
+    const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+    const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+    for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
+        for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
+            const std::size_t idx = y * width + x;
             const float rawPrint[3] = {ioC[idx], ioM[idx], ioY[idx]};
             float logPrint[3] = {0.0f, 0.0f, 0.0f};
             print_log_encode_device(rawPrint, logPrint);
@@ -1019,13 +1118,17 @@ __global__ void profile_print_develop_density_curve_kernel(
         return;
     }
 
-    if (!ioC || !ioM || !ioY) {
+    if (!ioC || !ioM || !ioY || params.width <= 0 || params.height <= 0) {
         return;
     }
 
-    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
-        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+    const std::size_t width = static_cast<std::size_t>(params.width);
+    const std::size_t height = static_cast<std::size_t>(params.height);
+    const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+    const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+    for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
+        for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
+            const std::size_t idx = y * width + x;
             const float logPrint[3] = {ioC[idx], ioM[idx], ioY[idx]};
             float D_cmy[3] = {0.0f, 0.0f, 0.0f};
             print_sample_density_curves_device(params.printDevelop, logPrint, D_cmy);
@@ -1046,12 +1149,20 @@ namespace {
         return idx;
     }
 
-    __device__ __forceinline__ float sample_plane_mitchell_device(
-        const float* JUICER_RESTRICT plane,
-        int width,
-        int height,
-        float x,
-        float y) {
+    struct MitchellPlaneSample {
+        const float* plane = nullptr;
+        int width = 0;
+        int height = 0;
+        float x = 0.0f;
+        float y = 0.0f;
+    };
+
+    __device__ __forceinline__ float sample_plane_mitchell_device(MitchellPlaneSample sample) {
+        const float* JUICER_RESTRICT plane = sample.plane;
+        const int width = sample.width;
+        const int height = sample.height;
+        float x = sample.x;
+        float y = sample.y;
         if (!plane || width <= 0 || height <= 0) {
             return 0.0f;
         }
@@ -1173,12 +1284,11 @@ namespace {
         float logE_raw[3] = {0.0f, 0.0f, 0.0f};
         float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
         float layerPre[3] = {0.0f, 0.0f, 0.0f};
-        compute_logE_and_layer_pre_device(
-            params,
-            rgbIn,
-            logE_raw,
-            logE_sanitized,
-            layerPre);
+        FilmDevelopIntermediatesDevice intermediates{};
+        intermediates.logERaw = logE_raw;
+        intermediates.logESanitized = logE_sanitized;
+        intermediates.layerPre = layerPre;
+        compute_logE_and_layer_pre_device(params, rgbIn, intermediates);
 
         if (dev.dir.active) {
             float logE_corr[3] = {
@@ -1218,11 +1328,16 @@ namespace {
     template <typename Params>
     __global__ void pipeline_direct_kernel(Params params) {
         const JuicerCuda::ScanStagePayload& scan = params.scanStage;
-        const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-        const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
-        if (x >= params.width || y >= params.height) {
+        if (params.width <= 0 || params.height <= 0) {
             return;
         }
+        const std::size_t xIndex = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+        const std::size_t yIndex = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y);
+        if (xIndex >= static_cast<std::size_t>(params.width) || yIndex >= static_cast<std::size_t>(params.height)) {
+            return;
+        }
+        const int x = static_cast<int>(xIndex);
+        const int y = static_cast<int>(yIndex);
 
         if (!params.src || !params.dst || params.srcRowBytes == 0 || params.dstRowBytes == 0) {
             return;
@@ -1278,9 +1393,7 @@ namespace {
             xyz[1] *= scale;
             xyz[2] *= scale;
         }
-        const std::size_t idx =
-            static_cast<std::size_t>(y) * static_cast<std::size_t>(params.width) +
-            static_cast<std::size_t>(x);
+        const std::size_t idx = yIndex * static_cast<std::size_t>(params.width) + xIndex;
         if (scan.glarePercent) {
             const double glare = static_cast<double>(scan.glarePercent[idx]) * 0.01;
             xyz[0] += glare * static_cast<double>(scan.scanColor.illuminantXYZ[0]);
@@ -1352,15 +1465,18 @@ namespace {
             return;
         }
 
-        const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-        const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
-        if (x >= params.width || y >= params.height) {
+        if (params.width <= 0 || params.height <= 0) {
             return;
         }
+        const std::size_t xIndex = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+        const std::size_t yIndex = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y);
+        if (xIndex >= static_cast<std::size_t>(params.width) || yIndex >= static_cast<std::size_t>(params.height)) {
+            return;
+        }
+        const int x = static_cast<int>(xIndex);
+        const int y = static_cast<int>(yIndex);
 
-        const std::size_t idx =
-            static_cast<std::size_t>(y) * static_cast<std::size_t>(params.width) +
-            static_cast<std::size_t>(x);
+        const std::size_t idx = yIndex * static_cast<std::size_t>(params.width) + xIndex;
         const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
         const char* srcRow = reinterpret_cast<const char*>(params.src) +
                              static_cast<std::size_t>(y) * params.srcRowBytes;
@@ -1386,12 +1502,16 @@ namespace {
         float* outG,
         float* outB) {
         const JuicerCuda::ScanStagePayload& scan = params.scanStage;
-        if (!inC || !inM || !inY || !outR || !outG || !outB) {
+        if (!inC || !inM || !inY || !outR || !outG || !outB || params.width <= 0 || params.height <= 0) {
             return;
         }
-        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
-            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
-                const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+        const std::size_t width = static_cast<std::size_t>(params.width);
+        const std::size_t height = static_cast<std::size_t>(params.height);
+        const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+        const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+        for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
+            for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
+                const std::size_t idx = y * width + x;
                 const float D_cmy[3] = {inC[idx], inM[idx], inY[idx]};
 
                 double D_norm[3];
@@ -1443,24 +1563,37 @@ namespace {
         }
     }
 
+    struct ScanLinearDensityPlanes {
+        const float* densityC = nullptr;
+        const float* densityM = nullptr;
+        const float* densityY = nullptr;
+        const float* glarePercent = nullptr;
+        float* outputR = nullptr;
+        float* outputG = nullptr;
+        float* outputB = nullptr;
+    };
+
     __global__ void scan_linear_density_rgb_kernel(
         JuicerCuda::PipelineRunParams params,
-        const float* inC,
-        const float* inM,
-        const float* inY,
-        const float* glarePercent,
-        float* outR,
-        float* outG,
-        float* outB) {
+        ScanLinearDensityPlanes planes) {
+        const float* inC = planes.densityC;
+        const float* inM = planes.densityM;
+        const float* inY = planes.densityY;
+        const float* glarePercent = planes.glarePercent;
+        float* outR = planes.outputR;
+        float* outG = planes.outputG;
+        float* outB = planes.outputB;
         const JuicerCuda::ScanStagePayload& scan = params.scanStage;
-        if (!inC || !inM || !inY || !outR || !outG || !outB) {
+        if (!inC || !inM || !inY || !outR || !outG || !outB || params.width <= 0 || params.height <= 0) {
             return;
         }
-        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
-            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
-                const size_t idx =
-                    static_cast<size_t>(y) * static_cast<size_t>(params.width) +
-                    static_cast<size_t>(x);
+        const std::size_t width = static_cast<std::size_t>(params.width);
+        const std::size_t height = static_cast<std::size_t>(params.height);
+        const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+        const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+        for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
+            for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
+                const std::size_t idx = y * width + x;
                 const float D_cmy[3] = {inC[idx], inM[idx], inY[idx]};
 
                 double D_norm[3];
@@ -1536,13 +1669,17 @@ namespace {
         float* ioR,
         float* ioG,
         float* ioB) {
-        if (!ioR || !ioG || !ioB) {
+        if (!ioR || !ioG || !ioB || params.width <= 0 || params.height <= 0) {
             return;
         }
         const JuicerCuda::ScanStagePayload& scan = params.scanStage;
-        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
-            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
-                const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+        const std::size_t width = static_cast<std::size_t>(params.width);
+        const std::size_t height = static_cast<std::size_t>(params.height);
+        const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+        const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+        for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
+            for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
+                const std::size_t idx = y * width + x;
                 double rgbOut[3] = {
                     static_cast<double>(ioR[idx]),
                     static_cast<double>(ioG[idx]),
@@ -1564,7 +1701,7 @@ namespace {
         float* ioC,
         float* ioM,
         float* ioY) {
-        if (!ioC || !ioM || !ioY) {
+        if (!ioC || !ioM || !ioY || width <= 0 || height <= 0) {
             return;
         }
         const float dustAmount = grain.filmDustAmount;
@@ -1605,28 +1742,54 @@ namespace {
         const float dustCellMm = kDustCellUm * 0.001f;
         const float scratchCellMmX = kScratchCellUmX * 0.001f;
         const float scratchCellMmY = kScratchCellUmY * 0.001f;
-        for (int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
-             y < height;
-             y += static_cast<int>(blockDim.y * gridDim.y)) {
-            for (int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-                 x < width;
-                 x += static_cast<int>(blockDim.x * gridDim.x)) {
-                const float absX = static_cast<float>(grain.originX + x);
-                const float absY = static_cast<float>(grain.originY + y);
+        const std::size_t widthCount = static_cast<std::size_t>(width);
+        const std::size_t heightCount = static_cast<std::size_t>(height);
+        const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+        const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+        for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < heightCount; y += yStep) {
+            for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < widthCount; x += xStep) {
+                const std::int64_t absXSigned = static_cast<std::int64_t>(grain.originX) + static_cast<std::int64_t>(x);
+                const std::int64_t absYSigned = static_cast<std::int64_t>(grain.originY) + static_cast<std::int64_t>(y);
+                const float absX = static_cast<float>(absXSigned);
+                const float absY = static_cast<float>(absYSigned);
                 const float rollY = absY + rollPx * time;
                 const float xMm = absX * pixelToMm;
                 const float rollYMm = rollY * pixelToMm;
 
-                const float dustMask = dust_mask_device(
-                    dustAmount, xMm, rollYMm, grain.pixelSizeUm, seedDust, dustCellMm, kDustBaseProb, kDustSizeUm, kDustStrength, kDustBrightMix, kDustBrightScale);
-                const float scratchMask = scratch_mask_device(
-                    scratchAmount, xMm, rollYMm, grain.pixelSizeUm, seedScratch, scratchCellMmX, scratchCellMmY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle, kScratchBrightMix, kScratchBrightScale);
+                DefectSampleLocation location{};
+                location.xMm = xMm;
+                location.yMm = rollYMm;
+                location.pixelSizeUm = grain.pixelSizeUm;
+
+                DustMaskParams dustParams{};
+                dustParams.amount = dustAmount;
+                dustParams.seed = seedDust;
+                dustParams.cellMm = dustCellMm;
+                dustParams.lambdaPerMm2 = kDustBaseProb;
+                dustParams.sizeUm = kDustSizeUm;
+                dustParams.strength = kDustStrength;
+                dustParams.brightMix = kDustBrightMix;
+                dustParams.brightScale = kDustBrightScale;
+                const float dustMask = dust_mask_device(location, dustParams);
+
+                ScratchMaskParams scratchParams{};
+                scratchParams.amount = scratchAmount;
+                scratchParams.seed = seedScratch;
+                scratchParams.cellMmX = scratchCellMmX;
+                scratchParams.cellMmY = scratchCellMmY;
+                scratchParams.lambdaPerMm = kScratchBaseProb;
+                scratchParams.widthUm = kScratchWidthUm;
+                scratchParams.strength = kScratchStrength;
+                scratchParams.maxAngleRad = kScratchMaxAngle;
+                scratchParams.brightMix = kScratchBrightMix;
+                scratchParams.brightScale = kScratchBrightScale;
+                const float scratchMask = scratch_mask_device(location, scratchParams);
                 float delta = dustMask + scratchMask;
                 if (!device_isfinite(delta)) {
                     delta = 0.0f;
                 }
                 if (delta != 0.0f) {
-                    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+                    const std::size_t idx = y * widthCount + x;
                     ioC[idx] = ioC[idx] + delta;
                     ioM[idx] = ioM[idx] + delta;
                     ioY[idx] = ioY[idx] + delta;
@@ -1641,7 +1804,7 @@ namespace {
         float* outMask,
         int maskWidth,
         int maskHeight) {
-        if (!outMask) {
+        if (!outMask || maskWidth <= 0 || maskHeight <= 0) {
             return;
         }
 
@@ -1655,10 +1818,14 @@ namespace {
         const std::uint64_t seedGateScratch = splitmix64_device(sessionSeed ^ 0xC6A4A7935BD1E995ULL);
 
         const float pixelToMm = grain.pixelSizeUm * 0.001f;
-        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < maskHeight; y += blockDim.y * gridDim.y) {
-            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < maskWidth; x += blockDim.x * gridDim.x) {
+        const std::size_t width = static_cast<std::size_t>(maskWidth);
+        const std::size_t height = static_cast<std::size_t>(maskHeight);
+        const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+        const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+        for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
+            for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
                 if (!gateActive || !pixelSizeValid) {
-                    outMask[static_cast<size_t>(y) * static_cast<size_t>(maskWidth) + static_cast<size_t>(x)] = 0.0f;
+                    outMask[y * width + x] = 0.0f;
                     continue;
                 }
 
@@ -1667,16 +1834,18 @@ namespace {
                 const float xMm = absX * pixelToMm;
                 const float yMm = absY * pixelToMm;
 
-                const float gateMask = gate_mask_device(
-                    dustAmount,
-                    scratchAmount,
-                    xMm,
-                    yMm,
-                    grain.pixelSizeUm,
-                    seedGateDust,
-                    seedGateScratch);
+                DefectSampleLocation location{};
+                location.xMm = xMm;
+                location.yMm = yMm;
+                location.pixelSizeUm = grain.pixelSizeUm;
+                GateMaskParams gateParams{};
+                gateParams.dustAmount = dustAmount;
+                gateParams.scratchAmount = scratchAmount;
+                gateParams.dustSeed = seedGateDust;
+                gateParams.scratchSeed = seedGateScratch;
+                const float gateMask = gate_mask_device(location, gateParams);
 
-                outMask[static_cast<size_t>(y) * static_cast<size_t>(maskWidth) + static_cast<size_t>(x)] = gateMask;
+                outMask[y * width + x] = gateMask;
             }
         }
     }
@@ -1721,12 +1890,17 @@ namespace {
             const float sourceY = weave.sinRot * offsetX +
                                   weave.cosRot * offsetY +
                                   centerY + weave.dyPx;
-            rgbOut[0] = sample_plane_mitchell_device(
-                rgbR, params.width, params.height, sourceX, sourceY);
-            rgbOut[1] = sample_plane_mitchell_device(
-                rgbG, params.width, params.height, sourceX, sourceY);
-            rgbOut[2] = sample_plane_mitchell_device(
-                rgbB, params.width, params.height, sourceX, sourceY);
+            MitchellPlaneSample planeSample{};
+            planeSample.width = params.width;
+            planeSample.height = params.height;
+            planeSample.x = sourceX;
+            planeSample.y = sourceY;
+            planeSample.plane = rgbR;
+            rgbOut[0] = sample_plane_mitchell_device(planeSample);
+            planeSample.plane = rgbG;
+            rgbOut[1] = sample_plane_mitchell_device(planeSample);
+            planeSample.plane = rgbB;
+            rgbOut[2] = sample_plane_mitchell_device(planeSample);
         } else {
             rgbOut[0] = static_cast<double>(rgbR[idx]);
             rgbOut[1] = static_cast<double>(rgbG[idx]);
@@ -1743,12 +1917,13 @@ namespace {
                 (absoluteX - static_cast<float>(gateDefects.originX)) * 0.5f;
             const float maskY =
                 (absoluteY - static_cast<float>(gateDefects.originY)) * 0.5f;
-            float mask = sample_gate_mask_device(
-                gateMask,
-                gateMaskWidth,
-                gateMaskHeight,
-                maskX,
-                maskY);
+            GateMaskSample maskSample{};
+            maskSample.mask = gateMask;
+            maskSample.width = gateMaskWidth;
+            maskSample.height = gateMaskHeight;
+            maskSample.x = maskX;
+            maskSample.y = maskY;
+            float mask = sample_gate_mask_device(maskSample);
             if (device_isfinite(mask) && mask != 0.0f) {
                 mask = fminf(fmaxf(mask, -0.5f), 0.95f);
                 const double transmittance =
@@ -1998,16 +2173,17 @@ cudaError_t launch_focused_scan_linear_rgb(
         }
         int glareLaunches = 1;
         const std::uint64_t mediumId = params.scanStage.scanTables.mediumIsNegative ? 0ULL : 1ULL;
-        optics_glare_generate_kernel<<<blocks, threads, 0, stream>>>(
-            dTmp,
-            params.width,
-            params.height,
-            options.glareSeed,
-            mediumId,
-            options.glareOriginX,
-            options.glareOriginY,
-            options.glarePercent,
-            options.glareRoughness);
+        GlareGenerationInput glareInput{};
+        glareInput.output = dTmp;
+        glareInput.width = params.width;
+        glareInput.height = params.height;
+        glareInput.seed = options.glareSeed;
+        glareInput.mediumId = mediumId;
+        glareInput.originX = options.glareOriginX;
+        glareInput.originY = options.glareOriginY;
+        glareInput.percent = options.glarePercent;
+        glareInput.roughness = options.glareRoughness;
+        optics_glare_generate_kernel<<<blocks, threads, 0, stream>>>(glareInput);
         cudaError_t error = cudaGetLastError();
         if (error != cudaSuccess) {
             return error;
@@ -2170,8 +2346,8 @@ cudaError_t launch_focused_scan_linear_density_rgb(
         cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
     dim3 threads(32, 8);
     dim3 blocks(
-        static_cast<unsigned int>((params.width + threads.x - 1) / threads.x),
-        static_cast<unsigned int>((params.height + threads.y - 1) / threads.y));
+        (params.width + threads.x - 1) / threads.x,
+        (params.height + threads.y - 1) / threads.y);
 
     const float* glarePercent = nullptr;
     const bool doGlare =
@@ -2186,16 +2362,17 @@ cudaError_t launch_focused_scan_linear_density_rgb(
             return cudaErrorInvalidValue;
         }
         const std::uint64_t mediumId = params.scanStage.scanTables.mediumIsNegative ? 0ULL : 1ULL;
-        optics_glare_generate_kernel<<<blocks, threads, 0, stream>>>(
-            dTmp,
-            params.width,
-            params.height,
-            options.glareSeed,
-            mediumId,
-            options.glareOriginX,
-            options.glareOriginY,
-            options.glarePercent,
-            options.glareRoughness);
+        GlareGenerationInput glareInput{};
+        glareInput.output = dTmp;
+        glareInput.width = params.width;
+        glareInput.height = params.height;
+        glareInput.seed = options.glareSeed;
+        glareInput.mediumId = mediumId;
+        glareInput.originX = options.glareOriginX;
+        glareInput.originY = options.glareOriginY;
+        glareInput.percent = options.glarePercent;
+        glareInput.roughness = options.glareRoughness;
+        optics_glare_generate_kernel<<<blocks, threads, 0, stream>>>(glareInput);
         cudaError_t error = cudaGetLastError();
         if (error != cudaSuccess) {
             return error;
@@ -2218,15 +2395,15 @@ cudaError_t launch_focused_scan_linear_density_rgb(
         glarePercent = dTmp;
     }
 
-    scan_linear_density_rgb_kernel<<<blocks, threads, 0, stream>>>(
-        params,
-        dDensityC,
-        dDensityM,
-        dDensityY,
-        glarePercent,
-        rgb.r,
-        rgb.g,
-        rgb.b);
+    ScanLinearDensityPlanes scanPlanes{};
+    scanPlanes.densityC = dDensityC;
+    scanPlanes.densityM = dDensityM;
+    scanPlanes.densityY = dDensityY;
+    scanPlanes.glarePercent = glarePercent;
+    scanPlanes.outputR = rgb.r;
+    scanPlanes.outputG = rgb.g;
+    scanPlanes.outputB = rgb.b;
+    scan_linear_density_rgb_kernel<<<blocks, threads, 0, stream>>>(params, scanPlanes);
     return cudaGetLastError();
 }
 
@@ -2394,14 +2571,15 @@ cudaError_t launch_focused_scanner_post_output(
             if (localError != cudaSuccess) {
                 return localError;
             }
-            optics_unsharp_vertical_combine_kernel<<<blocks, threads, verticalShared, stream>>>(
-                plane,
-                dTmp,
-                params.width,
-                params.height,
-                dUnsharpKernel,
-                unsharpRadius,
-                unsharpAmount);
+            VerticalUnsharpInput unsharpInput{};
+            unsharpInput.output = plane;
+            unsharpInput.horizontalBlur = dTmp;
+            unsharpInput.width = params.width;
+            unsharpInput.height = params.height;
+            unsharpInput.kernel = dUnsharpKernel;
+            unsharpInput.radius = unsharpRadius;
+            unsharpInput.amount = unsharpAmount;
+            optics_unsharp_vertical_combine_kernel<<<blocks, threads, verticalShared, stream>>>(unsharpInput);
             return cudaGetLastError();
         };
         CudaProfileStageTimer unsharpTimer;
@@ -2497,8 +2675,8 @@ cudaError_t profile_focused_pipeline_stages_impl(
         cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
     dim3 threads(32, 8);
     dim3 blocks(
-        static_cast<unsigned int>((params.width + threads.x - 1) / threads.x),
-        static_cast<unsigned int>((params.height + threads.y - 1) / threads.y));
+        (params.width + threads.x - 1) / threads.x,
+        (params.height + threads.y - 1) / threads.y);
 
     *profile = JuicerCuda::CompositePipelineProfile{};
     profile->width = params.width;
@@ -3262,16 +3440,17 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     float* density[3] = {densityC, densityM, densityY};
     cudaError_t error = cudaSuccess;
     if (grain->debugView == 6) {
-        grain_debug_encode_avg3_kernel<<<blocks1D, threads1D, 0, stream>>>(
-            densityC,
-            densityM,
-            densityY,
-            densityC,
-            densityM,
-            densityY,
-            total,
-            0.0f,
-            grain->debugScale * 4.0f);
+        GrainDebugAverageInput debugInput{};
+        debugInput.outputR = densityC;
+        debugInput.outputG = densityM;
+        debugInput.outputB = densityY;
+        debugInput.input0 = densityC;
+        debugInput.input1 = densityM;
+        debugInput.input2 = densityY;
+        debugInput.count = total;
+        debugInput.offset = 0.0f;
+        debugInput.scale = grain->debugScale * 4.0f;
+        grain_debug_encode_avg3_kernel<<<blocks1D, threads1D, 0, stream>>>(debugInput);
         return cudaGetLastError();
     }
 
@@ -3352,14 +3531,15 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 }
             }
             if (sharedChroma) {
-                grain_mix_shared_kernel<<<blocks1D, threads1D, 0, stream>>>(
-                    deltaAccum,
-                    grain->chromaIndWeight > 0.0f ? deltaAccum : nullptr,
-                    sharedDelta,
-                    total,
-                    grain->chromaSharedWeight,
-                    grain->chromaIndWeight,
-                    amplitude);
+                GrainMixSharedInput mixInput{};
+                mixInput.outputDelta = deltaAccum;
+                mixInput.independentDelta = grain->chromaIndWeight > 0.0f ? deltaAccum : nullptr;
+                mixInput.sharedDelta = sharedDelta;
+                mixInput.count = total;
+                mixInput.sharedWeight = grain->chromaSharedWeight;
+                mixInput.independentWeight = grain->chromaIndWeight;
+                mixInput.amplitude = amplitude;
+                grain_mix_shared_kernel<<<blocks1D, threads1D, 0, stream>>>(mixInput);
                 error = cudaGetLastError();
                 if (error != cudaSuccess) {
                     return error;
@@ -3379,16 +3559,17 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     }
 
     if (grain->debugView != 0) {
-        grain_debug_encode_avg3_kernel<<<blocks1D, threads1D, 0, stream>>>(
-            densityC,
-            densityM,
-            densityY,
-            densityC,
-            densityM,
-            densityY,
-            total,
-            0.5f,
-            grain->debugScale);
+        GrainDebugAverageInput debugInput{};
+        debugInput.outputR = densityC;
+        debugInput.outputG = densityM;
+        debugInput.outputB = densityY;
+        debugInput.input0 = densityC;
+        debugInput.input1 = densityM;
+        debugInput.input2 = densityY;
+        debugInput.count = total;
+        debugInput.offset = 0.5f;
+        debugInput.scale = grain->debugScale;
+        grain_debug_encode_avg3_kernel<<<blocks1D, threads1D, 0, stream>>>(debugInput);
         return cudaGetLastError();
     }
     return cudaSuccess;

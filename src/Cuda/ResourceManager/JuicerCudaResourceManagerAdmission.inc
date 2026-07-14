@@ -392,12 +392,17 @@ const char* admission_upload_saturation_reason(bool criticalCurrentFrame) noexce
     return "upload_allowed_below_shed_threshold";
 }
 
-std::uint64_t admission_open_remaining_ms(std::uint64_t elapsedMs, std::uint32_t openMs) noexcept {
-    const std::uint64_t openMsU64 = static_cast<std::uint64_t>(openMs);
-    if (elapsedMs >= openMsU64) {
+struct AdmissionOpenWindow {
+    std::uint64_t elapsedMs = 0;
+    std::uint32_t openMs = 0;
+};
+
+std::uint64_t admission_open_remaining_ms(AdmissionOpenWindow window) noexcept {
+    const std::uint64_t openMsU64 = static_cast<std::uint64_t>(window.openMs);
+    if (window.elapsedMs >= openMsU64) {
         return 0;
     }
-    return openMsU64 - elapsedMs;
+    return openMsU64 - window.elapsedMs;
 }
 
 std::uint64_t admission_state_age_or_max(
@@ -459,7 +464,12 @@ bool validate_scratch_request_descriptor_for_manager(
     const char* commandName,
     std::string& outError) noexcept {
     if (!scratch_request_descriptor_is_valid(descriptor)) {
-        outError = std::string(trace_or_non_empty(commandName, "scratch_request")) + ": invalid scratch request descriptor";
+        try {
+            outError = std::string(trace_or_non_empty(commandName, "scratch_request")) + ": invalid scratch request descriptor";
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+            outError.clear();
+        }
         return false;
     }
     return true;
@@ -1280,9 +1290,7 @@ bool try_acquire_scratch_policy_claim(
 bool acquire_scratch_policy_claim_with_wait(
     const SubmissionTransaction& transaction,
     const char* commandName,
-    ScratchWorkClass workClass,
-    int width,
-    int height,
+    const ScratchBucketKey& bucketKey,
     std::size_t requestBytes,
     bool criticalCurrentFrame,
     ScratchPolicyClaim& outClaim,
@@ -1291,7 +1299,6 @@ bool acquire_scratch_policy_claim_with_wait(
     outError.clear();
     ResourceManagerState& state = global_state();
 
-    const ScratchBucketKey bucketKey = make_scratch_bucket_key(width, height, workClass);
     const int waitBudgetMs = scratch_wait_budget_ms(bucketKey, requestBytes);
     ScratchPolicySnapshot snapshot{};
     ReservationAttemptInfo reservation{};
@@ -1389,9 +1396,9 @@ bool acquire_scratch_policy_claim_with_wait(
                     .requestBytes = requestBytes,
                     .waitMs = waitedMs});
             if (reservation.considered && !reservation.decision.granted) {
-                outError = std::string(kReservationDeferredPrefix) + " command=" + trace_or_unknown(commandName) + " work_class=" + to_cstr(workClass) + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes)) + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight)) + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes)) + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes)) + " critical_current_frame=" + std::to_string(admission_bool_u32(criticalCurrentFrame)) + " wait_ms=" + std::to_string(waitedMs) + " wait_budget_ms=" + std::to_string(waitBudgetMs) + " reason=" + trace_or_unspecified(reservation.decision.reason);
+                outError = std::string(kReservationDeferredPrefix) + " command=" + trace_or_unknown(commandName) + " work_class=" + to_cstr(bucketKey.workClass) + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes)) + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight)) + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes)) + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes)) + " critical_current_frame=" + std::to_string(admission_bool_u32(criticalCurrentFrame)) + " wait_ms=" + std::to_string(waitedMs) + " wait_budget_ms=" + std::to_string(waitBudgetMs) + " reason=" + trace_or_unspecified(reservation.decision.reason);
             } else {
-                outError = std::string(kScratchExhaustedPrefix) + " command=" + trace_or_unknown(commandName) + " work_class=" + to_cstr(workClass) + " bucket_w=" + std::to_string(bucketKey.widthBucket) + " bucket_h=" + std::to_string(bucketKey.heightBucket) + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes)) + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(snapshot.inFlightBytes)) + " in_flight_sets=" + std::to_string(snapshot.inFlightSets) + " bucket_exhausted=" + std::to_string(snapshot.bucketExhausted) + " bucket_attempts=" + std::to_string(snapshot.bucketAttempts) + " wait_ms=" + std::to_string(waitedMs) + " wait_budget_ms=" + std::to_string(waitBudgetMs);
+                outError = std::string(kScratchExhaustedPrefix) + " command=" + trace_or_unknown(commandName) + " work_class=" + to_cstr(bucketKey.workClass) + " bucket_w=" + std::to_string(bucketKey.widthBucket) + " bucket_h=" + std::to_string(bucketKey.heightBucket) + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes)) + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(snapshot.inFlightBytes)) + " in_flight_sets=" + std::to_string(snapshot.inFlightSets) + " bucket_exhausted=" + std::to_string(snapshot.bucketExhausted) + " bucket_attempts=" + std::to_string(snapshot.bucketAttempts) + " wait_ms=" + std::to_string(waitedMs) + " wait_budget_ms=" + std::to_string(waitBudgetMs);
             }
             return false;
         }
@@ -3243,15 +3250,19 @@ bool run_reap_pass_for_pressure(
     return true;
 }
 
+struct ActiveFrameAdmissionBytes {
+    std::uint64_t request = 0;
+    std::uint64_t reserve = 0;
+    std::uint64_t required = 0;
+    std::uint64_t headroom = 0;
+};
+
 void trace_active_frame_vram_admission(
     const SubmissionTransaction& transaction,
     const char* commandName,
     const PressureCheckpoint& checkpoint,
     const ManagerMemorySnapshot& memory,
-    std::uint64_t requestBytes,
-    std::uint64_t reserveBytes,
-    std::uint64_t requiredBytes,
-    std::uint64_t admissionHeadroomBytes,
+    ActiveFrameAdmissionBytes bytes,
     const char* admissionHeadroomMode,
     bool allowed,
     const char* reason) {
@@ -3262,12 +3273,12 @@ void trace_active_frame_vram_admission(
     const std::string msg =
         trace_event_prefix("active_frame_vram_admission", transaction, commandName) +
         " allowed=" + std::to_string(allowed ? 1 : 0) +
-        " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes)) +
-        " reserve_bytes=" + std::to_string(static_cast<unsigned long long>(reserveBytes)) +
-        " required_bytes=" + std::to_string(static_cast<unsigned long long>(requiredBytes)) +
+        " request_bytes=" + std::to_string(static_cast<unsigned long long>(bytes.request)) +
+        " reserve_bytes=" + std::to_string(static_cast<unsigned long long>(bytes.reserve)) +
+        " required_bytes=" + std::to_string(static_cast<unsigned long long>(bytes.required)) +
         " driver_free_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.driverFreeBytes)) +
         " effective_headroom_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.effectiveHeadroomBytes)) +
-        " admission_headroom_bytes=" + std::to_string(static_cast<unsigned long long>(admissionHeadroomBytes)) +
+        " admission_headroom_bytes=" + std::to_string(static_cast<unsigned long long>(bytes.headroom)) +
         " admission_headroom=" + trace_or_unspecified(admissionHeadroomMode) +
         " retire_pending_bytes=" + std::to_string(static_cast<unsigned long long>(memory.retirePendingBytes)) +
         " manager_active_bytes=" + std::to_string(static_cast<unsigned long long>(memory.activeBytes)) +
@@ -3281,10 +3292,7 @@ void trace_active_frame_vram_admission(
     (void)commandName;
     (void)checkpoint;
     (void)memory;
-    (void)requestBytes;
-    (void)reserveBytes;
-    (void)requiredBytes;
-    (void)admissionHeadroomBytes;
+    (void)bytes;
     (void)admissionHeadroomMode;
     (void)allowed;
     (void)reason;
@@ -3417,6 +3425,11 @@ bool admit_active_frame_vram_growth(
     const std::uint64_t admissionHeadroomBytes =
         active_frame_admission_headroom_bytes(headroomMode, checkpoint);
     const char* admissionHeadroomMode = to_cstr(headroomMode);
+    ActiveFrameAdmissionBytes admissionBytes{};
+    admissionBytes.request = requestBytes64;
+    admissionBytes.reserve = reserveBytes;
+    admissionBytes.required = requiredBytes;
+    admissionBytes.headroom = admissionHeadroomBytes;
     if (!checkpoint.headroom.sampleSuccess || !requiredOk ||
         admissionHeadroomBytes < requiredBytes) {
         const char* reason = !checkpoint.headroom.sampleSuccess
@@ -3430,10 +3443,7 @@ bool admit_active_frame_vram_growth(
             commandName,
             checkpoint,
             memory,
-            requestBytes64,
-            reserveBytes,
-            requiredBytes,
-            admissionHeadroomBytes,
+            admissionBytes,
             admissionHeadroomMode,
             false,
             reason);
@@ -3456,10 +3466,7 @@ bool admit_active_frame_vram_growth(
         commandName,
         checkpoint,
         memory,
-        requestBytes64,
-        reserveBytes,
-        requiredBytes,
-        admissionHeadroomBytes,
+        admissionBytes,
         admissionHeadroomMode,
         true,
         forceReap ? "admitted_after_reap" : "admitted");
@@ -4154,7 +4161,10 @@ bool tier_circuit_begin_attempt(
 
     if (tierState.state == TierCircuitState::Open && blocksAdmission) {
         const std::uint64_t elapsedMs = admission_elapsed_ms_since(nowMs, tierState.openedAtMs);
-        const std::uint64_t openRemainingMs = admission_open_remaining_ms(elapsedMs, openMs);
+        AdmissionOpenWindow openWindow{};
+        openWindow.elapsedMs = elapsedMs;
+        openWindow.openMs = openMs;
+        const std::uint64_t openRemainingMs = admission_open_remaining_ms(openWindow);
         telemetry_counter_add(global_state().tierCircuitBlockedEvents, 1);
         trace_tier_circuit_event(
             transaction,

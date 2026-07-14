@@ -75,13 +75,6 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
-    struct DichroicFilterCurveSet {
-        Spectral::Curve filterY;
-        Spectral::Curve filterM;
-        Spectral::Curve filterC;
-        std::uint64_t version = 0;
-    };
-
     struct IlluminantFilterCurveSet {
         Spectral::Curve d65;
         Spectral::Curve d55;
@@ -150,7 +143,6 @@ namespace JuicerAssets {
     class Library {
     public:
         struct StaticNoiseAssetSet;
-        struct DichroicFilterAssetSet;
         struct IlluminantFilterAssetSet;
 
         // Identity for pinned process-owned spectral assets. Bump when their source set or
@@ -174,7 +166,6 @@ namespace JuicerAssets {
             const NeutralFilterLookupKey& lookupKey,
             NeutralFilterLookupThread threadClass);
         std::shared_ptr<const StaticNoisePayloadSet> static_noise_payloads();
-        const DichroicFilterCurveSet& dichroic_filter_curves_for_choice(int dichroicSetChoice);
         const IlluminantFilterCurveSet& illuminant_filter_curves();
         MeasuredDichroicResourceIdentity measured_dichroic_resource_identity(const std::string& setKey);
         MeasuredDichroicCurveResult measured_dichroic_curves(const std::string& setKey);
@@ -194,12 +185,10 @@ namespace JuicerAssets {
         void ensure_catalogs();
         void ensure_neutral_filter_databases();
         void ensure_static_noise_assets();
-        void ensure_dichroic_filter_sets();
         void ensure_illuminant_filter_assets();
         void load_catalogs();
         void load_neutral_filter_databases();
         void load_static_noise_assets();
-        void load_dichroic_filter_sets();
         void load_illuminant_filter_assets();
         struct NeutralFilterPathLookup {
             const std::string& jsonPath;
@@ -213,14 +202,12 @@ namespace JuicerAssets {
         struct NeutralFilterCacheState;
         struct NeutralFilterDatabasePathSet;
         struct StaticNoisePayloadCacheState;
-        struct DichroicFilterCurveCacheState;
         struct IlluminantFilterCurveCacheState;
         struct ProfileCacheState;
 
         std::once_flag _catalogOnce;
         std::once_flag _neutralFilterOnce;
         std::once_flag _staticNoiseOnce;
-        std::once_flag _dichroicFilterOnce;
         std::once_flag _illuminantFilterOnce;
         std::string _dataDir;
         std::vector<SelectedFilmProfileAsset> _filmStocks;
@@ -229,11 +216,9 @@ namespace JuicerAssets {
         std::array<NeutralFilterDatabaseAsset, 3> _neutralFilterDatabases{};
         std::unique_ptr<NeutralFilterDatabasePathSet[]> _neutralFilterDatabasePaths;
         std::unique_ptr<StaticNoiseAssetSet> _staticNoiseAssets;
-        std::unique_ptr<DichroicFilterAssetSet[]> _dichroicFilterSets;
         std::unique_ptr<IlluminantFilterAssetSet> _illuminantFilterAssets;
         std::unique_ptr<NeutralFilterCacheState> _neutralFilterCache;
         std::unique_ptr<StaticNoisePayloadCacheState> _staticNoisePayloadCache;
-        std::unique_ptr<DichroicFilterCurveCacheState> _dichroicFilterCurveCache;
         std::unique_ptr<IlluminantFilterCurveCacheState> _illuminantFilterCurveCache;
         std::unique_ptr<ProfileCacheState> _profileCache;
         std::unique_ptr<Profiles::ProfileAssetStore> _selectedProfileAssets;

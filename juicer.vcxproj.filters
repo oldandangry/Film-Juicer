@@ -238,9 +238,6 @@
     <CudaCompile Include="src\Cuda\JuicerCudaAutoExposure.cu">
       <Filter>Cuda</Filter>
     </CudaCompile>
-    <CudaCompile Include="src\Cuda\JuicerCudaValidation.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
     <CudaCompile Include="src\Cuda\Film\JuicerCudaFilmPipeline.cu">
       <Filter>Cuda</Filter>
     </CudaCompile>

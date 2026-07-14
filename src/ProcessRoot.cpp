@@ -27,6 +27,7 @@
 #include "JuicerState.h"
 #include "Logging.h"
 #include "SpectralData.h"
+#include "SpectralProcessing.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
@@ -671,6 +672,10 @@ namespace JuicerProcess {
     }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    struct PreparedCudaFailureStage {
+        const char* tag = nullptr;
+    };
+
     struct Root::PreparedCudaFrame::State {
         struct AutoExposureFrameWorkspace {
             JuicerCudaAutoExposureScratch scratch{};
@@ -736,8 +741,11 @@ namespace JuicerProcess {
         const char* failurePrefix = "CUDA prepared frame failed";
         bool failureMarksContextLoss = true;
 
-        void set_failure(const char* stageTag, const char* prefix, bool marksContextLoss = true) noexcept {
-            failureStageTag = stageTag;
+        void set_failure(
+            PreparedCudaFailureStage stage,
+            const char* prefix,
+            bool marksContextLoss = true) noexcept {
+            failureStageTag = stage.tag;
             failurePrefix = prefix;
             failureMarksContextLoss = marksContextLoss;
         }
@@ -1005,16 +1013,25 @@ namespace JuicerProcess {
 
         err = cudaMallocHost(reinterpret_cast<void**>(&next.hostFlag), sizeof(int));
         if (err != cudaSuccess) {
-            next.hostFlag = nullptr;
+            cudaFree(next.deviceFlag);
+            outError = std::string("cudaMallocHost(frame scan error staging) failed: ") +
+                       (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            return false;
         }
 
-        if (next.hostFlag) {
-            cudaEvent_t ev = nullptr;
-            err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
-            if (err == cudaSuccess && ev) {
-                next.eventOpaque = reinterpret_cast<void*>(ev);
+        cudaEvent_t ev = nullptr;
+        err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
+        if (err != cudaSuccess || !ev) {
+            if (ev) {
+                cudaEventDestroy(ev);
             }
+            cudaFreeHost(next.hostFlag);
+            cudaFree(next.deviceFlag);
+            outError = std::string("cudaEventCreateWithFlags(frame scan error staging) failed: ") +
+                       (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            return false;
         }
+        next.eventOpaque = reinterpret_cast<void*>(ev);
 
         next.active = true;
         scanErrorStage = next;
@@ -1132,9 +1149,7 @@ namespace JuicerProcess {
         };
 
         AutoExposureFrameWorkspace next{};
-        if (!alloc_device(next.deviceState.exposureScale, sizeof(float), "frame auto-exposure scale") ||
-            !alloc_device(next.deviceState.autoEV, sizeof(double), "frame auto-exposure autoEV") ||
-            !alloc_device(next.deviceState.valid, sizeof(int), "frame auto-exposure valid")) {
+        if (!alloc_device(next.deviceState.exposureScale, sizeof(float), "frame auto-exposure scale")) {
             autoExposureWorkspace = next;
             free_auto_exposure_workspace_now();
             return false;
@@ -1223,8 +1238,6 @@ namespace JuicerProcess {
             };
 
             retire_ptr(workspace.deviceState.exposureScale, sizeof(float), "frame auto-exposure scale");
-            retire_ptr(workspace.deviceState.autoEV, sizeof(double), "frame auto-exposure autoEV");
-            retire_ptr(workspace.deviceState.valid, sizeof(int), "frame auto-exposure valid");
             retire_ptr(workspace.scratch.maxYBits, sizeof(unsigned int), "frame auto-exposure maxYBits");
             retire_ptr(workspace.scratch.histogram, sizeof(unsigned int) * 2048u, "frame auto-exposure histogram");
             retire_ptr(
@@ -1281,12 +1294,6 @@ namespace JuicerProcess {
         }
         if (workspace.deviceState.exposureScale) {
             cudaFree(workspace.deviceState.exposureScale);
-        }
-        if (workspace.deviceState.autoEV) {
-            cudaFree(workspace.deviceState.autoEV);
-        }
-        if (workspace.deviceState.valid) {
-            cudaFree(workspace.deviceState.valid);
         }
         workspace = AutoExposureFrameWorkspace{};
     }
@@ -2462,11 +2469,15 @@ namespace JuicerProcess {
         }
         if (_state) {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (_state->grainStaticOwner && JTRACE_ENABLED(1)) {
-                const std::string message =
-                    std::string("event=grain_static_abort_owner_reset use_event_recorded=") +
-                    (_state->frameUseEventSubmitted ? "1" : "0");
-                JTRACE("GRAINLIFE", message);
+            try {
+                if (_state->grainStaticOwner && JTRACE_ENABLED(1)) {
+                    const std::string message =
+                        std::string("event=grain_static_abort_owner_reset use_event_recorded=") +
+                        (_state->frameUseEventSubmitted ? "1" : "0");
+                    JTRACE("GRAINLIFE", message);
+                }
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
             }
 #endif
             _state->resources = nullptr;
@@ -2498,7 +2509,7 @@ namespace JuicerProcess {
                 scratchRequest,
                 cudaStreamOpaque,
                 outError)) {
-            _state->set_failure(stageTag, "CUDA current-medium upload failed");
+            _state->set_failure(PreparedCudaFailureStage{stageTag}, "CUDA current-medium upload failed");
             return false;
         }
         return true;
@@ -2528,7 +2539,7 @@ namespace JuicerProcess {
                 scratchRequest,
                 cudaStreamOpaque,
                 outError)) {
-            _state->set_failure(stageTag, failurePrefix);
+            _state->set_failure(PreparedCudaFailureStage{stageTag}, failurePrefix);
             return false;
         }
         return true;
@@ -2545,7 +2556,7 @@ namespace JuicerProcess {
         if (!_state->ensure_scratch_workspace(activeRequest, cudaStreamOpaque, outError)) {
             const bool marksContextLoss = !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
             _state->set_failure(
-                "acquire_frame_scratch_workspace",
+                PreparedCudaFailureStage{"acquire_frame_scratch_workspace"},
                 marksContextLoss
                     ? "CUDA frame scratch workspace acquisition failed"
                     : "CUDA frame scratch workspace admission failed",
@@ -2566,7 +2577,7 @@ namespace JuicerProcess {
                 outError)) {
             const bool marksContextLoss = !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
             _state->set_failure(
-                "command_ensure_optics_scratch",
+                PreparedCudaFailureStage{"command_ensure_optics_scratch"},
                 marksContextLoss
                     ? "CUDA optics scratch allocation failed"
                     : "CUDA optics scratch deferred by contention policy",
@@ -2874,7 +2885,7 @@ namespace JuicerProcess {
             }
             const bool marksContextLoss = !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
             _state->set_failure(
-                "command_ensure_spatial_dir_scratch",
+                PreparedCudaFailureStage{"command_ensure_spatial_dir_scratch"},
                 marksContextLoss
                     ? "CUDA spatial DIR scratch allocation failed"
                     : "CUDA spatial DIR scratch deferred by contention policy",
@@ -2923,7 +2934,7 @@ namespace JuicerProcess {
                     cudaStreamOpaque,
                     outError)) {
                 _state->set_failure(
-                    "command_ensure_spatial_dir_kernel",
+                    PreparedCudaFailureStage{"command_ensure_spatial_dir_kernel"},
                     "CUDA spatial DIR kernel upload failed");
                 return false;
             }
@@ -2993,7 +3004,7 @@ namespace JuicerProcess {
 #endif
         if (!ok) {
             _state->set_failure(
-                "release_spatial_dir_build_scratch_after_build",
+                PreparedCudaFailureStage{"release_spatial_dir_build_scratch_after_build"},
                 "CUDA spatial DIR build scratch release failed");
         }
         return ok;
@@ -3058,7 +3069,7 @@ namespace JuicerProcess {
 #endif
         if (!ok) {
             _state->set_failure(
-                "release_spatial_dir_stage_after_scan_linear",
+                PreparedCudaFailureStage{"release_spatial_dir_stage_after_scan_linear"},
                 "CUDA spatial DIR stage release failed");
         }
         return ok;
@@ -3134,7 +3145,7 @@ namespace JuicerProcess {
 #endif
         if (!ok) {
             _state->set_failure(
-                "stage_spatial_dir_cached_log_raw_for_final_develop",
+                PreparedCudaFailureStage{"stage_spatial_dir_cached_log_raw_for_final_develop"},
                 "CUDA spatial DIR cached log raw staging failed");
         }
         return ok;
@@ -3197,7 +3208,7 @@ namespace JuicerProcess {
 #endif
         if (!ok) {
             _state->set_failure(
-                "release_spatial_dir_cached_log_raw_after_final_develop",
+                PreparedCudaFailureStage{"release_spatial_dir_cached_log_raw_after_final_develop"},
                 "CUDA spatial DIR cached log raw release failed");
         }
         return ok;
@@ -3262,7 +3273,7 @@ namespace JuicerProcess {
                 cudaStreamOpaque,
                 outError)) {
             _state->set_failure(
-                "command_ensure_print_illuminant_filtered",
+                PreparedCudaFailureStage{"command_ensure_print_illuminant_filtered"},
                 "CUDA print illuminant upload failed");
             return false;
         }
@@ -3287,14 +3298,14 @@ namespace JuicerProcess {
                 previousScanErrorDetected,
                 outError)) {
             _state->set_failure(
-                "scan_error_pending_readback",
+                PreparedCudaFailureStage{"scan_error_pending_readback"},
                 "CUDA scan error validation failed");
             return false;
         }
         if (previousScanErrorDetected) {
             JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
             _state->set_failure(
-                "scan_error_previous_readback",
+                PreparedCudaFailureStage{"scan_error_previous_readback"},
                 "CUDA scan error validation failed",
                 false);
             outError = "previous scan produced non-finite RGB";
@@ -3305,7 +3316,7 @@ namespace JuicerProcess {
         outScanErrorFlag = stage.deviceFlag;
         if (!outScanErrorFlag) {
             _state->set_failure(
-                "scan_error_flag_missing",
+                PreparedCudaFailureStage{"scan_error_flag_missing"},
                 "CUDA scan error validation failed",
                 false);
             outError = "scan error flag missing after allocation";
@@ -3316,7 +3327,7 @@ namespace JuicerProcess {
         const cudaError_t flagErr = cudaMemsetAsync(outScanErrorFlag, 0, sizeof(int), stream);
         if (flagErr != cudaSuccess) {
             _state->set_failure(
-                "scan_error_flag_memset",
+                PreparedCudaFailureStage{"scan_error_flag_memset"},
                 "CUDA scan error validation failed");
             outError = "CUDA scan error flag memset failed";
             return false;
@@ -3335,7 +3346,7 @@ namespace JuicerProcess {
         }
         if (!scanErrorFlag) {
             _state->set_failure(
-                "scan_error_flag_missing",
+                PreparedCudaFailureStage{"scan_error_flag_missing"},
                 "CUDA scan error validation failed",
                 false);
             outError = "scan error flag missing after allocation";
@@ -3345,7 +3356,7 @@ namespace JuicerProcess {
         State::ScanErrorFrameStage& stage = _state->scanErrorStage;
         if (scanErrorFlag != stage.deviceFlag) {
             _state->set_failure(
-                "scan_error_flag_mismatch",
+                PreparedCudaFailureStage{"scan_error_flag_mismatch"},
                 "CUDA scan error validation failed",
                 false);
             outError = "scan error flag does not match prepared frame stage";
@@ -3365,7 +3376,7 @@ namespace JuicerProcess {
                 stream);
             if (flagErr != cudaSuccess) {
                 _state->set_failure(
-                    "scan_error_flag_readback",
+                    PreparedCudaFailureStage{"scan_error_flag_readback"},
                     "CUDA scan error validation failed");
                 outError = "CUDA scan error flag readback failed";
                 return false;
@@ -3373,17 +3384,19 @@ namespace JuicerProcess {
             const cudaError_t evErr = cudaEventRecord(scanEvent, stream);
             if (evErr != cudaSuccess) {
                 _state->set_failure(
-                    "scan_error_event_record",
+                    PreparedCudaFailureStage{"scan_error_event_record"},
                     "CUDA scan error validation failed");
                 outError = "CUDA scan error event record failed";
                 return false;
             }
             stage.readbackPending = true;
         } else {
-            static std::atomic<bool> sScanErrorReadbackUnavailableWarned{false};
-            if (!sScanErrorReadbackUnavailableWarned.exchange(true)) {
-                JTRACE("CUDA", "scan error host/event staging unavailable; skipping asynchronous scan-error readback validation");
-            }
+            _state->set_failure(
+                PreparedCudaFailureStage{"scan_error_staging_missing"},
+                "CUDA scan error validation failed",
+                false);
+            outError = "scan error host/event staging missing after allocation";
+            return false;
         }
         return true;
     }
@@ -3406,7 +3419,7 @@ namespace JuicerProcess {
                 failureStageTag,
                 outError)) {
             _state->set_failure(
-                failureStageTag,
+                PreparedCudaFailureStage{failureStageTag},
                 "CUDA scratch phase checkpoint failed");
             return false;
         }
@@ -3435,7 +3448,7 @@ namespace JuicerProcess {
                 failureStageTag,
                 outError)) {
             _state->set_failure(
-                failureStageTag,
+                PreparedCudaFailureStage{failureStageTag},
                 "CUDA large scratch transition checkpoint failed");
             return false;
         }
@@ -3461,7 +3474,7 @@ namespace JuicerProcess {
                 cudaStreamOpaque,
                 outError)) {
             _state->set_failure(
-                "command_ensure_gaussian_kernel",
+                PreparedCudaFailureStage{"command_ensure_gaussian_kernel"},
                 "CUDA gaussian kernel upload failed");
             return false;
         }
@@ -3487,7 +3500,7 @@ namespace JuicerProcess {
                 cudaStreamOpaque,
                 outError)) {
             _state->set_failure(
-                "command_ensure_halation_kernel",
+                PreparedCudaFailureStage{"command_ensure_halation_kernel"},
                 "CUDA halation kernel upload failed");
             return false;
         }
@@ -3607,7 +3620,7 @@ namespace JuicerProcess {
                 membershipChange);
             _state->grainStaticResources = nullptr;
             _state->grainStaticOwner.reset();
-            _state->set_failure(stageTag, failurePrefix);
+            _state->set_failure(PreparedCudaFailureStage{stageTag}, failurePrefix);
             return false;
         };
 
@@ -3799,7 +3812,7 @@ namespace JuicerProcess {
         if (channel < 0 || channel >= 3) {
             outError = "invalid halation kernel slot";
             _state->set_failure(
-                "build_halation_kernel",
+                PreparedCudaFailureStage{"build_halation_kernel"},
                 "CUDA halation kernel upload failed");
             return false;
         }
@@ -3822,7 +3835,7 @@ namespace JuicerProcess {
         if (channel < 0 || channel >= 3) {
             outError = "invalid halation scatter kernel slot";
             _state->set_failure(
-                "build_halation_scatter_kernel",
+                PreparedCudaFailureStage{"build_halation_scatter_kernel"},
                 "CUDA halation scatter kernel upload failed");
             return false;
         }
@@ -3853,49 +3866,11 @@ namespace JuicerProcess {
                 outCudaErrorCode,
                 outError)) {
             _state->set_failure(
-                "command_launch_base_pipeline_graph",
+                PreparedCudaFailureStage{"command_launch_base_pipeline_graph"},
                 "CUDA base graph launch command failed");
             return false;
         }
         return true;
-    }
-
-    bool Root::PreparedCudaFrame::validate_density_primitives(
-        const WorkingState& workingState,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            outError = "prepared frame is not active";
-            return false;
-        }
-        return JuicerCuda::validate_density_primitives(
-            *_state->resources,
-            workingState,
-            cudaStreamOpaque,
-            outError);
-    }
-
-    bool Root::PreparedCudaFrame::validate_print_primitives(
-        const WorkingState& workingState,
-        const Print::Runtime& printRt,
-        const Print::Params& printParams,
-        float midgrayFactor,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            outError = "prepared frame is not active";
-            return false;
-        }
-        return JuicerCuda::validate_print_primitives(
-            *_state->resources,
-            workingState,
-            printRt,
-            printParams,
-            midgrayFactor,
-            cudaStreamOpaque,
-            outError);
     }
 
     Root::PreparedCudaFrame::PreparedVisualGrainView
@@ -4248,9 +4223,7 @@ namespace JuicerProcess {
             histogramReady &&
             partialsReady &&
             weightsReady &&
-            view.deviceState.exposureScale &&
-            view.deviceState.autoEV &&
-            view.deviceState.valid;
+            view.deviceState.exposureScale;
         return view;
     }
 
@@ -4713,20 +4686,25 @@ namespace JuicerProcess {
         _state->resources->scannerScratch.gateMaskHash = gateMaskHash;
     }
 
-    void Root::PreparedCudaFrame::record_use(void* cudaStreamOpaque) noexcept {
-        try {
-            if (!_state ||
-                !_state->resources ||
-                !_state->transaction.active ||
-                _state->transaction.committed ||
-                _state->frameUseEventSubmitted) {
-                return;
-            }
-            std::string ignoredError;
-            (void)_state->submit_frame_use_event(cudaStreamOpaque, ignoredError);
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
+    bool Root::PreparedCudaFrame::record_use(
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active ||
+            _state->transaction.committed) {
+            outError = "prepared frame is not active for use-event submission";
+            return false;
         }
+        if (_state->frameUseEventSubmitted) {
+            return true;
+        }
+        if (!_state->submit_frame_use_event(cudaStreamOpaque, outError)) {
+            _state->set_failure(
+                PreparedCudaFailureStage{"submit_frame_use_event"},
+                "CUDA prepared-frame use fencing failed");
+            return false;
+        }
+        return true;
     }
 
     const char* Root::PreparedCudaFrame::failure_stage_tag() const noexcept {
@@ -5218,9 +5196,9 @@ namespace JuicerProcess {
         PreparedCudaFrame frame(std::move(state));
         frame._state->root = this;
         frame._state->remember_stream(cudaStreamOpaque);
-        frame._state->set_failure("prepare_frame", "CUDA prepared frame failed");
+        frame._state->set_failure(PreparedCudaFailureStage{"prepare_frame"}, "CUDA prepared frame failed");
         if (!begin_submission(frame._state->transaction, snapshot, outError)) {
-            frame._state->set_failure("begin_submission", "begin_submission failed");
+            frame._state->set_failure(PreparedCudaFailureStage{"begin_submission"}, "begin_submission failed");
             return frame;
         }
         if (!resolve_cuda_frame_resources(
@@ -5229,12 +5207,12 @@ namespace JuicerProcess {
                 frame._state->resourceOwner,
                 frame._state->resources,
                 outError)) {
-            frame._state->set_failure("resolve_cuda_resources", "CUDA resource acquisition failed");
+            frame._state->set_failure(PreparedCudaFailureStage{"resolve_cuda_resources"}, "CUDA resource acquisition failed");
             frame.abort("prepared_frame_resource_acquire_failed");
             return frame;
         }
         if (!acquire_submission_plan(frame._state->transaction, outError)) {
-            frame._state->set_failure("acquire_plan", "acquire_plan failed");
+            frame._state->set_failure(PreparedCudaFailureStage{"acquire_plan"}, "acquire_plan failed");
             frame.abort("prepared_frame_acquire_failed");
             return frame;
         }
@@ -5244,13 +5222,13 @@ namespace JuicerProcess {
                 workingState,
                 cudaStreamOpaque,
                 outError)) {
-            frame._state->set_failure("command_ensure_uploaded", "CUDA WorkingState upload failed");
+            frame._state->set_failure(PreparedCudaFailureStage{"command_ensure_uploaded"}, "CUDA WorkingState upload failed");
             frame.abort("prepared_frame_upload_failed");
             return frame;
         }
         if (!frame._state->allocate_scan_error_stage(outError)) {
             frame._state->set_failure(
-                "allocate_scan_error_stage",
+                PreparedCudaFailureStage{"allocate_scan_error_stage"},
                 "CUDA scan error staging allocation failed");
             frame.abort("prepared_frame_scan_error_flag_failed");
             return frame;
@@ -5260,7 +5238,7 @@ namespace JuicerProcess {
                 autoExposureBufferRequest.descriptor,
                 outError)) {
             frame._state->set_failure(
-                "allocate_auto_exposure_workspace",
+                PreparedCudaFailureStage{"allocate_auto_exposure_workspace"},
                 "CUDA auto-exposure workspace allocation failed");
             frame.abort("prepared_frame_auto_exposure_failed");
             return frame;
@@ -5288,7 +5266,7 @@ namespace JuicerProcess {
         frame._state->root = this;
         frame._state->remember_stream(cudaStreamOpaque);
         frame._state->set_failure(
-            "prepare_cuda_frame_print_phase4B",
+            PreparedCudaFailureStage{"prepare_cuda_frame_print_phase4B"},
             "CUDA Phase 4B print prepared frame failed",
             false);
         if (!request.recipe || !request.exposureTables || !request.spdSInv ||
@@ -5333,7 +5311,7 @@ namespace JuicerProcess {
         }
         if (!begin_submission(frame._state->transaction, snapshot, outError)) {
             frame._state->set_failure(
-                "begin_submission_print_phase4B",
+                PreparedCudaFailureStage{"begin_submission_print_phase4B"},
                 "Phase 4B print begin_submission failed");
             return frame;
         }
@@ -5344,14 +5322,14 @@ namespace JuicerProcess {
                 frame._state->resources,
                 outError)) {
             frame._state->set_failure(
-                "resolve_cuda_print_resources_phase4B",
+                PreparedCudaFailureStage{"resolve_cuda_print_resources_phase4B"},
                 "Phase 4B print CUDA resource acquisition failed");
             frame.abort("print_phase4B_resource_acquire_failed");
             return frame;
         }
         if (!acquire_submission_plan(frame._state->transaction, outError)) {
             frame._state->set_failure(
-                "acquire_print_plan_phase4B",
+                PreparedCudaFailureStage{"acquire_print_plan_phase4B"},
                 "Phase 4B print acquire_plan failed");
             frame.abort("print_phase4B_acquire_failed");
             return frame;
@@ -5370,7 +5348,7 @@ namespace JuicerProcess {
                 cudaStreamOpaque,
                 outError)) {
             frame._state->set_failure(
-                "prepare_print_route_resources_phase4C",
+                PreparedCudaFailureStage{"prepare_print_route_resources_phase4C"},
                 "Phase 4C focused print-route resource preparation failed",
                 false);
             frame.abort("print_phase4C_focused_preparation_failed");
@@ -5385,7 +5363,7 @@ namespace JuicerProcess {
                 cudaStreamOpaque,
                 outError)) {
             frame._state->set_failure(
-                "prepare_print_resources_phase4B",
+                PreparedCudaFailureStage{"prepare_print_resources_phase4B"},
                 "Phase 4B print resource preparation failed",
                 false);
             frame.abort("print_phase4B_preparation_failed");
@@ -5402,7 +5380,7 @@ namespace JuicerProcess {
                     cudaStreamOpaque,
                     outError)) {
                 frame._state->set_failure(
-                    "prepare_print_scanner_post_effects_phase8",
+                    PreparedCudaFailureStage{"prepare_print_scanner_post_effects_phase8"},
                     "CUDA print scanner post-effect preparation failed",
                     false);
                 frame.abort("print_phase8_scanner_post_effect_preparation_failed");
@@ -5411,7 +5389,7 @@ namespace JuicerProcess {
         }
         if (!frame._state->allocate_scan_error_stage(outError)) {
             frame._state->set_failure(
-                "allocate_print_scan_error_stage_phase4C",
+                PreparedCudaFailureStage{"allocate_print_scan_error_stage_phase4C"},
                 "CUDA print scan error staging allocation failed");
             frame.abort("print_phase4C_scan_error_flag_failed");
             return frame;
@@ -5421,7 +5399,7 @@ namespace JuicerProcess {
                 autoExposureBufferRequest.descriptor,
                 outError)) {
             frame._state->set_failure(
-                "allocate_print_auto_exposure_workspace_phase4C",
+                PreparedCudaFailureStage{"allocate_print_auto_exposure_workspace_phase4C"},
                 "CUDA print auto-exposure workspace allocation failed");
             frame.abort("print_phase4C_auto_exposure_failed");
             return frame;
@@ -5456,7 +5434,7 @@ namespace JuicerProcess {
         PreparedCudaFrame frame(std::move(state));
         frame._state->root = this;
         frame._state->remember_stream(cudaStreamOpaque);
-        frame._state->set_failure("prepare_cuda_frame_direct", "CUDA direct prepared frame failed");
+        frame._state->set_failure(PreparedCudaFailureStage{"prepare_cuda_frame_direct"}, "CUDA direct prepared frame failed");
         if (!validate_visual_grain_descriptor(
                 request.recipe,
                 request.visualGrainDescriptor,
@@ -5486,7 +5464,7 @@ namespace JuicerProcess {
             return frame;
         }
         if (!begin_submission(frame._state->transaction, snapshot, outError)) {
-            frame._state->set_failure("begin_submission_direct", "direct begin_submission failed");
+            frame._state->set_failure(PreparedCudaFailureStage{"begin_submission_direct"}, "direct begin_submission failed");
             return frame;
         }
         if (!resolve_cuda_frame_resources(
@@ -5495,12 +5473,12 @@ namespace JuicerProcess {
                 frame._state->resourceOwner,
                 frame._state->resources,
                 outError)) {
-            frame._state->set_failure("resolve_cuda_direct_resources", "CUDA direct resource acquisition failed");
+            frame._state->set_failure(PreparedCudaFailureStage{"resolve_cuda_direct_resources"}, "CUDA direct resource acquisition failed");
             frame.abort("direct_prepared_frame_resource_acquire_failed");
             return frame;
         }
         if (!acquire_submission_plan(frame._state->transaction, outError)) {
-            frame._state->set_failure("acquire_direct_plan", "direct acquire_plan failed");
+            frame._state->set_failure(PreparedCudaFailureStage{"acquire_direct_plan"}, "direct acquire_plan failed");
             frame.abort("direct_prepared_frame_acquire_failed");
             return frame;
         }
@@ -5518,7 +5496,7 @@ namespace JuicerProcess {
                 directRequest,
                 cudaStreamOpaque,
                 outError)) {
-            frame._state->set_failure("prepare_direct_resources", "CUDA direct resource preparation failed");
+            frame._state->set_failure(PreparedCudaFailureStage{"prepare_direct_resources"}, "CUDA direct resource preparation failed");
             frame.abort("direct_prepared_frame_upload_failed");
             return frame;
         }
@@ -5532,7 +5510,7 @@ namespace JuicerProcess {
                     cudaStreamOpaque,
                     outError)) {
                 frame._state->set_failure(
-                    "prepare_direct_scanner_post_effects_phase8",
+                    PreparedCudaFailureStage{"prepare_direct_scanner_post_effects_phase8"},
                     "CUDA direct scanner post-effect preparation failed",
                     false);
                 frame.abort("direct_phase8_scanner_post_effect_preparation_failed");
@@ -5540,13 +5518,13 @@ namespace JuicerProcess {
             }
         }
         if (!frame._state->allocate_scan_error_stage(outError)) {
-            frame._state->set_failure("allocate_direct_scan_error_stage", "CUDA direct scan error staging allocation failed");
+            frame._state->set_failure(PreparedCudaFailureStage{"allocate_direct_scan_error_stage"}, "CUDA direct scan error staging allocation failed");
             frame.abort("direct_prepared_frame_scan_error_flag_failed");
             return frame;
         }
         if (autoExposureBufferRequest.enabled &&
             !frame._state->allocate_auto_exposure_workspace(autoExposureBufferRequest.descriptor, outError)) {
-            frame._state->set_failure("allocate_direct_auto_exposure_workspace", "CUDA direct auto-exposure workspace allocation failed");
+            frame._state->set_failure(PreparedCudaFailureStage{"allocate_direct_auto_exposure_workspace"}, "CUDA direct auto-exposure workspace allocation failed");
             frame.abort("direct_prepared_frame_auto_exposure_failed");
             return frame;
         }

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include "SpectralData.h"
 
 // Forward declarations
@@ -28,7 +29,7 @@ namespace Spectral {
     // Input Color Space (consolidated from ColorSpaces.h)
     // ============================================================================
 
-    enum class InputColorSpace {
+    enum class InputColorSpace : std::uint8_t {
         DaVinciWideGamut = 0,
         ITU_R_BT2020,
         ACES2065_1,
@@ -272,9 +273,14 @@ namespace Spectral {
         }
     }
 
-    inline float sanitize_min_positive_channel_or(float v, float minValue, float fallback) {
-        const float value = sanitize_channel(v);
-        return (value > minValue) ? value : fallback;
+    inline float sanitize_raw_midgray_green_or_one(float value) {
+        const float sanitized = sanitize_channel(value);
+        return (sanitized > 1e-9f) ? sanitized : 1.0f;
+    }
+
+    inline float sanitize_exposure_scale_or_one(float value) {
+        const float sanitized = sanitize_channel(value);
+        return (sanitized > 0.0f) ? sanitized : 1.0f;
     }
 
     inline bool is_positive_finite(float v) {
@@ -356,11 +362,15 @@ namespace Spectral {
     // Chromatic Adaptation
     // ============================================================================
 
+    struct ChromaticAdaptationWhites {
+        const float* source = nullptr;
+        const float* destination = nullptr;
+    };
+
     // CAT02/Von Kries based chromatic adaptation (matches colour.XYZ_to_RGB default)
     inline void chromatic_adapt_XYZ_CAT02(
         const float XYZ[3],
-        const float srcWhiteXYZ[3],
-        const float dstWhiteXYZ[3],
+        const ChromaticAdaptationWhites& whites,
         float outXYZ[3]) {
         static const float M[9] = {
             0.7328000f, 0.4296000f, -0.1624000f, -0.7036000f, 1.6975000f, 0.0061000f, 0.0030000f, 0.0136000f, 0.9834000f};
@@ -369,8 +379,8 @@ namespace Spectral {
 
         float srcWhite[3];
         float dstWhite[3];
-        sanitize_nonnegative_triplet(srcWhite, srcWhiteXYZ);
-        sanitize_nonnegative_triplet(dstWhite, dstWhiteXYZ);
+        sanitize_nonnegative_triplet(srcWhite, whites.source);
+        sanitize_nonnegative_triplet(dstWhite, whites.destination);
         normalize_triplet_to_unit_y(srcWhite);
         normalize_triplet_to_unit_y(dstWhite);
 
@@ -394,13 +404,13 @@ namespace Spectral {
         mul_3x3_vec3(M_inv, adaptedLMS, outXYZ);
     }
 
-    inline Mat3 build_chromatic_adaptation_matrix(const float srcWhite[3], const float dstWhite[3]) {
+    inline Mat3 build_chromatic_adaptation_matrix(const ChromaticAdaptationWhites& whites) {
         Mat3 adapt = make_identity_mat3();
         for (int col = 0; col < 3; ++col) {
             float basis[3] = {0.0f, 0.0f, 0.0f};
             basis[col] = 1.0f;
             float adapted[3];
-            chromatic_adapt_XYZ_CAT02(basis, srcWhite, dstWhite, adapted);
+            chromatic_adapt_XYZ_CAT02(basis, whites, adapted);
             for (int row = 0; row < 3; ++row) {
                 adapt.m[row * 3 + col] = adapted[row];
             }
@@ -439,12 +449,12 @@ namespace Spectral {
         bool valid = false;
     };
 
-    inline bool whites_approximately_equal(const float a[3], const float b[3]) {
+    inline bool whites_approximately_equal(const ChromaticAdaptationWhites& whites) {
         auto scale = [](float v) {
             return std::max(1.0f, std::fabs(v));
         };
-        const float* aIt = a;
-        const float* bIt = b;
+        const float* aIt = whites.source;
+        const float* bIt = whites.destination;
         for (int i = 0; i < 3; ++i, ++aIt, ++bIt) {
             const float av = *aIt;
             const float bv = *bIt;
@@ -463,9 +473,12 @@ namespace Spectral {
         sanitize_white_or_dwg(cfg.inputWhiteXYZ, cfg.inputWhiteXYZ);
         sanitize_white_or_dwg(cfg.workingWhiteXYZ, cfg.workingWhiteXYZ);
 
-        cfg.applyInputChromaticAdapt = !whites_approximately_equal(cfg.inputWhiteXYZ, cfg.workingWhiteXYZ);
+        ChromaticAdaptationWhites whites{};
+        whites.source = cfg.inputWhiteXYZ;
+        whites.destination = cfg.workingWhiteXYZ;
+        cfg.applyInputChromaticAdapt = !whites_approximately_equal(whites);
         if (cfg.applyInputChromaticAdapt) {
-            cfg.inputXYZAdapt = build_chromatic_adaptation_matrix(cfg.inputWhiteXYZ, cfg.workingWhiteXYZ);
+            cfg.inputXYZAdapt = build_chromatic_adaptation_matrix(whites);
             if (!mat3_has_only_finite(cfg.inputXYZAdapt)) {
                 cfg.inputXYZAdapt = make_identity_mat3();
                 cfg.applyInputChromaticAdapt = false;
@@ -636,10 +649,14 @@ namespace Spectral {
         return path;
     }
 
+    struct ReconstructionRgbInputs {
+        const float* input = nullptr;
+        const float* davinciWideGamut = nullptr;
+    };
+
     inline void compute_layer_exposures_from_reconstruction_path(
         const FilmRawConfig& cfg,
-        const float rgbIn[3],
-        const float rgbDWG[3],
+        const ReconstructionRgbInputs& rgb,
         const SpectralTables* tablesSPD,
         const float* S_inv,
         const Curve& sB,
@@ -654,13 +671,22 @@ namespace Spectral {
 
         if (path.useMallett) {
             float rgbSRGB[3];
-            convert_input_rgb_to_sRGB_linear(cfg, rgbIn, rgbSRGB, nullptr);
+            convert_input_rgb_to_sRGB_linear(cfg, rgb.input, rgbSRGB, nullptr);
             mallett2019_exposures_from_linear_srgb(rgbSRGB, *tablesSPD, sB, sG, sR, E);
             return;
         }
 
         rgbDWG_to_layerExposures_from_tables_with_curves(
-            rgbDWG, E, 1.0f, tablesSPD, S_inv, sB, sG, sR, cfg.spectralUpsamplingMode, cfg.refIllumWhiteXYZ);
+            rgb.davinciWideGamut,
+            E,
+            1.0f,
+            tablesSPD,
+            S_inv,
+            sB,
+            sG,
+            sR,
+            cfg.spectralUpsamplingMode,
+            cfg.refIllumWhiteXYZ);
     }
 
     inline void compute_film_raw_midgray(
@@ -691,10 +717,12 @@ namespace Spectral {
             return;
         }
 
+        ReconstructionRgbInputs rgbInputs{};
+        rgbInputs.input = rgbMid;
+        rgbInputs.davinciWideGamut = rgbMidDWG;
         compute_layer_exposures_from_reconstruction_path(
             cfg,
-            rgbMid,
-            rgbMidDWG,
+            rgbInputs,
             tablesSPD,
             S_inv,
             sB,
@@ -704,7 +732,7 @@ namespace Spectral {
             E);
 
         copy_triplet(cfg.rawMidgray, E);
-        const float safeGreen = sanitize_min_positive_channel_or(E[1], 1e-9f, 1.0f);
+        const float safeGreen = sanitize_raw_midgray_green_or_one(E[1]);
         cfg.rawMidgrayGreen = safeGreen;
         cfg.midgrayScale = 1.0f / safeGreen;
         if (!is_positive_finite(cfg.midgrayScale)) {
@@ -743,10 +771,12 @@ namespace Spectral {
         float normScale = cfg.midgrayScale;
 #endif
         if (path.spdReady) {
+            ReconstructionRgbInputs rgbInputs{};
+            rgbInputs.input = rgbIn;
+            rgbInputs.davinciWideGamut = rgbDWG;
             compute_layer_exposures_from_reconstruction_path(
                 cfg,
-                rgbIn,
-                rgbDWG,
+                rgbInputs,
                 tablesSPD,
                 S_inv,
                 sB,
@@ -763,7 +793,7 @@ namespace Spectral {
         spd_probe_finalize(normScale, E);
 #endif
 
-        const float sExp = sanitize_min_positive_channel_or(exposureScale, 0.0f, 1.0f);
+        const float sExp = sanitize_exposure_scale_or_one(exposureScale);
         if (sExp != 1.0f) {
             scale_triplet_nonnegative_inplace(E, sExp);
         }
@@ -781,7 +811,10 @@ namespace Spectral {
         sanitize_white_or_dwg(tables.whiteXYZ, srcWhite);
 
         float adaptedXYZ[3];
-        chromatic_adapt_XYZ_CAT02(XYZ, srcWhite, gDWG_WhitePoint_XYZ, adaptedXYZ);
+        ChromaticAdaptationWhites whites{};
+        whites.source = srcWhite;
+        whites.destination = gDWG_WhitePoint_XYZ;
+        chromatic_adapt_XYZ_CAT02(XYZ, whites, adaptedXYZ);
         gDWG_XYZ_to_RGB.mul(adaptedXYZ, RGB);
     }
 
