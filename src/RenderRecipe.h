@@ -627,6 +627,8 @@ struct VisualGrainControls {
 struct VisualGrainRecipe {
     bool active = false;
     bool sublayersActive = false;
+    std::array<bool, 3> grainLayerAxisFinite{};
+    std::array<std::array<float, 16>, 3> grainLayerAxisBlockPrefixMax{};
     float particleAreaUm2 = 0.0f;
     std::array<float, 3> particleScaleCmy{};
     std::array<float, 3> particleScaleLayers{};

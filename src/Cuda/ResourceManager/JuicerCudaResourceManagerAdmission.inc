@@ -2283,6 +2283,7 @@ std::size_t estimate_optics_growth_bytes(
     bool aliasScannerRgbFromSpatialDirFiltered,
     bool needAuxScratch,
     bool needSharedTmpScratch,
+    bool needGrainFrameUniforms,
     bool needGrainLayerWorkScratch,
     bool needGrainSharedScratch,
     bool needGateMask) noexcept {
@@ -2332,6 +2333,10 @@ std::size_t estimate_optics_growth_bytes(
     }
     if (needAuxScratch && (fullRebuild || !scratch.aux)) {
         addPlane();
+    }
+    if (needGrainFrameUniforms &&
+        (fullRebuild || !scratch.grainFrameUniforms)) {
+        addBytes(sizeof(JuicerCuda::GrainFrameUniforms));
     }
     if (needGrainLayerWorkScratch) {
         if (fullRebuild || !scratch.grainTmp) {
@@ -2573,6 +2578,9 @@ std::size_t estimate_scratch_request_allocation_bytes(
         }
         if (descriptor.needAux) {
             add_plane(1);
+        }
+        if (descriptor.needGrainFrameUniforms) {
+            add_bytes(sizeof(JuicerCuda::GrainFrameUniforms));
         }
         if (descriptor.needGrainLayerWork) {
             add_plane(1);

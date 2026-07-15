@@ -426,6 +426,7 @@ namespace JuicerCuda {
             bool aliasScannerRgbFromSpatialDirFiltered = false;
             bool needAux = false;
             bool needSharedTmp = false;
+            bool needGrainFrameUniforms = false;
             bool needGrainLayerWork = false;
             bool needGrainShared = false;
             bool needGateMask = false;
@@ -456,6 +457,7 @@ namespace JuicerCuda {
             bool aliasScannerRgbFromSpatialDirFiltered = false;
             bool needAux = false;
             bool needSharedTmp = false;
+            bool needGrainFrameUniforms = false;
             bool needGrainLayerWork = false;
             bool needGrainShared = false;
             bool needGateMask = false;
@@ -497,6 +499,7 @@ namespace JuicerCuda {
                 (descriptor.needBlurred ||
                  descriptor.aliasScannerRgbFromSpatialDirFiltered ||
                  descriptor.needAux ||
+                 descriptor.needGrainFrameUniforms ||
                  descriptor.needGrainLayerWork ||
                  descriptor.needGrainShared ||
                  descriptor.needGateMask)) {
@@ -550,6 +553,7 @@ namespace JuicerCuda {
             mix(descriptor.aliasScannerRgbFromSpatialDirFiltered ? 1ull : 0ull);
             mix(descriptor.needAux ? 1ull : 0ull);
             mix(descriptor.needSharedTmp ? 1ull : 0ull);
+            mix(descriptor.needGrainFrameUniforms ? 1ull : 0ull);
             mix(descriptor.needGrainLayerWork ? 1ull : 0ull);
             mix(descriptor.needGrainShared ? 1ull : 0ull);
             mix(descriptor.needGateMask ? 1ull : 0ull);
@@ -580,6 +584,9 @@ namespace JuicerCuda {
                 request.attachments.aliasScannerRgbFromSpatialDirFiltered;
             descriptor.needAux = request.families.needOptics && request.attachments.needAux;
             descriptor.needSharedTmp = request.attachments.needSharedTmp;
+            descriptor.needGrainFrameUniforms =
+                request.families.needOptics &&
+                request.attachments.needGrainFrameUniforms;
             descriptor.needGrainLayerWork = request.families.needOptics && request.attachments.needGrainLayerWork;
             descriptor.needGrainShared = request.families.needOptics && request.attachments.needGrainShared;
             descriptor.needGateMask = request.families.needOptics && request.attachments.needGateMask;

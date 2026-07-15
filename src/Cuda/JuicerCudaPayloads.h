@@ -160,6 +160,28 @@ namespace JuicerCuda {
         int scatteringRadius[3] = {0, 0, 0};
     };
 
+    struct alignas(16) GrainFrameUniforms {
+        std::uint64_t breathingSeedA = 0;
+        std::uint64_t breathingSeedB = 0;
+        std::uint64_t clumpStaticSeed = 0;
+        float breathingT = 0.0f;
+        float breathingCellSmallPx = 0.0f;
+        float breathingCellLargePx = 0.0f;
+        float breathingDriftOffsetX = 0.0f;
+        float breathingDriftOffsetY = 0.0f;
+        float breathingRollOffsetY = 0.0f;
+        float breathingMix = 0.0f;
+        float clumpCellPx = 0.0f;
+        float clumpRollOffsetY = 0.0f;
+        float clumpMu = 0.0f;
+        float clumpSigma = 0.0f;
+        float clumpRmsNorm = 1.0f;
+        int breathingActive = 0;
+        int clumpActive = 0;
+    };
+
+    static_assert(sizeof(GrainFrameUniforms) == 80);
+
     struct GrainPayload {
         int active = 0;
         int sublayersActive = 0;
@@ -180,6 +202,7 @@ namespace JuicerCuda {
         float timeAlpha = 0.0f;
         std::uint64_t stbnSessionSeed = 0;
         std::uint64_t clipToken = 0;
+        GrainFrameUniforms* frameUniforms = nullptr;
         const std::uint8_t* JUICER_RESTRICT wangTiles = nullptr;
         const std::uint8_t* JUICER_RESTRICT wangLut = nullptr;
         int wangWidth = 0;
@@ -220,6 +243,8 @@ namespace JuicerCuda {
         float debugScale = 1.0f;
 
         DeviceCurveView densityCurveCmy[3] = {};
+        int densityLayerAxisFinite[3] = {0, 0, 0};
+        float densityLayerAxisBlockPrefixMax[3][16] = {};
         float densityMaxLayers[3][3] = {{0.0f, 0.0f, 0.0f},
                                         {0.0f, 0.0f, 0.0f},
                                         {0.0f, 0.0f, 0.0f}};

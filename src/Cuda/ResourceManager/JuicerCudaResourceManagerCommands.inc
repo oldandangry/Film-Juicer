@@ -211,6 +211,7 @@ bool resolve_optional_active_scratch_request(
             scratchRequest.aliasScannerRgbFromSpatialDirFiltered ||
             scratchRequest.needAux ||
             scratchRequest.needSharedTmp ||
+            scratchRequest.needGrainFrameUniforms ||
             scratchRequest.needGrainLayerWork ||
             scratchRequest.needGrainShared ||
             scratchRequest.needGateMask) {
@@ -3759,6 +3760,7 @@ bool command_ensure_optics_scratch(
         scratchRequest.aliasScannerRgbFromSpatialDirFiltered,
         scratchRequest.needAux,
         scratchRequest.needSharedTmp,
+        scratchRequest.needGrainFrameUniforms,
         scratchRequest.needGrainLayerWork,
         scratchRequest.needGrainShared,
         scratchRequest.needGateMask);

@@ -435,6 +435,8 @@ namespace JuicerProcess {
                 workspace.aliasScannerRgbFromSpatialDirFiltered;
             request.attachments.needAux = workspace.needAux;
             request.attachments.needSharedTmp = workspace.needSharedTmp;
+            request.attachments.needGrainFrameUniforms =
+                workspace.needGrainFrameUniforms;
             request.attachments.needGrainLayerWork = workspace.needGrainLayerWork;
             request.attachments.needGrainShared = workspace.needGrainShared;
             request.attachments.needGateMask = workspace.needGateMask;
@@ -500,6 +502,9 @@ namespace JuicerProcess {
                 request.aliasScannerRgbFromSpatialDirFiltered);
             append_bool("need_aux", request.needAux);
             append_bool("need_shared_tmp", request.needSharedTmp);
+            append_bool(
+                "need_grain_frame_uniforms",
+                request.needGrainFrameUniforms);
             append_bool("need_grain_layer_work", request.needGrainLayerWork);
             append_bool("need_grain_shared", request.needGrainShared);
             append_bool("need_gate_mask", request.needGateMask);
@@ -891,6 +896,7 @@ namespace JuicerProcess {
         request.needSharedTmp = true;
         request.needBlurred = true;
         request.needAux = true;
+        request.needGrainFrameUniforms = true;
         switch (descriptor.scratchShape) {
             case Spektrafilm::VisualGrainScratchShape::Streamed:
                 break;
@@ -1440,6 +1446,7 @@ namespace JuicerProcess {
                        b.aliasScannerRgbFromSpatialDirFiltered &&
                    a.needAux == b.needAux &&
                    a.needSharedTmp == b.needSharedTmp &&
+                   a.needGrainFrameUniforms == b.needGrainFrameUniforms &&
                    a.needGrainLayerWork == b.needGrainLayerWork &&
                    a.needGrainShared == b.needGrainShared &&
                    a.needGateMask == b.needGateMask;
@@ -1552,6 +1559,20 @@ namespace JuicerProcess {
             if (request.needAux &&
                 !alloc_float(optics.aux, planeBytes, "frame scannerScratch.aux")) {
                 return fail_after_partial_alloc();
+            }
+            if (request.needGrainFrameUniforms) {
+                cudaError_t error = cudaMalloc(
+                    reinterpret_cast<void**>(&optics.grainFrameUniforms),
+                    sizeof(JuicerCuda::GrainFrameUniforms));
+                if (error != cudaSuccess || !optics.grainFrameUniforms) {
+                    outError =
+                        std::string("cudaMalloc(frame scannerScratch.grainFrameUniforms) failed: ") +
+                        (cudaGetErrorString(error)
+                             ? cudaGetErrorString(error)
+                             : "(unknown)");
+                    optics.grainFrameUniforms = nullptr;
+                    return fail_after_partial_alloc();
+                }
             }
             if (request.needGrainLayerWork) {
                 if (!alloc_float(optics.grainTmp, planeBytes, "frame scannerScratch.grainTmp")) {
@@ -2077,7 +2098,7 @@ namespace JuicerProcess {
         }
 
         bool retiredAll = true;
-        auto retire_ptr = [&](float*& ptr, std::size_t bytes, const char* label) {
+        auto retire_ptr = [&](auto& ptr, std::size_t bytes, const char* label) {
             if (!ptr || !retiredAll) {
                 return;
             }
@@ -2107,6 +2128,10 @@ namespace JuicerProcess {
         retire_ptr(workspace.optics.rgbB, planeBytes, "frame scannerScratch.rgbB");
         retire_ptr(workspace.optics.blurred, planeBytes, "frame scannerScratch.blurred");
         retire_ptr(workspace.optics.aux, planeBytes, "frame scannerScratch.aux");
+        retire_ptr(
+            workspace.optics.grainFrameUniforms,
+            sizeof(JuicerCuda::GrainFrameUniforms),
+            "frame scannerScratch.grainFrameUniforms");
         retire_ptr(workspace.optics.grainTmp, planeBytes, "frame scannerScratch.grainTmp");
         retire_ptr(workspace.optics.grainTmpShared, planeBytes, "frame scannerScratch.grainTmpShared");
         retire_ptr(
@@ -2170,6 +2195,9 @@ namespace JuicerProcess {
         }
         if (workspace.optics.aux) {
             cudaFree(workspace.optics.aux);
+        }
+        if (workspace.optics.grainFrameUniforms) {
+            cudaFree(workspace.optics.grainFrameUniforms);
         }
         if (workspace.optics.grainTmp) {
             cudaFree(workspace.optics.grainTmp);
@@ -4020,12 +4048,15 @@ namespace JuicerProcess {
             request.needGrainLayerWork ? scratch.grainTmp : nullptr;
         view.sharedDelta =
             request.needGrainShared ? scratch.grainTmpShared : nullptr;
+        view.frameUniforms = request.needGrainFrameUniforms
+                                 ? scratch.grainFrameUniforms
+                                 : nullptr;
         view.scratchShape =
             _state->visualGrainDescriptor->scratchShape;
         view.overflow = _state->scratchWorkspace.overflowActive;
 
-        bool ready =
-            view.filterTemp && view.scaleWork && view.deltaAccum;
+        bool ready = view.filterTemp && view.scaleWork &&
+                     view.deltaAccum && view.frameUniforms;
         switch (view.scratchShape) {
             case Spektrafilm::VisualGrainScratchShape::Streamed:
                 ready = ready && !view.layerWork &&

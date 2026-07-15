@@ -1,11 +1,39 @@
 #pragma once
 
+#include <cstdint>
+
 namespace JuicerCuda {
 
     // Optional JUICER_DIR_PROFILE attribution for production DIR diagnosis.
     struct SpatialDirStageProfile {
         int launches = 0;
         float elapsedMs = 0.0f;
+    };
+
+    struct VisualGrainRuntimeProfile {
+        int width = 0;
+        int height = 0;
+        int captured = 0;
+        int totalLaunches = 0;
+        int mixEvaluations = 0;
+        int scaleEvaluations = 0;
+        int frameUniformPreparationLaunches = 0;
+        int clearLaunches = 0;
+        int layerParticleLaunches = 0;
+        int simpleParticleLaunches = 0;
+        int dyeBlurPassLaunches = 0;
+        int correlationBlurPassLaunches = 0;
+        int formDeltaLaunches = 0;
+        int subtractLaunches = 0;
+        int layerAccumulateLaunches = 0;
+        int weightedAccumulateLaunches = 0;
+        int scaleLaunches = 0;
+        int sharedMixLaunches = 0;
+        int reconstructLaunches = 0;
+        int debugLaunches = 0;
+        int copyOperations = 0;
+        std::uint64_t copyBytes = 0;
+        SpatialDirStageProfile total{};
     };
 
     struct SpatialDirBuildProfile {

@@ -63,6 +63,45 @@ namespace {
         return true;
     }
 
+    void derive_grain_layer_axis_search_metadata(
+        const Spektrafilm::FilmDevelopRecipe& filmDevelop,
+        std::array<bool, 3>& outFinite,
+        std::array<std::array<float, 16>, 3>& outBlockPrefixMax) {
+        outFinite.fill(false);
+        outBlockPrefixMax = {};
+        if (filmDevelop.normalizedDensityCurves.size() != 256 ||
+            (filmDevelop.polarity != Spektrafilm::ProfilePolarity::Negative &&
+             filmDevelop.polarity != Spektrafilm::ProfilePolarity::Positive)) {
+            return;
+        }
+
+        const bool positiveFilm =
+            filmDevelop.polarity == Spektrafilm::ProfilePolarity::Positive;
+        for (std::size_t channel = 0; channel < outFinite.size(); ++channel) {
+            float prefixMaximum = -std::numeric_limits<float>::infinity();
+            bool finite = true;
+            for (std::size_t sample = 0;
+                 sample < filmDevelop.normalizedDensityCurves.size();
+                 ++sample) {
+                float axisValue =
+                    filmDevelop.normalizedDensityCurves[sample][channel];
+                if (positiveFilm) {
+                    axisValue = -axisValue;
+                }
+                if (!std::isfinite(axisValue)) {
+                    finite = false;
+                    break;
+                }
+                prefixMaximum = std::max(prefixMaximum, axisValue);
+                if ((sample % 16) == 15) {
+                    outBlockPrefixMax[channel][sample / 16] =
+                        prefixMaximum;
+                }
+            }
+            outFinite[channel] = finite;
+        }
+    }
+
     Spektrafilm::AutoExposureMethod auto_exposure_method_from_index(int index) {
         switch (index) {
             case 0:
@@ -635,7 +674,7 @@ namespace {
 
     bool build_visual_grain_recipe(
         const VisualGrainControls& input,
-        std::uint64_t densityCurvesLayersHash,
+        const FilmDevelopRecipe& filmDevelop,
         VisualGrainRecipe& out) {
         out = VisualGrainRecipe{};
         if (!input.active) {
@@ -661,12 +700,19 @@ namespace {
             !std::isfinite(input.sizeMixScale) || input.sizeMixScale < 1.0f ||
             !std::isfinite(input.clumpTemporalMix) || input.clumpTemporalMix < 0.0f ||
             !std::isfinite(input.clumpMorphPeriodSec) || input.clumpMorphPeriodSec < 0.0f ||
-            (input.sublayersActive && densityCurvesLayersHash == 0)) {
+            (input.sublayersActive &&
+             filmDevelop.densityCurvesLayersHash == 0)) {
             return false;
         }
 
         out.active = true;
         out.sublayersActive = input.sublayersActive;
+        if (out.sublayersActive) {
+            derive_grain_layer_axis_search_metadata(
+                filmDevelop,
+                out.grainLayerAxisFinite,
+                out.grainLayerAxisBlockPrefixMax);
+        }
         out.particleAreaUm2 = input.particleAreaUm2;
         out.particleScaleCmy = input.particleScaleCmy;
         out.particleScaleLayers = input.particleScaleLayers;
@@ -705,7 +751,9 @@ namespace {
         out.clumpMorphPeriodSec = std::clamp(input.clumpMorphPeriodSec, 5.0f, 60.0f);
         out.debugView = std::clamp(input.debugView, 0, 6);
         out.densityCurvesLayersHash =
-            out.sublayersActive ? densityCurvesLayersHash : 0;
+            out.sublayersActive
+                ? filmDevelop.densityCurvesLayersHash
+                : 0;
         out.hash = hash_visual_grain_recipe(out);
         return out.hash != 0;
     }
@@ -1542,7 +1590,7 @@ namespace Spektrafilm {
         }
         if (!build_visual_grain_recipe(
                 input.visualGrain,
-                filmDevelop.densityCurvesLayersHash,
+                filmDevelop,
                 result.recipe.visualGrain)) {
             result.diagnostic = "MalformedRequiredProfileData phase=9A field=visual_grain";
             return result;

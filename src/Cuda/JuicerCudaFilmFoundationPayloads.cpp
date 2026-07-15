@@ -293,6 +293,17 @@ namespace JuicerCuda {
                 recipe.sublayersActive
                     ? prepared.densityLayers.baseCurvesCmy[channel]
                     : DeviceCurveView{};
+            outGrain.densityLayerAxisFinite[channel] =
+                recipe.sublayersActive &&
+                        recipe.grainLayerAxisFinite[channel]
+                    ? 1
+                    : 0;
+            if (recipe.sublayersActive) {
+                for (std::size_t block = 0; block < 16; ++block) {
+                    outGrain.densityLayerAxisBlockPrefixMax[channel][block] =
+                        recipe.grainLayerAxisBlockPrefixMax[channel][block];
+                }
+            }
         }
         for (std::size_t layer = 0; layer < 3; ++layer) {
             for (std::size_t channel = 0; channel < 3; ++channel) {

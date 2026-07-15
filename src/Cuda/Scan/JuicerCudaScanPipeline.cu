@@ -369,6 +369,7 @@ __global__ void optics_glare_generate_kernel(GlareGenerationInput input) {
     }
 }
 
+template <typename Accumulator>
 __global__ void optics_blur_horizontal_kernel(
     const float* JUICER_RESTRICT in,
     float* out,
@@ -419,13 +420,14 @@ __global__ void optics_blur_horizontal_kernel(
             __syncthreads();
 
             if (inBounds) {
-                double acc = 0.0;
+                Accumulator acc = 0;
                 const std::size_t tileRow = static_cast<std::size_t>(threadIdx.y) * tileW;
                 for (std::size_t kernelOffset = 0; kernelOffset < kLen; ++kernelOffset) {
                     const std::size_t tileX = static_cast<std::size_t>(threadIdx.x) + kernelOffset;
                     const float v = sTile[tileRow + tileX];
                     const float w = sWeights[kernelOffset];
-                    acc += static_cast<double>(v) * static_cast<double>(w);
+                    acc += static_cast<Accumulator>(v) *
+                           static_cast<Accumulator>(w);
                 }
 
                 out[y * widthCount + x] =
@@ -503,6 +505,113 @@ __global__ void optics_blur_vertical_kernel(
             __syncthreads();
         }
     }
+}
+
+struct GrainBlurVerticalAccumulateInput {
+    const float* horizontalBlur = nullptr;
+    float* output = nullptr;
+    int width = 0;
+    int height = 0;
+    const float* kernel = nullptr;
+    int radius = 0;
+    float weight = 0.0f;
+    int initialize = 0;
+};
+
+template <bool Weighted>
+__device__ __forceinline__ void grain_blur_vertical_accumulate_device(
+    GrainBlurVerticalAccumulateInput input,
+    float* verticalShared) {
+    const float* JUICER_RESTRICT in = input.horizontalBlur;
+    float* dst = input.output;
+    const int width = input.width;
+    const int height = input.height;
+    const float* JUICER_RESTRICT k = input.kernel;
+    const int radius = input.radius;
+    const float weight = input.weight;
+    const int initialize = input.initialize;
+    if (!in || !dst || !k || radius <= 0 || width <= 0 || height <= 0) {
+        return;
+    }
+
+    const std::size_t radiusCount = static_cast<std::size_t>(radius);
+    const std::size_t kLen = 2U * radiusCount + 1U;
+    const std::size_t tileW = static_cast<std::size_t>(blockDim.x);
+    const std::size_t tileH = static_cast<std::size_t>(blockDim.y) + 2U * radiusCount;
+
+    float* sWeights = verticalShared;
+    float* sTile = verticalShared + kLen;
+
+    const std::size_t tid = static_cast<std::size_t>(threadIdx.y) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
+    const std::size_t tcount = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(blockDim.y);
+    const std::size_t xLocal = static_cast<std::size_t>(threadIdx.x);
+
+    for (std::size_t i = tid; i < kLen; i += tcount) {
+        sWeights[i] = k[i];
+    }
+    __syncthreads();
+
+    const std::size_t widthCount = static_cast<std::size_t>(width);
+    const std::size_t heightCount = static_cast<std::size_t>(height);
+    const std::size_t blockYStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
+    const std::size_t blockXStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
+    const float finiteWeight = device_isfinite(weight) ? weight : 0.0f;
+    for (std::size_t blockY = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y); blockY < heightCount; blockY += blockYStep) {
+        for (std::size_t blockX = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x); blockX < widthCount; blockX += blockXStep) {
+            const std::size_t x = blockX + static_cast<std::size_t>(threadIdx.x);
+            const std::size_t y = blockY + static_cast<std::size_t>(threadIdx.y);
+            const bool inBounds = (x < widthCount && y < heightCount);
+            const std::size_t xLoad = blockX + xLocal;
+            if (xLoad < widthCount) {
+                for (std::size_t i = static_cast<std::size_t>(threadIdx.y); i < tileH; i += static_cast<std::size_t>(blockDim.y)) {
+                    const std::int64_t yLoad = static_cast<std::int64_t>(blockY) + static_cast<std::int64_t>(i) - static_cast<std::int64_t>(radius);
+                    const int yy = reflect_index_repeat_wide_device(yLoad, height);
+                    sTile[i * tileW + xLocal] =
+                        in[static_cast<std::size_t>(yy) * widthCount + xLoad];
+                }
+            }
+
+            __syncthreads();
+
+            if (inBounds) {
+                float acc = 0.0f;
+                for (std::size_t kernelOffset = 0; kernelOffset < kLen; ++kernelOffset) {
+                    const std::size_t tileY = static_cast<std::size_t>(threadIdx.y) + kernelOffset;
+                    const float v = sTile[tileY * tileW + xLocal];
+                    const float w = sWeights[kernelOffset];
+                    acc += v * w;
+                }
+
+                const float blurred =
+                    (isfinite(acc) && !isnan(acc)) ? acc : 0.0f;
+                const std::size_t index = y * widthCount + x;
+                const float previous = initialize != 0 ? 0.0f : dst[index];
+                float value = previous + blurred;
+                if constexpr (Weighted) {
+                    value = previous + finiteWeight * blurred;
+                }
+                dst[index] = device_isfinite(value) ? value : 0.0f;
+            }
+
+            __syncthreads();
+        }
+    }
+}
+
+__global__ void grain_blur_vertical_accumulate_kernel(
+    GrainBlurVerticalAccumulateInput input) {
+    extern __shared__ float grainLayerVerticalShared[];
+    grain_blur_vertical_accumulate_device<false>(
+        input,
+        grainLayerVerticalShared);
+}
+
+__global__ void grain_blur_vertical_accumulate_weighted_kernel(
+    GrainBlurVerticalAccumulateInput input) {
+    extern __shared__ float grainWeightedVerticalShared[];
+    grain_blur_vertical_accumulate_device<true>(
+        input,
+        grainWeightedVerticalShared);
 }
 
 struct VerticalUnsharpInput {
@@ -609,12 +718,17 @@ __global__ void develop_film_density_from_raw_kernel(
     float* outM,
     float* outY);
 __global__ void grain_clear_kernel(float* out, int n);
-__global__ void grain_accumulate_kernel(float* dst, const float* src, int n);
+__global__ void grain_accumulate_kernel(
+    float* dst,
+    const float* src,
+    int n,
+    int initialize);
 __global__ void grain_accumulate_weighted_kernel(
     float* dst,
     const float* src,
     int n,
-    float weight);
+    float weight,
+    int initialize);
 __global__ void grain_scale_kernel(float* inOut, int n, float scale);
 __global__ void grain_reconstruct_kernel(
     float* inOutMean,
@@ -622,7 +736,11 @@ __global__ void grain_reconstruct_kernel(
     int n,
     float scale,
     int addMean);
-__global__ void grain_add_bias_kernel(float* inOut, int n, float bias);
+__global__ void grain_form_delta_kernel(
+    float* inOut,
+    const float* sub,
+    int n,
+    float bias);
 __global__ void grain_subtract_kernel(float* inOut, const float* sub, int n, float amplitude);
 
 struct GrainMixSharedInput {
@@ -706,6 +824,8 @@ __global__ void grain_apply_simple_kernel(
     const float* inDensity,
     float* outGrain,
     int channelIndex);
+__global__ void grain_prepare_frame_uniforms_kernel(
+    JuicerCuda::GrainPayload grain);
 __global__ void grain_layer_kernel(
     JuicerCuda::GrainPayload grain,
     int width,
@@ -714,6 +834,13 @@ __global__ void grain_layer_kernel(
     float* outGrain,
     int channelIndex,
     int sublayerIndex);
+__global__ void grain_layer_triplet_kernel(
+    JuicerCuda::GrainPayload grain,
+    int width,
+    int height,
+    const float* inDensity,
+    float* outGrain,
+    int channelIndex);
 
 namespace {
 
@@ -2429,7 +2556,11 @@ cudaError_t blur_plane_in_place(
         (static_cast<size_t>(kernelLength) +
          static_cast<size_t>(threads.x) * static_cast<size_t>(threads.y + 2 * radius)) *
         sizeof(float);
-    optics_blur_horizontal_kernel<<<blocks, threads, horizontalShared, stream>>>(
+    optics_blur_horizontal_kernel<double><<<
+        blocks,
+        threads,
+        horizontalShared,
+        stream>>>(
         plane,
         tmp,
         width,
@@ -2560,7 +2691,11 @@ cudaError_t launch_focused_scanner_post_output(
                  static_cast<size_t>(threads.x) *
                      static_cast<size_t>(threads.y + 2 * unsharpRadius)) *
                 sizeof(float);
-            optics_blur_horizontal_kernel<<<blocks, threads, horizontalShared, stream>>>(
+            optics_blur_horizontal_kernel<double><<<
+                blocks,
+                threads,
+                horizontalShared,
+                stream>>>(
                 plane,
                 dTmp,
                 params.width,
@@ -3101,7 +3236,14 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     float* deltaAccum,
     float* layerWork,
     float* sharedDelta,
+    JuicerCuda::VisualGrainRuntimeProfile* profile,
     void* cudaStreamOpaque) {
+    if (profile) {
+        *profile = JuicerCuda::VisualGrainRuntimeProfile{};
+        profile->width = width;
+        profile->height = height;
+        profile->captured = 1;
+    }
     if (!grain || !kernels) {
         return cudaErrorInvalidValue;
     }
@@ -3111,7 +3253,8 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     if (width <= 0 || height <= 0 ||
         width > std::numeric_limits<int>::max() / height ||
         !densityC || !densityM || !densityY || !filterTemp ||
-        !scaleWork || !deltaAccum) {
+        !scaleWork || !deltaAccum ||
+        (grain->debugView != 6 && !grain->frameUniforms)) {
         return cudaErrorInvalidValue;
     }
 
@@ -3214,12 +3357,18 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
         (width + threads2D.x - 1) / threads2D.x,
         (height + threads2D.y - 1) / threads2D.y);
 
-    auto blur_plane = [&](float* plane,
-                          const float* kernel,
-                          int radius) -> cudaError_t {
-        if (radius <= 0) {
-            return cudaSuccess;
+    auto record_launch = [&](int JuicerCuda::VisualGrainRuntimeProfile::* counter) {
+        if (!profile) {
+            return;
         }
+        ++(profile->*counter);
+        ++profile->totalLaunches;
+    };
+
+    auto launch_grain_blur_horizontal = [&](float* plane,
+                                            const float* kernel,
+                                            int radius,
+                                            bool dyeCloud) -> cudaError_t {
         if (!plane || !kernel) {
             return cudaErrorInvalidValue;
         }
@@ -3229,26 +3378,20 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
              static_cast<size_t>(threads2D.y) *
                  static_cast<size_t>(threads2D.x + 2 * radius)) *
             sizeof(float);
-        const size_t verticalSharedBytes =
-            (static_cast<size_t>(kernelLength) +
-             static_cast<size_t>(threads2D.x) *
-                 static_cast<size_t>(threads2D.y + 2 * radius)) *
-            sizeof(float);
-        optics_blur_horizontal_kernel<<<
+        optics_blur_horizontal_kernel<float><<<
             blocks2D,
             threads2D,
             horizontalSharedBytes,
             stream>>>(plane, filterTemp, width, height, kernel, radius);
+        record_launch(
+            dyeCloud
+                ? &JuicerCuda::VisualGrainRuntimeProfile::dyeBlurPassLaunches
+                : &JuicerCuda::VisualGrainRuntimeProfile::correlationBlurPassLaunches);
         cudaError_t error = cudaGetLastError();
         if (error != cudaSuccess) {
             return error;
         }
-        optics_blur_vertical_kernel<<<
-            blocks2D,
-            threads2D,
-            verticalSharedBytes,
-            stream>>>(filterTemp, plane, width, height, kernel, radius);
-        return cudaGetLastError();
+        return cudaSuccess;
     };
 
     auto generate_scale = [&](const JuicerCuda::GrainPayload& base,
@@ -3259,7 +3402,11 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                               const float* correlationKernel,
                               int correlationRadius,
                               bool applyCorrelation,
-                              float weight) -> cudaError_t {
+                              float weight,
+                              bool initializeDeltaAccum) -> cudaError_t {
+        if (profile) {
+            ++profile->scaleEvaluations;
+        }
         JuicerCuda::GrainPayload pass = base;
         pass.seedBase ^= salt;
         pass.seedBaseNext ^= salt;
@@ -3287,40 +3434,149 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
 
         cudaError_t error = cudaSuccess;
         if (useSublayers) {
-            grain_clear_kernel<<<blocks1D, threads1D, 0, stream>>>(
-                scaleWork,
-                total);
-            error = cudaGetLastError();
-            if (error != cudaSuccess) {
-                return error;
-            }
-            for (int layer = 0; layer < 3; ++layer) {
-                grain_layer_kernel<<<blocks2D, threads2D, 0, stream>>>(
+            const int dyeRadius0 = kernels->dyeRadius[0][channel];
+            const int dyeRadius1 = kernels->dyeRadius[1][channel];
+            const int dyeRadius2 = kernels->dyeRadius[2][channel];
+            const float* dyeKernel0 = kernels->dyeKernel[0][channel];
+            const float* dyeKernel1 = kernels->dyeKernel[1][channel];
+            const float* dyeKernel2 = kernels->dyeKernel[2][channel];
+            const bool dyeRadiiEqual =
+                dyeRadius0 == dyeRadius1 && dyeRadius0 == dyeRadius2;
+            const bool dyeKernelsEqual =
+                dyeKernel0 == dyeKernel1 && dyeKernel0 == dyeKernel2;
+            const bool dyeKernelPrepared =
+                dyeRadius0 == 0 || dyeKernel0 != nullptr;
+            const bool zeroDyeKernels =
+                !dyeKernel0 && !dyeKernel1 && !dyeKernel2;
+            const bool batchDyeTriplet =
+                dyeRadiiEqual && dyeKernelsEqual && dyeKernelPrepared &&
+                (dyeRadius0 > 0 || zeroDyeKernels);
+            if (batchDyeTriplet) {
+                grain_layer_triplet_kernel<<<blocks2D, threads2D, 0, stream>>>(
                     pass,
                     width,
                     height,
                     density,
                     layerWork,
-                    channel,
-                    layer);
+                    channel);
+                record_launch(
+                    &JuicerCuda::VisualGrainRuntimeProfile::layerParticleLaunches);
                 error = cudaGetLastError();
                 if (error != cudaSuccess) {
                     return error;
                 }
-                error = blur_plane(
-                    layerWork,
-                    kernels->dyeKernel[layer][channel],
-                    kernels->dyeRadius[layer][channel]);
-                if (error != cudaSuccess) {
-                    return error;
+                if (dyeRadius0 > 0) {
+                    error = launch_grain_blur_horizontal(
+                        layerWork,
+                        dyeKernel0,
+                        dyeRadius0,
+                        true);
+                    if (error != cudaSuccess) {
+                        return error;
+                    }
+                    const int kernelLength = 2 * dyeRadius0 + 1;
+                    const size_t verticalSharedBytes =
+                        (static_cast<size_t>(kernelLength) +
+                         static_cast<size_t>(threads2D.x) *
+                             static_cast<size_t>(threads2D.y + 2 * dyeRadius0)) *
+                        sizeof(float);
+                    GrainBlurVerticalAccumulateInput finishInput{};
+                    finishInput.horizontalBlur = filterTemp;
+                    finishInput.output = scaleWork;
+                    finishInput.width = width;
+                    finishInput.height = height;
+                    finishInput.kernel = dyeKernel0;
+                    finishInput.radius = dyeRadius0;
+                    finishInput.initialize = 1;
+                    grain_blur_vertical_accumulate_kernel<<<
+                        blocks2D,
+                        threads2D,
+                        verticalSharedBytes,
+                        stream>>>(finishInput);
+                    record_launch(
+                        &JuicerCuda::VisualGrainRuntimeProfile::dyeBlurPassLaunches);
+                    error = cudaGetLastError();
+                    if (error != cudaSuccess) {
+                        return error;
+                    }
+                } else {
+                    grain_accumulate_kernel<<<blocks1D, threads1D, 0, stream>>>(
+                        scaleWork,
+                        layerWork,
+                        total,
+                        1);
+                    record_launch(
+                        &JuicerCuda::VisualGrainRuntimeProfile::layerAccumulateLaunches);
+                    error = cudaGetLastError();
+                    if (error != cudaSuccess) {
+                        return error;
+                    }
                 }
-                grain_accumulate_kernel<<<blocks1D, threads1D, 0, stream>>>(
-                    scaleWork,
-                    layerWork,
-                    total);
-                error = cudaGetLastError();
-                if (error != cudaSuccess) {
-                    return error;
+            } else {
+                for (int layer = 0; layer < 3; ++layer) {
+                    grain_layer_kernel<<<blocks2D, threads2D, 0, stream>>>(
+                        pass,
+                        width,
+                        height,
+                        density,
+                        layerWork,
+                        channel,
+                        layer);
+                    record_launch(
+                        &JuicerCuda::VisualGrainRuntimeProfile::layerParticleLaunches);
+                    error = cudaGetLastError();
+                    if (error != cudaSuccess) {
+                        return error;
+                    }
+                    const float* dyeKernel = kernels->dyeKernel[layer][channel];
+                    const int dyeRadius = kernels->dyeRadius[layer][channel];
+                    if (dyeRadius > 0) {
+                        error = launch_grain_blur_horizontal(
+                            layerWork,
+                            dyeKernel,
+                            dyeRadius,
+                            true);
+                        if (error != cudaSuccess) {
+                            return error;
+                        }
+                        const int kernelLength = 2 * dyeRadius + 1;
+                        const size_t verticalSharedBytes =
+                            (static_cast<size_t>(kernelLength) +
+                             static_cast<size_t>(threads2D.x) *
+                                 static_cast<size_t>(threads2D.y + 2 * dyeRadius)) *
+                            sizeof(float);
+                        GrainBlurVerticalAccumulateInput finishInput{};
+                        finishInput.horizontalBlur = filterTemp;
+                        finishInput.output = scaleWork;
+                        finishInput.width = width;
+                        finishInput.height = height;
+                        finishInput.kernel = dyeKernel;
+                        finishInput.radius = dyeRadius;
+                        finishInput.initialize = layer == 0 ? 1 : 0;
+                        grain_blur_vertical_accumulate_kernel<<<
+                            blocks2D,
+                            threads2D,
+                            verticalSharedBytes,
+                            stream>>>(finishInput);
+                        record_launch(
+                            &JuicerCuda::VisualGrainRuntimeProfile::dyeBlurPassLaunches);
+                        error = cudaGetLastError();
+                        if (error != cudaSuccess) {
+                            return error;
+                        }
+                    } else {
+                        grain_accumulate_kernel<<<blocks1D, threads1D, 0, stream>>>(
+                            scaleWork,
+                            layerWork,
+                            total,
+                            layer == 0 ? 1 : 0);
+                        record_launch(
+                            &JuicerCuda::VisualGrainRuntimeProfile::layerAccumulateLaunches);
+                        error = cudaGetLastError();
+                        if (error != cudaSuccess) {
+                            return error;
+                        }
+                    }
                 }
             }
         } else {
@@ -3331,6 +3587,8 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 density,
                 scaleWork,
                 channel);
+            record_launch(
+                &JuicerCuda::VisualGrainRuntimeProfile::simpleParticleLaunches);
             error = cudaGetLastError();
             if (error != cudaSuccess) {
                 return error;
@@ -3339,38 +3597,75 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
 
         const float densityBias = -base.densityMin[channel];
         if (densityBias != 0.0f) {
-            grain_add_bias_kernel<<<blocks1D, threads1D, 0, stream>>>(
+            grain_form_delta_kernel<<<blocks1D, threads1D, 0, stream>>>(
                 scaleWork,
+                density,
                 total,
                 densityBias);
+            record_launch(
+                &JuicerCuda::VisualGrainRuntimeProfile::formDeltaLaunches);
+            error = cudaGetLastError();
+            if (error != cudaSuccess) {
+                return error;
+            }
+        } else {
+            grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(
+                scaleWork,
+                density,
+                total,
+                1.0f);
+            record_launch(
+                &JuicerCuda::VisualGrainRuntimeProfile::subtractLaunches);
             error = cudaGetLastError();
             if (error != cudaSuccess) {
                 return error;
             }
         }
-        grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(
-            scaleWork,
-            density,
-            total,
-            1.0f);
-        error = cudaGetLastError();
-        if (error != cudaSuccess) {
-            return error;
-        }
-        if (applyCorrelation) {
-            error = blur_plane(
+        if (applyCorrelation && correlationRadius > 0) {
+            error = launch_grain_blur_horizontal(
                 scaleWork,
                 correlationKernel,
-                correlationRadius);
+                correlationRadius,
+                false);
             if (error != cudaSuccess) {
                 return error;
             }
+            const int kernelLength = 2 * correlationRadius + 1;
+            const size_t verticalSharedBytes =
+                (static_cast<size_t>(kernelLength) +
+                 static_cast<size_t>(threads2D.x) *
+                     static_cast<size_t>(threads2D.y + 2 * correlationRadius)) *
+                sizeof(float);
+            GrainBlurVerticalAccumulateInput finishInput{};
+            finishInput.horizontalBlur = filterTemp;
+            finishInput.output = deltaAccum;
+            finishInput.width = width;
+            finishInput.height = height;
+            finishInput.kernel = correlationKernel;
+            finishInput.radius = correlationRadius;
+            finishInput.weight = weight;
+            finishInput.initialize = initializeDeltaAccum ? 1 : 0;
+            grain_blur_vertical_accumulate_weighted_kernel<<<
+                blocks2D,
+                threads2D,
+                verticalSharedBytes,
+                stream>>>(finishInput);
+            record_launch(
+                &JuicerCuda::VisualGrainRuntimeProfile::correlationBlurPassLaunches);
+            return cudaGetLastError();
         }
         grain_accumulate_weighted_kernel<<<
             blocks1D,
             threads1D,
             0,
-            stream>>>(deltaAccum, scaleWork, total, weight);
+            stream>>>(
+            deltaAccum,
+            scaleWork,
+            total,
+            weight,
+            initializeDeltaAccum ? 1 : 0);
+        record_launch(
+            &JuicerCuda::VisualGrainRuntimeProfile::weightedAccumulateLaunches);
         return cudaGetLastError();
     };
 
@@ -3378,13 +3673,11 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     auto generate_mix = [&](const JuicerCuda::GrainPayload& base,
                             const float* density,
                             int channel) -> cudaError_t {
-        grain_clear_kernel<<<blocks1D, threads1D, 0, stream>>>(
-            deltaAccum,
-            total);
-        cudaError_t error = cudaGetLastError();
-        if (error != cudaSuccess) {
-            return error;
+        if (profile) {
+            ++profile->mixEvaluations;
         }
+        cudaError_t error = cudaSuccess;
+        bool initializeDeltaAccum = true;
         if (wFine > 0.0f) {
             error = generate_scale(
                 base,
@@ -3395,10 +3688,12 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 kernels->blurKernel,
                 kernels->blurRadius,
                 kernels->blurRadius > 0,
-                wFine);
+                wFine,
+                initializeDeltaAccum);
             if (error != cudaSuccess) {
                 return error;
             }
+            initializeDeltaAccum = false;
         }
         if (wMid > 0.0f) {
             error = generate_scale(
@@ -3410,10 +3705,12 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 kernels->blurKernelMid,
                 kernels->blurRadiusMid,
                 true,
-                wMid);
+                wMid,
+                initializeDeltaAccum);
             if (error != cudaSuccess) {
                 return error;
             }
+            initializeDeltaAccum = false;
         }
         if (wCoarse > 0.0f) {
             error = generate_scale(
@@ -3425,15 +3722,18 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 kernels->blurKernelCoarse,
                 kernels->blurRadiusCoarse,
                 true,
-                wCoarse);
+                wCoarse,
+                initializeDeltaAccum);
             if (error != cudaSuccess) {
                 return error;
             }
+            initializeDeltaAccum = false;
         }
         grain_scale_kernel<<<blocks1D, threads1D, 0, stream>>>(
             deltaAccum,
             total,
             sizeMixGain);
+        record_launch(&JuicerCuda::VisualGrainRuntimeProfile::scaleLaunches);
         return cudaGetLastError();
     };
 
@@ -3451,7 +3751,16 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
         debugInput.offset = 0.0f;
         debugInput.scale = grain->debugScale * 4.0f;
         grain_debug_encode_avg3_kernel<<<blocks1D, threads1D, 0, stream>>>(debugInput);
+        record_launch(&JuicerCuda::VisualGrainRuntimeProfile::debugLaunches);
         return cudaGetLastError();
+    }
+
+    grain_prepare_frame_uniforms_kernel<<<1, 1, 0, stream>>>(*grain);
+    record_launch(
+        &JuicerCuda::VisualGrainRuntimeProfile::frameUniformPreparationLaunches);
+    error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        return error;
     }
 
     if (grain->debugView >= 2 && grain->debugView <= 5) {
@@ -3459,13 +3768,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
             grain->debugView == 3 || grain->debugView == 5;
         const bool raw = grain->debugView == 4 || grain->debugView == 5;
         for (int channel = 0; channel < 3; ++channel) {
-            grain_clear_kernel<<<blocks1D, threads1D, 0, stream>>>(
-                deltaAccum,
-                total);
-            error = cudaGetLastError();
-            if (error != cudaSuccess) {
-                return error;
-            }
             if (!coarse || wCoarse > 0.0f) {
                 error = generate_scale(
                     *grain,
@@ -3480,7 +3782,18 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                     !raw &&
                         (coarse ? kernels->blurRadiusCoarse > 0
                                 : kernels->blurRadius > 0),
-                    1.0f);
+                    1.0f,
+                    true);
+                if (error != cudaSuccess) {
+                    return error;
+                }
+            } else {
+                grain_clear_kernel<<<blocks1D, threads1D, 0, stream>>>(
+                    deltaAccum,
+                    total);
+                record_launch(
+                    &JuicerCuda::VisualGrainRuntimeProfile::clearLaunches);
+                error = cudaGetLastError();
                 if (error != cudaSuccess) {
                     return error;
                 }
@@ -3491,6 +3804,8 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 total,
                 amplitude,
                 0);
+            record_launch(
+                &JuicerCuda::VisualGrainRuntimeProfile::reconstructLaunches);
             error = cudaGetLastError();
             if (error != cudaSuccess) {
                 return error;
@@ -3514,6 +3829,11 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
             if (error != cudaSuccess) {
                 return error;
             }
+            if (profile) {
+                ++profile->copyOperations;
+                profile->copyBytes +=
+                    static_cast<std::uint64_t>(total) * sizeof(float);
+            }
         }
         for (int channel = 0; channel < 3; ++channel) {
             if (grain->chromaIndWeight > 0.0f || !sharedChroma) {
@@ -3525,6 +3845,7 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 grain_clear_kernel<<<blocks1D, threads1D, 0, stream>>>(
                     deltaAccum,
                     total);
+                record_launch(&JuicerCuda::VisualGrainRuntimeProfile::clearLaunches);
                 error = cudaGetLastError();
                 if (error != cudaSuccess) {
                     return error;
@@ -3540,6 +3861,8 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 mixInput.independentWeight = grain->chromaIndWeight;
                 mixInput.amplitude = amplitude;
                 grain_mix_shared_kernel<<<blocks1D, threads1D, 0, stream>>>(mixInput);
+                record_launch(
+                    &JuicerCuda::VisualGrainRuntimeProfile::sharedMixLaunches);
                 error = cudaGetLastError();
                 if (error != cudaSuccess) {
                     return error;
@@ -3551,6 +3874,8 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 total,
                 sharedChroma ? 1.0f : amplitude,
                 grain->debugView == 0 ? 1 : 0);
+            record_launch(
+                &JuicerCuda::VisualGrainRuntimeProfile::reconstructLaunches);
             error = cudaGetLastError();
             if (error != cudaSuccess) {
                 return error;
@@ -3570,6 +3895,7 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
         debugInput.offset = 0.5f;
         debugInput.scale = grain->debugScale;
         grain_debug_encode_avg3_kernel<<<blocks1D, threads1D, 0, stream>>>(debugInput);
+        record_launch(&JuicerCuda::VisualGrainRuntimeProfile::debugLaunches);
         return cudaGetLastError();
     }
     return cudaSuccess;

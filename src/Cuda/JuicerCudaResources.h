@@ -330,6 +330,7 @@ namespace JuicerCuda {
             float* aux = nullptr;
             float* grainTmp = nullptr;
             float* grainTmpShared = nullptr;
+            GrainFrameUniforms* grainFrameUniforms = nullptr;
             float* gateMask = nullptr;
             int width = 0;
             int height = 0;

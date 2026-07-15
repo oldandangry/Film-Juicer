@@ -144,6 +144,7 @@ namespace JuicerProcess {
                 bool aliasScannerRgbFromSpatialDirFiltered = false;
                 bool needAux = false;
                 bool needSharedTmp = false;
+                bool needGrainFrameUniforms = false;
                 bool needGrainLayerWork = false;
                 bool needGrainShared = false;
                 bool needGateMask = false;
@@ -283,6 +284,7 @@ namespace JuicerProcess {
                 float* deltaAccum = nullptr;
                 float* layerWork = nullptr;
                 float* sharedDelta = nullptr;
+                JuicerCuda::GrainFrameUniforms* frameUniforms = nullptr;
                 Spektrafilm::VisualGrainScratchShape scratchShape =
                     Spektrafilm::VisualGrainScratchShape::None;
                 bool overflow = false;
