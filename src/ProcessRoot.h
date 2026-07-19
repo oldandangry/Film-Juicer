@@ -572,12 +572,6 @@ namespace JuicerProcess {
                 float sigma,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            bool launch_base_pipeline_graph(
-                JuicerCuda::PipelineRunParams& run,
-                int renderModeKey,
-                void* cudaStreamOpaque,
-                int& outCudaErrorCode,
-                std::string& outError);
             const char* failure_stage_tag() const noexcept;
             const char* failure_prefix() const noexcept;
             bool failure_marks_context_loss() const noexcept;

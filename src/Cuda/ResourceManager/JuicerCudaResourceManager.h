@@ -20,32 +20,6 @@ namespace Print {
 
 namespace JuicerCuda {
 
-    namespace LaunchGraphCounters {
-
-#ifndef JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
-#define JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED 0
-#endif
-
-        struct Snapshot {
-            std::uint64_t framesRendered = 0;
-            std::uint64_t kernelLaunchTotal = 0;
-            std::uint64_t graphEligibleSubmissionTotal = 0;
-            std::uint64_t graphReplayHitTotal = 0;
-        };
-
-        // Optional runtime counters for graph-eligible submissions, graph replays, and the
-        // total CUDA kernel launches emitted by the render path.
-        bool runtime_enabled() noexcept;
-        Snapshot snapshot() noexcept;
-        double kernel_launches_per_frame(const Snapshot& snapshot) noexcept;
-        double cuda_graph_replay_hit_rate(const Snapshot& snapshot) noexcept;
-        void record_kernel_launch(std::uint64_t delta = 1) noexcept;
-        void record_graph_eligible_submission(std::uint64_t delta = 1) noexcept;
-        void record_graph_replay_hit(std::uint64_t delta = 1) noexcept;
-        void record_frame_completed(std::uint64_t delta = 1) noexcept;
-
-    } // namespace LaunchGraphCounters
-
     namespace ResourceManager {
 
         // Lifecycle state for the per-context manager registry.
@@ -292,14 +266,6 @@ namespace JuicerCuda {
             void* cudaStreamOpaque,
             std::string& outError);
 
-        bool command_launch_base_pipeline_graph(
-            SubmissionTransaction& transaction,
-            JuicerCuda::PipelineRunParams& run,
-            int renderModeKey,
-            void* cudaStreamOpaque,
-            int& outCudaErrorCode,
-            std::string& outError);
-
         bool error_is_scratch_exhausted(const std::string& error) noexcept;
 
         void rollback_submission(
@@ -368,7 +334,6 @@ namespace JuicerCuda {
             std::atomic<std::uint64_t> fragmentationRecoveryAttempts{0};
             std::atomic<std::uint64_t> fragmentationRecoverySuccess{0};
             std::atomic<std::uint64_t> fragmentationRecoveryFailures{0};
-            std::atomic<std::uint64_t> fragmentationRecoveryGraphEvictedEntries{0};
             std::atomic<std::uint64_t> pressureStateTransitions{0};
             std::atomic<std::uint64_t> pressureTransitionDwellDefers{0};
             std::atomic<std::uint64_t> pressureTransitionRateDefers{0};
@@ -414,7 +379,6 @@ namespace JuicerCuda {
             std::atomic<std::uint64_t> builderFairnessWaitEvents{0};
             std::atomic<std::uint64_t> scratchBuilderBytesInFlight{0};
             std::atomic<std::uint64_t> lutBuilderBytesInFlight{0};
-            std::atomic<std::uint64_t> graphBuilderBytesInFlight{0};
             std::atomic<std::uint64_t> uploadReservationRequests{0};
             std::atomic<std::uint64_t> uploadReservationGranted{0};
             std::atomic<std::uint64_t> uploadReservationDeferred{0};
@@ -450,11 +414,6 @@ namespace JuicerCuda {
             std::atomic<std::uint64_t> supersededBuilderCancelSurfaceTraceEvents{0};
             std::atomic<std::uint64_t> supersededBuilderCancelEvents{0};
             std::atomic<std::uint64_t> supersededBuilderCancelSavedBytes{0};
-            std::atomic<std::uint64_t> graphNonResidentServeEvents{0};
-            std::atomic<std::uint64_t> graphLargeEntryDecayEvents{0};
-            std::atomic<std::uint64_t> graphLargeEntryTrimEvents{0};
-            std::atomic<std::uint64_t> graphLargeEntryCapHits{0};
-            std::atomic<std::uint64_t> graphLargeEntryResidentBytes{0};
             std::atomic<std::uint64_t> tierCircuitOpenEvents{0};
             std::atomic<std::uint64_t> tierCircuitHalfOpenEvents{0};
             std::atomic<std::uint64_t> tierCircuitCloseEvents{0};

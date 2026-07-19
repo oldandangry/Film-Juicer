@@ -3732,7 +3732,6 @@ void JuicerProcessor::processImagesCUDA() {
                 filmEffectsActive,
                 scannerPostEffects.active());
         }
-        JuicerCuda::LaunchGraphCounters::record_frame_completed();
         return;
     }
 
@@ -5071,7 +5070,6 @@ void JuicerProcessor::processImagesCUDA() {
                 filmEffectsActive,
                 scannerPostEffects.active());
         }
-        JuicerCuda::LaunchGraphCounters::record_frame_completed();
         return;
     }
 

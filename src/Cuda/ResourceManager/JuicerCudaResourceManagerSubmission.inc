@@ -372,13 +372,6 @@ bool run_fragmentation_recovery_once(
         true,
         fragmentation_reap_outcome_reason(reapedBytes));
 
-    const std::uint64_t graphEvictedEntries =
-        evict_noncritical_graph_entries_for_context(transaction.snapshot.deviceContextKey);
-
-    if (graphEvictedEntries > 0) {
-        telemetry_counter_add(managerState.fragmentationRecoveryGraphEvictedEntries, graphEvictedEntries);
-    }
-
     if (captureMemorySnapshots) {
         maybe_publish_manager_memory_snapshot(resources, true);
     }
@@ -391,7 +384,6 @@ bool run_fragmentation_recovery_once(
             .reason = "retry_once",
             .requestBytes = requestBytes,
             .reapedBytes = reapedBytes,
-            .graphEvictedEntries = graphEvictedEntries,
             .attempt = attempt,
             .success = true});
     return true;

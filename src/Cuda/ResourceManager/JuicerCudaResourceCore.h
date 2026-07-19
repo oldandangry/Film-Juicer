@@ -58,8 +58,7 @@ namespace JuicerCuda {
         enum class ResourceTier : std::uint8_t {
             Immutable = 0,
             Lut = 1,
-            Scratch = 2,
-            Graph = 3
+            Scratch = 2
         };
 
         struct ResourceKindContractEntry {
@@ -911,13 +910,10 @@ namespace JuicerCuda {
             std::uint64_t pinnedUploadStagingMaxBytes = 128ull * 1024ull * 1024ull;
             std::uint64_t pinnedUploadStagingTrimBatchBytes = 32ull * 1024ull * 1024ull;
             std::uint64_t maxCacheableEntryBytes = 256ull * 1024ull * 1024ull;
-            std::uint64_t graphLargeEntryThresholdBytes = 128ull * 1024ull * 1024ull;
-            std::uint64_t graphLargeEntryQuarantineMaxBytes = 512ull * 1024ull * 1024ull;
             std::uint64_t largeEntryProbationThresholdBytes = 128ull * 1024ull * 1024ull;
             std::uint64_t tierTargetImmutableBp = 2500;
             std::uint64_t tierTargetLutBp = 2500;
             std::uint64_t tierTargetScratchBp = 3000;
-            std::uint64_t tierTargetGraphBp = 2000;
             std::uint32_t keySchemaVersion = kSubmissionKeySchemaVersion;
             std::uint32_t traceSchemaVersion = kTraceSchemaVersion;
             std::uint32_t maxLiveManagersPerProcess = 16;
@@ -938,14 +934,12 @@ namespace JuicerCuda {
             std::uint32_t pinnedUploadStagingIdleTrimMs = 5000;
             std::uint32_t scratchBuilderBytesInFlightLimitMB = 256;
             std::uint32_t lutBuilderBytesInFlightLimitMB = 128;
-            std::uint32_t graphBuilderBytesInFlightLimitMB = 128;
             std::uint32_t builderFairnessTokensPerTick = 1;
             std::uint32_t criticalBuilderReservedTokens = 1;
             std::uint32_t uploadBytesInFlightLimitMB = 256;
             std::uint32_t uploadFairnessTokensPerTick = 1;
             std::uint32_t criticalUploadReservedTokens = 1;
             std::uint32_t maxCacheableEntryPctOfTarget = 20;
-            std::uint32_t graphLargeEntryQuarantineMaxEntries = 2;
             std::uint32_t largeEntryProbationHitsRequired = 2;
             std::uint32_t keepHotMs = 0;
             std::uint32_t admissionChurnWindowMs = 0;
@@ -975,13 +969,10 @@ namespace JuicerCuda {
             std::uint64_t pinnedUploadStagingMaxBytes = 128ull * 1024ull * 1024ull;
             std::uint64_t pinnedUploadStagingTrimBatchBytes = 32ull * 1024ull * 1024ull;
             std::uint64_t maxCacheableEntryBytes = 256ull * 1024ull * 1024ull;
-            std::uint64_t graphLargeEntryThresholdBytes = 128ull * 1024ull * 1024ull;
-            std::uint64_t graphLargeEntryQuarantineMaxBytes = 512ull * 1024ull * 1024ull;
             std::uint64_t largeEntryProbationThresholdBytes = 128ull * 1024ull * 1024ull;
             std::uint64_t tierTargetImmutableBp = 2500;
             std::uint64_t tierTargetLutBp = 2500;
             std::uint64_t tierTargetScratchBp = 3000;
-            std::uint64_t tierTargetGraphBp = 2000;
             std::uint32_t keySchemaVersion = kSubmissionKeySchemaVersion;
             std::uint32_t traceSchemaVersion = kTraceSchemaVersion;
             std::uint32_t maxLiveManagersPerProcess = 16;
@@ -1002,14 +993,12 @@ namespace JuicerCuda {
             std::uint32_t pinnedUploadStagingIdleTrimMs = 5000;
             std::uint32_t scratchBuilderBytesInFlightLimitMB = 256;
             std::uint32_t lutBuilderBytesInFlightLimitMB = 128;
-            std::uint32_t graphBuilderBytesInFlightLimitMB = 128;
             std::uint32_t builderFairnessTokensPerTick = 1;
             std::uint32_t criticalBuilderReservedTokens = 1;
             std::uint32_t uploadBytesInFlightLimitMB = 256;
             std::uint32_t uploadFairnessTokensPerTick = 1;
             std::uint32_t criticalUploadReservedTokens = 1;
             std::uint32_t maxCacheableEntryPctOfTarget = 20;
-            std::uint32_t graphLargeEntryQuarantineMaxEntries = 2;
             std::uint32_t largeEntryProbationHitsRequired = 2;
             std::uint32_t keepHotMs = 0;
             std::uint32_t admissionChurnWindowMs = 0;

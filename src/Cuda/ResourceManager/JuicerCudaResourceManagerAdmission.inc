@@ -426,8 +426,6 @@ std::uint64_t tier_target_basis_points(
             return cfg.tierTargetLutBp;
         case ResourceTier::Scratch:
             return cfg.tierTargetScratchBp;
-        case ResourceTier::Graph:
-            return cfg.tierTargetGraphBp;
         default:
             return 0;
     }
@@ -1001,10 +999,6 @@ std::uint64_t builder_reservation_cap_bytes(
             configCapMb = cfg.lutBuilderBytesInFlightLimitMB;
             defaultCapBytes = kLutBuilderReservationCapDefaultBytes;
             break;
-        case BuilderReservationTier::Graph:
-            configCapMb = cfg.graphBuilderBytesInFlightLimitMB;
-            defaultCapBytes = kGraphBuilderReservationCapDefaultBytes;
-            break;
         default:
             configCapMb = cfg.scratchBuilderBytesInFlightLimitMB;
             defaultCapBytes = kScratchBuilderReservationCapDefaultBytes;
@@ -1033,8 +1027,7 @@ std::uint64_t builder_reservation_threshold_bytes(
 
 bool builder_context_has_inflight(const BuilderReservationContextState& contextState) noexcept {
     return contextState.inFlightScratchBytes > 0 ||
-           contextState.inFlightLutBytes > 0 ||
-           contextState.inFlightGraphBytes > 0;
+           contextState.inFlightLutBytes > 0;
 }
 
 std::uint64_t upload_reservation_cap_bytes(
@@ -2174,42 +2167,6 @@ std::uint32_t decay_burst_debt_pct(
     return static_cast<std::uint32_t>(rounded);
 }
 
-std::uint64_t graph_large_entry_threshold_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
-    std::uint64_t thresholdBytes = std::max<std::uint64_t>(
-        1ull,
-        admission_u64_or_default(cfg.graphLargeEntryThresholdBytes, kGraphLargeEntryThresholdDefaultBytes));
-    if (cfg.managerSoftTargetBytes > 0) {
-        const std::uint64_t pctThresholdBytes = cfg.managerSoftTargetBytes / 10ull;
-        if (pctThresholdBytes > 0) {
-            thresholdBytes = std::min<std::uint64_t>(thresholdBytes, pctThresholdBytes);
-        }
-    }
-    return std::max<std::uint64_t>(1ull, thresholdBytes);
-}
-
-std::uint64_t graph_large_entry_quarantine_cap_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
-    std::uint64_t capBytes = admission_u64_or_default(
-        cfg.graphLargeEntryQuarantineMaxBytes,
-        kGraphLargeEntryQuarantineMaxBytesDefault);
-    if (cfg.managerSoftTargetBytes > 0) {
-        std::uint64_t weighted = 0;
-        if (mul_u64_checked(cfg.managerSoftTargetBytes, 15ull, weighted)) {
-            const std::uint64_t pctCapBytes = weighted / 100ull;
-            if (pctCapBytes > 0) {
-                capBytes = std::min<std::uint64_t>(capBytes, pctCapBytes);
-            }
-        }
-    }
-    return capBytes;
-}
-
-std::uint32_t graph_large_entry_quarantine_cap_entries(const ResourceManagerConfigEffective& cfg) noexcept {
-    return std::max<std::uint32_t>(
-        1u,
-        admission_u32_or_default(
-            cfg.graphLargeEntryQuarantineMaxEntries,
-            kGraphLargeEntryQuarantineMaxEntriesDefault));
-}
 
 std::uint32_t pressure_poll_interval_ms_for_state(
     const ResourceManagerConfigEffective& cfg,
@@ -2887,23 +2844,6 @@ PressureCheckpoint evaluate_pressure_checkpoint(
     PressureCheckpoint checkpoint{};
     checkpoint.memory = snapshot_manager_memory(resources);
 
-    const std::uint64_t graphActiveBytes =
-        estimate_graph_cache_active_bytes_for_context(transaction.snapshot.deviceContextKey);
-    std::uint64_t nextActiveBytes = 0;
-    if (add_u64_checked(checkpoint.memory.activeBytes, graphActiveBytes, nextActiveBytes)) {
-        checkpoint.memory.activeBytes = nextActiveBytes;
-    } else {
-        checkpoint.memory.activeBytes = std::numeric_limits<std::uint64_t>::max();
-        checkpoint.memory.overflow = true;
-    }
-    std::uint64_t nextReclaimableBytes = 0;
-    if (add_u64_checked(checkpoint.memory.reclaimableBytes, graphActiveBytes, nextReclaimableBytes)) {
-        checkpoint.memory.reclaimableBytes = nextReclaimableBytes;
-    } else {
-        checkpoint.memory.reclaimableBytes = std::numeric_limits<std::uint64_t>::max();
-        checkpoint.memory.overflow = true;
-    }
-
     publish_manager_memory_snapshot(checkpoint.memory);
 
     const HeadroomTelemetry headroom = sample_headroom_telemetry(transaction);
@@ -3423,11 +3363,9 @@ void run_tier_target_pretrim_impl(
     const TierBudgetSnapshot& tierBudget,
     const ScratchRequestDescriptor* scratchRequest,
     bool& outDidWork,
-    std::uint64_t& outScratchNormalizedActions,
-    std::uint64_t& outGraphEvictedEntries) {
+    std::uint64_t& outScratchNormalizedActions) {
     outDidWork = false;
     outScratchNormalizedActions = 0;
-    outGraphEvictedEntries = 0;
 
     const bool constrainedOrWorse =
         pressureState == PressureState::Constrained ||
@@ -3435,15 +3373,9 @@ void run_tier_target_pretrim_impl(
         pressureState == PressureState::Emergency;
     const bool allowProactiveTrim = constrainedOrWorse || lane == PressureLane::Builder;
 
-    const std::uint64_t graphOverTarget =
-        tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Graph);
     const std::uint64_t scratchOverTarget =
         tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Scratch);
 
-    if (graphOverTarget > 0 && allowProactiveTrim) {
-        outGraphEvictedEntries =
-            evict_noncritical_graph_entries_for_context(transaction.snapshot.deviceContextKey);
-    }
     if (scratchOverTarget > 0 && allowProactiveTrim) {
         ScratchCheckpointObservation scratchObservation{};
         std::string scratchCheckpointError;
@@ -3470,7 +3402,7 @@ void run_tier_target_pretrim_impl(
             scratchObservation.shedRetiredActionCount);
     }
 
-    outDidWork = (outGraphEvictedEntries > 0) || (outScratchNormalizedActions > 0);
+    outDidWork = outScratchNormalizedActions > 0;
     if (outDidWork && JTRACE_ENABLED(3)) {
         trace_tier_budget_event(
             transaction,
@@ -3479,7 +3411,6 @@ void run_tier_target_pretrim_impl(
                 .reason = "tier_target_pretrim",
                 .tierBudget = &tierBudget,
                 .scratchNormalizedActions = outScratchNormalizedActions,
-                .graphEvictedEntries = outGraphEvictedEntries,
                 .lane = lane,
                 .pressureState = pressureState});
     }
@@ -3494,8 +3425,7 @@ void run_tier_target_pretrim(
     const TierBudgetSnapshot& tierBudget,
     const ScratchRequestDescriptor* scratchRequest,
     bool& outDidWork,
-    std::uint64_t& outScratchNormalizedActions,
-    std::uint64_t& outGraphEvictedEntries) noexcept {
+    std::uint64_t& outScratchNormalizedActions) noexcept {
     try {
         run_tier_target_pretrim_impl(
             transaction,
@@ -3506,13 +3436,11 @@ void run_tier_target_pretrim(
             tierBudget,
             scratchRequest,
             outDidWork,
-            outScratchNormalizedActions,
-            outGraphEvictedEntries);
+            outScratchNormalizedActions);
     } catch (...) {
         JuicerLogging::discard_current_exception();
         outDidWork = false;
         outScratchNormalizedActions = 0;
-        outGraphEvictedEntries = 0;
     }
 }
 
@@ -3893,7 +3821,6 @@ bool enforce_pressure_gate(
         }
 
         std::uint64_t scratchNormalizedActions = 0;
-        std::uint64_t graphEvictedEntries = 0;
         bool didTierPretrim = false;
         run_tier_target_pretrim(
             transaction,
@@ -3904,8 +3831,7 @@ bool enforce_pressure_gate(
             tierBudget,
             scratchRequest,
             didTierPretrim,
-            scratchNormalizedActions,
-            graphEvictedEntries);
+            scratchNormalizedActions);
         if (didTierPretrim) {
             outRequestReclaimPass = outRequestReclaimPass || (requestBytes > 0);
         }
@@ -3917,7 +3843,6 @@ bool enforce_pressure_gate(
                 .reason = tier_pretrim_reason(didTierPretrim),
                 .tierBudget = &tierBudget,
                 .scratchNormalizedActions = scratchNormalizedActions,
-                .graphEvictedEntries = graphEvictedEntries,
                 .requestBytes = requestBytes,
                 .lane = lane,
                 .pressureState = pressureState,
