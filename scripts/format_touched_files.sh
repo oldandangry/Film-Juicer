@@ -48,7 +48,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-style_require_cmd clang-format
+CLANG_FORMAT_BIN="$(style_clang_format_bin)"
+style_require_cmd "$CLANG_FORMAT_BIN"
+style_verify_clang_format "$CLANG_FORMAT_BIN"
 
 REPO_ROOT="$(style_repo_root)"
 mapfile -t FILES < <(style_collect_candidate_files "$REPO_ROOT" "${INPUT_PATHS[@]}")
@@ -62,10 +64,10 @@ cd "$REPO_ROOT"
 
 if [[ "$CHECK_ONLY" -eq 1 ]]; then
     echo "Checking formatting for ${#FILES[@]} file(s)..."
-    clang-format --dry-run --Werror --style=file "${FILES[@]}"
+    "$CLANG_FORMAT_BIN" --dry-run --Werror --style=file "${FILES[@]}"
 else
     echo "Formatting ${#FILES[@]} file(s)..."
-    clang-format -i --style=file "${FILES[@]}"
+    "$CLANG_FORMAT_BIN" -i --style=file "${FILES[@]}"
 fi
 
 printf '  %s\n' "${FILES[@]}"

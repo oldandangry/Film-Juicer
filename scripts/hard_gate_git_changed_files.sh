@@ -29,7 +29,9 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     exit 0
 fi
 
-style_require_cmd clang-format
+CLANG_FORMAT_BIN="$(style_clang_format_bin)"
+style_require_cmd "$CLANG_FORMAT_BIN"
+style_verify_clang_format "$CLANG_FORMAT_BIN"
 style_require_cmd clang-format-diff
 style_require_cmd rg
 
@@ -62,13 +64,12 @@ for file in "${FILES[@]}"; do
 done
 
 FAIL=0
-EXTENSIONS="c,cc,cpp,cxx,h,hh,hpp,hxx,inl,ixx,cu,cuh"
-TRACKED_DIFF_IREGEX='.*\.(c|cc|cpp|cxx|h|hh|hpp|hxx|inl|ixx|cu|cuh)$'
+TRACKED_DIFF_IREGEX="$(style_supported_extension_regex)"
 
 if [[ ${#TRACKED_CHANGED_FILES[@]} -gt 0 ]]; then
     TRACKED_FORMAT_DIFF="$(
         git diff -U0 --no-color HEAD -- "${TRACKED_CHANGED_FILES[@]}" |
-        clang-format-diff -p1 -style=file -iregex "$TRACKED_DIFF_IREGEX"
+        clang-format-diff -binary "$CLANG_FORMAT_BIN" -p1 -style=file -iregex "$TRACKED_DIFF_IREGEX"
     )"
     if [[ -n "$TRACKED_FORMAT_DIFF" ]]; then
         printf '%s\n' "$TRACKED_FORMAT_DIFF"
@@ -78,7 +79,7 @@ if [[ ${#TRACKED_CHANGED_FILES[@]} -gt 0 ]]; then
 fi
 
 if [[ ${#WHOLE_FILE_FILES[@]} -gt 0 ]]; then
-    if ! clang-format --dry-run --Werror --style=file "${WHOLE_FILE_FILES[@]}"; then
+    if ! "$CLANG_FORMAT_BIN" --dry-run --Werror --style=file "${WHOLE_FILE_FILES[@]}"; then
         echo "ERROR: Untracked source files are not clang-formatted." >&2
         FAIL=1
     fi
@@ -106,11 +107,9 @@ fi
 
 declare -a HEADER_FILES=()
 for file in "${FILES[@]}"; do
-    case "$file" in
-        *.h|*.hh|*.hpp|*.hxx|*.inl|*.ixx)
-            HEADER_FILES+=("$file")
-            ;;
-    esac
+    if style_is_header_like "$file"; then
+        HEADER_FILES+=("$file")
+    fi
 done
 
 if [[ ${#HEADER_FILES[@]} -gt 0 ]]; then

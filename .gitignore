@@ -1,3 +1,9 @@
+# Private workbench material. This is a stable namespace, not a per-file list.
+/.juicer-local/
+/AGENTS.md
+# Existing path-sensitive harnesses remain a single quarantined legacy bucket.
+/tools/
+
 # VS user state
 .vs/
 *.vcxproj.user
@@ -42,5 +48,8 @@ vcpkg_installed/
 *.zip
 /third_party/nlohmann/json.hpp
 /DaVinci_Resolve_17_Wide_Gamut_Intermediate.pdf
-/AGENTS.md
 /before-juicer.ofx
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
