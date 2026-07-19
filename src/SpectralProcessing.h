@@ -65,8 +65,8 @@ namespace Spectral {
     struct SpdProbeBuffer {
         bool active = false;
         int sampleIndex = -1;
-        float rgbInput[3] = { 0.0f, 0.0f, 0.0f };
-        float rgbDWG[3] = { 0.0f, 0.0f, 0.0f };
+        float rgbInput[3] = {0.0f, 0.0f, 0.0f};
+        float rgbDWG[3] = {0.0f, 0.0f, 0.0f};
         float qx = 0.0f;
         float qy = 0.0f;
         bool hasCoords = false;
@@ -77,10 +77,10 @@ namespace Spectral {
         bool hasYrecon = false;
         float midgrayScale = 0.0f;
         bool hasMidgray = false;
-        float cat02InputXYZ[3] = { 0.0f, 0.0f, 0.0f };
-        float cat02OutputXYZ[3] = { 0.0f, 0.0f, 0.0f };
-        float cat02SrcWhite[3] = { 0.0f, 0.0f, 0.0f };
-        float cat02DstWhite[3] = { 0.0f, 0.0f, 0.0f };
+        float cat02InputXYZ[3] = {0.0f, 0.0f, 0.0f};
+        float cat02OutputXYZ[3] = {0.0f, 0.0f, 0.0f};
+        float cat02SrcWhite[3] = {0.0f, 0.0f, 0.0f};
+        float cat02DstWhite[3] = {0.0f, 0.0f, 0.0f};
         bool hasCat02 = false;
         bool applyDeltaLambdaFlag = false;
         bool hasDeltaLambda = false;
@@ -88,7 +88,7 @@ namespace Spectral {
     };
 
     inline std::atomic<int>& spd_probe_emitted_samples() {
-        static std::atomic<int> emitted{ 0 };
+        static std::atomic<int> emitted{0};
         return emitted;
     }
 
@@ -195,8 +195,7 @@ namespace Spectral {
         const float XYZ_in[3],
         const float XYZ_out[3],
         const float srcWhite[3],
-        const float dstWhite[3])
-    {
+        const float dstWhite[3]) {
         auto& buf = spd_probe_buffer();
         if (!buf.active) {
             return;
@@ -236,8 +235,7 @@ namespace Spectral {
         }
         if (buf.hasTargetScale) {
             oss << " targetScale=" << buf.targetScale;
-        }
-        else {
+        } else {
             oss << " targetScale=<unset>";
         }
         if (buf.hasYrecon) {
@@ -288,8 +286,12 @@ namespace Spectral {
         buf.active = false;
     }
 #else
-    inline bool spd_probe_begin_capture(const float[3], const float[3], bool) { return false; }
-    inline bool spd_probe_active() { return false; }
+    inline bool spd_probe_begin_capture(const float[3], const float[3], bool) {
+        return false;
+    }
+    inline bool spd_probe_active() {
+        return false;
+    }
     inline void spd_probe_record_target_scale(float) {}
     inline void spd_probe_record_yrecon(double) {}
     inline void spd_probe_record_coords(float, float) {}
@@ -334,7 +336,7 @@ namespace Spectral {
 
     inline std::uint64_t hash_float_span_digest_sp(const float* values, std::size_t count) {
         const Hash::FloatSpanHash h = Hash::hash_float_span_with_nan_mask(values, count);
-        const std::uint64_t fields[] = { h.valueHash, h.nanMaskHash };
+        const std::uint64_t fields[] = {h.valueHash, h.nanMaskHash};
         return Hash::hash_bytes(fields, sizeof(fields));
     }
 
@@ -350,7 +352,8 @@ namespace Spectral {
         return hash_float_span_digest_sp(values, 3);
     }
 
-    inline float sanitize_signed_width(float width, float minMagnitude = 1e-6f) {
+    inline float sanitize_signed_width(float width) {
+        constexpr float minMagnitude = 1e-6f;
         float safeWidth = width;
         if (!is_finite_sp(safeWidth)) {
             safeWidth = (safeWidth < 0.0f) ? -minMagnitude : minMagnitude;
@@ -380,8 +383,7 @@ namespace Spectral {
         const float fallback[3] = {
             gDWG_WhitePoint_XYZ[0],
             gDWG_WhitePoint_XYZ[1],
-            gDWG_WhitePoint_XYZ[2]
-        };
+            gDWG_WhitePoint_XYZ[2]};
         const float* src = white ? white : fallback;
         float* dstIt = dst;
         const float* srcIt = src;
@@ -401,27 +403,40 @@ namespace Spectral {
         matrix[8] = 1.0f;
     }
 
-    inline void store_scaled_xyz(double X, double Y, double Z, float scale, float XYZ[3]) {
-        XYZ[0] = static_cast<float>(X * scale);
-        XYZ[1] = static_cast<float>(Y * scale);
-        XYZ[2] = static_cast<float>(Z * scale);
+    struct XyzAccumulator {
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+    };
+
+    inline void store_scaled_xyz(const XyzAccumulator& value, float scale, float XYZ[3]) {
+        XYZ[0] = static_cast<float>(value.x * scale);
+        XYZ[1] = static_cast<float>(value.y * scale);
+        XYZ[2] = static_cast<float>(value.z * scale);
     }
 
-    inline void store_3x3_rowmajor(
-        float matrix[9],
-        double m00, double m01, double m02,
-        double m10, double m11, double m12,
-        double m20, double m21, double m22)
-    {
-        matrix[0] = static_cast<float>(m00);
-        matrix[1] = static_cast<float>(m01);
-        matrix[2] = static_cast<float>(m02);
-        matrix[3] = static_cast<float>(m10);
-        matrix[4] = static_cast<float>(m11);
-        matrix[5] = static_cast<float>(m12);
-        matrix[6] = static_cast<float>(m20);
-        matrix[7] = static_cast<float>(m21);
-        matrix[8] = static_cast<float>(m22);
+    struct RowMajor3x3d {
+        double m00 = 0.0;
+        double m01 = 0.0;
+        double m02 = 0.0;
+        double m10 = 0.0;
+        double m11 = 0.0;
+        double m12 = 0.0;
+        double m20 = 0.0;
+        double m21 = 0.0;
+        double m22 = 0.0;
+    };
+
+    inline void store_3x3_rowmajor(float matrix[9], const RowMajor3x3d& values) {
+        matrix[0] = static_cast<float>(values.m00);
+        matrix[1] = static_cast<float>(values.m01);
+        matrix[2] = static_cast<float>(values.m02);
+        matrix[3] = static_cast<float>(values.m10);
+        matrix[4] = static_cast<float>(values.m11);
+        matrix[5] = static_cast<float>(values.m12);
+        matrix[6] = static_cast<float>(values.m20);
+        matrix[7] = static_cast<float>(values.m21);
+        matrix[8] = static_cast<float>(values.m22);
     }
 
     inline bool determinant_near_zero(double determinant, double epsilon = 1e-20) {
@@ -432,9 +447,15 @@ namespace Spectral {
     // 1. MATH UTILITIES (~100 lines)
     // -------------------------------------------------------------------------
 
-    inline float sigmoid_erf(float x, float center, float width) {
-        const float w = sanitize_signed_width(width);
-        const float arg = (x - center) / w;
+    struct SigmoidErfSample {
+        float value = 0.0f;
+        float center = 0.0f;
+        float width = 1.0f;
+    };
+
+    inline float sigmoid_erf(const SigmoidErfSample& sample) {
+        const float w = sanitize_signed_width(sample.width);
+        const float arg = (sample.value - sample.center) / w;
         const float val = static_cast<float>(std::erf(static_cast<double>(arg)));
         return val * 0.5f + 0.5f;
     }
@@ -444,10 +465,12 @@ namespace Spectral {
         return std::exp(-0.5f * t * t);
     }
 
-    inline std::vector<float> compute_band_pass_filter(
-        const std::array<float, 3>& filterUV = { {1.0f, 410.0f, 8.0f} },
-        const std::array<float, 3>& filterIR = { {1.0f, 675.0f, 15.0f} })
-    {
+    struct BandPassFilterTriplets {
+        std::array<float, 3> uv = {{1.0f, 410.0f, 8.0f}};
+        std::array<float, 3> ir = {{1.0f, 675.0f, 15.0f}};
+    };
+
+    inline std::vector<float> compute_band_pass_filter(const BandPassFilterTriplets& filters = {}) {
         std::vector<float> bandPass;
         const int K = gShape.K;
         if (K <= 0 || gShape.wavelengths.size() != static_cast<size_t>(K)) {
@@ -456,24 +479,32 @@ namespace Spectral {
 
         bandPass.resize(static_cast<size_t>(K));
 
-        const float ampUV = std::clamp(filterUV[0], 0.0f, 1.0f);
-        const float ampIR = std::clamp(filterIR[0], 0.0f, 1.0f);
-        const float wlUV = filterUV[1];
-        const float wlIR = filterIR[1];
+        const float ampUV = std::clamp(filters.uv[0], 0.0f, 1.0f);
+        const float ampIR = std::clamp(filters.ir[0], 0.0f, 1.0f);
+        const float wlUV = filters.uv[1];
+        const float wlIR = filters.ir[1];
         if (ampUV <= 0.0f && ampIR <= 0.0f) {
             std::fill(bandPass.begin(), bandPass.end(), 1.0f);
             return bandPass;
         }
 
-        const float widthUV = sanitize_signed_width(filterUV[2]);
-        const float widthIR = -std::fabs(sanitize_signed_width(filterIR[2]));
+        const float widthUV = sanitize_signed_width(filters.uv[2]);
+        const float widthIR = -std::fabs(sanitize_signed_width(filters.ir[2]));
         const float* wavelengths = gShape.wavelengths.data();
         float* outData = bandPass.data();
 
         for (int i = 0; i < K; ++i) {
             const float wl = wavelengths[i];
-            const float filter_uv = 1.0f - ampUV + ampUV * sigmoid_erf(wl, wlUV, widthUV);
-            const float filter_ir = 1.0f - ampIR + ampIR * sigmoid_erf(wl, wlIR, widthIR);
+            SigmoidErfSample uvSample{};
+            uvSample.value = wl;
+            uvSample.center = wlUV;
+            uvSample.width = widthUV;
+            SigmoidErfSample irSample{};
+            irSample.value = wl;
+            irSample.center = wlIR;
+            irSample.width = widthIR;
+            const float filter_uv = 1.0f - ampUV + ampUV * sigmoid_erf(uvSample);
+            const float filter_ir = 1.0f - ampIR + ampIR * sigmoid_erf(irSample);
             outData[i] = filter_uv * filter_ir;
         }
 
@@ -481,7 +512,8 @@ namespace Spectral {
     }
 
     inline float compute_delta_from_shape(const SpectralShape& s) {
-        if (s.K <= 1 || s.wavelengths.size() < 2) return kDelta;
+        if (s.K <= 1 || s.wavelengths.size() < 2)
+            return kDelta;
         // Estimate mean Δλ to be robust to tiny non-uniformities
         const float* wavelengths = s.wavelengths.data();
         double sum = 0.0;
@@ -492,7 +524,9 @@ namespace Spectral {
         return (mean > 0.0) ? static_cast<float>(mean) : kDelta;
     }
 
-    inline float illuminant_E(float /*lambda*/) { return 1.0f; }
+    inline float illuminant_E(float /*lambda*/) {
+        return 1.0f;
+    }
 
     inline void fill_viewing_illuminant_Ee(float gain, std::vector<float>& Ee_out) {
         const int K = gShape.K;
@@ -513,13 +547,15 @@ namespace Spectral {
     // Global variables for SPD reconstruction
     inline std::atomic<bool>& gSPDInit = context().spdInit;
     inline std::mutex gSPDMutex;
-    inline float(&gS_inv)[9] = context().sInv; // row-major inverse of 3x3 S
+    inline float (&gS_inv)[9] = context().sInv; // row-major inverse of 3x3 S
 
     inline void compute_S_inverse_once() {
-        if (gSPDInit.load(std::memory_order_acquire)) return;
+        if (gSPDInit.load(std::memory_order_acquire))
+            return;
 
         std::lock_guard<std::mutex> lock(gSPDMutex);
-        if (gSPDInit.load(std::memory_order_acquire)) return;
+        if (gSPDInit.load(std::memory_order_acquire))
+            return;
 
         // Accumulate S over the fixed grid with Δλ = kDelta
         double Sxx = 0, Sxy = 0, Sxz = 0;
@@ -534,14 +570,26 @@ namespace Spectral {
             const float by = std::max(0.0f, y);
             const float bz = std::max(0.0f, z);
 
-            Sxx += bx * x; Sxy += bx * y; Sxz += bx * z;
-            Syx += by * x; Syy += by * y; Syz += by * z;
-            Szx += bz * x; Szy += bz * y; Szz += bz * z;
+            Sxx += bx * x;
+            Sxy += bx * y;
+            Sxz += bx * z;
+            Syx += by * x;
+            Syy += by * y;
+            Syz += by * z;
+            Szx += bz * x;
+            Szy += bz * y;
+            Szz += bz * z;
         }
         const double dl = static_cast<double>(gDeltaLambda);
-        Sxx *= dl; Sxy *= dl; Sxz *= dl;
-        Syx *= dl; Syy *= dl; Syz *= dl;
-        Szx *= dl; Szy *= dl; Szz *= dl;
+        Sxx *= dl;
+        Sxy *= dl;
+        Sxz *= dl;
+        Syx *= dl;
+        Syy *= dl;
+        Syz *= dl;
+        Szx *= dl;
+        Szy *= dl;
+        Szz *= dl;
 
 
         // Invert S via adjugate
@@ -568,9 +616,16 @@ namespace Spectral {
 
         store_3x3_rowmajor(
             gS_inv,
-            invSxx, invSxy, invSxz,
-            invSyx, invSyy, invSyz,
-            invSzx, invSzy, invSzz);
+            RowMajor3x3d{
+                invSxx,
+                invSxy,
+                invSxz,
+                invSyx,
+                invSyy,
+                invSyz,
+                invSzx,
+                invSzy,
+                invSzz});
 
         gSPDInit.store(true, std::memory_order_release);
     }
@@ -584,12 +639,26 @@ namespace Spectral {
             const float bx = std::max(0.0f, x);
             const float by = std::max(0.0f, y);
             const float bz = std::max(0.0f, z);
-            Sxx += bx * x; Sxy += bx * y; Sxz += bx * z;
-            Syx += by * x; Syy += by * y; Syz += by * z;
-            Szx += bz * x; Szy += bz * y; Szz += bz * z;
+            Sxx += bx * x;
+            Sxy += bx * y;
+            Sxz += bx * z;
+            Syx += by * x;
+            Syy += by * y;
+            Syz += by * z;
+            Szx += bz * x;
+            Szy += bz * y;
+            Szz += bz * z;
         }
         const double dl = static_cast<double>(T.deltaLambda);
-        Sxx *= dl; Sxy *= dl; Sxz *= dl; Syx *= dl; Syy *= dl; Syz *= dl; Szx *= dl; Szy *= dl; Szz *= dl;
+        Sxx *= dl;
+        Sxy *= dl;
+        Sxz *= dl;
+        Syx *= dl;
+        Syy *= dl;
+        Syz *= dl;
+        Szx *= dl;
+        Szy *= dl;
+        Szz *= dl;
 
         const double det = Sxx * (Syy * Szz - Syz * Szy) - Sxy * (Syx * Szz - Syz * Szx) + Sxz * (Syx * Szy - Syy * Szx);
         if (determinant_near_zero(det)) {
@@ -599,15 +668,16 @@ namespace Spectral {
         const double invDet = 1.0 / det;
         store_3x3_rowmajor(
             S_inv_out,
-            (Syy * Szz - Syz * Szy) * invDet,
-            (Sxz * Szy - Sxy * Szz) * invDet,
-            (Sxy * Syz - Sxz * Syy) * invDet,
-            (Syz * Szx - Syx * Szz) * invDet,
-            (Sxx * Szz - Sxz * Szx) * invDet,
-            (Sxz * Syx - Sxx * Syz) * invDet,
-            (Syx * Szy - Syy * Szx) * invDet,
-            (Sxy * Szx - Sxx * Szy) * invDet,
-            (Sxx * Syy - Sxy * Syx) * invDet);
+            RowMajor3x3d{
+                (Syy * Szz - Syz * Szy) * invDet,
+                (Sxz * Szy - Sxy * Szz) * invDet,
+                (Sxy * Syz - Sxz * Syy) * invDet,
+                (Syz * Szx - Syx * Szz) * invDet,
+                (Sxx * Szz - Sxz * Szx) * invDet,
+                (Sxz * Syx - Sxx * Syz) * invDet,
+                (Syx * Szy - Syy * Szx) * invDet,
+                (Sxy * Szx - Sxx * Szy) * invDet,
+                (Sxx * Syy - Sxy * Syx) * invDet});
     }
 
     // --- CMF-based SPD reconstruction (global) ---
@@ -649,8 +719,7 @@ namespace Spectral {
             for (int i = 0; i < K; ++i) {
                 Ee_out[i] = std::max(0.0f, s * Ee_out[i]);
             }
-        }
-        else if (targetScale <= 0.0f) {
+        } else if (targetScale <= 0.0f) {
             std::fill(Ee_out.begin(), Ee_out.end(), 0.0f);
         }
 
@@ -681,27 +750,29 @@ namespace Spectral {
             const float x2 = x * x;
             const float x3 = x2 * x;
             return ((12.0f - 9.0f * B - 6.0f * C) * x3 +
-                (-18.0f + 12.0f * B + 6.0f * C) * x2 +
-                (6.0f - 2.0f * B)) * (1.0f / 6.0f);
+                    (-18.0f + 12.0f * B + 6.0f * C) * x2 +
+                    (6.0f - 2.0f * B)) *
+                   (1.0f / 6.0f);
         }
         if (x < 2.0f) {
             const float x2 = x * x;
             const float x3 = x2 * x;
             return ((-B - 6.0f * C) * x3 +
-                (6.0f * B + 30.0f * C) * x2 +
-                (-12.0f * B - 48.0f * C) * x +
-                (8.0f * B + 24.0f * C)) * (1.0f / 6.0f);
+                    (6.0f * B + 30.0f * C) * x2 +
+                    (-12.0f * B - 48.0f * C) * x +
+                    (8.0f * B + 24.0f * C)) *
+                   (1.0f / 6.0f);
         }
         return 0.0f;
     }
 
     inline int reflect_index(int idx, int size) {
-        if (size <= 0) return 0;
+        if (size <= 0)
+            return 0;
         while (idx < 0 || idx >= size) {
             if (idx < 0) {
                 idx = -idx - 1;
-            }
-            else {
+            } else {
                 idx = 2 * size - idx - 1;
             }
         }
@@ -768,7 +839,7 @@ namespace Spectral {
         auto at = [&](int i, int j, int k) -> float {
             size_t idx = ((static_cast<size_t>(i) * N + j) * static_cast<size_t>(gHanSpectra.numSamples) + k);
             return gHanSpectra.data[idx];
-            };
+        };
 
         thread_local std::vector<float> tapBuffer;
         const size_t required = static_cast<size_t>(K) * 16;
@@ -840,8 +911,7 @@ namespace Spectral {
     inline void reconstruct_Ee_from_DWG_RGB_hanatos(
         const float rgbDWG[3],
         std::vector<float>& Ee_out,
-        const float refIllumWhiteXYZ[3])
-    {
+        const float refIllumWhiteXYZ[3]) {
         const int K = gShape.K;
         Ee_out.resize(K);
 
@@ -862,7 +932,10 @@ namespace Spectral {
         // Apply CAT02 chromatic adaptation from D65 to reference illuminant.
         // This matches Python: colour.RGB_to_XYZ(..., illuminant=ref_illum, chromatic_adaptation_transform='CAT02')
         float adaptedXYZ[3];
-        chromatic_adapt_XYZ_CAT02(XYZ, gDWG_WhitePoint_XYZ, refWhiteXYZ, adaptedXYZ);
+        ChromaticAdaptationWhites whites{};
+        whites.source = gDWG_WhitePoint_XYZ;
+        whites.destination = refWhiteXYZ;
+        chromatic_adapt_XYZ_CAT02(XYZ, whites, adaptedXYZ);
         spd_probe_record_cat02(XYZ, adaptedXYZ, gDWG_WhitePoint_XYZ, refWhiteXYZ);
 
         // agx-emulsion parity:
@@ -884,8 +957,8 @@ namespace Spectral {
         tri2quad(x, y, qx, qy);
         spd_probe_record_coords(qx, qy);
 
-        hanatos_linear_spectrum(qx, qy, Ee_out);  // Use bilinear to match Python's RegularGridInterpolator
-        spd_probe_record_raw_lut(Ee_out);  // Log raw LUT spectrum BEFORE targetScale
+        hanatos_linear_spectrum(qx, qy, Ee_out); // Use bilinear to match Python's RegularGridInterpolator
+        spd_probe_record_raw_lut(Ee_out);        // Log raw LUT spectrum BEFORE targetScale
 
         // Multiply by b to get final Ee spectrum (signed; matches Python).
         for (int i = 0; i < K; ++i) {
@@ -895,7 +968,7 @@ namespace Spectral {
         // Compute Y_recon for diagnostic logging (should match Python's ~3.95 for mid-gray)
         double Y_recon = 0.0;
         const bool hasYbar = (!gYBar.linear.empty() &&
-            static_cast<int>(gYBar.linear.size()) == K);
+                              static_cast<int>(gYBar.linear.size()) == K);
         const bool hasLambda = (static_cast<int>(gShape.wavelengths.size()) == K);
         for (int i = 0; i < K; ++i) {
             const float lambda = hasLambda ? gShape.wavelengths[i] : (380.0f + 5.0f * static_cast<float>(i));
@@ -946,8 +1019,8 @@ namespace Spectral {
 
             // 2) Sample all curves on the working grid (size-safe)
             const bool illumSizeMismatch = !gIlluminantCurve.linear.empty() &&
-                ((int)gIlluminantCurve.linear.size() != K ||
-                    gIlluminantCurve.lambda_nm.size() != gIlluminantCurve.linear.size());
+                                           ((int)gIlluminantCurve.linear.size() != K ||
+                                            gIlluminantCurve.lambda_nm.size() != gIlluminantCurve.linear.size());
             bool illumAxisMismatch = false;
             if (!illumSizeMismatch && !gIlluminantCurve.linear.empty()) {
                 for (int i = 0; i < K; ++i) {
@@ -977,8 +1050,8 @@ namespace Spectral {
             const float* xbarDirect = hasXbarDirect ? gXBar.linear.data() : nullptr;
             const float* ybarDirect = hasYbarDirect ? gYBar.linear.data() : nullptr;
             const float* zbarDirect = hasZbarDirect ? gZBar.linear.data() : nullptr;
-            const float* baseMinDirect = hasBaseMinDirect ? gBaseMin.linear.data() : nullptr;
-            const float* baseMidDirect = hasBaseMidDirect ? gBaseMid.linear.data() : nullptr;
+            const float* baseDensityMinDirect = hasBaseMinDirect ? gBaseMin.linear.data() : nullptr;
+            const float* baseDensityMidDirect = hasBaseMidDirect ? gBaseMid.linear.data() : nullptr;
             const float* illumDirect = hasIllumDirect ? gIlluminantCurve.linear.data() : nullptr;
             const float* lambdaData = gLambda.data();
             float* epsYTableData = gEpsYTable.data();
@@ -987,36 +1060,48 @@ namespace Spectral {
             float* xbarTableData = gXbarTable.data();
             float* ybarTableData = gYbarTable.data();
             float* zbarTableData = gZbarTable.data();
-            float* baseMinTableData = gBaselineMinTable.data();
-            float* baseMidTableData = gBaselineMidTable.data();
+            float* baseDensityMinTableData = gBaselineMinTable.data();
+            float* baseDensityMidTableData = gBaselineMidTable.data();
             float* illumTableData = gIllumTable.data();
 
             for (int i = 0; i < K; ++i) {
                 const float l = lambdaData[i];
 
                 // Measured dye extinctions: if pinned exactly to K, use direct indexing; otherwise sample by wavelength.
-                if (epsYDirect) epsYTableData[i] = epsYDirect[i];
-                else epsYTableData[i] = eps_yellow(l);
+                if (epsYDirect)
+                    epsYTableData[i] = epsYDirect[i];
+                else
+                    epsYTableData[i] = eps_yellow(l);
 
-                if (epsMDirect) epsMTableData[i] = epsMDirect[i];
-                else epsMTableData[i] = eps_magenta(l);
+                if (epsMDirect)
+                    epsMTableData[i] = epsMDirect[i];
+                else
+                    epsMTableData[i] = eps_magenta(l);
 
-                if (epsCDirect) epsCTableData[i] = epsCDirect[i];
-                else epsCTableData[i] = eps_cyan(l);
+                if (epsCDirect)
+                    epsCTableData[i] = epsCDirect[i];
+                else
+                    epsCTableData[i] = eps_cyan(l);
 
                 // CMFs with the same size-safe rule
-                if (xbarDirect) xbarTableData[i] = xbarDirect[i];
-                else xbarTableData[i] = cie_xbar(l);
+                if (xbarDirect)
+                    xbarTableData[i] = xbarDirect[i];
+                else
+                    xbarTableData[i] = cie_xbar(l);
 
-                if (ybarDirect) ybarTableData[i] = ybarDirect[i];
-                else ybarTableData[i] = cie_ybar(l);
+                if (ybarDirect)
+                    ybarTableData[i] = ybarDirect[i];
+                else
+                    ybarTableData[i] = cie_ybar(l);
 
-                if (zbarDirect) zbarTableData[i] = zbarDirect[i];
-                else zbarTableData[i] = cie_zbar(l);
+                if (zbarDirect)
+                    zbarTableData[i] = zbarDirect[i];
+                else
+                    zbarTableData[i] = cie_zbar(l);
 
                 // Baseline (size-safe: only direct index if sizes match)
-                baseMinTableData[i] = baseMinDirect ? baseMinDirect[i] : 0.0f;
-                baseMidTableData[i] = baseMidDirect ? baseMidDirect[i] : 0.0f;
+                baseDensityMinTableData[i] = baseDensityMinDirect ? baseDensityMinDirect[i] : 0.0f;
+                baseDensityMidTableData[i] = baseDensityMidDirect ? baseDensityMidDirect[i] : 0.0f;
 
                 // Illuminant: only direct index if axis/size match; otherwise fallback to equal-energy for this sample
                 illumTableData[i] = illumDirect ? illumDirect[i] : 1.0f; // equal-energy fallback
@@ -1043,7 +1128,6 @@ namespace Spectral {
                 azData[i] = Ee * z;
 
                 Yn += ayData[i];
-
             }
 
             gYnNorm = (Yn > 0.0f) ? Yn : 1.0f;
@@ -1102,15 +1186,8 @@ namespace Spectral {
     }
 
     inline void build_tables_from_curves_non_global(
-        const Curve& epsY, const Curve& epsM, const Curve& epsC,
-        const Curve& xbar, const Curve& ybar, const Curve& zbar,
-        const Curve& illumView,
-        const Curve& baseMin, const Curve& baseMid, bool hasBaseline,
-        float baselineMixReference,
-        SpectralTables& T,
-        std::uint64_t illuminantHash = 0)
-    {
-        (void)baselineMixReference;
+        const Curve& epsY, const Curve& epsM, const Curve& epsC, const Curve& xbar, const Curve& ybar, const Curve& zbar, const Curve& illumView, const Curve& baseDensityMin, const Curve& baseDensityMid, bool hasBaseline, float densityBaselineMixReference, SpectralTables& T, std::uint64_t illuminantHash = 0) {
+        (void)densityBaselineMixReference;
         const int K = gShape.K;
         T.K = K;
         T.lambda.assign(gShape.wavelengths.begin(), gShape.wavelengths.end());
@@ -1182,20 +1259,24 @@ namespace Spectral {
         }
         T.invYn = (Yn > 0.0) ? (1.0f / (float)Yn) : 1.0f;
         const double scale = static_cast<double>(T.invYn);
-        store_scaled_xyz(sumAx, sumAy, sumAz, static_cast<float>(scale), T.whiteXYZ);
+        XyzAccumulator whiteAccumulator{};
+        whiteAccumulator.x = sumAx;
+        whiteAccumulator.y = sumAy;
+        whiteAccumulator.z = sumAz;
+        store_scaled_xyz(whiteAccumulator, static_cast<float>(scale), T.whiteXYZ);
 
         // Illuminant white point used for chromatic adaptation (normalized to Y=1).
         copy_triplet3(T.whiteXYZ, T.refIllumWhiteXYZ);
 
         T.hasBaseline = hasBaseline &&
-            (int)baseMin.linear.size() == K;
-        T.baseMin.assign(K, 0.0f);
-        T.baseMid.assign(K, 0.0f);
-        T.baselineMixReference = 0.0f;
+                        (int)baseDensityMin.linear.size() == K;
+        T.baseDensityMin.assign(K, 0.0f);
+        T.baseDensityMid.assign(K, 0.0f);
+        T.densityBaselineMixReference = 0.0f;
         if (T.hasBaseline) {
-            T.baseMin.assign(baseMin.linear.begin(), baseMin.linear.end());
-            if ((int)baseMid.linear.size() == K) {
-                T.baseMid.assign(baseMid.linear.begin(), baseMid.linear.end());
+            T.baseDensityMin.assign(baseDensityMin.linear.begin(), baseDensityMin.linear.end());
+            if ((int)baseDensityMid.linear.size() == K) {
+                T.baseDensityMid.assign(baseDensityMid.linear.begin(), baseDensityMid.linear.end());
             }
         }
 
@@ -1220,11 +1301,10 @@ namespace Spectral {
             hash_float_vector_digest_sp(T.epsC),
             hash_float_vector_digest_sp(T.epsM),
             hash_float_vector_digest_sp(T.epsY),
-            hash_float_vector_digest_sp(T.baseMin),
-            hash_float_vector_digest_sp(T.baseMid),
-            hash_float_scalar_digest_sp(T.baselineMixReference),
-            Hash::hash_bytes(&T.hasBaseline, sizeof(T.hasBaseline))
-        };
+            hash_float_vector_digest_sp(T.baseDensityMin),
+            hash_float_vector_digest_sp(T.baseDensityMid),
+            hash_float_scalar_digest_sp(T.densityBaselineMixReference),
+            Hash::hash_bytes(&T.hasBaseline, sizeof(T.hasBaseline))};
         T.tablesHash = Hash::hash_bytes(tableFields, sizeof(tableFields));
     }
 
@@ -1232,8 +1312,7 @@ namespace Spectral {
         const float rgbDWG[3],
         const SpectralTables& T,
         const float S_inv[9],
-        std::vector<float>& Ee_out)
-    {
+        std::vector<float>& Ee_out) {
         float XYZ[3];
         DWG_linear_to_XYZ(rgbDWG, XYZ);
 
@@ -1247,7 +1326,10 @@ namespace Spectral {
         }
 
         float adaptedXYZ[3];
-        chromatic_adapt_XYZ_CAT02(sanitizedXYZ, gDWG_WhitePoint_XYZ, refWhite, adaptedXYZ);
+        ChromaticAdaptationWhites whites{};
+        whites.source = gDWG_WhitePoint_XYZ;
+        whites.destination = refWhite;
+        chromatic_adapt_XYZ_CAT02(sanitizedXYZ, whites, adaptedXYZ);
         spd_probe_record_cat02(sanitizedXYZ, adaptedXYZ, gDWG_WhitePoint_XYZ, refWhite);
 
         clamp_triplet_nonnegative(adaptedXYZ);
@@ -1283,35 +1365,67 @@ namespace Spectral {
             for (int i = 0; i < K; ++i, ++eeIt) {
                 *eeIt = std::max(0.0f, s * (*eeIt));
             }
-        }
-        else if (targetScale <= 0.0f) {
+        } else if (targetScale <= 0.0f) {
             std::fill(Ee_out.begin(), Ee_out.end(), 0.0f);
         }
 
         spd_probe_record_spectrum(Ee_out);
     }
 
-    // Forward declarations for exposure functions
-    inline void layerExposures_from_sceneSPD(
-        const std::vector<float>& Ee,
-        float E[3],
-        float exposureScale,
-        bool applyDeltaLambda = true);
+    // Per-instance SPD integration used by host preparation and CUDA parity probes.
     inline void layerExposures_from_sceneSPD_with_curves(
         const std::vector<float>& Ee,
-        const Curve& sB, const Curve& sG, const Curve& sR,
+        const Curve& sB,
+        const Curve& sG,
+        const Curve& sR,
         float E[3],
         float exposureScale,
-        bool applyDeltaLambda = true);
+        bool applyDeltaLambda = true) {
+        const int K = gShape.K;
+        double exposureBlue = 0.0;
+        double exposureGreen = 0.0;
+        double exposureRed = 0.0;
+        spd_probe_record_delta_lambda(applyDeltaLambda);
+        for (int i = 0; i < K; ++i) {
+            const float irradiance =
+                i < static_cast<int>(Ee.size()) ? Ee[i] : 0.0f;
+            if (!std::isfinite(irradiance)) {
+                continue;
+            }
+
+            const double irradiance64 = static_cast<double>(irradiance);
+            const float blue = sB.linear.empty() ? 0.0f : sB.linear[i];
+            const float green = sG.linear.empty() ? 0.0f : sG.linear[i];
+            const float red = sR.linear.empty() ? 0.0f : sR.linear[i];
+
+            if (std::isfinite(blue)) {
+                exposureBlue += irradiance64 * static_cast<double>(blue);
+            }
+            if (std::isfinite(green)) {
+                exposureGreen += irradiance64 * static_cast<double>(green);
+            }
+            if (std::isfinite(red)) {
+                exposureRed += irradiance64 * static_cast<double>(red);
+            }
+        }
+        const float safeScale = std::max(0.0f, exposureScale);
+        const double delta =
+            applyDeltaLambda ? static_cast<double>(gDeltaLambda) : 1.0;
+        const double scale = delta * static_cast<double>(safeScale);
+        E[0] = std::max(
+            0.0f,
+            static_cast<float>(exposureBlue * scale));
+        E[1] = std::max(
+            0.0f,
+            static_cast<float>(exposureGreen * scale));
+        E[2] = std::max(
+            0.0f,
+            static_cast<float>(exposureRed * scale));
+    }
 
     // Per-instance SPD exposure using per-instance sensitivity curves
     inline void rgbDWG_to_layerExposures_from_tables_with_curves(
-        const float rgbDWG[3], float E[3], float exposureScale,
-        const SpectralTables* T, const float* S_inv /* size 9 */,
-        const Curve& sB, const Curve& sG, const Curve& sR,
-        SpectralUpsamplingMode spectralUpsamplingMode = SpectralUpsamplingMode::PreferHanatos,
-        const float refIllumWhiteXYZ[3] /* optional override */ = nullptr)
-    {
+        const float rgbDWG[3], float E[3], float exposureScale, const SpectralTables* T, const float* S_inv /* size 9 */, const Curve& sB, const Curve& sG, const Curve& sR, SpectralUpsamplingMode spectralUpsamplingMode = SpectralUpsamplingMode::PreferHanatos, const float refIllumWhiteXYZ[3] /* optional override */ = nullptr) {
         if (!T || !S_inv || T->K <= 0) {
             E[0] = E[1] = E[2] = 0.0f;
             return;
@@ -1326,8 +1440,7 @@ namespace Spectral {
         if (useHanatos) {
             // Pass reference illuminant white point for chromatic adaptation
             reconstruct_Ee_from_DWG_RGB_hanatos(rgbDWG, Ee_scene, adaptWhite);
-        }
-        else {
+        } else {
             reconstruct_Ee_from_DWG_RGB_with_tables(rgbDWG, *T, S_inv, Ee_scene);
         }
 
@@ -1341,11 +1454,10 @@ namespace Spectral {
         const Spectral::Curve& xbar,
         const Spectral::Curve& ybar,
         const Spectral::Curve& zbar,
-        float XYZ[3])
-    {
+        float XYZ[3]) {
         assert(Ee.size() == xbar.linear.size() &&
-            Ee.size() == ybar.linear.size() &&
-            Ee.size() == zbar.linear.size());
+               Ee.size() == ybar.linear.size() &&
+               Ee.size() == zbar.linear.size());
 
         double X = 0.0, Y = 0.0, Z = 0.0;
         const size_t count = Ee.size();
@@ -1361,15 +1473,18 @@ namespace Spectral {
         }
 
         const float s = Spectral::gInvYn;
-        store_scaled_xyz(X, Y, Z, s, XYZ);
+        XyzAccumulator accumulator{};
+        accumulator.x = X;
+        accumulator.y = Y;
+        accumulator.z = Z;
+        store_scaled_xyz(accumulator, s, XYZ);
     }
 
     // Integrate spectral irradiance with per-instance tables (viewing axis and normalization)
     inline void Ee_to_XYZ_given_tables(
         const SpectralTables& T,
         const std::vector<float>& Ee,
-        float XYZ[3])
-    {
+        float XYZ[3]) {
         double X = 0.0, Y = 0.0, Z = 0.0;
         const int K = T.K;
         const int N = static_cast<int>(Ee.size());
@@ -1385,7 +1500,11 @@ namespace Spectral {
             Z += static_cast<double>(e) * static_cast<double>(*zData);
         }
         const float s = T.invYn;
-        store_scaled_xyz(X, Y, Z, s, XYZ);
+        XyzAccumulator accumulator{};
+        accumulator.x = X;
+        accumulator.y = Y;
+        accumulator.z = Z;
+        store_scaled_xyz(accumulator, s, XYZ);
     }
 
     // -------------------------------------------------------------------------
@@ -1394,40 +1513,53 @@ namespace Spectral {
 
     // Dye extinction samplers
     inline float eps_yellow(float lambda) {
-        if (!gEpsY.lambda_nm.empty()) return gEpsY.sample(lambda);
+        if (!gEpsY.lambda_nm.empty())
+            return gEpsY.sample(lambda);
         return 1.4f * gaussian(lambda, 440.0f, 25.0f);
     }
     inline float eps_magenta(float lambda) {
-        if (!gEpsM.lambda_nm.empty()) return gEpsM.sample(lambda);
+        if (!gEpsM.lambda_nm.empty())
+            return gEpsM.sample(lambda);
         return 1.2f * gaussian(lambda, 540.0f, 30.0f);
     }
     inline float eps_cyan(float lambda) {
-        if (!gEpsC.lambda_nm.empty()) return gEpsC.sample(lambda);
+        if (!gEpsC.lambda_nm.empty())
+            return gEpsC.sample(lambda);
         return 1.1f * gaussian(lambda, 610.0f, 35.0f);
     }
 
     // CMF samplers
     inline float cie_xbar(float lambda) {
-        if (!gXBar.lambda_nm.empty()) return gXBar.sample(lambda);
+        if (!gXBar.lambda_nm.empty())
+            return gXBar.sample(lambda);
         return 1.0f * gaussian(lambda, 595.0f, 40.0f) + 0.25f * gaussian(lambda, 445.0f, 20.0f);
     }
     inline float cie_ybar(float lambda) {
-        if (!gYBar.lambda_nm.empty()) return gYBar.sample(lambda);
+        if (!gYBar.lambda_nm.empty())
+            return gYBar.sample(lambda);
         return 1.0f * gaussian(lambda, 555.0f, 30.0f);
     }
     inline float cie_zbar(float lambda) {
-        if (!gZBar.lambda_nm.empty()) return gZBar.sample(lambda);
+        if (!gZBar.lambda_nm.empty())
+            return gZBar.sample(lambda);
         return 1.2f * gaussian(lambda, 445.0f, 25.0f);
     }
 
     // Sensitivity samplers
-    inline float sens_blue(float lambda) { return gSensBlue.sample(lambda); }
-    inline float sens_green(float lambda) { return gSensGreen.sample(lambda); }
-    inline float sens_red(float lambda) { return gSensRed.sample(lambda); }
+    inline float sens_blue(float lambda) {
+        return gSensBlue.sample(lambda);
+    }
+    inline float sens_green(float lambda) {
+        return gSensGreen.sample(lambda);
+    }
+    inline float sens_red(float lambda) {
+        return gSensRed.sample(lambda);
+    }
 
     // Effective layer gain helper
     inline float effective_layer_gain(const Curve& c) {
-        if (c.lambda_nm.empty()) return 1.0f;
+        if (c.lambda_nm.empty())
+            return 1.0f;
         const int K = gShape.K;
         float num = 0.0f, den = 0.0f;
         const float* illumData = gIllumTable.data();

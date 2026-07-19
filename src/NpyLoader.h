@@ -12,7 +12,7 @@
 // Minimal .npy loader for little-endian float64 arrays shaped (N, N, K)
 // Stores as float in row-major C-order: ((i*size + j) * K + k)
 struct NpySpectraLUT {
-    int size = 0; // LUT is square
+    int size = 0;       // LUT is square
     int numSamples = 0; // wavelengths per spectrum
     std::vector<float> data;
 };
@@ -56,21 +56,21 @@ inline float npy_half_to_float(uint16_t h) {
     if (h_exp == 0x7C00u) { // Inf/NaN
         f_exp = 0xFFu << 23;
         f_sig = h_sig ? (h_sig << 13) : 0;
-    }
-    else if (!h_exp) { // subnormal/zero
+    } else if (!h_exp) { // subnormal/zero
         if (!h_sig) {
             f_exp = 0;
             f_sig = 0;
-        }
-        else {
+        } else {
             int shift = 0;
-            while ((h_sig & 0x0400u) == 0) { h_sig <<= 1; ++shift; }
+            while ((h_sig & 0x0400u) == 0) {
+                h_sig <<= 1;
+                ++shift;
+            }
             h_sig &= 0x03FFu;
             f_exp = (127 - 15 - shift) << 23;
             f_sig = h_sig << 13;
         }
-    }
-    else { // normal
+    } else { // normal
         f_exp = ((h_exp >> 10) + (127 - 15)) << 23;
         f_sig = h_sig << 13;
     }
@@ -82,15 +82,18 @@ inline float npy_half_to_float(uint16_t h) {
 
 inline bool load_npy_spectra_lut(const std::string& path, NpySpectraLUT& out) {
     std::ifstream f(path, std::ios::binary);
-    if (!f) return false;
+    if (!f)
+        return false;
 
     // Magic + version
     char magic[6];
     f.read(magic, 6);
-    if (!f || std::memcmp(magic, "\x93NUMPY", 6) != 0) return false;
+    if (!f || std::memcmp(magic, "\x93NUMPY", 6) != 0)
+        return false;
     unsigned char ver[2];
     f.read(reinterpret_cast<char*>(ver), 2);
-    if (!f) return false;
+    if (!f)
+        return false;
 
     // Header length
     uint32_t header_len = 0;
@@ -98,16 +101,17 @@ inline bool load_npy_spectra_lut(const std::string& path, NpySpectraLUT& out) {
         uint16_t hl16 = 0;
         f.read(reinterpret_cast<char*>(&hl16), 2);
         header_len = hl16;
-    }
-    else {
+    } else {
         f.read(reinterpret_cast<char*>(&header_len), 4);
     }
-    if (!f) return false;
+    if (!f)
+        return false;
 
     // Header string
     std::string header(header_len, '\0');
     f.read(header.data(), header_len);
-    if (!f) return false;
+    if (!f)
+        return false;
 
     // Detect dtype
     bool littleEndian = (header.find('<') != std::string::npos || header.find('|') != std::string::npos);
@@ -126,23 +130,34 @@ inline bool load_npy_spectra_lut(const std::string& path, NpySpectraLUT& out) {
     {
         size_t lp = header.find('(');
         size_t rp = header.find(')', lp);
-        if (lp == std::string::npos || rp == std::string::npos) return false;
+        if (lp == std::string::npos || rp == std::string::npos)
+            return false;
         std::string inside = header.substr(lp + 1, rp - lp - 1);
         std::vector<int> dims;
         size_t start = 0;
         while (start < inside.size()) {
             size_t comma = inside.find(',', start);
             std::string token = inside.substr(start, (comma == std::string::npos ? inside.size() : comma) - start);
-            size_t a = 0; while (a < token.size() && std::isspace(static_cast<unsigned char>(token[a]))) ++a;
-            size_t b = token.size(); while (b > a && std::isspace(static_cast<unsigned char>(token[b - 1]))) --b;
-            if (b > a) dims.push_back(std::atoi(token.substr(a, b - a).c_str()));
-            if (comma == std::string::npos) break;
+            size_t a = 0;
+            while (a < token.size() && std::isspace(static_cast<unsigned char>(token[a])))
+                ++a;
+            size_t b = token.size();
+            while (b > a && std::isspace(static_cast<unsigned char>(token[b - 1])))
+                --b;
+            if (b > a)
+                dims.push_back(std::atoi(token.substr(a, b - a).c_str()));
+            if (comma == std::string::npos)
+                break;
             start = comma + 1;
         }
-        if (dims.size() != 3) return false;
-        N0 = dims[0]; N1 = dims[1]; K = dims[2];
+        if (dims.size() != 3)
+            return false;
+        N0 = dims[0];
+        N1 = dims[1];
+        K = dims[2];
     }
-    if (N0 <= 0 || N1 <= 0 || N0 != N1 || K <= 0) return false;
+    if (N0 <= 0 || N1 <= 0 || N0 != N1 || K <= 0)
+        return false;
 
     // Read payload into temp buffer
     const size_t count = static_cast<size_t>(N0) * static_cast<size_t>(N1) * static_cast<size_t>(K);
@@ -152,48 +167,57 @@ inline bool load_npy_spectra_lut(const std::string& path, NpySpectraLUT& out) {
 
     if (isF64) {
         std::vector<double> buf(count);
-        if (!npy_read_vector(f, buf)) return false;
-        for (size_t i = 0; i < count; ++i) out.data[i] = static_cast<float>(buf[i]);
-    }
-    else if (isF32) {
+        if (!npy_read_vector(f, buf))
+            return false;
+        for (size_t i = 0; i < count; ++i)
+            out.data[i] = static_cast<float>(buf[i]);
+    } else if (isF32) {
         std::vector<float> buf(count);
-        if (!npy_read_vector(f, buf)) return false;
+        if (!npy_read_vector(f, buf))
+            return false;
         out.data = buf; // already float
-    }
-    else if (isF16) {
-        struct F16 { uint16_t v; };
+    } else if (isF16) {
+        struct F16 {
+            uint16_t v;
+        };
         std::vector<F16> buf(count);
-        if (!npy_read_vector(f, buf)) return false;
-        for (size_t i = 0; i < count; ++i) out.data[i] = npy_half_to_float(buf[i].v);
+        if (!npy_read_vector(f, buf))
+            return false;
+        for (size_t i = 0; i < count; ++i)
+            out.data[i] = npy_half_to_float(buf[i].v);
     }
     return true;
 }
 
 inline bool load_npy_float2d(const std::string& path, NpyFloat2D& out) {
     std::ifstream f(path, std::ios::binary);
-    if (!f) return false;
+    if (!f)
+        return false;
 
     char magic[6];
     f.read(magic, 6);
-    if (!f || std::memcmp(magic, "\x93NUMPY", 6) != 0) return false;
+    if (!f || std::memcmp(magic, "\x93NUMPY", 6) != 0)
+        return false;
     unsigned char ver[2];
     f.read(reinterpret_cast<char*>(ver), 2);
-    if (!f) return false;
+    if (!f)
+        return false;
 
     uint32_t header_len = 0;
     if (ver[0] == 1) {
         uint16_t hl16 = 0;
         f.read(reinterpret_cast<char*>(&hl16), 2);
         header_len = hl16;
-    }
-    else {
+    } else {
         f.read(reinterpret_cast<char*>(&header_len), 4);
     }
-    if (!f) return false;
+    if (!f)
+        return false;
 
     std::string header(header_len, '\0');
     f.read(header.data(), header_len);
-    if (!f) return false;
+    if (!f)
+        return false;
 
     bool littleEndian = (header.find('<') != std::string::npos || header.find('|') != std::string::npos);
     bool isF16 = (header.find("f2") != std::string::npos);
@@ -210,24 +234,33 @@ inline bool load_npy_float2d(const std::string& path, NpyFloat2D& out) {
     {
         size_t lp = header.find('(');
         size_t rp = header.find(')', lp);
-        if (lp == std::string::npos || rp == std::string::npos) return false;
+        if (lp == std::string::npos || rp == std::string::npos)
+            return false;
         std::string inside = header.substr(lp + 1, rp - lp - 1);
         std::vector<int> dims;
         size_t start = 0;
         while (start < inside.size()) {
             size_t comma = inside.find(',', start);
             std::string token = inside.substr(start, (comma == std::string::npos ? inside.size() : comma) - start);
-            size_t a = 0; while (a < token.size() && std::isspace(static_cast<unsigned char>(token[a]))) ++a;
-            size_t b = token.size(); while (b > a && std::isspace(static_cast<unsigned char>(token[b - 1]))) --b;
-            if (b > a) dims.push_back(std::atoi(token.substr(a, b - a).c_str()));
-            if (comma == std::string::npos) break;
+            size_t a = 0;
+            while (a < token.size() && std::isspace(static_cast<unsigned char>(token[a])))
+                ++a;
+            size_t b = token.size();
+            while (b > a && std::isspace(static_cast<unsigned char>(token[b - 1])))
+                --b;
+            if (b > a)
+                dims.push_back(std::atoi(token.substr(a, b - a).c_str()));
+            if (comma == std::string::npos)
+                break;
             start = comma + 1;
         }
-        if (dims.size() != 2) return false;
+        if (dims.size() != 2)
+            return false;
         rows = dims[0];
         cols = dims[1];
     }
-    if (rows <= 0 || cols <= 0) return false;
+    if (rows <= 0 || cols <= 0)
+        return false;
 
     const size_t count = static_cast<size_t>(rows) * static_cast<size_t>(cols);
     out.rows = rows;
@@ -236,19 +269,24 @@ inline bool load_npy_float2d(const std::string& path, NpyFloat2D& out) {
 
     if (isF64) {
         std::vector<double> buf(count);
-        if (!npy_read_vector(f, buf)) return false;
-        for (size_t i = 0; i < count; ++i) out.data[i] = static_cast<float>(buf[i]);
-    }
-    else if (isF32) {
+        if (!npy_read_vector(f, buf))
+            return false;
+        for (size_t i = 0; i < count; ++i)
+            out.data[i] = static_cast<float>(buf[i]);
+    } else if (isF32) {
         std::vector<float> buf(count);
-        if (!npy_read_vector(f, buf)) return false;
+        if (!npy_read_vector(f, buf))
+            return false;
         out.data = buf;
-    }
-    else if (isF16) {
-        struct F16 { uint16_t v; };
+    } else if (isF16) {
+        struct F16 {
+            uint16_t v;
+        };
         std::vector<F16> buf(count);
-        if (!npy_read_vector(f, buf)) return false;
-        for (size_t i = 0; i < count; ++i) out.data[i] = npy_half_to_float(buf[i].v);
+        if (!npy_read_vector(f, buf))
+            return false;
+        for (size_t i = 0; i < count; ++i)
+            out.data[i] = npy_half_to_float(buf[i].v);
     }
     return true;
 }

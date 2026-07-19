@@ -8,16 +8,15 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
-#include <atomic>
 #include <limits>
-#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "JuicerState.h"
 #include "ColorTransforms.h"
-#include "Couplers.h"
+#include "DiffusionHostBehavior.h"
 #include "Illuminants.h"
 #include "OutputColor.h"
 #include "Print.h"
@@ -25,36 +24,23 @@
 #include "ProcessRoot.h"
 #include "Scanner.h"
 #include "SpectralData.h"
+#include "SpectralProcessing.h"
 #include "Logging.h"
 #include "Hash.h"
 #include "mainProcessing.h"
 
 namespace {
-    enum class MeteringMethod : int {
+    enum class MeteringMethod : std::uint8_t {
         CenterWeighted = 0,
-        Median = 1
+        Average = 1,
+        Median = 2,
+        Partial = 3,
+        Matrix = 4,
+        MultiZone = 5,
+        HighlightWeighted = 6
     };
 
     inline const char* cstr_or_default_if_null(const char* value, const char* fallback);
-    static int illuminant_choice_index_from_string(const std::string& value);
-
-    void trace_dichroic_load_failure(
-        const char* operation,
-        const char* detail,
-        const char* fallbackState) {
-        if (!JTRACE_ENABLED(1)) {
-            return;
-        }
-        const char* errorDetail = cstr_or_default_if_null(detail, "unknown error");
-        std::string msg;
-        msg.reserve(160);
-        msg = cstr_or_default_if_null(operation, "dichroic load failed");
-        msg += " (";
-        msg += errorDetail;
-        msg += "); ";
-        msg += cstr_or_default_if_null(fallbackState, "using identity filters");
-        JTRACE("PRINT", msg);
-    }
 
     struct RenderFatalTrace {
         const char* tag = nullptr;
@@ -64,40 +50,6 @@ namespace {
     [[noreturn]] inline void trace_and_throw_render_fatal(const RenderFatalTrace& fatal) {
         JTRACE(fatal.tag, cstr_or_default_if_null(fatal.message, "fatal render error"));
         throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-
-    bool try_load_dichroic_filters(
-        int dichroicSetChoice,
-        Print::Runtime& runtime,
-        const char* operation,
-        const char* fallbackState) {
-        try {
-            const JuicerAssets::DichroicFilterCurveSet& curves =
-                JuicerProcess::root().assets().dichroic_filter_curves_for_choice(dichroicSetChoice);
-            Print::load_dichroic_filters_from_assets(curves, runtime);
-            return true;
-        } catch (const std::exception& ex) {
-            trace_dichroic_load_failure(operation, ex.what(), fallbackState);
-        } catch (...) {
-            trace_dichroic_load_failure(operation, nullptr, fallbackState);
-        }
-        return false;
-    }
-
-    inline bool reload_dichroic_filters_with_identity_fallback(
-        int dichroicSetChoice,
-        Print::Runtime& runtime) {
-        return try_load_dichroic_filters(
-            dichroicSetChoice,
-            runtime,
-            "dichroic reload failed",
-            "identity filters remain active");
-    }
-
-    inline bool nearly_equal_double(double a, double b) {
-        const double diff = std::fabs(a - b);
-        const double scale = std::max({ 1.0, std::fabs(a), std::fabs(b) });
-        return diff <= scale * 1e-9;
     }
 
     inline bool is_finite(float value) {
@@ -120,15 +72,13 @@ namespace {
     inline std::size_t cstr_len_or_zero(const char* value) {
         return value ? std::strlen(value) : 0u;
     }
-
-    inline const char* cstr_or_default_if_empty(const std::string& value, const char* fallback) {
-        return value.empty() ? fallback : value.c_str();
-    }
 #endif
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     inline bool requires_nonfloat_copy(OFX::BitDepthEnum depth, int nComponents) {
         return depth != OFX::eBitDepthFloat || nComponents == 0;
     }
+#endif
 
     inline bool param_events_suppressed(const InstanceState* state) {
         return state && state->suppressParamEvents;
@@ -179,23 +129,6 @@ namespace {
         return userEdit && param_name_is(paramName, expected);
     }
 
-    inline std::string first_nonempty_or(
-        const std::string& primary,
-        const std::string& secondary,
-        const std::string& fallback) {
-        if (!primary.empty()) {
-            return primary;
-        }
-        if (!secondary.empty()) {
-            return secondary;
-        }
-        return fallback;
-    }
-
-    inline std::uint64_t instance_token_or_zero(const InstanceState* state) {
-        return state ? state->instanceToken : 0ull;
-    }
-
     struct SessionTokenSnapshot {
         std::uint64_t sessionSeed = 1;
         std::uint64_t instanceToken = 1;
@@ -212,10 +145,6 @@ namespace {
             snapshot.instanceToken = snapshot.sessionSeed;
         }
         return snapshot;
-    }
-
-    inline std::uint64_t working_state_build_counter_or_zero(const WorkingState* ws) {
-        return ws ? ws->buildCounter : 0ull;
     }
 
     inline std::uint64_t working_state_build_counter_or_zero(const std::shared_ptr<const WorkingState>& ws) {
@@ -238,164 +167,54 @@ namespace {
         return state ? JuicerAtomic::load_shared_ptr(&state->activeWorkingState) : nullptr;
     }
 
-    inline std::uint32_t frame_bounds_version_or_zero(const InstanceState* state) {
-        return state ? state->frameBoundsVersion.load(std::memory_order_acquire) : 0u;
+    inline std::shared_ptr<const DirectRenderState> load_active_direct_state_if(const InstanceState* state) {
+        return state ? JuicerAtomic::load_shared_ptr(&state->activeDirectState) : nullptr;
     }
 
-    inline float print_runtime_value_or_zero(const Print::Runtime* runtime, float Print::Runtime::*field) {
-        return runtime ? (runtime->*field) : 0.0f;
+    inline std::shared_ptr<const PrintRenderState> load_active_print_state_if(const InstanceState* state) {
+        return state ? JuicerAtomic::load_shared_ptr(&state->activePrintState) : nullptr;
     }
-
-    inline float scale_if_enabled_or_one(bool enabled, float scale) {
-        return enabled ? scale : 1.0f;
-    }
-
-    inline void append_ymc_triplet(std::string& msg, float y, float m, float c) {
-        msg += std::to_string(y);
-        msg += "/";
-        msg += std::to_string(m);
-        msg += "/";
-        msg += std::to_string(c);
-    }
-
-#if JUICER_DIAGNOSTICS_COMPILED
-    inline std::string join_keys_csv_or_none(const std::vector<std::string>& keys) {
-        std::string combined;
-        size_t reserveHint = 0;
-        const std::string* keyData = keys.data();
-        const size_t keyCount = keys.size();
-        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
-            reserveHint += keyData->size() + 1;
-        }
-        combined.reserve(reserveHint);
-        keyData = keys.data();
-        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
-            if (!combined.empty()) {
-                combined += ",";
-            }
-            combined += *keyData;
-        }
-        if (combined.empty()) {
-            combined = "<none>";
-        }
-        return combined;
-    }
-
-    inline std::string neutral_filter_prereq_context(
-        const char* paperKey,
-        const char* negativeKey,
-        const std::string& illumChoices) {
-        std::string msg;
-        msg.reserve(96 + illumChoices.size());
-        msg = "paper=";
-        msg += cstr_or_default_if_null(paperKey, "<unset>");
-        msg += " negative=";
-        msg += cstr_or_default_if_null(negativeKey, "<unset>");
-        msg += " illum_choices=";
-        msg += illumChoices;
-        return msg;
-    }
-
-    inline std::string neutral_filter_missing_context(
-        const char* paperKey,
-        const char* negativeKey,
-        const std::string& illumKeys) {
-        std::string msg;
-        msg.reserve(96 + illumKeys.size());
-        msg = "paper=";
-        msg += cstr_or_default_if_null(paperKey, "<unset>");
-        msg += " illuminant_keys=";
-        msg += illumKeys;
-        msg += " negative=";
-        msg += cstr_or_default_if_null(negativeKey, "<unset>");
-        return msg;
-    }
-#endif
 
     struct ProfileKeyLabels {
-        const char* paperKey = nullptr;
+        const char* printProfileKey = nullptr;
         const char* filmKey = nullptr;
         const char* paperLabel = "<null>";
         const char* filmLabel = "<null>";
     };
 
-    struct ProfileSelectionIndexes {
-        int printPaperIndex = 0;
-        int filmStockIndex = 0;
-    };
-
-    inline ProfileKeyLabels resolve_profile_key_labels(const ProfileSelectionIndexes& indexes) {
+    inline ProfileKeyLabels resolve_profile_key_labels(const ParamSnapshot& snapshot) {
         ProfileKeyLabels labels{};
-        labels.paperKey = print_paper_json_key_for_index(indexes.printPaperIndex);
-        labels.filmKey = negative_json_key_for_stock_index(indexes.filmStockIndex);
-        labels.paperLabel = cstr_or_default_if_null(labels.paperKey, "<null>");
+        labels.printProfileKey = snapshot.printProfileKey.empty() ? nullptr : snapshot.printProfileKey.c_str();
+        labels.filmKey = snapshot.filmProfileKey.empty() ? nullptr : snapshot.filmProfileKey.c_str();
+        labels.paperLabel = cstr_or_default_if_null(labels.printProfileKey, "<null>");
         labels.filmLabel = cstr_or_default_if_null(labels.filmKey, "<null>");
         return labels;
     }
 
-    inline ProfileKeyLabels resolve_profile_key_labels(const ParamSnapshot& snapshot) {
-        return resolve_profile_key_labels(ProfileSelectionIndexes{
-            snapshot.printPaperIndex,
-            snapshot.filmStockIndex});
-    }
-
-    struct PrintProfileLoadInputs {
-        ProfileKeyLabels labels{};
-        JuicerAssets::PrintRuntimeAssetSet printAssets{};
-    };
-
-    inline void load_print_profile_into_runtime(
-        const JuicerAssets::PrintPaperAsset& printPaper,
-        Print::Runtime& runtime);
-
-    inline PrintProfileLoadInputs build_print_profile_load_inputs(const ParamSnapshot& snapshot) {
-        PrintProfileLoadInputs inputs{};
-        inputs.labels = resolve_profile_key_labels(snapshot);
-        inputs.printAssets = JuicerProcess::root().assets().print_runtime_assets_for_choices(
-            JuicerAssets::PrintRuntimeChoices{
-                snapshot.filmStockIndex,
-                snapshot.printPaperIndex,
-                snapshot.enlDichroicSet});
-        return inputs;
-    }
-
-    inline PrintProfileLoadInputs load_print_profile_for_snapshot(
+    inline bool load_direct_film_profile_into_base_locked(
         const ParamSnapshot& snapshot,
-        Print::Runtime& runtime) {
-        PrintProfileLoadInputs inputs = build_print_profile_load_inputs(snapshot);
-        load_print_profile_into_runtime(
-            inputs.printAssets.printPaper,
-            runtime);
-        return inputs;
-    }
+        InstanceState& state) {
+        const JuicerAssets::SelectedProfileResult selected =
+            JuicerProcess::root().assets().selected_profiles_for_route(
+                JuicerAssets::SelectedProfileRequest{
+                    snapshot.filmProfileKey,
+                    snapshot.printProfileKey,
+                    snapshot.scanRoute});
+        const bool validDirectSelection = selected.valid && selected.filmProfile;
+        if (!validDirectSelection) {
+            JTRACE(
+                "SPEKTRAFILM",
+                selected.diagnostic.empty()
+                    ? "MissingRequiredResource phase=3A field=selected_direct_film_profile"
+                    : selected.diagnostic);
+            std::lock_guard<std::mutex> lock(state.m);
+            state.baseLoaded = false;
+            return false;
+        }
 
-    inline void sync_print_runtime_mid_neutral_from_profile(Print::Runtime& runtime) {
-        runtime.hasMidNeutralDensity = runtime.profile.hasMidNeutralDensity;
-        runtime.hasMidNeutralLogE = runtime.profile.hasMidNeutralLogE;
-        runtime.midNeutralDensity = runtime.profile.midNeutralDensity;
-        runtime.midNeutralLogE = runtime.profile.midNeutralLogE;
-    }
-
-    inline void load_print_profile_into_runtime(
-        const JuicerAssets::PrintPaperAsset& printPaper,
-        Print::Runtime& runtime) {
-        Print::load_profile_from_asset(printPaper, runtime.profile, &runtime);
-        sync_print_runtime_mid_neutral_from_profile(runtime);
-    }
-
-    inline Print::Runtime snapshot_print_runtime_locked(InstanceState& state) {
         std::lock_guard<std::mutex> lock(state.m);
-        return state.printRT;
-    }
-
-    inline void publish_print_runtime_locked(InstanceState& state, Print::Runtime runtime) {
-        std::lock_guard<std::mutex> lock(state.m);
-        state.printRT = std::move(runtime);
-    }
-
-    inline bool load_film_stock_into_base_locked(int filmStockIndex, InstanceState& state) {
-        std::lock_guard<std::mutex> lock(state.m);
-        state.baseLoaded = load_film_stock_into_base(filmStockIndex, state);
+        state.baseLoaded =
+            load_selected_spektrafilm_film_profile_into_base(*selected.filmProfile, state);
         return state.baseLoaded;
     }
 
@@ -442,8 +261,8 @@ namespace {
         std::uint64_t builtCoreHash,
         std::uint64_t builtDirHash) {
         return (pending.coreHash != 0) && (builtCoreHash != 0) &&
-            (pending.coreHash == builtCoreHash) &&
-            (pending.dirHash != 0) && (pending.dirHash != builtDirHash);
+               (pending.coreHash == builtCoreHash) &&
+               (pending.dirHash != 0) && (pending.dirHash != builtDirHash);
     }
 
     inline void rebuild_pending_working_state(
@@ -453,14 +272,22 @@ namespace {
         bool dirOnly) {
         if (dirOnly) {
             rebuild_working_state_couplers_only(effect.getHandle(), state, pending.params);
-        }
-        else {
+        } else {
             rebuild_working_state(effect.getHandle(), state, pending.params);
         }
     }
 
     inline void rebuild_pending_state_if_needed(JuicerEffect& effect, InstanceState& state) {
         const PendingStateSnapshot pending = load_pending_state_snapshot(state);
+        if (Spektrafilm::scan_route_is_print(pending.params.scanRoute)) {
+            const std::uint64_t builtFullHash =
+                state.lastHash.load(std::memory_order_acquire);
+            if (pending_rebuild_required(pending, builtFullHash)) {
+                (void)rebuild_print_render_state(state, pending.params);
+            }
+            return;
+        }
+
         const std::shared_ptr<const WorkingState> wsCur = load_active_working_state_if(&state);
         const std::uint64_t builtFullHash = working_state_full_hash_or_zero(wsCur);
         if (!pending_rebuild_required(pending, builtFullHash)) {
@@ -474,30 +301,30 @@ namespace {
 
     inline bool is_grain_preset_input_param(const std::string& paramName) {
         return param_name_is(paramName, JuicerParams::kGrainAmplitude) ||
-            param_name_is(paramName, JuicerParams::kGrainBlur) ||
-            param_name_is(paramName, JuicerParams::kGrainSharpness) ||
-            param_name_is(paramName, JuicerParams::kGrainChroma) ||
-            param_name_is(paramName, JuicerParams::kGrainTexture) ||
-            param_name_is(paramName, JuicerParams::kGrainSublayersActive) ||
-            param_name_is(paramName, JuicerParams::kGrainParticleAreaUm2) ||
-            param_name_is(paramName, JuicerParams::kGrainParticleScaleMaster) ||
-            param_name_is(paramName, JuicerParams::kGrainParticleScaleLayersMaster) ||
-            param_name_is(paramName, JuicerParams::kGrainDensityMinMaster) ||
-            param_name_is(paramName, JuicerParams::kGrainUniformityMaster) ||
-            param_name_is(paramName, JuicerParams::kGrainParticleScale) ||
-            param_name_is(paramName, JuicerParams::kGrainParticleScaleLayers) ||
-            param_name_is(paramName, JuicerParams::kGrainDensityMin) ||
-            param_name_is(paramName, JuicerParams::kGrainUniformity) ||
-            param_name_is(paramName, JuicerParams::kGrainBlurDyeCloudsUm) ||
-            param_name_is(paramName, JuicerParams::kGrainSizeMixWeight) ||
-            param_name_is(paramName, JuicerParams::kGrainSizeMixWeightMid) ||
-            param_name_is(paramName, JuicerParams::kGrainSizeMixScale) ||
-            param_name_is(paramName, JuicerParams::kGrainMicroStructure) ||
-            param_name_is(paramName, JuicerParams::kGrainClumpTemporalMix) ||
-            param_name_is(paramName, JuicerParams::kGrainClumpMorphPeriodSec);
+               param_name_is(paramName, JuicerParams::kGrainBlur) ||
+               param_name_is(paramName, JuicerParams::kGrainSharpness) ||
+               param_name_is(paramName, JuicerParams::kGrainChroma) ||
+               param_name_is(paramName, JuicerParams::kGrainTexture) ||
+               param_name_is(paramName, JuicerParams::kGrainSublayersActive) ||
+               param_name_is(paramName, JuicerParams::kGrainParticleAreaUm2) ||
+               param_name_is(paramName, JuicerParams::kGrainParticleScaleMaster) ||
+               param_name_is(paramName, JuicerParams::kGrainParticleScaleLayersMaster) ||
+               param_name_is(paramName, JuicerParams::kGrainDensityMinMaster) ||
+               param_name_is(paramName, JuicerParams::kGrainUniformityMaster) ||
+               param_name_is(paramName, JuicerParams::kGrainParticleScale) ||
+               param_name_is(paramName, JuicerParams::kGrainParticleScaleLayers) ||
+               param_name_is(paramName, JuicerParams::kGrainDensityMin) ||
+               param_name_is(paramName, JuicerParams::kGrainUniformity) ||
+               param_name_is(paramName, JuicerParams::kGrainBlurDyeCloudsUm) ||
+               param_name_is(paramName, JuicerParams::kGrainSizeMixWeight) ||
+               param_name_is(paramName, JuicerParams::kGrainSizeMixWeightMid) ||
+               param_name_is(paramName, JuicerParams::kGrainSizeMixScale) ||
+               param_name_is(paramName, JuicerParams::kGrainMicroStructure) ||
+               param_name_is(paramName, JuicerParams::kGrainClumpTemporalMix) ||
+               param_name_is(paramName, JuicerParams::kGrainClumpMorphPeriodSec);
     }
 
-    enum class GrainRatioMasterSelector {
+    enum class GrainRatioMasterSelector : std::uint8_t {
         None = 0,
         Scale,
         ScaleLayers,
@@ -521,12 +348,12 @@ namespace {
         return GrainRatioMasterSelector::None;
     }
 
-    enum class HalationMasterSelector {
+    enum class HalationMasterSelector : std::uint8_t {
         None = 0,
         Strength,
         SizeUm,
-        ScatteringStrength,
-        ScatteringSizeUm
+        SecondaryAmount,
+        SecondarySizeUm
     };
 
     inline HalationMasterSelector halation_master_selector(const std::string& paramName) {
@@ -536,127 +363,33 @@ namespace {
         if (param_name_is(paramName, JuicerParams::kHalationSizeUmMaster)) {
             return HalationMasterSelector::SizeUm;
         }
-        if (param_name_is(paramName, JuicerParams::kHalationScatteringStrengthMaster)) {
-            return HalationMasterSelector::ScatteringStrength;
+        if (param_name_is(paramName, JuicerParams::kHalationSecondaryAmountMaster)) {
+            return HalationMasterSelector::SecondaryAmount;
         }
-        if (param_name_is(paramName, JuicerParams::kHalationScatteringSizeUmMaster)) {
-            return HalationMasterSelector::ScatteringSizeUm;
+        if (param_name_is(paramName, JuicerParams::kHalationSecondarySizeUmMaster)) {
+            return HalationMasterSelector::SecondarySizeUm;
         }
         return HalationMasterSelector::None;
     }
 
-#ifdef JUICER_ENABLE_COUPLERS
-    constexpr int kDirCouplersInitVersionCurrent = 2;
-
-    enum class CouplerParamKind {
-        None = 0,
-        Active,
-        Amount,
-        RatioB,
-        RatioG,
-        RatioR,
-        Sigma,
-        High,
-        SpatialSigma
-    };
-
-    inline CouplerParamKind coupler_param_kind(const char* changedName) {
-        using namespace Couplers;
-        if (param_name_is(changedName, kParamCouplersActive)) {
-            return CouplerParamKind::Active;
-        }
-        if (param_name_is(changedName, kParamCouplersAmount)) {
-            return CouplerParamKind::Amount;
-        }
-        if (param_name_is(changedName, kParamCouplersAmountB)) {
-            return CouplerParamKind::RatioB;
-        }
-        if (param_name_is(changedName, kParamCouplersAmountG)) {
-            return CouplerParamKind::RatioG;
-        }
-        if (param_name_is(changedName, kParamCouplersAmountR)) {
-            return CouplerParamKind::RatioR;
-        }
-        if (param_name_is(changedName, kParamCouplersLayerSigma)) {
-            return CouplerParamKind::Sigma;
-        }
-        if (param_name_is(changedName, kParamCouplersHighExpShift)) {
-            return CouplerParamKind::High;
-        }
-        if (param_name_is(changedName, kParamCouplersSpatialSigma)) {
-            return CouplerParamKind::SpatialSigma;
-        }
-        return CouplerParamKind::None;
-    }
-
-    constexpr int kCouplerFollowStockActive = 1 << 0;
-    constexpr int kCouplerFollowStockAmount = 1 << 1;
-    constexpr int kCouplerFollowStockRatioB = 1 << 2;
-    constexpr int kCouplerFollowStockRatioG = 1 << 3;
-    constexpr int kCouplerFollowStockRatioR = 1 << 4;
-    constexpr int kCouplerFollowStockSigma = 1 << 5;
-    constexpr int kCouplerFollowStockHigh = 1 << 6;
-    constexpr int kCouplerFollowStockSpatialSigma = 1 << 7;
-    constexpr int kCouplerFollowStockAllMask =
-        kCouplerFollowStockActive |
-        kCouplerFollowStockAmount |
-        kCouplerFollowStockRatioB |
-        kCouplerFollowStockRatioG |
-        kCouplerFollowStockRatioR |
-        kCouplerFollowStockSigma |
-        kCouplerFollowStockHigh |
-        kCouplerFollowStockSpatialSigma;
-
-    inline int coupler_follow_stock_bit(CouplerParamKind kind) {
-        switch (kind) {
-        case CouplerParamKind::Active:
-            return kCouplerFollowStockActive;
-        case CouplerParamKind::Amount:
-            return kCouplerFollowStockAmount;
-        case CouplerParamKind::RatioB:
-            return kCouplerFollowStockRatioB;
-        case CouplerParamKind::RatioG:
-            return kCouplerFollowStockRatioG;
-        case CouplerParamKind::RatioR:
-            return kCouplerFollowStockRatioR;
-        case CouplerParamKind::Sigma:
-            return kCouplerFollowStockSigma;
-        case CouplerParamKind::High:
-            return kCouplerFollowStockHigh;
-        case CouplerParamKind::SpatialSigma:
-            return kCouplerFollowStockSpatialSigma;
-        case CouplerParamKind::None:
-        default:
-            return 0;
-        }
-    }
-
     inline bool is_coupler_param_name(const char* changedName) {
-        return coupler_param_kind(changedName) != CouplerParamKind::None;
-    }
-#endif
-
-    inline bool should_refresh_print_illuminant(bool printReloaded, bool filmReloaded) {
-        return printReloaded || filmReloaded;
-    }
-
-    inline bool should_apply_neutral_after_reload(bool printReloaded, bool dichroicReloaded) {
-        return printReloaded || dichroicReloaded;
-    }
-
-    inline bool auto_exposure_cache_param_changed(const std::string& paramName) {
-        return param_name_is(paramName, kParamCameraAutoExposure) ||
-            param_name_is(paramName, JuicerParams::kCameraMeteringMethod);
+        return param_name_is(changedName, JuicerParams::kDirCouplersActive) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersAmount) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersInhibitionSameLayer) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersInhibitionInterlayer) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersDiffusionSizeUm) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersGammaUseStock) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersGammaSameLayerRgb) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersGammaInterlayerRToGb) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersGammaInterlayerGToRb) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersGammaInterlayerBToRg);
     }
 
-    inline void invalidate_auto_exposure_cache_if_needed(
-        InstanceState* state,
-        const std::string& paramName) {
-        if (!state || !auto_exposure_cache_param_changed(paramName)) {
-            return;
-        }
-        std::lock_guard<std::mutex> cacheLock(state->autoExposureMutex);
-        state->autoExposureCacheValid = false;
+    inline bool is_coupler_gamma_numeric_param_name(const std::string& paramName) {
+        return param_name_is(paramName, JuicerParams::kDirCouplersGammaSameLayerRgb) ||
+               param_name_is(paramName, JuicerParams::kDirCouplersGammaInterlayerRToGb) ||
+               param_name_is(paramName, JuicerParams::kDirCouplersGammaInterlayerGToRb) ||
+               param_name_is(paramName, JuicerParams::kDirCouplersGammaInterlayerBToRg);
     }
 
     inline bool halation_revert_param_changed(const std::string& paramName) {
@@ -679,62 +412,56 @@ namespace {
         return user_edit_param_is(userEdit, paramName, JuicerParams::kGrainResetAdvanced);
     }
 
-    inline void update_print_illuminant_runtime(
-        const ParamSnapshot& snapshot,
-        Print::Runtime& runtime) {
-        Print::build_illuminant_from_choice(snapshot.enlIll, runtime, /*forEnlarger*/true);
-    }
-
     template <typename MediumRuntimeT>
     inline bool medium_runtime_ready_on_reference_axis(const MediumRuntimeT& runtime) {
         return runtime.staticKey.hash != 0 &&
-            runtime.range.digest != 0 &&
-            runtime.tables &&
-            runtime.tables->K == Spectral::gShape.K;
+               runtime.range.digest != 0 &&
+               runtime.tables &&
+               runtime.tables->K == Spectral::gShape.K;
     }
 
     inline bool negative_scanner_runtime_ready(const WorkingState& ws) {
         return ws.negativeScannerValid &&
-            medium_runtime_ready_on_reference_axis(ws.negativeMediumRuntime);
+               medium_runtime_ready_on_reference_axis(ws.negativeMediumRuntime);
     }
 
     inline bool print_scanner_runtime_ready(const WorkingState& ws) {
         return ws.printScannerValid &&
-            medium_runtime_ready_on_reference_axis(ws.printMediumRuntime);
+               medium_runtime_ready_on_reference_axis(ws.printMediumRuntime);
     }
 
     inline bool working_tables_view_ready(const WorkingState& ws) {
         const size_t k = static_cast<size_t>(Spectral::gShape.K);
         return ws.tablesView.K == Spectral::gShape.K &&
-            ws.tablesView.epsY.size() == k &&
-            ws.tablesView.epsM.size() == k &&
-            ws.tablesView.epsC.size() == k;
+               ws.tablesView.epsY.size() == k &&
+               ws.tablesView.epsM.size() == k &&
+               ws.tablesView.epsC.size() == k;
     }
 
     inline bool working_density_curves_ready(const WorkingState& ws) {
         return !ws.densB.lambda_nm.empty() && !ws.densB.linear.empty() &&
-            !ws.densG.lambda_nm.empty() && !ws.densG.linear.empty() &&
-            !ws.densR.lambda_nm.empty() && !ws.densR.linear.empty();
+               !ws.densG.lambda_nm.empty() && !ws.densG.linear.empty() &&
+               !ws.densR.lambda_nm.empty() && !ws.densR.linear.empty();
     }
 
     inline bool working_baseline_ready(const WorkingState& ws) {
         return !ws.hasBaseline ||
-            ws.baseMin.linear.size() == static_cast<size_t>(Spectral::gShape.K);
+               ws.baseDensityMin.linear.size() == static_cast<size_t>(Spectral::gShape.K);
     }
 
     inline bool print_runtime_illuminants_ready(const Print::Runtime& runtime) {
         const size_t k = static_cast<size_t>(Spectral::gShape.K);
         return runtime.illumView.linear.size() == k &&
-            runtime.illumEnlarger.linear.size() == k;
+               runtime.illumEnlarger.linear.size() == k;
     }
 
     inline bool working_state_ready(const WorkingState* ws) {
         return ws &&
-            ws->buildCounter > 0 &&
-            working_tables_view_ready(*ws) &&
-            working_baseline_ready(*ws) &&
-            working_density_curves_ready(*ws) &&
-            negative_scanner_runtime_ready(*ws);
+               ws->buildCounter > 0 &&
+               working_tables_view_ready(*ws) &&
+               working_baseline_ready(*ws) &&
+               working_density_curves_ready(*ws) &&
+               negative_scanner_runtime_ready(*ws);
     }
 
     inline bool print_runtime_ready(
@@ -742,20 +469,20 @@ namespace {
         const Print::Runtime* prt,
         bool workingStateReady) {
         return (prt != nullptr) &&
-            Print::profile_is_valid(prt->profile) &&
-            print_runtime_illuminants_ready(*prt) &&
-            ws &&
-            ws->tablesPrint.K == Spectral::gShape.K &&
-            workingStateReady &&
-            print_scanner_runtime_ready(*ws);
+               Print::profile_is_valid(prt->profile) &&
+               print_runtime_illuminants_ready(*prt) &&
+               ws &&
+               ws->tablesPrint.K == Spectral::gShape.K &&
+               workingStateReady &&
+               print_scanner_runtime_ready(*ws);
     }
 
     struct ChangedParamFlags {
         bool referenceIlluminant = false;
         bool enlargerIlluminant = false;
-        bool printPaper = false;
+        bool printProfile = false;
         bool enlargerDichroicSet = false;
-        bool filmStock = false;
+        bool filmProfile = false;
         bool couplerParam = false;
     };
 
@@ -767,34 +494,20 @@ namespace {
 
         flags.referenceIlluminant = param_name_is(changedName, kParamReferenceIlluminant);
         flags.enlargerIlluminant = param_name_is(changedName, kParamEnlargerIlluminant);
-        flags.printPaper = param_name_is(changedName, kParamPrintPaper);
-        flags.enlargerDichroicSet = param_name_is(changedName, kParamEnlargerDichroicSet);
-        flags.filmStock = param_name_is(changedName, kParamFilmStock);
-#ifdef JUICER_ENABLE_COUPLERS
+        flags.printProfile = param_name_is(changedName, JuicerParams::kPrintProfileKey);
+        flags.enlargerDichroicSet = param_name_is(changedName, kParamDichroicFilterSet);
+        flags.filmProfile = param_name_is(changedName, JuicerParams::kFilmProfileKey);
         flags.couplerParam = is_coupler_param_name(changedName);
-#endif
         return flags;
     }
 
     inline void mark_illuminant_override_if_changed(InstanceState& state, const ChangedParamFlags& changed) {
         if (changed.referenceIlluminant) {
             state.illuminantOverride.reference = true;
-        }
-        else if (changed.enlargerIlluminant) {
+        } else if (changed.enlargerIlluminant) {
             state.illuminantOverride.enlarger = true;
         }
     }
-
-#ifdef JUICER_ENABLE_COUPLERS
-    inline void maybe_notify_coupler_param_change(
-        const ChangedParamFlags& changed,
-        const char* changedNameOrNull) {
-        if (!changed.couplerParam) {
-            return;
-        }
-        Couplers::on_param_changed(changedNameOrNull);
-    }
-#endif
 
     inline void trace_param_change_verbose_if(
         bool traceVerbose,
@@ -812,12 +525,8 @@ namespace {
         msg.reserve(224);
         msg = "params change name=";
         msg += cstr_or_default_if_null(changedNameOrNull, "<null>");
-        msg += " printIndex=";
-        msg += std::to_string(snapshot.printPaperIndex);
         msg += " printKey=";
         msg += labels.paperLabel;
-        msg += " filmIndex=";
-        msg += std::to_string(snapshot.filmStockIndex);
         msg += " filmKey=";
         msg += labels.filmLabel;
         msg += " activeBuild=";
@@ -825,47 +534,6 @@ namespace {
         msg += " lastHash=";
         msg += std::to_string(lastHash);
         JTRACE_VERBOSE("PRINTDBG", msg);
-    }
-
-    inline void trace_print_reload_verbose_if(
-        bool traceVerbose,
-        const PrintProfileLoadInputs& printLoad,
-        const Print::Runtime& runtime) {
-        if (!traceVerbose) {
-            return;
-        }
-        const ProfileKeyLabels& labels = printLoad.labels;
-        const std::uint64_t paperVersion = printLoad.printAssets.printPaper.version;
-        std::string msg;
-        msg.reserve(256);
-        msg = "print reload key=";
-        msg += labels.paperLabel;
-        msg += " assetVersion=";
-        msg += std::to_string(paperVersion);
-        msg += " ref=";
-        msg += runtime.referenceIlluminant;
-        msg += " view=";
-        msg += runtime.viewingIlluminant;
-        JTRACE_VERBOSE("PRINTDBG", msg);
-    }
-
-    inline bool reload_print_profile_if_requested(
-        bool requested,
-        const ParamSnapshot& snapshot,
-        Print::Runtime& runtime,
-        bool traceVerbose) {
-        if (!requested) {
-            return false;
-        }
-        const PrintProfileLoadInputs printLoad =
-            load_print_profile_for_snapshot(snapshot, runtime);
-        trace_print_reload_verbose_if(traceVerbose, printLoad, runtime);
-
-        // Reload dichroic filters (vendor selection controls which curves are used).
-        (void)reload_dichroic_filters_with_identity_fallback(
-            snapshot.enlDichroicSet,
-            runtime);
-        return true;
     }
 
     inline void store_pending_hashes_for_snapshot(InstanceState& state, const ParamSnapshot& snapshot) {
@@ -878,86 +546,14 @@ namespace {
                 hash_params_dir(snapshot)});
     }
 
-    inline void trace_neutral_filters_applied_if(
-        bool traceVerbose,
-        const ParamSnapshot& snapshot,
-        const Print::Runtime& runtime,
-        const char* reloadSource) {
-        if (!traceVerbose) {
-            return;
-        }
-        const ProfileKeyLabels labels = resolve_profile_key_labels(snapshot);
-        std::string msg;
-        msg.reserve(192);
-        msg = "neutral filters applied (";
-        msg += cstr_or_default_if_null(reloadSource, "unspecified");
-        msg += ") paper=";
-        msg += labels.paperLabel;
-        msg += " film=";
-        msg += labels.filmLabel;
-        msg += " Y/M/C=";
-        append_ymc_triplet(msg, runtime.neutralY, runtime.neutralM, runtime.neutralC);
-        JTRACE_VERBOSE("PRINTDBG", msg);
-    }
-
-    inline void mark_neutral_filters_applied_with_trace(
-        bool traceVerbose,
-        const ParamSnapshot& snapshot,
-        const Print::Runtime& runtime,
-        const char* reloadSource,
-        bool& neutralApplied) {
-        neutralApplied = true;
-        trace_neutral_filters_applied_if(traceVerbose, snapshot, runtime, reloadSource);
-    }
-
-    inline bool reload_dichroic_filters_if_requested(
-        bool requested,
-        const ParamSnapshot& snapshot,
-        Print::Runtime& runtime) {
-        if (!requested) {
-            return false;
-        }
-        return reload_dichroic_filters_with_identity_fallback(snapshot.enlDichroicSet, runtime);
-    }
-
     inline bool reload_film_stock_if_requested(
         bool requested,
-        int filmStockIndex,
+        const ParamSnapshot& snapshot,
         InstanceState& state) {
         if (!requested) {
             return false;
         }
-        return load_film_stock_into_base_locked(filmStockIndex, state);
-    }
-
-    struct OnParamsReloadStatus {
-        bool printReloaded = false;
-        bool dichroicReloaded = false;
-        bool filmReloaded = false;
-    };
-
-    inline OnParamsReloadStatus evaluate_on_params_reload_status(
-        const ChangedParamFlags& changed,
-        const ParamSnapshot& snapshot,
-        InstanceState& state,
-        Print::Runtime& runtime,
-        bool traceVerbose) {
-        OnParamsReloadStatus status{};
-        status.printReloaded =
-            reload_print_profile_if_requested(changed.printPaper, snapshot, runtime, traceVerbose);
-        status.dichroicReloaded =
-            reload_dichroic_filters_if_requested(changed.enlargerDichroicSet, snapshot, runtime);
-        status.filmReloaded =
-            reload_film_stock_if_requested(changed.filmStock, snapshot.filmStockIndex, state);
-        return status;
-    }
-
-    inline bool should_refresh_print_illuminant_for_reload_status(const OnParamsReloadStatus& status) {
-        return should_refresh_print_illuminant(status.printReloaded, status.filmReloaded);
-    }
-
-    inline bool should_apply_reload_neutral_filters(const OnParamsReloadStatus& status) {
-        return should_apply_neutral_after_reload(status.printReloaded, status.dichroicReloaded);
+        return load_direct_film_profile_into_base_locked(snapshot, state);
     }
 
     inline bool should_skip_param_change_due_to_suppression(const InstanceState* state) {
@@ -968,89 +564,12 @@ namespace {
         return bootstrap_needed(state);
     }
 
-    inline bool should_apply_film_neutral_filters(bool filmReloaded, bool neutralApplied);
-
-    template <typename ApplyFn>
-    inline void apply_when_reload_requires_illuminant_refresh(
-        const OnParamsReloadStatus& status,
-        ApplyFn&& applyFn) {
-        if (!should_refresh_print_illuminant_for_reload_status(status)) {
-            return;
-        }
-        std::forward<ApplyFn>(applyFn)();
-    }
-
-    template <typename ApplyFn>
-    inline void apply_when_reload_requires_neutral_filters(
-        const OnParamsReloadStatus& status,
-        ApplyFn&& applyFn) {
-        if (!should_apply_reload_neutral_filters(status)) {
-            return;
-        }
-        std::forward<ApplyFn>(applyFn)();
-    }
-
     template <typename ApplyFn>
     inline void apply_when_film_reloaded(bool filmReloaded, ApplyFn&& applyFn) {
         if (!filmReloaded) {
             return;
         }
         std::forward<ApplyFn>(applyFn)();
-    }
-
-    template <typename ApplyFn>
-    inline void apply_when_film_neutral_filters_needed(
-        const OnParamsReloadStatus& status,
-        bool neutralApplied,
-        ApplyFn&& applyFn) {
-        if (!should_apply_film_neutral_filters(status.filmReloaded, neutralApplied)) {
-            return;
-        }
-        std::forward<ApplyFn>(applyFn)();
-    }
-
-    template <typename ApplyFn>
-    inline void apply_when_enlarger_illuminant_changed(
-        const ChangedParamFlags& changed,
-        ApplyFn&& applyFn) {
-        if (!changed.enlargerIlluminant) {
-            return;
-        }
-        std::forward<ApplyFn>(applyFn)();
-    }
-
-    template <typename ApplyFn>
-    inline void apply_neutral_filters_with_optional_trace(
-        ApplyFn&& applyFn,
-        bool traceVerbose,
-        const ParamSnapshot& snapshot,
-        Print::Runtime& runtime,
-        const char* reloadSource,
-        bool& neutralApplied) {
-        std::forward<ApplyFn>(applyFn)();
-        mark_neutral_filters_applied_with_trace(
-            traceVerbose,
-            snapshot,
-            runtime,
-            reloadSource,
-            neutralApplied);
-    }
-
-    template <typename ApplyFn>
-    inline void apply_if_requested(bool requested, ApplyFn&& applyFn) {
-        if (!requested) {
-            return;
-        }
-        std::forward<ApplyFn>(applyFn)();
-    }
-
-    inline bool should_apply_film_neutral_filters(bool filmReloaded, bool neutralApplied) {
-        return filmReloaded && !neutralApplied;
-    }
-
-    inline double sanitize_finite_clamped(double value, double fallback, double minValue, double maxValue) {
-        if (!is_finite(value)) return fallback;
-        return std::clamp(value, minValue, maxValue);
     }
 
     inline double sanitize_finite_or(double value, double fallback) {
@@ -1093,21 +612,23 @@ namespace {
         return is_finite(value) && value > 0.0;
     }
 
-    inline float sanitize_nonnegative_finite_or(float value, float fallback) {
-        return (is_finite(value) && value >= 0.0f) ? value : fallback;
-    }
+    struct SanitizedDoubleRange {
+        double minimum = 0.0;
+        double maximum = 0.0;
+    };
 
     inline double read_sanitized_double(
         OFX::DoubleParam* param,
         double fallback,
-        double minValue,
-        double maxValue)
-    {
+        const SanitizedDoubleRange& range) {
         double value = fallback;
         if (param) {
             param->getValue(value);
         }
-        return sanitize_finite_clamped(value, fallback, minValue, maxValue);
+        if (!is_finite(value)) {
+            return fallback;
+        }
+        return std::clamp(value, range.minimum, range.maximum);
     }
 
     inline float read_sanitized_float(
@@ -1118,12 +639,11 @@ namespace {
         return static_cast<float>(read_sanitized_double(
             param,
             static_cast<double>(fallback),
-            minValue,
-            maxValue));
+            SanitizedDoubleRange{minValue, maxValue}));
     }
 
     inline double read_sanitized_unit_double(OFX::DoubleParam* param, double fallback) {
-        return read_sanitized_double(param, fallback, 0.0, 1.0);
+        return read_sanitized_double(param, fallback, SanitizedDoubleRange{0.0, 1.0});
     }
 
     inline float read_sanitized_unit_float(OFX::DoubleParam* param, float fallback) {
@@ -1181,14 +701,18 @@ namespace {
         float transition = 0.3f;
     };
 
+    struct GlareCompensationParams {
+        OFX::DoubleParam* factor = nullptr;
+        OFX::DoubleParam* density = nullptr;
+        OFX::DoubleParam* transition = nullptr;
+    };
+
     inline GlareCompensationUiValues read_glare_compensation_ui_values(
-        OFX::DoubleParam* factorParam,
-        OFX::DoubleParam* densityParam,
-        OFX::DoubleParam* transitionParam) {
+        const GlareCompensationParams& params) {
         GlareCompensationUiValues values{};
-        values.factor = read_sanitized_unit_float(factorParam, 0.0f);
-        values.density = read_sanitized_float(densityParam, 1.2f, 0.0, 3.0);
-        values.transition = read_sanitized_float(transitionParam, 0.3f, 0.0, 2.0);
+        values.factor = read_sanitized_unit_float(params.factor, 0.0f);
+        values.density = read_sanitized_float(params.density, 1.2f, 0.0, 3.0);
+        values.transition = read_sanitized_float(params.transition, 0.3f, 0.0, 2.0);
         return values;
     }
 
@@ -1199,16 +723,18 @@ namespace {
     };
 
     inline GlareCompensationSnapshotValues read_glare_compensation_snapshot_values(
-        OFX::DoubleParam* factorParam,
-        OFX::DoubleParam* densityParam,
-        OFX::DoubleParam* transitionParam,
-        double factorFallback,
-        double densityFallback,
-        double transitionFallback) {
+        const GlareCompensationParams& params,
+        const GlareCompensationSnapshotValues& fallback) {
         GlareCompensationSnapshotValues values{};
-        values.factor = read_sanitized_unit_double(factorParam, factorFallback);
-        values.density = read_sanitized_double(densityParam, densityFallback, 0.0, 3.0);
-        values.transition = read_sanitized_double(transitionParam, transitionFallback, 0.0, 2.0);
+        values.factor = read_sanitized_unit_double(params.factor, fallback.factor);
+        values.density = read_sanitized_double(
+            params.density,
+            fallback.density,
+            SanitizedDoubleRange{0.0, 3.0});
+        values.transition = read_sanitized_double(
+            params.transition,
+            fallback.transition,
+            SanitizedDoubleRange{0.0, 2.0});
         return values;
     }
 
@@ -1220,7 +746,7 @@ namespace {
         if (!is_finite(valueOut)) {
             return false;
         }
-        valueOut = sanitize_finite_clamped(valueOut, fallback, 0.0, 1.0);
+        valueOut = std::clamp(valueOut, 0.0, 1.0);
         return true;
     }
 
@@ -1231,13 +757,20 @@ namespace {
         const InstanceState* state,
         OFX::DoubleParam* sourceParam) {
         return user_edit_param_is(userEdit, paramName, expectedParam) &&
-            state &&
-            sourceParam;
+               state &&
+               sourceParam;
     }
 
-    inline void set_grain_chroma_weights(float chroma, float& sharedWeightOut, float& indWeightOut) {
-        sharedWeightOut = std::sqrt(std::max(0.0f, 1.0f - chroma));
-        indWeightOut = std::sqrt(std::max(0.0f, chroma));
+    struct GrainChromaWeights {
+        float shared = 0.0f;
+        float independent = 0.0f;
+    };
+
+    inline GrainChromaWeights compute_grain_chroma_weights(float chroma) {
+        GrainChromaWeights weights{};
+        weights.shared = std::sqrt(std::max(0.0f, 1.0f - chroma));
+        weights.independent = std::sqrt(std::max(0.0f, chroma));
+        return weights;
     }
 
     inline bool read_bool_param_or(OFX::BooleanParam* param, bool fallback) {
@@ -1256,12 +789,60 @@ namespace {
         return value;
     }
 
+    inline std::string read_str_choice_param_or(OFX::StrChoiceParam* param, const std::string& fallback) {
+        std::string value = fallback;
+        if (param) {
+            param->getValue(value);
+        }
+        return value.empty() ? fallback : value;
+    }
+
+    inline Spektrafilm::ProfilePolarity capture_profile_polarity_for_key(const std::string& filmProfileKey) {
+        const Spektrafilm::ProfileCatalog& catalog =
+            JuicerProcess::root().assets().spektrafilm_profile_catalog();
+        for (const Spektrafilm::ProfileCatalogEntry& entry : catalog.filmProfiles) {
+            if (entry.key == filmProfileKey) {
+                return entry.polarity;
+            }
+        }
+        return Spektrafilm::ProfilePolarity::Negative;
+    }
+
+    inline Spektrafilm::ScanRoute read_resolved_scan_route(
+        OFX::StrChoiceParam* scanRouteParam,
+        const std::string& filmProfileKey) {
+        const Spektrafilm::ProfilePolarity capturePolarity =
+            capture_profile_polarity_for_key(filmProfileKey);
+        const Spektrafilm::ScanRoute defaultRoute =
+            Spektrafilm::default_scan_route_for_polarity(capturePolarity);
+        const std::string routeKey =
+            read_str_choice_param_or(scanRouteParam, Spektrafilm::scan_route_key(defaultRoute));
+        const Spektrafilm::ScanRoute userRouteSelection =
+            Spektrafilm::scan_route_from_key_or(routeKey, defaultRoute);
+        return Spektrafilm::resolve_scan_route(capturePolarity, userRouteSelection);
+    }
+
     inline int read_choice_param_clamped(
         OFX::ChoiceParam* param,
         int fallback,
         int minValue,
         int maxValue) {
         return std::clamp(read_choice_param_or(param, fallback), minValue, maxValue);
+    }
+
+    inline Spektrafilm::DiffusionFilterFamily read_diffusion_family(
+        OFX::ChoiceParam* param) {
+        switch (read_choice_param_clamped(param, 1, 0, 3)) {
+            case 0:
+                return Spektrafilm::DiffusionFilterFamily::Glimmerglass;
+            case 2:
+                return Spektrafilm::DiffusionFilterFamily::ProMist;
+            case 3:
+                return Spektrafilm::DiffusionFilterFamily::Cinebloom;
+            case 1:
+            default:
+                return Spektrafilm::DiffusionFilterFamily::BlackProMist;
+        }
     }
 
     inline int sanitize_scanner_lut_resolution_or_default(int value) {
@@ -1298,15 +879,12 @@ namespace {
 
     struct ScannerUnsharpPair {
         float sigmaPx = 0.7f;
-        float amount = 1.0f;
+        float amount = 0.7f;
     };
 
     inline float read_scanner_blur_sigma_px_or_default(OFX::DoubleParam* param, float fallback) {
-        const double blur = sanitize_finite_clamped(
-            read_double_param_or(param, static_cast<double>(fallback)),
-            0.55,
-            0.0,
-            10.0);
+        const double value = read_double_param_or(param, static_cast<double>(fallback));
+        const double blur = is_finite(value) ? std::clamp(value, 0.0, 10.0) : 0.0;
         return static_cast<float>(blur);
     }
 
@@ -1316,20 +894,20 @@ namespace {
         float amountFallback) {
         const std::array<double, 2> unsharp = read_double2_param_or(
             param,
-            { { static_cast<double>(sigmaFallback), static_cast<double>(amountFallback) } });
-        const double sigma = sanitize_finite_clamped(unsharp[0], 0.7, 0.0, 5.0);
-        const double amount = sanitize_finite_clamped(unsharp[1], 1.0, 0.0, 3.0);
+            {{static_cast<double>(sigmaFallback), static_cast<double>(amountFallback)}});
+        const double sigma = is_finite(unsharp[0]) ? std::clamp(unsharp[0], 0.0, 5.0) : 0.7;
+        const double amount = is_finite(unsharp[1]) ? std::clamp(unsharp[1], 0.0, 3.0) : 0.7;
         ScannerUnsharpPair out{};
         out.sigmaPx = static_cast<float>(sigma);
         out.amount = static_cast<float>(amount);
         return out;
     }
 
-    inline double sanitize_enlarger_filter_shift_or_zero(double value) {
+    inline double sanitize_print_filter_cc_shift_or_zero(double value) {
         if (!is_finite(value)) {
             return 0.0;
         }
-        const double limit = static_cast<double>(Print::kEnlargerSteps);
+        const double limit = static_cast<double>(Print::kPrintFilterCCLimit);
         return std::clamp(value, -limit, limit);
     }
 
@@ -1345,135 +923,10 @@ namespace {
         }
     }
 
-    inline void set_choice_param_if(OFX::ChoiceParam* param, int value) {
-        if (param) {
+    inline void set_str_choice_param_if(OFX::StrChoiceParam* param, const char* value) {
+        if (param && value) {
             param->setValue(value);
         }
-    }
-
-    inline void set_int_param_if(OFX::IntParam* param, int value) {
-        if (param) {
-            param->setValue(value);
-        }
-    }
-
-#ifdef JUICER_ENABLE_COUPLERS
-    struct CouplerProfileDefaults {
-        bool active = true;
-        double amount = kFactoryCouplersAmount;
-        double ratioB = kFactoryCouplersRatioB;
-        double ratioG = kFactoryCouplersRatioG;
-        double ratioR = kFactoryCouplersRatioR;
-        double sigma = kFactoryCouplersSigma;
-        double high = kFactoryCouplersHigh;
-        double spatialSigmaMicrometers = kFactoryCouplersSpatialSigma;
-    };
-
-    inline CouplerProfileDefaults build_coupler_profile_defaults(
-        const Profiles::DirCouplersProfile& dirCfg,
-        bool spatialSigmaValid,
-        double spatialSigmaMicrometers,
-        const ParamSnapshot& fallback) {
-        CouplerProfileDefaults defaults{};
-        defaults.active = dirCfg.active;
-        defaults.amount = sanitize_finite_clamped(
-            static_cast<double>(dirCfg.amount),
-            fallback.couplersAmount,
-            0.0,
-            2.0);
-        defaults.ratioB = sanitize_finite_clamped(
-            static_cast<double>(dirCfg.ratioRGB[0]),
-            fallback.ratioB,
-            0.0,
-            1.0);
-        defaults.ratioG = sanitize_finite_clamped(
-            static_cast<double>(dirCfg.ratioRGB[1]),
-            fallback.ratioG,
-            0.0,
-            1.0);
-        defaults.ratioR = sanitize_finite_clamped(
-            static_cast<double>(dirCfg.ratioRGB[2]),
-            fallback.ratioR,
-            0.0,
-            1.0);
-        defaults.sigma = sanitize_finite_clamped(
-            static_cast<double>(dirCfg.diffusionInterlayer),
-            fallback.sigma,
-            0.0,
-            4.0);
-        defaults.high = sanitize_finite_clamped(
-            static_cast<double>(dirCfg.highExposureShift),
-            fallback.high,
-            0.0,
-            1.0);
-        defaults.spatialSigmaMicrometers = sanitize_finite_clamped(
-            spatialSigmaValid ? spatialSigmaMicrometers : static_cast<double>(dirCfg.diffusionSizeUm),
-            fallback.spatialSigmaMicrometers,
-            0.0,
-            50.0);
-        return defaults;
-    }
-
-    inline int sanitize_coupler_follow_stock_mask(int mask) {
-        return mask & kCouplerFollowStockAllMask;
-    }
-
-    inline bool coupler_follow_stock_enabled(int mask, CouplerParamKind kind) {
-        const int bit = coupler_follow_stock_bit(kind);
-        return bit != 0 && ((mask & bit) != 0);
-    }
-
-    inline int infer_coupler_follow_stock_mask(
-        const ParamSnapshot& current,
-        const CouplerProfileDefaults& defaults) {
-        auto approx_equal_double = [](double a, double b, double eps = 1e-6) {
-            return std::fabs(a - b) <= eps;
-        };
-
-        int followMask = 0;
-        if (current.couplersActive == bool_to_i32(defaults.active)) {
-            followMask |= kCouplerFollowStockActive;
-        }
-        if (approx_equal_double(current.couplersAmount, defaults.amount)) {
-            followMask |= kCouplerFollowStockAmount;
-        }
-        if (approx_equal_double(current.ratioB, defaults.ratioB)) {
-            followMask |= kCouplerFollowStockRatioB;
-        }
-        if (approx_equal_double(current.ratioG, defaults.ratioG)) {
-            followMask |= kCouplerFollowStockRatioG;
-        }
-        if (approx_equal_double(current.ratioR, defaults.ratioR)) {
-            followMask |= kCouplerFollowStockRatioR;
-        }
-        if (approx_equal_double(current.sigma, defaults.sigma)) {
-            followMask |= kCouplerFollowStockSigma;
-        }
-        if (approx_equal_double(current.high, defaults.high)) {
-            followMask |= kCouplerFollowStockHigh;
-        }
-        if (approx_equal_double(current.spatialSigmaMicrometers, defaults.spatialSigmaMicrometers)) {
-            followMask |= kCouplerFollowStockSpatialSigma;
-        }
-        return followMask;
-    }
-#endif
-
-    inline bool apply_illuminant_choice_from_source(
-        OFX::ChoiceParam* param,
-        int& currentIndex,
-        bool overrideFlag,
-        const std::string& source) {
-        if (overrideFlag || !param) {
-            return false;
-        }
-        const int mapped = illuminant_choice_index_from_string(source);
-        if (mapped < 0 || currentIndex == mapped) {
-            return false;
-        }
-        set_choice_param_if(param, mapped);
-        currentIndex = mapped;
-        return true;
     }
 
     inline void set_double2_param_if(
@@ -1523,8 +976,7 @@ namespace {
         OFX::Double3DParam* param,
         const std::array<double, 3>& defaults,
         double minValue,
-        double maxValue)
-    {
+        double maxValue) {
         std::array<double, 3> values = defaults;
         if (param) {
             param->getValue(values[0], values[1], values[2]);
@@ -1532,31 +984,36 @@ namespace {
         double* valueIt = values.data();
         const double* defaultIt = defaults.data();
         for (int i = 0; i < 3; ++i, ++valueIt, ++defaultIt) {
-            *valueIt = sanitize_finite_clamped(*valueIt, *defaultIt, minValue, maxValue);
+            if (!is_finite(*valueIt)) {
+                *valueIt = *defaultIt;
+            } else {
+                *valueIt = std::clamp(*valueIt, minValue, maxValue);
+            }
         }
         return values;
     }
 
-    inline std::array<double, 3> read_sanitized_triplet_from_master(
+    inline std::array<double, 3> read_sanitized_grain_scale_triplet(
         OFX::Double3DParam* param,
-        double masterValue,
-        double minValue,
-        double maxValue) {
+        double masterValue) {
         std::array<double, 3> defaults{};
         defaults.fill(masterValue);
-        return read_sanitized_double3(
-            param,
-            defaults,
-            minValue,
-            maxValue);
+        return read_sanitized_double3(param, defaults, 0.0, 10.0);
+    }
+
+    inline std::array<double, 3> read_sanitized_grain_unit_triplet(
+        OFX::Double3DParam* param,
+        double masterValue) {
+        std::array<double, 3> defaults{};
+        defaults.fill(masterValue);
+        return read_sanitized_double3(param, defaults, 0.0, 1.0);
     }
 
     inline std::array<double, 2> read_sanitized_double2(
         OFX::Double2DParam* param,
         const std::array<double, 2>& defaults,
         double minValue,
-        double maxValue)
-    {
+        double maxValue) {
         std::array<double, 2> values = defaults;
         if (param) {
             param->getValue(values[0], values[1]);
@@ -1564,7 +1021,11 @@ namespace {
         double* valueIt = values.data();
         const double* defaultIt = defaults.data();
         for (int i = 0; i < 2; ++i, ++valueIt, ++defaultIt) {
-            *valueIt = sanitize_finite_clamped(*valueIt, *defaultIt, minValue, maxValue);
+            if (!is_finite(*valueIt)) {
+                *valueIt = *defaultIt;
+            } else {
+                *valueIt = std::clamp(*valueIt, minValue, maxValue);
+            }
         }
         return values;
     }
@@ -1601,6 +1062,10 @@ namespace {
     inline void read_scanner_snapshot_values(
         OFX::DoubleParam* scannerLensBlurParam,
         OFX::Double2DParam* scannerUnsharpParam,
+        OFX::BooleanParam* scannerBlackCorrectionParam,
+        OFX::BooleanParam* scannerWhiteCorrectionParam,
+        OFX::DoubleParam* scannerBlackLevelParam,
+        OFX::DoubleParam* scannerWhiteLevelParam,
         OFX::BooleanParam* scannerUseLutParam,
         OFX::IntParam* scannerLutResolutionParam,
         ParamSnapshot& snapshot) {
@@ -1610,6 +1075,14 @@ namespace {
         snapshot.scannerUnsharpMask = read_double2_param_or(
             scannerUnsharpParam,
             snapshot.scannerUnsharpMask);
+        snapshot.scannerBlackCorrection =
+            read_bool_param_as_i32(scannerBlackCorrectionParam, false);
+        snapshot.scannerWhiteCorrection =
+            read_bool_param_as_i32(scannerWhiteCorrectionParam, false);
+        snapshot.scannerBlackLevel =
+            read_sanitized_unit_double(scannerBlackLevelParam, snapshot.scannerBlackLevel);
+        snapshot.scannerWhiteLevel =
+            read_sanitized_unit_double(scannerWhiteLevelParam, snapshot.scannerWhiteLevel);
         snapshot.scannerUseLut = read_bool_param_as_i32(scannerUseLutParam, true);
         snapshot.scannerLutResolution = read_int_param_or(
             scannerLutResolutionParam,
@@ -1626,75 +1099,95 @@ namespace {
         snapshot.outputLinearPassThrough = read_bool_param_as_i32(outputLinearPassThroughParam, false);
     }
 
+    struct ProfileSnapshotChoiceParams {
+        OFX::StrChoiceParam* filmProfileKey = nullptr;
+        OFX::StrChoiceParam* printProfileKey = nullptr;
+        OFX::StrChoiceParam* scanRoute = nullptr;
+        OFX::ChoiceParam* spectralMode = nullptr;
+        OFX::ChoiceParam* referenceIlluminant = nullptr;
+        OFX::ChoiceParam* enlargerIlluminant = nullptr;
+        OFX::ChoiceParam* enlargerDichroicSet = nullptr;
+    };
+
     inline void read_profile_snapshot_choices(
-        OFX::ChoiceParam* filmStockParam,
-        OFX::ChoiceParam* printPaperParam,
-        OFX::ChoiceParam* spectralModeParam,
-        OFX::ChoiceParam* refIlluminantParam,
-        OFX::ChoiceParam* enlargerIlluminantParam,
-        OFX::ChoiceParam* enlargerDichroicSetParam,
+        const ProfileSnapshotChoiceParams& params,
         ParamSnapshot& snapshot) {
-        snapshot.filmStockIndex = read_choice_param_or(filmStockParam, snapshot.filmStockIndex);
-        snapshot.printPaperIndex = read_choice_param_or(printPaperParam, snapshot.printPaperIndex);
-        snapshot.spectralUpsamplingMode = read_choice_param_or(spectralModeParam, snapshot.spectralUpsamplingMode);
-        snapshot.refIll = read_choice_param_or(refIlluminantParam, snapshot.refIll);
-        snapshot.enlIll = read_choice_param_or(enlargerIlluminantParam, snapshot.enlIll);
-        snapshot.enlDichroicSet = read_choice_param_or(enlargerDichroicSetParam, snapshot.enlDichroicSet);
+        snapshot.filmProfileKey = read_str_choice_param_or(params.filmProfileKey, snapshot.filmProfileKey);
+        snapshot.printProfileKey = read_str_choice_param_or(params.printProfileKey, snapshot.printProfileKey);
+        snapshot.scanRoute = read_resolved_scan_route(params.scanRoute, snapshot.filmProfileKey);
+        snapshot.spectralUpsamplingMode = read_choice_param_or(params.spectralMode, snapshot.spectralUpsamplingMode);
+        snapshot.refIll = read_choice_param_or(params.referenceIlluminant, snapshot.refIll);
+        snapshot.enlIll = read_choice_param_or(params.enlargerIlluminant, snapshot.enlIll);
+        snapshot.enlDichroicSet = read_choice_param_or(params.enlargerDichroicSet, snapshot.enlDichroicSet);
+    }
+
+    inline void read_print_recipe_snapshot_values(
+        OFX::DoubleParam* printExposureParam,
+        OFX::DoubleParam* printPreflashParam,
+        OFX::BooleanParam* printExposureCompensationParam,
+        OFX::DoubleParam* enlargerYParam,
+        OFX::DoubleParam* enlargerMParam,
+        OFX::DoubleParam* enlargerCParam,
+        ParamSnapshot& snapshot) {
+        snapshot.printExposure = sanitize_finite_or(
+            read_double_param_or(printExposureParam, snapshot.printExposure),
+            snapshot.printExposure);
+        snapshot.printPreflashExposure = sanitize_finite_or(
+            read_double_param_or(printPreflashParam, snapshot.printPreflashExposure),
+            snapshot.printPreflashExposure);
+        snapshot.printExposureCompensation =
+            read_bool_param_as_i32(printExposureCompensationParam, true);
+        snapshot.normalizePrintExposure = 1;
+        snapshot.printUiYmcCc = {
+            sanitize_finite_or(read_double_param_or(enlargerYParam, 0.0), 0.0),
+            sanitize_finite_or(read_double_param_or(enlargerMParam, 0.0), 0.0),
+            sanitize_finite_or(read_double_param_or(enlargerCParam, 0.0), 0.0)};
     }
 
     inline void read_input_snapshot_values(
         OFX::ChoiceParam* inputColorSpaceParam,
         OFX::BooleanParam* inputCctfDecodingParam,
+        OFX::BooleanParam* hanatos2025AdaptationWindowParam,
+        OFX::BooleanParam* hanatos2025AdaptationSurfaceParam,
         ParamSnapshot& snapshot) {
         snapshot.inputColorSpace = read_choice_param_or(inputColorSpaceParam, snapshot.inputColorSpace);
         snapshot.inputCctfDecoding = read_bool_param_as_i32(inputCctfDecodingParam, false);
+        snapshot.hanatos2025AdaptationWindow =
+            read_bool_param_as_i32(hanatos2025AdaptationWindowParam, true);
+        snapshot.hanatos2025AdaptationSurface =
+            read_bool_param_as_i32(hanatos2025AdaptationSurfaceParam, false);
     }
 
-#ifdef JUICER_ENABLE_COUPLERS
-    struct CouplerSnapshotValues {
-        int active = 1;
-        double amount = 0.0;
-        double ratioR = 0.0;
-        double ratioG = 0.0;
-        double ratioB = 0.0;
-        double sigma = 0.0;
-        double high = 0.0;
-        double spatialSigmaMicrometers = 0.0;
-    };
-
-    inline CouplerSnapshotValues read_coupler_snapshot_values(
+    inline void read_coupler_snapshot_values(
         OFX::BooleanParam* couplersActiveParam,
         OFX::DoubleParam* couplersAmountParam,
-        OFX::DoubleParam* couplersAmountRParam,
-        OFX::DoubleParam* couplersAmountGParam,
-        OFX::DoubleParam* couplersAmountBParam,
-        OFX::DoubleParam* couplersSigmaParam,
-        OFX::DoubleParam* couplersHighParam,
-        OFX::DoubleParam* couplersSpatialSigmaParam,
-        const ParamSnapshot& fallback) {
-        CouplerSnapshotValues values{};
-        values.active = read_bool_param_as_i32(couplersActiveParam, true);
-        values.amount = read_double_param_or(couplersAmountParam, fallback.couplersAmount);
-        values.ratioR = read_double_param_or(couplersAmountRParam, fallback.ratioR);
-        values.ratioG = read_double_param_or(couplersAmountGParam, fallback.ratioG);
-        values.ratioB = read_double_param_or(couplersAmountBParam, fallback.ratioB);
-        values.sigma = read_double_param_or(couplersSigmaParam, fallback.sigma);
-        values.high = read_double_param_or(couplersHighParam, fallback.high);
-        values.spatialSigmaMicrometers = read_double_param_or(couplersSpatialSigmaParam, 0.0);
-        return values;
+        OFX::DoubleParam* inhibitionSameLayerParam,
+        OFX::DoubleParam* inhibitionInterlayerParam,
+        OFX::DoubleParam* diffusionSizeUmParam,
+        OFX::BooleanParam* gammaUseStockParam,
+        OFX::Double3DParam* gammaSameLayerRgbParam,
+        OFX::Double2DParam* gammaInterlayerRToGbParam,
+        OFX::Double2DParam* gammaInterlayerGToRbParam,
+        OFX::Double2DParam* gammaInterlayerBToRgParam,
+        ParamSnapshot& snapshot) {
+        snapshot.couplersActive = read_bool_param_as_i32(couplersActiveParam, true);
+        snapshot.couplersAmount = read_double_param_or(couplersAmountParam, snapshot.couplersAmount);
+        snapshot.couplersInhibitionSameLayer =
+            read_double_param_or(inhibitionSameLayerParam, snapshot.couplersInhibitionSameLayer);
+        snapshot.couplersInhibitionInterlayer =
+            read_double_param_or(inhibitionInterlayerParam, snapshot.couplersInhibitionInterlayer);
+        snapshot.couplersDiffusionSizeUm =
+            read_double_param_or(diffusionSizeUmParam, snapshot.couplersDiffusionSizeUm);
+        snapshot.couplersGammaUseStock = read_bool_param_as_i32(gammaUseStockParam, true);
+        snapshot.couplersGammaSameLayerRgb =
+            read_double3_param_or(gammaSameLayerRgbParam, snapshot.couplersGammaSameLayerRgb);
+        snapshot.couplersGammaInterlayerRToGb =
+            read_double2_param_or(gammaInterlayerRToGbParam, snapshot.couplersGammaInterlayerRToGb);
+        snapshot.couplersGammaInterlayerGToRb =
+            read_double2_param_or(gammaInterlayerGToRbParam, snapshot.couplersGammaInterlayerGToRb);
+        snapshot.couplersGammaInterlayerBToRg =
+            read_double2_param_or(gammaInterlayerBToRgParam, snapshot.couplersGammaInterlayerBToRg);
     }
-
-    inline void apply_coupler_snapshot_values(ParamSnapshot& snapshot, const CouplerSnapshotValues& values) {
-        snapshot.couplersActive = values.active;
-        snapshot.couplersAmount = values.amount;
-        snapshot.ratioR = values.ratioR;
-        snapshot.ratioG = values.ratioG;
-        snapshot.ratioB = values.ratioB;
-        snapshot.sigma = values.sigma;
-        snapshot.high = values.high;
-        snapshot.spatialSigmaMicrometers = values.spatialSigmaMicrometers;
-    }
-#endif
 
     template <size_t N>
     inline double mean_array(const std::array<double, N>& values) {
@@ -1708,715 +1201,53 @@ namespace {
     }
 
     template <size_t N>
-    inline std::array<double, N> sanitize_scaled_float_array_to_double(
+    inline std::array<double, N> sanitize_halation_percent_array_to_double(
         const std::array<float, N>& src,
-        const std::array<double, N>& fallback,
-        double scale,
-        double minValue,
-        double maxValue) {
+        const std::array<double, N>& fallback) {
         std::array<double, N> out{};
         double* outIt = out.data();
         const double* fallbackIt = fallback.data();
         const float* srcIt = src.data();
         const float* const srcEnd = srcIt + N;
         for (; srcIt < srcEnd; ++srcIt, ++outIt, ++fallbackIt) {
-            const double scaled = static_cast<double>(*srcIt) * scale;
-            *outIt = sanitize_finite_clamped(scaled, *fallbackIt, minValue, maxValue);
+            const double scaled = static_cast<double>(*srcIt) * 100.0;
+            *outIt = is_finite(scaled) ? std::clamp(scaled, 0.0, 100.0) : *fallbackIt;
+        }
+        return out;
+    }
+
+    template <size_t N>
+    inline std::array<double, N> sanitize_halation_size_array_to_double(
+        const std::array<float, N>& src,
+        const std::array<double, N>& fallback) {
+        std::array<double, N> out{};
+        double* outIt = out.data();
+        const double* fallbackIt = fallback.data();
+        const float* srcIt = src.data();
+        const float* const srcEnd = srcIt + N;
+        for (; srcIt < srcEnd; ++srcIt, ++outIt, ++fallbackIt) {
+            const double value = static_cast<double>(*srcIt);
+            *outIt = is_finite(value) ? std::clamp(value, 0.0, 1000.0) : *fallbackIt;
         }
         return out;
     }
 
     inline int pixel_component_count(OFX::PixelComponentEnum comps) {
         switch (comps) {
-        case OFX::ePixelComponentRGBA: return 4;
-        case OFX::ePixelComponentRGB: return 3;
-        case OFX::ePixelComponentAlpha: return 1;
-        default: return 0;
+            case OFX::ePixelComponentRGBA:
+                return 4;
+            case OFX::ePixelComponentRGB:
+                return 3;
+            case OFX::ePixelComponentAlpha:
+                return 1;
+            default:
+                return 0;
         }
-    }
-
-    inline bool span_x_within_bounds(int xStart, int xEnd, const OfxRectI& bounds) {
-        return xStart >= bounds.x1 && xEnd <= bounds.x2;
-    }
-
-    inline bool row_has_full_coverage(const OfxRectI& bounds, int xStart, int xEnd, int y) {
-        return span_x_within_bounds(xStart, xEnd, bounds) &&
-            y >= bounds.y1 && y < bounds.y2;
-    }
-
-    template <typename T>
-    inline T* row_ptr_if_fully_covered(
-        OFX::Image* image,
-        const OfxRectI& bounds,
-        int xStart,
-        int xEnd,
-        int y) {
-        if (!row_has_full_coverage(bounds, xStart, xEnd, y)) {
-            return nullptr;
-        }
-        return reinterpret_cast<T*>(image->getPixelAddress(xStart, y));
-    }
-
-    inline const float* row_start_if_covered(
-        OFX::Image* image,
-        const OfxRectI& srcBounds,
-        const OfxRectI& meterBounds,
-        int y) {
-        return row_ptr_if_fully_covered<const float>(
-            image,
-            srcBounds,
-            meterBounds.x1,
-            meterBounds.x2,
-            y);
-    }
-
-    inline double gaussian_weight(double normX, double normY, double invSigmaDenom) {
-        const double r2 = normX * normX + normY * normY;
-        return std::exp(-r2 * invSigmaDenom);
-    }
-
-    struct CenterWeightGeometry {
-        double invWidth = 0.0;
-        double invHeight = 0.0;
-        double scaleX = 0.0;
-        double scaleY = 0.0;
-        double invSigmaDenom = 0.0;
-    };
-
-    inline bool build_center_weight_geometry(
-        int width,
-        int height,
-        double sigma,
-        CenterWeightGeometry& out) {
-        if (width <= 0 || height <= 0 || !is_finite(sigma) || sigma <= 0.0) {
-            return false;
-        }
-        const double maxDim = static_cast<double>(std::max(width, height));
-        const double invMax = (maxDim > 0.0) ? (1.0 / maxDim) : 0.0;
-        const double sigmaDenom = 2.0 * sigma * sigma;
-        if (!is_finite(sigmaDenom) || sigmaDenom <= 0.0) {
-            return false;
-        }
-        out.invWidth = 1.0 / static_cast<double>(width);
-        out.invHeight = 1.0 / static_cast<double>(height);
-        out.scaleX = static_cast<double>(width) * invMax;
-        out.scaleY = static_cast<double>(height) * invMax;
-        out.invSigmaDenom = 1.0 / sigmaDenom;
-        return true;
-    }
-
-    inline double centered_norm_coordinate(int offset, double invExtent) {
-        return static_cast<double>(offset) * invExtent - 0.5;
-    }
-
-    inline double gaussian_weight_from_nx(
-        double nx,
-        double scaleX,
-        double normY,
-        double invSigmaDenom) {
-        const double normX = nx * scaleX;
-        return gaussian_weight(normX, normY, invSigmaDenom);
     }
 
     inline float finite_exp2_scale(double ev) {
         const float scale = static_cast<float>(std::exp2(ev));
         return is_finite(scale) ? scale : 1.0f;
-    }
-
-    inline void sanitize_dir_matrix(float matrix[3][3]) {
-        float* valueIt = &matrix[0][0];
-        const float* const valueEnd = valueIt + 9;
-        for (; valueIt < valueEnd; ++valueIt) {
-            float value = *valueIt;
-            if (!is_finite(value)) value = 0.0f;
-            if (value < -10.0f) value = -10.0f;
-            if (value > 10.0f) value = 10.0f;
-            *valueIt = value;
-        }
-    }
-
-    inline bool has_nonzero_finite_dir_matrix(const float matrix[3][3]) {
-        const float* valueIt = &matrix[0][0];
-        const float* const valueEnd = valueIt + 9;
-        for (; valueIt < valueEnd; ++valueIt) {
-            const float value = *valueIt;
-            if (is_finite(value) && value != 0.0f) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    constexpr std::uint64_t kAutoExposureMaskCacheMaxBytes = 96ull * 1024ull * 1024ull;
-    constexpr std::size_t kAutoExposureMedianScratchMaxSamples =
-        static_cast<std::size_t>(kAutoExposureMaskCacheMaxBytes / sizeof(float));
-    static std::atomic<std::uint64_t> gAutoExposureMaskCacheResidentBytes{ 0 };
-
-    inline bool auto_exposure_mask_cache_eligible(std::uint64_t requestedMaskBytes) {
-        return (requestedMaskBytes > 0) && (requestedMaskBytes <= kAutoExposureMaskCacheMaxBytes);
-    }
-
-    std::vector<float>& auto_exposure_median_scratch() {
-        thread_local std::vector<float> scratch;
-        return scratch;
-    }
-
-    inline std::uint64_t mask_bytes_for_dimensions(int width, int height) {
-        if (width <= 0 || height <= 0) {
-            return 0;
-        }
-        const std::uint64_t w = static_cast<std::uint64_t>(width);
-        const std::uint64_t h = static_cast<std::uint64_t>(height);
-        if (w > (std::numeric_limits<std::uint64_t>::max() / h)) {
-            return 0;
-        }
-        const std::uint64_t samples = w * h;
-        const std::uint64_t sampleBytes = static_cast<std::uint64_t>(sizeof(double));
-        if (samples > (std::numeric_limits<std::uint64_t>::max() / sampleBytes)) {
-            return 0;
-        }
-        return samples * sampleBytes;
-    }
-
-    inline void update_auto_exposure_mask_resident_bytes(
-        std::uint64_t previousBytes,
-        std::uint64_t nextBytes) {
-
-        if (nextBytes > previousBytes) {
-            gAutoExposureMaskCacheResidentBytes.fetch_add(nextBytes - previousBytes, std::memory_order_relaxed);
-        }
-        else if (previousBytes > nextBytes) {
-            const std::uint64_t delta = previousBytes - nextBytes;
-            std::uint64_t observed = gAutoExposureMaskCacheResidentBytes.load(std::memory_order_relaxed);
-            while (true) {
-                const std::uint64_t updated = (observed > delta) ? (observed - delta) : 0;
-                if (gAutoExposureMaskCacheResidentBytes.compare_exchange_weak(
-                    observed,
-                    updated,
-                    std::memory_order_relaxed,
-                    std::memory_order_relaxed)) {
-                    break;
-                }
-            }
-        }
-    }
-
-    inline void trace_auto_exposure_mask_cache_event(
-        const InstanceState* state,
-        const char* event,
-        int width,
-        int height,
-        std::uint64_t requestedBytes,
-        std::uint64_t cachedBytes,
-        std::uint64_t previousCachedBytes,
-        const char* reason) {
-
-        if (!JTRACE_ENABLED(2)) {
-            return;
-        }
-        const std::uint64_t residentBytes =
-            gAutoExposureMaskCacheResidentBytes.load(std::memory_order_relaxed);
-        std::string msg;
-        msg.reserve(256);
-        msg = "event=";
-        msg += cstr_or_default_if_null(event, "unknown");
-        msg += " instance_token=";
-        msg += std::to_string(instance_token_or_zero(state));
-        msg += " width=";
-        msg += std::to_string(width);
-        msg += " height=";
-        msg += std::to_string(height);
-        msg += " requested_bytes=";
-        msg += std::to_string(requestedBytes);
-        msg += " previous_cached_bytes=";
-        msg += std::to_string(previousCachedBytes);
-        msg += " cached_bytes=";
-        msg += std::to_string(cachedBytes);
-        msg += " resident_bytes=";
-        msg += std::to_string(residentBytes);
-        msg += " cap_bytes=";
-        msg += std::to_string(kAutoExposureMaskCacheMaxBytes);
-        if (reason && reason[0] != '\0') {
-            msg += " reason=";
-            msg += reason;
-        }
-        JTRACE_LEVEL(2, "MSAEM", msg);
-    }
-
-    static double build_center_weight_mask(int width, int height, double sigma, std::vector<double>& outMask) {
-        outMask.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
-        CenterWeightGeometry geometry{};
-        if (!build_center_weight_geometry(width, height, sigma, geometry)) {
-            std::fill(outMask.begin(), outMask.end(), 0.0);
-            return 0.0;
-        }
-
-        double sumMask = 0.0;
-        for (int y = 0; y < height; ++y) {
-            double* row = outMask.data() + static_cast<size_t>(y) * static_cast<size_t>(width);
-            double* rowIt = row;
-            const double ny = centered_norm_coordinate(y, geometry.invHeight);
-            const double normY = ny * geometry.scaleY;
-            for (int x = 0; x < width; ++x) {
-                const double nx = centered_norm_coordinate(x, geometry.invWidth);
-                const double w = gaussian_weight_from_nx(nx, geometry.scaleX, normY, geometry.invSigmaDenom);
-                *rowIt++ = w;
-                sumMask += w;
-            }
-        }
-        return sumMask;
-    }
-
-    static double measure_center_weighted_Y_DWG_cached(
-        OFX::Image* img,
-        const OfxRectI& bounds,
-        double sigma,
-        InstanceState* state,
-        double renderScaleX,
-        double renderScaleY,
-        std::uintptr_t clipToken,
-        Spectral::InputColorSpace inputColorSpace,
-        const Spectral::Mat3& rgbToXYZ,
-        bool applyCctfDecoding) {
-
-        if (!img) {
-            return 0.0;
-        }
-
-        const int width = bounds.x2 - bounds.x1;
-        const int height = bounds.y2 - bounds.y1;
-        if (width <= 0 || height <= 0) {
-            return 0.0;
-        }
-        const OfxRectI srcBounds = img->getBounds();
-        const int nComponents = pixel_component_count(img->getPixelComponents());
-        if (nComponents <= 0) {
-            return 0.0;
-        }
-        const std::size_t pixelStride = static_cast<std::size_t>(nComponents);
-        const bool singleComponent = (nComponents == 1);
-
-        auto accumulateYFromMask = [&](const std::vector<double>& mask, double* outSumMask) {
-            double sumY = 0.0;
-            double sumMask = 0.0;
-            for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
-                const size_t rowOffset = static_cast<size_t>(yy - bounds.y1) * static_cast<size_t>(width);
-                const double* maskRow = mask.data() + rowOffset;
-                const float* rowPix = row_start_if_covered(img, srcBounds, bounds, yy);
-                const double* maskIt = maskRow;
-                if (rowPix) {
-                    const float* rowPixIt = rowPix;
-                    for (int xOff = 0; xOff < width; ++xOff) {
-                        const double w = *maskIt++;
-                        float linear[3];
-                        if (singleComponent) {
-                            const float gray = rowPixIt[0];
-                            const float grayRgb[3] = { gray, gray, gray };
-                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                        }
-                        else {
-                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, rowPixIt, linear);
-                        }
-                        float XYZ[3];
-                        rgbToXYZ.mul(linear, XYZ);
-                        const float Y = XYZ[1];
-                        if (is_finite(Y)) {
-                            sumY += static_cast<double>(Y) * w;
-                            sumMask += w;
-                        }
-                        rowPixIt += pixelStride;
-                    }
-                    continue;
-                }
-                for (int xOff = 0; xOff < width; ++xOff) {
-                    const int xx = bounds.x1 + xOff;
-                    const double w = *maskIt++;
-                    const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
-                    if (!pix) {
-                        continue;
-                    }
-                    float linear[3];
-                    if (singleComponent) {
-                        const float gray = pix[0];
-                        const float grayRgb[3] = { gray, gray, gray };
-                        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                    }
-                    else {
-                        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
-                    }
-                    float XYZ[3];
-                    rgbToXYZ.mul(linear, XYZ);
-                    const float Y = XYZ[1];
-                    if (!is_finite(Y)) {
-                        continue;
-                    }
-                    sumY += static_cast<double>(Y) * w;
-                    sumMask += w;
-                }
-            }
-            if (outSumMask) {
-                *outSumMask = sumMask;
-            }
-            return (sumMask > 0.0) ? (sumY / sumMask) : 0.0;
-        };
-
-        auto accumulateYUncached = [&](double* outSumMask) {
-            CenterWeightGeometry geometry{};
-            if (!build_center_weight_geometry(width, height, sigma, geometry)) {
-                if (outSumMask) {
-                    *outSumMask = 0.0;
-                }
-                return 0.0;
-            }
-
-            double sumY = 0.0;
-            double sumMask = 0.0;
-            for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
-                const int localY = yy - bounds.y1;
-                const double ny = centered_norm_coordinate(localY, geometry.invHeight);
-                const double normY = ny * geometry.scaleY;
-                const float* rowPix = row_start_if_covered(img, srcBounds, bounds, yy);
-                double nx = -0.5;
-                if (rowPix) {
-                    const float* rowPixIt = rowPix;
-                    for (int xOff = 0; xOff < width; ++xOff) {
-                        const double w = gaussian_weight_from_nx(nx, geometry.scaleX, normY, geometry.invSigmaDenom);
-                        float linear[3];
-                        if (singleComponent) {
-                            const float gray = rowPixIt[0];
-                            const float grayRgb[3] = { gray, gray, gray };
-                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                        }
-                        else {
-                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, rowPixIt, linear);
-                        }
-                        float XYZ[3];
-                        rgbToXYZ.mul(linear, XYZ);
-                        const float Y = XYZ[1];
-                        if (is_finite(Y)) {
-                            sumY += static_cast<double>(Y) * w;
-                            sumMask += w;
-                        }
-                        rowPixIt += pixelStride;
-                        nx += geometry.invWidth;
-                    }
-                    continue;
-                }
-                for (int xOff = 0; xOff < width; ++xOff) {
-                    const int xx = bounds.x1 + xOff;
-                    const double w = gaussian_weight_from_nx(nx, geometry.scaleX, normY, geometry.invSigmaDenom);
-                    const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
-                    if (pix) {
-                        float linear[3];
-                        if (singleComponent) {
-                            const float gray = pix[0];
-                            const float grayRgb[3] = { gray, gray, gray };
-                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                        }
-                        else {
-                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
-                        }
-                        float XYZ[3];
-                        rgbToXYZ.mul(linear, XYZ);
-                        const float Y = XYZ[1];
-                        if (is_finite(Y)) {
-                            sumY += static_cast<double>(Y) * w;
-                            sumMask += w;
-                        }
-                    }
-                    nx += geometry.invWidth;
-                }
-            }
-            if (outSumMask) {
-                *outSumMask = sumMask;
-            }
-            return (sumMask > 0.0) ? (sumY / sumMask) : 0.0;
-        };
-
-        if (!state) {
-            return accumulateYUncached(nullptr);
-        }
-
-        const std::uint64_t requestedMaskBytes = mask_bytes_for_dimensions(width, height);
-        const bool cacheEligible = auto_exposure_mask_cache_eligible(requestedMaskBytes);
-
-        if (!cacheEligible) {
-            bool emitBypassTrace = false;
-            std::uint64_t previousCachedBytes = 0;
-            {
-                std::lock_guard<std::mutex> lock(state->autoExposureMutex);
-                previousCachedBytes = state->autoExposureMaskCachedBytes;
-                const bool wasBypass = state->autoExposureMaskPolicyBypass;
-                const std::uint64_t previousRequestedBytes = state->autoExposureMaskLastRequestedBytes;
-
-                if (previousCachedBytes > 0) {
-                    update_auto_exposure_mask_resident_bytes(previousCachedBytes, 0);
-                }
-                state->autoExposureMaskWeights.reset();
-                state->autoExposureMaskCachedBytes = 0;
-                state->autoExposureMaskValid = false;
-                state->autoExposureMaskWidth = width;
-                state->autoExposureMaskHeight = height;
-                state->autoExposureMaskSigma = sigma;
-                state->autoExposureMaskRenderScaleX = renderScaleX;
-                state->autoExposureMaskRenderScaleY = renderScaleY;
-                state->autoExposureMaskClipToken = clipToken;
-                state->autoExposureMaskSum = 0.0;
-                state->autoExposureMaskPolicyBypass = true;
-                state->autoExposureMaskLastRequestedBytes = requestedMaskBytes;
-
-                emitBypassTrace = (previousCachedBytes > 0)
-                    || !wasBypass
-                    || (previousRequestedBytes != requestedMaskBytes);
-            }
-
-            if (emitBypassTrace) {
-                trace_auto_exposure_mask_cache_event(
-                    state,
-                    "cache_bypass",
-                    width,
-                    height,
-                    requestedMaskBytes,
-                    0,
-                    previousCachedBytes,
-                    (requestedMaskBytes == 0) ? "overflow_or_invalid" : "over_cap");
-            }
-
-            double effectiveSumMask = 0.0;
-            const double measuredY = accumulateYUncached(&effectiveSumMask);
-            {
-                std::lock_guard<std::mutex> lock(state->autoExposureMutex);
-                if (state->autoExposureMaskPolicyBypass &&
-                    state->autoExposureMaskLastRequestedBytes == requestedMaskBytes) {
-                    state->autoExposureMaskSum = effectiveSumMask;
-                }
-            }
-            return measuredY;
-        }
-
-        const size_t expectedMaskSize = static_cast<size_t>(width) * static_cast<size_t>(height);
-        auto needsMaskRebuild = [&](const InstanceState& s) -> bool {
-            const std::shared_ptr<const std::vector<double>>& weights = s.autoExposureMaskWeights;
-            return !s.autoExposureMaskValid
-                || s.autoExposureMaskWidth != width
-                || s.autoExposureMaskHeight != height
-                || !nearly_equal_double(s.autoExposureMaskSigma, sigma)
-                || !nearly_equal_double(s.autoExposureMaskRenderScaleX, renderScaleX)
-                || !nearly_equal_double(s.autoExposureMaskRenderScaleY, renderScaleY)
-                || s.autoExposureMaskClipToken != clipToken
-                || !weights
-                || weights->size() != expectedMaskSize;
-        };
-
-        std::shared_ptr<const std::vector<double>> maskSnapshot;
-        bool maskValid = false;
-        bool rebuildMask = false;
-        {
-            std::lock_guard<std::mutex> lock(state->autoExposureMutex);
-            rebuildMask = needsMaskRebuild(*state);
-            if (!rebuildMask) {
-                maskSnapshot = state->autoExposureMaskWeights;
-                maskValid = state->autoExposureMaskValid && static_cast<bool>(maskSnapshot);
-                if (!maskValid) {
-                    state->autoExposureMaskSum = 0.0;
-                }
-            }
-        }
-
-        if (rebuildMask) {
-            auto rebuiltMask = std::make_shared<std::vector<double>>();
-            const double sumMask = build_center_weight_mask(width, height, sigma, *rebuiltMask);
-            const bool rebuiltValid = sumMask > 0.0;
-            bool emitStoreTrace = false;
-            std::uint64_t previousCachedBytes = 0;
-            {
-                std::lock_guard<std::mutex> lock(state->autoExposureMutex);
-                if (needsMaskRebuild(*state)) {
-                    previousCachedBytes = state->autoExposureMaskCachedBytes;
-                    update_auto_exposure_mask_resident_bytes(previousCachedBytes, requestedMaskBytes);
-                    state->autoExposureMaskWidth = width;
-                    state->autoExposureMaskHeight = height;
-                    state->autoExposureMaskSigma = sigma;
-                    state->autoExposureMaskRenderScaleX = renderScaleX;
-                    state->autoExposureMaskRenderScaleY = renderScaleY;
-                    state->autoExposureMaskClipToken = clipToken;
-                    state->autoExposureMaskWeights = rebuiltMask;
-                    state->autoExposureMaskCachedBytes = requestedMaskBytes;
-                    state->autoExposureMaskValid = rebuiltValid;
-                    state->autoExposureMaskSum = rebuiltValid ? sumMask : 0.0;
-                    emitStoreTrace = (previousCachedBytes != requestedMaskBytes) || state->autoExposureMaskPolicyBypass;
-                    state->autoExposureMaskPolicyBypass = false;
-                    state->autoExposureMaskLastRequestedBytes = requestedMaskBytes;
-                }
-                maskSnapshot = state->autoExposureMaskWeights;
-                maskValid = state->autoExposureMaskValid && static_cast<bool>(maskSnapshot);
-                if (!maskValid) {
-                    state->autoExposureMaskSum = 0.0;
-                }
-            }
-
-            if (emitStoreTrace) {
-                trace_auto_exposure_mask_cache_event(
-                    state,
-                    "cache_store",
-                    width,
-                    height,
-                    requestedMaskBytes,
-                    requestedMaskBytes,
-                    previousCachedBytes,
-                    rebuiltValid ? "rebuilt" : "rebuilt_invalid");
-            }
-        }
-
-        if (!maskValid || !maskSnapshot || maskSnapshot->size() != expectedMaskSize) {
-            return 0.0;
-        }
-
-        double effectiveSumMask = 0.0;
-        const double measuredY = accumulateYFromMask(*maskSnapshot, &effectiveSumMask);
-        {
-            std::lock_guard<std::mutex> lock(state->autoExposureMutex);
-            if (state->autoExposureMaskWeights == maskSnapshot) {
-                state->autoExposureMaskSum = effectiveSumMask;
-            }
-        }
-        return measuredY;
-    }
-
-    static double measure_median_Y_DWG(
-        OFX::Image* img,
-        const OfxRectI& bounds,
-        Spectral::InputColorSpace inputColorSpace,
-        const Spectral::Mat3& rgbToXYZ,
-        bool applyCctfDecoding) {
-
-        if (!img) {
-            return 0.0;
-        }
-
-        const int width = bounds.x2 - bounds.x1;
-        const int height = bounds.y2 - bounds.y1;
-        if (width <= 0 || height <= 0) {
-            return 0.0;
-        }
-        const OfxRectI srcBounds = img->getBounds();
-
-        const size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
-        const int nComponents = pixel_component_count(img->getPixelComponents());
-        if (nComponents <= 0) {
-            return 0.0;
-        }
-        const std::size_t pixelStride = static_cast<std::size_t>(nComponents);
-        const bool singleComponent = (nComponents == 1);
-        std::vector<float>* valuesPtr = nullptr;
-        std::vector<float> localValues;
-        if (total <= kAutoExposureMedianScratchMaxSamples) {
-            std::vector<float>& scratch = auto_exposure_median_scratch();
-            scratch.clear();
-            scratch.reserve(total);
-            valuesPtr = &scratch;
-        }
-        else {
-            localValues.reserve(total);
-            valuesPtr = &localValues;
-        }
-        std::vector<float>& values = *valuesPtr;
-        for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
-            const float* rowPix = row_start_if_covered(img, srcBounds, bounds, yy);
-            if (rowPix) {
-                const float* rowPixIt = rowPix;
-                for (int xOff = 0; xOff < width; ++xOff) {
-                    float linear[3];
-                    if (singleComponent) {
-                        const float gray = rowPixIt[0];
-                        const float grayRgb[3] = { gray, gray, gray };
-                        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                    }
-                    else {
-                        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, rowPixIt, linear);
-                    }
-                    float XYZ[3];
-                    rgbToXYZ.mul(linear, XYZ);
-                    float Y = XYZ[1];
-                    if (is_finite(Y)) {
-                        values.emplace_back((Y < 0.0f) ? 0.0f : Y);
-                    }
-                    rowPixIt += pixelStride;
-                }
-                continue;
-            }
-            for (int xOff = 0; xOff < width; ++xOff) {
-                const int x = bounds.x1 + xOff;
-                const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(x, yy));
-                if (!pix) {
-                    continue;
-                }
-                float linear[3];
-                if (singleComponent) {
-                    const float gray = pix[0];
-                    const float grayRgb[3] = { gray, gray, gray };
-                    Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                }
-                else {
-                    Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
-                }
-                float XYZ[3];
-                rgbToXYZ.mul(linear, XYZ);
-                float Y = XYZ[1];
-                if (is_finite(Y)) {
-                    values.emplace_back((Y < 0.0f) ? 0.0f : Y);
-                }
-            }
-        }
-
-        if (values.empty()) {
-            return 0.0;
-        }
-
-        const size_t n = values.size();
-        const size_t mid = n / 2;
-        auto midIt = values.begin() + static_cast<std::ptrdiff_t>(mid);
-        std::nth_element(values.begin(), midIt, values.end());
-        const float high = *midIt;
-        if ((n & 1U) != 0U) {
-            return static_cast<double>(high);
-        }
-
-        const float low = *std::max_element(values.begin(), midIt);
-        return static_cast<double>((low + high) * 0.5f);
-    }
-
-    static std::vector<std::string> enlarger_illuminant_keys_for_choice(int choice) {
-        switch (choice) {
-        case 0: return { "D65", "d65" };
-        case 1: return { "D55", "d55" };
-        case 2: return { "D50", "d50" };
-        case 3: return { "TH-KG3-L", "th-kg3-l" };
-        case 4: return { "T", "t", "Incandescent", "incandescent" };
-        case 5: return { "K75P", "k75p", "Kinoton75P", "Kinoton 75P", "kinoton75p", "kinoton_75p" };
-        case 6: return { "EqualEnergy", "equal_energy", "Equal energy" };
-        default: break;
-        }
-        return {};
-    }
-
-    static int illuminant_choice_index_from_string(const std::string& value) {
-        const std::string normalized = IlluminantKeys::normalize(value);
-        if (normalized.empty()) {
-            return -1;
-        }
-        constexpr int kIlluminantChoiceCount = 7;
-        for (int choice = 0; choice < kIlluminantChoiceCount; ++choice) {
-            const auto keys = enlarger_illuminant_keys_for_choice(choice);
-            const std::string* keyData = keys.data();
-            const size_t keyCount = keys.size();
-            for (size_t i = 0; i < keyCount; ++i, ++keyData) {
-                if (IlluminantKeys::normalize(*keyData) == normalized) {
-                    return choice;
-                }
-            }
-        }
-        return -1;
     }
 
     class ScopedParamEventSuppression {
@@ -2438,6 +1269,31 @@ namespace {
     private:
         InstanceState* _state = nullptr;
         bool _previous = false;
+    };
+
+    class ScopedBootstrapState {
+    public:
+        explicit ScopedBootstrapState(InstanceState* state)
+            : _state(state) {
+            if (_state) {
+                _previousSuppression = _state->suppressParamEvents;
+                _previousBootstrap = _state->inBootstrap;
+                _state->suppressParamEvents = true;
+                _state->inBootstrap = true;
+            }
+        }
+
+        ~ScopedBootstrapState() {
+            if (_state) {
+                _state->suppressParamEvents = _previousSuppression;
+                _state->inBootstrap = _previousBootstrap;
+            }
+        }
+
+    private:
+        InstanceState* _state = nullptr;
+        bool _previousSuppression = false;
+        bool _previousBootstrap = false;
     };
 
 } // namespace
@@ -2482,18 +1338,18 @@ Scanner::Settings JuicerEffect::gatherScannerSettings() const {
 
 Print::Params JuicerEffect::gatherPrintParams() const {
     Print::Params params{};
-    const bool bypass = read_bool_param_or(_pPrintBypass, false);
+    const ParamSnapshot snapshot = snapshotParams();
     const double pexp = read_double_param_or(_pPrintExposure, 1.0);
     const double preflash = read_double_param_or(_pPrintPreflash, 0.0);
     const double y = read_double_param_or(_pEnlargerY, 0.0);
     const double m = read_double_param_or(_pEnlargerM, 0.0);
     const double c = read_double_param_or(_pEnlargerC, 0.0);
-    params.bypass = bypass;
+    params.bypass = !Spektrafilm::scan_route_is_print(snapshot.scanRoute);
     params.exposure = static_cast<float>(pexp);
     params.preflashExposure = static_cast<float>(preflash);
-    params.yFilter = static_cast<float>(sanitize_enlarger_filter_shift_or_zero(y));
-    params.mFilter = static_cast<float>(sanitize_enlarger_filter_shift_or_zero(m));
-    params.cFilter = static_cast<float>(sanitize_enlarger_filter_shift_or_zero(c));
+    params.yFilter = static_cast<float>(sanitize_print_filter_cc_shift_or_zero(y));
+    params.mFilter = static_cast<float>(sanitize_print_filter_cc_shift_or_zero(m));
+    params.cFilter = static_cast<float>(sanitize_print_filter_cc_shift_or_zero(c));
     return params;
 }
 
@@ -2502,25 +1358,25 @@ Profiles::HalationMetadata JuicerEffect::gatherHalationUi() const {
 
     halation.active = read_bool_param_or(_pHalationActive, false);
 
-    const std::array<double, 3> strengthPercent =
-        read_sanitized_double3(_pHalationStrength, { {3.0, 0.30, 0.10} }, 0.0, 100.0);
+    const std::array<double, 3> primaryAmountPercent =
+        read_sanitized_double3(_pHalationStrength, {{3.0, 0.30, 0.10}}, 0.0, 100.0);
     const std::array<double, 3> sizeUm =
-        read_sanitized_double3(_pHalationSizeUm, { {200.0, 200.0, 200.0} }, 0.0, 1000.0);
-    const std::array<double, 3> scatterStrengthPercent =
-        read_sanitized_double3(_pHalationScatteringStrength, { {1.0, 2.0, 4.0} }, 0.0, 100.0);
-    const std::array<double, 3> scatterSizeUm =
-        read_sanitized_double3(_pHalationScatteringSizeUm, { {30.0, 20.0, 15.0} }, 0.0, 1000.0);
+        read_sanitized_double3(_pHalationSizeUm, {{200.0, 200.0, 200.0}}, 0.0, 1000.0);
+    const std::array<double, 3> secondaryAmountPercent =
+        read_sanitized_double3(_pHalationSecondaryAmount, {{1.0, 2.0, 4.0}}, 0.0, 100.0);
+    const std::array<double, 3> secondarySizeUm =
+        read_sanitized_double3(_pHalationSecondarySizeUm, {{30.0, 20.0, 15.0}}, 0.0, 1000.0);
 
     cast_array(halation.sizeUm, sizeUm);
-    cast_array(halation.scatteringSizeUm, scatterSizeUm);
+    cast_array(halation.secondarySizeUm, secondarySizeUm);
     const float scale = 0.01f;
-    float* strengthIt = halation.strength.data();
-    float* scatterStrengthIt = halation.scatteringStrength.data();
-    const double* strengthSrc = strengthPercent.data();
-    const double* scatterStrengthSrc = scatterStrengthPercent.data();
-    for (int i = 0; i < 3; ++i, ++strengthIt, ++scatterStrengthIt, ++strengthSrc, ++scatterStrengthSrc) {
-        *strengthIt = static_cast<float>(*strengthSrc) * scale;
-        *scatterStrengthIt = static_cast<float>(*scatterStrengthSrc) * scale;
+    float* primaryAmountIt = halation.primaryAmount.data();
+    float* secondaryAmountIt = halation.secondaryAmount.data();
+    const double* primaryAmountSrc = primaryAmountPercent.data();
+    const double* secondaryAmountSrc = secondaryAmountPercent.data();
+    for (int i = 0; i < 3; ++i, ++primaryAmountIt, ++secondaryAmountIt, ++primaryAmountSrc, ++secondaryAmountSrc) {
+        *primaryAmountIt = static_cast<float>(*primaryAmountSrc) * scale;
+        *secondaryAmountIt = static_cast<float>(*secondaryAmountSrc) * scale;
     }
 
     return halation;
@@ -2536,62 +1392,52 @@ void JuicerEffect::applyHalationProfileDefaults() {
 
     const Profiles::HalationMetadata& halationCfg = _state->base.halation;
 
-    const std::array<double, 3> currentStrength =
-        read_double3_param_or(_pHalationStrength, { { 0.0, 0.0, 0.0 } });
+    const std::array<double, 3> currentPrimaryAmount =
+        read_double3_param_or(_pHalationStrength, {{0.0, 0.0, 0.0}});
     const std::array<double, 3> currentSize =
-        read_double3_param_or(_pHalationSizeUm, { { 0.0, 0.0, 0.0 } });
-    const std::array<double, 3> currentScatterStrength =
-        read_double3_param_or(_pHalationScatteringStrength, { { 0.0, 0.0, 0.0 } });
-    const std::array<double, 3> currentScatterSize =
-        read_double3_param_or(_pHalationScatteringSizeUm, { { 0.0, 0.0, 0.0 } });
+        read_double3_param_or(_pHalationSizeUm, {{0.0, 0.0, 0.0}});
+    const std::array<double, 3> currentSecondaryAmount =
+        read_double3_param_or(_pHalationSecondaryAmount, {{0.0, 0.0, 0.0}});
+    const std::array<double, 3> currentSecondarySize =
+        read_double3_param_or(_pHalationSecondarySizeUm, {{0.0, 0.0, 0.0}});
 
-    const std::array<double, 3> strengthPct = sanitize_scaled_float_array_to_double(
-        halationCfg.strength,
-        currentStrength,
-        100.0,
-        0.0,
-        100.0);
-    const std::array<double, 3> sizeUm = sanitize_scaled_float_array_to_double(
+    const std::array<double, 3> primaryAmountPct = sanitize_halation_percent_array_to_double(
+        halationCfg.primaryAmount,
+        currentPrimaryAmount);
+    const std::array<double, 3> sizeUm = sanitize_halation_size_array_to_double(
         halationCfg.sizeUm,
-        currentSize,
-        1.0,
-        0.0,
-        1000.0);
-    const std::array<double, 3> scatterStrengthPct = sanitize_scaled_float_array_to_double(
-        halationCfg.scatteringStrength,
-        currentScatterStrength,
-        100.0,
-        0.0,
-        100.0);
-    const std::array<double, 3> scatterSizeUm = sanitize_scaled_float_array_to_double(
-        halationCfg.scatteringSizeUm,
-        currentScatterSize,
-        1.0,
-        0.0,
-        1000.0);
+        currentSize);
+    const std::array<double, 3> secondaryAmountPct = sanitize_halation_percent_array_to_double(
+        halationCfg.secondaryAmount,
+        currentSecondaryAmount);
+    const std::array<double, 3> secondarySizeUm = sanitize_halation_size_array_to_double(
+        halationCfg.secondarySizeUm,
+        currentSecondarySize);
 
-    const double strengthMaster = mean_array(strengthPct);
+    const double primaryAmountMaster = mean_array(primaryAmountPct);
     const double sizeMaster = mean_array(sizeUm);
-    const double scatterStrengthMaster = mean_array(scatterStrengthPct);
-    const double scatterSizeMaster = mean_array(scatterSizeUm);
+    const double secondaryAmountMaster = mean_array(secondaryAmountPct);
+    const double secondarySizeMaster = mean_array(secondarySizeUm);
 
     const ScopedParamEventSuppression suppressEvents(_state.get());
 
-    set_double3_param_if(_pHalationStrength, strengthPct[0], strengthPct[1], strengthPct[2]);
+    set_double3_param_if(_pHalationStrength, primaryAmountPct[0], primaryAmountPct[1], primaryAmountPct[2]);
     set_double3_param_if(_pHalationSizeUm, sizeUm[0], sizeUm[1], sizeUm[2]);
     set_double3_param_if(
-        _pHalationScatteringStrength,
-        scatterStrengthPct[0], scatterStrengthPct[1], scatterStrengthPct[2]);
-    set_double3_param_if(_pHalationScatteringSizeUm, scatterSizeUm[0], scatterSizeUm[1], scatterSizeUm[2]);
-    set_double_param_if(_pHalationStrengthMaster, strengthMaster);
+        _pHalationSecondaryAmount,
+        secondaryAmountPct[0],
+        secondaryAmountPct[1],
+        secondaryAmountPct[2]);
+    set_double3_param_if(_pHalationSecondarySizeUm, secondarySizeUm[0], secondarySizeUm[1], secondarySizeUm[2]);
+    set_double_param_if(_pHalationStrengthMaster, primaryAmountMaster);
     set_double_param_if(_pHalationSizeUmMaster, sizeMaster);
-    set_double_param_if(_pHalationScatteringStrengthMaster, scatterStrengthMaster);
-    set_double_param_if(_pHalationScatteringSizeUmMaster, scatterSizeMaster);
+    set_double_param_if(_pHalationSecondaryAmountMaster, secondaryAmountMaster);
+    set_double_param_if(_pHalationSecondarySizeUmMaster, secondarySizeMaster);
 
-    _halationStrengthMasterLast = strengthMaster;
+    _halationPrimaryAmountMasterLast = primaryAmountMaster;
     _halationSizeUmMasterLast = sizeMaster;
-    _halationScatteringStrengthMasterLast = scatterStrengthMaster;
-    _halationScatteringSizeUmMasterLast = scatterSizeMaster;
+    _halationSecondaryAmountMasterLast = secondaryAmountMaster;
+    _halationSecondarySizeUmMasterLast = secondarySizeMaster;
 }
 
 namespace {
@@ -2616,38 +1462,38 @@ namespace {
     static GrainPresetDefaults grain_preset_defaults(int presetIndex) {
         GrainPresetDefaults d;
         switch (presetIndex) {
-        case 0: // Fine
-            d.amountEV = -1.396;
-            d.sizePx = 0.615;
-            d.sharpness = 0.50;
-            d.chroma = 0.00;
-            d.texture = 0.63;
-            d.particleAreaUm2 = 0.25;
-            d.sizeMixScale = 31.3;
-            d.densityMinMaster = 0.08;
-            d.uniformityMaster = 0.97;
-            d.sizeMixWeight = 0.119;
-            d.microCell = 60.0;
-            d.microSigma = 181.2;
-            d.particleScaleMaster = 1.48;
-            d.particleScaleLayersMaster = 1.99;
-            d.sublayersActive = true;
-            break;
-        case 2: // Coarse
-            d.amountEV = -0.57;
-            d.sizePx = 0.56;
-            d.sharpness = 0.50;
-            d.chroma = 0.50;
-            d.texture = 0.35;
-            d.particleAreaUm2 = 0.33;
-            d.sizeMixScale = 16.0;
-            d.densityMinMaster = 0.09;
-            d.uniformityMaster = 0.96;
-            d.sublayersActive = true;
-            break;
-        case 1: // Medium
-        default:
-            break;
+            case 0: // Fine
+                d.amountEV = -1.396;
+                d.sizePx = 0.615;
+                d.sharpness = 0.50;
+                d.chroma = 0.00;
+                d.texture = 0.63;
+                d.particleAreaUm2 = 0.25;
+                d.sizeMixScale = 31.3;
+                d.densityMinMaster = 0.08;
+                d.uniformityMaster = 0.97;
+                d.sizeMixWeight = 0.119;
+                d.microCell = 60.0;
+                d.microSigma = 181.2;
+                d.particleScaleMaster = 1.48;
+                d.particleScaleLayersMaster = 1.99;
+                d.sublayersActive = true;
+                break;
+            case 2: // Coarse
+                d.amountEV = -0.57;
+                d.sizePx = 0.56;
+                d.sharpness = 0.50;
+                d.chroma = 0.50;
+                d.texture = 0.35;
+                d.particleAreaUm2 = 0.33;
+                d.sizeMixScale = 16.0;
+                d.densityMinMaster = 0.09;
+                d.uniformityMaster = 0.96;
+                d.sublayersActive = true;
+                break;
+            case 1: // Medium
+            default:
+                break;
         }
         return d;
     }
@@ -2657,19 +1503,19 @@ namespace {
     }
 
     static std::array<double, 3> default_particle_scale_ratio() {
-        return { {0.8, 1.0, 2.0} };
+        return {{0.8, 1.0, 2.0}};
     }
 
     static std::array<double, 3> default_particle_scale_layers_ratio() {
-        return { {2.5, 1.0, 0.5} };
+        return {{2.5, 1.0, 0.5}};
     }
 
     static std::array<double, 3> default_density_min_ratio() {
-        return { {0.07, 0.08, 0.12} };
+        return {{0.07, 0.08, 0.12}};
     }
 
     static std::array<double, 3> default_uniformity_ratio() {
-        return { {0.97, 0.97, 0.99} };
+        return {{0.97, 0.97, 0.99}};
     }
 
     static void normalize_ratio(std::array<double, 3>& values) {
@@ -2679,14 +1525,14 @@ namespace {
         for (; data < dataEnd; ++data) {
             const double v = *data;
             if (!is_positive_finite(v)) {
-                values = { {1.0, 1.0, 1.0} };
+                values = {{1.0, 1.0, 1.0}};
                 return;
             }
             sum += v;
         }
         const double mean = sum / 3.0;
         if (!is_positive_finite(mean)) {
-            values = { {1.0, 1.0, 1.0} };
+            values = {{1.0, 1.0, 1.0}};
             return;
         }
         double* outData = values.data();
@@ -2733,8 +1579,7 @@ namespace {
             default_particle_scale_ratio(),
             default_particle_scale_layers_ratio(),
             default_density_min_ratio(),
-            default_uniformity_ratio()
-        };
+            default_uniformity_ratio()};
         normalize_ratio(ratios.scale);
         normalize_ratio(ratios.scaleLayers);
         normalize_ratio(ratios.densityMin);
@@ -2770,7 +1615,7 @@ namespace {
             std::clamp(master * ratio[2], lo, hi));
     }
 
-}
+} // namespace
 
 Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     Profiles::GrainMetadata grain{};
@@ -2782,7 +1627,10 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
 
     grain.sublayersActive = read_bool_param_or(_pGrainSublayersActive, preset.sublayersActive);
 
-    const double amountEV = read_sanitized_double(_pGrainAmplitude, preset.amountEV, -3.0, 3.0);
+    const double amountEV = read_sanitized_double(
+        _pGrainAmplitude,
+        preset.amountEV,
+        SanitizedDoubleRange{-3.0, 3.0});
     const double amplitude = std::exp2(amountEV);
     grain.amplitude = static_cast<float>(amplitude);
 
@@ -2820,18 +1668,17 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
         static_cast<float>(advancedDefaults.blurDyeClouds));
 
     grain.chroma = static_cast<float>(chroma);
-    set_grain_chroma_weights(
-        grain.chroma,
-        grain.chromaSharedWeight,
-        grain.chromaIndWeight);
+    const GrainChromaWeights chromaWeights = compute_grain_chroma_weights(grain.chroma);
+    grain.chromaSharedWeight = chromaWeights.shared;
+    grain.chromaIndWeight = chromaWeights.independent;
     const std::array<double, 3> particleScale =
-        read_sanitized_triplet_from_master(_pGrainParticleScale, preset.particleScaleMaster, 0.0, 10.0);
+        read_sanitized_grain_scale_triplet(_pGrainParticleScale, preset.particleScaleMaster);
     const std::array<double, 3> particleScaleLayers =
-        read_sanitized_triplet_from_master(_pGrainParticleScaleLayers, preset.particleScaleLayersMaster, 0.0, 10.0);
+        read_sanitized_grain_scale_triplet(_pGrainParticleScaleLayers, preset.particleScaleLayersMaster);
     const std::array<double, 3> densityMin =
-        read_sanitized_triplet_from_master(_pGrainDensityMin, preset.densityMinMaster, 0.0, 1.0);
+        read_sanitized_grain_unit_triplet(_pGrainDensityMin, preset.densityMinMaster);
     const std::array<double, 3> uniformity =
-        read_sanitized_triplet_from_master(_pGrainUniformity, preset.uniformityMaster, 0.0, 1.0);
+        read_sanitized_grain_unit_triplet(_pGrainUniformity, preset.uniformityMaster);
     assign_grain_triplet_controls(
         grain,
         particleScale,
@@ -2844,14 +1691,10 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     grain.clumpTemporalMix = clumpControls.temporalMix;
     grain.clumpMorphPeriodSec = clumpControls.morphPeriodSec;
 
-    std::array<double, 2> microStructure = { {
-        advancedDefaults.microCell,
-        advancedDefaults.microSigma
-    } };
+    std::array<double, 2> microStructure = {{advancedDefaults.microCell,
+                                             advancedDefaults.microSigma}};
     microStructure = read_sanitized_double2(_pGrainMicroStructure, microStructure, 0.0, 1000.0);
     cast_array(grain.microStructure, microStructure);
-
-    grain.breathingDebug = read_bool_param_or(_pGrainBreathingDebug, false);
 
     grain.debugView = read_choice_param_clamped(_pGrainDebugView, 0, 0, 6);
 
@@ -2991,8 +1834,8 @@ void JuicerEffect::resetGrainAdvancedControls() {
 void JuicerEffect::updateGrainPresetLabel(bool custom) {
     _grainPresetCustom = custom;
     const std::string label = custom
-        ? (_grainPresetLabel + " (Custom)")
-        : _grainPresetLabel;
+                                  ? (_grainPresetLabel + " (Custom)")
+                                  : _grainPresetLabel;
     set_choice_label_if(_pGrainPreset, label);
 }
 
@@ -3001,8 +1844,7 @@ void JuicerEffect::updateGrainChromaEnabled() {
     set_double_param_enabled_if(_pGrainChroma, !perChannelDirty);
     if (perChannelDirty) {
         set_double_param_hint_if(_pGrainChroma, "Chroma disabled when per-channel overrides are active.");
-    }
-    else {
+    } else {
         set_double_param_hint_if(_pGrainChroma, _grainChromaHint);
     }
 }
@@ -3012,21 +1854,76 @@ Profiles::ProfileGlare JuicerEffect::gatherGlareUi() const {
 
     glare.active = read_bool_param_or(_pGlareActive, true);
 
-    glare.percent = read_sanitized_unit_float(_pGlarePercent, 0.10f);
+    glare.percent = read_sanitized_unit_float(_pGlarePercent, 0.03f);
 
-    glare.roughness = read_sanitized_unit_float(_pGlareRoughness, 0.4f);
+    glare.roughness = read_sanitized_unit_float(_pGlareRoughness, 0.7f);
 
     glare.blur = read_sanitized_0_to_10_float(_pGlareBlurSigmaPx, 0.5f);
 
-    const GlareCompensationUiValues compensation = read_glare_compensation_ui_values(
-        _pGlareCompRemovalFactor,
-        _pGlareCompRemovalDensity,
-        _pGlareCompRemovalTransition);
-    glare.compensationRemovalFactor = compensation.factor;
-    glare.compensationRemovalDensity = compensation.density;
-    glare.compensationRemovalTransition = compensation.transition;
+    GlareCompensationParams compensationParams{};
+    compensationParams.factor = _pGlareCompRemovalFactor;
+    compensationParams.density = _pGlareCompRemovalDensity;
+    compensationParams.transition = _pGlareCompRemovalTransition;
+    const GlareCompensationUiValues compensation =
+        read_glare_compensation_ui_values(compensationParams);
+    glare.printShadowCompensationFactor = compensation.factor;
+    glare.printShadowCompensationDensity = compensation.density;
+    glare.printShadowCompensationTransition = compensation.transition;
 
     return glare;
+}
+
+Spektrafilm::DiffusionFilterAuthoredControls JuicerEffect::gatherDiffusionUi(
+    const DiffusionUiParams& params) const {
+    Spektrafilm::DiffusionFilterAuthoredControls controls{};
+    controls.active = read_bool_param_or(params.enabled, controls.active);
+    controls.family = read_diffusion_family(params.family);
+    controls.strength = read_double_param_or(params.strength, controls.strength);
+    controls.spatialScale = read_double_param_or(params.spatialScale, controls.spatialScale);
+    controls.haloWarmth = read_double_param_or(params.haloWarmth, controls.haloWarmth);
+    controls.coreIntensity = read_double_param_or(params.coreIntensity, controls.coreIntensity);
+    controls.coreSize = read_double_param_or(params.coreSize, controls.coreSize);
+    controls.haloIntensity = read_double_param_or(params.haloIntensity, controls.haloIntensity);
+    controls.haloSize = read_double_param_or(params.haloSize, controls.haloSize);
+    controls.bloomIntensity = read_double_param_or(params.bloomIntensity, controls.bloomIntensity);
+    controls.bloomSize = read_double_param_or(params.bloomSize, controls.bloomSize);
+    return controls;
+}
+
+void JuicerEffect::updateDiffusionControlState() {
+    const bool cameraEnabled = read_bool_param_or(_cameraDiffusionUi.enabled, false);
+    const std::string filmProfileKey =
+        read_str_choice_param_or(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
+    const Spektrafilm::ScanRoute selectedRoute =
+        read_resolved_scan_route(_pScanRoute, filmProfileKey);
+    const bool printRoute = Spektrafilm::scan_route_is_print(selectedRoute);
+    const bool printEnabled = read_bool_param_or(_printDiffusionUi.enabled, false);
+
+    auto setControlState = [](auto* param, bool visible, bool enabled) {
+        if (!param) {
+            return;
+        }
+        param->setIsSecret(!visible);
+        param->setEnabled(enabled);
+    };
+    auto setStageControlState = [&](const DiffusionUiParams& params,
+                                    bool visible,
+                                    bool enabled) {
+        setControlState(params.enabled, visible, visible);
+        setControlState(params.family, visible, visible && enabled);
+        setControlState(params.strength, visible, visible && enabled);
+        setControlState(params.spatialScale, visible, visible && enabled);
+        setControlState(params.haloWarmth, visible, visible && enabled);
+        setControlState(params.coreIntensity, visible, visible && enabled);
+        setControlState(params.coreSize, visible, visible && enabled);
+        setControlState(params.haloIntensity, visible, visible && enabled);
+        setControlState(params.haloSize, visible, visible && enabled);
+        setControlState(params.bloomIntensity, visible, visible && enabled);
+        setControlState(params.bloomSize, visible, visible && enabled);
+    };
+
+    setStageControlState(_cameraDiffusionUi, true, cameraEnabled);
+    setStageControlState(_printDiffusionUi, printRoute, printEnabled);
 }
 
 OutputEncoding::Params JuicerEffect::gatherOutputEncodingParams() const {
@@ -3042,238 +1939,54 @@ OutputEncoding::Params JuicerEffect::gatherOutputEncodingParams() const {
     return params;
 }
 
-JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
-    const OFX::RenderArguments& args,
-    OFX::Image* srcImg,
-    const OfxRectI& fullBounds,
-    const ExposureParams& exposureParams) const {
-
-    AutoExposureResult result{};
-    result.exposureScale = 1.0f;
-    result.autoEV = 0.0;
-
-    if (!srcImg) {
-        result.exposureScale = finite_exp2_scale(exposureParams.sliderEV);
-        return result;
-    }
-    if (!exposureParams.cameraAutoEnabled) {
-        result.exposureScale = finite_exp2_scale(exposureParams.sliderEV);
-        return result;
+void JuicerEffect::applyDirGammaProfileDefaults() {
+    if (!_state || !read_bool_param_or(_pCouplersGammaUseStock, true)) {
+        return;
     }
 
-    InstanceState* state = _state.get();
-    const bool isCudaRender = args.isEnabledCudaRender;
-
-    auto rect_equal = [](const OfxRectI& a, const OfxRectI& b) {
-        return a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
-        };
-
-    OfxRectI meterBounds = fullBounds;
-    if (_src) {
-        try {
-            const OfxRectD rod = _src->getRegionOfDefinition(args.time);
-            const double rodWidth = rod.x2 - rod.x1;
-            const double rodHeight = rod.y2 - rod.y1;
-            const bool hasRodDimensions =
-                sanitize_positive_finite_or(rodWidth, 0.0) > 0.0 &&
-                sanitize_positive_finite_or(rodHeight, 0.0) > 0.0;
-            if (hasRodDimensions) {
-                meterBounds.x1 = static_cast<int>(std::floor(rod.x1));
-                meterBounds.y1 = static_cast<int>(std::floor(rod.y1));
-                meterBounds.x2 = static_cast<int>(std::ceil(rod.x2));
-                meterBounds.y2 = static_cast<int>(std::ceil(rod.y2));
-            }
-        }
-        catch (...) {
-            // Ignore failures; fall back to full bounds.
-            meterBounds = fullBounds;
-        }
-    }
-    result.meterBounds = meterBounds;
-    result.meterBoundsValid = true;
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    // CUDA path: metering + exposure scale are computed and applied entirely on the GPU to avoid
-    // forcing a stream synchronization just to read back Y/EV on the CPU.
-    if (isCudaRender) {
-        result.autoEV = 0.0;
-        result.exposureScale = 1.0f;
-        return result;
-    }
-#endif
-
-    const std::shared_ptr<const WorkingState> wsCur = load_active_working_state_if(state);
-    const uint64_t wsBuildCounter = working_state_build_counter_or_zero(wsCur);
-
-    // Camera auto-exposure always meters against AgX's fixed 18.4% target (independent of scanner target tweaks).
-    constexpr double kCameraMeterTargetY = 0.184;
-    constexpr double kInvLn2 = 1.44269504088896340736;
-
-    const double sigma = 0.2;
-    const double renderScaleX = sanitize_positive_finite_or(args.renderScale.x, 1.0);
-    const double renderScaleY = sanitize_positive_finite_or(args.renderScale.y, 1.0);
-    const std::uintptr_t clipToken = reinterpret_cast<std::uintptr_t>(_src);
-
-    const int inputColorSpaceIndex = read_choice_param_or(
-        _pInputColorSpace,
-        Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut));
-    const bool applyInputCctfDecoding = read_bool_param_or(_pInputCctfDecoding, false);
-
-    double autoEV = 0.0;
-    bool haveCachedAutoEV = false;
-    const int meteringMethod = exposureParams.meteringMethod;
-    if (state) {
-        std::lock_guard<std::mutex> cacheLock(state->autoExposureMutex);
-        if (state->autoExposureCacheValid &&
-            state->autoExposureCacheIsCudaRender == isCudaRender &&
-            state->autoExposureCacheAutoEnabled &&
-            state->autoExposureCacheMeteringMethod == meteringMethod &&
-            nearly_equal_double(state->autoExposureCacheTime, args.time) &&
-            state->autoExposureCacheBuildCounter == wsBuildCounter &&
-            rect_equal(state->autoExposureCacheBounds, meterBounds) &&
-            nearly_equal_double(state->autoExposureCacheRenderScaleX, renderScaleX) &&
-            nearly_equal_double(state->autoExposureCacheRenderScaleY, renderScaleY) &&
-            state->autoExposureCacheClipToken == clipToken &&
-            state->autoExposureCacheInputColorSpaceIndex == inputColorSpaceIndex &&
-            state->autoExposureCacheApplyCctfDecoding == applyInputCctfDecoding) {
-            autoEV = state->autoExposureCacheEV;
-            haveCachedAutoEV = true;
-        }
+    JuicerProcess::root().ensure_bootstrap();
+    const std::string filmKey =
+        read_str_choice_param_or(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
+    const std::shared_ptr<const Profiles::ValidatedFilmProfile> profile =
+        JuicerProcess::root().assets().selected_film_profile_for_key(filmKey);
+    if (!profile) {
+        JTRACE("SPEKTRAFILM", "MissingRequiredResource field=dir_gamma_profile_defaults");
+        return;
     }
 
-    if (!haveCachedAutoEV) {
-        bool measurementValid = false;
-        double evComp = 0.0;
-        double Yexp = 0.0;
-        const Spectral::InputColorSpace inputColorSpace =
-            Spectral::inputColorSpaceFromIndex(inputColorSpaceIndex);
-        const Spectral::Mat3 inputRgbToXYZ = Spectral::matrix_input_rgb_to_xyz(inputColorSpace);
-        if (meteringMethod == static_cast<int>(MeteringMethod::Median)) {
-            Yexp = measure_median_Y_DWG(
-                srcImg,
-                meterBounds,
-                inputColorSpace,
-                inputRgbToXYZ,
-                applyInputCctfDecoding);
-        }
-        else {
-            Yexp = measure_center_weighted_Y_DWG_cached(
-                srcImg,
-                meterBounds,
-                sigma,
-                state,
-                renderScaleX,
-                renderScaleY,
-                clipToken,
-                inputColorSpace,
-                inputRgbToXYZ,
-                applyInputCctfDecoding);
-        }
-        const bool canComputeEv = (Yexp > 0.0 && kCameraMeterTargetY > 0.0);
-        if (canComputeEv) {
-            const double exposureRatio = Yexp / kCameraMeterTargetY;
-            evComp = -std::log(exposureRatio) * kInvLn2;
-        }
-        if (!is_finite(evComp)) {
-            evComp = 0.0;
-            measurementValid = false;
-        }
-        else {
-            measurementValid = canComputeEv;
-        }
-        autoEV = evComp;
-
-        if (state) {
-            std::lock_guard<std::mutex> cacheLock(state->autoExposureMutex);
-            state->autoExposureCacheValid = measurementValid;
-            state->autoExposureCacheIsCudaRender = isCudaRender;
-            state->autoExposureCacheTime = args.time;
-            state->autoExposureCacheAutoEnabled = true;
-            state->autoExposureCacheMeteringMethod = meteringMethod;
-            state->autoExposureCacheBuildCounter = wsBuildCounter;
-            state->autoExposureCacheBounds = meterBounds;
-            state->autoExposureCacheEV = autoEV;
-            state->autoExposureCacheRenderScaleX = renderScaleX;
-            state->autoExposureCacheRenderScaleY = renderScaleY;
-            state->autoExposureCacheClipToken = clipToken;
-            state->autoExposureCacheInputColorSpaceIndex = inputColorSpaceIndex;
-            state->autoExposureCacheApplyCctfDecoding = applyInputCctfDecoding;
-        }
-    }
-
-    const double sliderEV = exposureParams.sliderEV;
-    const double totalEV = autoEV + sliderEV;
-    result.autoEV = autoEV;
-    result.exposureScale = finite_exp2_scale(totalEV);
-    return result;
-}
-
-#ifdef JUICER_ENABLE_COUPLERS
-Couplers::Runtime JuicerEffect::prepareCouplers(
-    const OFX::RenderArguments& args,
-    int fullWidth,
-    int fullHeight,
-    float pixelSizeUm) const {
-
-    Couplers::Runtime dirRT{};
-    if (!has_loaded_base_state(_state.get())) {
-        return dirRT;
-    }
-
-    const std::shared_ptr<const WorkingState> wsCur = load_active_working_state_if(_state.get());
-    if (wsCur && wsCur->buildCounter > 0) {
-        dirRT = wsCur->dirRT;
-        float* dMaxIt = dirRT.dMax;
-        for (int i = 0; i < 3; ++i, ++dMaxIt) {
-            float v = static_cast<float>(sanitize_positive_finite_or(*dMaxIt, 1.0));
-            if (v > 1000.0f) v = 1000.0f;
-            *dMaxIt = v;
-        }
-        sanitize_dir_matrix(dirRT.M);
-    }
-
-    float sigmaPixels = 0.0f;
-    const float sigmaMicrometers = dirRT.spatialSigmaMicrometers;
-    const bool hasPixelSize = sanitize_positive_finite_or(pixelSizeUm, 0.0) > 0.0;
-    if (sigmaMicrometers > 0.0f && hasPixelSize) {
-        sigmaPixels = sigmaMicrometers / pixelSizeUm;
-        sigmaPixels = sanitize_nonnegative_finite_or(sigmaPixels, 0.0f);
-    }
-    else {
-        // Fallback to cached geometry if pixelSizeUm was not available
-        const double filmLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
-
-        const double widthPx = static_cast<double>(fullWidth);
-        const double heightPx = static_cast<double>(fullHeight);
-        const double longEdgePx = std::max(widthPx, heightPx);
-
-        if (sigmaMicrometers > 0.0f && longEdgePx > 0.0 && filmLongEdgeMm > 0.0) {
-            sigmaPixels = Couplers::spatial_sigma_pixels_from_micrometers(
-                sigmaMicrometers,
-                filmLongEdgeMm,
-                widthPx,
-                heightPx);
-            sigmaPixels = sanitize_nonnegative_finite_or(sigmaPixels, 0.0f);
-        }
-    }
-    dirRT.spatialSigmaPixels = sigmaPixels;
-
-    auto dir_has_effect = [](const Couplers::Runtime& rt) -> bool {
-        if (!rt.active) {
-            return false;
-        }
-        return has_nonzero_finite_dir_matrix(rt.M);
+    const Profiles::ProfileDigest& digest = profile->digest;
+    const auto finiteNonnegative = [](float value) {
+        return std::isfinite(value) && value >= 0.0f;
     };
-
-    if (!dir_has_effect(dirRT)) {
-        // Provably zero-effect DIR (e.g. amount==0). Treat as inactive so we can skip the
-        // extra DIR sampling path and any spatial-DIR build work without changing results.
-        dirRT.active = false;
+    const bool valid =
+        std::all_of(digest.gammaSamelayerRgb.begin(), digest.gammaSamelayerRgb.end(), finiteNonnegative) &&
+        std::all_of(digest.gammaInterlayerRToGb.begin(), digest.gammaInterlayerRToGb.end(), finiteNonnegative) &&
+        std::all_of(digest.gammaInterlayerGToRb.begin(), digest.gammaInterlayerGToRb.end(), finiteNonnegative) &&
+        std::all_of(digest.gammaInterlayerBToRg.begin(), digest.gammaInterlayerBToRg.end(), finiteNonnegative);
+    if (!valid) {
+        JTRACE("SPEKTRAFILM", "MalformedRequiredProfileData field=dir_gamma_profile_defaults");
+        return;
     }
 
-    return dirRT;
+    const ScopedParamEventSuppression suppressEvents(_state.get());
+    set_double3_param_if(
+        _pCouplersGammaSameLayerRgb,
+        digest.gammaSamelayerRgb[0],
+        digest.gammaSamelayerRgb[1],
+        digest.gammaSamelayerRgb[2]);
+    set_double2_param_if(
+        _pCouplersGammaInterlayerRToGb,
+        digest.gammaInterlayerRToGb[0],
+        digest.gammaInterlayerRToGb[1]);
+    set_double2_param_if(
+        _pCouplersGammaInterlayerGToRb,
+        digest.gammaInterlayerGToRb[0],
+        digest.gammaInterlayerGToRb[1]);
+    set_double2_param_if(
+        _pCouplersGammaInterlayerBToRg,
+        digest.gammaInterlayerBToRg[0],
+        digest.gammaInterlayerBToRg[1]);
 }
-#endif
 
 JuicerEffect::WorkingStateInfo JuicerEffect::prepareWorkingState() const {
     WorkingStateInfo info{};
@@ -3285,26 +1998,24 @@ JuicerEffect::WorkingStateInfo JuicerEffect::prepareWorkingState() const {
 
     const WorkingState* ws = info.workingState.get();
     if (ws && ws->buildCounter > 0 && ws->printRT) {
-        info.printRuntime = ws->printRT.get();
+        info.printRt = ws->printRT.get();
     }
 
     info.workingStateReady = working_state_ready(ws);
 
-    const Print::Runtime* prt = info.printRuntime;
-    info.printRuntimeReady = print_runtime_ready(ws, prt, info.workingStateReady);
+    const Print::Runtime* prt = info.printRt;
+    info.printRtReady = print_runtime_ready(ws, prt, info.workingStateReady);
 
     return info;
 }
 
 JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
-    : OFX::ImageEffect(handle)
-{
+    : OFX::ImageEffect(handle) {
     // Cache clips (wrappers) for Step 2; safe even if render still uses the existing path.
     try {
         _src = fetchClip(kOfxImageEffectSimpleSourceClipName); // "Source"
         _dst = fetchClip(kOfxImageEffectOutputClipName);       // "Output"
-    }
-    catch (...) {
+    } catch (...) {
         _src = nullptr;
         _dst = nullptr;
     }
@@ -3315,38 +2026,54 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pCameraAutoExposure = fetchBooleanParam(kParamCameraAutoExposure);
         _pCameraFilmFormat = fetchDoubleParam(JuicerParams::kCameraFilmFormatMm);
         _pCameraMeteringMethod = fetchChoiceParam(JuicerParams::kCameraMeteringMethod);
-        _pFilmStock = fetchChoiceParam(kParamFilmStock);
+        _pFilmProfileKey = fetchStrChoiceParam(JuicerParams::kFilmProfileKey);
         _pSpectralMode = fetchChoiceParam(kParamSpectralMode);
-        _pPrintPaper = fetchChoiceParam(kParamPrintPaper);
+        _pPrintProfileKey = fetchStrChoiceParam(JuicerParams::kPrintProfileKey);
         _pRefIll = fetchChoiceParam("ReferenceIlluminant");
         _pEnlIll = fetchChoiceParam("EnlargerIlluminant");
-        _pEnlDichroicSet = fetchChoiceParam(kParamEnlargerDichroicSet);
+        _pEnlDichroicSet = fetchChoiceParam(kParamDichroicFilterSet);
         _pInputColorSpace = fetchChoiceParam(JuicerParams::kInputColorSpace);
         _pInputCctfDecoding = fetchBooleanParam(JuicerParams::kInputCctfDecoding);
+        _pHanatos2025AdaptationWindow =
+            fetchBooleanParam(JuicerParams::kHanatos2025AdaptationWindow);
+        _pHanatos2025AdaptationSurface =
+            fetchBooleanParam(JuicerParams::kHanatos2025AdaptationSurface);
+        _pScanRoute = fetchStrChoiceParam(JuicerParams::kParamScanRoute);
         _pOutputColorSpace = fetchChoiceParam(kParamOutputColorSpace);
         _pOutputCctfEncoding = fetchBooleanParam(kParamOutputCctfEncoding);
         _pOutputLinearPassThrough = fetchBooleanParam(kParamOutputLinearPassThrough);
 
 
-#ifdef JUICER_ENABLE_COUPLERS
-        _pCouplersActive = fetchBooleanParam(Couplers::kParamCouplersActive);
-        _pCouplersAmount = fetchDoubleParam(Couplers::kParamCouplersAmount);
-        _pCouplersAmountR = fetchDoubleParam(Couplers::kParamCouplersAmountR);
-        _pCouplersAmountG = fetchDoubleParam(Couplers::kParamCouplersAmountG);
-        _pCouplersAmountB = fetchDoubleParam(Couplers::kParamCouplersAmountB);
-        _pCouplersSigma = fetchDoubleParam(Couplers::kParamCouplersLayerSigma);
-        _pCouplersHigh = fetchDoubleParam(Couplers::kParamCouplersHighExpShift);
-        _pCouplersSpatialSigma = fetchDoubleParam(Couplers::kParamCouplersSpatialSigma);
-        _pCouplersInitVersion = fetchIntParam(JuicerParams::kDirCouplersInitVersion);
-        _pCouplersFollowMask = fetchIntParam(JuicerParams::kDirCouplersFollowStockMask);
-#endif
+        _pCouplersActive = fetchBooleanParam(JuicerParams::kDirCouplersActive);
+        _pCouplersAmount = fetchDoubleParam(JuicerParams::kDirCouplersAmount);
+        _pCouplersInhibitionSameLayer =
+            fetchDoubleParam(JuicerParams::kDirCouplersInhibitionSameLayer);
+        _pCouplersInhibitionInterlayer =
+            fetchDoubleParam(JuicerParams::kDirCouplersInhibitionInterlayer);
+        _pCouplersDiffusionSizeUm =
+            fetchDoubleParam(JuicerParams::kDirCouplersDiffusionSizeUm);
+        _pCouplersGammaUseStock =
+            fetchBooleanParam(JuicerParams::kDirCouplersGammaUseStock);
+        _pCouplersGammaSameLayerRgb =
+            fetchDouble3DParam(JuicerParams::kDirCouplersGammaSameLayerRgb);
+        _pCouplersGammaInterlayerRToGb =
+            fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerRToGb);
+        _pCouplersGammaInterlayerGToRb =
+            fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerGToRb);
+        _pCouplersGammaInterlayerBToRg =
+            fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerBToRg);
 
         _pScannerLensBlur = fetchDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
         _pScannerUnsharp = fetchDouble2DParam(JuicerParams::kScannerUnsharpMask);
+        _pScannerBlackCorrection =
+            fetchBooleanParam(JuicerParams::kScannerBlackCorrection);
+        _pScannerWhiteCorrection =
+            fetchBooleanParam(JuicerParams::kScannerWhiteCorrection);
+        _pScannerBlackLevel = fetchDoubleParam(JuicerParams::kScannerBlackLevel);
+        _pScannerWhiteLevel = fetchDoubleParam(JuicerParams::kScannerWhiteLevel);
         _pScannerUseLut = fetchBooleanParam(JuicerParams::kScannerUseLut);
         _pScannerLutResolution = fetchIntParam(JuicerParams::kScannerLutResolution);
 
-        _pPrintBypass = fetchBooleanParam("PrintBypass");
         _pPrintExposure = fetchDoubleParam("PrintExposure");
         _pPrintPreflash = fetchDoubleParam("PrintPreflash");
         _pPrintExposureComp = fetchBooleanParam("PrintExposureCompensation");
@@ -3357,13 +2084,13 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pHalationActive = fetchBooleanParam(JuicerParams::kHalationActive);
         _pHalationStrengthMaster = fetchDoubleParam(JuicerParams::kHalationStrengthMaster);
         _pHalationSizeUmMaster = fetchDoubleParam(JuicerParams::kHalationSizeUmMaster);
-        _pHalationScatteringStrengthMaster = fetchDoubleParam(JuicerParams::kHalationScatteringStrengthMaster);
-        _pHalationScatteringSizeUmMaster = fetchDoubleParam(JuicerParams::kHalationScatteringSizeUmMaster);
+        _pHalationSecondaryAmountMaster = fetchDoubleParam(JuicerParams::kHalationSecondaryAmountMaster);
+        _pHalationSecondarySizeUmMaster = fetchDoubleParam(JuicerParams::kHalationSecondarySizeUmMaster);
         _pHalationRevertToStock = fetchPushButtonParam(JuicerParams::kHalationRevertToStock);
         _pHalationStrength = fetchDouble3DParam(JuicerParams::kHalationStrength);
         _pHalationSizeUm = fetchDouble3DParam(JuicerParams::kHalationSizeUm);
-        _pHalationScatteringStrength = fetchDouble3DParam(JuicerParams::kHalationScatteringStrength);
-        _pHalationScatteringSizeUm = fetchDouble3DParam(JuicerParams::kHalationScatteringSizeUm);
+        _pHalationSecondaryAmount = fetchDouble3DParam(JuicerParams::kHalationSecondaryAmount);
+        _pHalationSecondarySizeUm = fetchDouble3DParam(JuicerParams::kHalationSecondarySizeUm);
 
         _pGrainActive = fetchBooleanParam(JuicerParams::kGrainActive);
         _pGrainSublayersActive = fetchBooleanParam(JuicerParams::kGrainSublayersActive);
@@ -3388,7 +2115,6 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pGrainSizeMixScale = fetchDoubleParam(JuicerParams::kGrainSizeMixScale);
         _pGrainClumpTemporalMix = fetchDoubleParam(JuicerParams::kGrainClumpTemporalMix);
         _pGrainClumpMorphPeriodSec = fetchDoubleParam(JuicerParams::kGrainClumpMorphPeriodSec);
-        _pGrainBreathingDebug = fetchBooleanParam(JuicerParams::kGrainBreathingDebug);
         _pGrainDebugView = fetchChoiceParam(JuicerParams::kGrainDebugView);
         _pGrainMicroStructure = fetchDouble2DParam(JuicerParams::kGrainMicroStructure);
         _pGrainResetAdvanced = fetchPushButtonParam(JuicerParams::kGrainResetAdvanced);
@@ -3398,16 +2124,61 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pFilmScratchAmount = fetchDoubleParam(JuicerParams::kFilmScratchAmount);
         _pGateScratchAmount = fetchDoubleParam(JuicerParams::kGateScratchAmount);
 
+        _cameraDiffusionUi.enabled =
+            fetchBooleanParam(JuicerParams::kCameraDiffusionEnabled);
+        _cameraDiffusionUi.family =
+            fetchChoiceParam(JuicerParams::kCameraDiffusionFamily);
+        _cameraDiffusionUi.strength =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionStrength);
+        _cameraDiffusionUi.spatialScale =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionSpatialScale);
+        _cameraDiffusionUi.haloWarmth =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionHaloWarmth);
+        _cameraDiffusionUi.coreIntensity =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionCoreIntensity);
+        _cameraDiffusionUi.coreSize =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionCoreSize);
+        _cameraDiffusionUi.haloIntensity =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionHaloIntensity);
+        _cameraDiffusionUi.haloSize =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionHaloSize);
+        _cameraDiffusionUi.bloomIntensity =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionBloomIntensity);
+        _cameraDiffusionUi.bloomSize =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionBloomSize);
+
+        _printDiffusionUi.enabled =
+            fetchBooleanParam(JuicerParams::kPrintDiffusionEnabled);
+        _printDiffusionUi.family =
+            fetchChoiceParam(JuicerParams::kPrintDiffusionFamily);
+        _printDiffusionUi.strength =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionStrength);
+        _printDiffusionUi.spatialScale =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionSpatialScale);
+        _printDiffusionUi.haloWarmth =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionHaloWarmth);
+        _printDiffusionUi.coreIntensity =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionCoreIntensity);
+        _printDiffusionUi.coreSize =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionCoreSize);
+        _printDiffusionUi.haloIntensity =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionHaloIntensity);
+        _printDiffusionUi.haloSize =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionHaloSize);
+        _printDiffusionUi.bloomIntensity =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionBloomIntensity);
+        _printDiffusionUi.bloomSize =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionBloomSize);
+
         _pGlareActive = fetchBooleanParam(JuicerParams::kGlareActive);
         _pGlarePercent = fetchDoubleParam(JuicerParams::kGlarePercent);
         _pGlareRoughness = fetchDoubleParam(JuicerParams::kGlareRoughness);
         _pGlareBlurSigmaPx = fetchDoubleParam(JuicerParams::kGlareBlurSigmaPx);
-        _pGlareCompRemovalFactor = fetchDoubleParam(JuicerParams::kGlareCompensationRemovalFactor);
-        _pGlareCompRemovalDensity = fetchDoubleParam(JuicerParams::kGlareCompensationRemovalDensity);
-        _pGlareCompRemovalTransition = fetchDoubleParam(JuicerParams::kGlareCompensationRemovalTransition);
+        _pGlareCompRemovalFactor = fetchDoubleParam(JuicerParams::kPrintShadowCompensationFactor);
+        _pGlareCompRemovalDensity = fetchDoubleParam(JuicerParams::kPrintShadowCompensationDensity);
+        _pGlareCompRemovalTransition = fetchDoubleParam(JuicerParams::kPrintShadowCompensationTransition);
         _pPrintDminFactor = fetchDoubleParam(JuicerParams::kPrintDminFactor);
-    }
-    catch (...) {
+    } catch (...) {
         // Safe: any missing param will remain nullptr and defaults are used in snapshot/usage paths.
         JTRACE("PARAM", "parameter cache bootstrap incomplete; defaults will be used for missing handles");
     }
@@ -3435,10 +2206,10 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         param->getValue(v);
         outValue = v;
     };
-    initMasterCache(_pHalationStrengthMaster, _halationStrengthMasterLast);
+    initMasterCache(_pHalationStrengthMaster, _halationPrimaryAmountMasterLast);
     initMasterCache(_pHalationSizeUmMaster, _halationSizeUmMasterLast);
-    initMasterCache(_pHalationScatteringStrengthMaster, _halationScatteringStrengthMasterLast);
-    initMasterCache(_pHalationScatteringSizeUmMaster, _halationScatteringSizeUmMasterLast);
+    initMasterCache(_pHalationSecondaryAmountMaster, _halationSecondaryAmountMasterLast);
+    initMasterCache(_pHalationSecondarySizeUmMaster, _halationSecondarySizeUmMasterLast);
     initMasterCache(_pGrainParticleScaleMaster, _grainParticleScaleMasterLast);
     initMasterCache(_pGrainParticleScaleLayersMaster, _grainParticleScaleLayersMasterLast);
     initMasterCache(_pGrainDensityMinMaster, _grainDensityMinMasterLast);
@@ -3448,13 +2219,14 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     _state = std::make_unique<InstanceState>();
     _state->dataDir = ensure_trailing_separator(data_dir_string());
     JuicerAtomic::store_shared_ptr(&_state->activeWorkingState, std::shared_ptr<const WorkingState>{});
+    JuicerAtomic::store_shared_ptr(&_state->activeDirectState, std::shared_ptr<const DirectRenderState>{});
+    JuicerAtomic::store_shared_ptr(&_state->activePrintState, std::shared_ptr<const PrintRenderState>{});
     _state->activeBuildCounter = 0;
     {
         const auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
         const std::uint64_t seedFields[2] = {
             static_cast<std::uint64_t>(now),
-            static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this))
-        };
+            static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this))};
         std::uint64_t seed = Hash::hash_bytes(seedFields, sizeof(seedFields));
         if (seed == 0) {
             seed = 1;
@@ -3463,46 +2235,50 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _state->instanceToken = seed;
     }
 
+    updateDiffusionControlState();
+
     // Defer heavy bootstrap until first param change
 }
 
 JuicerEffect::~JuicerEffect() {
     try {
-        std::uint64_t releasedMaskBytes = 0;
         if (_state) {
-            std::lock_guard<std::mutex> lock(_state->autoExposureMutex);
-            releasedMaskBytes = _state->autoExposureMaskCachedBytes;
-            _state->autoExposureMaskWeights.reset();
-            _state->autoExposureMaskCachedBytes = 0;
-            _state->autoExposureMaskValid = false;
-            _state->autoExposureMaskSum = 0.0;
+            JuicerProcess::root().retire_grain_static_instance(
+                _state->instanceToken);
         }
-        if (releasedMaskBytes > 0) {
-            update_auto_exposure_mask_resident_bytes(releasedMaskBytes, 0);
-            trace_auto_exposure_mask_cache_event(
-                _state.get(),
-                "cache_release",
-                0,
-                0,
-                0,
-                0,
-                releasedMaskBytes,
-                "instance_destroy");
-        }
-    }
-    catch (...) {
-        JuicerLogging::discard_current_exception();
-    }
-
-    try {
         _state.reset();
-    }
-    catch (...) {
+    } catch (...) {
         JuicerLogging::discard_current_exception();
     }
 }
 
+[[noreturn]] void JuicerEffect::throw_spektrafilm_phase1a_render_cutoff(const OFX::RenderArguments& args) const {
+    const std::string filmKey = read_str_choice_param_or(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
+    const std::string printKey = read_str_choice_param_or(_pPrintProfileKey, Spektrafilm::kDefaultPrintProfileKey);
+    const char* backend = args.isEnabledCudaRender ? "cuda" : "non-cuda";
+
+    std::string msg;
+    msg.reserve(192 + filmKey.size() + printKey.size());
+    msg = "FATAL: SpektrafilmPixelPipelineNotImplementedForPhase1A at JuicerEffect::render";
+    msg += " backend=";
+    msg += backend;
+    msg += " filmProfileKey=";
+    msg += filmKey;
+    msg += " printProfileKey=";
+    msg += printKey;
+    JTRACE("SPEKTRAFILM", msg);
+    throw OFX::Exception::Suite(kOfxStatErrFatal);
+}
+
 void JuicerEffect::render(const OFX::RenderArguments& args) {
+    const Spektrafilm::ScanRoute requestedRoute = Spektrafilm::scan_route_from_key_or(
+        read_str_choice_param_or(_pScanRoute, Spektrafilm::scan_route_key(Spektrafilm::kDefaultScanRoute)),
+        Spektrafilm::kDefaultScanRoute);
+    const bool cudaRoute = args.isEnabledCudaRender;
+    const bool directCudaRoute = cudaRoute && !Spektrafilm::scan_route_is_print(requestedRoute);
+    if (!cudaRoute) {
+        throw_spektrafilm_phase1a_render_cutoff(args);
+    }
     auto framePreparation = JuicerProcess::root().begin_frame_preparation();
     if (!framePreparation.active()) {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3511,7 +2287,8 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     // Fetch images via wrappers
     std::unique_ptr<OFX::Image> srcImg(_src ? _src->fetchImage(args.time) : nullptr);
     std::unique_ptr<OFX::Image> dstImg(_dst ? _dst->fetchImage(args.time) : nullptr);
-    if (!srcImg || !dstImg) return;
+    if (!srcImg || !dstImg)
+        return;
 
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
     // CUDA-only mode: reject CPU/OpenCL/Metal renders with an explicit failure.
@@ -3521,16 +2298,15 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     }
 #endif
 
-    // Components and depth
+    // Components
     const OFX::PixelComponentEnum comps = srcImg->getPixelComponents();
-    const OFX::BitDepthEnum depth = srcImg->getPixelDepth();
-
     const int nComponents = pixel_component_count(comps);
     const bool traceVerbose = JTRACE_ENABLED(3);
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    const OFX::BitDepthEnum depth = srcImg->getPixelDepth();
     if (args.isEnabledCudaRender) {
-        // CUDA renders use device pointers; avoid CPU pixel reads (auto-exposure, non-float copies, etc.).
+        // CUDA renders use device pointers; avoid host-side image reads for metering or copy paths.
         if (requires_nonfloat_copy(depth, nComponents)) {
             JTRACE("CUDA", "FATAL: CUDA render requested with unsupported non-float copy path");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3543,17 +2319,12 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     }
 #endif
 
-    if (requires_nonfloat_copy(depth, nComponents)) {
-        JuicerProc::copyNonFloatRect(srcImg.get(), dstImg.get());
-        return;
-    }
-
     const OfxRectI fullBounds = srcImg->getBounds();
     if (_state) {
         std::lock_guard<std::mutex> lock(_state->m);
         const OfxRectI prev = _state->cachedFrameBounds;
         const bool changed = prev.x1 != fullBounds.x1 || prev.y1 != fullBounds.y1 ||
-            prev.x2 != fullBounds.x2 || prev.y2 != fullBounds.y2;
+                             prev.x2 != fullBounds.x2 || prev.y2 != fullBounds.y2;
         if (changed) {
             _state->cachedFrameBounds = fullBounds;
             std::uint32_t next = _state->frameBoundsVersion.load(std::memory_order_relaxed);
@@ -3572,22 +2343,18 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     }
     const int width = roi.x2 - roi.x1;
     const int height = roi.y2 - roi.y1;
-    if (width <= 0 || height <= 0) return;
+    if (width <= 0 || height <= 0)
+        return;
     const int fullWidth = fullBounds.x2 - fullBounds.x1;
     const int fullHeight = fullBounds.y2 - fullBounds.y1;
     const bool fullFrame = (roi.x1 == fullBounds.x1 && roi.y1 == fullBounds.y1 &&
-        roi.x2 == fullBounds.x2 && roi.y2 == fullBounds.y2);
-    if (!fullFrame) {
+                            roi.x2 == fullBounds.x2 && roi.y2 == fullBounds.y2);
+    if (!fullFrame && !directCudaRoute) {
         JTRACE("RENDER", "FATAL: render window must match full frame; tiles/ROIs are unsupported");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
-    const double filmFormatMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
     const double longEdgePx = static_cast<double>(std::max(fullWidth, fullHeight));
-    float pixelSizeUm = 0.0f;
-    if (filmFormatMm > 0.0 && longEdgePx > 0.0) {
-        pixelSizeUm = static_cast<float>((filmFormatMm * 1000.0) / longEdgePx);
-    }
 
     // Ensure bootstrap has run before we rely on parameter state
     if (bootstrap_needed(_state.get())) {
@@ -3601,78 +2368,46 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     if (has_loaded_base_state(_state.get())) {
         rebuild_pending_state_if_needed(*this, *_state);
     }
-    const ExposureParams exposureParams = gatherExposureParams();
-    const Scanner::Options scannerOptions = gatherScannerOptions();
-    const Scanner::Settings scannerSettings = gatherScannerSettings();
-    Print::Params printParams = gatherPrintParams();
-    const Profiles::HalationMetadata halationUi = gatherHalationUi();
-    const Profiles::GrainMetadata grainUi = gatherGrainUi();
-    const Profiles::ProfileGlare glareUi = gatherGlareUi();
-    const double gateWeaveAmount = read_double_param_or(_pGateWeaveAmount, 1.0);
-    OutputEncoding::Params outputEncodingParams = gatherOutputEncodingParams();
-
-    const AutoExposureResult autoExposure = computeAutoExposure(
-        args,
-        srcImg.get(),
-        fullBounds,
-        exposureParams);
-
-#ifdef JUICER_ENABLE_COUPLERS
-    Couplers::Runtime dirRT = prepareCouplers(args, fullWidth, fullHeight, pixelSizeUm);
-#else
-    Couplers::Runtime dirRT{};
-#endif
-
-    WorkingStateInfo wsInfo = prepareWorkingState();
-    std::shared_ptr<const WorkingState> wsHold = wsInfo.workingState;
-    const Print::Runtime* prt = wsInfo.printRuntime;
-    const bool wsReady = wsInfo.workingStateReady;
-    const bool printReady = wsInfo.printRuntimeReady;
+    const bool printRoute = Spektrafilm::scan_route_is_print(requestedRoute);
+    const std::shared_ptr<const DirectRenderState> directState =
+        printRoute ? nullptr : load_active_direct_state_if(_state.get());
+    const std::shared_ptr<const PrintRenderState> printState =
+        printRoute ? load_active_print_state_if(_state.get()) : nullptr;
+    if ((!printRoute &&
+         (!directState || directState->buildCounter == 0 || !directState->recipe.directStructuralReady)) ||
+        (printRoute &&
+         (!printState || printState->buildCounter == 0 || !printState->recipe.printStructuralReady))) {
+        trace_and_throw_render_fatal(RenderFatalTrace{"BUILD", "FATAL: focused render state not ready; aborting render"});
+    }
+    const RenderRecipe& focusedRecipe = printRoute ? printState->recipe : directState->recipe;
+    const double filmFormatMm = focusedRecipe.filmRaw.filmFormatLongEdgeMm;
+    const float pixelSizeUm =
+        (filmFormatMm > 0.0 && longEdgePx > 0.0)
+            ? static_cast<float>((filmFormatMm * 1000.0) / longEdgePx)
+            : 0.0f;
     if (traceVerbose) {
-        const WorkingState* ws = wsHold.get();
-        ParamSnapshot Pdbg = snapshotParams();
-        const ProfileKeyLabels labels = resolve_profile_key_labels(Pdbg);
-        const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(prt);
-        const std::uint64_t buildCounter = working_state_build_counter_or_zero(ws);
-        const float neutralY = print_runtime_value_or_zero(prt, &Print::Runtime::neutralY);
-        const float neutralM = print_runtime_value_or_zero(prt, &Print::Runtime::neutralM);
-        const float neutralC = print_runtime_value_or_zero(prt, &Print::Runtime::neutralC);
-        std::string msg;
-        msg.reserve(256);
-        msg = "render print state build=";
-        msg += std::to_string(buildCounter);
-        msg += " paper=";
-        msg += labels.paperLabel;
-        msg += " film=";
-        msg += labels.filmLabel;
-        msg += " printRT=";
-        msg += std::to_string(prtPtr);
-        msg += " neutralY/M/C=";
-        append_ymc_triplet(msg, neutralY, neutralM, neutralC);
-        msg += " yFilter=";
-        msg += std::to_string(printParams.yFilter);
-        msg += " mFilter=";
-        msg += std::to_string(printParams.mFilter);
-        msg += " cFilter=";
-        msg += std::to_string(printParams.cFilter);
-        msg += " bypass=";
-        msg += std::to_string(bool_to_i32(printParams.bypass));
-        JTRACE_VERBOSE("PRINTDBG", msg);
-    }
-    if (!wsReady) {
-        trace_and_throw_render_fatal(RenderFatalTrace{"BUILD", "FATAL: working state not ready; aborting render"});
+        std::string msg = printRoute ? "render print state build=" : "render direct state build=";
+        msg += std::to_string(printRoute ? printState->buildCounter : directState->buildCounter);
+        msg += " recipe_hash=";
+        msg += std::to_string(focusedRecipe.hash);
+        JTRACE_VERBOSE("RENDER", msg);
     }
 
-    if (!printParams.bypass && !printReady) {
-        trace_and_throw_render_fatal(RenderFatalTrace{"PRINT", "FATAL: print runtime not ready while print path requested"});
-    }
-
-    // --- Print exposure compensation via spectral mid-gray probe (agx parity) ---
-    {
-        const bool printComp = read_bool_param_or(_pPrintExposureComp, false);
-
-        printParams.exposureCompensationEnabled = printComp;
-        printParams.exposureCompensationScale = scale_if_enabled_or_one(printComp, exposureParams.sliderScale);
+    std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
+    std::string diffusionDiagnostic;
+    if (!Spektrafilm::build_diffusion_frame_set_descriptor(
+            focusedRecipe.spatialOptics,
+            focusedRecipe.profileRoute.scanRoute,
+            static_cast<double>(pixelSizeUm),
+            Spektrafilm::DiffusionFrameDomain{
+                fullBounds.x1,
+                fullBounds.y1,
+                fullWidth,
+                fullHeight},
+            diffusionFrameSet,
+            diffusionDiagnostic)) {
+        JTRACE("SPEKTRAFILM", diffusionDiagnostic);
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
     // Tile-based multithreaded processing via OFX::ImageProcessor
@@ -3683,47 +2418,37 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.setSrcDst(images);
     proc.setInstanceState(_state.get());
     const SessionTokenSnapshot sessionTokens = snapshot_session_tokens(_state.get());
-    const std::uint32_t frameVersion = frame_bounds_version_or_zero(_state.get());
-    // Per agx-emulsion parity: autoExposure.exposureScale already encodes 2^(autoEV + sliderEV).
-    float filmExposureScale = static_cast<float>(sanitize_positive_finite_or(autoExposure.exposureScale, 1.0));
     const std::uintptr_t renderClipToken = reinterpret_cast<std::uintptr_t>(_src);
 
-    JuicerProcessor::FrameRequest frameRequest{};
-    frameRequest.workingState = wsHold;
-    frameRequest.printRuntime = prt;
-    frameRequest.workingStateReady = wsReady;
-    frameRequest.printRuntimeReady = printReady;
-    frameRequest.components = nComponents;
-    frameRequest.renderWindow = roi;
-    frameRequest.scannerOptions = scannerOptions;
-    frameRequest.scannerSettings = scannerSettings;
-    frameRequest.printParams = printParams;
-    frameRequest.halationOverride = halationUi;
-    frameRequest.hasHalationOverride = true;
-    frameRequest.grainOverride = grainUi;
-    frameRequest.hasGrainOverride = true;
-    frameRequest.printGlareOverride = glareUi;
-    frameRequest.hasPrintGlareOverride = true;
-    frameRequest.dirRuntime = dirRT;
-    frameRequest.exposureScale = filmExposureScale;
-    frameRequest.cameraAutoEnabled = exposureParams.cameraAutoEnabled;
-    frameRequest.cameraMeteringMethod = exposureParams.meteringMethod;
-    frameRequest.cameraSliderEV = exposureParams.sliderEV;
-    frameRequest.autoExposureMeterBounds = autoExposure.meterBounds;
-    frameRequest.autoExposureMeterBoundsValid = autoExposure.meterBoundsValid;
-    frameRequest.outputEncoding = outputEncodingParams;
-    frameRequest.sessionSeed = sessionTokens.sessionSeed;
-    frameRequest.instanceToken = sessionTokens.instanceToken;
-    frameRequest.clipToken = renderClipToken;
-    frameRequest.gateWeaveAmount = gateWeaveAmount;
-    frameRequest.frameTime = args.time;
-    frameRequest.frameRate = getFrameRate();
-    frameRequest.frameBoundsVersion = frameVersion;
-    frameRequest.pixelSizeUm = pixelSizeUm;
-    frameRequest.interactiveRenderStatus = args.interactiveRenderStatus;
-    frameRequest.renderQualityDraft = args.renderQualityDraft;
-    frameRequest.sequentialRenderStatus = args.sequentialRenderStatus;
-    proc.setFrameRequest(frameRequest);
+    if (printRoute) {
+        JuicerProcessor::PrintFrameRequest frameRequest{};
+        frameRequest.state = printState;
+        frameRequest.diffusionFrameSet = diffusionFrameSet;
+        frameRequest.components = nComponents;
+        frameRequest.renderWindow = roi;
+        frameRequest.fullFrameExtent = fullBounds;
+        frameRequest.sessionSeed = sessionTokens.sessionSeed;
+        frameRequest.instanceToken = sessionTokens.instanceToken;
+        frameRequest.clipToken = renderClipToken;
+        frameRequest.frameTime = args.time;
+        frameRequest.frameRate = getFrameRate();
+        frameRequest.pixelSizeUm = pixelSizeUm;
+        proc.setPrintFrameRequest(frameRequest);
+    } else {
+        JuicerProcessor::DirectFrameRequest frameRequest{};
+        frameRequest.state = directState;
+        frameRequest.diffusionFrameSet = diffusionFrameSet;
+        frameRequest.components = nComponents;
+        frameRequest.renderWindow = roi;
+        frameRequest.fullFrameExtent = fullBounds;
+        frameRequest.sessionSeed = sessionTokens.sessionSeed;
+        frameRequest.instanceToken = sessionTokens.instanceToken;
+        frameRequest.clipToken = renderClipToken;
+        frameRequest.frameTime = args.time;
+        frameRequest.frameRate = getFrameRate();
+        frameRequest.pixelSizeUm = pixelSizeUm;
+        proc.setDirectFrameRequest(frameRequest);
+    }
     proc.setGPURenderArgs(args);
 
     // Dispatch to support library's threaded/tiled CPU path
@@ -3742,7 +2467,6 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         trace_changed_param_gate(traceInfo, paramName, "changedParam ignored during bootstrap for '");
         return;
     }
-    invalidate_auto_exposure_cache_if_needed(_state.get(), paramName);
 
     auto apply_action_then_rebuild = [&](const auto& applyFn) {
         applyFn();
@@ -3751,11 +2475,23 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
     const bool userEdit = (args.reason == OFX::eChangeUserEdit);
 
-#ifdef JUICER_ENABLE_COUPLERS
-    if (userEdit && is_coupler_param_name(paramName.c_str())) {
-        clearCouplerFollowStockForParam(paramName.c_str());
+    if (userEdit && is_coupler_gamma_numeric_param_name(paramName)) {
+        const ScopedParamEventSuppression suppressEvents(_state.get());
+        set_bool_param_if(_pCouplersGammaUseStock, false);
     }
-#endif
+    if (param_name_is(paramName, JuicerParams::kDirCouplersGammaUseStock) &&
+        read_bool_param_or(_pCouplersGammaUseStock, true)) {
+        applyDirGammaProfileDefaults();
+    }
+
+    if (param_name_is(paramName, JuicerParams::kFilmProfileKey)) {
+        const std::string filmKey =
+            read_str_choice_param_or(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
+        const Spektrafilm::ProfilePolarity polarity = capture_profile_polarity_for_key(filmKey);
+        const Spektrafilm::ScanRoute defaultRoute = Spektrafilm::default_scan_route_for_polarity(polarity);
+        const ScopedParamEventSuppression suppressEvents(_state.get());
+        set_str_choice_param_if(_pScanRoute, Spektrafilm::scan_route_key(defaultRoute));
+    }
 
     auto should_apply_halation_revert_defaults = [&]() {
         return halation_revert_param_changed(paramName);
@@ -3826,7 +2562,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
     auto sanitize_triplet_values = [&](std::array<double, 3>& values, double fallback, double lo, double hi) {
         for (double& value : values) {
-            value = sanitize_finite_clamped(value, fallback, lo, hi);
+            value = is_finite(value) ? std::clamp(value, lo, hi) : fallback;
         }
     };
 
@@ -3852,8 +2588,8 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
     auto sanitize_triplet_values_for_master =
         [&](std::array<double, 3>& values, double fallback, double lo, double hi) {
-        sanitize_triplet_values(values, fallback, lo, hi);
-    };
+            sanitize_triplet_values(values, fallback, lo, hi);
+        };
 
     auto compute_triplet_mean = [&](const std::array<double, 3>& values) {
         return (values[0] + values[1] + values[2]) / 3.0;
@@ -3861,22 +2597,22 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
     auto write_triplet_from_ratio =
         [&](std::array<double, 3>& values, double master, const std::array<double, 3>& ratio, double lo, double hi) {
-        double* valueIt = values.data();
-        const double* ratioIt = ratio.data();
-        for (int i = 0; i < 3; ++i, ++valueIt, ++ratioIt) {
-            *valueIt = std::clamp(master * *ratioIt, lo, hi);
-        }
-    };
+            double* valueIt = values.data();
+            const double* ratioIt = ratio.data();
+            for (int i = 0; i < 3; ++i, ++valueIt, ++ratioIt) {
+                *valueIt = std::clamp(master * *ratioIt, lo, hi);
+            }
+        };
 
     auto update_master_cache = [&](double& masterCache, double master) {
         masterCache = master;
     };
 
     auto apply_master_delta = [&](OFX::DoubleParam* masterParam,
-        OFX::Double3DParam* advParam,
-        double& masterCache,
-        double lo,
-        double hi) {
+                                  OFX::Double3DParam* advParam,
+                                  double& masterCache,
+                                  double lo,
+                                  double hi) {
         if (!should_apply_master_delta(masterParam, advParam)) {
             return;
         }
@@ -3889,7 +2625,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
             prev = master;
         }
         const double delta = master - prev;
-        std::array<double, 3> values{ {0.0, 0.0, 0.0} };
+        std::array<double, 3> values{{0.0, 0.0, 0.0}};
         advParam->getValue(values[0], values[1], values[2]);
         sanitize_triplet_values_for_master(values, master, lo, hi);
         if (delta != 0.0) {
@@ -3902,11 +2638,11 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     };
 
     auto apply_ratio_master = [&](OFX::DoubleParam* masterParam,
-        OFX::Double3DParam* advParam,
-        const std::array<double, 3>& fallbackRatio,
-        double& masterCache,
-        double lo,
-        double hi) {
+                                  OFX::Double3DParam* advParam,
+                                  const std::array<double, 3>& fallbackRatio,
+                                  double& masterCache,
+                                  double lo,
+                                  double hi) {
         if (!should_apply_ratio_master(masterParam, advParam)) {
             return;
         }
@@ -3915,7 +2651,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
             return;
         }
 
-        std::array<double, 3> values{ {0.0, 0.0, 0.0} };
+        std::array<double, 3> values{{0.0, 0.0, 0.0}};
         advParam->getValue(values[0], values[1], values[2]);
         sanitize_triplet_values_for_master(values, master, lo, hi);
 
@@ -3947,17 +2683,17 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
     auto resolve_halation_master_update = [&]() -> MasterTripletUpdateBinding {
         switch (halation_master_selector(paramName)) {
-        case HalationMasterSelector::Strength:
-            return { _pHalationStrengthMaster, _pHalationStrength, &_halationStrengthMasterLast, 0.0, 100.0 };
-        case HalationMasterSelector::SizeUm:
-            return { _pHalationSizeUmMaster, _pHalationSizeUm, &_halationSizeUmMasterLast, 0.0, 1000.0 };
-        case HalationMasterSelector::ScatteringStrength:
-            return { _pHalationScatteringStrengthMaster, _pHalationScatteringStrength, &_halationScatteringStrengthMasterLast, 0.0, 100.0 };
-        case HalationMasterSelector::ScatteringSizeUm:
-            return { _pHalationScatteringSizeUmMaster, _pHalationScatteringSizeUm, &_halationScatteringSizeUmMasterLast, 0.0, 1000.0 };
-        case HalationMasterSelector::None:
-        default:
-            return {};
+            case HalationMasterSelector::Strength:
+                return {_pHalationStrengthMaster, _pHalationStrength, &_halationPrimaryAmountMasterLast, 0.0, 100.0};
+            case HalationMasterSelector::SizeUm:
+                return {_pHalationSizeUmMaster, _pHalationSizeUm, &_halationSizeUmMasterLast, 0.0, 1000.0};
+            case HalationMasterSelector::SecondaryAmount:
+                return {_pHalationSecondaryAmountMaster, _pHalationSecondaryAmount, &_halationSecondaryAmountMasterLast, 0.0, 100.0};
+            case HalationMasterSelector::SecondarySizeUm:
+                return {_pHalationSecondarySizeUmMaster, _pHalationSecondarySizeUm, &_halationSecondarySizeUmMasterLast, 0.0, 1000.0};
+            case HalationMasterSelector::None:
+            default:
+                return {};
         }
     };
 
@@ -3972,25 +2708,25 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
     auto ratio_binding_ready = [](const RatioMasterUpdateBinding& binding) {
         return binding.masterParam &&
-            binding.tripletParam &&
-            binding.masterCache &&
-            binding.fallbackRatio;
+               binding.tripletParam &&
+               binding.masterCache &&
+               binding.fallbackRatio;
     };
 
     auto resolve_grain_ratio_update =
         [&](GrainRatioMasterSelector selector, const GrainRatioSet& ratios) -> RatioMasterUpdateBinding {
         switch (selector) {
-        case GrainRatioMasterSelector::Scale:
-            return { _pGrainParticleScaleMaster, _pGrainParticleScale, &ratios.scale, &_grainParticleScaleMasterLast, 0.0, 10.0 };
-        case GrainRatioMasterSelector::ScaleLayers:
-            return { _pGrainParticleScaleLayersMaster, _pGrainParticleScaleLayers, &ratios.scaleLayers, &_grainParticleScaleLayersMasterLast, 0.0, 10.0 };
-        case GrainRatioMasterSelector::DensityMin:
-            return { _pGrainDensityMinMaster, _pGrainDensityMin, &ratios.densityMin, &_grainDensityMinMasterLast, 0.0, 1.0 };
-        case GrainRatioMasterSelector::Uniformity:
-            return { _pGrainUniformityMaster, _pGrainUniformity, &ratios.uniformity, &_grainUniformityMasterLast, 0.0, 1.0 };
-        case GrainRatioMasterSelector::None:
-        default:
-            return {};
+            case GrainRatioMasterSelector::Scale:
+                return {_pGrainParticleScaleMaster, _pGrainParticleScale, &ratios.scale, &_grainParticleScaleMasterLast, 0.0, 10.0};
+            case GrainRatioMasterSelector::ScaleLayers:
+                return {_pGrainParticleScaleLayersMaster, _pGrainParticleScaleLayers, &ratios.scaleLayers, &_grainParticleScaleLayersMasterLast, 0.0, 10.0};
+            case GrainRatioMasterSelector::DensityMin:
+                return {_pGrainDensityMinMaster, _pGrainDensityMin, &ratios.densityMin, &_grainDensityMinMasterLast, 0.0, 1.0};
+            case GrainRatioMasterSelector::Uniformity:
+                return {_pGrainUniformityMaster, _pGrainUniformity, &ratios.uniformity, &_grainUniformityMasterLast, 0.0, 1.0};
+            case GrainRatioMasterSelector::None:
+            default:
+                return {};
         }
     };
 
@@ -4026,12 +2762,12 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
     auto apply_grain_linked_unit_edit =
         [&](const char* expectedParam, OFX::DoubleParam* sourceParam, double fallback, const auto& applyFn) {
-        double value = fallback;
-        if (!try_read_grain_user_edit_unit(expectedParam, sourceParam, fallback, value)) {
-            return;
-        }
-        applyFn(value);
-    };
+            double value = fallback;
+            if (!try_read_grain_user_edit_unit(expectedParam, sourceParam, fallback, value)) {
+                return;
+            }
+            applyFn(value);
+        };
 
     auto has_grain_blur_dye_target = [&]() {
         return _pGrainBlurDyeCloudsUm != nullptr;
@@ -4166,6 +2902,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     auto finalize_changed_param_update = [&](const MasterTripletUpdateBinding& binding) {
         apply_master_triplet_or_ratio_fallback(binding);
         apply_grain_linked_updates();
+        updateDiffusionControlState();
         notify_param_change_rebuild();
     };
 
@@ -4181,45 +2918,95 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
 ParamSnapshot JuicerEffect::snapshotParams() const {
     ParamSnapshot P;
-    read_profile_snapshot_choices(
-        _pFilmStock,
-        _pPrintPaper,
-        _pSpectralMode,
-        _pRefIll,
-        _pEnlIll,
-        _pEnlDichroicSet,
+    ProfileSnapshotChoiceParams profileChoiceParams{};
+    profileChoiceParams.filmProfileKey = _pFilmProfileKey;
+    profileChoiceParams.printProfileKey = _pPrintProfileKey;
+    profileChoiceParams.scanRoute = _pScanRoute;
+    profileChoiceParams.spectralMode = _pSpectralMode;
+    profileChoiceParams.referenceIlluminant = _pRefIll;
+    profileChoiceParams.enlargerIlluminant = _pEnlIll;
+    profileChoiceParams.enlargerDichroicSet = _pEnlDichroicSet;
+    read_profile_snapshot_choices(profileChoiceParams, P);
+    P.cameraDiffusion = gatherDiffusionUi(_cameraDiffusionUi);
+    P.enlargerDiffusion = gatherDiffusionUi(_printDiffusionUi);
+    read_print_recipe_snapshot_values(
+        _pPrintExposure,
+        _pPrintPreflash,
+        _pPrintExposureComp,
+        _pEnlargerY,
+        _pEnlargerM,
+        _pEnlargerC,
         P);
+    const JuicerAssets::SelectedProfileResult selectedProfiles =
+        JuicerProcess::root().assets().selected_profiles_for_route(
+            JuicerAssets::SelectedProfileRequest{
+                P.filmProfileKey,
+                P.printProfileKey,
+                P.scanRoute});
+    P.filmProfileAssetVersionToken =
+        selectedProfiles.filmProfile ? selectedProfiles.filmProfile->assetVersionToken : 0;
+    P.printProfileAssetVersionToken =
+        selectedProfiles.printProfile ? selectedProfiles.printProfile->assetVersionToken : 0;
+    P.directRoutePrintProfileExcluded = selectedProfiles.directRoutePrintProfileExcluded;
+    P.directRouteNeutralCalibrationExcluded =
+        selectedProfiles.directRouteNeutralCalibrationExcluded;
 
-    const GlareCompensationSnapshotValues compensation = read_glare_compensation_snapshot_values(
-        _pGlareCompRemovalFactor,
-        _pGlareCompRemovalDensity,
-        _pGlareCompRemovalTransition,
-        P.glareCompRemovalFactor,
-        P.glareCompRemovalDensity,
-        P.glareCompRemovalTransition);
-    P.glareCompRemovalFactor = compensation.factor;
-    P.glareCompRemovalDensity = compensation.density;
-    P.glareCompRemovalTransition = compensation.transition;
+    GlareCompensationParams compensationParams{};
+    compensationParams.factor = _pGlareCompRemovalFactor;
+    compensationParams.density = _pGlareCompRemovalDensity;
+    compensationParams.transition = _pGlareCompRemovalTransition;
+    GlareCompensationSnapshotValues compensationFallback{};
+    compensationFallback.factor = P.printShadowCompensationFactor;
+    compensationFallback.density = P.printShadowCompensationDensity;
+    compensationFallback.transition = P.printShadowCompensationTransition;
+    const GlareCompensationSnapshotValues compensation =
+        read_glare_compensation_snapshot_values(compensationParams, compensationFallback);
+    P.printShadowCompensationFactor = compensation.factor;
+    P.printShadowCompensationDensity = compensation.density;
+    P.printShadowCompensationTransition = compensation.transition;
+    const Profiles::ProfileGlare glare = gatherGlareUi();
+    P.glareActive = glare.active;
+    P.glarePercent = glare.percent;
+    P.glareRoughness = glare.roughness;
+    P.glareBlurSigmaPx = glare.blur;
     P.printDminFactor =
         read_sanitized_unit_double(_pPrintDminFactor, P.printDminFactor);
-    read_input_snapshot_values(_pInputColorSpace, _pInputCctfDecoding, P);
-#ifdef JUICER_ENABLE_COUPLERS
-    apply_coupler_snapshot_values(
-        P,
-        read_coupler_snapshot_values(
-            _pCouplersActive,
-            _pCouplersAmount,
-            _pCouplersAmountR,
-            _pCouplersAmountG,
-            _pCouplersAmountB,
-            _pCouplersSigma,
-            _pCouplersHigh,
-            _pCouplersSpatialSigma,
-            P));
-#endif
+    read_input_snapshot_values(
+        _pInputColorSpace,
+        _pInputCctfDecoding,
+        _pHanatos2025AdaptationWindow,
+        _pHanatos2025AdaptationSurface,
+        P);
+    const ExposureParams exposure = gatherExposureParams();
+    P.cameraAutoExposureEnabled = exposure.cameraAutoEnabled ? 1 : 0;
+    P.cameraMeteringMethod = exposure.meteringMethod;
+    P.cameraExposureCompensationEv = exposure.sliderEV;
+    P.cameraFilmFormatLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
+    P.exactScatterHalationActive = read_bool_param_or(_pHalationActive, false) ? 1 : 0;
+    P.grainControls = gatherGrainUi();
+    P.gateWeaveAmount = read_sanitized_double(
+        _pGateWeaveAmount,
+        1.0,
+        SanitizedDoubleRange{0.0, 10.0});
+    read_coupler_snapshot_values(
+        _pCouplersActive,
+        _pCouplersAmount,
+        _pCouplersInhibitionSameLayer,
+        _pCouplersInhibitionInterlayer,
+        _pCouplersDiffusionSizeUm,
+        _pCouplersGammaUseStock,
+        _pCouplersGammaSameLayerRgb,
+        _pCouplersGammaInterlayerRToGb,
+        _pCouplersGammaInterlayerGToRb,
+        _pCouplersGammaInterlayerBToRg,
+        P);
     read_scanner_snapshot_values(
         _pScannerLensBlur,
         _pScannerUnsharp,
+        _pScannerBlackCorrection,
+        _pScannerWhiteCorrection,
+        _pScannerBlackLevel,
+        _pScannerWhiteLevel,
         _pScannerUseLut,
         _pScannerLutResolution,
         P);
@@ -4235,460 +3022,46 @@ void JuicerEffect::bootstrap_after_attach() {
     // Initialize Spectral globals exactly once per process.
     JuicerProcess::root().ensure_bootstrap();
     JTRACE("BUILD", "spectral globals ensured once; proceeding to profile and film stock load");
-    // Suppress re-entrant param events during bootstrap
-    _state->inBootstrap = true;
-    _state->suppressParamEvents = true;
-
-    Print::Runtime nextPrintRuntime{};
+    const ScopedBootstrapState bootstrapState(_state.get());
     ParamSnapshot P = snapshotParams();
+    const bool printRoute = Spektrafilm::scan_route_is_print(P.scanRoute);
 
-    // Load selected print paper profile
-    (void)load_print_profile_for_snapshot(P, nextPrintRuntime);
-
-    // Load film stock before applying metadata-driven illuminant defaults
-    load_film_stock_into_base_locked(P.filmStockIndex, *_state);
+    // Both accepted routes consume the selected validated Spektrafilm film payload.
+    load_direct_film_profile_into_base_locked(P, *_state);
     if (has_loaded_base_state(_state.get())) {
+        applyDirGammaProfileDefaults();
         applyHalationProfileDefaults();
-    }
-
-    // Apply metadata-driven illuminant defaults and rebuild runtime illuminants
-    applyMetadataIlluminantDefaults(P, nextPrintRuntime);
-    update_print_illuminant_runtime(P, nextPrintRuntime);
-
-    // Load dichroic filters (set selection controls which vendor curves are used).
-    // Identity fallback is already handled in loader via 1.0 curves.
-    (void)try_load_dichroic_filters(
-        P.enlDichroicSet,
-        nextPrintRuntime,
-        "dichroic load failed",
-        "using identity filters");
-
-    applyNeutralFilters(P, nextPrintRuntime);
-    publish_print_runtime_locked(*_state, std::move(nextPrintRuntime));
-
-    if (has_loaded_base_state(_state.get())) {
-#ifdef JUICER_ENABLE_COUPLERS
-        initializeCouplerParamsFromProfileIfNeeded(P);
-#endif
-        rebuild_working_state(this->getHandle(), *_state, P);
-    }
-    else {
-        JTRACE("STOCK", "bootstrap: failed to load film stock; deferring rebuild");
-    }
-
-    // Re-enable changedParam handling now that bootstrap is complete
-    _state->suppressParamEvents = false;
-    _state->inBootstrap = false;
-}
-
-void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& runtime) {
-    if (!_state) {
-        return;
-    }
-#if JUICER_DIAGNOSTICS_COMPILED
-    const bool traceInfo = JTRACE_ENABLED(1);
-#endif
-
-    const JuicerAssets::PrintRuntimeAssetSet printAssets =
-        JuicerProcess::root().assets().print_runtime_assets_for_choices(
-            JuicerAssets::PrintRuntimeChoices{
-                P.filmStockIndex,
-                P.printPaperIndex,
-                P.enlDichroicSet});
-    const char* paperKey = printAssets.printPaper.jsonKey.empty()
-                               ? nullptr
-                               : printAssets.printPaper.jsonKey.c_str();
-    const char* negativeKey = printAssets.filmStock.jsonKey.empty()
-                                  ? nullptr
-                                  : printAssets.filmStock.jsonKey.c_str();
-    const std::vector<std::string> illumKeys = enlarger_illuminant_keys_for_choice(P.enlIll);
-
-    if (!(paperKey && negativeKey && !illumKeys.empty())) {
-#if JUICER_DIAGNOSTICS_COMPILED
-        if (traceInfo) {
-            JTRACE(
-                "PRINT",
-                "Neutral filter lookup prerequisites missing: " + neutral_filter_prereq_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys)));
-        }
-#endif
-        throw std::runtime_error("Neutral filter metadata incomplete for current selection");
-    }
-
-    float neutralY = Print::kDefaultNeutralY;
-    float neutralM = Print::kDefaultNeutralM;
-    float neutralC = Print::kDefaultNeutralC;
-    bool loaded = false;
-
-    const JuicerAssets::NeutralFilterDatabaseAsset& neutralDb = printAssets.neutralFilters;
-    std::tuple<float, float, float> ymc{};
-    std::string selectedDbVersionHash;
-    const std::string* illumKeyData = illumKeys.data();
-    const size_t illumKeyCount = illumKeys.size();
-    for (size_t i = 0; i < illumKeyCount; ++i, ++illumKeyData) {
-        const std::string& illumKey = *illumKeyData;
-        if (illumKey.empty()) {
-            continue;
-        }
-        const JuicerAssets::NeutralFilterLookupResult lookup =
-            JuicerProcess::root().assets().lookup_neutral_filters(
-                neutralDb,
-                JuicerAssets::NeutralFilterLookupKey{
-                    printAssets.printPaper.jsonKey,
-                    illumKey,
-                    printAssets.filmStock.jsonKey},
-                JuicerAssets::NeutralFilterLookupThread::Control);
-        if (lookup.found) {
-            ymc = lookup.ymc;
-            selectedDbVersionHash = lookup.selectedDbVersionHash;
-            neutralY = std::clamp(std::get<0>(ymc), 0.0f, 1.0f);
-            neutralM = std::clamp(std::get<1>(ymc), 0.0f, 1.0f);
-            neutralC = std::clamp(std::get<2>(ymc), 0.0f, 1.0f);
-            loaded = true;
-#if JUICER_DIAGNOSTICS_COMPILED
-            if (traceInfo) {
-                std::string msg;
-                msg.reserve(192);
-                msg = "Neutral filters loaded for ";
-                msg += illumKey;
-                msg += " Y/M/C=";
-                append_ymc_triplet(msg, neutralY, neutralM, neutralC);
-                msg += " db_version_hash=";
-                msg += cstr_or_default_if_empty(selectedDbVersionHash, "none");
-                JTRACE("PRINT", msg);
-            }
-#endif
-            break;
-        }
-    }
-
-    if (!loaded) {
-#if JUICER_DIAGNOSTICS_COMPILED
-        if (traceInfo) {
-            JTRACE(
-                "PRINT",
-                "Neutral filters missing for " + neutral_filter_missing_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys)) + "; aborting print path");
-        }
-#endif
-        throw std::runtime_error("Neutral filter database entry not found");
-    }
-
-    std::uint64_t neutralFilterHash = Print::kDefaultNeutralFilterHash;
-    if (!selectedDbVersionHash.empty()) {
-        neutralFilterHash = Hash::hash_bytes(selectedDbVersionHash.data(), selectedDbVersionHash.size());
-        if (neutralFilterHash == 0) {
-            neutralFilterHash = Print::kDefaultNeutralFilterHash;
-        }
-    }
-
-    runtime.neutralY = neutralY;
-    runtime.neutralM = neutralM;
-    runtime.neutralC = neutralC;
-    runtime.neutralFilterHash = neutralFilterHash;
-    // Preserve user-entered enlarger offsets and exposure toggle; neutral baselines update independently.
-
-}
-
-bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P, const Print::Runtime& runtime) {
-    if (!_state) {
-        return false;
-    }
-
-    bool changed = false;
-
-    const std::string& filmRef = !_state->filmReferenceIlluminant.empty()
-        ? _state->filmReferenceIlluminant
-        : _state->base.referenceIlluminant;
-    const std::string& printRef = runtime.referenceIlluminant;
-    const std::string& printView = runtime.viewingIlluminant;
-
-    const std::string refSource = first_nonempty_or(filmRef, printRef, printView);
-    const std::string enlSource = first_nonempty_or(printRef, filmRef, printView);
-
-    const ScopedParamEventSuppression suppressEvents(_state.get());
-    changed = apply_illuminant_choice_from_source(
-        _pRefIll,
-        P.refIll,
-        _state->illuminantOverride.reference,
-        refSource) || changed;
-    changed = apply_illuminant_choice_from_source(
-        _pEnlIll,
-        P.enlIll,
-        _state->illuminantOverride.enlarger,
-        enlSource) || changed;
-
-    if (changed) {
         P = snapshotParams();
     }
 
-    return changed;
-}
-
-#ifdef JUICER_ENABLE_COUPLERS
-void JuicerEffect::initializeCouplerParamsFromProfileIfNeeded(ParamSnapshot& P) {
-    if (!_state) {
-        return;
+#if JUICER_DIAGNOSTICS_COMPILED
+    if (printRoute) {
+        JTRACE_VERBOSE(
+            "SPEKTRAFILM",
+            "phase=4C print bootstrap uses selected print recipe publication");
+    } else {
+        JTRACE_VERBOSE(
+            "SPEKTRAFILM",
+            "phase=3A direct route excludes print profile, dichroic, and neutral-calibration bootstrap");
     }
-
-    const int initVersion = read_int_param_or(_pCouplersInitVersion, 0);
-    if (initVersion >= kDirCouplersInitVersionCurrent) {
-        return;
-    }
-
-    const ScopedParamEventSuppression suppressEvents(_state.get());
-
-    const Profiles::DirCouplersProfile& dirCfg = _state->base.dirCouplers;
-    CouplerProfileDefaults factoryDefaults{};
-    factoryDefaults.active = (kFactoryCouplersActive != 0);
-    factoryDefaults.amount = kFactoryCouplersAmount;
-    factoryDefaults.ratioB = kFactoryCouplersRatioB;
-    factoryDefaults.ratioG = kFactoryCouplersRatioG;
-    factoryDefaults.ratioR = kFactoryCouplersRatioR;
-    factoryDefaults.sigma = kFactoryCouplersSigma;
-    factoryDefaults.high = kFactoryCouplersHigh;
-    factoryDefaults.spatialSigmaMicrometers = kFactoryCouplersSpatialSigma;
-
-    if (!dirCfg.hasData) {
-        set_int_param_if(_pCouplersFollowMask, infer_coupler_follow_stock_mask(P, factoryDefaults));
-        set_int_param_if(_pCouplersInitVersion, kDirCouplersInitVersionCurrent);
-        return;
-    }
-
-    const CouplerProfileDefaults profileDefaults = build_coupler_profile_defaults(
-        dirCfg,
-        _state->couplerProfileSpatialSigmaValid,
-        _state->couplerProfileSpatialSigmaMicrometers,
-        P);
-
-    const int profileFollowMask = infer_coupler_follow_stock_mask(P, profileDefaults);
-    const bool matchesProfileDefaults = profileFollowMask == kCouplerFollowStockAllMask;
-    const bool matchesFactoryDefaults =
-        infer_coupler_follow_stock_mask(P, factoryDefaults) == kCouplerFollowStockAllMask;
-
-    int followMask = profileFollowMask;
-    // Legacy instances without the init-version param can only be distinguished by their
-    // visible values: untouched factory defaults get the stock-profile initialization once,
-    // while any other restored values are preserved as authored state.
-    if (!matchesProfileDefaults && matchesFactoryDefaults) {
-        applyCouplerProfileDefaults(P);
-        followMask = kCouplerFollowStockAllMask;
-    }
-
-    set_int_param_if(_pCouplersFollowMask, sanitize_coupler_follow_stock_mask(followMask));
-    set_int_param_if(_pCouplersInitVersion, kDirCouplersInitVersionCurrent);
-}
-
-void JuicerEffect::syncCouplerParamsFromProfileFollowMask(ParamSnapshot& P) {
-    if (!_state) {
-        return;
-    }
-
-    const Profiles::DirCouplersProfile& dirCfg = _state->base.dirCouplers;
-    if (!dirCfg.hasData) {
-        return;
-    }
-
-    const int followMask = sanitize_coupler_follow_stock_mask(
-        read_int_param_or(_pCouplersFollowMask, kCouplerFollowStockAllMask));
-    if (followMask == 0) {
-        return;
-    }
-
-    const ScopedParamEventSuppression suppressEvents(_state.get());
-    const CouplerProfileDefaults profileDefaults = build_coupler_profile_defaults(
-        dirCfg,
-        _state->couplerProfileSpatialSigmaValid,
-        _state->couplerProfileSpatialSigmaMicrometers,
-        P);
-
-    auto apply_if_following = [&](CouplerParamKind kind,
-                                  double source,
-                                  double fallback,
-                                  double lo,
-                                  double hi,
-                                  OFX::DoubleParam* param,
-                                  double& target) {
-        if (!coupler_follow_stock_enabled(followMask, kind)) {
-            return;
-        }
-        const double value = sanitize_finite_clamped(source, fallback, lo, hi);
-        set_double_param_if(param, value);
-        target = value;
-    };
-
-    if (coupler_follow_stock_enabled(followMask, CouplerParamKind::Active)) {
-        set_bool_param_if(_pCouplersActive, profileDefaults.active);
-        P.couplersActive = bool_to_i32(profileDefaults.active);
-    }
-
-    apply_if_following(
-        CouplerParamKind::Amount,
-        profileDefaults.amount,
-        P.couplersAmount,
-        0.0,
-        2.0,
-        _pCouplersAmount,
-        P.couplersAmount);
-    apply_if_following(
-        CouplerParamKind::RatioB,
-        profileDefaults.ratioB,
-        P.ratioB,
-        0.0,
-        1.0,
-        _pCouplersAmountB,
-        P.ratioB);
-    apply_if_following(
-        CouplerParamKind::RatioG,
-        profileDefaults.ratioG,
-        P.ratioG,
-        0.0,
-        1.0,
-        _pCouplersAmountG,
-        P.ratioG);
-    apply_if_following(
-        CouplerParamKind::RatioR,
-        profileDefaults.ratioR,
-        P.ratioR,
-        0.0,
-        1.0,
-        _pCouplersAmountR,
-        P.ratioR);
-    apply_if_following(
-        CouplerParamKind::Sigma,
-        profileDefaults.sigma,
-        P.sigma,
-        0.0,
-        4.0,
-        _pCouplersSigma,
-        P.sigma);
-    apply_if_following(
-        CouplerParamKind::High,
-        profileDefaults.high,
-        P.high,
-        0.0,
-        1.0,
-        _pCouplersHigh,
-        P.high);
-    apply_if_following(
-        CouplerParamKind::SpatialSigma,
-        profileDefaults.spatialSigmaMicrometers,
-        P.spatialSigmaMicrometers,
-        0.0,
-        50.0,
-        _pCouplersSpatialSigma,
-        P.spatialSigmaMicrometers);
-}
-
-void JuicerEffect::clearCouplerFollowStockForParam(const char* changedNameOrNull) {
-    if (!_state || !_pCouplersFollowMask) {
-        return;
-    }
-
-    const CouplerParamKind kind = coupler_param_kind(changedNameOrNull);
-    const int bit = coupler_follow_stock_bit(kind);
-    if (bit == 0) {
-        return;
-    }
-
-    const int followMask = sanitize_coupler_follow_stock_mask(read_int_param_or(_pCouplersFollowMask, 0));
-    if ((followMask & bit) == 0) {
-        return;
-    }
-
-    const ScopedParamEventSuppression suppressEvents(_state.get());
-    set_int_param_if(_pCouplersFollowMask, followMask & ~bit);
-}
-
-void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
-    if (!_state) {
-        return;
-    }
-
-    const Profiles::DirCouplersProfile& dirCfg = _state->base.dirCouplers;
-    if (!dirCfg.hasData) {
-        return;
-    }
-
-    const ScopedParamEventSuppression suppressEvents(_state.get());
-
-    auto apply_profile_double = [&](double source,
-                                    double fallback,
-                                    double lo,
-                                    double hi,
-                                    OFX::DoubleParam* param,
-                                    double& target) {
-        const double value = sanitize_finite_clamped(source, fallback, lo, hi);
-        set_double_param_if(param, value);
-        target = value;
-    };
-
-    const bool active = dirCfg.active;
-    set_bool_param_if(_pCouplersActive, active);
-    P.couplersActive = bool_to_i32(active);
-
-    apply_profile_double(
-        static_cast<double>(dirCfg.amount),
-        P.couplersAmount,
-        0.0,
-        2.0,
-        _pCouplersAmount,
-        P.couplersAmount);
-
-    apply_profile_double(
-        static_cast<double>(dirCfg.ratioRGB[0]),
-        P.ratioB,
-        0.0,
-        1.0,
-        _pCouplersAmountB,
-        P.ratioB);
-
-    apply_profile_double(
-        static_cast<double>(dirCfg.ratioRGB[1]),
-        P.ratioG,
-        0.0,
-        1.0,
-        _pCouplersAmountG,
-        P.ratioG);
-
-    apply_profile_double(
-        static_cast<double>(dirCfg.ratioRGB[2]),
-        P.ratioR,
-        0.0,
-        1.0,
-        _pCouplersAmountR,
-        P.ratioR);
-
-    apply_profile_double(
-        static_cast<double>(dirCfg.diffusionInterlayer),
-        P.sigma,
-        0.0,
-        4.0,
-        _pCouplersSigma,
-        P.sigma);
-
-    apply_profile_double(
-        static_cast<double>(dirCfg.highExposureShift),
-        P.high,
-        0.0,
-        1.0,
-        _pCouplersHigh,
-        P.high);
-
-    const float profileSpatialSigma = _state->couplerProfileSpatialSigmaValid
-        ? static_cast<float>(_state->couplerProfileSpatialSigmaMicrometers)
-        : dirCfg.diffusionSizeUm;
-    apply_profile_double(
-        static_cast<double>(profileSpatialSigma),
-        P.spatialSigmaMicrometers,
-        0.0,
-        50.0,
-        _pCouplersSpatialSigma,
-        P.spatialSigmaMicrometers);
-
-}
 #endif
 
+    if (has_loaded_base_state(_state.get())) {
+        store_pending_hashes_for_snapshot(*_state, P);
+        if (printRoute) {
+            (void)rebuild_print_render_state(*_state, P);
+        } else {
+            rebuild_working_state(this->getHandle(), *_state, P);
+        }
+    } else {
+        JTRACE("STOCK", "bootstrap: failed to load film stock; deferring rebuild");
+    }
+}
+
+
 void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
-    if (!_state) return;
+    if (!_state)
+        return;
     const bool traceVerbose = JTRACE_ENABLED(3);
     // Suppress re-entrant param handling while programmatic changes are in flight
     if (should_skip_param_change_due_to_suppression(_state.get())) {
@@ -4704,67 +3077,25 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     ParamSnapshot P = snapshotParams();
     const ChangedParamFlags changed = classify_changed_param(changedNameOrNull);
     trace_param_change_verbose_if(traceVerbose, P, *_state, changedNameOrNull);
-    Print::Runtime nextPrintRuntime = snapshot_print_runtime_locked(*_state);
 
     // Track user overrides for illuminant choices.
     mark_illuminant_override_if_changed(*_state, changed);
 
-    bool neutralApplied = false;
-    auto apply_neutral_filters_with_trace = [&](const char* reloadSource) {
-        apply_neutral_filters_with_optional_trace(
-            [&]() {
-                applyNeutralFilters(P, nextPrintRuntime);
-            },
-            traceVerbose,
-            P,
-            nextPrintRuntime,
-            reloadSource,
-            neutralApplied);
-    };
-
-    const OnParamsReloadStatus reloadStatus =
-        evaluate_on_params_reload_status(changed, P, *_state, nextPrintRuntime, traceVerbose);
-
-    bool printRuntimeDirty =
-        reloadStatus.printReloaded ||
-        reloadStatus.dichroicReloaded ||
-        reloadStatus.filmReloaded;
-
-    apply_when_film_reloaded(reloadStatus.filmReloaded, [&]() {
+    const bool filmReloaded =
+        reload_film_stock_if_requested(changed.filmProfile, P, *_state);
+    apply_when_film_reloaded(filmReloaded, [&]() {
+        applyDirGammaProfileDefaults();
         applyHalationProfileDefaults();
-#ifdef JUICER_ENABLE_COUPLERS
-        syncCouplerParamsFromProfileFollowMask(P);
-#endif
     });
+    if (filmReloaded) {
+        P = snapshotParams();
+    }
 
-    apply_when_reload_requires_illuminant_refresh(reloadStatus, [&]() {
-        applyMetadataIlluminantDefaults(P, nextPrintRuntime);
-        update_print_illuminant_runtime(P, nextPrintRuntime);
-        printRuntimeDirty = true;
-    });
-
-    apply_when_reload_requires_neutral_filters(reloadStatus, [&]() {
-        apply_neutral_filters_with_trace("print/dichroic");
-        printRuntimeDirty = true;
-    });
-
-    apply_when_film_neutral_filters_needed(reloadStatus, neutralApplied, [&]() {
-        apply_neutral_filters_with_trace("film");
-        printRuntimeDirty = true;
-    });
-
-    apply_when_enlarger_illuminant_changed(changed, [&]() {
-        applyNeutralFilters(P, nextPrintRuntime);
-        printRuntimeDirty = true;
-    });
-
-    if (printRuntimeDirty) {
-        publish_print_runtime_locked(*_state, std::move(nextPrintRuntime));
+    if (Spektrafilm::scan_route_is_print(P.scanRoute)) {
+        JTRACE_VERBOSE(
+            "SPEKTRAFILM",
+            "phase=4C parameter change queued focused print recipe publication");
     }
 
     store_pending_hashes_for_snapshot(*_state, P);
-
-#ifdef JUICER_ENABLE_COUPLERS
-    maybe_notify_coupler_param_change(changed, changedNameOrNull);
-#endif
 }

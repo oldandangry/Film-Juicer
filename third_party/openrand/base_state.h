@@ -147,12 +147,12 @@ class BaseRNG {
   template <typename T = float>
   OPENRAND_DEVICE T randn() {
     static_assert(std::is_floating_point_v<T>);
-    constexpr T M_PI2 = 2 * static_cast<T>(M_PI);
+    constexpr T two_pi = static_cast<T>(6.283185307179586476925286766559005768L);
 
     T u = rand<T>();
     T v = rand<T>();
     T r = openrand::sqrt(T(-2.0) * openrand::log(u));
-    T theta = v * M_PI2;
+    T theta = v * two_pi;
     return r * openrand::cos(theta);
   }
 
@@ -166,12 +166,12 @@ class BaseRNG {
   OPENRAND_DEVICE vec2<T> randn2() {
     // Implements box-muller method
     static_assert(std::is_floating_point_v<T>);
-    constexpr T M_PI2 = 2 * static_cast<T>(M_PI);
+    constexpr T two_pi = static_cast<T>(6.283185307179586476925286766559005768L);
 
     T u = rand<T>();
     T v = rand<T>();
     T r = sqrt(T(-2.0) * log(u));
-    T theta = v * M_PI2;
+    T theta = v * two_pi;
     return {r * cos(theta), r * sin(theta)};
   }
 

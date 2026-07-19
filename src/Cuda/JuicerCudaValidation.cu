@@ -2,146 +2,10 @@
 // CUDA validation probes (guarded).
 #include <cuda_runtime.h>
 
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <string>
 
 #include "Cuda/JuicerCudaDeviceHelpers.cuh"
-
-namespace {
-
-    __global__ void add_kernel(const float* a, const float* b, float* c, int n) {
-        const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-        if (idx < n) {
-            c[idx] = a[idx] + b[idx];
-        }
-    }
-
-    const char* set_self_check_error(std::string& storage, const char* msg) {
-        storage = msg ? msg : "(unknown)";
-        return storage.c_str();
-    }
-
-    const char* set_self_check_error_cuda(std::string& storage, const char* prefix, cudaError_t err) {
-        const char* cudaMsg = cudaGetErrorString(err);
-        storage.clear();
-        if (prefix) {
-            storage += prefix;
-        }
-        storage += (cudaMsg ? cudaMsg : "(unknown)");
-        return storage.c_str();
-    }
-
-} // namespace
-
-bool juicer_cuda_runtime_self_check(void* cudaStreamOpaque, const char** outError) {
-    static std::string sError;
-    if (outError) {
-        *outError = nullptr;
-    }
-
-    const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-
-    constexpr int kN = 256;
-    alignas(16) float hA[kN];
-    alignas(16) float hB[kN];
-    alignas(16) float hC[kN];
-    for (int i = 0; i < kN; ++i) {
-        hA[i] = 0.5f + 0.01f * static_cast<float>(i);
-        hB[i] = -0.25f + 0.02f * static_cast<float>(i);
-        hC[i] = 0.0f;
-    }
-
-    float* dA = nullptr;
-    float* dB = nullptr;
-    float* dC = nullptr;
-    cudaError_t err = cudaSuccess;
-
-    err = cudaMalloc(reinterpret_cast<void**>(&dA), sizeof(hA));
-    if (err != cudaSuccess) {
-        if (outError) *outError = set_self_check_error_cuda(sError, "cudaMalloc(dA) failed: ", err);
-        return false;
-    }
-    err = cudaMalloc(reinterpret_cast<void**>(&dB), sizeof(hB));
-    if (err != cudaSuccess) {
-        cudaFree(dA);
-        if (outError) *outError = set_self_check_error_cuda(sError, "cudaMalloc(dB) failed: ", err);
-        return false;
-    }
-    err = cudaMalloc(reinterpret_cast<void**>(&dC), sizeof(hC));
-    if (err != cudaSuccess) {
-        cudaFree(dB);
-        cudaFree(dA);
-        if (outError) *outError = set_self_check_error_cuda(sError, "cudaMalloc(dC) failed: ", err);
-        return false;
-    }
-
-    err = cudaMemcpyAsync(dA, hA, sizeof(hA), cudaMemcpyHostToDevice, stream);
-    if (err != cudaSuccess) {
-        cudaFree(dC);
-        cudaFree(dB);
-        cudaFree(dA);
-        if (outError) *outError = set_self_check_error_cuda(sError, "cudaMemcpyAsync(H2D A) failed: ", err);
-        return false;
-    }
-    err = cudaMemcpyAsync(dB, hB, sizeof(hB), cudaMemcpyHostToDevice, stream);
-    if (err != cudaSuccess) {
-        cudaFree(dC);
-        cudaFree(dB);
-        cudaFree(dA);
-        if (outError) *outError = set_self_check_error_cuda(sError, "cudaMemcpyAsync(H2D B) failed: ", err);
-        return false;
-    }
-
-    const int threads = 128;
-    const int blocks = (kN + threads - 1) / threads;
-    add_kernel<<<blocks, threads, 0, stream>>>(dA, dB, dC, kN);
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        cudaFree(dC);
-        cudaFree(dB);
-        cudaFree(dA);
-        if (outError) *outError = set_self_check_error_cuda(sError, "self-check kernel launch failed: ", err);
-        return false;
-    }
-
-    err = cudaMemcpyAsync(hC, dC, sizeof(hC), cudaMemcpyDeviceToHost, stream);
-    if (err != cudaSuccess) {
-        cudaFree(dC);
-        cudaFree(dB);
-        cudaFree(dA);
-        if (outError) *outError = set_self_check_error_cuda(sError, "cudaMemcpyAsync(D2H C) failed: ", err);
-        return false;
-    }
-    err = cudaStreamSynchronize(stream);
-    if (err != cudaSuccess) {
-        cudaFree(dC);
-        cudaFree(dB);
-        cudaFree(dA);
-        if (outError) *outError = set_self_check_error_cuda(sError, "cudaStreamSynchronize failed: ", err);
-        return false;
-    }
-
-    cudaFree(dC);
-    cudaFree(dB);
-    cudaFree(dA);
-
-    for (int i = 0; i < kN; ++i) {
-        const float expected = hA[i] + hB[i];
-        const float diff = std::fabs(hC[i] - expected);
-        if (!std::isfinite(hC[i])) {
-            if (outError) *outError = set_self_check_error(sError, "self-check validation failed: non-finite kernel result");
-            return false;
-        }
-        if (!(diff <= 1e-6f)) {
-            if (outError) *outError = set_self_check_error(sError, "self-check validation failed: wrong kernel result");
-            return false;
-        }
-    }
-
-    return true;
-}
 
 #if defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
 
@@ -154,8 +18,7 @@ namespace {
         float gammaFactor,
         const float* JUICER_RESTRICT logE,
         int m,
-        float* out)
-    {
+        float* out) {
         const int idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (idx < m) {
             out[idx] = sample_density_at_logE_device(x, y, n, logE[idx], gammaFactor);
@@ -169,8 +32,7 @@ namespace {
         float gammaFactor,
         const float* JUICER_RESTRICT logE,
         int m,
-        float* out)
-    {
+        float* out) {
         const int idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (idx < m) {
             const float le = sanitize_inf_logE_for_curve_device(logE[idx], x, n);
@@ -185,8 +47,7 @@ namespace {
         int applyInputChromaticAdapt,
         const float* inputRGBToXYZ,
         const float* inputXYZAdapt,
-        float* outRgbDWG)
-    {
+        float* outRgbDWG) {
         if (threadIdx.x != 0 || blockIdx.x != 0) {
             return;
         }
@@ -217,31 +78,25 @@ namespace {
         int N,
         int K,
         const float refIllumWhiteXYZ[3],
-        float* outEe /* K */)
-    {
+        float* outEe /* K */) {
         // Convert DWG RGB to XYZ (D65).
         const float DWG_RGB_to_XYZ[9] = {
-            0.70062239f,  0.14877482f,  0.10105872f,
-            0.27411851f,  0.87363190f, -0.14775041f,
-           -0.09896291f, -0.13789533f,  1.32591599f
-        };
+            0.70062239f, 0.14877482f, 0.10105872f, 0.27411851f, 0.87363190f, -0.14775041f, -0.09896291f, -0.13789533f, 1.32591599f};
 
         float XYZ[3] = {
             DWG_RGB_to_XYZ[0] * rgbDWG[0] + DWG_RGB_to_XYZ[1] * rgbDWG[1] + DWG_RGB_to_XYZ[2] * rgbDWG[2],
             DWG_RGB_to_XYZ[3] * rgbDWG[0] + DWG_RGB_to_XYZ[4] * rgbDWG[1] + DWG_RGB_to_XYZ[5] * rgbDWG[2],
-            DWG_RGB_to_XYZ[6] * rgbDWG[0] + DWG_RGB_to_XYZ[7] * rgbDWG[1] + DWG_RGB_to_XYZ[8] * rgbDWG[2]
-        };
+            DWG_RGB_to_XYZ[6] * rgbDWG[0] + DWG_RGB_to_XYZ[7] * rgbDWG[1] + DWG_RGB_to_XYZ[8] * rgbDWG[2]};
         XYZ[0] = device_sanitize_channel(XYZ[0]);
         XYZ[1] = device_sanitize_channel(XYZ[1]);
         XYZ[2] = device_sanitize_channel(XYZ[2]);
 
-        const float D65[3] = { 0.950455f, 1.0f, 1.089058f };
+        const float D65[3] = {0.950455f, 1.0f, 1.089058f};
 
         float refWhite[3] = {
             device_sanitize_channel(refIllumWhiteXYZ[0]),
             device_sanitize_channel(refIllumWhiteXYZ[1]),
-            device_sanitize_channel(refIllumWhiteXYZ[2])
-        };
+            device_sanitize_channel(refIllumWhiteXYZ[2])};
         if (!(refWhite[1] > 0.0f)) {
             refWhite[0] = D65[0];
             refWhite[1] = D65[1];
@@ -269,10 +124,14 @@ namespace {
         const float fy = fminf(1.0f, fmaxf(0.0f, qy)) * static_cast<float>(N - 1);
         int x0 = static_cast<int>(floorf(fx));
         int y0 = static_cast<int>(floorf(fy));
-        if (x0 < 0) x0 = 0;
-        if (y0 < 0) y0 = 0;
-        if (x0 > N - 1) x0 = N - 1;
-        if (y0 > N - 1) y0 = N - 1;
+        if (x0 < 0)
+            x0 = 0;
+        if (y0 < 0)
+            y0 = 0;
+        if (x0 > N - 1)
+            x0 = N - 1;
+        if (y0 > N - 1)
+            y0 = N - 1;
         const int x1 = (x0 + 1 <= N - 1) ? (x0 + 1) : (N - 1);
         const int y1 = (y0 + 1 <= N - 1) ? (y0 + 1) : (N - 1);
         const float tx = fx - static_cast<float>(x0);
@@ -305,14 +164,13 @@ namespace {
         const float* JUICER_RESTRICT sensB,
         const float* JUICER_RESTRICT sensG,
         const float* JUICER_RESTRICT sensR,
-        float* outE3)
-    {
+        float* outE3) {
         if (threadIdx.x != 0 || blockIdx.x != 0) {
             return;
         }
 
-        float rgb[3] = { rgbDWG0, rgbDWG1, rgbDWG2 };
-        float refWhite[3] = { refWhite0, refWhite1, refWhite2 };
+        float rgb[3] = {rgbDWG0, rgbDWG1, rgbDWG2};
+        float refWhite[3] = {refWhite0, refWhite1, refWhite2};
 
         // Small fixed K (81). Keep on stack for the probe path.
         float Ee[81];
@@ -330,9 +188,12 @@ namespace {
             const float sg = sensG ? ldg_f(sensG + i) : 0.0f;
             const float sr = sensR ? ldg_f(sensR + i) : 0.0f;
             const double e64 = static_cast<double>(e);
-            if (device_isfinite(sb)) Eb += e64 * static_cast<double>(sb);
-            if (device_isfinite(sg)) Eg += e64 * static_cast<double>(sg);
-            if (device_isfinite(sr)) Er += e64 * static_cast<double>(sr);
+            if (device_isfinite(sb))
+                Eb += e64 * static_cast<double>(sb);
+            if (device_isfinite(sg))
+                Eg += e64 * static_cast<double>(sg);
+            if (device_isfinite(sr))
+                Er += e64 * static_cast<double>(sr);
         }
 
         const float safeScale = fmaxf(0.0f, exposureScale);
@@ -369,38 +230,31 @@ namespace {
         float rgbDWG0,
         float rgbDWG1,
         float rgbDWG2,
-        float* outE3)
-    {
+        float* outE3) {
         if (!Ax || !Ay || !Az || !sensB || !sensG || !sensR || !outE3 || K <= 0) {
             return;
         }
 
         // Convert DWG RGB to XYZ (D65).
         const float DWG_RGB_to_XYZ[9] = {
-            0.70062239f,  0.14877482f,  0.10105872f,
-            0.27411851f,  0.87363190f, -0.14775041f,
-           -0.09896291f, -0.13789533f,  1.32591599f
-        };
+            0.70062239f, 0.14877482f, 0.10105872f, 0.27411851f, 0.87363190f, -0.14775041f, -0.09896291f, -0.13789533f, 1.32591599f};
 
         float XYZ[3] = {
             DWG_RGB_to_XYZ[0] * rgbDWG0 + DWG_RGB_to_XYZ[1] * rgbDWG1 + DWG_RGB_to_XYZ[2] * rgbDWG2,
             DWG_RGB_to_XYZ[3] * rgbDWG0 + DWG_RGB_to_XYZ[4] * rgbDWG1 + DWG_RGB_to_XYZ[5] * rgbDWG2,
-            DWG_RGB_to_XYZ[6] * rgbDWG0 + DWG_RGB_to_XYZ[7] * rgbDWG1 + DWG_RGB_to_XYZ[8] * rgbDWG2
-        };
+            DWG_RGB_to_XYZ[6] * rgbDWG0 + DWG_RGB_to_XYZ[7] * rgbDWG1 + DWG_RGB_to_XYZ[8] * rgbDWG2};
 
         float sanitizedXYZ[3] = {
             sanitize_component_device(XYZ[0]),
             sanitize_component_device(XYZ[1]),
-            sanitize_component_device(XYZ[2])
-        };
+            sanitize_component_device(XYZ[2])};
 
-        const float D65[3] = { 0.950455f, 1.0f, 1.089058f };
+        const float D65[3] = {0.950455f, 1.0f, 1.089058f};
 
         float refWhite[3] = {
             sanitize_component_device(params.refIllumWhiteXYZ[0]),
             sanitize_component_device(params.refIllumWhiteXYZ[1]),
-            sanitize_component_device(params.refIllumWhiteXYZ[2])
-        };
+            sanitize_component_device(params.refIllumWhiteXYZ[2])};
         if (!(refWhite[1] > 0.0f)) {
             refWhite[0] = D65[0];
             refWhite[1] = D65[1];
@@ -448,9 +302,12 @@ namespace {
             const float sg = sensG[i];
             const float sr = sensR[i];
             const double e64 = static_cast<double>(Ei);
-            if (isfinite(sb)) Eb += e64 * static_cast<double>(sb);
-            if (isfinite(sg)) Eg += e64 * static_cast<double>(sg);
-            if (isfinite(sr)) Er += e64 * static_cast<double>(sr);
+            if (isfinite(sb))
+                Eb += e64 * static_cast<double>(sb);
+            if (isfinite(sg))
+                Eg += e64 * static_cast<double>(sg);
+            if (isfinite(sr))
+                Er += e64 * static_cast<double>(sr);
         }
 
         if (Y_recon > 1e-20 && targetScale > 0.0f) {
@@ -501,12 +358,11 @@ namespace {
         const float* Ax,
         const float* Ay,
         const float* Az,
-        const float* baseMin,
+        const float* baseDensityMin,
         int K,
         int hasBaseline,
         float invYn,
-        double* outLogXYZ3)
-    {
+        double* outLogXYZ3) {
         if (!outLogXYZ3 || !epsC || !epsM || !epsY || !Ax || !Ay || !Az || K <= 0) {
             return;
         }
@@ -528,7 +384,7 @@ namespace {
         double Y = 0.0;
         double Z = 0.0;
         for (int i = 0; i < K; ++i) {
-            const double baseSpectral = (hasBaseline && baseMin) ? static_cast<double>(baseMin[i]) : 0.0;
+            const double baseSpectral = (hasBaseline && baseDensityMin) ? static_cast<double>(baseDensityMin[i]) : 0.0;
             const double Dlambda =
                 D_denorm0 * static_cast<double>(epsC[i]) +
                 D_denorm1 * static_cast<double>(epsM[i]) +
@@ -543,15 +399,18 @@ namespace {
 
             if (isfinite(ax)) {
                 const double out = transmittance * ax;
-                if (!isnan(out)) X += out;
+                if (!isnan(out))
+                    X += out;
             }
             if (isfinite(ay)) {
                 const double out = transmittance * ay;
-                if (!isnan(out)) Y += out;
+                if (!isnan(out))
+                    Y += out;
             }
             if (isfinite(az)) {
                 const double out = transmittance * az;
-                if (!isnan(out)) Z += out;
+                if (!isnan(out))
+                    Z += out;
             }
         }
 
@@ -570,8 +429,7 @@ namespace {
         const float* x,
         int n,
         float logE,
-        float* outLogE)
-    {
+        float* outLogE) {
         if (!x || n <= 0 || !outLogE) {
             return;
         }
@@ -597,8 +455,7 @@ namespace {
         JuicerCuda::PipelineRunParams params,
         const float* inNegCmy,
         float* outPrintCmy,
-        int count)
-    {
+        int count) {
         const int idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (idx >= count) {
             return;
@@ -609,8 +466,7 @@ namespace {
         float D_cmy[3] = {
             inNegCmy[idx * 3 + 0],
             inNegCmy[idx * 3 + 1],
-            inNegCmy[idx * 3 + 2]
-        };
+            inNegCmy[idx * 3 + 2]};
         apply_print_pipeline_device(params.printExpose, params.printDevelop, D_cmy);
         outPrintCmy[idx * 3 + 0] = D_cmy[0];
         outPrintCmy[idx * 3 + 1] = D_cmy[1];
@@ -627,8 +483,7 @@ extern "C" cudaError_t juicer_cuda_probe_density_curve(
     const float* hLogE,
     int m,
     float* hOut,
-    void* cudaStreamOpaque)
-{
+    void* cudaStreamOpaque) {
     if (!dX || !dY || n <= 0 || !hLogE || m <= 0 || !hOut) {
         return cudaErrorInvalidValue;
     }
@@ -685,8 +540,7 @@ extern "C" cudaError_t juicer_cuda_probe_density_curve_sanitize_inf(
     const float* hLogE,
     int m,
     float* hOut,
-    void* cudaStreamOpaque)
-{
+    void* cudaStreamOpaque) {
     if (!dX || !dY || n <= 0 || !hLogE || m <= 0 || !hOut) {
         return cudaErrorInvalidValue;
     }
@@ -747,8 +601,7 @@ extern "C" cudaError_t juicer_cuda_probe_hanatos_layer_exposures(
     float exposureScale,
     int applyDeltaLambda,
     float* outE3,
-    void* cudaStreamOpaque)
-{
+    void* cudaStreamOpaque) {
     if (!rgbDWG || !dHanatosLut || hanatosN <= 0 || !refIllumWhiteXYZ || !outE3) {
         return cudaErrorInvalidValue;
     }
@@ -812,8 +665,7 @@ extern "C" cudaError_t juicer_cuda_probe_tables_layer_exposures(
     float exposureScale,
     int applyDeltaLambda,
     float* outE3,
-    void* cudaStreamOpaque)
-{
+    void* cudaStreamOpaque) {
     if (!rgbDWG || !S_inv9 || !refIllumWhiteXYZ || !dAx || !dAy || !dAz || !dSensB || !dSensG || !dSensR || !outE3 || K <= 0) {
         return cudaErrorInvalidValue;
     }
@@ -824,8 +676,10 @@ extern "C" cudaError_t juicer_cuda_probe_tables_layer_exposures(
     cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
 
     TablesProbeParams params{};
-    for (int i = 0; i < 9; ++i) params.S_inv[i] = S_inv9[i];
-    for (int i = 0; i < 3; ++i) params.refIllumWhiteXYZ[i] = refIllumWhiteXYZ[i];
+    for (int i = 0; i < 9; ++i)
+        params.S_inv[i] = S_inv9[i];
+    for (int i = 0; i < 3; ++i)
+        params.refIllumWhiteXYZ[i] = refIllumWhiteXYZ[i];
 
     float* dOut = nullptr;
     cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dOut), 3 * sizeof(float));
@@ -869,8 +723,7 @@ extern "C" cudaError_t juicer_cuda_probe_tables_layer_exposures(
 extern "C" cudaError_t juicer_cuda_probe_film_log_raw(
     const float filmRaw3[3],
     float outLogRaw3[3],
-    void* cudaStreamOpaque)
-{
+    void* cudaStreamOpaque) {
     if (!filmRaw3 || !outLogRaw3) {
         return cudaErrorInvalidValue;
     }
@@ -933,8 +786,7 @@ extern "C" cudaError_t juicer_cuda_probe_scan_spectral_to_log_xyz(
     int hasBaseline,
     float invYn,
     double outLogXYZ3[3],
-    void* cudaStreamOpaque)
-{
+    void* cudaStreamOpaque) {
     if (!D_norm3 || !min_cmy || !inv_max_cmy || !dEpsC || !dEpsM || !dEpsY || !dAx || !dAy || !dAz || !outLogXYZ3) {
         return cudaErrorInvalidValue;
     }
@@ -995,8 +847,7 @@ extern "C" cudaError_t juicer_cuda_probe_clamp_logE_to_curve_domain(
     int n,
     float logE,
     float* outLogE,
-    void* cudaStreamOpaque)
-{
+    void* cudaStreamOpaque) {
     if (!dX || n <= 0 || !outLogE) {
         return cudaErrorInvalidValue;
     }
@@ -1035,8 +886,7 @@ extern "C" cudaError_t juicer_cuda_probe_convert_input_to_DWG(
     const float inputRGBToXYZ9[9],
     const float inputXYZAdapt9[9],
     float outRgbDWG[3],
-    void* cudaStreamOpaque)
-{
+    void* cudaStreamOpaque) {
     if (!rgbIn || !inputRGBToXYZ9 || !inputXYZAdapt9 || !outRgbDWG) {
         return cudaErrorInvalidValue;
     }
@@ -1048,27 +898,70 @@ extern "C" cudaError_t juicer_cuda_probe_convert_input_to_DWG(
     float* dMatB = nullptr;
     float* dOut = nullptr;
     cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dIn), 3 * sizeof(float));
-    if (err != cudaSuccess) return err;
+    if (err != cudaSuccess)
+        return err;
     err = cudaMalloc(reinterpret_cast<void**>(&dMatA), 9 * sizeof(float));
-    if (err != cudaSuccess) { cudaFree(dIn); return err; }
+    if (err != cudaSuccess) {
+        cudaFree(dIn);
+        return err;
+    }
     err = cudaMalloc(reinterpret_cast<void**>(&dMatB), 9 * sizeof(float));
-    if (err != cudaSuccess) { cudaFree(dMatA); cudaFree(dIn); return err; }
+    if (err != cudaSuccess) {
+        cudaFree(dMatA);
+        cudaFree(dIn);
+        return err;
+    }
     err = cudaMalloc(reinterpret_cast<void**>(&dOut), 3 * sizeof(float));
-    if (err != cudaSuccess) { cudaFree(dMatB); cudaFree(dMatA); cudaFree(dIn); return err; }
+    if (err != cudaSuccess) {
+        cudaFree(dMatB);
+        cudaFree(dMatA);
+        cudaFree(dIn);
+        return err;
+    }
 
     err = cudaMemcpyAsync(dIn, rgbIn, 3 * sizeof(float), cudaMemcpyHostToDevice, stream);
-    if (err != cudaSuccess) { cudaFree(dOut); cudaFree(dMatB); cudaFree(dMatA); cudaFree(dIn); return err; }
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        cudaFree(dMatB);
+        cudaFree(dMatA);
+        cudaFree(dIn);
+        return err;
+    }
     err = cudaMemcpyAsync(dMatA, inputRGBToXYZ9, 9 * sizeof(float), cudaMemcpyHostToDevice, stream);
-    if (err != cudaSuccess) { cudaFree(dOut); cudaFree(dMatB); cudaFree(dMatA); cudaFree(dIn); return err; }
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        cudaFree(dMatB);
+        cudaFree(dMatA);
+        cudaFree(dIn);
+        return err;
+    }
     err = cudaMemcpyAsync(dMatB, inputXYZAdapt9, 9 * sizeof(float), cudaMemcpyHostToDevice, stream);
-    if (err != cudaSuccess) { cudaFree(dOut); cudaFree(dMatB); cudaFree(dMatA); cudaFree(dIn); return err; }
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        cudaFree(dMatB);
+        cudaFree(dMatA);
+        cudaFree(dIn);
+        return err;
+    }
 
     probe_convert_input_to_DWG_kernel<<<1, 1, 0, stream>>>(dIn, inputColorSpaceIndex, applyCctfDecoding, applyInputChromaticAdapt, dMatA, dMatB, dOut);
     err = cudaGetLastError();
-    if (err != cudaSuccess) { cudaFree(dOut); cudaFree(dMatB); cudaFree(dMatA); cudaFree(dIn); return err; }
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        cudaFree(dMatB);
+        cudaFree(dMatA);
+        cudaFree(dIn);
+        return err;
+    }
 
     err = cudaMemcpyAsync(outRgbDWG, dOut, 3 * sizeof(float), cudaMemcpyDeviceToHost, stream);
-    if (err != cudaSuccess) { cudaFree(dOut); cudaFree(dMatB); cudaFree(dMatA); cudaFree(dIn); return err; }
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        cudaFree(dMatB);
+        cudaFree(dMatA);
+        cudaFree(dIn);
+        return err;
+    }
 
     err = cudaStreamSynchronize(stream);
     cudaFree(dOut);
@@ -1083,8 +976,7 @@ extern "C" cudaError_t juicer_cuda_probe_print_pipeline(
     int count,
     const JuicerCuda::PipelineRunParams* hParams,
     float* hOutPrintCmy,
-    void* cudaStreamOpaque)
-{
+    void* cudaStreamOpaque) {
     if (!hNegCmy || count <= 0 || !hParams || !hOutPrintCmy) {
         return cudaErrorInvalidValue;
     }

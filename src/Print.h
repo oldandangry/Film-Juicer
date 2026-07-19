@@ -16,11 +16,11 @@
 
 namespace Print {
 
-    constexpr float kEnlargerSteps = 170.0f;
-    constexpr float kDefaultNeutralY = 0.9f;
-    constexpr float kDefaultNeutralM = 0.5f;
-    constexpr float kDefaultNeutralC = 0.35f;
-    constexpr std::uint64_t kDefaultNeutralFilterHash = 1ull;
+    constexpr float kPrintFilterCCLimit = 200.0f;
+    constexpr float kSpektrafilmNeutralYCC = 55.0f;
+    constexpr float kSpektrafilmNeutralMCC = 65.0f;
+    constexpr float kSpektrafilmNeutralCCC = 0.0f;
+    constexpr std::uint64_t kNeutralCalibrationHashSeed = 1ull;
 
     struct DensityCurves {
         std::vector<std::pair<double, double>> cyan;
@@ -32,9 +32,9 @@ namespace Print {
     struct Profile;
 
     struct Profile {
-        Spectral::Curve epsC, epsM, epsY;     // print dye extinction (OD/λ)
-        Spectral::Curve dcC, dcM, dcY;        // logE -> D (C,M,Y)
-        Spectral::Curve baseMin, baseMid;     // optional print baseline (D-min/mid)
+        Spectral::Curve epsC, epsM, epsY;               // print dye extinction (OD/λ)
+        Spectral::Curve dcC, dcM, dcY;                  // logE -> D (C,M,Y)
+        Spectral::Curve baseDensityMin, baseDensityMid; // optional print baseline (D-min/mid)
         bool hasBaseline = false;
         bool glareRemoved = false;
         bool hasGlareCompensation = false;
@@ -42,24 +42,19 @@ namespace Print {
         float glareCompensationDensity = 1.2f;
         float glareCompensationTransition = 0.3f;
         Profiles::ProfileGlare glare;
-        float logEOffC = 0.0f, logEOffM = 0.0f, logEOffY = 0.0f; // retained per-channel logE offsets (unused)
-        std::array<float, 3> gammaFactor{ {1.0f, 1.0f, 1.0f} };
+        std::array<float, 3> gammaFactor{{1.0f, 1.0f, 1.0f}};
 
         // Optional neutral density target for mid-scale metameric patch (agx parity)
         bool hasMidNeutralDensity = false;
-        std::array<float, 3> midNeutralDensity{ {
-            std::numeric_limits<float>::quiet_NaN(),
-            std::numeric_limits<float>::quiet_NaN(),
-            std::numeric_limits<float>::quiet_NaN()
-        } };
+        std::array<float, 3> midNeutralDensity{{std::numeric_limits<float>::quiet_NaN(),
+                                                std::numeric_limits<float>::quiet_NaN(),
+                                                std::numeric_limits<float>::quiet_NaN()}};
         bool hasMidNeutralLogE = false;
-        std::array<float, 3> midNeutralLogE{ {
-            std::numeric_limits<float>::quiet_NaN(),
-            std::numeric_limits<float>::quiet_NaN(),
-            std::numeric_limits<float>::quiet_NaN()
-        } };
+        std::array<float, 3> midNeutralLogE{{std::numeric_limits<float>::quiet_NaN(),
+                                             std::numeric_limits<float>::quiet_NaN(),
+                                             std::numeric_limits<float>::quiet_NaN()}};
         bool hasSensitivityCorrection = false;
-        std::array<float, 3> sensitivityNeutralCorr{ {1.0f, 1.0f, 1.0f} };
+        std::array<float, 3> sensitivityNeutralCorr{{1.0f, 1.0f, 1.0f}};
         std::string referenceIlluminant;
         std::string viewingIlluminant;
 
@@ -69,10 +64,10 @@ namespace Print {
 
 
     struct Params {
-        bool bypass = false;     // if true, bypass print (show negative)
-        float exposure = 1.0f;   // enlarger exposure scalar
+        bool bypass = false;           // if true, bypass print (show negative)
+        float exposure = 1.0f;         // enlarger exposure scalar
         float preflashExposure = 0.0f; // additional uniform print exposure (linear scale)
-        float yFilter = 0.0f;    // delta from neutral baseline in Durst steps (±170)
+        float yFilter = 0.0f;          // delta from neutral baseline in Kodak CC units
         float mFilter = 0.0f;
         float cFilter = 0.0f;
 
@@ -96,40 +91,37 @@ namespace Print {
         Spectral::Curve filterY;
         Spectral::Curve filterM;
         Spectral::Curve filterC;
-        // Neutral baseline scalars (0..1) used for compensation probes
-        float neutralY = kDefaultNeutralY;
-        float neutralM = kDefaultNeutralM;
-        float neutralC = kDefaultNeutralC;
-        std::uint64_t neutralFilterHash = kDefaultNeutralFilterHash;
+        // Neutral baseline values in Kodak CC units.
+        float neutralY = kSpektrafilmNeutralYCC;
+        float neutralM = kSpektrafilmNeutralMCC;
+        float neutralC = kSpektrafilmNeutralCCC;
+        std::uint64_t neutralFilterHash = kNeutralCalibrationHashSeed;
 
         bool hasMidNeutralDensity = false;
-        std::array<float, 3> midNeutralDensity{ {
-            std::numeric_limits<float>::quiet_NaN(),
-            std::numeric_limits<float>::quiet_NaN(),
-            std::numeric_limits<float>::quiet_NaN()
-        } };
+        std::array<float, 3> midNeutralDensity{{std::numeric_limits<float>::quiet_NaN(),
+                                                std::numeric_limits<float>::quiet_NaN(),
+                                                std::numeric_limits<float>::quiet_NaN()}};
         bool hasMidNeutralLogE = false;
-        std::array<float, 3> midNeutralLogE{ {
-            std::numeric_limits<float>::quiet_NaN(),
-            std::numeric_limits<float>::quiet_NaN(),
-            std::numeric_limits<float>::quiet_NaN()
-        } };
+        std::array<float, 3> midNeutralLogE{{std::numeric_limits<float>::quiet_NaN(),
+                                             std::numeric_limits<float>::quiet_NaN(),
+                                             std::numeric_limits<float>::quiet_NaN()}};
         bool hasSensitivityCorrection = false;
-        std::array<float, 3> sensitivityNeutralCorr{ {1.0f, 1.0f, 1.0f} };
+        std::array<float, 3> sensitivityNeutralCorr{{1.0f, 1.0f, 1.0f}};
     };
 
     // Profile validity: spectral-domain curves must match current spectral shape (K).
     // Density curves (dcC/M/Y) are in log-exposure domain, so they only need to be non-empty.
     inline bool profile_is_valid(const Profile& p) {
         const int K = Spectral::gShape.K;
-        if (K <= 0) return false;
+        if (K <= 0)
+            return false;
 
         auto spectral_curve_ok = [](const Spectral::Curve& c) -> bool {
             return !c.linear.empty() && static_cast<int>(c.linear.size()) == K;
-            };
+        };
         auto logE_curve_ok = [](const Spectral::Curve& c) -> bool {
             return !c.linear.empty();
-            };
+        };
 
         // Require spectral print dye EPS
         if (!spectral_curve_ok(p.epsC) ||
@@ -153,20 +145,20 @@ namespace Print {
         }
 
         if (p.hasBaseline) {
-            if (!spectral_curve_ok(p.baseMin)) {
+            if (!spectral_curve_ok(p.baseDensityMin)) {
                 return false;
             }
-            if (!p.baseMid.linear.empty() && !spectral_curve_ok(p.baseMid)) {
+            if (!p.baseDensityMid.linear.empty() && !spectral_curve_ok(p.baseDensityMid)) {
                 return false;
             }
         }
         return true;
     }
-    bool remove_glare_compensation_from_curves(Profile& profile, DensityCurves& curves);
+    bool apply_print_shadow_compensation_to_curves(Profile& profile, DensityCurves& curves);
     bool rebuild_density_curves(Profile& profile, const DensityCurves& curves);
     void recompute_mid_neutral(Profile& profile, Runtime* runtime = nullptr);
     void load_profile_from_asset(
-        const JuicerAssets::PrintPaperAsset& asset,
+        const JuicerAssets::SelectedPrintProfileAsset& asset,
         Profile& out,
         Runtime* runtime = nullptr);
 
@@ -249,21 +241,4 @@ namespace Print {
         }
     }
 
-    inline void load_dichroic_filters_from_assets(
-        const JuicerAssets::DichroicFilterCurveSet& curves,
-        Runtime& rt) {
-        rt.filterY = curves.filterY;
-        rt.filterM = curves.filterM;
-        rt.filterC = curves.filterC;
-
-        {
-            std::ostringstream oss;
-            oss << "DICHROICS loaded K=" << Spectral::gShape.K
-                << " Y/M/C first="
-                << (rt.filterY.linear.empty() ? -1.0f : rt.filterY.linear.front()) << "/"
-                << (rt.filterM.linear.empty() ? -1.0f : rt.filterM.linear.front()) << "/"
-                << (rt.filterC.linear.empty() ? -1.0f : rt.filterC.linear.front());
-            JTRACE("PRINT", oss.str());
-        }
-    }
 } // namespace Print

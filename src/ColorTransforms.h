@@ -5,6 +5,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include "SpectralData.h"
 
 // Forward declarations
@@ -14,17 +15,13 @@ namespace Spectral {
     struct SpectralTables;
     struct Curve;
     inline void rgbDWG_to_layerExposures_from_tables_with_curves(
-        const float rgbDWG[3], float E[3], float exposureScale,
-        const SpectralTables* tables, const float* S_inv,
-        const Curve& sB, const Curve& sG, const Curve& sR,
-        SpectralUpsamplingMode spectralUpsamplingMode,
-        const float refIllumWhiteXYZ[3]);
+        const float rgbDWG[3], float E[3], float exposureScale, const SpectralTables* tables, const float* S_inv, const Curve& sB, const Curve& sG, const Curve& sR, SpectralUpsamplingMode spectralUpsamplingMode, const float refIllumWhiteXYZ[3]);
 
 #if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
     bool spd_probe_begin_capture(const float rgbIn[3], const float rgbDWG[3], bool spdEnabled);
     void spd_probe_finalize(float midgrayScale, const float E_afterMidgray[3]);
 #endif
-}
+} // namespace Spectral
 
 namespace Spectral {
 
@@ -32,7 +29,7 @@ namespace Spectral {
     // Input Color Space (consolidated from ColorSpaces.h)
     // ============================================================================
 
-    enum class InputColorSpace {
+    enum class InputColorSpace : std::uint8_t {
         DaVinciWideGamut = 0,
         ITU_R_BT2020,
         ACES2065_1,
@@ -44,8 +41,7 @@ namespace Spectral {
         "DaVinci Wide Gamut",
         "ITU-R BT.2020",
         "ACES2065-1",
-        "sRGB / Rec.709"
-    };
+        "sRGB / Rec.709"};
 
     inline constexpr std::size_t kInputColorSpaceCount = static_cast<std::size_t>(InputColorSpace::Count);
 
@@ -92,25 +88,19 @@ namespace Spectral {
 
             const float eps = 1e-6f;
             if (!is_finite(det) || std::fabs(det) <= eps) {
-                return Mat3{ {
-                    fallback, 0.0f,    0.0f,
-                    0.0f,    fallback, 0.0f,
-                    0.0f,    0.0f,    fallback
-                } };
+                return Mat3{{fallback, 0.0f, 0.0f, 0.0f, fallback, 0.0f, 0.0f, 0.0f, fallback}};
             }
 
             const float invDet = 1.0f / det;
-            Mat3 inv{ {
-                (m[4] * m[8] - m[5] * m[7]) * invDet,
-                (m[2] * m[7] - m[1] * m[8]) * invDet,
-                (m[1] * m[5] - m[2] * m[4]) * invDet,
-                (m[5] * m[6] - m[3] * m[8]) * invDet,
-                (m[0] * m[8] - m[2] * m[6]) * invDet,
-                (m[2] * m[3] - m[0] * m[5]) * invDet,
-                (m[3] * m[7] - m[4] * m[6]) * invDet,
-                (m[1] * m[6] - m[0] * m[7]) * invDet,
-                (m[0] * m[4] - m[1] * m[3]) * invDet
-            } };
+            Mat3 inv{{(m[4] * m[8] - m[5] * m[7]) * invDet,
+                      (m[2] * m[7] - m[1] * m[8]) * invDet,
+                      (m[1] * m[5] - m[2] * m[4]) * invDet,
+                      (m[5] * m[6] - m[3] * m[8]) * invDet,
+                      (m[0] * m[8] - m[2] * m[6]) * invDet,
+                      (m[2] * m[3] - m[0] * m[5]) * invDet,
+                      (m[3] * m[7] - m[4] * m[6]) * invDet,
+                      (m[1] * m[6] - m[0] * m[7]) * invDet,
+                      (m[0] * m[4] - m[1] * m[3]) * invDet}};
             return inv;
         }
     };
@@ -127,11 +117,7 @@ namespace Spectral {
     }
 
     inline Mat3 make_identity_mat3(float diag = 1.0f) {
-        return Mat3{ {
-            diag, 0.0f, 0.0f,
-            0.0f, diag, 0.0f,
-            0.0f, 0.0f, diag
-        } };
+        return Mat3{{diag, 0.0f, 0.0f, 0.0f, diag, 0.0f, 0.0f, 0.0f, diag}};
     }
 
     inline void copy_triplet(float dst[3], const float src[3]) {
@@ -176,41 +162,17 @@ namespace Spectral {
     }
 
     // Canonical RGB�XYZ matrices
-    inline constexpr Mat3 kRGB_to_XYZ_DWG = { {
-        0.70062239f,  0.14877482f,  0.10105872f,
-        0.27411851f,  0.87363190f, -0.14775041f,
-       -0.09896291f, -0.13789533f,  1.32591599f
-    } };
+    inline constexpr Mat3 kRGB_to_XYZ_DWG = {{0.70062239f, 0.14877482f, 0.10105872f, 0.27411851f, 0.87363190f, -0.14775041f, -0.09896291f, -0.13789533f, 1.32591599f}};
 
-    inline constexpr Mat3 kRGB_to_XYZ_BT2020 = { {
-        0.63695806f,  0.14461690f,  0.16888097f,
-        0.26270020f,  0.67799807f,  0.05930172f,
-        0.00000000f,  0.02807269f,  1.06098509f
-    } };
+    inline constexpr Mat3 kRGB_to_XYZ_BT2020 = {{0.63695806f, 0.14461690f, 0.16888097f, 0.26270020f, 0.67799807f, 0.05930172f, 0.00000000f, 0.02807269f, 1.06098509f}};
 
-    inline constexpr Mat3 kRGB_to_XYZ_ACES2065 = { {
-        0.95255238f,  0.00000000f,  0.00009368f,
-        0.34396645f,  0.72816610f, -0.07213255f,
-        0.00000000f,  0.00000000f,  1.00882518f
-    } };
+    inline constexpr Mat3 kRGB_to_XYZ_ACES2065 = {{0.95255238f, 0.00000000f, 0.00009368f, 0.34396645f, 0.72816610f, -0.07213255f, 0.00000000f, 0.00000000f, 1.00882518f}};
 
-    inline constexpr Mat3 kRGB_to_XYZ_sRGB_Rec709 = { {
-        0.4124564f, 0.3575761f, 0.1804375f,
-        0.2126729f, 0.7151522f, 0.0721750f,
-        0.0193339f, 0.1191920f, 0.9503041f
-    } };
+    inline constexpr Mat3 kRGB_to_XYZ_sRGB_Rec709 = {{0.4124564f, 0.3575761f, 0.1804375f, 0.2126729f, 0.7151522f, 0.0721750f, 0.0193339f, 0.1191920f, 0.9503041f}};
 
     // Global DWG�XYZ matrices
-    inline Mat3 gDWG_RGB_to_XYZ = { {
-        0.70062239f,  0.14877482f,  0.10105872f,
-        0.27411851f,  0.87363190f, -0.14775041f,
-       -0.09896291f, -0.13789533f,  1.32591599f
-    } };
-    inline Mat3 gDWG_XYZ_to_RGB = { {
-        1.51667204f, -0.28147805f, -0.14696363f,
-       -0.46491710f,  1.25142378f,  0.17488461f,
-        0.07578536f,  0.08076209f,  0.76034476f
-    } };
+    inline Mat3 gDWG_RGB_to_XYZ = {{0.70062239f, 0.14877482f, 0.10105872f, 0.27411851f, 0.87363190f, -0.14775041f, -0.09896291f, -0.13789533f, 1.32591599f}};
+    inline Mat3 gDWG_XYZ_to_RGB = {{1.51667204f, -0.28147805f, -0.14696363f, -0.46491710f, 1.25142378f, 0.17488461f, 0.07578536f, 0.08076209f, 0.76034476f}};
 
     inline void XYZ_to_DWG_linear(const float XYZ[3], float RGB[3]) {
         gDWG_XYZ_to_RGB.mul(XYZ, RGB);
@@ -227,33 +189,33 @@ namespace Spectral {
 
     inline Mat3 matrix_input_rgb_to_xyz(InputColorSpace cs) {
         switch (cs) {
-        case InputColorSpace::DaVinciWideGamut:
-            return kRGB_to_XYZ_DWG;
-        case InputColorSpace::ITU_R_BT2020:
-            return kRGB_to_XYZ_BT2020;
-        case InputColorSpace::ACES2065_1:
-            return kRGB_to_XYZ_ACES2065;
-        case InputColorSpace::SRGB_Rec709:
-            return kRGB_to_XYZ_sRGB_Rec709;
-        default:
-            return kRGB_to_XYZ_DWG;
+            case InputColorSpace::DaVinciWideGamut:
+                return kRGB_to_XYZ_DWG;
+            case InputColorSpace::ITU_R_BT2020:
+                return kRGB_to_XYZ_BT2020;
+            case InputColorSpace::ACES2065_1:
+                return kRGB_to_XYZ_ACES2065;
+            case InputColorSpace::SRGB_Rec709:
+                return kRGB_to_XYZ_sRGB_Rec709;
+            default:
+                return kRGB_to_XYZ_DWG;
         }
     }
 
     inline void input_colorspace_white_xyz(InputColorSpace cs, float whiteXYZ[3]) {
-        static constexpr float kACES2065WhiteXYZ[3] = { 0.95264608f, 1.0f, 1.00882518f };
+        static constexpr float kACES2065WhiteXYZ[3] = {0.95264608f, 1.0f, 1.00882518f};
         switch (cs) {
-        case InputColorSpace::DaVinciWideGamut:
-        case InputColorSpace::ITU_R_BT2020:
-        case InputColorSpace::SRGB_Rec709:
-            copy_triplet(whiteXYZ, gDWG_WhitePoint_XYZ);
-            break;
-        case InputColorSpace::ACES2065_1:
-            copy_triplet(whiteXYZ, kACES2065WhiteXYZ);
-            break;
-        default:
-            copy_triplet(whiteXYZ, gDWG_WhitePoint_XYZ);
-            break;
+            case InputColorSpace::DaVinciWideGamut:
+            case InputColorSpace::ITU_R_BT2020:
+            case InputColorSpace::SRGB_Rec709:
+                copy_triplet(whiteXYZ, gDWG_WhitePoint_XYZ);
+                break;
+            case InputColorSpace::ACES2065_1:
+                copy_triplet(whiteXYZ, kACES2065WhiteXYZ);
+                break;
+            default:
+                copy_triplet(whiteXYZ, gDWG_WhitePoint_XYZ);
+                break;
         }
     }
 
@@ -311,9 +273,14 @@ namespace Spectral {
         }
     }
 
-    inline float sanitize_min_positive_channel_or(float v, float minValue, float fallback) {
-        const float value = sanitize_channel(v);
-        return (value > minValue) ? value : fallback;
+    inline float sanitize_raw_midgray_green_or_one(float value) {
+        const float sanitized = sanitize_channel(value);
+        return (sanitized > 1e-9f) ? sanitized : 1.0f;
+    }
+
+    inline float sanitize_exposure_scale_or_one(float value) {
+        const float sanitized = sanitize_channel(value);
+        return (sanitized > 0.0f) ? sanitized : 1.0f;
     }
 
     inline bool is_positive_finite(float v) {
@@ -367,27 +334,27 @@ namespace Spectral {
         }
 
         switch (cs) {
-        case InputColorSpace::ITU_R_BT2020: {
-            assign_triplet(
-                out,
-                decode_BT2020_channel(in[0]),
-                decode_BT2020_channel(in[1]),
-                decode_BT2020_channel(in[2]));
-            break;
-        }
-        case InputColorSpace::SRGB_Rec709: {
-            assign_triplet(
-                out,
-                decode_sRGB_channel(in[0]),
-                decode_sRGB_channel(in[1]),
-                decode_sRGB_channel(in[2]));
-            break;
-        }
-        case InputColorSpace::DaVinciWideGamut:
-        case InputColorSpace::ACES2065_1:
-        default:
-            sanitize_triplet(out, in);
-            break;
+            case InputColorSpace::ITU_R_BT2020: {
+                assign_triplet(
+                    out,
+                    decode_BT2020_channel(in[0]),
+                    decode_BT2020_channel(in[1]),
+                    decode_BT2020_channel(in[2]));
+                break;
+            }
+            case InputColorSpace::SRGB_Rec709: {
+                assign_triplet(
+                    out,
+                    decode_sRGB_channel(in[0]),
+                    decode_sRGB_channel(in[1]),
+                    decode_sRGB_channel(in[2]));
+                break;
+            }
+            case InputColorSpace::DaVinciWideGamut:
+            case InputColorSpace::ACES2065_1:
+            default:
+                sanitize_triplet(out, in);
+                break;
         }
     }
 
@@ -395,28 +362,25 @@ namespace Spectral {
     // Chromatic Adaptation
     // ============================================================================
 
+    struct ChromaticAdaptationWhites {
+        const float* source = nullptr;
+        const float* destination = nullptr;
+    };
+
     // CAT02/Von Kries based chromatic adaptation (matches colour.XYZ_to_RGB default)
     inline void chromatic_adapt_XYZ_CAT02(
         const float XYZ[3],
-        const float srcWhiteXYZ[3],
-        const float dstWhiteXYZ[3],
-        float outXYZ[3])
-    {
+        const ChromaticAdaptationWhites& whites,
+        float outXYZ[3]) {
         static const float M[9] = {
-             0.7328000f,  0.4296000f, -0.1624000f,
-            -0.7036000f,  1.6975000f,  0.0061000f,
-             0.0030000f,  0.0136000f,  0.9834000f
-        };
+            0.7328000f, 0.4296000f, -0.1624000f, -0.7036000f, 1.6975000f, 0.0061000f, 0.0030000f, 0.0136000f, 0.9834000f};
         static const float M_inv[9] = {
-            1.0961238f, -0.2788690f,  0.1827452f,
-            0.4543690f,  0.4735332f,  0.0720978f,
-           -0.0096276f, -0.0056980f,  1.0153256f
-        };
+            1.0961238f, -0.2788690f, 0.1827452f, 0.4543690f, 0.4735332f, 0.0720978f, -0.0096276f, -0.0056980f, 1.0153256f};
 
         float srcWhite[3];
         float dstWhite[3];
-        sanitize_nonnegative_triplet(srcWhite, srcWhiteXYZ);
-        sanitize_nonnegative_triplet(dstWhite, dstWhiteXYZ);
+        sanitize_nonnegative_triplet(srcWhite, whites.source);
+        sanitize_nonnegative_triplet(dstWhite, whites.destination);
         normalize_triplet_to_unit_y(srcWhite);
         normalize_triplet_to_unit_y(dstWhite);
 
@@ -440,13 +404,13 @@ namespace Spectral {
         mul_3x3_vec3(M_inv, adaptedLMS, outXYZ);
     }
 
-    inline Mat3 build_chromatic_adaptation_matrix(const float srcWhite[3], const float dstWhite[3]) {
+    inline Mat3 build_chromatic_adaptation_matrix(const ChromaticAdaptationWhites& whites) {
         Mat3 adapt = make_identity_mat3();
         for (int col = 0; col < 3; ++col) {
-            float basis[3] = { 0.0f, 0.0f, 0.0f };
+            float basis[3] = {0.0f, 0.0f, 0.0f};
             basis[col] = 1.0f;
             float adapted[3];
-            chromatic_adapt_XYZ_CAT02(basis, srcWhite, dstWhite, adapted);
+            chromatic_adapt_XYZ_CAT02(basis, whites, adapted);
             for (int row = 0; row < 3; ++row) {
                 adapt.m[row * 3 + col] = adapted[row];
             }
@@ -466,34 +430,31 @@ namespace Spectral {
         bool applyInputChromaticAdapt = false;
         SpectralUpsamplingMode spectralUpsamplingMode = SpectralUpsamplingMode::PreferHanatos;
         float midgrayScale = 1.0f;
-        float midgrayDWG[3] = { 0.184f, 0.184f, 0.184f };
-        float rawMidgray[3] = { 1.0f, 1.0f, 1.0f };
+        float midgrayDWG[3] = {0.184f, 0.184f, 0.184f};
+        float rawMidgray[3] = {1.0f, 1.0f, 1.0f};
         float rawMidgrayGreen = 1.0f;
         float inputWhiteXYZ[3] = {
             gDWG_WhitePoint_XYZ[0],
             gDWG_WhitePoint_XYZ[1],
-            gDWG_WhitePoint_XYZ[2]
-        };
+            gDWG_WhitePoint_XYZ[2]};
         float workingWhiteXYZ[3] = {
             gDWG_WhitePoint_XYZ[0],
             gDWG_WhitePoint_XYZ[1],
-            gDWG_WhitePoint_XYZ[2]
-        };
+            gDWG_WhitePoint_XYZ[2]};
         float refIllumWhiteXYZ[3] = {
             gDWG_WhitePoint_XYZ[0],
             gDWG_WhitePoint_XYZ[1],
-            gDWG_WhitePoint_XYZ[2]
-        };
+            gDWG_WhitePoint_XYZ[2]};
         bool hasRefIllumWhite = false;
         bool valid = false;
     };
 
-    inline bool whites_approximately_equal(const float a[3], const float b[3]) {
+    inline bool whites_approximately_equal(const ChromaticAdaptationWhites& whites) {
         auto scale = [](float v) {
             return std::max(1.0f, std::fabs(v));
-            };
-        const float* aIt = a;
-        const float* bIt = b;
+        };
+        const float* aIt = whites.source;
+        const float* bIt = whites.destination;
         for (int i = 0; i < 3; ++i, ++aIt, ++bIt) {
             const float av = *aIt;
             const float bv = *bIt;
@@ -512,15 +473,17 @@ namespace Spectral {
         sanitize_white_or_dwg(cfg.inputWhiteXYZ, cfg.inputWhiteXYZ);
         sanitize_white_or_dwg(cfg.workingWhiteXYZ, cfg.workingWhiteXYZ);
 
-        cfg.applyInputChromaticAdapt = !whites_approximately_equal(cfg.inputWhiteXYZ, cfg.workingWhiteXYZ);
+        ChromaticAdaptationWhites whites{};
+        whites.source = cfg.inputWhiteXYZ;
+        whites.destination = cfg.workingWhiteXYZ;
+        cfg.applyInputChromaticAdapt = !whites_approximately_equal(whites);
         if (cfg.applyInputChromaticAdapt) {
-            cfg.inputXYZAdapt = build_chromatic_adaptation_matrix(cfg.inputWhiteXYZ, cfg.workingWhiteXYZ);
+            cfg.inputXYZAdapt = build_chromatic_adaptation_matrix(whites);
             if (!mat3_has_only_finite(cfg.inputXYZAdapt)) {
                 cfg.inputXYZAdapt = make_identity_mat3();
                 cfg.applyInputChromaticAdapt = false;
             }
-        }
-        else {
+        } else {
             cfg.inputXYZAdapt = make_identity_mat3();
         }
 
@@ -532,8 +495,7 @@ namespace Spectral {
         const float rgbIn[3],
         float rgbDWG[3],
         float* outXYZ = nullptr,
-        bool clampNonNegative = true)
-    {
+        bool clampNonNegative = true) {
         float linear[3];
         apply_input_cctf_decoding(cfg.inputColorSpace, cfg.applyCctfDecoding, rgbIn, linear);
 
@@ -554,8 +516,7 @@ namespace Spectral {
         float dwgLinear[3];
         if (clampNonNegative) {
             XYZ_to_DWG_linear(xyzPtr, dwgLinear);
-        }
-        else {
+        } else {
             gDWG_XYZ_to_RGB.mul(xyzPtr, dwgLinear);
         }
         copy_triplet_sanitized(rgbDWG, dwgLinear, clampNonNegative);
@@ -565,8 +526,7 @@ namespace Spectral {
         const FilmRawConfig& cfg,
         const float rgbIn[3],
         float rgbSRGB[3],
-        float* outXYZ = nullptr)
-    {
+        float* outXYZ = nullptr) {
         float linear[3];
         apply_input_cctf_decoding(cfg.inputColorSpace, cfg.applyCctfDecoding, rgbIn, linear);
 
@@ -594,8 +554,7 @@ namespace Spectral {
         const SpectralTables* tables,
         const Curve& sB,
         const Curve& sG,
-        const Curve& sR)
-    {
+        const Curve& sR) {
         if (!tables || tables->K <= 0) {
             return false;
         }
@@ -624,8 +583,7 @@ namespace Spectral {
         const Curve& sB,
         const Curve& sG,
         const Curve& sR,
-        float E[3])
-    {
+        float E[3]) {
         const int K = tables.K;
         double Eb = 0.0;
         double Eg = 0.0;
@@ -677,8 +635,7 @@ namespace Spectral {
         bool useSPD,
         const Curve& sB,
         const Curve& sG,
-        const Curve& sR)
-    {
+        const Curve& sR) {
         SpectralReconstructionPath path{};
         path.spdReady = useSPD && tablesSPD && S_inv && tablesSPD->K > 0;
         if (!path.spdReady) {
@@ -692,18 +649,21 @@ namespace Spectral {
         return path;
     }
 
+    struct ReconstructionRgbInputs {
+        const float* input = nullptr;
+        const float* davinciWideGamut = nullptr;
+    };
+
     inline void compute_layer_exposures_from_reconstruction_path(
         const FilmRawConfig& cfg,
-        const float rgbIn[3],
-        const float rgbDWG[3],
+        const ReconstructionRgbInputs& rgb,
         const SpectralTables* tablesSPD,
         const float* S_inv,
         const Curve& sB,
         const Curve& sG,
         const Curve& sR,
         const SpectralReconstructionPath& path,
-        float E[3])
-    {
+        float E[3]) {
         if (!path.spdReady || !tablesSPD || !S_inv) {
             std::fill_n(E, 3, 0.0f);
             return;
@@ -711,16 +671,20 @@ namespace Spectral {
 
         if (path.useMallett) {
             float rgbSRGB[3];
-            convert_input_rgb_to_sRGB_linear(cfg, rgbIn, rgbSRGB, nullptr);
+            convert_input_rgb_to_sRGB_linear(cfg, rgb.input, rgbSRGB, nullptr);
             mallett2019_exposures_from_linear_srgb(rgbSRGB, *tablesSPD, sB, sG, sR, E);
             return;
         }
 
         rgbDWG_to_layerExposures_from_tables_with_curves(
-            rgbDWG, E, 1.0f,
+            rgb.davinciWideGamut,
+            E,
+            1.0f,
             tablesSPD,
             S_inv,
-            sB, sG, sR,
+            sB,
+            sG,
+            sR,
             cfg.spectralUpsamplingMode,
             cfg.refIllumWhiteXYZ);
     }
@@ -731,9 +695,8 @@ namespace Spectral {
         const float* S_inv,
         const Curve& sB,
         const Curve& sG,
-        const Curve& sR)
-    {
-        const float rgbMid[3] = { 0.184f, 0.184f, 0.184f };
+        const Curve& sR) {
+        const float rgbMid[3] = {0.184f, 0.184f, 0.184f};
         float rgbMidDWG[3];
         const SpectralReconstructionPath path = select_spectral_reconstruction_path(
             cfg,
@@ -746,7 +709,7 @@ namespace Spectral {
         convert_input_rgb_to_DWG(cfg, rgbMid, rgbMidDWG, nullptr, !path.useHanatos);
         copy_triplet(cfg.midgrayDWG, rgbMidDWG);
 
-        float E[3] = { 0.0f, 0.0f, 0.0f };
+        float E[3] = {0.0f, 0.0f, 0.0f};
         if (!path.spdReady) {
             std::fill_n(cfg.rawMidgray, 3, 0.0f);
             cfg.rawMidgrayGreen = 1.0f;
@@ -754,10 +717,12 @@ namespace Spectral {
             return;
         }
 
+        ReconstructionRgbInputs rgbInputs{};
+        rgbInputs.input = rgbMid;
+        rgbInputs.davinciWideGamut = rgbMidDWG;
         compute_layer_exposures_from_reconstruction_path(
             cfg,
-            rgbMid,
-            rgbMidDWG,
+            rgbInputs,
             tablesSPD,
             S_inv,
             sB,
@@ -767,7 +732,7 @@ namespace Spectral {
             E);
 
         copy_triplet(cfg.rawMidgray, E);
-        const float safeGreen = sanitize_min_positive_channel_or(E[1], 1e-9f, 1.0f);
+        const float safeGreen = sanitize_raw_midgray_green_or_one(E[1]);
         cfg.rawMidgrayGreen = safeGreen;
         cfg.midgrayScale = 1.0f / safeGreen;
         if (!is_positive_finite(cfg.midgrayScale)) {
@@ -785,8 +750,7 @@ namespace Spectral {
         bool useSPD,
         const Curve& sB,
         const Curve& sG,
-        const Curve& sR)
-    {
+        const Curve& sR) {
         const SpectralReconstructionPath path = select_spectral_reconstruction_path(
             cfg,
             tablesSPD,
@@ -807,10 +771,12 @@ namespace Spectral {
         float normScale = cfg.midgrayScale;
 #endif
         if (path.spdReady) {
+            ReconstructionRgbInputs rgbInputs{};
+            rgbInputs.input = rgbIn;
+            rgbInputs.davinciWideGamut = rgbDWG;
             compute_layer_exposures_from_reconstruction_path(
                 cfg,
-                rgbIn,
-                rgbDWG,
+                rgbInputs,
                 tablesSPD,
                 S_inv,
                 sB,
@@ -819,8 +785,7 @@ namespace Spectral {
                 path,
                 E);
             scale_triplet_nonnegative_inplace(E, cfg.midgrayScale);
-        }
-        else {
+        } else {
             std::fill_n(E, 3, 0.0f);
         }
 
@@ -828,7 +793,7 @@ namespace Spectral {
         spd_probe_finalize(normScale, E);
 #endif
 
-        const float sExp = sanitize_min_positive_channel_or(exposureScale, 0.0f, 1.0f);
+        const float sExp = sanitize_exposure_scale_or_one(exposureScale);
         if (sExp != 1.0f) {
             scale_triplet_nonnegative_inplace(E, sExp);
         }
@@ -841,22 +806,24 @@ namespace Spectral {
     inline void XYZ_to_DWG_linear_adapted(
         const SpectralTables& tables,
         const float XYZ[3],
-        float RGB[3])
-    {
+        float RGB[3]) {
         float srcWhite[3];
         sanitize_white_or_dwg(tables.whiteXYZ, srcWhite);
 
         float adaptedXYZ[3];
-        chromatic_adapt_XYZ_CAT02(XYZ, srcWhite, gDWG_WhitePoint_XYZ, adaptedXYZ);
+        ChromaticAdaptationWhites whites{};
+        whites.source = srcWhite;
+        whites.destination = gDWG_WhitePoint_XYZ;
+        chromatic_adapt_XYZ_CAT02(XYZ, whites, adaptedXYZ);
         gDWG_XYZ_to_RGB.mul(adaptedXYZ, RGB);
     }
 
     inline float neutral_blend_weight_from_DWG_rgb(const float rgbDWG[3]) {
         // Y = row 2 of DWG_RGB_to_XYZ dot rgb
         const float Y = std::max(0.0f,
-            gDWG_RGB_to_XYZ.m[3] * rgbDWG[0] +
-            gDWG_RGB_to_XYZ.m[4] * rgbDWG[1] +
-            gDWG_RGB_to_XYZ.m[5] * rgbDWG[2]);
+                                 gDWG_RGB_to_XYZ.m[3] * rgbDWG[0] +
+                                     gDWG_RGB_to_XYZ.m[4] * rgbDWG[1] +
+                                     gDWG_RGB_to_XYZ.m[5] * rgbDWG[2]);
         const float w = Y / 0.18f;
         return std::clamp(w, 0.0f, 1.0f);
     }

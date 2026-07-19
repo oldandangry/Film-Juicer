@@ -8,10 +8,11 @@
 #include "ofxPixels.h"      // Pixel/rect helpers used by some 1.4 distributions
 
 #include <cstddef>
+#include <limits>
 
 // Resolve OFX support library C++ wrappers (OpenFX 1.4 compliant)
 #pragma warning(push)
-#pragma warning(disable: 5040)
+#pragma warning(disable : 5040)
 #include "ofxsCore.h"
 #include "ofxsImageEffect.h"
 #include "ofxsParam.h"
@@ -33,9 +34,9 @@
 #error "Missing kOfxTypeParameter in ofxParam.h (OpenFX 1.4)."
 #endif
 
-#include "Couplers.h"
 #include "JuicerEffect.h"
 #include "JuicerState.h"
+#include "Logging.h"
 #include "OutputColor.h"
 #include "SpectralProcessing.h"
 #include "ColorTransforms.h"
@@ -57,8 +58,8 @@ class JuicerPluginFactory : public OFX::PluginFactoryHelper<JuicerPluginFactory>
 public:
     JuicerPluginFactory()
         : OFX::PluginFactoryHelper<JuicerPluginFactory>(kPluginIdentifier,
-            kPluginVersionMajor,
-            kPluginVersionMinor) {
+                                                        kPluginVersionMajor,
+                                                        kPluginVersionMinor) {
     }
 
     void describe(OFX::ImageEffectDescriptor& desc) override;
@@ -72,8 +73,7 @@ void JuicerPluginFactory::unload() {
     JuicerProcess::root().shutdown();
 }
 
-void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc)
-{
+void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc) {
     // Label/group
     desc.setLabels("Juicer", "Juicer", "Juicer");
     desc.setPluginGrouping("Negative-juice");
@@ -97,9 +97,9 @@ void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc)
 #endif
 }
 
-void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context)
-{
-    if (context != OFX::eContextFilter) return;
+void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context) {
+    if (context != OFX::eContextFilter)
+        return;
 
     // Clips
     {
@@ -122,8 +122,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(kParamExposure);
         p->setLabel("Exposure Compensation Ev");
         p->setHint("Camera exposure compensation in EV stops. Per agx-emulsion parity: "
-            "this is camera.exposure_compensation_ev, applied as 2^EV multiplication "
-            "to film exposure. Positive values brighten the image.");
+                   "this is camera.exposure_compensation_ev, applied as 2^EV multiplication "
+                   "to film exposure. Positive values brighten the image.");
         p->setDefault(0.0);
         p->setRange(-8.0, 8.0);
         p->setDisplayRange(-4.0, 4.0);
@@ -132,7 +132,12 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(JuicerParams::kCameraMeteringMethod);
         p->setLabel("Camera metering");
         p->appendOption("Center-weighted");
+        p->appendOption("Average");
         p->appendOption("Median");
+        p->appendOption("Partial");
+        p->appendOption("Matrix");
+        p->appendOption("Multi-zone");
+        p->appendOption("Highlight-weighted");
         p->setDefault(0);
         p->setEvaluateOnChange(true);
     }
@@ -153,13 +158,20 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setEvaluateOnChange(true);
     }
 
-    // Film stock (choice)
+    if (!spektrafilm_profile_catalog_ready()) {
+        JTRACE("CATALOG", std::string("FATAL: spektrafilm profile catalog descriptor failure: ") + spektrafilm_profile_catalog_failure());
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    // Current spektrafilm profile identity.
     {
-        OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamFilmStock);
+        OFX::StrChoiceParamDescriptor* p = desc.defineStrChoiceParam(JuicerParams::kFilmProfileKey);
         p->setLabel("Film stock");
-        const int stockCount = film_stock_option_count();
-        for (int i = 0; i < stockCount; ++i) p->appendOption(film_stock_option_label(i));
-        p->setDefault(0);
+        const int stockCount = film_profile_option_count();
+        for (int i = 0; i < stockCount; ++i) {
+            p->appendOption(film_profile_option_key(i), film_profile_option_label(i));
+        }
+        p->setDefault(Spektrafilm::kDefaultFilmProfileKey); // kodak_portra_400
         p->setEvaluateOnChange(true);
     }
     // Spectral upsampling
@@ -169,11 +181,10 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->appendOption("Hanatos");
         p->appendOption("Mallett");
         p->setHint("Choose the spectral reconstruction method used for film exposure. "
-            "Hanatos uses the Hanatos 2025 LUT when available; "
-            "Mallett uses the Mallett 2019 sRGB basis reconstruction.");
+                   "Hanatos uses the Hanatos 2025 LUT when available; "
+                   "Mallett uses the Mallett 2019 sRGB basis reconstruction.");
         p->setDefault(0);
         p->setEvaluateOnChange(true);
-
     }
     // Input colour space and encoding
     {
@@ -191,136 +202,241 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setDefault(false);
         p->setEvaluateOnChange(true);
     }
-
-#ifdef JUICER_ENABLE_COUPLERS
-    // Couplers (DIR) parameters — wrapper descriptors matching Couplers::define_params
     {
-        OFX::GroupParamDescriptor* grpCouplers = desc.defineGroupParam(Couplers::kParamCouplersGroup);
-        if (grpCouplers) grpCouplers->setLabel("DIR couplers");
+        OFX::BooleanParamDescriptor* p =
+            desc.defineBooleanParam(JuicerParams::kHanatos2025AdaptationWindow);
+        p->setLabel("hanatos2025 adaptation window");
+        p->setHint("Apply the Hanatos 2025 bandpass adaptation window when reconstructing spectra.");
+        p->setDefault(true);
+        p->setEvaluateOnChange(true);
+    }
+    {
+        OFX::BooleanParamDescriptor* p =
+            desc.defineBooleanParam(JuicerParams::kHanatos2025AdaptationSurface);
+        p->setLabel("hanatos2025 adaptation surface");
+        p->setHint("Apply the Hanatos 2025 surface adaptation polynomial when reconstructing spectra.");
+        p->setDefault(false);
+        p->setEvaluateOnChange(true);
+    }
+
+    // Recipe-owned spektrafilm DIR controls.
+    {
+        OFX::GroupParamDescriptor* grpCouplers = desc.defineGroupParam(JuicerParams::kDirCouplersGroup);
+        if (grpCouplers)
+            grpCouplers->setLabel("DIR couplers");
 
         {
-            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(Couplers::kParamCouplersActive);
+            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kDirCouplersActive);
             p->setLabel("Active");
             p->setDefault(true);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersAmount);
-            p->setLabel("Couplers amount");
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kDirCouplersAmount);
+            p->setLabel("Amount");
+            p->setHint("Global multiplier on the DIR inhibition matrix.");
             p->setDefault(1.0);
             p->setRange(0.0, 2.0);
             p->setDisplayRange(0.0, 2.0);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            p->setIncrement(0.05);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersAmountR);
-            p->setLabel("Couplers ratio R");
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kDirCouplersInhibitionSameLayer);
+            p->setLabel("Inhibition_samelayer");
+            p->setHint("Multiplier on same-layer DIR inhibition.");
             p->setDefault(1.0);
-            p->setRange(0.0, 1.0);
-            p->setDisplayRange(0.0, 1.0);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            p->setRange(0.0, 2.0);
+            p->setDisplayRange(0.0, 2.0);
+            p->setIncrement(0.05);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersAmountG);
-            p->setLabel("Couplers ratio G");
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kDirCouplersInhibitionInterlayer);
+            p->setLabel("Inhibition_interlayer");
+            p->setHint("Multiplier on cross-layer DIR inhibition.");
             p->setDefault(1.0);
-            p->setRange(0.0, 1.0);
-            p->setDisplayRange(0.0, 1.0);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            p->setRange(0.0, 2.0);
+            p->setDisplayRange(0.0, 2.0);
+            p->setIncrement(0.05);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersAmountB);
-            p->setLabel("Couplers ratio B");
-            p->setDefault(1.0);
-            p->setRange(0.0, 1.0);
-            p->setDisplayRange(0.0, 1.0);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kDirCouplersDiffusionSizeUm);
+            p->setLabel("Diffusion_size_um");
+            p->setHint("Sigma in micrometers for spatial diffusion of the DIR correction.");
+            p->setDefault(20.0);
+            p->setRange(0.0, 200.0);
+            p->setDisplayRange(0.0, 200.0);
+            p->setIncrement(5.0);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
+            p->setEvaluateOnChange(true);
+        }
+
+        OFX::GroupParamDescriptor* grpCouplersAdvanced = desc.defineGroupParam("CouplersAdvancedGroup");
+        if (grpCouplersAdvanced) {
+            grpCouplersAdvanced->setLabel("Advanced");
+            grpCouplersAdvanced->setOpen(false);
+            if (grpCouplers)
+                grpCouplersAdvanced->setParent(*grpCouplers);
+        }
+        {
+            OFX::BooleanParamDescriptor* p =
+                desc.defineBooleanParam(JuicerParams::kDirCouplersGammaUseStock);
+            p->setLabel("Gamma_use_stock");
+            p->setHint("Use the selected film profile's DIR gamma values.");
+            p->setDefault(true);
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersLayerSigma);
-            p->setLabel("Layer diffusion");
-            p->setDefault(2.0);
-            p->setRange(0.0, 4.0);
-            p->setDisplayRange(0.0, 4.0);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            OFX::Double3DParamDescriptor* p =
+                desc.defineDouble3DParam(JuicerParams::kDirCouplersGammaSameLayerRgb);
+            p->setLabel("Gamma_samelayer_rgb");
+            p->setHint("Same-layer DIR gamma in donor RGB order.");
+            p->setDefault(0.336, 0.319, 0.273);
+            p->setRange(0.0, 0.0, 0.0, 4.0, 4.0, 4.0);
+            p->setDisplayRange(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
+            p->setIncrement(0.02);
+            p->setDimensionLabels("R", "G", "B");
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersHighExpShift);
-            p->setLabel("High exposure shift");
-            p->setDefault(0.0);
-            p->setRange(0.0, 1.0);
-            p->setDisplayRange(0.0, 1.0);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            OFX::Double2DParamDescriptor* p =
+                desc.defineDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerRToGb);
+            p->setLabel("Gamma_interlayer_r_to_gb");
+            p->setHint("DIR inhibition from the R layer onto G and B.");
+            p->setDefault(0.353, 0.302);
+            p->setRange(0.0, 0.0, 4.0, 4.0);
+            p->setDisplayRange(0.0, 0.0, 1.0, 1.0);
+            p->setIncrement(0.02);
+            p->setDimensionLabels("G", "B");
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersSpatialSigma);
-            p->setLabel("Couplers spatial diffusion (\xC2\xB5m)");
-            p->setDefault(10.0);
-            p->setRange(0.0, 50.0);
-            p->setDisplayRange(0.0, 50.0);
-            p->setHint("Micrometers of DIR spatial diffusion; scaled by the Camera film format parameter.");
-            if (grpCouplers) p->setParent(*grpCouplers);
+            OFX::Double2DParamDescriptor* p =
+                desc.defineDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerGToRb);
+            p->setLabel("Gamma_interlayer_g_to_rb");
+            p->setHint("DIR inhibition from the G layer onto R and B.");
+            p->setDefault(0.154, 0.353);
+            p->setRange(0.0, 0.0, 4.0, 4.0);
+            p->setDisplayRange(0.0, 0.0, 1.0, 1.0);
+            p->setIncrement(0.02);
+            p->setDimensionLabels("R", "B");
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::IntParamDescriptor* p = desc.defineIntParam(JuicerParams::kDirCouplersInitVersion);
-            p->setLabel("DIR couplers init version");
-            p->setDefault(0);
-            p->setRange(0, 1024);
-            p->setDisplayRange(0, 1024);
-            p->setIsSecret(true);
-        }
-        {
-            OFX::IntParamDescriptor* p = desc.defineIntParam(JuicerParams::kDirCouplersFollowStockMask);
-            p->setLabel("DIR couplers follow stock mask");
-            p->setDefault(0);
-            p->setRange(0, 255);
-            p->setDisplayRange(0, 255);
-            p->setIsSecret(true);
+            OFX::Double2DParamDescriptor* p =
+                desc.defineDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerBToRg);
+            p->setLabel("Gamma_interlayer_b_to_rg");
+            p->setHint("DIR inhibition from the B layer onto R and G.");
+            p->setDefault(0.168, 0.226);
+            p->setRange(0.0, 0.0, 4.0, 4.0);
+            p->setDisplayRange(0.0, 0.0, 1.0, 1.0);
+            p->setIncrement(0.02);
+            p->setDimensionLabels("R", "G");
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
+            p->setEvaluateOnChange(true);
         }
     }
 
-#endif
-
     // Scanner optics and math
     OFX::GroupParamDescriptor* grpScannerOptics = desc.defineGroupParam("ScannerOptics");
-    if (grpScannerOptics) grpScannerOptics->setLabel("Scanner Optics");
+    if (grpScannerOptics)
+        grpScannerOptics->setLabel("Scanner Optics");
     OFX::GroupParamDescriptor* grpScannerMath = desc.defineGroupParam("ScannerMath");
-    if (grpScannerMath) grpScannerMath->setLabel("Scanner Math");
+    if (grpScannerMath)
+        grpScannerMath->setLabel("Scanner Math");
     {
         OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
         p->setLabel("Scanner lens blur (px)");
         p->setHint("Gaussian blur sigma in pixels for scanner optics.");
-        p->setDefault(0.55);
+        p->setDefault(0.0);
         p->setRange(0.0, 10.0);
         p->setDisplayRange(0.0, 3.0);
-        if (grpScannerOptics) p->setParent(*grpScannerOptics);
+        if (grpScannerOptics)
+            p->setParent(*grpScannerOptics);
         p->setEvaluateOnChange(true);
     }
     {
         OFX::Double2DParamDescriptor* p = desc.defineDouble2DParam(JuicerParams::kScannerUnsharpMask);
         p->setLabel("Scanner unsharp mask");
         p->setHint("Unsharp sigma (px) and amount applied after scanner blur.");
-        p->setDefault(0.7, 1.0);
+        p->setDefault(0.7, 0.7);
         p->setRange(0.0, 0.0, 5.0, 3.0);
         p->setDisplayRange(0.0, 0.0, 5.0, 3.0);
         p->setDimensionLabels("Sigma (px)", "Amount");
-        if (grpScannerOptics) p->setParent(*grpScannerOptics);
+        if (grpScannerOptics)
+            p->setParent(*grpScannerOptics);
         p->setEvaluateOnChange(true);
     }
     {
         OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kScannerUseLut);
         p->setLabel("Scanner use LUT");
         p->setDefault(true);
-        if (grpScannerMath) p->setParent(*grpScannerMath);
+        if (grpScannerMath)
+            p->setParent(*grpScannerMath);
         p->setHint("Enable precomputed scanner spectral LUTs.");
+        p->setEvaluateOnChange(true);
+    }
+    {
+        OFX::BooleanParamDescriptor* p =
+            desc.defineBooleanParam(JuicerParams::kScannerBlackCorrection);
+        p->setLabel("Scanner black correction");
+        p->setDefault(false);
+        if (grpScannerMath)
+            p->setParent(*grpScannerMath);
+        p->setEvaluateOnChange(true);
+    }
+    {
+        OFX::BooleanParamDescriptor* p =
+            desc.defineBooleanParam(JuicerParams::kScannerWhiteCorrection);
+        p->setLabel("Scanner white correction");
+        p->setDefault(false);
+        if (grpScannerMath)
+            p->setParent(*grpScannerMath);
+        p->setEvaluateOnChange(true);
+    }
+    {
+        OFX::DoubleParamDescriptor* p =
+            desc.defineDoubleParam(JuicerParams::kScannerBlackLevel);
+        p->setLabel("Scanner black level");
+        p->setDefault(0.01);
+        p->setRange(0.0, 1.0);
+        p->setDisplayRange(0.0, 0.1);
+        if (grpScannerMath)
+            p->setParent(*grpScannerMath);
+        p->setEvaluateOnChange(true);
+    }
+    {
+        OFX::DoubleParamDescriptor* p =
+            desc.defineDoubleParam(JuicerParams::kScannerWhiteLevel);
+        p->setLabel("Scanner white level");
+        p->setDefault(0.98);
+        p->setRange(0.0, 1.0);
+        p->setDisplayRange(0.8, 1.0);
+        if (grpScannerMath)
+            p->setParent(*grpScannerMath);
         p->setEvaluateOnChange(true);
     }
     {
@@ -329,7 +445,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setDefault(17);
         p->setRange(17, 128);
         p->setDisplayRange(17, 128);
-        if (grpScannerMath) p->setParent(*grpScannerMath);
+        if (grpScannerMath)
+            p->setParent(*grpScannerMath);
         p->setHint("Cube resolution for scanner spectral LUTs.");
         p->setEvaluateOnChange(true);
     }
@@ -342,19 +459,26 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             grpPrint->setLabel("Print");
         }
         {
-            OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamPrintPaper);
+            OFX::StrChoiceParamDescriptor* p = desc.defineStrChoiceParam(JuicerParams::kPrintProfileKey);
             p->setLabel("Print paper");
-            const int paperCount = print_paper_option_count();
-            for (int i = 0; i < paperCount; ++i) p->appendOption(print_paper_option_label(i));
-            p->setDefault(0);
-            if (grpPrint) p->setParent(*grpPrint);
+            const int paperCount = print_profile_option_count();
+            for (int i = 0; i < paperCount; ++i) {
+                p->appendOption(print_profile_option_key(i), print_profile_option_label(i));
+            }
+            p->setDefault(Spektrafilm::kDefaultPrintProfileKey); // kodak_portra_endura
+            if (grpPrint)
+                p->setParent(*grpPrint);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam("PrintBypass");
-            p->setLabel("Bypass print");
-            p->setDefault(false);
-            if (grpPrint) p->setParent(*grpPrint);
+            OFX::StrChoiceParamDescriptor* p = desc.defineStrChoiceParam(JuicerParams::kParamScanRoute);
+            p->setLabel("Scan route");
+            for (int i = 0; i < Spektrafilm::scan_route_option_count(); ++i) {
+                p->appendOption(Spektrafilm::scan_route_option_key(i), Spektrafilm::scan_route_option_label(i));
+            }
+            p->setDefault(Spektrafilm::scan_route_key(Spektrafilm::kDefaultScanRoute));
+            if (grpPrint)
+                p->setParent(*grpPrint);
             p->setEvaluateOnChange(true);
         }
         {
@@ -362,56 +486,65 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setLabel("Print exposure");
             p->setDefault(1.0);
             p->setDisplayRange(0.1, 10.0);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("PrintPreflash");
             p->setLabel("Print preflash");
             p->setDefault(0.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
         }
         {
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam("PrintExposureCompensation");
             p->setLabel("Print exposure compensation");
             p->setDefault(true);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamEnlargerDichroicSet);
-            p->setLabel("Enlarger dichroics");
-            p->setHint("Select the dichroic filter set used by the enlarger Y/M/C wheels. This also selects the corresponding neutral Y/M/C baseline database.");
+            OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamDichroicFilterSet);
+            p->setLabel("Dichroic filter set");
+            p->setHint("Select the spektrafilm custom/reference dichroic model or a measured C/M/Y resource set.");
+            p->appendOption("Spektrafilm Custom");
             p->appendOption("Durst Digital Light");
             p->appendOption("Thorlabs");
             p->appendOption("Edmund Optics");
             p->setDefault(0);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
             p->setEvaluateOnChange(true);
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerY");
-            p->setLabel("Enlarger Y");
+            p->setLabel("Enlarger Y offset (Kodak CC)");
             p->setDefault(0.0);
-            p->setDisplayRange(-Print::kEnlargerSteps, Print::kEnlargerSteps);
+            p->setDisplayRange(-200.0, 200.0);
             p->setIncrement(1.0);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerM");
-            p->setLabel("Enlarger M");
+            p->setLabel("Enlarger M offset (Kodak CC)");
             p->setDefault(0.0);
-            p->setDisplayRange(-Print::kEnlargerSteps, Print::kEnlargerSteps);
+            p->setDisplayRange(-200.0, 200.0);
             p->setIncrement(1.0);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerC");
-            p->setLabel("Enlarger C");
+            p->setLabel("Enlarger C offset (Kodak CC)");
+            p->setHint("User cyan offset carried as FilmJuicerMainCFilterShift at the print recipe boundary.");
             p->setDefault(0.0);
-            p->setDisplayRange(-Print::kEnlargerSteps, Print::kEnlargerSteps);
+            p->setDisplayRange(-200.0, 200.0);
             p->setIncrement(1.0);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
         }
     }
 
@@ -421,33 +554,37 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         if (grpHalation) {
             grpHalation->setLabel("Halation");
             grpHalation->setOpen(false);
+            grpHalation->setIsSecret(true);
         }
         {
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kHalationActive);
             p->setLabel("Add halation");
             p->setDefault(false);
-            p->setHint("Add halation to the negative (scattering in raw exposure).");
-            if (grpHalation) p->setParent(*grpHalation);
+            p->setHint("Add halation to the negative raw exposure.");
+            if (grpHalation)
+                p->setParent(*grpHalation);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationScatteringStrengthMaster);
-            p->setLabel("Scattering strength (M)");
-            p->setHint("Master control for scattering strength; adjusts RGB values together.");
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationSecondaryAmountMaster);
+            p->setLabel("Secondary amount (M)");
+            p->setHint("Master control for the secondary halation amount; adjusts RGB values together.");
             p->setDefault((1.0 + 2.0 + 4.0) / 3.0);
             p->setRange(0.0, 100.0);
             p->setDisplayRange(0.0, 25.0);
-            if (grpHalation) p->setParent(*grpHalation);
+            if (grpHalation)
+                p->setParent(*grpHalation);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationScatteringSizeUmMaster);
-            p->setLabel("Scattering size (M)");
-            p->setHint("Master control for scattering size; adjusts RGB values together.");
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationSecondarySizeUmMaster);
+            p->setLabel("Secondary size (M)");
+            p->setHint("Master control for the secondary halation size; adjusts RGB values together.");
             p->setDefault((30.0 + 20.0 + 15.0) / 3.0);
             p->setRange(0.0, 1000.0);
             p->setDisplayRange(0.0, 500.0);
-            if (grpHalation) p->setParent(*grpHalation);
+            if (grpHalation)
+                p->setParent(*grpHalation);
             p->setEvaluateOnChange(true);
         }
         {
@@ -457,7 +594,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault((3.0 + 0.30 + 0.10) / 3.0);
             p->setRange(0.0, 100.0);
             p->setDisplayRange(0.0, 25.0);
-            if (grpHalation) p->setParent(*grpHalation);
+            if (grpHalation)
+                p->setParent(*grpHalation);
             p->setEvaluateOnChange(true);
         }
         {
@@ -467,41 +605,46 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(200.0);
             p->setRange(0.0, 1000.0);
             p->setDisplayRange(0.0, 1000.0);
-            if (grpHalation) p->setParent(*grpHalation);
+            if (grpHalation)
+                p->setParent(*grpHalation);
             p->setEvaluateOnChange(true);
         }
         OFX::GroupParamDescriptor* grpHalationAdvanced = desc.defineGroupParam("HalationAdvancedGroup");
         if (grpHalationAdvanced) {
             grpHalationAdvanced->setLabel("Advanced");
             grpHalationAdvanced->setOpen(false);
-            if (grpHalation) grpHalationAdvanced->setParent(*grpHalation);
+            if (grpHalation)
+                grpHalationAdvanced->setParent(*grpHalation);
         }
         {
             OFX::PushButtonParamDescriptor* p = desc.definePushButtonParam(JuicerParams::kHalationRevertToStock);
             p->setLabel("Revert to stock defaults");
             p->setHint("Reset halation parameters to the current film stock defaults.");
-            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
+            if (grpHalationAdvanced)
+                p->setParent(*grpHalationAdvanced);
         }
         {
-            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationScatteringStrength);
-            p->setLabel("Scattering strength (%)");
-            p->setHint("Fraction of scattered light (0-100, percentage) per channel.");
+            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationSecondaryAmount);
+            p->setLabel("Secondary amount (%)");
+            p->setHint("Secondary halation amount (0-100, percentage) per channel.");
             p->setDefault(1.0, 2.0, 4.0);
             p->setRange(0.0, 0.0, 0.0, 100.0, 100.0, 100.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
             p->setDimensionLabels("R", "G", "B");
-            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
+            if (grpHalationAdvanced)
+                p->setParent(*grpHalationAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationScatteringSizeUm);
-            p->setLabel("Scattering size (\xC2\xB5m)");
-            p->setHint("Sigma of the scattering blur in micrometers per channel.");
+            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationSecondarySizeUm);
+            p->setLabel("Secondary size (\xC2\xB5m)");
+            p->setHint("Sigma of the secondary halation blur in micrometers per channel.");
             p->setDefault(30.0, 20.0, 15.0);
             p->setRange(0.0, 0.0, 0.0, 1000.0, 1000.0, 1000.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 300.0, 300.0, 300.0);
             p->setDimensionLabels("R", "G", "B");
-            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
+            if (grpHalationAdvanced)
+                p->setParent(*grpHalationAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -512,7 +655,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 0.0, 100.0, 100.0, 100.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
             p->setDimensionLabels("R", "G", "B");
-            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
+            if (grpHalationAdvanced)
+                p->setParent(*grpHalationAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -523,7 +667,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 0.0, 1000.0, 1000.0, 1000.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 400.0, 400.0, 400.0);
             p->setDimensionLabels("R", "G", "B");
-            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
+            if (grpHalationAdvanced)
+                p->setParent(*grpHalationAdvanced);
             p->setEvaluateOnChange(true);
         }
     }
@@ -540,7 +685,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setLabel("Add grain");
             p->setDefault(false);
             p->setHint("Add grain to the negative.");
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -548,7 +694,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setLabel("Use sublayers");
             p->setDefault(true);
             p->setHint("Enable sublayer grain simulation.");
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -559,7 +706,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->appendOption("Coarse");
             p->setDefault(1);
             p->setHint("Starting point for grain size/strength presets.");
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -570,7 +718,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(-3.0, 3.0);
             p->setDisplayRange(-3.0, 3.0);
             p->setIncrement(0.1);
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -580,7 +729,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.50);
             p->setRange(0.20, 2.00);
             p->setDisplayRange(0.20, 2.00);
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -590,7 +740,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.5);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -600,7 +751,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.3);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -610,20 +762,23 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.55);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         OFX::GroupParamDescriptor* grpGrainAdvanced = desc.defineGroupParam("GrainAdvancedGroup");
         if (grpGrainAdvanced) {
             grpGrainAdvanced->setLabel("Advanced");
             grpGrainAdvanced->setOpen(false);
-            if (grpGrain) grpGrainAdvanced->setParent(*grpGrain);
+            if (grpGrain)
+                grpGrainAdvanced->setParent(*grpGrain);
         }
         {
             OFX::PushButtonParamDescriptor* p = desc.definePushButtonParam(JuicerParams::kGrainResetAdvanced);
             p->setLabel("Reset Advanced");
             p->setHint("Reset advanced grain controls to the base values.");
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainParticleAreaUm2);
@@ -633,7 +788,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 1.0);
             p->setIncrement(0.1);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -643,7 +799,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(1.48);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 3.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -653,7 +810,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(1.922);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 4.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -663,7 +821,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.08);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 0.2);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -673,7 +832,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.97);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.9, 1.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -683,7 +843,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(1.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 3.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -693,7 +854,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.226);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -703,7 +865,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -713,7 +876,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(19.0);
             p->setRange(1.0, 50.0);
             p->setDisplayRange(1.0, 50.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -724,15 +888,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 100.0, 1000.0);
             p->setDisplayRange(0.0, 0.0, 100.0, 200.0);
             p->setDimensionLabels("Cell (um)", "Sigma (1e-3)");
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kGrainBreathingDebug);
-            p->setLabel("Breathing debug");
-            p->setHint("Debug view for the breathing field.");
-            p->setDefault(false);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -747,7 +904,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->appendOption("Mean density");
             p->setDefault(0);
             p->setHint("Debug view selector for grain delta fields (pre-scanner).");
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -759,7 +917,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDisplayRange(0.0, 0.0, 0.0, 3.0, 3.0, 3.0);
             p->setDimensionLabels("R", "G", "B");
             p->setIsSecret(true);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -771,7 +930,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDisplayRange(0.0, 0.0, 0.0, 4.0, 4.0, 4.0);
             p->setDimensionLabels("R", "G", "B");
             p->setIsSecret(true);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -783,7 +943,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDisplayRange(0.0, 0.0, 0.0, 0.2, 0.2, 0.2);
             p->setDimensionLabels("C", "M", "Y");
             p->setIsSecret(true);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -795,7 +956,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDisplayRange(0.9, 0.9, 0.9, 1.0, 1.0, 1.0);
             p->setDimensionLabels("C", "M", "Y");
             p->setIsSecret(true);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -805,7 +967,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.30);
             p->setRange(0.0, 0.30);
             p->setDisplayRange(0.0, 0.30);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -815,7 +978,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(8.0);
             p->setRange(5.0, 60.0);
             p->setDisplayRange(5.0, 60.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
     }
@@ -835,7 +999,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(1.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
-            if (grpEffects) p->setParent(*grpEffects);
+            if (grpEffects)
+                p->setParent(*grpEffects);
             p->setEvaluateOnChange(true);
         }
         {
@@ -845,7 +1010,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
-            if (grpEffects) p->setParent(*grpEffects);
+            if (grpEffects)
+                p->setParent(*grpEffects);
             p->setEvaluateOnChange(true);
         }
         {
@@ -855,7 +1021,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
-            if (grpEffects) p->setParent(*grpEffects);
+            if (grpEffects)
+                p->setParent(*grpEffects);
             p->setEvaluateOnChange(true);
         }
         {
@@ -865,7 +1032,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
-            if (grpEffects) p->setParent(*grpEffects);
+            if (grpEffects)
+                p->setParent(*grpEffects);
             p->setEvaluateOnChange(true);
         }
         {
@@ -875,9 +1043,245 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
-            if (grpEffects) p->setParent(*grpEffects);
+            if (grpEffects)
+                p->setParent(*grpEffects);
             p->setEvaluateOnChange(true);
         }
+    }
+
+    // Diffusion group
+    {
+        OFX::GroupParamDescriptor* grpDiffusion =
+            desc.defineGroupParam(JuicerParams::kDiffusionGroup);
+        if (grpDiffusion) {
+            grpDiffusion->setLabel("Diffusion");
+            grpDiffusion->setOpen(false);
+        }
+
+        struct DiffusionParamUiSpec {
+            const char* name = nullptr;
+            const char* label = nullptr;
+            const char* hint = nullptr;
+        };
+        struct DiffusionSliderUiSpec {
+            DiffusionParamUiSpec param;
+            double defaultValue = 0.0;
+            double minimum = 0.0;
+            double maximum = 0.0;
+            double displayMinimum = 0.0;
+            double displayMaximum = 0.0;
+            double increment = 0.0;
+        };
+        auto defineEnabled = [&](const DiffusionParamUiSpec& spec) {
+            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(spec.name);
+            p->setLabel(spec.label);
+            p->setDefault(false);
+            p->setHint(spec.hint);
+            if (grpDiffusion)
+                p->setParent(*grpDiffusion);
+            p->setEvaluateOnChange(true);
+        };
+        auto defineFamily = [&](const DiffusionParamUiSpec& spec) {
+            OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(spec.name);
+            p->setLabel(spec.label);
+            p->appendOption("Glimmerglass");
+            p->appendOption("Black Pro-Mist");
+            p->appendOption("Pro-Mist");
+            p->appendOption("CineBloom");
+            p->setDefault(1);
+            p->setHint(spec.hint);
+            if (grpDiffusion)
+                p->setParent(*grpDiffusion);
+            p->setEvaluateOnChange(true);
+        };
+        auto defineSlider = [&](const DiffusionSliderUiSpec& spec) {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(spec.param.name);
+            p->setLabel(spec.param.label);
+            p->setDefault(spec.defaultValue);
+            p->setRange(spec.minimum, spec.maximum);
+            p->setDisplayRange(spec.displayMinimum, spec.displayMaximum);
+            p->setIncrement(spec.increment);
+            p->setHint(spec.param.hint);
+            if (grpDiffusion)
+                p->setParent(*grpDiffusion);
+            p->setEvaluateOnChange(true);
+        };
+
+        defineEnabled({JuicerParams::kCameraDiffusionEnabled,
+                       "Camera Enabled",
+                       "Apply diffusion on the camera stage before film exposure."});
+        defineFamily({JuicerParams::kCameraDiffusionFamily,
+                      "Camera Family",
+                      "PSF family used on the camera stage before film exposure."});
+        defineSlider({{JuicerParams::kCameraDiffusionStrength,
+                       "Camera Strength",
+                       "Commercial filter stop: 0, 1/8, 1/4, 1/2, 1, or 2; intermediate values are supported."},
+                      0.5,
+                      0.0,
+                      2.0,
+                      0.0,
+                      2.0,
+                      0.125});
+        defineSlider({{JuicerParams::kCameraDiffusionSpatialScale,
+                       "Camera Spatial Scale",
+                       "Multiplier on the camera-stage image-plane PSF widths."},
+                      1.0,
+                      0.0,
+                      std::numeric_limits<double>::max(),
+                      0.0,
+                      4.0,
+                      0.1});
+        defineSlider({{JuicerParams::kCameraDiffusionHaloWarmth,
+                       "Camera Halo Warmth",
+                       "Additive camera-stage halo warmth offset. Positive warms the outer halo; negative inverts it."},
+                      0.0,
+                      -1.5,
+                      1.5,
+                      -1.5,
+                      1.5,
+                      0.05});
+        defineSlider({{JuicerParams::kCameraDiffusionCoreIntensity,
+                       "Camera Core Intensity",
+                       "Multiplier on the camera-stage core weight. 1.0 uses the family default."},
+                      1.0,
+                      0.0,
+                      4.0,
+                      0.0,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kCameraDiffusionCoreSize,
+                       "Camera Core Size",
+                       "Multiplier on the camera-stage core size. 1.0 uses the family default."},
+                      1.0,
+                      0.1,
+                      4.0,
+                      0.1,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kCameraDiffusionHaloIntensity,
+                       "Camera Halo Intensity",
+                       "Multiplier on the camera-stage halo weight. 1.0 uses the family default."},
+                      1.0,
+                      0.0,
+                      4.0,
+                      0.0,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kCameraDiffusionHaloSize,
+                       "Camera Halo Size",
+                       "Multiplier on the camera-stage halo size. 1.0 uses the family default."},
+                      1.0,
+                      0.1,
+                      4.0,
+                      0.1,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kCameraDiffusionBloomIntensity,
+                       "Camera Bloom Intensity",
+                       "Multiplier on the camera-stage bloom weight. 1.0 uses the family default."},
+                      1.0,
+                      0.0,
+                      4.0,
+                      0.0,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kCameraDiffusionBloomSize,
+                       "Camera Bloom Size",
+                       "Multiplier on the camera-stage bloom size. 1.0 uses the family default."},
+                      1.0,
+                      0.1,
+                      4.0,
+                      0.1,
+                      4.0,
+                      0.05});
+
+        defineEnabled({JuicerParams::kPrintDiffusionEnabled,
+                       "Print Enabled",
+                       "Apply diffusion on the print stage after enlarger exposure is formed."});
+        defineFamily({JuicerParams::kPrintDiffusionFamily,
+                      "Print Family",
+                      "PSF family used on the print stage after enlarger exposure is formed."});
+        defineSlider({{JuicerParams::kPrintDiffusionStrength,
+                       "Print Strength",
+                       "Commercial filter stop: 0, 1/8, 1/4, 1/2, 1, or 2; intermediate values are supported."},
+                      0.5,
+                      0.0,
+                      2.0,
+                      0.0,
+                      2.0,
+                      0.125});
+        defineSlider({{JuicerParams::kPrintDiffusionSpatialScale,
+                       "Print Spatial Scale",
+                       "Multiplier on the print-stage image-plane PSF widths."},
+                      1.0,
+                      0.0,
+                      std::numeric_limits<double>::max(),
+                      0.0,
+                      4.0,
+                      0.1});
+        defineSlider({{JuicerParams::kPrintDiffusionHaloWarmth,
+                       "Print Halo Warmth",
+                       "Additive print-stage halo warmth offset. Positive warms the outer halo; negative inverts it."},
+                      0.0,
+                      -1.5,
+                      1.5,
+                      -1.5,
+                      1.5,
+                      0.05});
+        defineSlider({{JuicerParams::kPrintDiffusionCoreIntensity,
+                       "Print Core Intensity",
+                       "Multiplier on the print-stage core weight. 1.0 uses the family default."},
+                      1.0,
+                      0.0,
+                      4.0,
+                      0.0,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kPrintDiffusionCoreSize,
+                       "Print Core Size",
+                       "Multiplier on the print-stage core size. 1.0 uses the family default."},
+                      1.0,
+                      0.1,
+                      4.0,
+                      0.1,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kPrintDiffusionHaloIntensity,
+                       "Print Halo Intensity",
+                       "Multiplier on the print-stage halo weight. 1.0 uses the family default."},
+                      1.0,
+                      0.0,
+                      4.0,
+                      0.0,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kPrintDiffusionHaloSize,
+                       "Print Halo Size",
+                       "Multiplier on the print-stage halo size. 1.0 uses the family default."},
+                      1.0,
+                      0.1,
+                      4.0,
+                      0.1,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kPrintDiffusionBloomIntensity,
+                       "Print Bloom Intensity",
+                       "Multiplier on the print-stage bloom weight. 1.0 uses the family default."},
+                      1.0,
+                      0.0,
+                      4.0,
+                      0.0,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kPrintDiffusionBloomSize,
+                       "Print Bloom Size",
+                       "Multiplier on the print-stage bloom size. 1.0 uses the family default."},
+                      1.0,
+                      0.1,
+                      4.0,
+                      0.1,
+                      4.0,
+                      0.05});
     }
 
     // Glare group
@@ -893,28 +1297,31 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setLabel("Add glare");
             p->setDefault(true);
             p->setHint("Add glare to the print (scanner-stage stray light).");
-            if (grpGlare) p->setParent(*grpGlare);
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlarePercent);
             p->setLabel("Glare percent");
-            p->setDefault(0.10);
+            p->setDefault(0.03);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 0.5);
             p->setIncrement(0.05);
             p->setHint("Percentage of glare light (typ. 0.10-0.25). Value is in percent, not fraction.");
-            if (grpGlare) p->setParent(*grpGlare);
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlareRoughness);
             p->setLabel("Glare roughness");
-            p->setDefault(0.4);
+            p->setDefault(0.7);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
             p->setHint("Glare roughness (0-1). Stddev = roughness * percent.");
-            if (grpGlare) p->setParent(*grpGlare);
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
         {
@@ -924,38 +1331,42 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 3.0);
             p->setHint("Gaussian blur sigma in pixels applied to the glare field.");
-            if (grpGlare) p->setParent(*grpGlare);
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlareCompensationRemovalFactor);
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kPrintShadowCompensationFactor);
             p->setLabel("Compensation removal factor");
             p->setDefault(0.0);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 0.2);
             p->setIncrement(0.05);
-            p->setHint("Remove viewing glare compensation from print curves. 0.2 = 20% underexposed shadows. Intended as alternative to stochastic glare (set GlarePercent=0).");
-            if (grpGlare) p->setParent(*grpGlare);
+            p->setHint("Apply print shadow compensation to density curves. 0.2 = 20% underexposed shadows. Intended as alternative to stochastic glare (set GlarePercent=0).");
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlareCompensationRemovalDensity);
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kPrintShadowCompensationDensity);
             p->setLabel("Compensation removal density");
             p->setDefault(1.2);
             p->setRange(0.0, 3.0);
             p->setDisplayRange(0.8, 2.0);
             p->setHint("Density at which the compensation-removal transition is centered (typ. 1.0-1.5).");
-            if (grpGlare) p->setParent(*grpGlare);
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlareCompensationRemovalTransition);
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kPrintShadowCompensationTransition);
             p->setLabel("Compensation removal transition");
             p->setDefault(0.3);
             p->setRange(0.0, 2.0);
             p->setDisplayRange(0.0, 0.8);
             p->setHint("Transition density range for compensation removal (typ. 0.1-0.5).");
-            if (grpGlare) p->setParent(*grpGlare);
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
     }
@@ -975,7 +1386,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDisplayRange(0.0, 1.0);
             p->setIncrement(0.2);
             p->setHint("Minimum density factor of the print paper (0-1), make the white less white.");
-            if (grpSpecial) p->setParent(*grpSpecial);
+            if (grpSpecial)
+                p->setParent(*grpSpecial);
             p->setEvaluateOnChange(true);
         }
     }
@@ -1000,6 +1412,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->appendOption("D65");
         p->appendOption("D55");
         p->appendOption("D50");
+        p->appendOption("TH-KG3");
         p->appendOption("TH-KG3-L");
         p->appendOption("T");
         p->appendOption("K75P");
@@ -1011,7 +1424,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
     // Output encoding group
     {
         OFX::GroupParamDescriptor* grpOutput = desc.defineGroupParam("OutputEncodingGroup");
-        if (grpOutput) grpOutput->setLabel("Output encoding");
+        if (grpOutput)
+            grpOutput->setLabel("Output encoding");
 
         {
             OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamOutputColorSpace);
@@ -1020,28 +1434,30 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
                 p->appendOption(OutputEncoding::kColorSpaceLabels[i]);
             }
             p->setDefault(OutputEncoding::toIndex(OutputEncoding::ColorSpace::sRGB));
-            if (grpOutput) p->setParent(*grpOutput);
+            if (grpOutput)
+                p->setParent(*grpOutput);
             p->setEvaluateOnChange(true);
         }
         {
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(kParamOutputCctfEncoding);
             p->setLabel("Apply output CCTF");
             p->setDefault(true);
-            if (grpOutput) p->setParent(*grpOutput);
+            if (grpOutput)
+                p->setParent(*grpOutput);
             p->setEvaluateOnChange(true);
         }
         {
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(kParamOutputLinearPassThrough);
             p->setLabel("Output linear pass-through");
             p->setDefault(false);
-            if (grpOutput) p->setParent(*grpOutput);
+            if (grpOutput)
+                p->setParent(*grpOutput);
             p->setEvaluateOnChange(true);
         }
     }
 }
 
-OFX::ImageEffect* JuicerPluginFactory::createInstance(OfxImageEffectHandle handle, OFX::ContextEnum /*context*/)
-{
+OFX::ImageEffect* JuicerPluginFactory::createInstance(OfxImageEffectHandle handle, OFX::ContextEnum /*context*/) {
     // Create our effect instance (constructor attaches InstanceState + runs bootstrap).
     return new JuicerEffect(handle);
 }

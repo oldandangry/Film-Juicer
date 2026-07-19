@@ -37,18 +37,12 @@ namespace JuicerCuda {
         int spectralUpsamplingMode = 0; // 0=PreferHanatos, 1=ForceMallett (Spectral::SpectralUpsamplingMode)
 
         float inputRGBToXYZ[9] = {
-            1,0,0,
-            0,1,0,
-            0,0,1
-        };
+            1, 0, 0, 0, 1, 0, 0, 0, 1};
         float inputXYZAdapt[9] = {
-            1,0,0,
-            0,1,0,
-            0,0,1
-        };
+            1, 0, 0, 0, 1, 0, 0, 0, 1};
 
-        float midgrayScale = 1.0f;
-        float refIllumWhiteXYZ[3] = { 0.950455f, 1.0f, 1.089058f };
+        float mallettGreenMidgrayScale = 1.0f;
+        float refIllumWhiteXYZ[3] = {0.950455f, 1.0f, 1.089058f};
     };
 
     struct CctfPayload {
@@ -70,29 +64,23 @@ namespace JuicerCuda {
         int preserveLinearRange = 0;
         int inputIsOutputSpace = 1;
         float dwgToOutput[9] = {
-            1,0,0,
-            0,1,0,
-            0,0,1
-        };
+            1, 0, 0, 0, 1, 0, 0, 0, 1};
         CctfPayload cctf{};
     };
 
     struct DirPayload {
         int active = 0;
+        int positive = 0;
         float M[9] = {
-            0,0,0,
-            0,0,0,
-            0,0,0
-        };
-        float highShift = 0.0f;
-        float dMax[3] = { 1.0f, 1.0f, 1.0f };
+            0, 0, 0, 0, 0, 0, 0, 0, 0};
+        float dMax[3] = {1.0f, 1.0f, 1.0f};
     };
 
     // Scanner color runtime (CAT + XYZ->RGB) plus output encoding selection.
     struct ScanColorPayload {
-        float cat02[9] = { 0.0f };
-        float xyzToRgb[9] = { 0.0f };
-        float illuminantXYZ[3] = { 0.0f, 0.0f, 0.0f };
+        float cat02[9] = {0.0f};
+        float xyzToRgb[9] = {0.0f};
+        float illuminantXYZ[3] = {0.0f, 0.0f, 0.0f};
         OutputEncodingPayload encoding{};
     };
 
@@ -103,24 +91,42 @@ namespace JuicerCuda {
         const float* JUICER_RESTRICT Ax = nullptr;
         const float* JUICER_RESTRICT Ay = nullptr;
         const float* JUICER_RESTRICT Az = nullptr;
-        const float* JUICER_RESTRICT baseMin = nullptr;
+        const float* JUICER_RESTRICT baseDensityMin = nullptr;
         int K = 0;
         int hasBaseline = 0;
         float invYn = 1.0f;
         int mediumIsNegative = 1;
-        float min_cmy[3] = { 0.0f, 0.0f, 0.0f };
-        float inv_max_cmy[3] = { 1.0f, 1.0f, 1.0f };
+        float min_cmy[3] = {0.0f, 0.0f, 0.0f};
+        float inv_max_cmy[3] = {1.0f, 1.0f, 1.0f};
     };
 
     struct SpatialDirPayload {
         int active = 0;
-        const float* JUICER_RESTRICT corrY = nullptr;
-        const float* JUICER_RESTRICT corrM = nullptr;
-        const float* JUICER_RESTRICT corrC = nullptr;
+        const float* filteredCorrectionY = nullptr;
+        const float* filteredCorrectionM = nullptr;
+        const float* filteredCorrectionC = nullptr;
+        const float* JUICER_RESTRICT logRawB = nullptr;
+        const float* JUICER_RESTRICT logRawG = nullptr;
+        const float* JUICER_RESTRICT logRawR = nullptr;
+    };
+
+    struct CameraFilmLinearExposurePlanes {
+        float* redSensitive = nullptr;
+        float* greenSensitive = nullptr;
+        float* blueSensitive = nullptr;
+        std::size_t rowStrideFloats = 0;
+    };
+
+    struct EnlargerPrintLinearExposurePlanes {
+        float* redSensitiveCForming = nullptr;
+        float* greenSensitiveMForming = nullptr;
+        float* blueSensitiveYForming = nullptr;
+        std::size_t rowStrideFloats = 0;
     };
 
     struct FilmExposurePayload {
-        float exposureScale = 1.0f;
+        float manualExposureScale = 1.0f;
+        float routeCorrectionScale = 1.0f;
         const float* JUICER_RESTRICT exposureScaleDevice = nullptr;
         DeviceCurveView sensB{};
         DeviceCurveView sensG{};
@@ -130,7 +136,7 @@ namespace JuicerCuda {
         const float* JUICER_RESTRICT tablesAz = nullptr;
         const float* JUICER_RESTRICT tablesIllum = nullptr;
         int tablesK = 0;
-        float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
+        float spdSInv[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
         const float* JUICER_RESTRICT hanatosLut = nullptr;
         int hanatosN = 0;
         const float* JUICER_RESTRICT hanatosLutIntegrated = nullptr;
@@ -140,6 +146,7 @@ namespace JuicerCuda {
     };
 
     struct FilmDevelopPayload {
+        // Direct production packs only DirCouplersRecipe and prepared-frame views here.
         float gammaFactorB = 1.0f;
         float gammaFactorG = 1.0f;
         float gammaFactorR = 1.0f;
@@ -156,20 +163,43 @@ namespace JuicerCuda {
 
     struct HalationPayload {
         int active = 0;
-        float strength[3] = { 0.0f, 0.0f, 0.0f };
-        float scatteringStrength[3] = { 0.0f, 0.0f, 0.0f };
+        float primaryAmount[3] = {0.0f, 0.0f, 0.0f};
+        float secondaryAmount[3] = {0.0f, 0.0f, 0.0f};
     };
 
     struct HalationKernelPayload {
-        const float* JUICER_RESTRICT halationKernel[3] = { nullptr, nullptr, nullptr };
-        int halationRadius[3] = { 0, 0, 0 };
-        const float* JUICER_RESTRICT scatteringKernel[3] = { nullptr, nullptr, nullptr };
-        int scatteringRadius[3] = { 0, 0, 0 };
+        const float* JUICER_RESTRICT halationKernel[3] = {nullptr, nullptr, nullptr};
+        int halationRadius[3] = {0, 0, 0};
+        const float* JUICER_RESTRICT scatteringKernel[3] = {nullptr, nullptr, nullptr};
+        int scatteringRadius[3] = {0, 0, 0};
     };
+
+    struct alignas(16) GrainFrameUniforms {
+        std::uint64_t breathingSeedA = 0;
+        std::uint64_t breathingSeedB = 0;
+        std::uint64_t clumpStaticSeed = 0;
+        float breathingT = 0.0f;
+        float breathingCellSmallPx = 0.0f;
+        float breathingCellLargePx = 0.0f;
+        float breathingDriftOffsetX = 0.0f;
+        float breathingDriftOffsetY = 0.0f;
+        float breathingRollOffsetY = 0.0f;
+        float breathingMix = 0.0f;
+        float clumpCellPx = 0.0f;
+        float clumpRollOffsetY = 0.0f;
+        float clumpMu = 0.0f;
+        float clumpSigma = 0.0f;
+        float clumpRmsNorm = 1.0f;
+        int breathingActive = 0;
+        int clumpActive = 0;
+    };
+
+    static_assert(sizeof(GrainFrameUniforms) == 80);
 
     struct GrainPayload {
         int active = 0;
         int sublayersActive = 0;
+        int positiveFilm = 0;
         int nSubLayers = 1;
         int originX = 0;
         int originY = 0;
@@ -186,6 +216,7 @@ namespace JuicerCuda {
         float timeAlpha = 0.0f;
         std::uint64_t stbnSessionSeed = 0;
         std::uint64_t clipToken = 0;
+        GrainFrameUniforms* frameUniforms = nullptr;
         const std::uint8_t* JUICER_RESTRICT wangTiles = nullptr;
         const std::uint8_t* JUICER_RESTRICT wangLut = nullptr;
         int wangWidth = 0;
@@ -199,27 +230,22 @@ namespace JuicerCuda {
         float breathingCellUmLarge = 0.0f;
         float breathingMix = 0.0f;
         float breathingDriftUmPerFrame = 0.0f;
-        int breathingDebug = 0;
         int debugView = 0;
         float pixelSizeUm = 0.0f; // Pixel size in micrometers.
         int pitchPx = 0;
-        float blurSigmaPx = 0.0f; // Grain blur sigma in pixels.
-        float blurDyeCloudsUm = 0.0f; // Dye-cloud blur sigma scale in pixels (legacy name).
-        float microStructure[2] = { 0.0f, 0.0f }; // [cell_um, clump_sigma_x1e-3]
+        float microStructure[2] = {0.0f, 0.0f}; // [cell_um, clump_sigma_x1e-3]
         float clumpTemporalMix = 0.0f;
         int clumpMorphPeriodFrames = 0;
         float filmDustAmount = 0.0f;
         float gateDustAmount = 0.0f;
         float filmScratchAmount = 0.0f;
         float gateScratchAmount = 0.0f;
-        const float* JUICER_RESTRICT gateMask = nullptr;
-        int gateMaskWidth = 0;
-        int gateMaskHeight = 0;
-        float densityMin[3] = { 0.0f, 0.0f, 0.0f };
-        float uniformity[3] = { 0.0f, 0.0f, 0.0f };
-        float densityMax[3] = { 0.0f, 0.0f, 0.0f };
-        float nParticles[3] = { 0.0f, 0.0f, 0.0f };
-        float odParticle[3] = { 0.0f, 0.0f, 0.0f };
+        float densityMin[3] = {0.0f, 0.0f, 0.0f};
+        float uniformity[3] = {0.0f, 0.0f, 0.0f};
+        float densityMax[3] = {0.0f, 0.0f, 0.0f};
+        float nParticles[3] = {0.0f, 0.0f, 0.0f};
+        float odParticle[3] = {0.0f, 0.0f, 0.0f};
+        float sizeMixWeightFine = 1.0f;
         float sizeMixWeight = 0.0f;
         float sizeMixWeightMid = 0.0f;
         float sizeMixScale = 1.0f;
@@ -230,23 +256,25 @@ namespace JuicerCuda {
         float chromaIndWeight = 1.0f;
         float debugScale = 1.0f;
 
-        float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
-                                         {0.0f, 0.0f, 0.0f},
-                                         {0.0f, 0.0f, 0.0f} };
-        float densityMinLayers[3][3] = { {0.0f, 0.0f, 0.0f},
-                                         {0.0f, 0.0f, 0.0f},
-                                         {0.0f, 0.0f, 0.0f} };
-        float nParticlesLayers[3][3] = { {0.0f, 0.0f, 0.0f},
-                                         {0.0f, 0.0f, 0.0f},
-                                         {0.0f, 0.0f, 0.0f} };
-        float odParticleLayers[3][3] = { {0.0f, 0.0f, 0.0f},
-                                         {0.0f, 0.0f, 0.0f},
-                                         {0.0f, 0.0f, 0.0f} };
+        DeviceCurveView densityCurveCmy[3] = {};
+        int densityLayerAxisFinite[3] = {0, 0, 0};
+        float densityLayerAxisBlockPrefixMax[3][16] = {};
+        float densityMaxLayers[3][3] = {{0.0f, 0.0f, 0.0f},
+                                        {0.0f, 0.0f, 0.0f},
+                                        {0.0f, 0.0f, 0.0f}};
+        float densityMinLayers[3][3] = {{0.0f, 0.0f, 0.0f},
+                                        {0.0f, 0.0f, 0.0f},
+                                        {0.0f, 0.0f, 0.0f}};
+        float nParticlesLayers[3][3] = {{0.0f, 0.0f, 0.0f},
+                                        {0.0f, 0.0f, 0.0f},
+                                        {0.0f, 0.0f, 0.0f}};
+        float odParticleLayers[3][3] = {{0.0f, 0.0f, 0.0f},
+                                        {0.0f, 0.0f, 0.0f},
+                                        {0.0f, 0.0f, 0.0f}};
         const float* JUICER_RESTRICT densityCurvesLayers[3][3] = {
-            { nullptr, nullptr, nullptr },
-            { nullptr, nullptr, nullptr },
-            { nullptr, nullptr, nullptr }
-        };
+            {nullptr, nullptr, nullptr},
+            {nullptr, nullptr, nullptr},
+            {nullptr, nullptr, nullptr}};
     };
 
     struct GateWeavePayload {
@@ -255,7 +283,6 @@ namespace JuicerCuda {
         float dyPx = 0.0f;
         float cosRot = 1.0f;
         float sinRot = 0.0f;
-        float debugScalePx = 1.0f;
     };
 
     struct GrainKernelPayload {
@@ -266,11 +293,10 @@ namespace JuicerCuda {
         const float* JUICER_RESTRICT blurKernelCoarse = nullptr;
         int blurRadiusCoarse = 0;
         const float* JUICER_RESTRICT dyeKernel[3][3] = {
-            { nullptr, nullptr, nullptr },
-            { nullptr, nullptr, nullptr },
-            { nullptr, nullptr, nullptr }
-        };
-        int dyeRadius[3][3] = { {0, 0, 0}, {0, 0, 0}, {0, 0, 0} };
+            {nullptr, nullptr, nullptr},
+            {nullptr, nullptr, nullptr},
+            {nullptr, nullptr, nullptr}};
+        int dyeRadius[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
     };
 
     struct PrintExposePayload {
@@ -282,9 +308,10 @@ namespace JuicerCuda {
         DeviceCurveView printSensM{};
         DeviceCurveView printSensY{};
         float printExposure = 1.0f;
+        float routeCorrectionScale = 1.0f;
         float printPreflashExposure = 0.0f;
         float printMidgrayFactor = 1.0f;
-        float printPreflashRaw[3] = { 0.0f, 0.0f, 0.0f };
+        float printPreflashRaw[3] = {0.0f, 0.0f, 0.0f};
     };
 
     struct PrintDevelopPayload {
@@ -298,10 +325,22 @@ namespace JuicerCuda {
 
     struct ScanStagePayload {
         int scannerUseLut = 0;
-        const double* JUICER_RESTRICT scanLutLog2XYZ = nullptr;
+        const float* JUICER_RESTRICT scanLutLog2PchipXYZ = nullptr;
+        const float* JUICER_RESTRICT scanLutPchipSlopeC = nullptr;
+        const float* JUICER_RESTRICT scanLutPchipSlopeM = nullptr;
+        const float* JUICER_RESTRICT scanLutPchipSlopeY = nullptr;
+        const float* JUICER_RESTRICT scanLutPchipCellMin = nullptr;
+        const float* JUICER_RESTRICT scanLutPchipCellMax = nullptr;
         int scanLutRes = 0;
         ScanTablesPayload scanTables{};
         ScanColorPayload scanColor{};
+        int correctionActive = 0;
+        float correctionSlope = 1.0f;
+        float correctionOffset = 0.0f;
+        const float* JUICER_RESTRICT glarePercent = nullptr;
+        float* linearRgbR = nullptr;
+        float* linearRgbG = nullptr;
+        float* linearRgbB = nullptr;
         int* scanErrorFlag = nullptr;
     };
 
@@ -320,6 +359,38 @@ namespace JuicerCuda {
         int glareRadius = 0;
     };
 
+    struct DirectPipelineRunParams {
+        const void* src = nullptr;
+        std::size_t srcRowBytes = 0;
+        void* dst = nullptr;
+        std::size_t dstRowBytes = 0;
+        int width = 0;
+        int height = 0;
+        int nComponents = 0;
+        FilmExposurePayload filmExpose{};
+        FilmDevelopPayload filmDevelop{};
+        ScanStagePayload scanStage{};
+        FilmRawPayload filmRaw{};
+    };
+
+    struct PrintPipelineRunParams {
+        const void* src = nullptr;
+        std::size_t srcRowBytes = 0;
+        void* dst = nullptr;
+        std::size_t dstRowBytes = 0;
+        int width = 0;
+        int height = 0;
+        int nComponents = 0;
+        FilmExposurePayload filmExpose{};
+        FilmDevelopPayload filmDevelop{};
+        PrintExposePayload printExpose{};
+        PrintDevelopPayload printDevelop{};
+        ScanStagePayload scanStage{};
+        FilmRawPayload filmRaw{};
+    };
+
+    // Broad CUDA payload used by the monolithic launch path; focused direct rendering uses
+    // DirectPipelineRunParams.
     struct PipelineRunParams {
         const void* src = nullptr;
         std::size_t srcRowBytes = 0;
@@ -334,9 +405,6 @@ namespace JuicerCuda {
         FilmDevelopPayload filmDevelop{};
         HalationPayload halation{};
         HalationKernelPayload halationKernels{};
-        GrainPayload grain{};
-        GrainKernelPayload grainKernels{};
-        GateWeavePayload gateWeave{};
         PrintExposePayload printExpose{};
         PrintDevelopPayload printDevelop{};
         ScanStagePayload scanStage{};

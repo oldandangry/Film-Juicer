@@ -74,25 +74,29 @@ namespace Spectral {
     // --------------------------
     // Physics: Planck blackbody
     // --------------------------
-    inline float planck_blackbody(float lambda_nm, float T_kelvin) {
+    struct PlanckBlackbodySample {
+        float wavelengthNm = 0.0f;
+        float temperatureKelvin = 0.0f;
+    };
+
+    inline float planck_blackbody(const PlanckBlackbodySample& sample) {
         // Spectral radiance up to a scale factor; we normalize later.
         // lambda in meters
-        const double lambda_m = static_cast<double>(lambda_nm) * 1e-9;
+        const double lambda_m = static_cast<double>(sample.wavelengthNm) * 1e-9;
         const double c = 2.99792458e8;
         const double h = 6.62607015e-34;
         const double k = 1.380649e-23;
 
         const double c1 = 2.0 * h * c * c;
         const double c2 = h * c / k;
-        const double denom = std::exp(c2 / (lambda_m * static_cast<double>(T_kelvin))) - 1.0;
+        const double denom = std::exp(c2 / (lambda_m * static_cast<double>(sample.temperatureKelvin))) - 1.0;
         const double L = (denom > 0.0) ? c1 / (std::pow(lambda_m, 5) * denom) : 0.0;
         return static_cast<float>(L);
     }
 
     inline bool csv_pairs_cover_reference_band(
         const std::vector<std::pair<float, float>>& pairs,
-        std::string_view label)
-    {
+        std::string_view label) {
         if (pairs.empty()) {
             return false;
         }
@@ -139,8 +143,7 @@ namespace Spectral {
 
     inline bool csv_pairs_match_reference_axis(
         const std::vector<std::pair<float, float>>& pairs,
-        std::string_view label)
-    {
+        std::string_view label) {
         if (Spectral::samples_follow_reference_axis(pairs)) {
             return true;
         }
@@ -154,8 +157,7 @@ namespace Spectral {
 
     inline bool csv_pairs_mean_power_normalized(
         const std::vector<std::pair<float, float>>& pairs,
-        std::string_view label)
-    {
+        std::string_view label) {
         if (pairs.size() != static_cast<size_t>(Spectral::SpectralShape::K)) {
             if (JTRACE_ENABLED(1)) {
                 std::ostringstream oss;
@@ -204,25 +206,27 @@ namespace Spectral {
         const float blue = 1.0f - 0.12f * std::exp(-0.5f * std::pow((lambda_nm - 420.0f) / 35.0f, 2.0f));
         const float red = 1.0f - 0.06f * std::exp(-0.5f * std::pow((lambda_nm - 700.0f) / 60.0f, 2.0f));
         float t = blue * red;
-        if (t < 0.0f) t = 0.0f;
-        if (t > 1.0f) t = 1.0f;
+        if (t < 0.0f)
+            t = 0.0f;
+        if (t > 1.0f)
+            t = 1.0f;
         return t;
     }
 
     // Optional: allow user to feed measured filter curves (wavelength, transmission 0..1).
     // These are multiplied into the illuminant build if provided.
-    inline Curve gFilterKG3Curve;      // leave empty to use schott_KG3_transmission()
+    inline Curve gFilterKG3Curve;        // leave empty to use schott_KG3_transmission()
     inline Curve gLensTransmissionCurve; // leave empty to use generic_lens_transmission()
 
     inline void set_filter_KG3_from_pairs(const std::vector<std::pair<float, float>>& pairs) {
         if (!build_curve_on_reference_axis_from_linear_pairs(
-            gFilterKG3Curve, pairs, ReferenceResampleKernel::Akima)) {
+                gFilterKG3Curve, pairs, ReferenceResampleKernel::Akima)) {
             Spectral::log_spectral_warning("KG3 filter resample failed (all samples filtered)");
         }
     }
     inline void set_lens_transmission_from_pairs(const std::vector<std::pair<float, float>>& pairs) {
         if (!build_curve_on_reference_axis_from_linear_pairs(
-            gLensTransmissionCurve, pairs, ReferenceResampleKernel::Akima)) {
+                gLensTransmissionCurve, pairs, ReferenceResampleKernel::Akima)) {
             Spectral::log_spectral_warning("Lens transmission resample failed (all samples filtered)");
         }
     }
@@ -231,8 +235,7 @@ namespace Spectral {
     inline Curve gIllumD65CurveLoaded;
 
     inline void set_illuminant_from_loaded_curve_or_pairs(const Curve& curve,
-        const std::vector<std::pair<float, float>>& pairs)
-    {
+                                                          const std::vector<std::pair<float, float>>& pairs) {
         if (!curve.lambda_nm.empty()) {
             // Curve is already pinned to SpectralShape
             const bool sameSize =
@@ -243,14 +246,16 @@ namespace Spectral {
             if (identical) {
                 for (size_t i = 0; i < curve.lambda_nm.size(); ++i) {
                     if (curve.lambda_nm[i] != gIlluminantCurve.lambda_nm[i]) {
-                        identical = false; break;
+                        identical = false;
+                        break;
                     }
                 }
                 if (identical) {
                     constexpr float eps = 1e-6f;
                     for (size_t i = 0; i < curve.linear.size(); ++i) {
                         if (std::fabs(curve.linear[i] - gIlluminantCurve.linear[i]) > eps) {
-                            identical = false; break;
+                            identical = false;
+                            break;
                         }
                     }
                 }
@@ -275,8 +280,7 @@ namespace Spectral {
     inline void install_illuminant_curve_or_clear(const Spectral::Curve& curve) {
         if (!curve.lambda_nm.empty() && !curve.linear.empty()) {
             gIlluminantCurve = curve;
-        }
-        else {
+        } else {
             gIlluminantCurve.lambda_nm.clear();
             gIlluminantCurve.linear.clear();
         }
@@ -290,8 +294,11 @@ namespace Spectral {
     inline Spectral::Curve build_curve_from_csv_pinned(const std::string& csvPath) {
         Spectral::Curve c;
         std::vector<std::pair<float, float>> pairs;
-        try { pairs = Spectral::load_csv_pairs(csvPath); }
-        catch (...) { pairs.clear(); }
+        try {
+            pairs = Spectral::load_csv_pairs(csvPath);
+        } catch (...) {
+            pairs.clear();
+        }
         if (pairs.empty()) {
             if (JTRACE_ENABLED(1)) {
                 JTRACE("ILLUM", std::string("Failed to load illuminant CSV: ") + csvPath);
@@ -334,19 +341,24 @@ namespace Spectral {
     }
 
     inline Spectral::Curve build_curve_TH_KG3_L_pinned(
-        const std::string& kg3CsvPath, const std::string& lensCsvPath)
-    {
+        const std::string& kg3CsvPath, const std::string& lensCsvPath) {
         Spectral::Curve c;
         // 1) 3200K blackbody
         std::vector<float> bb(Spectral::gShape.K);
         for (int i = 0; i < Spectral::gShape.K; ++i) {
-            bb[i] = planck_blackbody(Spectral::gShape.wavelengths[i], 3200.0f);
+            PlanckBlackbodySample sample{};
+            sample.wavelengthNm = Spectral::gShape.wavelengths[i];
+            sample.temperatureKelvin = 3200.0f;
+            bb[i] = planck_blackbody(sample);
         }
 
         // 2) KG3 filter (resampled, no fallback)
         std::vector<std::pair<float, float>> kg3_pairs;
-        try { kg3_pairs = Spectral::load_csv_pairs(kg3CsvPath); }
-        catch (...) { kg3_pairs.clear(); }
+        try {
+            kg3_pairs = Spectral::load_csv_pairs(kg3CsvPath);
+        } catch (...) {
+            kg3_pairs.clear();
+        }
         if (kg3_pairs.empty()) {
             if (JTRACE_ENABLED(1)) {
                 JTRACE("ILLUM", std::string("Failed to load KG3 filter CSV: ") + kg3CsvPath);
@@ -368,8 +380,11 @@ namespace Spectral {
 
         // 3) Lens transmission (resampled, no fallback)
         std::vector<std::pair<float, float>> lens_pairs;
-        try { lens_pairs = Spectral::load_csv_pairs(lensCsvPath); }
-        catch (...) { lens_pairs.clear(); }
+        try {
+            lens_pairs = Spectral::load_csv_pairs(lensCsvPath);
+        } catch (...) {
+            lens_pairs.clear();
+        }
         if (lens_pairs.empty()) {
             if (JTRACE_ENABLED(1)) {
                 JTRACE("ILLUM", std::string("Failed to load lens transmission CSV: ") + lensCsvPath);
@@ -397,6 +412,37 @@ namespace Spectral {
         Spectral::mean_power_normalize(combined);
 
         // 5) Pin to shape without touching globals
+        Spectral::assign_reference_axis(c.lambda_nm);
+        c.linear = std::move(combined);
+        return c;
+    }
+
+    inline Spectral::Curve build_curve_TH_KG3_pinned(const std::string& kg3CsvPath) {
+        Spectral::Curve c;
+        std::vector<std::pair<float, float>> kg3_pairs;
+        try {
+            kg3_pairs = Spectral::load_csv_pairs(kg3CsvPath);
+        } catch (...) {
+            kg3_pairs.clear();
+        }
+        if (kg3_pairs.empty() || !csv_pairs_cover_reference_band(kg3_pairs, kg3CsvPath)) {
+            return c;
+        }
+        const auto kg3_pinned = Spectral::resample_pairs_akima_to_reference_axis(kg3_pairs);
+        if (kg3_pinned.size() != static_cast<std::size_t>(Spectral::gShape.K)) {
+            return c;
+        }
+
+        std::vector<float> combined(static_cast<std::size_t>(Spectral::gShape.K));
+        for (int i = 0; i < Spectral::gShape.K; ++i) {
+            PlanckBlackbodySample sample{};
+            sample.wavelengthNm = Spectral::gShape.wavelengths[i];
+            sample.temperatureKelvin = 3400.0f;
+            combined[static_cast<std::size_t>(i)] =
+                planck_blackbody(sample) *
+                kg3_pinned[static_cast<std::size_t>(i)].second;
+        }
+        Spectral::mean_power_normalize(combined);
         Spectral::assign_reference_axis(c.lambda_nm);
         c.linear = std::move(combined);
         return c;
@@ -439,7 +485,6 @@ namespace Spectral {
     inline void set_illuminant_T_incandescent(const std::string& csvPath) {
         install_illuminant_curve_or_clear(build_curve_T_pinned(csvPath));
     }
-
 
 
 } // namespace Spectral

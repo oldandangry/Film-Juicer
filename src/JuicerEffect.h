@@ -13,27 +13,25 @@ namespace Profiles {
     struct HalationMetadata;
     struct GrainMetadata;
     struct ProfileGlare;
-}
+} // namespace Profiles
 
 namespace Scanner {
     struct Options;
     struct Settings;
-}
+} // namespace Scanner
 
 namespace Print {
     struct Params;
     struct Runtime;
-}
+} // namespace Print
 
 namespace OutputEncoding {
     struct Params;
 }
 
-#ifdef JUICER_ENABLE_COUPLERS
-namespace Couplers {
-    struct Runtime;
+namespace Spektrafilm {
+    struct DiffusionFilterAuthoredControls;
 }
-#endif
 
 namespace OFX {
     class Clip;
@@ -41,6 +39,7 @@ namespace OFX {
     class DoubleParam;
     class Double3DParam;
     class ChoiceParam;
+    class StrChoiceParam;
     class Double2DParam;
     class IntParam;
     class BooleanParam;
@@ -50,19 +49,13 @@ namespace OFX {
 
 // Placeholder parameter names (Step 1)
 // Per agx-emulsion parity: this is "camera.exposure_compensation_ev" (not just "exposure")
-#define kParamExposure "Exposure"   // UI: "Exposure Compensation Ev"
+#define kParamExposure "Exposure" // UI: "Exposure Compensation Ev"
 #define kParamCameraAutoExposure "CameraAutoExposure"
-#define kParamContrast "Contrast"   // unitless
+#define kParamContrast "Contrast" // unitless
 #define kParamSpectralMode "SpectralUpsampling"
 #define kParamReferenceIlluminant "ReferenceIlluminant"
 #define kParamEnlargerIlluminant "EnlargerIlluminant"
-#define kParamEnlargerDichroicSet "EnlargerDichroicSet"
-
-// Film stock parameter
-#define kParamFilmStock "FilmStock"
-
-// Print paper parameter
-#define kParamPrintPaper "PrintPaper"
+#define kParamDichroicFilterSet "DichroicFilterSet"
 
 // Output encoding parameters
 #define kParamOutputColorSpace "OutputColorSpace"
@@ -85,18 +78,25 @@ private:
         int meteringMethod = 0;
     };
 
-    struct AutoExposureResult {
-        float exposureScale = 1.0f;
-        double autoEV = 0.0;
-        OfxRectI meterBounds{0, 0, 0, 0};
-        bool meterBoundsValid = false;
-    };
-
     struct WorkingStateInfo {
         std::shared_ptr<const WorkingState> workingState;
-        const Print::Runtime* printRuntime = nullptr;
+        const Print::Runtime* printRt = nullptr;
         bool workingStateReady = false;
-        bool printRuntimeReady = false;
+        bool printRtReady = false;
+    };
+
+    struct DiffusionUiParams {
+        OFX::BooleanParam* enabled = nullptr;
+        OFX::ChoiceParam* family = nullptr;
+        OFX::DoubleParam* strength = nullptr;
+        OFX::DoubleParam* spatialScale = nullptr;
+        OFX::DoubleParam* haloWarmth = nullptr;
+        OFX::DoubleParam* coreIntensity = nullptr;
+        OFX::DoubleParam* coreSize = nullptr;
+        OFX::DoubleParam* haloIntensity = nullptr;
+        OFX::DoubleParam* haloSize = nullptr;
+        OFX::DoubleParam* bloomIntensity = nullptr;
+        OFX::DoubleParam* bloomSize = nullptr;
     };
 
     ExposureParams gatherExposureParams() const;
@@ -106,37 +106,22 @@ private:
     Profiles::HalationMetadata gatherHalationUi() const;
     Profiles::GrainMetadata gatherGrainUi() const;
     Profiles::ProfileGlare gatherGlareUi() const;
+    Spektrafilm::DiffusionFilterAuthoredControls gatherDiffusionUi(
+        const DiffusionUiParams& params) const;
     OutputEncoding::Params gatherOutputEncodingParams() const;
+    void applyDirGammaProfileDefaults();
     void applyHalationProfileDefaults();
     void applyGrainPresetDefaults(int presetIndex);
     void resetGrainAdvancedControls();
     void updateGrainPresetLabel(bool custom);
     void updateGrainChromaEnabled();
-    AutoExposureResult computeAutoExposure(
-        const OFX::RenderArguments& args,
-        OFX::Image* srcImg,
-        const OfxRectI& fullBounds,
-        const ExposureParams& exposureParams) const;
-#ifdef JUICER_ENABLE_COUPLERS
-    Couplers::Runtime prepareCouplers(
-        const OFX::RenderArguments& args,
-        int fullWidth,
-        int fullHeight,
-        float pixelSizeUm) const;
-#endif
+    void updateDiffusionControlState();
+    [[noreturn]] void throw_spektrafilm_phase1a_render_cutoff(const OFX::RenderArguments& args) const;
     WorkingStateInfo prepareWorkingState() const;
 
     ParamSnapshot snapshotParams() const;
     void onParamsPossiblyChanged(const char* changedNameOrNull);
     void bootstrap_after_attach();
-    void applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& runtime);
-    bool applyMetadataIlluminantDefaults(ParamSnapshot& P, const Print::Runtime& runtime);
-#ifdef JUICER_ENABLE_COUPLERS
-    void initializeCouplerParamsFromProfileIfNeeded(ParamSnapshot& P);
-    void syncCouplerParamsFromProfileFollowMask(ParamSnapshot& P);
-    void clearCouplerFollowStockForParam(const char* changedNameOrNull);
-    void applyCouplerProfileDefaults(ParamSnapshot& P);
-#endif
 
     OFX::Clip* _src = nullptr;
     OFX::Clip* _dst = nullptr;
@@ -146,39 +131,43 @@ private:
     OFX::BooleanParam* _pCameraAutoExposure = nullptr;
     OFX::DoubleParam* _pCameraFilmFormat = nullptr;
     OFX::ChoiceParam* _pCameraMeteringMethod = nullptr;
-    OFX::ChoiceParam* _pFilmStock = nullptr;
+    OFX::StrChoiceParam* _pFilmProfileKey = nullptr;
     OFX::ChoiceParam* _pSpectralMode = nullptr;
-    OFX::ChoiceParam* _pPrintPaper = nullptr;
+    OFX::StrChoiceParam* _pPrintProfileKey = nullptr;
     OFX::ChoiceParam* _pRefIll = nullptr;
     OFX::ChoiceParam* _pEnlIll = nullptr;
     OFX::ChoiceParam* _pEnlDichroicSet = nullptr;
     OFX::ChoiceParam* _pInputColorSpace = nullptr;
     OFX::BooleanParam* _pInputCctfDecoding = nullptr;
+    OFX::BooleanParam* _pHanatos2025AdaptationWindow = nullptr;
+    OFX::BooleanParam* _pHanatos2025AdaptationSurface = nullptr;
+    OFX::StrChoiceParam* _pScanRoute = nullptr;
     OFX::ChoiceParam* _pOutputColorSpace = nullptr;
     OFX::BooleanParam* _pOutputCctfEncoding = nullptr;
     OFX::BooleanParam* _pOutputLinearPassThrough = nullptr;
 
 
-#ifdef JUICER_ENABLE_COUPLERS
     OFX::BooleanParam* _pCouplersActive = nullptr;
     OFX::DoubleParam* _pCouplersAmount = nullptr;
-    OFX::DoubleParam* _pCouplersAmountR = nullptr;
-    OFX::DoubleParam* _pCouplersAmountG = nullptr;
-    OFX::DoubleParam* _pCouplersAmountB = nullptr;
-    OFX::DoubleParam* _pCouplersSigma = nullptr;
-    OFX::DoubleParam* _pCouplersHigh = nullptr;
-    OFX::DoubleParam* _pCouplersSpatialSigma = nullptr;
-    OFX::IntParam* _pCouplersInitVersion = nullptr;
-    OFX::IntParam* _pCouplersFollowMask = nullptr;
-#endif
+    OFX::DoubleParam* _pCouplersInhibitionSameLayer = nullptr;
+    OFX::DoubleParam* _pCouplersInhibitionInterlayer = nullptr;
+    OFX::DoubleParam* _pCouplersDiffusionSizeUm = nullptr;
+    OFX::BooleanParam* _pCouplersGammaUseStock = nullptr;
+    OFX::Double3DParam* _pCouplersGammaSameLayerRgb = nullptr;
+    OFX::Double2DParam* _pCouplersGammaInterlayerRToGb = nullptr;
+    OFX::Double2DParam* _pCouplersGammaInterlayerGToRb = nullptr;
+    OFX::Double2DParam* _pCouplersGammaInterlayerBToRg = nullptr;
 
     // Scanner and print params
     OFX::DoubleParam* _pScannerLensBlur = nullptr;
     OFX::Double2DParam* _pScannerUnsharp = nullptr;
+    OFX::BooleanParam* _pScannerBlackCorrection = nullptr;
+    OFX::BooleanParam* _pScannerWhiteCorrection = nullptr;
+    OFX::DoubleParam* _pScannerBlackLevel = nullptr;
+    OFX::DoubleParam* _pScannerWhiteLevel = nullptr;
     OFX::BooleanParam* _pScannerUseLut = nullptr;
     OFX::IntParam* _pScannerLutResolution = nullptr;
 
-    OFX::BooleanParam* _pPrintBypass = nullptr;
     OFX::DoubleParam* _pPrintExposure = nullptr;
     OFX::DoubleParam* _pPrintPreflash = nullptr;
     OFX::BooleanParam* _pPrintExposureComp = nullptr;
@@ -189,13 +178,13 @@ private:
     OFX::BooleanParam* _pHalationActive = nullptr;
     OFX::DoubleParam* _pHalationStrengthMaster = nullptr;
     OFX::DoubleParam* _pHalationSizeUmMaster = nullptr;
-    OFX::DoubleParam* _pHalationScatteringStrengthMaster = nullptr;
-    OFX::DoubleParam* _pHalationScatteringSizeUmMaster = nullptr;
+    OFX::DoubleParam* _pHalationSecondaryAmountMaster = nullptr;
+    OFX::DoubleParam* _pHalationSecondarySizeUmMaster = nullptr;
     OFX::PushButtonParam* _pHalationRevertToStock = nullptr;
     OFX::Double3DParam* _pHalationStrength = nullptr;
     OFX::Double3DParam* _pHalationSizeUm = nullptr;
-    OFX::Double3DParam* _pHalationScatteringStrength = nullptr;
-    OFX::Double3DParam* _pHalationScatteringSizeUm = nullptr;
+    OFX::Double3DParam* _pHalationSecondaryAmount = nullptr;
+    OFX::Double3DParam* _pHalationSecondarySizeUm = nullptr;
 
     OFX::BooleanParam* _pGrainActive = nullptr;
     OFX::BooleanParam* _pGrainSublayersActive = nullptr;
@@ -220,7 +209,6 @@ private:
     OFX::DoubleParam* _pGrainSizeMixScale = nullptr;
     OFX::DoubleParam* _pGrainClumpTemporalMix = nullptr;
     OFX::DoubleParam* _pGrainClumpMorphPeriodSec = nullptr;
-    OFX::BooleanParam* _pGrainBreathingDebug = nullptr;
     OFX::ChoiceParam* _pGrainDebugView = nullptr;
     OFX::Double2DParam* _pGrainMicroStructure = nullptr;
     OFX::PushButtonParam* _pGrainResetAdvanced = nullptr;
@@ -233,6 +221,9 @@ private:
     OFX::DoubleParam* _pFilmScratchAmount = nullptr;
     OFX::DoubleParam* _pGateScratchAmount = nullptr;
 
+    DiffusionUiParams _cameraDiffusionUi;
+    DiffusionUiParams _printDiffusionUi;
+
     OFX::BooleanParam* _pGlareActive = nullptr;
     OFX::DoubleParam* _pGlarePercent = nullptr;
     OFX::DoubleParam* _pGlareRoughness = nullptr;
@@ -244,13 +235,12 @@ private:
 
     std::unique_ptr<InstanceState> _state;
 
-    double _halationStrengthMasterLast = 0.0;
+    double _halationPrimaryAmountMasterLast = 0.0;
     double _halationSizeUmMasterLast = 0.0;
-    double _halationScatteringStrengthMasterLast = 0.0;
-    double _halationScatteringSizeUmMasterLast = 0.0;
+    double _halationSecondaryAmountMasterLast = 0.0;
+    double _halationSecondarySizeUmMasterLast = 0.0;
     double _grainParticleScaleMasterLast = 0.0;
     double _grainParticleScaleLayersMasterLast = 0.0;
     double _grainDensityMinMasterLast = 0.0;
     double _grainUniformityMasterLast = 0.0;
-
 };

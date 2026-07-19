@@ -2,15 +2,15 @@
 
 ## Project Overview
 
-**Film-Juicer** is an OpenFX 1.4 plug-in for DaVinci Resolve that implements spectral film emulation. It is a C++17 port of the [agx-emulsion](https://github.com/andreavolpato/agx-emulsion) Python reference implementation, providing physically-based negative film simulation, print paper rendering, and scanner emulation through spectral modeling.
+**Film-Juicer** is an OpenFX 1.4 plug-in for DaVinci Resolve that implements spectral film emulation. It is a C++20 port of the [agx-emulsion](https://github.com/andreavolpato/agx-emulsion) Python reference implementation, providing physically-based negative film simulation, print paper rendering, and scanner emulation through spectral modeling. CUDA translation units compile with CUDA 13.2 as CUDA C++20 (`--std=c++20`).
 
 The plug-in operates on spectral power distributions (SPDs) sampled at 81 wavelengths (380–780 nm, 5 nm steps), converting input RGB → spectral → film exposure → density curves → print exposure → print density → scanned RGB output.
 
 ## Project Structure & Module Organization
 - The Visual Studio solution (`juicer.sln`) drives the OpenFX entry point in `main.cpp` and the processing glue in `mainProcessing.cpp`.
-- Key modules: state (`JuicerState.*`), effect wiring (`JuicerEffect.*`), spectral core (`SpectralData.h`, `SpectralProcessing.h`, `FilmProcessing.h`, `ColorTransforms.h`, `SpectralContext.*`, `SpectralMathAVX.cpp`), print models (`Print.*`), and profile ingestion (`ProfileJSONLoader.*`).
+- Key modules: process/root (`ProcessRoot.*`), asset library (`ResourceAssetLibrary.*`), state (`JuicerState.*`), effect wiring (`JuicerEffect.*`), processing (`mainProcessing.*`), CUDA resource management (`Cuda/ResourceManager/*`, `Cuda/JuicerCudaResources*`), spectral core (`SpectralData.h`, `SpectralProcessing.h`, `FilmProcessing.h`, `ColorTransforms.h`, `SpectralContext.*`, `SpectralMathAVX.cpp`), print models (`Print.*`), and profile ingestion (`ProfileJSONLoader.*`).
 - Shared headers stay header-only; keep helper logic near its domain module.
-- Assets live in `Resources/` (filters, illuminants, lens data, spectral tables, JSON profiles). Runtime code reads them via `gDataDir`; keep relative paths stable.
+- Assets live in `Resources/` (filters, illuminants, lens data, spectral tables, JSON profiles). Runtime code resolves them from the process data directory through the asset library/`JuicerProcess::Root`; keep relative paths stable and avoid render-time file discovery.
 - Build artefacts land in `juicer/x64/<Config>` while MSVC intermediates mirror in `x64/`; do not commit either directory.
 
 ## Architecture
@@ -49,10 +49,18 @@ The rendering pipeline follows the agx-emulsion reference exactly (see `agx-docu
 ### Key Modules
 
 **State Management** (`JuicerState.h/cpp`):
-- `InstanceState`: Per-effect-instance state with double-buffered `WorkingState` (workA/workB) for thread-safe atomic swapping during parameter changes
+- `InstanceState`: Per-effect-instance clip/session state, pending parameter snapshots, atomic published `std::shared_ptr<const WorkingState>`, and clip-local temporal state
 - `BaseState`: Immutable film stock spectral data (sensitivities, dye extinction, density curves) loaded from JSON profiles
-- `WorkingState`: Derived render-ready state built from BaseState + current parameters; includes precomputed spectral tables for all illuminants (reference, enlarger, viewing, scanner)
+- `WorkingState`: Immutable host-owned render recipe built from BaseState + current parameters and published by atomic shared-pointer swap; includes precomputed spectral tables for all illuminants, but not CUDA handles, frame-owned workspaces, or live mutable session state
 - `ParamSnapshot`: Lightweight parameter bundle for detecting changes and triggering rebuilds
+
+**Resource Management** (`ProcessRoot.*`, `ResourceAssetLibrary.*`, `Cuda/ResourceManager/*`):
+- `JuicerProcess::Root` is the process composition root for bootstrap, asset-library access, CUDA frame preparation, context retire/reset, and ordered shutdown.
+- `ResourceAssetLibrary` owns process-lifetime logical assets and validated asset payloads. Render paths consume resolved assets or published recipes, not ad hoc file discovery.
+- `JuicerProcessor::FrameRequest` captures immutable per-render inputs before processing.
+- CUDA durable residency is Root/context owned and keyed by exact `DeviceContextKey {deviceId, contextOpaque}` plus context epoch. Do not use instance identity, device ID alone, thread affinity, or raw file paths as substitutes.
+- `PreparedCudaFrame` is the post-preparation CUDA boundary. Mutable frame scratch, staging, scan-error state, in-flight-use events, and overlap workspace are accessed through prepared-frame views/leases and released on `finish()` or `abort()`.
+- Graph replay is optional and context-local; direct launch remains the correctness path. Device-wide coordination is not currently part of the architecture.
 
 **Profile System** (`ProfileJSONLoader.h/cpp`):
 - Loads JSON film stock and print paper profiles from `Resources/profiles/`
@@ -107,6 +115,7 @@ The rendering pipeline follows the agx-emulsion reference exactly (see `agx-docu
 - `multiThreadProcessImages()`: Tile-based rendering with auto-exposure caching
 - Auto-exposure: Center-weighted Gaussian mask (σ=0.2) on luminance, clamped to prevent inf EV
 - Render scaling: Tracks `pixel_size_um` for μm-to-pixel conversions (lens blur, halation radii, DIR diffusion)
+- CUDA rendering prepares through `Root::prepare_cuda_frame()` and consumes prepared-frame views after preparation rather than adding new public `ensure_*` chains in the render path.
 
 **Scanner** (`Scanner.h`):
 - Configurable auto-gain (when `PrintBypass=true`) normalizes film D-max to target Y
@@ -114,21 +123,32 @@ The rendering pipeline follows the agx-emulsion reference exactly (see `agx-docu
 - Film format parameter (`scanFilmLongEdge`) determines pixel → micrometer scaling for grain/diffusion
 
 ## Build, Test, and Development Commands
-- `msbuild juicer.sln /p:Configuration=Debug /p:Platform=x64` — builds the plug-in and leaves symbols in `juicer/x64/Debug`.
-- `msbuild juicer.sln /p:Configuration=Release /p:Platform=x64` — produces the optimised plug-in for host validation, emitting OFX recipes under `juicer/x64/Release`.
-- `msbuild juicer.sln /t:Clean /p:Platform=x64` — clears intermediates before switching branches or configurations.
-- Run these from the “x64 Native Tools for VS 2022” prompt with the OFX SDK and host headers on the include path.
+- Host C++ builds are C++20. CUDA kernels/manual CUDA compile steps use CUDA 13.2 with CUDA C++20 (`--std=c++20`); do not downgrade host-side checks, fallback compiler args, or clang-tidy setup to C++17.
+- MSVC 2026 / Visual Studio 18 is installed outside the Windows system PATH. Call tools by direct path instead of relying on `msbuild`, `clang-cl`, `clang-tidy`, or `clang-format` being discoverable:
+  - `C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe`
+  - `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin\clang-cl.exe`
+  - `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin\clang-tidy.exe`
+  - `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin\clang-format.exe`
+- CUDA 13.2 is the required CUDA toolkit. Release-Clang uses the VS 18 direct MSBuild/ClangCl paths for host C++, and manual `nvcc` uses the active VS 18 `VCToolsInstallDir` MSVC host compiler unless `JuicerNvccHostCompilerBin` is explicitly overridden with a tested direct compiler path.
+- `"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" juicer.sln /p:Configuration=Debug /p:Platform=x64` — builds the plug-in and leaves symbols in `juicer/x64/Debug`.
+- `"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" juicer.sln /p:Configuration=Release /p:Platform=x64` — produces the optimised plug-in for host validation, emitting OFX recipes under `juicer/x64/Release`.
+- `"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" juicer.sln /p:Configuration=Release-Clang /p:Platform=x64` — required Clang build path for spektrafilm evidence; use the VS 18 direct path so ClangCl is found.
+- `"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" juicer.sln /t:Clean /p:Platform=x64` — clears intermediates before switching branches or configurations.
+- If invoking PowerShell tooling from WSL, set `PATHEXT` to include `.EXE` and prepend the VS 18 LLVM bin directory to `PATH`; WSL-launched Windows PowerShell may not inherit normal Windows command-extension lookup.
 
 ## Coding Style & Naming Conventions
 - Follow the existing MSVC layout: four-space indentation, braces on the same line as the control statement, and no trailing commas in initializer lists.
 - Use `PascalCase` for types, `snake_case` verbs for free functions, and reserve `k` prefixes for constants mirrored from upstream specs.
 - Keep includes grouped (standard, third-party, project) and use `"..."` for project headers.
 - Add brief comments only for non-obvious data flows or invariants in shared headers.
+- For implementation hygiene, follow `docs/code-hygiene.md`; for resource-management architecture, use `docs/rm/resource-manager-simplification-plan.md` and `docs/rm/resource-manager-architecture-decisions-pass.md`.
 
 ## Testing Guidelines
 - There is no standalone test harness yet; edge cases are covered through host integration and the spectral resampling helpers.
-- When introducing new logic, add focused unit hooks behind the `JUICER_TESTS` define so they compile alongside the plug-in without impacting release builds.
+- `JUICER_TESTS` is deprecated and must not be added or revived.
+- Validate changes through the real-project workflow: build in `C:\Dev\Juicer\`, run targeted manual checks in the host, and capture trace or evidence when relevant.
 - Validate spectral data changes by running the Release build inside the target host and comparing print or spectral previews against reference assets in `Resources/`.
+- Resource-management or CUDA lifetime changes need owner-run Debug/Release builds and targeted host evidence for overlap, abort, context reset/retire, or shutdown when relevant.
 
 ## Commit & Pull Request Guidelines
 - Match the Git history: summaries are single-sentence, present-tense descriptions of the behavioural change (e.g., “Ensure log10 curve resampling exponentiates finite samples…”).

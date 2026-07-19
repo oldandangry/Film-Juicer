@@ -30,19 +30,10 @@ static __device__ __forceinline__ float ldg_f(const float* p) {
 #endif
 }
 
-static __device__ __forceinline__ double ldg_d(const double* p) {
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 350)
-    return __ldg(p);
-#else
-    return *p;
-#endif
-}
-
 static __device__ __forceinline__ float sample_density_at_logE_device(
     const JuicerCuda::DeviceCurveView& curve,
     float logE,
-    float gammaFactor)
-{
+    float gammaFactor) {
     if (!curve.x || !curve.y || curve.n <= 0) {
         return 0.0f;
     }
@@ -51,8 +42,7 @@ static __device__ __forceinline__ float sample_density_at_logE_device(
         return nanf("");
     }
 
-    const float gammaSafe = (device_isfinite(gammaFactor) && gammaFactor > 0.0f) ? gammaFactor : 1.0f;
-    const float xq = logE * gammaSafe;
+    const float xq = logE * gammaFactor;
 
     int domainBegin = curve.domainBegin;
     int domainEnd = curve.domainEnd;
@@ -111,33 +101,6 @@ static __device__ __forceinline__ float sample_density_at_logE_device(
     return y0 + t * (y1 - y0);
 }
 
-static __device__ __forceinline__ float sample_density_at_logE_device(
-    const float* JUICER_RESTRICT x,
-    const float* JUICER_RESTRICT y,
-    int n,
-    float logE,
-    float gammaFactor)
-{
-    if (!x || !y || n <= 0) {
-        return 0.0f;
-    }
-
-    int domainBegin = 0;
-    while (domainBegin < n && !device_isfinite(ldg_f(x + domainBegin))) {
-        ++domainBegin;
-    }
-    if (domainBegin >= n) {
-        return 0.0f;
-    }
-    int domainEnd = n - 1;
-    while (domainEnd > domainBegin && !device_isfinite(ldg_f(x + domainEnd))) {
-        --domainEnd;
-    }
-
-    const JuicerCuda::DeviceCurveView curve = { x, y, n, domainBegin, domainEnd };
-    return sample_density_at_logE_device(curve, logE, gammaFactor);
-}
-
 static __device__ __forceinline__ float sanitize_inf_logE_for_curve_device(float logE, const JuicerCuda::DeviceCurveView& curve) {
     if (device_isfinite(logE) || isnan(logE)) {
         return logE;
@@ -186,12 +149,29 @@ static __device__ __forceinline__ float sanitize_inf_logE_for_curve_device(float
         --end;
     }
 
-    const JuicerCuda::DeviceCurveView curve = { x, nullptr, n, begin, end };
+    const JuicerCuda::DeviceCurveView curve = {x, nullptr, n, begin, end};
     return sanitize_inf_logE_for_curve_device(logE, curve);
 }
 
 struct Mat3 {
     float m[9];
+};
+
+struct ChromaticAdaptationDeviceInput {
+    const float* xyz = nullptr;
+    const float* sourceWhiteXYZ = nullptr;
+    const float* destinationWhiteXYZ = nullptr;
+};
+
+struct InputCctfDecodingDevice {
+    int inputColorSpaceIndex = 0;
+    int applyCctfDecoding = 0;
+};
+
+struct FilmDevelopIntermediatesDevice {
+    float* logERaw = nullptr;
+    float* logESanitized = nullptr;
+    float* layerPre = nullptr;
 };
 
 static __device__ __forceinline__ void mul3(const float m[9], const float v[3], float dst[3]) {
@@ -201,46 +181,39 @@ static __device__ __forceinline__ void mul3(const float m[9], const float v[3], 
 }
 
 static __device__ __forceinline__ void chromatic_adapt_XYZ_CAT02_device(
-    const float XYZ[3],
-    const float srcWhiteXYZ[3],
-    const float dstWhiteXYZ[3],
-    float outXYZ[3])
-{
+    ChromaticAdaptationDeviceInput input,
+    float outXYZ[3]) {
     const float M[9] = {
-         0.7328000f,  0.4296000f, -0.1624000f,
-        -0.7036000f,  1.6975000f,  0.0061000f,
-         0.0030000f,  0.0136000f,  0.9834000f
-    };
+        0.7328000f, 0.4296000f, -0.1624000f, -0.7036000f, 1.6975000f, 0.0061000f, 0.0030000f, 0.0136000f, 0.9834000f};
     const float M_inv[9] = {
-        1.0961238f, -0.2788690f,  0.1827452f,
-        0.4543690f,  0.4735332f,  0.0720978f,
-       -0.0096276f, -0.0056980f,  1.0153256f
-    };
+        1.0961238f, -0.2788690f, 0.1827452f, 0.4543690f, 0.4735332f, 0.0720978f, -0.0096276f, -0.0056980f, 1.0153256f};
 
     float srcWhite[3] = {
-        device_sanitize_nonneg(srcWhiteXYZ[0]),
-        device_sanitize_nonneg(srcWhiteXYZ[1]),
-        device_sanitize_nonneg(srcWhiteXYZ[2])
-    };
+        device_sanitize_nonneg(input.sourceWhiteXYZ[0]),
+        device_sanitize_nonneg(input.sourceWhiteXYZ[1]),
+        device_sanitize_nonneg(input.sourceWhiteXYZ[2])};
     float dstWhite[3] = {
-        device_sanitize_nonneg(dstWhiteXYZ[0]),
-        device_sanitize_nonneg(dstWhiteXYZ[1]),
-        device_sanitize_nonneg(dstWhiteXYZ[2])
-    };
+        device_sanitize_nonneg(input.destinationWhiteXYZ[0]),
+        device_sanitize_nonneg(input.destinationWhiteXYZ[1]),
+        device_sanitize_nonneg(input.destinationWhiteXYZ[2])};
 
     const float srcY = (srcWhite[1] > 0.0f) ? srcWhite[1] : 1.0f;
     const float dstY = (dstWhite[1] > 0.0f) ? dstWhite[1] : 1.0f;
     const float srcScale = 1.0f / srcY;
     const float dstScale = 1.0f / dstY;
-    srcWhite[0] *= srcScale; srcWhite[1] = 1.0f; srcWhite[2] *= srcScale;
-    dstWhite[0] *= dstScale; dstWhite[1] = 1.0f; dstWhite[2] *= dstScale;
+    srcWhite[0] *= srcScale;
+    srcWhite[1] = 1.0f;
+    srcWhite[2] *= srcScale;
+    dstWhite[0] *= dstScale;
+    dstWhite[1] = 1.0f;
+    dstWhite[2] *= dstScale;
 
     float srcLMS[3];
     float dstLMS[3];
     float XYZ_LMS[3];
     mul3(M, srcWhite, srcLMS);
     mul3(M, dstWhite, dstLMS);
-    mul3(M, XYZ, XYZ_LMS);
+    mul3(M, input.xyz, XYZ_LMS);
 
     const float scale0 = (srcLMS[0] > 1e-6f) ? (dstLMS[0] / srcLMS[0]) : 1.0f;
     const float scale1 = (srcLMS[1] > 1e-6f) ? (dstLMS[1] / srcLMS[1]) : 1.0f;
@@ -249,8 +222,7 @@ static __device__ __forceinline__ void chromatic_adapt_XYZ_CAT02_device(
     float adaptedLMS[3] = {
         scale0 * XYZ_LMS[0],
         scale1 * XYZ_LMS[1],
-        scale2 * XYZ_LMS[2]
-    };
+        scale2 * XYZ_LMS[2]};
     mul3(M_inv, adaptedLMS, outXYZ);
 }
 
@@ -274,25 +246,23 @@ static __device__ __forceinline__ float decode_srgb_channel_device(float v) {
 }
 
 static __device__ __forceinline__ void apply_input_cctf_decoding_device(
-    int inputColorSpaceIndex,
-    int applyCctfDecoding,
+    InputCctfDecodingDevice config,
     const float inRgb[3],
-    float outRgb[3])
-{
-    if (!applyCctfDecoding) {
+    float outRgb[3]) {
+    if (!config.applyCctfDecoding) {
         outRgb[0] = device_sanitize_channel(inRgb[0]);
         outRgb[1] = device_sanitize_channel(inRgb[1]);
         outRgb[2] = device_sanitize_channel(inRgb[2]);
         return;
     }
 
-    if (inputColorSpaceIndex == 1) {
+    if (config.inputColorSpaceIndex == 1) {
         outRgb[0] = decode_bt2020_channel_device(inRgb[0]);
         outRgb[1] = decode_bt2020_channel_device(inRgb[1]);
         outRgb[2] = decode_bt2020_channel_device(inRgb[2]);
         return;
     }
-    if (inputColorSpaceIndex == 3) {
+    if (config.inputColorSpaceIndex == 3) {
         outRgb[0] = decode_srgb_channel_device(inRgb[0]);
         outRgb[1] = decode_srgb_channel_device(inRgb[1]);
         outRgb[2] = decode_srgb_channel_device(inRgb[2]);
@@ -312,10 +282,7 @@ static __device__ __forceinline__ void mat3_mul9_device(const float m[9], const 
 
 static __device__ __forceinline__ void XYZ_to_DWG_linear_device(const float XYZ[3], float RGB[3]) {
     const float DWG_XYZ_to_RGB[9] = {
-        1.51667204f, -0.28147805f, -0.14696363f,
-       -0.46491710f,  1.25142378f,  0.17488461f,
-        0.07578536f,  0.08076209f,  0.76034476f
-    };
+        1.51667204f, -0.28147805f, -0.14696363f, -0.46491710f, 1.25142378f, 0.17488461f, 0.07578536f, 0.08076209f, 0.76034476f};
     float out[3];
     mat3_mul9_device(DWG_XYZ_to_RGB, XYZ, out);
     for (int i = 0; i < 3; ++i) {
@@ -329,10 +296,7 @@ static __device__ __forceinline__ void XYZ_to_DWG_linear_device(const float XYZ[
 
 static __device__ __forceinline__ void XYZ_to_DWG_linear_unclamped_device(const float XYZ[3], float RGB[3]) {
     const float DWG_XYZ_to_RGB[9] = {
-        1.51667204f, -0.28147805f, -0.14696363f,
-       -0.46491710f,  1.25142378f,  0.17488461f,
-        0.07578536f,  0.08076209f,  0.76034476f
-    };
+        1.51667204f, -0.28147805f, -0.14696363f, -0.46491710f, 1.25142378f, 0.17488461f, 0.07578536f, 0.08076209f, 0.76034476f};
     float out[3];
     mat3_mul9_device(DWG_XYZ_to_RGB, XYZ, out);
     for (int i = 0; i < 3; ++i) {
@@ -355,8 +319,7 @@ static __device__ __forceinline__ float hanatos_bilinear_at(
     int K,
     int x,
     int y,
-    int k)
-{
+    int k) {
     const std::size_t idx = (static_cast<std::size_t>(x) * static_cast<std::size_t>(N) + static_cast<std::size_t>(y)) * static_cast<std::size_t>(K) + static_cast<std::size_t>(k);
     return ldg_f(lut + idx);
 }
@@ -366,16 +329,18 @@ static __device__ __forceinline__ float hanatos_integrated_at(
     int N,
     int x,
     int y,
-    int c)
-{
+    int c) {
     const std::size_t idx = (static_cast<std::size_t>(x) * static_cast<std::size_t>(N) + static_cast<std::size_t>(y)) * 4u + static_cast<std::size_t>(c);
     return ldg_f(lut + idx);
 }
 
 static __device__ __forceinline__ int reflect_index_device(int idx, int size) {
-    if (size <= 1) return 0;
-    if (idx < 0) return -idx;
-    if (idx >= size) return 2 * (size - 1) - idx;
+    if (size <= 1)
+        return 0;
+    if (idx < 0)
+        return -idx;
+    if (idx >= size)
+        return 2 * (size - 1) - idx;
     return idx;
 }
 
@@ -384,27 +349,108 @@ static __device__ __forceinline__ double mitchell_weight_device(double t) {
     const double C = 1.0 / 3.0;
     const double x = fabs(t);
     if (x < 1.0) {
-        return (1.0 / 6.0) * ((12.0 - 9.0 * B - 6.0 * C) * x * x * x
-            + (-18.0 + 12.0 * B + 6.0 * C) * x * x
-            + (6.0 - 2.0 * B));
+        return (1.0 / 6.0) * ((12.0 - 9.0 * B - 6.0 * C) * x * x * x + (-18.0 + 12.0 * B + 6.0 * C) * x * x + (6.0 - 2.0 * B));
     } else if (x < 2.0) {
-        return (1.0 / 6.0) * ((-B - 6.0 * C) * x * x * x
-            + (6.0 * B + 30.0 * C) * x * x
-            + (-12.0 * B - 48.0 * C) * x
-            + (8.0 * B + 24.0 * C));
+        return (1.0 / 6.0) * ((-B - 6.0 * C) * x * x * x + (6.0 * B + 30.0 * C) * x * x + (-12.0 * B - 48.0 * C) * x + (8.0 * B + 24.0 * C));
     }
     return 0.0;
 }
 
-static __device__ __forceinline__ double scan_lut_fetch_device(const double* JUICER_RESTRICT lut, int res, size_t limit, int xi, int yi, int zi, int c) {
-    const size_t sRes = static_cast<size_t>(res);
-    const size_t idx = (static_cast<size_t>(zi) * sRes + static_cast<size_t>(yi)) * sRes + static_cast<size_t>(xi);
-    const size_t base = idx * 3u + static_cast<size_t>(c);
-    if (base >= limit) {
-        return 0.0;
+static __device__ __forceinline__ void hanatos_cubic_coordinate_device(
+    float normalized,
+    int size,
+    int& base,
+    double& fraction) {
+    double coordinate =
+        static_cast<double>(fminf(1.0f, fmaxf(0.0f, normalized))) *
+        static_cast<double>(size - 1);
+    if (coordinate >= static_cast<double>(size - 1)) {
+        base = size - 2;
+        fraction = 1.0;
+        return;
     }
-    return ldg_d(lut + base);
+    base = static_cast<int>(floor(coordinate));
+    fraction = coordinate - static_cast<double>(base);
 }
+
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+static __device__ __forceinline__ float sample_hanatos_spectrum_cubic_device(
+    const float* JUICER_RESTRICT lut,
+    int size,
+    int samples,
+    int sample,
+    float tcC,
+    float tcM) {
+    int cBase = 0;
+    int mBase = 0;
+    double cFraction = 0.0;
+    double mFraction = 0.0;
+    hanatos_cubic_coordinate_device(tcC, size, cBase, cFraction);
+    hanatos_cubic_coordinate_device(tcM, size, mBase, mFraction);
+
+    const double wc[4] = {
+        mitchell_weight_device(cFraction + 1.0),
+        mitchell_weight_device(cFraction),
+        mitchell_weight_device(cFraction - 1.0),
+        mitchell_weight_device(cFraction - 2.0)};
+    const double wm[4] = {
+        mitchell_weight_device(mFraction + 1.0),
+        mitchell_weight_device(mFraction),
+        mitchell_weight_device(mFraction - 1.0),
+        mitchell_weight_device(mFraction - 2.0)};
+
+    double value = 0.0;
+    double weightSum = 0.0;
+    for (int dc = 0; dc < 4; ++dc) {
+        const int c = reflect_index_device(cBase - 1 + dc, size);
+        for (int dm = 0; dm < 4; ++dm) {
+            const int m = reflect_index_device(mBase - 1 + dm, size);
+            const double weight = wc[dc] * wm[dm];
+            weightSum += weight;
+            value += weight * static_cast<double>(hanatos_bilinear_at(lut, size, samples, c, m, sample));
+        }
+    }
+    return static_cast<float>(weightSum != 0.0 ? value / weightSum : 0.0);
+}
+
+static __device__ __forceinline__ float sample_hanatos_integrated_cubic_device(
+    const float* JUICER_RESTRICT lut,
+    int size,
+    int channel,
+    float tcC,
+    float tcM) {
+    int cBase = 0;
+    int mBase = 0;
+    double cFraction = 0.0;
+    double mFraction = 0.0;
+    hanatos_cubic_coordinate_device(tcC, size, cBase, cFraction);
+    hanatos_cubic_coordinate_device(tcM, size, mBase, mFraction);
+
+    const double wc[4] = {
+        mitchell_weight_device(cFraction + 1.0),
+        mitchell_weight_device(cFraction),
+        mitchell_weight_device(cFraction - 1.0),
+        mitchell_weight_device(cFraction - 2.0)};
+    const double wm[4] = {
+        mitchell_weight_device(mFraction + 1.0),
+        mitchell_weight_device(mFraction),
+        mitchell_weight_device(mFraction - 1.0),
+        mitchell_weight_device(mFraction - 2.0)};
+
+    double value = 0.0;
+    double weightSum = 0.0;
+    for (int dc = 0; dc < 4; ++dc) {
+        const int c = reflect_index_device(cBase - 1 + dc, size);
+        for (int dm = 0; dm < 4; ++dm) {
+            const int m = reflect_index_device(mBase - 1 + dm, size);
+            const double weight = wc[dc] * wm[dm];
+            weightSum += weight;
+            value += weight * static_cast<double>(hanatos_integrated_at(lut, size, c, m, channel));
+        }
+    }
+    return static_cast<float>(weightSum != 0.0 ? value / weightSum : 0.0);
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
 
 static __device__ __forceinline__ int reflect_index_repeat_device(int idx, int size) {
     if (size <= 1) {
@@ -420,76 +466,196 @@ static __device__ __forceinline__ int reflect_index_repeat_device(int idx, int s
     return idx;
 }
 
-static __device__ __forceinline__ void sample_cubic_scan_lut_device(const double* JUICER_RESTRICT lut, int resRaw, const double D_norm[3], double out[3]) {
-    if (!out) {
-        return;
-    }
-    if (!lut || !D_norm) {
-        out[0] = out[1] = out[2] = 0.0;
-        return;
-    }
-
-    const int res = (resRaw > 1) ? resRaw : 1;
-    const double scale = (res > 1) ? static_cast<double>(res - 1) : 1.0;
-    const double fx = D_norm[0] * scale;
-    const double fy = D_norm[1] * scale;
-    const double fz = D_norm[2] * scale;
-
-    const int xBase = static_cast<int>(floor(fx));
-    const int yBase = static_cast<int>(floor(fy));
-    const int zBase = static_cast<int>(floor(fz));
-    const double tx = fx - static_cast<double>(xBase);
-    const double ty = fy - static_cast<double>(yBase);
-    const double tz = fz - static_cast<double>(zBase);
-
-    double wx[4], wy[4], wz[4];
-    wx[0] = mitchell_weight_device(tx + 1.0);
-    wx[1] = mitchell_weight_device(tx);
-    wx[2] = mitchell_weight_device(tx - 1.0);
-    wx[3] = mitchell_weight_device(tx - 2.0);
-    wy[0] = mitchell_weight_device(ty + 1.0);
-    wy[1] = mitchell_weight_device(ty);
-    wy[2] = mitchell_weight_device(ty - 1.0);
-    wy[3] = mitchell_weight_device(ty - 2.0);
-    wz[0] = mitchell_weight_device(tz + 1.0);
-    wz[1] = mitchell_weight_device(tz);
-    wz[2] = mitchell_weight_device(tz - 1.0);
-    wz[3] = mitchell_weight_device(tz - 2.0);
-
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+static __device__ __forceinline__ float scan_lut_fetch_float_cmy_device(
+    const float* JUICER_RESTRICT lut,
+    int res,
+    int c,
+    int m,
+    int y,
+    int output) {
     const size_t sRes = static_cast<size_t>(res);
-    const size_t limit = sRes * sRes * sRes * 3u;
+    const size_t index =
+        ((static_cast<size_t>(c) * sRes + static_cast<size_t>(m)) * sRes + static_cast<size_t>(y)) * 3u +
+        static_cast<size_t>(output);
+    return ldg_f(lut + index);
+}
 
-    double sum[3] = { 0.0, 0.0, 0.0 };
-    double wsum = 0.0;
-    for (int i = 0; i < 4; ++i) {
-        const int xi = reflect_index_device(xBase - 1 + i, res);
-        for (int j = 0; j < 4; ++j) {
-            const int yj = reflect_index_device(yBase - 1 + j, res);
-            for (int k = 0; k < 4; ++k) {
-                const int zk = reflect_index_device(zBase - 1 + k, res);
-                const double w = wx[i] * wy[j] * wz[k];
-                wsum += w;
-                sum[0] += w * scan_lut_fetch_device(lut, res, limit, xi, yj, zk, 0);
-                sum[1] += w * scan_lut_fetch_device(lut, res, limit, xi, yj, zk, 1);
-                sum[2] += w * scan_lut_fetch_device(lut, res, limit, xi, yj, zk, 2);
-            }
-        }
+static __device__ __forceinline__ float scan_lut_fetch_float_cell_cmy_device(
+    const float* JUICER_RESTRICT lut,
+    int cellRes,
+    int c,
+    int m,
+    int y,
+    int output) {
+    const size_t sRes = static_cast<size_t>(cellRes);
+    const size_t index =
+        ((static_cast<size_t>(c) * sRes + static_cast<size_t>(m)) * sRes + static_cast<size_t>(y)) * 3u +
+        static_cast<size_t>(output);
+    return ldg_f(lut + index);
+}
+
+static __device__ __forceinline__ void pchip_coordinate_float_device(
+    float normalized,
+    int res,
+    int& base,
+    float& fraction) {
+    float coordinate = normalized * static_cast<float>(res - 1);
+    coordinate = fminf(static_cast<float>(res - 1), fmaxf(0.0f, coordinate));
+    if (coordinate >= static_cast<float>(res - 1)) {
+        base = res - 2;
+        fraction = 1.0f;
+        return;
+    }
+    base = static_cast<int>(floorf(coordinate));
+    fraction = coordinate - static_cast<float>(base);
+}
+
+static __device__ __forceinline__ float hermite_value_float_device(
+    float y0,
+    float y1,
+    float m0,
+    float m1,
+    float t) {
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    const float h00 = 2.0f * t3 - 3.0f * t2 + 1.0f;
+    const float h10 = t3 - 2.0f * t2 + t;
+    const float h01 = -2.0f * t3 + 3.0f * t2;
+    const float h11 = t3 - t2;
+    return h00 * y0 + h10 * m0 + h01 * y1 + h11 * m1;
+}
+
+static __device__ __forceinline__ float linear_mix_float_device(float v0, float v1, float t) {
+    return v0 + t * (v1 - v0);
+}
+
+static __device__ __forceinline__ float bilinear_mix_float_device(
+    float v00,
+    float v10,
+    float v01,
+    float v11,
+    float tc,
+    float tm) {
+    return linear_mix_float_device(
+        linear_mix_float_device(v00, v10, tc),
+        linear_mix_float_device(v01, v11, tc),
+        tm);
+}
+
+static __device__ __forceinline__ bool sample_pchip_float_log2_scan_lut_device(
+    const JuicerCuda::ScanStagePayload& scanStage,
+    const double normalizedCmy[3],
+    float out[3]) {
+    if (!scanStage.scannerUseLut ||
+        !scanStage.scanLutLog2PchipXYZ ||
+        !scanStage.scanLutPchipSlopeC ||
+        !scanStage.scanLutPchipSlopeM ||
+        !scanStage.scanLutPchipSlopeY ||
+        !scanStage.scanLutPchipCellMin ||
+        !scanStage.scanLutPchipCellMax ||
+        scanStage.scanLutRes < 2 ||
+        !normalizedCmy ||
+        !out ||
+        !isfinite(normalizedCmy[0]) ||
+        !isfinite(normalizedCmy[1]) ||
+        !isfinite(normalizedCmy[2])) {
+        return false;
     }
 
-    const double inv = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
-    out[0] = sum[0] * inv;
-    out[1] = sum[1] * inv;
-    out[2] = sum[2] * inv;
+    int c = 0;
+    int m = 0;
+    int y = 0;
+    float tc = 0.0f;
+    float tm = 0.0f;
+    float ty = 0.0f;
+    pchip_coordinate_float_device(static_cast<float>(normalizedCmy[0]), scanStage.scanLutRes, c, tc);
+    pchip_coordinate_float_device(static_cast<float>(normalizedCmy[1]), scanStage.scanLutRes, m, tm);
+    pchip_coordinate_float_device(static_cast<float>(normalizedCmy[2]), scanStage.scanLutRes, y, ty);
+
+    const int res = scanStage.scanLutRes;
+    const int cellRes = res - 1;
+    for (int output = 0; output < 3; ++output) {
+        const float v000 = hermite_value_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c, m, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c + 1, m, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c, m, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c + 1, m, y, output),
+            tc);
+        const float v010 = hermite_value_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c, m + 1, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c + 1, m + 1, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c, m + 1, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c + 1, m + 1, y, output),
+            tc);
+        const float v001 = hermite_value_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c, m, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c + 1, m, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c, m, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c + 1, m, y + 1, output),
+            tc);
+        const float v011 = hermite_value_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c, m + 1, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c + 1, m + 1, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c, m + 1, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c + 1, m + 1, y + 1, output),
+            tc);
+
+        const float sm00 = linear_mix_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c, m, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c + 1, m, y, output),
+            tc);
+        const float sm10 = linear_mix_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c, m + 1, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c + 1, m + 1, y, output),
+            tc);
+        const float sm01 = linear_mix_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c, m, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c + 1, m, y + 1, output),
+            tc);
+        const float sm11 = linear_mix_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c, m + 1, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c + 1, m + 1, y + 1, output),
+            tc);
+        const float vy0 = hermite_value_float_device(v000, v010, sm00, sm10, tm);
+        const float vy1 = hermite_value_float_device(v001, v011, sm01, sm11, tm);
+
+        const float sy0 = bilinear_mix_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c, m, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c + 1, m, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c, m + 1, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c + 1, m + 1, y, output),
+            tc,
+            tm);
+        const float sy1 = bilinear_mix_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c, m, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c + 1, m, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c, m + 1, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c + 1, m + 1, y + 1, output),
+            tc,
+            tm);
+
+        const float interpolated = hermite_value_float_device(vy0, vy1, sy0, sy1, ty);
+        const float minimum =
+            scan_lut_fetch_float_cell_cmy_device(scanStage.scanLutPchipCellMin, cellRes, c, m, y, output);
+        const float maximum =
+            scan_lut_fetch_float_cell_cmy_device(scanStage.scanLutPchipCellMax, cellRes, c, m, y, output);
+        out[output] = fminf(maximum, fmaxf(minimum, interpolated));
+    }
+    return true;
 }
+// NOLINTEND(bugprone-easily-swappable-parameters)
 
 static __device__ __forceinline__ void convert_input_to_DWG_device(
     const JuicerCuda::FilmRawPayload& cfg,
     const float rgbIn[3],
     float rgbDWG[3],
-    bool clampNonNegative)
-{
+    bool clampNonNegative) {
     float linear[3];
-    apply_input_cctf_decoding_device(cfg.inputColorSpaceIndex, cfg.applyCctfDecoding, rgbIn, linear);
+    InputCctfDecodingDevice decoding{};
+    decoding.inputColorSpaceIndex = cfg.inputColorSpaceIndex;
+    decoding.applyCctfDecoding = cfg.applyCctfDecoding;
+    apply_input_cctf_decoding_device(decoding, rgbIn, linear);
 
     float XYZ[3];
     mat3_mul9_device(cfg.inputRGBToXYZ, linear, XYZ);
@@ -504,8 +670,7 @@ static __device__ __forceinline__ void convert_input_to_DWG_device(
     float dwg[3];
     if (clampNonNegative) {
         XYZ_to_DWG_linear_device(xyzPtr, dwg);
-    }
-    else {
+    } else {
         XYZ_to_DWG_linear_unclamped_device(xyzPtr, dwg);
     }
     rgbDWG[0] = dwg[0];
@@ -516,10 +681,12 @@ static __device__ __forceinline__ void convert_input_to_DWG_device(
 static __device__ __forceinline__ void convert_input_to_sRGB_device(
     const JuicerCuda::FilmRawPayload& cfg,
     const float rgbIn[3],
-    float rgbSRGB[3])
-{
+    float rgbSRGB[3]) {
     float linear[3];
-    apply_input_cctf_decoding_device(cfg.inputColorSpaceIndex, cfg.applyCctfDecoding, rgbIn, linear);
+    InputCctfDecodingDevice decoding{};
+    decoding.inputColorSpaceIndex = cfg.inputColorSpaceIndex;
+    decoding.applyCctfDecoding = cfg.applyCctfDecoding;
+    apply_input_cctf_decoding_device(decoding, rgbIn, linear);
 
     float XYZ[3];
     mat3_mul9_device(cfg.inputRGBToXYZ, linear, XYZ);
@@ -532,10 +699,7 @@ static __device__ __forceinline__ void convert_input_to_sRGB_device(
     }
 
     const float XYZ_to_sRGB[9] = {
-        3.2404542f, -1.5371385f, -0.4985314f,
-       -0.9692660f,  1.8760108f,  0.0415560f,
-        0.0556434f, -0.2040259f,  1.0572252f
-    };
+        3.2404542f, -1.5371385f, -0.4985314f, -0.9692660f, 1.8760108f, 0.0415560f, 0.0556434f, -0.2040259f, 1.0572252f};
 
     float srgb[3];
     mat3_mul9_device(XYZ_to_sRGB, xyzPtr, srgb);
@@ -545,16 +709,41 @@ static __device__ __forceinline__ void convert_input_to_sRGB_device(
     rgbSRGB[2] = device_isfinite(srgb[2]) ? srgb[2] : 0.0f;
 }
 
+static __device__ __forceinline__ void convert_input_to_working_xyz_device(
+    const JuicerCuda::FilmRawPayload& cfg,
+    const float rgbIn[3],
+    float workingXYZ[3]) {
+    float linear[3];
+    InputCctfDecodingDevice decoding{};
+    decoding.inputColorSpaceIndex = cfg.inputColorSpaceIndex;
+    decoding.applyCctfDecoding = cfg.applyCctfDecoding;
+    apply_input_cctf_decoding_device(decoding, rgbIn, linear);
+
+    float inputXYZ[3];
+    mat3_mul9_device(cfg.inputRGBToXYZ, linear, inputXYZ);
+
+    if (cfg.applyInputChromaticAdapt) {
+        mat3_mul9_device(cfg.inputXYZAdapt, inputXYZ, workingXYZ);
+    } else {
+        workingXYZ[0] = inputXYZ[0];
+        workingXYZ[1] = inputXYZ[1];
+        workingXYZ[2] = inputXYZ[2];
+    }
+
+    workingXYZ[0] = device_sanitize_channel(workingXYZ[0]);
+    workingXYZ[1] = device_sanitize_channel(workingXYZ[1]);
+    workingXYZ[2] = device_sanitize_channel(workingXYZ[2]);
+}
+
 static __device__ void hanatos_layer_exposures_device(
-    const float rgbDWG[3],
+    const float workingXYZ[3],
     const float* JUICER_RESTRICT hanatosLut,
     int hanatosN,
     const float refIllumWhiteXYZ[3],
     const float* JUICER_RESTRICT sensB,
     const float* JUICER_RESTRICT sensG,
     const float* JUICER_RESTRICT sensR,
-    float E_out[3])
-{
+    float E_out[3]) {
     if (!E_out) {
         return;
     }
@@ -563,29 +752,17 @@ static __device__ void hanatos_layer_exposures_device(
         return;
     }
 
-    // Convert DWG RGB to XYZ (D65).
-    const float DWG_RGB_to_XYZ[9] = {
-        0.70062239f,  0.14877482f,  0.10105872f,
-        0.27411851f,  0.87363190f, -0.14775041f,
-       -0.09896291f, -0.13789533f,  1.32591599f
-    };
-
     float XYZ[3] = {
-        DWG_RGB_to_XYZ[0] * rgbDWG[0] + DWG_RGB_to_XYZ[1] * rgbDWG[1] + DWG_RGB_to_XYZ[2] * rgbDWG[2],
-        DWG_RGB_to_XYZ[3] * rgbDWG[0] + DWG_RGB_to_XYZ[4] * rgbDWG[1] + DWG_RGB_to_XYZ[5] * rgbDWG[2],
-        DWG_RGB_to_XYZ[6] * rgbDWG[0] + DWG_RGB_to_XYZ[7] * rgbDWG[1] + DWG_RGB_to_XYZ[8] * rgbDWG[2]
-    };
-    XYZ[0] = device_sanitize_channel(XYZ[0]);
-    XYZ[1] = device_sanitize_channel(XYZ[1]);
-    XYZ[2] = device_sanitize_channel(XYZ[2]);
+        device_sanitize_channel(workingXYZ[0]),
+        device_sanitize_channel(workingXYZ[1]),
+        device_sanitize_channel(workingXYZ[2])};
 
-    const float D65[3] = { 0.950455f, 1.0f, 1.089058f };
+    const float D65[3] = {0.950455f, 1.0f, 1.089058f};
 
     float refWhite[3] = {
         device_sanitize_channel(refIllumWhiteXYZ[0]),
         device_sanitize_channel(refIllumWhiteXYZ[1]),
-        device_sanitize_channel(refIllumWhiteXYZ[2])
-    };
+        device_sanitize_channel(refIllumWhiteXYZ[2])};
     if (!(refWhite[1] > 0.0f)) {
         refWhite[0] = D65[0];
         refWhite[1] = D65[1];
@@ -593,7 +770,11 @@ static __device__ void hanatos_layer_exposures_device(
     }
 
     float adaptedXYZ[3];
-    chromatic_adapt_XYZ_CAT02_device(XYZ, D65, refWhite, adaptedXYZ);
+    ChromaticAdaptationDeviceInput adaptation{};
+    adaptation.xyz = XYZ;
+    adaptation.sourceWhiteXYZ = D65;
+    adaptation.destinationWhiteXYZ = refWhite;
+    chromatic_adapt_XYZ_CAT02_device(adaptation, adaptedXYZ);
     adaptedXYZ[0] = device_sanitize_channel(adaptedXYZ[0]);
     adaptedXYZ[1] = device_sanitize_channel(adaptedXYZ[1]);
     adaptedXYZ[2] = device_sanitize_channel(adaptedXYZ[2]);
@@ -611,30 +792,11 @@ static __device__ void hanatos_layer_exposures_device(
 
     const int N = hanatosN;
     const int K = 81;
-    const float fx = fminf(1.0f, fmaxf(0.0f, qx)) * static_cast<float>(N - 1);
-    const float fy = fminf(1.0f, fmaxf(0.0f, qy)) * static_cast<float>(N - 1);
-    int x0 = static_cast<int>(floorf(fx));
-    int y0 = static_cast<int>(floorf(fy));
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x0 > N - 1) x0 = N - 1;
-    if (y0 > N - 1) y0 = N - 1;
-    const int x1 = (x0 + 1 <= N - 1) ? (x0 + 1) : (N - 1);
-    const int y1 = (y0 + 1 <= N - 1) ? (y0 + 1) : (N - 1);
-    const float tx = fx - static_cast<float>(x0);
-    const float ty = fy - static_cast<float>(y0);
-
     double Eb = 0.0;
     double Eg = 0.0;
     double Er = 0.0;
     for (int k = 0; k < K; ++k) {
-        const float v00 = hanatos_bilinear_at(hanatosLut, N, K, x0, y0, k);
-        const float v10 = hanatos_bilinear_at(hanatosLut, N, K, x1, y0, k);
-        const float v01 = hanatos_bilinear_at(hanatosLut, N, K, x0, y1, k);
-        const float v11 = hanatos_bilinear_at(hanatosLut, N, K, x1, y1, k);
-        const float v0 = v00 * (1.0f - tx) + v10 * tx;
-        const float v1 = v01 * (1.0f - tx) + v11 * tx;
-        const float raw = v0 * (1.0f - ty) + v1 * ty;
+        const float raw = sample_hanatos_spectrum_cubic_device(hanatosLut, N, K, k, qx, qy);
 
         const float e = device_sanitize_channel(sumXYZ * raw);
         if (!device_isfinite(e)) {
@@ -645,9 +807,12 @@ static __device__ void hanatos_layer_exposures_device(
         const float sb = ldg_f(sensB + k);
         const float sg = ldg_f(sensG + k);
         const float sr = ldg_f(sensR + k);
-        if (isfinite(sb)) Eb += e64 * static_cast<double>(sb);
-        if (isfinite(sg)) Eg += e64 * static_cast<double>(sg);
-        if (isfinite(sr)) Er += e64 * static_cast<double>(sr);
+        if (isfinite(sb))
+            Eb += e64 * static_cast<double>(sb);
+        if (isfinite(sg))
+            Eg += e64 * static_cast<double>(sg);
+        if (isfinite(sr))
+            Er += e64 * static_cast<double>(sr);
     }
 
     E_out[0] = device_isfinite(static_cast<float>(Eb)) ? static_cast<float>(Eb) : 0.0f;
@@ -656,12 +821,11 @@ static __device__ void hanatos_layer_exposures_device(
 }
 
 static __device__ void hanatos_integrated_exposures_device(
-    const float rgbDWG[3],
+    const float workingXYZ[3],
     const float* JUICER_RESTRICT lutIntegrated,
     int hanatosN,
     const float refIllumWhiteXYZ[3],
-    float E_out[3])
-{
+    float E_out[3]) {
     if (!E_out) {
         return;
     }
@@ -670,29 +834,17 @@ static __device__ void hanatos_integrated_exposures_device(
         return;
     }
 
-    // Convert DWG RGB to XYZ (D65).
-    const float DWG_RGB_to_XYZ[9] = {
-        0.70062239f,  0.14877482f,  0.10105872f,
-        0.27411851f,  0.87363190f, -0.14775041f,
-       -0.09896291f, -0.13789533f,  1.32591599f
-    };
-
     float XYZ[3] = {
-        DWG_RGB_to_XYZ[0] * rgbDWG[0] + DWG_RGB_to_XYZ[1] * rgbDWG[1] + DWG_RGB_to_XYZ[2] * rgbDWG[2],
-        DWG_RGB_to_XYZ[3] * rgbDWG[0] + DWG_RGB_to_XYZ[4] * rgbDWG[1] + DWG_RGB_to_XYZ[5] * rgbDWG[2],
-        DWG_RGB_to_XYZ[6] * rgbDWG[0] + DWG_RGB_to_XYZ[7] * rgbDWG[1] + DWG_RGB_to_XYZ[8] * rgbDWG[2]
-    };
-    XYZ[0] = device_sanitize_channel(XYZ[0]);
-    XYZ[1] = device_sanitize_channel(XYZ[1]);
-    XYZ[2] = device_sanitize_channel(XYZ[2]);
+        device_sanitize_channel(workingXYZ[0]),
+        device_sanitize_channel(workingXYZ[1]),
+        device_sanitize_channel(workingXYZ[2])};
 
-    const float D65[3] = { 0.950455f, 1.0f, 1.089058f };
+    const float D65[3] = {0.950455f, 1.0f, 1.089058f};
 
     float refWhite[3] = {
         device_sanitize_channel(refIllumWhiteXYZ[0]),
         device_sanitize_channel(refIllumWhiteXYZ[1]),
-        device_sanitize_channel(refIllumWhiteXYZ[2])
-    };
+        device_sanitize_channel(refIllumWhiteXYZ[2])};
     if (!(refWhite[1] > 0.0f)) {
         refWhite[0] = D65[0];
         refWhite[1] = D65[1];
@@ -700,7 +852,11 @@ static __device__ void hanatos_integrated_exposures_device(
     }
 
     float adaptedXYZ[3];
-    chromatic_adapt_XYZ_CAT02_device(XYZ, D65, refWhite, adaptedXYZ);
+    ChromaticAdaptationDeviceInput adaptation{};
+    adaptation.xyz = XYZ;
+    adaptation.sourceWhiteXYZ = D65;
+    adaptation.destinationWhiteXYZ = refWhite;
+    chromatic_adapt_XYZ_CAT02_device(adaptation, adaptedXYZ);
     adaptedXYZ[0] = device_sanitize_channel(adaptedXYZ[0]);
     adaptedXYZ[1] = device_sanitize_channel(adaptedXYZ[1]);
     adaptedXYZ[2] = device_sanitize_channel(adaptedXYZ[2]);
@@ -717,44 +873,9 @@ static __device__ void hanatos_integrated_exposures_device(
     tri2quad_device(x, y, qx, qy);
 
     const int N = hanatosN;
-    const float fx = fminf(1.0f, fmaxf(0.0f, qx)) * static_cast<float>(N - 1);
-    const float fy = fminf(1.0f, fmaxf(0.0f, qy)) * static_cast<float>(N - 1);
-    int x0 = static_cast<int>(floorf(fx));
-    int y0 = static_cast<int>(floorf(fy));
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x0 > N - 1) x0 = N - 1;
-    if (y0 > N - 1) y0 = N - 1;
-    const int x1 = (x0 + 1 <= N - 1) ? (x0 + 1) : (N - 1);
-    const int y1 = (y0 + 1 <= N - 1) ? (y0 + 1) : (N - 1);
-    const float tx = fx - static_cast<float>(x0);
-    const float ty = fy - static_cast<float>(y0);
-
-    const float r00 = hanatos_integrated_at(lutIntegrated, N, x0, y0, 0);
-    const float r10 = hanatos_integrated_at(lutIntegrated, N, x1, y0, 0);
-    const float r01 = hanatos_integrated_at(lutIntegrated, N, x0, y1, 0);
-    const float r11 = hanatos_integrated_at(lutIntegrated, N, x1, y1, 0);
-
-    const float g00 = hanatos_integrated_at(lutIntegrated, N, x0, y0, 1);
-    const float g10 = hanatos_integrated_at(lutIntegrated, N, x1, y0, 1);
-    const float g01 = hanatos_integrated_at(lutIntegrated, N, x0, y1, 1);
-    const float g11 = hanatos_integrated_at(lutIntegrated, N, x1, y1, 1);
-
-    const float b00 = hanatos_integrated_at(lutIntegrated, N, x0, y0, 2);
-    const float b10 = hanatos_integrated_at(lutIntegrated, N, x1, y0, 2);
-    const float b01 = hanatos_integrated_at(lutIntegrated, N, x0, y1, 2);
-    const float b11 = hanatos_integrated_at(lutIntegrated, N, x1, y1, 2);
-
-    const float r0 = r00 * (1.0f - tx) + r10 * tx;
-    const float r1 = r01 * (1.0f - tx) + r11 * tx;
-    const float g0 = g00 * (1.0f - tx) + g10 * tx;
-    const float g1 = g01 * (1.0f - tx) + g11 * tx;
-    const float b0 = b00 * (1.0f - tx) + b10 * tx;
-    const float b1 = b01 * (1.0f - tx) + b11 * tx;
-
-    const float r = r0 * (1.0f - ty) + r1 * ty;
-    const float g = g0 * (1.0f - ty) + g1 * ty;
-    const float b = b0 * (1.0f - ty) + b1 * ty;
+    const float r = sample_hanatos_integrated_cubic_device(lutIntegrated, N, 0, qx, qy);
+    const float g = sample_hanatos_integrated_cubic_device(lutIntegrated, N, 1, qx, qy);
+    const float b = sample_hanatos_integrated_cubic_device(lutIntegrated, N, 2, qx, qy);
 
     const float rSafe = device_isfinite(r) ? r : 0.0f;
     const float gSafe = device_isfinite(g) ? g : 0.0f;
@@ -776,8 +897,7 @@ static __device__ void tables_layer_exposures_device(
     const float* JUICER_RESTRICT sensB,
     const float* JUICER_RESTRICT sensG,
     const float* JUICER_RESTRICT sensR,
-    float E_out[3])
-{
+    float E_out[3]) {
     if (!E_out) {
         return;
     }
@@ -787,30 +907,24 @@ static __device__ void tables_layer_exposures_device(
     }
 
     const float DWG_RGB_to_XYZ[9] = {
-        0.70062239f,  0.14877482f,  0.10105872f,
-        0.27411851f,  0.87363190f, -0.14775041f,
-       -0.09896291f, -0.13789533f,  1.32591599f
-    };
+        0.70062239f, 0.14877482f, 0.10105872f, 0.27411851f, 0.87363190f, -0.14775041f, -0.09896291f, -0.13789533f, 1.32591599f};
 
     float XYZ[3] = {
         DWG_RGB_to_XYZ[0] * rgbDWG[0] + DWG_RGB_to_XYZ[1] * rgbDWG[1] + DWG_RGB_to_XYZ[2] * rgbDWG[2],
         DWG_RGB_to_XYZ[3] * rgbDWG[0] + DWG_RGB_to_XYZ[4] * rgbDWG[1] + DWG_RGB_to_XYZ[5] * rgbDWG[2],
-        DWG_RGB_to_XYZ[6] * rgbDWG[0] + DWG_RGB_to_XYZ[7] * rgbDWG[1] + DWG_RGB_to_XYZ[8] * rgbDWG[2]
-    };
+        DWG_RGB_to_XYZ[6] * rgbDWG[0] + DWG_RGB_to_XYZ[7] * rgbDWG[1] + DWG_RGB_to_XYZ[8] * rgbDWG[2]};
 
     float sanitizedXYZ[3] = {
         device_sanitize_nonneg(XYZ[0]),
         device_sanitize_nonneg(XYZ[1]),
-        device_sanitize_nonneg(XYZ[2])
-    };
+        device_sanitize_nonneg(XYZ[2])};
 
-    const float D65[3] = { 0.950455f, 1.0f, 1.089058f };
+    const float D65[3] = {0.950455f, 1.0f, 1.089058f};
 
     float refWhite[3] = {
         device_sanitize_nonneg(refIllumWhiteXYZ[0]),
         device_sanitize_nonneg(refIllumWhiteXYZ[1]),
-        device_sanitize_nonneg(refIllumWhiteXYZ[2])
-    };
+        device_sanitize_nonneg(refIllumWhiteXYZ[2])};
     if (!(refWhite[1] > 0.0f)) {
         refWhite[0] = D65[0];
         refWhite[1] = D65[1];
@@ -818,7 +932,11 @@ static __device__ void tables_layer_exposures_device(
     }
 
     float adaptedXYZ[3];
-    chromatic_adapt_XYZ_CAT02_device(sanitizedXYZ, D65, refWhite, adaptedXYZ);
+    ChromaticAdaptationDeviceInput adaptation{};
+    adaptation.xyz = sanitizedXYZ;
+    adaptation.sourceWhiteXYZ = D65;
+    adaptation.destinationWhiteXYZ = refWhite;
+    chromatic_adapt_XYZ_CAT02_device(adaptation, adaptedXYZ);
     adaptedXYZ[0] = fmaxf(0.0f, adaptedXYZ[0]);
     adaptedXYZ[1] = fmaxf(0.0f, adaptedXYZ[1]);
     adaptedXYZ[2] = fmaxf(0.0f, adaptedXYZ[2]);
@@ -859,9 +977,12 @@ static __device__ void tables_layer_exposures_device(
         const float sg = ldg_f(sensG + i);
         const float sr = ldg_f(sensR + i);
         const double e64 = static_cast<double>(Ei);
-        if (isfinite(sb)) Eb += e64 * static_cast<double>(sb);
-        if (isfinite(sg)) Eg += e64 * static_cast<double>(sg);
-        if (isfinite(sr)) Er += e64 * static_cast<double>(sr);
+        if (isfinite(sb))
+            Eb += e64 * static_cast<double>(sb);
+        if (isfinite(sg))
+            Eg += e64 * static_cast<double>(sg);
+        if (isfinite(sr))
+            Er += e64 * static_cast<double>(sr);
     }
 
     if (Y_recon > 1e-20 && targetScale > 0.0f) {
@@ -869,8 +990,7 @@ static __device__ void tables_layer_exposures_device(
         Eb *= s;
         Eg *= s;
         Er *= s;
-    }
-    else if (!(targetScale > 0.0f)) {
+    } else if (!(targetScale > 0.0f)) {
         Eb = Eg = Er = 0.0;
     }
 
@@ -889,8 +1009,7 @@ static __device__ void mallett_layer_exposures_device(
     const float* JUICER_RESTRICT sensB,
     const float* JUICER_RESTRICT sensG,
     const float* JUICER_RESTRICT sensR,
-    float E_out[3])
-{
+    float E_out[3]) {
     if (!E_out) {
         return;
     }
@@ -920,9 +1039,12 @@ static __device__ void mallett_layer_exposures_device(
         const float sb = ldg_f(sensB + i);
         const float sg = ldg_f(sensG + i);
         const float sr = ldg_f(sensR + i);
-        if (isfinite(sb)) Eb += e64 * static_cast<double>(sb);
-        if (isfinite(sg)) Eg += e64 * static_cast<double>(sg);
-        if (isfinite(sr)) Er += e64 * static_cast<double>(sr);
+        if (isfinite(sb))
+            Eb += e64 * static_cast<double>(sb);
+        if (isfinite(sg))
+            Eg += e64 * static_cast<double>(sg);
+        if (isfinite(sr))
+            Er += e64 * static_cast<double>(sr);
     }
 
     E_out[0] = device_isfinite(static_cast<float>(Eb)) ? static_cast<float>(Eb) : 0.0f;
@@ -930,24 +1052,24 @@ static __device__ void mallett_layer_exposures_device(
     E_out[2] = device_isfinite(static_cast<float>(Er)) ? static_cast<float>(Er) : 0.0f;
 }
 
-static __device__ __forceinline__ void compute_film_raw_device(
-    const JuicerCuda::PipelineRunParams& params,
+template <bool ApplyRouteCorrection, typename Params>
+static __device__ __forceinline__ void compute_film_linear_exposure_device(
+    const Params& params,
     const float rgbIn[3],
-    float filmRaw[3])
-{
+    float filmRaw[3]) {
     const JuicerCuda::FilmExposurePayload& expose = params.filmExpose;
 
-    float E_raw[3] = { 0.0f, 0.0f, 0.0f };
+    float E_raw[3] = {0.0f, 0.0f, 0.0f};
     const bool allowHanatos = (params.filmRaw.spectralUpsamplingMode == 0);
     const bool allowMallett = (params.filmRaw.spectralUpsamplingMode != 0);
     const bool spdReady = expose.tablesAx && expose.tablesAy && expose.tablesAz && expose.tablesK == 81;
     const bool useHanatos = allowHanatos &&
-        spdReady &&
-        expose.hanatosLut &&
-        (expose.hanatosN > 0) &&
-        (expose.sensB.n >= 81) &&
-        (expose.sensG.n >= 81) &&
-        (expose.sensR.n >= 81);
+                            spdReady &&
+                            expose.hanatosLut &&
+                            (expose.hanatosN > 0) &&
+                            (expose.sensB.n >= 81) &&
+                            (expose.sensG.n >= 81) &&
+                            (expose.sensR.n >= 81);
     const bool useHanatosIntegrated =
         useHanatos &&
         expose.hanatosLutIntegrated &&
@@ -960,28 +1082,42 @@ static __device__ __forceinline__ void compute_film_raw_device(
         (expose.sensG.n >= 81) &&
         (expose.sensR.n >= 81);
     const bool useMallett = allowMallett &&
-        spdReady &&
-        expose.tablesIllum &&
-        expose.mallettBasis &&
-        (expose.mallettBasisK == 81) &&
-        canTables;
+                            spdReady &&
+                            expose.tablesIllum &&
+                            expose.mallettBasis &&
+                            (expose.mallettBasisK == 81) &&
+                            canTables;
 
-    float rgbDWG[3];
-    if (!useMallett) {
-        convert_input_to_DWG_device(params.filmRaw, rgbIn, rgbDWG, !useHanatos);
+    float autoExposureScale = 1.0f;
+    if (expose.exposureScaleDevice) {
+        const float deviceScale = *expose.exposureScaleDevice;
+        if (isfinite(deviceScale) && deviceScale > 0.0f) {
+            autoExposureScale = deviceScale;
+        }
+    }
+    const float autoExposedRgb[3] = {
+        rgbIn[0] * autoExposureScale,
+        rgbIn[1] * autoExposureScale,
+        rgbIn[2] * autoExposureScale};
+
+    float rgbDWG[3] = {0.0f, 0.0f, 0.0f};
+    float workingXYZ[3] = {0.0f, 0.0f, 0.0f};
+    if (useHanatos) {
+        convert_input_to_working_xyz_device(params.filmRaw, autoExposedRgb, workingXYZ);
+    } else if (!useMallett) {
+        convert_input_to_DWG_device(params.filmRaw, autoExposedRgb, rgbDWG, !useHanatos);
     }
 
     if (useHanatosIntegrated) {
         hanatos_integrated_exposures_device(
-            rgbDWG,
+            workingXYZ,
             expose.hanatosLutIntegrated,
             expose.hanatosNIntegrated,
             params.filmRaw.refIllumWhiteXYZ,
             E_raw);
-    }
-    else if (useHanatos) {
+    } else if (useHanatos) {
         hanatos_layer_exposures_device(
-            rgbDWG,
+            workingXYZ,
             expose.hanatosLut,
             expose.hanatosN,
             params.filmRaw.refIllumWhiteXYZ,
@@ -989,10 +1125,9 @@ static __device__ __forceinline__ void compute_film_raw_device(
             expose.sensG.y,
             expose.sensR.y,
             E_raw);
-    }
-    else if (useMallett) {
+    } else if (useMallett) {
         float rgbSRGB[3];
-        convert_input_to_sRGB_device(params.filmRaw, rgbIn, rgbSRGB);
+        convert_input_to_sRGB_device(params.filmRaw, autoExposedRgb, rgbSRGB);
         mallett_layer_exposures_device(
             rgbSRGB,
             expose.mallettBasis,
@@ -1002,8 +1137,7 @@ static __device__ __forceinline__ void compute_film_raw_device(
             expose.sensG.y,
             expose.sensR.y,
             E_raw);
-    }
-    else if (canTables) {
+    } else if (canTables) {
         tables_layer_exposures_device(
             rgbDWG,
             expose.spdSInv,
@@ -1017,37 +1151,60 @@ static __device__ __forceinline__ void compute_film_raw_device(
             E_raw);
     }
 
-    float midgrayScale = params.filmRaw.midgrayScale;
-    if (!isfinite(midgrayScale) || !(midgrayScale > 0.0f)) {
-        midgrayScale = 1.0f;
-    }
-
-    float exposureScale = expose.exposureScale;
-    if (!isfinite(exposureScale) || !(exposureScale > 0.0f)) {
-        exposureScale = 1.0f;
-    }
-    if (expose.exposureScaleDevice) {
-        float deviceScale = *expose.exposureScaleDevice;
-        if (!isfinite(deviceScale) || !(deviceScale > 0.0f)) {
-            deviceScale = 1.0f;
-        }
-        exposureScale = deviceScale;
-    }
-
+    const float mallettGreenMidgrayScale =
+        params.filmRaw.mallettGreenMidgrayScale;
+    const float manualExposureScale = expose.manualExposureScale;
+    const float routeCorrectionScale = expose.routeCorrectionScale;
     for (int i = 0; i < 3; ++i) {
         float v = E_raw[i];
-        if (!isfinite(v) || v < 0.0f) v = 0.0f;
-        v = fmaxf(0.0f, v * midgrayScale);
-        v = fmaxf(0.0f, v * exposureScale);
+        if (!isfinite(v) || v < 0.0f)
+            v = 0.0f;
+        if (useMallett) {
+            v = fmaxf(0.0f, v * mallettGreenMidgrayScale);
+        }
+        if constexpr (ApplyRouteCorrection) {
+            // Preserve the established disabled-path multiplication and rounding.
+            v = fmaxf(
+                0.0f,
+                v * manualExposureScale * routeCorrectionScale);
+        } else {
+            v = fmaxf(0.0f, v * manualExposureScale);
+        }
         filmRaw[i] = v;
     }
 }
 
+template <typename Params>
+static __device__ __forceinline__ void compute_camera_film_linear_exposure_device(
+    const Params& params,
+    const float rgbIn[3],
+    float filmRaw[3]) {
+    compute_film_linear_exposure_device<false>(params, rgbIn, filmRaw);
+}
+
+template <typename Params>
+static __device__ __forceinline__ void apply_film_route_correction_device(
+    const Params& params,
+    float filmRaw[3]) {
+    const float routeCorrectionScale = params.filmExpose.routeCorrectionScale;
+    for (int i = 0; i < 3; ++i) {
+        filmRaw[i] = fmaxf(0.0f, filmRaw[i] * routeCorrectionScale);
+    }
+}
+
+template <typename Params>
+static __device__ __forceinline__ void compute_film_raw_device(
+    const Params& params,
+    const float rgbIn[3],
+    float filmRaw[3]) {
+    compute_film_linear_exposure_device<true>(params, rgbIn, filmRaw);
+}
+
+template <typename Params>
 static __device__ __forceinline__ void compute_logE_raw_from_film_raw_device(
-    const JuicerCuda::PipelineRunParams& params,
+    const Params& params,
     const float filmRaw[3],
-    float logE_raw[3])
-{
+    float logE_raw[3]) {
     (void)params;
     constexpr float kLogEps = 1e-10f;
     logE_raw[0] = log10f(fmaxf(filmRaw[0], 0.0f) + kLogEps);
@@ -1055,91 +1212,249 @@ static __device__ __forceinline__ void compute_logE_raw_from_film_raw_device(
     logE_raw[2] = log10f(fmaxf(filmRaw[2], 0.0f) + kLogEps);
 }
 
+template <typename Params>
 static __device__ __forceinline__ void compute_logE_raw_device(
-    const JuicerCuda::PipelineRunParams& params,
+    const Params& params,
     const float rgbIn[3],
-    float logE_raw[3])
-{
-    float filmRaw[3] = { 0.0f, 0.0f, 0.0f };
+    float logE_raw[3]) {
+    float filmRaw[3] = {0.0f, 0.0f, 0.0f};
     compute_film_raw_device(params, rgbIn, filmRaw);
     compute_logE_raw_from_film_raw_device(params, filmRaw, logE_raw);
 }
 
+static constexpr int kJuicerLogRawMaskB = 0x1;
+static constexpr int kJuicerLogRawMaskG = 0x2;
+static constexpr int kJuicerLogRawMaskR = 0x4;
+static constexpr int kJuicerLogRawMaskBgr =
+    kJuicerLogRawMaskB | kJuicerLogRawMaskG | kJuicerLogRawMaskR;
+
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+static __device__ __forceinline__ float compute_hanatos_integrated_log_raw_channel_from_quad_device(
+    const JuicerCuda::FilmExposurePayload& expose,
+    float qx,
+    float qy,
+    float sumXYZ,
+    float exposureScale,
+    int lutChannel) {
+    const float raw = sample_hanatos_integrated_cubic_device(
+        expose.hanatosLutIntegrated,
+        expose.hanatosNIntegrated,
+        lutChannel,
+        qx,
+        qy);
+    float exposure = device_sanitize_channel(sumXYZ * (device_isfinite(raw) ? raw : 0.0f));
+    exposure = fmaxf(0.0f, exposure * exposureScale);
+    constexpr float kLogEps = 1e-10f;
+    return log10f(fmaxf(exposure, 0.0f) + kLogEps);
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+template <typename Params>
+static __device__ __forceinline__ bool compute_logE_raw_selected_hanatos_integrated_device(
+    const Params& params,
+    const float rgbIn[3],
+    int channelMask,
+    float logE_raw[3]) {
+    const JuicerCuda::FilmExposurePayload& expose = params.filmExpose;
+    const bool allowHanatos = (params.filmRaw.spectralUpsamplingMode == 0);
+    const bool spdReady = expose.tablesAx && expose.tablesAy && expose.tablesAz && expose.tablesK == 81;
+    const bool useHanatos =
+        allowHanatos &&
+        spdReady &&
+        expose.hanatosLut &&
+        (expose.hanatosN > 0) &&
+        (expose.sensB.n >= 81) &&
+        (expose.sensG.n >= 81) &&
+        (expose.sensR.n >= 81);
+    const bool useHanatosIntegrated =
+        useHanatos &&
+        expose.hanatosLutIntegrated &&
+        (expose.hanatosNIntegrated > 0) &&
+        (expose.hanatosNIntegrated == expose.hanatosN);
+    if (!useHanatosIntegrated) {
+        return false;
+    }
+
+    float autoExposureScale = 1.0f;
+    if (expose.exposureScaleDevice) {
+        const float deviceScale = *expose.exposureScaleDevice;
+        if (isfinite(deviceScale) && deviceScale > 0.0f) {
+            autoExposureScale = deviceScale;
+        }
+    }
+    const float autoExposedRgb[3] = {
+        rgbIn[0] * autoExposureScale,
+        rgbIn[1] * autoExposureScale,
+        rgbIn[2] * autoExposureScale};
+
+    float workingXYZ[3] = {0.0f, 0.0f, 0.0f};
+    convert_input_to_working_xyz_device(params.filmRaw, autoExposedRgb, workingXYZ);
+
+    float XYZ[3] = {
+        device_sanitize_channel(workingXYZ[0]),
+        device_sanitize_channel(workingXYZ[1]),
+        device_sanitize_channel(workingXYZ[2])};
+    const float D65[3] = {0.950455f, 1.0f, 1.089058f};
+    float refWhite[3] = {
+        device_sanitize_channel(params.filmRaw.refIllumWhiteXYZ[0]),
+        device_sanitize_channel(params.filmRaw.refIllumWhiteXYZ[1]),
+        device_sanitize_channel(params.filmRaw.refIllumWhiteXYZ[2])};
+    if (!(refWhite[1] > 0.0f)) {
+        refWhite[0] = D65[0];
+        refWhite[1] = D65[1];
+        refWhite[2] = D65[2];
+    }
+
+    float adaptedXYZ[3];
+    ChromaticAdaptationDeviceInput adaptation{};
+    adaptation.xyz = XYZ;
+    adaptation.sourceWhiteXYZ = D65;
+    adaptation.destinationWhiteXYZ = refWhite;
+    chromatic_adapt_XYZ_CAT02_device(adaptation, adaptedXYZ);
+    adaptedXYZ[0] = device_sanitize_channel(adaptedXYZ[0]);
+    adaptedXYZ[1] = device_sanitize_channel(adaptedXYZ[1]);
+    adaptedXYZ[2] = device_sanitize_channel(adaptedXYZ[2]);
+
+    const float sumXYZ = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
+    const float denom = fmaxf(sumXYZ, 1e-10f);
+    float x = adaptedXYZ[0] / denom;
+    float y = adaptedXYZ[1] / denom;
+    x = fminf(1.0f, fmaxf(0.0f, x));
+    y = fminf(1.0f, fmaxf(0.0f, y));
+
+    float qx = 0.0f;
+    float qy = 0.0f;
+    tri2quad_device(x, y, qx, qy);
+
+    const float manualExposureScale = expose.manualExposureScale;
+    const float routeCorrectionScale = expose.routeCorrectionScale;
+    const float scale = manualExposureScale * routeCorrectionScale;
+
+    if (channelMask & kJuicerLogRawMaskB) {
+        logE_raw[0] =
+            compute_hanatos_integrated_log_raw_channel_from_quad_device(expose, qx, qy, sumXYZ, scale, 2);
+    }
+    if (channelMask & kJuicerLogRawMaskG) {
+        logE_raw[1] =
+            compute_hanatos_integrated_log_raw_channel_from_quad_device(expose, qx, qy, sumXYZ, scale, 1);
+    }
+    if (channelMask & kJuicerLogRawMaskR) {
+        logE_raw[2] =
+            compute_hanatos_integrated_log_raw_channel_from_quad_device(expose, qx, qy, sumXYZ, scale, 0);
+    }
+    return true;
+}
+
+template <typename Params>
+static __device__ __forceinline__ void compute_logE_raw_selected_device(
+    const Params& params,
+    const float rgbIn[3],
+    int channelMask,
+    float logE_raw[3]) {
+    channelMask &= kJuicerLogRawMaskBgr;
+    if (channelMask == 0) {
+        return;
+    }
+    if (channelMask == kJuicerLogRawMaskBgr ||
+        !compute_logE_raw_selected_hanatos_integrated_device(params, rgbIn, channelMask, logE_raw)) {
+        float fullLogRaw[3] = {0.0f, 0.0f, 0.0f};
+        compute_logE_raw_device(params, rgbIn, fullLogRaw);
+        if (channelMask & kJuicerLogRawMaskB) {
+            logE_raw[0] = fullLogRaw[0];
+        }
+        if (channelMask & kJuicerLogRawMaskG) {
+            logE_raw[1] = fullLogRaw[1];
+        }
+        if (channelMask & kJuicerLogRawMaskR) {
+            logE_raw[2] = fullLogRaw[2];
+        }
+    }
+}
+
+template <typename Params>
 static __device__ __forceinline__ void compute_logE_from_film_raw_device(
-    const JuicerCuda::PipelineRunParams& params,
+    const Params& params,
     const float filmRaw[3],
-    float logE_raw[3],
-    float logE_sanitized[3],
-    float layerPre[3])
-{
+    FilmDevelopIntermediatesDevice outputs) {
     const JuicerCuda::FilmDevelopPayload& develop = params.filmDevelop;
 
-    compute_logE_raw_from_film_raw_device(params, filmRaw, logE_raw);
+    compute_logE_raw_from_film_raw_device(params, filmRaw, outputs.logERaw);
 
-    logE_sanitized[0] = sanitize_inf_logE_for_curve_device(logE_raw[0], develop.densB);
-    logE_sanitized[1] = sanitize_inf_logE_for_curve_device(logE_raw[1], develop.densG);
-    logE_sanitized[2] = sanitize_inf_logE_for_curve_device(logE_raw[2], develop.densR);
+    outputs.logESanitized[0] = sanitize_inf_logE_for_curve_device(outputs.logERaw[0], develop.densB);
+    outputs.logESanitized[1] = sanitize_inf_logE_for_curve_device(outputs.logERaw[1], develop.densG);
+    outputs.logESanitized[2] = sanitize_inf_logE_for_curve_device(outputs.logERaw[2], develop.densR);
 
-    layerPre[0] = sample_density_at_logE_device(develop.densB, logE_sanitized[0], develop.gammaFactorB);
-    layerPre[1] = sample_density_at_logE_device(develop.densG, logE_sanitized[1], develop.gammaFactorG);
-    layerPre[2] = sample_density_at_logE_device(develop.densR, logE_sanitized[2], develop.gammaFactorR);
+    outputs.layerPre[0] =
+        sample_density_at_logE_device(develop.densB, outputs.logESanitized[0], develop.gammaFactorB);
+    outputs.layerPre[1] =
+        sample_density_at_logE_device(develop.densG, outputs.logESanitized[1], develop.gammaFactorG);
+    outputs.layerPre[2] =
+        sample_density_at_logE_device(develop.densR, outputs.logESanitized[2], develop.gammaFactorR);
 }
 
+template <typename Params>
+static __device__ __forceinline__ void compute_logE_from_camera_film_linear_exposure_device(
+    const Params& params,
+    const float cameraFilmLinear[3],
+    FilmDevelopIntermediatesDevice outputs) {
+    float correctedFilmRaw[3] = {
+        cameraFilmLinear[0],
+        cameraFilmLinear[1],
+        cameraFilmLinear[2]};
+    apply_film_route_correction_device(params, correctedFilmRaw);
+    compute_logE_from_film_raw_device(params, correctedFilmRaw, outputs);
+}
+
+template <typename Params>
 static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
-    const JuicerCuda::PipelineRunParams& params,
+    const Params& params,
     const float rgbIn[3],
-    float logE_raw[3],
-    float logE_sanitized[3],
-    float layerPre[3])
-{
-    float filmRaw[3] = { 0.0f, 0.0f, 0.0f };
+    FilmDevelopIntermediatesDevice outputs) {
+    float filmRaw[3] = {0.0f, 0.0f, 0.0f};
     compute_film_raw_device(params, rgbIn, filmRaw);
-    compute_logE_from_film_raw_device(params, filmRaw, logE_raw, logE_sanitized, layerPre);
+    compute_logE_from_film_raw_device(params, filmRaw, outputs);
 }
 
 static __device__ __forceinline__ float density_to_light_sample_agx_device(float density, float illuminant) {
-    // pow(10, -d) = exp2(-d * log2(10))
-    constexpr double kLog2_10 = 3.32192809488736234787;
-    const double transmitted = exp2(-static_cast<double>(density) * kLog2_10) * static_cast<double>(illuminant);
-    const float out = static_cast<float>(transmitted);
-    return isnan(out) ? 0.0f : out;
+    constexpr float kLog2_10 = 3.32192809488736234787f;
+    const float transmitted = exp2f(-density * kLog2_10) * illuminant;
+    return isnan(transmitted) ? 0.0f : transmitted;
 }
 
-static __device__ __forceinline__ void apply_print_pipeline_device(
+static __device__ __forceinline__ bool print_spectral_integrate_device(
     const JuicerCuda::PrintExposePayload& expose,
-    const JuicerCuda::PrintDevelopPayload& develop,
-    float D_cmy[3]) {
-    if (!expose.active || !D_cmy) {
-        return;
+    const float D_cmy[3],
+    float rawPrint[3]) {
+    if (!D_cmy || !rawPrint) {
+        return false;
     }
 
     const int K = expose.printIllumK;
     if (K <= 0 || !expose.printIllumFiltered) {
-        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
-        return;
+        rawPrint[0] = rawPrint[1] = rawPrint[2] = 0.0f;
+        return false;
     }
 
     const int negK = expose.negTables.K;
     if (negK != K || !expose.negTables.epsC || !expose.negTables.epsM || !expose.negTables.epsY) {
-        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
-        return;
+        rawPrint[0] = rawPrint[1] = rawPrint[2] = 0.0f;
+        return false;
     }
 
-    const bool haveBaseline = (expose.negTables.hasBaseline != 0) && expose.negTables.baseMin;
+    const bool haveBaseline = (expose.negTables.hasBaseline != 0) && expose.negTables.baseDensityMin;
 
     if (!expose.printSensC.y || !expose.printSensM.y || !expose.printSensY.y) {
-        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
-        return;
+        rawPrint[0] = rawPrint[1] = rawPrint[2] = 0.0f;
+        return false;
     }
     if (expose.printSensC.n < K || expose.printSensM.n < K || expose.printSensY.n < K) {
-        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
-        return;
+        rawPrint[0] = rawPrint[1] = rawPrint[2] = 0.0f;
+        return false;
     }
 
-    // Negative density -> filtered enlarger light -> raw print exposures (C/M/Y).
-    double accumC = 0.0;
-    double accumM = 0.0;
-    double accumY = 0.0;
+    float accumC = 0.0f;
+    float accumM = 0.0f;
+    float accumY = 0.0f;
     for (int i = 0; i < K; ++i) {
         const float sC = ldg_f(expose.printSensC.y + i);
         const float sM = ldg_f(expose.printSensM.y + i);
@@ -1152,7 +1467,7 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
             continue;
         }
 
-        const float baseD = haveBaseline ? ldg_f(expose.negTables.baseMin + i) : 0.0f;
+        const float baseD = haveBaseline ? ldg_f(expose.negTables.baseDensityMin + i) : 0.0f;
         const float densitySpectral =
             D_cmy[0] * ldg_f(expose.negTables.epsC + i) +
             D_cmy[1] * ldg_f(expose.negTables.epsM + i) +
@@ -1160,51 +1475,145 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
             baseD;
 
         const float e = density_to_light_sample_agx_device(densitySpectral, ldg_f(expose.printIllumFiltered + i));
-        const double e64 = static_cast<double>(e);
 
-        if (activeC) accumC += e64 * static_cast<double>(sC);
-        if (activeM) accumM += e64 * static_cast<double>(sM);
-        if (activeY) accumY += e64 * static_cast<double>(sY);
+        if (activeC)
+            accumC += e * sC;
+        if (activeM)
+            accumM += e * sM;
+        if (activeY)
+            accumY += e * sY;
     }
 
-    float rawC = static_cast<float>(accumC);
-    float rawM = static_cast<float>(accumM);
-    float rawY = static_cast<float>(accumY);
+    rawPrint[0] = accumC;
+    rawPrint[1] = accumM;
+    rawPrint[2] = accumY;
+    return true;
+}
 
-    float expPrint = expose.printExposure;
-    if (!isfinite(expPrint)) {
-        expPrint = 1.0f;
-    }
-    if (expPrint < 0.0f) {
-        expPrint = 0.0f;
-    }
-
-    float kMid = expose.printMidgrayFactor;
-    if (!isfinite(kMid) || !(kMid > 0.0f)) {
-        kMid = 1.0f;
+static __device__ __forceinline__ void print_apply_exposure_scale_device(
+    const JuicerCuda::PrintExposePayload& expose,
+    float rawPrint[3]) {
+    if (!rawPrint) {
+        return;
     }
 
-    const float rawScale = expPrint * kMid;
-    rawC *= rawScale;
-    rawM *= rawScale;
-    rawY *= rawScale;
+    const float expPrint = expose.printExposure;
+    const float kMid = expose.printMidgrayFactor;
+
+    rawPrint[0] *= kMid;
+    rawPrint[1] *= kMid;
+    rawPrint[2] *= kMid;
 
     const float preflash = expose.printPreflashExposure;
     if (isfinite(preflash) && preflash > 0.0f) {
-        rawC += expose.printPreflashRaw[0] * preflash;
-        rawM += expose.printPreflashRaw[1] * preflash;
-        rawY += expose.printPreflashRaw[2] * preflash;
+        rawPrint[0] += expose.printPreflashRaw[0] * preflash;
+        rawPrint[1] += expose.printPreflashRaw[1] * preflash;
+        rawPrint[2] += expose.printPreflashRaw[2] * preflash;
     }
 
-    // RAW -> log10(raw + eps) -> print density curves.
-    constexpr float kLogEps = 1e-10f;
-    const float logC = log10f(rawC + kLogEps);
-    const float logM = log10f(rawM + kLogEps);
-    const float logY = log10f(rawY + kLogEps);
+    rawPrint[0] *= expPrint;
+    rawPrint[1] *= expPrint;
+    rawPrint[2] *= expPrint;
 
-    D_cmy[0] = sample_density_at_logE_device(develop.printDcC, logC, develop.printGammaC);
-    D_cmy[1] = sample_density_at_logE_device(develop.printDcM, logM, develop.printGammaM);
-    D_cmy[2] = sample_density_at_logE_device(develop.printDcY, logY, develop.printGammaY);
+    const float routeCorrectionScale = expose.routeCorrectionScale;
+    rawPrint[0] *= routeCorrectionScale;
+    rawPrint[1] *= routeCorrectionScale;
+    rawPrint[2] *= routeCorrectionScale;
+}
+
+static __device__ __forceinline__ bool print_inner_raw_device(
+    const JuicerCuda::PrintExposePayload& expose,
+    const float filmDensityCmy[3],
+    float innerRaw[3]) {
+    if (!print_spectral_integrate_device(
+            expose,
+            filmDensityCmy,
+            innerRaw)) {
+        return false;
+    }
+
+    innerRaw[0] *= expose.printMidgrayFactor;
+    innerRaw[1] *= expose.printMidgrayFactor;
+    innerRaw[2] *= expose.printMidgrayFactor;
+    if (expose.printPreflashExposure > 0.0f) {
+        innerRaw[0] +=
+            expose.printPreflashRaw[0] * expose.printPreflashExposure;
+        innerRaw[1] +=
+            expose.printPreflashRaw[1] * expose.printPreflashExposure;
+        innerRaw[2] +=
+            expose.printPreflashRaw[2] * expose.printPreflashExposure;
+    }
+    return true;
+}
+
+static __device__ __forceinline__ void print_linear_for_diffusion_device(
+    const JuicerCuda::PrintExposePayload& expose,
+    const float innerRaw[3],
+    float linearForDiffusion[3]) {
+    constexpr float kLogEps = 1e-10f;
+    const float outerScale =
+        expose.printExposure * expose.routeCorrectionScale;
+    linearForDiffusion[0] =
+        (fmaxf(innerRaw[0], 0.0f) + kLogEps) * outerScale;
+    linearForDiffusion[1] =
+        (fmaxf(innerRaw[1], 0.0f) + kLogEps) * outerScale;
+    linearForDiffusion[2] =
+        (fmaxf(innerRaw[2], 0.0f) + kLogEps) * outerScale;
+}
+
+static __device__ __forceinline__ void print_log_encode_device(
+    const float rawPrint[3],
+    float logPrint[3]) {
+    if (!rawPrint || !logPrint) {
+        return;
+    }
+
+    constexpr float kLogEps = 1e-10f;
+    logPrint[0] = log10f(rawPrint[0] + kLogEps);
+    logPrint[1] = log10f(rawPrint[1] + kLogEps);
+    logPrint[2] = log10f(rawPrint[2] + kLogEps);
+}
+
+static __device__ __forceinline__ void print_log_encode_diffused_device(
+    const float diffusedRaw[3],
+    float logPrint[3]) {
+    constexpr float kLogEps = 1e-10f;
+    logPrint[0] = log10f(fmaxf(diffusedRaw[0], 0.0f) + kLogEps);
+    logPrint[1] = log10f(fmaxf(diffusedRaw[1], 0.0f) + kLogEps);
+    logPrint[2] = log10f(fmaxf(diffusedRaw[2], 0.0f) + kLogEps);
+}
+
+static __device__ __forceinline__ void print_sample_density_curves_device(
+    const JuicerCuda::PrintDevelopPayload& develop,
+    const float logPrint[3],
+    float D_cmy[3]) {
+    if (!logPrint || !D_cmy) {
+        return;
+    }
+
+    D_cmy[0] = sample_density_at_logE_device(develop.printDcC, logPrint[0], develop.printGammaC);
+    D_cmy[1] = sample_density_at_logE_device(develop.printDcM, logPrint[1], develop.printGammaM);
+    D_cmy[2] = sample_density_at_logE_device(develop.printDcY, logPrint[2], develop.printGammaY);
+}
+
+static __device__ __forceinline__ void apply_print_pipeline_device(
+    const JuicerCuda::PrintExposePayload& expose,
+    const JuicerCuda::PrintDevelopPayload& develop,
+    float D_cmy[3]) {
+    if (!expose.active || !D_cmy) {
+        return;
+    }
+
+    float rawPrint[3] = {0.0f, 0.0f, 0.0f};
+    if (!print_spectral_integrate_device(expose, D_cmy, rawPrint)) {
+        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
+        return;
+    }
+
+    print_apply_exposure_scale_device(expose, rawPrint);
+    float logPrint[3] = {0.0f, 0.0f, 0.0f};
+    print_log_encode_device(rawPrint, logPrint);
+    print_sample_density_curves_device(develop, logPrint, D_cmy);
 }
 
 static __device__ __forceinline__ float clamp_to_curve_domain_device(float logE, const JuicerCuda::DeviceCurveView& c) {
@@ -1228,8 +1637,7 @@ static __device__ __forceinline__ void apply_dir_runtime_logE_device(
     const JuicerCuda::DirPayload& dir,
     const JuicerCuda::DeviceCurveView& densB,
     const JuicerCuda::DeviceCurveView& densG,
-    const JuicerCuda::DeviceCurveView& densR)
-{
+    const JuicerCuda::DeviceCurveView& densR) {
     if (!logE_BGR || !layerD_BGR) {
         return;
     }
@@ -1237,41 +1645,34 @@ static __device__ __forceinline__ void apply_dir_runtime_logE_device(
         return;
     }
 
-    auto safe_norm = [](float D, float dmax) -> float {
-        float Din = (!isfinite(D) || D < 0.0f) ? 0.0f : D;
-        float m = (isfinite(dmax) && dmax > 1e-4f) ? dmax : 1.0f;
-        float n = Din / m;
-        if (!isfinite(n) || n < 0.0f) n = 0.0f;
-        return n;
+    auto silver_density = [&](float density, float dmax) -> float {
+        const float finiteDensity = isfinite(density) ? density : 0.0f;
+        const float silver = dir.positive ? dmax - finiteDensity : finiteDensity;
+        return isfinite(silver) ? fmaxf(0.0f, silver) : 0.0f;
     };
 
-    float nB = safe_norm(layerD_BGR[0], dir.dMax[0]);
-    float nG = safe_norm(layerD_BGR[1], dir.dMax[1]);
-    float nR = safe_norm(layerD_BGR[2], dir.dMax[2]);
-
-    auto high_boost = [&](float n) -> float {
-        const float nb = n + dir.highShift * n * n;
-        if (!isfinite(nb)) {
-            return (n >= 0.0f && isfinite(n)) ? n : 0.0f;
-        }
-        return fmaxf(0.0f, nb);
-    };
-    nB = high_boost(nB);
-    nG = high_boost(nG);
-    nR = high_boost(nR);
+    const float nB = silver_density(layerD_BGR[0], dir.dMax[0]);
+    const float nG = silver_density(layerD_BGR[1], dir.dMax[1]);
+    const float nR = silver_density(layerD_BGR[2], dir.dMax[2]);
 
     float aY = dir.M[0] * nB + dir.M[3] * nG + dir.M[6] * nR;
     float aM = dir.M[1] * nB + dir.M[4] * nG + dir.M[7] * nR;
     float aC = dir.M[2] * nB + dir.M[5] * nG + dir.M[8] * nR;
 
-    if (!isfinite(aY)) aY = 0.0f;
-    if (!isfinite(aM)) aM = 0.0f;
-    if (!isfinite(aC)) aC = 0.0f;
+    if (!isfinite(aY))
+        aY = 0.0f;
+    if (!isfinite(aM))
+        aM = 0.0f;
+    if (!isfinite(aC))
+        aC = 0.0f;
 
     auto clamp_corr = [](float v) -> float {
-        if (!isfinite(v)) return 0.0f;
-        if (v < -10.0f) return -10.0f;
-        if (v > 10.0f) return 10.0f;
+        if (!isfinite(v))
+            return 0.0f;
+        if (v < -10.0f)
+            return -10.0f;
+        if (v > 10.0f)
+            return 10.0f;
         return v;
     };
     aY = clamp_corr(aY);
@@ -1285,4 +1686,63 @@ static __device__ __forceinline__ void apply_dir_runtime_logE_device(
     logE_BGR[0] = clamp_to_curve_domain_device(logE_BGR[0], densB);
     logE_BGR[1] = clamp_to_curve_domain_device(logE_BGR[1], densG);
     logE_BGR[2] = clamp_to_curve_domain_device(logE_BGR[2], densR);
+}
+
+static __device__ __forceinline__ bool juicer_cuda_spatial_dir_filtered_correction_active_device(
+    const JuicerCuda::FilmDevelopPayload& develop) {
+    return develop.spatialDir.active &&
+           develop.spatialDir.filteredCorrectionY &&
+           develop.spatialDir.filteredCorrectionM &&
+           develop.spatialDir.filteredCorrectionC;
+}
+
+static __device__ __forceinline__ bool juicer_cuda_spatial_dir_cached_log_raw_active_device(
+    const JuicerCuda::FilmDevelopPayload& develop) {
+    return develop.spatialDir.logRawB &&
+           develop.spatialDir.logRawG &&
+           develop.spatialDir.logRawR;
+}
+
+static __device__ __forceinline__ void juicer_cuda_load_spatial_dir_cached_log_raw_device(
+    const JuicerCuda::FilmDevelopPayload& develop,
+    std::size_t pixelIndex,
+    float logRawBgr[3]) {
+    logRawBgr[0] = ldg_f(develop.spatialDir.logRawB + pixelIndex);
+    logRawBgr[1] = ldg_f(develop.spatialDir.logRawG + pixelIndex);
+    logRawBgr[2] = ldg_f(develop.spatialDir.logRawR + pixelIndex);
+}
+
+static __device__ __forceinline__ void juicer_cuda_develop_dir_final_device(
+    const JuicerCuda::FilmDevelopPayload& develop,
+    const float logRawBgr[3],
+    std::size_t pixelIndex,
+    float densityCmy[3]) {
+    // The focused schedule overwrites these correction planes with density.
+    // They are mutable for this kernel and must not use the read-only __ldg path.
+    const float filteredCorrectionY =
+        develop.spatialDir.filteredCorrectionY[pixelIndex];
+    const float filteredCorrectionM =
+        develop.spatialDir.filteredCorrectionM[pixelIndex];
+    const float filteredCorrectionC =
+        develop.spatialDir.filteredCorrectionC[pixelIndex];
+
+    float correctedLogRawB = logRawBgr[0] - filteredCorrectionY;
+    float correctedLogRawG = logRawBgr[1] - filteredCorrectionM;
+    float correctedLogRawR = logRawBgr[2] - filteredCorrectionC;
+
+    const JuicerCuda::DeviceCurveView preCorrectedB = develop.dirDensB;
+    const JuicerCuda::DeviceCurveView preCorrectedG = develop.dirDensG;
+    const JuicerCuda::DeviceCurveView preCorrectedR = develop.dirDensR;
+
+    correctedLogRawB = sanitize_inf_logE_for_curve_device(correctedLogRawB, preCorrectedB);
+    correctedLogRawG = sanitize_inf_logE_for_curve_device(correctedLogRawG, preCorrectedG);
+    correctedLogRawR = sanitize_inf_logE_for_curve_device(correctedLogRawR, preCorrectedR);
+
+    const float densityY = sample_density_at_logE_device(preCorrectedB, correctedLogRawB, develop.gammaFactorB);
+    const float densityM = sample_density_at_logE_device(preCorrectedG, correctedLogRawG, develop.gammaFactorG);
+    const float densityC = sample_density_at_logE_device(preCorrectedR, correctedLogRawR, develop.gammaFactorR);
+
+    densityCmy[0] = densityC;
+    densityCmy[1] = densityM;
+    densityCmy[2] = densityY;
 }
