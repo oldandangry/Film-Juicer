@@ -4359,33 +4359,6 @@ namespace JuicerProcess {
             outError);
     }
 
-    bool Root::PreparedCudaFrame::launch_base_pipeline_graph(
-        JuicerCuda::PipelineRunParams& run,
-        int renderModeKey,
-        void* cudaStreamOpaque,
-        int& outCudaErrorCode,
-        std::string& outError) {
-        outError.clear();
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            outError = "prepared frame is not active";
-            return false;
-        }
-
-        if (!JuicerCuda::ResourceManager::command_launch_base_pipeline_graph(
-                _state->transaction,
-                run,
-                renderModeKey,
-                cudaStreamOpaque,
-                outCudaErrorCode,
-                outError)) {
-            _state->set_failure(
-                PreparedCudaFailureStage{"command_launch_base_pipeline_graph"},
-                "CUDA base graph launch command failed");
-            return false;
-        }
-        return true;
-    }
-
     Root::PreparedCudaFrame::PreparedVisualGrainView
     Root::PreparedCudaFrame::visual_grain_resources() const noexcept {
         PreparedVisualGrainView view{};

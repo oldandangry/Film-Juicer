@@ -19,8 +19,6 @@
 #include <cstddef>
 #include <condition_variable>
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -35,226 +33,8 @@
 #include <cuda_runtime.h>
 #endif
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-extern "C" cudaError_t juicer_cuda_negative_pipeline(
-    const JuicerCuda::PipelineRunParams* hParams,
-    void* cudaStreamOpaque);
-
-extern "C" cudaError_t juicer_cuda_print_pipeline(
-    const JuicerCuda::PipelineRunParams* hParams,
-    void* cudaStreamOpaque);
-#endif
-
 namespace JuicerCuda {
 
-    namespace LaunchGraphCounters {
-
-#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
-        namespace {
-
-            struct RuntimeConfig {
-                bool runtimeEnabled = false;
-                std::filesystem::path snapshotPath{};
-            };
-
-            int parse_env_int(const char* name, int fallback) noexcept {
-                if (!name) {
-                    return fallback;
-                }
-                const char* value = std::getenv(name);
-                if (!value || !*value) {
-                    return fallback;
-                }
-                char* end = nullptr;
-                const long parsed = std::strtol(value, &end, 10);
-                if (end == value) {
-                    return fallback;
-                }
-                return static_cast<int>(parsed);
-            }
-
-            const RuntimeConfig& runtime_config() noexcept {
-                static const RuntimeConfig config = []() {
-                    RuntimeConfig out{};
-                    out.runtimeEnabled = parse_env_int("JUICER_LAUNCH_GRAPH_COUNTERS", 0) != 0;
-                    const char* snapshotPathEnv = std::getenv("JUICER_LAUNCH_GRAPH_COUNTERS_PATH");
-                    if (out.runtimeEnabled && snapshotPathEnv && *snapshotPathEnv) {
-                        try {
-                            out.snapshotPath = std::filesystem::path(snapshotPathEnv);
-                            out.snapshotPath.make_preferred();
-                        } catch (...) {
-                            out.snapshotPath.clear();
-                        }
-                    }
-                    return out;
-                }();
-                return config;
-            }
-
-            std::atomic<std::uint64_t>& frames_rendered_counter() noexcept {
-                static std::atomic<std::uint64_t> counter{0};
-                return counter;
-            }
-
-            std::atomic<std::uint64_t>& kernel_launch_total_counter() noexcept {
-                static std::atomic<std::uint64_t> counter{0};
-                return counter;
-            }
-
-            std::atomic<std::uint64_t>& graph_eligible_submission_total_counter() noexcept {
-                static std::atomic<std::uint64_t> counter{0};
-                return counter;
-            }
-
-            std::atomic<std::uint64_t>& graph_replay_hit_total_counter() noexcept {
-                static std::atomic<std::uint64_t> counter{0};
-                return counter;
-            }
-
-            std::mutex& snapshot_write_mutex() noexcept {
-                static std::mutex m;
-                return m;
-            }
-
-            std::once_flag& snapshot_dir_once_flag() noexcept {
-                static std::once_flag flag;
-                return flag;
-            }
-
-            void ensure_snapshot_dir_exists_if_needed(const std::filesystem::path& path) noexcept {
-                if (path.empty() || !path.has_parent_path()) {
-                    return;
-                }
-                std::call_once(snapshot_dir_once_flag(), [&]() {
-                    try {
-                        std::error_code ec;
-                        std::filesystem::create_directories(path.parent_path(), ec);
-                    } catch (...) {
-                        JuicerLogging::discard_current_exception();
-                    }
-                });
-            }
-
-            void flush_snapshot_file() noexcept {
-                const RuntimeConfig& config = runtime_config();
-                if (!config.runtimeEnabled || config.snapshotPath.empty()) {
-                    return;
-                }
-
-                try {
-                    // Keep the snapshot write best-effort so telemetry never interferes with rendering.
-                    ensure_snapshot_dir_exists_if_needed(config.snapshotPath);
-                    const Snapshot current = snapshot();
-
-                    std::lock_guard<std::mutex> lock(snapshot_write_mutex());
-                    std::ofstream out(config.snapshotPath, std::ios::out | std::ios::trunc);
-                    if (!out.is_open()) {
-                        return;
-                    }
-                    out.setf(std::ios::fixed, std::ios::floatfield);
-                    out.precision(6);
-                    out << "format_version=1\n";
-                    out << "compiled=1\n";
-                    out << "runtime_enabled=1\n";
-                    out << "frames_rendered=" << current.framesRendered << "\n";
-                    out << "kernel_launch_total=" << current.kernelLaunchTotal << "\n";
-                    out << "graph_eligible_submission_total=" << current.graphEligibleSubmissionTotal << "\n";
-                    out << "graph_replay_hit_total=" << current.graphReplayHitTotal << "\n";
-                    out << "kernel_launches_per_frame=" << kernel_launches_per_frame(current) << "\n";
-                    out << "cuda_graph_replay_hit_rate=" << cuda_graph_replay_hit_rate(current) << "\n";
-                } catch (...) {
-                    JuicerLogging::discard_current_exception();
-                }
-            }
-
-        } // namespace
-#endif
-
-        Snapshot snapshot() noexcept {
-#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
-            Snapshot out{};
-            out.framesRendered = frames_rendered_counter().load(std::memory_order_relaxed);
-            out.kernelLaunchTotal = kernel_launch_total_counter().load(std::memory_order_relaxed);
-            out.graphEligibleSubmissionTotal =
-                graph_eligible_submission_total_counter().load(std::memory_order_relaxed);
-            out.graphReplayHitTotal =
-                graph_replay_hit_total_counter().load(std::memory_order_relaxed);
-            return out;
-#else
-            return {};
-#endif
-        }
-
-        double kernel_launches_per_frame(const Snapshot& snapshot) noexcept {
-            if (snapshot.framesRendered == 0) {
-                return 0.0;
-            }
-            return static_cast<double>(snapshot.kernelLaunchTotal) /
-                   static_cast<double>(snapshot.framesRendered);
-        }
-
-        double cuda_graph_replay_hit_rate(const Snapshot& snapshot) noexcept {
-            if (snapshot.graphEligibleSubmissionTotal == 0) {
-                return 0.0;
-            }
-            return (100.0 * static_cast<double>(snapshot.graphReplayHitTotal)) /
-                   static_cast<double>(snapshot.graphEligibleSubmissionTotal);
-        }
-
-        bool runtime_enabled() noexcept {
-#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
-            return runtime_config().runtimeEnabled;
-#else
-            return false;
-#endif
-        }
-
-        void record_kernel_launch(std::uint64_t delta) noexcept {
-#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
-            if (delta == 0 || !runtime_enabled()) {
-                return;
-            }
-            kernel_launch_total_counter().fetch_add(delta, std::memory_order_relaxed);
-#else
-            (void)delta;
-#endif
-        }
-
-        void record_graph_eligible_submission(std::uint64_t delta) noexcept {
-#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
-            if (delta == 0 || !runtime_enabled()) {
-                return;
-            }
-            graph_eligible_submission_total_counter().fetch_add(delta, std::memory_order_relaxed);
-#else
-            (void)delta;
-#endif
-        }
-
-        void record_graph_replay_hit(std::uint64_t delta) noexcept {
-#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
-            if (delta == 0 || !runtime_enabled()) {
-                return;
-            }
-            graph_replay_hit_total_counter().fetch_add(delta, std::memory_order_relaxed);
-#else
-            (void)delta;
-#endif
-        }
-
-        void record_frame_completed(std::uint64_t delta) noexcept {
-#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
-            if (delta == 0 || !runtime_enabled()) {
-                return;
-            }
-            frames_rendered_counter().fetch_add(delta, std::memory_order_relaxed);
-            flush_snapshot_file();
-#else
-            (void)delta;
-#endif
-        }
-
-    } // namespace LaunchGraphCounters
 
     // Internal resource-acquire helpers are intentionally consumed only by command wrappers
     // in this module; they are not part of the public JuicerCudaResources API surface.
@@ -292,8 +72,6 @@ namespace JuicerCuda {
 
         // Cross-split helper declarations stay local to the owning TU rather than
         // living behind a one-consumer internal header.
-        std::uint64_t estimate_graph_cache_active_bytes_for_context(const DeviceContextKey& key) noexcept;
-        std::uint64_t evict_noncritical_graph_entries_for_context(const DeviceContextKey& key) noexcept;
         std::uint64_t tier_target_bytes(
             const ResourceManagerConfigEffective& cfg,
             const ResolvedPressurePolicy& policy,
@@ -400,8 +178,7 @@ namespace JuicerCuda {
 
             enum class BuilderReservationTier : std::uint8_t {
                 Scratch = 0,
-                Lut = 1,
-                Graph = 2
+                Lut = 1
             };
 
             enum class TierCircuitState : std::uint8_t {
@@ -451,8 +228,6 @@ namespace JuicerCuda {
                         return "scratch";
                     case BuilderReservationTier::Lut:
                         return "lut";
-                    case BuilderReservationTier::Graph:
-                        return "graph";
                     default:
                         return "unknown";
                 }
@@ -466,8 +241,6 @@ namespace JuicerCuda {
                         return "lut";
                     case ResourceTier::Scratch:
                         return "scratch";
-                    case ResourceTier::Graph:
-                        return "graph";
                     default:
                         return "unknown";
                 }
@@ -778,7 +551,6 @@ namespace JuicerCuda {
             struct BuilderReservationContextState {
                 std::uint64_t inFlightScratchBytes = 0;
                 std::uint64_t inFlightLutBytes = 0;
-                std::uint64_t inFlightGraphBytes = 0;
                 struct FairnessEntry {
                     std::uint32_t sharedTokens = 0;
                     std::uint32_t criticalTokens = 0;
@@ -794,7 +566,6 @@ namespace JuicerCuda {
                 std::unordered_map<DeviceContextKey, BuilderReservationContextState, DeviceContextKeyHash> byContext;
                 std::uint64_t totalScratchInFlightBytes = 0;
                 std::uint64_t totalLutInFlightBytes = 0;
-                std::uint64_t totalGraphInFlightBytes = 0;
             };
 
 
@@ -839,7 +610,7 @@ namespace JuicerCuda {
             };
 
             struct TierCircuitContextState {
-                std::array<TierCircuitTierState, 4> tiers{};
+                std::array<TierCircuitTierState, 3> tiers{};
             };
 
             struct TierCircuitPolicyState {
@@ -913,10 +684,10 @@ namespace JuicerCuda {
             };
 
             struct TierBudgetSnapshot {
-                std::array<std::uint64_t, 4> activeBytes{};
-                std::array<std::uint64_t, 4> reclaimableBytes{};
-                std::array<std::uint64_t, 4> targetBytes{};
-                std::array<std::uint64_t, 4> overTargetBytes{};
+                std::array<std::uint64_t, 3> activeBytes{};
+                std::array<std::uint64_t, 3> reclaimableBytes{};
+                std::array<std::uint64_t, 3> targetBytes{};
+                std::array<std::uint64_t, 3> overTargetBytes{};
                 std::uint64_t totalActiveBytes = 0;
                 std::uint64_t totalReclaimableBytes = 0;
                 bool anyOverTarget = false;
@@ -1085,12 +856,6 @@ namespace JuicerCuda {
             constexpr std::size_t kLargeFrameQuarantineMaxBytes = static_cast<std::size_t>(1024ull * 1024ull * 1024ull);
             constexpr std::size_t kLargeFrameQuarantineMaxEntries = 2;
             constexpr std::uint64_t kLargeFrameQuarantineDecayMs = 2000;
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-            constexpr std::uint64_t kGraphLargeEntryDecayMs = 2000;
-#endif
-            constexpr std::uint64_t kGraphLargeEntryThresholdDefaultBytes = 128ull * 1024ull * 1024ull;
-            constexpr std::uint64_t kGraphLargeEntryQuarantineMaxBytesDefault = 512ull * 1024ull * 1024ull;
-            constexpr std::uint32_t kGraphLargeEntryQuarantineMaxEntriesDefault = 2;
             constexpr const char* kScratchExhaustedPrefix = "scratch_exhausted:";
             constexpr const char* kReservationDeferredPrefix = "reservation_deferred:";
             constexpr const char* kPressureShedNonCriticalPrefix = "pressure_shed_noncritical:";
@@ -1102,7 +867,6 @@ namespace JuicerCuda {
             constexpr std::uint64_t kTransientReservationThresholdDefaultBytes = 64ull * 1024ull * 1024ull;
             constexpr std::uint64_t kScratchBuilderReservationCapDefaultBytes = 256ull * 1024ull * 1024ull;
             constexpr std::uint64_t kLutBuilderReservationCapDefaultBytes = 128ull * 1024ull * 1024ull;
-            constexpr std::uint64_t kGraphBuilderReservationCapDefaultBytes = 128ull * 1024ull * 1024ull;
             constexpr std::uint64_t kBuilderReservationThresholdDefaultBytes = 16ull * 1024ull * 1024ull;
             constexpr std::uint64_t kUploadReservationCapDefaultBytes = 256ull * 1024ull * 1024ull;
             constexpr std::uint64_t kUploadReservationThresholdDefaultBytes = 16ull * 1024ull * 1024ull;
@@ -1346,15 +1110,9 @@ namespace JuicerCuda {
                         return 1u;
                     case ResourceTier::Scratch:
                         return 2u;
-                    case ResourceTier::Graph:
-                        return 3u;
                     default:
                         return 0u;
                 }
-            }
-
-            inline bool tier_circuit_blocks_admission(ResourceTier tier) noexcept {
-                return tier == ResourceTier::Graph;
             }
 
             inline bool tier_circuit_policy_enabled(const ResourceManagerConfigEffective& cfg) noexcept {
@@ -1491,13 +1249,13 @@ namespace JuicerCuda {
             }
 
             inline std::uint64_t& tier_bytes_at(
-                std::array<std::uint64_t, 4>& values,
+                std::array<std::uint64_t, 3>& values,
                 ResourceTier tier) noexcept {
                 return values[tier_circuit_index(tier)];
             }
 
             inline const std::uint64_t& tier_bytes_at(
-                const std::array<std::uint64_t, 4>& values,
+                const std::array<std::uint64_t, 3>& values,
                 ResourceTier tier) noexcept {
                 return values[tier_circuit_index(tier)];
             }
@@ -1968,50 +1726,28 @@ namespace JuicerCuda {
                     add_scratch_tier_bytes_locked(resources, scratchSnapshot);
                 }
 
-                const std::uint64_t graphActiveBytes =
-                    estimate_graph_cache_active_bytes_for_context(transaction.snapshot.deviceContextKey);
-                const std::uint64_t managerActiveBytesNoGraph =
-                    (managerMemory.activeBytes >= graphActiveBytes)
-                        ? (managerMemory.activeBytes - graphActiveBytes)
-                        : 0;
-                const std::uint64_t lutActiveBytes = std::min(lutSnapshot.activeBytes, managerActiveBytesNoGraph);
-                const std::uint64_t remainingAfterLut = managerActiveBytesNoGraph - lutActiveBytes;
+                const std::uint64_t lutActiveBytes =
+                    std::min(lutSnapshot.activeBytes, managerMemory.activeBytes);
+                const std::uint64_t remainingAfterLut =
+                    managerMemory.activeBytes - lutActiveBytes;
                 const std::uint64_t scratchActiveBytes = std::min(scratchSnapshot.activeBytes, remainingAfterLut);
                 const std::uint64_t immutableActiveBytes = remainingAfterLut - scratchActiveBytes;
 
                 tier_bytes_at(out.activeBytes, ResourceTier::Immutable) = immutableActiveBytes;
                 tier_bytes_at(out.activeBytes, ResourceTier::Lut) = lutActiveBytes;
                 tier_bytes_at(out.activeBytes, ResourceTier::Scratch) = scratchActiveBytes;
-                tier_bytes_at(out.activeBytes, ResourceTier::Graph) = graphActiveBytes;
-
-                const std::uint64_t immutableReclaimableBytes =
-                    (managerMemory.reclaimableBytes >= graphActiveBytes)
-                        ? (managerMemory.reclaimableBytes - graphActiveBytes)
-                        : 0;
-                tier_bytes_at(out.reclaimableBytes, ResourceTier::Immutable) = immutableReclaimableBytes;
+                tier_bytes_at(out.reclaimableBytes, ResourceTier::Immutable) =
+                    managerMemory.reclaimableBytes;
                 tier_bytes_at(out.reclaimableBytes, ResourceTier::Lut) = 0;
                 tier_bytes_at(out.reclaimableBytes, ResourceTier::Scratch) = 0;
-                tier_bytes_at(out.reclaimableBytes, ResourceTier::Graph) = graphActiveBytes;
 
-                out.totalActiveBytes = managerActiveBytesNoGraph;
-                if (!add_u64_checked(out.totalActiveBytes, graphActiveBytes, out.totalActiveBytes)) {
-                    out.totalActiveBytes = std::numeric_limits<std::uint64_t>::max();
-                    out.overflow = true;
-                }
-                out.totalReclaimableBytes = immutableReclaimableBytes;
-                if (!add_u64_checked(
-                        out.totalReclaimableBytes,
-                        tier_bytes_at(out.reclaimableBytes, ResourceTier::Graph),
-                        out.totalReclaimableBytes)) {
-                    out.totalReclaimableBytes = std::numeric_limits<std::uint64_t>::max();
-                    out.overflow = true;
-                }
+                out.totalActiveBytes = managerMemory.activeBytes;
+                out.totalReclaimableBytes = managerMemory.reclaimableBytes;
 
-                constexpr ResourceTier kTierOrder[4] = {
+                constexpr ResourceTier kTierOrder[3] = {
                     ResourceTier::Immutable,
                     ResourceTier::Lut,
-                    ResourceTier::Scratch,
-                    ResourceTier::Graph};
+                    ResourceTier::Scratch};
                 for (ResourceTier tier : kTierOrder) {
                     const std::uint64_t targetBytes =
                         tier_target_bytes(cfg, transaction.resolvedPressurePolicy, tier);
@@ -2101,8 +1837,6 @@ namespace JuicerCuda {
                         return contextState.inFlightScratchBytes;
                     case BuilderReservationTier::Lut:
                         return contextState.inFlightLutBytes;
-                    case BuilderReservationTier::Graph:
-                        return contextState.inFlightGraphBytes;
                     default:
                         return contextState.inFlightScratchBytes;
                 }
@@ -2116,8 +1850,6 @@ namespace JuicerCuda {
                         return state.totalScratchInFlightBytes;
                     case BuilderReservationTier::Lut:
                         return state.totalLutInFlightBytes;
-                    case BuilderReservationTier::Graph:
-                        return state.totalGraphInFlightBytes;
                     default:
                         return state.totalScratchInFlightBytes;
                 }
@@ -2131,8 +1863,6 @@ namespace JuicerCuda {
                         return state.scratchBuilderBytesInFlight;
                     case BuilderReservationTier::Lut:
                         return state.lutBuilderBytesInFlight;
-                    case BuilderReservationTier::Graph:
-                        return state.graphBuilderBytesInFlight;
                     default:
                         return state.scratchBuilderBytesInFlight;
                 }
@@ -2262,7 +1992,6 @@ namespace JuicerCuda {
             const char* reason = nullptr;
             const TierBudgetSnapshot* tierBudget = nullptr;
             std::uint64_t scratchNormalizedActions = 0;
-            std::uint64_t graphEvictedEntries = 0;
             std::size_t requestBytes = 0;
             PressureLane lane = PressureLane::Builder;
             PressureState pressureState = PressureState::Normal;
@@ -2279,7 +2008,7 @@ namespace JuicerCuda {
             }
 
             const TierBudgetSnapshot& tierBudget = *trace.tierBudget;
-            const std::string msg = trace_event_prefix("tier_budget", transaction, trace.commandName) + " lane=" + to_cstr(trace.lane) + " state=" + to_cstr(trace.pressureState) + trace_resolved_policy_fields(transaction) + " critical_current_frame=" + std::to_string(trace.criticalCurrentFrame ? 1 : 0) + " request_bytes=" + std::to_string(static_cast<unsigned long long>(trace.requestBytes)) + " request_reclaim_pass=" + std::to_string(trace.requestReclaimPass ? 1 : 0) + " any_over_target=" + std::to_string(tierBudget.anyOverTarget ? 1 : 0) + " dominant_tier=" + to_cstr(tierBudget.dominantOverTargetTier) + " dominant_over_target_bytes=" + std::to_string(static_cast<unsigned long long>(tierBudget.dominantOverTargetBytes)) + " immutable_active_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.activeBytes, ResourceTier::Immutable))) + " immutable_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.targetBytes, ResourceTier::Immutable))) + " immutable_over_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Immutable))) + " immutable_reclaimable_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.reclaimableBytes, ResourceTier::Immutable))) + " lut_active_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.activeBytes, ResourceTier::Lut))) + " lut_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.targetBytes, ResourceTier::Lut))) + " lut_over_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Lut))) + " lut_reclaimable_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.reclaimableBytes, ResourceTier::Lut))) + " scratch_active_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.activeBytes, ResourceTier::Scratch))) + " scratch_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.targetBytes, ResourceTier::Scratch))) + " scratch_over_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Scratch))) + " scratch_reclaimable_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.reclaimableBytes, ResourceTier::Scratch))) + " graph_active_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.activeBytes, ResourceTier::Graph))) + " graph_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.targetBytes, ResourceTier::Graph))) + " graph_over_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Graph))) + " graph_reclaimable_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.reclaimableBytes, ResourceTier::Graph))) + " total_active_bytes=" + std::to_string(static_cast<unsigned long long>(tierBudget.totalActiveBytes)) + " total_reclaimable_bytes=" + std::to_string(static_cast<unsigned long long>(tierBudget.totalReclaimableBytes)) + " scratch_normalized_actions=" + std::to_string(static_cast<unsigned long long>(trace.scratchNormalizedActions)) + " graph_evicted_entries=" + std::to_string(static_cast<unsigned long long>(trace.graphEvictedEntries)) + trace_device_context_fields(transaction) + " reason=" + trace_or_unspecified(trace.reason);
+            const std::string msg = trace_event_prefix("tier_budget", transaction, trace.commandName) + " lane=" + to_cstr(trace.lane) + " state=" + to_cstr(trace.pressureState) + trace_resolved_policy_fields(transaction) + " critical_current_frame=" + std::to_string(trace.criticalCurrentFrame ? 1 : 0) + " request_bytes=" + std::to_string(static_cast<unsigned long long>(trace.requestBytes)) + " request_reclaim_pass=" + std::to_string(trace.requestReclaimPass ? 1 : 0) + " any_over_target=" + std::to_string(tierBudget.anyOverTarget ? 1 : 0) + " dominant_tier=" + to_cstr(tierBudget.dominantOverTargetTier) + " dominant_over_target_bytes=" + std::to_string(static_cast<unsigned long long>(tierBudget.dominantOverTargetBytes)) + " immutable_active_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.activeBytes, ResourceTier::Immutable))) + " immutable_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.targetBytes, ResourceTier::Immutable))) + " immutable_over_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Immutable))) + " immutable_reclaimable_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.reclaimableBytes, ResourceTier::Immutable))) + " lut_active_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.activeBytes, ResourceTier::Lut))) + " lut_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.targetBytes, ResourceTier::Lut))) + " lut_over_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Lut))) + " lut_reclaimable_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.reclaimableBytes, ResourceTier::Lut))) + " scratch_active_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.activeBytes, ResourceTier::Scratch))) + " scratch_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.targetBytes, ResourceTier::Scratch))) + " scratch_over_target_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Scratch))) + " scratch_reclaimable_bytes=" + std::to_string(static_cast<unsigned long long>(tier_bytes_at(tierBudget.reclaimableBytes, ResourceTier::Scratch))) + " total_active_bytes=" + std::to_string(static_cast<unsigned long long>(tierBudget.totalActiveBytes)) + " total_reclaimable_bytes=" + std::to_string(static_cast<unsigned long long>(tierBudget.totalReclaimableBytes)) + " scratch_normalized_actions=" + std::to_string(static_cast<unsigned long long>(trace.scratchNormalizedActions)) + trace_device_context_fields(transaction) + " reason=" + trace_or_unspecified(trace.reason);
             JTRACE("MSTGT", msg);
 #endif
         }
@@ -2958,31 +2687,6 @@ namespace JuicerCuda {
 #endif
         }
 
-        struct GraphLargeEntryQuarantineTrace {
-            const char* commandName = nullptr;
-            const char* reason = nullptr;
-            std::uint64_t thresholdBytes = 0;
-            std::uint64_t capBytes = 0;
-            std::uint64_t residentBytes = 0;
-            std::uint64_t decayEvictedEntries = 0;
-            std::uint64_t capTrimEvictedEntries = 0;
-            std::uint32_t capEntries = 0;
-            std::uint32_t residentEntries = 0;
-            bool capHit = false;
-        };
-
-        void trace_graph_large_entry_quarantine(
-            const SubmissionTransaction& transaction,
-            const GraphLargeEntryQuarantineTrace& trace) {
-#if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(2)) {
-                return;
-            }
-
-            const std::string msg = trace_event_prefix("graph_large_quarantine", transaction, trace.commandName) + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(trace.thresholdBytes)) + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(trace.capBytes)) + " cap_entries=" + std::to_string(trace.capEntries) + " resident_bytes=" + std::to_string(static_cast<unsigned long long>(trace.residentBytes)) + " resident_entries=" + std::to_string(trace.residentEntries) + " decay_evicted_entries=" + std::to_string(static_cast<unsigned long long>(trace.decayEvictedEntries)) + " cap_trim_evicted_entries=" + std::to_string(static_cast<unsigned long long>(trace.capTrimEvictedEntries)) + " cap_hit=" + std::to_string(trace.capHit ? 1 : 0) + trace_device_context_fields(transaction) + " reason=" + trace_or_unspecified(trace.reason);
-            JTRACE("MSADM", msg);
-#endif
-        }
 #endif
 
         void trace_reap_pass(
@@ -3007,7 +2711,6 @@ namespace JuicerCuda {
             const char* reason = nullptr;
             std::size_t requestBytes = 0;
             std::size_t reapedBytes = 0;
-            std::uint64_t graphEvictedEntries = 0;
             std::uint32_t attempt = 0;
             bool success = false;
         };
@@ -3020,7 +2723,7 @@ namespace JuicerCuda {
                 return;
             }
 
-            const std::string msg = trace_event_prefix("fragmentation_recovery", transaction, trace.commandName) + " attempt=" + std::to_string(static_cast<unsigned long long>(trace.attempt)) + " request_bytes=" + std::to_string(static_cast<unsigned long long>(trace.requestBytes)) + " reaped_bytes=" + std::to_string(static_cast<unsigned long long>(trace.reapedBytes)) + " graph_evicted_entries=" + std::to_string(static_cast<unsigned long long>(trace.graphEvictedEntries)) + " success=" + std::to_string(trace.success ? 1 : 0) + " stage=" + trace_or_unknown(trace.stage) + trace_device_context_fields(transaction) + " reason=" + trace_or_unspecified(trace.reason) + trace_reason_class_field_if_known("reason_class", trace.reason);
+            const std::string msg = trace_event_prefix("fragmentation_recovery", transaction, trace.commandName) + " attempt=" + std::to_string(static_cast<unsigned long long>(trace.attempt)) + " request_bytes=" + std::to_string(static_cast<unsigned long long>(trace.requestBytes)) + " reaped_bytes=" + std::to_string(static_cast<unsigned long long>(trace.reapedBytes)) + " success=" + std::to_string(trace.success ? 1 : 0) + " stage=" + trace_or_unknown(trace.stage) + trace_device_context_fields(transaction) + " reason=" + trace_or_unspecified(trace.reason) + trace_reason_class_field_if_known("reason_class", trace.reason);
             JTRACE("MSFRAG", msg);
 #endif
         }
@@ -3516,8 +3219,6 @@ namespace JuicerCuda {
             constexpr std::uint32_t kMaxScratchBuilderBytesInFlightLimitMB = 512u;
             constexpr std::uint32_t kMinLutBuilderBytesInFlightLimitMB = 64u;
             constexpr std::uint32_t kMaxLutBuilderBytesInFlightLimitMB = 256u;
-            constexpr std::uint32_t kMinGraphBuilderBytesInFlightLimitMB = 64u;
-            constexpr std::uint32_t kMaxGraphBuilderBytesInFlightLimitMB = 256u;
             constexpr std::uint32_t kMinBuilderFairnessTokensPerTick = 1u;
             constexpr std::uint32_t kMaxBuilderFairnessTokensPerTick = 2u;
             constexpr std::uint32_t kMinCriticalBuilderReservedTokens = 1u;
@@ -3530,12 +3231,6 @@ namespace JuicerCuda {
             constexpr std::uint64_t kMaxMaxCacheableEntryBytes = 1024ull * kMiB;
             constexpr std::uint32_t kMinMaxCacheableEntryPctOfTarget = 5u;
             constexpr std::uint32_t kMaxMaxCacheableEntryPctOfTarget = 50u;
-            constexpr std::uint64_t kMinGraphLargeEntryThresholdBytes = 16ull * kMiB;
-            constexpr std::uint64_t kMaxGraphLargeEntryThresholdBytes = 2048ull * kMiB;
-            constexpr std::uint64_t kMinGraphLargeEntryQuarantineMaxBytes = 32ull * kMiB;
-            constexpr std::uint64_t kMaxGraphLargeEntryQuarantineMaxBytes = 2048ull * kMiB;
-            constexpr std::uint32_t kMinGraphLargeEntryQuarantineMaxEntries = 1u;
-            constexpr std::uint32_t kMaxGraphLargeEntryQuarantineMaxEntries = 16u;
             constexpr std::uint64_t kMinLargeEntryProbationThresholdBytes = 16ull * kMiB;
             constexpr std::uint32_t kMinLargeEntryProbationHitsRequired = 1u;
             constexpr std::uint32_t kMaxLargeEntryProbationHitsRequired = 4u;
@@ -3675,10 +3370,6 @@ namespace JuicerCuda {
                 raw.lutBuilderBytesInFlightLimitMB,
                 kMinLutBuilderBytesInFlightLimitMB,
                 kMaxLutBuilderBytesInFlightLimitMB);
-            out.graphBuilderBytesInFlightLimitMB = std::clamp(
-                raw.graphBuilderBytesInFlightLimitMB,
-                kMinGraphBuilderBytesInFlightLimitMB,
-                kMaxGraphBuilderBytesInFlightLimitMB);
             out.builderFairnessTokensPerTick = std::clamp(
                 raw.builderFairnessTokensPerTick,
                 kMinBuilderFairnessTokensPerTick,
@@ -3707,21 +3398,6 @@ namespace JuicerCuda {
                 raw.maxCacheableEntryPctOfTarget,
                 kMinMaxCacheableEntryPctOfTarget,
                 kMaxMaxCacheableEntryPctOfTarget);
-            out.graphLargeEntryThresholdBytes = std::clamp(
-                raw.graphLargeEntryThresholdBytes,
-                kMinGraphLargeEntryThresholdBytes,
-                kMaxGraphLargeEntryThresholdBytes);
-            out.graphLargeEntryQuarantineMaxBytes = std::clamp(
-                raw.graphLargeEntryQuarantineMaxBytes,
-                kMinGraphLargeEntryQuarantineMaxBytes,
-                kMaxGraphLargeEntryQuarantineMaxBytes);
-            out.graphLargeEntryQuarantineMaxEntries = std::clamp(
-                raw.graphLargeEntryQuarantineMaxEntries,
-                kMinGraphLargeEntryQuarantineMaxEntries,
-                kMaxGraphLargeEntryQuarantineMaxEntries);
-            out.graphLargeEntryQuarantineMaxBytes = std::max<std::uint64_t>(
-                out.graphLargeEntryQuarantineMaxBytes,
-                out.graphLargeEntryThresholdBytes);
             out.largeEntryProbationThresholdBytes = std::clamp(
                 raw.largeEntryProbationThresholdBytes,
                 kMinLargeEntryProbationThresholdBytes,
@@ -3771,26 +3447,22 @@ namespace JuicerCuda {
             std::uint64_t immutableBp = std::min<std::uint64_t>(raw.tierTargetImmutableBp, kBasisPointsDenom);
             std::uint64_t lutBp = std::min<std::uint64_t>(raw.tierTargetLutBp, kBasisPointsDenom);
             std::uint64_t scratchBp = std::min<std::uint64_t>(raw.tierTargetScratchBp, kBasisPointsDenom);
-            std::uint64_t graphBp = std::min<std::uint64_t>(raw.tierTargetGraphBp, kBasisPointsDenom);
-            std::uint64_t totalBp = immutableBp + lutBp + scratchBp + graphBp;
+            std::uint64_t totalBp = immutableBp + lutBp + scratchBp;
             if (totalBp == 0) {
                 immutableBp = 2500;
                 lutBp = 2500;
                 scratchBp = 3000;
-                graphBp = 2000;
-                totalBp = immutableBp + lutBp + scratchBp + graphBp;
+                totalBp = immutableBp + lutBp + scratchBp;
             }
             if (totalBp > kBasisPointsDenom) {
                 immutableBp = (immutableBp * kBasisPointsDenom) / totalBp;
                 lutBp = (lutBp * kBasisPointsDenom) / totalBp;
-                scratchBp = (scratchBp * kBasisPointsDenom) / totalBp;
-                graphBp = kBasisPointsDenom - (immutableBp + lutBp + scratchBp);
+                scratchBp = kBasisPointsDenom - (immutableBp + lutBp);
             }
 
             out.tierTargetImmutableBp = immutableBp;
             out.tierTargetLutBp = lutBp;
             out.tierTargetScratchBp = scratchBp;
-            out.tierTargetGraphBp = graphBp;
             return out;
         }
 
