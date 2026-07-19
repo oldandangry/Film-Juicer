@@ -367,10 +367,12 @@ namespace JuicerCuda::Diffusion {
                 slot.workAreaCapacityBytes = 0;
                 slot.transformCapacityBytes = 0;
                 slot.stagePlaneCapacityElements = 0;
+                slot.releaseSequence = 0;
                 slot.stagePlanes = {};
                 slot.failureApi = FailureApi::None;
                 slot.failureCode = 0;
                 slot.failureStage = nullptr;
+                slot.completionUnknown = false;
             }
             return released;
         }
@@ -464,8 +466,47 @@ namespace JuicerCuda::Diffusion {
             }
         }
 
+        void complete_workspace_retirement_locked(
+            DiffusionContextResources& resources,
+            std::size_t workspaceIndex) {
+            DiffusionWorkspaceSlot& slot = resources.workspaces[workspaceIndex];
+            clear_workspace_use_bit(resources, workspaceIndex);
+            if (slot.failureApi != FailureApi::None || !slot.retainedRole) {
+                std::string ignored;
+                if (destroy_workspace_contents(slot, ignored)) {
+                    slot.state = WorkspaceSlotState::Vacant;
+                } else {
+                    slot.state = WorkspaceSlotState::FailedQuarantined;
+                }
+            } else {
+                slot.releaseSequence = 0;
+                slot.state = WorkspaceSlotState::Vacant;
+            }
+        }
+
+        void reap_retired_spectra_locked(
+            DiffusionContextResources& resources) {
+            for (DiffusionSpectrumEntry& entry : resources.spectra) {
+                if ((entry.state != SpectrumEntryState::Retiring &&
+                     entry.state != SpectrumEntryState::FailedQuarantined) ||
+                    entry.leaseCount != 0 || entry.pendingWorkspaceMask != 0) {
+                    continue;
+                }
+                cudaError_t buildResult = cudaSuccess;
+                if (entry.buildEventOpaque &&
+                    !event_complete(entry.buildEventOpaque, buildResult)) {
+                    continue;
+                }
+                std::string ignored;
+                if (!destroy_spectrum_contents(entry, ignored)) {
+                    entry.state = SpectrumEntryState::FailedQuarantined;
+                }
+            }
+        }
+
         void reap_completed_locked(
             DiffusionContextResources& resources) {
+            bool workspaceStateChanged = false;
             for (DiffusionSpectrumEntry& entry : resources.spectra) {
                 if (entry.state != SpectrumEntryState::Building ||
                     !entry.buildEventPublished || !entry.buildEventOpaque) {
@@ -496,50 +537,93 @@ namespace JuicerCuda::Diffusion {
                 }
                 cudaError_t result = cudaSuccess;
                 if (event_complete(slot.completionEventOpaque, result)) {
-                    clear_workspace_use_bit(resources, index);
-                    if (slot.failureApi != FailureApi::None) {
-                        std::string ignored;
-                        if (destroy_workspace_contents(slot, ignored)) {
-                            slot.state = WorkspaceSlotState::Vacant;
-                        } else {
-                            slot.state =
-                                WorkspaceSlotState::FailedQuarantined;
-                        }
-                    } else if (slot.retainedRole) {
-                        slot.state = WorkspaceSlotState::Vacant;
-                    } else {
-                        std::string ignored;
-                        if (destroy_workspace_contents(slot, ignored)) {
-                            slot.state = WorkspaceSlotState::Vacant;
-                        } else {
-                            slot.state =
-                                WorkspaceSlotState::FailedQuarantined;
-                        }
-                    }
+                    complete_workspace_retirement_locked(resources, index);
+                    workspaceStateChanged = true;
                 } else if (result != cudaErrorNotReady) {
                     slot.failureApi = FailureApi::Cuda;
                     slot.failureCode = static_cast<int>(result);
                     slot.failureStage = "cudaEventQuery_workspace_completion";
                     slot.state = WorkspaceSlotState::FailedQuarantined;
+                    workspaceStateChanged = true;
                 }
             }
 
-            for (DiffusionSpectrumEntry& entry : resources.spectra) {
-                if ((entry.state != SpectrumEntryState::Retiring &&
-                     entry.state != SpectrumEntryState::FailedQuarantined) ||
-                    entry.leaseCount != 0 || entry.pendingWorkspaceMask != 0) {
+            reap_retired_spectra_locked(resources);
+            if (workspaceStateChanged) {
+                resources.workspaceAvailability.notify_all();
+            }
+        }
+
+        std::size_t choose_retiring_workspace_locked(
+            const DiffusionContextResources& resources) noexcept {
+            std::size_t selected = kInvalidIndex;
+            for (std::size_t index = 0; index < resources.workspaces.size();
+                 ++index) {
+                const DiffusionWorkspaceSlot& slot = resources.workspaces[index];
+                if (slot.state != WorkspaceSlotState::Retiring ||
+                    !slot.completionEventOpaque) {
                     continue;
                 }
-                cudaError_t buildResult = cudaSuccess;
-                if (entry.buildEventOpaque &&
-                    !event_complete(entry.buildEventOpaque, buildResult)) {
-                    continue;
-                }
-                std::string ignored;
-                if (!destroy_spectrum_contents(entry, ignored)) {
-                    entry.state = SpectrumEntryState::FailedQuarantined;
+                if (selected == kInvalidIndex ||
+                    slot.releaseSequence <
+                        resources.workspaces[selected].releaseSequence ||
+                    (slot.releaseSequence ==
+                         resources.workspaces[selected].releaseSequence &&
+                     index < selected)) {
+                    selected = index;
                 }
             }
+            return selected;
+        }
+
+        bool workspace_wait_can_progress_locked(
+            const DiffusionContextResources& resources) noexcept {
+            for (const DiffusionWorkspaceSlot& slot : resources.workspaces) {
+                if (slot.state == WorkspaceSlotState::Building ||
+                    slot.state == WorkspaceSlotState::Leased ||
+                    slot.state == WorkspaceSlotState::Retiring ||
+                    slot.state == WorkspaceSlotState::WaitingForCompletion) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool workspace_wait_state_changed_locked(
+            const DiffusionContextResources& resources) noexcept {
+            if (!resources.acceptingPreparations) {
+                return true;
+            }
+            for (const DiffusionWorkspaceSlot& slot : resources.workspaces) {
+                if (slot.state == WorkspaceSlotState::Vacant ||
+                    (slot.state == WorkspaceSlotState::Retiring &&
+                     slot.completionEventOpaque)) {
+                    return true;
+                }
+            }
+            return !workspace_wait_can_progress_locked(resources);
+        }
+
+        bool has_diffusion_residency_locked(
+            const DiffusionContextResources& resources) noexcept {
+            for (const DiffusionWorkspaceSlot& slot : resources.workspaces) {
+                if (slot.state != WorkspaceSlotState::Vacant ||
+                    slot.r2cPlan != 0 || slot.c2rPlan != 0 || slot.workArea ||
+                    slot.transformBuffer || slot.stagePlanes.redSensitive ||
+                    slot.stagePlanes.greenSensitive ||
+                    slot.stagePlanes.blueSensitive ||
+                    slot.stagePlanes.auxiliary) {
+                    return true;
+                }
+            }
+            for (const DiffusionSpectrumEntry& entry : resources.spectra) {
+                if (entry.state != SpectrumEntryState::Vacant ||
+                    entry.spectra.red || entry.spectra.green ||
+                    entry.spectra.blue) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         bool same_spectrum_key(
@@ -1259,23 +1343,95 @@ namespace JuicerCuda::Diffusion {
 
         {
             std::unique_lock<std::mutex> lock(resources.metadataMutex);
-            reap_completed_locked(resources);
-            for (std::size_t index = 0; index < resources.workspaces.size();
-                 ++index) {
-                if (resources.workspaces[index].state ==
-                    WorkspaceSlotState::Vacant) {
-                    workspaceIndex = index;
+            for (;;) {
+                reap_completed_locked(resources);
+                if (!resources.acceptingPreparations) {
+                    outError =
+                        "ExactAdmissionFailure component=diffusion class=context_retiring requested_new_bytes=0";
+                    return false;
+                }
+                for (std::size_t index = 0;
+                     index < resources.workspaces.size();
+                     ++index) {
+                    if (resources.workspaces[index].state ==
+                        WorkspaceSlotState::Vacant) {
+                        workspaceIndex = index;
+                        break;
+                    }
+                }
+                if (workspaceIndex != kInvalidIndex) {
                     break;
                 }
-            }
-            if (workspaceIndex == kInvalidIndex) {
-                outError =
-                    "ExactAdmissionFailure component=diffusion class=execution_slot requested_new_bytes=0 slots=2";
-                return false;
+
+                const std::size_t retiringIndex =
+                    choose_retiring_workspace_locked(resources);
+                if (retiringIndex != kInvalidIndex) {
+                    DiffusionWorkspaceSlot& retiring =
+                        resources.workspaces[retiringIndex];
+                    void* completionEventOpaque =
+                        retiring.completionEventOpaque;
+                    // Claim the event while the metadata lock is released so no
+                    // other prepare or context drain can recycle its slot.
+                    retiring.state =
+                        WorkspaceSlotState::WaitingForCompletion;
+                    lock.unlock();
+                    const cudaError_t waitResult = cudaEventSynchronize(
+                        reinterpret_cast<cudaEvent_t>(
+                            completionEventOpaque));
+                    lock.lock();
+                    DiffusionWorkspaceSlot& waited =
+                        resources.workspaces[retiringIndex];
+                    if (waited.state !=
+                            WorkspaceSlotState::WaitingForCompletion ||
+                        waited.completionEventOpaque !=
+                            completionEventOpaque) {
+                        if (waited.state ==
+                            WorkspaceSlotState::WaitingForCompletion) {
+                            waited.failureApi = FailureApi::Validation;
+                            waited.failureStage =
+                                "workspace_wait_owner";
+                            waited.state =
+                                WorkspaceSlotState::FailedQuarantined;
+                        }
+                        resources.workspaceAvailability.notify_all();
+                        outError =
+                            "ResourceDescriptorMismatch component=diffusion field=workspace_wait_owner";
+                        return false;
+                    }
+                    if (waitResult != cudaSuccess) {
+                        waited.failureApi = FailureApi::Cuda;
+                        waited.failureCode = static_cast<int>(waitResult);
+                        waited.failureStage =
+                            "cudaEventSynchronize_workspace_admission";
+                        waited.state =
+                            WorkspaceSlotState::FailedQuarantined;
+                        resources.workspaceAvailability.notify_all();
+                        outError =
+                            std::string("cudaEventSynchronize(diffusion admission) failed: ") +
+                            cuda_message(waitResult);
+                        return false;
+                    }
+                    complete_workspace_retirement_locked(
+                        resources,
+                        retiringIndex);
+                    reap_retired_spectra_locked(resources);
+                    resources.workspaceAvailability.notify_all();
+                    continue;
+                }
+
+                if (!workspace_wait_can_progress_locked(resources)) {
+                    outError =
+                        "ExactAdmissionFailure component=diffusion class=execution_slot_unrecoverable requested_new_bytes=0 slots=2";
+                    return false;
+                }
+                resources.workspaceAvailability.wait(lock, [&resources] {
+                    return workspace_wait_state_changed_locked(resources);
+                });
             }
 
             DiffusionWorkspaceSlot& workspace =
                 resources.workspaces[workspaceIndex];
+            workspace.releaseSequence = 0;
             const std::uint64_t requiredPlaneElements =
                 descriptor.stagePlaneBytes /
                 (4u * static_cast<std::uint64_t>(sizeof(float)));
@@ -1472,6 +1628,7 @@ namespace JuicerCuda::Diffusion {
                     }
                 }
                 resources.buildPublication.notify_all();
+                resources.workspaceAvailability.notify_all();
             }
             if (completionCertain) {
                 std::lock_guard<std::mutex> lock(resources.metadataMutex);
@@ -1493,6 +1650,7 @@ namespace JuicerCuda::Diffusion {
                         (void)destroy_spectrum_contents(entry, ignored);
                     }
                 }
+                resources.workspaceAvailability.notify_all();
             }
             lease.reset();
             return false;
@@ -1737,6 +1895,11 @@ namespace JuicerCuda::Diffusion {
                 }
 
                 if (completionRecorded) {
+                    workspace.releaseSequence = resources.nextReleaseSequence;
+                    if (resources.nextReleaseSequence <
+                        std::numeric_limits<std::uint64_t>::max()) {
+                        ++resources.nextReleaseSequence;
+                    }
                     workspace.state = WorkspaceSlotState::Retiring;
                 } else if (completionCertain) {
                     workspace.state =
@@ -1761,6 +1924,7 @@ namespace JuicerCuda::Diffusion {
                         entry.state = SpectrumEntryState::FailedQuarantined;
                     }
                 }
+                resources.workspaceAvailability.notify_all();
             }
 
             if (cleanupWorkspace || cleanupSpectrum[0] || cleanupSpectrum[1]) {
@@ -1789,6 +1953,7 @@ namespace JuicerCuda::Diffusion {
                 if (!cleanupError.empty() && outError.empty()) {
                     outError = cleanupError;
                 }
+                resources.workspaceAvailability.notify_all();
             }
 
             const bool safeRelease = completionCertain;
@@ -1805,12 +1970,89 @@ namespace JuicerCuda::Diffusion {
         }
     }
 
+    bool trim_inactive_diffusion_resources(
+        DiffusionContextResources& resources,
+        const ResourceManager::DeviceContextKey& contextKey,
+        std::string& outError) noexcept {
+        try {
+            outError.clear();
+            {
+                std::lock_guard<std::mutex> lock(resources.metadataMutex);
+                if (!has_diffusion_residency_locked(resources)) {
+                    return true;
+                }
+            }
+            if (!current_owner_matches(contextKey, outError)) {
+                return false;
+            }
+
+            std::lock_guard<std::mutex> lock(resources.metadataMutex);
+            if (!resources.acceptingPreparations) {
+                outError =
+                    "ExactAdmissionFailure component=diffusion class=context_retiring requested_new_bytes=0";
+                return false;
+            }
+            reap_completed_locked(resources);
+
+            bool trimmed = true;
+            for (DiffusionWorkspaceSlot& workspace : resources.workspaces) {
+                if (workspace.state != WorkspaceSlotState::Vacant) {
+                    continue;
+                }
+                std::string localError;
+                if (!destroy_workspace_contents(workspace, localError)) {
+                    workspace.state =
+                        WorkspaceSlotState::FailedQuarantined;
+                    trimmed = false;
+                    if (outError.empty()) {
+                        outError = localError;
+                    }
+                }
+            }
+            for (DiffusionSpectrumEntry& entry : resources.spectra) {
+                if (entry.state != SpectrumEntryState::Ready ||
+                    entry.leaseCount != 0 || entry.pendingWorkspaceMask != 0) {
+                    continue;
+                }
+                std::string localError;
+                if (!destroy_spectrum_contents(entry, localError)) {
+                    entry.state = SpectrumEntryState::FailedQuarantined;
+                    trimmed = false;
+                    if (outError.empty()) {
+                        outError = localError;
+                    }
+                }
+            }
+            resources.workspaceAvailability.notify_all();
+            return trimmed;
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+            try {
+                outError = "inactive diffusion residency trim failed";
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+            return false;
+        }
+    }
+
     bool drain_diffusion_resources(
         DiffusionContextResources& resources,
         std::string& outError) noexcept {
         try {
             outError.clear();
-            std::lock_guard<std::mutex> lock(resources.metadataMutex);
+            std::unique_lock<std::mutex> lock(resources.metadataMutex);
+            resources.acceptingPreparations = false;
+            resources.workspaceAvailability.notify_all();
+            resources.workspaceAvailability.wait(lock, [&resources] {
+                return std::none_of(
+                    resources.workspaces.begin(),
+                    resources.workspaces.end(),
+                    [](const DiffusionWorkspaceSlot& workspace) {
+                        return workspace.state ==
+                               WorkspaceSlotState::WaitingForCompletion;
+                    });
+            });
             bool drained = true;
             for (DiffusionWorkspaceSlot& workspace : resources.workspaces) {
                 if (workspace.completionUnknown) {
@@ -1887,6 +2129,7 @@ namespace JuicerCuda::Diffusion {
                     }
                 }
             }
+            resources.workspaceAvailability.notify_all();
             return drained;
         } catch (...) {
             JuicerLogging::discard_current_exception();
@@ -1902,7 +2145,18 @@ namespace JuicerCuda::Diffusion {
     void invalidate_diffusion_resources_after_proven_context_loss(
         DiffusionContextResources& resources) noexcept {
         try {
-            std::lock_guard<std::mutex> lock(resources.metadataMutex);
+            std::unique_lock<std::mutex> lock(resources.metadataMutex);
+            resources.acceptingPreparations = false;
+            resources.workspaceAvailability.notify_all();
+            resources.workspaceAvailability.wait(lock, [&resources] {
+                return std::none_of(
+                    resources.workspaces.begin(),
+                    resources.workspaces.end(),
+                    [](const DiffusionWorkspaceSlot& workspace) {
+                        return workspace.state ==
+                               WorkspaceSlotState::WaitingForCompletion;
+                    });
+            });
             for (std::size_t index = 0; index < resources.spectra.size();
                  ++index) {
                 const bool retainedRole = index < 2;
@@ -1917,6 +2171,7 @@ namespace JuicerCuda::Diffusion {
             }
             resources.nextReleaseSequence = 1;
             resources.buildPublication.notify_all();
+            resources.workspaceAvailability.notify_all();
         } catch (...) {
             JuicerLogging::discard_current_exception();
         }

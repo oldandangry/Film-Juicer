@@ -468,32 +468,81 @@ namespace {
                 other.workloadNanoseconds < candidate.workloadNanoseconds);
     }
 
-    struct KneeNumerator {
-        bool positive = false;
-        std::uint64_t magnitude = 0;
+    struct WideUnsigned {
+        std::uint64_t high = 0;
+        std::uint64_t low = 0;
     };
 
-    bool checked_knee_numerator(
+    // Multiplication is commutative, so swapping these operands is harmless.
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    WideUnsigned multiply_wide(
+        std::uint64_t left,
+        std::uint64_t right) noexcept {
+        constexpr std::uint64_t kLowMask = 0xffffffffULL;
+        const std::uint64_t leftLow = left & kLowMask;
+        const std::uint64_t leftHigh = left >> 32u;
+        const std::uint64_t rightLow = right & kLowMask;
+        const std::uint64_t rightHigh = right >> 32u;
+
+        const std::uint64_t lowProduct = leftLow * rightLow;
+        const std::uint64_t lowWord = lowProduct & kLowMask;
+        const std::uint64_t firstCross =
+            leftHigh * rightLow + (lowProduct >> 32u);
+        const std::uint64_t firstCrossLow = firstCross & kLowMask;
+        const std::uint64_t firstCrossHigh = firstCross >> 32u;
+        const std::uint64_t secondCross =
+            leftLow * rightHigh + firstCrossLow;
+
+        return {
+            leftHigh * rightHigh + firstCrossHigh +
+                (secondCross >> 32u),
+            (secondCross << 32u) + lowWord};
+    }
+    // NOLINTEND(bugprone-easily-swappable-parameters)
+
+    int compare_wide(
+        const WideUnsigned& left,
+        const WideUnsigned& right) noexcept {
+        if (left.high != right.high) {
+            return left.high < right.high ? -1 : 1;
+        }
+        if (left.low != right.low) {
+            return left.low < right.low ? -1 : 1;
+        }
+        return 0;
+    }
+
+    WideUnsigned subtract_wide(
+        const WideUnsigned& greater,
+        const WideUnsigned& lesser) noexcept {
+        return {
+            greater.high - lesser.high -
+                (greater.low < lesser.low ? 1u : 0u),
+            greater.low - lesser.low};
+    }
+
+    struct KneeNumerator {
+        bool positive = false;
+        WideUnsigned magnitude{};
+    };
+
+    KneeNumerator knee_numerator(
         const EvaluatedCandidate& candidate,
         const EvaluatedCandidate& lowestMemory,
-        const EvaluatedCandidate& fastest,
-        KneeNumerator& out) noexcept {
-        out = {};
+        const EvaluatedCandidate& fastest) noexcept {
         const std::uint64_t timeGain =
             lowestMemory.workloadNanoseconds - candidate.workloadNanoseconds;
         const std::uint64_t memoryRange = fastest.memoryBytes - lowestMemory.memoryBytes;
         const std::uint64_t memoryCost = candidate.memoryBytes - lowestMemory.memoryBytes;
         const std::uint64_t timeRange =
             lowestMemory.workloadNanoseconds - fastest.workloadNanoseconds;
-        std::uint64_t left = 0;
-        std::uint64_t right = 0;
-        if (!checked_multiply(timeGain, memoryRange, left) ||
-            !checked_multiply(memoryCost, timeRange, right)) {
-            return false;
-        }
-        out.positive = left > right;
-        out.magnitude = left >= right ? left - right : right - left;
-        return true;
+        const WideUnsigned left = multiply_wide(timeGain, memoryRange);
+        const WideUnsigned right = multiply_wide(memoryCost, timeRange);
+        const int order = compare_wide(left, right);
+        return {
+            order > 0,
+            order >= 0 ? subtract_wide(left, right)
+                       : subtract_wide(right, left)};
     }
 
     std::uint64_t hash_spectrum_key(
@@ -709,23 +758,18 @@ namespace Spektrafilm {
 
         const EvaluatedCandidate* selected = &lowestMemory;
         bool hasPositiveScore = false;
-        std::uint64_t selectedMagnitude = 0;
+        WideUnsigned selectedMagnitude{};
         if (fastest->memoryBytes > lowestMemory.memoryBytes &&
             lowestMemory.workloadNanoseconds > fastest->workloadNanoseconds) {
             for (std::size_t index = 0; index < frontierCount; ++index) {
                 const auto& candidate = frontier[index];
-                KneeNumerator numerator{};
-                if (!checked_knee_numerator(
-                        candidate,
-                        lowestMemory,
-                        *fastest,
-                        numerator)) {
-                    fail(diagnostic, "knee_score_product");
-                    return false;
-                }
+                const KneeNumerator numerator =
+                    knee_numerator(candidate, lowestMemory, *fastest);
+                const int magnitudeOrder =
+                    compare_wide(numerator.magnitude, selectedMagnitude);
                 if (numerator.positive &&
-                    (!hasPositiveScore || numerator.magnitude > selectedMagnitude ||
-                     (numerator.magnitude == selectedMagnitude &&
+                    (!hasPositiveScore || magnitudeOrder > 0 ||
+                     (magnitudeOrder == 0 &&
                       lower_cost_tie(candidate, *selected)))) {
                     selected = &candidate;
                     selectedMagnitude = numerator.magnitude;

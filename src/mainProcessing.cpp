@@ -3480,6 +3480,21 @@ void JuicerProcessor::processImagesCUDA() {
             }
         }
 
+        if (cameraDiffusionActive) {
+            std::string diffusionReleaseError;
+            if (!preparedFrame.release_diffusion_resources_after_use(
+                    _pCudaStream,
+                    diffusionReleaseError)) {
+                preparedFrame.abort("direct_diffusion_release_after_use_failed");
+                throw_submission_fatal(
+                    "direct_diffusion_release_after_use",
+                    "direct diffusion resource release failed",
+                    diffusionReleaseError);
+            }
+            directCameraDiffusion = {};
+            directCameraFilmLinear = {};
+        }
+
         if (gateOutputActive && !grainDebugActive &&
             directEffectsDescriptor->gateMaskActive) {
             launchError = juicer_cuda_build_gate_defect_mask_focused(
@@ -4765,6 +4780,22 @@ void JuicerProcessor::processImagesCUDA() {
                     }
                 }
             }
+        }
+
+        if (routeDiffusionActive) {
+            std::string diffusionReleaseError;
+            if (!preparedFrame.release_diffusion_resources_after_use(
+                    _pCudaStream,
+                    diffusionReleaseError)) {
+                preparedFrame.abort("print_diffusion_release_after_use_failed");
+                throw_submission_fatal(
+                    "print_diffusion_release_after_use",
+                    "print diffusion resource release failed",
+                    diffusionReleaseError);
+            }
+            printCameraDiffusion = {};
+            printEnlargerDiffusion = {};
+            printCameraFilmLinear = {};
         }
 
         if (gateOutputActive && !grainDebugActive &&

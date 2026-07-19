@@ -30,6 +30,7 @@ namespace JuicerCuda::Diffusion {
         Building,
         Leased,
         Retiring,
+        WaitingForCompletion,
         FailedQuarantined
     };
 
@@ -65,6 +66,7 @@ namespace JuicerCuda::Diffusion {
         std::uint64_t workAreaCapacityBytes = 0;
         std::uint64_t transformCapacityBytes = 0;
         std::uint64_t stagePlaneCapacityElements = 0;
+        std::uint64_t releaseSequence = 0;
         void* completionEventOpaque = nullptr;
         WorkspaceSlotState state = WorkspaceSlotState::Vacant;
         FailureApi failureApi = FailureApi::None;
@@ -77,9 +79,11 @@ namespace JuicerCuda::Diffusion {
     struct DiffusionContextResources {
         std::mutex metadataMutex;
         std::condition_variable buildPublication;
+        std::condition_variable workspaceAvailability;
         std::array<DiffusionSpectrumEntry, 4> spectra{};
         std::array<DiffusionWorkspaceSlot, 2> workspaces{};
         std::uint64_t nextReleaseSequence = 1;
+        bool acceptingPreparations = true;
 
         DiffusionContextResources() noexcept;
         DiffusionContextResources(const DiffusionContextResources&) = delete;
@@ -176,6 +180,11 @@ namespace JuicerCuda::Diffusion {
         PreparedDiffusionLease& lease,
         void* cudaStreamOpaque,
         bool dependentFailure,
+        std::string& outError) noexcept;
+
+    bool trim_inactive_diffusion_resources(
+        DiffusionContextResources& resources,
+        const ResourceManager::DeviceContextKey& contextKey,
         std::string& outError) noexcept;
 
     bool drain_diffusion_resources(

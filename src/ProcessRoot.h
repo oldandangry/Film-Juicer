@@ -456,6 +456,9 @@ namespace JuicerProcess {
             JuicerCuda::Diffusion::DiffusionPreparedView
             diffusion_resources() const noexcept;
             void mark_diffusion_work_enqueued() noexcept;
+            bool release_diffusion_resources_after_use(
+                void* cudaStreamOpaque,
+                std::string& outError);
             SpatialDirScratchView spatial_dir_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
             SpatialDirPreparedView spatial_dir_resources(
                 const WorkspaceLeaseMarker& workspace,

@@ -1275,7 +1275,15 @@ namespace JuicerProcess {
         outError.clear();
         diffusionExecutionDescriptor = {};
         if (!frameSet) {
-            return true;
+            if (!resources) {
+                outError =
+                    "MissingRequiredResource component=diffusion field=context_resources";
+                return false;
+            }
+            return JuicerCuda::Diffusion::trim_inactive_diffusion_resources(
+                resources->diffusion,
+                contextKey,
+                outError);
         }
         if (!resources || !resources->deviceLedger ||
             transaction.snapshot.contextEpoch == 0 ||
@@ -4828,6 +4836,24 @@ namespace JuicerProcess {
             _state->diffusionLease);
     }
 
+    bool Root::PreparedCudaFrame::release_diffusion_resources_after_use(
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!active() || !_state->resources ||
+            !_state->diffusionLease.active()) {
+            outError = "prepared diffusion lease is not active";
+            return false;
+        }
+        _state->remember_stream(cudaStreamOpaque);
+        return JuicerCuda::Diffusion::release_diffusion_resources(
+            _state->resources->diffusion,
+            _state->diffusionLease,
+            cudaStreamOpaque,
+            false,
+            outError);
+    }
+
     Root::PreparedCudaFrame::PrintRoutePreparedView Root::PreparedCudaFrame::print_route_resources() const noexcept {
         PrintRoutePreparedView view{};
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed ||
@@ -6080,6 +6106,13 @@ namespace JuicerProcess {
             frame.abort("print_phase4B_resource_acquire_failed");
             return frame;
         }
+        if (!acquire_submission_plan(frame._state->transaction, outError)) {
+            frame._state->set_failure(
+                PreparedCudaFailureStage{"acquire_print_plan_phase4B"},
+                "Phase 4B print acquire_plan failed");
+            frame.abort("print_phase4B_acquire_failed");
+            return frame;
+        }
         if (!frame._state->prepare_diffusion_resources(
                 deviceContextKey,
                 *request.recipe,
@@ -6094,13 +6127,6 @@ namespace JuicerProcess {
                 "CUDA print diffusion resource preparation failed",
                 false);
             frame.abort("print_diffusion_preparation_failed");
-            return frame;
-        }
-        if (!acquire_submission_plan(frame._state->transaction, outError)) {
-            frame._state->set_failure(
-                PreparedCudaFailureStage{"acquire_print_plan_phase4B"},
-                "Phase 4B print acquire_plan failed");
-            frame.abort("print_phase4B_acquire_failed");
             return frame;
         }
         JuicerCuda::PrintRouteResourcePreparation focusedPreparation{};
@@ -6248,6 +6274,11 @@ namespace JuicerProcess {
             frame.abort("direct_prepared_frame_resource_acquire_failed");
             return frame;
         }
+        if (!acquire_submission_plan(frame._state->transaction, outError)) {
+            frame._state->set_failure(PreparedCudaFailureStage{"acquire_direct_plan"}, "direct acquire_plan failed");
+            frame.abort("direct_prepared_frame_acquire_failed");
+            return frame;
+        }
         if (!frame._state->prepare_diffusion_resources(
                 deviceContextKey,
                 *request.recipe,
@@ -6262,11 +6293,6 @@ namespace JuicerProcess {
                 "CUDA direct diffusion resource preparation failed",
                 false);
             frame.abort("direct_diffusion_preparation_failed");
-            return frame;
-        }
-        if (!acquire_submission_plan(frame._state->transaction, outError)) {
-            frame._state->set_failure(PreparedCudaFailureStage{"acquire_direct_plan"}, "direct acquire_plan failed");
-            frame.abort("direct_prepared_frame_acquire_failed");
             return frame;
         }
 
