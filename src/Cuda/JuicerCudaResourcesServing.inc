@@ -1269,7 +1269,7 @@ static bool load_wang_cpu(WangCpuCache& cache, std::string& outError) {
 static void free_stbn(Resources& resources) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     if (resources.stbnData) {
-        cudaFree(resources.stbnData);
+        free_owned_device_noexcept(resources, resources.stbnData);
         resources.stbnData = nullptr;
     }
 #endif
@@ -1282,11 +1282,11 @@ static void free_stbn(Resources& resources) noexcept {
 static void free_wang(Resources& resources) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     if (resources.wangTilesData) {
-        cudaFree(resources.wangTilesData);
+        free_owned_device_noexcept(resources, resources.wangTilesData);
         resources.wangTilesData = nullptr;
     }
     if (resources.wangLutData) {
-        cudaFree(resources.wangLutData);
+        free_owned_device_noexcept(resources, resources.wangLutData);
         resources.wangLutData = nullptr;
     }
 #endif
@@ -1543,7 +1543,7 @@ bool ensure_grain_static_assets_uploaded(
                 resources.stbnHeight = stbnView.height;
                 resources.stbnFrames = stbnView.frames;
             } else if (stbnData) {
-                cudaFree(stbnData);
+                free_owned_device_noexcept(resources, stbnData);
             }
         }
     }
@@ -1575,10 +1575,10 @@ bool ensure_grain_static_assets_uploaded(
                                               wangError);
             if (!tilesOk || !lutOk) {
                 if (wangTilesData) {
-                    cudaFree(wangTilesData);
+                    free_owned_device_noexcept(resources, wangTilesData);
                 }
                 if (wangLutData) {
-                    cudaFree(wangLutData);
+                    free_owned_device_noexcept(resources, wangLutData);
                 }
                 free_wang(resources);
             } else if (!resources.wangTilesData && !resources.wangLutData) {
@@ -1590,10 +1590,10 @@ bool ensure_grain_static_assets_uploaded(
                 resources.wangColors = wangView.colors;
             } else {
                 if (wangTilesData) {
-                    cudaFree(wangTilesData);
+                    free_owned_device_noexcept(resources, wangTilesData);
                 }
                 if (wangLutData) {
-                    cudaFree(wangLutData);
+                    free_owned_device_noexcept(resources, wangLutData);
                 }
             }
         }
@@ -1995,7 +1995,7 @@ bool ensure_uploaded(
                     return false;
                 }
             } else {
-                free_scan_medium(dst);
+                free_scan_medium(resources, dst);
             }
             return true;
         }
@@ -2036,35 +2036,35 @@ bool ensure_uploaded(
                     return false;
                 }
             } else {
-                free_scan_medium(dst);
+                free_scan_medium(resources, dst);
             }
             if (!upload_array_locked(resources, dst.tables.epsC, 0, t->epsC.data(), K, cudaStreamOpaque, &lock, "scan.epsC", outErrorLocal)) {
-                free_scan_medium(dst);
+                free_scan_medium(resources, dst);
                 return false;
             }
             if (!upload_array_locked(resources, dst.tables.epsM, 0, t->epsM.data(), K, cudaStreamOpaque, &lock, "scan.epsM", outErrorLocal)) {
-                free_scan_medium(dst);
+                free_scan_medium(resources, dst);
                 return false;
             }
             if (!upload_array_locked(resources, dst.tables.epsY, 0, t->epsY.data(), K, cudaStreamOpaque, &lock, "scan.epsY", outErrorLocal)) {
-                free_scan_medium(dst);
+                free_scan_medium(resources, dst);
                 return false;
             }
             if (!upload_array_locked(resources, dst.tables.Ax, 0, t->Ax.data(), K, cudaStreamOpaque, &lock, "scan.Ax", outErrorLocal)) {
-                free_scan_medium(dst);
+                free_scan_medium(resources, dst);
                 return false;
             }
             if (!upload_array_locked(resources, dst.tables.Ay, 0, t->Ay.data(), K, cudaStreamOpaque, &lock, "scan.Ay", outErrorLocal)) {
-                free_scan_medium(dst);
+                free_scan_medium(resources, dst);
                 return false;
             }
             if (!upload_array_locked(resources, dst.tables.Az, 0, t->Az.data(), K, cudaStreamOpaque, &lock, "scan.Az", outErrorLocal)) {
-                free_scan_medium(dst);
+                free_scan_medium(resources, dst);
                 return false;
             }
             if (t->hasBaseline) {
                 if (!upload_array_locked(resources, dst.tables.baseDensityMin, 0, t->baseDensityMin.data(), K, cudaStreamOpaque, &lock, "scan.baseDensityMin", outErrorLocal)) {
-                    free_scan_medium(dst);
+                    free_scan_medium(resources, dst);
                     return false;
                 }
             }
@@ -2080,7 +2080,7 @@ bool ensure_uploaded(
                 }
             } else if (!dst.tables.baseDensityMin) {
                 if (!upload_array_locked(resources, dst.tables.baseDensityMin, 0, t->baseDensityMin.data(), K, cudaStreamOpaque, &lock, "scan.baseDensityMin", outErrorLocal)) {
-                    free_scan_medium(dst);
+                    free_scan_medium(resources, dst);
                     return false;
                 }
             }
@@ -2157,7 +2157,7 @@ bool ensure_uploaded(
                             return false;
                         }
                     } else {
-                        free_curve(dst);
+                        free_curve(resources, dst);
                     }
                     return true;
                 }
@@ -2300,6 +2300,7 @@ bool ensure_uploaded(
                 float* dHanatosLut = nullptr;
                 lock.unlock();
                 const bool allocOk = alloc_and_upload_array(
+                    resources,
                     dHanatosLut,
                     ctx.hanSpectra.data.data(),
                     static_cast<int>(count),
@@ -2308,7 +2309,7 @@ bool ensure_uploaded(
                     outError);
                 if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
                     if (dHanatosLut) {
-                        cudaFree(dHanatosLut);
+                        free_owned_device_noexcept(resources, dHanatosLut);
                     }
                     return false;
                 }
@@ -2322,7 +2323,7 @@ bool ensure_uploaded(
                         static_cast<size_t>(Spectral::kNumSamples);
                     const size_t oldBytes = oldCount * sizeof(float);
                     if (!retire_ptr_locked(resources, resources.hanatosLut, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Hanatos LUT", outError)) {
-                        cudaFree(dHanatosLut);
+                        free_owned_device_noexcept(resources, dHanatosLut);
                         return false;
                     }
                 }
@@ -2372,6 +2373,7 @@ bool ensure_uploaded(
                         float* dLut = nullptr;
                         lock.unlock();
                         const bool allocOk = alloc_and_upload_array(
+                            resources,
                             dLut,
                             cpu.data(),
                             valueCountInt,
@@ -2380,7 +2382,7 @@ bool ensure_uploaded(
                             outError);
                         if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
                             if (dLut) {
-                                cudaFree(dLut);
+                                free_owned_device_noexcept(resources, dLut);
                             }
                             return false;
                         }
@@ -2392,7 +2394,7 @@ bool ensure_uploaded(
                             const size_t count = static_cast<size_t>(resources.hanatosNIntegrated) * static_cast<size_t>(resources.hanatosNIntegrated) * 4u;
                             const size_t oldBytes = count * sizeof(float);
                             if (!retire_ptr_locked(resources, resources.hanatosLutIntegrated, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Hanatos integrated LUT", outError)) {
-                                cudaFree(dLut);
+                                free_owned_device_noexcept(resources, dLut);
                                 return false;
                             }
                         }
@@ -2451,6 +2453,7 @@ bool ensure_uploaded(
             float* dMallettBasis = nullptr;
             lock.unlock();
             const bool allocOk = alloc_and_upload_array(
+                resources,
                 dMallettBasis,
                 ctx.mallettBasis.data.data(),
                 static_cast<int>(count),
@@ -2459,7 +2462,7 @@ bool ensure_uploaded(
                 outError);
             if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
                 if (dMallettBasis) {
-                    cudaFree(dMallettBasis);
+                    free_owned_device_noexcept(resources, dMallettBasis);
                 }
                 return false;
             }
@@ -2470,7 +2473,7 @@ bool ensure_uploaded(
                 const size_t oldCount = static_cast<size_t>(resources.mallettBasisK) * 3u;
                 const size_t oldBytes = oldCount * sizeof(float);
                 if (!retire_ptr_locked(resources, resources.mallettBasis, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Mallett basis", outError)) {
-                    cudaFree(dMallettBasis);
+                    free_owned_device_noexcept(resources, dMallettBasis);
                     return false;
                 }
             }
@@ -2564,17 +2567,18 @@ bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negative
         float* cellMax = nullptr;
     } next;
     auto free_next = [&]() {
-        cudaFree(next.log2PchipXYZ);
-        cudaFree(next.slopeC);
-        cudaFree(next.slopeM);
-        cudaFree(next.slopeY);
-        cudaFree(next.cellMin);
-        cudaFree(next.cellMax);
+        free_owned_device_noexcept(resources, next.log2PchipXYZ);
+        free_owned_device_noexcept(resources, next.slopeC);
+        free_owned_device_noexcept(resources, next.slopeM);
+        free_owned_device_noexcept(resources, next.slopeY);
+        free_owned_device_noexcept(resources, next.cellMin);
+        free_owned_device_noexcept(resources, next.cellMax);
         next = {};
     };
     auto upload_next = [&](float*& destination, const std::vector<float>& source, const char* label) {
         void* raw = nullptr;
         if (!alloc_and_upload_bytes(
+                resources,
                 raw,
                 source.data(),
                 source.size() * sizeof(float),
@@ -2797,8 +2801,13 @@ bool ensure_print_illuminant_filtered(
     } else {
         float* printIllumFiltered = nullptr;
         lock.unlock();
-        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&printIllumFiltered), bytes);
-        const bool allocOk = (err == cudaSuccess);
+        const bool allocOk = allocate_owned_device(
+            resources,
+            reinterpret_cast<void**>(&printIllumFiltered),
+            bytes,
+            DeviceAllocationClass::DurableStatic,
+            "print illuminant filtered",
+            outError);
         const bool copyOk = allocOk && enqueue_host_to_device_copy(
                                            HostToDeviceCopyRequest{__func__, "print illuminant filtered"},
                                            printIllumFiltered,
@@ -2808,16 +2817,15 @@ bool ensure_print_illuminant_filtered(
                                            outError);
         if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
             if (printIllumFiltered) {
-                cudaFree(printIllumFiltered);
+                free_owned_device_noexcept(resources, printIllumFiltered);
             }
             return false;
         }
         if (!allocOk) {
-            outError = std::string("cudaMalloc(print illuminant filtered) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             return false;
         }
         if (!copyOk) {
-            cudaFree(printIllumFiltered);
+            free_owned_device_noexcept(resources, printIllumFiltered);
             return false;
         }
         resources.printIllumFiltered = printIllumFiltered;

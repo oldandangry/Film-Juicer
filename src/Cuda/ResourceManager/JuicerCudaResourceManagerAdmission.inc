@@ -1,11 +1,6 @@
 // Cuda/ResourceManager/JuicerCudaResourceManagerAdmission.inc
 //
 // Included by JuicerCudaResourceManager.cpp (single-TU split).
-void maybe_apply_async_mempool_release_policy(
-    const SubmissionTransaction& transaction,
-    PressureState pressureState,
-    const ResourceManagerConfigEffective& cfg,
-    const char* reason);
 void trim_large_frame_quarantine_decay_locked(
     ScratchContextState& contextState,
     std::uint64_t nowMs) noexcept;
@@ -2059,45 +2054,6 @@ HeadroomTelemetry sample_headroom_telemetry(const SubmissionTransaction& transac
                     freeBytes,
                     static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
             out.effectiveHeadroomBytes = out.driverFreeBytes;
-#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
-            cudaMemPool_t defaultPool = nullptr;
-            if (cudaDeviceGetDefaultMemPool(&defaultPool, targetDevice) == cudaSuccess &&
-                defaultPool != nullptr) {
-                std::size_t poolReservedBytes = 0;
-                std::size_t poolUsedBytes = 0;
-                const cudaError_t reservedErr = cudaMemPoolGetAttribute(
-                    defaultPool,
-                    cudaMemPoolAttrReservedMemCurrent,
-                    &poolReservedBytes);
-                const cudaError_t usedErr = cudaMemPoolGetAttribute(
-                    defaultPool,
-                    cudaMemPoolAttrUsedMemCurrent,
-                    &poolUsedBytes);
-                if (reservedErr == cudaSuccess && usedErr == cudaSuccess) {
-                    out.poolTelemetryAvailable = true;
-                    out.source = HeadroomSource::AllocatorPool;
-                    out.allocatorPoolReservedBytes = static_cast<std::uint64_t>(
-                        std::min<std::size_t>(
-                            poolReservedBytes,
-                            static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
-                    out.allocatorPoolUsedBytes = static_cast<std::uint64_t>(
-                        std::min<std::size_t>(
-                            poolUsedBytes,
-                            static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
-                    if (out.allocatorPoolUsedBytes > out.allocatorPoolReservedBytes) {
-                        out.allocatorPoolUsedBytes = out.allocatorPoolReservedBytes;
-                    }
-
-                    const std::uint64_t poolFreeBytes =
-                        out.allocatorPoolReservedBytes - out.allocatorPoolUsedBytes;
-                    std::uint64_t combinedHeadroom = out.driverFreeBytes;
-                    if (!add_u64_checked(combinedHeadroom, poolFreeBytes, combinedHeadroom)) {
-                        combinedHeadroom = std::numeric_limits<std::uint64_t>::max();
-                    }
-                    out.effectiveHeadroomBytes = combinedHeadroom;
-                }
-            }
-#endif
 #else
             (void)targetDevice;
 #endif
@@ -2961,18 +2917,10 @@ PressureCheckpoint evaluate_pressure_checkpoint(
     checkpoint.input.transientNonManagerBytes = checkpoint.memory.transientNonManagerBytes;
     checkpoint.input.effectiveHeadroomBytes = headroom.effectiveHeadroomBytes;
     checkpoint.input.driverFreeBytes = headroom.driverFreeBytes;
-    checkpoint.input.allocatorPoolReservedBytes = headroom.allocatorPoolReservedBytes;
-    checkpoint.input.allocatorPoolUsedBytes = headroom.allocatorPoolUsedBytes;
     checkpoint.input.headroomSource = headroom.source;
 
     managerState.allocatorEffectiveHeadroomBytes.store(
         checkpoint.input.effectiveHeadroomBytes,
-        std::memory_order_relaxed);
-    managerState.allocatorPoolReservedBytes.store(
-        checkpoint.input.allocatorPoolReservedBytes,
-        std::memory_order_relaxed);
-    managerState.allocatorPoolUsedBytes.store(
-        checkpoint.input.allocatorPoolUsedBytes,
         std::memory_order_relaxed);
 
     std::uint64_t predictedResident = checkpoint.memory.activeBytes;
@@ -3198,8 +3146,6 @@ void record_allocator_oom_headroom_observation(
     const HeadroomTelemetry headroom = sample_headroom_telemetry(transaction);
     ResourceManagerState& managerState = global_state();
     managerState.allocatorEffectiveHeadroomBytes.store(headroom.effectiveHeadroomBytes, std::memory_order_relaxed);
-    managerState.allocatorPoolReservedBytes.store(headroom.allocatorPoolReservedBytes, std::memory_order_relaxed);
-    managerState.allocatorPoolUsedBytes.store(headroom.allocatorPoolUsedBytes, std::memory_order_relaxed);
 
     const bool aboveHeadroom =
         (requestBytes > 0) && (headroom.effectiveHeadroomBytes >= static_cast<std::uint64_t>(requestBytes));
@@ -3213,8 +3159,6 @@ void record_allocator_oom_headroom_observation(
     checkpoint.input.reserveBytes = transaction.resolvedPressurePolicy.reserveBytes;
     checkpoint.input.effectiveHeadroomBytes = headroom.effectiveHeadroomBytes;
     checkpoint.input.driverFreeBytes = headroom.driverFreeBytes;
-    checkpoint.input.allocatorPoolReservedBytes = headroom.allocatorPoolReservedBytes;
-    checkpoint.input.allocatorPoolUsedBytes = headroom.allocatorPoolUsedBytes;
     checkpoint.input.headroomSource = headroom.source;
     trace_headroom_sample(
         transaction,
@@ -3332,42 +3276,31 @@ std::string make_active_frame_vram_exhausted_error(
 }
 
 enum class ActiveFrameAdmissionHeadroom : std::uint8_t {
-    DriverFreeOnly,
-    AllocatorEffective
+    DriverFreeOnly
 };
 
 const char* to_cstr(ActiveFrameAdmissionHeadroom mode) noexcept {
     switch (mode) {
         case ActiveFrameAdmissionHeadroom::DriverFreeOnly:
             return "driver_free";
-        case ActiveFrameAdmissionHeadroom::AllocatorEffective:
-            return "allocator_effective";
         default:
             return "unknown";
     }
 }
 
-bool active_frame_admission_uses_allocator_headroom(
-    ActiveFrameAdmissionHeadroom mode,
-    const PressureCheckpoint& checkpoint) noexcept {
-    return mode == ActiveFrameAdmissionHeadroom::AllocatorEffective &&
-           checkpoint.input.headroomSource == HeadroomSource::AllocatorPool;
-}
-
 std::uint64_t active_frame_admission_headroom_bytes(
     ActiveFrameAdmissionHeadroom mode,
     const PressureCheckpoint& checkpoint) noexcept {
-    return active_frame_admission_uses_allocator_headroom(mode, checkpoint)
-               ? checkpoint.input.effectiveHeadroomBytes
-               : checkpoint.input.driverFreeBytes;
+    (void)mode;
+    return checkpoint.input.driverFreeBytes;
 }
 
 const char* active_frame_admission_insufficient_reason(
     ActiveFrameAdmissionHeadroom mode,
     const PressureCheckpoint& checkpoint) noexcept {
-    return active_frame_admission_uses_allocator_headroom(mode, checkpoint)
-               ? "insufficient_effective_headroom"
-               : "insufficient_driver_free_vram";
+    (void)mode;
+    (void)checkpoint;
+    return "insufficient_driver_free_vram";
 }
 
 bool admit_active_frame_vram_growth(
@@ -3881,12 +3814,6 @@ bool enforce_pressure_gate(
         outRequestReclaimPass = checkpoint.decision.requestReclaimPass && (requestBytes > 0);
         pressureState = checkpoint.decision.state;
         freezeBelowReserve = checkpoint.decision.freezeOpportunistic;
-        maybe_apply_async_mempool_release_policy(
-            transaction,
-            pressureState,
-            cfg,
-            "pressure_checkpoint");
-
         evaluate_active_burst_window(
             transaction,
             cfg,

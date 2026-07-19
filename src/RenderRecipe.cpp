@@ -197,21 +197,12 @@ namespace {
     }
 
     std::uint64_t hash_diffusion_filter_optics(const DiffusionFilterOpticsRecipe& recipe) {
-        if (!recipe.active) {
+        if (!recipe.resolved.active || recipe.resolved.hash == 0) {
             return 0;
         }
         std::uint64_t hash = Hash::kFnvOffset;
         hash_value(hash, hash_spatial_optics_policy(recipe.policy));
-        hash_value(hash, recipe.family);
-        hash_value(hash, recipe.strength);
-        hash_value(hash, recipe.spatialScale);
-        hash_value(hash, recipe.haloWarmth);
-        hash_value(hash, recipe.coreIntensity);
-        hash_value(hash, recipe.coreSize);
-        hash_value(hash, recipe.haloIntensity);
-        hash_value(hash, recipe.haloSize);
-        hash_value(hash, recipe.bloomIntensity);
-        hash_value(hash, recipe.bloomSize);
+        hash_value(hash, recipe.resolved.hash);
         return hash;
     }
 
@@ -270,29 +261,42 @@ namespace {
         const Profiles::ValidatedFilmProfile& profile,
         const Spektrafilm::SpatialOpticsControls& controls,
         bool includePrintDomain,
-        SpatialOptics& out) {
+        SpatialOptics& out,
+        std::string& diagnostic) {
         out = SpatialOptics{};
+        diagnostic.clear();
+
+        const auto set_diffusion_diagnostic = [&](const char* component,
+                                                  const std::string& resolvedDiagnostic) {
+            constexpr const char kFieldMarker[] = "field=";
+            const std::size_t fieldOffset = resolvedDiagnostic.find(kFieldMarker);
+            const std::string field =
+                fieldOffset == std::string::npos
+                    ? "unknown"
+                    : resolvedDiagnostic.substr(fieldOffset + sizeof(kFieldMarker) - 1);
+            diagnostic = std::string("ResourceDescriptorMismatch phase=6A component=") +
+                         component + " field=" + field;
+        };
 
         DiffusionFilterOpticsRecipe& cameraDiffusion = out.cameraDiffusion;
-        cameraDiffusion.active =
-            controls.cameraDiffusionActive &&
-            controls.cameraDiffusionStrength > 0.0f &&
-            controls.cameraDiffusionSpatialScale > 0.0f;
-        if (cameraDiffusion.active) {
-            if (!finite_positive(controls.cameraDiffusionStrength) ||
-                !finite_positive(controls.cameraDiffusionSpatialScale)) {
-                return false;
-            }
+        std::string resolvedDiagnostic;
+        if (!Spektrafilm::resolve_diffusion_filter(
+                controls.cameraDiffusion,
+                cameraDiffusion.resolved,
+                resolvedDiagnostic)) {
+            set_diffusion_diagnostic("camera_diffusion", resolvedDiagnostic);
+            return false;
+        }
+        if (cameraDiffusion.resolved.active) {
             cameraDiffusion.policy =
                 active_exact_policy(Spektrafilm::SpatialOpticsDomain::FilmLinearExposure);
-            cameraDiffusion.family = controls.cameraDiffusionFamily;
-            cameraDiffusion.strength = controls.cameraDiffusionStrength;
-            cameraDiffusion.spatialScale = controls.cameraDiffusionSpatialScale;
             cameraDiffusion.hash = hash_diffusion_filter_optics(cameraDiffusion);
         }
 
         CameraLensBlurOpticsRecipe& lensBlur = out.cameraLensBlur;
         if (!std::isfinite(controls.cameraLensBlurUm)) {
+            diagnostic =
+                "ResourceDescriptorMismatch phase=6A component=camera_lens_blur field=sigma_um";
             return false;
         }
         lensBlur.sigmaUm = std::max(controls.cameraLensBlurUm, 0.0f);
@@ -306,6 +310,8 @@ namespace {
         scatterHalation.active = controls.scatterHalationActive;
         if (scatterHalation.active) {
             if (!profile.digest.halationPresetApplied) {
+                diagnostic = "ResourceDescriptorMismatch phase=6A "
+                             "component=scatter_halation field=profile_antihalation_preset";
                 return false;
             }
             scatterHalation.policy = active_exact_policy(
@@ -324,43 +330,52 @@ namespace {
                 !finite_nonnegative_triplet(scatterHalation.halationFirstSigmaUm) ||
                 scatterHalation.halationBounceCount == 0 ||
                 !finite_nonnegative_optics(scatterHalation.halationBounceDecay)) {
+                diagnostic = "ResourceDescriptorMismatch phase=6A "
+                             "component=scatter_halation field=resolved_parameters";
                 return false;
             }
             scatterHalation.hash = hash_scatter_halation_optics(scatterHalation);
         }
 
         DiffusionFilterOpticsRecipe& enlargerDiffusion = out.enlargerDiffusion;
-        enlargerDiffusion.policy.domain = Spektrafilm::SpatialOpticsDomain::PrintLinearExposure;
-        enlargerDiffusion.active =
-            includePrintDomain &&
-            controls.enlargerDiffusionActive &&
-            controls.enlargerDiffusionStrength > 0.0f &&
-            controls.enlargerDiffusionSpatialScale > 0.0f;
-        if (enlargerDiffusion.active) {
-            if (!finite_positive(controls.enlargerDiffusionStrength) ||
-                !finite_positive(controls.enlargerDiffusionSpatialScale)) {
+        if (includePrintDomain) {
+            if (!Spektrafilm::resolve_diffusion_filter(
+                    controls.enlargerDiffusion,
+                    enlargerDiffusion.resolved,
+                    resolvedDiagnostic)) {
+                set_diffusion_diagnostic("enlarger_diffusion", resolvedDiagnostic);
                 return false;
             }
-            enlargerDiffusion.policy =
-                active_exact_policy(Spektrafilm::SpatialOpticsDomain::PrintLinearExposure);
-            enlargerDiffusion.family = controls.enlargerDiffusionFamily;
-            enlargerDiffusion.strength = controls.enlargerDiffusionStrength;
-            enlargerDiffusion.spatialScale = controls.enlargerDiffusionSpatialScale;
-            enlargerDiffusion.hash = hash_diffusion_filter_optics(enlargerDiffusion);
+            if (enlargerDiffusion.resolved.active) {
+                enlargerDiffusion.policy =
+                    active_exact_policy(Spektrafilm::SpatialOpticsDomain::PrintLinearExposure);
+                enlargerDiffusion.hash = hash_diffusion_filter_optics(enlargerDiffusion);
+            }
         }
 
         std::uint64_t enabledHash = Hash::kFnvOffset;
         bool anyEnabled = false;
-        for (const std::uint64_t hash : {
-                 cameraDiffusion.hash,
-                 lensBlur.hash,
-                 scatterHalation.hash,
-                 enlargerDiffusion.hash}) {
-            if (hash != 0) {
-                hash_value(enabledHash, hash);
-                anyEnabled = true;
+        const auto mix_component = [&](Spektrafilm::SpatialOpticsComponent component,
+                                       std::uint64_t componentHash) {
+            if (componentHash == 0) {
+                return;
             }
-        }
+            hash_value(enabledHash, component);
+            hash_value(enabledHash, componentHash);
+            anyEnabled = true;
+        };
+        mix_component(
+            Spektrafilm::SpatialOpticsComponent::CameraDiffusion,
+            cameraDiffusion.hash);
+        mix_component(
+            Spektrafilm::SpatialOpticsComponent::CameraLensBlur,
+            lensBlur.hash);
+        mix_component(
+            Spektrafilm::SpatialOpticsComponent::InEmulsionScatterHalation,
+            scatterHalation.hash);
+        mix_component(
+            Spektrafilm::SpatialOpticsComponent::EnlargerDiffusion,
+            enlargerDiffusion.hash);
         out.hash = anyEnabled ? enabledHash : 0;
         return true;
     }
@@ -1520,8 +1535,8 @@ namespace Spektrafilm {
                 profile,
                 input.spatialOptics,
                 false,
-                result.recipe.spatialOptics)) {
-            result.diagnostic = "ResourceDescriptorMismatch phase=6A field=spatial_optics";
+                result.recipe.spatialOptics,
+                result.diagnostic)) {
             return result;
         }
 
@@ -1745,8 +1760,8 @@ namespace Spektrafilm {
                 *input.filmProfile,
                 input.filmFoundation.spatialOptics,
                 true,
-                result.recipe.spatialOptics)) {
-            result.diagnostic = "ResourceDescriptorMismatch phase=6A field=spatial_optics";
+                result.recipe.spatialOptics,
+                result.diagnostic)) {
             return result;
         }
         result.recipe.filmDevelop = foundation.recipe.filmDevelop;
@@ -2048,7 +2063,8 @@ namespace Spektrafilm {
         ExactOpticsFrameExtent fullFrameExtent,
         ExactOpticsExecutionPlan& out) {
         out = ExactOpticsExecutionPlan{};
-        if (recipe.hash == 0) {
+        if (recipe.cameraLensBlur.hash == 0 &&
+            recipe.scatterHalation.hash == 0) {
             return true;
         }
         if (!(std::isfinite(pixelSizeUm) && pixelSizeUm > 0.0f) ||
@@ -2076,20 +2092,6 @@ namespace Spektrafilm {
             }
             return std::min(static_cast<int>(std::ceil(requested)), radiusCap);
         };
-        const auto diffusion_bloom_max_um = [](DiffusionFilterFamily family) -> float {
-            switch (family) {
-                case DiffusionFilterFamily::Glimmerglass:
-                    return 260.0f * 2.5f;
-                case DiffusionFilterFamily::BlackProMist:
-                    return 380.0f * 2.5f;
-                case DiffusionFilterFamily::ProMist:
-                    return 650.0f * 2.5f;
-                case DiffusionFilterFamily::Cinebloom:
-                    return 1000.0f * 2.5f;
-                default:
-                    return 0.0f;
-            }
-        };
         const auto finalize_descriptor = [&](ExactOpticsExecutionDescriptor& descriptor,
                                              bool usesFft) -> bool {
             descriptor.route = route;
@@ -2115,14 +2117,16 @@ namespace Spektrafilm {
                     return false;
                 }
             }
-            std::uint64_t psfHash = Hash::kFnvOffset;
-            hash_value(psfHash, descriptor.recipeComponentHash);
-            hash_value(psfHash, descriptor.pixelSizeUm);
-            hash_value(psfHash, descriptor.reflectedPaddingRadiusPixels);
-            hash_value(psfHash, descriptor.paddedImageExtent.width);
-            hash_value(psfHash, descriptor.paddedImageExtent.height);
-            hash_value(psfHash, descriptor.normalization);
-            descriptor.sampledPsfHash = psfHash;
+            if (descriptor.sampledPsfHash == 0) {
+                std::uint64_t psfHash = Hash::kFnvOffset;
+                hash_value(psfHash, descriptor.recipeComponentHash);
+                hash_value(psfHash, descriptor.pixelSizeUm);
+                hash_value(psfHash, descriptor.reflectedPaddingRadiusPixels);
+                hash_value(psfHash, descriptor.paddedImageExtent.width);
+                hash_value(psfHash, descriptor.paddedImageExtent.height);
+                hash_value(psfHash, descriptor.normalization);
+                descriptor.sampledPsfHash = psfHash;
+            }
 
             std::uint64_t hash = Hash::kFnvOffset;
             hash_value(hash, descriptor.route);
@@ -2160,32 +2164,6 @@ namespace Spektrafilm {
             out.descriptors[out.descriptorCount++] = descriptor;
             return true;
         };
-        const auto append_diffusion = [&](const DiffusionFilterOpticsRecipe& component,
-                                          SpatialOpticsComponent componentKind) -> bool {
-            if (component.hash == 0) {
-                return true;
-            }
-            const float outermostBloomUm =
-                diffusion_bloom_max_um(component.family) * component.bloomSize * component.spatialScale;
-            ExactOpticsExecutionDescriptor descriptor{};
-            descriptor.domain = component.policy.domain;
-            descriptor.component = componentKind;
-            descriptor.convolution = ExactOpticsConvolution::ReflectFft;
-            descriptor.normalization =
-                ExactOpticsNormalization::PerChannelUnitSumEnergyConserving;
-            descriptor.recipeComponentHash = component.hash;
-            descriptor.reflectedPaddingRadiusPixels =
-                capped_radius(8.0 * static_cast<double>(outermostBloomUm) /
-                              static_cast<double>(pixelSizeUm));
-            return descriptor.reflectedPaddingRadiusPixels > 0 &&
-                   append_descriptor(descriptor, true);
-        };
-
-        if (!append_diffusion(
-                recipe.cameraDiffusion,
-                SpatialOpticsComponent::CameraDiffusion)) {
-            return false;
-        }
         if (recipe.cameraLensBlur.hash != 0) {
             ExactOpticsExecutionDescriptor descriptor{};
             descriptor.domain = recipe.cameraLensBlur.policy.domain;
@@ -2234,16 +2212,8 @@ namespace Spektrafilm {
                 return false;
             }
         }
-        if (recipe.enlargerDiffusion.hash != 0) {
-            if (!scan_route_is_print(route) ||
-                !append_diffusion(
-                    recipe.enlargerDiffusion,
-                    SpatialOpticsComponent::EnlargerDiffusion)) {
-                return false;
-            }
-        }
         if (out.descriptorCount == 0) {
-            return false;
+            return true;
         }
 
         std::uint64_t planHash = Hash::kFnvOffset;

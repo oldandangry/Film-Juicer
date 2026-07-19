@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -721,6 +722,8 @@ namespace JuicerProcess {
         Root::CudaResourceOwner grainStaticOwner;
         JuicerCuda::Resources* resources = nullptr;
         JuicerCuda::Resources* grainStaticResources = nullptr;
+        Spektrafilm::DiffusionExecutionDescriptor diffusionExecutionDescriptor{};
+        JuicerCuda::Diffusion::PreparedDiffusionLease diffusionLease;
         const Spectral::FilmRawConfig* focusedFilmRawConfig = nullptr;
         const Scanner::ColorRuntime* focusedScannerColor = nullptr;
         const PrintRecipe* printRecipe = nullptr;
@@ -729,6 +732,8 @@ namespace JuicerProcess {
         ScanErrorFrameStage scanErrorStage{};
         AutoExposureFrameWorkspace autoExposureWorkspace{};
         FrameScratchWorkspace scratchWorkspace{};
+        std::map<void*, JuicerCuda::DeviceByteReservation>
+            deviceAllocationRecords;
         WorkspaceRequest workspaceRequest{};
         Spektrafilm::SpatialDirDescriptor spatialDirDescriptor{};
         Scanner::ScannerPostEffectsDescriptor scannerPostEffectsDescriptor{};
@@ -761,6 +766,30 @@ namespace JuicerProcess {
             }
         }
 
+        bool allocate_device_bytes(
+            void** outPtr,
+            std::size_t bytes,
+            const char* label,
+            std::string& outError);
+        bool retire_device_bytes(
+            void* ptr,
+            std::size_t bytes,
+            void* cudaStreamOpaque,
+            const char* label,
+            std::string& outError);
+        bool free_device_bytes_now(void* ptr, std::string& outError) noexcept;
+        bool transfer_remaining_device_allocations(
+            std::string& outError) noexcept;
+        bool prepare_diffusion_resources(
+            const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
+            const Spektrafilm::RenderRecipe& recipe,
+            const Spektrafilm::DiffusionFrameSetDescriptor* frameSet,
+            bool printRoute,
+            int requestedWidth,
+            int requestedHeight,
+            void* cudaStreamOpaque,
+            std::string& outError);
+
         bool allocate_auto_exposure_workspace(
             const JuicerCuda::AutoExposurePreviewDescriptor& descriptor,
             std::string& outError);
@@ -788,7 +817,7 @@ namespace JuicerProcess {
             void* cudaStreamOpaque,
             JuicerCuda::SpatialDirCachedLogRawReleaseStats& outStats,
             std::string& outError);
-        bool release_overflow_spatial_dir_stage_after_scan_linear(
+        bool release_overflow_spatial_dir_stage_after_scanner_output(
             void* cudaStreamOpaque,
             JuicerCuda::SpatialDirStageReleaseStats& outStats,
             std::string& outError);
@@ -922,6 +951,7 @@ namespace JuicerProcess {
     bool derive_workspace_request(
         const Spektrafilm::SpatialDirDescriptor* spatialDir,
         const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects,
+        const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSet,
         const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& visualGrain,
         const std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& effects,
         Spektrafilm::ProfilePolarity capturePolarity,
@@ -937,6 +967,22 @@ namespace JuicerProcess {
         }
         out.requestedWidth = requestedWidth;
         out.requestedHeight = requestedHeight;
+
+        const bool routeDiffusionActive =
+            diffusionFrameSet &&
+            (diffusionFrameSet->camera.has_value() ||
+             diffusionFrameSet->enlarger.has_value());
+        if (diffusionFrameSet &&
+            (diffusionFrameSet->hash == 0 ||
+             diffusionFrameSet->fullFrame.width != requestedWidth ||
+             diffusionFrameSet->fullFrame.height != requestedHeight)) {
+            outError =
+                "ResourceDescriptorMismatch phase=workspace field=diffusion_extent";
+            return false;
+        }
+        if (routeDiffusionActive) {
+            out.needOptics = true;
+        }
 
         if (spatialDir && spatialDir->hash != 0) {
             if (spatialDir->renderExtent.width != requestedWidth ||
@@ -991,7 +1037,7 @@ namespace JuicerProcess {
             out.needSharedTmp = true;
         }
         // Positive final develop retains DIR correction as an input while the scanner writes RGB.
-        if (out.needOptics && out.needSpatialDir &&
+        if (!routeDiffusionActive && out.needOptics && out.needSpatialDir &&
             capturePolarity != Spektrafilm::ProfilePolarity::Positive) {
             out.aliasScannerRgbFromSpatialDirFiltered = true;
             out.spatialDirTargetScratchTier = out.spatialDirScratchTier;
@@ -1004,22 +1050,390 @@ namespace JuicerProcess {
         return true;
     }
 
+    bool Root::PreparedCudaFrame::State::allocate_device_bytes(
+        void** outPtr,
+        std::size_t bytes,
+        const char* label,
+        std::string& outError) {
+        outError.clear();
+        if (!outPtr || *outPtr || bytes == 0 || !label || !label[0] ||
+            !resources || !resources->deviceLedger) {
+            outError = "invalid prepared-frame CUDA allocation request";
+            return false;
+        }
+
+        std::map<void*, JuicerCuda::DeviceByteReservation> stagedRecords;
+        std::map<void*, JuicerCuda::DeviceByteReservation>::node_type stagedNode;
+        JuicerCuda::DeviceAllocationIdentity identity{};
+        try {
+            stagedRecords.emplace(nullptr, JuicerCuda::DeviceByteReservation{});
+            stagedNode = stagedRecords.extract(stagedRecords.begin());
+            identity.deviceId = resources->ownerContextKey.deviceId;
+            identity.contextKey = resources->ownerContextKey;
+            identity.contextEpoch = resources->contextEpoch;
+            identity.allocationClass =
+                JuicerCuda::DeviceAllocationClass::FrameScratch;
+            identity.diagnosticIdentity = label;
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+            outError = "failed to stage prepared-frame allocation record";
+            return false;
+        }
+
+        JuicerCuda::DeviceByteReservation reservation;
+        if (!resources->deviceLedger->reserve(
+                identity,
+                static_cast<std::uint64_t>(bytes),
+                reservation,
+                outError)) {
+            return false;
+        }
+        void* allocated = nullptr;
+        const cudaError_t allocationError = cudaMalloc(&allocated, bytes);
+        if (allocationError != cudaSuccess || !allocated) {
+            outError = std::string("cudaMalloc(") + label + ") failed: " +
+                       (cudaGetErrorString(allocationError)
+                            ? cudaGetErrorString(allocationError)
+                            : "(unknown)");
+            return false;
+        }
+        if (!reservation.commit(static_cast<std::uint64_t>(bytes), outError)) {
+            (void)cudaFree(allocated);
+            return false;
+        }
+
+        stagedNode.key() = allocated;
+        stagedNode.mapped() = std::move(reservation);
+        const auto inserted = deviceAllocationRecords.insert(std::move(stagedNode));
+        if (!inserted.inserted) {
+            JuicerCuda::DeviceByteReservation duplicateReservation =
+                std::move(inserted.node.mapped());
+            std::string retireError;
+            (void)duplicateReservation.mark_retiring(retireError);
+            const cudaError_t freeError = cudaFree(allocated);
+            (void)duplicateReservation.release_after_physical_free(
+                freeError == cudaSuccess,
+                retireError);
+            outError = "prepared-frame allocation pointer collision";
+            return false;
+        }
+        *outPtr = allocated;
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::State::retire_device_bytes(
+        void* ptr,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
+        if (!ptr) {
+            return true;
+        }
+        const auto allocation = deviceAllocationRecords.find(ptr);
+        if (allocation == deviceAllocationRecords.end() ||
+            allocation->second.bytes() != bytes) {
+            outError = "unregistered prepared-frame CUDA retirement";
+            return false;
+        }
+        if (!JuicerCuda::retire_frame_scratch_allocation(
+                *resources,
+                ptr,
+                bytes,
+                std::move(allocation->second),
+                cudaStreamOpaque,
+                label,
+                outError)) {
+            return false;
+        }
+        deviceAllocationRecords.erase(allocation);
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::State::free_device_bytes_now(
+        void* ptr,
+        std::string& outError) noexcept {
+        outError.clear();
+        if (!ptr) {
+            return true;
+        }
+        try {
+            const auto allocation = deviceAllocationRecords.find(ptr);
+            if (allocation == deviceAllocationRecords.end()) {
+                outError = "unregistered prepared-frame CUDA free";
+                return false;
+            }
+            JuicerCuda::DeviceByteReservation& reservation = allocation->second;
+            if (reservation.state() ==
+                    JuicerCuda::DeviceReservationState::Committed &&
+                !reservation.mark_retiring(outError)) {
+                return false;
+            }
+            const cudaError_t freeError = cudaFree(ptr);
+            if (freeError != cudaSuccess) {
+                outError = std::string("cudaFree(prepared frame) failed: ") +
+                           (cudaGetErrorString(freeError)
+                                ? cudaGetErrorString(freeError)
+                                : "(unknown)");
+                return false;
+            }
+            if (!reservation.release_after_physical_free(true, outError)) {
+                return false;
+            }
+            deviceAllocationRecords.erase(allocation);
+            return true;
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+            try {
+                outError = "prepared-frame CUDA free bookkeeping failed";
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+            return false;
+        }
+    }
+
+    bool Root::PreparedCudaFrame::State::transfer_remaining_device_allocations(
+        std::string& outError) noexcept {
+        try {
+            outError.clear();
+            if (deviceAllocationRecords.empty()) {
+                return true;
+            }
+            if (!resources) {
+                outError =
+                    "CUDA resources unavailable for remaining frame allocation transfer";
+                return false;
+            }
+            while (!deviceAllocationRecords.empty()) {
+                const auto allocation = deviceAllocationRecords.begin();
+                void* ptr = allocation->first;
+                const std::size_t bytes = static_cast<std::size_t>(
+                    allocation->second.bytes());
+                std::string retireError;
+                if (retire_device_bytes(
+                        ptr,
+                        bytes,
+                        lastCudaStreamOpaque,
+                        "remaining frame allocation",
+                        retireError)) {
+                    continue;
+                }
+
+                const cudaStream_t stream = lastCudaStreamOpaque
+                                                ? reinterpret_cast<cudaStream_t>(
+                                                      lastCudaStreamOpaque)
+                                                : nullptr;
+                const bool completionCertain =
+                    cudaStreamSynchronize(stream) == cudaSuccess;
+                if (completionCertain) {
+                    std::string freeError;
+                    if (free_device_bytes_now(ptr, freeError)) {
+                        continue;
+                    }
+                }
+
+                auto allocationRecord = deviceAllocationRecords.extract(ptr);
+                std::string adoptionError;
+                if (!JuicerCuda::adopt_failed_frame_allocation_record(
+                        *resources,
+                        allocationRecord,
+                        completionCertain,
+                        adoptionError)) {
+                    if (!allocationRecord.empty()) {
+                        deviceAllocationRecords.insert(
+                            std::move(allocationRecord));
+                    }
+                    outError = adoptionError.empty()
+                                   ? "remaining frame allocation adoption failed"
+                                   : adoptionError;
+                    return false;
+                }
+            }
+            return true;
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+            try {
+                outError =
+                    "remaining frame allocation transfer bookkeeping failed";
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+            return false;
+        }
+    }
+
+    bool Root::PreparedCudaFrame::State::prepare_diffusion_resources(
+        const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
+        const Spektrafilm::RenderRecipe& recipe,
+        const Spektrafilm::DiffusionFrameSetDescriptor* frameSet,
+        bool printRoute,
+        int requestedWidth,
+        int requestedHeight,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        diffusionExecutionDescriptor = {};
+        if (!frameSet) {
+            return true;
+        }
+        if (!resources || !resources->deviceLedger ||
+            transaction.snapshot.contextEpoch == 0 ||
+            transaction.resolvedPressurePolicy.softTargetBytes == 0 ||
+            frameSet->hash == 0 || frameSet->route != recipe.profileRoute.scanRoute ||
+            Spektrafilm::scan_route_is_print(frameSet->route) != printRoute ||
+            frameSet->fullFrame.width != requestedWidth ||
+            frameSet->fullFrame.height != requestedHeight ||
+            requestedWidth <= 0 || requestedHeight <= 0 ||
+            (!printRoute && frameSet->enlarger.has_value())) {
+            outError =
+                "ResourceDescriptorMismatch component=diffusion field=preparation_request";
+            return false;
+        }
+
+        Spektrafilm::DiffusionExecutionProfileKey observedProfile{};
+        const auto appendDiffusionFailureIdentity = [&] {
+            const auto& acceptedProfile =
+                Spektrafilm::supported_diffusion_execution_profile();
+            const JuicerCuda::DeviceLedgerSnapshot ledgerSnapshot =
+                resources->deviceLedger->snapshot();
+            outError += " device_id=" + std::to_string(contextKey.deviceId);
+            outError += " context=" + std::to_string(
+                                          static_cast<unsigned long long>(
+                                              reinterpret_cast<std::uintptr_t>(
+                                                  contextKey.contextOpaque)));
+            outError += " epoch=" + std::to_string(
+                                        static_cast<unsigned long long>(
+                                            transaction.snapshot.contextEpoch));
+            outError += " device_budget_bytes=" + std::to_string(
+                                                      static_cast<unsigned long long>(
+                                                          transaction.resolvedPressurePolicy.deviceBudgetBytes));
+            outError += " resolved_cap_bytes=" + std::to_string(
+                                                     static_cast<unsigned long long>(
+                                                         transaction.resolvedPressurePolicy.softTargetBytes));
+            outError += " resolved_reserve_bytes=" + std::to_string(
+                                                         static_cast<unsigned long long>(
+                                                             transaction.resolvedPressurePolicy.reserveBytes));
+            outError += " accepted_reference_cap_bytes=" + std::to_string(
+                                                               static_cast<unsigned long long>(
+                                                                   acceptedProfile.referenceCapBytes));
+            outError += " ledger_reserved_bytes=" + std::to_string(
+                                                        static_cast<unsigned long long>(
+                                                            ledgerSnapshot.reservedBytes));
+            outError += " ledger_committed_bytes=" + std::to_string(
+                                                         static_cast<unsigned long long>(
+                                                             ledgerSnapshot.committedBytes));
+            outError += " ledger_retiring_bytes=" + std::to_string(
+                                                        static_cast<unsigned long long>(
+                                                            ledgerSnapshot.retiringBytes));
+            outError += " frame_set_hash=" + std::to_string(
+                                                 static_cast<unsigned long long>(
+                                                     frameSet->hash));
+            outError += " execution_hash=" + std::to_string(
+                                                 static_cast<unsigned long long>(
+                                                     diffusionExecutionDescriptor.hash));
+            outError += " fft_width=" +
+                        std::to_string(diffusionExecutionDescriptor.extent.width);
+            outError += " fft_height=" +
+                        std::to_string(diffusionExecutionDescriptor.extent.height);
+            outError += " unique_spectra=" + std::to_string(
+                                                 diffusionExecutionDescriptor.uniqueSpectrumCount);
+            for (std::size_t index = 0;
+                 index < diffusionExecutionDescriptor.uniqueSpectrumCount;
+                 ++index) {
+                outError += " spectrum_key_" + std::to_string(index) + "=" +
+                            std::to_string(static_cast<unsigned long long>(
+                                diffusionExecutionDescriptor.spectrumKeys[index].hash));
+            }
+            outError += " observed_cuda_compile=" +
+                        std::to_string(observedProfile.cudaCompileVersion);
+            outError += " observed_cuda_runtime=" +
+                        std::to_string(observedProfile.cudaRuntimeVersion);
+            outError += " observed_cuda_driver=" +
+                        std::to_string(observedProfile.cudaDriverVersion);
+            outError += " observed_cufft=" +
+                        std::to_string(observedProfile.cufftVersion);
+            outError += " observed_compute_capability=" +
+                        std::to_string(observedProfile.computeCapabilityMajor) + "." +
+                        std::to_string(observedProfile.computeCapabilityMinor);
+            outError += " observed_precision_schema=" +
+                        std::to_string(observedProfile.precisionSchema);
+            outError += " observed_layout_schema=" +
+                        std::to_string(observedProfile.layoutSchema);
+            outError += " observed_candidate_table=" +
+                        std::to_string(observedProfile.candidateTableVersion);
+            outError += " observed_selection_policy=" +
+                        std::to_string(observedProfile.selectionPolicyVersion);
+        };
+        if (frameSet->camera &&
+            (frameSet->camera->route != frameSet->route ||
+             frameSet->camera->stage !=
+                 Spektrafilm::DiffusionLinearStage::CameraFilmLinear)) {
+            outError =
+                "ResourceDescriptorMismatch component=diffusion field=camera_stage_order";
+            return false;
+        }
+        if (frameSet->enlarger &&
+            (frameSet->enlarger->route != frameSet->route ||
+             frameSet->enlarger->stage !=
+                 Spektrafilm::DiffusionLinearStage::EnlargerPrintLinear)) {
+            outError =
+                "ResourceDescriptorMismatch component=diffusion field=enlarger_stage_order";
+            return false;
+        }
+
+        if (!JuicerCuda::Diffusion::query_observed_diffusion_execution_profile(
+                observedProfile,
+                outError)) {
+            appendDiffusionFailureIdentity();
+            return false;
+        }
+        if (!Spektrafilm::build_diffusion_execution_descriptor(
+                *frameSet,
+                transaction.snapshot.contextEpoch,
+                observedProfile,
+                transaction.resolvedPressurePolicy.softTargetBytes,
+                diffusionExecutionDescriptor,
+                outError)) {
+            appendDiffusionFailureIdentity();
+            return false;
+        }
+        if (!JuicerCuda::Diffusion::prepare_diffusion_resources(
+                resources->diffusion,
+                contextKey,
+                transaction.snapshot.contextEpoch,
+                resources->deviceLedger,
+                observedProfile,
+                *frameSet,
+                diffusionExecutionDescriptor,
+                cudaStreamOpaque,
+                diffusionLease,
+                outError)) {
+            appendDiffusionFailureIdentity();
+            diffusionExecutionDescriptor = {};
+            return false;
+        }
+        return true;
+    }
+
     bool Root::PreparedCudaFrame::State::allocate_scan_error_stage(std::string& outError) {
         outError.clear();
         free_scan_error_stage_now();
 
         ScanErrorFrameStage next{};
-        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&next.deviceFlag), sizeof(int));
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMalloc(frame scan error flag) failed: ") +
-                       (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            next.deviceFlag = nullptr;
+        if (!allocate_device_bytes(
+                reinterpret_cast<void**>(&next.deviceFlag),
+                sizeof(int),
+                "frame scan error flag",
+                outError)) {
             return false;
         }
 
-        err = cudaMallocHost(reinterpret_cast<void**>(&next.hostFlag), sizeof(int));
+        cudaError_t err =
+            cudaMallocHost(reinterpret_cast<void**>(&next.hostFlag), sizeof(int));
         if (err != cudaSuccess) {
-            cudaFree(next.deviceFlag);
+            std::string freeError;
+            (void)free_device_bytes_now(next.deviceFlag, freeError);
             outError = std::string("cudaMallocHost(frame scan error staging) failed: ") +
                        (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             return false;
@@ -1032,7 +1446,8 @@ namespace JuicerProcess {
                 cudaEventDestroy(ev);
             }
             cudaFreeHost(next.hostFlag);
-            cudaFree(next.deviceFlag);
+            std::string freeError;
+            (void)free_device_bytes_now(next.deviceFlag, freeError);
             outError = std::string("cudaEventCreateWithFlags(frame scan error staging) failed: ") +
                        (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             return false;
@@ -1075,8 +1490,7 @@ namespace JuicerProcess {
 
         if (stage.deviceFlag) {
             int* flag = stage.deviceFlag;
-            if (!JuicerCuda::retire_frame_scratch_allocation(
-                    *resources,
+            if (!retire_device_bytes(
                     flag,
                     sizeof(int),
                     retireStreamOpaque,
@@ -1106,7 +1520,8 @@ namespace JuicerProcess {
     void Root::PreparedCudaFrame::State::free_scan_error_stage_now() noexcept {
         ScanErrorFrameStage& stage = scanErrorStage;
         if (stage.deviceFlag) {
-            cudaFree(stage.deviceFlag);
+            std::string freeError;
+            (void)free_device_bytes_now(stage.deviceFlag, freeError);
         }
         if (stage.hostFlag) {
             cudaFreeHost(stage.hostFlag);
@@ -1144,14 +1559,11 @@ namespace JuicerProcess {
         }
 
         auto alloc_device = [&](auto*& ptr, std::size_t bytes, const char* label) -> bool {
-            const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&ptr), bytes);
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMalloc(") + label + ") failed: " +
-                           (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                ptr = nullptr;
-                return false;
-            }
-            return true;
+            return allocate_device_bytes(
+                reinterpret_cast<void**>(&ptr),
+                bytes,
+                label,
+                outError);
         };
 
         AutoExposureFrameWorkspace next{};
@@ -1224,8 +1636,7 @@ namespace JuicerProcess {
                 }
                 void* raw = ptr;
                 std::string localError;
-                if (JuicerCuda::retire_frame_scratch_allocation(
-                        *resources,
+                if (retire_device_bytes(
                         raw,
                         bytes,
                         retireStreamOpaque,
@@ -1280,26 +1691,29 @@ namespace JuicerProcess {
 
     void Root::PreparedCudaFrame::State::free_auto_exposure_workspace_now() noexcept {
         AutoExposureFrameWorkspace& workspace = autoExposureWorkspace;
+        std::string freeError;
         if (workspace.scratch.partialsA) {
-            cudaFree(workspace.scratch.partialsA);
+            (void)free_device_bytes_now(workspace.scratch.partialsA, freeError);
         }
         if (workspace.scratch.partialsB) {
-            cudaFree(workspace.scratch.partialsB);
+            (void)free_device_bytes_now(workspace.scratch.partialsB, freeError);
         }
         if (workspace.scratch.maxYBits) {
-            cudaFree(workspace.scratch.maxYBits);
+            (void)free_device_bytes_now(workspace.scratch.maxYBits, freeError);
         }
         if (workspace.scratch.histogram) {
-            cudaFree(workspace.scratch.histogram);
+            (void)free_device_bytes_now(workspace.scratch.histogram, freeError);
         }
         if (workspace.scratch.weightsX) {
-            cudaFree(workspace.scratch.weightsX);
+            (void)free_device_bytes_now(workspace.scratch.weightsX, freeError);
         }
         if (workspace.scratch.weightsY) {
-            cudaFree(workspace.scratch.weightsY);
+            (void)free_device_bytes_now(workspace.scratch.weightsY, freeError);
         }
         if (workspace.deviceState.exposureScale) {
-            cudaFree(workspace.deviceState.exposureScale);
+            (void)free_device_bytes_now(
+                workspace.deviceState.exposureScale,
+                freeError);
         }
         workspace = AutoExposureFrameWorkspace{};
     }
@@ -1510,14 +1924,11 @@ namespace JuicerProcess {
         next.overflowActive = true;
 
         auto alloc_float = [&](float*& ptr, std::size_t bytes, const char* label) {
-            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&ptr), bytes);
-            if (err == cudaSuccess && ptr) {
-                return true;
-            }
-            outError = std::string("cudaMalloc(") + (label ? label : "frame scratch") + ") failed: " +
-                       (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            ptr = nullptr;
-            return false;
+            return allocate_device_bytes(
+                reinterpret_cast<void**>(&ptr),
+                bytes,
+                label ? label : "frame scratch",
+                outError);
         };
         auto fail_after_partial_alloc = [&]() {
             scratchWorkspace = next;
@@ -1561,16 +1972,11 @@ namespace JuicerProcess {
                 return fail_after_partial_alloc();
             }
             if (request.needGrainFrameUniforms) {
-                cudaError_t error = cudaMalloc(
-                    reinterpret_cast<void**>(&optics.grainFrameUniforms),
-                    sizeof(JuicerCuda::GrainFrameUniforms));
-                if (error != cudaSuccess || !optics.grainFrameUniforms) {
-                    outError =
-                        std::string("cudaMalloc(frame scannerScratch.grainFrameUniforms) failed: ") +
-                        (cudaGetErrorString(error)
-                             ? cudaGetErrorString(error)
-                             : "(unknown)");
-                    optics.grainFrameUniforms = nullptr;
+                if (!allocate_device_bytes(
+                        reinterpret_cast<void**>(&optics.grainFrameUniforms),
+                        sizeof(JuicerCuda::GrainFrameUniforms),
+                        "frame scannerScratch.grainFrameUniforms",
+                        outError)) {
                     return fail_after_partial_alloc();
                 }
             }
@@ -1713,8 +2119,7 @@ namespace JuicerProcess {
             }
             void* raw = ptr;
             std::string localError;
-            if (JuicerCuda::retire_frame_scratch_allocation(
-                    *resources,
+            if (retire_device_bytes(
                     raw,
                     planeBytes,
                     retireStreamOpaque,
@@ -1768,8 +2173,7 @@ namespace JuicerProcess {
         if (sharedTmp && !opticsKeepsSharedTmp) {
             void* raw = workspace.sharedTmpPlane;
             std::string localError;
-            if (!JuicerCuda::retire_frame_scratch_allocation(
-                    *resources,
+            if (!retire_device_bytes(
                     raw,
                     workspace.sharedTmpCapacityElements * sizeof(float),
                     retireStreamOpaque,
@@ -1859,16 +2263,17 @@ namespace JuicerProcess {
         }
 
         auto free_log_raw = [&]() noexcept {
+            std::string freeError;
             if (spatialDir.logRawB) {
-                cudaFree(spatialDir.logRawB);
+                (void)free_device_bytes_now(spatialDir.logRawB, freeError);
                 spatialDir.logRawB = nullptr;
             }
             if (spatialDir.logRawG) {
-                cudaFree(spatialDir.logRawG);
+                (void)free_device_bytes_now(spatialDir.logRawG, freeError);
                 spatialDir.logRawG = nullptr;
             }
             if (spatialDir.logRawR) {
-                cudaFree(spatialDir.logRawR);
+                (void)free_device_bytes_now(spatialDir.logRawR, freeError);
                 spatialDir.logRawR = nullptr;
             }
         };
@@ -1876,14 +2281,14 @@ namespace JuicerProcess {
             if (ptr) {
                 return true;
             }
-            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&ptr), planeBytes);
-            if (err == cudaSuccess && ptr) {
+            if (allocate_device_bytes(
+                    reinterpret_cast<void**>(&ptr),
+                    planeBytes,
+                    label ? label : "overflow spatial DIR logRaw",
+                    outError)) {
                 outStats.cachedLogRawAllocatedBytes += planeBytes;
                 return true;
             }
-            outError = std::string("cudaMalloc(") + (label ? label : "overflow spatial DIR logRaw") +
-                       ") failed: " +
-                       (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             ptr = nullptr;
             return false;
         };
@@ -1927,8 +2332,7 @@ namespace JuicerProcess {
             }
             void* raw = ptr;
             std::string localError;
-            if (JuicerCuda::retire_frame_scratch_allocation(
-                    *resources,
+            if (retire_device_bytes(
                     raw,
                     planeBytes,
                     retireStreamOpaque,
@@ -1973,7 +2377,7 @@ namespace JuicerProcess {
             outError);
     }
 
-    bool Root::PreparedCudaFrame::State::release_overflow_spatial_dir_stage_after_scan_linear(
+    bool Root::PreparedCudaFrame::State::release_overflow_spatial_dir_stage_after_scanner_output(
         void* cudaStreamOpaque,
         JuicerCuda::SpatialDirStageReleaseStats& outStats,
         std::string& outError) {
@@ -2004,8 +2408,7 @@ namespace JuicerProcess {
             }
             void* raw = ptr;
             std::string localError;
-            if (JuicerCuda::retire_frame_scratch_allocation(
-                    *resources,
+            if (retire_device_bytes(
                     raw,
                     planeBytes,
                     retireStreamOpaque,
@@ -2104,8 +2507,7 @@ namespace JuicerProcess {
             }
             void* raw = ptr;
             std::string localError;
-            if (JuicerCuda::retire_frame_scratch_allocation(
-                    *resources,
+            if (retire_device_bytes(
                     raw,
                     bytes,
                     retireStreamOpaque,
@@ -2181,68 +2583,89 @@ namespace JuicerProcess {
 
     void Root::PreparedCudaFrame::State::free_scratch_workspace_now() noexcept {
         FrameScratchWorkspace& workspace = scratchWorkspace;
+        std::string freeError;
         if (workspace.optics.rgbR) {
-            cudaFree(workspace.optics.rgbR);
+            (void)free_device_bytes_now(workspace.optics.rgbR, freeError);
         }
         if (workspace.optics.rgbG) {
-            cudaFree(workspace.optics.rgbG);
+            (void)free_device_bytes_now(workspace.optics.rgbG, freeError);
         }
         if (workspace.optics.rgbB) {
-            cudaFree(workspace.optics.rgbB);
+            (void)free_device_bytes_now(workspace.optics.rgbB, freeError);
         }
         if (workspace.optics.blurred) {
-            cudaFree(workspace.optics.blurred);
+            (void)free_device_bytes_now(workspace.optics.blurred, freeError);
         }
         if (workspace.optics.aux) {
-            cudaFree(workspace.optics.aux);
+            (void)free_device_bytes_now(workspace.optics.aux, freeError);
         }
         if (workspace.optics.grainFrameUniforms) {
-            cudaFree(workspace.optics.grainFrameUniforms);
+            (void)free_device_bytes_now(
+                workspace.optics.grainFrameUniforms,
+                freeError);
         }
         if (workspace.optics.grainTmp) {
-            cudaFree(workspace.optics.grainTmp);
+            (void)free_device_bytes_now(workspace.optics.grainTmp, freeError);
         }
         if (workspace.optics.grainTmpShared) {
-            cudaFree(workspace.optics.grainTmpShared);
+            (void)free_device_bytes_now(
+                workspace.optics.grainTmpShared,
+                freeError);
         }
         if (workspace.optics.gateMask) {
-            cudaFree(workspace.optics.gateMask);
+            (void)free_device_bytes_now(workspace.optics.gateMask, freeError);
         }
         if (workspace.spatialDir.rawCorrectionY) {
-            cudaFree(workspace.spatialDir.rawCorrectionY);
+            (void)free_device_bytes_now(
+                workspace.spatialDir.rawCorrectionY,
+                freeError);
         }
         if (workspace.spatialDir.rawCorrectionM) {
-            cudaFree(workspace.spatialDir.rawCorrectionM);
+            (void)free_device_bytes_now(
+                workspace.spatialDir.rawCorrectionM,
+                freeError);
         }
         if (workspace.spatialDir.rawCorrectionC) {
-            cudaFree(workspace.spatialDir.rawCorrectionC);
+            (void)free_device_bytes_now(
+                workspace.spatialDir.rawCorrectionC,
+                freeError);
         }
         if (workspace.spatialDir.filteredCorrectionY) {
-            cudaFree(workspace.spatialDir.filteredCorrectionY);
+            (void)free_device_bytes_now(
+                workspace.spatialDir.filteredCorrectionY,
+                freeError);
         }
         if (workspace.spatialDir.filteredCorrectionM) {
-            cudaFree(workspace.spatialDir.filteredCorrectionM);
+            (void)free_device_bytes_now(
+                workspace.spatialDir.filteredCorrectionM,
+                freeError);
         }
         if (workspace.spatialDir.filteredCorrectionC) {
-            cudaFree(workspace.spatialDir.filteredCorrectionC);
+            (void)free_device_bytes_now(
+                workspace.spatialDir.filteredCorrectionC,
+                freeError);
         }
         if (workspace.spatialDir.filterTempM) {
-            cudaFree(workspace.spatialDir.filterTempM);
+            (void)free_device_bytes_now(
+                workspace.spatialDir.filterTempM,
+                freeError);
         }
         if (workspace.spatialDir.filterTempC) {
-            cudaFree(workspace.spatialDir.filterTempC);
+            (void)free_device_bytes_now(
+                workspace.spatialDir.filterTempC,
+                freeError);
         }
         if (workspace.spatialDir.logRawB) {
-            cudaFree(workspace.spatialDir.logRawB);
+            (void)free_device_bytes_now(workspace.spatialDir.logRawB, freeError);
         }
         if (workspace.spatialDir.logRawG) {
-            cudaFree(workspace.spatialDir.logRawG);
+            (void)free_device_bytes_now(workspace.spatialDir.logRawG, freeError);
         }
         if (workspace.spatialDir.logRawR) {
-            cudaFree(workspace.spatialDir.logRawR);
+            (void)free_device_bytes_now(workspace.spatialDir.logRawR, freeError);
         }
         if (workspace.sharedTmpPlane) {
-            cudaFree(workspace.sharedTmpPlane);
+            (void)free_device_bytes_now(workspace.sharedTmpPlane, freeError);
         }
         workspace = FrameScratchWorkspace{};
     }
@@ -2383,6 +2806,18 @@ namespace JuicerProcess {
         const JuicerCuda::ResourceManager::ScratchRequestDescriptor postFrameScratchRequest =
             _state->post_frame_scratch_request_descriptor();
         std::string releaseError;
+        if (_state->diffusionLease.active() &&
+            !JuicerCuda::Diffusion::release_diffusion_resources(
+                _state->resources->diffusion,
+                _state->diffusionLease,
+                cudaStreamOpaque,
+                false,
+                releaseError)) {
+            outError = releaseError.empty()
+                           ? "diffusion resource release failed"
+                           : releaseError;
+            return false;
+        }
         if (!_state->release_scan_error_stage_after_use(cudaStreamOpaque, releaseError)) {
             outError = releaseError.empty() ? "frame scan-error stage release failed" : releaseError;
             return false;
@@ -2398,6 +2833,12 @@ namespace JuicerProcess {
                 msg += outError;
                 JTRACE("CUDA", msg);
             }
+            return false;
+        }
+        if (!_state->transfer_remaining_device_allocations(releaseError)) {
+            outError = releaseError.empty()
+                           ? "remaining frame allocation transfer failed"
+                           : releaseError;
             return false;
         }
         if (!_state->root->shed_post_frame_scratch(
@@ -2434,6 +2875,26 @@ namespace JuicerProcess {
                 std::string releaseError;
                 const JuicerCuda::ResourceManager::ScratchRequestDescriptor postFrameScratchRequest =
                     _state->post_frame_scratch_request_descriptor();
+                if (_state->resources && _state->diffusionLease.active() &&
+                    !JuicerCuda::Diffusion::release_diffusion_resources(
+                        _state->resources->diffusion,
+                        _state->diffusionLease,
+                        _state->lastCudaStreamOpaque,
+                        true,
+                        releaseError) &&
+                    JTRACE_ENABLED(1)) {
+                    std::string msg =
+                        "diffusion_resource_release_failed abort=1";
+                    if (reason && reason[0]) {
+                        msg += " reason=";
+                        msg += reason;
+                    }
+                    if (!releaseError.empty()) {
+                        msg += " error=";
+                        msg += releaseError;
+                    }
+                    JTRACE("CUDA", msg);
+                }
                 (void)_state->release_scan_error_stage_after_use(
                     _state->lastCudaStreamOpaque,
                     releaseError);
@@ -2457,6 +2918,21 @@ namespace JuicerProcess {
                         releaseError) &&
                     JTRACE_ENABLED(1)) {
                     std::string msg = "frame_auto_exposure_retire_failed abort=1";
+                    if (reason && reason[0]) {
+                        msg += " reason=";
+                        msg += reason;
+                    }
+                    if (!releaseError.empty()) {
+                        msg += " error=";
+                        msg += releaseError;
+                    }
+                    JTRACE("CUDA", msg);
+                }
+                if (!_state->transfer_remaining_device_allocations(
+                        releaseError) &&
+                    JTRACE_ENABLED(1)) {
+                    std::string msg =
+                        "frame_remaining_allocation_transfer_failed abort=1";
                     if (reason && reason[0]) {
                         msg += " reason=";
                         msg += reason;
@@ -3038,7 +3514,7 @@ namespace JuicerProcess {
         return ok;
     }
 
-    bool Root::PreparedCudaFrame::release_spatial_dir_stage_after_scan_linear(
+    bool Root::PreparedCudaFrame::release_spatial_dir_stage_after_scanner_output(
         const WorkspaceLeaseMarker& workspace,
         void* cudaStreamOpaque,
         std::string& outError) {
@@ -3057,7 +3533,7 @@ namespace JuicerProcess {
         const bool overflow = _state->scratchWorkspace.overflowActive;
         bool ok = false;
         if (overflow) {
-            ok = _state->release_overflow_spatial_dir_stage_after_scan_linear(
+            ok = _state->release_overflow_spatial_dir_stage_after_scanner_output(
                 cudaStreamOpaque,
                 releaseStats,
                 outError);
@@ -3077,7 +3553,7 @@ namespace JuicerProcess {
 #if JUICER_DIAGNOSTICS_COMPILED
         if (JTRACE_ENABLED(1)) {
             const std::uint64_t descriptorHash = workspace._request.spatialDirDescriptorHash;
-            std::string msg = "event=spatial_dir_stage_release_after_scan_linear";
+            std::string msg = "event=spatial_dir_stage_release_after_scanner_output";
             msg += " descriptor_hash=";
             msg += std::to_string(static_cast<unsigned long long>(descriptorHash));
             msg += " scratch_source=";
@@ -3097,7 +3573,7 @@ namespace JuicerProcess {
 #endif
         if (!ok) {
             _state->set_failure(
-                PreparedCudaFailureStage{"release_spatial_dir_stage_after_scan_linear"},
+                PreparedCudaFailureStage{"release_spatial_dir_stage_after_scanner_output"},
                 "CUDA spatial DIR stage release failed");
         }
         return ok;
@@ -3624,6 +4100,7 @@ namespace JuicerProcess {
         if (!root.apply_grain_static_membership_and_copy_owner(
                 deviceContextKey,
                 snapshot.contextEpoch,
+                _state->resources->deviceLedger,
                 snapshot.instanceToken.value,
                 snapshot.registryGeneration,
                 snapshot.snapshotId,
@@ -4335,6 +4812,22 @@ namespace JuicerProcess {
         return view;
     }
 
+    JuicerCuda::Diffusion::DiffusionPreparedView
+    Root::PreparedCudaFrame::diffusion_resources() const noexcept {
+        if (!active() || !_state->diffusionLease.active()) {
+            return {};
+        }
+        return _state->diffusionLease.view();
+    }
+
+    void Root::PreparedCudaFrame::mark_diffusion_work_enqueued() noexcept {
+        if (!active() || !_state->diffusionLease.active()) {
+            return;
+        }
+        JuicerCuda::Diffusion::mark_diffusion_work_enqueued(
+            _state->diffusionLease);
+    }
+
     Root::PreparedCudaFrame::PrintRoutePreparedView Root::PreparedCudaFrame::print_route_resources() const noexcept {
         PrintRoutePreparedView view{};
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed ||
@@ -4881,14 +5374,7 @@ namespace JuicerProcess {
         JuicerCuda::ResourceManager::DeviceContextKey key{};
         key.deviceId = deviceId;
         key.contextOpaque = contextOpaque;
-        const bool retired =
-            JuicerCuda::ResourceManager::command_retire_context_idle(
-                key,
-                outError);
-        if (retired) {
-            retire_grain_static_context_activity(key);
-        }
-        return retired;
+        return retire_cuda_context(key, false, outError);
 #else
         (void)deviceId;
         (void)contextOpaque;
@@ -4902,14 +5388,7 @@ namespace JuicerProcess {
         JuicerCuda::ResourceManager::DeviceContextKey key{};
         key.deviceId = deviceId;
         key.contextOpaque = contextOpaque;
-        const bool retired =
-            JuicerCuda::ResourceManager::command_retire_context_reset(
-                key,
-                outError);
-        if (retired) {
-            retire_grain_static_context_activity(key);
-        }
-        return retired;
+        return retire_cuda_context(key, true, outError);
 #else
         (void)deviceId;
         (void)contextOpaque;
@@ -4919,6 +5398,165 @@ namespace JuicerProcess {
     }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    bool Root::retire_cuda_context(
+        const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+        bool contextReset,
+        std::string& outError) noexcept {
+        try {
+            outError.clear();
+            if (deviceContextKey.deviceId < 0 ||
+                !deviceContextKey.contextOpaque) {
+                outError = "invalid CUDA context retirement key";
+                return false;
+            }
+            JuicerCuda::ResourceManager::RegistrySnapshotGenerations generations{};
+            if (!JuicerCuda::ResourceManager::command_begin_context_owner_retire(
+                    deviceContextKey,
+                    generations,
+                    outError)) {
+                return false;
+            }
+
+            std::vector<CudaResourceOwner> owners;
+            std::vector<std::uint64_t> epochs;
+            std::shared_ptr<JuicerCuda::DeviceAllocationLedger> deviceLedger;
+            {
+                std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+                const auto ledger =
+                    _cudaDeviceLedgers.find(deviceContextKey.deviceId);
+                if (ledger != _cudaDeviceLedgers.end()) {
+                    deviceLedger = ledger->second;
+                }
+                auto collect_epoch = [&](std::uint64_t epoch) {
+                    if (epoch != 0 &&
+                        std::find(epochs.begin(), epochs.end(), epoch) ==
+                            epochs.end()) {
+                        epochs.push_back(epoch);
+                    }
+                };
+                collect_epoch(generations.contextEpoch);
+                for (const auto& [key, owner] : _cudaResourcesByContext) {
+                    if (key.deviceContextKey == deviceContextKey) {
+                        collect_epoch(key.contextEpoch);
+                        if (owner) {
+                            owners.push_back(owner);
+                        }
+                    }
+                }
+                for (const auto& [key, entry] : _grainStaticByContext) {
+                    if (key.deviceContextKey == deviceContextKey) {
+                        collect_epoch(key.contextEpoch);
+                        if (entry.owner) {
+                            owners.push_back(entry.owner);
+                        }
+                    }
+                }
+            }
+
+            bool physicalDrainSucceeded = true;
+            for (const CudaResourceOwner& owner : owners) {
+                if (!owner ||
+                    !JuicerCuda::drain_for_context_retire(*owner, outError)) {
+                    physicalDrainSucceeded = false;
+                    break;
+                }
+            }
+            if (physicalDrainSucceeded) {
+                for (std::uint64_t epoch : epochs) {
+                    if (!JuicerCuda::purge_shared_gaussian_kernels_for_context(
+                            deviceContextKey.deviceId,
+                            deviceContextKey.contextOpaque,
+                            epoch,
+                            outError)) {
+                        physicalDrainSucceeded = false;
+                        break;
+                    }
+                }
+            }
+            if (!physicalDrainSucceeded) {
+                if (!contextReset || !deviceLedger) {
+                    if (outError.empty()) {
+                        outError = "CUDA context owner drain failed";
+                    }
+                    return false;
+                }
+                for (std::uint64_t epoch : epochs) {
+                    std::uint64_t releasedBytes = 0;
+                    if (!deviceLedger->release_context_after_proven_loss(
+                            deviceContextKey,
+                            epoch,
+                            releasedBytes,
+                            outError)) {
+                        return false;
+                    }
+                    JuicerCuda::invalidate_shared_gaussian_kernels_after_proven_context_loss(
+                        deviceContextKey.deviceId,
+                        deviceContextKey.contextOpaque,
+                        epoch);
+                }
+                for (const CudaResourceOwner& owner : owners) {
+                    if (owner) {
+                        JuicerCuda::invalidate_resources_after_proven_context_loss(
+                            *owner);
+                    }
+                }
+                outError.clear();
+            }
+            for (std::uint64_t epoch : epochs) {
+                if (deviceLedger &&
+                    deviceLedger->record_count_for_context(
+                        deviceContextKey,
+                        epoch) != 0) {
+                    outError =
+                        "CUDA context retirement retained ledger records epoch=" +
+                        std::to_string(epoch);
+                    return false;
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+                for (auto it = _cudaResourcesByContext.begin();
+                     it != _cudaResourcesByContext.end();) {
+                    if (it->first.deviceContextKey == deviceContextKey) {
+                        it = _cudaResourcesByContext.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                for (auto it = _grainStaticByContext.begin();
+                     it != _grainStaticByContext.end();) {
+                    if (it->first.deviceContextKey == deviceContextKey) {
+                        it = _grainStaticByContext.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
+
+            const bool retired = contextReset
+                                     ? JuicerCuda::ResourceManager::command_retire_context_reset(
+                                           deviceContextKey,
+                                           outError)
+                                     : JuicerCuda::ResourceManager::command_retire_context_idle(
+                                           deviceContextKey,
+                                           outError);
+            if (!retired) {
+                return false;
+            }
+            owners.clear();
+            return true;
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+            try {
+                outError = "CUDA context retirement failed";
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+            return false;
+        }
+    }
+
     void Root::CudaResourcesDeleter::operator()(JuicerCuda::Resources* resources) const noexcept {
         JuicerCuda::destroy(resources);
     }
@@ -4926,6 +5564,7 @@ namespace JuicerProcess {
     bool Root::resolve_context_cuda_resources(
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         std::uint64_t contextEpoch,
+        const std::shared_ptr<JuicerCuda::DeviceAllocationLedger>& deviceLedger,
         ContextCudaResourceMap& contextMap,
         CudaResourceOwner& outResourceOwner,
         JuicerCuda::Resources*& outResources,
@@ -4933,7 +5572,8 @@ namespace JuicerProcess {
         outResourceOwner.reset();
         outResources = nullptr;
         outError.clear();
-        if (deviceContextKey.deviceId < 0 || !deviceContextKey.contextOpaque) {
+        if (deviceContextKey.deviceId < 0 || !deviceContextKey.contextOpaque ||
+            !deviceLedger) {
             outError = "invalid CUDA context key";
             return false;
         }
@@ -4943,25 +5583,30 @@ namespace JuicerProcess {
         }
 
         const ContextCudaResourceKey resourceKey{deviceContextKey, contextEpoch};
-        std::vector<CudaResourceOwner> retiredOwners;
+        std::vector<std::pair<ContextCudaResourceKey, CudaResourceOwner>>
+            retiredOwners;
         {
             std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
             CudaResourceOwner& resourceOwner = contextMap[resourceKey];
             if (!resourceOwner) {
-                CudaResourceOwner resources(JuicerCuda::create(), CudaResourcesDeleter{});
+                CudaResourceOwner resources(
+                    JuicerCuda::create(
+                        deviceContextKey,
+                        contextEpoch,
+                        JuicerCuda::Resources::kAllocationOwnershipSchemaVersion,
+                        deviceLedger,
+                        outError),
+                    CudaResourcesDeleter{});
                 if (!resources) {
                     JTRACE("CUDA", "FATAL: failed to allocate CUDA resources");
-                    outError = "failed to allocate CUDA resources";
+                    if (outError.empty()) {
+                        outError = "failed to allocate CUDA resources";
+                    }
                     return false;
                 }
-                if (resources->deviceId < 0) {
-                    resources->deviceId = deviceContextKey.deviceId;
-                }
-                if (!resources->ownerContextOpaque) {
-                    resources->ownerContextOpaque = deviceContextKey.contextOpaque;
-                }
-                if (resources->deviceId != deviceContextKey.deviceId ||
-                    resources->ownerContextOpaque != deviceContextKey.contextOpaque) {
+                if (!(resources->ownerContextKey == deviceContextKey) ||
+                    resources->contextEpoch != contextEpoch ||
+                    resources->deviceLedger != deviceLedger) {
                     outError = "CUDA resources resolved for a different context";
                     return false;
                 }
@@ -4969,16 +5614,39 @@ namespace JuicerProcess {
             }
 
             outResourceOwner = resourceOwner;
-            for (auto it = contextMap.begin(); it != contextMap.end();) {
-                if (!(it->first.deviceContextKey == deviceContextKey) ||
-                    it->first.contextEpoch >= contextEpoch) {
-                    ++it;
+            for (const auto& [key, owner] : contextMap) {
+                if (!(key.deviceContextKey == deviceContextKey) ||
+                    key.contextEpoch >= contextEpoch) {
                     continue;
                 }
-                if (it->second) {
-                    retiredOwners.emplace_back(std::move(it->second));
+                if (owner) {
+                    retiredOwners.emplace_back(key, owner);
                 }
-                it = contextMap.erase(it);
+            }
+        }
+
+        for (const auto& [key, owner] : retiredOwners) {
+            if (!JuicerCuda::drain_for_context_retire(*owner, outError) ||
+                !JuicerCuda::purge_shared_gaussian_kernels_for_context(
+                    key.deviceContextKey.deviceId,
+                    key.deviceContextKey.contextOpaque,
+                    key.contextEpoch,
+                    outError) ||
+                deviceLedger->record_count_for_context(
+                    key.deviceContextKey,
+                    key.contextEpoch) != 0) {
+                if (outError.empty()) {
+                    outError =
+                        "stale CUDA context epoch failed exact retirement";
+                }
+                return false;
+            }
+        }
+        if (!retiredOwners.empty()) {
+            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+            for (const auto& [key, owner] : retiredOwners) {
+                (void)owner;
+                contextMap.erase(key);
             }
         }
 
@@ -4993,12 +5661,60 @@ namespace JuicerProcess {
     bool Root::resolve_cuda_frame_resources(
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         std::uint64_t contextEpoch,
+        const JuicerCuda::ResourceManager::ResolvedPressurePolicy& pressurePolicy,
         CudaResourceOwner& outResourceOwner,
         JuicerCuda::Resources*& outResources,
         std::string& outError) {
+        outResourceOwner.reset();
+        outResources = nullptr;
+        outError.clear();
+        if (pressurePolicy.policyDeviceId != deviceContextKey.deviceId ||
+            pressurePolicy.deviceBudgetBytes == 0 ||
+            pressurePolicy.softTargetBytes == 0) {
+            outError =
+                "UnsupportedCudaExecutionProfile component=device_ledger field=pressure_policy";
+            return false;
+        }
+
+        std::shared_ptr<JuicerCuda::DeviceAllocationLedger> deviceLedger;
+        {
+            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+            auto& ledger = _cudaDeviceLedgers[deviceContextKey.deviceId];
+            if (!ledger) {
+                ledger = JuicerCuda::DeviceAllocationLedger::create(
+                    deviceContextKey.deviceId,
+                    outError);
+                if (!ledger) {
+                    if (outError.empty()) {
+                        outError =
+                            "UnsupportedCudaExecutionProfile component=device_ledger field=create";
+                    }
+                    return false;
+                }
+            }
+            deviceLedger = ledger;
+        }
+        if (!deviceLedger->bind_or_validate_cap(
+                pressurePolicy.deviceBudgetBytes,
+                pressurePolicy.softTargetBytes,
+                outError)) {
+            const JuicerCuda::DeviceLedgerSnapshot ledgerSnapshot =
+                deviceLedger->snapshot();
+            outError =
+                "UnsupportedCudaExecutionProfile component=device_ledger field=cap" +
+                std::string(" device=") + std::to_string(deviceContextKey.deviceId) +
+                " requested_cap=" +
+                std::to_string(pressurePolicy.softTargetBytes) +
+                " current_cap=" + std::to_string(ledgerSnapshot.capBytes) +
+                " reserved=" + std::to_string(ledgerSnapshot.reservedBytes) +
+                " committed=" + std::to_string(ledgerSnapshot.committedBytes) +
+                " retiring=" + std::to_string(ledgerSnapshot.retiringBytes);
+            return false;
+        }
         return resolve_context_cuda_resources(
             deviceContextKey,
             contextEpoch,
+            deviceLedger,
             _cudaResourcesByContext,
             outResourceOwner,
             outResources,
@@ -5008,6 +5724,7 @@ namespace JuicerProcess {
     bool Root::apply_grain_static_membership_and_copy_owner(
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         std::uint64_t contextEpoch,
+        const std::shared_ptr<JuicerCuda::DeviceAllocationLedger>& deviceLedger,
         std::uint64_t instanceToken,
         std::uint64_t registryGeneration,
         std::uint64_t snapshotId,
@@ -5022,7 +5739,7 @@ namespace JuicerProcess {
         outError.clear();
         if (deviceContextKey.deviceId < 0 || !deviceContextKey.contextOpaque ||
             contextEpoch == 0 || instanceToken == 0 ||
-            registryGeneration == 0 || snapshotId == 0) {
+            registryGeneration == 0 || snapshotId == 0 || !deviceLedger) {
             outError =
                 "ResourceDescriptorMismatch phase=grain_static field=membership_identity";
             return false;
@@ -5074,7 +5791,12 @@ namespace JuicerProcess {
             if (active) {
                 if (!entry.owner) {
                     CudaResourceOwner resources(
-                        JuicerCuda::create(),
+                        JuicerCuda::create(
+                            deviceContextKey,
+                            contextEpoch,
+                            JuicerCuda::Resources::kAllocationOwnershipSchemaVersion,
+                            deviceLedger,
+                            outError),
                         CudaResourcesDeleter{});
                     if (!resources) {
                         if (change.applied) {
@@ -5088,14 +5810,11 @@ namespace JuicerProcess {
                         outError = "failed to allocate grain-static CUDA resources";
                         return false;
                     }
-                    resources->deviceId = deviceContextKey.deviceId;
-                    resources->ownerContextOpaque =
-                        deviceContextKey.contextOpaque;
                     entry.owner = std::move(resources);
                 }
-                if (entry.owner->deviceId != deviceContextKey.deviceId ||
-                    entry.owner->ownerContextOpaque !=
-                        deviceContextKey.contextOpaque) {
+                if (!(entry.owner->ownerContextKey == deviceContextKey) ||
+                    entry.owner->contextEpoch != contextEpoch ||
+                    entry.owner->deviceLedger != deviceLedger) {
                     if (change.applied) {
                         (void)detail::rollback_grain_static_membership(
                             entry.instances,
@@ -5235,6 +5954,7 @@ namespace JuicerProcess {
         if (!resolve_cuda_frame_resources(
                 deviceContextKey,
                 frame._state->transaction.snapshot.contextEpoch,
+                frame._state->transaction.resolvedPressurePolicy,
                 frame._state->resourceOwner,
                 frame._state->resources,
                 outError)) {
@@ -5324,6 +6044,7 @@ namespace JuicerProcess {
         if (!derive_workspace_request(
                 request.spatialDirDescriptor,
                 request.scannerPostEffects,
+                request.diffusionFrameSetDescriptor,
                 request.visualGrainDescriptor,
                 request.effectsDescriptor,
                 request.recipe->profileRoute.capturePolarity,
@@ -5349,6 +6070,7 @@ namespace JuicerProcess {
         if (!resolve_cuda_frame_resources(
                 deviceContextKey,
                 frame._state->transaction.snapshot.contextEpoch,
+                frame._state->transaction.resolvedPressurePolicy,
                 frame._state->resourceOwner,
                 frame._state->resources,
                 outError)) {
@@ -5356,6 +6078,22 @@ namespace JuicerProcess {
                 PreparedCudaFailureStage{"resolve_cuda_print_resources_phase4B"},
                 "Phase 4B print CUDA resource acquisition failed");
             frame.abort("print_phase4B_resource_acquire_failed");
+            return frame;
+        }
+        if (!frame._state->prepare_diffusion_resources(
+                deviceContextKey,
+                *request.recipe,
+                request.diffusionFrameSetDescriptor,
+                true,
+                request.requestedWidth,
+                request.requestedHeight,
+                cudaStreamOpaque,
+                outError)) {
+            frame._state->set_failure(
+                PreparedCudaFailureStage{"prepare_print_diffusion_resources"},
+                "CUDA print diffusion resource preparation failed",
+                false);
+            frame.abort("print_diffusion_preparation_failed");
             return frame;
         }
         if (!acquire_submission_plan(frame._state->transaction, outError)) {
@@ -5484,6 +6222,7 @@ namespace JuicerProcess {
         if (!derive_workspace_request(
                 request.spatialDirDescriptor,
                 request.scannerPostEffects,
+                request.diffusionFrameSetDescriptor,
                 request.visualGrainDescriptor,
                 request.effectsDescriptor,
                 request.recipe->profileRoute.capturePolarity,
@@ -5501,11 +6240,28 @@ namespace JuicerProcess {
         if (!resolve_cuda_frame_resources(
                 deviceContextKey,
                 frame._state->transaction.snapshot.contextEpoch,
+                frame._state->transaction.resolvedPressurePolicy,
                 frame._state->resourceOwner,
                 frame._state->resources,
                 outError)) {
             frame._state->set_failure(PreparedCudaFailureStage{"resolve_cuda_direct_resources"}, "CUDA direct resource acquisition failed");
             frame.abort("direct_prepared_frame_resource_acquire_failed");
+            return frame;
+        }
+        if (!frame._state->prepare_diffusion_resources(
+                deviceContextKey,
+                *request.recipe,
+                request.diffusionFrameSetDescriptor,
+                false,
+                request.requestedWidth,
+                request.requestedHeight,
+                cudaStreamOpaque,
+                outError)) {
+            frame._state->set_failure(
+                PreparedCudaFailureStage{"prepare_direct_diffusion_resources"},
+                "CUDA direct diffusion resource preparation failed",
+                false);
+            frame.abort("direct_diffusion_preparation_failed");
             return frame;
         }
         if (!acquire_submission_plan(frame._state->transaction, outError)) {
@@ -5617,7 +6373,54 @@ namespace JuicerProcess {
         outError.clear();
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         try {
-            return JuicerCuda::ResourceManager::command_retire_all_contexts_idle(outError);
+            std::vector<JuicerCuda::ResourceManager::DeviceContextKey> keys;
+            {
+                std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+                auto collect = [&](
+                                   const JuicerCuda::ResourceManager::DeviceContextKey&
+                                       key) {
+                    if (std::find(keys.begin(), keys.end(), key) == keys.end()) {
+                        keys.push_back(key);
+                    }
+                };
+                for (const auto& [key, owner] : _cudaResourcesByContext) {
+                    (void)owner;
+                    collect(key.deviceContextKey);
+                }
+                for (const auto& [key, entry] : _grainStaticByContext) {
+                    (void)entry;
+                    collect(key.deviceContextKey);
+                }
+            }
+            for (const auto& key : keys) {
+                if (!retire_cuda_context(key, false, outError)) {
+                    return false;
+                }
+            }
+            if (!JuicerCuda::ResourceManager::command_retire_all_contexts_idle(
+                    outError)) {
+                return false;
+            }
+            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+            for (const auto& [deviceId, ledger] : _cudaDeviceLedgers) {
+                if (!ledger) {
+                    continue;
+                }
+                const JuicerCuda::DeviceLedgerSnapshot ledgerSnapshot =
+                    ledger->snapshot();
+                if (ledgerSnapshot.chargedBytes != 0 ||
+                    ledgerSnapshot.recordCount != 0) {
+                    outError =
+                        "shutdown retained CUDA ledger records device=" +
+                        std::to_string(deviceId) +
+                        " charged=" +
+                        std::to_string(ledgerSnapshot.chargedBytes) +
+                        " records=" +
+                        std::to_string(ledgerSnapshot.recordCount);
+                    return false;
+                }
+            }
+            return true;
         } catch (...) {
             JuicerLogging::discard_current_exception();
             try {
@@ -5640,6 +6443,7 @@ namespace JuicerProcess {
             std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
             frameResources.swap(_cudaResourcesByContext);
             grainStaticResources.swap(_grainStaticByContext);
+            _cudaDeviceLedgers.clear();
         } catch (...) {
             JuicerLogging::discard_current_exception();
         }

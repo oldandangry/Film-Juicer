@@ -62,19 +62,6 @@ namespace JuicerCuda {
             Graph = 3
         };
 
-        enum class AllocatorBackendPreference : std::uint8_t {
-            CudaMalloc = 0,
-            AsyncPool = 1,
-            Slab = 2,
-            Auto = 3
-        };
-
-        enum class AllocatorBackendMode : std::uint8_t {
-            CudaMalloc = 0,
-            AsyncPool = 1,
-            Slab = 2
-        };
-
         struct ResourceKindContractEntry {
             ResourceKind kind = ResourceKind::UploadCore;
             ResourceTier tier = ResourceTier::Immutable;
@@ -752,8 +739,7 @@ namespace JuicerCuda {
         };
 
         enum class HeadroomSource : std::uint8_t {
-            FreeVramOnly = 0,
-            AllocatorPool = 1
+            FreeVramOnly = 0
         };
 
         enum class CacheAdmissionClass : std::uint8_t {
@@ -814,8 +800,6 @@ namespace JuicerCuda {
             std::uint64_t transientNonManagerBytes = 0;
             std::uint64_t effectiveHeadroomBytes = 0;
             std::uint64_t driverFreeBytes = 0;
-            std::uint64_t allocatorPoolReservedBytes = 0;
-            std::uint64_t allocatorPoolUsedBytes = 0;
             HeadroomSource headroomSource = HeadroomSource::FreeVramOnly;
         };
 
@@ -951,8 +935,6 @@ namespace JuicerCuda {
             std::uint32_t tierErrorThreshold = 3;
             std::uint32_t tierCircuitOpenMs = 2000;
             std::uint32_t hostAssetIdleTrimMs = 5000;
-            std::uint32_t allocatorBackendPreference = 3;
-            std::uint32_t asyncMempoolReleaseThresholdMB = 256;
             std::uint32_t pinnedUploadStagingIdleTrimMs = 5000;
             std::uint32_t scratchBuilderBytesInFlightLimitMB = 256;
             std::uint32_t lutBuilderBytesInFlightLimitMB = 128;
@@ -1017,8 +999,6 @@ namespace JuicerCuda {
             std::uint32_t tierErrorThreshold = 3;
             std::uint32_t tierCircuitOpenMs = 2000;
             std::uint32_t hostAssetIdleTrimMs = 5000;
-            std::uint32_t allocatorBackendPreference = 3;
-            std::uint32_t asyncMempoolReleaseThresholdMB = 256;
             std::uint32_t pinnedUploadStagingIdleTrimMs = 5000;
             std::uint32_t scratchBuilderBytesInFlightLimitMB = 256;
             std::uint32_t lutBuilderBytesInFlightLimitMB = 128;

@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 
+#include "DiffusionFrameDescriptor.h"
 #include "OutputColor.h"
 #include "Print.h"
 #include "ProfileJSONLoader.h"
@@ -53,6 +55,7 @@ struct FrameRequest {
 
 struct DirectFrameRequest {
     std::shared_ptr<const DirectRenderState> state;
+    std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
     int components = 0;
     OfxRectI renderWindow{0, 0, 0, 0};
     OfxRectI fullFrameExtent{0, 0, 0, 0};
@@ -66,6 +69,7 @@ struct DirectFrameRequest {
 
 struct PrintFrameRequest {
     std::shared_ptr<const PrintRenderState> state;
+    std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
     int components = 0;
     OfxRectI renderWindow{0, 0, 0, 0};
     OfxRectI fullFrameExtent{0, 0, 0, 0};

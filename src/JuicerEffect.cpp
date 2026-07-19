@@ -8,6 +8,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <limits>
 #include <utility>
@@ -15,6 +16,7 @@
 
 #include "JuicerState.h"
 #include "ColorTransforms.h"
+#include "DiffusionHostBehavior.h"
 #include "Illuminants.h"
 #include "OutputColor.h"
 #include "Print.h"
@@ -826,6 +828,21 @@ namespace {
         int minValue,
         int maxValue) {
         return std::clamp(read_choice_param_or(param, fallback), minValue, maxValue);
+    }
+
+    inline Spektrafilm::DiffusionFilterFamily read_diffusion_family(
+        OFX::ChoiceParam* param) {
+        switch (read_choice_param_clamped(param, 1, 0, 3)) {
+            case 0:
+                return Spektrafilm::DiffusionFilterFamily::Glimmerglass;
+            case 2:
+                return Spektrafilm::DiffusionFilterFamily::ProMist;
+            case 3:
+                return Spektrafilm::DiffusionFilterFamily::Cinebloom;
+            case 1:
+            default:
+                return Spektrafilm::DiffusionFilterFamily::BlackProMist;
+        }
     }
 
     inline int sanitize_scanner_lut_resolution_or_default(int value) {
@@ -1856,6 +1873,59 @@ Profiles::ProfileGlare JuicerEffect::gatherGlareUi() const {
     return glare;
 }
 
+Spektrafilm::DiffusionFilterAuthoredControls JuicerEffect::gatherDiffusionUi(
+    const DiffusionUiParams& params) const {
+    Spektrafilm::DiffusionFilterAuthoredControls controls{};
+    controls.active = read_bool_param_or(params.enabled, controls.active);
+    controls.family = read_diffusion_family(params.family);
+    controls.strength = read_double_param_or(params.strength, controls.strength);
+    controls.spatialScale = read_double_param_or(params.spatialScale, controls.spatialScale);
+    controls.haloWarmth = read_double_param_or(params.haloWarmth, controls.haloWarmth);
+    controls.coreIntensity = read_double_param_or(params.coreIntensity, controls.coreIntensity);
+    controls.coreSize = read_double_param_or(params.coreSize, controls.coreSize);
+    controls.haloIntensity = read_double_param_or(params.haloIntensity, controls.haloIntensity);
+    controls.haloSize = read_double_param_or(params.haloSize, controls.haloSize);
+    controls.bloomIntensity = read_double_param_or(params.bloomIntensity, controls.bloomIntensity);
+    controls.bloomSize = read_double_param_or(params.bloomSize, controls.bloomSize);
+    return controls;
+}
+
+void JuicerEffect::updateDiffusionControlState() {
+    const bool cameraEnabled = read_bool_param_or(_cameraDiffusionUi.enabled, false);
+    const std::string filmProfileKey =
+        read_str_choice_param_or(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
+    const Spektrafilm::ScanRoute selectedRoute =
+        read_resolved_scan_route(_pScanRoute, filmProfileKey);
+    const bool printRoute = Spektrafilm::scan_route_is_print(selectedRoute);
+    const bool printEnabled = read_bool_param_or(_printDiffusionUi.enabled, false);
+
+    auto setControlState = [](auto* param, bool visible, bool enabled) {
+        if (!param) {
+            return;
+        }
+        param->setIsSecret(!visible);
+        param->setEnabled(enabled);
+    };
+    auto setStageControlState = [&](const DiffusionUiParams& params,
+                                    bool visible,
+                                    bool enabled) {
+        setControlState(params.enabled, visible, visible);
+        setControlState(params.family, visible, visible && enabled);
+        setControlState(params.strength, visible, visible && enabled);
+        setControlState(params.spatialScale, visible, visible && enabled);
+        setControlState(params.haloWarmth, visible, visible && enabled);
+        setControlState(params.coreIntensity, visible, visible && enabled);
+        setControlState(params.coreSize, visible, visible && enabled);
+        setControlState(params.haloIntensity, visible, visible && enabled);
+        setControlState(params.haloSize, visible, visible && enabled);
+        setControlState(params.bloomIntensity, visible, visible && enabled);
+        setControlState(params.bloomSize, visible, visible && enabled);
+    };
+
+    setStageControlState(_cameraDiffusionUi, true, cameraEnabled);
+    setStageControlState(_printDiffusionUi, printRoute, printEnabled);
+}
+
 OutputEncoding::Params JuicerEffect::gatherOutputEncodingParams() const {
     OutputEncoding::Params params{};
     const int csIndex = read_choice_param_or(
@@ -2054,6 +2124,52 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pFilmScratchAmount = fetchDoubleParam(JuicerParams::kFilmScratchAmount);
         _pGateScratchAmount = fetchDoubleParam(JuicerParams::kGateScratchAmount);
 
+        _cameraDiffusionUi.enabled =
+            fetchBooleanParam(JuicerParams::kCameraDiffusionEnabled);
+        _cameraDiffusionUi.family =
+            fetchChoiceParam(JuicerParams::kCameraDiffusionFamily);
+        _cameraDiffusionUi.strength =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionStrength);
+        _cameraDiffusionUi.spatialScale =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionSpatialScale);
+        _cameraDiffusionUi.haloWarmth =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionHaloWarmth);
+        _cameraDiffusionUi.coreIntensity =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionCoreIntensity);
+        _cameraDiffusionUi.coreSize =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionCoreSize);
+        _cameraDiffusionUi.haloIntensity =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionHaloIntensity);
+        _cameraDiffusionUi.haloSize =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionHaloSize);
+        _cameraDiffusionUi.bloomIntensity =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionBloomIntensity);
+        _cameraDiffusionUi.bloomSize =
+            fetchDoubleParam(JuicerParams::kCameraDiffusionBloomSize);
+
+        _printDiffusionUi.enabled =
+            fetchBooleanParam(JuicerParams::kPrintDiffusionEnabled);
+        _printDiffusionUi.family =
+            fetchChoiceParam(JuicerParams::kPrintDiffusionFamily);
+        _printDiffusionUi.strength =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionStrength);
+        _printDiffusionUi.spatialScale =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionSpatialScale);
+        _printDiffusionUi.haloWarmth =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionHaloWarmth);
+        _printDiffusionUi.coreIntensity =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionCoreIntensity);
+        _printDiffusionUi.coreSize =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionCoreSize);
+        _printDiffusionUi.haloIntensity =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionHaloIntensity);
+        _printDiffusionUi.haloSize =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionHaloSize);
+        _printDiffusionUi.bloomIntensity =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionBloomIntensity);
+        _printDiffusionUi.bloomSize =
+            fetchDoubleParam(JuicerParams::kPrintDiffusionBloomSize);
+
         _pGlareActive = fetchBooleanParam(JuicerParams::kGlareActive);
         _pGlarePercent = fetchDoubleParam(JuicerParams::kGlarePercent);
         _pGlareRoughness = fetchDoubleParam(JuicerParams::kGlareRoughness);
@@ -2118,6 +2234,8 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _state->sessionSeed = seed;
         _state->instanceToken = seed;
     }
+
+    updateDiffusionControlState();
 
     // Defer heavy bootstrap until first param change
 }
@@ -2275,6 +2393,23 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         JTRACE_VERBOSE("RENDER", msg);
     }
 
+    std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
+    std::string diffusionDiagnostic;
+    if (!Spektrafilm::build_diffusion_frame_set_descriptor(
+            focusedRecipe.spatialOptics,
+            focusedRecipe.profileRoute.scanRoute,
+            static_cast<double>(pixelSizeUm),
+            Spektrafilm::DiffusionFrameDomain{
+                fullBounds.x1,
+                fullBounds.y1,
+                fullWidth,
+                fullHeight},
+            diffusionFrameSet,
+            diffusionDiagnostic)) {
+        JTRACE("SPEKTRAFILM", diffusionDiagnostic);
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
     // Tile-based multithreaded processing via OFX::ImageProcessor
     JuicerProcessor proc(*this);
     JuicerProcessor::SourceDestinationImages images{};
@@ -2288,6 +2423,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     if (printRoute) {
         JuicerProcessor::PrintFrameRequest frameRequest{};
         frameRequest.state = printState;
+        frameRequest.diffusionFrameSet = diffusionFrameSet;
         frameRequest.components = nComponents;
         frameRequest.renderWindow = roi;
         frameRequest.fullFrameExtent = fullBounds;
@@ -2301,6 +2437,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     } else {
         JuicerProcessor::DirectFrameRequest frameRequest{};
         frameRequest.state = directState;
+        frameRequest.diffusionFrameSet = diffusionFrameSet;
         frameRequest.components = nComponents;
         frameRequest.renderWindow = roi;
         frameRequest.fullFrameExtent = fullBounds;
@@ -2765,6 +2902,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     auto finalize_changed_param_update = [&](const MasterTripletUpdateBinding& binding) {
         apply_master_triplet_or_ratio_fallback(binding);
         apply_grain_linked_updates();
+        updateDiffusionControlState();
         notify_param_change_rebuild();
     };
 
@@ -2789,6 +2927,8 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     profileChoiceParams.enlargerIlluminant = _pEnlIll;
     profileChoiceParams.enlargerDichroicSet = _pEnlDichroicSet;
     read_profile_snapshot_choices(profileChoiceParams, P);
+    P.cameraDiffusion = gatherDiffusionUi(_cameraDiffusionUi);
+    P.enlargerDiffusion = gatherDiffusionUi(_printDiffusionUi);
     read_print_recipe_snapshot_values(
         _pPrintExposure,
         _pPrintPreflash,

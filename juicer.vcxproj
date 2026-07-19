@@ -220,7 +220,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
       <AdditionalLibraryDirectories Condition="'$(JuicerEnableCudaBuild)'=='1'">$(CudaToolkitDir)lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies Condition="'$(JuicerEnableCudaBuild)'=='1'">cudart.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(JuicerEnableCudaBuild)'=='1'">cudart.lib;cufft.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(JuicerIsReleaseBuild)'=='1' and '$(Platform)'=='x64'">
@@ -253,7 +253,7 @@
       </ModuleDefinitionFile>
       <OutputFile>$(OutDir)juicer.ofx</OutputFile>
       <AdditionalLibraryDirectories Condition="'$(JuicerEnableCudaBuild)'=='1'">$(CudaToolkitDir)lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies Condition="'$(JuicerEnableCudaBuild)'=='1'">cudart.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(JuicerEnableCudaBuild)'=='1'">cudart.lib;cufft.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalOptions Condition="'$(PlatformToolset)'=='ClangCl'">$(JuicerClangReleaseLinkOptions) %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
@@ -268,6 +268,8 @@
     <ClCompile Include="..\OFXS\Support\Library\ofxsParams.cpp" />
     <ClCompile Include="..\OFXS\Support\Library\ofxsProperty.cpp" />
     <ClCompile Include="..\OFXS\Support\Library\ofxsPropertyValidation.cpp" />
+    <ClCompile Include="src\Cuda\JuicerCudaDeviceLedger.cpp" />
+    <ClCompile Include="src\Cuda\Diffusion\JuicerCudaDiffusionResources.cpp" />
     <ClCompile Include="src\Cuda\JuicerCudaResources.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp" />
@@ -281,6 +283,9 @@
     <ClCompile Include="src\ProfileCatalog.cpp" />
     <ClCompile Include="src\ProfileJSONLoader.cpp" />
     <ClCompile Include="src\ProcessRoot.cpp" />
+    <ClCompile Include="src\DiffusionHostBehavior.cpp" />
+    <ClCompile Include="src\DiffusionFrameDescriptor.cpp" />
+    <ClCompile Include="src\DiffusionExecutionProfile.cpp" />
     <ClCompile Include="src\RenderRecipe.cpp" />
     <ClCompile Include="src\Cuda\JuicerCudaFilmFoundationPayloads.cpp" />
     <ClCompile Include="src\FilmJuicerEffectsFrameDescriptor.cpp" />
@@ -305,6 +310,7 @@
     <ClInclude Include="src\FilmJuicerEffectsFrameDescriptor.h" />
     <ClInclude Include="src\Cuda\JuicerCudaDirProfile.h" />
     <ClInclude Include="src\Cuda\JuicerCudaDeviceHelpers.cuh" />
+    <ClInclude Include="src\Cuda\JuicerCudaDeviceLedger.h" />
     <ClInclude Include="src\Cuda\JuicerCudaResources.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceCore.h" />
@@ -327,6 +333,12 @@
     <ClInclude Include="src\ProfileJSONLoader.h" />
     <ClInclude Include="src\ProcessRoot.h" />
     <ClInclude Include="src\RenderFrameRequest.h" />
+    <ClInclude Include="src\DiffusionHostBehavior.h" />
+    <ClInclude Include="src\DiffusionFrameDescriptor.h" />
+    <ClInclude Include="src\DiffusionPlanLayout.h" />
+    <ClInclude Include="src\DiffusionExecutionProfile.h" />
+    <ClInclude Include="src\Cuda\Diffusion\JuicerCudaDiffusion.h" />
+    <ClInclude Include="src\Cuda\Diffusion\JuicerCudaDiffusionResources.h" />
     <ClInclude Include="src\RenderRecipe.h" />
     <ClInclude Include="src\VisualGrainFrameDescriptor.h" />
     <ClInclude Include="src\ResourceAssetLibrary.h" />
@@ -336,6 +348,7 @@
     <ClInclude Include="src\SpectralProcessing.h" />
   </ItemGroup>
   <ItemGroup Condition="'$(JuicerEnableCudaBuild)'=='1'">
+    <CudaCompile Include="src\Cuda\Diffusion\JuicerCudaDiffusion.cu" />
     <CudaCompile Include="src\Cuda\Film\JuicerCudaFilmPipeline.cu" />
     <CudaCompile Include="src\Cuda\JuicerCudaAutoExposure.cu" />
     <CudaCompile Include="src\Cuda\Scan\JuicerCudaScanPipeline.cu" />

@@ -8,6 +8,7 @@
 #include "ofxPixels.h"      // Pixel/rect helpers used by some 1.4 distributions
 
 #include <cstddef>
+#include <limits>
 
 // Resolve OFX support library C++ wrappers (OpenFX 1.4 compliant)
 #pragma warning(push)
@@ -1046,6 +1047,241 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
                 p->setParent(*grpEffects);
             p->setEvaluateOnChange(true);
         }
+    }
+
+    // Diffusion group
+    {
+        OFX::GroupParamDescriptor* grpDiffusion =
+            desc.defineGroupParam(JuicerParams::kDiffusionGroup);
+        if (grpDiffusion) {
+            grpDiffusion->setLabel("Diffusion");
+            grpDiffusion->setOpen(false);
+        }
+
+        struct DiffusionParamUiSpec {
+            const char* name = nullptr;
+            const char* label = nullptr;
+            const char* hint = nullptr;
+        };
+        struct DiffusionSliderUiSpec {
+            DiffusionParamUiSpec param;
+            double defaultValue = 0.0;
+            double minimum = 0.0;
+            double maximum = 0.0;
+            double displayMinimum = 0.0;
+            double displayMaximum = 0.0;
+            double increment = 0.0;
+        };
+        auto defineEnabled = [&](const DiffusionParamUiSpec& spec) {
+            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(spec.name);
+            p->setLabel(spec.label);
+            p->setDefault(false);
+            p->setHint(spec.hint);
+            if (grpDiffusion)
+                p->setParent(*grpDiffusion);
+            p->setEvaluateOnChange(true);
+        };
+        auto defineFamily = [&](const DiffusionParamUiSpec& spec) {
+            OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(spec.name);
+            p->setLabel(spec.label);
+            p->appendOption("Glimmerglass");
+            p->appendOption("Black Pro-Mist");
+            p->appendOption("Pro-Mist");
+            p->appendOption("CineBloom");
+            p->setDefault(1);
+            p->setHint(spec.hint);
+            if (grpDiffusion)
+                p->setParent(*grpDiffusion);
+            p->setEvaluateOnChange(true);
+        };
+        auto defineSlider = [&](const DiffusionSliderUiSpec& spec) {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(spec.param.name);
+            p->setLabel(spec.param.label);
+            p->setDefault(spec.defaultValue);
+            p->setRange(spec.minimum, spec.maximum);
+            p->setDisplayRange(spec.displayMinimum, spec.displayMaximum);
+            p->setIncrement(spec.increment);
+            p->setHint(spec.param.hint);
+            if (grpDiffusion)
+                p->setParent(*grpDiffusion);
+            p->setEvaluateOnChange(true);
+        };
+
+        defineEnabled({JuicerParams::kCameraDiffusionEnabled,
+                       "Camera Enabled",
+                       "Apply diffusion on the camera stage before film exposure."});
+        defineFamily({JuicerParams::kCameraDiffusionFamily,
+                      "Camera Family",
+                      "PSF family used on the camera stage before film exposure."});
+        defineSlider({{JuicerParams::kCameraDiffusionStrength,
+                       "Camera Strength",
+                       "Commercial filter stop: 0, 1/8, 1/4, 1/2, 1, or 2; intermediate values are supported."},
+                      0.5,
+                      0.0,
+                      2.0,
+                      0.0,
+                      2.0,
+                      0.125});
+        defineSlider({{JuicerParams::kCameraDiffusionSpatialScale,
+                       "Camera Spatial Scale",
+                       "Multiplier on the camera-stage image-plane PSF widths."},
+                      1.0,
+                      0.0,
+                      std::numeric_limits<double>::max(),
+                      0.0,
+                      4.0,
+                      0.1});
+        defineSlider({{JuicerParams::kCameraDiffusionHaloWarmth,
+                       "Camera Halo Warmth",
+                       "Additive camera-stage halo warmth offset. Positive warms the outer halo; negative inverts it."},
+                      0.0,
+                      -1.5,
+                      1.5,
+                      -1.5,
+                      1.5,
+                      0.05});
+        defineSlider({{JuicerParams::kCameraDiffusionCoreIntensity,
+                       "Camera Core Intensity",
+                       "Multiplier on the camera-stage core weight. 1.0 uses the family default."},
+                      1.0,
+                      0.0,
+                      4.0,
+                      0.0,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kCameraDiffusionCoreSize,
+                       "Camera Core Size",
+                       "Multiplier on the camera-stage core size. 1.0 uses the family default."},
+                      1.0,
+                      0.1,
+                      4.0,
+                      0.1,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kCameraDiffusionHaloIntensity,
+                       "Camera Halo Intensity",
+                       "Multiplier on the camera-stage halo weight. 1.0 uses the family default."},
+                      1.0,
+                      0.0,
+                      4.0,
+                      0.0,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kCameraDiffusionHaloSize,
+                       "Camera Halo Size",
+                       "Multiplier on the camera-stage halo size. 1.0 uses the family default."},
+                      1.0,
+                      0.1,
+                      4.0,
+                      0.1,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kCameraDiffusionBloomIntensity,
+                       "Camera Bloom Intensity",
+                       "Multiplier on the camera-stage bloom weight. 1.0 uses the family default."},
+                      1.0,
+                      0.0,
+                      4.0,
+                      0.0,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kCameraDiffusionBloomSize,
+                       "Camera Bloom Size",
+                       "Multiplier on the camera-stage bloom size. 1.0 uses the family default."},
+                      1.0,
+                      0.1,
+                      4.0,
+                      0.1,
+                      4.0,
+                      0.05});
+
+        defineEnabled({JuicerParams::kPrintDiffusionEnabled,
+                       "Print Enabled",
+                       "Apply diffusion on the print stage after enlarger exposure is formed."});
+        defineFamily({JuicerParams::kPrintDiffusionFamily,
+                      "Print Family",
+                      "PSF family used on the print stage after enlarger exposure is formed."});
+        defineSlider({{JuicerParams::kPrintDiffusionStrength,
+                       "Print Strength",
+                       "Commercial filter stop: 0, 1/8, 1/4, 1/2, 1, or 2; intermediate values are supported."},
+                      0.5,
+                      0.0,
+                      2.0,
+                      0.0,
+                      2.0,
+                      0.125});
+        defineSlider({{JuicerParams::kPrintDiffusionSpatialScale,
+                       "Print Spatial Scale",
+                       "Multiplier on the print-stage image-plane PSF widths."},
+                      1.0,
+                      0.0,
+                      std::numeric_limits<double>::max(),
+                      0.0,
+                      4.0,
+                      0.1});
+        defineSlider({{JuicerParams::kPrintDiffusionHaloWarmth,
+                       "Print Halo Warmth",
+                       "Additive print-stage halo warmth offset. Positive warms the outer halo; negative inverts it."},
+                      0.0,
+                      -1.5,
+                      1.5,
+                      -1.5,
+                      1.5,
+                      0.05});
+        defineSlider({{JuicerParams::kPrintDiffusionCoreIntensity,
+                       "Print Core Intensity",
+                       "Multiplier on the print-stage core weight. 1.0 uses the family default."},
+                      1.0,
+                      0.0,
+                      4.0,
+                      0.0,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kPrintDiffusionCoreSize,
+                       "Print Core Size",
+                       "Multiplier on the print-stage core size. 1.0 uses the family default."},
+                      1.0,
+                      0.1,
+                      4.0,
+                      0.1,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kPrintDiffusionHaloIntensity,
+                       "Print Halo Intensity",
+                       "Multiplier on the print-stage halo weight. 1.0 uses the family default."},
+                      1.0,
+                      0.0,
+                      4.0,
+                      0.0,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kPrintDiffusionHaloSize,
+                       "Print Halo Size",
+                       "Multiplier on the print-stage halo size. 1.0 uses the family default."},
+                      1.0,
+                      0.1,
+                      4.0,
+                      0.1,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kPrintDiffusionBloomIntensity,
+                       "Print Bloom Intensity",
+                       "Multiplier on the print-stage bloom weight. 1.0 uses the family default."},
+                      1.0,
+                      0.0,
+                      4.0,
+                      0.0,
+                      4.0,
+                      0.05});
+        defineSlider({{JuicerParams::kPrintDiffusionBloomSize,
+                       "Print Bloom Size",
+                       "Multiplier on the print-stage bloom size. 1.0 uses the family default."},
+                      1.0,
+                      0.1,
+                      4.0,
+                      0.1,
+                      4.0,
+                      0.05});
     }
 
     // Glare group

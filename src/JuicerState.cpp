@@ -719,6 +719,29 @@ namespace {
     }
 
     template <typename MixFn>
+    inline void mix_diffusion_authored_hash_fields(
+        uint64_t& h,
+        const ParamSnapshot& p,
+        const MixFn& mix) {
+        mix_hash_field(
+            h,
+            Spektrafilm::SpatialOpticsComponent::CameraDiffusion,
+            mix);
+        mix_hash_field(
+            h,
+            Spektrafilm::hash_diffusion_authored_controls(p.cameraDiffusion),
+            mix);
+        mix_hash_field(
+            h,
+            Spektrafilm::SpatialOpticsComponent::EnlargerDiffusion,
+            mix);
+        mix_hash_field(
+            h,
+            Spektrafilm::hash_diffusion_authored_controls(p.enlargerDiffusion),
+            mix);
+    }
+
+    template <typename MixFn>
     inline void mix_focused_grain_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
         const Profiles::GrainMetadata& grain = p.grainControls;
         if (!grain.active) {
@@ -871,6 +894,15 @@ namespace {
         controls.gammaInterlayerBToRg = {
             static_cast<float>(p.couplersGammaInterlayerBToRg[0]),
             static_cast<float>(p.couplersGammaInterlayerBToRg[1])};
+        return controls;
+    }
+
+    Spektrafilm::SpatialOpticsControls focused_spatial_optics_controls_from_snapshot(
+        const ParamSnapshot& params) {
+        Spektrafilm::SpatialOpticsControls controls{};
+        controls.cameraDiffusion = params.cameraDiffusion;
+        controls.scatterHalationActive = params.exactScatterHalationActive != 0;
+        controls.enlargerDiffusion = params.enlargerDiffusion;
         return controls;
     }
 
@@ -1511,7 +1543,7 @@ namespace {
         input.gateScratchAmount = params.grainControls.gateScratchAmount;
         input.gateWeaveAmount = params.gateWeaveAmount;
         input.dirCouplers = focused_dir_couplers_controls_from_snapshot(params);
-        input.spatialOptics.scatterHalationActive = params.exactScatterHalationActive != 0;
+        input.spatialOptics = focused_spatial_optics_controls_from_snapshot(params);
         input.directRoutePrintProfileExcluded = selected.directRoutePrintProfileExcluded;
         input.directRouteNeutralCalibrationExcluded =
             selected.directRouteNeutralCalibrationExcluded;
@@ -1655,8 +1687,8 @@ namespace {
         input.filmFoundation.cameraFilterUV = params.cameraFilterUV;
         input.filmFoundation.cameraFilterIR = params.cameraFilterIR;
         input.filmFoundation.dirCouplers = focused_dir_couplers_controls_from_snapshot(params);
-        input.filmFoundation.spatialOptics.scatterHalationActive =
-            params.exactScatterHalationActive != 0;
+        input.filmFoundation.spatialOptics =
+            focused_spatial_optics_controls_from_snapshot(params);
         if (selected.filmProfile) {
             const std::string illuminantKey =
                 IlluminantKeys::normalize(selected.filmProfile->info.referenceIlluminant.value);
@@ -1791,6 +1823,7 @@ uint64_t hash_params(const ParamSnapshot& p) {
     mix_hanatos_adaptation_hash_fields(h, p, hash_mix);
     mix_camera_filter_hash(h, p, hash_mix);
     mix_direct_phase3a_recipe_hash_fields(h, p, hash_mix);
+    mix_diffusion_authored_hash_fields(h, p, hash_mix);
     mix_focused_grain_hash_fields(h, p, hash_mix);
     mix_film_juicer_effects_hash_fields(h, p, hash_mix);
     return h;
@@ -1804,6 +1837,7 @@ uint64_t hash_params_core(const ParamSnapshot& p) {
     mix_hanatos_adaptation_hash_fields(h, p, hash_mix);
     mix_camera_filter_hash(h, p, hash_mix);
     mix_direct_phase3a_recipe_hash_fields(h, p, hash_mix);
+    mix_diffusion_authored_hash_fields(h, p, hash_mix);
     mix_focused_grain_hash_fields(h, p, hash_mix);
     mix_film_juicer_effects_hash_fields(h, p, hash_mix);
     return h;

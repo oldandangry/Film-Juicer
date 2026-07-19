@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "DiffusionHostBehavior.h"
 #include "ProfileAssets.h"
 #include "ScanRoute.h"
 
@@ -129,13 +130,6 @@ namespace Spektrafilm {
         RequireExactOrFail
     };
 
-    enum class DiffusionFilterFamily : std::uint8_t {
-        Glimmerglass,
-        BlackProMist,
-        ProMist,
-        Cinebloom
-    };
-
     enum class ExactOpticsConvolution : std::uint8_t {
         ReflectFft,
         ReflectFastGaussian,
@@ -209,17 +203,7 @@ struct SpatialOpticsComponentPolicy {
 
 struct DiffusionFilterOpticsRecipe {
     SpatialOpticsComponentPolicy policy;
-    Spektrafilm::DiffusionFilterFamily family = Spektrafilm::DiffusionFilterFamily::BlackProMist;
-    bool active = false;
-    float strength = 0.5f;
-    float spatialScale = 1.0f;
-    float haloWarmth = 0.0f;
-    float coreIntensity = 1.0f;
-    float coreSize = 1.0f;
-    float haloIntensity = 1.0f;
-    float haloSize = 1.0f;
-    float bloomIntensity = 1.0f;
-    float bloomSize = 1.0f;
+    Spektrafilm::DiffusionFilterResolvedParameters resolved;
     std::uint64_t hash = 0;
 };
 
@@ -829,16 +813,10 @@ namespace Spektrafilm {
     using ::VisualGrainRecipe;
 
     struct SpatialOpticsControls {
-        bool cameraDiffusionActive = false;
-        DiffusionFilterFamily cameraDiffusionFamily = DiffusionFilterFamily::BlackProMist;
-        float cameraDiffusionStrength = 0.5f;
-        float cameraDiffusionSpatialScale = 1.0f;
+        DiffusionFilterAuthoredControls cameraDiffusion;
         float cameraLensBlurUm = 0.0f;
         bool scatterHalationActive = false;
-        bool enlargerDiffusionActive = false;
-        DiffusionFilterFamily enlargerDiffusionFamily = DiffusionFilterFamily::BlackProMist;
-        float enlargerDiffusionStrength = 0.5f;
-        float enlargerDiffusionSpatialScale = 1.0f;
+        DiffusionFilterAuthoredControls enlargerDiffusion;
     };
 
     struct DirectRecipeBuildInput {

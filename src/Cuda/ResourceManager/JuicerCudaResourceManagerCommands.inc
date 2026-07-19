@@ -525,7 +525,7 @@ bool execute_scratch_growth_command(
             growthBytes,
             &scratchRequest,
             true,
-            ActiveFrameAdmissionHeadroom::AllocatorEffective,
+            ActiveFrameAdmissionHeadroom::DriverFreeOnly,
             outError)) {
         const std::string admissionError = outError;
         if (!try_reclaim_retained_optics_for_admission_retry(
@@ -547,7 +547,7 @@ bool execute_scratch_growth_command(
                 growthBytes,
                 &scratchRequest,
                 true,
-                ActiveFrameAdmissionHeadroom::AllocatorEffective,
+                ActiveFrameAdmissionHeadroom::DriverFreeOnly,
                 outError)) {
             return false;
         }
@@ -2779,6 +2779,24 @@ bool command_freeze_drain_bump_resume(
     return true;
 }
 
+bool command_begin_context_owner_retire(
+    const DeviceContextKey& key,
+    RegistrySnapshotGenerations& outGenerations,
+    std::string& outError) {
+    outGenerations = RegistrySnapshotGenerations{};
+    outError.clear();
+    if (!registry_begin_owner_retire(key, outGenerations)) {
+        outError = "context owner-retire freeze/drain rejected";
+        return false;
+    }
+    if (outGenerations.contextEpoch == 0 ||
+        outGenerations.registryGeneration == 0) {
+        outError = "context owner-retire generation identity invalid";
+        return false;
+    }
+    return true;
+}
+
 namespace {
     bool command_retire_context_with_reason(
         const DeviceContextKey& key,
@@ -2801,9 +2819,6 @@ namespace {
         }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        JuicerCuda::purge_shared_gaussian_kernels_for_context(
-            key.deviceId,
-            key.contextOpaque);
         JuicerCuda::purge_pinned_upload_staging_for_context(
             key.deviceId,
             key.contextOpaque);
@@ -2814,7 +2829,6 @@ namespace {
         scratch_normalization_retire_context(key);
         admission_churn_retire_context(key);
         optional_heuristic_trace_retire_context(key);
-        allocator_backend_retire_context(key);
         state_clear_latest_snapshot_for_context(key);
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         JuicerCuda::purge_host_asset_caches_if_registry_idle(stageName);
@@ -3531,10 +3545,6 @@ void trace_post_frame_scratch_shed(
         " effective_headroom_bytes=" +
         std::to_string(static_cast<unsigned long long>(checkpoint.input.effectiveHeadroomBytes)) +
         " headroom_source=" + to_cstr(checkpoint.input.headroomSource) +
-        " allocator_pool_reserved_bytes=" +
-        std::to_string(static_cast<unsigned long long>(checkpoint.input.allocatorPoolReservedBytes)) +
-        " allocator_pool_used_bytes=" +
-        std::to_string(static_cast<unsigned long long>(checkpoint.input.allocatorPoolUsedBytes)) +
         " manager_active_bytes=" +
         std::to_string(static_cast<unsigned long long>(checkpoint.memory.activeBytes)) +
         " retire_pending_bytes=" +
@@ -3616,11 +3626,6 @@ bool command_shed_post_frame_scratch(
     }
 
     checkpoint = evaluate_pressure_checkpoint(transaction, resources, 0, true, stageName);
-    maybe_apply_async_mempool_release_policy(
-        transaction,
-        checkpoint.decision.state,
-        manager_effective_config(),
-        "post_frame_scratch_shed");
     requestLowHeadroom = post_frame_large_spatial_dir_shed_required(
         scratchRequest,
         checkpoint,

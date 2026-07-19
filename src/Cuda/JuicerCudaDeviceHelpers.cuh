@@ -1052,8 +1052,8 @@ static __device__ void mallett_layer_exposures_device(
     E_out[2] = device_isfinite(static_cast<float>(Er)) ? static_cast<float>(Er) : 0.0f;
 }
 
-template <typename Params>
-static __device__ __forceinline__ void compute_film_raw_device(
+template <bool ApplyRouteCorrection, typename Params>
+static __device__ __forceinline__ void compute_film_linear_exposure_device(
     const Params& params,
     const float rgbIn[3],
     float filmRaw[3]) {
@@ -1162,9 +1162,42 @@ static __device__ __forceinline__ void compute_film_raw_device(
         if (useMallett) {
             v = fmaxf(0.0f, v * mallettGreenMidgrayScale);
         }
-        v = fmaxf(0.0f, v * manualExposureScale * routeCorrectionScale);
+        if constexpr (ApplyRouteCorrection) {
+            // Preserve the established disabled-path multiplication and rounding.
+            v = fmaxf(
+                0.0f,
+                v * manualExposureScale * routeCorrectionScale);
+        } else {
+            v = fmaxf(0.0f, v * manualExposureScale);
+        }
         filmRaw[i] = v;
     }
+}
+
+template <typename Params>
+static __device__ __forceinline__ void compute_camera_film_linear_exposure_device(
+    const Params& params,
+    const float rgbIn[3],
+    float filmRaw[3]) {
+    compute_film_linear_exposure_device<false>(params, rgbIn, filmRaw);
+}
+
+template <typename Params>
+static __device__ __forceinline__ void apply_film_route_correction_device(
+    const Params& params,
+    float filmRaw[3]) {
+    const float routeCorrectionScale = params.filmExpose.routeCorrectionScale;
+    for (int i = 0; i < 3; ++i) {
+        filmRaw[i] = fmaxf(0.0f, filmRaw[i] * routeCorrectionScale);
+    }
+}
+
+template <typename Params>
+static __device__ __forceinline__ void compute_film_raw_device(
+    const Params& params,
+    const float rgbIn[3],
+    float filmRaw[3]) {
+    compute_film_linear_exposure_device<true>(params, rgbIn, filmRaw);
 }
 
 template <typename Params>
@@ -1360,6 +1393,19 @@ static __device__ __forceinline__ void compute_logE_from_film_raw_device(
 }
 
 template <typename Params>
+static __device__ __forceinline__ void compute_logE_from_camera_film_linear_exposure_device(
+    const Params& params,
+    const float cameraFilmLinear[3],
+    FilmDevelopIntermediatesDevice outputs) {
+    float correctedFilmRaw[3] = {
+        cameraFilmLinear[0],
+        cameraFilmLinear[1],
+        cameraFilmLinear[2]};
+    apply_film_route_correction_device(params, correctedFilmRaw);
+    compute_logE_from_film_raw_device(params, correctedFilmRaw, outputs);
+}
+
+template <typename Params>
 static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
     const Params& params,
     const float rgbIn[3],
@@ -1475,6 +1521,46 @@ static __device__ __forceinline__ void print_apply_exposure_scale_device(
     rawPrint[2] *= routeCorrectionScale;
 }
 
+static __device__ __forceinline__ bool print_inner_raw_device(
+    const JuicerCuda::PrintExposePayload& expose,
+    const float filmDensityCmy[3],
+    float innerRaw[3]) {
+    if (!print_spectral_integrate_device(
+            expose,
+            filmDensityCmy,
+            innerRaw)) {
+        return false;
+    }
+
+    innerRaw[0] *= expose.printMidgrayFactor;
+    innerRaw[1] *= expose.printMidgrayFactor;
+    innerRaw[2] *= expose.printMidgrayFactor;
+    if (expose.printPreflashExposure > 0.0f) {
+        innerRaw[0] +=
+            expose.printPreflashRaw[0] * expose.printPreflashExposure;
+        innerRaw[1] +=
+            expose.printPreflashRaw[1] * expose.printPreflashExposure;
+        innerRaw[2] +=
+            expose.printPreflashRaw[2] * expose.printPreflashExposure;
+    }
+    return true;
+}
+
+static __device__ __forceinline__ void print_linear_for_diffusion_device(
+    const JuicerCuda::PrintExposePayload& expose,
+    const float innerRaw[3],
+    float linearForDiffusion[3]) {
+    constexpr float kLogEps = 1e-10f;
+    const float outerScale =
+        expose.printExposure * expose.routeCorrectionScale;
+    linearForDiffusion[0] =
+        (fmaxf(innerRaw[0], 0.0f) + kLogEps) * outerScale;
+    linearForDiffusion[1] =
+        (fmaxf(innerRaw[1], 0.0f) + kLogEps) * outerScale;
+    linearForDiffusion[2] =
+        (fmaxf(innerRaw[2], 0.0f) + kLogEps) * outerScale;
+}
+
 static __device__ __forceinline__ void print_log_encode_device(
     const float rawPrint[3],
     float logPrint[3]) {
@@ -1486,6 +1572,15 @@ static __device__ __forceinline__ void print_log_encode_device(
     logPrint[0] = log10f(rawPrint[0] + kLogEps);
     logPrint[1] = log10f(rawPrint[1] + kLogEps);
     logPrint[2] = log10f(rawPrint[2] + kLogEps);
+}
+
+static __device__ __forceinline__ void print_log_encode_diffused_device(
+    const float diffusedRaw[3],
+    float logPrint[3]) {
+    constexpr float kLogEps = 1e-10f;
+    logPrint[0] = log10f(fmaxf(diffusedRaw[0], 0.0f) + kLogEps);
+    logPrint[1] = log10f(fmaxf(diffusedRaw[1], 0.0f) + kLogEps);
+    logPrint[2] = log10f(fmaxf(diffusedRaw[2], 0.0f) + kLogEps);
 }
 
 static __device__ __forceinline__ void print_sample_density_curves_device(

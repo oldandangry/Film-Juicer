@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "Cuda/JuicerCudaPayloads.h"
+
 namespace JuicerCuda {
 
     // Optional JUICER_DIR_PROFILE attribution for production DIR diagnosis.
@@ -79,6 +81,7 @@ namespace JuicerCuda {
 
     struct SpatialDirBuildRequest {
         SpatialDirPlanes planes{};
+        CameraFilmLinearExposurePlanes cameraFilmLinear{};
         SpatialDirFilterSpec gaussian{};
         SpatialDirFilterSpec tails[3]{};
         void* streamOpaque = nullptr;

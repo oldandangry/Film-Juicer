@@ -10,11 +10,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
+#include "Cuda/JuicerCudaDeviceLedger.h"
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+#include "Cuda/Diffusion/JuicerCudaDiffusionResources.h"
+#endif
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "RenderRecipe.h"
@@ -247,6 +252,8 @@ namespace JuicerCuda {
     };
 
     struct Resources {
+        static constexpr std::uint32_t kAllocationOwnershipSchemaVersion = 1u;
+
         struct PendingFrameUseEvent {
             void* eventOpaque = nullptr;
         };
@@ -254,8 +261,7 @@ namespace JuicerCuda {
         enum class RetireKind : std::uint8_t {
             DeviceFree = 0,
             HostPinnedFree = 1,
-            EventDestroy = 2,
-            DeviceFreeAsync = 3
+            EventDestroy = 2
         };
 
         struct RetireEntry {
@@ -264,6 +270,13 @@ namespace JuicerCuda {
             RetireKind kind = RetireKind::DeviceFree;
             bool scratchTier = false;
             void* doneEventOpaque = nullptr; // cudaEvent_t recorded once for this entry.
+            DeviceByteReservation deviceReservation;
+
+            RetireEntry() noexcept = default;
+            RetireEntry(const RetireEntry&) = delete;
+            RetireEntry& operator=(const RetireEntry&) = delete;
+            RetireEntry(RetireEntry&&) noexcept = default;
+            RetireEntry& operator=(RetireEntry&&) noexcept = default;
         };
 
         struct ScratchResidencyState {
@@ -367,7 +380,15 @@ namespace JuicerCuda {
         // Eight-byte-aligned identity, residency, pointer, and container state is grouped first
         // so the per-context resource object does not pay repeated alignment gaps between its
         // narrower counters and flags.
-        void* ownerContextOpaque = nullptr;
+        ResourceManager::DeviceContextKey ownerContextKey{};
+        std::uint64_t contextEpoch = 0;
+        std::shared_ptr<DeviceAllocationLedger> deviceLedger;
+        std::map<void*, DeviceByteReservation> deviceAllocationRecords;
+        std::map<void*, DeviceByteReservation>
+            contextLossOnlyDeviceAllocationRecords;
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        Diffusion::DiffusionContextResources diffusion;
+#endif
         std::uint64_t uploadedBuildCounter = 0;
         std::uint64_t uploadedCoreHash = 0;
         std::uint64_t uploadedDirHash = 0;
@@ -454,8 +475,6 @@ namespace JuicerCuda {
         DeviceCurve printSensM;
         DeviceCurve printSensY;
 
-        // Tracks pointers allocated with cudaMallocAsync so free/retire uses cudaFreeAsync.
-        std::unordered_set<void*> asyncDeviceAllocPointers;
         DeviceSpectralLut scanNegativeLut;
         DeviceSpectralLut scanPrintLut;
         float* densityCurvesLayers[3][3] = {{nullptr, nullptr, nullptr},
@@ -467,6 +486,8 @@ namespace JuicerCuda {
 
         // Serializes multi-step serving mutations. Always take this mutex before `m`.
         std::mutex servingUpdateMutex;
+        // Serializes only the pointer-to-accounting-token ownership table.
+        std::mutex deviceAllocationRecordsMutex;
         // Leaf lock for per-device CUDA resource state. Do not wait on external work while held.
         std::mutex m;
 
@@ -520,16 +541,30 @@ namespace JuicerCuda {
         bool printPreflashValid = false;
         bool printIllumFilteredHostValid = false;
         bool printPreflashIllumFilteredHostValid = false;
+        bool contextInvalidatedByProvenLoss = false;
 
-        Resources() = default;
+        Resources(
+            const ResourceManager::DeviceContextKey& contextKey,
+            std::uint64_t epoch,
+            std::shared_ptr<DeviceAllocationLedger> ledger);
         Resources(const Resources&) = delete;
         Resources& operator=(const Resources&) = delete;
 
         ~Resources() noexcept;
     };
 
-    Resources* create() noexcept;
+    Resources* create(
+        const ResourceManager::DeviceContextKey& contextKey,
+        std::uint64_t contextEpoch,
+        std::uint32_t allocationOwnershipSchemaVersion,
+        std::shared_ptr<DeviceAllocationLedger> deviceLedger,
+        std::string& outError) noexcept;
     void destroy(Resources* resources) noexcept;
+    bool drain_for_context_retire(
+        Resources& resources,
+        std::string& outError) noexcept;
+    void invalidate_resources_after_proven_context_loss(
+        Resources& resources) noexcept;
 
     // Narrow context-static serving helper used by the process-owned Root grain slots.
     bool ensure_grain_static_assets_uploaded(
@@ -709,9 +744,15 @@ namespace JuicerCuda {
         Resources& resources,
         void* ptr,
         std::size_t bytes,
+        DeviceByteReservation&& reservation,
         void* cudaStreamOpaque,
         const char* label,
         std::string& outError);
+    bool adopt_failed_frame_allocation_record(
+        Resources& resources,
+        std::map<void*, DeviceByteReservation>::node_type& allocationRecord,
+        bool completionCertain,
+        std::string& outError) noexcept;
     bool retain_scan_error_readback(
         Resources& resources,
         int*& host,
@@ -729,7 +770,15 @@ namespace JuicerCuda {
         std::string& outError);
 
     // Purges process-shared Gaussian kernels for one device/context key.
-    void purge_shared_gaussian_kernels_for_context(int deviceId, void* contextOpaque) noexcept;
+    bool purge_shared_gaussian_kernels_for_context(
+        int deviceId,
+        void* contextOpaque,
+        std::uint64_t contextEpoch,
+        std::string& outError) noexcept;
+    void invalidate_shared_gaussian_kernels_after_proven_context_loss(
+        int deviceId,
+        void* contextOpaque,
+        std::uint64_t contextEpoch) noexcept;
 
     // Purges process-shared pinned upload staging blocks for one device/context key.
     void purge_pinned_upload_staging_for_context(int deviceId, void* contextOpaque) noexcept;

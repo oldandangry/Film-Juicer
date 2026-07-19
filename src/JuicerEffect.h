@@ -29,6 +29,10 @@ namespace OutputEncoding {
     struct Params;
 }
 
+namespace Spektrafilm {
+    struct DiffusionFilterAuthoredControls;
+}
+
 namespace OFX {
     class Clip;
     class Image;
@@ -81,6 +85,20 @@ private:
         bool printRtReady = false;
     };
 
+    struct DiffusionUiParams {
+        OFX::BooleanParam* enabled = nullptr;
+        OFX::ChoiceParam* family = nullptr;
+        OFX::DoubleParam* strength = nullptr;
+        OFX::DoubleParam* spatialScale = nullptr;
+        OFX::DoubleParam* haloWarmth = nullptr;
+        OFX::DoubleParam* coreIntensity = nullptr;
+        OFX::DoubleParam* coreSize = nullptr;
+        OFX::DoubleParam* haloIntensity = nullptr;
+        OFX::DoubleParam* haloSize = nullptr;
+        OFX::DoubleParam* bloomIntensity = nullptr;
+        OFX::DoubleParam* bloomSize = nullptr;
+    };
+
     ExposureParams gatherExposureParams() const;
     Scanner::Options gatherScannerOptions() const;
     Scanner::Settings gatherScannerSettings() const;
@@ -88,6 +106,8 @@ private:
     Profiles::HalationMetadata gatherHalationUi() const;
     Profiles::GrainMetadata gatherGrainUi() const;
     Profiles::ProfileGlare gatherGlareUi() const;
+    Spektrafilm::DiffusionFilterAuthoredControls gatherDiffusionUi(
+        const DiffusionUiParams& params) const;
     OutputEncoding::Params gatherOutputEncodingParams() const;
     void applyDirGammaProfileDefaults();
     void applyHalationProfileDefaults();
@@ -95,6 +115,7 @@ private:
     void resetGrainAdvancedControls();
     void updateGrainPresetLabel(bool custom);
     void updateGrainChromaEnabled();
+    void updateDiffusionControlState();
     [[noreturn]] void throw_spektrafilm_phase1a_render_cutoff(const OFX::RenderArguments& args) const;
     WorkingStateInfo prepareWorkingState() const;
 
@@ -199,6 +220,9 @@ private:
     OFX::DoubleParam* _pGateDustAmount = nullptr;
     OFX::DoubleParam* _pFilmScratchAmount = nullptr;
     OFX::DoubleParam* _pGateScratchAmount = nullptr;
+
+    DiffusionUiParams _cameraDiffusionUi;
+    DiffusionUiParams _printDiffusionUi;
 
     OFX::BooleanParam* _pGlareActive = nullptr;
     OFX::DoubleParam* _pGlarePercent = nullptr;

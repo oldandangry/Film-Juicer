@@ -487,33 +487,6 @@ namespace JuicerCuda {
                 }
             }
 
-            const char* to_cstr(AllocatorBackendPreference value) noexcept {
-                switch (value) {
-                    case AllocatorBackendPreference::CudaMalloc:
-                        return "cuda_malloc";
-                    case AllocatorBackendPreference::AsyncPool:
-                        return "async_pool";
-                    case AllocatorBackendPreference::Slab:
-                        return "slab";
-                    case AllocatorBackendPreference::Auto:
-                        return "auto";
-                    default:
-                        return "unknown";
-                }
-            }
-
-            const char* to_cstr(AllocatorBackendMode value) noexcept {
-                switch (value) {
-                    case AllocatorBackendMode::CudaMalloc:
-                        return "cuda_malloc";
-                    case AllocatorBackendMode::AsyncPool:
-                        return "async_pool";
-                    case AllocatorBackendMode::Slab:
-                        return "slab";
-                    default:
-                        return "unknown";
-                }
-            }
 #endif
 
             const char* trace_or(const char* value, const char* fallback) noexcept {
@@ -955,12 +928,9 @@ namespace JuicerCuda {
             struct HeadroomTelemetry {
                 std::uint64_t effectiveHeadroomBytes = 0;
                 std::uint64_t driverFreeBytes = 0;
-                std::uint64_t allocatorPoolReservedBytes = 0;
-                std::uint64_t allocatorPoolUsedBytes = 0;
                 HeadroomSource source = HeadroomSource::FreeVramOnly;
                 int sampledDeviceId = -1;
                 bool sampleSuccess = false;
-                bool poolTelemetryAvailable = false;
             };
 
             struct PressureCheckpoint {
@@ -2561,7 +2531,7 @@ namespace JuicerCuda {
                 return;
             }
 
-            const std::string msg = trace_event_prefix("pressure_checkpoint", transaction, commandName) + " state=" + to_cstr(checkpoint.decision.state) + " prev_state=" + to_cstr(checkpoint.previousState) + " desired_state=" + to_cstr(checkpoint.desiredState) + " transition=" + std::to_string(checkpoint.transition ? 1 : 0) + " transition_deferred_dwell=" + std::to_string(checkpoint.transitionDeferredByDwell ? 1 : 0) + " transition_deferred_rate=" + std::to_string(checkpoint.transitionDeferredByRate ? 1 : 0) + " reserve_crossing=" + std::to_string(checkpoint.reserveCrossing ? 1 : 0) + " reserve_crossed=" + std::to_string(checkpoint.reserveCrossedNow ? 1 : 0) + " sampled=" + std::to_string(checkpoint.sampled ? 1 : 0) + " poll_interval_ms=" + std::to_string(checkpoint.pollIntervalMs) + trace_device_context_fields(transaction) + trace_resolved_policy_fields(transaction, checkpoint.input.softTargetBytes, checkpoint.input.reserveBytes) + trace_headroom_identity_fields(transaction, checkpoint.headroom) + " manager_resident_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.managerResidentBytes)) + " retire_pending_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.retirePendingBytes)) + " transient_non_manager_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.transientNonManagerBytes)) + " pressure_total_bytes=" + std::to_string(static_cast<unsigned long long>(pressure_total_bytes(checkpoint.input))) + " active_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.memory.activeBytes)) + " reclaimable_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.memory.reclaimableBytes)) + " pending_growth_bytes=" + std::to_string(static_cast<unsigned long long>(pendingGrowthBytes)) + " allow_opportunistic=" + std::to_string(checkpoint.decision.allowOpportunistic ? 1 : 0) + " freeze_opportunistic=" + std::to_string(checkpoint.decision.freezeOpportunistic ? 1 : 0) + " request_reclaim_pass=" + std::to_string(checkpoint.decision.requestReclaimPass ? 1 : 0) + " should_shed_non_critical=" + std::to_string(checkpoint.decision.shouldShedNonCritical ? 1 : 0) + " reserve_before_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.reserveBeforeBytes)) + " reserve_target_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.reserveTargetBytes)) + " reserve_updated=" + std::to_string(checkpoint.reserveUpdated ? 1 : 0) + " effective_reserve_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.decision.effectiveReserveBytes)) + " effective_headroom_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.decision.effectiveHeadroomBytes)) + " headroom_source=" + to_cstr(checkpoint.decision.headroomSource) + " driver_free_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.driverFreeBytes)) + " allocator_pool_reserved_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.allocatorPoolReservedBytes)) + " allocator_pool_used_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.allocatorPoolUsedBytes)) + " reason=" + trace_or_unspecified(reason);
+            const std::string msg = trace_event_prefix("pressure_checkpoint", transaction, commandName) + " state=" + to_cstr(checkpoint.decision.state) + " prev_state=" + to_cstr(checkpoint.previousState) + " desired_state=" + to_cstr(checkpoint.desiredState) + " transition=" + std::to_string(checkpoint.transition ? 1 : 0) + " transition_deferred_dwell=" + std::to_string(checkpoint.transitionDeferredByDwell ? 1 : 0) + " transition_deferred_rate=" + std::to_string(checkpoint.transitionDeferredByRate ? 1 : 0) + " reserve_crossing=" + std::to_string(checkpoint.reserveCrossing ? 1 : 0) + " reserve_crossed=" + std::to_string(checkpoint.reserveCrossedNow ? 1 : 0) + " sampled=" + std::to_string(checkpoint.sampled ? 1 : 0) + " poll_interval_ms=" + std::to_string(checkpoint.pollIntervalMs) + trace_device_context_fields(transaction) + trace_resolved_policy_fields(transaction, checkpoint.input.softTargetBytes, checkpoint.input.reserveBytes) + trace_headroom_identity_fields(transaction, checkpoint.headroom) + " manager_resident_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.managerResidentBytes)) + " retire_pending_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.retirePendingBytes)) + " transient_non_manager_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.transientNonManagerBytes)) + " pressure_total_bytes=" + std::to_string(static_cast<unsigned long long>(pressure_total_bytes(checkpoint.input))) + " active_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.memory.activeBytes)) + " reclaimable_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.memory.reclaimableBytes)) + " pending_growth_bytes=" + std::to_string(static_cast<unsigned long long>(pendingGrowthBytes)) + " allow_opportunistic=" + std::to_string(checkpoint.decision.allowOpportunistic ? 1 : 0) + " freeze_opportunistic=" + std::to_string(checkpoint.decision.freezeOpportunistic ? 1 : 0) + " request_reclaim_pass=" + std::to_string(checkpoint.decision.requestReclaimPass ? 1 : 0) + " should_shed_non_critical=" + std::to_string(checkpoint.decision.shouldShedNonCritical ? 1 : 0) + " reserve_before_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.reserveBeforeBytes)) + " reserve_target_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.reserveTargetBytes)) + " reserve_updated=" + std::to_string(checkpoint.reserveUpdated ? 1 : 0) + " effective_reserve_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.decision.effectiveReserveBytes)) + " effective_headroom_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.decision.effectiveHeadroomBytes)) + " headroom_source=" + to_cstr(checkpoint.decision.headroomSource) + " driver_free_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.driverFreeBytes)) + " reason=" + trace_or_unspecified(reason);
             JTRACE("MSPRS", msg);
 #endif
         }
@@ -2578,7 +2548,7 @@ namespace JuicerCuda {
                 return;
             }
 
-            const std::string msg = trace_event_prefix("headroom", transaction, commandName) + trace_device_context_fields(transaction) + trace_resolved_policy_fields(transaction, checkpoint.input.softTargetBytes, checkpoint.input.reserveBytes) + trace_headroom_identity_fields(transaction, checkpoint.headroom) + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes)) + " effective_headroom_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.effectiveHeadroomBytes)) + " headroom_source=" + to_cstr(checkpoint.input.headroomSource) + " driver_free_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.driverFreeBytes)) + " allocator_pool_reserved_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.allocatorPoolReservedBytes)) + " allocator_pool_used_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.allocatorPoolUsedBytes)) + " source_switch=" + std::to_string(sourceSwitch ? 1 : 0) + " reason=" + trace_or_unspecified(reason);
+            const std::string msg = trace_event_prefix("headroom", transaction, commandName) + trace_device_context_fields(transaction) + trace_resolved_policy_fields(transaction, checkpoint.input.softTargetBytes, checkpoint.input.reserveBytes) + trace_headroom_identity_fields(transaction, checkpoint.headroom) + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes)) + " effective_headroom_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.effectiveHeadroomBytes)) + " headroom_source=" + to_cstr(checkpoint.input.headroomSource) + " driver_free_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.driverFreeBytes)) + " reason=" + trace_or_unspecified(reason);
             JTRACE("MSHDR", msg);
 #endif
         }
@@ -3222,8 +3192,6 @@ namespace JuicerCuda {
             switch (source) {
                 case HeadroomSource::FreeVramOnly:
                     return "free_vram_only";
-                case HeadroomSource::AllocatorPool:
-                    return "allocator_pool";
                 default:
                     return "unknown";
             }
@@ -3590,10 +3558,6 @@ namespace JuicerCuda {
             constexpr std::uint64_t kMinHostAssetCacheMaxBytes = 64ull * kMiB;
             constexpr std::uint64_t kMaxHostAssetCacheMaxBytes = 1024ull * kMiB;
             constexpr std::uint64_t kMinHostAssetTrimBatchBytes = 8ull * kMiB;
-            constexpr std::uint32_t kMinAllocatorBackendPreference = 0u;
-            constexpr std::uint32_t kMaxAllocatorBackendPreference = 3u;
-            constexpr std::uint32_t kMinAsyncMempoolReleaseThresholdMB = 0u;
-            constexpr std::uint32_t kMaxAsyncMempoolReleaseThresholdMB = 4096u;
             constexpr std::uint64_t kMinPinnedStagingMaxBytes = 8ull * kMiB;
             constexpr std::uint64_t kMaxPinnedStagingMaxBytes = 2048ull * kMiB;
             constexpr std::uint64_t kMinPinnedStagingTrimBatchBytes = 1ull * kMiB;
@@ -3691,14 +3655,6 @@ namespace JuicerCuda {
                 raw.hostAssetTrimBatchBytes,
                 kMinHostAssetTrimBatchBytes,
                 out.hostAssetCacheMaxBytes);
-            out.allocatorBackendPreference = std::clamp(
-                raw.allocatorBackendPreference,
-                kMinAllocatorBackendPreference,
-                kMaxAllocatorBackendPreference);
-            out.asyncMempoolReleaseThresholdMB = std::clamp(
-                raw.asyncMempoolReleaseThresholdMB,
-                kMinAsyncMempoolReleaseThresholdMB,
-                kMaxAsyncMempoolReleaseThresholdMB);
             out.pinnedUploadStagingMaxBytes = std::clamp(
                 raw.pinnedUploadStagingMaxBytes,
                 kMinPinnedStagingMaxBytes,

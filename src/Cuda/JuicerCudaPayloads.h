@@ -110,6 +110,20 @@ namespace JuicerCuda {
         const float* JUICER_RESTRICT logRawR = nullptr;
     };
 
+    struct CameraFilmLinearExposurePlanes {
+        float* redSensitive = nullptr;
+        float* greenSensitive = nullptr;
+        float* blueSensitive = nullptr;
+        std::size_t rowStrideFloats = 0;
+    };
+
+    struct EnlargerPrintLinearExposurePlanes {
+        float* redSensitiveCForming = nullptr;
+        float* greenSensitiveMForming = nullptr;
+        float* blueSensitiveYForming = nullptr;
+        std::size_t rowStrideFloats = 0;
+    };
+
     struct FilmExposurePayload {
         float manualExposureScale = 1.0f;
         float routeCorrectionScale = 1.0f;

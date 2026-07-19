@@ -19,6 +19,12 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Cuda\JuicerCudaDeviceLedger.cpp">
+      <Filter>Cuda</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Cuda\Diffusion\JuicerCudaDiffusionResources.cpp">
+      <Filter>Cuda</Filter>
+    </ClCompile>
     <ClCompile Include="src\Cuda\JuicerCudaResources.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
@@ -62,6 +68,15 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\ProcessRoot.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\DiffusionHostBehavior.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\DiffusionFrameDescriptor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\DiffusionExecutionProfile.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\RenderRecipe.cpp">
@@ -135,6 +150,9 @@
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaDeviceHelpers.cuh">
+      <Filter>Cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Cuda\JuicerCudaDeviceLedger.h">
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaResources.h">
@@ -212,6 +230,24 @@
     <ClInclude Include="src\RenderFrameRequest.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\DiffusionHostBehavior.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\DiffusionFrameDescriptor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\DiffusionPlanLayout.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\DiffusionExecutionProfile.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Cuda\Diffusion\JuicerCudaDiffusion.h">
+      <Filter>Cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Cuda\Diffusion\JuicerCudaDiffusionResources.h">
+      <Filter>Cuda</Filter>
+    </ClInclude>
     <ClInclude Include="src\RenderRecipe.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -235,6 +271,9 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <CudaCompile Include="src\Cuda\Diffusion\JuicerCudaDiffusion.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
     <CudaCompile Include="src\Cuda\JuicerCudaAutoExposure.cu">
       <Filter>Cuda</Filter>
     </CudaCompile>

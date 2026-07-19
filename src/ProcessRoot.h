@@ -97,6 +97,7 @@ namespace JuicerProcess {
             const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
+            const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSetDescriptor = nullptr;
             std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
             std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor;
             int requestedWidth = 0;
@@ -114,6 +115,7 @@ namespace JuicerProcess {
             const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
+            const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSetDescriptor = nullptr;
             std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
             std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor;
             int requestedWidth = 0;
@@ -451,6 +453,9 @@ namespace JuicerProcess {
             DirectPreparedView direct_resources() const noexcept;
             PrintPreparedView print_resources() const noexcept;
             PrintRoutePreparedView print_route_resources() const noexcept;
+            JuicerCuda::Diffusion::DiffusionPreparedView
+            diffusion_resources() const noexcept;
+            void mark_diffusion_work_enqueued() noexcept;
             SpatialDirScratchView spatial_dir_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
             SpatialDirPreparedView spatial_dir_resources(
                 const WorkspaceLeaseMarker& workspace,
@@ -514,7 +519,7 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            bool release_spatial_dir_stage_after_scan_linear(
+            bool release_spatial_dir_stage_after_scanner_output(
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
@@ -743,6 +748,7 @@ namespace JuicerProcess {
         bool apply_grain_static_membership_and_copy_owner(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             std::uint64_t contextEpoch,
+            const std::shared_ptr<JuicerCuda::DeviceAllocationLedger>& deviceLedger,
             std::uint64_t instanceToken,
             std::uint64_t registryGeneration,
             std::uint64_t snapshotId,
@@ -760,6 +766,7 @@ namespace JuicerProcess {
         bool resolve_context_cuda_resources(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             std::uint64_t contextEpoch,
+            const std::shared_ptr<JuicerCuda::DeviceAllocationLedger>& deviceLedger,
             ContextCudaResourceMap& contextMap,
             CudaResourceOwner& outResourceOwner,
             JuicerCuda::Resources*& outResources,
@@ -767,15 +774,22 @@ namespace JuicerProcess {
         bool resolve_cuda_frame_resources(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             std::uint64_t contextEpoch,
+            const JuicerCuda::ResourceManager::ResolvedPressurePolicy& pressurePolicy,
             CudaResourceOwner& outResourceOwner,
             JuicerCuda::Resources*& outResources,
             std::string& outError);
+        bool retire_cuda_context(
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+            bool contextReset,
+            std::string& outError) noexcept;
 #endif
 
         bool _acceptFramePreparation = true;
         bool _shutdownRetireBlocked = false;
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         std::mutex _cudaResourcesMutex;
+        std::unordered_map<int, std::shared_ptr<JuicerCuda::DeviceAllocationLedger>>
+            _cudaDeviceLedgers;
         ContextCudaResourceMap _cudaResourcesByContext;
         GrainStaticContextMap _grainStaticByContext;
 #endif

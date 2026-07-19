@@ -74,6 +74,11 @@ __global__ void optics_blur_vertical_kernel(
 
 namespace {
 
+    bool valid_camera_film_linear_planes(
+        const JuicerCuda::CameraFilmLinearExposurePlanes& planes,
+        int width,
+        int height) noexcept;
+
     struct CudaProfileStageTimer {
         cudaEvent_t start = nullptr;
         cudaEvent_t stop = nullptr;
@@ -192,11 +197,35 @@ namespace {
         float* logRawR = nullptr;
     };
 
+    __device__ __forceinline__ bool camera_film_linear_planes_active_device(
+        const JuicerCuda::CameraFilmLinearExposurePlanes& planes) {
+        return planes.redSensitive &&
+               planes.greenSensitive &&
+               planes.blueSensitive;
+    }
+
+    __device__ __forceinline__ void load_camera_film_linear_bgr_device(
+        const JuicerCuda::CameraFilmLinearExposurePlanes& planes,
+        int x,
+        int y,
+        float filmRawBgr[3]) {
+        const std::size_t offset =
+            static_cast<std::size_t>(y) * planes.rowStrideFloats +
+            static_cast<std::size_t>(x);
+        filmRawBgr[0] = ldg_f(planes.blueSensitive + offset);
+        filmRawBgr[1] = ldg_f(planes.greenSensitive + offset);
+        filmRawBgr[2] = ldg_f(planes.redSensitive + offset);
+    }
+
     template <typename Params>
     __global__ void dir_raw_correction_source_build_kernel(
         Params params,
-        DirRawCorrectionOutputs outputs) {
-        if (!params.src || params.srcRowBytes == 0) {
+        DirRawCorrectionOutputs outputs,
+        JuicerCuda::CameraFilmLinearExposurePlanes cameraFilmLinear) {
+        const bool useCameraFilmLinear =
+            camera_film_linear_planes_active_device(cameraFilmLinear);
+        if (!useCameraFilmLinear &&
+            (!params.src || params.srcRowBytes == 0)) {
             return;
         }
         if (!outputs.correctionY || !outputs.correctionM || !outputs.correctionC) {
@@ -219,14 +248,16 @@ namespace {
             static_cast<int>(threadIdx.x);
         const int xStep = static_cast<int>(blockDim.x) * static_cast<int>(gridDim.x);
         for (int y = yStart; y < params.height; y += yStep) {
-            const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
             for (int x = xStart; x < params.width; x += xStep) {
-                const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
-                if (!srcPix) {
-                    continue;
+                const float* srcPix = nullptr;
+                if (!useCameraFilmLinear) {
+                    const char* srcRow =
+                        reinterpret_cast<const char*>(params.src) +
+                        static_cast<std::size_t>(y) * params.srcRowBytes;
+                    srcPix = reinterpret_cast<const float*>(
+                        srcRow + static_cast<std::size_t>(x) * pixelBytes);
                 }
 
-                const float rgbIn[3] = {srcPix[0], srcPix[1], srcPix[2]};
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
                 float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
                 float layerPre[3] = {0.0f, 0.0f, 0.0f};
@@ -234,7 +265,27 @@ namespace {
                 intermediates.logERaw = logE_raw;
                 intermediates.logESanitized = logE_sanitized;
                 intermediates.layerPre = layerPre;
-                compute_logE_and_layer_pre_device(params, rgbIn, intermediates);
+                if (useCameraFilmLinear) {
+                    float filmRawBgr[3] = {0.0f, 0.0f, 0.0f};
+                    load_camera_film_linear_bgr_device(
+                        cameraFilmLinear,
+                        x,
+                        y,
+                        filmRawBgr);
+                    compute_logE_from_camera_film_linear_exposure_device(
+                        params,
+                        filmRawBgr,
+                        intermediates);
+                } else {
+                    const float rgbIn[3] = {
+                        srcPix[0],
+                        srcPix[1],
+                        srcPix[2]};
+                    compute_logE_and_layer_pre_device(
+                        params,
+                        rgbIn,
+                        intermediates);
+                }
 
                 const float D_cmy[3] = {layerPre[2], layerPre[1], layerPre[0]};
                 const float layerDensities[3] = {D_cmy[2], D_cmy[1], D_cmy[0]};
@@ -265,8 +316,13 @@ namespace {
     __global__ void dir_raw_correction_channel_source_build_kernel(
         Params params,
         int correctionChannel,
-        float* rawCorrection) {
-        if (!params.src || params.srcRowBytes == 0 || !rawCorrection) {
+        float* rawCorrection,
+        JuicerCuda::CameraFilmLinearExposurePlanes cameraFilmLinear) {
+        const bool useCameraFilmLinear =
+            camera_film_linear_planes_active_device(cameraFilmLinear);
+        if ((!useCameraFilmLinear &&
+             (!params.src || params.srcRowBytes == 0)) ||
+            !rawCorrection) {
             return;
         }
         if (correctionChannel < 0 || correctionChannel >= 3) {
@@ -288,18 +344,16 @@ namespace {
             static_cast<int>(threadIdx.x);
         const int xStep = static_cast<int>(blockDim.x) * static_cast<int>(gridDim.x);
         for (int y = yStart; y < params.height; y += yStep) {
-            const char* srcRow =
-                reinterpret_cast<const char*>(params.src) +
-                static_cast<std::size_t>(y) * params.srcRowBytes;
             for (int x = xStart; x < params.width; x += xStep) {
-                const float* srcPix =
-                    reinterpret_cast<const float*>(
+                const float* srcPix = nullptr;
+                if (!useCameraFilmLinear) {
+                    const char* srcRow =
+                        reinterpret_cast<const char*>(params.src) +
+                        static_cast<std::size_t>(y) * params.srcRowBytes;
+                    srcPix = reinterpret_cast<const float*>(
                         srcRow + static_cast<std::size_t>(x) * pixelBytes);
-                if (!srcPix) {
-                    continue;
                 }
 
-                const float rgbIn[3] = {srcPix[0], srcPix[1], srcPix[2]};
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
                 float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
                 float layerPre[3] = {0.0f, 0.0f, 0.0f};
@@ -307,7 +361,27 @@ namespace {
                 intermediates.logERaw = logE_raw;
                 intermediates.logESanitized = logE_sanitized;
                 intermediates.layerPre = layerPre;
-                compute_logE_and_layer_pre_device(params, rgbIn, intermediates);
+                if (useCameraFilmLinear) {
+                    float filmRawBgr[3] = {0.0f, 0.0f, 0.0f};
+                    load_camera_film_linear_bgr_device(
+                        cameraFilmLinear,
+                        x,
+                        y,
+                        filmRawBgr);
+                    compute_logE_from_camera_film_linear_exposure_device(
+                        params,
+                        filmRawBgr,
+                        intermediates);
+                } else {
+                    const float rgbIn[3] = {
+                        srcPix[0],
+                        srcPix[1],
+                        srcPix[2]};
+                    compute_logE_and_layer_pre_device(
+                        params,
+                        rgbIn,
+                        intermediates);
+                }
 
                 const float D_cmy[3] = {layerPre[2], layerPre[1], layerPre[0]};
                 const float layerDensities[3] = {D_cmy[2], D_cmy[1], D_cmy[0]};
@@ -328,8 +402,13 @@ namespace {
         Params params,
         float* logRawB,
         float* logRawG,
-        float* logRawR) {
-        if (!params.src || params.srcRowBytes == 0 || !logRawB || !logRawG || !logRawR) {
+        float* logRawR,
+        JuicerCuda::CameraFilmLinearExposurePlanes cameraFilmLinear) {
+        const bool useCameraFilmLinear =
+            camera_film_linear_planes_active_device(cameraFilmLinear);
+        if ((!useCameraFilmLinear &&
+             (!params.src || params.srcRowBytes == 0)) ||
+            !logRawB || !logRawG || !logRawR) {
             return;
         }
 
@@ -348,14 +427,16 @@ namespace {
             static_cast<int>(threadIdx.x);
         const int xStep = static_cast<int>(blockDim.x) * static_cast<int>(gridDim.x);
         for (int y = yStart; y < params.height; y += yStep) {
-            const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
             for (int x = xStart; x < params.width; x += xStep) {
-                const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
-                if (!srcPix) {
-                    continue;
+                const float* srcPix = nullptr;
+                if (!useCameraFilmLinear) {
+                    const char* srcRow =
+                        reinterpret_cast<const char*>(params.src) +
+                        static_cast<std::size_t>(y) * params.srcRowBytes;
+                    srcPix = reinterpret_cast<const float*>(
+                        srcRow + static_cast<std::size_t>(x) * pixelBytes);
                 }
 
-                const float rgbIn[3] = {srcPix[0], srcPix[1], srcPix[2]};
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
                 float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
                 float layerPre[3] = {0.0f, 0.0f, 0.0f};
@@ -363,7 +444,27 @@ namespace {
                 intermediates.logERaw = logE_raw;
                 intermediates.logESanitized = logE_sanitized;
                 intermediates.layerPre = layerPre;
-                compute_logE_and_layer_pre_device(params, rgbIn, intermediates);
+                if (useCameraFilmLinear) {
+                    float filmRawBgr[3] = {0.0f, 0.0f, 0.0f};
+                    load_camera_film_linear_bgr_device(
+                        cameraFilmLinear,
+                        x,
+                        y,
+                        filmRawBgr);
+                    compute_logE_from_camera_film_linear_exposure_device(
+                        params,
+                        filmRawBgr,
+                        intermediates);
+                } else {
+                    const float rgbIn[3] = {
+                        srcPix[0],
+                        srcPix[1],
+                        srcPix[2]};
+                    compute_logE_and_layer_pre_device(
+                        params,
+                        rgbIn,
+                        intermediates);
+                }
 
                 const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
                 logRawB[idx] = logE_raw[0];
@@ -670,13 +771,21 @@ cudaError_t build_spatial_dir_impl(
     const float tailWeight2 = request.tails[2].weight;
     void* cudaStreamOpaque = request.streamOpaque;
     JuicerCuda::SpatialDirBuildProfile* profile = request.profile;
-    if (!params.src || params.srcRowBytes == 0) {
-        return cudaErrorInvalidValue;
-    }
     if (params.width <= 0 || params.height <= 0) {
         return cudaSuccess;
     }
-    if (!(params.nComponents == 3 || params.nComponents == 4)) {
+    const bool anyCameraFilmLinearPlane =
+        request.cameraFilmLinear.redSensitive ||
+        request.cameraFilmLinear.greenSensitive ||
+        request.cameraFilmLinear.blueSensitive;
+    const bool useCameraFilmLinear = valid_camera_film_linear_planes(
+        request.cameraFilmLinear,
+        params.width,
+        params.height);
+    if ((anyCameraFilmLinearPlane && !useCameraFilmLinear) ||
+        (!useCameraFilmLinear &&
+         (!params.src || params.srcRowBytes == 0 ||
+          !(params.nComponents == 3 || params.nComponents == 4)))) {
         return cudaErrorInvalidValue;
     }
     const bool haveComponentStreamedYvvScratch =
@@ -771,7 +880,8 @@ cudaError_t build_spatial_dir_impl(
         outputs.logRawR = logRawR;
         dir_raw_correction_source_build_kernel<<<blocks2D, threads2D, 0, stream>>>(
             params,
-            outputs);
+            outputs,
+            request.cameraFilmLinear);
         mark_launch(
             profile ? &profile->correction : nullptr,
             profile ? &profile->correctionLaunches : nullptr);
@@ -793,7 +903,8 @@ cudaError_t build_spatial_dir_impl(
         dir_raw_correction_channel_source_build_kernel<<<blocks2D, threads2D, 0, stream>>>(
             params,
             channel,
-            rawCorrectionY);
+            rawCorrectionY,
+            request.cameraFilmLinear);
         mark_launch(
             profile ? &profile->correction : nullptr,
             profile ? &profile->correctionLaunches : nullptr);
@@ -1388,17 +1499,27 @@ cudaError_t build_spatial_dir_impl(
 template <typename Params>
 cudaError_t build_spatial_dir_cached_log_raw_impl(
     const Params& params,
+    JuicerCuda::CameraFilmLinearExposurePlanes cameraFilmLinear,
     float* logRawB,
     float* logRawG,
     float* logRawR,
     void* cudaStreamOpaque) {
-    if (!params.src || params.srcRowBytes == 0 || !logRawB || !logRawG || !logRawR) {
-        return cudaErrorInvalidValue;
-    }
     if (params.width <= 0 || params.height <= 0) {
         return cudaSuccess;
     }
-    if (!(params.nComponents == 3 || params.nComponents == 4)) {
+    const bool anyCameraFilmLinearPlane =
+        cameraFilmLinear.redSensitive ||
+        cameraFilmLinear.greenSensitive ||
+        cameraFilmLinear.blueSensitive;
+    const bool useCameraFilmLinear = valid_camera_film_linear_planes(
+        cameraFilmLinear,
+        params.width,
+        params.height);
+    if (!logRawB || !logRawG || !logRawR ||
+        (anyCameraFilmLinearPlane && !useCameraFilmLinear) ||
+        (!useCameraFilmLinear &&
+         (!params.src || params.srcRowBytes == 0 ||
+          !(params.nComponents == 3 || params.nComponents == 4)))) {
         return cudaErrorInvalidValue;
     }
 
@@ -1411,7 +1532,8 @@ cudaError_t build_spatial_dir_cached_log_raw_impl(
         params,
         logRawB,
         logRawG,
-        logRawR);
+        logRawR,
+        cameraFilmLinear);
     return cudaGetLastError();
 }
 
@@ -1426,6 +1548,27 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(
     }
     return build_spatial_dir_cached_log_raw_impl(
         *hParams,
+        {},
+        logRawB,
+        logRawG,
+        logRawR,
+        cudaStreamOpaque);
+}
+
+extern "C" cudaError_t
+juicer_cuda_build_direct_spatial_dir_cached_log_raw_from_camera_film_linear(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    JuicerCuda::CameraFilmLinearExposurePlanes cameraFilmLinear,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
+    void* cudaStreamOpaque) {
+    if (!hParams) {
+        return cudaErrorInvalidValue;
+    }
+    return build_spatial_dir_cached_log_raw_impl(
+        *hParams,
+        cameraFilmLinear,
         logRawB,
         logRawG,
         logRawR,
@@ -1461,6 +1604,27 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir_cached_log_raw(
     }
     return build_spatial_dir_cached_log_raw_impl(
         *hParams,
+        {},
+        logRawB,
+        logRawG,
+        logRawR,
+        cudaStreamOpaque);
+}
+
+extern "C" cudaError_t
+juicer_cuda_build_print_spatial_dir_cached_log_raw_from_camera_film_linear(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    JuicerCuda::CameraFilmLinearExposurePlanes cameraFilmLinear,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
+    void* cudaStreamOpaque) {
+    if (!hParams) {
+        return cudaErrorInvalidValue;
+    }
+    return build_spatial_dir_cached_log_raw_impl(
+        *hParams,
+        cameraFilmLinear,
         logRawB,
         logRawG,
         logRawR,
@@ -3028,4 +3192,319 @@ __global__ void develop_film_density_from_raw_kernel(
             outY[idx] = D_cmy[2];
         }
     }
+}
+
+namespace {
+
+    bool valid_camera_film_linear_planes(
+        const JuicerCuda::CameraFilmLinearExposurePlanes& planes,
+        int width,
+        int height) noexcept {
+        return planes.redSensitive &&
+               planes.greenSensitive &&
+               planes.blueSensitive &&
+               planes.redSensitive != planes.greenSensitive &&
+               planes.redSensitive != planes.blueSensitive &&
+               planes.greenSensitive != planes.blueSensitive &&
+               width > 0 &&
+               height > 0 &&
+               planes.rowStrideFloats >= static_cast<std::size_t>(width) &&
+               planes.rowStrideFloats <=
+                   std::numeric_limits<std::size_t>::max() /
+                       static_cast<std::size_t>(height);
+    }
+
+    template <typename Params>
+    __global__ void camera_film_linear_exposure_kernel(
+        Params params,
+        JuicerCuda::CameraFilmLinearExposurePlanes planes) {
+        const std::size_t width = static_cast<std::size_t>(params.width);
+        const std::size_t height = static_cast<std::size_t>(params.height);
+        const std::size_t yStep =
+            static_cast<std::size_t>(blockDim.y) *
+            static_cast<std::size_t>(gridDim.y);
+        const std::size_t xStep =
+            static_cast<std::size_t>(blockDim.x) *
+            static_cast<std::size_t>(gridDim.x);
+        const std::size_t pixelBytes =
+            static_cast<std::size_t>(params.nComponents) * sizeof(float);
+        for (std::size_t y =
+                 static_cast<std::size_t>(blockIdx.y) *
+                     static_cast<std::size_t>(blockDim.y) +
+                 static_cast<std::size_t>(threadIdx.y);
+             y < height;
+             y += yStep) {
+            const char* sourceRow =
+                reinterpret_cast<const char*>(params.src) +
+                y * params.srcRowBytes;
+            for (std::size_t x =
+                     static_cast<std::size_t>(blockIdx.x) *
+                         static_cast<std::size_t>(blockDim.x) +
+                     static_cast<std::size_t>(threadIdx.x);
+                 x < width;
+                 x += xStep) {
+                const float* source = reinterpret_cast<const float*>(
+                    sourceRow + x * pixelBytes);
+                const float rgb[3] = {source[0], source[1], source[2]};
+                // Film storage is B/G/R-sensitive; the binding names the semantic planes.
+                float filmRawBgr[3] = {0.0f, 0.0f, 0.0f};
+                compute_camera_film_linear_exposure_device(
+                    params,
+                    rgb,
+                    filmRawBgr);
+                const std::size_t planeOffset = y * planes.rowStrideFloats + x;
+                planes.blueSensitive[planeOffset] = filmRawBgr[0];
+                planes.greenSensitive[planeOffset] = filmRawBgr[1];
+                planes.redSensitive[planeOffset] = filmRawBgr[2];
+            }
+        }
+    }
+
+    template <typename Params>
+    cudaError_t launch_camera_film_linear_exposure(
+        const Params* params,
+        JuicerCuda::CameraFilmLinearExposurePlanes planes,
+        void* cudaStreamOpaque) {
+        if (!params || !params->src || params->srcRowBytes == 0 ||
+            !(params->nComponents == 3 || params->nComponents == 4) ||
+            !valid_camera_film_linear_planes(
+                planes,
+                params->width,
+                params->height)) {
+            return cudaErrorInvalidValue;
+        }
+        cudaStream_t stream = cudaStreamOpaque
+                                  ? reinterpret_cast<cudaStream_t>(
+                                        cudaStreamOpaque)
+                                  : nullptr;
+        dim3 threads(32, 8);
+        dim3 blocks(
+            static_cast<unsigned int>(
+                (params->width + static_cast<int>(threads.x) - 1) /
+                static_cast<int>(threads.x)),
+            static_cast<unsigned int>(
+                (params->height + static_cast<int>(threads.y) - 1) /
+                static_cast<int>(threads.y)));
+        camera_film_linear_exposure_kernel<<<blocks, threads, 0, stream>>>(
+            *params,
+            planes);
+        return cudaGetLastError();
+    }
+
+    template <typename Params>
+    __global__ void develop_camera_film_linear_density_kernel(
+        Params params,
+        JuicerCuda::CameraFilmLinearExposurePlanes planes,
+        float* outC,
+        float* outM,
+        float* outY) {
+        const JuicerCuda::FilmDevelopPayload& develop = params.filmDevelop;
+        const bool useSpatialDir =
+            juicer_cuda_spatial_dir_filtered_correction_active_device(develop);
+        const std::size_t width = static_cast<std::size_t>(params.width);
+        const std::size_t height = static_cast<std::size_t>(params.height);
+        const std::size_t yStep =
+            static_cast<std::size_t>(blockDim.y) *
+            static_cast<std::size_t>(gridDim.y);
+        const std::size_t xStep =
+            static_cast<std::size_t>(blockDim.x) *
+            static_cast<std::size_t>(gridDim.x);
+        for (std::size_t y =
+                 static_cast<std::size_t>(blockIdx.y) *
+                     static_cast<std::size_t>(blockDim.y) +
+                 static_cast<std::size_t>(threadIdx.y);
+             y < height;
+             y += yStep) {
+            for (std::size_t x =
+                     static_cast<std::size_t>(blockIdx.x) *
+                         static_cast<std::size_t>(blockDim.x) +
+                     static_cast<std::size_t>(threadIdx.x);
+                 x < width;
+                 x += xStep) {
+                const std::size_t frameOffset = y * width + x;
+                const std::size_t planeOffset =
+                    y * planes.rowStrideFloats + x;
+                const float filmRawBgr[3] = {
+                    planes.blueSensitive[planeOffset],
+                    planes.greenSensitive[planeOffset],
+                    planes.redSensitive[planeOffset]};
+
+                float densityCmy[3] = {0.0f, 0.0f, 0.0f};
+                if (useSpatialDir) {
+                    float logRawBgr[3] = {0.0f, 0.0f, 0.0f};
+                    if (juicer_cuda_spatial_dir_cached_log_raw_active_device(
+                            develop)) {
+                        juicer_cuda_load_spatial_dir_cached_log_raw_device(
+                            develop,
+                            frameOffset,
+                            logRawBgr);
+                    } else {
+                        float logSanitizedBgr[3] = {0.0f, 0.0f, 0.0f};
+                        float layerPreBgr[3] = {0.0f, 0.0f, 0.0f};
+                        FilmDevelopIntermediatesDevice intermediates{};
+                        intermediates.logERaw = logRawBgr;
+                        intermediates.logESanitized = logSanitizedBgr;
+                        intermediates.layerPre = layerPreBgr;
+                        compute_logE_from_camera_film_linear_exposure_device(
+                            params,
+                            filmRawBgr,
+                            intermediates);
+                    }
+                    juicer_cuda_develop_dir_final_device(
+                        develop,
+                        logRawBgr,
+                        frameOffset,
+                        densityCmy);
+                } else {
+                    float logRawBgr[3] = {0.0f, 0.0f, 0.0f};
+                    float logSanitizedBgr[3] = {0.0f, 0.0f, 0.0f};
+                    float layerPreBgr[3] = {0.0f, 0.0f, 0.0f};
+                    FilmDevelopIntermediatesDevice intermediates{};
+                    intermediates.logERaw = logRawBgr;
+                    intermediates.logESanitized = logSanitizedBgr;
+                    intermediates.layerPre = layerPreBgr;
+                    compute_logE_from_camera_film_linear_exposure_device(
+                        params,
+                        filmRawBgr,
+                        intermediates);
+
+                    if (develop.dir.active) {
+                        float correctedLogBgr[3] = {
+                            logSanitizedBgr[0],
+                            logSanitizedBgr[1],
+                            logSanitizedBgr[2]};
+                        apply_dir_runtime_logE_device(
+                            correctedLogBgr,
+                            layerPreBgr,
+                            develop.dir,
+                            develop.densB,
+                            develop.densG,
+                            develop.densR);
+                        const JuicerCuda::DeviceCurveView curveB =
+                            develop.dirPrecorrected
+                                ? develop.dirDensB
+                                : develop.densB;
+                        const JuicerCuda::DeviceCurveView curveG =
+                            develop.dirPrecorrected
+                                ? develop.dirDensG
+                                : develop.densG;
+                        const JuicerCuda::DeviceCurveView curveR =
+                            develop.dirPrecorrected
+                                ? develop.dirDensR
+                                : develop.densR;
+                        densityCmy[2] = sample_density_at_logE_device(
+                            curveB,
+                            correctedLogBgr[0],
+                            develop.gammaFactorB);
+                        densityCmy[1] = sample_density_at_logE_device(
+                            curveG,
+                            correctedLogBgr[1],
+                            develop.gammaFactorG);
+                        densityCmy[0] = sample_density_at_logE_device(
+                            curveR,
+                            correctedLogBgr[2],
+                            develop.gammaFactorR);
+                    } else {
+                        densityCmy[0] = layerPreBgr[2];
+                        densityCmy[1] = layerPreBgr[1];
+                        densityCmy[2] = layerPreBgr[0];
+                    }
+                }
+
+                outC[frameOffset] = densityCmy[0];
+                outM[frameOffset] = densityCmy[1];
+                outY[frameOffset] = densityCmy[2];
+            }
+        }
+    }
+
+    template <typename Params>
+    cudaError_t launch_camera_film_linear_capture_density(
+        const Params* params,
+        JuicerCuda::CameraFilmLinearExposurePlanes planes,
+        float* outC,
+        float* outM,
+        float* outY,
+        void* cudaStreamOpaque) {
+        if (!params || !outC || !outM || !outY ||
+            !valid_camera_film_linear_planes(
+                planes,
+                params ? params->width : 0,
+                params ? params->height : 0)) {
+            return cudaErrorInvalidValue;
+        }
+        cudaStream_t stream = cudaStreamOpaque
+                                  ? reinterpret_cast<cudaStream_t>(
+                                        cudaStreamOpaque)
+                                  : nullptr;
+        dim3 threads(32, 8);
+        dim3 blocks(
+            static_cast<unsigned int>(
+                (params->width + static_cast<int>(threads.x) - 1) /
+                static_cast<int>(threads.x)),
+            static_cast<unsigned int>(
+                (params->height + static_cast<int>(threads.y) - 1) /
+                static_cast<int>(threads.y)));
+        develop_camera_film_linear_density_kernel<<<
+            blocks,
+            threads,
+            0,
+            stream>>>(*params, planes, outC, outM, outY);
+        return cudaGetLastError();
+    }
+
+} // namespace
+
+extern "C" cudaError_t juicer_cuda_direct_camera_film_linear_exposure(
+    const JuicerCuda::DirectPipelineRunParams* params,
+    JuicerCuda::CameraFilmLinearExposurePlanes planes,
+    void* cudaStreamOpaque) {
+    return launch_camera_film_linear_exposure(
+        params,
+        planes,
+        cudaStreamOpaque);
+}
+
+extern "C" cudaError_t juicer_cuda_print_camera_film_linear_exposure(
+    const JuicerCuda::PrintPipelineRunParams* params,
+    JuicerCuda::CameraFilmLinearExposurePlanes planes,
+    void* cudaStreamOpaque) {
+    return launch_camera_film_linear_exposure(
+        params,
+        planes,
+        cudaStreamOpaque);
+}
+
+extern "C" cudaError_t
+juicer_cuda_direct_focused_capture_density_from_camera_film_linear(
+    const JuicerCuda::DirectPipelineRunParams* params,
+    JuicerCuda::CameraFilmLinearExposurePlanes planes,
+    float* outC,
+    float* outM,
+    float* outY,
+    void* cudaStreamOpaque) {
+    return launch_camera_film_linear_capture_density(
+        params,
+        planes,
+        outC,
+        outM,
+        outY,
+        cudaStreamOpaque);
+}
+
+extern "C" cudaError_t
+juicer_cuda_print_focused_capture_density_from_camera_film_linear(
+    const JuicerCuda::PrintPipelineRunParams* params,
+    JuicerCuda::CameraFilmLinearExposurePlanes planes,
+    float* outC,
+    float* outM,
+    float* outY,
+    void* cudaStreamOpaque) {
+    return launch_camera_film_linear_capture_density(
+        params,
+        planes,
+        outC,
+        outM,
+        outY,
+        cudaStreamOpaque);
 }

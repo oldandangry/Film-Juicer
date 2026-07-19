@@ -111,13 +111,15 @@ namespace JuicerCuda {
         bool registry_freeze_drain_bump_resume(
             const DeviceContextKey& key,
             const char* reason) noexcept;
+        bool registry_begin_owner_retire(
+            const DeviceContextKey& key,
+            RegistrySnapshotGenerations& outGenerations) noexcept;
         bool registry_retire(
             RegistryHandle handle,
             RegistryRetireReason reason,
             const DeviceContextKey* managerKey = nullptr) noexcept;
 
         // Read-only query surface; these helpers must not mutate manager state.
-        AllocatorBackendMode query_allocator_backend_mode(const DeviceContextKey& key) noexcept;
 
         // Submission planning and execution entry points.
         bool begin_submission(
@@ -137,6 +139,10 @@ namespace JuicerCuda {
         bool command_freeze_drain_bump_resume(
             const DeviceContextKey& key,
             const char* reason,
+            std::string& outError);
+        bool command_begin_context_owner_retire(
+            const DeviceContextKey& key,
+            RegistrySnapshotGenerations& outGenerations,
             std::string& outError);
 
         bool command_retire_context_reset(
@@ -394,8 +400,6 @@ namespace JuicerCuda {
             std::atomic<std::uint64_t> pinnedStagingTrimBytes{0};
             std::atomic<std::uint64_t> transientNonManagerBytes{0};
             std::atomic<std::uint64_t> allocatorEffectiveHeadroomBytes{0};
-            std::atomic<std::uint64_t> allocatorPoolReservedBytes{0};
-            std::atomic<std::uint64_t> allocatorPoolUsedBytes{0};
             std::atomic<std::uint64_t> transientReservationRequests{0};
             std::atomic<std::uint64_t> transientReservationGranted{0};
             std::atomic<std::uint64_t> transientReservationDeferred{0};

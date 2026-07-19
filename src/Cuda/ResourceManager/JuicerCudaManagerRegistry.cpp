@@ -1586,6 +1586,64 @@ namespace JuicerCuda {
             }
         }
 
+        bool registry_begin_owner_retire(
+            const DeviceContextKey& key,
+            RegistrySnapshotGenerations& outGenerations) noexcept {
+            outGenerations = RegistrySnapshotGenerations{};
+            try {
+                MetadataMutationGuard mutationGuard(
+                    "registry_begin_owner_retire",
+                    &key);
+                if (!mutationGuard.ok()) {
+                    return false;
+                }
+                RegistryState& state = registry_state();
+                std::lock_guard<std::mutex> lock(state.mutex);
+                const auto it = state.byDeviceContext.find(key);
+                if (it == state.byDeviceContext.end()) {
+                    return false;
+                }
+                RegistryEntry& entry = it->second;
+                if (entry.activeSubmissionCount != 0) {
+                    trace_registry_event_current(
+                        &key,
+                        &entry,
+                        "owner_retire_begin",
+                        false,
+                        "active_submissions",
+                        0);
+                    return false;
+                }
+                outGenerations.registryGeneration = entry.registryGeneration;
+                outGenerations.contextEpoch = entry.contextEpoch;
+                if (entry.lifecycleState == ContextLifecycleState::Draining) {
+                    return true;
+                }
+                if (!transition_entry_locked(
+                        key,
+                        entry,
+                        LifecycleTransitionRequest{
+                            .expectedState = ContextLifecycleState::Active,
+                            .desiredState = ContextLifecycleState::Freezing},
+                        "owner_retire_freeze") ||
+                    !transition_entry_locked(
+                        key,
+                        entry,
+                        LifecycleTransitionRequest{
+                            .expectedState = ContextLifecycleState::Freezing,
+                            .desiredState = ContextLifecycleState::Draining},
+                        "owner_retire_drain")) {
+                    return false;
+                }
+                entry.lastTouchedMs = monotonic_time_ms();
+                return true;
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+                outGenerations = RegistrySnapshotGenerations{};
+                return false;
+            }
+        }
+
         bool registry_get(const DeviceContextKey& key, RegistryHandle& outHandle) noexcept {
             try {
                 RegistryState& state = registry_state();
@@ -1645,7 +1703,8 @@ namespace JuicerCuda {
                         0);
                     return false;
                 }
-                if (reason == RegistryRetireReason::ContextReset) {
+                if (reason == RegistryRetireReason::ContextReset &&
+                    entry.lifecycleState != ContextLifecycleState::Draining) {
                     const bool barrierOk = run_freeze_drain_bump_resume_locked(
                         deviceKey,
                         entry,
