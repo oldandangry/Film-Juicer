@@ -620,9 +620,9 @@ namespace Profiles {
 
         std::string selected_profile_diagnostic(
             const SelectedProfileContext& ctx,
-            std::string field,
-            std::string expected,
-            std::string actual) {
+            const std::string& field,
+            const std::string& expected,
+            const std::string& actual) {
             std::ostringstream oss;
             oss << "MalformedRequiredProfileData phase=2"
                 << " profile=" << (ctx.key.empty() ? "<unknown>" : ctx.key)

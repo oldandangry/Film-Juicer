@@ -6,7 +6,6 @@
 namespace JuicerProcess::detail {
 
     struct GrainStaticInstanceState final {
-        std::uint64_t registryGeneration = 0;
         std::uint64_t latestSnapshotId = 0;
         bool active = false;
     };
@@ -25,7 +24,6 @@ namespace JuicerProcess::detail {
     enum class GrainStaticMembershipResult : std::uint8_t {
         Applied,
         Idempotent,
-        StaleRegistryGeneration,
         StaleSnapshot,
         ConflictingEqualSnapshot,
         InvalidInput
@@ -44,37 +42,30 @@ namespace JuicerProcess::detail {
     inline GrainStaticMembershipResult apply_grain_static_membership(
         GrainStaticInstanceMap& instances,
         std::uint64_t instanceToken,
-        std::uint64_t registryGeneration,
         std::uint64_t snapshotId,
         bool active,
         GrainStaticMembershipChange& outChange) {
         outChange = GrainStaticMembershipChange{};
-        if (instanceToken == 0 || registryGeneration == 0 || snapshotId == 0) {
+        if (instanceToken == 0 || snapshotId == 0) {
             return GrainStaticMembershipResult::InvalidInput;
         }
 
         const auto current = instances.find(instanceToken);
         if (current != instances.end()) {
             const GrainStaticInstanceState& state = current->second;
-            if (registryGeneration < state.registryGeneration) {
-                return GrainStaticMembershipResult::StaleRegistryGeneration;
+            if (snapshotId < state.latestSnapshotId) {
+                return GrainStaticMembershipResult::StaleSnapshot;
             }
-            if (registryGeneration == state.registryGeneration) {
-                if (snapshotId < state.latestSnapshotId) {
-                    return GrainStaticMembershipResult::StaleSnapshot;
-                }
-                if (snapshotId == state.latestSnapshotId) {
-                    return active == state.active
-                               ? GrainStaticMembershipResult::Idempotent
-                               : GrainStaticMembershipResult::ConflictingEqualSnapshot;
-                }
+            if (snapshotId == state.latestSnapshotId) {
+                return active == state.active
+                           ? GrainStaticMembershipResult::Idempotent
+                           : GrainStaticMembershipResult::ConflictingEqualSnapshot;
             }
             outChange.previous = state;
             outChange.hadPrevious = true;
         }
 
-        instances[instanceToken] =
-            GrainStaticInstanceState{registryGeneration, snapshotId, active};
+        instances[instanceToken] = GrainStaticInstanceState{snapshotId, active};
         outChange.instanceToken = instanceToken;
         outChange.appliedSnapshotId = snapshotId;
         outChange.applied = true;

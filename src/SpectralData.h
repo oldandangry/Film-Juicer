@@ -62,7 +62,7 @@ namespace Spectral {
             lambda_nm.reserve(samples.size());
             linear.reserve(samples.size());
             float peak = 0.0f;
-            for (auto& p : samples) {
+            for (const auto& p : samples) {
                 lambda_nm.push_back(p.first);
                 float lin = std::pow(10.0f, p.second);
                 if (!std::isfinite(lin) || lin < 0.0f) {
@@ -687,6 +687,7 @@ namespace Spectral {
     // ============================================================================
 
     inline void log_spectral_warning(const std::string& message) {
+        (void)message;
         if (JTRACE_ENABLED(1)) {
             JTRACE("SPECTRAL", "WARN: " + message);
         }

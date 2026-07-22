@@ -1,12 +1,20 @@
 #include "Cuda/JuicerCudaFilmFoundationPayloads.h"
 
 #include <cstddef>
-#include <cstring>
+#include <memory>
 
 #include "Hash.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 namespace {
+
+    template <typename Payload>
+    void reset_payload_to_defaults(Payload& payload) noexcept {
+        // Clang cannot synthesize assignment for payloads containing arrays
+        // of restrict-qualified pointers, so reconstruct the aggregate in place.
+        std::destroy_at(std::addressof(payload));
+        std::construct_at(std::addressof(payload));
+    }
 
     // NOLINTBEGIN(bugprone-easily-swappable-parameters) STBN helpers mirror the reviewed seed formula.
     int stbn_offset(
@@ -107,8 +115,8 @@ namespace JuicerCuda {
         GrainPayload& outGrain,
         GrainKernelPayload& outKernels,
         std::string& diagnostic) {
-        std::memset(&outGrain, 0, sizeof(outGrain));
-        std::memset(&outKernels, 0, sizeof(outKernels));
+        reset_payload_to_defaults(outGrain);
+        reset_payload_to_defaults(outKernels);
         diagnostic.clear();
 
         if (!recipe.active) {
@@ -342,8 +350,8 @@ namespace JuicerCuda {
         GrainPayload& outDefects,
         GateWeavePayload& outWeave,
         std::string& diagnostic) {
-        std::memset(&outDefects, 0, sizeof(outDefects));
-        std::memset(&outWeave, 0, sizeof(outWeave));
+        reset_payload_to_defaults(outDefects);
+        reset_payload_to_defaults(outWeave);
         diagnostic.clear();
 
         if (!descriptor.filmActive && !descriptor.gateOutputActive) {

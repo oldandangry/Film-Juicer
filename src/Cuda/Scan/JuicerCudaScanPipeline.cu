@@ -1112,12 +1112,6 @@ namespace {
 
 } // namespace
 
-__global__ void halation_apply_kernel(
-    float* inOut,
-    const float* blurred,
-    int n,
-    float strength);
-
 __global__ void develop_print_density_kernel(
     JuicerCuda::PipelineRunParams params,
     float* ioC,

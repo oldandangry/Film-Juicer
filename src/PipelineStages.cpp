@@ -430,7 +430,7 @@ namespace Pipeline {
 
     bool compute_preflash_raw(
         const WorkingState& ws,
-        const Print::Runtime& prt,
+        const Print::Runtime& printRt,
         float outRaw[3],
         int& outShapeK) {
         outShapeK = Spectral::gShape.K;
@@ -446,7 +446,7 @@ namespace Pipeline {
             return false;
         }
 
-        const Print::Profile& p = prt.profile;
+        const Print::Profile& p = printRt.profile;
         if (static_cast<int>(p.sensC_log.linear.size()) < outShapeK ||
             static_cast<int>(p.sensM_log.linear.size()) < outShapeK ||
             static_cast<int>(p.sensY_log.linear.size()) < outShapeK) {
@@ -457,9 +457,9 @@ namespace Pipeline {
             ws.hasBaseline &&
             static_cast<int>(ws.tablesView.baseDensityMin.size()) == outShapeK;
 
-        const float yAmount = compose_dichroic_amount(prt.neutralY, 0.0f);
-        const float mAmount = compose_dichroic_amount(prt.neutralM, 0.0f);
-        const float cAmount = compose_dichroic_amount(prt.neutralC, 0.0f);
+        const float yAmount = compose_dichroic_amount(printRt.neutralY, 0.0f);
+        const float mAmount = compose_dichroic_amount(printRt.neutralM, 0.0f);
+        const float cAmount = compose_dichroic_amount(printRt.neutralC, 0.0f);
 
         double accumC = 0.0;
         double accumM = 0.0;
@@ -467,20 +467,20 @@ namespace Pipeline {
 
         for (int i = 0; i < outShapeK; ++i) {
             const size_t idx = static_cast<size_t>(i);
-            const float Ee = (prt.illumEnlarger.linear.size() > idx)
-                                 ? prt.illumEnlarger.linear[idx]
+            const float Ee = (printRt.illumEnlarger.linear.size() > idx)
+                                 ? printRt.illumEnlarger.linear[idx]
                                  : 1.0f;
             const float fY = blend_dichroic_filter_linear(
                 DichroicFilterBlendSample{
-                    (prt.filterY.linear.size() > idx) ? prt.filterY.linear[idx] : 1.0f,
+                    (printRt.filterY.linear.size() > idx) ? printRt.filterY.linear[idx] : 1.0f,
                     yAmount});
             const float fM = blend_dichroic_filter_linear(
                 DichroicFilterBlendSample{
-                    (prt.filterM.linear.size() > idx) ? prt.filterM.linear[idx] : 1.0f,
+                    (printRt.filterM.linear.size() > idx) ? printRt.filterM.linear[idx] : 1.0f,
                     mAmount});
             const float fC = blend_dichroic_filter_linear(
                 DichroicFilterBlendSample{
-                    (prt.filterC.linear.size() > idx) ? prt.filterC.linear[idx] : 1.0f,
+                    (printRt.filterC.linear.size() > idx) ? printRt.filterC.linear[idx] : 1.0f,
                     cAmount});
             const float illumFiltered = Ee * (fY * fM * fC);
 

@@ -516,10 +516,6 @@ namespace JuicerCuda {
     static void free_scan_medium(Resources& resources, Resources::DeviceScanMedium& m) noexcept;
     static void free_scan_lut(Resources& resources, Resources::DeviceSpectralLut& lut) noexcept;
     static void free_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& k) noexcept;
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    static bool retire_tables_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError);
-    static bool retire_scan_medium_locked(Resources& resources, Resources::DeviceScanMedium& m, void* cudaStreamOpaque, const char* label, std::string& outError);
-#endif
     static void free_optics_scratch(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque) noexcept;
     static void free_spatial_dir_scratch(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque) noexcept;
     static void free_shared_tmp_plane(Resources& resources) noexcept;
@@ -763,159 +759,10 @@ namespace JuicerCuda {
 
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    static bool add_u64_saturating(std::uint64_t lhs, std::uint64_t rhs, std::uint64_t& out) noexcept {
-        if (lhs > (std::numeric_limits<std::uint64_t>::max() - rhs)) {
-            out = std::numeric_limits<std::uint64_t>::max();
-            return false;
-        }
-        out = lhs + rhs;
-        return true;
-    }
-
-    static std::uint64_t bytes_for_count_u64(
-        std::size_t count,
-        std::size_t elementBytes,
-        bool& overflow) noexcept {
-        if (overflow) {
-            return std::numeric_limits<std::uint64_t>::max();
-        }
-        if (count == 0 || elementBytes == 0) {
-            return 0;
-        }
-
-        const std::uint64_t count64 = static_cast<std::uint64_t>(count);
-        const std::uint64_t elementBytes64 = static_cast<std::uint64_t>(elementBytes);
-        if (count64 > (std::numeric_limits<std::uint64_t>::max() / elementBytes64)) {
-            overflow = true;
-            return std::numeric_limits<std::uint64_t>::max();
-        }
-        return count64 * elementBytes64;
-    }
-
-    struct ResidencyByteTarget {
-        std::uint64_t& total;
-        bool& overflow;
-    };
-
-    static void add_residency_bytes(
-        std::uint64_t bytes,
-        ResidencyByteTarget target) noexcept {
-        std::uint64_t next = 0;
-        if (!add_u64_saturating(target.total, bytes, next)) {
-            target.overflow = true;
-        }
-        target.total = next;
-    }
-
-    static void refresh_scratch_residency_state_locked(Resources& resources) noexcept {
-        Resources::ScratchResidencyState next{};
-        next.retainedGeneration = std::max<std::uint64_t>(1ull, resources.scratchResidency.retainedGeneration);
-
-        bool overflow = false;
-        const std::uint64_t opticsPlaneBytes =
-            bytes_for_count_u64(resources.scannerScratch.capacityElements, sizeof(float), overflow);
-        const std::uint64_t spatialDirPlaneBytes =
-            bytes_for_count_u64(resources.spatialDirScratch.capacityElements, sizeof(float), overflow);
-        const std::uint64_t gateMaskBytes =
-            bytes_for_count_u64(resources.scannerScratch.gateMaskCapacityElements, sizeof(float), overflow);
-        const std::uint64_t sharedTmpBytes =
-            bytes_for_count_u64(resources.sharedTmpCapacityElements, sizeof(float), overflow);
-        if (overflow) {
-            next.overflow = true;
-        }
-
-        auto add_candidate_plane = [&](ResourceManager::ScratchPolicyCandidate candidate, bool live, std::uint64_t bytes) {
-            if (!live || bytes == 0) {
-                return;
-            }
-            const std::size_t index = ResourceManager::scratch_policy_candidate_index(candidate);
-            add_residency_bytes(
-                bytes,
-                ResidencyByteTarget{next.candidateLiveBytes[index], next.overflow});
-        };
-
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsBase, resources.scannerScratch.rgbR != nullptr, opticsPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsBase, resources.scannerScratch.rgbG != nullptr, opticsPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsBase, resources.scannerScratch.rgbB != nullptr, opticsPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsBlurred, resources.scannerScratch.blurred != nullptr, opticsPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsAux, resources.scannerScratch.aux != nullptr, opticsPlaneBytes);
-        add_candidate_plane(
-            ResourceManager::ScratchPolicyCandidate::OpticsBase,
-            resources.scannerScratch.grainFrameUniforms != nullptr,
-            sizeof(GrainFrameUniforms));
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGrainLayerWork, resources.scannerScratch.grainTmp != nullptr, opticsPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGrainShared, resources.scannerScratch.grainTmpShared != nullptr, opticsPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGateMask, resources.scannerScratch.gateMask != nullptr, gateMaskBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.rawCorrectionY != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.rawCorrectionM != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.rawCorrectionC != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.filteredCorrectionY != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.filteredCorrectionM != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.filteredCorrectionC != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.filterTempM != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.filterTempC != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.logRawB != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.logRawG != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.logRawR != nullptr, spatialDirPlaneBytes);
-
-        if (resources.sharedTmpPlane) {
-            next.helperSharedBytes = sharedTmpBytes;
-        }
-
-        auto assign_non_policy_bytes = [&](ResourceManager::ScratchHelperNonPolicyAllocation allocation, bool live, std::uint64_t bytes) {
-            if (!live || bytes == 0) {
-                return;
-            }
-            const std::size_t index = ResourceManager::scratch_helper_non_policy_index(allocation);
-            next.helperNonPolicyBytes[index] = bytes;
-            add_residency_bytes(
-                bytes,
-                ResidencyByteTarget{next.helperNonPolicyTotalBytes, next.overflow});
-        };
-
-        assign_non_policy_bytes(
-            ResourceManager::ScratchHelperNonPolicyAllocation::ScanErrorHost,
-            !resources.pendingScanErrorReadbacks.empty(),
-            static_cast<std::uint64_t>(resources.pendingScanErrorReadbacks.size()) * sizeof(int));
-
-        for (std::uint64_t bytes : next.candidateLiveBytes) {
-            add_residency_bytes(
-                bytes,
-                ResidencyByteTarget{next.policyLiveRetainedBytes, next.overflow});
-        }
-        add_residency_bytes(
-            next.helperSharedBytes,
-            ResidencyByteTarget{next.policyLiveRetainedBytes, next.overflow});
-        next.totalLiveRetainedBytes = next.policyLiveRetainedBytes;
-        add_residency_bytes(
-            next.helperNonPolicyTotalBytes,
-            ResidencyByteTarget{next.totalLiveRetainedBytes, next.overflow});
-
-        const bool changed =
-            next.candidateLiveBytes != resources.scratchResidency.candidateLiveBytes ||
-            next.helperNonPolicyBytes != resources.scratchResidency.helperNonPolicyBytes ||
-            next.helperSharedBytes != resources.scratchResidency.helperSharedBytes ||
-            next.helperNonPolicyTotalBytes != resources.scratchResidency.helperNonPolicyTotalBytes ||
-            next.policyLiveRetainedBytes != resources.scratchResidency.policyLiveRetainedBytes ||
-            next.totalLiveRetainedBytes != resources.scratchResidency.totalLiveRetainedBytes ||
-            next.overflow != resources.scratchResidency.overflow;
-        if (changed) {
-            next.retainedGeneration =
-                (resources.scratchResidency.retainedGeneration == std::numeric_limits<std::uint64_t>::max())
-                    ? std::numeric_limits<std::uint64_t>::max()
-                    : std::max<std::uint64_t>(1ull, resources.scratchResidency.retainedGeneration + 1ull);
-        }
-
-        resources.scratchResidency = next;
-    }
-#endif
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static bool allocate_owned_device(
         Resources& resources,
         void** outPtr,
         std::size_t bytes,
-        DeviceAllocationClass allocationClass,
         const char* label,
         std::string& outError) {
         outError.clear();
@@ -927,15 +774,9 @@ namespace JuicerCuda {
 
         std::map<void*, DeviceByteReservation> stagedRecords;
         std::map<void*, DeviceByteReservation>::node_type stagedNode;
-        DeviceAllocationIdentity identity{};
         try {
             stagedRecords.emplace(nullptr, DeviceByteReservation{});
             stagedNode = stagedRecords.extract(stagedRecords.begin());
-            identity.deviceId = resources.ownerContextKey.deviceId;
-            identity.contextKey = resources.ownerContextKey;
-            identity.contextEpoch = resources.contextEpoch;
-            identity.allocationClass = allocationClass;
-            identity.diagnosticIdentity = label;
         } catch (...) {
             JuicerLogging::discard_current_exception();
             outError = "failed to stage owned CUDA allocation record";
@@ -944,8 +785,10 @@ namespace JuicerCuda {
 
         DeviceByteReservation reservation;
         if (!resources.deviceLedger->reserve(
-                identity,
-                static_cast<std::uint64_t>(bytes),
+                DeviceReservationRequest{
+                    .contextKey = resources.ownerContextKey,
+                    .contextEpoch = resources.contextEpoch,
+                    .bytes = static_cast<std::uint64_t>(bytes)},
                 reservation,
                 outError)) {
             return false;
@@ -1037,7 +880,6 @@ namespace JuicerCuda {
     }
 
     static void reap_retire_queue_locked(Resources& resources) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         for (size_t i = 0; i < resources.retireQueue.size();) {
             Resources::RetireEntry& e = resources.retireQueue[i];
             cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(e.doneEventOpaque);
@@ -1109,9 +951,6 @@ namespace JuicerCuda {
             // On unexpected CUDA errors, keep the entry so we don't free too early.
             ++i;
         }
-#else
-        (void)resources;
-#endif
     }
 #endif
 
@@ -1227,7 +1066,6 @@ namespace JuicerCuda {
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static void reap_frame_use_events_locked(Resources& resources) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         std::vector<Resources::PendingFrameUseEvent>& pending = resources.pendingFrameUseEvents;
         for (std::size_t i = 0; i < pending.size();) {
             Resources::PendingFrameUseEvent& entry = pending[i];
@@ -1247,9 +1085,6 @@ namespace JuicerCuda {
             }
             ++i;
         }
-#else
-        (void)resources;
-#endif
     }
 
     static bool wait_for_frame_use_events_locked(
@@ -1574,14 +1409,6 @@ namespace JuicerCuda {
     static void free_spectral_tables(
         Resources& resources,
         Resources::DeviceSpectralTables& t) noexcept;
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    static bool retire_spectral_tables_locked(
-        Resources& resources,
-        Resources::DeviceSpectralTables& t,
-        void* cudaStreamOpaque,
-        const char* label,
-        std::string& outError);
-#endif
 
     static void free_print_payloads(Resources& resources) noexcept {
         free_curve(resources, resources.printDcC);
@@ -1605,13 +1432,6 @@ namespace JuicerCuda {
         }
 #endif
         resources.printIllumK = 0;
-        resources.printIllumYShiftSteps = 0.0f;
-        resources.printIllumMShiftSteps = 0.0f;
-        resources.printIllumCShiftSteps = 0.0f;
-        resources.printIllumNeutralFilterHash = 0;
-        resources.printIllumShapeK = 0;
-        resources.printIllumBuildCounter = 0;
-        resources.printIllumCoreHash = 0;
         resources.printPreflashIllumK = 0;
         resources.printIllumFilteredHostValid = false;
         resources.printPreflashIllumFilteredHostValid = false;
@@ -1636,86 +1456,6 @@ namespace JuicerCuda {
         resources.printPreparationDescriptorHash = 0;
         resources.printPreparationCounter = 0;
     }
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    static bool retire_print_payloads_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        if (!retire_curve_locked(resources, resources.printDcC, cudaStreamOpaque, label, outError))
-            return false;
-        if (!retire_curve_locked(resources, resources.printDcM, cudaStreamOpaque, label, outError))
-            return false;
-        if (!retire_curve_locked(resources, resources.printDcY, cudaStreamOpaque, label, outError))
-            return false;
-        if (!retire_curve_locked(resources, resources.printSensC, cudaStreamOpaque, label, outError))
-            return false;
-        if (!retire_curve_locked(resources, resources.printSensM, cudaStreamOpaque, label, outError))
-            return false;
-        if (!retire_curve_locked(resources, resources.printSensY, cudaStreamOpaque, label, outError))
-            return false;
-        if (!retire_spectral_tables_locked(
-                resources,
-                resources.printFilmDensityTables,
-                cudaStreamOpaque,
-                label,
-                outError))
-            return false;
-
-        if (resources.printIllumFiltered) {
-            const size_t bytes = static_cast<size_t>(std::max(0, resources.printIllumK)) * sizeof(float);
-            if (!retire_ptr_locked(resources, resources.printIllumFiltered, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
-                return false;
-            }
-            resources.printIllumFiltered = nullptr;
-        }
-        if (resources.printPreflashIllumFiltered) {
-            const size_t bytes = static_cast<size_t>(std::max(0, resources.printPreflashIllumK)) * sizeof(float);
-            if (!retire_ptr_locked(resources, resources.printPreflashIllumFiltered, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
-                return false;
-            }
-            resources.printPreflashIllumFiltered = nullptr;
-        }
-
-        resources.printIllumK = 0;
-        resources.printIllumYShiftSteps = 0.0f;
-        resources.printIllumMShiftSteps = 0.0f;
-        resources.printIllumCShiftSteps = 0.0f;
-        resources.printIllumNeutralFilterHash = 0;
-        resources.printIllumShapeK = 0;
-        resources.printIllumBuildCounter = 0;
-        resources.printIllumCoreHash = 0;
-        resources.printPreflashIllumK = 0;
-        resources.printIllumFilteredHostValid = false;
-        resources.printPreflashIllumFilteredHostValid = false;
-
-        resources.printGammaC = 1.0f;
-        resources.printGammaM = 1.0f;
-        resources.printGammaY = 1.0f;
-
-        resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
-        resources.printPreflashValid = false;
-        resources.printPreflashKeyHash = 0;
-        resources.printPreflashShapeK = 0;
-        resources.printBalanceFactorMidgray = 1.0f;
-        resources.printBalanceFactorMidgrayComp = 1.0f;
-        resources.printBalanceNormalizer = 1.0f;
-        resources.printFilmDensityTablesDescriptorHash = 0;
-        resources.printProfileTablesDescriptorHash = 0;
-        resources.printMainIlluminantDescriptorHash = 0;
-        resources.printPreflashIlluminantDescriptorHash = 0;
-        resources.printPreflashRawDescriptorHash = 0;
-        resources.printBalanceDescriptorHash = 0;
-        resources.printPreparationDescriptorHash = 0;
-        resources.printPreparationCounter = 0;
-        return true;
-#endif
-    }
-#endif
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static bool alloc_and_upload_array(Resources& resources, float*& dst, const float* src, int n, void* cudaStreamOpaque, const char* label, std::string& outError) {
@@ -1737,7 +1477,6 @@ namespace JuicerCuda {
                 resources,
                 reinterpret_cast<void**>(&dst),
                 bytes,
-                DeviceAllocationClass::DurableStatic,
                 label,
                 outError)) {
             return false;
@@ -1795,7 +1534,6 @@ namespace JuicerCuda {
                 resources,
                 &dst,
                 bytes,
-                DeviceAllocationClass::DurableStatic,
                 label ? label : "buffer",
                 outError)) {
             return false;
@@ -1961,7 +1699,6 @@ namespace JuicerCuda {
                 resources,
                 reinterpret_cast<void**>(&dst.x),
                 bytes,
-                DeviceAllocationClass::DurableStatic,
                 "curve.x",
                 outError)) {
             free_curve(resources, dst);
@@ -1971,7 +1708,6 @@ namespace JuicerCuda {
                 resources,
                 reinterpret_cast<void**>(&dst.y),
                 bytes,
-                DeviceAllocationClass::DurableStatic,
                 "curve.y",
                 outError)) {
             free_curve(resources, dst);
@@ -2143,7 +1879,6 @@ namespace JuicerCuda {
                 resources,
                 reinterpret_cast<void**>(&dst.y),
                 bytes,
-                DeviceAllocationClass::DurableStatic,
                 label,
                 outError)) {
             free_curve(resources, dst);
@@ -2297,12 +2032,6 @@ namespace JuicerCuda {
                     resources,
                     resources.grainDyeKernel[layer][channel]);
             }
-        }
-        for (int channel = 0; channel < 3; ++channel) {
-            free_gaussian_kernel(resources, resources.halationKernel[channel]);
-            free_gaussian_kernel(
-                resources,
-                resources.halationScatterKernel[channel]);
         }
         free_optics_scratch(resources, resources.scannerScratch, nullptr);
         for (auto& kernel : resources.spatialDirKernels) {
@@ -2676,47 +2405,6 @@ namespace JuicerCuda {
         const std::size_t afterBytes = resources.retireBytes;
         reclaimedBytes = (beforeBytes >= afterBytes) ? (beforeBytes - afterBytes) : 0;
         return true;
-#endif
-    }
-
-    void snapshot_scratch_stage1_state(
-        Resources& resources,
-        ResourceManager::ScratchStage1DecisionState& outState) noexcept {
-        outState = ResourceManager::ScratchStage1DecisionState{};
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        std::lock_guard<std::mutex> lock(resources.m);
-        refresh_scratch_residency_state_locked(resources);
-        outState.policyLiveRetainedBytes = resources.scratchResidency.policyLiveRetainedBytes;
-        outState.retainedGeneration = resources.scratchResidency.retainedGeneration;
-#else
-        (void)resources;
-#endif
-    }
-
-    void snapshot_scratch_residency_view(
-        Resources& resources,
-        ResourceManager::ScratchResidencyView& outView) noexcept {
-        outView = ResourceManager::ScratchResidencyView{};
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        std::lock_guard<std::mutex> lock(resources.m);
-        refresh_scratch_residency_state_locked(resources);
-        for (std::size_t i = 0; i < ResourceManager::kScratchPolicyCandidateCount; ++i) {
-            outView.candidates[i].candidate = ResourceManager::kScratchPolicyCandidateOrder[i];
-            outView.candidates[i].liveRetainedBytes = resources.scratchResidency.candidateLiveBytes[i];
-        }
-        outView.helperNonPolicyBytes = resources.scratchResidency.helperNonPolicyBytes;
-        outView.helperSharedBytes = resources.scratchResidency.helperSharedBytes;
-        outView.helperNonPolicyTotalBytes = resources.scratchResidency.helperNonPolicyTotalBytes;
-        outView.policyLiveRetainedBytes = resources.scratchResidency.policyLiveRetainedBytes;
-        outView.totalLiveRetainedBytes = resources.scratchResidency.totalLiveRetainedBytes;
-        outView.retirePendingScratchBytes = static_cast<std::uint64_t>(
-            std::min<std::size_t>(
-                resources.retireScratchBytes,
-                static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
-        outView.retainedGeneration = resources.scratchResidency.retainedGeneration;
-        outView.overflow = resources.scratchResidency.overflow;
-#else
-        (void)resources;
 #endif
     }
 
@@ -3224,9 +2912,6 @@ namespace JuicerCuda {
         resources.directScannerDescriptorHash = scannerDescriptor.hash;
         resources.directSelectedMethod = filmRaw.rgbToRawMethod;
         ++resources.directUploadCounter;
-        resources.uploadedBuildCounter = 0;
-        resources.uploadedCoreHash = 0;
-        resources.uploadedDirHash = 0;
         return true;
 #endif
     }
@@ -4382,7 +4067,6 @@ namespace JuicerCuda {
     // Included by JuicerCudaResources.cpp (single-TU split).
     enum class SharedGaussianKind : std::uint8_t {
         Standard = 0,
-        Halation = 1,
         SpatialDir = 2
     };
 
@@ -4568,23 +4252,13 @@ namespace JuicerCuda {
 
         float* dWeights = nullptr;
         const std::size_t bytes = cpuWeights.size() * sizeof(float);
-        DeviceAllocationIdentity identity{};
-        try {
-            identity.deviceId = resources.ownerContextKey.deviceId;
-            identity.contextKey = resources.ownerContextKey;
-            identity.contextEpoch = resources.contextEpoch;
-            identity.allocationClass = DeviceAllocationClass::SharedGaussian;
-            identity.diagnosticIdentity = "shared gaussian kernel";
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-            outError = "failed to build shared Gaussian allocation identity";
-            return false;
-        }
         DeviceByteReservation reservation;
         if (!resources.deviceLedger ||
             !resources.deviceLedger->reserve(
-                identity,
-                static_cast<std::uint64_t>(bytes),
+                DeviceReservationRequest{
+                    .contextKey = resources.ownerContextKey,
+                    .contextEpoch = resources.contextEpoch,
+                    .bytes = static_cast<std::uint64_t>(bytes)},
                 reservation,
                 outError)) {
             return false;
@@ -4739,7 +4413,6 @@ namespace JuicerCuda {
             resources,
             &outPtr,
             bytes,
-            DeviceAllocationClass::RetainedScratch,
             label ? label : "scratch",
             outError);
     }
@@ -4787,46 +4460,6 @@ namespace JuicerCuda {
         resources.tablesK = 0;
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    static bool retire_tables_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        const size_t bytes = static_cast<size_t>(std::max(0, resources.tablesK)) * sizeof(float);
-        if (resources.tablesAx) {
-            if (!retire_ptr_locked(resources, resources.tablesAx, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
-                return false;
-            }
-            resources.tablesAx = nullptr;
-        }
-        if (resources.tablesAy) {
-            if (!retire_ptr_locked(resources, resources.tablesAy, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
-                return false;
-            }
-            resources.tablesAy = nullptr;
-        }
-        if (resources.tablesAz) {
-            if (!retire_ptr_locked(resources, resources.tablesAz, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
-                return false;
-            }
-            resources.tablesAz = nullptr;
-        }
-        if (resources.tablesIllum) {
-            if (!retire_ptr_locked(resources, resources.tablesIllum, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
-                return false;
-            }
-            resources.tablesIllum = nullptr;
-        }
-        resources.tablesK = 0;
-        return true;
-#endif
-    }
-#endif
-
     static void free_spectral_tables(
         Resources& resources,
         Resources::DeviceSpectralTables& t) noexcept {
@@ -4865,60 +4498,6 @@ namespace JuicerCuda {
         t.invYn = 1.0f;
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    static bool retire_spectral_tables_locked(Resources& resources, Resources::DeviceSpectralTables& t, void* cudaStreamOpaque, const char* label, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)t;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        const size_t bytes = static_cast<size_t>(std::max(0, t.K)) * sizeof(float);
-        if (t.epsC) {
-            if (!retire_ptr_locked(resources, t.epsC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
-                return false;
-            t.epsC = nullptr;
-        }
-        if (t.epsM) {
-            if (!retire_ptr_locked(resources, t.epsM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
-                return false;
-            t.epsM = nullptr;
-        }
-        if (t.epsY) {
-            if (!retire_ptr_locked(resources, t.epsY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
-                return false;
-            t.epsY = nullptr;
-        }
-        if (t.Ax) {
-            if (!retire_ptr_locked(resources, t.Ax, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
-                return false;
-            t.Ax = nullptr;
-        }
-        if (t.Ay) {
-            if (!retire_ptr_locked(resources, t.Ay, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
-                return false;
-            t.Ay = nullptr;
-        }
-        if (t.Az) {
-            if (!retire_ptr_locked(resources, t.Az, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
-                return false;
-            t.Az = nullptr;
-        }
-        if (t.baseDensityMin) {
-            if (!retire_ptr_locked(resources, t.baseDensityMin, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
-                return false;
-            t.baseDensityMin = nullptr;
-        }
-        t.K = 0;
-        t.hasBaseline = 0;
-        t.invYn = 1.0f;
-        return true;
-#endif
-    }
-#endif
-
     static void free_scan_medium(
         Resources& resources,
         Resources::DeviceScanMedium& m) noexcept {
@@ -4927,27 +4506,6 @@ namespace JuicerCuda {
         m.min_cmy[0] = m.min_cmy[1] = m.min_cmy[2] = 0.0f;
         m.inv_max_cmy[0] = m.inv_max_cmy[1] = m.inv_max_cmy[2] = 1.0f;
     }
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    static bool retire_scan_medium_locked(Resources& resources, Resources::DeviceScanMedium& m, void* cudaStreamOpaque, const char* label, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)m;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        if (!retire_spectral_tables_locked(resources, m.tables, cudaStreamOpaque, label, outError)) {
-            return false;
-        }
-        m.mediumIsNegative = 1;
-        m.min_cmy[0] = m.min_cmy[1] = m.min_cmy[2] = 0.0f;
-        m.inv_max_cmy[0] = m.inv_max_cmy[1] = m.inv_max_cmy[2] = 1.0f;
-        return true;
-#endif
-    }
-#endif
 
     static void free_scan_lut(
         Resources& resources,
@@ -5288,11 +4846,9 @@ namespace JuicerCuda {
         const Spektrafilm::DirScratchPlaneRoles& planeRoles) noexcept {
         const bool hasThreeRaw =
             scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC;
-        const bool hasStreamedRaw =
-            scratch.rawCorrectionY && scratch.rawCorrectionM == nullptr && scratch.rawCorrectionC == nullptr;
         const bool rawCorrectionMatch =
             (planeRoles.rawCorrectionPlanes == 3 && hasThreeRaw) ||
-            (planeRoles.rawCorrectionPlanes == 1 && hasStreamedRaw);
+            (planeRoles.rawCorrectionPlanes == 1 && scratch.rawCorrectionY);
         const bool tier1Base =
             rawCorrectionMatch &&
             scratch.filteredCorrectionY && scratch.filteredCorrectionM && scratch.filteredCorrectionC;
@@ -5301,19 +4857,14 @@ namespace JuicerCuda {
         }
         const bool hasAliasedForwardTemps =
             scratch.filterTempM && scratch.filterTempC;
-        const bool hasLowScratchPairTemps =
-            scratch.filterTempM && scratch.filterTempC == nullptr;
-        const bool hasNoChannelTemps =
-            scratch.filterTempM == nullptr && scratch.filterTempC == nullptr;
         const bool channelTempsMatch =
-            (planeRoles.filterTempPlanes == 1 && hasNoChannelTemps) ||
-            (planeRoles.filterTempPlanes == 2 && hasLowScratchPairTemps) ||
+            planeRoles.filterTempPlanes == 1 ||
+            (planeRoles.filterTempPlanes == 2 && scratch.filterTempM) ||
             (planeRoles.filterTempPlanes == 3 && hasAliasedForwardTemps);
         const bool cachedLogRawMatch =
-            (planeRoles.cachedLogRawPlanes == 0 &&
-             scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr) ||
+            planeRoles.cachedLogRawPlanes == 0 ||
             (planeRoles.cachedLogRawPlanes == 2 &&
-             scratch.logRawB && scratch.logRawG && scratch.logRawR == nullptr) ||
+             scratch.logRawB && scratch.logRawG) ||
             (planeRoles.cachedLogRawPlanes == 3 &&
              scratch.logRawB && scratch.logRawG && scratch.logRawR);
         return channelTempsMatch && cachedLogRawMatch;
@@ -5405,616 +4956,27 @@ namespace JuicerCuda {
         return retire_shared_tmp_plane_locked(
             resources,
             cudaStreamOpaque,
-            label ? label : "scratch normalization shared tmp plane",
-            outError);
-#endif
-    }
-
-    static bool shared_tmp_has_live_reference_locked(const Resources& resources) noexcept {
-        const float* sharedTmp = resources.sharedTmpPlane;
-        if (!sharedTmp) {
-            return false;
-        }
-        if (resources.spatialDirScratch.filterTemp == sharedTmp) {
-            return true;
-        }
-        return resources.scannerScratch.tmp == sharedTmp &&
-               optics_any_live_locked(resources.scannerScratch);
-    }
-
-    static bool retire_unreferenced_shared_tmp_plane_locked(
-        Resources& resources,
-        void* cudaStreamOpaque,
-        const char* label,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        if (!resources.sharedTmpPlane || shared_tmp_has_live_reference_locked(resources)) {
-            return true;
-        }
-        return retire_shared_tmp_plane_locked(
-            resources,
-            cudaStreamOpaque,
-            label ? label : "unreferenced shared tmp plane",
-            outError);
-#endif
-    }
-
-    static bool retire_spatial_dir_build_scratch_locked(
-        Resources& resources,
-        Resources::DeviceSpatialDirScratch& scratch,
-        void* cudaStreamOpaque,
-        SpatialDirBuildScratchReleaseStats& outStats,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)scratch;
-        (void)cudaStreamOpaque;
-        (void)outStats;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        const std::size_t bytes = scratch.capacityElements * sizeof(float);
-        auto retire_plane = [&](float*& ptr, const char* label, std::size_t& retiredBytes) {
-            if (!ptr) {
-                return true;
-            }
-            if (bytes == 0) {
-                outError = std::string(label ? label : "spatial DIR build scratch") +
-                           " capacity is invalid";
-                return false;
-            }
-            if (!retire_ptr_locked(
-                    resources,
-                    ptr,
-                    bytes,
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    label ? label : "spatial DIR build scratch",
-                    outError,
-                    true)) {
-                return false;
-            }
-            ptr = nullptr;
-            retiredBytes += bytes;
-            return true;
-        };
-
-        if (!retire_plane(
-                scratch.rawCorrectionY,
-                "retained spatial DIR build rawCorrectionY",
-                outStats.rawCorrectionRetiredBytes) ||
-            !retire_plane(
-                scratch.rawCorrectionM,
-                "retained spatial DIR build rawCorrectionM",
-                outStats.rawCorrectionRetiredBytes) ||
-            !retire_plane(
-                scratch.rawCorrectionC,
-                "retained spatial DIR build rawCorrectionC",
-                outStats.rawCorrectionRetiredBytes) ||
-            !retire_plane(
-                scratch.filterTempM,
-                "retained spatial DIR build filterTempM",
-                outStats.filterTempRetiredBytes) ||
-            !retire_plane(
-                scratch.filterTempC,
-                "retained spatial DIR build filterTempC",
-                outStats.filterTempRetiredBytes)) {
-            return false;
-        }
-
-        scratch.filterTemp = nullptr;
-        return true;
-#endif
-    }
-
-    static bool retire_spatial_dir_cached_log_raw_locked(
-        Resources& resources,
-        Resources::DeviceSpatialDirScratch& scratch,
-        void* cudaStreamOpaque,
-        SpatialDirCachedLogRawReleaseStats& outStats,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)scratch;
-        (void)cudaStreamOpaque;
-        (void)outStats;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        const std::size_t bytes = scratch.capacityElements * sizeof(float);
-        auto retire_plane = [&](float*& ptr, const char* label) {
-            if (!ptr) {
-                return true;
-            }
-            if (bytes == 0) {
-                outError = std::string(label ? label : "spatial DIR cached log raw") +
-                           " capacity is invalid";
-                return false;
-            }
-            if (!retire_ptr_locked(
-                    resources,
-                    ptr,
-                    bytes,
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    label ? label : "spatial DIR cached log raw",
-                    outError,
-                    true)) {
-                return false;
-            }
-            ptr = nullptr;
-            outStats.cachedLogRawRetiredBytes += bytes;
-            return true;
-        };
-
-        return retire_plane(scratch.logRawB, "retained spatial DIR final logRawB") &&
-               retire_plane(scratch.logRawG, "retained spatial DIR final logRawG") &&
-               retire_plane(scratch.logRawR, "retained spatial DIR final logRawR");
-#endif
-    }
-
-    static bool retire_optics_gate_mask_candidate_locked(
-        Resources& resources,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        Resources::DeviceOpticsScratch& scratch = resources.scannerScratch;
-        if (!scratch.gateMask) {
-            return true;
-        }
-
-        const std::size_t bytes = scratch.gateMaskCapacityElements * sizeof(float);
-        if (!retire_ptr_locked(
-                resources,
-                scratch.gateMask,
-                bytes,
-                Resources::RetireKind::DeviceFree,
-                cudaStreamOpaque,
-                "scratch normalization optics gate mask",
-                outError,
-                true)) {
-            return false;
-        }
-        scratch.gateMask = nullptr;
-        scratch.gateWidth = 0;
-        scratch.gateHeight = 0;
-        scratch.gateMaskCapacityElements = 0;
-        scratch.gateMaskHash = 0;
-        return true;
-#endif
-    }
-
-    static bool retire_optics_grain_shared_candidate_locked(
-        Resources& resources,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        Resources::DeviceOpticsScratch& scratch = resources.scannerScratch;
-        if (!scratch.grainTmpShared) {
-            return true;
-        }
-
-        const std::size_t bytes = scratch.capacityElements * sizeof(float);
-        if (!retire_ptr_locked(
-                resources,
-                scratch.grainTmpShared,
-                bytes,
-                Resources::RetireKind::DeviceFree,
-                cudaStreamOpaque,
-                "scratch normalization optics grain shared",
-                outError,
-                true)) {
-            return false;
-        }
-        scratch.grainTmpShared = nullptr;
-        return true;
-#endif
-    }
-
-    static bool retire_optics_grain_layer_work_candidate_locked(
-        Resources& resources,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        Resources::DeviceOpticsScratch& scratch = resources.scannerScratch;
-        const std::size_t bytes = scratch.capacityElements * sizeof(float);
-        if (scratch.grainTmp) {
-            if (!retire_ptr_locked(
-                    resources,
-                    scratch.grainTmp,
-                    bytes,
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    "scratch normalization optics grain layer work",
-                    outError,
-                    true)) {
-                return false;
-            }
-            scratch.grainTmp = nullptr;
-        }
-        return true;
-#endif
-    }
-
-    static bool retire_optics_aux_candidate_locked(
-        Resources& resources,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        Resources::DeviceOpticsScratch& scratch = resources.scannerScratch;
-        if (!scratch.aux) {
-            return true;
-        }
-
-        const std::size_t bytes = scratch.capacityElements * sizeof(float);
-        if (!retire_ptr_locked(
-                resources,
-                scratch.aux,
-                bytes,
-                Resources::RetireKind::DeviceFree,
-                cudaStreamOpaque,
-                "scratch normalization optics aux",
-                outError,
-                true)) {
-            return false;
-        }
-        scratch.aux = nullptr;
-        return true;
-#endif
-    }
-
-    static bool retire_optics_blurred_candidate_locked(
-        Resources& resources,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        Resources::DeviceOpticsScratch& scratch = resources.scannerScratch;
-        if (!scratch.blurred) {
-            return true;
-        }
-
-        const std::size_t bytes = scratch.capacityElements * sizeof(float);
-        if (!retire_ptr_locked(
-                resources,
-                scratch.blurred,
-                bytes,
-                Resources::RetireKind::DeviceFree,
-                cudaStreamOpaque,
-                "scratch normalization optics blurred",
-                outError,
-                true)) {
-            return false;
-        }
-        scratch.blurred = nullptr;
-        return true;
-#endif
-    }
-
-    static bool retire_spatial_dir_base_candidate_locked(
-        Resources& resources,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        Resources::DeviceSpatialDirScratch& scratch = resources.spatialDirScratch;
-        const std::size_t bytes = scratch.capacityElements * sizeof(float);
-        if (scratch.rawCorrectionY) {
-            if (!retire_ptr_locked(
-                    resources,
-                    scratch.rawCorrectionY,
-                    bytes,
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    "scratch normalization spatial dir base",
-                    outError,
-                    true)) {
-                return false;
-            }
-            scratch.rawCorrectionY = nullptr;
-        }
-        if (scratch.rawCorrectionM) {
-            if (!retire_ptr_locked(
-                    resources,
-                    scratch.rawCorrectionM,
-                    bytes,
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    "scratch normalization spatial dir base",
-                    outError,
-                    true)) {
-                return false;
-            }
-            scratch.rawCorrectionM = nullptr;
-        }
-        if (scratch.rawCorrectionC) {
-            if (!retire_ptr_locked(
-                    resources,
-                    scratch.rawCorrectionC,
-                    bytes,
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    "scratch normalization spatial dir base",
-                    outError,
-                    true)) {
-                return false;
-            }
-            scratch.rawCorrectionC = nullptr;
-        }
-        float** filteredPlanes[3] = {
-            &scratch.filteredCorrectionY,
-            &scratch.filteredCorrectionM,
-            &scratch.filteredCorrectionC};
-        for (float** filteredPlane : filteredPlanes) {
-            if (*filteredPlane) {
-                if (!retire_ptr_locked(
-                        resources,
-                        *filteredPlane,
-                        bytes,
-                        Resources::RetireKind::DeviceFree,
-                        cudaStreamOpaque,
-                        "scratch normalization spatial dir filtered correction",
-                        outError,
-                        true)) {
-                    return false;
-                }
-                *filteredPlane = nullptr;
-            }
-        }
-        float** channelTempPlanes[2] = {&scratch.filterTempM, &scratch.filterTempC};
-        for (float** tempPlane : channelTempPlanes) {
-            if (*tempPlane) {
-                if (!retire_ptr_locked(
-                        resources,
-                        *tempPlane,
-                        bytes,
-                        Resources::RetireKind::DeviceFree,
-                        cudaStreamOpaque,
-                        "scratch normalization spatial dir channel temp",
-                        outError,
-                        true)) {
-                    return false;
-                }
-                *tempPlane = nullptr;
-            }
-        }
-        float** logRawPlanes[3] = {&scratch.logRawB, &scratch.logRawG, &scratch.logRawR};
-        for (float** logRawPlane : logRawPlanes) {
-            if (*logRawPlane) {
-                if (!retire_ptr_locked(
-                        resources,
-                        *logRawPlane,
-                        bytes,
-                        Resources::RetireKind::DeviceFree,
-                        cudaStreamOpaque,
-                        "scratch normalization spatial dir log raw",
-                        outError,
-                        true)) {
-                    return false;
-                }
-                *logRawPlane = nullptr;
-            }
-        }
-        scratch.filterTemp = nullptr;
-        scratch.width = 0;
-        scratch.height = 0;
-        scratch.capacityElements = 0;
-        return retire_orphaned_shared_tmp_plane_locked(
-            resources,
-            cudaStreamOpaque,
-            "scratch normalization spatial dir shared tmp",
-            outError);
-#endif
-    }
-
-    static bool retire_optics_base_candidate_locked(
-        Resources& resources,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        Resources::DeviceOpticsScratch& scratch = resources.scannerScratch;
-        const std::size_t bytes = scratch.capacityElements * sizeof(float);
-        if (scratch.rgbR) {
-            if (!retire_ptr_locked(
-                    resources,
-                    scratch.rgbR,
-                    bytes,
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    "scratch normalization optics base",
-                    outError,
-                    true)) {
-                return false;
-            }
-            scratch.rgbR = nullptr;
-        }
-        if (scratch.rgbG) {
-            if (!retire_ptr_locked(
-                    resources,
-                    scratch.rgbG,
-                    bytes,
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    "scratch normalization optics base",
-                    outError,
-                    true)) {
-                return false;
-            }
-            scratch.rgbG = nullptr;
-        }
-        if (scratch.rgbB) {
-            if (!retire_ptr_locked(
-                    resources,
-                    scratch.rgbB,
-                    bytes,
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    "scratch normalization optics base",
-                    outError,
-                    true)) {
-                return false;
-            }
-            scratch.rgbB = nullptr;
-        }
-        if (scratch.grainFrameUniforms) {
-            if (!retire_ptr_locked(
-                    resources,
-                    scratch.grainFrameUniforms,
-                    sizeof(GrainFrameUniforms),
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    "scratch normalization grain frame uniforms",
-                    outError,
-                    true)) {
-                return false;
-            }
-            scratch.grainFrameUniforms = nullptr;
-        }
-
-        if (!optics_any_live_locked(scratch)) {
-            scratch.tmp = nullptr;
-            scratch.width = 0;
-            scratch.height = 0;
-            scratch.capacityElements = 0;
-            scratch.gateWidth = 0;
-            scratch.gateHeight = 0;
-            scratch.gateMaskCapacityElements = 0;
-            scratch.gateMaskHash = 0;
-        }
-        return retire_orphaned_shared_tmp_plane_locked(
-            resources,
-            cudaStreamOpaque,
-            "scratch normalization optics shared tmp",
+            label ? label : "orphaned shared tmp plane",
             outError);
 #endif
     }
 
 #endif
 
-    bool retire_scratch_policy_candidate(
-        Resources& resources,
-        ResourceManager::ScratchPolicyCandidate candidate,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)candidate;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        std::lock_guard<std::mutex> lock(resources.m);
-        reap_retire_queue_locked(resources);
-        if (!validate_resource_owner_locked(resources, outError, true)) {
-            return false;
-        }
-        if (resources.retainedScratchLeaseGeneration != 0) {
-            return true;
-        }
 
-        switch (candidate) {
-            case ResourceManager::ScratchPolicyCandidate::OpticsGateMask:
-                return retire_optics_gate_mask_candidate_locked(resources, cudaStreamOpaque, outError);
-            case ResourceManager::ScratchPolicyCandidate::OpticsGrainShared:
-                return retire_optics_grain_shared_candidate_locked(resources, cudaStreamOpaque, outError);
-            case ResourceManager::ScratchPolicyCandidate::OpticsGrainLayerWork:
-                return retire_optics_grain_layer_work_candidate_locked(resources, cudaStreamOpaque, outError);
-            case ResourceManager::ScratchPolicyCandidate::OpticsAux:
-                return retire_optics_aux_candidate_locked(resources, cudaStreamOpaque, outError);
-            case ResourceManager::ScratchPolicyCandidate::OpticsBlurred:
-                return retire_optics_blurred_candidate_locked(resources, cudaStreamOpaque, outError);
-            case ResourceManager::ScratchPolicyCandidate::SpatialDirBase:
-                return retire_spatial_dir_base_candidate_locked(resources, cudaStreamOpaque, outError);
-            case ResourceManager::ScratchPolicyCandidate::OpticsBase:
-                return retire_optics_base_candidate_locked(resources, cudaStreamOpaque, outError);
-            default:
-                outError = "scratch normalization candidate is invalid";
-                return false;
-        }
-#endif
-    }
-
-    bool retire_orphaned_shared_tmp_plane(
-        Resources& resources,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        std::lock_guard<std::mutex> lock(resources.m);
-        reap_retire_queue_locked(resources);
-        if (!validate_resource_owner_locked(resources, outError, true)) {
-            return false;
-        }
-        if (resources.retainedScratchLeaseGeneration != 0) {
-            return true;
-        }
-        return retire_orphaned_shared_tmp_plane_locked(
-            resources,
-            cudaStreamOpaque,
-            "scratch normalization orphaned shared tmp",
-            outError);
-#endif
-    }
-
-    bool try_acquire_retained_frame_scratch_lease(
+    bool acquire_retained_frame_scratch_lease(
         Resources& resources,
         std::uint64_t leaseGeneration,
         void* cudaStreamOpaque,
-        bool& outAcquired,
         std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)leaseGeneration;
         (void)cudaStreamOpaque;
-        outAcquired = false;
         outError = "CUDA is not enabled";
         return false;
 #else
         outError.clear();
-        outAcquired = false;
         if (leaseGeneration == 0) {
             outError = "retained frame scratch lease generation is invalid";
             return false;
@@ -6027,11 +4989,12 @@ namespace JuicerCuda {
         }
 
         if (resources.retainedScratchLeaseGeneration == leaseGeneration) {
-            outAcquired = true;
             return true;
         }
         if (resources.retainedScratchLeaseGeneration != 0) {
-            return true;
+            outError =
+                "retained frame scratch lease is already active under the serialized render contract";
+            return false;
         }
         if (!wait_for_frame_use_events_locked(
                 resources,
@@ -6041,7 +5004,6 @@ namespace JuicerCuda {
             return false;
         }
         resources.retainedScratchLeaseGeneration = leaseGeneration;
-        outAcquired = true;
         return true;
 #endif
     }
@@ -6072,205 +5034,6 @@ namespace JuicerCuda {
         }
         resources.retainedScratchLeaseGeneration = 0;
         return true;
-#endif
-    }
-
-    bool release_retained_spatial_dir_build_scratch_stage(
-        Resources& resources,
-        std::uint64_t leaseGeneration,
-        void* cudaStreamOpaque,
-        SpatialDirBuildScratchReleaseStats& outStats,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)leaseGeneration;
-        (void)cudaStreamOpaque;
-        outStats = SpatialDirBuildScratchReleaseStats{};
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        outStats = SpatialDirBuildScratchReleaseStats{};
-        outError.clear();
-        if (leaseGeneration == 0) {
-            outError = "retained spatial DIR build scratch lease generation is invalid";
-            return false;
-        }
-
-        bool syncBeforeReap = false;
-        {
-            std::lock_guard<std::mutex> lock(resources.m);
-            reap_retire_queue_locked(resources);
-            if (!validate_resource_owner_locked(resources, outError, true)) {
-                return false;
-            }
-            if (resources.retainedScratchLeaseGeneration != leaseGeneration) {
-                outError = "retained spatial DIR build scratch lease generation mismatch";
-                return false;
-            }
-
-            outStats.pendingScratchBytesBefore = resources.retireScratchBytes;
-            if (!retire_spatial_dir_build_scratch_locked(
-                    resources,
-                    resources.spatialDirScratch,
-                    cudaStreamOpaque,
-                    outStats,
-                    outError)) {
-                return false;
-            }
-
-            const std::size_t sharedTmpBytesBefore =
-                resources.sharedTmpPlane ? resources.sharedTmpCapacityElements * sizeof(float) : 0;
-            if (!retire_unreferenced_shared_tmp_plane_locked(
-                    resources,
-                    cudaStreamOpaque,
-                    "retained spatial DIR build shared tmp plane",
-                    outError)) {
-                return false;
-            }
-            if (sharedTmpBytesBefore > 0 && !resources.sharedTmpPlane) {
-                outStats.sharedTmpRetiredBytes = sharedTmpBytesBefore;
-            }
-
-            syncBeforeReap =
-                outStats.pendingScratchBytesBefore > 0 ||
-                outStats.rawCorrectionRetiredBytes > 0 ||
-                outStats.filterTempRetiredBytes > 0 ||
-                outStats.sharedTmpRetiredBytes > 0;
-        }
-
-        if (!syncBeforeReap) {
-            return true;
-        }
-
-        const cudaStream_t stream = cudaStreamOpaque
-                                        ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-                                        : nullptr;
-        const cudaError_t syncErr = cudaStreamSynchronize(stream);
-        if (syncErr != cudaSuccess) {
-            outError = std::string("cudaStreamSynchronize(retained spatial DIR build scratch) failed: ") +
-                       (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
-            return false;
-        }
-        return reap_retired_allocations(resources, outStats.reclaimedBytes, outError);
-#endif
-    }
-
-    bool release_retained_spatial_dir_scratch_stage(
-        Resources& resources,
-        std::uint64_t leaseGeneration,
-        void* cudaStreamOpaque,
-        SpatialDirStageReleaseStats& outStats,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)leaseGeneration;
-        (void)cudaStreamOpaque;
-        outStats = SpatialDirStageReleaseStats{};
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        outStats = SpatialDirStageReleaseStats{};
-        outError.clear();
-        if (leaseGeneration == 0) {
-            outError = "retained spatial DIR stage lease generation is invalid";
-            return false;
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(resources.m);
-            reap_retire_queue_locked(resources);
-            if (!validate_resource_owner_locked(resources, outError, true)) {
-                return false;
-            }
-            if (resources.retainedScratchLeaseGeneration != leaseGeneration) {
-                outError = "retained spatial DIR stage lease generation mismatch";
-                return false;
-            }
-            outStats.retiredBytes = spatial_dir_stage_live_bytes_locked(resources.spatialDirScratch);
-            if (outStats.retiredBytes == 0) {
-                return true;
-            }
-            if (!retire_spatial_dir_scratch_locked(
-                    resources,
-                    resources.spatialDirScratch,
-                    cudaStreamOpaque,
-                    "retained spatial DIR stage",
-                    outError)) {
-                return false;
-            }
-        }
-
-        const cudaStream_t stream = cudaStreamOpaque
-                                        ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-                                        : nullptr;
-        const cudaError_t syncErr = cudaStreamSynchronize(stream);
-        if (syncErr != cudaSuccess) {
-            outError = std::string("cudaStreamSynchronize(retained spatial DIR stage) failed: ") +
-                       (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
-            return false;
-        }
-        return reap_retired_allocations(resources, outStats.reclaimedBytes, outError);
-#endif
-    }
-
-    bool release_retained_spatial_dir_cached_log_raw_stage(
-        Resources& resources,
-        std::uint64_t leaseGeneration,
-        void* cudaStreamOpaque,
-        SpatialDirCachedLogRawReleaseStats& outStats,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)leaseGeneration;
-        (void)cudaStreamOpaque;
-        outStats = SpatialDirCachedLogRawReleaseStats{};
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        outStats = SpatialDirCachedLogRawReleaseStats{};
-        outError.clear();
-        if (leaseGeneration == 0) {
-            outError = "retained spatial DIR cached log raw lease generation is invalid";
-            return false;
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(resources.m);
-            reap_retire_queue_locked(resources);
-            if (!validate_resource_owner_locked(resources, outError, true)) {
-                return false;
-            }
-            if (resources.retainedScratchLeaseGeneration != leaseGeneration) {
-                outError = "retained spatial DIR cached log raw lease generation mismatch";
-                return false;
-            }
-
-            outStats.pendingScratchBytesBefore = resources.retireScratchBytes;
-            if (!retire_spatial_dir_cached_log_raw_locked(
-                    resources,
-                    resources.spatialDirScratch,
-                    cudaStreamOpaque,
-                    outStats,
-                    outError)) {
-                return false;
-            }
-        }
-
-        if (outStats.pendingScratchBytesBefore == 0 &&
-            outStats.cachedLogRawRetiredBytes == 0) {
-            return true;
-        }
-
-        const cudaStream_t stream = cudaStreamOpaque
-                                        ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-                                        : nullptr;
-        const cudaError_t syncErr = cudaStreamSynchronize(stream);
-        if (syncErr != cudaSuccess) {
-            outError = std::string("cudaStreamSynchronize(retained spatial DIR cached log raw) failed: ") +
-                       (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
-            return false;
-        }
-        return reap_retired_allocations(resources, outStats.reclaimedBytes, outError);
 #endif
     }
 
@@ -6496,98 +5259,6 @@ namespace JuicerCuda {
 #endif
     }
 
-    bool reclaim_retained_optics_for_admission_retry(
-        Resources& resources,
-        std::uint64_t leaseGeneration,
-        const ResourceManager::ScratchRequestDescriptor& scratchRequest,
-        void* cudaStreamOpaque,
-        AdmissionRetryOpticsReclaimStats& outStats,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)leaseGeneration;
-        (void)scratchRequest;
-        (void)cudaStreamOpaque;
-        outStats = AdmissionRetryOpticsReclaimStats{};
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        outStats = AdmissionRetryOpticsReclaimStats{};
-        outError.clear();
-        if (leaseGeneration == 0) {
-            outError = "admission retry optics reclaim lease generation is invalid";
-            return false;
-        }
-        if (!ResourceManager::scratch_request_descriptor_is_valid(scratchRequest)) {
-            outError = "admission retry optics reclaim request descriptor is invalid";
-            return false;
-        }
-        if (!scratchRequest.needSpatialDir) {
-            outError = "admission retry optics reclaim requires spatial DIR scratch";
-            return false;
-        }
-
-        bool syncBeforeReap = false;
-        {
-            std::lock_guard<std::mutex> lock(resources.m);
-            reap_retire_queue_locked(resources);
-            if (!validate_resource_owner_locked(resources, outError, true)) {
-                return false;
-            }
-            outStats.pendingScratchBytesBefore = resources.retireScratchBytes;
-            if (resources.retainedScratchLeaseGeneration != 0 &&
-                resources.retainedScratchLeaseGeneration != leaseGeneration) {
-                return true;
-            }
-
-            Resources::DeviceOpticsScratch& optics = resources.scannerScratch;
-            if (optics_any_live_locked(optics)) {
-                outStats.opticsRetiredBytes = optics_stage_live_bytes_locked(optics);
-                if (!retire_optics_scratch_locked(
-                        resources,
-                        optics,
-                        cudaStreamOpaque,
-                        "admission retry optics scratch",
-                        outError)) {
-                    return false;
-                }
-            }
-
-            const std::size_t sharedTmpBytesBefore =
-                resources.sharedTmpPlane ? resources.sharedTmpCapacityElements * sizeof(float) : 0;
-            if (!retire_orphaned_shared_tmp_plane_locked(
-                    resources,
-                    cudaStreamOpaque,
-                    "admission retry shared tmp plane",
-                    outError)) {
-                return false;
-            }
-            if (sharedTmpBytesBefore > 0 && !resources.sharedTmpPlane) {
-                outStats.sharedTmpRetiredBytes = sharedTmpBytesBefore;
-            }
-
-            syncBeforeReap =
-                outStats.pendingScratchBytesBefore > 0 ||
-                outStats.opticsRetiredBytes > 0 ||
-                outStats.sharedTmpRetiredBytes > 0;
-        }
-
-        if (!syncBeforeReap) {
-            return true;
-        }
-
-        const cudaStream_t stream = cudaStreamOpaque
-                                        ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-                                        : nullptr;
-        const cudaError_t syncErr = cudaStreamSynchronize(stream);
-        if (syncErr != cudaSuccess) {
-            outError = std::string("cudaStreamSynchronize(admission retry optics reclaim) failed: ") +
-                       (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
-            return false;
-        }
-        return reap_retired_allocations(resources, outStats.reclaimedBytes, outError);
-#endif
-    }
 
     bool shed_retained_scratch_after_frame(
         Resources& resources,
@@ -7577,26 +6248,6 @@ namespace JuicerCuda {
             spec,
             cudaStreamOpaque,
             "gaussian kernel",
-            outError);
-    }
-
-    bool ensure_halation_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError) {
-        constexpr int kMaxRadius = 75;
-        const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
-        const int radiusRaw = sigmaOk
-                                  ? JuicerGaussian::scipy_gaussian_radius(sigma, 7.0f)
-                                  : 0;
-        const int radius = std::min(radiusRaw, kMaxRadius);
-        SharedGaussianSpec spec{};
-        spec.kind = SharedGaussianKind::Halation;
-        spec.radius = radius;
-        spec.sigma = sigma;
-        return ensure_shared_gaussian_kernel(
-            resources,
-            kernel,
-            spec,
-            cudaStreamOpaque,
-            "halation kernel",
             outError);
     }
 

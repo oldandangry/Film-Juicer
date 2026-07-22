@@ -89,7 +89,9 @@ void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc) {
     desc.setHostFrameThreading(false);
     desc.setSupportsMultiResolution(true);
     desc.setSupportsTiles(false);
-    desc.setRenderThreadSafety(OFX::eRenderFullySafe);
+    // One mutable CUDA scratch workspace is retained per context. Serialize
+    // render actions across instances so that workspace has one exact owner.
+    desc.setRenderThreadSafety(OFX::eRenderUnsafe);
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     desc.setSupportsCudaRender(true);
@@ -1463,7 +1465,7 @@ OFX::ImageEffect* JuicerPluginFactory::createInstance(OfxImageEffectHandle handl
 }
 
 // Resolve support library entry: register our factory.
-void OFX::Plugin::getPluginIDs(OFX::PluginFactoryArray& arr) {
+void OFX::Plugin::getPluginIDs(OFX::PluginFactoryArray& id) {
     static JuicerPluginFactory factory;
-    arr.push_back(&factory);
+    id.push_back(&factory);
 }

@@ -123,28 +123,8 @@ namespace JuicerCuda::Diffusion {
             return true;
         }
 
-        DeviceAllocationIdentity make_identity(
-            const ResourceManager::DeviceContextKey& contextKey,
-            std::uint64_t contextEpoch,
-            DeviceAllocationClass allocationClass,
-            const char* label) {
-            DeviceAllocationIdentity identity{};
-            identity.deviceId = contextKey.deviceId;
-            identity.contextKey = contextKey;
-            identity.contextEpoch = contextEpoch;
-            identity.allocationClass = allocationClass;
-            identity.diagnosticIdentity = label ? label : "diffusion allocation";
-            return identity;
-        }
-
-        struct DiffusionAllocationOwner {
-            ResourceManager::DeviceContextKey contextKey{};
-            std::uint64_t contextEpoch = 0;
-        };
-
         bool allocate_from_aggregate(
             DeviceByteReservation& aggregate,
-            const DeviceAllocationIdentity& identity,
             std::uint64_t bytes,
             void*& outPointer,
             DeviceByteReservation& outReservation,
@@ -157,7 +137,7 @@ namespace JuicerCuda::Diffusion {
                 return false;
             }
             DeviceByteReservation reservation;
-            if (!aggregate.split(identity, bytes, reservation, outError)) {
+            if (!aggregate.split(bytes, reservation, outError)) {
                 return false;
             }
 #if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
@@ -188,7 +168,6 @@ namespace JuicerCuda::Diffusion {
 
         bool commit_allowance_from_aggregate(
             DeviceByteReservation& aggregate,
-            const DeviceAllocationIdentity& identity,
             std::uint64_t bytes,
             DeviceByteReservation& outReservation,
             std::string& outError) {
@@ -198,7 +177,7 @@ namespace JuicerCuda::Diffusion {
                 return false;
             }
             DeviceByteReservation reservation;
-            if (!aggregate.split(identity, bytes, reservation, outError) ||
+            if (!aggregate.split(bytes, reservation, outError) ||
                 !reservation.commit(bytes, outError)) {
                 return false;
             }
@@ -752,16 +731,10 @@ namespace JuicerCuda::Diffusion {
             DiffusionWorkspaceSlot& slot,
             const Spektrafilm::DiffusionExecutionDescriptor& descriptor,
             DeviceByteReservation& aggregate,
-            const DiffusionAllocationOwner& owner,
             cudaStream_t stream,
             std::string& outError) {
             if (!commit_allowance_from_aggregate(
                     aggregate,
-                    make_identity(
-                        owner.contextKey,
-                        owner.contextEpoch,
-                        DeviceAllocationClass::CufftPlanAllowance,
-                        "diffusion cuFFT plan pair allowance"),
                     descriptor.acceptedPlanAllowanceBytes,
                     slot.planAllowanceReservation,
                     outError)) {
@@ -871,11 +844,6 @@ namespace JuicerCuda::Diffusion {
                 void* work = nullptr;
                 if (!allocate_from_aggregate(
                         aggregate,
-                        make_identity(
-                            owner.contextKey,
-                            owner.contextEpoch,
-                            DeviceAllocationClass::DiffusionTransformWorkArea,
-                            "diffusion shared cuFFT work area"),
                         sharedWork,
                         work,
                         slot.workAreaReservation,
@@ -925,14 +893,12 @@ namespace JuicerCuda::Diffusion {
             DiffusionWorkspaceSlot& slot,
             const Spektrafilm::DiffusionExecutionDescriptor& descriptor,
             DeviceByteReservation& aggregate,
-            const DiffusionAllocationOwner& owner,
             cudaStream_t stream,
             std::string& outError) {
             if (!make_plan_pair(
                     slot,
                     descriptor,
                     aggregate,
-                    owner,
                     stream,
                     outError)) {
                 return false;
@@ -940,11 +906,6 @@ namespace JuicerCuda::Diffusion {
             void* transform = nullptr;
             if (!allocate_from_aggregate(
                     aggregate,
-                    make_identity(
-                        owner.contextKey,
-                        owner.contextEpoch,
-                        DeviceAllocationClass::DiffusionTransformWorkArea,
-                        "diffusion transform buffer"),
                     descriptor.transformBufferBytes,
                     transform,
                     slot.transformReservation,
@@ -960,20 +921,10 @@ namespace JuicerCuda::Diffusion {
                 return false;
             }
             const std::uint64_t onePlaneBytes = descriptor.stagePlaneBytes / 4u;
-            constexpr const char* kPlaneLabels[]{
-                "diffusion red-sensitive stage plane",
-                "diffusion green-sensitive stage plane",
-                "diffusion blue-sensitive stage plane",
-                "diffusion sequential auxiliary stage plane"};
             for (std::size_t index = 0; index < 4; ++index) {
                 void* plane = nullptr;
                 if (!allocate_from_aggregate(
                         aggregate,
-                        make_identity(
-                            owner.contextKey,
-                            owner.contextEpoch,
-                            DeviceAllocationClass::DiffusionStagePlane,
-                            kPlaneLabels[index]),
                         onePlaneBytes,
                         plane,
                         slot.stagePlaneReservations[index],
@@ -1008,22 +959,12 @@ namespace JuicerCuda::Diffusion {
             DiffusionWorkspaceSlot& workspace,
             const Spektrafilm::DiffusionExecutionDescriptor& descriptor,
             DeviceByteReservation& aggregate,
-            const DiffusionAllocationOwner& owner,
             cudaStream_t stream,
             std::string& outError) {
-            constexpr const char* kSpectrumLabels[]{
-                "diffusion red spectrum",
-                "diffusion green spectrum",
-                "diffusion blue spectrum"};
             for (std::size_t index = 0; index < 3; ++index) {
                 void* spectrum = nullptr;
                 if (!allocate_from_aggregate(
                         aggregate,
-                        make_identity(
-                            owner.contextKey,
-                            owner.contextEpoch,
-                            DeviceAllocationClass::DiffusionSpectrum,
-                            kSpectrumLabels[index]),
                         descriptor.transformBufferBytes,
                         spectrum,
                         entry.spectrumReservations[index],
@@ -1331,9 +1272,6 @@ namespace JuicerCuda::Diffusion {
 
         const cudaStream_t stream =
             reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
-        const DiffusionAllocationOwner allocationOwner{
-            contextKey,
-            contextEpoch};
         std::array<std::size_t, 2> spectrumIndices{};
         std::array<bool, 2> missingSpectrum{};
         std::array<bool, 2> dependentBuilding{};
@@ -1573,12 +1511,10 @@ namespace JuicerCuda::Diffusion {
             if (prospectiveBytes > 0) {
                 std::string ledgerError;
                 if (!ledger->reserve(
-                        make_identity(
-                            contextKey,
-                            contextEpoch,
-                            DeviceAllocationClass::DiffusionTransformWorkArea,
-                            "diffusion aggregate preparation"),
-                        prospectiveBytes,
+                        DeviceReservationRequest{
+                            .contextKey = contextKey,
+                            .contextEpoch = contextEpoch,
+                            .bytes = prospectiveBytes},
                         aggregate,
                         ledgerError)) {
                     outError =
@@ -1704,7 +1640,6 @@ namespace JuicerCuda::Diffusion {
                     workspace,
                     descriptor,
                     aggregate,
-                    allocationOwner,
                     stream,
                     outError)) {
                 if (outError.empty()) {
@@ -1739,7 +1674,6 @@ namespace JuicerCuda::Diffusion {
                     workspace,
                     descriptor,
                     aggregate,
-                    allocationOwner,
                     stream,
                     outError)) {
                 return failPreparation("build_spectrum");

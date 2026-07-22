@@ -123,16 +123,6 @@ TierCircuitPolicyState& tier_circuit_policy_state() {
     return state;
 }
 
-AdmissionChurnPolicyState& admission_churn_policy_state() {
-    static AdmissionChurnPolicyState state{};
-    return state;
-}
-
-OptionalHeuristicTraceState& optional_heuristic_trace_state() {
-    static OptionalHeuristicTraceState state{};
-    return state;
-}
-
 bool contains_ascii_case_insensitive(const std::string& haystack, const char* needle) noexcept {
     if (!needle || !*needle) {
         return true;
@@ -192,13 +182,6 @@ std::string make_pressure_shed_noncritical_error(
     PressureLane lane,
     PressureState state) {
     return std::string(kPressureShedNonCriticalPrefix) + " lane=" + to_cstr(lane) + " state=" + to_cstr(state);
-}
-
-std::string make_burst_debt_throttle_noncritical_error(
-    PressureLane lane,
-    std::uint64_t debtPct,
-    std::uint64_t maxDebtPct) {
-    return std::string(kBurstDebtThrottleNonCriticalPrefix) + " lane=" + to_cstr(lane) + " debt_pct=" + std::to_string(static_cast<unsigned long long>(debtPct)) + " max_debt_pct=" + std::to_string(static_cast<unsigned long long>(maxDebtPct));
 }
 
 const char* reservation_wait_outcome_reason(bool shouldWait) noexcept {
@@ -874,9 +857,6 @@ bool run_canonical_scratch_checkpoint(
             sheddingResult.orphanedSharedTmpRetired;
         outObservation.shedRetiredActionCount = sheddingResult.retiredActionCount;
         outObservation.shedRetiredLiveBytes = sheddingResult.retiredLiveBytes;
-        if (sheddingResult.progressed || sheddingResult.partialFailure) {
-            publish_manager_memory_snapshot(snapshot_manager_memory(resources));
-        }
     }
 
     {
@@ -944,13 +924,6 @@ bool run_large_scratch_transition_checkpoint(
         scratchRequest,
         reclaimStats,
         "large_scratch_transition_checkpoint");
-
-    if (reclaimStats.opticsRetiredBytes > 0 ||
-        reclaimStats.spatialDirRetiredBytes > 0 ||
-        reclaimStats.sharedTmpRetiredBytes > 0 ||
-        reclaimStats.reclaimedBytes > 0) {
-        publish_manager_memory_snapshot(snapshot_manager_memory(resources));
-    }
 
     ScratchCheckpointObservation observation{};
     return run_canonical_scratch_checkpoint(
@@ -2015,15 +1988,6 @@ bool acquire_upload_reservation_with_wait(
 }
 
 
-void maybe_publish_manager_memory_snapshot(
-    JuicerCuda::Resources& resources,
-    bool enabled) noexcept {
-    if (!enabled) {
-        return;
-    }
-    publish_manager_memory_snapshot(snapshot_manager_memory(resources));
-}
-
 HeadroomTelemetry sample_headroom_telemetry(const SubmissionTransaction& transaction) noexcept {
     HeadroomTelemetry out{};
     const int targetDevice = transaction.snapshot.deviceContextKey.deviceId;
@@ -2142,32 +2106,6 @@ std::uint64_t active_burst_cap_bytes(
     return std::min<std::uint64_t>(cfg.maxActiveBurstBytes, pctCapBytes);
 }
 
-std::uint32_t decay_burst_debt_pct(
-    std::uint32_t currentDebtPct,
-    std::uint64_t elapsedMs,
-    std::uint32_t halfLifeMs) noexcept {
-    if (currentDebtPct == 0 || elapsedMs == 0 || halfLifeMs == 0) {
-        return currentDebtPct;
-    }
-
-    const double exponent =
-        -static_cast<double>(elapsedMs) / static_cast<double>(halfLifeMs);
-    const double decayed = static_cast<double>(currentDebtPct) * std::exp2(exponent);
-    if (!std::isfinite(decayed) || decayed <= 0.0) {
-        return 0;
-    }
-
-    const long long rounded = std::llround(decayed);
-    if (rounded <= 0) {
-        return 0;
-    }
-    if (rounded >= 100) {
-        return 100;
-    }
-    return static_cast<std::uint32_t>(rounded);
-}
-
-
 std::uint32_t pressure_poll_interval_ms_for_state(
     const ResourceManagerConfigEffective& cfg,
     PressureState state) noexcept {
@@ -2184,7 +2122,7 @@ std::uint32_t pressure_poll_interval_ms_for_state(
         case PressureState::Emergency:
             return critical;
         default:
-            return std::max<std::uint32_t>(1u, cfg.pressurePollIntervalMs);
+            return normal;
     }
 }
 
@@ -2296,41 +2234,34 @@ std::size_t estimate_spatial_dir_growth_bytes(
     const auto& scratch = resources.spatialDirScratch;
     const std::size_t requiredElements = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
     const bool hasThreeRaw = scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC;
-    const bool hasStreamedRaw =
-        scratch.rawCorrectionY && !scratch.rawCorrectionM && !scratch.rawCorrectionC;
     const bool haveRaw =
         (planeRoles.rawCorrectionPlanes == 3 && hasThreeRaw) ||
-        (planeRoles.rawCorrectionPlanes == 1 && hasStreamedRaw);
+        (planeRoles.rawCorrectionPlanes == 1 && scratch.rawCorrectionY);
     const bool haveFiltered = scratch.filteredCorrectionY && scratch.filteredCorrectionM &&
                               scratch.filteredCorrectionC;
     const bool haveBase = haveRaw && haveFiltered;
     const bool hasAliasedForwardTemps =
         scratch.filterTempM && scratch.filterTempC;
-    const bool hasLowScratchPairTemps =
-        scratch.filterTempM && !scratch.filterTempC;
-    const bool hasNoChannelTemps =
-        !scratch.filterTempM && !scratch.filterTempC;
     const bool channelTempsMatch =
-        (planeRoles.filterTempPlanes == 1 && hasNoChannelTemps) ||
-        (planeRoles.filterTempPlanes == 2 && hasLowScratchPairTemps) ||
+        planeRoles.filterTempPlanes == 1 ||
+        (planeRoles.filterTempPlanes == 2 && scratch.filterTempM) ||
         (planeRoles.filterTempPlanes == 3 && hasAliasedForwardTemps);
     const bool cachedLogRawMatch =
-        (planeRoles.cachedLogRawPlanes == 0 &&
-         !scratch.logRawB && !scratch.logRawG && !scratch.logRawR) ||
+        planeRoles.cachedLogRawPlanes == 0 ||
         (planeRoles.cachedLogRawPlanes == 2 &&
-         scratch.logRawB && scratch.logRawG && !scratch.logRawR) ||
+         scratch.logRawB && scratch.logRawG) ||
         (planeRoles.cachedLogRawPlanes == 3 &&
          scratch.logRawB && scratch.logRawG && scratch.logRawR);
     const bool haveRequiredRoles = haveBase && channelTempsMatch && cachedLogRawMatch;
     const bool capacityMatch = scratch.capacityElements >= requiredElements;
     const bool filterTempsCompatible =
         planeRoles.filterTempPlanes == 3 ||
-        (planeRoles.filterTempPlanes == 2 && !scratch.filterTempC) ||
-        (!scratch.filterTempM && !scratch.filterTempC);
+        (planeRoles.filterTempPlanes == 2 && scratch.filterTempM) ||
+        planeRoles.filterTempPlanes <= 1;
     const bool cachedLogRawCompatible =
-        (planeRoles.cachedLogRawPlanes == 0 &&
-         !scratch.logRawB && !scratch.logRawG && !scratch.logRawR) ||
-        (planeRoles.cachedLogRawPlanes == 2 && !scratch.logRawR) ||
+        planeRoles.cachedLogRawPlanes == 0 ||
+        (planeRoles.cachedLogRawPlanes == 2 &&
+         scratch.logRawB && scratch.logRawG) ||
         (planeRoles.cachedLogRawPlanes == 3);
     const bool haveRetainedFinalRoles =
         haveFiltered && cachedLogRawCompatible && filterTempsCompatible;
@@ -2844,8 +2775,6 @@ PressureCheckpoint evaluate_pressure_checkpoint(
     PressureCheckpoint checkpoint{};
     checkpoint.memory = snapshot_manager_memory(resources);
 
-    publish_manager_memory_snapshot(checkpoint.memory);
-
     const HeadroomTelemetry headroom = sample_headroom_telemetry(transaction);
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
     const ResolvedPressurePolicy& policy = transaction.resolvedPressurePolicy;
@@ -3138,7 +3067,6 @@ bool run_reap_pass_for_pressure(
         reclaimedBytes,
         true,
         reason);
-    publish_manager_memory_snapshot(snapshot_manager_memory(resources));
     return true;
 }
 
@@ -3549,138 +3477,6 @@ void evaluate_active_burst_window(
     }
 }
 
-BurstDebtRuntimeDecision evaluate_burst_debt_runtime(
-    const SubmissionTransaction& transaction,
-    const ResourceManagerConfigEffective& cfg,
-    const ActiveBurstDecision& burstDecision,
-    bool criticalCurrentFrame,
-    std::size_t requestBytes) {
-    BurstDebtRuntimeDecision out{};
-    if (requestBytes == 0) {
-        out.reason = "zero_request";
-        return out;
-    }
-
-    out.enabled = (cfg.burstDebtHalfLifeMs > 0) && (cfg.maxBurstDebtPct < 100);
-    if (!out.enabled) {
-        out.reason = "disabled";
-        return out;
-    }
-    out.sampled = true;
-    telemetry_counter_add(global_state().burstDebtSampleEvents, 1);
-
-    const std::uint64_t instanceToken = transaction.snapshot.instanceToken.value;
-    if (instanceToken == 0) {
-        out.reason = "missing_instance_token";
-        return out;
-    }
-
-    const std::uint64_t nowMs = monotonic_time_ms();
-    out.burstConsumed = criticalCurrentFrame &&
-                        burstDecision.considered &&
-                        burstDecision.allowed;
-
-    PressurePolicyState& policyState = pressure_policy_state();
-    std::lock_guard<std::mutex> lock(policyState.mutex);
-    PressureContextState& contextState = policyState.byContext[transaction.snapshot.deviceContextKey];
-    BurstDebtEntry& debtEntry = contextState.burstDebtByInstance[instanceToken];
-
-    if (debtEntry.lastUpdateMs > 0) {
-        const std::uint64_t elapsedMs =
-            admission_elapsed_ms_since(nowMs, debtEntry.lastUpdateMs);
-        debtEntry.debtPct = decay_burst_debt_pct(
-            debtEntry.debtPct,
-            elapsedMs,
-            cfg.burstDebtHalfLifeMs);
-    }
-    debtEntry.lastUpdateMs = nowMs;
-    out.debtBeforePct = debtEntry.debtPct;
-
-    BurstDebtInput debtInput{};
-    debtInput.burstDebtHalfLifeMs = cfg.burstDebtHalfLifeMs;
-    debtInput.maxBurstDebtPct = cfg.maxBurstDebtPct;
-    debtInput.currentDebtPct = debtEntry.debtPct;
-    debtInput.criticalCurrentFrame = criticalCurrentFrame;
-    debtInput.burstConsumed = out.burstConsumed;
-    debtInput.burstOverTargetBytes = burstDecision.overTargetBytes;
-    debtInput.burstCapBytes = burstDecision.capBytes;
-    const BurstDebtDecision debtDecision = classify_burst_debt(debtInput);
-    out.reason = debtDecision.reason;
-
-    if (debtDecision.accrueDebt && debtDecision.debtIncrementPct > 0) {
-        const std::uint64_t expandedDebt =
-            static_cast<std::uint64_t>(debtEntry.debtPct) +
-            static_cast<std::uint64_t>(debtDecision.debtIncrementPct);
-        debtEntry.debtPct = static_cast<std::uint32_t>(std::min<std::uint64_t>(100ull, expandedDebt));
-        out.debtIncrementPct = debtDecision.debtIncrementPct;
-        telemetry_counter_add(global_state().burstDebtAccrualEvents, 1);
-    }
-    if (debtDecision.throttleOpportunistic) {
-        out.throttled = true;
-        telemetry_counter_add(global_state().burstDebtThrottleEvents, 1);
-    }
-    out.debtAfterPct = debtEntry.debtPct;
-
-    if (debtEntry.debtPct == 0 && !out.burstConsumed && !out.throttled) {
-        contextState.burstDebtByInstance.erase(instanceToken);
-    }
-    return out;
-}
-
-std::string make_superseded_builder_cancel_error(
-    const char* commandName,
-    std::uint64_t latestSnapshotId) {
-    std::string out = std::string(kReservationDeferredPrefix) + "superseded_builder_cancel";
-    if (commandName && *commandName) {
-        out += ":command=";
-        out += commandName;
-    }
-    if (latestSnapshotId > 0) {
-        out += ":latest_snapshot_id=" + std::to_string(static_cast<unsigned long long>(latestSnapshotId));
-    }
-    return out;
-}
-
-bool should_cancel_superseded_noncritical_builder(
-    const SubmissionTransaction& transaction,
-    const char* commandName,
-    bool criticalCurrentFrame,
-    std::uint64_t requestBytes,
-    std::uint64_t& outLatestSnapshotId) {
-    outLatestSnapshotId = 0;
-    const ResourceManagerConfigEffective& cfg = manager_effective_config();
-
-    SupersededBuilderCancelInput input{};
-    input.enabled = cfg.cancelSupersededBuilders;
-    input.criticalCurrentFrame = criticalCurrentFrame;
-    input.superseded = state_snapshot_is_superseded(transaction.snapshot, &outLatestSnapshotId);
-    const SupersededBuilderCancelDecision decision =
-        classify_superseded_builder_cancel(input);
-
-    if (input.enabled || decision.cancel || JTRACE_ENABLED(3)) {
-        trace_superseded_builder_cancel_decision(
-            transaction,
-            SupersededBuilderCancelTrace{
-                .commandName = commandName,
-                .input = &input,
-                .decision = &decision,
-                .requestBytes = requestBytes,
-                .latestSnapshotId = outLatestSnapshotId,
-                .criticalCurrentFrame = criticalCurrentFrame});
-    }
-
-    if (!decision.cancel) {
-        return false;
-    }
-
-    ResourceManagerState& state = global_state();
-    telemetry_counter_add(state.supersededBuilderCancelEvents, 1);
-    if (requestBytes > 0) {
-        telemetry_counter_add(state.supersededBuilderCancelSavedBytes, requestBytes);
-    }
-    return true;
-}
-
 bool enforce_pressure_gate(
     const SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
@@ -3711,17 +3507,6 @@ bool enforce_pressure_gate(
     const bool uploadCapEnabled = (uploadCapBytes > 0);
     const bool uploadCapSaturated = uploadCapEnabled && (uploadBytesInFlight >= uploadCapBytes);
     const bool nonCritical = !criticalCurrentFrame;
-    std::uint64_t supersededLatestSnapshotId = 0;
-    if (requestBytes > 0 &&
-        should_cancel_superseded_noncritical_builder(
-            transaction,
-            commandName,
-            criticalCurrentFrame,
-            static_cast<std::uint64_t>(requestBytes),
-            supersededLatestSnapshotId)) {
-        outError = make_superseded_builder_cancel_error(commandName, supersededLatestSnapshotId);
-        return false;
-    }
     PressureState pressureState = PressureState::Normal;
     TierBudgetSnapshot tierBudget{};
     bool tierBudgetValid = false;
@@ -3730,7 +3515,6 @@ bool enforce_pressure_gate(
     bool checkpointValid = false;
     bool freezeBelowReserve = false;
     ActiveBurstDecision burstDecision{};
-    BurstDebtRuntimeDecision burstDebtDecision{};
     if (pressureEnabled) {
         checkpoint = evaluate_pressure_checkpoint(
             transaction,
@@ -3789,24 +3573,6 @@ bool enforce_pressure_gate(
                     .frozen = freezeBelowReserve,
                     .allowed = !freezeBelowReserve,
                     .criticalCurrentFrame = criticalCurrentFrame});
-        }
-
-        burstDebtDecision = evaluate_burst_debt_runtime(
-            transaction,
-            cfg,
-            burstDecision,
-            criticalCurrentFrame,
-            requestBytes);
-        if (burstDebtDecision.sampled || JTRACE_ENABLED(3)) {
-            trace_burst_debt_decision(
-                transaction,
-                commandName,
-                lane,
-                pressureState,
-                criticalCurrentFrame,
-                requestBytes,
-                cfg,
-                burstDebtDecision);
         }
 
         fill_tier_budget_snapshot(
@@ -3876,17 +3642,6 @@ bool enforce_pressure_gate(
                 .allowed = false,
                 .criticalCurrentFrame = criticalCurrentFrame});
         outError = make_pressure_shed_noncritical_error(lane, pressureState);
-        return false;
-    }
-
-    if (nonCritical &&
-        burstDebtDecision.enabled &&
-        burstDebtDecision.throttled &&
-        requestBytes > 0) {
-        outError = make_burst_debt_throttle_noncritical_error(
-            lane,
-            burstDebtDecision.debtAfterPct,
-            cfg.maxBurstDebtPct);
         return false;
     }
 
@@ -4288,26 +4043,6 @@ void pressure_policy_retire_context(const DeviceContextKey& key) noexcept {
 void scratch_normalization_retire_context(const DeviceContextKey& key) noexcept {
     try {
         ScratchNormalizationState& state = scratch_normalization_state();
-        std::lock_guard<std::mutex> lock(state.mutex);
-        state.byContext.erase(key);
-    } catch (...) {
-        JuicerLogging::discard_current_exception();
-    }
-}
-
-void admission_churn_retire_context(const DeviceContextKey& key) noexcept {
-    try {
-        AdmissionChurnPolicyState& state = admission_churn_policy_state();
-        std::lock_guard<std::mutex> lock(state.mutex);
-        state.byContext.erase(key);
-    } catch (...) {
-        JuicerLogging::discard_current_exception();
-    }
-}
-
-void optional_heuristic_trace_retire_context(const DeviceContextKey& key) noexcept {
-    try {
-        OptionalHeuristicTraceState& state = optional_heuristic_trace_state();
         std::lock_guard<std::mutex> lock(state.mutex);
         state.byContext.erase(key);
     } catch (...) {

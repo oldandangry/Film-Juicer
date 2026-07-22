@@ -120,9 +120,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerAdmission.inc">
-      <Filter>Cuda</Filter>
-    </None>
     <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerCommands.inc">
       <Filter>Cuda</Filter>
     </None>

@@ -41,6 +41,64 @@ namespace JuicerProcess {
     namespace {
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        bool query_cuda_device_total_bytes(
+            int deviceId,
+            std::uint64_t& outDeviceBudgetBytes,
+            std::string& outError) {
+            outDeviceBudgetBytes = 0;
+            outError.clear();
+            if (deviceId < 0) {
+                outError = "CUDA device-total query requires a valid device id";
+                return false;
+            }
+
+            int previousDevice = -1;
+            cudaError_t status = cudaGetDevice(&previousDevice);
+            if (status != cudaSuccess) {
+                outError = std::string("cudaGetDevice failed during device-total query: ") +
+                           cudaGetErrorString(status);
+                return false;
+            }
+
+            const bool switchedDevice = previousDevice != deviceId;
+            if (switchedDevice) {
+                status = cudaSetDevice(deviceId);
+                if (status != cudaSuccess) {
+                    outError = std::string("cudaSetDevice failed during device-total query: ") +
+                               cudaGetErrorString(status);
+                    return false;
+                }
+            }
+
+            std::size_t freeBytes = 0;
+            std::size_t totalBytes = 0;
+            const cudaError_t queryStatus = cudaMemGetInfo(&freeBytes, &totalBytes);
+            const cudaError_t restoreStatus = switchedDevice
+                                                  ? cudaSetDevice(previousDevice)
+                                                  : cudaSuccess;
+            if (queryStatus != cudaSuccess) {
+                outError = std::string("cudaMemGetInfo failed during device-total query: ") +
+                           cudaGetErrorString(queryStatus);
+                return false;
+            }
+            if (restoreStatus != cudaSuccess) {
+                outError = std::string("cudaSetDevice failed restoring device after device-total query: ") +
+                           cudaGetErrorString(restoreStatus);
+                return false;
+            }
+
+            outDeviceBudgetBytes = static_cast<std::uint64_t>(
+                std::min<std::size_t>(
+                    totalBytes,
+                    static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
+            if (outDeviceBudgetBytes <= 1) {
+                outError = "CUDA device-total query returned an invalid budget";
+                outDeviceBudgetBytes = 0;
+                return false;
+            }
+            return true;
+        }
+
         bool spatial_dir_scratch_has_required_roles(
             const JuicerCuda::Resources::DeviceSpatialDirScratch& scratch,
             Spektrafilm::DirScratchTier tier,
@@ -53,11 +111,9 @@ namespace JuicerProcess {
             }
             const bool hasThreeRaw =
                 scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC;
-            const bool hasStreamedRaw =
-                scratch.rawCorrectionY && scratch.rawCorrectionM == nullptr && scratch.rawCorrectionC == nullptr;
             const bool rawCorrectionMatch =
                 (roles.rawCorrectionPlanes == 3 && hasThreeRaw) ||
-                (roles.rawCorrectionPlanes == 1 && hasStreamedRaw);
+                (roles.rawCorrectionPlanes == 1 && scratch.rawCorrectionY);
             const bool filterTempMatch =
                 roles.filterTempPlanes == 0 || scratch.filterTemp;
             const bool tier1Base =
@@ -69,19 +125,14 @@ namespace JuicerProcess {
             }
             const bool hasAliasedForwardTemps =
                 scratch.filterTempM && scratch.filterTempC;
-            const bool hasLowScratchPairTemps =
-                scratch.filterTempM && scratch.filterTempC == nullptr;
-            const bool hasNoChannelTemps =
-                scratch.filterTempM == nullptr && scratch.filterTempC == nullptr;
             const bool channelTempsMatch =
-                (roles.filterTempPlanes == 1 && hasNoChannelTemps) ||
-                (roles.filterTempPlanes == 2 && hasLowScratchPairTemps) ||
+                roles.filterTempPlanes == 1 ||
+                (roles.filterTempPlanes == 2 && scratch.filterTempM) ||
                 (roles.filterTempPlanes == 3 && hasAliasedForwardTemps);
             const bool cachedLogRawMatch =
-                (roles.cachedLogRawPlanes == 0 &&
-                 scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr) ||
+                roles.cachedLogRawPlanes == 0 ||
                 (roles.cachedLogRawPlanes == 2 &&
-                 scratch.logRawB && scratch.logRawG && scratch.logRawR == nullptr) ||
+                 scratch.logRawB && scratch.logRawG) ||
                 (roles.cachedLogRawPlanes == 3 &&
                  scratch.logRawB && scratch.logRawG && scratch.logRawR);
             return channelTempsMatch && cachedLogRawMatch;
@@ -95,10 +146,9 @@ namespace JuicerProcess {
                 return false;
             }
             const bool cachedLogRawMatch =
-                (targetRoles.cachedLogRawPlanes == 0 &&
-                 scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr) ||
+                targetRoles.cachedLogRawPlanes == 0 ||
                 (targetRoles.cachedLogRawPlanes == 2 &&
-                 scratch.logRawB && scratch.logRawG && scratch.logRawR == nullptr) ||
+                 scratch.logRawB && scratch.logRawG) ||
                 (targetRoles.cachedLogRawPlanes == 3 &&
                  scratch.logRawB && scratch.logRawG && scratch.logRawR);
             if (!cachedLogRawMatch) {
@@ -106,8 +156,8 @@ namespace JuicerProcess {
             }
             const bool filterTempsCompatible =
                 targetRoles.filterTempPlanes == 3 ||
-                (targetRoles.filterTempPlanes == 2 && !scratch.filterTempC) ||
-                (!scratch.filterTempM && !scratch.filterTempC);
+                (targetRoles.filterTempPlanes == 2 && scratch.filterTempM) ||
+                targetRoles.filterTempPlanes <= 1;
             return filterTempsCompatible;
         }
 
@@ -236,10 +286,6 @@ namespace JuicerProcess {
             return "unknown";
         }
 
-        bool workspace_request_needs_shared_tmp_plane(
-            const Root::PreparedCudaFrame::WorkspaceRequest& request) noexcept {
-            return request.needSharedTmp;
-        }
 #endif
 
         std::string compute_process_data_dir() {
@@ -522,8 +568,6 @@ namespace JuicerProcess {
             msg += std::to_string(static_cast<unsigned long long>(transaction.transactionId));
             msg += " snapshot_id=";
             msg += std::to_string(static_cast<unsigned long long>(transaction.snapshot.snapshotId));
-            msg += " trace_schema=";
-            msg += std::to_string(transaction.snapshot.traceSchemaVersion);
             append_workspace_request_trace_fields(msg, "active", activeRequest);
             append_workspace_request_trace_fields(msg, "requested", requestedRequest);
             JTRACE("MSADM", msg);
@@ -549,10 +593,8 @@ namespace JuicerProcess {
                     msg += std::to_string(static_cast<unsigned long long>(transaction->transactionId));
                     msg += " snapshot_id=";
                     msg += std::to_string(static_cast<unsigned long long>(transaction->snapshot.snapshotId));
-                    msg += " trace_schema=";
-                    msg += std::to_string(transaction->snapshot.traceSchemaVersion);
                 } else {
-                    msg += " transaction_id=0 snapshot_id=0 trace_schema=0";
+                    msg += " transaction_id=0 snapshot_id=0";
                 }
                 msg += " reason=";
                 msg += reason && reason[0] ? reason : "unspecified";
@@ -627,8 +669,6 @@ namespace JuicerProcess {
                 msg += std::to_string(static_cast<unsigned long long>(transaction.transactionId));
                 msg += " snapshot_id=";
                 msg += std::to_string(static_cast<unsigned long long>(transaction.snapshot.snapshotId));
-                msg += " trace_schema=";
-                msg += std::to_string(transaction.snapshot.traceSchemaVersion);
                 msg += " descriptor_hash=";
                 msg += std::to_string(static_cast<unsigned long long>(descriptorHash));
                 msg += " spatial_dir_descriptor_hash=";
@@ -706,15 +746,8 @@ namespace JuicerProcess {
         struct FrameScratchWorkspace {
             WorkspaceRequest request{};
             WorkspaceRequest postFrameRequest{};
-            JuicerCuda::Resources::DeviceOpticsScratch optics{};
-            JuicerCuda::Resources::DeviceSpatialDirScratch spatialDir{};
-            float* sharedTmpPlane = nullptr;
-            int sharedTmpWidth = 0;
-            int sharedTmpHeight = 0;
-            std::size_t sharedTmpCapacityElements = 0;
             bool postFrameRequestActive = false;
             bool retainedLeaseActive = false;
-            bool overflowActive = false;
         };
 
         Root* root = nullptr;
@@ -749,15 +782,12 @@ namespace JuicerProcess {
         bool frameUseEventSubmitted = false;
         const char* failureStageTag = "prepare_frame";
         const char* failurePrefix = "CUDA prepared frame failed";
-        bool failureMarksContextLoss = true;
 
         void set_failure(
             PreparedCudaFailureStage stage,
-            const char* prefix,
-            bool marksContextLoss = true) noexcept {
+            const char* prefix) noexcept {
             failureStageTag = stage.tag;
             failurePrefix = prefix;
-            failureMarksContextLoss = marksContextLoss;
         }
 
         void remember_stream(void* cudaStreamOpaque) noexcept {
@@ -805,22 +835,6 @@ namespace JuicerProcess {
             const WorkspaceRequest& request,
             void* cudaStreamOpaque,
             std::string& outError);
-        bool release_overflow_spatial_dir_build_scratch_after_build(
-            void* cudaStreamOpaque,
-            JuicerCuda::SpatialDirBuildScratchReleaseStats& outStats,
-            std::string& outError);
-        bool stage_overflow_spatial_dir_cached_log_raw_for_final_develop(
-            void* cudaStreamOpaque,
-            JuicerCuda::SpatialDirCachedLogRawStageStats& outStats,
-            std::string& outError);
-        bool release_overflow_spatial_dir_cached_log_raw_after_final_develop(
-            void* cudaStreamOpaque,
-            JuicerCuda::SpatialDirCachedLogRawReleaseStats& outStats,
-            std::string& outError);
-        bool release_overflow_spatial_dir_stage_after_scanner_output(
-            void* cudaStreamOpaque,
-            JuicerCuda::SpatialDirStageReleaseStats& outStats,
-            std::string& outError);
         bool release_scratch_workspace_after_use(
             void* cudaStreamOpaque,
             std::string& outError);
@@ -829,7 +843,6 @@ namespace JuicerProcess {
             std::string& outError);
         void free_scan_error_stage_now() noexcept;
         void free_auto_exposure_workspace_now() noexcept;
-        void free_scratch_workspace_now() noexcept;
     };
 
     bool validate_visual_grain_descriptor(
@@ -1064,16 +1077,9 @@ namespace JuicerProcess {
 
         std::map<void*, JuicerCuda::DeviceByteReservation> stagedRecords;
         std::map<void*, JuicerCuda::DeviceByteReservation>::node_type stagedNode;
-        JuicerCuda::DeviceAllocationIdentity identity{};
         try {
             stagedRecords.emplace(nullptr, JuicerCuda::DeviceByteReservation{});
             stagedNode = stagedRecords.extract(stagedRecords.begin());
-            identity.deviceId = resources->ownerContextKey.deviceId;
-            identity.contextKey = resources->ownerContextKey;
-            identity.contextEpoch = resources->contextEpoch;
-            identity.allocationClass =
-                JuicerCuda::DeviceAllocationClass::FrameScratch;
-            identity.diagnosticIdentity = label;
         } catch (...) {
             JuicerLogging::discard_current_exception();
             outError = "failed to stage prepared-frame allocation record";
@@ -1082,8 +1088,10 @@ namespace JuicerProcess {
 
         JuicerCuda::DeviceByteReservation reservation;
         if (!resources->deviceLedger->reserve(
-                identity,
-                static_cast<std::uint64_t>(bytes),
+                JuicerCuda::DeviceReservationRequest{
+                    .contextKey = resources->ownerContextKey,
+                    .contextEpoch = resources->contextEpoch,
+                    .bytes = static_cast<std::uint64_t>(bytes)},
                 reservation,
                 outError)) {
             return false;
@@ -1287,7 +1295,7 @@ namespace JuicerProcess {
         }
         if (!resources || !resources->deviceLedger ||
             transaction.snapshot.contextEpoch == 0 ||
-            transaction.resolvedPressurePolicy.softTargetBytes == 0 ||
+            transaction.resolvedMemoryBudget.allocationCapBytes == 0 ||
             frameSet->hash == 0 || frameSet->route != recipe.profileRoute.scanRoute ||
             Spektrafilm::scan_route_is_print(frameSet->route) != printRoute ||
             frameSet->fullFrame.width != requestedWidth ||
@@ -1315,13 +1323,10 @@ namespace JuicerProcess {
                                             transaction.snapshot.contextEpoch));
             outError += " device_budget_bytes=" + std::to_string(
                                                       static_cast<unsigned long long>(
-                                                          transaction.resolvedPressurePolicy.deviceBudgetBytes));
-            outError += " resolved_cap_bytes=" + std::to_string(
-                                                     static_cast<unsigned long long>(
-                                                         transaction.resolvedPressurePolicy.softTargetBytes));
-            outError += " resolved_reserve_bytes=" + std::to_string(
-                                                         static_cast<unsigned long long>(
-                                                             transaction.resolvedPressurePolicy.reserveBytes));
+                                                          transaction.resolvedMemoryBudget.deviceBudgetBytes));
+            outError += " allocation_cap_bytes=" + std::to_string(
+                                                       static_cast<unsigned long long>(
+                                                           transaction.resolvedMemoryBudget.allocationCapBytes));
             outError += " accepted_reference_cap_bytes=" + std::to_string(
                                                                static_cast<unsigned long long>(
                                                                    acceptedProfile.referenceCapBytes));
@@ -1400,7 +1405,7 @@ namespace JuicerProcess {
                 *frameSet,
                 transaction.snapshot.contextEpoch,
                 observedProfile,
-                transaction.resolvedPressurePolicy.softTargetBytes,
+                transaction.resolvedMemoryBudget.allocationCapBytes,
                 diffusionExecutionDescriptor,
                 outError)) {
             appendDiffusionFailureIdentity();
@@ -1874,7 +1879,7 @@ namespace JuicerProcess {
                    a.needGateMask == b.needGateMask;
         };
 
-        if (scratchWorkspace.retainedLeaseActive || scratchWorkspace.overflowActive) {
+        if (scratchWorkspace.retainedLeaseActive) {
             if (!requests_match(scratchWorkspace.request, request)) {
 #if JUICER_DIAGNOSTICS_COMPILED
                 trace_workspace_request_mismatch(transaction, scratchWorkspace.request, request);
@@ -1886,589 +1891,17 @@ namespace JuicerProcess {
         }
 
         remember_stream(cudaStreamOpaque);
-        bool retainedAcquired = false;
-        if (!JuicerCuda::try_acquire_retained_frame_scratch_lease(
+        if (!JuicerCuda::acquire_retained_frame_scratch_lease(
                 *resources,
                 transaction.leaseGeneration,
                 cudaStreamOpaque,
-                retainedAcquired,
                 outError)) {
             return false;
         }
-        if (retainedAcquired) {
-            scratchWorkspace.request = request;
-            scratchWorkspace.postFrameRequest = request;
-            scratchWorkspace.postFrameRequestActive = true;
-            scratchWorkspace.retainedLeaseActive = true;
-            return true;
-        }
-
-        const std::size_t width = static_cast<std::size_t>(request.requestedWidth);
-        const std::size_t height = static_cast<std::size_t>(request.requestedHeight);
-        if (width > (std::numeric_limits<std::size_t>::max() / height)) {
-            outError = "frame scratch element count overflow";
-            return false;
-        }
-        const std::size_t requiredElements = width * height;
-        if (requiredElements > (std::numeric_limits<std::size_t>::max() / sizeof(float))) {
-            outError = "frame scratch byte count overflow";
-            return false;
-        }
-        const std::size_t planeBytes = requiredElements * sizeof(float);
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-            make_workspace_scratch_request_descriptor(request);
-        if (!JuicerCuda::ResourceManager::command_admit_frame_scratch_overflow(
-                transaction,
-                *resources,
-                scratchRequest,
-                outError)) {
-            return false;
-        }
-
-        FrameScratchWorkspace next{};
-        next.request = request;
-        next.postFrameRequest = request;
-        next.postFrameRequestActive = true;
-        next.overflowActive = true;
-
-        auto alloc_float = [&](float*& ptr, std::size_t bytes, const char* label) {
-            return allocate_device_bytes(
-                reinterpret_cast<void**>(&ptr),
-                bytes,
-                label ? label : "frame scratch",
-                outError);
-        };
-        auto fail_after_partial_alloc = [&]() {
-            scratchWorkspace = next;
-            free_scratch_workspace_now();
-            return false;
-        };
-
-        const bool needSharedTmp = workspace_request_needs_shared_tmp_plane(request);
-        if (needSharedTmp) {
-            if (!alloc_float(next.sharedTmpPlane, planeBytes, "frame shared tmp plane")) {
-                return fail_after_partial_alloc();
-            }
-            next.sharedTmpWidth = request.requestedWidth;
-            next.sharedTmpHeight = request.requestedHeight;
-            next.sharedTmpCapacityElements = requiredElements;
-        }
-
-        if (request.needOptics) {
-            JuicerCuda::Resources::DeviceOpticsScratch& optics = next.optics;
-            if (request.needSharedTmp && !next.sharedTmpPlane) {
-                outError = "frame optics scratch requires shared tmp plane";
-                return fail_after_partial_alloc();
-            }
-            if (!request.aliasScannerRgbFromSpatialDirFiltered) {
-                if (!alloc_float(optics.rgbR, planeBytes, "frame scannerScratch.rgbR") ||
-                    !alloc_float(optics.rgbG, planeBytes, "frame scannerScratch.rgbG") ||
-                    !alloc_float(optics.rgbB, planeBytes, "frame scannerScratch.rgbB")) {
-                    return fail_after_partial_alloc();
-                }
-            }
-            optics.tmp = next.sharedTmpPlane;
-            optics.width = request.requestedWidth;
-            optics.height = request.requestedHeight;
-            optics.capacityElements = requiredElements;
-            if (request.needBlurred &&
-                !alloc_float(optics.blurred, planeBytes, "frame scannerScratch.blurred")) {
-                return fail_after_partial_alloc();
-            }
-            if (request.needAux &&
-                !alloc_float(optics.aux, planeBytes, "frame scannerScratch.aux")) {
-                return fail_after_partial_alloc();
-            }
-            if (request.needGrainFrameUniforms) {
-                if (!allocate_device_bytes(
-                        reinterpret_cast<void**>(&optics.grainFrameUniforms),
-                        sizeof(JuicerCuda::GrainFrameUniforms),
-                        "frame scannerScratch.grainFrameUniforms",
-                        outError)) {
-                    return fail_after_partial_alloc();
-                }
-            }
-            if (request.needGrainLayerWork) {
-                if (!alloc_float(optics.grainTmp, planeBytes, "frame scannerScratch.grainTmp")) {
-                    return fail_after_partial_alloc();
-                }
-            }
-            if (request.needGrainShared &&
-                !alloc_float(optics.grainTmpShared, planeBytes, "frame scannerScratch.grainTmpShared")) {
-                return fail_after_partial_alloc();
-            }
-            if (request.needGateMask) {
-                const int gateWidth = (request.requestedWidth + 1) / 2;
-                const int gateHeight = (request.requestedHeight + 1) / 2;
-                const std::size_t gateElements =
-                    static_cast<std::size_t>(gateWidth) * static_cast<std::size_t>(gateHeight);
-                if (gateElements > (std::numeric_limits<std::size_t>::max() / sizeof(float))) {
-                    outError = "frame gate-mask byte count overflow";
-                    return fail_after_partial_alloc();
-                }
-                if (!alloc_float(
-                        optics.gateMask,
-                        gateElements * sizeof(float),
-                        "frame scannerScratch.gateMask")) {
-                    return fail_after_partial_alloc();
-                }
-                optics.gateWidth = gateWidth;
-                optics.gateHeight = gateHeight;
-                optics.gateMaskCapacityElements = gateElements;
-                optics.gateMaskHash = 0;
-            }
-        }
-
-        if (request.needSpatialDir) {
-            JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir = next.spatialDir;
-            if (!spatial_dir_roles_match_tier(
-                    request.spatialDirScratchTier,
-                    request.spatialDirPlaneRoles)) {
-                outError = "frame spatial DIR scratch tier/roles invalid";
-                return fail_after_partial_alloc();
-            }
-            if (!alloc_float(spatialDir.rawCorrectionY, planeBytes, "frame spatial DIR rawCorrectionY") ||
-                !alloc_float(
-                    spatialDir.filteredCorrectionY,
-                    planeBytes,
-                    "frame spatial DIR filteredCorrectionY") ||
-                !alloc_float(
-                    spatialDir.filteredCorrectionM,
-                    planeBytes,
-                    "frame spatial DIR filteredCorrectionM") ||
-                !alloc_float(
-                    spatialDir.filteredCorrectionC,
-                    planeBytes,
-                    "frame spatial DIR filteredCorrectionC")) {
-                return fail_after_partial_alloc();
-            }
-            if (request.spatialDirPlaneRoles.rawCorrectionPlanes == 3 &&
-                (!alloc_float(spatialDir.rawCorrectionM, planeBytes, "frame spatial DIR rawCorrectionM") ||
-                 !alloc_float(spatialDir.rawCorrectionC, planeBytes, "frame spatial DIR rawCorrectionC"))) {
-                return fail_after_partial_alloc();
-            }
-            if (request.spatialDirPlaneRoles.filterTempPlanes > 0) {
-                if (!next.sharedTmpPlane) {
-                    outError = "frame spatial DIR filter temp requires shared tmp plane";
-                    return fail_after_partial_alloc();
-                }
-                spatialDir.filterTemp = next.sharedTmpPlane;
-            }
-            if (request.spatialDirPlaneRoles.filterTempPlanes >= 2 &&
-                !alloc_float(
-                    spatialDir.filterTempM,
-                    planeBytes,
-                    "frame spatial DIR filterTempM")) {
-                return fail_after_partial_alloc();
-            }
-            if (request.spatialDirPlaneRoles.filterTempPlanes == 3 &&
-                !alloc_float(
-                    spatialDir.filterTempC,
-                    planeBytes,
-                    "frame spatial DIR filterTempC")) {
-                return fail_after_partial_alloc();
-            }
-            if (request.spatialDirPlaneRoles.cachedLogRawPlanes >= 1 &&
-                !alloc_float(
-                    spatialDir.logRawB,
-                    planeBytes,
-                    "frame spatial DIR logRawB")) {
-                return fail_after_partial_alloc();
-            }
-            if (request.spatialDirPlaneRoles.cachedLogRawPlanes >= 2 &&
-                !alloc_float(
-                    spatialDir.logRawG,
-                    planeBytes,
-                    "frame spatial DIR logRawG")) {
-                return fail_after_partial_alloc();
-            }
-            if (request.spatialDirPlaneRoles.cachedLogRawPlanes >= 3 &&
-                !alloc_float(
-                    spatialDir.logRawR,
-                    planeBytes,
-                    "frame spatial DIR logRawR")) {
-                return fail_after_partial_alloc();
-            }
-            spatialDir.width = request.requestedWidth;
-            spatialDir.height = request.requestedHeight;
-            spatialDir.capacityElements = requiredElements;
-        }
-
-        scratchWorkspace = next;
-        return true;
-    }
-
-    bool Root::PreparedCudaFrame::State::release_overflow_spatial_dir_build_scratch_after_build(
-        void* cudaStreamOpaque,
-        JuicerCuda::SpatialDirBuildScratchReleaseStats& outStats,
-        std::string& outError) {
-        outStats = JuicerCuda::SpatialDirBuildScratchReleaseStats{};
-        outError.clear();
-        FrameScratchWorkspace& workspace = scratchWorkspace;
-        if (!workspace.overflowActive || !workspace.request.needSpatialDir) {
-            return true;
-        }
-        if (!resources) {
-            outError = "CUDA resources unavailable for overflow spatial DIR build scratch release";
-            return false;
-        }
-        JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir = workspace.spatialDir;
-        const std::size_t planeBytes = spatialDir.capacityElements * sizeof(float);
-        if (planeBytes == 0) {
-            return true;
-        }
-
-        remember_stream(cudaStreamOpaque);
-        void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
-        bool retiredAll = true;
-        auto retire_ptr = [&](float*& ptr, const char* label, std::size_t& retiredBytes) {
-            if (!ptr || !retiredAll) {
-                return;
-            }
-            void* raw = ptr;
-            std::string localError;
-            if (retire_device_bytes(
-                    raw,
-                    planeBytes,
-                    retireStreamOpaque,
-                    label,
-                    localError)) {
-                ptr = nullptr;
-                retiredBytes += planeBytes;
-                return;
-            }
-            retiredAll = false;
-            outError = localError.empty()
-                           ? std::string(label ? label : "overflow spatial DIR build scratch") +
-                                 " retire failed"
-                           : localError;
-        };
-
-        retire_ptr(
-            spatialDir.rawCorrectionY,
-            "overflow spatial DIR build rawCorrectionY",
-            outStats.rawCorrectionRetiredBytes);
-        retire_ptr(
-            spatialDir.rawCorrectionM,
-            "overflow spatial DIR build rawCorrectionM",
-            outStats.rawCorrectionRetiredBytes);
-        retire_ptr(
-            spatialDir.rawCorrectionC,
-            "overflow spatial DIR build rawCorrectionC",
-            outStats.rawCorrectionRetiredBytes);
-        retire_ptr(
-            spatialDir.filterTempM,
-            "overflow spatial DIR build filterTempM",
-            outStats.filterTempRetiredBytes);
-        retire_ptr(
-            spatialDir.filterTempC,
-            "overflow spatial DIR build filterTempC",
-            outStats.filterTempRetiredBytes);
-        if (!retiredAll) {
-            if (outError.empty()) {
-                outError = "overflow spatial DIR build scratch retire failed";
-            }
-            return false;
-        }
-
-        const float* sharedTmp = workspace.sharedTmpPlane;
-        spatialDir.filterTemp = nullptr;
-        const bool opticsKeepsSharedTmp =
-            sharedTmp && workspace.optics.tmp == sharedTmp &&
-            (workspace.optics.rgbR || workspace.optics.rgbG || workspace.optics.rgbB ||
-             workspace.optics.blurred || workspace.optics.aux || workspace.optics.grainTmp ||
-             workspace.optics.grainTmpShared || workspace.optics.gateMask);
-        if (sharedTmp && !opticsKeepsSharedTmp) {
-            void* raw = workspace.sharedTmpPlane;
-            std::string localError;
-            if (!retire_device_bytes(
-                    raw,
-                    workspace.sharedTmpCapacityElements * sizeof(float),
-                    retireStreamOpaque,
-                    "overflow spatial DIR build shared tmp plane",
-                    localError)) {
-                outError = localError.empty()
-                               ? "overflow spatial DIR build shared tmp retire failed"
-                               : localError;
-                return false;
-            }
-            outStats.sharedTmpRetiredBytes =
-                workspace.sharedTmpCapacityElements * sizeof(float);
-            workspace.sharedTmpPlane = nullptr;
-            workspace.sharedTmpWidth = 0;
-            workspace.sharedTmpHeight = 0;
-            workspace.sharedTmpCapacityElements = 0;
-            if (workspace.optics.tmp == sharedTmp) {
-                workspace.optics.tmp = nullptr;
-            }
-        }
-
-        const bool syncBeforeReap =
-            outStats.rawCorrectionRetiredBytes > 0 ||
-            outStats.filterTempRetiredBytes > 0 ||
-            outStats.sharedTmpRetiredBytes > 0;
-        if (!syncBeforeReap) {
-            return true;
-        }
-
-        const cudaStream_t stream = retireStreamOpaque
-                                        ? reinterpret_cast<cudaStream_t>(retireStreamOpaque)
-                                        : nullptr;
-        const cudaError_t syncErr = cudaStreamSynchronize(stream);
-        if (syncErr != cudaSuccess) {
-            outError = std::string("cudaStreamSynchronize(overflow spatial DIR build scratch) failed: ") +
-                       (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
-            return false;
-        }
-        return JuicerCuda::reap_retired_allocations(
-            *resources,
-            outStats.reclaimedBytes,
-            outError);
-    }
-
-    bool Root::PreparedCudaFrame::State::stage_overflow_spatial_dir_cached_log_raw_for_final_develop(
-        void* cudaStreamOpaque,
-        JuicerCuda::SpatialDirCachedLogRawStageStats& outStats,
-        std::string& outError) {
-        outStats = JuicerCuda::SpatialDirCachedLogRawStageStats{};
-        outError.clear();
-        FrameScratchWorkspace& workspace = scratchWorkspace;
-        if (!workspace.overflowActive || !workspace.request.needSpatialDir) {
-            return true;
-        }
-        if (workspace.request.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3) {
-            outError = "overflow spatial DIR cached log raw target roles invalid";
-            return false;
-        }
-        if (!resources) {
-            outError = "CUDA resources unavailable for overflow spatial DIR cached log raw stage";
-            return false;
-        }
-
-        JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir = workspace.spatialDir;
-        if (!spatialDir.filteredCorrectionY || !spatialDir.filteredCorrectionM ||
-            !spatialDir.filteredCorrectionC || spatialDir.capacityElements == 0) {
-            outError = "overflow spatial DIR cached log raw stage missing filtered correction residency";
-            return false;
-        }
-        if (spatialDir.logRawB && spatialDir.logRawG && spatialDir.logRawR) {
-            return true;
-        }
-        const std::size_t planeBytes = spatialDir.capacityElements * sizeof(float);
-        if (planeBytes == 0) {
-            outError = "overflow spatial DIR cached log raw stage byte count invalid";
-            return false;
-        }
-
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-            make_workspace_scratch_request_descriptor(workspace.request);
-        if (!JuicerCuda::ResourceManager::command_admit_spatial_dir_cached_log_raw_overflow(
-                transaction,
-                *resources,
-                scratchRequest,
-                outError)) {
-            return false;
-        }
-
-        auto free_log_raw = [&]() noexcept {
-            std::string freeError;
-            if (spatialDir.logRawB) {
-                (void)free_device_bytes_now(spatialDir.logRawB, freeError);
-                spatialDir.logRawB = nullptr;
-            }
-            if (spatialDir.logRawG) {
-                (void)free_device_bytes_now(spatialDir.logRawG, freeError);
-                spatialDir.logRawG = nullptr;
-            }
-            if (spatialDir.logRawR) {
-                (void)free_device_bytes_now(spatialDir.logRawR, freeError);
-                spatialDir.logRawR = nullptr;
-            }
-        };
-        auto alloc_float = [&](float*& ptr, const char* label) {
-            if (ptr) {
-                return true;
-            }
-            if (allocate_device_bytes(
-                    reinterpret_cast<void**>(&ptr),
-                    planeBytes,
-                    label ? label : "overflow spatial DIR logRaw",
-                    outError)) {
-                outStats.cachedLogRawAllocatedBytes += planeBytes;
-                return true;
-            }
-            ptr = nullptr;
-            return false;
-        };
-
-        if (!alloc_float(spatialDir.logRawB, "overflow spatial DIR final logRawB") ||
-            !alloc_float(spatialDir.logRawG, "overflow spatial DIR final logRawG") ||
-            !alloc_float(spatialDir.logRawR, "overflow spatial DIR final logRawR")) {
-            free_log_raw();
-            return false;
-        }
-        remember_stream(cudaStreamOpaque);
-        return true;
-    }
-
-    bool Root::PreparedCudaFrame::State::release_overflow_spatial_dir_cached_log_raw_after_final_develop(
-        void* cudaStreamOpaque,
-        JuicerCuda::SpatialDirCachedLogRawReleaseStats& outStats,
-        std::string& outError) {
-        outStats = JuicerCuda::SpatialDirCachedLogRawReleaseStats{};
-        outError.clear();
-        FrameScratchWorkspace& workspace = scratchWorkspace;
-        if (!workspace.overflowActive || !workspace.request.needSpatialDir) {
-            return true;
-        }
-        if (!resources) {
-            outError = "CUDA resources unavailable for overflow spatial DIR cached log raw release";
-            return false;
-        }
-        JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir = workspace.spatialDir;
-        const std::size_t planeBytes = spatialDir.capacityElements * sizeof(float);
-        if (planeBytes == 0) {
-            return true;
-        }
-
-        remember_stream(cudaStreamOpaque);
-        void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
-        bool retiredAll = true;
-        auto retire_ptr = [&](float*& ptr, const char* label) {
-            if (!ptr || !retiredAll) {
-                return;
-            }
-            void* raw = ptr;
-            std::string localError;
-            if (retire_device_bytes(
-                    raw,
-                    planeBytes,
-                    retireStreamOpaque,
-                    label,
-                    localError)) {
-                ptr = nullptr;
-                outStats.cachedLogRawRetiredBytes += planeBytes;
-                return;
-            }
-            retiredAll = false;
-            outError = localError.empty()
-                           ? std::string(label ? label : "overflow spatial DIR cached log raw") +
-                                 " retire failed"
-                           : localError;
-        };
-
-        retire_ptr(spatialDir.logRawB, "overflow spatial DIR final logRawB");
-        retire_ptr(spatialDir.logRawG, "overflow spatial DIR final logRawG");
-        retire_ptr(spatialDir.logRawR, "overflow spatial DIR final logRawR");
-        if (!retiredAll) {
-            if (outError.empty()) {
-                outError = "overflow spatial DIR cached log raw retire failed";
-            }
-            return false;
-        }
-        if (outStats.cachedLogRawRetiredBytes == 0) {
-            return true;
-        }
-
-        const cudaStream_t stream = retireStreamOpaque
-                                        ? reinterpret_cast<cudaStream_t>(retireStreamOpaque)
-                                        : nullptr;
-        const cudaError_t syncErr = cudaStreamSynchronize(stream);
-        if (syncErr != cudaSuccess) {
-            outError = std::string("cudaStreamSynchronize(overflow spatial DIR cached log raw) failed: ") +
-                       (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
-            return false;
-        }
-        return JuicerCuda::reap_retired_allocations(
-            *resources,
-            outStats.reclaimedBytes,
-            outError);
-    }
-
-    bool Root::PreparedCudaFrame::State::release_overflow_spatial_dir_stage_after_scanner_output(
-        void* cudaStreamOpaque,
-        JuicerCuda::SpatialDirStageReleaseStats& outStats,
-        std::string& outError) {
-        outStats = JuicerCuda::SpatialDirStageReleaseStats{};
-        outError.clear();
-        FrameScratchWorkspace& workspace = scratchWorkspace;
-        if (!workspace.overflowActive || !workspace.request.needSpatialDir) {
-            return true;
-        }
-        if (!resources) {
-            outError = "CUDA resources unavailable for overflow spatial DIR stage release";
-            return false;
-        }
-        JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir = workspace.spatialDir;
-        const std::size_t planeBytes = spatialDir.capacityElements * sizeof(float);
-        if (planeBytes == 0) {
-            workspace.request.needSpatialDir = false;
-            spatialDir = JuicerCuda::Resources::DeviceSpatialDirScratch{};
-            return true;
-        }
-
-        remember_stream(cudaStreamOpaque);
-        void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
-        bool retiredAll = true;
-        auto retire_ptr = [&](float*& ptr, const char* label) {
-            if (!ptr || !retiredAll) {
-                return;
-            }
-            void* raw = ptr;
-            std::string localError;
-            if (retire_device_bytes(
-                    raw,
-                    planeBytes,
-                    retireStreamOpaque,
-                    label,
-                    localError)) {
-                ptr = nullptr;
-                outStats.retiredBytes += planeBytes;
-                return;
-            }
-            retiredAll = false;
-            outError = localError.empty()
-                           ? std::string(label ? label : "overflow spatial DIR stage") +
-                                 " retire failed"
-                           : localError;
-        };
-
-        retire_ptr(spatialDir.rawCorrectionY, "overflow spatial DIR rawCorrectionY");
-        retire_ptr(spatialDir.rawCorrectionM, "overflow spatial DIR rawCorrectionM");
-        retire_ptr(spatialDir.rawCorrectionC, "overflow spatial DIR rawCorrectionC");
-        retire_ptr(spatialDir.filteredCorrectionY, "overflow spatial DIR filteredCorrectionY");
-        retire_ptr(spatialDir.filteredCorrectionM, "overflow spatial DIR filteredCorrectionM");
-        retire_ptr(spatialDir.filteredCorrectionC, "overflow spatial DIR filteredCorrectionC");
-        retire_ptr(spatialDir.filterTempM, "overflow spatial DIR filterTempM");
-        retire_ptr(spatialDir.filterTempC, "overflow spatial DIR filterTempC");
-        retire_ptr(spatialDir.logRawB, "overflow spatial DIR logRawB");
-        retire_ptr(spatialDir.logRawG, "overflow spatial DIR logRawG");
-        retire_ptr(spatialDir.logRawR, "overflow spatial DIR logRawR");
-        if (!retiredAll) {
-            if (outError.empty()) {
-                outError = "overflow spatial DIR stage retire failed";
-            }
-            return false;
-        }
-
-        const cudaStream_t stream = retireStreamOpaque
-                                        ? reinterpret_cast<cudaStream_t>(retireStreamOpaque)
-                                        : nullptr;
-        const cudaError_t syncErr = cudaStreamSynchronize(stream);
-        if (syncErr != cudaSuccess) {
-            outError = std::string("cudaStreamSynchronize(overflow spatial DIR stage) failed: ") +
-                       (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
-            return false;
-        }
-        if (!JuicerCuda::reap_retired_allocations(
-                *resources,
-                outStats.reclaimedBytes,
-                outError)) {
-            return false;
-        }
-        spatialDir = JuicerCuda::Resources::DeviceSpatialDirScratch{};
-        workspace.request.needSpatialDir = false;
-        spatialDirDescriptor = Spektrafilm::SpatialDirDescriptor{};
+        scratchWorkspace.request = request;
+        scratchWorkspace.postFrameRequest = request;
+        scratchWorkspace.postFrameRequestActive = true;
+        scratchWorkspace.retainedLeaseActive = true;
         return true;
     }
 
@@ -2477,7 +1910,7 @@ namespace JuicerProcess {
         std::string& outError) {
         outError.clear();
         FrameScratchWorkspace& workspace = scratchWorkspace;
-        if (!workspace.retainedLeaseActive && !workspace.overflowActive) {
+        if (!workspace.retainedLeaseActive) {
             return true;
         }
         if (!resources) {
@@ -2487,195 +1920,23 @@ namespace JuicerProcess {
 
         remember_stream(cudaStreamOpaque);
         void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
-
-        if (workspace.retainedLeaseActive) {
-            if (!submit_frame_use_event(retireStreamOpaque, outError)) {
-                if (outError.empty()) {
-                    outError = "frame scratch use-event submission failed";
-                }
-                return false;
+        if (!submit_frame_use_event(retireStreamOpaque, outError)) {
+            if (outError.empty()) {
+                outError = "frame scratch use-event submission failed";
             }
-            if (!JuicerCuda::release_retained_frame_scratch_lease(
-                    *resources,
-                    transaction.leaseGeneration,
-                    outError)) {
-                if (outError.empty()) {
-                    outError = "retained frame scratch lease release failed";
-                }
-                return false;
+            return false;
+        }
+        if (!JuicerCuda::release_retained_frame_scratch_lease(
+                *resources,
+                transaction.leaseGeneration,
+                outError)) {
+            if (outError.empty()) {
+                outError = "retained frame scratch lease release failed";
             }
-            workspace = FrameScratchWorkspace{};
-            return true;
-        }
-
-        bool retiredAll = true;
-        auto retire_ptr = [&](auto& ptr, std::size_t bytes, const char* label) {
-            if (!ptr || !retiredAll) {
-                return;
-            }
-            void* raw = ptr;
-            std::string localError;
-            if (retire_device_bytes(
-                    raw,
-                    bytes,
-                    retireStreamOpaque,
-                    label,
-                    localError)) {
-                ptr = nullptr;
-                return;
-            }
-            retiredAll = false;
-            outError = localError.empty()
-                           ? std::string(label ? label : "frame scratch") + " retire failed"
-                           : localError;
-        };
-
-        const std::size_t planeBytes = workspace.optics.capacityElements > 0
-                                           ? workspace.optics.capacityElements * sizeof(float)
-                                           : workspace.spatialDir.capacityElements * sizeof(float);
-        retire_ptr(workspace.optics.rgbR, planeBytes, "frame scannerScratch.rgbR");
-        retire_ptr(workspace.optics.rgbG, planeBytes, "frame scannerScratch.rgbG");
-        retire_ptr(workspace.optics.rgbB, planeBytes, "frame scannerScratch.rgbB");
-        retire_ptr(workspace.optics.blurred, planeBytes, "frame scannerScratch.blurred");
-        retire_ptr(workspace.optics.aux, planeBytes, "frame scannerScratch.aux");
-        retire_ptr(
-            workspace.optics.grainFrameUniforms,
-            sizeof(JuicerCuda::GrainFrameUniforms),
-            "frame scannerScratch.grainFrameUniforms");
-        retire_ptr(workspace.optics.grainTmp, planeBytes, "frame scannerScratch.grainTmp");
-        retire_ptr(workspace.optics.grainTmpShared, planeBytes, "frame scannerScratch.grainTmpShared");
-        retire_ptr(
-            workspace.optics.gateMask,
-            workspace.optics.gateMaskCapacityElements * sizeof(float),
-            "frame scannerScratch.gateMask");
-        retire_ptr(workspace.spatialDir.rawCorrectionY, planeBytes, "frame spatial DIR rawCorrectionY");
-        retire_ptr(workspace.spatialDir.rawCorrectionM, planeBytes, "frame spatial DIR rawCorrectionM");
-        retire_ptr(workspace.spatialDir.rawCorrectionC, planeBytes, "frame spatial DIR rawCorrectionC");
-        retire_ptr(
-            workspace.spatialDir.filteredCorrectionY,
-            planeBytes,
-            "frame spatial DIR filteredCorrectionY");
-        retire_ptr(
-            workspace.spatialDir.filteredCorrectionM,
-            planeBytes,
-            "frame spatial DIR filteredCorrectionM");
-        retire_ptr(
-            workspace.spatialDir.filteredCorrectionC,
-            planeBytes,
-            "frame spatial DIR filteredCorrectionC");
-        retire_ptr(
-            workspace.spatialDir.filterTempM,
-            planeBytes,
-            "frame spatial DIR filterTempM");
-        retire_ptr(
-            workspace.spatialDir.filterTempC,
-            planeBytes,
-            "frame spatial DIR filterTempC");
-        retire_ptr(workspace.spatialDir.logRawB, planeBytes, "frame spatial DIR logRawB");
-        retire_ptr(workspace.spatialDir.logRawG, planeBytes, "frame spatial DIR logRawG");
-        retire_ptr(workspace.spatialDir.logRawR, planeBytes, "frame spatial DIR logRawR");
-        retire_ptr(
-            workspace.sharedTmpPlane,
-            workspace.sharedTmpCapacityElements * sizeof(float),
-            "frame shared tmp plane");
-
-        if (retiredAll) {
-            workspace = FrameScratchWorkspace{};
-            return true;
-        }
-        if (outError.empty()) {
-            outError = "frame scratch retire failed";
-        }
-        return false;
-    }
-
-    void Root::PreparedCudaFrame::State::free_scratch_workspace_now() noexcept {
-        FrameScratchWorkspace& workspace = scratchWorkspace;
-        std::string freeError;
-        if (workspace.optics.rgbR) {
-            (void)free_device_bytes_now(workspace.optics.rgbR, freeError);
-        }
-        if (workspace.optics.rgbG) {
-            (void)free_device_bytes_now(workspace.optics.rgbG, freeError);
-        }
-        if (workspace.optics.rgbB) {
-            (void)free_device_bytes_now(workspace.optics.rgbB, freeError);
-        }
-        if (workspace.optics.blurred) {
-            (void)free_device_bytes_now(workspace.optics.blurred, freeError);
-        }
-        if (workspace.optics.aux) {
-            (void)free_device_bytes_now(workspace.optics.aux, freeError);
-        }
-        if (workspace.optics.grainFrameUniforms) {
-            (void)free_device_bytes_now(
-                workspace.optics.grainFrameUniforms,
-                freeError);
-        }
-        if (workspace.optics.grainTmp) {
-            (void)free_device_bytes_now(workspace.optics.grainTmp, freeError);
-        }
-        if (workspace.optics.grainTmpShared) {
-            (void)free_device_bytes_now(
-                workspace.optics.grainTmpShared,
-                freeError);
-        }
-        if (workspace.optics.gateMask) {
-            (void)free_device_bytes_now(workspace.optics.gateMask, freeError);
-        }
-        if (workspace.spatialDir.rawCorrectionY) {
-            (void)free_device_bytes_now(
-                workspace.spatialDir.rawCorrectionY,
-                freeError);
-        }
-        if (workspace.spatialDir.rawCorrectionM) {
-            (void)free_device_bytes_now(
-                workspace.spatialDir.rawCorrectionM,
-                freeError);
-        }
-        if (workspace.spatialDir.rawCorrectionC) {
-            (void)free_device_bytes_now(
-                workspace.spatialDir.rawCorrectionC,
-                freeError);
-        }
-        if (workspace.spatialDir.filteredCorrectionY) {
-            (void)free_device_bytes_now(
-                workspace.spatialDir.filteredCorrectionY,
-                freeError);
-        }
-        if (workspace.spatialDir.filteredCorrectionM) {
-            (void)free_device_bytes_now(
-                workspace.spatialDir.filteredCorrectionM,
-                freeError);
-        }
-        if (workspace.spatialDir.filteredCorrectionC) {
-            (void)free_device_bytes_now(
-                workspace.spatialDir.filteredCorrectionC,
-                freeError);
-        }
-        if (workspace.spatialDir.filterTempM) {
-            (void)free_device_bytes_now(
-                workspace.spatialDir.filterTempM,
-                freeError);
-        }
-        if (workspace.spatialDir.filterTempC) {
-            (void)free_device_bytes_now(
-                workspace.spatialDir.filterTempC,
-                freeError);
-        }
-        if (workspace.spatialDir.logRawB) {
-            (void)free_device_bytes_now(workspace.spatialDir.logRawB, freeError);
-        }
-        if (workspace.spatialDir.logRawG) {
-            (void)free_device_bytes_now(workspace.spatialDir.logRawG, freeError);
-        }
-        if (workspace.spatialDir.logRawR) {
-            (void)free_device_bytes_now(workspace.spatialDir.logRawR, freeError);
-        }
-        if (workspace.sharedTmpPlane) {
-            (void)free_device_bytes_now(workspace.sharedTmpPlane, freeError);
+            return false;
         }
         workspace = FrameScratchWorkspace{};
+        return true;
     }
 
     Root::PreparedCudaFrame::PreparedCudaFrame(std::unique_ptr<State> state) noexcept
@@ -2708,14 +1969,6 @@ namespace JuicerProcess {
         return _active;
     }
 
-    bool Root::PreparedCudaFrame::WorkspaceLeaseMarker::has_any_family() const noexcept {
-        return _active && (_request.needOptics || _request.needSpatialDir);
-    }
-
-    std::uint64_t Root::PreparedCudaFrame::WorkspaceLeaseMarker::lease_generation() const noexcept {
-        return _active ? _leaseGeneration : 0;
-    }
-
     bool Root::PreparedCudaFrame::active() const noexcept {
         return _state &&
                _state->resources &&
@@ -2723,14 +1976,9 @@ namespace JuicerProcess {
                !_state->transaction.committed;
     }
 
-    Root::PreparedCudaFrame::WorkspaceRequest
-    Root::PreparedCudaFrame::workspace_request() const noexcept {
-        return active() ? _state->workspaceRequest : WorkspaceRequest{};
-    }
-
     JuicerCuda::ResourceManager::ScratchRequestDescriptor
     Root::PreparedCudaFrame::State::post_frame_scratch_request_descriptor() const noexcept {
-        if (!scratchWorkspace.retainedLeaseActive && !scratchWorkspace.overflowActive) {
+        if (!scratchWorkspace.retainedLeaseActive) {
             return JuicerCuda::ResourceManager::ScratchRequestDescriptor{};
         }
         const WorkspaceRequest& request = scratchWorkspace.postFrameRequestActive
@@ -2739,33 +1987,21 @@ namespace JuicerProcess {
         return make_workspace_scratch_request_descriptor(request);
     }
 
-    Root::PreparedCudaFrame::WorkspaceLeaseMarker Root::PreparedCudaFrame::bind_workspace_request(
-        const WorkspaceRequest& request) const noexcept {
-        if (!active() || !request.has_any_family()) {
+    Root::PreparedCudaFrame::WorkspaceLeaseMarker
+    Root::PreparedCudaFrame::workspace_lease() const noexcept {
+        if (!active() || !_state->workspaceRequest.has_any_family()) {
             return WorkspaceLeaseMarker{};
         }
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor expected =
-            make_workspace_scratch_request_descriptor(_state->workspaceRequest);
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor actual =
-            make_workspace_scratch_request_descriptor(request);
-        if (expected.generation == 0 ||
-            expected.generation != actual.generation) {
-            return WorkspaceLeaseMarker{};
-        }
-        return WorkspaceLeaseMarker(request, _state->transaction.leaseGeneration);
-    }
-
-    JuicerCuda::ResourceManager::ScratchRequestDescriptor Root::PreparedCudaFrame::make_scratch_request_descriptor(
-        const WorkspaceLeaseMarker& workspace) noexcept {
-        return make_workspace_scratch_request_descriptor(workspace._request);
+        return WorkspaceLeaseMarker(
+            _state->workspaceRequest,
+            _state->transaction.leaseGeneration);
     }
 
     const Root::PreparedCudaFrame::WorkspaceRequest&
     Root::PreparedCudaFrame::active_workspace_request(
         const WorkspaceLeaseMarker& workspace) const noexcept {
         if (_state &&
-            (_state->scratchWorkspace.retainedLeaseActive ||
-             _state->scratchWorkspace.overflowActive) &&
+            _state->scratchWorkspace.retainedLeaseActive &&
             _state->scratchWorkspace.request.needSpatialDir &&
             workspace._request.needSpatialDir &&
             _state->scratchWorkspace.request.spatialDirDescriptorHash ==
@@ -2782,7 +2018,7 @@ namespace JuicerProcess {
                _state->transaction.active &&
                !_state->transaction.committed &&
                workspace.active() &&
-               workspace.lease_generation() == _state->transaction.leaseGeneration;
+               workspace._leaseGeneration == _state->transaction.leaseGeneration;
     }
 
     bool Root::PreparedCudaFrame::validate_workspace_lease_marker(
@@ -2797,7 +2033,7 @@ namespace JuicerProcess {
             outError = "prepared frame workspace marker is not active";
             return false;
         }
-        if (workspace.lease_generation() != _state->transaction.leaseGeneration) {
+        if (workspace._leaseGeneration != _state->transaction.leaseGeneration) {
             outError = "prepared frame workspace marker does not match current lease";
             return false;
         }
@@ -2849,7 +2085,7 @@ namespace JuicerProcess {
                            : releaseError;
             return false;
         }
-        if (!_state->root->shed_post_frame_scratch(
+        if (!JuicerCuda::ResourceManager::command_shed_post_frame_scratch(
                 _state->transaction,
                 *_state->resources,
                 postFrameScratchRequest,
@@ -2859,7 +2095,10 @@ namespace JuicerProcess {
             return false;
         }
 
-        if (!_state->root->commit_submission(_state->transaction, cudaStreamOpaque, outError)) {
+        if (!JuicerCuda::ResourceManager::commit_submission(
+                _state->transaction,
+                cudaStreamOpaque,
+                outError)) {
             return false;
         }
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -2953,7 +2192,7 @@ namespace JuicerProcess {
                 }
                 if (_state->root && _state->resources && _state->transaction.active &&
                     !_state->transaction.committed &&
-                    !_state->root->shed_post_frame_scratch(
+                    !JuicerCuda::ResourceManager::command_shed_post_frame_scratch(
                         _state->transaction,
                         *_state->resources,
                         postFrameScratchRequest,
@@ -2977,7 +2216,7 @@ namespace JuicerProcess {
             }
         }
         if (_state && _state->root && _state->transaction.active && !_state->transaction.committed) {
-            _state->root->rollback_submission(_state->transaction, reason);
+            JuicerCuda::ResourceManager::rollback_submission(_state->transaction, reason);
         }
         if (_state) {
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -2999,64 +2238,6 @@ namespace JuicerProcess {
         }
     }
 
-    bool Root::PreparedCudaFrame::prepare_current_medium(
-        const WorkingState& workingState,
-        bool negativeMedium,
-        const WorkspaceLeaseMarker& workspace,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        if (!validate_workspace_lease_marker(workspace, outError)) {
-            return false;
-        }
-
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-            make_scratch_request_descriptor(workspace);
-        const char* stageTag = negativeMedium ? "current_medium_upload_negative"
-                                              : "current_medium_upload_print";
-        if (!JuicerCuda::ResourceManager::command_ensure_current_medium_uploaded(
-                _state->transaction,
-                *_state->resources,
-                workingState,
-                negativeMedium,
-                scratchRequest,
-                cudaStreamOpaque,
-                outError)) {
-            _state->set_failure(PreparedCudaFailureStage{stageTag}, "CUDA current-medium upload failed");
-            return false;
-        }
-        return true;
-    }
-
-    bool Root::PreparedCudaFrame::prepare_scan_lut(
-        const WorkingState& workingState,
-        bool negativeMedium,
-        const WorkspaceLeaseMarker& workspace,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        if (!validate_workspace_lease_marker(workspace, outError)) {
-            return false;
-        }
-
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-            make_scratch_request_descriptor(workspace);
-        const char* stageTag = negativeMedium ? "scan_lut_negative"
-                                              : "scan_lut_print";
-        const char* failurePrefix = negativeMedium ? "CUDA scan LUT upload failed"
-                                                   : "CUDA print scan LUT upload failed";
-        if (!JuicerCuda::ResourceManager::command_ensure_scan_lut(
-                _state->transaction,
-                *_state->resources,
-                workingState,
-                negativeMedium,
-                scratchRequest,
-                cudaStreamOpaque,
-                outError)) {
-            _state->set_failure(PreparedCudaFailureStage{stageTag}, failurePrefix);
-            return false;
-        }
-        return true;
-    }
-
     bool Root::PreparedCudaFrame::stage_optical_workspace(
         const WorkspaceLeaseMarker& workspace,
         void* cudaStreamOpaque,
@@ -3066,19 +2247,15 @@ namespace JuicerProcess {
         }
         const WorkspaceRequest& activeRequest = active_workspace_request(workspace);
         if (!_state->ensure_scratch_workspace(activeRequest, cudaStreamOpaque, outError)) {
-            const bool marksContextLoss = !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
+            const bool marksContextLoss =
+                !JuicerCuda::ResourceManager::error_is_allocation_capacity_exhausted(outError);
             _state->set_failure(
                 PreparedCudaFailureStage{"acquire_frame_scratch_workspace"},
                 marksContextLoss
                     ? "CUDA frame scratch workspace acquisition failed"
-                    : "CUDA frame scratch workspace admission failed",
-                marksContextLoss);
+                    : "CUDA frame scratch allocation capacity exhausted");
             return false;
         }
-        if (_state->scratchWorkspace.overflowActive) {
-            return true;
-        }
-
         const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
             make_workspace_scratch_request_descriptor(activeRequest);
         if (!JuicerCuda::ResourceManager::command_ensure_optics_scratch(
@@ -3087,13 +2264,13 @@ namespace JuicerProcess {
                 scratchRequest,
                 cudaStreamOpaque,
                 outError)) {
-            const bool marksContextLoss = !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
+            const bool marksContextLoss =
+                !JuicerCuda::ResourceManager::error_is_allocation_capacity_exhausted(outError);
             _state->set_failure(
                 PreparedCudaFailureStage{"command_ensure_optics_scratch"},
                 marksContextLoss
                     ? "CUDA optics scratch allocation failed"
-                    : "CUDA optics scratch deferred by contention policy",
-                marksContextLoss);
+                    : "CUDA optics scratch allocation capacity exhausted");
             return false;
         }
         return true;
@@ -3111,10 +2288,6 @@ namespace JuicerProcess {
         if (!_state->ensure_scratch_workspace(activeRequest, cudaStreamOpaque, outError)) {
             return false;
         }
-        if (_state->scratchWorkspace.overflowActive) {
-            return true;
-        }
-
         const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
             make_workspace_scratch_request_descriptor(activeRequest);
         return JuicerCuda::ResourceManager::command_ensure_optics_scratch(
@@ -3353,13 +2526,13 @@ namespace JuicerProcess {
                 JTRACE("DIR_DESCRIPTOR", msg);
             }
 #endif
-            if (_state->scratchWorkspace.retainedLeaseActive &&
-                !_state->scratchWorkspace.overflowActive) {
+            if (_state->scratchWorkspace.retainedLeaseActive) {
                 _state->scratchWorkspace.request = candidate;
                 _state->scratchWorkspace.postFrameRequest = candidate;
                 _state->scratchWorkspace.postFrameRequestActive = true;
             } else if (!_state->ensure_scratch_workspace(candidate, cudaStreamOpaque, scratchAdmissionError)) {
-                if (JuicerCuda::ResourceManager::error_is_scratch_exhausted(scratchAdmissionError) &&
+                if (JuicerCuda::ResourceManager::error_is_allocation_capacity_exhausted(
+                        scratchAdmissionError) &&
                     candidateIndex + 1 < scratchCandidateCount) {
                     continue;
                 }
@@ -3369,20 +2542,19 @@ namespace JuicerProcess {
 
             const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
                 make_workspace_scratch_request_descriptor(candidate);
-            if (!_state->scratchWorkspace.overflowActive) {
-                if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_scratch(
-                        _state->transaction,
-                        *_state->resources,
-                        scratchRequest,
-                        cudaStreamOpaque,
-                        scratchAdmissionError)) {
-                    if (JuicerCuda::ResourceManager::error_is_scratch_exhausted(scratchAdmissionError) &&
-                        candidateIndex + 1 < scratchCandidateCount) {
-                        continue;
-                    }
-                    outError = scratchAdmissionError;
-                    break;
+            if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_scratch(
+                    _state->transaction,
+                    *_state->resources,
+                    scratchRequest,
+                    cudaStreamOpaque,
+                    scratchAdmissionError)) {
+                if (JuicerCuda::ResourceManager::error_is_allocation_capacity_exhausted(
+                        scratchAdmissionError) &&
+                    candidateIndex + 1 < scratchCandidateCount) {
+                    continue;
                 }
+                outError = scratchAdmissionError;
+                break;
             }
             admittedRequest = candidate;
             scratchPrepared = true;
@@ -3395,13 +2567,13 @@ namespace JuicerProcess {
                                ? "spatial DIR scratch admission failed"
                                : scratchAdmissionError;
             }
-            const bool marksContextLoss = !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
+            const bool marksContextLoss =
+                !JuicerCuda::ResourceManager::error_is_allocation_capacity_exhausted(outError);
             _state->set_failure(
                 PreparedCudaFailureStage{"command_ensure_spatial_dir_scratch"},
                 marksContextLoss
                     ? "CUDA spatial DIR scratch allocation failed"
-                    : "CUDA spatial DIR scratch deferred by contention policy",
-                marksContextLoss);
+                    : "CUDA spatial DIR scratch allocation capacity exhausted");
             return false;
         }
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -3410,7 +2582,7 @@ namespace JuicerProcess {
             std::string msg = "event=spatial_dir_scratch_admission descriptor_hash=";
             msg += std::to_string(static_cast<unsigned long long>(descriptor.hash));
             msg += " scratch_source=";
-            msg += _state->scratchWorkspace.overflowActive ? "overflow" : "retained";
+            msg += "retained";
             msg += " scratch_tier=";
             msg += Spektrafilm::to_cstr(admittedRequest.spatialDirScratchTier);
             msg += " strict_yvv_shape=";
@@ -3438,8 +2610,7 @@ namespace JuicerProcess {
             if (sigmas[slot] >= 3.0f) {
                 continue;
             }
-            if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_kernel(
-                    _state->transaction,
+            if (!JuicerCuda::ensure_spatial_dir_kernel(
                     *_state->resources,
                     _state->resources->spatialDirKernels[static_cast<std::size_t>(slot)],
                     sigmas[slot],
@@ -3453,138 +2624,6 @@ namespace JuicerProcess {
         }
         _state->spatialDirDescriptor = descriptor;
         return true;
-    }
-
-    bool Root::PreparedCudaFrame::release_spatial_dir_build_scratch_after_build(
-        const WorkspaceLeaseMarker& workspace,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
-        if (!validate_workspace_lease_marker(workspace, outError)) {
-            return false;
-        }
-        if (!workspace._request.needSpatialDir) {
-            return true;
-        }
-        if (!_state->scratchWorkspace.retainedLeaseActive && !_state->scratchWorkspace.overflowActive) {
-            return true;
-        }
-
-        JuicerCuda::SpatialDirBuildScratchReleaseStats releaseStats{};
-        const bool overflow = _state->scratchWorkspace.overflowActive;
-        bool ok = false;
-        if (overflow) {
-            ok = _state->release_overflow_spatial_dir_build_scratch_after_build(
-                cudaStreamOpaque,
-                releaseStats,
-                outError);
-        } else {
-            _state->remember_stream(cudaStreamOpaque);
-            ok = JuicerCuda::ResourceManager::command_release_spatial_dir_build_scratch_stage(
-                _state->transaction,
-                *_state->resources,
-                cudaStreamOpaque,
-                releaseStats,
-                outError);
-        }
-#if JUICER_DIAGNOSTICS_COMPILED
-        if (JTRACE_ENABLED(1)) {
-            const std::uint64_t descriptorHash = workspace._request.spatialDirDescriptorHash;
-            std::string msg = "event=spatial_dir_build_scratch_release_after_build";
-            msg += " descriptor_hash=";
-            msg += std::to_string(static_cast<unsigned long long>(descriptorHash));
-            msg += " scratch_source=";
-            msg += overflow ? "overflow" : "retained";
-            msg += " ok=";
-            msg += ok ? "1" : "0";
-            msg += " pending_scratch_bytes_before=";
-            msg += std::to_string(static_cast<unsigned long long>(releaseStats.pendingScratchBytesBefore));
-            msg += " raw_correction_retired_bytes=";
-            msg += std::to_string(static_cast<unsigned long long>(releaseStats.rawCorrectionRetiredBytes));
-            msg += " filter_temp_retired_bytes=";
-            msg += std::to_string(static_cast<unsigned long long>(releaseStats.filterTempRetiredBytes));
-            msg += " shared_tmp_retired_bytes=";
-            msg += std::to_string(static_cast<unsigned long long>(releaseStats.sharedTmpRetiredBytes));
-            msg += " reclaimed_bytes=";
-            msg += std::to_string(static_cast<unsigned long long>(releaseStats.reclaimedBytes));
-            if (!outError.empty()) {
-                msg += " error=";
-                msg += outError;
-            }
-            JTRACE("DIR_DESCRIPTOR", msg);
-        }
-#endif
-        if (!ok) {
-            _state->set_failure(
-                PreparedCudaFailureStage{"release_spatial_dir_build_scratch_after_build"},
-                "CUDA spatial DIR build scratch release failed");
-        }
-        return ok;
-    }
-
-    bool Root::PreparedCudaFrame::release_spatial_dir_stage_after_scanner_output(
-        const WorkspaceLeaseMarker& workspace,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
-        if (!validate_workspace_lease_marker(workspace, outError)) {
-            return false;
-        }
-        if (!workspace._request.needSpatialDir) {
-            return true;
-        }
-        if (!_state->scratchWorkspace.retainedLeaseActive && !_state->scratchWorkspace.overflowActive) {
-            return true;
-        }
-
-        JuicerCuda::SpatialDirStageReleaseStats releaseStats{};
-        const bool overflow = _state->scratchWorkspace.overflowActive;
-        bool ok = false;
-        if (overflow) {
-            ok = _state->release_overflow_spatial_dir_stage_after_scanner_output(
-                cudaStreamOpaque,
-                releaseStats,
-                outError);
-        } else {
-            _state->remember_stream(cudaStreamOpaque);
-            ok = JuicerCuda::ResourceManager::command_release_spatial_dir_scratch_stage(
-                _state->transaction,
-                *_state->resources,
-                cudaStreamOpaque,
-                releaseStats,
-                outError);
-            if (ok) {
-                _state->scratchWorkspace.request.needSpatialDir = false;
-                _state->spatialDirDescriptor = Spektrafilm::SpatialDirDescriptor{};
-            }
-        }
-#if JUICER_DIAGNOSTICS_COMPILED
-        if (JTRACE_ENABLED(1)) {
-            const std::uint64_t descriptorHash = workspace._request.spatialDirDescriptorHash;
-            std::string msg = "event=spatial_dir_stage_release_after_scanner_output";
-            msg += " descriptor_hash=";
-            msg += std::to_string(static_cast<unsigned long long>(descriptorHash));
-            msg += " scratch_source=";
-            msg += overflow ? "overflow" : "retained";
-            msg += " ok=";
-            msg += ok ? "1" : "0";
-            msg += " retired_bytes=";
-            msg += std::to_string(static_cast<unsigned long long>(releaseStats.retiredBytes));
-            msg += " reclaimed_bytes=";
-            msg += std::to_string(static_cast<unsigned long long>(releaseStats.reclaimedBytes));
-            if (!outError.empty()) {
-                msg += " error=";
-                msg += outError;
-            }
-            JTRACE("DIR_DESCRIPTOR", msg);
-        }
-#endif
-        if (!ok) {
-            _state->set_failure(
-                PreparedCudaFailureStage{"release_spatial_dir_stage_after_scanner_output"},
-                "CUDA spatial DIR stage release failed");
-        }
-        return ok;
     }
 
     bool Root::PreparedCudaFrame::stage_spatial_dir_cached_log_raw_for_final_develop(
@@ -3609,30 +2648,28 @@ namespace JuicerProcess {
             outError = "spatial DIR cached log raw final target roles invalid";
             return false;
         }
-        if (!_state->scratchWorkspace.retainedLeaseActive && !_state->scratchWorkspace.overflowActive) {
+        if (!_state->scratchWorkspace.retainedLeaseActive) {
             outError = "spatial DIR cached log raw staging requires an active scratch workspace";
             return false;
         }
 
         JuicerCuda::SpatialDirCachedLogRawStageStats stageStats{};
-        const bool overflow = _state->scratchWorkspace.overflowActive;
-        bool ok = false;
-        if (overflow) {
-            ok = _state->stage_overflow_spatial_dir_cached_log_raw_for_final_develop(
-                cudaStreamOpaque,
-                stageStats,
-                outError);
-        } else {
-            _state->remember_stream(cudaStreamOpaque);
-            const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-                make_workspace_scratch_request_descriptor(effectiveRequest);
-            ok = JuicerCuda::ResourceManager::command_ensure_spatial_dir_cached_log_raw_stage(
-                _state->transaction,
-                *_state->resources,
-                scratchRequest,
-                cudaStreamOpaque,
-                stageStats,
-                outError);
+        _state->remember_stream(cudaStreamOpaque);
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            make_workspace_scratch_request_descriptor(effectiveRequest);
+        const bool ok = JuicerCuda::ResourceManager::command_ensure_spatial_dir_cached_log_raw_stage(
+            _state->transaction,
+            *_state->resources,
+            scratchRequest,
+            cudaStreamOpaque,
+            stageStats,
+            outError);
+        if (ok) {
+            WorkspaceRequest& activeRequest = _state->scratchWorkspace.request;
+            activeRequest.spatialDirScratchTier =
+                activeRequest.spatialDirTargetScratchTier;
+            activeRequest.spatialDirPlaneRoles =
+                activeRequest.spatialDirTargetPlaneRoles;
         }
 #if JUICER_DIAGNOSTICS_COMPILED
         if (JTRACE_ENABLED(1)) {
@@ -3641,7 +2678,7 @@ namespace JuicerProcess {
             msg += " descriptor_hash=";
             msg += std::to_string(static_cast<unsigned long long>(descriptorHash));
             msg += " scratch_source=";
-            msg += overflow ? "overflow" : "retained";
+            msg += "retained";
             msg += " ok=";
             msg += ok ? "1" : "0";
             msg += " pending_scratch_bytes_before=";
@@ -3659,69 +2696,6 @@ namespace JuicerProcess {
             _state->set_failure(
                 PreparedCudaFailureStage{"stage_spatial_dir_cached_log_raw_for_final_develop"},
                 "CUDA spatial DIR cached log raw staging failed");
-        }
-        return ok;
-    }
-
-    bool Root::PreparedCudaFrame::release_spatial_dir_cached_log_raw_after_final_develop(
-        const WorkspaceLeaseMarker& workspace,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
-        if (!validate_workspace_lease_marker(workspace, outError)) {
-            return false;
-        }
-        if (!workspace._request.needSpatialDir) {
-            return true;
-        }
-        if (!_state->scratchWorkspace.retainedLeaseActive && !_state->scratchWorkspace.overflowActive) {
-            return true;
-        }
-
-        JuicerCuda::SpatialDirCachedLogRawReleaseStats releaseStats{};
-        const bool overflow = _state->scratchWorkspace.overflowActive;
-        bool ok = false;
-        if (overflow) {
-            ok = _state->release_overflow_spatial_dir_cached_log_raw_after_final_develop(
-                cudaStreamOpaque,
-                releaseStats,
-                outError);
-        } else {
-            _state->remember_stream(cudaStreamOpaque);
-            ok = JuicerCuda::ResourceManager::command_release_spatial_dir_cached_log_raw_stage(
-                _state->transaction,
-                *_state->resources,
-                cudaStreamOpaque,
-                releaseStats,
-                outError);
-        }
-#if JUICER_DIAGNOSTICS_COMPILED
-        if (JTRACE_ENABLED(1)) {
-            const std::uint64_t descriptorHash = workspace._request.spatialDirDescriptorHash;
-            std::string msg = "event=spatial_dir_cached_log_raw_release_after_final_develop";
-            msg += " descriptor_hash=";
-            msg += std::to_string(static_cast<unsigned long long>(descriptorHash));
-            msg += " scratch_source=";
-            msg += overflow ? "overflow" : "retained";
-            msg += " ok=";
-            msg += ok ? "1" : "0";
-            msg += " pending_scratch_bytes_before=";
-            msg += std::to_string(static_cast<unsigned long long>(releaseStats.pendingScratchBytesBefore));
-            msg += " cached_log_raw_retired_bytes=";
-            msg += std::to_string(static_cast<unsigned long long>(releaseStats.cachedLogRawRetiredBytes));
-            msg += " reclaimed_bytes=";
-            msg += std::to_string(static_cast<unsigned long long>(releaseStats.reclaimedBytes));
-            if (!outError.empty()) {
-                msg += " error=";
-                msg += outError;
-            }
-            JTRACE("DIR_DESCRIPTOR", msg);
-        }
-#endif
-        if (!ok) {
-            _state->set_failure(
-                PreparedCudaFailureStage{"release_spatial_dir_cached_log_raw_after_final_develop"},
-                "CUDA spatial DIR cached log raw release failed");
         }
         return ok;
     }
@@ -3762,36 +2736,6 @@ namespace JuicerProcess {
         return true;
     }
 
-    bool Root::PreparedCudaFrame::build_print_illuminant_filter_curve(
-        const WorkingState& workingState,
-        const Print::Runtime& printRt,
-        const Print::Params& printParams,
-        const WorkspaceLeaseMarker& workspace,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        if (!validate_workspace_lease_marker(workspace, outError)) {
-            return false;
-        }
-
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-            make_scratch_request_descriptor(workspace);
-        if (!JuicerCuda::ResourceManager::command_ensure_print_illuminant_filtered(
-                _state->transaction,
-                *_state->resources,
-                workingState,
-                printRt,
-                printParams,
-                scratchRequest,
-                cudaStreamOpaque,
-                outError)) {
-            _state->set_failure(
-                PreparedCudaFailureStage{"command_ensure_print_illuminant_filtered"},
-                "CUDA print illuminant upload failed");
-            return false;
-        }
-        return true;
-    }
-
     bool Root::PreparedCudaFrame::prepare_scan_error_stage(
         int*& outScanErrorFlag,
         void* cudaStreamOpaque,
@@ -3818,8 +2762,7 @@ namespace JuicerProcess {
             JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
             _state->set_failure(
                 PreparedCudaFailureStage{"scan_error_previous_readback"},
-                "CUDA scan error validation failed",
-                false);
+                "CUDA scan error validation failed");
             outError = "previous scan produced non-finite RGB";
             return false;
         }
@@ -3829,8 +2772,7 @@ namespace JuicerProcess {
         if (!outScanErrorFlag) {
             _state->set_failure(
                 PreparedCudaFailureStage{"scan_error_flag_missing"},
-                "CUDA scan error validation failed",
-                false);
+                "CUDA scan error validation failed");
             outError = "scan error flag missing after allocation";
             return false;
         }
@@ -3859,8 +2801,7 @@ namespace JuicerProcess {
         if (!scanErrorFlag) {
             _state->set_failure(
                 PreparedCudaFailureStage{"scan_error_flag_missing"},
-                "CUDA scan error validation failed",
-                false);
+                "CUDA scan error validation failed");
             outError = "scan error flag missing after allocation";
             return false;
         }
@@ -3869,8 +2810,7 @@ namespace JuicerProcess {
         if (scanErrorFlag != stage.deviceFlag) {
             _state->set_failure(
                 PreparedCudaFailureStage{"scan_error_flag_mismatch"},
-                "CUDA scan error validation failed",
-                false);
+                "CUDA scan error validation failed");
             outError = "scan error flag does not match prepared frame stage";
             return false;
         }
@@ -3905,34 +2845,8 @@ namespace JuicerProcess {
         } else {
             _state->set_failure(
                 PreparedCudaFailureStage{"scan_error_staging_missing"},
-                "CUDA scan error validation failed",
-                false);
+                "CUDA scan error validation failed");
             outError = "scan error host/event staging missing after allocation";
-            return false;
-        }
-        return true;
-    }
-
-    bool Root::PreparedCudaFrame::checkpoint_scratch_phase(
-        const WorkspaceLeaseMarker& workspace,
-        const char* stageTag,
-        std::string& outError) {
-        if (!validate_workspace_lease_marker(workspace, outError)) {
-            return false;
-        }
-
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-            make_scratch_request_descriptor(workspace);
-        const char* failureStageTag = stageTag ? stageTag : "command_checkpoint_scratch_phase";
-        if (!JuicerCuda::ResourceManager::command_checkpoint_scratch_phase(
-                _state->transaction,
-                *_state->resources,
-                scratchRequest,
-                failureStageTag,
-                outError)) {
-            _state->set_failure(
-                PreparedCudaFailureStage{failureStageTag},
-                "CUDA scratch phase checkpoint failed");
             return false;
         }
         return true;
@@ -3949,7 +2863,7 @@ namespace JuicerProcess {
 
         _state->remember_stream(cudaStreamOpaque);
         const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-            make_scratch_request_descriptor(workspace);
+            make_workspace_scratch_request_descriptor(workspace._request);
         const char* failureStageTag =
             stageTag ? stageTag : "command_checkpoint_large_scratch_transition";
         if (!JuicerCuda::ResourceManager::command_checkpoint_large_scratch_transition(
@@ -3978,8 +2892,7 @@ namespace JuicerProcess {
             return false;
         }
 
-        if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
-                _state->transaction,
+        if (!JuicerCuda::ensure_gaussian_kernel(
                 *_state->resources,
                 kernel,
                 sigma,
@@ -3991,77 +2904,6 @@ namespace JuicerProcess {
             return false;
         }
         return true;
-    }
-
-    bool Root::PreparedCudaFrame::build_halation_kernel_slot(
-        JuicerCuda::Resources::DeviceGaussianKernel& kernel,
-        float sigma,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            outError = "prepared frame is not active";
-            return false;
-        }
-
-        if (!JuicerCuda::ResourceManager::command_ensure_halation_kernel(
-                _state->transaction,
-                *_state->resources,
-                kernel,
-                sigma,
-                cudaStreamOpaque,
-                outError)) {
-            _state->set_failure(
-                PreparedCudaFailureStage{"command_ensure_halation_kernel"},
-                "CUDA halation kernel upload failed");
-            return false;
-        }
-        return true;
-    }
-
-    bool Root::PreparedCudaFrame::build_lens_blur_kernel(
-        float sigma,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        if (!_state || !_state->resources) {
-            outError = "prepared frame is not active";
-            return false;
-        }
-        return build_gaussian_kernel_slot(
-            _state->resources->scannerLensBlurKernel,
-            sigma,
-            cudaStreamOpaque,
-            outError);
-    }
-
-    bool Root::PreparedCudaFrame::build_unsharp_kernel(
-        float sigma,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        if (!_state || !_state->resources) {
-            outError = "prepared frame is not active";
-            return false;
-        }
-        return build_gaussian_kernel_slot(
-            _state->resources->scannerUnsharpKernel,
-            sigma,
-            cudaStreamOpaque,
-            outError);
-    }
-
-    bool Root::PreparedCudaFrame::build_glare_kernel(
-        float sigma,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        if (!_state || !_state->resources) {
-            outError = "prepared frame is not active";
-            return false;
-        }
-        return build_gaussian_kernel_slot(
-            _state->resources->scannerGlareKernel,
-            sigma,
-            cudaStreamOpaque,
-            outError);
     }
 
     bool Root::PreparedCudaFrame::prepare_visual_grain_resources(
@@ -4110,7 +2952,6 @@ namespace JuicerProcess {
                 snapshot.contextEpoch,
                 _state->resources->deviceLedger,
                 snapshot.instanceToken.value,
-                snapshot.registryGeneration,
                 snapshot.snapshotId,
                 active,
                 membershipChange,
@@ -4313,52 +3154,6 @@ namespace JuicerProcess {
         _state->visualGrainPrepared = true;
         return true;
     }
-    bool Root::PreparedCudaFrame::build_halation_kernel(
-        int channel,
-        float sigma,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        if (!_state || !_state->resources) {
-            outError = "prepared frame is not active";
-            return false;
-        }
-        if (channel < 0 || channel >= 3) {
-            outError = "invalid halation kernel slot";
-            _state->set_failure(
-                PreparedCudaFailureStage{"build_halation_kernel"},
-                "CUDA halation kernel upload failed");
-            return false;
-        }
-        return build_halation_kernel_slot(
-            _state->resources->halationKernel[channel],
-            sigma,
-            cudaStreamOpaque,
-            outError);
-    }
-
-    bool Root::PreparedCudaFrame::build_halation_scatter_kernel(
-        int channel,
-        float sigma,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        if (!_state || !_state->resources) {
-            outError = "prepared frame is not active";
-            return false;
-        }
-        if (channel < 0 || channel >= 3) {
-            outError = "invalid halation scatter kernel slot";
-            _state->set_failure(
-                PreparedCudaFailureStage{"build_halation_scatter_kernel"},
-                "CUDA halation scatter kernel upload failed");
-            return false;
-        }
-        return build_halation_kernel_slot(
-            _state->resources->halationScatterKernel[channel],
-            sigma,
-            cudaStreamOpaque,
-            outError);
-    }
-
     Root::PreparedCudaFrame::PreparedVisualGrainView
     Root::PreparedCudaFrame::visual_grain_resources() const noexcept {
         PreparedVisualGrainView view{};
@@ -4484,8 +3279,7 @@ namespace JuicerProcess {
         if (!_state || !_state->visualGrainPrepared ||
             !_state->visualGrainDescriptor.has_value() ||
             !workspace_marker_matches_current_frame(workspace) ||
-            (!_state->scratchWorkspace.retainedLeaseActive &&
-             !_state->scratchWorkspace.overflowActive)) {
+            !_state->scratchWorkspace.retainedLeaseActive) {
             return view;
         }
         const WorkspaceRequest& request =
@@ -4494,9 +3288,7 @@ namespace JuicerProcess {
             return view;
         }
         const JuicerCuda::Resources::DeviceOpticsScratch& scratch =
-            _state->scratchWorkspace.overflowActive
-                ? _state->scratchWorkspace.optics
-                : _state->resources->scannerScratch;
+            _state->resources->scannerScratch;
         view.filterTemp =
             request.needSharedTmp ? scratch.tmp : nullptr;
         view.scaleWork =
@@ -4511,7 +3303,6 @@ namespace JuicerProcess {
                                  : nullptr;
         view.scratchShape =
             _state->visualGrainDescriptor->scratchShape;
-        view.overflow = _state->scratchWorkspace.overflowActive;
 
         bool ready = view.filterTemp && view.scaleWork &&
                      view.deltaAccum && view.frameUniforms;
@@ -4554,8 +3345,7 @@ namespace JuicerProcess {
         const WorkspaceLeaseMarker& workspace) const noexcept {
         CaptureFilmDensityWorkspaceView view{};
         if (!_state || !workspace_marker_matches_current_frame(workspace) ||
-            (!_state->scratchWorkspace.retainedLeaseActive &&
-             !_state->scratchWorkspace.overflowActive) ||
+            !_state->scratchWorkspace.retainedLeaseActive ||
             (_state->capturePolarity !=
                  Spektrafilm::ProfilePolarity::Negative &&
              _state->capturePolarity !=
@@ -4574,7 +3364,6 @@ namespace JuicerProcess {
         view.m = shared.rgbG;
         view.y = shared.rgbB;
         view.polarity = _state->capturePolarity;
-        view.overflow = _state->scratchWorkspace.overflowActive;
         view.active = view.c && view.m && view.y;
         return view.active ? view : CaptureFilmDensityWorkspaceView{};
     }
@@ -4584,8 +3373,7 @@ namespace JuicerProcess {
         const WorkspaceLeaseMarker& workspace) const noexcept {
         FocusedRgbWorkspaceView view{};
         if (!_state || !workspace_marker_matches_current_frame(workspace) ||
-            (!_state->scratchWorkspace.retainedLeaseActive &&
-             !_state->scratchWorkspace.overflowActive)) {
+            !_state->scratchWorkspace.retainedLeaseActive) {
             return view;
         }
         const WorkspaceRequest& request = active_workspace_request(workspace);
@@ -4599,91 +3387,8 @@ namespace JuicerProcess {
         view.r = shared.rgbR;
         view.g = shared.rgbG;
         view.b = shared.rgbB;
-        view.overflow = _state->scratchWorkspace.overflowActive;
         view.active = view.r && view.g && view.b;
         return view.active ? view : FocusedRgbWorkspaceView{};
-    }
-
-    Root::PreparedCudaFrame::DurableBundleView Root::PreparedCudaFrame::durable_bundle() const noexcept {
-        DurableBundleView bundle{};
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            return bundle;
-        }
-
-        const JuicerCuda::Resources& resources = *_state->resources;
-        bundle.film.densB = &resources.densB;
-        bundle.film.densG = &resources.densG;
-        bundle.film.densR = &resources.densR;
-        bundle.film.dirDensB = &resources.dirDensB;
-        bundle.film.dirDensG = &resources.dirDensG;
-        bundle.film.dirDensR = &resources.dirDensR;
-        bundle.film.sensB = &resources.sensB;
-        bundle.film.sensG = &resources.sensG;
-        bundle.film.sensR = &resources.sensR;
-        bundle.film.hasDensityCurvesLayers = resources.hasDensityCurvesLayers;
-        for (int layer = 0; layer < 3; ++layer) {
-            for (int ch = 0; ch < 3; ++ch) {
-                bundle.film.densityCurvesLayers[layer][ch] = resources.densityCurvesLayers[layer][ch];
-            }
-        }
-        bundle.film.tablesAx = resources.tablesAx;
-        bundle.film.tablesAy = resources.tablesAy;
-        bundle.film.tablesAz = resources.tablesAz;
-        bundle.film.tablesIllum = resources.tablesIllum;
-        bundle.film.tablesK = resources.tablesK;
-        for (int i = 0; i < 9; ++i) {
-            bundle.film.spdSInv[i] = resources.spdSInv[i];
-        }
-        bundle.film.hanatosLut = resources.hanatosLut;
-        bundle.film.hanatosN = resources.hanatosN;
-        bundle.film.hanatosLutIntegrated = resources.hanatosLutIntegrated;
-        bundle.film.hanatosNIntegrated = resources.hanatosNIntegrated;
-        bundle.film.mallettBasis = resources.mallettBasis;
-        bundle.film.mallettBasisK = resources.mallettBasisK;
-
-        bundle.scan.negativeMedium = &resources.scanNegative;
-        bundle.scan.printMedium = &resources.scanPrint;
-        bundle.scan.negativeLut = &resources.scanNegativeLut;
-        bundle.scan.printLut = &resources.scanPrintLut;
-
-        bundle.print.printIllumFiltered = resources.printIllumFiltered;
-        bundle.print.printIllumK = resources.printIllumK;
-        bundle.print.printSensC = &resources.printSensC;
-        bundle.print.printSensM = &resources.printSensM;
-        bundle.print.printSensY = &resources.printSensY;
-        bundle.print.printDcC = &resources.printDcC;
-        bundle.print.printDcM = &resources.printDcM;
-        bundle.print.printDcY = &resources.printDcY;
-        bundle.print.printGammaC = resources.printGammaC;
-        bundle.print.printGammaM = resources.printGammaM;
-        bundle.print.printGammaY = resources.printGammaY;
-        for (int i = 0; i < 3; ++i) {
-            bundle.print.printPreflashRaw[i] = resources.printPreflashRaw[i];
-        }
-        return bundle;
-    }
-
-    Root::PreparedCudaFrame::OpticsKernelView Root::PreparedCudaFrame::optics_kernels() const noexcept {
-        OpticsKernelView kernels{};
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            return kernels;
-        }
-
-        const JuicerCuda::Resources& resources = *_state->resources;
-        kernels.spatialDir = {
-            resources.spatialDirKernels[0].weights,
-            resources.spatialDirKernels[0].radius,
-            resources.spatialDirKernels[0].sigma};
-        kernels.scannerLensBlur = {resources.scannerLensBlurKernel.weights, resources.scannerLensBlurKernel.radius};
-        kernels.scannerUnsharp = {resources.scannerUnsharpKernel.weights, resources.scannerUnsharpKernel.radius};
-        kernels.scannerGlare = {resources.scannerGlareKernel.weights, resources.scannerGlareKernel.radius};
-        for (int i = 0; i < 3; ++i) {
-            kernels.halation[i] = {resources.halationKernel[i].weights, resources.halationKernel[i].radius};
-            kernels.halationScatter[i] = {
-                resources.halationScatterKernel[i].weights,
-                resources.halationScatterKernel[i].radius};
-        }
-        return kernels;
     }
 
     Root::PreparedCudaFrame::AutoExposureBufferView Root::PreparedCudaFrame::auto_exposure_buffers() const noexcept {
@@ -4723,13 +3428,6 @@ namespace JuicerProcess {
         }
 
         std::lock_guard<std::mutex> lock(_state->resources->m);
-        view.uploadedBuildCounter = _state->resources->uploadedBuildCounter;
-        view.printIllumBuildCounter = _state->resources->printIllumBuildCounter;
-        view.printIllumCoreHash = _state->resources->printIllumCoreHash;
-        view.printIllumNeutralFilterHash = _state->resources->printIllumNeutralFilterHash;
-        view.printIllumYShiftSteps = _state->resources->printIllumYShiftSteps;
-        view.printIllumMShiftSteps = _state->resources->printIllumMShiftSteps;
-        view.printIllumCShiftSteps = _state->resources->printIllumCShiftSteps;
         view.printPreflashValid = _state->resources->printPreflashValid;
         view.printPreflashKeyHash = _state->resources->printPreflashKeyHash;
         view.directUploadCounter = _state->resources->directUploadCounter;
@@ -4951,38 +3649,49 @@ namespace JuicerProcess {
         if (!workspace_marker_matches_current_frame(workspace) || !workspace._request.needSpatialDir) {
             return view;
         }
-        if (!_state->scratchWorkspace.retainedLeaseActive && !_state->scratchWorkspace.overflowActive) {
+        if (!_state->scratchWorkspace.retainedLeaseActive) {
             return view;
         }
 
         const JuicerCuda::Resources::DeviceSpatialDirScratch& scratch =
-            _state->scratchWorkspace.overflowActive
-                ? _state->scratchWorkspace.spatialDir
-                : _state->resources->spatialDirScratch;
+            _state->resources->spatialDirScratch;
         const WorkspaceRequest& effectiveRequest =
             (_state->scratchWorkspace.request.needSpatialDir &&
              _state->scratchWorkspace.request.spatialDirDescriptorHash ==
                  workspace._request.spatialDirDescriptorHash)
                 ? _state->scratchWorkspace.request
                 : workspace._request;
-        view.rawCorrectionY = scratch.rawCorrectionY;
-        view.rawCorrectionM = scratch.rawCorrectionM;
-        view.rawCorrectionC = scratch.rawCorrectionC;
-        view.filteredCorrectionY = scratch.filteredCorrectionY;
-        view.filteredCorrectionM = scratch.filteredCorrectionM;
-        view.filteredCorrectionC = scratch.filteredCorrectionC;
-        view.filterTemp = scratch.filterTemp;
-        view.filterTempM = scratch.filterTempM;
-        view.filterTempC = scratch.filterTempC;
-        view.logRawB = scratch.logRawB;
-        view.logRawG = scratch.logRawG;
-        view.logRawR = scratch.logRawR;
+        const Spektrafilm::DirScratchPlaneRoles& roles =
+            effectiveRequest.spatialDirPlaneRoles;
+        view.rawCorrectionY =
+            roles.rawCorrectionPlanes >= 1 ? scratch.rawCorrectionY : nullptr;
+        view.rawCorrectionM =
+            roles.rawCorrectionPlanes >= 3 ? scratch.rawCorrectionM : nullptr;
+        view.rawCorrectionC =
+            roles.rawCorrectionPlanes >= 3 ? scratch.rawCorrectionC : nullptr;
+        view.filteredCorrectionY =
+            roles.filteredCorrectionPlanes >= 1 ? scratch.filteredCorrectionY : nullptr;
+        view.filteredCorrectionM =
+            roles.filteredCorrectionPlanes >= 2 ? scratch.filteredCorrectionM : nullptr;
+        view.filteredCorrectionC =
+            roles.filteredCorrectionPlanes >= 3 ? scratch.filteredCorrectionC : nullptr;
+        view.filterTemp =
+            roles.filterTempPlanes >= 1 ? scratch.filterTemp : nullptr;
+        view.filterTempM =
+            roles.filterTempPlanes >= 2 ? scratch.filterTempM : nullptr;
+        view.filterTempC =
+            roles.filterTempPlanes >= 3 ? scratch.filterTempC : nullptr;
+        view.logRawB =
+            roles.cachedLogRawPlanes >= 1 ? scratch.logRawB : nullptr;
+        view.logRawG =
+            roles.cachedLogRawPlanes >= 2 ? scratch.logRawG : nullptr;
+        view.logRawR =
+            roles.cachedLogRawPlanes >= 3 ? scratch.logRawR : nullptr;
         view.descriptorHash = effectiveRequest.spatialDirDescriptorHash;
         view.scratchTier = effectiveRequest.spatialDirScratchTier;
         view.planeRoles = effectiveRequest.spatialDirPlaneRoles;
         view.targetScratchTier = effectiveRequest.spatialDirTargetScratchTier;
         view.targetPlaneRoles = effectiveRequest.spatialDirTargetPlaneRoles;
-        view.overflow = _state->scratchWorkspace.overflowActive;
         view.active =
             spatial_dir_scratch_has_required_roles(
                 scratch,
@@ -5039,19 +3748,15 @@ namespace JuicerProcess {
         if (!activeRequest.needOptics) {
             return view;
         }
-        if (!_state->scratchWorkspace.retainedLeaseActive && !_state->scratchWorkspace.overflowActive) {
+        if (!_state->scratchWorkspace.retainedLeaseActive) {
             return view;
         }
 
         const JuicerCuda::Resources::DeviceOpticsScratch& scratch =
-            _state->scratchWorkspace.overflowActive
-                ? _state->scratchWorkspace.optics
-                : _state->resources->scannerScratch;
+            _state->resources->scannerScratch;
         if (activeRequest.aliasScannerRgbFromSpatialDirFiltered) {
             const JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir =
-                _state->scratchWorkspace.overflowActive
-                    ? _state->scratchWorkspace.spatialDir
-                    : _state->resources->spatialDirScratch;
+                _state->resources->spatialDirScratch;
             view.rgbR = spatialDir.filteredCorrectionC;
             view.rgbG = spatialDir.filteredCorrectionM;
             view.rgbB = spatialDir.filteredCorrectionY;
@@ -5168,6 +3873,11 @@ namespace JuicerProcess {
                 resources.scannerGlareKernel.sigma};
         }
         view.descriptorHash = descriptor.hash;
+        const bool sharedTmpReady = view.scratch.tmp != nullptr;
+        const bool glareScratchReady =
+            !descriptor.glareActive ||
+            descriptor.glareBlurSigmaPx <= 0.0f ||
+            view.scratch.blurred != nullptr;
         const bool lensReady =
             descriptor.lensBlurSigmaPx <= 0.0f ||
             (view.lensBlur.weights && view.lensBlur.radius > 0);
@@ -5178,7 +3888,8 @@ namespace JuicerProcess {
             !descriptor.glareActive ||
             descriptor.glareBlurSigmaPx <= 0.0f ||
             (view.glare.weights && view.glare.radius > 0);
-        view.active = lensReady && unsharpReady && glareReady;
+        view.active = sharedTmpReady && glareScratchReady &&
+                      lensReady && unsharpReady && glareReady;
 #if JUICER_DIAGNOSTICS_COMPILED
         if (!view.active) {
             trace_scanner_post_effects_view_inactive(
@@ -5197,10 +3908,6 @@ namespace JuicerProcess {
 
     void Root::PreparedCudaFrame::mark_gate_mask_built(std::uint64_t gateMaskHash) noexcept {
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            return;
-        }
-        if (_state->scratchWorkspace.overflowActive) {
-            _state->scratchWorkspace.optics.gateMaskHash = gateMaskHash;
             return;
         }
         if (!_state->scratchWorkspace.retainedLeaseActive) {
@@ -5238,9 +3945,6 @@ namespace JuicerProcess {
         return _state ? _state->failurePrefix : "CUDA prepared frame failed";
     }
 
-    bool Root::PreparedCudaFrame::failure_marks_context_loss() const noexcept {
-        return _state ? _state->failureMarksContextLoss : true;
-    }
 #endif
 
     Root::ShutdownToken::ShutdownToken(Root* root) noexcept
@@ -5333,13 +4037,13 @@ namespace JuicerProcess {
             std::vector<CudaResourceOwner> retiredOwners;
             {
                 std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-                for (auto& item : _grainStaticByContext) {
-                    GrainStaticContextEntry& entry = item.second;
-                    entry.instances.erase(instanceToken);
+                for (auto& item : _cudaContextResources) {
+                    CudaContextResourceEntry& entry = item.second;
+                    entry.grainInstances.erase(instanceToken);
                     if (!detail::grain_static_has_active_instance(
-                            entry.instances) &&
-                        entry.owner) {
-                        retiredOwners.emplace_back(std::move(entry.owner));
+                            entry.grainInstances) &&
+                        entry.grainOwner) {
+                        retiredOwners.emplace_back(std::move(entry.grainOwner));
                     }
                 }
             }
@@ -5408,11 +4112,15 @@ namespace JuicerProcess {
                 outError = "invalid CUDA context retirement key";
                 return false;
             }
-            JuicerCuda::ResourceManager::RegistrySnapshotGenerations generations{};
-            if (!JuicerCuda::ResourceManager::command_begin_context_owner_retire(
+            JuicerCuda::ResourceManager::RegistryContextSnapshot contextSnapshot{};
+            if (!JuicerCuda::ResourceManager::registry_begin_owner_retire(
                     deviceContextKey,
-                    generations,
-                    outError)) {
+                    contextSnapshot)) {
+                outError = "context owner-retire rejected";
+                return false;
+            }
+            if (contextSnapshot.contextEpoch == 0) {
+                outError = "context owner-retire epoch invalid";
                 return false;
             }
 
@@ -5433,20 +4141,15 @@ namespace JuicerProcess {
                         epochs.push_back(epoch);
                     }
                 };
-                collect_epoch(generations.contextEpoch);
-                for (const auto& [key, owner] : _cudaResourcesByContext) {
+                collect_epoch(contextSnapshot.contextEpoch);
+                for (const auto& [key, entry] : _cudaContextResources) {
                     if (key.deviceContextKey == deviceContextKey) {
                         collect_epoch(key.contextEpoch);
-                        if (owner) {
-                            owners.push_back(owner);
+                        if (entry.frameOwner) {
+                            owners.push_back(entry.frameOwner);
                         }
-                    }
-                }
-                for (const auto& [key, entry] : _grainStaticByContext) {
-                    if (key.deviceContextKey == deviceContextKey) {
-                        collect_epoch(key.contextEpoch);
-                        if (entry.owner) {
-                            owners.push_back(entry.owner);
+                        if (entry.grainOwner) {
+                            owners.push_back(entry.grainOwner);
                         }
                     }
                 }
@@ -5515,34 +4218,26 @@ namespace JuicerProcess {
 
             {
                 std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-                for (auto it = _cudaResourcesByContext.begin();
-                     it != _cudaResourcesByContext.end();) {
+                for (auto it = _cudaContextResources.begin();
+                     it != _cudaContextResources.end();) {
                     if (it->first.deviceContextKey == deviceContextKey) {
-                        it = _cudaResourcesByContext.erase(it);
-                    } else {
-                        ++it;
-                    }
-                }
-                for (auto it = _grainStaticByContext.begin();
-                     it != _grainStaticByContext.end();) {
-                    if (it->first.deviceContextKey == deviceContextKey) {
-                        it = _grainStaticByContext.erase(it);
+                        it = _cudaContextResources.erase(it);
                     } else {
                         ++it;
                     }
                 }
             }
 
-            const bool retired = contextReset
-                                     ? JuicerCuda::ResourceManager::command_retire_context_reset(
-                                           deviceContextKey,
-                                           outError)
-                                     : JuicerCuda::ResourceManager::command_retire_context_idle(
-                                           deviceContextKey,
-                                           outError);
-            if (!retired) {
+            if (!JuicerCuda::ResourceManager::registry_retire(
+                    deviceContextKey)) {
+                outError = "context registry retire rejected";
                 return false;
             }
+            JuicerCuda::purge_pinned_upload_staging_for_context(
+                deviceContextKey.deviceId,
+                deviceContextKey.contextOpaque);
+            JuicerCuda::purge_host_asset_caches_if_registry_idle(
+                contextReset ? "context_reset" : "context_idle");
             owners.clear();
             return true;
         } catch (...) {
@@ -5564,7 +4259,6 @@ namespace JuicerProcess {
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         std::uint64_t contextEpoch,
         const std::shared_ptr<JuicerCuda::DeviceAllocationLedger>& deviceLedger,
-        ContextCudaResourceMap& contextMap,
         CudaResourceOwner& outResourceOwner,
         JuicerCuda::Resources*& outResources,
         std::string& outError) {
@@ -5582,13 +4276,13 @@ namespace JuicerProcess {
         }
 
         const ContextCudaResourceKey resourceKey{deviceContextKey, contextEpoch};
-        std::vector<std::pair<ContextCudaResourceKey, CudaResourceOwner>>
-            retiredOwners;
+        CudaResourceOwner candidateOwner;
         {
             std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-            CudaResourceOwner& resourceOwner = contextMap[resourceKey];
+            CudaContextResourceEntry& entry = _cudaContextResources[resourceKey];
+            CudaResourceOwner& resourceOwner = entry.frameOwner;
             if (!resourceOwner) {
-                CudaResourceOwner resources(
+                candidateOwner = CudaResourceOwner(
                     JuicerCuda::create(
                         deviceContextKey,
                         contextEpoch,
@@ -5596,57 +4290,29 @@ namespace JuicerProcess {
                         deviceLedger,
                         outError),
                     CudaResourcesDeleter{});
-                if (!resources) {
+                if (!candidateOwner) {
                     JTRACE("CUDA", "FATAL: failed to allocate CUDA resources");
+                    if (!entry.grainOwner && entry.grainInstances.empty()) {
+                        _cudaContextResources.erase(resourceKey);
+                    }
                     if (outError.empty()) {
                         outError = "failed to allocate CUDA resources";
                     }
                     return false;
                 }
-                if (!(resources->ownerContextKey == deviceContextKey) ||
-                    resources->contextEpoch != contextEpoch ||
-                    resources->deviceLedger != deviceLedger) {
+                if (!(candidateOwner->ownerContextKey == deviceContextKey) ||
+                    candidateOwner->contextEpoch != contextEpoch ||
+                    candidateOwner->deviceLedger != deviceLedger) {
+                    if (!entry.grainOwner && entry.grainInstances.empty()) {
+                        _cudaContextResources.erase(resourceKey);
+                    }
                     outError = "CUDA resources resolved for a different context";
                     return false;
                 }
-                resourceOwner = std::move(resources);
+                resourceOwner = std::move(candidateOwner);
             }
 
             outResourceOwner = resourceOwner;
-            for (const auto& [key, owner] : contextMap) {
-                if (!(key.deviceContextKey == deviceContextKey) ||
-                    key.contextEpoch >= contextEpoch) {
-                    continue;
-                }
-                if (owner) {
-                    retiredOwners.emplace_back(key, owner);
-                }
-            }
-        }
-
-        for (const auto& [key, owner] : retiredOwners) {
-            if (!JuicerCuda::drain_for_context_retire(*owner, outError) ||
-                !JuicerCuda::purge_shared_gaussian_kernels_for_context(
-                    key.deviceContextKey.deviceId,
-                    key.deviceContextKey.contextOpaque,
-                    key.contextEpoch,
-                    outError) ||
-                deviceLedger->record_count_for_context(
-                    key.deviceContextKey,
-                    key.contextEpoch) != 0) {
-                if (outError.empty()) {
-                    outError =
-                        "stale CUDA context epoch failed exact retirement";
-                }
-                return false;
-            }
-        }
-        if (!retiredOwners.empty()) {
-            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-            for (const auto& [key, owner] : retiredOwners) {
-                (void)owner;
-                contextMap.erase(key);
-            }
         }
 
         outResources = outResourceOwner.get();
@@ -5657,45 +4323,83 @@ namespace JuicerProcess {
         return true;
     }
 
+    bool Root::resolve_cuda_device_ledger(
+        const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+        std::shared_ptr<JuicerCuda::DeviceAllocationLedger>& outDeviceLedger,
+        std::string& outError) {
+        outDeviceLedger.reset();
+        outError.clear();
+        if (deviceContextKey.deviceId < 0) {
+            outError =
+                "UnsupportedCudaExecutionProfile component=device_ledger field=device_id";
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+            const auto ledgerIt = _cudaDeviceLedgers.find(deviceContextKey.deviceId);
+            if (ledgerIt != _cudaDeviceLedgers.end() && ledgerIt->second) {
+                outDeviceLedger = ledgerIt->second;
+                return true;
+            }
+        }
+
+        std::uint64_t deviceBudgetBytes = 0;
+        if (!query_cuda_device_total_bytes(
+                deviceContextKey.deviceId,
+                deviceBudgetBytes,
+                outError)) {
+            return false;
+        }
+        std::shared_ptr<JuicerCuda::DeviceAllocationLedger> candidate =
+            JuicerCuda::DeviceAllocationLedger::create(
+                JuicerCuda::DeviceLedgerBudget{
+                    .deviceId = deviceContextKey.deviceId,
+                    .bytes = deviceBudgetBytes},
+                outError);
+        if (!candidate) {
+            if (outError.empty()) {
+                outError =
+                    "UnsupportedCudaExecutionProfile component=device_ledger field=create";
+            }
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+            auto [ledgerIt, inserted] =
+                _cudaDeviceLedgers.try_emplace(deviceContextKey.deviceId, candidate);
+            if (!inserted && !ledgerIt->second) {
+                ledgerIt->second = std::move(candidate);
+            }
+            outDeviceLedger = ledgerIt->second;
+        }
+        return outDeviceLedger != nullptr;
+    }
+
     bool Root::resolve_cuda_frame_resources(
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         std::uint64_t contextEpoch,
-        const JuicerCuda::ResourceManager::ResolvedPressurePolicy& pressurePolicy,
+        const JuicerCuda::ResourceManager::ResolvedMemoryBudget& memoryBudget,
+        const std::shared_ptr<JuicerCuda::DeviceAllocationLedger>& deviceLedger,
         CudaResourceOwner& outResourceOwner,
         JuicerCuda::Resources*& outResources,
         std::string& outError) {
         outResourceOwner.reset();
         outResources = nullptr;
         outError.clear();
-        if (pressurePolicy.policyDeviceId != deviceContextKey.deviceId ||
-            pressurePolicy.deviceBudgetBytes == 0 ||
-            pressurePolicy.softTargetBytes == 0) {
+        if (!deviceLedger ||
+            memoryBudget.deviceId != deviceContextKey.deviceId ||
+            memoryBudget.deviceBudgetBytes == 0 ||
+            memoryBudget.allocationCapBytes == 0 ||
+            deviceLedger->device_budget_bytes() != memoryBudget.deviceBudgetBytes) {
             outError =
-                "UnsupportedCudaExecutionProfile component=device_ledger field=pressure_policy";
+                "UnsupportedCudaExecutionProfile component=device_ledger field=memory_budget";
             return false;
         }
 
-        std::shared_ptr<JuicerCuda::DeviceAllocationLedger> deviceLedger;
-        {
-            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-            auto& ledger = _cudaDeviceLedgers[deviceContextKey.deviceId];
-            if (!ledger) {
-                ledger = JuicerCuda::DeviceAllocationLedger::create(
-                    deviceContextKey.deviceId,
-                    outError);
-                if (!ledger) {
-                    if (outError.empty()) {
-                        outError =
-                            "UnsupportedCudaExecutionProfile component=device_ledger field=create";
-                    }
-                    return false;
-                }
-            }
-            deviceLedger = ledger;
-        }
         if (!deviceLedger->bind_or_validate_cap(
-                pressurePolicy.deviceBudgetBytes,
-                pressurePolicy.softTargetBytes,
+                memoryBudget.allocationCapBytes,
                 outError)) {
             const JuicerCuda::DeviceLedgerSnapshot ledgerSnapshot =
                 deviceLedger->snapshot();
@@ -5703,7 +4407,7 @@ namespace JuicerProcess {
                 "UnsupportedCudaExecutionProfile component=device_ledger field=cap" +
                 std::string(" device=") + std::to_string(deviceContextKey.deviceId) +
                 " requested_cap=" +
-                std::to_string(pressurePolicy.softTargetBytes) +
+                std::to_string(memoryBudget.allocationCapBytes) +
                 " current_cap=" + std::to_string(ledgerSnapshot.capBytes) +
                 " reserved=" + std::to_string(ledgerSnapshot.reservedBytes) +
                 " committed=" + std::to_string(ledgerSnapshot.committedBytes) +
@@ -5714,7 +4418,6 @@ namespace JuicerProcess {
             deviceContextKey,
             contextEpoch,
             deviceLedger,
-            _cudaResourcesByContext,
             outResourceOwner,
             outResources,
             outError);
@@ -5725,7 +4428,6 @@ namespace JuicerProcess {
         std::uint64_t contextEpoch,
         const std::shared_ptr<JuicerCuda::DeviceAllocationLedger>& deviceLedger,
         std::uint64_t instanceToken,
-        std::uint64_t registryGeneration,
         std::uint64_t snapshotId,
         bool active,
         detail::GrainStaticMembershipChange& outChange,
@@ -5737,8 +4439,8 @@ namespace JuicerProcess {
         outResources = nullptr;
         outError.clear();
         if (deviceContextKey.deviceId < 0 || !deviceContextKey.contextOpaque ||
-            contextEpoch == 0 || instanceToken == 0 ||
-            registryGeneration == 0 || snapshotId == 0 || !deviceLedger) {
+            contextEpoch == 0 || instanceToken == 0 || snapshotId == 0 ||
+            !deviceLedger) {
             outError =
                 "ResourceDescriptorMismatch phase=grain_static field=membership_identity";
             return false;
@@ -5747,6 +4449,7 @@ namespace JuicerProcess {
         const ContextCudaResourceKey contextKey{
             deviceContextKey,
             contextEpoch};
+        CudaResourceOwner candidateOwner;
         CudaResourceOwner retiredOwner;
 #if JUICER_DIAGNOSTICS_COMPILED
         bool ownerCopied = false;
@@ -5754,13 +4457,12 @@ namespace JuicerProcess {
 #endif
         {
             std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-            GrainStaticContextEntry& entry = _grainStaticByContext[contextKey];
+            CudaContextResourceEntry& entry = _cudaContextResources[contextKey];
             detail::GrainStaticMembershipChange change;
             const detail::GrainStaticMembershipResult result =
                 detail::apply_grain_static_membership(
-                    entry.instances,
+                    entry.grainInstances,
                     instanceToken,
-                    registryGeneration,
                     snapshotId,
                     active,
                     change);
@@ -5768,10 +4470,6 @@ namespace JuicerProcess {
                 case detail::GrainStaticMembershipResult::Applied:
                 case detail::GrainStaticMembershipResult::Idempotent:
                     break;
-                case detail::GrainStaticMembershipResult::StaleRegistryGeneration:
-                    outError =
-                        "ResourceDescriptorMismatch phase=grain_static field=stale_registry_generation";
-                    return false;
                 case detail::GrainStaticMembershipResult::StaleSnapshot:
                     outError =
                         "ResourceDescriptorMismatch phase=grain_static field=stale_snapshot";
@@ -5788,8 +4486,8 @@ namespace JuicerProcess {
             }
 
             if (active) {
-                if (!entry.owner) {
-                    CudaResourceOwner resources(
+                if (!entry.grainOwner) {
+                    candidateOwner = CudaResourceOwner(
                         JuicerCuda::create(
                             deviceContextKey,
                             contextEpoch,
@@ -5797,39 +4495,54 @@ namespace JuicerProcess {
                             deviceLedger,
                             outError),
                         CudaResourcesDeleter{});
-                    if (!resources) {
+                    if (!candidateOwner) {
                         if (change.applied) {
                             (void)detail::rollback_grain_static_membership(
-                                entry.instances,
+                                entry.grainInstances,
                                 change);
                         }
-                        if (entry.instances.empty()) {
-                            _grainStaticByContext.erase(contextKey);
+                        if (!entry.frameOwner && entry.grainInstances.empty()) {
+                            _cudaContextResources.erase(contextKey);
                         }
                         outError = "failed to allocate grain-static CUDA resources";
                         return false;
                     }
-                    entry.owner = std::move(resources);
+                    if (!(candidateOwner->ownerContextKey == deviceContextKey) ||
+                        candidateOwner->contextEpoch != contextEpoch ||
+                        candidateOwner->deviceLedger != deviceLedger) {
+                        if (change.applied) {
+                            (void)detail::rollback_grain_static_membership(
+                                entry.grainInstances,
+                                change);
+                        }
+                        if (!entry.frameOwner && entry.grainInstances.empty()) {
+                            _cudaContextResources.erase(contextKey);
+                        }
+                        outError =
+                            "grain-static CUDA resources resolved for a different context";
+                        return false;
+                    }
+                    entry.grainOwner = std::move(candidateOwner);
                 }
-                if (!(entry.owner->ownerContextKey == deviceContextKey) ||
-                    entry.owner->contextEpoch != contextEpoch ||
-                    entry.owner->deviceLedger != deviceLedger) {
+                if (!(entry.grainOwner->ownerContextKey == deviceContextKey) ||
+                    entry.grainOwner->contextEpoch != contextEpoch ||
+                    entry.grainOwner->deviceLedger != deviceLedger) {
                     if (change.applied) {
                         (void)detail::rollback_grain_static_membership(
-                            entry.instances,
+                            entry.grainInstances,
                             change);
                     }
                     outError =
                         "grain-static CUDA resources resolved for a different context";
                     return false;
                 }
-                outOwner = entry.owner;
+                outOwner = entry.grainOwner;
 #if JUICER_DIAGNOSTICS_COMPILED
                 ownerCopied = static_cast<bool>(outOwner);
 #endif
             } else if (!detail::grain_static_has_active_instance(
-                           entry.instances)) {
-                retiredOwner = std::move(entry.owner);
+                           entry.grainInstances)) {
+                retiredOwner = std::move(entry.grainOwner);
 #if JUICER_DIAGNOSTICS_COMPILED
                 rootOwnerRetired = static_cast<bool>(retiredOwner);
 #endif
@@ -5874,10 +4587,10 @@ namespace JuicerProcess {
             bool rolledBack = false;
 #endif
             std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-            const auto entryIt = _grainStaticByContext.find(contextKey);
-            if (entryIt == _grainStaticByContext.end() ||
+            const auto entryIt = _cudaContextResources.find(contextKey);
+            if (entryIt == _cudaContextResources.end() ||
                 !detail::rollback_grain_static_membership(
-                    entryIt->second.instances,
+                    entryIt->second.grainInstances,
                     change)) {
                 return;
             }
@@ -5885,11 +4598,13 @@ namespace JuicerProcess {
             rolledBack = true;
 #endif
             if (!detail::grain_static_has_active_instance(
-                    entryIt->second.instances)) {
-                retiredOwner = std::move(entryIt->second.owner);
+                    entryIt->second.grainInstances)) {
+                retiredOwner = std::move(entryIt->second.grainOwner);
             }
-            if (entryIt->second.instances.empty()) {
-                _grainStaticByContext.erase(entryIt);
+            if (!entryIt->second.frameOwner &&
+                !entryIt->second.grainOwner &&
+                entryIt->second.grainInstances.empty()) {
+                _cudaContextResources.erase(entryIt);
             }
 #if JUICER_DIAGNOSTICS_COMPILED
             if (rolledBack && JTRACE_ENABLED(1)) {
@@ -5902,100 +4617,6 @@ namespace JuicerProcess {
             JuicerLogging::discard_current_exception();
         }
     }
-
-    void Root::retire_grain_static_context_activity(
-        const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey) noexcept {
-        try {
-            std::vector<CudaResourceOwner> retiredOwners;
-            {
-                std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-                for (auto it = _grainStaticByContext.begin();
-                     it != _grainStaticByContext.end();) {
-                    if (it->first.deviceContextKey == deviceContextKey) {
-                        if (it->second.owner) {
-                            retiredOwners.emplace_back(
-                                std::move(it->second.owner));
-                        }
-                        it = _grainStaticByContext.erase(it);
-                    } else {
-                        ++it;
-                    }
-                }
-            }
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-        }
-    }
-    Root::PreparedCudaFrame Root::prepare_cuda_frame(
-        const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
-        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
-        const WorkingState& workingState,
-        const AutoExposureBufferRequest& autoExposureBufferRequest,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
-        std::unique_ptr<PreparedCudaFrame::State> state;
-        try {
-            state = std::make_unique<PreparedCudaFrame::State>();
-        } catch (...) {
-            outError = "failed to allocate CUDA prepared frame";
-            return PreparedCudaFrame{};
-        }
-
-        PreparedCudaFrame frame(std::move(state));
-        frame._state->root = this;
-        frame._state->remember_stream(cudaStreamOpaque);
-        frame._state->set_failure(PreparedCudaFailureStage{"prepare_frame"}, "CUDA prepared frame failed");
-        if (!begin_submission(frame._state->transaction, snapshot, outError)) {
-            frame._state->set_failure(PreparedCudaFailureStage{"begin_submission"}, "begin_submission failed");
-            return frame;
-        }
-        if (!resolve_cuda_frame_resources(
-                deviceContextKey,
-                frame._state->transaction.snapshot.contextEpoch,
-                frame._state->transaction.resolvedPressurePolicy,
-                frame._state->resourceOwner,
-                frame._state->resources,
-                outError)) {
-            frame._state->set_failure(PreparedCudaFailureStage{"resolve_cuda_resources"}, "CUDA resource acquisition failed");
-            frame.abort("prepared_frame_resource_acquire_failed");
-            return frame;
-        }
-        if (!acquire_submission_plan(frame._state->transaction, outError)) {
-            frame._state->set_failure(PreparedCudaFailureStage{"acquire_plan"}, "acquire_plan failed");
-            frame.abort("prepared_frame_acquire_failed");
-            return frame;
-        }
-        if (!JuicerCuda::ResourceManager::command_ensure_uploaded(
-                frame._state->transaction,
-                *frame._state->resources,
-                workingState,
-                cudaStreamOpaque,
-                outError)) {
-            frame._state->set_failure(PreparedCudaFailureStage{"command_ensure_uploaded"}, "CUDA WorkingState upload failed");
-            frame.abort("prepared_frame_upload_failed");
-            return frame;
-        }
-        if (!frame._state->allocate_scan_error_stage(outError)) {
-            frame._state->set_failure(
-                PreparedCudaFailureStage{"allocate_scan_error_stage"},
-                "CUDA scan error staging allocation failed");
-            frame.abort("prepared_frame_scan_error_flag_failed");
-            return frame;
-        }
-        if (autoExposureBufferRequest.enabled &&
-            !frame._state->allocate_auto_exposure_workspace(
-                autoExposureBufferRequest.descriptor,
-                outError)) {
-            frame._state->set_failure(
-                PreparedCudaFailureStage{"allocate_auto_exposure_workspace"},
-                "CUDA auto-exposure workspace allocation failed");
-            frame.abort("prepared_frame_auto_exposure_failed");
-            return frame;
-        }
-        return frame;
-    }
-
     Root::PreparedCudaFrame Root::prepare_cuda_frame(
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
@@ -6017,8 +4638,7 @@ namespace JuicerProcess {
         frame._state->remember_stream(cudaStreamOpaque);
         frame._state->set_failure(
             PreparedCudaFailureStage{"prepare_cuda_frame_print_phase4B"},
-            "CUDA Phase 4B print prepared frame failed",
-            false);
+            "CUDA Phase 4B print prepared frame failed");
         if (!request.recipe || !request.exposureTables || !request.spdSInv ||
             !request.filmRawConfig || !request.scannerTables || !request.scannerColor ||
             !request.scannerLutDescriptor) {
@@ -6060,7 +4680,12 @@ namespace JuicerProcess {
                 outError)) {
             return frame;
         }
-        if (!begin_submission(frame._state->transaction, snapshot, outError)) {
+        std::shared_ptr<JuicerCuda::DeviceAllocationLedger> deviceLedger;
+        if (!begin_submission(
+                frame._state->transaction,
+                snapshot,
+                deviceLedger,
+                outError)) {
             frame._state->set_failure(
                 PreparedCudaFailureStage{"begin_submission_print_phase4B"},
                 "Phase 4B print begin_submission failed");
@@ -6069,7 +4694,8 @@ namespace JuicerProcess {
         if (!resolve_cuda_frame_resources(
                 deviceContextKey,
                 frame._state->transaction.snapshot.contextEpoch,
-                frame._state->transaction.resolvedPressurePolicy,
+                frame._state->transaction.resolvedMemoryBudget,
+                deviceLedger,
                 frame._state->resourceOwner,
                 frame._state->resources,
                 outError)) {
@@ -6077,13 +4703,6 @@ namespace JuicerProcess {
                 PreparedCudaFailureStage{"resolve_cuda_print_resources_phase4B"},
                 "Phase 4B print CUDA resource acquisition failed");
             frame.abort("print_phase4B_resource_acquire_failed");
-            return frame;
-        }
-        if (!acquire_submission_plan(frame._state->transaction, outError)) {
-            frame._state->set_failure(
-                PreparedCudaFailureStage{"acquire_print_plan_phase4B"},
-                "Phase 4B print acquire_plan failed");
-            frame.abort("print_phase4B_acquire_failed");
             return frame;
         }
         if (!frame._state->prepare_diffusion_resources(
@@ -6097,8 +4716,7 @@ namespace JuicerProcess {
                 outError)) {
             frame._state->set_failure(
                 PreparedCudaFailureStage{"prepare_print_diffusion_resources"},
-                "CUDA print diffusion resource preparation failed",
-                false);
+                "CUDA print diffusion resource preparation failed");
             frame.abort("print_diffusion_preparation_failed");
             return frame;
         }
@@ -6117,8 +4735,7 @@ namespace JuicerProcess {
                 outError)) {
             frame._state->set_failure(
                 PreparedCudaFailureStage{"prepare_print_route_resources_phase4C"},
-                "Phase 4C focused print-route resource preparation failed",
-                false);
+                "Phase 4C focused print-route resource preparation failed");
             frame.abort("print_phase4C_focused_preparation_failed");
             return frame;
         }
@@ -6132,8 +4749,7 @@ namespace JuicerProcess {
                 outError)) {
             frame._state->set_failure(
                 PreparedCudaFailureStage{"prepare_print_resources_phase4B"},
-                "Phase 4B print resource preparation failed",
-                false);
+                "Phase 4B print resource preparation failed");
             frame.abort("print_phase4B_preparation_failed");
             return frame;
         }
@@ -6149,8 +4765,7 @@ namespace JuicerProcess {
                     outError)) {
                 frame._state->set_failure(
                     PreparedCudaFailureStage{"prepare_print_scanner_post_effects_phase8"},
-                    "CUDA print scanner post-effect preparation failed",
-                    false);
+                    "CUDA print scanner post-effect preparation failed");
                 frame.abort("print_phase8_scanner_post_effect_preparation_failed");
                 return frame;
             }
@@ -6232,24 +4847,25 @@ namespace JuicerProcess {
                 outError)) {
             return frame;
         }
-        if (!begin_submission(frame._state->transaction, snapshot, outError)) {
+        std::shared_ptr<JuicerCuda::DeviceAllocationLedger> deviceLedger;
+        if (!begin_submission(
+                frame._state->transaction,
+                snapshot,
+                deviceLedger,
+                outError)) {
             frame._state->set_failure(PreparedCudaFailureStage{"begin_submission_direct"}, "direct begin_submission failed");
             return frame;
         }
         if (!resolve_cuda_frame_resources(
                 deviceContextKey,
                 frame._state->transaction.snapshot.contextEpoch,
-                frame._state->transaction.resolvedPressurePolicy,
+                frame._state->transaction.resolvedMemoryBudget,
+                deviceLedger,
                 frame._state->resourceOwner,
                 frame._state->resources,
                 outError)) {
             frame._state->set_failure(PreparedCudaFailureStage{"resolve_cuda_direct_resources"}, "CUDA direct resource acquisition failed");
             frame.abort("direct_prepared_frame_resource_acquire_failed");
-            return frame;
-        }
-        if (!acquire_submission_plan(frame._state->transaction, outError)) {
-            frame._state->set_failure(PreparedCudaFailureStage{"acquire_direct_plan"}, "direct acquire_plan failed");
-            frame.abort("direct_prepared_frame_acquire_failed");
             return frame;
         }
         if (!frame._state->prepare_diffusion_resources(
@@ -6263,8 +4879,7 @@ namespace JuicerProcess {
                 outError)) {
             frame._state->set_failure(
                 PreparedCudaFailureStage{"prepare_direct_diffusion_resources"},
-                "CUDA direct diffusion resource preparation failed",
-                false);
+                "CUDA direct diffusion resource preparation failed");
             frame.abort("direct_diffusion_preparation_failed");
             return frame;
         }
@@ -6297,8 +4912,7 @@ namespace JuicerProcess {
                     outError)) {
                 frame._state->set_failure(
                     PreparedCudaFailureStage{"prepare_direct_scanner_post_effects_phase8"},
-                    "CUDA direct scanner post-effect preparation failed",
-                    false);
+                    "CUDA direct scanner post-effect preparation failed");
                 frame.abort("direct_phase8_scanner_post_effect_preparation_failed");
                 return frame;
             }
@@ -6328,44 +4942,21 @@ namespace JuicerProcess {
     bool Root::begin_submission(
         JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+        std::shared_ptr<JuicerCuda::DeviceAllocationLedger>& outDeviceLedger,
         std::string& outError) {
-        return JuicerCuda::ResourceManager::begin_submission(transaction, snapshot, outError);
-    }
-
-    bool Root::acquire_submission_plan(
-        JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
-        std::string& outError) {
-        return JuicerCuda::ResourceManager::acquire_plan(transaction, outError);
-    }
-
-    bool Root::commit_submission(
-        JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        return JuicerCuda::ResourceManager::commit_submission(transaction, cudaStreamOpaque, outError);
-    }
-
-    bool Root::shed_post_frame_scratch(
-        JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
-        JuicerCuda::Resources& resources,
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
-        void* cudaStreamOpaque,
-        const char* commandName,
-        std::string& outError) {
-        return JuicerCuda::ResourceManager::command_shed_post_frame_scratch(
+        if (!resolve_cuda_device_ledger(
+                snapshot.deviceContextKey,
+                outDeviceLedger,
+                outError)) {
+            return false;
+        }
+        return JuicerCuda::ResourceManager::begin_submission(
             transaction,
-            resources,
-            scratchRequest,
-            cudaStreamOpaque,
-            commandName,
+            snapshot,
+            outDeviceLedger->device_budget_bytes(),
             outError);
     }
 
-    void Root::rollback_submission(
-        JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
-        const char* reason) noexcept {
-        JuicerCuda::ResourceManager::rollback_submission(transaction, reason);
-    }
 #endif
 
     bool Root::retire_known_contexts(std::string& outError) noexcept {
@@ -6373,22 +4964,17 @@ namespace JuicerProcess {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         try {
             std::vector<JuicerCuda::ResourceManager::DeviceContextKey> keys;
+            JuicerCuda::ResourceManager::registry_snapshot_context_keys(keys);
             {
                 std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-                auto collect = [&](
-                                   const JuicerCuda::ResourceManager::DeviceContextKey&
-                                       key) {
-                    if (std::find(keys.begin(), keys.end(), key) == keys.end()) {
-                        keys.push_back(key);
-                    }
-                };
-                for (const auto& [key, owner] : _cudaResourcesByContext) {
-                    (void)owner;
-                    collect(key.deviceContextKey);
-                }
-                for (const auto& [key, entry] : _grainStaticByContext) {
+                for (const auto& [resourceKey, entry] : _cudaContextResources) {
                     (void)entry;
-                    collect(key.deviceContextKey);
+                    if (std::find(
+                            keys.begin(),
+                            keys.end(),
+                            resourceKey.deviceContextKey) == keys.end()) {
+                        keys.push_back(resourceKey.deviceContextKey);
+                    }
                 }
             }
             for (const auto& key : keys) {
@@ -6396,8 +4982,11 @@ namespace JuicerProcess {
                     return false;
                 }
             }
-            if (!JuicerCuda::ResourceManager::command_retire_all_contexts_idle(
-                    outError)) {
+            keys.clear();
+            JuicerCuda::ResourceManager::registry_snapshot_context_keys(keys);
+            if (!keys.empty()) {
+                outError = "context retire incomplete; live_contexts=" +
+                           std::to_string(keys.size());
                 return false;
             }
             std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
@@ -6437,11 +5026,9 @@ namespace JuicerProcess {
     void Root::release_cuda_context_resource_owners() noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         try {
-            ContextCudaResourceMap frameResources;
-            GrainStaticContextMap grainStaticResources;
+            CudaContextResourceMap contextResources;
             std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-            frameResources.swap(_cudaResourcesByContext);
-            grainStaticResources.swap(_grainStaticByContext);
+            contextResources.swap(_cudaContextResources);
             _cudaDeviceLedgers.clear();
         } catch (...) {
             JuicerLogging::discard_current_exception();
