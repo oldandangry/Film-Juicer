@@ -310,8 +310,6 @@ namespace Profiles {
         }
 
         if (!Spektrafilm::scan_route_is_print(request.scanRoute)) {
-            result.directRoutePrintProfileExcluded = true;
-            result.directRouteNeutralCalibrationExcluded = true;
             result.valid = true;
             result.diagnostic.clear();
             return result;

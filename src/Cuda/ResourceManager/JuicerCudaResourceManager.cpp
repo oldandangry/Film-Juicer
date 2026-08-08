@@ -4,10 +4,8 @@
 
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
-#include "Hash.h"
 #include "Logging.h"
 
-#include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <limits>
@@ -40,15 +38,6 @@ namespace JuicerCuda {
 
         namespace {
 
-            template <typename TraceAction>
-            void run_telemetry_trace_noexcept(TraceAction&& action) noexcept {
-                try {
-                    action();
-                } catch (...) {
-                    JuicerLogging::discard_current_exception();
-                }
-            }
-
             const char* trace_or(const char* value, const char* fallback) noexcept {
                 return value ? value : fallback;
             }
@@ -71,12 +60,6 @@ namespace JuicerCuda {
                 const SubmissionTransaction& transaction,
                 const char* commandName) {
                 return std::string("event=") + trace_or_unknown(eventName) + " transaction_id=" + std::to_string(transaction.transactionId) + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId) + " command=" + trace_or_unknown(commandName);
-            }
-
-            std::string trace_event_identity_prefix(
-                const char* eventName,
-                const SubmissionTransaction& transaction) {
-                return std::string("event=") + trace_or_unknown(eventName) + " transaction_id=" + std::to_string(transaction.transactionId) + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId);
             }
 
             std::string trace_device_context_fields(const SubmissionTransaction& transaction) {
@@ -137,55 +120,33 @@ namespace JuicerCuda {
                 return maxDim >= 7680 || area >= kLargeFrameThresholdPixels;
             }
 
-            inline std::size_t plane_bytes_for_extent(int width, int height) noexcept {
-                if (width <= 0 || height <= 0) {
-                    return 0;
-                }
-                const std::size_t w = static_cast<std::size_t>(width);
-                const std::size_t h = static_cast<std::size_t>(height);
-                if (h > (std::numeric_limits<std::size_t>::max() / w)) {
-                    return std::numeric_limits<std::size_t>::max();
-                }
-                const std::size_t n = w * h;
-                if (n > (std::numeric_limits<std::size_t>::max() / sizeof(float))) {
-                    return std::numeric_limits<std::size_t>::max();
-                }
-                return n * sizeof(float);
-            }
-
         } // namespace
-
-
-        void trace_scratch_request_descriptor(
-            const SubmissionTransaction& transaction,
-            const char* commandName,
-            const ScratchRequestDescriptor& descriptor,
-            const char* reason) {
-#if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(2)) {
-                return;
-            }
-
-            const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.spatialDirPlaneRoles;
-            const Spektrafilm::DirScratchPlaneRoles& targetRoles = descriptor.spatialDirTargetPlaneRoles;
-            const std::string msg = trace_event_prefix("scratch_request", transaction, commandName) + " request_generation=" + std::to_string(static_cast<unsigned long long>(descriptor.generation)) + " need_optics=" + std::to_string(descriptor.needOptics ? 1 : 0) + " need_spatial_dir=" + std::to_string(descriptor.needSpatialDir ? 1 : 0) + " spatial_dir_descriptor_hash=" + std::to_string(static_cast<unsigned long long>(descriptor.spatialDirDescriptorHash)) + " spatial_dir_scratch_tier=" + Spektrafilm::to_cstr(descriptor.spatialDirScratchTier) + " spatial_dir_target_scratch_tier=" + Spektrafilm::to_cstr(descriptor.spatialDirTargetScratchTier) + " raw_correction_planes=" + std::to_string(roles.rawCorrectionPlanes) + " filtered_correction_planes=" + std::to_string(roles.filteredCorrectionPlanes) + " filter_temp_planes=" + std::to_string(roles.filterTempPlanes) + " cached_log_raw_planes=" + std::to_string(roles.cachedLogRawPlanes) + " target_raw_correction_planes=" + std::to_string(targetRoles.rawCorrectionPlanes) + " target_filtered_correction_planes=" + std::to_string(targetRoles.filteredCorrectionPlanes) + " target_filter_temp_planes=" + std::to_string(targetRoles.filterTempPlanes) + " target_cached_log_raw_planes=" + std::to_string(targetRoles.cachedLogRawPlanes) + " requested_width=" + std::to_string(descriptor.requestedWidth) + " requested_height=" + std::to_string(descriptor.requestedHeight) + " need_blurred=" + std::to_string(descriptor.needBlurred ? 1 : 0) + " alias_scanner_rgb_from_spatial_dir_filtered=" + std::to_string(descriptor.aliasScannerRgbFromSpatialDirFiltered ? 1 : 0) + " need_aux=" + std::to_string(descriptor.needAux ? 1 : 0) + " need_shared_tmp=" + std::to_string(descriptor.needSharedTmp ? 1 : 0) + " need_grain_frame_uniforms=" + std::to_string(descriptor.needGrainFrameUniforms ? 1 : 0) + " need_grain_layer_work=" + std::to_string(descriptor.needGrainLayerWork ? 1 : 0) + " need_grain_shared=" + std::to_string(descriptor.needGrainShared ? 1 : 0) + " need_gate_mask=" + std::to_string(descriptor.needGateMask ? 1 : 0) + trace_device_context_fields(transaction) + " reason=" + trace_or_unspecified(reason);
-            JTRACE("MSSRQ", msg);
-#endif
-        }
-
 
         void trace_large_scratch_transition_checkpoint(
             const SubmissionTransaction& transaction,
             const char* commandName,
             const ScratchRequestDescriptor& scratchRequest,
             const JuicerCuda::LargeScratchTransitionReclaimStats& stats,
-            const char* reason) {
+            bool ok,
+            const std::string& error) {
 #if JUICER_DIAGNOSTICS_COMPILED
-            if (!JTRACE_ENABLED(2)) {
+            const bool hasResourceActivity =
+                stats.pendingScratchBytesBefore > 0 ||
+                stats.opticsRetiredBytes > 0 ||
+                stats.spatialDirRetiredBytes > 0 ||
+                stats.sharedTmpRetiredBytes > 0 ||
+                stats.reclaimedBytes > 0;
+            const bool largeRequest = is_large_frame_extent(
+                scratchRequest.requestedWidth,
+                scratchRequest.requestedHeight);
+            if (ok && !largeRequest && !hasResourceActivity) {
+                return;
+            }
+            if (ok ? !JTRACE_ENABLED(2) : !JTRACE_ENABLED(1)) {
                 return;
             }
 
-            const std::string msg =
+            std::string msg =
                 trace_event_prefix("large_scratch_transition_checkpoint", transaction, commandName) +
                 " request_generation=" +
                 std::to_string(static_cast<unsigned long long>(scratchRequest.generation)) +
@@ -205,36 +166,43 @@ namespace JuicerCuda {
                 std::to_string(static_cast<unsigned long long>(stats.sharedTmpRetiredBytes)) +
                 " reclaimed_bytes=" +
                 std::to_string(static_cast<unsigned long long>(stats.reclaimedBytes)) +
-                trace_device_context_fields(transaction) +
-                " reason=" + trace_or_unspecified(reason);
+                " ok=" + std::to_string(ok ? 1 : 0) +
+                trace_device_context_fields(transaction);
+            if (!error.empty()) {
+                msg += " error=";
+                msg += error;
+            }
             JTRACE("MSLTC", msg);
 #else
             (void)transaction;
             (void)commandName;
             (void)scratchRequest;
             (void)stats;
-            (void)reason;
+            (void)ok;
+            (void)error;
 #endif
         }
-
-
-        struct BudgetReclaimRetryTrace {
-            const char* commandName = nullptr;
-            const char* reason = nullptr;
-            std::size_t reclaimedBytes = 0;
-            std::uint32_t attempt = 0;
-            bool success = false;
-        };
-
-        void trace_budget_reclaim_retry(
+        void trace_allocation_retry(
             const SubmissionTransaction& transaction,
-            const BudgetReclaimRetryTrace& trace) {
+            const char* commandName,
+            std::size_t reclaimedBytes,
+            bool success,
+            const std::string& error) {
 #if JUICER_DIAGNOSTICS_COMPILED
             if (!JTRACE_ENABLED(2)) {
                 return;
             }
 
-            const std::string msg = trace_event_prefix("reclaim_retry", transaction, trace.commandName) + " attempt=" + std::to_string(static_cast<unsigned long long>(trace.attempt)) + " reclaimed_bytes=" + std::to_string(static_cast<unsigned long long>(trace.reclaimedBytes)) + trace_device_context_fields(transaction) + " success=" + std::to_string(trace.success ? 1 : 0) + " reason=" + trace_or_unspecified(trace.reason);
+            std::string msg =
+                trace_event_prefix("reclaim_retry", transaction, commandName) +
+                " reclaimed_bytes=" +
+                std::to_string(static_cast<unsigned long long>(reclaimedBytes)) +
+                trace_device_context_fields(transaction) +
+                " success=" + std::to_string(success ? 1 : 0);
+            if (!error.empty()) {
+                msg += " error=";
+                msg += error;
+            }
             JTRACE("MSEVICT", msg);
 #endif
         }
@@ -255,89 +223,11 @@ namespace JuicerCuda {
 #endif
         }
 
-        // Former RM foundation implementation now owned by the RM TU.
-        ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& raw) noexcept {
-            constexpr std::uint64_t kMiB = 1024ull * 1024ull;
-            constexpr std::uint32_t kMinHostAssetIdleTrimMs = 1000u;
-            constexpr std::uint32_t kMaxHostAssetIdleTrimMs = 60000u;
-            constexpr std::uint32_t kMinPinnedStagingIdleTrimMs = 500u;
-            constexpr std::uint32_t kMaxPinnedStagingIdleTrimMs = 60000u;
-            constexpr std::uint64_t kMinHostAssetCacheMaxBytes = 64ull * kMiB;
-            constexpr std::uint64_t kMaxHostAssetCacheMaxBytes = 1024ull * kMiB;
-            constexpr std::uint64_t kMinHostAssetTrimBatchBytes = 8ull * kMiB;
-            constexpr std::uint64_t kMinPinnedStagingMaxBytes = 8ull * kMiB;
-            constexpr std::uint64_t kMaxPinnedStagingMaxBytes = 2048ull * kMiB;
-            constexpr std::uint64_t kMinPinnedStagingTrimBatchBytes = 1ull * kMiB;
-
-            ResourceManagerConfigEffective out{};
-            out.hostAssetCacheMaxBytes = std::clamp(
-                raw.hostAssetCacheMaxBytes,
-                kMinHostAssetCacheMaxBytes,
-                kMaxHostAssetCacheMaxBytes);
-            out.hostAssetIdleTrimMs = std::clamp(
-                raw.hostAssetIdleTrimMs,
-                kMinHostAssetIdleTrimMs,
-                kMaxHostAssetIdleTrimMs);
-            out.hostAssetTrimBatchBytes = std::clamp(
-                raw.hostAssetTrimBatchBytes,
-                kMinHostAssetTrimBatchBytes,
-                out.hostAssetCacheMaxBytes);
-            out.pinnedUploadStagingMaxBytes = std::clamp(
-                raw.pinnedUploadStagingMaxBytes,
-                kMinPinnedStagingMaxBytes,
-                kMaxPinnedStagingMaxBytes);
-            out.pinnedUploadStagingIdleTrimMs = std::clamp(
-                raw.pinnedUploadStagingIdleTrimMs,
-                kMinPinnedStagingIdleTrimMs,
-                kMaxPinnedStagingIdleTrimMs);
-            out.pinnedUploadStagingTrimBatchBytes = std::clamp(
-                raw.pinnedUploadStagingTrimBatchBytes,
-                kMinPinnedStagingTrimBatchBytes,
-                out.pinnedUploadStagingMaxBytes);
-            return out;
-        }
-
-
         std::uint64_t normalize_key_u64(std::uint64_t value) noexcept {
             if (value == 0) {
                 return 1;
             }
             return value;
-        }
-
-        std::uint32_t normalize_scan_lut_resolution(std::uint32_t value) noexcept {
-            return std::clamp(value, kScanLutResolutionMin, kScanLutResolutionMax);
-        }
-
-        std::uint64_t make_scan_lut_key_digest(
-            std::uint32_t medium,
-            std::uint64_t tablesHash,
-            std::uint64_t densityRangeHash,
-            std::uint32_t lutResolution,
-            std::uint32_t lutFormatVersion,
-            std::uint32_t keySchemaVersion) noexcept {
-            if (medium > 1u ||
-                tablesHash == 0 ||
-                densityRangeHash == 0 ||
-                lutFormatVersion == 0 ||
-                keySchemaVersion == 0) {
-                return 0;
-            }
-
-            const std::uint64_t fields[] = {
-                static_cast<std::uint64_t>(keySchemaVersion),
-                static_cast<std::uint64_t>(medium),
-                tablesHash,
-                densityRangeHash,
-                static_cast<std::uint64_t>(normalize_scan_lut_resolution(lutResolution)),
-                static_cast<std::uint64_t>(lutFormatVersion)};
-            std::uint64_t digest = Hash::kFnvOffset;
-            const auto* bytes = reinterpret_cast<const std::uint8_t*>(fields);
-            for (std::size_t index = 0; index < sizeof(fields); ++index) {
-                digest ^= static_cast<std::uint64_t>(bytes[index]);
-                digest *= Hash::kFnvPrime;
-            }
-            return digest;
         }
 
         KeyDigests make_key_digests(
@@ -366,76 +256,677 @@ namespace JuicerCuda {
             return state;
         }
 
-        void telemetry_record_begin_submission() noexcept {
-            telemetry_counter_add(global_state().beginSubmissionCalls, 1);
-        }
-
-        void telemetry_record_commit_submission() noexcept {
-            telemetry_counter_add(global_state().commitSubmissionCalls, 1);
-        }
-
-        void telemetry_record_rollback_submission() noexcept {
-            telemetry_counter_add(global_state().rollbackSubmissionCalls, 1);
-        }
-
-        void telemetry_record_module_boundary_violation() noexcept {
-            telemetry_counter_add(global_state().moduleBoundaryViolations, 1);
-        }
-
-        constexpr const char* kTraceTokenUnknown = "unknown";
-        const char* trace_token_or(const char* value, const char* fallback) noexcept {
-            if (value) {
-                return value;
-            }
-            return fallback;
-        }
-
-        struct TelemetryTraceContext {
-            std::uint64_t transactionId = 0;
-            std::uint64_t snapshotId = 0;
-        };
-
-        std::string telemetry_trace_txn_snapshot_prefix(const TelemetryTraceContext& context) {
-            return std::string("transaction_id=") + std::to_string(context.transactionId) + " snapshot_id=" + std::to_string(context.snapshotId);
-        }
-
-        std::string telemetry_trace_device_context_fields(const DeviceContextKey* key) {
-            int deviceId = -1;
-            std::uintptr_t contextBits = 0;
-            if (key) {
-                deviceId = key->deviceId;
-                contextBits = reinterpret_cast<std::uintptr_t>(key->contextOpaque);
-            }
-            return std::string(" device_id=") + std::to_string(deviceId) + " context=" + std::to_string(contextBits);
-        }
-
-        std::string telemetry_trace_event_prefix(const char* eventName) {
-            return std::string("event=") + trace_token_or(eventName, kTraceTokenUnknown);
-        }
-
-        struct TelemetryModuleBoundaryViolationTrace {
-            TelemetryTraceContext context{};
-            const char* reason = nullptr;
-        };
-
-        void telemetry_trace_module_boundary_violation(const TelemetryModuleBoundaryViolationTrace& trace) noexcept {
+        void trace_module_boundary_violation(
+            const SubmissionTransaction& transaction,
+            const char* reason) noexcept {
 #if JUICER_DIAGNOSTICS_COMPILED
-            run_telemetry_trace_noexcept([&]() {
+            try {
                 if (!JTRACE_ENABLED(1)) {
                     return;
                 }
                 const std::string msg =
-                    telemetry_trace_txn_snapshot_prefix(trace.context) +
-                    " reason=" + trace_token_or(trace.reason, kTraceTokenUnknown);
+                    std::string("transaction_id=") +
+                    std::to_string(transaction.transactionId) +
+                    " snapshot_id=" +
+                    std::to_string(transaction.snapshot.snapshotId) +
+                    " reason=" +
+                    trace_or(reason, "unknown");
                 JTRACE("MSCMD", msg);
-            });
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+#else
+            (void)transaction;
+            (void)reason;
 #endif
         }
 
-// Split implementation sections (single-TU include model to preserve exact behavior while
-// reducing monolithic file size and keeping ownership boundaries explicit).
-#include "Cuda/ResourceManager/JuicerCudaResourceManagerSubmission.inc"
-#include "Cuda/ResourceManager/JuicerCudaResourceManagerCommands.inc"
+        void finalize_submission_transaction(
+            SubmissionTransaction& transaction,
+            bool committed) noexcept {
+            transaction.committed = committed;
+            transaction.active = false;
+        }
+
+        bool ensure_submission_active(
+            const SubmissionTransaction& transaction,
+            std::string& outError) {
+            if (transaction.active) {
+                return true;
+            }
+            outError = "submission transaction is not active";
+            return false;
+        }
+
+        bool finalize_submission_end_or_trace(
+            const SubmissionTransaction& transaction,
+            const char* stage,
+            std::string* outError = nullptr) {
+            if (registry_note_submission_end(transaction.snapshot.deviceContextKey)) {
+                return true;
+            }
+            trace_module_boundary_violation(
+                transaction,
+                trace_or(stage, "registry_submission_end_rejected"));
+            if (outError) {
+                *outError = "registry submission-end tracking rejected";
+            }
+            return false;
+        }
+
+        bool validate_resolved_memory_budget(
+            const ResolvedMemoryBudget& budget,
+            std::string& outError) {
+            outError.clear();
+            if (budget.deviceId < 0) {
+                outError = "submission memory budget device id is invalid";
+                return false;
+            }
+            if (budget.deviceBudgetBytes <= 1) {
+                outError = "submission memory budget must be greater than one byte";
+                return false;
+            }
+            if (budget.allocationCapBytes == 0) {
+                outError = "submission allocation cap must be non-zero";
+                return false;
+            }
+            if (budget.allocationCapBytes > budget.deviceBudgetBytes) {
+                outError = "submission allocation cap exceeds device budget";
+                return false;
+            }
+            return true;
+        }
+
+        bool resolve_submission_memory_budget(
+            const SubmissionSnapshot& snapshot,
+            std::uint64_t deviceBudgetBytes,
+            ResolvedMemoryBudget& outBudget,
+            std::string& outError) {
+            outBudget = ResolvedMemoryBudget{};
+            outBudget.deviceId = snapshot.deviceContextKey.deviceId;
+            outBudget.deviceBudgetBytes = deviceBudgetBytes;
+
+            constexpr std::uint64_t kDefaultDeviceHeadroomBytes =
+                256ull * 1024ull * 1024ull;
+            const std::uint64_t maximumHeadroom =
+                deviceBudgetBytes > 0 ? deviceBudgetBytes - 1 : 0;
+            const std::uint64_t configuredHeadroom =
+                std::min(kDefaultDeviceHeadroomBytes, maximumHeadroom);
+            outBudget.allocationCapBytes = deviceBudgetBytes - configuredHeadroom;
+            return validate_resolved_memory_budget(outBudget, outError);
+        }
+
+        bool begin_submission(
+            SubmissionTransaction& outTransaction,
+            const SubmissionSnapshot& snapshot,
+            std::uint64_t deviceBudgetBytes,
+            std::string& outError) {
+            outError.clear();
+            if (outTransaction.active) {
+                outError = "submission transaction already active";
+                return false;
+            }
+
+            ResourceManagerState& state = global_state();
+            outTransaction.transactionId = state.nextTransactionId.fetch_add(1, std::memory_order_relaxed);
+            if (outTransaction.transactionId == 0) {
+                outTransaction.transactionId = state.nextTransactionId.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            outTransaction.snapshot = snapshot;
+            outTransaction.snapshot.keyDigests = normalize_key_digests(outTransaction.snapshot.keyDigests);
+
+            if (!resolve_submission_memory_budget(
+                    outTransaction.snapshot,
+                    deviceBudgetBytes,
+                    outTransaction.resolvedMemoryBudget,
+                    outError)) {
+                return false;
+            }
+
+            RegistryContextSnapshot contextSnapshot{};
+            if (!registry_begin_submission(
+                    outTransaction.snapshot.deviceContextKey,
+                    contextSnapshot)) {
+                outError = "registry submission admission failed";
+                return false;
+            }
+            outTransaction.snapshot.contextEpoch = contextSnapshot.contextEpoch;
+
+            std::uint64_t leaseGeneration = state.nextLeaseGeneration.fetch_add(1, std::memory_order_relaxed);
+            if (leaseGeneration == 0) {
+                leaseGeneration = state.nextLeaseGeneration.fetch_add(1, std::memory_order_relaxed);
+            }
+            outTransaction.leaseGeneration = leaseGeneration;
+            outTransaction.active = true;
+            outTransaction.committed = false;
+
+            return true;
+        }
+
+        bool commit_submission(
+            SubmissionTransaction& transaction,
+            void* cudaStreamOpaque,
+            std::string& outError) {
+            (void)cudaStreamOpaque;
+            outError.clear();
+            if (!ensure_submission_active(transaction, outError)) {
+                return false;
+            }
+            if (!finalize_submission_end_or_trace(transaction, "registry_submission_end_rejected_commit", &outError)) {
+                finalize_submission_transaction(transaction, false);
+                return false;
+            }
+            finalize_submission_transaction(transaction, true);
+            return true;
+        }
+
+
+        void rollback_submission(SubmissionTransaction& transaction) noexcept {
+            try {
+                if (!transaction.active) {
+                    return;
+                }
+                (void)finalize_submission_end_or_trace(transaction, "registry_submission_end_rejected_rollback");
+                finalize_submission_transaction(transaction, false);
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+        }
+
+        bool ensure_active_for_command(
+            const SubmissionTransaction& transaction,
+            std::string& outError,
+            const char* commandName) {
+            const char* rejectionStage = trace_or(commandName, "command_requires_active_submission");
+            if (!ensure_submission_active(transaction, outError)) {
+                trace_module_boundary_violation(transaction, rejectionStage);
+                return false;
+            }
+
+            return true;
+        }
+
+        const char* bool_reason(bool value, const char* whenTrue, const char* whenFalse) noexcept {
+            if (value) {
+                return whenTrue;
+            }
+            return whenFalse;
+        }
+
+        std::uint32_t bool_u32(bool value) noexcept {
+            if (value) {
+                return 1u;
+            }
+            return 0u;
+        }
+
+        const char* commands_error_or_cstr(const std::string& error, const char* fallback) noexcept {
+            if (error.empty()) {
+                return fallback;
+            }
+            return error.c_str();
+        }
+
+        bool contains_ascii_case_insensitive(const std::string& haystack, const char* needle) noexcept {
+            if (!needle || !*needle) {
+                return true;
+            }
+            if (haystack.empty()) {
+                return false;
+            }
+            const std::size_t needleLen = std::char_traits<char>::length(needle);
+            if (needleLen == 0 || needleLen > haystack.size()) {
+                return false;
+            }
+            for (std::size_t i = 0; i + needleLen <= haystack.size(); ++i) {
+                bool match = true;
+                for (std::size_t j = 0; j < needleLen; ++j) {
+                    const unsigned char a = static_cast<unsigned char>(haystack[i + j]);
+                    const unsigned char b = static_cast<unsigned char>(needle[j]);
+                    if (std::tolower(a) != std::tolower(b)) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool is_allocation_capacity_error(const std::string& error) noexcept {
+            if (error.empty()) {
+                return false;
+            }
+            return contains_ascii_case_insensitive(error, "out of memory") ||
+                   contains_ascii_case_insensitive(error, "memory allocation") ||
+                   contains_ascii_case_insensitive(error, "device_cap_exceeded");
+        }
+
+        bool validate_scratch_request_descriptor_for_manager(
+            const ScratchRequestDescriptor& descriptor,
+            const char* commandName,
+            std::string& outError) noexcept {
+            if (!scratch_request_descriptor_is_valid(descriptor)) {
+                try {
+                    outError = std::string(trace_or_non_empty(commandName, "scratch_request")) +
+                               ": invalid scratch request descriptor";
+                } catch (...) {
+                    JuicerLogging::discard_current_exception();
+                    outError.clear();
+                }
+                return false;
+            }
+            return true;
+        }
+
+        bool run_large_scratch_transition_checkpoint(
+            const SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            const char* commandName,
+            const ScratchRequestDescriptor& scratchRequest,
+            void* cudaStreamOpaque,
+            std::string& outError) {
+            outError.clear();
+
+            JuicerCuda::LargeScratchTransitionReclaimStats reclaimStats{};
+            const bool ok = JuicerCuda::reclaim_large_scratch_transition(
+                resources,
+                scratchRequest,
+                cudaStreamOpaque,
+                reclaimStats,
+                outError);
+            trace_large_scratch_transition_checkpoint(
+                transaction,
+                commandName,
+                scratchRequest,
+                reclaimStats,
+                ok,
+                outError);
+            return ok;
+        }
+
+        bool resolve_optional_active_scratch_request(
+            const ScratchRequestDescriptor& scratchRequest,
+            const char* commandName,
+            const ScratchRequestDescriptor*& outActiveScratchRequest,
+            std::string& outError) {
+            outActiveScratchRequest = nullptr;
+            if (!scratchRequest.has_any_family()) {
+                if (scratchRequest.needBlurred ||
+                    scratchRequest.aliasScannerRgbFromSpatialDirFiltered ||
+                    scratchRequest.needAux ||
+                    scratchRequest.needSharedTmp ||
+                    scratchRequest.needGrainFrameUniforms ||
+                    scratchRequest.needGrainLayerWork ||
+                    scratchRequest.needGrainShared ||
+                    scratchRequest.needGateMask) {
+                    outError = std::string(trace_or_non_empty(commandName, "scratch_request")) + ": invalid scratch request descriptor";
+                    return false;
+                }
+                return true;
+            }
+
+            if (!validate_scratch_request_descriptor_for_manager(
+                    scratchRequest,
+                    commandName,
+                    outError)) {
+                return false;
+            }
+
+            outActiveScratchRequest = &scratchRequest;
+            return true;
+        }
+
+        bool validate_optics_scratch_request(
+            const ScratchRequestDescriptor& scratchRequest,
+            const char* commandName,
+            std::string& outError) {
+            if (!validate_scratch_request_descriptor_for_manager(
+                    scratchRequest,
+                    commandName,
+                    outError)) {
+                return false;
+            }
+
+            if (!scratchRequest.needOptics) {
+                outError = std::string(trace_or_non_empty(commandName, "command")) + ": optics scratch request missing needOptics";
+                return false;
+            }
+            return true;
+        }
+
+        bool validate_spatial_dir_scratch_request(
+            const ScratchRequestDescriptor& scratchRequest,
+            const char* commandName,
+            std::string& outError) {
+            if (!validate_scratch_request_descriptor_for_manager(
+                    scratchRequest,
+                    commandName,
+                    outError)) {
+                return false;
+            }
+
+            if (!scratchRequest.needSpatialDir) {
+                outError = std::string(trace_or_non_empty(commandName, "command")) + ": spatial DIR scratch request missing needSpatialDir";
+                return false;
+            }
+            return true;
+        }
+
+        template <typename Action>
+        bool execute_allocation_with_reclaim_retry(
+            SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            const char* commandName,
+            Action&& action,
+            std::string& outError) {
+            outError.clear();
+            if (action(outError)) {
+                return true;
+            }
+            if (!is_allocation_capacity_error(outError)) {
+                return false;
+            }
+
+            const std::string firstAllocationError = outError;
+            std::size_t reclaimedBytes = 0;
+            std::string reclaimError;
+            if (!JuicerCuda::reap_retired_allocations(
+                    resources,
+                    reclaimedBytes,
+                    reclaimError)) {
+                trace_reap_pass(
+                    transaction,
+                    commandName,
+                    reclaimedBytes,
+                    false,
+                    commands_error_or_cstr(reclaimError, "reap_failed"));
+                outError = firstAllocationError;
+                if (!reclaimError.empty()) {
+                    outError += " | reclaim_failed: " + reclaimError;
+                }
+                return false;
+            }
+
+            if (reclaimedBytes == 0) {
+                trace_reap_pass(
+                    transaction,
+                    commandName,
+                    0,
+                    true,
+                    "reap_no_progress");
+                outError = firstAllocationError;
+                return false;
+            }
+
+            std::string retryError;
+            const bool retrySucceeded = action(retryError);
+            trace_allocation_retry(
+                transaction,
+                commandName,
+                reclaimedBytes,
+                retrySucceeded,
+                retryError);
+            if (retrySucceeded) {
+                outError.clear();
+                return true;
+            }
+
+            outError = firstAllocationError;
+            if (!retryError.empty()) {
+                outError += " | allocation_retry_failed: " + retryError;
+            }
+            return false;
+        }
+
+
+        bool command_checkpoint_large_scratch_transition(
+            SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            const ScratchRequestDescriptor& scratchRequest,
+            void* cudaStreamOpaque,
+            const char* commandName,
+            std::string& outError) {
+            const char* stageName =
+                trace_or_non_empty(commandName, "command_checkpoint_large_scratch_transition");
+            if (!ensure_active_for_command(transaction, outError, stageName)) {
+                return false;
+            }
+            if (!validate_scratch_request_descriptor_for_manager(
+                    scratchRequest,
+                    stageName,
+                    outError)) {
+                return false;
+            }
+
+            return run_large_scratch_transition_checkpoint(
+                transaction,
+                resources,
+                stageName,
+                scratchRequest,
+                cudaStreamOpaque,
+                outError);
+        }
+
+
+        bool command_ensure_spatial_dir_cached_log_raw_stage(
+            SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            const ScratchRequestDescriptor& scratchRequest,
+            void* cudaStreamOpaque,
+            JuicerCuda::SpatialDirCachedLogRawStageStats& outStats,
+            std::string& outError) {
+            const char* stageName = "command_ensure_spatial_dir_cached_log_raw_stage";
+            outStats = JuicerCuda::SpatialDirCachedLogRawStageStats{};
+            if (!ensure_active_for_command(transaction, outError, stageName)) {
+                return false;
+            }
+            if (!validate_spatial_dir_scratch_request(
+                    scratchRequest,
+                    stageName,
+                    outError)) {
+                return false;
+            }
+            if (scratchRequest.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3) {
+                outError = "spatial DIR cached log raw stage requested without Tier2 target roles";
+                return false;
+            }
+
+            auto action = [&](std::string& actionError) {
+                return JuicerCuda::ensure_retained_spatial_dir_cached_log_raw_stage(
+                    resources,
+                    transaction.leaseGeneration,
+                    scratchRequest,
+                    cudaStreamOpaque,
+                    outStats,
+                    actionError);
+            };
+
+            const bool ok = execute_allocation_with_reclaim_retry(
+                transaction,
+                resources,
+                stageName,
+                action,
+                outError);
+#if JUICER_DIAGNOSTICS_COMPILED
+            if (JTRACE_ENABLED(1)) {
+                std::string msg = trace_event_prefix(
+                    "spatial_dir_cached_log_raw_stage",
+                    transaction,
+                    stageName);
+                msg += " ok=";
+                msg += ok ? "1" : "0";
+                msg += " pending_scratch_bytes_before=";
+                msg += std::to_string(static_cast<unsigned long long>(outStats.pendingScratchBytesBefore));
+                msg += " cached_log_raw_allocated_bytes=";
+                msg += std::to_string(static_cast<unsigned long long>(outStats.cachedLogRawAllocatedBytes));
+                if (!outError.empty()) {
+                    msg += " error=";
+                    msg += outError;
+                }
+                JTRACE("MSADM", msg);
+            }
+#endif
+            return ok;
+        }
+
+        void trace_post_frame_scratch_shed(
+            const SubmissionTransaction& transaction,
+            const char* commandName,
+            const ScratchRequestDescriptor& scratchRequest,
+            const JuicerCuda::PostFrameScratchShedStats& stats,
+            bool ok,
+            const std::string& error) {
+#if JUICER_DIAGNOSTICS_COMPILED
+            if (!JTRACE_ENABLED(1)) {
+                return;
+            }
+            std::string msg =
+                trace_event_prefix("post_frame_scratch_shed", transaction, commandName) +
+                " ok=" + std::to_string(ok ? 1 : 0) +
+                " request_width=" + std::to_string(scratchRequest.requestedWidth) +
+                " request_height=" + std::to_string(scratchRequest.requestedHeight) +
+                " pending_scratch_bytes_before=" +
+                std::to_string(static_cast<unsigned long long>(
+                    stats.pendingScratchBytesBefore)) +
+                " optics_retired_bytes=" +
+                std::to_string(static_cast<unsigned long long>(stats.opticsRetiredBytes)) +
+                " spatial_dir_retired_bytes=" +
+                std::to_string(static_cast<unsigned long long>(
+                    stats.spatialDirRetiredBytes)) +
+                " shared_tmp_retired_bytes=" +
+                std::to_string(static_cast<unsigned long long>(
+                    stats.sharedTmpRetiredBytes)) +
+                " reclaimed_bytes=" +
+                std::to_string(static_cast<unsigned long long>(stats.reclaimedBytes)) +
+                trace_device_context_fields(transaction);
+            if (!error.empty()) {
+                msg += " error=";
+                msg += error;
+            }
+            JTRACE("MSPFS", msg);
+#else
+            (void)transaction;
+            (void)commandName;
+            (void)scratchRequest;
+            (void)stats;
+            (void)ok;
+            (void)error;
+#endif
+        }
+
+        bool command_shed_post_frame_scratch(
+            SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            const ScratchRequestDescriptor& scratchRequest,
+            void* cudaStreamOpaque,
+            const char* commandName,
+            std::string& outError) {
+            const char* stageName =
+                trace_or_non_empty(commandName, "command_shed_post_frame_scratch");
+            outError.clear();
+            if (!ensure_active_for_command(transaction, outError, stageName)) {
+                return false;
+            }
+            const ScratchRequestDescriptor* activeScratchRequest = nullptr;
+            if (!resolve_optional_active_scratch_request(
+                    scratchRequest,
+                    stageName,
+                    activeScratchRequest,
+                    outError)) {
+                return false;
+            }
+            (void)activeScratchRequest;
+
+            const bool shedLargeSpatialDir =
+                scratchRequest.needSpatialDir &&
+                is_large_frame_extent(
+                    scratchRequest.requestedWidth,
+                    scratchRequest.requestedHeight);
+            if (!shedLargeSpatialDir) {
+                return true;
+            }
+
+            JuicerCuda::PostFrameScratchShedStats stats{};
+            const bool ok = JuicerCuda::shed_retained_scratch_after_frame(
+                resources,
+                cudaStreamOpaque,
+                stats,
+                outError);
+            trace_post_frame_scratch_shed(
+                transaction,
+                stageName,
+                scratchRequest,
+                stats,
+                ok,
+                outError);
+            return ok;
+        }
+
+        bool command_ensure_optics_scratch(
+            SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            const ScratchRequestDescriptor& scratchRequest,
+            void* cudaStreamOpaque,
+            std::string& outError) {
+            if (!ensure_active_for_command(transaction, outError, "command_ensure_optics_scratch")) {
+                return false;
+            }
+            if (!validate_optics_scratch_request(
+                    scratchRequest,
+                    "command_ensure_optics_scratch",
+                    outError)) {
+                return false;
+            }
+            return execute_allocation_with_reclaim_retry(
+                transaction,
+                resources,
+                "command_ensure_optics_scratch",
+                [&](std::string& actionError) {
+                    return JuicerCuda::ensure_optics_scratch(
+                        resources,
+                        scratchRequest,
+                        cudaStreamOpaque,
+                        actionError);
+                },
+                outError);
+        }
+
+        bool command_ensure_spatial_dir_scratch(
+            SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            const ScratchRequestDescriptor& scratchRequest,
+            void* cudaStreamOpaque,
+            std::string& outError) {
+            if (!ensure_active_for_command(transaction, outError, "command_ensure_spatial_dir_scratch")) {
+                return false;
+            }
+            if (!validate_spatial_dir_scratch_request(
+                    scratchRequest,
+                    "command_ensure_spatial_dir_scratch",
+                    outError)) {
+                return false;
+            }
+            return execute_allocation_with_reclaim_retry(
+                transaction,
+                resources,
+                "command_ensure_spatial_dir_scratch",
+                [&](std::string& actionError) {
+                    return JuicerCuda::ensure_spatial_dir_scratch(
+                        resources,
+                        scratchRequest,
+                        cudaStreamOpaque,
+                        actionError);
+                },
+                outError);
+        }
+
+        bool error_is_allocation_capacity_exhausted(const std::string& error) noexcept {
+            return is_allocation_capacity_error(error);
+        }
 
     } // namespace ResourceManager
 } // namespace JuicerCuda

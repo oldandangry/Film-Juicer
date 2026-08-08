@@ -128,8 +128,6 @@
     <JuicerDiagnosticsCompiled Condition="'$(JuicerDiagnosticsCompiled)'=='' and '$(JuicerIsReleaseBuild)'=='1'">0</JuicerDiagnosticsCompiled>
     <JuicerSpdDebug Condition="'$(JuicerSpdDebug)'==''">0</JuicerSpdDebug>
     <JuicerSpdDebugMaxSamples Condition="'$(JuicerSpdDebugMaxSamples)'==''">1</JuicerSpdDebugMaxSamples>
-    <JuicerRmTelemetryCountersCompiled Condition="'$(JuicerRmTelemetryCountersCompiled)'=='' and '$(JuicerIsDebugBuild)'=='1'">1</JuicerRmTelemetryCountersCompiled>
-    <JuicerRmTelemetryCountersCompiled Condition="'$(JuicerRmTelemetryCountersCompiled)'=='' and '$(JuicerIsReleaseBuild)'=='1'">0</JuicerRmTelemetryCountersCompiled>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <TargetExt>.ofx</TargetExt>
@@ -145,7 +143,7 @@
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -172,7 +170,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -200,8 +198,8 @@
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'=='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_CUDA=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'!='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'=='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_CUDA=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'!='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -231,8 +229,8 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'=='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_CUDA=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'!='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'=='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_CUDA=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(JuicerEnableCudaBuild)'!='1'">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -286,29 +284,19 @@
     <ClCompile Include="src\ProfileJSONLoader.cpp" />
     <ClCompile Include="src\ProcessRoot.cpp" />
     <ClCompile Include="src\DiffusionHostBehavior.cpp" />
-    <ClCompile Include="src\DiffusionFrameDescriptor.cpp" />
-    <ClCompile Include="src\DiffusionExecutionProfile.cpp" />
+    <ClCompile Include="src\DiffusionExecution.cpp" />
     <ClCompile Include="src\RenderRecipe.cpp" />
-    <ClCompile Include="src\Cuda\JuicerCudaFilmFoundationPayloads.cpp" />
-    <ClCompile Include="src\FilmJuicerEffectsFrameDescriptor.cpp" />
-    <ClCompile Include="src\VisualGrainFrameDescriptor.cpp" />
+    <ClCompile Include="src\Cuda\JuicerCudaFilmPayloads.cpp" />
+    <ClCompile Include="src\FilmEffectsFrameDescriptors.cpp" />
     <ClCompile Include="src\ResourceAssetLibrary.cpp" />
     <ClCompile Include="src\Scanner.cpp" />
-    <ClCompile Include="src\ScannerOptics.cpp" />
-  </ItemGroup>
-  <ItemGroup Condition="'$(JuicerEnableCudaBuild)'=='1'">
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerCommands.inc" />
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerSubmission.inc" />
-    <None Include="src\Cuda\JuicerCudaResourcesServing.inc" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\AkimaInterpolator.h" />
     <ClInclude Include="src\ColorTransforms.h" />
-    <ClInclude Include="src\Couplers.h" />
     <ClInclude Include="src\Cuda\JuicerCudaPayloads.h" />
-    <ClInclude Include="src\Cuda\JuicerCudaDirectFilmPayloads.h" />
-    <ClInclude Include="src\Cuda\JuicerCudaFilmFoundationPayloads.h" />
-    <ClInclude Include="src\FilmJuicerEffectsFrameDescriptor.h" />
+    <ClInclude Include="src\Cuda\JuicerCudaFilmPayloads.h" />
+    <ClInclude Include="src\FilmEffectsFrameDescriptors.h" />
     <ClInclude Include="src\Cuda\JuicerCudaDirProfile.h" />
     <ClInclude Include="src\Cuda\JuicerCudaDeviceHelpers.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaDeviceLedger.h" />
@@ -317,7 +305,6 @@
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceCore.h" />
     <ClInclude Include="src\FilmProcessing.h" />
     <ClInclude Include="src\GaussianSciPy.h" />
-    <ClInclude Include="src\GrainStaticActivityState.h" />
     <ClInclude Include="src\Hash.h" />
     <ClInclude Include="src\Illuminants.h" />
     <ClInclude Include="src\JuicerEffect.h" />
@@ -333,15 +320,11 @@
     <ClInclude Include="src\ProfileCatalog.h" />
     <ClInclude Include="src\ProfileJSONLoader.h" />
     <ClInclude Include="src\ProcessRoot.h" />
-    <ClInclude Include="src\RenderFrameRequest.h" />
     <ClInclude Include="src\DiffusionHostBehavior.h" />
-    <ClInclude Include="src\DiffusionFrameDescriptor.h" />
-    <ClInclude Include="src\DiffusionPlanLayout.h" />
-    <ClInclude Include="src\DiffusionExecutionProfile.h" />
+    <ClInclude Include="src\DiffusionExecution.h" />
     <ClInclude Include="src\Cuda\Diffusion\JuicerCudaDiffusion.h" />
     <ClInclude Include="src\Cuda\Diffusion\JuicerCudaDiffusionResources.h" />
     <ClInclude Include="src\RenderRecipe.h" />
-    <ClInclude Include="src\VisualGrainFrameDescriptor.h" />
     <ClInclude Include="src\ResourceAssetLibrary.h" />
     <ClInclude Include="src\ScanRoute.h" />
     <ClInclude Include="src\Scanner.h" />
@@ -367,7 +350,7 @@
     <Error Condition="'$(JuicerNvccHostCompilerBin)'=='' or !Exists('$(JuicerNvccHostCompilerBin)\cl.exe')" Text="Juicer manual CUDA build requires MSVC cl.exe. Set JuicerNvccHostCompilerBin to the Hostx64\x64 compiler directory." />
     <MakeDir Directories="$(IntDir)manual_cuda" />
     <Message Importance="High" Text="Compiling CUDA with nvcc: %(JuicerManualCudaCompile.Identity)" />
-    <Exec Command="set &quot;CL=&quot; &amp;&amp; set &quot;INCLUDE=$(JuicerNvccHostIncludePath)&quot; &amp;&amp; &quot;$(CudaToolkitDir)bin\nvcc.exe&quot; -c &quot;%(JuicerManualCudaCompile.FullPath)&quot; --std=c++20 --cudart hybrid $(JuicerNvccReleaseDeviceOptions) $(JuicerNvccFastMathOptions) -ccbin &quot;$(JuicerNvccHostCompilerBin)&quot; -I&quot;$(ProjectDir)src&quot; -I&quot;$(ProjectDir)third_party&quot; -I&quot;$(CudaToolkitDir)include&quot; -DWIN32 -DNOMINMAX -D_CRT_SECURE_NO_WARNINGS -DJUICER_ENABLE_CUDA=1 -DJUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled) -DJUICER_SPD_DEBUG=$(JuicerSpdDebug) -DJUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples) -DJUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled) -gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_75,code=compute_75 -Xcompiler &quot;$(JuicerNvccHostCompilerOptions)&quot; -o &quot;%(JuicerManualCudaCompile.ObjectFile)&quot;" />
+    <Exec Command="set &quot;CL=&quot; &amp;&amp; set &quot;INCLUDE=$(JuicerNvccHostIncludePath)&quot; &amp;&amp; &quot;$(CudaToolkitDir)bin\nvcc.exe&quot; -c &quot;%(JuicerManualCudaCompile.FullPath)&quot; --std=c++20 --cudart hybrid $(JuicerNvccReleaseDeviceOptions) $(JuicerNvccFastMathOptions) -ccbin &quot;$(JuicerNvccHostCompilerBin)&quot; -I&quot;$(ProjectDir)src&quot; -I&quot;$(ProjectDir)third_party&quot; -I&quot;$(CudaToolkitDir)include&quot; -DWIN32 -DNOMINMAX -D_CRT_SECURE_NO_WARNINGS -DJUICER_ENABLE_CUDA=1 -DJUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled) -DJUICER_SPD_DEBUG=$(JuicerSpdDebug) -DJUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples) -gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_75,code=compute_75 -Xcompiler &quot;$(JuicerNvccHostCompilerOptions)&quot; -o &quot;%(JuicerManualCudaCompile.ObjectFile)&quot;" />
   </Target>
   <Target Name="JuicerManualCudaLinkInputs"
           Condition="'$(JuicerUseManualNvcc)'=='1'"

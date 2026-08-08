@@ -1,6 +1,5 @@
 #include "JuicerState.h"
 
-#include "Couplers.h"
 #include "Logging.h"
 #include "ProcessRoot.h"
 #include "SpectralProcessing.h"
@@ -437,7 +436,7 @@ namespace {
         encoding.applyCctfEncoding = recipe.scannerOutput.outputCctfEncoding;
         encoding.preserveLinearRange = recipe.scannerOutput.outputLinearPassThrough;
         encoding.inputIsOutputSpace = true;
-        print->payload.scannerColor = ScannerOptics::build_color_runtime(medium, encoding);
+        print->payload.scannerColor = Scanner::build_color_runtime(medium, encoding);
         print->payload.uploadCoreHash = recipe.hash;
         print->payload.scannerHash = Hash::hash_uint64_values(
             {recipe.densityBounds.hash,
@@ -1025,7 +1024,7 @@ namespace {
         target.printMediumRuntime.illuminant = target.printScannerIlluminant;
         target.printMediumRuntime.glare = target.printGlare;
 
-        target.negativeColorRuntime = ScannerOptics::build_color_runtime(
+        target.negativeColorRuntime = Scanner::build_color_runtime(
             target.negativeMediumRuntime,
             scannerEncoding);
         if (target.negativeColorRuntime.hash == 0) {
@@ -1033,7 +1032,7 @@ namespace {
             return false;
         }
         if (printRtOk) {
-            target.printColorRuntime = ScannerOptics::build_color_runtime(
+            target.printColorRuntime = Scanner::build_color_runtime(
                 target.printMediumRuntime,
                 scannerEncoding);
             if (target.printColorRuntime.hash == 0) {
@@ -1075,11 +1074,6 @@ namespace {
 
         target.printMediumRuntime.color = printRtOk ? &target.printColorRuntime : nullptr;
         target.printMediumRuntime.staticKey = target.printStaticKey;
-
-        const float glareCompensationFactor = target.printRT
-                                                  ? target.printRT->profile.glare.printShadowCompensationFactor
-                                                  : target.printGlare.printShadowCompensationFactor;
-        target.printGlareCompensated = (printRtOk && glareCompensationFactor > 0.0f);
         return true;
     }
 
@@ -1520,72 +1514,96 @@ namespace {
         }
     }
 
-    bool publish_direct_recipe_if_selected(const ParamSnapshot& params, RenderRecipe& outRecipe) {
-        if (Spektrafilm::scan_route_is_print(params.scanRoute)) {
-            return true;
-        }
-
-        const JuicerAssets::SelectedProfileResult selected =
-            JuicerProcess::root().assets().selected_profiles_for_route(
-                JuicerAssets::SelectedProfileRequest{
-                    params.filmProfileKey,
-                    params.printProfileKey,
-                    params.scanRoute});
-        Spektrafilm::DirectRecipeBuildInput input{};
+    Spektrafilm::FilmFoundationBuildInput film_foundation_input_from_snapshot(
+        const ParamSnapshot& params,
+        const std::shared_ptr<const Profiles::ValidatedFilmProfile>& filmProfile,
+        Spektrafilm::ScanRoute route,
+        const JuicerAssets::IlluminantFilterCurveSet& illuminants) {
+        Spektrafilm::FilmFoundationBuildInput input{};
         input.filmProfileKey = params.filmProfileKey;
-        input.printProfileKey = params.printProfileKey;
-        input.scanRoute = params.scanRoute;
-        input.filmProfile = selected.filmProfile;
-        input.visualGrain = focused_visual_grain_controls_from_snapshot(params);
+        input.scanRoute = route;
+        input.filmProfile = filmProfile;
+        input.visualGrain =
+            focused_visual_grain_controls_from_snapshot(params);
         input.filmDustAmount = params.grainControls.filmDustAmount;
         input.filmScratchAmount = params.grainControls.filmScratchAmount;
         input.gateDustAmount = params.grainControls.gateDustAmount;
         input.gateScratchAmount = params.grainControls.gateScratchAmount;
         input.gateWeaveAmount = params.gateWeaveAmount;
-        input.dirCouplers = focused_dir_couplers_controls_from_snapshot(params);
-        input.spatialOptics = focused_spatial_optics_controls_from_snapshot(params);
-        input.directRoutePrintProfileExcluded = selected.directRoutePrintProfileExcluded;
-        input.directRouteNeutralCalibrationExcluded =
-            selected.directRouteNeutralCalibrationExcluded;
+        input.dirCouplers =
+            focused_dir_couplers_controls_from_snapshot(params);
+        input.spatialOptics =
+            focused_spatial_optics_controls_from_snapshot(params);
         input.spectralUpsamplingMode = params.spectralUpsamplingMode;
         input.inputColorSpace = params.inputColorSpace;
         input.inputCctfDecoding = params.inputCctfDecoding != 0;
-        input.applyHanatos2025AdaptationWindow = params.hanatos2025AdaptationWindow != 0;
-        input.applyHanatos2025AdaptationSurface = params.hanatos2025AdaptationSurface != 0;
-        input.cameraAutoExposureEnabled = params.cameraAutoExposureEnabled != 0;
+        input.applyHanatos2025AdaptationWindow =
+            params.hanatos2025AdaptationWindow != 0;
+        input.applyHanatos2025AdaptationSurface =
+            params.hanatos2025AdaptationSurface != 0;
+        input.cameraAutoExposureEnabled =
+            params.cameraAutoExposureEnabled != 0;
         input.cameraMeteringMethod = params.cameraMeteringMethod;
         input.manualExposureCompensationEv =
             static_cast<float>(params.cameraExposureCompensationEv);
-        input.filmFormatLongEdgeMm = static_cast<float>(params.cameraFilmFormatLongEdgeMm);
+        input.filmFormatLongEdgeMm =
+            static_cast<float>(params.cameraFilmFormatLongEdgeMm);
         input.cameraFilterOverride = params.cameraFilterOverride;
         input.cameraFilterUV = params.cameraFilterUV;
         input.cameraFilterIR = params.cameraFilterIR;
-        if (selected.filmProfile) {
-            const std::string illuminantKey =
-                IlluminantKeys::normalize(selected.filmProfile->info.referenceIlluminant.value);
-            const JuicerAssets::IlluminantFilterCurveSet& illuminants =
-                JuicerProcess::root().assets().illuminant_filter_curves();
-            const Spectral::Curve* referenceIlluminant = nullptr;
-            if (IlluminantKeys::matches_any(illuminantKey, {"D65"})) {
-                referenceIlluminant = &illuminants.d65;
-            } else if (IlluminantKeys::matches_any(illuminantKey, {"D55"})) {
-                referenceIlluminant = &illuminants.d55;
-            } else if (IlluminantKeys::matches_any(illuminantKey, {"D50"})) {
-                referenceIlluminant = &illuminants.d50;
-            } else if (IlluminantKeys::matches_any(illuminantKey, {"T", "TUNGSTEN"})) {
-                referenceIlluminant = &illuminants.tungsten;
-            } else if (IlluminantKeys::matches_any(illuminantKey, {"TH-KG3", "TUNGSTEN-KG3"})) {
-                referenceIlluminant = &illuminants.tungstenKg3Lens;
-            }
-            if (referenceIlluminant &&
-                referenceIlluminant->linear.size() == input.referenceIlluminant.size()) {
-                std::copy(
-                    referenceIlluminant->linear.begin(),
-                    referenceIlluminant->linear.end(),
-                    input.referenceIlluminant.begin());
-                input.referenceIlluminantValid = true;
-            }
+
+        if (!filmProfile) {
+            return input;
         }
+        const std::string illuminantKey =
+            IlluminantKeys::normalize(
+                filmProfile->info.referenceIlluminant.value);
+        const Spectral::Curve* referenceIlluminant = nullptr;
+        if (IlluminantKeys::matches_any(illuminantKey, {"D65"})) {
+            referenceIlluminant = &illuminants.d65;
+        } else if (IlluminantKeys::matches_any(illuminantKey, {"D55"})) {
+            referenceIlluminant = &illuminants.d55;
+        } else if (IlluminantKeys::matches_any(illuminantKey, {"D50"})) {
+            referenceIlluminant = &illuminants.d50;
+        } else if (IlluminantKeys::matches_any(
+                       illuminantKey,
+                       {"T", "TUNGSTEN"})) {
+            referenceIlluminant = &illuminants.tungsten;
+        } else if (IlluminantKeys::matches_any(
+                       illuminantKey,
+                       {"TH-KG3", "TUNGSTEN-KG3"})) {
+            referenceIlluminant = &illuminants.tungstenKg3Lens;
+        }
+        if (referenceIlluminant &&
+            referenceIlluminant->linear.size() ==
+                input.referenceIlluminant.size()) {
+            std::copy(
+                referenceIlluminant->linear.begin(),
+                referenceIlluminant->linear.end(),
+                input.referenceIlluminant.begin());
+            input.referenceIlluminantValid = true;
+        }
+        return input;
+    }
+
+    bool publish_direct_recipe_if_selected(const ParamSnapshot& params, RenderRecipe& outRecipe) {
+        if (Spektrafilm::scan_route_is_print(params.scanRoute)) {
+            return true;
+        }
+
+        JuicerAssets::Library& assets = JuicerProcess::root().assets();
+        const JuicerAssets::SelectedProfileResult selected =
+            assets.selected_profiles_for_route(
+                JuicerAssets::SelectedProfileRequest{
+                    params.filmProfileKey,
+                    params.printProfileKey,
+                    params.scanRoute});
+        Spektrafilm::DirectRecipeBuildInput input{};
+        input.film = film_foundation_input_from_snapshot(
+            params,
+            selected.filmProfile,
+            params.scanRoute,
+            assets.illuminant_filter_curves());
         input.scannerLutResolution =
             static_cast<std::uint32_t>(std::clamp(params.scannerLutResolution, 17, 128));
         input.outputColorSpace = params.outputColorSpace;
@@ -1653,68 +1671,13 @@ namespace {
         }
 
         Spektrafilm::PrintRecipeBuildInput input{};
-        input.filmProfileKey = params.filmProfileKey;
+        input.film = film_foundation_input_from_snapshot(
+            params,
+            selected.filmProfile,
+            params.scanRoute,
+            assets.illuminant_filter_curves());
         input.printProfileKey = params.printProfileKey;
-        input.scanRoute = params.scanRoute;
-        input.filmProfile = selected.filmProfile;
         input.printProfile = selected.printProfile;
-        input.filmFoundation.filmProfile = selected.filmProfile;
-        input.filmFoundation.visualGrain =
-            focused_visual_grain_controls_from_snapshot(params);
-        input.filmFoundation.filmDustAmount =
-            params.grainControls.filmDustAmount;
-        input.filmFoundation.filmScratchAmount =
-            params.grainControls.filmScratchAmount;
-        input.filmFoundation.gateDustAmount =
-            params.grainControls.gateDustAmount;
-        input.filmFoundation.gateScratchAmount =
-            params.grainControls.gateScratchAmount;
-        input.filmFoundation.gateWeaveAmount = params.gateWeaveAmount;
-        input.filmFoundation.spectralUpsamplingMode = params.spectralUpsamplingMode;
-        input.filmFoundation.inputColorSpace = params.inputColorSpace;
-        input.filmFoundation.inputCctfDecoding = params.inputCctfDecoding != 0;
-        input.filmFoundation.applyHanatos2025AdaptationWindow =
-            params.hanatos2025AdaptationWindow != 0;
-        input.filmFoundation.applyHanatos2025AdaptationSurface =
-            params.hanatos2025AdaptationSurface != 0;
-        input.filmFoundation.cameraAutoExposureEnabled = params.cameraAutoExposureEnabled != 0;
-        input.filmFoundation.cameraMeteringMethod = params.cameraMeteringMethod;
-        input.filmFoundation.manualExposureCompensationEv =
-            static_cast<float>(params.cameraExposureCompensationEv);
-        input.filmFoundation.filmFormatLongEdgeMm =
-            static_cast<float>(params.cameraFilmFormatLongEdgeMm);
-        input.filmFoundation.cameraFilterOverride = params.cameraFilterOverride;
-        input.filmFoundation.cameraFilterUV = params.cameraFilterUV;
-        input.filmFoundation.cameraFilterIR = params.cameraFilterIR;
-        input.filmFoundation.dirCouplers = focused_dir_couplers_controls_from_snapshot(params);
-        input.filmFoundation.spatialOptics =
-            focused_spatial_optics_controls_from_snapshot(params);
-        if (selected.filmProfile) {
-            const std::string illuminantKey =
-                IlluminantKeys::normalize(selected.filmProfile->info.referenceIlluminant.value);
-            const JuicerAssets::IlluminantFilterCurveSet& illuminants =
-                assets.illuminant_filter_curves();
-            const Spectral::Curve* referenceIlluminant = nullptr;
-            if (IlluminantKeys::matches_any(illuminantKey, {"D65"})) {
-                referenceIlluminant = &illuminants.d65;
-            } else if (IlluminantKeys::matches_any(illuminantKey, {"D55"})) {
-                referenceIlluminant = &illuminants.d55;
-            } else if (IlluminantKeys::matches_any(illuminantKey, {"D50"})) {
-                referenceIlluminant = &illuminants.d50;
-            } else if (IlluminantKeys::matches_any(illuminantKey, {"T", "TUNGSTEN"})) {
-                referenceIlluminant = &illuminants.tungsten;
-            } else if (IlluminantKeys::matches_any(illuminantKey, {"TH-KG3", "TUNGSTEN-KG3"})) {
-                referenceIlluminant = &illuminants.tungstenKg3Lens;
-            }
-            if (referenceIlluminant &&
-                referenceIlluminant->linear.size() == input.filmFoundation.referenceIlluminant.size()) {
-                std::copy(
-                    referenceIlluminant->linear.begin(),
-                    referenceIlluminant->linear.end(),
-                    input.filmFoundation.referenceIlluminant.begin());
-                input.filmFoundation.referenceIlluminantValid = true;
-            }
-        }
         input.dichroic.set = dichroic_filter_set_from_choice(params.enlDichroicSet);
         input.dichroic.setKey = dichroic_filter_set_key(input.dichroic.set);
         if (input.dichroic.set != Spektrafilm::DichroicFilterSet::Custom) {
@@ -1768,8 +1731,6 @@ namespace {
                     Spektrafilm::NeutralCalibrationStatus::MissingEntry;
                 break;
         }
-        input.neutralCalibrationResourceHash = neutral.resourceHash;
-        input.neutralCalibrationHash = neutral.hash;
         input.uiYmcCc = {
             static_cast<float>(params.printUiYmcCc[0]),
             static_cast<float>(params.printUiYmcCc[1]),
@@ -1778,8 +1739,6 @@ namespace {
         input.preflashYFilterCc = static_cast<float>(params.preflashYFilterCc);
         input.printExposure = static_cast<float>(params.printExposure);
         input.preflashExposure = static_cast<float>(params.printPreflashExposure);
-        input.cameraExposureCompensationEv =
-            static_cast<float>(params.cameraExposureCompensationEv);
         input.normalizePrintExposure = params.normalizePrintExposure != 0;
         input.printExposureCompensation = params.printExposureCompensation != 0;
         input.scannerLutResolution =
@@ -1840,16 +1799,6 @@ uint64_t hash_params_core(const ParamSnapshot& p) {
     mix_diffusion_authored_hash_fields(h, p, hash_mix);
     mix_focused_grain_hash_fields(h, p, hash_mix);
     mix_film_juicer_effects_hash_fields(h, p, hash_mix);
-    return h;
-}
-
-static uint64_t hash_params_upload_core(const ParamSnapshot& p) {
-    uint64_t h = 0;
-    mix_profile_selection_hash_fields(h, p, hash_mix);
-    mix_glare_print_hash_fields(h, p, hash_mix);
-    mix_hanatos_adaptation_hash_fields(h, p, hash_mix);
-    mix_camera_filter_hash(h, p, hash_mix);
-    mix_focused_grain_hash_fields(h, p, hash_mix);
     return h;
 }
 
@@ -2840,7 +2789,6 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     target->negativeScannerValid = false;
     target->printScannerValid = false;
-    target->printGlareCompensated = false;
 
     target->negParams = negParams;
     target->grain = base.grain;
@@ -3246,16 +3194,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->sensB = std::move(sensB);
     target->sensG = std::move(sensG);
     target->sensR = std::move(sensR);
-    // negSensB/G/R removed: profiles are pre-balanced, no "before balance" state needed.
-    // Per agx-emulsion parity, sensitivities are used as-is from profiles.
-    target->negSensB.linear.clear();
-    target->negSensG.linear.clear();
-    target->negSensR.linear.clear();
     target->baseDensityMin = std::move(baseDensityMin);
     target->baseDensityMid = std::move(baseDensityMid);
     target->hasBaseline = hasBaseline;
     target->densityBaselineMixReference = densityBaselineMixReference;
-    target->printBaselineMixReference = printBaselineMixReference;
 
     // Copy per-channel gamma factors for density curve interpolation (agx-emulsion parity)
     target->gammaFactorB = base.gammaFactor[0];
@@ -3346,15 +3288,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     target->negativeScannerValid = true;
     target->printScannerValid = printRtOk;
-    target->printGlareCompensated = (printRtOk && printProfile.glare.printShadowCompensationFactor > 0.0f);
     if (!rebuild_working_state_scanner_output_runtime(P, *target)) {
         return;
     }
 
     target->fullHash = hash_params(P);
-    target->uploadCoreHash = hash_params_upload_core(P);
     target->coreHash = coreShareHash;
-    target->coreShareHash = coreShareHash;
     target->dirHash = hash_params_dir(P);
     target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
     trace_print_working_state_commit();

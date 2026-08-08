@@ -37,8 +37,7 @@ namespace Spektrafilm {
         std::array<double, 3> groupWeightsCoreHaloBloom{};
         std::array<double, 3> groupCenterLambdaUm{};
         double effectiveWarmth = 0.0;
-        double radiusScale = 0.0;
-        double samplingScale = 0.0;
+        double spatialScale = 0.0;
         std::uint64_t hash = 0;
     };
 
@@ -47,7 +46,7 @@ namespace Spektrafilm {
         std::array<double, 3> groupWeightsCoreHaloBloom{};
         std::array<double, 3> groupCenterLambdaUm{};
         double effectiveWarmth = 0.0;
-        double samplingScale = 0.0;
+        double spatialScale = 0.0;
         double pixelSizeUm = 0.0;
         int radiusPixels = 0;
         std::uint64_t hash = 0;

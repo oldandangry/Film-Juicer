@@ -2947,9 +2947,6 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
         selectedProfiles.filmProfile ? selectedProfiles.filmProfile->assetVersionToken : 0;
     P.printProfileAssetVersionToken =
         selectedProfiles.printProfile ? selectedProfiles.printProfile->assetVersionToken : 0;
-    P.directRoutePrintProfileExcluded = selectedProfiles.directRoutePrintProfileExcluded;
-    P.directRouteNeutralCalibrationExcluded =
-        selectedProfiles.directRouteNeutralCalibrationExcluded;
 
     GlareCompensationParams compensationParams{};
     compensationParams.factor = _pGlareCompRemovalFactor;

@@ -16,15 +16,6 @@ namespace JuicerCuda {
     namespace ResourceManager {
         namespace {
 
-            template <typename TraceAction>
-            void run_registry_trace_noexcept(TraceAction&& action) noexcept {
-                try {
-                    action();
-                } catch (...) {
-                    JuicerLogging::discard_current_exception();
-                }
-            }
-
             struct RegistryEntry {
                 std::uint64_t activeSubmissionCount = 0;
                 std::uint64_t contextEpoch = 1;
@@ -50,12 +41,6 @@ namespace JuicerCuda {
                 return epoch;
             }
 
-            void publish_registry_live_count(std::size_t count) noexcept {
-                global_state().registryLiveManagers.store(
-                    static_cast<std::uint64_t>(count),
-                    std::memory_order_relaxed);
-            }
-
 #if JUICER_DIAGNOSTICS_COMPILED
             const char* trace_or_unknown(const char* value) noexcept {
                 if (value && value[0] != '\0') {
@@ -64,94 +49,75 @@ namespace JuicerCuda {
                 return "unknown";
             }
 
-            std::string trace_device_context_fields(const DeviceContextKey* key) {
-                const int deviceId = key ? key->deviceId : -1;
-                const std::uintptr_t contextBits = key
-                                                       ? reinterpret_cast<std::uintptr_t>(key->contextOpaque)
-                                                       : 0;
-                return std::string(" device_id=") + std::to_string(deviceId) +
+            std::string trace_device_context_fields(const DeviceContextKey& key) {
+                const std::uintptr_t contextBits =
+                    reinterpret_cast<std::uintptr_t>(key.contextOpaque);
+                return std::string(" device_id=") + std::to_string(key.deviceId) +
                        " context=" + std::to_string(contextBits);
             }
 #endif
 
-            struct RegistryEventTrace {
-                const DeviceContextKey* key = nullptr;
-                const RegistryEntry* entry = nullptr;
+            struct RegistryTrace {
+                DeviceContextKey key{};
+                RegistryEntry entry{};
                 const char* eventName = nullptr;
                 const char* reason = nullptr;
                 std::uint64_t liveManagers = 0;
+                bool hasEntry = false;
                 bool accepted = false;
             };
 
-            void trace_registry_event(const RegistryEventTrace& trace) {
-#if JUICER_DIAGNOSTICS_COMPILED
-                if (!JTRACE_ENABLED(2)) {
-                    return;
-                }
-                const std::uint64_t contextEpoch = trace.entry ? trace.entry->contextEpoch : 0;
-                const std::uint64_t activeSubmissions = trace.entry ? trace.entry->activeSubmissionCount : 0;
-                const bool retiring = trace.entry && trace.entry->retiring;
-                const std::string msg =
-                    std::string("event=") + trace_or_unknown(trace.eventName) +
-                    " accepted=" + std::to_string(trace.accepted ? 1 : 0) +
-                    " reason=" + trace_or_unknown(trace.reason) +
-                    trace_device_context_fields(trace.key) +
-                    " context_epoch=" + std::to_string(contextEpoch) +
-                    " active_submissions=" + std::to_string(activeSubmissions) +
-                    " retiring=" + std::to_string(retiring ? 1 : 0) +
-                    " live_managers=" + std::to_string(trace.liveManagers);
-                JTRACE_LEVEL(2, "MSREG", msg);
-#else
-                (void)trace;
-#endif
-            }
-
-            void trace_registry_event_current(
-                const DeviceContextKey* key,
+            RegistryTrace snapshot_registry_trace(
+                const RegistryState& state,
+                const DeviceContextKey& key,
                 const RegistryEntry* entry,
                 const char* eventName,
                 bool accepted,
-                const char* reason) noexcept {
-                const std::uint64_t liveManagers =
-                    global_state().registryLiveManagers.load(std::memory_order_relaxed);
-                run_registry_trace_noexcept([&]() {
-                    trace_registry_event(
-                        RegistryEventTrace{
-                            .key = key,
-                            .entry = entry,
-                            .eventName = eventName,
-                            .reason = reason,
-                            .liveManagers = liveManagers,
-                            .accepted = accepted});
-                });
-            }
-
-            void trace_missing_entry(const DeviceContextKey& key, const char* eventName) noexcept {
-                trace_registry_event_current(
-                    &key,
-                    nullptr,
-                    eventName,
-                    false,
-                    "missing_registry_entry");
-            }
-
-            bool erase_registry_entry_locked(
-                RegistryState& state,
-                const DeviceContextKey& key) noexcept {
-                const auto it = state.byDeviceContext.find(key);
-                if (it == state.byDeviceContext.end()) {
-                    return false;
+                const char* reason,
+                bool traceEnabled) noexcept {
+                if (!traceEnabled) {
+                    return RegistryTrace{};
                 }
-                const RegistryEntry removed = it->second;
-                state.byDeviceContext.erase(it);
-                publish_registry_live_count(state.byDeviceContext.size());
-                trace_registry_event_current(
-                    &key,
-                    &removed,
-                    "retire",
-                    true,
-                    "explicit_owner_retire");
-                return true;
+                RegistryTrace trace{
+                    .key = key,
+                    .eventName = eventName,
+                    .reason = reason,
+                    .liveManagers = static_cast<std::uint64_t>(state.byDeviceContext.size()),
+                    .hasEntry = entry != nullptr,
+                    .accepted = accepted};
+                if (entry) {
+                    trace.entry = *entry;
+                }
+                return trace;
+            }
+
+            void trace_registry_event(const RegistryTrace& trace) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
+                if (!trace.eventName || !JTRACE_ENABLED(2)) {
+                    return;
+                }
+                try {
+                    const std::uint64_t contextEpoch =
+                        trace.hasEntry ? trace.entry.contextEpoch : 0;
+                    const std::uint64_t activeSubmissions =
+                        trace.hasEntry ? trace.entry.activeSubmissionCount : 0;
+                    const bool retiring = trace.hasEntry && trace.entry.retiring;
+                    const std::string msg =
+                        std::string("event=") + trace_or_unknown(trace.eventName) +
+                        " accepted=" + std::to_string(trace.accepted ? 1 : 0) +
+                        " reason=" + trace_or_unknown(trace.reason) +
+                        trace_device_context_fields(trace.key) +
+                        " context_epoch=" + std::to_string(contextEpoch) +
+                        " active_submissions=" + std::to_string(activeSubmissions) +
+                        " retiring=" + std::to_string(retiring ? 1 : 0) +
+                        " live_managers=" + std::to_string(trace.liveManagers);
+                    JTRACE_LEVEL(2, "MSREG", msg);
+                } catch (...) {
+                    JuicerLogging::discard_current_exception();
+                }
+#else
+                (void)trace;
+#endif
             }
 
         } // namespace
@@ -161,43 +127,53 @@ namespace JuicerCuda {
             RegistryContextSnapshot& outSnapshot) noexcept {
             outSnapshot = RegistryContextSnapshot{};
             try {
+                const bool traceEnabled = JTRACE_ENABLED(2);
+                RegistryTrace trace{};
+                bool accepted = false;
                 RegistryState& state = registry_state();
-                std::lock_guard<std::mutex> lock(state.mutex);
-                auto [it, inserted] = state.byDeviceContext.try_emplace(key);
-                RegistryEntry& entry = it->second;
-                if (inserted) {
-                    entry.contextEpoch = next_nonzero_epoch();
-                    publish_registry_live_count(state.byDeviceContext.size());
-                    trace_registry_event_current(
-                        &key,
-                        &entry,
-                        "create",
-                        true,
-                        "create_for_submission");
-                }
+                {
+                    std::lock_guard<std::mutex> lock(state.mutex);
+                    auto [it, inserted] = state.byDeviceContext.try_emplace(key);
+                    RegistryEntry& entry = it->second;
+                    if (inserted) {
+                        entry.contextEpoch = next_nonzero_epoch();
+                        trace = snapshot_registry_trace(
+                            state,
+                            key,
+                            &entry,
+                            "create",
+                            true,
+                            "create_for_submission",
+                            traceEnabled);
+                    }
 
-                if (entry.retiring) {
-                    trace_registry_event_current(
-                        &key,
-                        &entry,
-                        "submission_begin",
-                        false,
-                        "context_retiring");
-                    return false;
+                    if (entry.retiring) {
+                        trace = snapshot_registry_trace(
+                            state,
+                            key,
+                            &entry,
+                            "submission_begin",
+                            false,
+                            "context_retiring",
+                            traceEnabled);
+                    } else if (entry.activeSubmissionCount ==
+                               std::numeric_limits<std::uint64_t>::max()) {
+                        trace = snapshot_registry_trace(
+                            state,
+                            key,
+                            &entry,
+                            "submission_begin",
+                            false,
+                            "active_submission_count_overflow",
+                            traceEnabled);
+                    } else {
+                        ++entry.activeSubmissionCount;
+                        outSnapshot.contextEpoch = entry.contextEpoch;
+                        accepted = true;
+                    }
                 }
-                if (entry.activeSubmissionCount == std::numeric_limits<std::uint64_t>::max()) {
-                    trace_registry_event_current(
-                        &key,
-                        &entry,
-                        "submission_begin",
-                        false,
-                        "active_submission_count_overflow");
-                    return false;
-                }
-
-                ++entry.activeSubmissionCount;
-                outSnapshot.contextEpoch = entry.contextEpoch;
-                return true;
+                trace_registry_event(trace);
+                return accepted;
             } catch (...) {
                 JuicerLogging::discard_current_exception();
                 outSnapshot = RegistryContextSnapshot{};
@@ -217,25 +193,38 @@ namespace JuicerCuda {
 
         bool registry_note_submission_end(const DeviceContextKey& key) noexcept {
             try {
+                const bool traceEnabled = JTRACE_ENABLED(2);
+                RegistryTrace trace{};
+                bool accepted = false;
                 RegistryState& state = registry_state();
-                std::lock_guard<std::mutex> lock(state.mutex);
-                const auto it = state.byDeviceContext.find(key);
-                if (it == state.byDeviceContext.end()) {
-                    trace_missing_entry(key, "submission_end");
-                    return false;
+                {
+                    std::lock_guard<std::mutex> lock(state.mutex);
+                    const auto it = state.byDeviceContext.find(key);
+                    if (it == state.byDeviceContext.end()) {
+                        trace = snapshot_registry_trace(
+                            state,
+                            key,
+                            nullptr,
+                            "submission_end",
+                            false,
+                            "missing_registry_entry",
+                            traceEnabled);
+                    } else if (it->second.activeSubmissionCount == 0) {
+                        trace = snapshot_registry_trace(
+                            state,
+                            key,
+                            &it->second,
+                            "submission_end",
+                            false,
+                            "active_submission_underflow",
+                            traceEnabled);
+                    } else {
+                        --it->second.activeSubmissionCount;
+                        accepted = true;
+                    }
                 }
-                RegistryEntry& entry = it->second;
-                if (entry.activeSubmissionCount == 0) {
-                    trace_registry_event_current(
-                        &key,
-                        &entry,
-                        "submission_end",
-                        false,
-                        "active_submission_underflow");
-                    return false;
-                }
-                --entry.activeSubmissionCount;
-                return true;
+                trace_registry_event(trace);
+                return accepted;
             } catch (...) {
                 JuicerLogging::discard_current_exception();
                 return false;
@@ -247,33 +236,43 @@ namespace JuicerCuda {
             RegistryContextSnapshot& outSnapshot) noexcept {
             outSnapshot = RegistryContextSnapshot{};
             try {
+                const bool traceEnabled = JTRACE_ENABLED(2);
+                RegistryTrace trace{};
+                bool accepted = false;
                 RegistryState& state = registry_state();
-                std::lock_guard<std::mutex> lock(state.mutex);
-                const auto it = state.byDeviceContext.find(key);
-                if (it == state.byDeviceContext.end()) {
-                    return false;
+                {
+                    std::lock_guard<std::mutex> lock(state.mutex);
+                    const auto it = state.byDeviceContext.find(key);
+                    if (it != state.byDeviceContext.end()) {
+                        RegistryEntry& entry = it->second;
+                        if (entry.activeSubmissionCount != 0) {
+                            trace = snapshot_registry_trace(
+                                state,
+                                key,
+                                &entry,
+                                "owner_retire_begin",
+                                false,
+                                "active_submissions",
+                                traceEnabled);
+                        } else {
+                            if (!entry.retiring) {
+                                entry.retiring = true;
+                                trace = snapshot_registry_trace(
+                                    state,
+                                    key,
+                                    &entry,
+                                    "owner_retire_begin",
+                                    true,
+                                    "context_retiring",
+                                    traceEnabled);
+                            }
+                            outSnapshot.contextEpoch = entry.contextEpoch;
+                            accepted = true;
+                        }
+                    }
                 }
-                RegistryEntry& entry = it->second;
-                if (entry.activeSubmissionCount != 0) {
-                    trace_registry_event_current(
-                        &key,
-                        &entry,
-                        "owner_retire_begin",
-                        false,
-                        "active_submissions");
-                    return false;
-                }
-                if (!entry.retiring) {
-                    entry.retiring = true;
-                    trace_registry_event_current(
-                        &key,
-                        &entry,
-                        "owner_retire_begin",
-                        true,
-                        "context_retiring");
-                }
-                outSnapshot.contextEpoch = entry.contextEpoch;
-                return true;
+                trace_registry_event(trace);
+                return accepted;
             } catch (...) {
                 JuicerLogging::discard_current_exception();
                 outSnapshot = RegistryContextSnapshot{};
@@ -283,32 +282,49 @@ namespace JuicerCuda {
 
         bool registry_retire(const DeviceContextKey& key) noexcept {
             try {
+                const bool traceEnabled = JTRACE_ENABLED(2);
+                RegistryTrace trace{};
+                bool accepted = false;
                 RegistryState& state = registry_state();
-                std::lock_guard<std::mutex> lock(state.mutex);
-                const auto it = state.byDeviceContext.find(key);
-                if (it == state.byDeviceContext.end()) {
-                    return true;
+                {
+                    std::lock_guard<std::mutex> lock(state.mutex);
+                    const auto it = state.byDeviceContext.find(key);
+                    if (it == state.byDeviceContext.end()) {
+                        accepted = true;
+                    } else if (it->second.activeSubmissionCount != 0) {
+                        trace = snapshot_registry_trace(
+                            state,
+                            key,
+                            &it->second,
+                            "retire",
+                            false,
+                            "active_submissions",
+                            traceEnabled);
+                    } else if (!it->second.retiring) {
+                        trace = snapshot_registry_trace(
+                            state,
+                            key,
+                            &it->second,
+                            "retire",
+                            false,
+                            "owner_retire_not_started",
+                            traceEnabled);
+                    } else {
+                        const RegistryEntry removedEntry = it->second;
+                        state.byDeviceContext.erase(it);
+                        trace = snapshot_registry_trace(
+                            state,
+                            key,
+                            &removedEntry,
+                            "retire",
+                            true,
+                            "explicit_owner_retire",
+                            traceEnabled);
+                        accepted = true;
+                    }
                 }
-                RegistryEntry& entry = it->second;
-                if (entry.activeSubmissionCount != 0) {
-                    trace_registry_event_current(
-                        &key,
-                        &entry,
-                        "retire",
-                        false,
-                        "active_submissions");
-                    return false;
-                }
-                if (!entry.retiring) {
-                    trace_registry_event_current(
-                        &key,
-                        &entry,
-                        "retire",
-                        false,
-                        "owner_retire_not_started");
-                    return false;
-                }
-                return erase_registry_entry_locked(state, key);
+                trace_registry_event(trace);
+                return accepted;
             } catch (...) {
                 JuicerLogging::discard_current_exception();
                 return false;

@@ -131,9 +131,6 @@ namespace JuicerAssets {
     struct NeutralPrintCalibrationResult {
         NeutralPrintCalibrationStatus status = NeutralPrintCalibrationStatus::MissingEntry;
         std::array<float, 3> cmyCc{};
-        std::string resourcePath = "Resources/filters/neutral_print_filters.json";
-        std::uint64_t resourceHash = 0;
-        std::uint64_t hash = 0;
         std::string diagnostic;
     };
 

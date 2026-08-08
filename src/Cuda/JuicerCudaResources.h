@@ -39,6 +39,7 @@ namespace Print {
 } // namespace Print
 namespace JuicerAssets {
     class Library;
+    struct StaticNoisePayloadSet;
 } // namespace JuicerAssets
 
 struct JuicerCudaAutoExposurePartial {
@@ -163,8 +164,6 @@ namespace JuicerCuda {
         const float* preflashIlluminant = nullptr;
         int spectralSampleCount = 0;
         float preflashRawCmy[3] = {0.0f, 0.0f, 0.0f};
-        float factorMidgray = 1.0f;
-        float factorMidgrayComp = 1.0f;
         float normalizer = 1.0f;
         std::uint64_t filmDensityTablesHash = 0;
         std::uint64_t profileTablesHash = 0;
@@ -181,16 +180,9 @@ namespace JuicerCuda {
         PrintExposePayload expose{};
         PrintDevelopPayload develop{};
         float printRawScale = 1.0f;
-        Spektrafilm::PrintExposureScalingOrder scalingOrder =
-            Spektrafilm::PrintExposureScalingOrder::NormalizeBaseThenAddPreflashThenScaleExposureAndCorrection;
-        std::uint64_t preparationHash = 0;
     };
 
     struct AutoExposurePreviewDescriptor {
-        enum class Sampling : std::uint8_t {
-            NearestNeighbor = 0
-        };
-
         static constexpr int kMaxLongEdge = 256;
 
         int sourceX1 = 0;
@@ -204,7 +196,6 @@ namespace JuicerCuda {
         int previewWidth = 0;
         int previewHeight = 0;
         Spektrafilm::AutoExposureMethod method = Spektrafilm::AutoExposureMethod::CenterWeighted;
-        Sampling sampling = Sampling::NearestNeighbor;
         std::uint64_t hash = 0;
     };
 
@@ -378,13 +369,13 @@ namespace JuicerCuda {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         Diffusion::DiffusionContextResources diffusion;
 #endif
-        std::uint64_t directFinalSensitivityHash = 0;
-        std::uint64_t directDensityCurvesHash = 0;
-        std::uint64_t directDensityLayersHash = 0;
-        std::uint64_t directDirHash = 0;
-        std::uint64_t directDensityBoundsHash = 0;
-        std::uint64_t directScannerDescriptorHash = 0;
-        std::uint64_t directUploadCounter = 0;
+        std::uint64_t filmFinalSensitivityHash = 0;
+        std::uint64_t filmDensityCurvesHash = 0;
+        std::uint64_t filmDensityLayersHash = 0;
+        std::uint64_t filmDirHash = 0;
+        std::uint64_t routeDensityBoundsHash = 0;
+        std::uint64_t routeScannerDescriptorHash = 0;
+        std::uint64_t focusedPreparationCounter = 0;
         std::size_t retireBytes = 0;
         std::size_t retireScratchBytes = 0;
 
@@ -428,7 +419,8 @@ namespace JuicerCuda {
         std::vector<PendingFrameUseEvent> pendingFrameUseEvents;
         // Deferred frees to avoid blocking synchronize/free in hot paths.
         std::vector<RetireEntry> retireQueue;
-        std::vector<void*> retireEventPoolOpaque; // cudaEvent_t pool (cudaEventDisableTiming)
+        // Completed untimed cudaEvent_t handles available for later completion fences.
+        std::vector<void*> completionEventPoolOpaque;
         // Submitted readbacks retained after a prepared frame releases its exclusive scan-error
         // stage. These entries are not reusable workspace.
         std::vector<PendingScanErrorReadback> pendingScanErrorReadbacks;
@@ -513,7 +505,7 @@ namespace JuicerCuda {
         std::array<float, 81> printIllumFilteredHost{};
         std::array<float, 81> printPreflashIllumFilteredHost{};
 
-        Spektrafilm::RgbToRawMethod directSelectedMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
+        Spektrafilm::RgbToRawMethod filmRgbToRawMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
         bool printPreflashValid = false;
         bool printIllumFilteredHostValid = false;
         bool printPreflashIllumFilteredHostValid = false;
@@ -545,11 +537,12 @@ namespace JuicerCuda {
     // Narrow context-static serving helper used by the process-owned Root grain slots.
     bool ensure_grain_static_assets_uploaded(
         Resources& resources,
+        const JuicerAssets::StaticNoisePayloadSet& payloads,
         std::uint64_t expectedAssetVersion,
         void* cudaStreamOpaque,
         std::string& outError);
 
-    struct DirectResourcePreparation {
+    struct FocusedRouteResourcePreparation {
         const RenderRecipe* recipe = nullptr;
         const Spectral::SpectralTables* exposureTables = nullptr;
         const float* spdSInv = nullptr;
@@ -559,19 +552,11 @@ namespace JuicerCuda {
         const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
     };
 
-    using PrintRouteResourcePreparation = DirectResourcePreparation;
-
-    // Descriptor-driven direct-route preparation. This is called only behind Root's prepared
-    // frame boundary and intentionally has no WorkingState or static-noise input.
-    bool prepare_direct_resources(
+    // Descriptor-driven film and selected scan-route preparation. This is called only behind
+    // Root's prepared-frame boundary and intentionally has no WorkingState or static-noise input.
+    bool prepare_focused_route_resources(
         Resources& resources,
-        const DirectResourcePreparation& request,
-        void* cudaStreamOpaque,
-        std::string& outError);
-
-    bool prepare_print_route_resources(
-        Resources& resources,
-        const PrintRouteResourcePreparation& request,
+        const FocusedRouteResourcePreparation& request,
         void* cudaStreamOpaque,
         std::string& outError);
 
@@ -685,9 +670,10 @@ namespace JuicerCuda {
         bool& outDetected,
         std::string& outError);
 
-    bool retain_frame_use_event(
+    bool record_frame_use_event(
         Resources& resources,
-        void*& eventOpaque,
+        void* cudaStreamOpaque,
+        const char* label,
         std::string& outError);
 
     // Purges process-shared Gaussian kernels for one device/context key.
@@ -701,10 +687,15 @@ namespace JuicerCuda {
         void* contextOpaque,
         std::uint64_t contextEpoch) noexcept;
 
-    // Purges process-shared pinned upload staging blocks for one device/context key.
-    void purge_pinned_upload_staging_for_context(int deviceId, void* contextOpaque) noexcept;
+    enum class PinnedUploadPurgeDisposition : std::uint8_t {
+        NormalRetire = 0,
+        ProvenContextLoss
+    };
 
-    // Purges process-shared host asset caches once no live CUDA managers remain.
-    void purge_host_asset_caches_if_registry_idle(const char* stage) noexcept;
+    // Purges process-shared pinned upload staging blocks for one device/context key.
+    void purge_pinned_upload_staging_for_context(
+        int deviceId,
+        void* contextOpaque,
+        PinnedUploadPurgeDisposition disposition) noexcept;
 
 } // namespace JuicerCuda

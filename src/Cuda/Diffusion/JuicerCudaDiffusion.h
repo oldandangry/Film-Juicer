@@ -6,9 +6,8 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "DiffusionExecutionProfile.h"
+#include "DiffusionExecution.h"
 #include "DiffusionHostBehavior.h"
-#include "DiffusionPlanLayout.h"
 
 namespace JuicerCuda::Diffusion {
 

@@ -18,7 +18,6 @@
 struct DensityBoundsRecipe;
 struct ProfileRoute;
 struct ScannerOutputRecipe;
-struct PrintMediumHandoffRecipe;
 struct RenderRecipe;
 
 namespace Scanner {
@@ -68,19 +67,6 @@ namespace Scanner {
         std::uint64_t hash = 0;
     };
 
-    struct ScannerRuntimeKey {
-        std::uint64_t settingsHash = 0;
-        std::uint32_t frameBoundsVersion = 0;
-        std::uint64_t hash = 0;
-    };
-
-    struct ScannerKey {
-        ScannerStaticKey staticKey;
-        ScannerRuntimeEffectsKey effectsKey;
-        ScannerRuntimeKey runtimeKey;
-        std::uint64_t hash = 0;
-    };
-
     struct ColorRuntime {
         float cat02[9]{0.0f};
         float xyzToRgb[9]{0.0f};
@@ -105,42 +91,15 @@ namespace Scanner {
         Print
     };
 
-    enum class ScannerXyzNormalization : std::uint8_t {
-        ScannerIlluminantY
-    };
-
-    enum class ScannerLutInterpolation : std::uint8_t {
-        PchipClamped
-    };
-
-    enum class ScannerLutAxisOrder : std::uint8_t {
-        Cmy
-    };
-
-    enum class ScannerLutStoredValueDomain : std::uint8_t {
-        LogXyz
-    };
-
-    enum class ScannerLutLogBase : std::uint8_t {
-        Base10
-    };
-
-    enum class ScannerLutNumericFormat : std::uint8_t {
-        Float64
-    };
-
-    enum class ScannerLutOutputTripletOrder : std::uint8_t {
-        Xyz
-    };
+    inline constexpr std::uint32_t kScannerSpectralLutSchemaVersion = 2;
 
     // ScannerSpectralLutDescriptor family contract:
     // Producer: focused direct or print-medium builder from selected recipe payloads.
     // Consumer: focused scanner LUT preparation behind PreparedCudaFrame.
     // Identity: route, medium/polarity, DensityBoundsRecipe hash, selected channel/base density,
-    // viewing illuminant, observer/Y normalization, LUT resolution, interpolation, axes, stored
-    // value domain/log base/format/output order, and schema version. Scanner correction, output
-    // color/CCTF, glare, blur, unsharp, frame bounds, auto exposure, and downstream scanner effects
-    // are excluded.
+    // viewing illuminant, observer, LUT resolution, and the fixed LUT representation schema.
+    // Scanner correction, output color/CCTF, glare, blur, unsharp, frame bounds, auto exposure,
+    // and downstream scanner effects are excluded.
     // Lifetime: plain host descriptor; no upload/admission/allocation occurs in Phase 3A.
     struct ScannerSpectralLutDescriptor {
         Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
@@ -151,16 +110,7 @@ namespace Scanner {
         std::uint64_t baseDensityHash = 0;
         std::uint64_t scanIlluminantHash = 0;
         std::uint64_t observerHash = 0;
-        ScannerXyzNormalization xyzNormalization = ScannerXyzNormalization::ScannerIlluminantY;
         std::uint32_t lutResolution = 17;
-        ScannerLutInterpolation interpolation = ScannerLutInterpolation::PchipClamped;
-        ScannerLutAxisOrder semanticInputAxisOrder = ScannerLutAxisOrder::Cmy;
-        ScannerLutAxisOrder storageInputAxisOrder = ScannerLutAxisOrder::Cmy;
-        ScannerLutStoredValueDomain storedValueDomain = ScannerLutStoredValueDomain::LogXyz;
-        ScannerLutLogBase logBase = ScannerLutLogBase::Base10;
-        ScannerLutNumericFormat numericFormat = ScannerLutNumericFormat::Float64;
-        ScannerLutOutputTripletOrder storedOutputTripletOrder = ScannerLutOutputTripletOrder::Xyz;
-        std::uint32_t schemaVersion = 2;
         std::uint64_t hash = 0;
     };
 
@@ -175,7 +125,6 @@ namespace Scanner {
         const ::ProfileRoute* profileRoute = nullptr;
         const ::DensityBoundsRecipe* densityBounds = nullptr;
         const ::ScannerOutputRecipe* scannerOutput = nullptr;
-        const ::PrintMediumHandoffRecipe* mediumHandoff = nullptr;
         std::string_view observerIdentity = "CIE1931_2deg_380_780_5nm";
     };
 
@@ -259,6 +208,10 @@ namespace Scanner {
     // Canonical normalization for LUT coordinates (mirrors agx _normalize_* semantics).
     void normalize_density(const ScannerMediumRuntime& medium, const float D_cmy[3], double D_norm[3]);
 
+    ColorRuntime build_color_runtime(
+        const ScannerMediumRuntime& medium,
+        const OutputEncoding::Params& outputEncoding);
+
     inline std::uint64_t hash_glare(const Profiles::ProfileGlare& glare) {
         const float floats[] = {
             glare.percent,
@@ -297,19 +250,6 @@ namespace Scanner {
 
     inline void finalize_runtime_effects_key(ScannerRuntimeEffectsKey& key) {
         key.hash = Hash::hash_uint64_values({key.glareRuntimeHash, key.colorRuntimeHash});
-    }
-
-    inline void finalize_runtime_key(ScannerRuntimeKey& key) {
-        key.hash = Hash::hash_uint64_values({key.settingsHash,
-                                             static_cast<std::uint64_t>(key.frameBoundsVersion)});
-    }
-
-    inline void finalize_scanner_key(ScannerKey& key) {
-        finalize_static_key(key.staticKey);
-        finalize_runtime_effects_key(key.effectsKey);
-        finalize_runtime_key(key.runtimeKey);
-        key.hash =
-            Hash::hash_uint64_values({key.staticKey.hash, key.effectsKey.hash, key.runtimeKey.hash});
     }
 
 } // namespace Scanner

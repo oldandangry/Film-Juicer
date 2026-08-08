@@ -331,21 +331,6 @@ namespace JuicerCuda {
         int* scanErrorFlag = nullptr;
     };
 
-    struct ScannerOpticsPayload {
-        const float* JUICER_RESTRICT lensBlurKernel = nullptr;
-        int lensBlurRadius = 0;
-        const float* JUICER_RESTRICT unsharpKernel = nullptr;
-        int unsharpRadius = 0;
-        float unsharpAmount = 0.0f;
-        int glareOriginX = 0;
-        int glareOriginY = 0;
-        std::uint64_t glareSeed = 0;
-        float glarePercent = 0.0f;
-        float glareRoughness = 0.0f;
-        const float* JUICER_RESTRICT glareKernel = nullptr;
-        int glareRadius = 0;
-    };
-
     struct DirectPipelineRunParams {
         const void* src = nullptr;
         std::size_t srcRowBytes = 0;
@@ -393,7 +378,6 @@ namespace JuicerCuda {
         PrintExposePayload printExpose{};
         PrintDevelopPayload printDevelop{};
         ScanStagePayload scanStage{};
-        ScannerOpticsPayload scannerOptics{};
 
         FilmRawPayload filmRaw{};
     };

@@ -1,22 +1,22 @@
 // JuicerProcessing.h
 #pragma once
 
-#include "ofxsProcessing.h"
-#include "ofxsImageEffect.h"
-#include "SpectralData.h"
-#include "PipelineTypes.h"
-#include "Print.h"
-#include "Scanner.h"
-#include "Couplers.h"
-#include "OutputColor.h"
-#include "RenderFrameRequest.h"
-#include <vector>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <vector>
+
+#include "ofxsImageEffect.h"
+#include "ofxsProcessing.h"
+
+#include "RenderRecipe.h"
+#include "SpectralData.h"
 
 struct InstanceState;
-struct WorkingState;
+struct DirectRenderState;
+struct PrintRenderState;
 
 namespace JuicerProc {
 
@@ -54,97 +54,59 @@ class JuicerProcessor : public OFX::ImageProcessor {
 public:
     explicit JuicerProcessor(OFX::ImageEffect& effect);
 
-    using DirectFrameRequest = Spektrafilm::DirectFrameRequest;
-    using PrintFrameRequest = Spektrafilm::PrintFrameRequest;
-    using FrameRequest = Spektrafilm::FrameRequest;
-
     struct SourceDestinationImages {
         OFX::Image* src = nullptr;
         OFX::Image* dst = nullptr;
     };
 
-    struct CameraAutoExposureSettings {
-        bool enabled = false;
-        int meteringMethod = 0;
-        double sliderEV = 0.0;
-    };
-
-    struct SessionTokens {
+    struct DirectFrameRequest {
+        std::shared_ptr<const DirectRenderState> state;
+        std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
+        int components = 0;
+        OfxRectI renderWindow{0, 0, 0, 0};
+        OfxRectI fullFrameExtent{0, 0, 0, 0};
         std::uint64_t sessionSeed = 1;
         std::uint64_t instanceToken = 1;
+        std::uintptr_t clipToken = 0;
+        double frameTime = 0.0;
+        double frameRate = 0.0;
+        float pixelSizeUm = 0.0f;
+    };
+
+    struct PrintFrameRequest {
+        std::shared_ptr<const PrintRenderState> state;
+        std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
+        int components = 0;
+        OfxRectI renderWindow{0, 0, 0, 0};
+        OfxRectI fullFrameExtent{0, 0, 0, 0};
+        std::uint64_t sessionSeed = 1;
+        std::uint64_t instanceToken = 1;
+        std::uintptr_t clipToken = 0;
+        double frameTime = 0.0;
+        double frameRate = 0.0;
+        float pixelSizeUm = 0.0f;
     };
 
     void setSrcDst(const SourceDestinationImages& images);
     void setDirectFrameRequest(const DirectFrameRequest& request);
     void setPrintFrameRequest(const PrintFrameRequest& request);
-    void setFrameRequest(const FrameRequest& request);
-    void setRenderWindowRect(const OfxRectI& rect);
-    void setComponents(int n);
-    void setScannerOptions(const Scanner::Options& o);
-    void setScannerSettings(const Scanner::Settings& s);
-    void setPrintParams(const Print::Params& p);
-    void setHalationOverride(const Profiles::HalationMetadata& halation);
-    void setPrintGlareOverride(const Profiles::ProfileGlare& glare);
-    void setWorkingState(const WorkingState* ws, bool wsReady);
-    void setPrintRuntime(const Print::Runtime* prt, bool printReady);
-    void setExposure(float exposureScale);
-    void setCameraAutoExposure(const CameraAutoExposureSettings& settings);
-    void setAutoExposureMeterBounds(const OfxRectI& bounds, bool valid);
-    void setOutputEncoding(const OutputEncoding::Params& p);
     void setInstanceState(InstanceState* s);
-    void setSessionTokens(const SessionTokens& tokens);
-    void setClipToken(std::uintptr_t token);
-    void setFrameTime(double time);
-    void setFrameRate(double frameRate);
-    void setFrameBoundsVersion(std::uint32_t v);
-    void setPixelSizeUm(float pixelSizeUm);
-    void setRenderHints(bool interactiveRenderStatus, bool renderQualityDraft, bool sequentialRenderStatus);
 
     void process() override;
     void processImagesCUDA() override;
 
 private:
-    OFX::Image* _srcImg;
-    int _nComponents;
-
-    Scanner::Options _scannerOptions;
-    Scanner::Settings _scannerSettings;
-    Print::Params _printParams;
-    Profiles::HalationMetadata _halationOverride{};
-    bool _hasHalationOverride = false;
-    Profiles::ProfileGlare _printGlareOverride{};
-    bool _hasPrintGlareOverride = false;
-    Couplers::Runtime _dirRT;
-
-    const Print::Runtime* _prt;
-    const WorkingState* _ws;
-    std::shared_ptr<const WorkingState> _wsHold;
-    std::shared_ptr<const RenderRecipe> _recipeHold;
+    OFX::Image* _srcImg = nullptr;
+    int _nComponents = 0;
     std::shared_ptr<const DirectRenderState> _directStateHold;
     std::shared_ptr<const PrintRenderState> _printStateHold;
     InstanceState* _instanceState = nullptr;
-    bool _wsReady;
-    bool _printReady;
-
-    float _exposureScale;
-    bool _cameraAutoEnabled = false;
-    int _cameraMeteringMethod = 0;
-    double _cameraSliderEV = 0.0;
-    OfxRectI _autoExposureMeterBounds{0, 0, 0, 0};
-    bool _autoExposureMeterBoundsValid = false;
-    OutputEncoding::Params _outputEncoding;
     std::uint64_t _sessionSeed = 1;
     std::uint64_t _instanceToken = 1;
     std::uintptr_t _clipToken = 0;
-    std::uint64_t _frameTimeHash = 0;
     std::int64_t _frameIndex = 0;
     double _timeFrames = 0.0;
     double _frameRate = 0.0;
-    bool _renderInteractiveStatus = false;
-    bool _renderQualityDraft = false;
-    bool _renderSequentialStatus = false;
-
-    std::uint32_t _frameBoundsVersion = 0;
     OfxRectI _fullFrameExtent{0, 0, 0, 0};
     std::optional<Spektrafilm::DiffusionFrameSetDescriptor> _diffusionFrameSetDescriptor;
     float _pixelSizeUm = 0.0f;

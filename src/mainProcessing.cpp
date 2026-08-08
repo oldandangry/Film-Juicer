@@ -18,8 +18,8 @@
 #include <limits>
 #include <optional>
 
+#include "FilmEffectsFrameDescriptors.h"
 #include "GaussianSciPy.h"
-#include "VisualGrainFrameDescriptor.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
@@ -32,8 +32,7 @@
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/Diffusion/JuicerCudaDiffusion.h"
 #include "Cuda/JuicerCudaDirProfile.h"
-#include "Cuda/JuicerCudaDirectFilmPayloads.h"
-#include "Cuda/JuicerCudaFilmFoundationPayloads.h"
+#include "Cuda/JuicerCudaFilmPayloads.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
@@ -41,10 +40,6 @@
 #endif
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-extern "C" cudaError_t juicer_cuda_negative_pipeline(
-    const JuicerCuda::PipelineRunParams* hParams,
-    void* cudaStreamOpaque);
-
 extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(
     const JuicerCuda::DirectPipelineRunParams* hParams,
     void* cudaStreamOpaque);
@@ -320,7 +315,6 @@ extern "C" cudaError_t juicer_cuda_print_pipeline(
 #include "JuicerState.h"
 #include "Scanner.h"
 #include "OutputColor.h"
-#include "Couplers.h"
 #include "mainProcessing.h"
 
 namespace {
@@ -363,16 +357,13 @@ namespace {
         const Spektrafilm::DiffusionSpectrumKey& right) noexcept {
         return left.sampleHash == right.sampleHash &&
                left.extent == right.extent &&
-               left.layoutSchema == right.layoutSchema &&
                left.hash == right.hash;
     }
 
     bool same_diffusion_plan_key(
         const Spektrafilm::DiffusionPlanKey& left,
         const Spektrafilm::DiffusionPlanKey& right) noexcept {
-        return left.profileDigest == right.profileDigest &&
-               left.extent == right.extent &&
-               left.layoutSchema == right.layoutSchema &&
+        return left.extent == right.extent &&
                left.hash == right.hash;
     }
 
@@ -390,8 +381,7 @@ namespace {
                     Spektrafilm::DiffusionLinearStage::CameraFilmLinear
                 ? "camera"
                 : "enlarger";
-        if (stageDescriptor.stage != expectedStage ||
-            stageDescriptor.route != frameSet.route || !prepared.active ||
+        if (stageDescriptor.stage != expectedStage || !prepared.active ||
             prepared.executionDescriptor.hash == 0 ||
             prepared.executionDescriptor.frameSetHash != frameSet.hash ||
             prepared.executionDescriptor.stageCount == 0 ||
@@ -429,8 +419,6 @@ namespace {
         }
         if (!stageGeometry ||
             stageGeometry->stageDescriptorHash != stageDescriptor.hash ||
-            prepared.executionDescriptor.fullFrame != frameSet.fullFrame ||
-            stageDescriptor.fullFrame != frameSet.fullFrame ||
             stageGeometry->spectrumKeyIndex >=
                 prepared.executionDescriptor.uniqueSpectrumCount ||
             stageGeometry->spectrumKeyIndex >= prepared.spectrumCount) {
@@ -480,7 +468,7 @@ namespace {
 
         out.layout = prepared.executionDescriptor.layout;
         out.geometry = *stageGeometry;
-        out.fullFrame = prepared.executionDescriptor.fullFrame;
+        out.fullFrame = frameSet.fullFrame;
         out.spectra = spectra;
         out.execution = execution;
         out.stagePlanes = planes;
@@ -533,12 +521,6 @@ namespace {
         return diagnostic;
     }
 #endif
-
-    inline void clear_glare_compensation_fields(Profiles::ProfileGlare& glare) {
-        glare.printShadowCompensationFactor = 0.0f;
-        glare.printShadowCompensationDensity = 0.0f;
-        glare.printShadowCompensationTransition = 0.0f;
-    }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     bool spatial_dir_profile_enabled() {
@@ -1301,7 +1283,7 @@ namespace {
             << " visual_grain_scratch_bytes=" << visualGrainScratchBytes
             << " visual_grain_stage_live_bytes=" << visualGrainStageLiveBytes
             << " visual_grain_static_version=" << visualGrainStaticVersion
-            << " resource_direct_upload_counter=" << uploadTrace.directUploadCounter
+            << " resource_focused_preparation_counter=" << uploadTrace.focusedPreparationCounter
             << " resource_print_preparation_counter="
             << uploadTrace.printPreparationCounter
             << " effect_film_dust_amount=" << effectsRecipe.filmDustAmount
@@ -1538,16 +1520,8 @@ namespace {
         return openclEnabled || cudaEnabled || metalEnabled;
     }
 
-    inline bool is_positive_finite(float value) {
-        return is_finite(value) && value > 0.0f;
-    }
-
     inline bool is_positive_finite(double value) {
         return is_finite(value) && value > 0.0;
-    }
-
-    inline float positive_finite_or(float value, float fallback) {
-        return is_positive_finite(value) ? value : fallback;
     }
 
     inline double positive_finite_or(double value, double fallback) {
@@ -1560,13 +1534,6 @@ namespace {
 
     inline bool is_finite(double value) {
         return std::isfinite(value);
-    }
-
-    inline float sanitize_dir_dmax_value(float value) {
-        if (!is_finite(value) || value <= 1e-4f) {
-            return 1.0f;
-        }
-        return value;
     }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -1901,7 +1868,6 @@ namespace {
         descriptor.meterX2 = meterBounds.x2;
         descriptor.meterY2 = meterBounds.y2;
         descriptor.method = method;
-        descriptor.sampling = JuicerCuda::AutoExposurePreviewDescriptor::Sampling::NearestNeighbor;
 
         const int width = std::max(0, meterBounds.x2 - meterBounds.x1);
         const int height = std::max(0, meterBounds.y2 - meterBounds.y1);
@@ -1935,7 +1901,6 @@ namespace {
         Hash::hash_bytes_update(descriptor.hash, &descriptor.previewWidth, sizeof(descriptor.previewWidth));
         Hash::hash_bytes_update(descriptor.hash, &descriptor.previewHeight, sizeof(descriptor.previewHeight));
         Hash::hash_bytes_update(descriptor.hash, &descriptor.method, sizeof(descriptor.method));
-        Hash::hash_bytes_update(descriptor.hash, &descriptor.sampling, sizeof(descriptor.sampling));
         if (descriptor.hash == 0) {
             descriptor.hash = 1;
         }
@@ -1946,10 +1911,6 @@ namespace {
 #endif
 
 // --- Spatial DIR: defensive curve utilities (monotonic + robust interpolation) ---
-
-inline std::uint64_t upload_core_hash_or_core_hash(const WorkingState& ws) {
-    return (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
-}
 
 bool curve_ok(const Spectral::Curve& c) {
     const size_t N = c.lambda_nm.size();
@@ -1974,7 +1935,7 @@ bool curve_ok(const Spectral::Curve& c) {
 // JuicerProcessor method definitions matching JuicerProcessing.h
 
 JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect)
-    : OFX::ImageProcessor(effect), _srcImg(nullptr), _nComponents(0), _scannerOptions{}, _scannerSettings{}, _printParams{}, _halationOverride{}, _hasHalationOverride(false), _printGlareOverride{}, _hasPrintGlareOverride(false), _dirRT{}, _prt(nullptr), _ws(nullptr), _wsReady(false), _printReady(false), _exposureScale(1.0f), _outputEncoding{}, _frameBoundsVersion(0), _pixelSizeUm(0.0f) {
+    : OFX::ImageProcessor(effect) {
 }
 
 void JuicerProcessor::setSrcDst(const SourceDestinationImages& images) {
@@ -1983,191 +1944,47 @@ void JuicerProcessor::setSrcDst(const SourceDestinationImages& images) {
 }
 
 void JuicerProcessor::setDirectFrameRequest(const DirectFrameRequest& request) {
-    setRenderWindowRect(request.renderWindow);
+    setRenderWindow(request.renderWindow);
     _fullFrameExtent = request.fullFrameExtent;
     _diffusionFrameSetDescriptor = request.diffusionFrameSet;
-    setComponents(request.components);
+    _nComponents = request.components;
     _directStateHold = request.state;
-    _recipeHold = _directStateHold
-                      ? std::shared_ptr<const RenderRecipe>(_directStateHold, &_directStateHold->recipe)
-                      : nullptr;
-    _wsHold.reset();
-    _ws = nullptr;
-    _wsReady = false;
-    _prt = nullptr;
-    _printReady = false;
-    setSessionTokens(SessionTokens{request.sessionSeed, request.instanceToken});
-    setClipToken(request.clipToken);
-    setFrameTime(request.frameTime);
-    setFrameRate(request.frameRate);
-    setPixelSizeUm(request.pixelSizeUm);
+    _printStateHold.reset();
+    _sessionSeed = session_seed_or_default(request.sessionSeed);
+    _instanceToken =
+        instance_token_or_session_seed(request.instanceToken, _sessionSeed);
+    _clipToken = request.clipToken;
+    _timeFrames = finite_or(request.frameTime, 0.0);
+    _frameIndex = frame_index_from_time(_timeFrames);
+    _frameRate = positive_finite_or(request.frameRate, 0.0);
+    _pixelSizeUm =
+        is_finite(request.pixelSizeUm)
+            ? std::max(0.0f, request.pixelSizeUm)
+            : 0.0f;
 }
 
 void JuicerProcessor::setPrintFrameRequest(const PrintFrameRequest& request) {
-    setRenderWindowRect(request.renderWindow);
+    setRenderWindow(request.renderWindow);
     _fullFrameExtent = request.fullFrameExtent;
     _diffusionFrameSetDescriptor = request.diffusionFrameSet;
-    setComponents(request.components);
+    _nComponents = request.components;
     _printStateHold = request.state;
-    _recipeHold = _printStateHold
-                      ? std::shared_ptr<const RenderRecipe>(_printStateHold, &_printStateHold->recipe)
-                      : nullptr;
     _directStateHold.reset();
-    _wsHold.reset();
-    _ws = nullptr;
-    _wsReady = false;
-    _prt = nullptr;
-    _printReady = false;
-    setSessionTokens(SessionTokens{request.sessionSeed, request.instanceToken});
-    setClipToken(request.clipToken);
-    setFrameTime(request.frameTime);
-    setFrameRate(request.frameRate);
-    setPixelSizeUm(request.pixelSizeUm);
-}
-
-void JuicerProcessor::setFrameRequest(const FrameRequest& request) {
-    // Broad request adapter retained for host plumbing; focused CUDA routes use typed requests.
-    setRenderWindowRect(request.renderWindow);
-    _diffusionFrameSetDescriptor.reset();
-    setComponents(request.components);
-    _scannerOptions = request.scannerOptions;
-    _scannerSettings = request.scannerSettings;
-    _printParams = request.printParams;
-    _halationOverride = request.halationOverride;
-    _hasHalationOverride = request.hasHalationOverride;
-    _printGlareOverride = request.printGlareOverride;
-    if (request.hasPrintGlareOverride) {
-        clear_glare_compensation_fields(_printGlareOverride);
-    }
-    _hasPrintGlareOverride = request.hasPrintGlareOverride;
-    _recipeHold = request.recipe;
-    _wsHold = request.workingState;
-    setWorkingState(_wsHold.get(), request.workingStateReady);
-    setPrintRuntime(
-        request.printRt ? request.printRt : ((_ws && _ws->printRT) ? _ws->printRT.get() : nullptr),
-        request.printRtReady);
-    setExposure(request.exposureScale);
-    CameraAutoExposureSettings autoExposureSettings{};
-    autoExposureSettings.enabled = request.cameraAutoEnabled;
-    autoExposureSettings.meteringMethod = request.cameraMeteringMethod;
-    autoExposureSettings.sliderEV = request.cameraSliderEV;
-    setCameraAutoExposure(autoExposureSettings);
-    setAutoExposureMeterBounds(
-        request.autoExposureMeterBounds,
-        request.autoExposureMeterBoundsValid);
-    _outputEncoding = request.outputEncoding;
-    setSessionTokens(SessionTokens{request.sessionSeed, request.instanceToken});
-    setClipToken(request.clipToken);
-    setFrameTime(request.frameTime);
-    setFrameRate(request.frameRate);
-    setFrameBoundsVersion(request.frameBoundsVersion);
-    setPixelSizeUm(request.pixelSizeUm);
-    setRenderHints(
-        request.interactiveRenderStatus,
-        request.renderQualityDraft,
-        request.sequentialRenderStatus);
-}
-
-void JuicerProcessor::setRenderWindowRect(const OfxRectI& rect) {
-    setRenderWindow(rect);
-}
-void JuicerProcessor::setComponents(int n) {
-    _nComponents = n;
-}
-void JuicerProcessor::setScannerOptions(const Scanner::Options& o) {
-    _scannerOptions = o;
-}
-void JuicerProcessor::setScannerSettings(const Scanner::Settings& s) {
-    _scannerSettings = s;
-}
-void JuicerProcessor::setPrintParams(const Print::Params& p) {
-    _printParams = p;
-}
-void JuicerProcessor::setHalationOverride(const Profiles::HalationMetadata& halation) {
-    _halationOverride = halation;
-    _hasHalationOverride = true;
-}
-void JuicerProcessor::setPrintGlareOverride(const Profiles::ProfileGlare& glare) {
-    _printGlareOverride = glare;
-    clear_glare_compensation_fields(_printGlareOverride);
-    _hasPrintGlareOverride = true;
-}
-void JuicerProcessor::setWorkingState(const WorkingState* ws, bool wsReady) {
-    if (_wsHold.get() != ws) {
-        _wsHold.reset();
-    }
-    _ws = ws;
-    _wsReady = wsReady;
-    // Align DIR normalization constants to per-instance maxima if available
-    if (_wsReady && _ws) {
-        const float* srcDMax = _ws->dMax;
-        float* dstDMax = _dirRT.dMax;
-        for (int i = 0; i < 3; ++i, ++srcDMax, ++dstDMax) {
-            *dstDMax = sanitize_dir_dmax_value(*srcDMax);
-        }
-    }
-}
-void JuicerProcessor::setPrintRuntime(const Print::Runtime* prt, bool printReady) {
-    _prt = prt;
-    _printReady = printReady;
-}
-void JuicerProcessor::setExposure(float exposureScale) {
-    _exposureScale = positive_finite_or(exposureScale, 1.0f);
-}
-
-void JuicerProcessor::setCameraAutoExposure(const CameraAutoExposureSettings& settings) {
-    _cameraAutoEnabled = settings.enabled;
-    _cameraMeteringMethod = settings.meteringMethod;
-    _cameraSliderEV = settings.sliderEV;
-}
-
-void JuicerProcessor::setAutoExposureMeterBounds(const OfxRectI& bounds, bool valid) {
-    _autoExposureMeterBounds = bounds;
-    _autoExposureMeterBoundsValid = valid;
-}
-
-void JuicerProcessor::setOutputEncoding(const OutputEncoding::Params& p) {
-    _outputEncoding = p;
+    _sessionSeed = session_seed_or_default(request.sessionSeed);
+    _instanceToken =
+        instance_token_or_session_seed(request.instanceToken, _sessionSeed);
+    _clipToken = request.clipToken;
+    _timeFrames = finite_or(request.frameTime, 0.0);
+    _frameIndex = frame_index_from_time(_timeFrames);
+    _frameRate = positive_finite_or(request.frameRate, 0.0);
+    _pixelSizeUm =
+        is_finite(request.pixelSizeUm)
+            ? std::max(0.0f, request.pixelSizeUm)
+            : 0.0f;
 }
 
 void JuicerProcessor::setInstanceState(InstanceState* s) {
     _instanceState = s;
-}
-
-void JuicerProcessor::setSessionTokens(const SessionTokens& tokens) {
-    _sessionSeed = session_seed_or_default(tokens.sessionSeed);
-    _instanceToken = instance_token_or_session_seed(tokens.instanceToken, _sessionSeed);
-}
-
-void JuicerProcessor::setClipToken(std::uintptr_t token) {
-    _clipToken = token;
-}
-
-void JuicerProcessor::setFrameTime(double time) {
-    _timeFrames = finite_or(time, 0.0);
-    _frameIndex = frame_index_from_time(_timeFrames);
-    _frameTimeHash = Hash::hash_bytes(&_frameIndex, sizeof(_frameIndex));
-    if (_frameTimeHash == 0) {
-        _frameTimeHash = 1;
-    }
-}
-
-void JuicerProcessor::setFrameRate(double frameRate) {
-    _frameRate = positive_finite_or(frameRate, 0.0);
-}
-
-void JuicerProcessor::setFrameBoundsVersion(std::uint32_t v) {
-    _frameBoundsVersion = v;
-}
-
-void JuicerProcessor::setPixelSizeUm(float pixelSizeUm) {
-    _pixelSizeUm = is_finite(pixelSizeUm) ? std::max(0.0f, pixelSizeUm) : 0.0f;
-}
-
-void JuicerProcessor::setRenderHints(bool interactiveRenderStatus, bool renderQualityDraft, bool sequentialRenderStatus) {
-    _renderInteractiveStatus = interactiveRenderStatus;
-    _renderQualityDraft = renderQualityDraft;
-    _renderSequentialStatus = sequentialRenderStatus;
 }
 
 void JuicerProcessor::process() {
@@ -2335,11 +2152,11 @@ void JuicerProcessor::processImagesCUDA() {
                 bounds.x2 - bounds.x1,
                 bounds.y2 - bounds.y1};
         };
-        if (!Spektrafilm::diffusion_full_frame_matches(
-                *_diffusionFrameSetDescriptor,
-                frame_domain(win),
-                frame_domain(srcBounds),
-                frame_domain(_fullFrameExtent))) {
+        const auto& diffusionFullFrame =
+            _diffusionFrameSetDescriptor->fullFrame;
+        if (frame_domain(win) != diffusionFullFrame ||
+            frame_domain(srcBounds) != diffusionFullFrame ||
+            frame_domain(_fullFrameExtent) != diffusionFullFrame) {
             JTRACE(
                 "SPEKTRAFILM",
                 "ResourceDescriptorMismatch component=diffusion field=full_frame_domain");
@@ -2462,7 +2279,6 @@ void JuicerProcessor::processImagesCUDA() {
     auto record_cuda_use = [&](JuicerProcess::Root::PreparedCudaFrame& frame) {
         std::string useError;
         if (!frame.record_use(_pCudaStream, useError)) {
-            frame.abort("prepared_frame_use_fence_failed");
             throw_submission_fatal(
                 "prepared_frame_use_fence",
                 "CUDA prepared-frame use fencing failed",
@@ -2745,7 +2561,7 @@ void JuicerProcessor::processImagesCUDA() {
         const bool captureDensityConsumerActive =
             grainStageActive || filmEffectsActive;
 
-        JuicerProcess::Root::DirectCudaPreparationRequest directPreparation{};
+        JuicerProcess::Root::CudaFramePreparationRequest directPreparation{};
         directPreparation.recipe = directRecipe;
         directPreparation.exposureTables = &directPayload->exposureTables;
         directPreparation.spdSInv = directPayload->spdSInv.data();
@@ -2803,7 +2619,6 @@ void JuicerProcessor::processImagesCUDA() {
                 diffusionPrepared.spectrumCount == 0 ||
                 diffusionPrepared.spectrumCount !=
                     diffusionPrepared.executionDescriptor.uniqueSpectrumCount) {
-                preparedFrame.abort("direct_diffusion_prepared_view_mismatch");
                 throw_direct_restriction(
                     "MissingRequiredResource component=diffusion field=prepared_view");
             }
@@ -2821,8 +2636,6 @@ void JuicerProcessor::processImagesCUDA() {
                 diagnostic += " frame_set_hash=";
                 diagnostic +=
                     std::to_string(_diffusionFrameSetDescriptor->hash);
-                preparedFrame.abort(
-                    "direct_diffusion_stage_boundary_unavailable");
                 throw_direct_restriction(diagnostic.c_str());
             }
             std::string cameraBindingDiagnostic;
@@ -2833,17 +2646,15 @@ void JuicerProcessor::processImagesCUDA() {
                     diffusionPrepared,
                     directCameraDiffusion,
                     cameraBindingDiagnostic)) {
-                preparedFrame.abort("direct_diffusion_camera_binding_failed");
                 throw_direct_restriction(cameraBindingDiagnostic.c_str());
             }
         } else if (diffusionPrepared.active) {
-            preparedFrame.abort("direct_disabled_diffusion_view_active");
             throw_direct_restriction(
                 "ResourceDescriptorMismatch component=diffusion field=disabled_prepared_view");
         }
 
-        const JuicerProcess::Root::PreparedCudaFrame::DirectPreparedView prepared =
-            preparedFrame.direct_resources();
+        const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView prepared =
+            preparedFrame.focused_resources();
         JuicerProcess::Root::PreparedCudaFrame::UploadTraceView directUploadTrace{};
         if (dirProfileEnabled) {
             directUploadTrace = preparedFrame.upload_trace_view();
@@ -2852,7 +2663,6 @@ void JuicerProcessor::processImagesCUDA() {
             prepared.densityBoundsHash != directRecipe->densityBounds.hash ||
             prepared.scannerDescriptorHash != scannerDescriptor.hash ||
             prepared.selectedMethod != directRecipe->filmRaw.rgbToRawMethod) {
-            preparedFrame.abort("direct_prepared_view_descriptor_mismatch");
             throw_direct_restriction("ResourceDescriptorMismatch phase=3C field=direct_prepared_view");
         }
 
@@ -2873,7 +2683,6 @@ void JuicerProcessor::processImagesCUDA() {
         if (cameraAutoEnabled) {
             const auto buffers = preparedFrame.auto_exposure_buffers();
             if (!buffers.active) {
-                preparedFrame.abort("direct_auto_exposure_buffers_missing");
                 throw_direct_restriction("MissingRequiredResource phase=3C field=auto_exposure_buffers");
             }
             const char* meterError = nullptr;
@@ -2888,7 +2697,6 @@ void JuicerProcessor::processImagesCUDA() {
                     _pCudaStream,
                     &meterError);
                 if (weightsRc != 0) {
-                    preparedFrame.abort("direct_auto_exposure_weights_failed");
                     throw_direct_restriction(detail_or_unknown(meterError));
                 }
                 preparedFrame.mark_auto_exposure_weights_built(
@@ -2911,7 +2719,6 @@ void JuicerProcessor::processImagesCUDA() {
                 _pCudaStream,
                 &meterError);
             if (meterRc != 0) {
-                preparedFrame.abort("direct_auto_exposure_meter_failed");
                 throw_direct_restriction(detail_or_unknown(meterError));
             }
             preparedFrame.mark_auto_exposure_metered(
@@ -2920,9 +2727,9 @@ void JuicerProcessor::processImagesCUDA() {
             autoExposureScaleDevice = buffers.deviceState.exposureScale;
         }
 
-        JuicerCuda::DirectFilmPayloadPack directFilmPayloads{};
+        JuicerCuda::FilmPayloadPack directFilmPayloads{};
         std::string packDiagnostic;
-        if (!JuicerCuda::pack_direct_film_payloads(
+        if (!JuicerCuda::pack_film_payloads(
                 directRecipe->filmRaw,
                 directRecipe->filmDevelop,
                 directRecipe->dirCouplers,
@@ -2932,7 +2739,6 @@ void JuicerProcessor::processImagesCUDA() {
                 scannerCorrection.exposureScale,
                 directFilmPayloads,
                 packDiagnostic)) {
-            preparedFrame.abort("direct_film_payload_pack_failed");
             throw_direct_restriction(packDiagnostic.c_str());
         }
         run.filmRaw = directFilmPayloads.filmRaw;
@@ -2942,7 +2748,6 @@ void JuicerProcessor::processImagesCUDA() {
         JuicerCuda::CameraFilmLinearExposurePlanes directCameraFilmLinear{};
         if (cameraDiffusionActive) {
             if (!directCameraDiffusion.active) {
-                preparedFrame.abort("direct_diffusion_camera_binding_inactive");
                 throw_direct_restriction(
                     "MissingRequiredResource component=diffusion field=camera_stage_binding");
             }
@@ -2955,8 +2760,6 @@ void JuicerProcessor::processImagesCUDA() {
                     directCameraFilmLinear,
                     _pCudaStream);
             if (exposureError != cudaSuccess) {
-                preparedFrame.abort(
-                    "direct_camera_film_linear_exposure_launch_failed");
                 throw_cuda_stage_fatal(
                     "direct_camera_film_linear_exposure_launch",
                     "direct camera film-linear exposure launch failed",
@@ -2974,7 +2777,6 @@ void JuicerProcessor::processImagesCUDA() {
             const JuicerCuda::Diffusion::LaunchResult diffusionResult =
                 JuicerCuda::Diffusion::launch_stage(diffusionLaunch);
             if (!diffusionResult.ok()) {
-                preparedFrame.abort("direct_camera_diffusion_launch_failed");
                 if (diffusionResult.api ==
                     JuicerCuda::Diffusion::FailureApi::Cuda) {
                     throw_cuda_stage_fatal(
@@ -3008,7 +2810,6 @@ void JuicerProcessor::processImagesCUDA() {
                     _pCudaStream,
                     "direct_large_scratch_transition",
                     transitionError)) {
-                preparedFrame.abort("direct_large_scratch_transition_failed");
                 throw_submission_fatal(
                     "direct_large_scratch_transition",
                     "direct large scratch transition checkpoint failed",
@@ -3037,7 +2838,6 @@ void JuicerProcessor::processImagesCUDA() {
                     focusedWorkspace,
                     _pCudaStream,
                     spatialError)) {
-                preparedFrame.abort("direct_spatial_dir_prepare_failed");
                 throw_submission_fatal(
                     "direct_spatial_dir_prepare",
                     "direct spatial DIR preparation failed",
@@ -3053,8 +2853,7 @@ void JuicerProcessor::processImagesCUDA() {
             directFocusedRgb{};
         JuicerProcess::Root::PreparedCudaFrame::VisualGrainWorkspaceView
             directGrainWorkspace{};
-        JuicerProcess::Root::PreparedCudaFrame::PreparedVisualGrainView
-            directGrainResources{};
+        JuicerCuda::PreparedVisualGrainView directGrainResources{};
         JuicerProcess::Root::PreparedCudaFrame::ScannerWorkspaceView
             directEffectsWorkspace{};
         JuicerCuda::GrainPayload directGrainPayload{};
@@ -3072,14 +2871,12 @@ void JuicerProcessor::processImagesCUDA() {
                     directEffectsPayload,
                     directWeavePayload,
                     effectsPayloadDiagnostic)) {
-                preparedFrame.abort("direct_effects_payload_pack_failed");
                 throw_direct_restriction(
                     effectsPayloadDiagnostic.empty()
                         ? "MissingRequiredResource phase=effects_route field=effects_binding"
                         : effectsPayloadDiagnostic.c_str());
             }
         } else if (preparedDirectEffectsDescriptor) {
-            preparedFrame.abort("direct_inactive_effects_descriptor_present");
             throw_direct_restriction(
                 "ResourceDescriptorMismatch phase=effects_route field=inactive_descriptor");
         }
@@ -3089,7 +2886,6 @@ void JuicerProcessor::processImagesCUDA() {
                     focusedWorkspace,
                     _pCudaStream,
                     focusedWorkspaceError)) {
-                preparedFrame.abort("direct_focused_workspace_stage_failed");
                 throw_submission_fatal(
                     "direct_focused_workspace_stage",
                     "direct focused workspace staging failed",
@@ -3104,7 +2900,6 @@ void JuicerProcessor::processImagesCUDA() {
                 directCaptureDensity.c != directFocusedRgb.r ||
                 directCaptureDensity.m != directFocusedRgb.g ||
                 directCaptureDensity.y != directFocusedRgb.b) {
-                preparedFrame.abort("direct_focused_triplet_binding_failed");
                 throw_direct_restriction(
                     "MissingRequiredResource phase=grain_route field=focused_triplet");
             }
@@ -3114,7 +2909,6 @@ void JuicerProcessor::processImagesCUDA() {
                 (directEffectsDescriptor.has_value() &&
                  directEffectsDescriptor->gateMaskActive &&
                  !directEffectsWorkspace.hasGateMask)) {
-                preparedFrame.abort("direct_effects_workspace_binding_failed");
                 throw_direct_restriction(
                     "MissingRequiredResource phase=effects_route field=effects_workspace");
             }
@@ -3132,7 +2926,6 @@ void JuicerProcessor::processImagesCUDA() {
                     directGrainPayload,
                     directGrainKernels,
                     grainPayloadDiagnostic)) {
-                preparedFrame.abort("direct_visual_grain_payload_pack_failed");
                 throw_direct_restriction(
                     grainPayloadDiagnostic.empty()
                         ? "MissingRequiredResource phase=grain_route field=grain_binding"
@@ -3146,7 +2939,6 @@ void JuicerProcessor::processImagesCUDA() {
             const auto resources =
                 preparedFrame.spatial_dir_resources(focusedWorkspace, directSpatialDir.hash);
             if (!scratch.active || !resources.active) {
-                preparedFrame.abort("direct_spatial_dir_binding_failed");
                 throw_direct_restriction(
                     "MissingRequiredResource phase=3D-3 field=prepared_spatial_dir");
             }
@@ -3161,7 +2953,6 @@ void JuicerProcessor::processImagesCUDA() {
                 !spatial_dir_required_cached_log_raw_present(
                     scratch,
                     directDirAdmittedRoles.cachedLogRawPlanes)) {
-                preparedFrame.abort("direct_spatial_dir_source_build_cached_log_raw_missing");
                 throw_direct_restriction(
                     "MissingRequiredResource phase=3D-3 field=spatial_dir_source_build_cached_log_raw");
             }
@@ -3205,7 +2996,6 @@ void JuicerProcessor::processImagesCUDA() {
                 directDirBuildHostMs = elapsed_ms_since(directDirBuildStart);
             }
             if (dirError != cudaSuccess) {
-                preparedFrame.abort("direct_spatial_dir_launch_failed");
                 throw_cuda_stage_fatal(
                     "direct_spatial_dir_launch",
                     "direct spatial DIR build failed",
@@ -3217,7 +3007,6 @@ void JuicerProcessor::processImagesCUDA() {
                         focusedWorkspace,
                         _pCudaStream,
                         stageError)) {
-                    preparedFrame.abort("direct_spatial_dir_cached_log_raw_stage_failed");
                     throw_submission_fatal(
                         "direct_spatial_dir_cached_log_raw_stage",
                         "direct spatial DIR cached log raw staging failed",
@@ -3231,7 +3020,6 @@ void JuicerProcessor::processImagesCUDA() {
                  directDirAdmittedTargetRoles.cachedLogRawPlanes == 3);
             if (!finalScratch.filteredCorrectionY || !finalScratch.filteredCorrectionM ||
                 !finalScratch.filteredCorrectionC) {
-                preparedFrame.abort("direct_spatial_dir_filtered_correction_missing");
                 throw_direct_restriction(
                     "MissingRequiredResource phase=3D-3 field=spatial_dir_filtered_correction");
             }
@@ -3239,7 +3027,6 @@ void JuicerProcessor::processImagesCUDA() {
                 !spatial_dir_required_cached_log_raw_present(
                     finalScratch,
                     directDirAdmittedTargetRoles.cachedLogRawPlanes)) {
-                preparedFrame.abort("direct_spatial_dir_cached_log_raw_missing");
                 throw_direct_restriction(
                     "MissingRequiredResource phase=3D-3 field=spatial_dir_cached_log_raw");
             }
@@ -3259,7 +3046,6 @@ void JuicerProcessor::processImagesCUDA() {
                                                           finalScratch.logRawR,
                                                           _pCudaStream);
                 if (logRawError != cudaSuccess) {
-                    preparedFrame.abort("direct_spatial_dir_cached_log_raw_launch_failed");
                     throw_cuda_stage_fatal(
                         "direct_spatial_dir_cached_log_raw_launch",
                         "direct spatial DIR cached log raw build failed",
@@ -3310,7 +3096,6 @@ void JuicerProcessor::processImagesCUDA() {
 
         std::string scanError;
         if (!preparedFrame.prepare_scan_error_stage(run.scanStage.scanErrorFlag, _pCudaStream, scanError)) {
-            preparedFrame.abort("direct_scan_error_stage_failed");
             throw_submission_fatal("direct_scan_error_stage", "direct scan error stage failed", scanError);
         }
         if (directCompositeProfileRequested &&
@@ -3376,7 +3161,6 @@ void JuicerProcessor::processImagesCUDA() {
                                     directCaptureDensity.y,
                                     _pCudaStream);
             if (launchError != cudaSuccess) {
-                preparedFrame.abort("direct_capture_density_launch_failed");
                 throw_cuda_stage_fatal(
                     "direct_capture_density_launch",
                     "direct capture-film density launch failed",
@@ -3419,7 +3203,6 @@ void JuicerProcessor::processImagesCUDA() {
                         directGrainProfile.totalLaunches;
                 }
                 if (launchError != cudaSuccess) {
-                    preparedFrame.abort("direct_visual_grain_launch_failed");
                     throw_cuda_stage_fatal(
                         "direct_visual_grain_launch",
                         "direct visual grain launch failed",
@@ -3436,7 +3219,6 @@ void JuicerProcessor::processImagesCUDA() {
                     directCaptureDensity.y,
                     _pCudaStream);
                 if (launchError != cudaSuccess) {
-                    preparedFrame.abort("direct_film_effects_launch_failed");
                     throw_cuda_stage_fatal(
                         "direct_film_effects_launch",
                         "direct film defects launch failed",
@@ -3450,7 +3232,6 @@ void JuicerProcessor::processImagesCUDA() {
             if (!preparedFrame.release_diffusion_resources_after_use(
                     _pCudaStream,
                     diffusionReleaseError)) {
-                preparedFrame.abort("direct_diffusion_release_after_use_failed");
                 throw_submission_fatal(
                     "direct_diffusion_release_after_use",
                     "direct diffusion resource release failed",
@@ -3469,7 +3250,6 @@ void JuicerProcessor::processImagesCUDA() {
                 directEffectsWorkspace.gateMaskHeight,
                 _pCudaStream);
             if (launchError != cudaSuccess) {
-                preparedFrame.abort("direct_gate_mask_launch_failed");
                 throw_cuda_stage_fatal(
                     "direct_gate_mask_launch",
                     "direct gate defect mask launch failed",
@@ -3490,7 +3270,6 @@ void JuicerProcessor::processImagesCUDA() {
                     post.scratch.rgbR != directFocusedRgb.r ||
                     post.scratch.rgbG != directFocusedRgb.g ||
                     post.scratch.rgbB != directFocusedRgb.b) {
-                    preparedFrame.abort("direct_scanner_post_effects_view_failed");
                     throw_direct_restriction(
                         "MissingRequiredResource phase=8C field=scanner_post_effects");
                 }
@@ -3522,7 +3301,6 @@ void JuicerProcessor::processImagesCUDA() {
                     }
                 } else {
                     if (!directCaptureDensityReady) {
-                        preparedFrame.abort("direct_capture_density_not_ready");
                         throw_direct_restriction(
                             "MissingRequiredResource phase=grain_route field=capture_density");
                     }
@@ -3537,7 +3315,6 @@ void JuicerProcessor::processImagesCUDA() {
                         _pCudaStream);
                 }
                 if (launchError != cudaSuccess) {
-                    preparedFrame.abort("direct_scanner_linear_launch_failed");
                     throw_cuda_stage_fatal(
                         "direct_scanner_linear_launch",
                         "direct scanner-linear launch failed",
@@ -3605,7 +3382,6 @@ void JuicerProcessor::processImagesCUDA() {
             }
         }
         if (launchError != cudaSuccess) {
-            preparedFrame.abort("direct_negative_pipeline_launch_failed");
             throw_cuda_stage_fatal("direct_negative_pipeline_launch", "direct negative pipeline launch failed", launchError);
         }
         if (directSpatialDir.hash != 0 && !useFocusedSplit) {
@@ -3618,7 +3394,6 @@ void JuicerProcessor::processImagesCUDA() {
             directPreparedFrameFinishStart = std::chrono::steady_clock::now();
         }
         if (!preparedFrame.finalize_scan_error_stage(run.scanStage.scanErrorFlag, _pCudaStream, scanError)) {
-            preparedFrame.abort("direct_scan_error_finalize_failed");
             throw_submission_fatal("direct_scan_error_finalize", "direct scan error finalize failed", scanError);
         }
         record_cuda_use(preparedFrame);
@@ -3682,8 +3457,7 @@ void JuicerProcessor::processImagesCUDA() {
                 Scanner::PrintScannerSpectralLutDescriptorInput{
                     &printRecipe->profileRoute,
                     &printRecipe->densityBounds,
-                    &printRecipe->scannerOutput,
-                    &printRecipe->print.mediumHandoff},
+                    &printRecipe->scannerOutput},
                 scannerDescriptor,
                 scannerDescriptorDiagnostic)) {
             throw_print_restriction(scannerDescriptorDiagnostic.c_str());
@@ -3807,7 +3581,7 @@ void JuicerProcessor::processImagesCUDA() {
         const bool captureDensityConsumerActive =
             grainStageActive || filmEffectsActive;
 
-        JuicerProcess::Root::PrintCudaPreparationRequest preparation{};
+        JuicerProcess::Root::CudaFramePreparationRequest preparation{};
         preparation.recipe = printRecipe;
         preparation.exposureTables = &printPayload->exposureTables;
         preparation.spdSInv = printPayload->spdSInv.data();
@@ -3866,7 +3640,6 @@ void JuicerProcessor::processImagesCUDA() {
                 diffusionPrepared.spectrumCount == 0 ||
                 diffusionPrepared.spectrumCount !=
                     diffusionPrepared.executionDescriptor.uniqueSpectrumCount) {
-                preparedFrame.abort("print_diffusion_prepared_view_mismatch");
                 throw_print_restriction(
                     "MissingRequiredResource component=diffusion field=prepared_view");
             }
@@ -3879,8 +3652,6 @@ void JuicerProcessor::processImagesCUDA() {
                         diffusionPrepared,
                         printCameraDiffusion,
                         cameraBindingDiagnostic)) {
-                    preparedFrame.abort(
-                        "print_diffusion_camera_binding_failed");
                     throw_print_restriction(
                         cameraBindingDiagnostic.c_str());
                 }
@@ -3894,20 +3665,17 @@ void JuicerProcessor::processImagesCUDA() {
                         diffusionPrepared,
                         printEnlargerDiffusion,
                         enlargerBindingDiagnostic)) {
-                    preparedFrame.abort(
-                        "print_diffusion_enlarger_binding_failed");
                     throw_print_restriction(
                         enlargerBindingDiagnostic.c_str());
                 }
             }
         } else if (diffusionPrepared.active) {
-            preparedFrame.abort("print_disabled_diffusion_view_active");
             throw_print_restriction(
                 "ResourceDescriptorMismatch component=diffusion field=disabled_prepared_view");
         }
 
-        const JuicerProcess::Root::PreparedCudaFrame::PrintRoutePreparedView prepared =
-            preparedFrame.print_route_resources();
+        const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView prepared =
+            preparedFrame.focused_resources();
         const JuicerProcess::Root::PreparedCudaFrame::PrintPreparedView preparedPrint =
             preparedFrame.print_resources();
         JuicerProcess::Root::PreparedCudaFrame::UploadTraceView printUploadTrace{};
@@ -3918,7 +3686,6 @@ void JuicerProcessor::processImagesCUDA() {
             prepared.densityBoundsHash != printRecipe->densityBounds.hash ||
             prepared.scannerDescriptorHash != scannerDescriptor.hash ||
             prepared.selectedMethod != printRecipe->filmRaw.rgbToRawMethod) {
-            preparedFrame.abort("print_prepared_view_descriptor_mismatch");
             throw_print_restriction(
                 "ResourceDescriptorMismatch phase=4C field=print_prepared_view");
         }
@@ -3934,7 +3701,6 @@ void JuicerProcessor::processImagesCUDA() {
                 correctionInput,
                 scannerCorrection,
                 scannerDescriptorDiagnostic)) {
-            preparedFrame.abort("print_scanner_correction_descriptor_failed");
             throw_print_restriction(scannerDescriptorDiagnostic.c_str());
         }
         if (traceVerbose) {
@@ -3943,30 +3709,18 @@ void JuicerProcessor::processImagesCUDA() {
             msg.reserve(512);
             msg = "event=focused_route_prepared recipeHash=";
             msg += std::to_string(printRecipe->hash);
-            msg += " uiYmcCc(Y/M/C)=";
-            msg += std::to_string(filters.userCmyCc.y);
-            msg += "/";
-            msg += std::to_string(filters.userCmyCc.m);
-            msg += "/";
-            msg += std::to_string(filters.userCmyCc.c);
-            msg += " neutralCmyCc(C/M/Y)=";
-            msg += std::to_string(filters.neutralCmyCc.c);
-            msg += "/";
-            msg += std::to_string(filters.neutralCmyCc.m);
-            msg += "/";
-            msg += std::to_string(filters.neutralCmyCc.y);
-            msg += " userCmyCc(C/M/Y)=";
-            msg += std::to_string(filters.userCmyCc.c);
-            msg += "/";
-            msg += std::to_string(filters.userCmyCc.m);
-            msg += "/";
-            msg += std::to_string(filters.userCmyCc.y);
             msg += " mainCmyCc(C/M/Y)=";
             msg += std::to_string(filters.mainCmyCc.c);
             msg += "/";
             msg += std::to_string(filters.mainCmyCc.m);
             msg += "/";
             msg += std::to_string(filters.mainCmyCc.y);
+            msg += " preflashCmyCc(C/M/Y)=";
+            msg += std::to_string(filters.preflashCmyCc.c);
+            msg += "/";
+            msg += std::to_string(filters.preflashCmyCc.m);
+            msg += "/";
+            msg += std::to_string(filters.preflashCmyCc.y);
             msg += " filterRecipeHash=";
             msg += std::to_string(filters.hash);
             msg += " filteredMainIlluminantDescriptorHash=";
@@ -3991,7 +3745,6 @@ void JuicerProcessor::processImagesCUDA() {
         if (cameraAutoEnabled) {
             const auto buffers = preparedFrame.auto_exposure_buffers();
             if (!buffers.active) {
-                preparedFrame.abort("print_auto_exposure_buffers_missing");
                 throw_print_restriction(
                     "MissingRequiredResource phase=4C field=auto_exposure_buffers");
             }
@@ -4007,7 +3760,6 @@ void JuicerProcessor::processImagesCUDA() {
                     _pCudaStream,
                     &meterError);
                 if (weightsRc != 0) {
-                    preparedFrame.abort("print_auto_exposure_weights_failed");
                     throw_print_restriction(detail_or_unknown(meterError));
                 }
                 preparedFrame.mark_auto_exposure_weights_built(
@@ -4030,7 +3782,6 @@ void JuicerProcessor::processImagesCUDA() {
                 _pCudaStream,
                 &meterError);
             if (meterRc != 0) {
-                preparedFrame.abort("print_auto_exposure_meter_failed");
                 throw_print_restriction(detail_or_unknown(meterError));
             }
             preparedFrame.mark_auto_exposure_metered(
@@ -4039,9 +3790,9 @@ void JuicerProcessor::processImagesCUDA() {
             autoExposureScaleDevice = buffers.deviceState.exposureScale;
         }
 
-        JuicerCuda::DirectFilmPayloadPack filmPayloads{};
+        JuicerCuda::FilmPayloadPack filmPayloads{};
         std::string payloadDiagnostic;
-        if (!JuicerCuda::pack_direct_film_payloads(
+        if (!JuicerCuda::pack_film_payloads(
                 printRecipe->filmRaw,
                 printRecipe->filmDevelop,
                 printRecipe->dirCouplers,
@@ -4051,7 +3802,6 @@ void JuicerProcessor::processImagesCUDA() {
                 1.0f,
                 filmPayloads,
                 payloadDiagnostic)) {
-            preparedFrame.abort("print_film_payload_pack_failed");
             throw_print_restriction(payloadDiagnostic.c_str());
         }
         JuicerCuda::PrintCudaPayloadPack printPayloads{};
@@ -4061,7 +3811,6 @@ void JuicerProcessor::processImagesCUDA() {
                 scannerCorrection.exposureScale,
                 printPayloads,
                 payloadDiagnostic)) {
-            preparedFrame.abort("print_payload_pack_failed");
             throw_print_restriction(payloadDiagnostic.c_str());
         }
         run.filmRaw = filmPayloads.filmRaw;
@@ -4073,7 +3822,6 @@ void JuicerProcessor::processImagesCUDA() {
         JuicerCuda::CameraFilmLinearExposurePlanes printCameraFilmLinear{};
         if (cameraDiffusionActive) {
             if (!printCameraDiffusion.active) {
-                preparedFrame.abort("print_diffusion_camera_binding_inactive");
                 throw_print_restriction(
                     "MissingRequiredResource component=diffusion field=camera_stage_binding");
             }
@@ -4086,8 +3834,6 @@ void JuicerProcessor::processImagesCUDA() {
                     printCameraFilmLinear,
                     _pCudaStream);
             if (exposureError != cudaSuccess) {
-                preparedFrame.abort(
-                    "print_camera_film_linear_exposure_launch_failed");
                 throw_cuda_stage_fatal(
                     "print_camera_film_linear_exposure_launch",
                     "print camera film-linear exposure launch failed",
@@ -4105,7 +3851,6 @@ void JuicerProcessor::processImagesCUDA() {
             const JuicerCuda::Diffusion::LaunchResult diffusionResult =
                 JuicerCuda::Diffusion::launch_stage(diffusionLaunch);
             if (!diffusionResult.ok()) {
-                preparedFrame.abort("print_camera_diffusion_launch_failed");
                 if (diffusionResult.api ==
                     JuicerCuda::Diffusion::FailureApi::Cuda) {
                     throw_cuda_stage_fatal(
@@ -4139,7 +3884,6 @@ void JuicerProcessor::processImagesCUDA() {
                     _pCudaStream,
                     "print_large_scratch_transition",
                     transitionError)) {
-                preparedFrame.abort("print_large_scratch_transition_failed");
                 throw_submission_fatal(
                     "print_large_scratch_transition",
                     "print large scratch transition checkpoint failed",
@@ -4168,7 +3912,6 @@ void JuicerProcessor::processImagesCUDA() {
                     focusedWorkspace,
                     _pCudaStream,
                     spatialError)) {
-                preparedFrame.abort("print_spatial_dir_prepare_failed");
                 throw_submission_fatal(
                     "print_spatial_dir_prepare",
                     "print spatial DIR preparation failed",
@@ -4184,8 +3927,7 @@ void JuicerProcessor::processImagesCUDA() {
             printFocusedRgb{};
         JuicerProcess::Root::PreparedCudaFrame::VisualGrainWorkspaceView
             printGrainWorkspace{};
-        JuicerProcess::Root::PreparedCudaFrame::PreparedVisualGrainView
-            printGrainResources{};
+        JuicerCuda::PreparedVisualGrainView printGrainResources{};
         JuicerProcess::Root::PreparedCudaFrame::ScannerWorkspaceView
             printEffectsWorkspace{};
         JuicerCuda::GrainPayload printGrainPayload{};
@@ -4203,14 +3945,12 @@ void JuicerProcessor::processImagesCUDA() {
                     printEffectsPayload,
                     printWeavePayload,
                     effectsPayloadDiagnostic)) {
-                preparedFrame.abort("print_effects_payload_pack_failed");
                 throw_print_restriction(
                     effectsPayloadDiagnostic.empty()
                         ? "MissingRequiredResource phase=effects_route field=effects_binding"
                         : effectsPayloadDiagnostic.c_str());
             }
         } else if (preparedPrintEffectsDescriptor) {
-            preparedFrame.abort("print_inactive_effects_descriptor_present");
             throw_print_restriction(
                 "ResourceDescriptorMismatch phase=effects_route field=inactive_descriptor");
         }
@@ -4220,7 +3960,6 @@ void JuicerProcessor::processImagesCUDA() {
                     focusedWorkspace,
                     _pCudaStream,
                     focusedWorkspaceError)) {
-                preparedFrame.abort("print_focused_workspace_stage_failed");
                 throw_submission_fatal(
                     "print_focused_workspace_stage",
                     "print focused workspace staging failed",
@@ -4235,7 +3974,6 @@ void JuicerProcessor::processImagesCUDA() {
                 printCaptureDensity.c != printFocusedRgb.r ||
                 printCaptureDensity.m != printFocusedRgb.g ||
                 printCaptureDensity.y != printFocusedRgb.b) {
-                preparedFrame.abort("print_focused_triplet_binding_failed");
                 throw_print_restriction(
                     "MissingRequiredResource phase=grain_route field=focused_triplet");
             }
@@ -4245,7 +3983,6 @@ void JuicerProcessor::processImagesCUDA() {
                 (printEffectsDescriptor.has_value() &&
                  printEffectsDescriptor->gateMaskActive &&
                  !printEffectsWorkspace.hasGateMask)) {
-                preparedFrame.abort("print_effects_workspace_binding_failed");
                 throw_print_restriction(
                     "MissingRequiredResource phase=effects_route field=effects_workspace");
             }
@@ -4263,7 +4000,6 @@ void JuicerProcessor::processImagesCUDA() {
                     printGrainPayload,
                     printGrainKernels,
                     grainPayloadDiagnostic)) {
-                preparedFrame.abort("print_visual_grain_payload_pack_failed");
                 throw_print_restriction(
                     grainPayloadDiagnostic.empty()
                         ? "MissingRequiredResource phase=grain_route field=grain_binding"
@@ -4277,7 +4013,6 @@ void JuicerProcessor::processImagesCUDA() {
             const auto resources =
                 preparedFrame.spatial_dir_resources(focusedWorkspace, spatialDir.hash);
             if (!scratch.active || !resources.active) {
-                preparedFrame.abort("print_spatial_dir_binding_failed");
                 throw_print_restriction(
                     "MissingRequiredResource phase=4C field=prepared_spatial_dir");
             }
@@ -4292,7 +4027,6 @@ void JuicerProcessor::processImagesCUDA() {
                 !spatial_dir_required_cached_log_raw_present(
                     scratch,
                     printDirAdmittedRoles.cachedLogRawPlanes)) {
-                preparedFrame.abort("print_spatial_dir_source_build_cached_log_raw_missing");
                 throw_print_restriction(
                     "MissingRequiredResource phase=4C field=spatial_dir_source_build_cached_log_raw");
             }
@@ -4336,7 +4070,6 @@ void JuicerProcessor::processImagesCUDA() {
                 printDirBuildHostMs = elapsed_ms_since(printDirBuildStart);
             }
             if (dirError != cudaSuccess) {
-                preparedFrame.abort("print_spatial_dir_launch_failed");
                 throw_cuda_stage_fatal(
                     "print_spatial_dir_launch",
                     "print spatial DIR build failed",
@@ -4348,7 +4081,6 @@ void JuicerProcessor::processImagesCUDA() {
                         focusedWorkspace,
                         _pCudaStream,
                         stageError)) {
-                    preparedFrame.abort("print_spatial_dir_cached_log_raw_stage_failed");
                     throw_submission_fatal(
                         "print_spatial_dir_cached_log_raw_stage",
                         "print spatial DIR cached log raw staging failed",
@@ -4362,7 +4094,6 @@ void JuicerProcessor::processImagesCUDA() {
                  printDirAdmittedTargetRoles.cachedLogRawPlanes == 3);
             if (!finalScratch.filteredCorrectionY || !finalScratch.filteredCorrectionM ||
                 !finalScratch.filteredCorrectionC) {
-                preparedFrame.abort("print_spatial_dir_filtered_correction_missing");
                 throw_print_restriction(
                     "MissingRequiredResource phase=4C field=spatial_dir_filtered_correction");
             }
@@ -4370,7 +4101,6 @@ void JuicerProcessor::processImagesCUDA() {
                 !spatial_dir_required_cached_log_raw_present(
                     finalScratch,
                     printDirAdmittedTargetRoles.cachedLogRawPlanes)) {
-                preparedFrame.abort("print_spatial_dir_cached_log_raw_missing");
                 throw_print_restriction(
                     "MissingRequiredResource phase=4C field=spatial_dir_cached_log_raw");
             }
@@ -4390,7 +4120,6 @@ void JuicerProcessor::processImagesCUDA() {
                                                           finalScratch.logRawR,
                                                           _pCudaStream);
                 if (logRawError != cudaSuccess) {
-                    preparedFrame.abort("print_spatial_dir_cached_log_raw_launch_failed");
                     throw_cuda_stage_fatal(
                         "print_spatial_dir_cached_log_raw_launch",
                         "print spatial DIR cached log raw build failed",
@@ -4448,7 +4177,6 @@ void JuicerProcessor::processImagesCUDA() {
                 run.scanStage.scanErrorFlag,
                 _pCudaStream,
                 scanError)) {
-            preparedFrame.abort("print_scan_error_stage_failed");
             throw_submission_fatal(
                 "print_scan_error_stage",
                 "print scan error stage failed",
@@ -4517,7 +4245,6 @@ void JuicerProcessor::processImagesCUDA() {
                                     printCaptureDensity.y,
                                     _pCudaStream);
             if (launchError != cudaSuccess) {
-                preparedFrame.abort("print_capture_density_launch_failed");
                 throw_cuda_stage_fatal(
                     "print_capture_density_launch",
                     "print capture-film density launch failed",
@@ -4560,7 +4287,6 @@ void JuicerProcessor::processImagesCUDA() {
                         printGrainProfile.totalLaunches;
                 }
                 if (launchError != cudaSuccess) {
-                    preparedFrame.abort("print_visual_grain_launch_failed");
                     throw_cuda_stage_fatal(
                         "print_visual_grain_launch",
                         "print visual grain launch failed",
@@ -4577,7 +4303,6 @@ void JuicerProcessor::processImagesCUDA() {
                     printCaptureDensity.y,
                     _pCudaStream);
                 if (launchError != cudaSuccess) {
-                    preparedFrame.abort("print_film_effects_launch_failed");
                     throw_cuda_stage_fatal(
                         "print_film_effects_launch",
                         "print film defects launch failed",
@@ -4587,8 +4312,6 @@ void JuicerProcessor::processImagesCUDA() {
             if (!grainDebugActive) {
                 if (enlargerDiffusionActive) {
                     if (!printEnlargerDiffusion.active) {
-                        preparedFrame.abort(
-                            "print_diffusion_enlarger_binding_inactive");
                         throw_print_restriction(
                             "MissingRequiredResource component=diffusion field=enlarger_stage_binding");
                     }
@@ -4605,8 +4328,6 @@ void JuicerProcessor::processImagesCUDA() {
                             printEnlargerLinear,
                             _pCudaStream);
                     if (launchError != cudaSuccess) {
-                        preparedFrame.abort(
-                            "print_enlarger_linear_exposure_launch_failed");
                         throw_cuda_stage_fatal(
                             "print_enlarger_linear_exposure_launch",
                             "print enlarger-linear exposure launch failed",
@@ -4632,8 +4353,6 @@ void JuicerProcessor::processImagesCUDA() {
                             JuicerCuda::Diffusion::launch_stage(
                                 diffusionLaunch);
                     if (!diffusionResult.ok()) {
-                        preparedFrame.abort(
-                            "print_enlarger_diffusion_launch_failed");
                         if (diffusionResult.api ==
                             JuicerCuda::Diffusion::FailureApi::Cuda) {
                             throw_cuda_stage_fatal(
@@ -4659,8 +4378,6 @@ void JuicerProcessor::processImagesCUDA() {
                             printCaptureDensity.y,
                             _pCudaStream);
                     if (launchError != cudaSuccess) {
-                        preparedFrame.abort(
-                            "print_develop_from_enlarger_linear_launch_failed");
                         throw_cuda_stage_fatal(
                             "print_develop_from_enlarger_linear_launch",
                             "print development from enlarger-linear exposure failed",
@@ -4675,8 +4392,6 @@ void JuicerProcessor::processImagesCUDA() {
                             printCaptureDensity.y,
                             _pCudaStream);
                     if (launchError != cudaSuccess) {
-                        preparedFrame.abort(
-                            "print_continuation_from_capture_density_launch_failed");
                         throw_cuda_stage_fatal(
                             "print_continuation_from_capture_density_launch",
                             "print continuation from capture density launch failed",
@@ -4691,7 +4406,6 @@ void JuicerProcessor::processImagesCUDA() {
             if (!preparedFrame.release_diffusion_resources_after_use(
                     _pCudaStream,
                     diffusionReleaseError)) {
-                preparedFrame.abort("print_diffusion_release_after_use_failed");
                 throw_submission_fatal(
                     "print_diffusion_release_after_use",
                     "print diffusion resource release failed",
@@ -4711,7 +4425,6 @@ void JuicerProcessor::processImagesCUDA() {
                 printEffectsWorkspace.gateMaskHeight,
                 _pCudaStream);
             if (launchError != cudaSuccess) {
-                preparedFrame.abort("print_gate_mask_launch_failed");
                 throw_cuda_stage_fatal(
                     "print_gate_mask_launch",
                     "print gate defect mask launch failed",
@@ -4732,7 +4445,6 @@ void JuicerProcessor::processImagesCUDA() {
                     post.scratch.rgbR != printFocusedRgb.r ||
                     post.scratch.rgbG != printFocusedRgb.g ||
                     post.scratch.rgbB != printFocusedRgb.b) {
-                    preparedFrame.abort("print_scanner_post_effects_view_failed");
                     throw_print_restriction(
                         "MissingRequiredResource phase=8C field=scanner_post_effects");
                 }
@@ -4778,7 +4490,6 @@ void JuicerProcessor::processImagesCUDA() {
                     }
                 } else {
                     if (!printCaptureDensityReady) {
-                        preparedFrame.abort("print_capture_density_not_ready");
                         throw_print_restriction(
                             "MissingRequiredResource phase=grain_route field=capture_density");
                     }
@@ -4802,7 +4513,6 @@ void JuicerProcessor::processImagesCUDA() {
                         _pCudaStream);
                 }
                 if (launchError != cudaSuccess) {
-                    preparedFrame.abort("print_scanner_linear_launch_failed");
                     throw_cuda_stage_fatal(
                         "print_scanner_linear_launch",
                         "print scanner-linear launch failed",
@@ -4870,7 +4580,6 @@ void JuicerProcessor::processImagesCUDA() {
             }
         }
         if (launchError != cudaSuccess) {
-            preparedFrame.abort("print_pipeline_launch_failed");
             throw_cuda_stage_fatal(
                 "print_pipeline_launch",
                 "focused print pipeline launch failed",
@@ -4889,7 +4598,6 @@ void JuicerProcessor::processImagesCUDA() {
                 run.scanStage.scanErrorFlag,
                 _pCudaStream,
                 scanError)) {
-            preparedFrame.abort("print_scan_error_finalize_failed");
             throw_submission_fatal(
                 "print_scan_error_finalize",
                 "print scan error finalize failed",
@@ -4898,7 +4606,6 @@ void JuicerProcessor::processImagesCUDA() {
         record_cuda_use(preparedFrame);
         std::string finishError;
         if (!preparedFrame.finish(_pCudaStream, finishError)) {
-            preparedFrame.abort("print_prepared_frame_finish_failed");
             throw_submission_fatal(
                 "print_prepared_frame_finish",
                 "print prepared frame finish failed",

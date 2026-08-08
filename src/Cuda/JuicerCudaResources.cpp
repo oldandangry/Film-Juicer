@@ -14,6 +14,7 @@
 #include "Print.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "ResourceAssetLibrary.h"
 
 #include "GaussianSciPy.h"
 
@@ -33,7 +34,6 @@
 #include <array>
 #include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -134,7 +134,7 @@ namespace JuicerCuda {
                 const int k = source.numSamples;
                 const int radius = JuicerGaussian::scipy_gaussian_radius(sigma);
                 if (n <= 0 || k <= 0 || radius <= 0 || source.data.size() != static_cast<size_t>(n) * n * k) {
-                    outError = "direct Hanatos spectral blur source is invalid";
+                    outError = "film Hanatos spectral blur source is invalid";
                     return false;
                 }
 
@@ -149,7 +149,7 @@ namespace JuicerCuda {
                     kernelSum += weight;
                 }
                 if (!(std::isfinite(kernelSum) && kernelSum > 0.0)) {
-                    outError = "direct Hanatos spectral blur kernel is invalid";
+                    outError = "film Hanatos spectral blur kernel is invalid";
                     return false;
                 }
                 for (double& weight : kernel) {
@@ -172,7 +172,7 @@ namespace JuicerCuda {
                                          static_cast<double>(source.data[base + static_cast<size_t>(reflected)]);
                             }
                             if (!std::isfinite(value)) {
-                                outError = "direct Hanatos spectral blur produced non-finite data";
+                                outError = "film Hanatos spectral blur produced non-finite data";
                                 return false;
                             }
                             out[base + static_cast<size_t>(sample)] = static_cast<float>(value);
@@ -320,7 +320,7 @@ namespace JuicerCuda {
             return true;
         }
 
-        bool build_direct_hanatos_integrated_lut_cpu(
+        bool build_film_hanatos_integrated_lut_cpu(
             const Spectral::SpectralContext& context,
             const FilmRawRecipe& filmRaw,
             const float referenceWhiteXYZ[3],
@@ -329,7 +329,7 @@ namespace JuicerCuda {
             const int n = context.hanSpectra.size;
             const int k = context.hanSpectra.numSamples;
             if (n <= 0 || k != Spectral::kNumSamples || filmRaw.hanatosLutHash == 0) {
-                outError = "direct Hanatos integrated LUT input is invalid";
+                outError = "film Hanatos integrated LUT input is invalid";
                 return false;
             }
 
@@ -350,7 +350,7 @@ namespace JuicerCuda {
                     static_cast<double>(referenceWhiteXYZ[1]) +
                     static_cast<double>(referenceWhiteXYZ[2]);
                 if (!(std::isfinite(sum) && sum > 0.0)) {
-                    outError = "direct Hanatos adaptation surface reference illuminant is invalid";
+                    outError = "film Hanatos adaptation surface reference illuminant is invalid";
                     return false;
                 }
                 const double x = std::clamp(static_cast<double>(referenceWhiteXYZ[0]) / sum, 0.0, 1.0);
@@ -390,7 +390,7 @@ namespace JuicerCuda {
                         (static_cast<size_t>(c) * static_cast<size_t>(n) + static_cast<size_t>(m)) * 4u;
                     for (size_t channel = 0; channel < 3u; ++channel) {
                         if (!std::isfinite(raw[channel])) {
-                            outError = "direct Hanatos integrated LUT produced non-finite data";
+                            outError = "film Hanatos integrated LUT produced non-finite data";
                             return false;
                         }
                         out[outBase + channel] = static_cast<float>(raw[channel]);
@@ -501,6 +501,7 @@ namespace JuicerCuda {
     };
 
     static bool enqueue_host_to_device_copy(
+        Resources& resources,
         const HostToDeviceCopyRequest& request,
         void* dst,
         const void* src,
@@ -879,6 +880,22 @@ namespace JuicerCuda {
         (void)free_owned_device(resources, ptr, ignored);
     }
 
+    static void recycle_completion_event_locked(
+        Resources& resources,
+        void*& eventOpaque) noexcept {
+        if (!eventOpaque) {
+            return;
+        }
+        try {
+            resources.completionEventPoolOpaque.push_back(eventOpaque);
+            eventOpaque = nullptr;
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+            cudaEventDestroy(reinterpret_cast<cudaEvent_t>(eventOpaque));
+            eventOpaque = nullptr;
+        }
+    }
+
     static void reap_retire_queue_locked(Resources& resources) noexcept {
         for (size_t i = 0; i < resources.retireQueue.size();) {
             Resources::RetireEntry& e = resources.retireQueue[i];
@@ -924,14 +941,9 @@ namespace JuicerCuda {
                     continue;
                 }
 
-                // Return the fence to the pool; destroy it if the pool cannot grow.
-                try {
-                    resources.retireEventPoolOpaque.push_back(e.doneEventOpaque);
-                } catch (...) {
-                    JuicerLogging::discard_current_exception();
-                    cudaEventDestroy(ev);
-                    e.doneEventOpaque = nullptr;
-                }
+                recycle_completion_event_locked(
+                    resources,
+                    e.doneEventOpaque);
                 if (resources.retireBytes >= e.bytes) {
                     resources.retireBytes -= e.bytes;
                 }
@@ -1013,13 +1025,13 @@ namespace JuicerCuda {
         }
 
         if (allReleased) {
-            for (void* p : resources.retireEventPoolOpaque) {
+            for (void* p : resources.completionEventPoolOpaque) {
                 cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(p);
                 if (ev) {
                     cudaEventDestroy(ev);
                 }
             }
-            resources.retireEventPoolOpaque.clear();
+            resources.completionEventPoolOpaque.clear();
         }
         return allReleased;
 #else
@@ -1036,9 +1048,9 @@ namespace JuicerCuda {
         outError = "CUDA is not enabled";
         return false;
 #else
-        if (!resources.retireEventPoolOpaque.empty()) {
-            outEventOpaque = resources.retireEventPoolOpaque.back();
-            resources.retireEventPoolOpaque.pop_back();
+        if (!resources.completionEventPoolOpaque.empty()) {
+            outEventOpaque = resources.completionEventPoolOpaque.back();
+            resources.completionEventPoolOpaque.pop_back();
             return true;
         }
         cudaEvent_t ev = nullptr;
@@ -1054,12 +1066,25 @@ namespace JuicerCuda {
     }
 #endif
 
-    static void release_frame_use_event_entry(Resources::PendingFrameUseEvent& entry) noexcept {
+    static void release_frame_use_event_entry(
+        Resources& resources,
+        Resources::PendingFrameUseEvent& entry,
+        bool recycle) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (entry.eventOpaque) {
-            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(entry.eventOpaque);
-            cudaEventDestroy(ev);
+            if (recycle) {
+                recycle_completion_event_locked(
+                    resources,
+                    entry.eventOpaque);
+            } else {
+                cudaEventDestroy(
+                    reinterpret_cast<cudaEvent_t>(entry.eventOpaque));
+                entry.eventOpaque = nullptr;
+            }
         }
+#else
+        (void)resources;
+        (void)recycle;
 #endif
         entry = Resources::PendingFrameUseEvent{};
     }
@@ -1073,13 +1098,13 @@ namespace JuicerCuda {
                                  ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
                                  : nullptr;
             if (!ev) {
-                release_frame_use_event_entry(entry);
+                release_frame_use_event_entry(resources, entry, true);
                 pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
                 continue;
             }
             const cudaError_t queryErr = cudaEventQuery(ev);
             if (queryErr == cudaSuccess) {
-                release_frame_use_event_entry(entry);
+                release_frame_use_event_entry(resources, entry, true);
                 pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
                 continue;
             }
@@ -1341,7 +1366,7 @@ namespace JuicerCuda {
             resources.densityCurvesLayersChannelN[ch] = 0;
         }
         resources.hasDensityCurvesLayers = 0;
-        resources.directDensityLayersHash = 0;
+        resources.filmDensityLayersHash = 0;
     }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -1368,7 +1393,7 @@ namespace JuicerCuda {
             resources.densityCurvesLayersChannelN[ch] = 0;
         }
         resources.hasDensityCurvesLayers = 0;
-        resources.directDensityLayersHash = 0;
+        resources.filmDensityLayersHash = 0;
         return true;
 #endif
     }
@@ -1482,6 +1507,7 @@ namespace JuicerCuda {
             return false;
         }
         if (!enqueue_host_to_device_copy(
+                resources,
                 HostToDeviceCopyRequest{"alloc_and_upload_array", label},
                 dst,
                 src,
@@ -1540,6 +1566,7 @@ namespace JuicerCuda {
         }
 
         if (!enqueue_host_to_device_copy(
+                resources,
                 HostToDeviceCopyRequest{"alloc_and_upload_bytes", label},
                 dst,
                 src,
@@ -1626,6 +1653,7 @@ namespace JuicerCuda {
                 label,
                 outError);
             const bool copyOk = waitOk && enqueue_host_to_device_copy(
+                                              resources,
                                               HostToDeviceCopyRequest{"upload_array_locked", label},
                                               dst,
                                               src,
@@ -1715,6 +1743,7 @@ namespace JuicerCuda {
         }
 
         if (!enqueue_host_to_device_copy(
+                resources,
                 HostToDeviceCopyRequest{"alloc_and_upload_curve", "curve.x"},
                 dst.x,
                 src.lambda_nm.data(),
@@ -1726,6 +1755,7 @@ namespace JuicerCuda {
             return false;
         }
         if (!enqueue_host_to_device_copy(
+                resources,
                 HostToDeviceCopyRequest{"alloc_and_upload_curve", "curve.y"},
                 dst.y,
                 src.linear.data(),
@@ -1791,6 +1821,7 @@ namespace JuicerCuda {
                 baseLabel,
                 outError);
             const bool copyXOk = waitOk && enqueue_host_to_device_copy(
+                                               resources,
                                                HostToDeviceCopyRequest{"upload_curve_locked", labelX.c_str()},
                                                dst.x,
                                                src.lambda_nm.data(),
@@ -1799,6 +1830,7 @@ namespace JuicerCuda {
                                                outError);
             const std::string labelY = std::string(baseLabel) + ".y";
             const bool copyYOk = copyXOk && enqueue_host_to_device_copy(
+                                                resources,
                                                 HostToDeviceCopyRequest{"upload_curve_locked", labelY.c_str()},
                                                 dst.y,
                                                 src.linear.data(),
@@ -1885,6 +1917,7 @@ namespace JuicerCuda {
             return false;
         }
         if (!enqueue_host_to_device_copy(
+                resources,
                 HostToDeviceCopyRequest{"alloc_and_upload_spectral_samples", label},
                 dst.y,
                 src.data(),
@@ -1938,6 +1971,7 @@ namespace JuicerCuda {
                 label,
                 outError);
             const bool copyOk = waitOk && enqueue_host_to_device_copy(
+                                              resources,
                                               HostToDeviceCopyRequest{"upload_spectral_samples_locked", label},
                                               dst.y,
                                               src.data(),
@@ -2051,7 +2085,7 @@ namespace JuicerCuda {
         free_scan_error_readbacks(resources);
         for (Resources::PendingFrameUseEvent& entry :
              resources.pendingFrameUseEvents) {
-            release_frame_use_event_entry(entry);
+            release_frame_use_event_entry(resources, entry, false);
         }
         resources.pendingFrameUseEvents.clear();
 
@@ -2133,7 +2167,7 @@ namespace JuicerCuda {
             resources.deviceAllocationRecords.clear();
             resources.contextLossOnlyDeviceAllocationRecords.clear();
             resources.retireQueue.clear();
-            resources.retireEventPoolOpaque.clear();
+            resources.completionEventPoolOpaque.clear();
             resources.pendingFrameUseEvents.clear();
             resources.pendingScanErrorReadbacks.clear();
             resources.retireBytes = 0;
@@ -2408,7 +2442,54 @@ namespace JuicerCuda {
 #endif
     }
 
-    bool retain_frame_use_event(
+    static bool acquire_frame_use_event(
+        Resources& resources,
+        const char* label,
+        void*& outEventOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)label;
+        outEventOpaque = nullptr;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outEventOpaque = nullptr;
+        outError.clear();
+        {
+            std::lock_guard<std::mutex> lock(resources.m);
+            reap_retire_queue_locked(resources);
+            reap_frame_use_events_locked(resources);
+            if (!validate_resource_owner_locked(resources, outError, true)) {
+                return false;
+            }
+            if (!resources.completionEventPoolOpaque.empty()) {
+                outEventOpaque = resources.completionEventPoolOpaque.back();
+                resources.completionEventPoolOpaque.pop_back();
+                return true;
+            }
+        }
+
+        cudaEvent_t event = nullptr;
+        const cudaError_t createError =
+            cudaEventCreateWithFlags(&event, cudaEventDisableTiming);
+        if (createError != cudaSuccess || !event) {
+            if (event) {
+                cudaEventDestroy(event);
+            }
+            outError = std::string("cudaEventCreateWithFlags(") +
+                       (label ? label : "frame use") + ") failed: " +
+                       (cudaGetErrorString(createError)
+                            ? cudaGetErrorString(createError)
+                            : "(unknown)");
+            return false;
+        }
+        outEventOpaque = reinterpret_cast<void*>(event);
+        return true;
+#endif
+    }
+
+    static bool retain_frame_use_event(
         Resources& resources,
         void*& eventOpaque,
         std::string& outError) {
@@ -2424,8 +2505,6 @@ namespace JuicerCuda {
         }
 
         std::lock_guard<std::mutex> lock(resources.m);
-        reap_retire_queue_locked(resources);
-        reap_frame_use_events_locked(resources);
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
@@ -2444,14 +2523,1254 @@ namespace JuicerCuda {
 #endif
     }
 
-
-// Split implementation sections (single-TU include model to preserve exact behavior while
-// reducing monolithic file size and keeping ownership boundaries explicit).
-#include "Cuda/JuicerCudaResourcesServing.inc"
-    static bool prepare_focused_route_resources(
+    bool record_frame_use_event(
         Resources& resources,
-        const DirectResourcePreparation& request,
-        bool printRoute,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        void* eventOpaque = nullptr;
+        if (!acquire_frame_use_event(
+                resources,
+                label,
+                eventOpaque,
+                outError)) {
+            return false;
+        }
+
+        const cudaEvent_t event =
+            reinterpret_cast<cudaEvent_t>(eventOpaque);
+        const cudaStream_t stream = cudaStreamOpaque
+                                        ? reinterpret_cast<cudaStream_t>(
+                                              cudaStreamOpaque)
+                                        : nullptr;
+        const cudaError_t recordError = cudaEventRecord(event, stream);
+        if (recordError != cudaSuccess) {
+            cudaEventDestroy(event);
+            outError = std::string("cudaEventRecord(") +
+                       (label ? label : "frame use") + ") failed: " +
+                       (cudaGetErrorString(recordError)
+                            ? cudaGetErrorString(recordError)
+                            : "(unknown)");
+            return false;
+        }
+
+        if (!retain_frame_use_event(resources, eventOpaque, outError)) {
+            if (eventOpaque) {
+                cudaEventDestroy(
+                    reinterpret_cast<cudaEvent_t>(eventOpaque));
+            }
+            if (outError.empty()) {
+                outError = std::string(label ? label : "frame use") +
+                           " retention failed";
+            }
+            return false;
+        }
+        return true;
+#endif
+    }
+
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+
+    struct PinnedUploadContextKey {
+        int deviceId = -1;
+        void* contextOpaque = nullptr;
+
+        bool operator==(const PinnedUploadContextKey& other) const noexcept {
+            return deviceId == other.deviceId &&
+                   contextOpaque == other.contextOpaque;
+        }
+    };
+
+    struct PinnedUploadContextKeyHash {
+        std::size_t operator()(const PinnedUploadContextKey& key) const noexcept {
+            const std::size_t hDevice = std::hash<int>{}(key.deviceId);
+            const std::size_t hContext = std::hash<std::uintptr_t>{}(
+                reinterpret_cast<std::uintptr_t>(key.contextOpaque));
+            return hDevice ^ (hContext + 0x9e3779b9u + (hDevice << 6u) + (hDevice >> 2u));
+        }
+    };
+
+    constexpr std::size_t kPinnedUploadStagingMaxBytes =
+        128ull * 1024ull * 1024ull;
+
+    enum class PinnedUploadBlockState : std::uint8_t {
+        Available = 0,
+        Reserved,
+        InFlight,
+        Quarantined
+    };
+
+    struct PinnedUploadBlock {
+        std::uint64_t id = 0;
+        void* ptr = nullptr;
+        std::size_t capacity = 0;
+        std::uint64_t lastTouchedMs = 0;
+        void* doneEventOpaque = nullptr;
+        PinnedUploadBlockState state = PinnedUploadBlockState::Available;
+    };
+
+    struct PinnedUploadPool {
+        std::vector<PinnedUploadBlock> blocks;
+        std::uint64_t nextBlockId = 1;
+        std::size_t totalBytes = 0;
+    };
+
+    struct PinnedUploadStagingPolicyState {
+        // Serializes reserve/trim/allocation operations. The state mutex below is
+        // never held across CUDA calls.
+        std::mutex reservationMutex;
+        std::mutex mutex;
+        std::unordered_map<PinnedUploadContextKey, PinnedUploadPool, PinnedUploadContextKeyHash> pools;
+        std::size_t totalBytesAllContexts = 0;
+    };
+
+    static PinnedUploadStagingPolicyState& pinned_upload_staging_policy_state() {
+        static PinnedUploadStagingPolicyState state;
+        return state;
+    }
+
+    static std::uint64_t pinned_upload_now_ms() noexcept {
+        using Clock = std::chrono::steady_clock;
+        const auto now = Clock::now().time_since_epoch();
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+    }
+
+    static void publish_pinned_upload_staging_bytes(std::size_t bytes) {
+        ResourceManager::global_state().pinnedStagingBytes.store(
+            static_cast<std::uint64_t>(bytes), std::memory_order_relaxed);
+    }
+
+    static std::size_t published_pinned_upload_staging_bytes() noexcept {
+        return static_cast<std::size_t>(
+            ResourceManager::global_state().pinnedStagingBytes.load(
+                std::memory_order_relaxed));
+    }
+
+    static void trace_pinned_staging_event(
+        const char* stage,
+        const char* eventName,
+        const char* reason,
+        const PinnedUploadContextKey& key,
+        std::size_t bytes,
+        std::size_t totalBytes) noexcept {
+        if (!JTRACE_ENABLED(2)) {
+            return;
+        }
+        try {
+            std::ostringstream oss;
+            oss << "stage=" << (stage ? stage : "unknown")
+                << " event=" << (eventName ? eventName : "unknown")
+                << " reason=" << (reason ? reason : "none")
+                << " device_id=" << key.deviceId
+                << " context=" << reinterpret_cast<std::uintptr_t>(key.contextOpaque)
+                << " bytes=" << bytes
+                << " cap_bytes=" << kPinnedUploadStagingMaxBytes
+                << " total_bytes=" << totalBytes;
+            JTRACE("MSPIN", oss.str());
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+    }
+
+    static PinnedUploadBlock* find_pinned_upload_block_locked(
+        PinnedUploadStagingPolicyState& policyState,
+        const PinnedUploadContextKey& key,
+        std::uint64_t blockId) {
+        const auto poolIt = policyState.pools.find(key);
+        if (poolIt == policyState.pools.end()) {
+            return nullptr;
+        }
+        for (PinnedUploadBlock& block : poolIt->second.blocks) {
+            if (block.id == blockId) {
+                return &block;
+            }
+        }
+        return nullptr;
+    }
+
+    struct PinnedUploadCompletionProbe {
+        PinnedUploadContextKey key{};
+        std::uint64_t blockId = 0;
+        void* doneEventOpaque = nullptr;
+    };
+
+    static void refresh_pinned_block_completions(
+        PinnedUploadStagingPolicyState& policyState,
+        const PinnedUploadContextKey* contextFilter) {
+        std::vector<PinnedUploadCompletionProbe> probes;
+        {
+            std::lock_guard<std::mutex> lock(policyState.mutex);
+            for (auto& poolEntry : policyState.pools) {
+                if (contextFilter && !(poolEntry.first == *contextFilter)) {
+                    continue;
+                }
+                probes.reserve(probes.size() + poolEntry.second.blocks.size());
+                for (PinnedUploadBlock& block : poolEntry.second.blocks) {
+                    if (block.state != PinnedUploadBlockState::InFlight) {
+                        continue;
+                    }
+                    if (!block.doneEventOpaque) {
+                        block.state = PinnedUploadBlockState::Quarantined;
+                        continue;
+                    }
+                    probes.push_back(PinnedUploadCompletionProbe{
+                        poolEntry.first,
+                        block.id,
+                        block.doneEventOpaque});
+                }
+            }
+        }
+
+        for (const PinnedUploadCompletionProbe& probe : probes) {
+            const cudaError_t queryErr = cudaEventQuery(
+                reinterpret_cast<cudaEvent_t>(probe.doneEventOpaque));
+            PinnedUploadBlockState nextState = PinnedUploadBlockState::Quarantined;
+            if (queryErr == cudaSuccess) {
+                nextState = PinnedUploadBlockState::Available;
+            } else if (queryErr == cudaErrorNotReady) {
+                nextState = PinnedUploadBlockState::InFlight;
+            }
+
+            std::size_t blockBytes = 0;
+            bool transitioned = false;
+            {
+                std::lock_guard<std::mutex> lock(policyState.mutex);
+                PinnedUploadBlock* block =
+                    find_pinned_upload_block_locked(
+                        policyState,
+                        probe.key,
+                        probe.blockId);
+                if (block && block->state == PinnedUploadBlockState::InFlight) {
+                    block->state = nextState;
+                    blockBytes = block->capacity;
+                    if (nextState == PinnedUploadBlockState::Available) {
+                        block->lastTouchedMs = pinned_upload_now_ms();
+                    }
+                    transitioned = true;
+                }
+            }
+
+            if (transitioned && nextState == PinnedUploadBlockState::Quarantined) {
+                const char* reason = cudaGetErrorString(queryErr);
+                trace_pinned_staging_event(
+                    "completion_query",
+                    "quarantine",
+                    reason ? reason : "event_query_failed",
+                    probe.key,
+                    blockBytes,
+                    published_pinned_upload_staging_bytes());
+            }
+        }
+    }
+
+    static int pick_reusable_pinned_block_locked(
+        PinnedUploadPool& pool,
+        std::size_t requiredBytes) {
+        int bestIndex = -1;
+        std::size_t bestCapacity = std::numeric_limits<std::size_t>::max();
+        for (std::size_t i = 0; i < pool.blocks.size(); ++i) {
+            const PinnedUploadBlock& block = pool.blocks[i];
+            if (block.state != PinnedUploadBlockState::Available || !block.ptr ||
+                !block.doneEventOpaque || block.capacity < requiredBytes) {
+                continue;
+            }
+            if (block.capacity < bestCapacity) {
+                bestCapacity = block.capacity;
+                bestIndex = static_cast<int>(i);
+            }
+        }
+        return bestIndex;
+    }
+
+    static bool pinned_upload_pool_is_empty_locked(const PinnedUploadPool& pool) {
+        return pool.blocks.empty() && pool.totalBytes == 0;
+    }
+
+    struct DetachedPinnedUploadBlock {
+        PinnedUploadContextKey key{};
+        PinnedUploadBlock block{};
+    };
+
+    static std::vector<DetachedPinnedUploadBlock> collect_pressure_trim_blocks_locked(
+        PinnedUploadStagingPolicyState& policyState,
+        std::size_t requiredBytes) {
+        std::vector<DetachedPinnedUploadBlock> candidates;
+        if (requiredBytes == 0) {
+            return candidates;
+        }
+
+        for (const auto& poolEntry : policyState.pools) {
+            candidates.reserve(
+                candidates.size() + poolEntry.second.blocks.size());
+            for (const PinnedUploadBlock& block : poolEntry.second.blocks) {
+                if (block.state == PinnedUploadBlockState::Available && block.ptr) {
+                    candidates.push_back(
+                        DetachedPinnedUploadBlock{poolEntry.first, block});
+                }
+            }
+        }
+        std::sort(
+            candidates.begin(),
+            candidates.end(),
+            [](const DetachedPinnedUploadBlock& left,
+               const DetachedPinnedUploadBlock& right) {
+                return left.block.lastTouchedMs < right.block.lastTouchedMs;
+            });
+
+        std::size_t selected = 0;
+        std::size_t trimmedBytes = 0;
+        for (std::size_t i = 0;
+             i < candidates.size() && trimmedBytes < requiredBytes;
+             ++i) {
+            PinnedUploadPool& pool = policyState.pools.at(candidates[i].key);
+            const auto blockIt = std::find_if(
+                pool.blocks.begin(),
+                pool.blocks.end(),
+                [&](const PinnedUploadBlock& block) {
+                    return block.id == candidates[i].block.id;
+                });
+            if (blockIt == pool.blocks.end()) {
+                continue;
+            }
+            const std::size_t blockBytes = blockIt->capacity;
+            pool.blocks.erase(blockIt);
+            pool.totalBytes =
+                (pool.totalBytes >= blockBytes) ? pool.totalBytes - blockBytes : 0;
+            trimmedBytes += blockBytes;
+            candidates[selected++] = candidates[i];
+        }
+        candidates.resize(selected);
+        return candidates;
+    }
+
+    static std::size_t destroy_detached_pinned_upload_blocks(
+        std::vector<DetachedPinnedUploadBlock>& blocks,
+        const char* stage,
+        std::size_t totalBytesAfterTrim) noexcept {
+        std::size_t freedBytes = 0;
+        for (DetachedPinnedUploadBlock& detached : blocks) {
+            const cudaError_t freeErr = detached.block.ptr
+                                            ? cudaFreeHost(detached.block.ptr)
+                                            : cudaErrorInvalidValue;
+            if (freeErr != cudaSuccess) {
+                const char* reason = cudaGetErrorString(freeErr);
+                trace_pinned_staging_event(
+                    stage,
+                    "quarantine",
+                    reason ? reason : "pressure_trim_free_failed",
+                    detached.key,
+                    detached.block.capacity,
+                    totalBytesAfterTrim);
+                continue;
+            }
+            freedBytes += detached.block.capacity;
+            detached.block.ptr = nullptr;
+            if (detached.block.doneEventOpaque) {
+                const cudaError_t destroyErr = cudaEventDestroy(
+                    reinterpret_cast<cudaEvent_t>(
+                        detached.block.doneEventOpaque));
+                if (destroyErr != cudaSuccess) {
+                    const char* reason = cudaGetErrorString(destroyErr);
+                    trace_pinned_staging_event(
+                        stage,
+                        "cudaEventDestroy_failed",
+                        reason ? reason : "pressure_trim_event_destroy_failed",
+                        detached.key,
+                        detached.block.capacity,
+                        totalBytesAfterTrim);
+                }
+                detached.block.doneEventOpaque = nullptr;
+            }
+            trace_pinned_staging_event(
+                stage,
+                "trim",
+                "cap_pressure",
+                detached.key,
+                detached.block.capacity,
+                totalBytesAfterTrim);
+        }
+        return freedBytes;
+    }
+
+    struct PinnedUploadReservation {
+        bool staged = false;
+        PinnedUploadContextKey key{};
+        std::uint64_t blockId = 0;
+        void* stagingPtr = nullptr;
+        void* doneEventOpaque = nullptr;
+        const char* fallbackReason = nullptr;
+    };
+
+    static bool reserve_reusable_pinned_upload_block_locked(
+        PinnedUploadStagingPolicyState& policyState,
+        const PinnedUploadContextKey& key,
+        std::size_t bytes,
+        PinnedUploadReservation& outReservation) {
+        const auto poolIt = policyState.pools.find(key);
+        if (poolIt == policyState.pools.end()) {
+            return false;
+        }
+        const int blockIndex =
+            pick_reusable_pinned_block_locked(poolIt->second, bytes);
+        if (blockIndex < 0) {
+            return false;
+        }
+
+        PinnedUploadBlock& block =
+            poolIt->second.blocks[static_cast<std::size_t>(blockIndex)];
+        block.state = PinnedUploadBlockState::Reserved;
+        block.lastTouchedMs = pinned_upload_now_ms();
+        outReservation.staged = true;
+        outReservation.key = key;
+        outReservation.blockId = block.id;
+        outReservation.stagingPtr = block.ptr;
+        outReservation.doneEventOpaque = block.doneEventOpaque;
+        return true;
+    }
+
+    static void destroy_unpublished_pinned_upload_block(
+        void* pinnedPtr,
+        cudaEvent_t doneEvent) noexcept {
+        if (doneEvent) {
+            (void)cudaEventDestroy(doneEvent);
+        }
+        if (pinnedPtr) {
+            (void)cudaFreeHost(pinnedPtr);
+        }
+    }
+
+    static PinnedUploadReservation reserve_pinned_upload_block(
+        Resources& resources,
+        std::size_t bytes,
+        const char* stage) {
+        PinnedUploadReservation result{};
+        if (bytes == 0) {
+            return result;
+        }
+
+        result.key.deviceId = resources.ownerContextKey.deviceId;
+        result.key.contextOpaque = resources.ownerContextKey.contextOpaque;
+        if (result.key.deviceId < 0 || !result.key.contextOpaque ||
+            resources.deviceId != result.key.deviceId) {
+            result.fallbackReason = "invalid_resource_owner";
+            return result;
+        }
+        if (bytes > kPinnedUploadStagingMaxBytes) {
+            result.fallbackReason = "cap_exceeded";
+            return result;
+        }
+
+        PinnedUploadStagingPolicyState& policyState = pinned_upload_staging_policy_state();
+        std::lock_guard<std::mutex> reservationLock(
+            policyState.reservationMutex);
+        refresh_pinned_block_completions(policyState, &result.key);
+
+        bool capPressure = false;
+        {
+            std::lock_guard<std::mutex> lock(policyState.mutex);
+            if (reserve_reusable_pinned_upload_block_locked(
+                    policyState,
+                    result.key,
+                    bytes,
+                    result)) {
+                return result;
+            }
+
+            if (policyState.totalBytesAllContexts >
+                kPinnedUploadStagingMaxBytes - bytes) {
+                capPressure = true;
+            }
+        }
+
+        std::vector<DetachedPinnedUploadBlock> detachedBlocks;
+        if (capPressure) {
+            refresh_pinned_block_completions(policyState, nullptr);
+
+            std::size_t totalBytesAfterTrim = 0;
+            std::size_t requiredTrimBytes = 0;
+            {
+                std::lock_guard<std::mutex> lock(policyState.mutex);
+                if (reserve_reusable_pinned_upload_block_locked(
+                        policyState,
+                        result.key,
+                        bytes,
+                        result)) {
+                    return result;
+                }
+
+                requiredTrimBytes =
+                    (policyState.totalBytesAllContexts >
+                     kPinnedUploadStagingMaxBytes - bytes)
+                        ? policyState.totalBytesAllContexts -
+                              (kPinnedUploadStagingMaxBytes - bytes)
+                        : 0;
+                if (requiredTrimBytes > 0) {
+                    detachedBlocks = collect_pressure_trim_blocks_locked(
+                        policyState,
+                        requiredTrimBytes);
+                }
+                totalBytesAfterTrim = policyState.totalBytesAllContexts;
+            }
+
+            const std::size_t freedBytes = destroy_detached_pinned_upload_blocks(
+                detachedBlocks,
+                stage,
+                totalBytesAfterTrim);
+            {
+                std::lock_guard<std::mutex> lock(policyState.mutex);
+                for (const DetachedPinnedUploadBlock& detached : detachedBlocks) {
+                    if (!detached.block.ptr) {
+                        continue;
+                    }
+                    PinnedUploadPool& pool = policyState.pools.at(detached.key);
+                    PinnedUploadBlock block = detached.block;
+                    block.state = PinnedUploadBlockState::Quarantined;
+                    pool.blocks.push_back(block);
+                    pool.totalBytes += block.capacity;
+                }
+                policyState.totalBytesAllContexts =
+                    (policyState.totalBytesAllContexts >= freedBytes)
+                        ? policyState.totalBytesAllContexts - freedBytes
+                        : 0;
+                for (auto it = policyState.pools.begin();
+                     it != policyState.pools.end();) {
+                    if (pinned_upload_pool_is_empty_locked(it->second)) {
+                        it = policyState.pools.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                totalBytesAfterTrim = policyState.totalBytesAllContexts;
+                publish_pinned_upload_staging_bytes(totalBytesAfterTrim);
+            }
+            trace_pinned_staging_event(
+                stage,
+                "cap_hit",
+                detachedBlocks.empty() ? "capacity_rechecked" : "pressure_trim",
+                result.key,
+                bytes,
+                totalBytesAfterTrim);
+            if (totalBytesAfterTrim > kPinnedUploadStagingMaxBytes - bytes) {
+                result.fallbackReason = "cap_exceeded";
+                return result;
+            }
+        }
+
+        void* pinnedPtr = nullptr;
+        const cudaError_t allocErr = cudaMallocHost(&pinnedPtr, bytes);
+        if (allocErr != cudaSuccess || !pinnedPtr) {
+            destroy_unpublished_pinned_upload_block(pinnedPtr, nullptr);
+            result.fallbackReason = "host_alloc_failed";
+            return result;
+        }
+
+        cudaEvent_t doneEvent = nullptr;
+        const cudaError_t eventErr =
+            cudaEventCreateWithFlags(&doneEvent, cudaEventDisableTiming);
+        if (eventErr != cudaSuccess || !doneEvent) {
+            destroy_unpublished_pinned_upload_block(pinnedPtr, doneEvent);
+            result.fallbackReason = "event_create_failed";
+            return result;
+        }
+
+        bool inserted = false;
+        std::size_t totalBytes = 0;
+        try {
+            std::lock_guard<std::mutex> lock(policyState.mutex);
+            PinnedUploadPool& pool = policyState.pools[result.key];
+            PinnedUploadBlock block{};
+            block.id = pool.nextBlockId;
+            block.ptr = pinnedPtr;
+            block.capacity = bytes;
+            block.lastTouchedMs = pinned_upload_now_ms();
+            block.doneEventOpaque = reinterpret_cast<void*>(doneEvent);
+            block.state = PinnedUploadBlockState::Reserved;
+            pool.blocks.push_back(block);
+            ++pool.nextBlockId;
+            pool.totalBytes += bytes;
+            policyState.totalBytesAllContexts += bytes;
+            totalBytes = policyState.totalBytesAllContexts;
+            publish_pinned_upload_staging_bytes(totalBytes);
+
+            result.staged = true;
+            result.blockId = block.id;
+            result.stagingPtr = block.ptr;
+            result.doneEventOpaque = block.doneEventOpaque;
+            inserted = true;
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+
+        if (!inserted) {
+            destroy_unpublished_pinned_upload_block(pinnedPtr, doneEvent);
+            result.fallbackReason = "pool_insert_failed";
+            return result;
+        }
+
+        trace_pinned_staging_event(
+            stage,
+            "alloc",
+            "new_block",
+            result.key,
+            bytes,
+            totalBytes);
+        return result;
+    }
+
+    static bool transition_pinned_upload_reservation(
+        const PinnedUploadReservation& reservation,
+        PinnedUploadBlockState nextState) {
+        if (!reservation.staged || reservation.blockId == 0) {
+            return false;
+        }
+
+        PinnedUploadStagingPolicyState& policyState = pinned_upload_staging_policy_state();
+        std::lock_guard<std::mutex> lock(policyState.mutex);
+        PinnedUploadBlock* block = find_pinned_upload_block_locked(
+            policyState,
+            reservation.key,
+            reservation.blockId);
+        if (!block || block->state != PinnedUploadBlockState::Reserved) {
+            return false;
+        }
+
+        block->state = nextState;
+        if (nextState == PinnedUploadBlockState::Available) {
+            block->lastTouchedMs = pinned_upload_now_ms();
+        }
+        return true;
+    }
+
+    static bool return_pinned_upload_reservation(
+        const PinnedUploadReservation& reservation) {
+        return transition_pinned_upload_reservation(
+            reservation,
+            PinnedUploadBlockState::Available);
+    }
+
+    enum class PinnedUploadCompletionResult : std::uint8_t {
+        InFlight = 0,
+        CompletedAfterExceptionalSync,
+        Quarantined
+    };
+
+    static PinnedUploadCompletionResult complete_enqueued_pinned_upload(
+        const PinnedUploadReservation& reservation,
+        cudaStream_t stream,
+        const char* stage,
+        std::string& outError) {
+        outError.clear();
+        const cudaError_t recordErr = cudaEventRecord(
+            reinterpret_cast<cudaEvent_t>(reservation.doneEventOpaque),
+            stream);
+        if (recordErr == cudaSuccess) {
+            if (transition_pinned_upload_reservation(
+                    reservation,
+                    PinnedUploadBlockState::InFlight)) {
+                return PinnedUploadCompletionResult::InFlight;
+            }
+            outError = "pinned staging reservation ownership was lost";
+            return PinnedUploadCompletionResult::Quarantined;
+        }
+
+        const char* recordReason = cudaGetErrorString(recordErr);
+        const std::string recordError =
+            std::string("cudaEventRecord(pinned staging) failed: ") +
+            (recordReason ? recordReason : "(unknown)");
+        const cudaError_t syncErr = cudaStreamSynchronize(stream);
+        if (syncErr == cudaSuccess) {
+            if (!transition_pinned_upload_reservation(
+                    reservation,
+                    PinnedUploadBlockState::Available)) {
+                outError = "pinned staging reservation ownership was lost";
+                return PinnedUploadCompletionResult::Quarantined;
+            }
+            trace_pinned_staging_event(
+                stage,
+                "event_record_failed",
+                "stream_sync_completed",
+                reservation.key,
+                0,
+                published_pinned_upload_staging_bytes());
+            outError = recordError;
+            return PinnedUploadCompletionResult::CompletedAfterExceptionalSync;
+        }
+
+        const bool quarantined = transition_pinned_upload_reservation(
+            reservation,
+            PinnedUploadBlockState::Quarantined);
+        const char* syncReason = cudaGetErrorString(syncErr);
+        outError = recordError + " | cudaStreamSynchronize(pinned staging) failed: " +
+                   (syncReason ? syncReason : "(unknown)");
+        if (!quarantined) {
+            outError += " | pinned staging reservation ownership was lost";
+        }
+        trace_pinned_staging_event(
+            stage,
+            "quarantine",
+            "event_record_and_stream_sync_failed",
+            reservation.key,
+            0,
+            published_pinned_upload_staging_bytes());
+        return PinnedUploadCompletionResult::Quarantined;
+    }
+
+    static bool enqueue_host_to_device_copy(
+        Resources& resources,
+        const HostToDeviceCopyRequest& request,
+        void* dst,
+        const void* src,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (bytes == 0) {
+            return true;
+        }
+        if (!dst || !src) {
+            outError = std::string(request.label ? request.label : "copy") + " upload args invalid";
+            return false;
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque
+                                        ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+                                        : nullptr;
+
+        PinnedUploadReservation reservation =
+            reserve_pinned_upload_block(resources, bytes, request.stage);
+        if (reservation.staged && reservation.stagingPtr) {
+            std::memcpy(reservation.stagingPtr, src, bytes);
+            const cudaError_t stagedErr = cudaMemcpyAsync(
+                dst,
+                reservation.stagingPtr,
+                bytes,
+                cudaMemcpyHostToDevice,
+                stream);
+            if (stagedErr == cudaSuccess) {
+                const PinnedUploadCompletionResult completion =
+                    complete_enqueued_pinned_upload(
+                        reservation,
+                        stream,
+                        request.stage,
+                        outError);
+                if (completion == PinnedUploadCompletionResult::InFlight) {
+                    return true;
+                }
+                if (completion ==
+                    PinnedUploadCompletionResult::CompletedAfterExceptionalSync) {
+                    trace_pinned_staging_event(
+                        request.stage,
+                        "fallback",
+                        "event_record_failed_stream_synchronized",
+                        reservation.key,
+                        bytes,
+                        published_pinned_upload_staging_bytes());
+                    outError.clear();
+                    return true;
+                }
+                return false;
+            }
+
+            if (!return_pinned_upload_reservation(reservation)) {
+                outError = "failed to return pinned staging reservation";
+                return false;
+            }
+            reservation.fallbackReason = "staged_copy_failed";
+        }
+
+        const cudaError_t err = cudaMemcpyAsync(
+            dst,
+            src,
+            bytes,
+            cudaMemcpyHostToDevice,
+            stream);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMemcpyAsync(") + (request.label ? request.label : "upload") + ") failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            return false;
+        }
+
+        if (reservation.fallbackReason) {
+            trace_pinned_staging_event(
+                request.stage,
+                "fallback",
+                reservation.fallbackReason,
+                reservation.key,
+                bytes,
+                published_pinned_upload_staging_bytes());
+        }
+        return true;
+    }
+
+#endif // defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+
+    static void free_stbn(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (resources.stbnData) {
+            free_owned_device_noexcept(resources, resources.stbnData);
+            resources.stbnData = nullptr;
+        }
+#endif
+        resources.stbnWidth = 0;
+        resources.stbnHeight = 0;
+        resources.stbnFrames = 0;
+        resources.grainStaticAssetVersion = 0;
+    }
+
+    static void free_wang(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (resources.wangTilesData) {
+            free_owned_device_noexcept(resources, resources.wangTilesData);
+            resources.wangTilesData = nullptr;
+        }
+        if (resources.wangLutData) {
+            free_owned_device_noexcept(resources, resources.wangLutData);
+            resources.wangLutData = nullptr;
+        }
+#endif
+        resources.wangWidth = 0;
+        resources.wangHeight = 0;
+        resources.wangCount = 0;
+        resources.wangColors = 0;
+        resources.grainStaticAssetVersion = 0;
+    }
+
+    static void release_scan_error_readback_entry(
+        Resources::PendingScanErrorReadback& entry,
+        bool waitForEvent) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        cudaEvent_t ev = entry.eventOpaque
+                             ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
+                             : nullptr;
+        if (waitForEvent && ev) {
+            (void)cudaEventSynchronize(ev);
+        }
+        if (entry.host) {
+            cudaFreeHost(entry.host);
+        }
+        if (ev) {
+            cudaEventDestroy(ev);
+        }
+#else
+        (void)waitForEvent;
+#endif
+        entry = Resources::PendingScanErrorReadback{};
+    }
+
+    static void free_scan_error_readbacks(Resources& resources) noexcept {
+        for (Resources::PendingScanErrorReadback& entry : resources.pendingScanErrorReadbacks) {
+            release_scan_error_readback_entry(entry, true);
+        }
+        resources.pendingScanErrorReadbacks.clear();
+    }
+
+
+    bool retain_scan_error_readback(
+        Resources& resources,
+        int*& host,
+        void*& eventOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)host;
+        (void)eventOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outError.clear();
+        if (!host || !eventOpaque) {
+            outError = "scan error readback staging missing";
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+
+        try {
+            Resources::PendingScanErrorReadback entry{};
+            entry.host = host;
+            entry.eventOpaque = eventOpaque;
+            resources.pendingScanErrorReadbacks.push_back(entry);
+        } catch (...) {
+            outError = "scan error readback retention failed";
+            return false;
+        }
+
+        host = nullptr;
+        eventOpaque = nullptr;
+        return true;
+#endif
+    }
+
+    bool poll_scan_error_readbacks(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        bool& outDetected,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        outDetected = false;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outDetected = false;
+        outError.clear();
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+
+        std::vector<Resources::PendingScanErrorReadback>& pending =
+            resources.pendingScanErrorReadbacks;
+        for (std::size_t i = 0; i < pending.size();) {
+            Resources::PendingScanErrorReadback& entry = pending[i];
+            cudaEvent_t ev = entry.eventOpaque
+                                 ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
+                                 : nullptr;
+            if (!entry.host || !ev) {
+                release_scan_error_readback_entry(entry, false);
+                pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
+                continue;
+            }
+
+            const cudaError_t pollErr = cudaEventQuery(ev);
+            if (pollErr == cudaSuccess) {
+                if (*entry.host != 0) {
+                    outDetected = true;
+                }
+                release_scan_error_readback_entry(entry, false);
+                pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
+                if (outDetected) {
+                    return true;
+                }
+                continue;
+            }
+            if (pollErr == cudaErrorNotReady) {
+                cudaStream_t stream = cudaStreamOpaque
+                                          ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+                                          : nullptr;
+                const cudaError_t waitErr = cudaStreamWaitEvent(stream, ev, 0);
+                if (waitErr != cudaSuccess) {
+                    outError = std::string("CUDA scan error stream wait failed: ") +
+                               (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                    return false;
+                }
+                ++i;
+                continue;
+            }
+
+            outError = std::string("CUDA scan error event query failed: ") +
+                       (cudaGetErrorString(pollErr) ? cudaGetErrorString(pollErr) : "(unknown)");
+            return false;
+        }
+        return true;
+#endif
+    }
+
+
+    bool ensure_grain_static_assets_uploaded(
+        Resources& resources,
+        const JuicerAssets::StaticNoisePayloadSet& payloads,
+        std::uint64_t expectedAssetVersion,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)payloads;
+        (void)expectedAssetVersion;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outError.clear();
+        if (expectedAssetVersion == 0) {
+            outError = "grain static asset version is invalid";
+            return false;
+        }
+
+        const JuicerAssets::StbnNoisePayload& stbn = payloads.stbn;
+        const JuicerAssets::WangNoisePayload& wang = payloads.wang;
+        if (!stbn.valid) {
+            outError = stbn.error.empty()
+                           ? "grain static STBN payload is invalid"
+                           : stbn.error;
+            return false;
+        }
+        if (!wang.valid) {
+            outError = wang.error.empty()
+                           ? "grain static Wang payload is invalid"
+                           : wang.error;
+            return false;
+        }
+        if (payloads.version != expectedAssetVersion ||
+            stbn.version != expectedAssetVersion ||
+            wang.version != expectedAssetVersion) {
+            outError = "grain static host asset identity mismatch";
+            return false;
+        }
+        if (stbn.data.empty() || stbn.width <= 0 || stbn.height <= 0 ||
+            stbn.frames <= 0 || wang.tiles.empty() || wang.lut.empty() ||
+            wang.width <= 0 || wang.height <= 0 || wang.count <= 0 ||
+            wang.colors <= 0) {
+            outError = "grain static host asset payload is incomplete";
+            return false;
+        }
+
+        std::lock_guard<std::mutex> servingUpdateLock(resources.servingUpdateMutex);
+        std::unique_lock<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+
+        const bool needStbnUpload = !resources.stbnData;
+        const bool needWangUpload =
+            !resources.wangTilesData || !resources.wangLutData;
+        if (!needStbnUpload && !needWangUpload) {
+            if (resources.grainStaticAssetVersion != expectedAssetVersion ||
+                resources.stbnWidth != stbn.width ||
+                resources.stbnHeight != stbn.height ||
+                resources.stbnFrames != stbn.frames ||
+                resources.wangWidth != wang.width ||
+                resources.wangHeight != wang.height ||
+                resources.wangCount != wang.count ||
+                resources.wangColors != wang.colors) {
+                outError = "grain static resource identity mismatch";
+                return false;
+            }
+            return true;
+        }
+
+        std::string stbnError;
+        if (!resources.stbnData) {
+            void* stbnData = nullptr;
+            if (!alloc_and_upload_bytes_locked(
+                    resources,
+                    stbnData,
+                    stbn.data.data(),
+                    stbn.data.size(),
+                    cudaStreamOpaque,
+                    &lock,
+                    "STBN",
+                    stbnError)) {
+                free_stbn(resources);
+            } else if (!resources.stbnData) {
+                resources.stbnData =
+                    reinterpret_cast<std::uint8_t*>(stbnData);
+                resources.stbnWidth = stbn.width;
+                resources.stbnHeight = stbn.height;
+                resources.stbnFrames = stbn.frames;
+            } else if (stbnData) {
+                free_owned_device_noexcept(resources, stbnData);
+            }
+        }
+
+        std::string wangError;
+        if (!resources.wangTilesData || !resources.wangLutData) {
+            if (resources.wangTilesData || resources.wangLutData) {
+                free_wang(resources);
+            }
+            void* wangTilesData = nullptr;
+            void* wangLutData = nullptr;
+            const bool tilesOk = alloc_and_upload_bytes_locked(
+                resources,
+                wangTilesData,
+                wang.tiles.data(),
+                wang.tiles.size(),
+                cudaStreamOpaque,
+                &lock,
+                "Wang.tiles",
+                wangError);
+            const bool lutOk = tilesOk && alloc_and_upload_bytes_locked(
+                                              resources,
+                                              wangLutData,
+                                              wang.lut.data(),
+                                              wang.lut.size(),
+                                              cudaStreamOpaque,
+                                              &lock,
+                                              "Wang.lut",
+                                              wangError);
+            if (!tilesOk || !lutOk) {
+                if (wangTilesData) {
+                    free_owned_device_noexcept(resources, wangTilesData);
+                }
+                if (wangLutData) {
+                    free_owned_device_noexcept(resources, wangLutData);
+                }
+                free_wang(resources);
+            } else if (!resources.wangTilesData && !resources.wangLutData) {
+                resources.wangTilesData =
+                    reinterpret_cast<std::uint8_t*>(wangTilesData);
+                resources.wangLutData =
+                    reinterpret_cast<std::uint8_t*>(wangLutData);
+                resources.wangWidth = wang.width;
+                resources.wangHeight = wang.height;
+                resources.wangCount = wang.count;
+                resources.wangColors = wang.colors;
+            } else {
+                if (wangTilesData) {
+                    free_owned_device_noexcept(resources, wangTilesData);
+                }
+                if (wangLutData) {
+                    free_owned_device_noexcept(resources, wangLutData);
+                }
+            }
+        }
+
+        const bool ready =
+            resources.stbnData &&
+            resources.stbnWidth == stbn.width &&
+            resources.stbnHeight == stbn.height &&
+            resources.stbnFrames == stbn.frames &&
+            resources.wangTilesData && resources.wangLutData &&
+            resources.wangWidth == wang.width &&
+            resources.wangHeight == wang.height &&
+            resources.wangCount == wang.count &&
+            resources.wangColors == wang.colors;
+        if (!ready) {
+            outError = !stbnError.empty()
+                           ? stbnError
+                           : (!wangError.empty()
+                                  ? wangError
+                                  : "grain static resource upload incomplete");
+            return false;
+        }
+        resources.grainStaticAssetVersion = expectedAssetVersion;
+        return true;
+#endif
+    }
+
+    void purge_pinned_upload_staging_for_context(
+        int deviceId,
+        void* contextOpaque,
+        PinnedUploadPurgeDisposition disposition) noexcept {
+        try {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+            if (deviceId < 0 || contextOpaque == nullptr) {
+                return;
+            }
+
+            const PinnedUploadContextKey key{deviceId, contextOpaque};
+            PinnedUploadStagingPolicyState& policyState =
+                pinned_upload_staging_policy_state();
+            std::unique_lock<std::mutex> reservationLock(
+                policyState.reservationMutex);
+            std::vector<PinnedUploadBlock> blocksToFree;
+            {
+                std::lock_guard<std::mutex> lock(policyState.mutex);
+                const auto it = policyState.pools.find(key);
+                if (it == policyState.pools.end()) {
+                    return;
+                }
+                const std::size_t contextBytes = it->second.totalBytes;
+                blocksToFree = std::move(it->second.blocks);
+                policyState.pools.erase(it);
+                policyState.totalBytesAllContexts =
+                    (policyState.totalBytesAllContexts >= contextBytes)
+                        ? policyState.totalBytesAllContexts - contextBytes
+                        : 0;
+                publish_pinned_upload_staging_bytes(
+                    policyState.totalBytesAllContexts);
+            }
+            reservationLock.unlock();
+
+            if (disposition == PinnedUploadPurgeDisposition::ProvenContextLoss) {
+                return;
+            }
+
+            if (blocksToFree.empty()) {
+                return;
+            }
+
+            const auto trace_cuda_failure = [&](const char* operation,
+                                                cudaError_t error,
+                                                std::size_t bytes) noexcept {
+                if (error == cudaSuccess) {
+                    return;
+                }
+                const char* reason = cudaGetErrorString(error);
+                trace_pinned_staging_event(
+                    "context_purge",
+                    operation,
+                    reason ? reason : "unknown_cuda_error",
+                    key,
+                    bytes,
+                    published_pinned_upload_staging_bytes());
+            };
+
+            int previousDevice = -1;
+            const cudaError_t prevErr = cudaGetDevice(&previousDevice);
+            trace_cuda_failure("cudaGetDevice", prevErr, 0);
+            const bool havePreviousDevice = (prevErr == cudaSuccess && previousDevice >= 0);
+            const bool needRestore = havePreviousDevice && previousDevice != deviceId;
+            const cudaError_t setErr = cudaSetDevice(deviceId);
+            trace_cuda_failure("cudaSetDevice(owner)", setErr, 0);
+            const bool ownerDeviceSelected = (setErr == cudaSuccess);
+            for (const PinnedUploadBlock& block : blocksToFree) {
+                bool completionProven =
+                    block.state == PinnedUploadBlockState::Available;
+                if (block.state != PinnedUploadBlockState::Available &&
+                    block.doneEventOpaque && ownerDeviceSelected) {
+                    cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
+                    const cudaError_t syncErr = cudaEventSynchronize(doneEvent);
+                    trace_cuda_failure(
+                        "cudaEventSynchronize",
+                        syncErr,
+                        block.capacity);
+                    completionProven = (syncErr == cudaSuccess);
+                }
+                if (block.doneEventOpaque && ownerDeviceSelected) {
+                    cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
+                    trace_cuda_failure(
+                        "cudaEventDestroy",
+                        cudaEventDestroy(doneEvent),
+                        block.capacity);
+                }
+                if (block.ptr && completionProven) {
+                    trace_cuda_failure(
+                        "cudaFreeHost",
+                        cudaFreeHost(block.ptr),
+                        block.capacity);
+                } else if (block.ptr) {
+                    trace_pinned_staging_event(
+                        "context_purge",
+                        "abandon",
+                        "completion_not_proven",
+                        key,
+                        block.capacity,
+                        published_pinned_upload_staging_bytes());
+                }
+            }
+            if (needRestore) {
+                trace_cuda_failure(
+                    "cudaSetDevice(restore)",
+                    cudaSetDevice(previousDevice),
+                    0);
+            }
+#else
+            (void)deviceId;
+            (void)contextOpaque;
+            (void)disposition;
+#endif
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+    }
+    bool prepare_focused_route_resources(
+        Resources& resources,
+        const FocusedRouteResourcePreparation& request,
         void* cudaStreamOpaque,
         std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
@@ -2465,11 +3784,19 @@ namespace JuicerCuda {
         if (!request.recipe || !request.exposureTables || !request.spdSInv ||
             !request.filmRawConfig || !request.scannerTables || !request.scannerColor ||
             !request.scannerLutDescriptor) {
-            outError = "direct resource preparation request is incomplete";
+            outError = "focused route resource preparation request is incomplete";
             return false;
         }
 
         const RenderRecipe& recipe = *request.recipe;
+        const Spektrafilm::ScanRoute route = recipe.profileRoute.scanRoute;
+        const Spektrafilm::ScanRouteMetadata& routeMetadata =
+            Spektrafilm::scan_route_metadata(route);
+        if (routeMetadata.route != route) {
+            outError = "focused route resource preparation route is invalid";
+            return false;
+        }
+        const bool printRoute = routeMetadata.printRoute;
         const FilmRawRecipe& filmRaw = recipe.filmRaw;
         const FilmDevelopRecipe& filmDevelop = recipe.filmDevelop;
         const DirCouplersRecipe& dirCouplers = recipe.dirCouplers;
@@ -2479,21 +3806,20 @@ namespace JuicerCuda {
         const Scanner::ScannerSpectralLutDescriptor& scannerDescriptor =
             *request.scannerLutDescriptor;
         if ((printRoute ? !recipe.printStructuralReady : !recipe.directStructuralReady) ||
-            Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) != printRoute ||
             recipe.hash == 0 ||
             filmRaw.finalSensitivityHash == 0 ||
             filmDevelop.normalizedDensityCurvesHash == 0 ||
             densityBounds.hash == 0 ||
             scannerDescriptor.hash == 0 ||
             scannerDescriptor.densityBoundsHash != densityBounds.hash) {
-            outError = "direct resource descriptor mismatch";
+            outError = "focused route resource descriptor mismatch";
             return false;
         }
         if (request.exposureTables->K != Spectral::kNumSamples ||
             request.scannerTables->K != Spectral::kNumSamples ||
             filmDevelop.logExposure.empty() ||
             filmDevelop.logExposure.size() != filmDevelop.normalizedDensityCurves.size()) {
-            outError = "direct resource host derivation shape mismatch";
+            outError = "focused route resource host derivation shape mismatch";
             return false;
         }
 
@@ -2505,13 +3831,13 @@ namespace JuicerCuda {
         }
 
         const bool alreadyPrepared =
-            resources.directFinalSensitivityHash == filmRaw.finalSensitivityHash &&
-            resources.directDensityCurvesHash == filmDevelop.normalizedDensityCurvesHash &&
-            resources.directDensityLayersHash == (wantDensityLayers ? filmDevelop.densityCurvesLayersHash : 0) &&
-            resources.directDirHash == (dirCouplers.active ? dirCouplers.hash : 0) &&
-            resources.directDensityBoundsHash == densityBounds.hash &&
-            resources.directScannerDescriptorHash == scannerDescriptor.hash &&
-            resources.directSelectedMethod == filmRaw.rgbToRawMethod &&
+            resources.filmFinalSensitivityHash == filmRaw.finalSensitivityHash &&
+            resources.filmDensityCurvesHash == filmDevelop.normalizedDensityCurvesHash &&
+            resources.filmDensityLayersHash == (wantDensityLayers ? filmDevelop.densityCurvesLayersHash : 0) &&
+            resources.filmDirHash == (dirCouplers.active ? dirCouplers.hash : 0) &&
+            resources.routeDensityBoundsHash == densityBounds.hash &&
+            resources.routeScannerDescriptorHash == scannerDescriptor.hash &&
+            resources.filmRgbToRawMethod == filmRaw.rgbToRawMethod &&
             resources.sensB.x && resources.sensG.x && resources.sensR.x &&
             resources.densB.x && resources.densG.x && resources.densR.x &&
             (!wantDensityLayers ||
@@ -2570,12 +3896,12 @@ namespace JuicerCuda {
             densR.linear[sample] = rgb[0];
         }
 
-        if (!upload_curve_locked(resources, resources.sensB, sensB, cudaStreamOpaque, &lock, "direct finalSensB", outError) ||
-            !upload_curve_locked(resources, resources.sensG, sensG, cudaStreamOpaque, &lock, "direct finalSensG", outError) ||
-            !upload_curve_locked(resources, resources.sensR, sensR, cudaStreamOpaque, &lock, "direct finalSensR", outError) ||
-            !upload_curve_locked(resources, resources.densB, densB, cudaStreamOpaque, &lock, "direct normalizedDensB", outError) ||
-            !upload_curve_locked(resources, resources.densG, densG, cudaStreamOpaque, &lock, "direct normalizedDensG", outError) ||
-            !upload_curve_locked(resources, resources.densR, densR, cudaStreamOpaque, &lock, "direct normalizedDensR", outError)) {
+        if (!upload_curve_locked(resources, resources.sensB, sensB, cudaStreamOpaque, &lock, "focused film finalSensB", outError) ||
+            !upload_curve_locked(resources, resources.sensG, sensG, cudaStreamOpaque, &lock, "focused film finalSensG", outError) ||
+            !upload_curve_locked(resources, resources.sensR, sensR, cudaStreamOpaque, &lock, "focused film finalSensR", outError) ||
+            !upload_curve_locked(resources, resources.densB, densB, cudaStreamOpaque, &lock, "focused film normalizedDensB", outError) ||
+            !upload_curve_locked(resources, resources.densG, densG, cudaStreamOpaque, &lock, "focused film normalizedDensG", outError) ||
+            !upload_curve_locked(resources, resources.densR, densR, cudaStreamOpaque, &lock, "focused film normalizedDensR", outError)) {
             return false;
         }
 
@@ -2598,7 +3924,7 @@ namespace JuicerCuda {
             }
             bool canReuse =
                 resources.hasDensityCurvesLayers &&
-                resources.directDensityLayersHash == filmDevelop.densityCurvesLayersHash &&
+                resources.filmDensityLayersHash == filmDevelop.densityCurvesLayersHash &&
                 resources.densityCurvesLayersChannelN[0] == densitySamples &&
                 resources.densityCurvesLayersChannelN[1] == densitySamples &&
                 resources.densityCurvesLayersChannelN[2] == densitySamples;
@@ -2636,8 +3962,8 @@ namespace JuicerCuda {
                 resources.densityCurvesLayersChannelN[ch] = densitySamples;
             }
             resources.hasDensityCurvesLayers = 1;
-            resources.directDensityLayersHash = filmDevelop.densityCurvesLayersHash;
-        } else if (resources.hasDensityCurvesLayers || resources.directDensityLayersHash != 0) {
+            resources.filmDensityLayersHash = filmDevelop.densityCurvesLayersHash;
+        } else if (resources.hasDensityCurvesLayers || resources.filmDensityLayersHash != 0) {
             if (!retire_density_layers_locked(
                     resources,
                     cudaStreamOpaque,
@@ -2651,7 +3977,7 @@ namespace JuicerCuda {
             if (dirCouplers.hash == 0 ||
                 dirCouplers.precorrectedDensityCurvesHash == 0 ||
                 dirCouplers.precorrectedDensityCurves.size() != filmDevelop.logExposure.size()) {
-                outError = "direct DIR resource descriptor mismatch";
+                outError = "focused film DIR resource descriptor mismatch";
                 return false;
             }
             Spectral::Curve dirB = densB;
@@ -2663,25 +3989,25 @@ namespace JuicerCuda {
                 dirG.linear[sample] = rgb[1];
                 dirR.linear[sample] = rgb[0];
             }
-            if (!upload_curve_locked(resources, resources.dirDensB, dirB, cudaStreamOpaque, &lock, "direct DIR densB", outError) ||
-                !upload_curve_locked(resources, resources.dirDensG, dirG, cudaStreamOpaque, &lock, "direct DIR densG", outError) ||
-                !upload_curve_locked(resources, resources.dirDensR, dirR, cudaStreamOpaque, &lock, "direct DIR densR", outError)) {
+            if (!upload_curve_locked(resources, resources.dirDensB, dirB, cudaStreamOpaque, &lock, "focused film DIR densB", outError) ||
+                !upload_curve_locked(resources, resources.dirDensG, dirG, cudaStreamOpaque, &lock, "focused film DIR densG", outError) ||
+                !upload_curve_locked(resources, resources.dirDensR, dirR, cudaStreamOpaque, &lock, "focused film DIR densR", outError)) {
                 return false;
             }
         } else {
-            if (!retire_curve_locked(resources, resources.dirDensB, cudaStreamOpaque, "disabled direct DIR densB", outError) ||
-                !retire_curve_locked(resources, resources.dirDensG, cudaStreamOpaque, "disabled direct DIR densG", outError) ||
-                !retire_curve_locked(resources, resources.dirDensR, cudaStreamOpaque, "disabled direct DIR densR", outError)) {
+            if (!retire_curve_locked(resources, resources.dirDensB, cudaStreamOpaque, "disabled focused film DIR densB", outError) ||
+                !retire_curve_locked(resources, resources.dirDensG, cudaStreamOpaque, "disabled focused film DIR densG", outError) ||
+                !retire_curve_locked(resources, resources.dirDensR, cudaStreamOpaque, "disabled focused film DIR densR", outError)) {
                 return false;
             }
         }
 
         const Spectral::SpectralTables& exposureTables = *request.exposureTables;
         const int exposureK = exposureTables.K;
-        if (!upload_array_locked(resources, resources.tablesAx, resources.tablesK, exposureTables.Ax.data(), exposureK, cudaStreamOpaque, &lock, "direct tablesAx", outError) ||
-            !upload_array_locked(resources, resources.tablesAy, resources.tablesK, exposureTables.Ay.data(), exposureK, cudaStreamOpaque, &lock, "direct tablesAy", outError) ||
-            !upload_array_locked(resources, resources.tablesAz, resources.tablesK, exposureTables.Az.data(), exposureK, cudaStreamOpaque, &lock, "direct tablesAz", outError) ||
-            !upload_array_locked(resources, resources.tablesIllum, resources.tablesK, exposureTables.illum.data(), exposureK, cudaStreamOpaque, &lock, "direct tablesIllum", outError)) {
+        if (!upload_array_locked(resources, resources.tablesAx, resources.tablesK, exposureTables.Ax.data(), exposureK, cudaStreamOpaque, &lock, "focused film tablesAx", outError) ||
+            !upload_array_locked(resources, resources.tablesAy, resources.tablesK, exposureTables.Ay.data(), exposureK, cudaStreamOpaque, &lock, "focused film tablesAy", outError) ||
+            !upload_array_locked(resources, resources.tablesAz, resources.tablesK, exposureTables.Az.data(), exposureK, cudaStreamOpaque, &lock, "focused film tablesAz", outError) ||
+            !upload_array_locked(resources, resources.tablesIllum, resources.tablesK, exposureTables.illum.data(), exposureK, cudaStreamOpaque, &lock, "focused film tablesIllum", outError)) {
             return false;
         }
         resources.tablesK = exposureK;
@@ -2698,13 +4024,13 @@ namespace JuicerCuda {
                 return false;
             }
             const int lutCount = n * n * k;
-            if (!upload_array_locked(resources, resources.hanatosLut, resources.hanatosN * resources.hanatosN * k, context.hanSpectra.data.data(), lutCount, cudaStreamOpaque, &lock, "direct Hanatos LUT", outError)) {
+            if (!upload_array_locked(resources, resources.hanatosLut, resources.hanatosN * resources.hanatosN * k, context.hanSpectra.data.data(), lutCount, cudaStreamOpaque, &lock, "film Hanatos LUT", outError)) {
                 return false;
             }
             resources.hanatosN = n;
 
             std::vector<float> integrated;
-            if (!Precompute::build_direct_hanatos_integrated_lut_cpu(
+            if (!Precompute::build_film_hanatos_integrated_lut_cpu(
                     context,
                     filmRaw,
                     request.filmRawConfig->refIllumWhiteXYZ,
@@ -2713,7 +4039,7 @@ namespace JuicerCuda {
                 return false;
             }
             const int integratedCount = n * n * 4;
-            if (!upload_array_locked(resources, resources.hanatosLutIntegrated, resources.hanatosNIntegrated * resources.hanatosNIntegrated * 4, integrated.data(), integratedCount, cudaStreamOpaque, &lock, "direct Hanatos integrated LUT", outError)) {
+            if (!upload_array_locked(resources, resources.hanatosLutIntegrated, resources.hanatosNIntegrated * resources.hanatosNIntegrated * 4, integrated.data(), integratedCount, cudaStreamOpaque, &lock, "film Hanatos integrated LUT", outError)) {
                 return false;
             }
             resources.hanatosNIntegrated = n;
@@ -2735,7 +4061,7 @@ namespace JuicerCuda {
                 return false;
             }
             const int count = k * 3;
-            if (!upload_array_locked(resources, resources.mallettBasis, resources.mallettBasisK * 3, context.mallettBasis.data.data(), count, cudaStreamOpaque, &lock, "direct Mallett basis", outError)) {
+            if (!upload_array_locked(resources, resources.mallettBasis, resources.mallettBasisK * 3, context.mallettBasis.data.data(), count, cudaStreamOpaque, &lock, "film Mallett basis", outError)) {
                 return false;
             }
             resources.mallettBasisK = k;
@@ -2763,21 +4089,21 @@ namespace JuicerCuda {
         const Spectral::SpectralTables& mediumTables = *request.scannerTables;
         Resources::DeviceScanMedium& scan = printRoute ? resources.scanPrint : resources.scanNegative;
         const int scanK = mediumTables.K;
-        if (!upload_array_locked(resources, scan.tables.epsC, scan.tables.K, mediumTables.epsC.data(), scanK, cudaStreamOpaque, &lock, "direct medium epsC", outError) ||
-            !upload_array_locked(resources, scan.tables.epsM, scan.tables.K, mediumTables.epsM.data(), scanK, cudaStreamOpaque, &lock, "direct medium epsM", outError) ||
-            !upload_array_locked(resources, scan.tables.epsY, scan.tables.K, mediumTables.epsY.data(), scanK, cudaStreamOpaque, &lock, "direct medium epsY", outError) ||
-            !upload_array_locked(resources, scan.tables.Ax, scan.tables.K, mediumTables.Ax.data(), scanK, cudaStreamOpaque, &lock, "direct medium Ax", outError) ||
-            !upload_array_locked(resources, scan.tables.Ay, scan.tables.K, mediumTables.Ay.data(), scanK, cudaStreamOpaque, &lock, "direct medium Ay", outError) ||
-            !upload_array_locked(resources, scan.tables.Az, scan.tables.K, mediumTables.Az.data(), scanK, cudaStreamOpaque, &lock, "direct medium Az", outError)) {
+        if (!upload_array_locked(resources, scan.tables.epsC, scan.tables.K, mediumTables.epsC.data(), scanK, cudaStreamOpaque, &lock, "focused medium epsC", outError) ||
+            !upload_array_locked(resources, scan.tables.epsM, scan.tables.K, mediumTables.epsM.data(), scanK, cudaStreamOpaque, &lock, "focused medium epsM", outError) ||
+            !upload_array_locked(resources, scan.tables.epsY, scan.tables.K, mediumTables.epsY.data(), scanK, cudaStreamOpaque, &lock, "focused medium epsY", outError) ||
+            !upload_array_locked(resources, scan.tables.Ax, scan.tables.K, mediumTables.Ax.data(), scanK, cudaStreamOpaque, &lock, "focused medium Ax", outError) ||
+            !upload_array_locked(resources, scan.tables.Ay, scan.tables.K, mediumTables.Ay.data(), scanK, cudaStreamOpaque, &lock, "focused medium Ay", outError) ||
+            !upload_array_locked(resources, scan.tables.Az, scan.tables.K, mediumTables.Az.data(), scanK, cudaStreamOpaque, &lock, "focused medium Az", outError)) {
             return false;
         }
         if (mediumTables.hasBaseline) {
-            if (!upload_array_locked(resources, scan.tables.baseDensityMin, scan.tables.K, mediumTables.baseDensityMin.data(), scanK, cudaStreamOpaque, &lock, "direct medium baseDensityMin", outError)) {
+            if (!upload_array_locked(resources, scan.tables.baseDensityMin, scan.tables.K, mediumTables.baseDensityMin.data(), scanK, cudaStreamOpaque, &lock, "focused medium baseDensityMin", outError)) {
                 return false;
             }
         } else if (scan.tables.baseDensityMin) {
             const std::size_t bytes = static_cast<std::size_t>(scan.tables.K) * sizeof(float);
-            if (!retire_ptr_locked(resources, scan.tables.baseDensityMin, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "direct medium baseDensityMin", outError)) {
+            if (!retire_ptr_locked(resources, scan.tables.baseDensityMin, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "focused medium baseDensityMin", outError)) {
                 return false;
             }
             scan.tables.baseDensityMin = nullptr;
@@ -2851,12 +4177,12 @@ namespace JuicerCuda {
 
         lock.unlock();
         const bool canonicalUploaded =
-            upload_next(next.log2PchipXYZ, lutCpu.log2XYZ, "direct scan PCHIP log2 XYZ") &&
-            upload_next(next.slopeC, lutCpu.slopeC, "direct scan PCHIP C slopes") &&
-            upload_next(next.slopeM, lutCpu.slopeM, "direct scan PCHIP M slopes") &&
-            upload_next(next.slopeY, lutCpu.slopeY, "direct scan PCHIP Y slopes") &&
-            upload_next(next.cellMin, lutCpu.cellMin, "direct scan PCHIP cell minima") &&
-            upload_next(next.cellMax, lutCpu.cellMax, "direct scan PCHIP cell maxima");
+            upload_next(next.log2PchipXYZ, lutCpu.log2XYZ, "focused scan PCHIP log2 XYZ") &&
+            upload_next(next.slopeC, lutCpu.slopeC, "focused scan PCHIP C slopes") &&
+            upload_next(next.slopeM, lutCpu.slopeM, "focused scan PCHIP M slopes") &&
+            upload_next(next.slopeY, lutCpu.slopeY, "focused scan PCHIP Y slopes") &&
+            upload_next(next.cellMin, lutCpu.cellMin, "focused scan PCHIP cell minima") &&
+            upload_next(next.cellMax, lutCpu.cellMax, "focused scan PCHIP cell maxima");
         lock.lock();
         if (!validate_resource_owner_locked(resources, outError, false) || !canonicalUploaded) {
             free_next();
@@ -2885,12 +4211,12 @@ namespace JuicerCuda {
             return true;
         };
         lut.hash = 0;
-        if (!retire_old(lut.log2PchipXYZ, oldVoxelBytes, "direct scan PCHIP log2 XYZ") ||
-            !retire_old(lut.slopeC, oldVoxelBytes, "direct scan PCHIP C slopes") ||
-            !retire_old(lut.slopeM, oldVoxelBytes, "direct scan PCHIP M slopes") ||
-            !retire_old(lut.slopeY, oldVoxelBytes, "direct scan PCHIP Y slopes") ||
-            !retire_old(lut.cellMin, oldCellBytes, "direct scan PCHIP cell minima") ||
-            !retire_old(lut.cellMax, oldCellBytes, "direct scan PCHIP cell maxima")) {
+        if (!retire_old(lut.log2PchipXYZ, oldVoxelBytes, "focused scan PCHIP log2 XYZ") ||
+            !retire_old(lut.slopeC, oldVoxelBytes, "focused scan PCHIP C slopes") ||
+            !retire_old(lut.slopeM, oldVoxelBytes, "focused scan PCHIP M slopes") ||
+            !retire_old(lut.slopeY, oldVoxelBytes, "focused scan PCHIP Y slopes") ||
+            !retire_old(lut.cellMin, oldCellBytes, "focused scan PCHIP cell minima") ||
+            !retire_old(lut.cellMax, oldCellBytes, "focused scan PCHIP cell maxima")) {
             free_next();
             return false;
         }
@@ -2904,43 +4230,18 @@ namespace JuicerCuda {
         lut.res = scannerDescriptor.lutResolution;
         lut.hash = scannerDescriptor.hash;
 
-        resources.directFinalSensitivityHash = filmRaw.finalSensitivityHash;
-        resources.directDensityCurvesHash = filmDevelop.normalizedDensityCurvesHash;
-        resources.directDensityLayersHash = wantDensityLayers ? filmDevelop.densityCurvesLayersHash : 0;
-        resources.directDirHash = dirCouplers.active ? dirCouplers.hash : 0;
-        resources.directDensityBoundsHash = densityBounds.hash;
-        resources.directScannerDescriptorHash = scannerDescriptor.hash;
-        resources.directSelectedMethod = filmRaw.rgbToRawMethod;
-        ++resources.directUploadCounter;
+        resources.filmFinalSensitivityHash = filmRaw.finalSensitivityHash;
+        resources.filmDensityCurvesHash = filmDevelop.normalizedDensityCurvesHash;
+        resources.filmDensityLayersHash = wantDensityLayers ? filmDevelop.densityCurvesLayersHash : 0;
+        resources.filmDirHash = dirCouplers.active ? dirCouplers.hash : 0;
+        resources.routeDensityBoundsHash = densityBounds.hash;
+        resources.routeScannerDescriptorHash = scannerDescriptor.hash;
+        resources.filmRgbToRawMethod = filmRaw.rgbToRawMethod;
+        ++resources.focusedPreparationCounter;
         return true;
 #endif
     }
 
-    bool prepare_direct_resources(
-        Resources& resources,
-        const DirectResourcePreparation& request,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        return prepare_focused_route_resources(
-            resources,
-            request,
-            false,
-            cudaStreamOpaque,
-            outError);
-    }
-
-    bool prepare_print_route_resources(
-        Resources& resources,
-        const PrintRouteResourcePreparation& request,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        return prepare_focused_route_resources(
-            resources,
-            request,
-            true,
-            cudaStreamOpaque,
-            outError);
-    }
     namespace {
 
         template <typename T>
@@ -3344,7 +4645,7 @@ namespace JuicerCuda {
                     return false;
                 }
                 std::vector<float> integratedLut;
-                if (!Precompute::build_direct_hanatos_integrated_lut_cpu(
+                if (!Precompute::build_film_hanatos_integrated_lut_cpu(
                         Spectral::context(),
                         recipe.filmRaw,
                         referenceWhiteXYZ,
@@ -4053,8 +5354,6 @@ namespace JuicerCuda {
         out.develop.printDcM = prepared.printDcM;
         out.develop.printDcY = prepared.printDcY;
         out.printRawScale = recipe.exposure.printExposure * prepared.normalizer;
-        out.scalingOrder = recipe.exposure.scalingOrder;
-        out.preparationHash = prepared.preparationHash;
         if (!(std::isfinite(out.printRawScale) && out.printRawScale >= 0.0f)) {
             diagnostic = "MalformedRequiredResource phase=4B field=print_raw_scale";
             return false;

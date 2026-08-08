@@ -252,22 +252,7 @@ namespace JuicerCuda {
             bool committed = false;
         };
 
-        // Concrete scan-LUT and submission identity helpers.
-        constexpr std::uint32_t kLutKeySchemaVersion = 1u;
-        constexpr std::uint32_t kScanLutFormatVersion = 1u;
-        constexpr std::uint32_t kScanLutResolutionMin = 17u;
-        constexpr std::uint32_t kScanLutResolutionMax = 128u;
-
         std::uint64_t normalize_key_u64(std::uint64_t value) noexcept;
-        std::uint32_t normalize_scan_lut_resolution(std::uint32_t value) noexcept;
-
-        std::uint64_t make_scan_lut_key_digest(
-            std::uint32_t medium,
-            std::uint64_t tablesHash,
-            std::uint64_t densityRangeHash,
-            std::uint32_t lutResolution,
-            std::uint32_t lutFormatVersion = kScanLutFormatVersion,
-            std::uint32_t keySchemaVersion = kLutKeySchemaVersion) noexcept;
 
         KeyDigests make_key_digests(
             std::uint64_t uploadCoreHash,
@@ -276,27 +261,6 @@ namespace JuicerCuda {
             std::uint64_t autoExposureHash) noexcept;
 
         KeyDigests normalize_key_digests(const KeyDigests& digests) noexcept;
-
-        // Resource-manager configuration.
-        struct ResourceManagerConfigRaw {
-            std::uint64_t hostAssetCacheMaxBytes = 256ull * 1024ull * 1024ull;
-            std::uint64_t hostAssetTrimBatchBytes = 64ull * 1024ull * 1024ull;
-            std::uint64_t pinnedUploadStagingMaxBytes = 128ull * 1024ull * 1024ull;
-            std::uint64_t pinnedUploadStagingTrimBatchBytes = 32ull * 1024ull * 1024ull;
-            std::uint32_t hostAssetIdleTrimMs = 5000;
-            std::uint32_t pinnedUploadStagingIdleTrimMs = 5000;
-        };
-
-        struct ResourceManagerConfigEffective {
-            std::uint64_t hostAssetCacheMaxBytes = 256ull * 1024ull * 1024ull;
-            std::uint64_t hostAssetTrimBatchBytes = 64ull * 1024ull * 1024ull;
-            std::uint64_t pinnedUploadStagingMaxBytes = 128ull * 1024ull * 1024ull;
-            std::uint64_t pinnedUploadStagingTrimBatchBytes = 32ull * 1024ull * 1024ull;
-            std::uint32_t hostAssetIdleTrimMs = 5000;
-            std::uint32_t pinnedUploadStagingIdleTrimMs = 5000;
-        };
-
-        ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& raw) noexcept;
 
     } // namespace ResourceManager
 } // namespace JuicerCuda

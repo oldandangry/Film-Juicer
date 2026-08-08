@@ -147,9 +147,14 @@ namespace JuicerAssets {
             hash = fnv1a_append(hash, &value, sizeof(value));
         }
 
-        bool read_file_bytes(const std::string& path, std::string& out, std::uint64_t& outHash) {
+        bool read_file_bytes(
+            const std::string& path,
+            std::string& out,
+            std::uint64_t* outHash = nullptr) {
             out.clear();
-            outHash = 0;
+            if (outHash) {
+                *outHash = 0;
+            }
             std::ifstream file(path, std::ios::binary | std::ios::ate);
             if (!file) {
                 return false;
@@ -164,7 +169,9 @@ namespace JuicerAssets {
                 out.clear();
                 return false;
             }
-            outHash = fnv1a_append(kFnvOffsetBasis64, out.data(), out.size());
+            if (outHash) {
+                *outHash = fnv1a_append(kFnvOffsetBasis64, out.data(), out.size());
+            }
             return true;
         }
 
@@ -578,7 +585,7 @@ namespace JuicerAssets {
             std::string& diagnostic) {
             std::string bytes;
             std::uint64_t fileHash = 0;
-            if (!read_file_bytes(request.path, bytes, fileHash)) {
+            if (!read_file_bytes(request.path, bytes, &fileHash)) {
                 diagnostic = "SelectedDichroicResourceMissing phase=4A resource=" + request.relativePath;
                 return false;
             }
@@ -1245,7 +1252,7 @@ namespace JuicerAssets {
         NeutralPrintCalibrationResult result;
         const std::string path = neutral_print_calibration_path(_dataDir);
         std::string bytes;
-        if (!read_file_bytes(path, bytes, result.resourceHash)) {
+        if (!read_file_bytes(path, bytes)) {
             std::error_code ec;
             if (fs::exists(path, ec) && !ec) {
                 result.status = NeutralPrintCalibrationStatus::Malformed;
@@ -1302,19 +1309,6 @@ namespace JuicerAssets {
             }
         }
 
-        std::uint64_t hash = kFnvOffsetBasis64;
-        constexpr std::uint32_t kSchemaVersion = 1u;
-        hash_value(hash, kSchemaVersion);
-        hash_string(hash, result.resourcePath);
-        hash_string(hash, printProfileKey);
-        hash_string(hash, printIlluminantKey);
-        hash_string(hash, filmProfileKey);
-        hash_value(hash, result.status);
-        hash_value(hash, result.resourceHash);
-        if (result.status == NeutralPrintCalibrationStatus::Found) {
-            hash = fnv1a_append(hash, result.cmyCc.data(), sizeof(result.cmyCc));
-        }
-        result.hash = hash;
         return result;
     }
 

@@ -21,17 +21,9 @@
 #include "ScanRoute.h"
 #include "ColorTransforms.h"
 #include "FilmProcessing.h"
-#include "Couplers.h"
 #include "Scanner.h"
 #include "SpectralData.h"
 #include "ofxImageEffect.h"
-
-namespace ScannerOptics {
-    Scanner::ColorRuntime build_color_runtime(
-        const Scanner::ScannerMediumRuntime& medium,
-        const OutputEncoding::Params& outputEncoding);
-
-} // namespace ScannerOptics
 
 namespace JuicerAtomic {
 
@@ -170,15 +162,10 @@ struct WorkingState {
     Spectral::Curve sensG;
     Spectral::Curve sensR;
 
-    Spectral::Curve negSensB;
-    Spectral::Curve negSensG;
-    Spectral::Curve negSensR;
-
     Spectral::Curve baseDensityMin;
     Spectral::Curve baseDensityMid;
     bool hasBaseline = false;
     float densityBaselineMixReference = 0.0f;
-    float printBaselineMixReference = 0.0f;
 
     float gammaFactorB = 1.0f;
     float gammaFactorG = 1.0f;
@@ -213,7 +200,6 @@ struct WorkingState {
 
     bool negativeScannerValid = false;
     bool printScannerValid = false;
-    bool printGlareCompensated = false;
 
     float spdSInv[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
     bool spdReady = false;
@@ -222,9 +208,7 @@ struct WorkingState {
     Spectral::NegativeCouplerParams negParams{};
 
     std::uint64_t fullHash = 0;
-    std::uint64_t uploadCoreHash = 0;
     std::uint64_t coreHash = 0;
-    std::uint64_t coreShareHash = 0;
     std::uint64_t dirHash = 0;
     std::uint64_t buildCounter = 0;
 };
@@ -330,8 +314,6 @@ struct ParamSnapshot {
     Profiles::GrainMetadata grainControls;
     Spektrafilm::ScanRoute scanRoute = Spektrafilm::kDefaultScanRoute;
 
-    bool directRoutePrintProfileExcluded = false;
-    bool directRouteNeutralCalibrationExcluded = false;
     bool glareActive = true;
     bool cameraFilterOverride = false;
 };

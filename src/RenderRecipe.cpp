@@ -1,9 +1,12 @@
 #include "RenderRecipe.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <limits>
+#include <string_view>
 
 #include "Hash.h"
 
@@ -139,12 +142,7 @@ namespace {
         hash_string(hash, route.filmProfileKey);
         hash_value(hash, route.filmProfileAssetVersionToken);
         hash_value(hash, route.scanRoute);
-        hash_value(hash, route.captureSupport);
-        hash_value(hash, route.captureStage);
         hash_value(hash, route.capturePolarity);
-        hash_value(hash, route.captureUse);
-        hash_value(hash, route.captureAntihalation);
-        hash_value(hash, route.captureChannelModel);
         if (Spektrafilm::scan_route_is_print(route.scanRoute)) {
             hash_string(hash, route.printProfileKey);
             hash_value(hash, route.printProfileAssetVersionToken);
@@ -425,6 +423,7 @@ namespace {
     }
 
     bool derive_final_sensitivity(
+        const std::array<std::array<float, 3>, 81>& linearSensitivity,
         FilmRawRecipe& recipe,
         const std::array<float, 81>& referenceIlluminant) {
         std::array<double, 3> unfilteredResponse{};
@@ -442,7 +441,7 @@ namespace {
                 return false;
             }
             for (std::size_t channel = 0; channel < 3; ++channel) {
-                const float sensitivity = recipe.linearSensitivity[wavelengthIndex][channel];
+                const float sensitivity = linearSensitivity[wavelengthIndex][channel];
                 const double finiteSensitivity =
                     std::isfinite(sensitivity) ? std::max(0.0, static_cast<double>(sensitivity)) : 0.0;
                 unfilteredResponse[channel] += finiteSensitivity * static_cast<double>(illuminant);
@@ -463,7 +462,7 @@ namespace {
 
         for (std::size_t wavelengthIndex = 0; wavelengthIndex < recipe.finalSensitivity.size(); ++wavelengthIndex) {
             for (std::size_t channel = 0; channel < 3; ++channel) {
-                const float source = recipe.linearSensitivity[wavelengthIndex][channel];
+                const float source = linearSensitivity[wavelengthIndex][channel];
                 const double finiteSource =
                     std::isfinite(source) ? std::max(0.0, static_cast<double>(source)) : 0.0;
                 const double derived =
@@ -498,13 +497,13 @@ namespace {
                 }
             }
 
-            std::array<double, 3> normalization{};
-            for (std::size_t channel = 0; channel < normalization.size(); ++channel) {
+            std::array<double, 3> windowNormalization{};
+            for (std::size_t channel = 0; channel < windowNormalization.size(); ++channel) {
                 if (!(std::isfinite(response[channel]) && response[channel] > 0.0) ||
                     !(std::isfinite(windowedResponse[channel]) && windowedResponse[channel] > 0.0)) {
                     return false;
                 }
-                normalization[channel] = windowedResponse[channel] / response[channel];
+                windowNormalization[channel] = windowedResponse[channel] / response[channel];
             }
 
             for (std::size_t wavelengthIndex = 0; wavelengthIndex < recipe.finalSensitivity.size(); ++wavelengthIndex) {
@@ -512,7 +511,7 @@ namespace {
                     const double adapted =
                         static_cast<double>(recipe.finalSensitivity[wavelengthIndex][channel]) *
                         static_cast<double>(window[wavelengthIndex]) /
-                        normalization[channel];
+                        windowNormalization[channel];
                     if (!std::isfinite(adapted) || adapted < 0.0) {
                         return false;
                     }
@@ -549,7 +548,6 @@ namespace {
     std::uint64_t hash_film_develop_recipe(const FilmDevelopRecipe& recipe) {
         std::uint64_t hash = Hash::kFnvOffset;
         hash_value(hash, recipe.polarity);
-        hash_value(hash, recipe.authoredDensityCurvesHash);
         hash_value(hash, recipe.normalizedDensityCurvesHash);
         hash_value(hash, recipe.densityCurvesLayersRequired);
         if (recipe.densityCurvesLayersRequired) {
@@ -586,12 +584,6 @@ namespace {
         return true;
     }
 
-    std::uint64_t hash_grain_contract(const GrainContract& contract) {
-        std::uint64_t hash = Hash::kFnvOffset;
-        Hash::hash_bytes_update(hash, contract.densityMinCmy.data(), sizeof(contract.densityMinCmy));
-        return hash;
-    }
-
     bool build_grain_contract(const GrainContract& input, GrainContract& out) {
         out = input;
         if (!finite_nonnegative_grain_triplet(out.densityMinCmy)) {
@@ -600,8 +592,7 @@ namespace {
         for (float& value : out.densityMinCmy) {
             value = std::clamp(value, 0.0f, 1.0f);
         }
-        out.hash = hash_grain_contract(out);
-        return out.hash != 0;
+        return true;
     }
 
     std::uint64_t hash_visual_grain_recipe(const VisualGrainRecipe& recipe) {
@@ -669,7 +660,7 @@ namespace {
     }
 
     void build_film_juicer_effects_recipe(
-        const Spektrafilm::DirectRecipeBuildInput& input,
+        const Spektrafilm::FilmFoundationBuildInput& input,
         FilmJuicerEffectsRecipe& out) {
         out = FilmJuicerEffectsRecipe{};
         out.filmDustAmount = normalize_effect_amount(input.filmDustAmount);
@@ -1052,13 +1043,6 @@ namespace {
         }
         std::uint64_t hash = Hash::kFnvOffset;
         hash_value(hash, recipe.polarity);
-        hash_value(hash, recipe.amount);
-        hash_value(hash, recipe.inhibitionSameLayer);
-        hash_value(hash, recipe.inhibitionInterlayer);
-        Hash::hash_bytes_update(hash, recipe.gammaSameLayerRgb.data(), sizeof(recipe.gammaSameLayerRgb));
-        Hash::hash_bytes_update(hash, recipe.gammaInterlayerRToGb.data(), sizeof(recipe.gammaInterlayerRToGb));
-        Hash::hash_bytes_update(hash, recipe.gammaInterlayerGToRb.data(), sizeof(recipe.gammaInterlayerGToRb));
-        Hash::hash_bytes_update(hash, recipe.gammaInterlayerBToRg.data(), sizeof(recipe.gammaInterlayerBToRg));
         for (const auto& row : recipe.matrixRgb) {
             Hash::hash_bytes_update(hash, row.data(), sizeof(float) * row.size());
         }
@@ -1112,29 +1096,22 @@ namespace {
         if (!out.active) {
             return true;
         }
-        out.amount = controls.amount;
-        out.inhibitionSameLayer = controls.inhibitionSameLayer;
-        out.inhibitionInterlayer = controls.inhibitionInterlayer;
-        out.gammaSameLayerRgb = gammaSameLayerRgb;
-        out.gammaInterlayerRToGb = gammaInterlayerRToGb;
-        out.gammaInterlayerGToRb = gammaInterlayerGToRb;
-        out.gammaInterlayerBToRg = gammaInterlayerBToRg;
         out.diffusionSizeUm = controls.diffusionSizeUm;
         out.diffusionTailUm = 200.0f;
         out.diffusionTailWeight = 0.06f;
 
-        out.matrixRgb[0][0] = out.gammaSameLayerRgb[0] * out.inhibitionSameLayer;
-        out.matrixRgb[1][1] = out.gammaSameLayerRgb[1] * out.inhibitionSameLayer;
-        out.matrixRgb[2][2] = out.gammaSameLayerRgb[2] * out.inhibitionSameLayer;
-        out.matrixRgb[0][1] = out.gammaInterlayerRToGb[0] * out.inhibitionInterlayer;
-        out.matrixRgb[0][2] = out.gammaInterlayerRToGb[1] * out.inhibitionInterlayer;
-        out.matrixRgb[1][0] = out.gammaInterlayerGToRb[0] * out.inhibitionInterlayer;
-        out.matrixRgb[1][2] = out.gammaInterlayerGToRb[1] * out.inhibitionInterlayer;
-        out.matrixRgb[2][0] = out.gammaInterlayerBToRg[0] * out.inhibitionInterlayer;
-        out.matrixRgb[2][1] = out.gammaInterlayerBToRg[1] * out.inhibitionInterlayer;
+        out.matrixRgb[0][0] = gammaSameLayerRgb[0] * controls.inhibitionSameLayer;
+        out.matrixRgb[1][1] = gammaSameLayerRgb[1] * controls.inhibitionSameLayer;
+        out.matrixRgb[2][2] = gammaSameLayerRgb[2] * controls.inhibitionSameLayer;
+        out.matrixRgb[0][1] = gammaInterlayerRToGb[0] * controls.inhibitionInterlayer;
+        out.matrixRgb[0][2] = gammaInterlayerRToGb[1] * controls.inhibitionInterlayer;
+        out.matrixRgb[1][0] = gammaInterlayerGToRb[0] * controls.inhibitionInterlayer;
+        out.matrixRgb[1][2] = gammaInterlayerGToRb[1] * controls.inhibitionInterlayer;
+        out.matrixRgb[2][0] = gammaInterlayerBToRg[0] * controls.inhibitionInterlayer;
+        out.matrixRgb[2][1] = gammaInterlayerBToRg[1] * controls.inhibitionInterlayer;
         for (auto& row : out.matrixRgb) {
             for (float& value : row) {
-                value *= out.amount;
+                value *= controls.amount;
             }
         }
 
@@ -1228,7 +1205,6 @@ namespace {
         hash_value(hash, recipe.whiteCorrection);
         hash_value(hash, recipe.blackLevel);
         hash_value(hash, recipe.whiteLevel);
-        hash_value(hash, recipe.directGlareDisabled);
         hash_value(hash, recipe.glareActive);
         hash_value(hash, recipe.glarePercent);
         hash_value(hash, recipe.glareRoughness);
@@ -1236,21 +1212,21 @@ namespace {
         hash_value(hash, recipe.lensBlurSigmaPx);
         hash_value(hash, recipe.unsharpSigmaPx);
         hash_value(hash, recipe.unsharpAmount);
-        hash_value(hash, recipe.postEffectsDisposition);
         return hash;
     }
 
-    bool build_direct_density_bounds(
+    bool build_film_density_bounds(
         const Profiles::ValidatedFilmProfile& profile,
         const FilmDevelopRecipe& develop,
         const GrainContract& grain,
         Spektrafilm::ScanRoute route,
+        Spektrafilm::DensityBoundsSource source,
         DensityBoundsRecipe& out) {
         out = DensityBoundsRecipe{};
         out.route = route;
         out.medium = Spektrafilm::DensityMedium::Film;
         out.polarity = profile.info.type;
-        out.source = Spektrafilm::DensityBoundsSource::DirectFilmGrainContractAndAuthoredCurves;
+        out.source = source;
         out.authoredMinCmy = develop.authoredMinCmy;
         out.authoredMaxCmy = develop.authoredMaxCmy;
         for (std::size_t channel = 0; channel < out.dataMinCmy.size(); ++channel) {
@@ -1318,22 +1294,6 @@ namespace {
                    : Spektrafilm::PrintNormalizationMode::None;
     }
 
-    Spektrafilm::PrintNormalizerExpression print_normalizer_expression(
-        Spektrafilm::PrintNormalizationMode mode) {
-        switch (mode) {
-            case Spektrafilm::PrintNormalizationMode::None:
-                return Spektrafilm::PrintNormalizerExpression::One;
-            case Spektrafilm::PrintNormalizationMode::CompensationOnly:
-                return Spektrafilm::PrintNormalizerExpression::FactorMidgrayCompOverFactorMidgray;
-            case Spektrafilm::PrintNormalizationMode::NormalizeOnly:
-                return Spektrafilm::PrintNormalizerExpression::FactorMidgray;
-            case Spektrafilm::PrintNormalizationMode::NormalizeAndCompensate:
-                return Spektrafilm::PrintNormalizerExpression::FactorMidgrayComp;
-            default:
-                return Spektrafilm::PrintNormalizerExpression::One;
-        }
-    }
-
     std::uint64_t hash_dichroic_resource_identity(const DichroicResourceIdentity& identity) {
         std::uint64_t hash = Hash::kFnvOffset;
         hash_value(hash, identity.set);
@@ -1381,27 +1341,11 @@ namespace {
         return true;
     }
 
-    std::uint64_t hash_neutral_calibration(const NeutralCalibrationRecipe& calibration) {
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, calibration.status);
-        hash_string(hash, calibration.resourcePath);
-        hash_string(hash, calibration.printProfileKey);
-        hash_string(hash, calibration.printIlluminantKey);
-        hash_string(hash, calibration.filmProfileKey);
-        hash_value(hash, calibration.resourceHash);
-        return hash;
-    }
-
     std::uint64_t hash_print_filter_recipe(const PrintFilterRecipe& recipe) {
         std::uint64_t hash = Hash::kFnvOffset;
-        hash_cmy(hash, recipe.neutralCmyCc);
-        hash_cmy(hash, recipe.userCmyCc);
-        hash_value(hash, recipe.filmJuicerMainCFilterShiftCc);
         hash_cmy(hash, recipe.mainCmyCc);
-        hash_cmy(hash, recipe.preflashUserCmyCc);
         hash_cmy(hash, recipe.preflashCmyCc);
         hash_value(hash, recipe.dichroic.hash);
-        hash_value(hash, recipe.neutralCalibration.hash);
         return hash;
     }
 
@@ -1413,36 +1357,387 @@ namespace {
         hash_value(hash, recipe.normalizePrintExposure);
         hash_value(hash, recipe.printExposureCompensation);
         hash_value(hash, recipe.normalizationMode);
-        hash_value(hash, recipe.normalizerExpression);
-        hash_value(hash, recipe.scalingOrder);
         return hash;
+    }
+
+    constexpr std::uint64_t kDiffusionFrameFnvPrime = 0x100000001b3ULL;
+
+    void fail_diffusion_frame_descriptor(
+        std::string& diagnostic,
+        std::string_view field) {
+        diagnostic = "InvalidDiffusionFrameDescriptor field=";
+        diagnostic.append(field);
+    }
+
+    void hash_diffusion_frame_byte(
+        std::uint64_t& hash,
+        std::uint8_t value) {
+        hash ^= static_cast<std::uint64_t>(value);
+        hash *= kDiffusionFrameFnvPrime;
+    }
+
+    void hash_diffusion_frame_u32_le(
+        std::uint64_t& hash,
+        std::uint32_t value) {
+        for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+            hash_diffusion_frame_byte(
+                hash,
+                static_cast<std::uint8_t>((value >> (byte * 8)) & 0xffu));
+        }
+    }
+
+    void hash_diffusion_frame_u64_le(
+        std::uint64_t& hash,
+        std::uint64_t value) {
+        for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+            hash_diffusion_frame_byte(
+                hash,
+                static_cast<std::uint8_t>((value >> (byte * 8)) & 0xffu));
+        }
+    }
+
+    void hash_diffusion_frame_tag(
+        std::uint64_t& hash,
+        std::string_view tag) {
+        for (const char value : tag) {
+            hash_diffusion_frame_byte(
+                hash,
+                static_cast<std::uint8_t>(value));
+        }
+        hash_diffusion_frame_byte(hash, 0);
+    }
+
+    void hash_diffusion_frame_double(
+        std::uint64_t& hash,
+        double value) {
+        if (value == 0.0) {
+            value = 0.0;
+        }
+        hash_diffusion_frame_u64_le(
+            hash,
+            std::bit_cast<std::uint64_t>(value));
+    }
+
+    void hash_diffusion_frame_domain(
+        std::uint64_t& hash,
+        const Spektrafilm::DiffusionFrameDomain& domain) {
+        hash_diffusion_frame_u32_le(
+            hash,
+            static_cast<std::uint32_t>(domain.originX));
+        hash_diffusion_frame_u32_le(
+            hash,
+            static_cast<std::uint32_t>(domain.originY));
+        hash_diffusion_frame_u32_le(
+            hash,
+            static_cast<std::uint32_t>(domain.width));
+        hash_diffusion_frame_u32_le(
+            hash,
+            static_cast<std::uint32_t>(domain.height));
+    }
+
+    bool valid_diffusion_frame_route(Spektrafilm::ScanRoute route) {
+        using Spektrafilm::ScanRoute;
+        switch (route) {
+            case ScanRoute::NegativeDirectScan:
+            case ScanRoute::NegativePrintScan:
+            case ScanRoute::PositiveDirectScan:
+            case ScanRoute::PositivePrintScan:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    bool build_diffusion_stage_frame_descriptor(
+        const DiffusionFilterOpticsRecipe& component,
+        Spektrafilm::DiffusionLinearStage stage,
+        double pixelSizeUm,
+        Spektrafilm::DiffusionFrameDomain fullFrame,
+        Spektrafilm::DiffusionStageFrameDescriptor& out,
+        std::string& diagnostic) {
+        const bool cameraStage =
+            stage == Spektrafilm::DiffusionLinearStage::CameraFilmLinear;
+        const char* inactiveField = cameraStage
+                                        ? "camera_recipe_component_hash"
+                                        : "enlarger_recipe_component_hash";
+        const char* resolvedField =
+            cameraStage ? "camera_resolved_hash" : "enlarger_resolved_hash";
+        const char* scatterField = cameraStage
+                                       ? "camera_scatter_fraction"
+                                       : "enlarger_scatter_fraction";
+        const char* domainField =
+            cameraStage ? "camera_linear_domain" : "enlarger_linear_domain";
+        const char* sampleField =
+            cameraStage ? "camera_sample" : "enlarger_sample";
+        const char* stageHashField =
+            cameraStage ? "camera_hash" : "enlarger_hash";
+
+        if (component.hash == 0) {
+            fail_diffusion_frame_descriptor(diagnostic, inactiveField);
+            return false;
+        }
+        if (!component.resolved.active || component.resolved.hash == 0) {
+            fail_diffusion_frame_descriptor(diagnostic, resolvedField);
+            return false;
+        }
+        if (!std::isfinite(component.resolved.scatterFraction) ||
+            component.resolved.scatterFraction <= 0.0 ||
+            component.resolved.scatterFraction > 1.0) {
+            fail_diffusion_frame_descriptor(diagnostic, scatterField);
+            return false;
+        }
+        const Spektrafilm::SpatialOpticsDomain expectedDomain =
+            cameraStage
+                ? Spektrafilm::SpatialOpticsDomain::FilmLinearExposure
+                : Spektrafilm::SpatialOpticsDomain::PrintLinearExposure;
+        if (component.policy.domain != expectedDomain) {
+            fail_diffusion_frame_descriptor(diagnostic, domainField);
+            return false;
+        }
+
+        Spektrafilm::DiffusionPsfSampleDescriptor sample{};
+        std::string sampleDiagnostic;
+        if (!Spektrafilm::build_diffusion_psf_sample_descriptor(
+                component.resolved,
+                pixelSizeUm,
+                fullFrame.width,
+                fullFrame.height,
+                sample,
+                sampleDiagnostic) ||
+            sample.hash == 0 || sample.radiusPixels <= 0) {
+            fail_diffusion_frame_descriptor(diagnostic, sampleField);
+            return false;
+        }
+
+        out = Spektrafilm::DiffusionStageFrameDescriptor{};
+        out.stage = stage;
+        out.scatterFraction = component.resolved.scatterFraction;
+        out.sample = sample;
+
+        std::uint64_t hash = Hash::kFnvOffset;
+        hash_diffusion_frame_tag(hash, "diffusion-stage-frame");
+        hash_diffusion_frame_u32_le(
+            hash,
+            Spektrafilm::kDiffusionFrameDescriptorSchemaVersion);
+        hash_diffusion_frame_byte(
+            hash,
+            static_cast<std::uint8_t>(out.stage));
+        hash_diffusion_frame_double(hash, out.scatterFraction);
+        hash_diffusion_frame_u64_le(hash, out.sample.hash);
+        out.hash = hash;
+        if (out.hash == 0) {
+            fail_diffusion_frame_descriptor(diagnostic, stageHashField);
+            return false;
+        }
+        return true;
     }
 
 } // namespace
 
 namespace Spektrafilm {
+    namespace {
+
+        bool build_film_foundation(
+            const FilmFoundationBuildInput& input,
+            RenderRecipe& recipe,
+            std::string& diagnostic) {
+            const auto fail = [&diagnostic](const char* message) {
+                diagnostic = message;
+                return false;
+            };
+            if (!input.filmProfile) {
+                return fail("MissingRequiredResource phase=3B field=film_profile");
+            }
+            if (!input.referenceIlluminantValid) {
+                return fail("MissingRequiredResource phase=3B field=reference_illuminant");
+            }
+            if (!auto_exposure_method_index_valid(input.cameraMeteringMethod)) {
+                return fail("UnsupportedMode phase=3B field=auto_exposure_method");
+            }
+
+            const Profiles::ValidatedFilmProfile& profile = *input.filmProfile;
+            const ScanRoute resolvedRoute = resolve_scan_route(profile.info.type, input.scanRoute);
+            if (resolvedRoute != input.scanRoute ||
+                profile.info.support != ProfileSupport::Film ||
+                profile.info.stage != ProfileStage::Filming) {
+                return fail("UnsupportedMode phase=3A selected capture profile route mismatch");
+            }
+
+            ProfileRoute& profileRoute = recipe.profileRoute;
+            profileRoute.capturePolarity = profile.info.type;
+            profileRoute.filmProfileAssetVersionToken = profile.assetVersionToken;
+            profileRoute.printProfileAssetVersionToken = 0;
+            profileRoute.filmProfile = input.filmProfile;
+            profileRoute.printProfile.reset();
+
+            FilmRawRecipe& filmRaw = recipe.filmRaw;
+            filmRaw.inputColorSpace = input.inputColorSpace;
+            filmRaw.inputCctfDecoding = input.inputCctfDecoding;
+            filmRaw.rgbToRawMethod = input.spectralUpsamplingMode == 1
+                                         ? RgbToRawMethod::Mallett2019
+                                         : RgbToRawMethod::Hanatos2025;
+            filmRaw.autoExposureEnabled = input.cameraAutoExposureEnabled;
+            filmRaw.autoExposureMethod = auto_exposure_method_from_index(input.cameraMeteringMethod);
+            filmRaw.manualExposureCompensationEv = input.manualExposureCompensationEv;
+            filmRaw.filmFormatLongEdgeMm = input.filmFormatLongEdgeMm;
+            filmRaw.cameraBandPass.active = input.cameraFilterOverride;
+            filmRaw.cameraBandPass.uv = copy_filter_triplet(input.cameraFilterUV, input.cameraFilterOverride);
+            filmRaw.cameraBandPass.ir = copy_filter_triplet(input.cameraFilterIR, input.cameraFilterOverride);
+            filmRaw.hanatos.applyWindow = input.applyHanatos2025AdaptationWindow;
+            filmRaw.hanatos.applySurface = input.applyHanatos2025AdaptationSurface;
+            filmRaw.hanatos.spectralGaussianBlur = profile.digest.hanatosSpectralGaussianBlurDefault;
+            filmRaw.hanatos.windowParams = profile.data.hanatos2025AdaptationWindowParams;
+            filmRaw.hanatos.surfaceParams = profile.data.hanatos2025AdaptationSurfaceParams;
+            filmRaw.hanatos.referenceIlluminant = profile.info.referenceIlluminant.value;
+            if (filmRaw.rgbToRawMethod == RgbToRawMethod::Hanatos2025) {
+                if (filmRaw.hanatos.applyWindow &&
+                    !profile.data.hasHanatos2025AdaptationWindowParams) {
+                    return fail("MalformedRequiredProfileData phase=3D-2 field=data.hanatos2025_adaptation_window_params");
+                }
+                if (filmRaw.hanatos.applySurface &&
+                    !profile.data.hasHanatos2025AdaptationSurfaceParams) {
+                    return fail("MalformedRequiredProfileData phase=3D-2 field=data.hanatos2025_adaptation_surface_params");
+                }
+                if (!std::isfinite(filmRaw.hanatos.spectralGaussianBlur) ||
+                    filmRaw.hanatos.spectralGaussianBlur < 0.0f) {
+                    return fail("MalformedRequiredProfileData phase=3D-2 field=settings.spectral_gaussian_blur");
+                }
+            }
+            if (!derive_final_sensitivity(
+                    profile.data.linearSensitivity,
+                    filmRaw,
+                    input.referenceIlluminant)) {
+                return fail("MalformedRequiredProfileData phase=3B field=final_sensitivity");
+            }
+            filmRaw.hash = hash_film_raw_recipe(filmRaw);
+            if (filmRaw.finalSensitivityHash == 0 ||
+                (filmRaw.rgbToRawMethod == RgbToRawMethod::Hanatos2025 &&
+                 filmRaw.hanatosLutHash == 0) ||
+                filmRaw.hash == 0) {
+                return fail("MalformedRequiredProfileData phase=3B field=data.log_sensitivity");
+            }
+
+            if (!build_spatial_optics_recipe(
+                    profile,
+                    input.spatialOptics,
+                    scan_route_is_print(input.scanRoute),
+                    recipe.spatialOptics,
+                    diagnostic)) {
+                return false;
+            }
+
+            if (!build_grain_contract(input.grainContract, recipe.grainContract)) {
+                return fail("MalformedRequiredProfileData phase=9A field=grain_contract");
+            }
+
+            FilmDevelopRecipe& filmDevelop = recipe.filmDevelop;
+            filmDevelop.polarity = profile.info.type;
+            filmDevelop.logExposure = profile.data.logExposure;
+            filmDevelop.authoredDensityCurves = profile.data.densityCurves;
+            if (!normalize_density_curves(
+                    filmDevelop.authoredDensityCurves,
+                    filmDevelop.normalizedDensityCurves,
+                    filmDevelop.authoredMinCmy,
+                    filmDevelop.authoredMaxCmy)) {
+                return fail("MalformedRequiredProfileData phase=3A field=data.density_curves");
+            }
+            if (filmDevelop.authoredDensityCurves.empty() ||
+                filmDevelop.normalizedDensityCurves.empty()) {
+                return fail("MalformedRequiredProfileData phase=3A field=data.density_curves empty");
+            }
+            filmDevelop.normalizedDensityCurvesHash = hash_nan_preserving_floats(
+                &filmDevelop.normalizedDensityCurves[0][0],
+                filmDevelop.normalizedDensityCurves.size() * 3u);
+            filmDevelop.densityCurvesLayersRequired =
+                visual_grain_requires_density_layers(input.visualGrain);
+            if (filmDevelop.densityCurvesLayersRequired) {
+                if (profile.data.densityCurvesLayersMalformed) {
+                    diagnostic =
+                        profile.data.densityCurvesLayersDiagnostic.empty()
+                            ? "MalformedRequiredProfileData phase=9B field=data.density_curves_layers"
+                            : profile.data.densityCurvesLayersDiagnostic;
+                    return false;
+                }
+                if (!profile.data.hasDensityCurvesLayers) {
+                    return fail("MissingRequiredResource phase=9B field=data.density_curves_layers");
+                }
+                if (!validate_density_curves_layers_shape(
+                        profile.data.densityCurvesLayers,
+                        filmDevelop.logExposure.size())) {
+                    return fail("MalformedRequiredProfileData phase=9B field=data.density_curves_layers shape");
+                }
+                filmDevelop.densityCurvesLayers = profile.data.densityCurvesLayers;
+                filmDevelop.densityCurvesLayersHash =
+                    hash_density_curves_layers(filmDevelop.densityCurvesLayers);
+                if (filmDevelop.densityCurvesLayersHash == 0) {
+                    return fail("MalformedRequiredProfileData phase=9B field=data.density_curves_layers hash");
+                }
+            }
+            filmDevelop.hash = hash_film_develop_recipe(filmDevelop);
+            if (filmDevelop.normalizedDensityCurvesHash == 0 ||
+                filmDevelop.hash == 0) {
+                return fail("MalformedRequiredProfileData phase=3A field=data.density_curves hash");
+            }
+            if (!build_visual_grain_recipe(
+                    input.visualGrain,
+                    filmDevelop,
+                    recipe.visualGrain)) {
+                return fail("MalformedRequiredProfileData phase=9A field=visual_grain");
+            }
+            build_film_juicer_effects_recipe(input, recipe.filmJuicerEffects);
+
+            if (!build_dir_couplers_recipe(
+                    profile,
+                    filmDevelop,
+                    input.dirCouplers,
+                    recipe.dirCouplers)) {
+                return fail("MalformedRequiredProfileData phase=3D-3 field=dirCouplers");
+            }
+
+            const bool printRoute = scan_route_is_print(input.scanRoute);
+            DensityBoundsRecipe& filmBounds =
+                printRoute ? recipe.enlargerFilmBounds : recipe.densityBounds;
+            const DensityBoundsSource source = printRoute
+                                                   ? DensityBoundsSource::EnlargerFilmGrainContractAndAuthoredCurves
+                                                   : DensityBoundsSource::DirectFilmGrainContractAndAuthoredCurves;
+            if (!build_film_density_bounds(
+                    profile,
+                    filmDevelop,
+                    recipe.grainContract,
+                    input.scanRoute,
+                    source,
+                    filmBounds)) {
+                return fail("MalformedRequiredProfileData phase=3A field=density_bounds");
+            }
+            return true;
+        }
+
+        std::uint64_t append_optional_film_feature_hashes(
+            std::uint64_t hash,
+            const RenderRecipe& recipe) {
+            if (recipe.spatialOptics.hash != 0) {
+                hash = Hash::hash_uint64_values({hash, recipe.spatialOptics.hash});
+            }
+            if (recipe.visualGrain.hash != 0) {
+                hash = Hash::hash_uint64_values({hash, recipe.visualGrain.hash});
+            }
+            if (recipe.filmJuicerEffects.hash != 0) {
+                hash = Hash::hash_uint64_values({hash, recipe.filmJuicerEffects.hash});
+            }
+            return hash;
+        }
+
+    } // namespace
 
     DirectRecipeBuildResult build_direct_render_recipe(const DirectRecipeBuildInput& input) {
         DirectRecipeBuildResult result{};
-        result.recipe = make_render_recipe(input.filmProfileKey, input.printProfileKey, input.scanRoute);
-        if (scan_route_is_print(input.scanRoute)) {
-            result.diagnostic = "UnsupportedMode phase=3A field=scan_route expected=direct";
-            return result;
-        }
-        if (!input.filmProfile) {
-            result.diagnostic = "MissingRequiredResource phase=3B field=film_profile";
-            return result;
-        }
-        if (!input.directRoutePrintProfileExcluded || !input.directRouteNeutralCalibrationExcluded) {
-            result.diagnostic = "ResourceDescriptorMismatch phase=3A direct route print/neutral exclusion";
-            return result;
-        }
-        if (!input.referenceIlluminantValid) {
-            result.diagnostic = "MissingRequiredResource phase=3B field=reference_illuminant";
-            return result;
-        }
-        if (!auto_exposure_method_index_valid(input.cameraMeteringMethod)) {
-            result.diagnostic = "UnsupportedMode phase=3B field=auto_exposure_method";
+        RenderRecipe& recipe = result.recipe;
+        const FilmFoundationBuildInput& film = input.film;
+        recipe =
+            make_render_recipe(film.filmProfileKey, {}, film.scanRoute);
+        if (scan_route_is_print(film.scanRoute)) {
+            result.diagnostic =
+                "UnsupportedMode phase=3A field=scan_route expected=direct";
             return result;
         }
         if (!std::isfinite(input.scannerBlackLevel) ||
@@ -1450,195 +1745,25 @@ namespace Spektrafilm {
             !std::isfinite(input.scannerLensBlurSigmaPx) ||
             !std::isfinite(input.scannerUnsharpSigmaPx) ||
             !std::isfinite(input.scannerUnsharpAmount)) {
-            result.diagnostic = "ResourceDescriptorMismatch phase=8 field=scanner_output";
+            result.diagnostic =
+                "ResourceDescriptorMismatch phase=8 field=scanner_output";
+            return result;
+        }
+        if (!build_film_foundation(film, recipe, result.diagnostic)) {
             return result;
         }
 
-        const Profiles::ValidatedFilmProfile& profile = *input.filmProfile;
-        const ScanRoute resolvedRoute = resolve_scan_route(profile.info.type, input.scanRoute);
-        if (resolvedRoute != input.scanRoute ||
-            profile.info.support != ProfileSupport::Film ||
-            profile.info.stage != ProfileStage::Filming) {
-            result.diagnostic = "UnsupportedMode phase=3A selected capture profile route mismatch";
-            return result;
-        }
-
-        ProfileRoute& profileRoute = result.recipe.profileRoute;
-        profileRoute.captureSupport = profile.info.support;
-        profileRoute.captureStage = profile.info.stage;
-        profileRoute.capturePolarity = profile.info.type;
-        profileRoute.captureUse = profile.info.use;
-        profileRoute.captureAntihalation = profile.info.antihalation;
-        profileRoute.captureChannelModel = profile.info.channelModel;
-        profileRoute.filmProfileAssetVersionToken = profile.assetVersionToken;
-        profileRoute.printProfileAssetVersionToken = 0;
-        profileRoute.filmProfile = input.filmProfile;
-        profileRoute.printProfile.reset();
-        profileRoute.directRoutePrintProfileExcluded = input.directRoutePrintProfileExcluded;
-        profileRoute.directRouteNeutralCalibrationExcluded = input.directRouteNeutralCalibrationExcluded;
+        ProfileRoute& profileRoute = recipe.profileRoute;
         profileRoute.hash = hash_profile_route(profileRoute);
 
-        FilmRawRecipe& filmRaw = result.recipe.filmRaw;
-        filmRaw.inputColorSpace = input.inputColorSpace;
-        filmRaw.inputCctfDecoding = input.inputCctfDecoding;
-        filmRaw.rgbToRawMethod = (input.spectralUpsamplingMode == 1)
-                                     ? RgbToRawMethod::Mallett2019
-                                     : RgbToRawMethod::Hanatos2025;
-        filmRaw.autoExposureEnabled = input.cameraAutoExposureEnabled;
-        filmRaw.autoExposureMethod = auto_exposure_method_from_index(input.cameraMeteringMethod);
-        filmRaw.manualExposureCompensationEv = input.manualExposureCompensationEv;
-        filmRaw.filmFormatLongEdgeMm = input.filmFormatLongEdgeMm;
-        filmRaw.cameraBandPass.active = input.cameraFilterOverride;
-        filmRaw.cameraBandPass.uv = copy_filter_triplet(input.cameraFilterUV, input.cameraFilterOverride);
-        filmRaw.cameraBandPass.ir = copy_filter_triplet(input.cameraFilterIR, input.cameraFilterOverride);
-        filmRaw.hanatos.applyWindow = input.applyHanatos2025AdaptationWindow;
-        filmRaw.hanatos.applySurface = input.applyHanatos2025AdaptationSurface;
-        filmRaw.hanatos.spectralGaussianBlur = profile.digest.hanatosSpectralGaussianBlurDefault;
-        filmRaw.hanatos.windowParams = profile.data.hanatos2025AdaptationWindowParams;
-        filmRaw.hanatos.surfaceParams = profile.data.hanatos2025AdaptationSurfaceParams;
-        filmRaw.hanatos.referenceIlluminant = profile.info.referenceIlluminant.value;
-        filmRaw.linearSensitivity = profile.data.linearSensitivity;
-        filmRaw.linearSensitivityHash =
-            Hash::hash_float_span(&filmRaw.linearSensitivity[0][0], filmRaw.linearSensitivity.size() * 3u);
-        if (filmRaw.rgbToRawMethod == RgbToRawMethod::Hanatos2025) {
-            if (filmRaw.hanatos.applyWindow && !profile.data.hasHanatos2025AdaptationWindowParams) {
-                result.diagnostic =
-                    "MalformedRequiredProfileData phase=3D-2 field=data.hanatos2025_adaptation_window_params";
-                return result;
-            }
-            if (filmRaw.hanatos.applySurface && !profile.data.hasHanatos2025AdaptationSurfaceParams) {
-                result.diagnostic =
-                    "MalformedRequiredProfileData phase=3D-2 field=data.hanatos2025_adaptation_surface_params";
-                return result;
-            }
-            if (!std::isfinite(filmRaw.hanatos.spectralGaussianBlur) ||
-                filmRaw.hanatos.spectralGaussianBlur < 0.0f) {
-                result.diagnostic =
-                    "MalformedRequiredProfileData phase=3D-2 field=settings.spectral_gaussian_blur";
-                return result;
-            }
-        }
-        if (!derive_final_sensitivity(filmRaw, input.referenceIlluminant)) {
-            result.diagnostic = "MalformedRequiredProfileData phase=3B field=final_sensitivity";
-            return result;
-        }
-        filmRaw.hash = hash_film_raw_recipe(filmRaw);
-        if (filmRaw.linearSensitivityHash == 0 ||
-            filmRaw.finalSensitivityHash == 0 ||
-            (filmRaw.rgbToRawMethod == RgbToRawMethod::Hanatos2025 && filmRaw.hanatosLutHash == 0) ||
-            filmRaw.hash == 0) {
-            result.diagnostic = "MalformedRequiredProfileData phase=3B field=data.log_sensitivity";
-            return result;
-        }
-
-        if (!build_spatial_optics_recipe(
-                profile,
-                input.spatialOptics,
-                false,
-                result.recipe.spatialOptics,
-                result.diagnostic)) {
-            return result;
-        }
-
-        if (!build_grain_contract(input.grainContract, result.recipe.grainContract)) {
-            result.diagnostic = "MalformedRequiredProfileData phase=9A field=grain_contract";
-            return result;
-        }
-
-        FilmDevelopRecipe& filmDevelop = result.recipe.filmDevelop;
-        filmDevelop.polarity = profile.info.type;
-        filmDevelop.logExposure = profile.data.logExposure;
-        filmDevelop.authoredDensityCurves = profile.data.densityCurves;
-        if (!normalize_density_curves(
-                filmDevelop.authoredDensityCurves,
-                filmDevelop.normalizedDensityCurves,
-                filmDevelop.authoredMinCmy,
-                filmDevelop.authoredMaxCmy)) {
-            result.diagnostic = "MalformedRequiredProfileData phase=3A field=data.density_curves";
-            return result;
-        }
-        if (filmDevelop.authoredDensityCurves.empty() ||
-            filmDevelop.normalizedDensityCurves.empty()) {
-            result.diagnostic = "MalformedRequiredProfileData phase=3A field=data.density_curves empty";
-            return result;
-        }
-        filmDevelop.authoredDensityCurvesHash = hash_nan_preserving_floats(
-            &filmDevelop.authoredDensityCurves[0][0],
-            filmDevelop.authoredDensityCurves.size() * 3u);
-        filmDevelop.normalizedDensityCurvesHash = hash_nan_preserving_floats(
-            &filmDevelop.normalizedDensityCurves[0][0],
-            filmDevelop.normalizedDensityCurves.size() * 3u);
-        filmDevelop.densityCurvesLayersRequired =
-            visual_grain_requires_density_layers(input.visualGrain);
-        if (filmDevelop.densityCurvesLayersRequired) {
-            if (profile.data.densityCurvesLayersMalformed) {
-                result.diagnostic =
-                    profile.data.densityCurvesLayersDiagnostic.empty()
-                        ? "MalformedRequiredProfileData phase=9B field=data.density_curves_layers"
-                        : profile.data.densityCurvesLayersDiagnostic;
-                return result;
-            }
-            if (!profile.data.hasDensityCurvesLayers) {
-                result.diagnostic = "MissingRequiredResource phase=9B field=data.density_curves_layers";
-                return result;
-            }
-            if (!validate_density_curves_layers_shape(
-                    profile.data.densityCurvesLayers,
-                    filmDevelop.logExposure.size())) {
-                result.diagnostic = "MalformedRequiredProfileData phase=9B field=data.density_curves_layers shape";
-                return result;
-            }
-            filmDevelop.densityCurvesLayers = profile.data.densityCurvesLayers;
-            filmDevelop.densityCurvesLayersHash =
-                hash_density_curves_layers(filmDevelop.densityCurvesLayers);
-            if (filmDevelop.densityCurvesLayersHash == 0) {
-                result.diagnostic = "MalformedRequiredProfileData phase=9B field=data.density_curves_layers hash";
-                return result;
-            }
-        }
-        filmDevelop.hash = hash_film_develop_recipe(filmDevelop);
-        if (filmDevelop.authoredDensityCurvesHash == 0 ||
-            filmDevelop.normalizedDensityCurvesHash == 0 ||
-            filmDevelop.hash == 0) {
-            result.diagnostic = "MalformedRequiredProfileData phase=3A field=data.density_curves hash";
-            return result;
-        }
-        if (!build_visual_grain_recipe(
-                input.visualGrain,
-                filmDevelop,
-                result.recipe.visualGrain)) {
-            result.diagnostic = "MalformedRequiredProfileData phase=9A field=visual_grain";
-            return result;
-        }
-        build_film_juicer_effects_recipe(
-            input,
-            result.recipe.filmJuicerEffects);
-
-        if (!build_dir_couplers_recipe(
-                profile,
-                filmDevelop,
-                input.dirCouplers,
-                result.recipe.dirCouplers)) {
-            result.diagnostic = "MalformedRequiredProfileData phase=3D-3 field=dirCouplers";
-            return result;
-        }
-
-        if (!build_direct_density_bounds(
-                profile,
-                filmDevelop,
-                result.recipe.grainContract,
-                input.scanRoute,
-                result.recipe.densityBounds)) {
-            result.diagnostic = "MalformedRequiredProfileData phase=3A field=density_bounds";
-            return result;
-        }
-
-        ScannerOutputRecipe& scanner = result.recipe.scannerOutput;
-        scanner.route = input.scanRoute;
+        const Profiles::ValidatedFilmProfile& profile = *film.filmProfile;
+        ScannerOutputRecipe& scanner = recipe.scannerOutput;
+        scanner.route = film.scanRoute;
         scanner.medium = DensityMedium::Film;
         scanner.polarity = profile.info.type;
         scanner.viewingIlluminant = profile.info.viewingIlluminant.value;
-        scanner.lutResolution = std::clamp(input.scannerLutResolution, 17u, 128u);
+        scanner.lutResolution =
+            std::clamp(input.scannerLutResolution, 17u, 128u);
         scanner.outputColorSpace = input.outputColorSpace;
         scanner.outputCctfEncoding = input.outputCctfEncoding;
         scanner.outputLinearPassThrough = false;
@@ -1646,151 +1771,119 @@ namespace Spektrafilm {
         scanner.whiteCorrection = input.scannerWhiteCorrection;
         scanner.blackLevel = input.scannerBlackLevel;
         scanner.whiteLevel = input.scannerWhiteLevel;
-        scanner.directGlareDisabled = true;
         scanner.lensBlurSigmaPx = input.scannerLensBlurSigmaPx;
         scanner.unsharpSigmaPx = input.scannerUnsharpSigmaPx;
         scanner.unsharpAmount = input.scannerUnsharpAmount;
-        const bool scannerPostEffectsIdentity =
-            scanner.lensBlurSigmaPx <= 0.0f &&
-            (scanner.unsharpSigmaPx <= 0.0f || scanner.unsharpAmount <= 0.0f);
-        scanner.postEffectsDisposition = scannerPostEffectsIdentity
-                                             ? ScannerPostEffectDisposition::Identity
-                                             : ScannerPostEffectDisposition::Implemented;
-        scanner.blockingDiagnostic.clear();
         scanner.hash = hash_scanner_output_recipe(scanner);
 
-        result.recipe.directStructuralReady = true;
-        result.recipe.directPixelAcceptance = false;
-        if (result.recipe.dirCouplers.active) {
-            result.recipe.hash = Hash::hash_uint64_values({profileRoute.hash,
-                                                           filmRaw.hash,
-                                                           filmDevelop.hash,
-                                                           result.recipe.dirCouplers.hash,
-                                                           result.recipe.densityBounds.hash,
-                                                           scanner.hash});
+        recipe.directStructuralReady = true;
+        if (recipe.dirCouplers.active) {
+            recipe.hash = Hash::hash_uint64_values(
+                {profileRoute.hash,
+                 recipe.filmRaw.hash,
+                 recipe.filmDevelop.hash,
+                 recipe.dirCouplers.hash,
+                 recipe.densityBounds.hash,
+                 scanner.hash});
         } else {
-            result.recipe.hash = Hash::hash_uint64_values({profileRoute.hash,
-                                                           filmRaw.hash,
-                                                           filmDevelop.hash,
-                                                           result.recipe.densityBounds.hash,
-                                                           scanner.hash});
+            recipe.hash = Hash::hash_uint64_values(
+                {profileRoute.hash,
+                 recipe.filmRaw.hash,
+                 recipe.filmDevelop.hash,
+                 recipe.densityBounds.hash,
+                 scanner.hash});
         }
-        if (result.recipe.spatialOptics.hash != 0) {
-            result.recipe.hash =
-                Hash::hash_uint64_values({result.recipe.hash, result.recipe.spatialOptics.hash});
-        }
-        if (result.recipe.visualGrain.hash != 0) {
-            result.recipe.hash =
-                Hash::hash_uint64_values({result.recipe.hash, result.recipe.visualGrain.hash});
-        }
-        if (result.recipe.filmJuicerEffects.hash != 0) {
-            result.recipe.hash = Hash::hash_uint64_values(
-                {result.recipe.hash, result.recipe.filmJuicerEffects.hash});
-        }
-        result.valid = result.recipe.hash != 0;
+        recipe.hash =
+            append_optional_film_feature_hashes(
+                recipe.hash,
+                recipe);
+        result.valid = recipe.hash != 0;
         if (!result.valid) {
-            result.diagnostic = "ResourceDescriptorMismatch phase=3A field=render_recipe_hash";
+            result.diagnostic =
+                "ResourceDescriptorMismatch phase=3A field=render_recipe_hash";
         }
         return result;
     }
-
-    PrintRecipeBuildResult build_print_render_recipe(const PrintRecipeBuildInput& input) {
+    PrintRecipeBuildResult build_print_render_recipe(
+        const PrintRecipeBuildInput& input) {
         PrintRecipeBuildResult result{};
-        result.recipe = make_render_recipe(input.filmProfileKey, input.printProfileKey, input.scanRoute);
-        if (!scan_route_is_print(input.scanRoute)) {
-            result.diagnostic = "UnsupportedMode phase=4A field=scan_route expected=print";
+        RenderRecipe& recipe = result.recipe;
+        const FilmFoundationBuildInput& film = input.film;
+        recipe = make_render_recipe(
+            film.filmProfileKey,
+            input.printProfileKey,
+            film.scanRoute);
+        if (!scan_route_is_print(film.scanRoute)) {
+            result.diagnostic =
+                "UnsupportedMode phase=4A field=scan_route expected=print";
             return result;
         }
-        if (!input.filmProfile || !input.printProfile) {
-            result.diagnostic = "MissingRequiredResource phase=4A field=selected_profile";
+        if (!film.filmProfile || !input.printProfile) {
+            result.diagnostic =
+                "MissingRequiredResource phase=4A field=selected_profile";
             return result;
         }
-        if (resolve_scan_route(input.filmProfile->info.type, input.scanRoute) != input.scanRoute ||
-            input.filmProfile->info.stage != ProfileStage::Filming ||
-            input.printProfile->digest.profileRole != Profiles::ProfileRole::Print ||
+        if (input.printProfile->digest.profileRole !=
+                Profiles::ProfileRole::Print ||
             input.printProfile->info.stage != ProfileStage::Printing) {
-            result.diagnostic = "UnsupportedMode phase=4A selected profile route mismatch";
+            result.diagnostic =
+                "UnsupportedMode phase=4A selected profile route mismatch";
             return result;
         }
-        if (input.neutralCalibrationHash == 0 ||
-            input.printIlluminantKey.empty() ||
+        if (input.printIlluminantKey.empty() ||
             !finite_cmy(input.currentNeutralCmyCc) ||
             !finite_cmy(input.calibratedNeutralCmyCc) ||
-            !std::all_of(input.uiYmcCc.begin(), input.uiYmcCc.end(), [](float value) {
-                return std::isfinite(value);
-            }) ||
-            !std::isfinite(input.preflashMFilterCc) || !std::isfinite(input.preflashYFilterCc) || !std::isfinite(input.printExposure) || !std::isfinite(input.preflashExposure) || !std::isfinite(input.cameraExposureCompensationEv) || !std::isfinite(input.scannerBlackLevel) || !std::isfinite(input.scannerWhiteLevel) || !std::isfinite(input.glarePercent) || !std::isfinite(input.glareRoughness) || !std::isfinite(input.glareBlurSigmaPx) || !std::isfinite(input.scannerLensBlurSigmaPx) || !std::isfinite(input.scannerUnsharpSigmaPx) || !std::isfinite(input.scannerUnsharpAmount)) {
-            result.diagnostic = "ResourceDescriptorMismatch phase=4A field=print_recipe_input";
+            !std::all_of(
+                input.uiYmcCc.begin(),
+                input.uiYmcCc.end(),
+                [](float value) {
+                    return std::isfinite(value);
+                }) ||
+            !std::isfinite(input.preflashMFilterCc) ||
+            !std::isfinite(input.preflashYFilterCc) ||
+            !std::isfinite(input.printExposure) ||
+            !std::isfinite(input.preflashExposure) ||
+            !std::isfinite(film.manualExposureCompensationEv) ||
+            !std::isfinite(input.scannerBlackLevel) ||
+            !std::isfinite(input.scannerWhiteLevel) ||
+            !std::isfinite(input.glarePercent) ||
+            !std::isfinite(input.glareRoughness) ||
+            !std::isfinite(input.glareBlurSigmaPx) ||
+            !std::isfinite(input.scannerLensBlurSigmaPx) ||
+            !std::isfinite(input.scannerUnsharpSigmaPx) ||
+            !std::isfinite(input.scannerUnsharpAmount)) {
+            result.diagnostic =
+                "ResourceDescriptorMismatch phase=4A field=print_recipe_input";
+            return result;
+        }
+        if (!build_film_foundation(film, recipe, result.diagnostic)) {
             return result;
         }
 
-        DirectRecipeBuildInput foundationInput = input.filmFoundation;
-        foundationInput.filmProfileKey = input.filmProfileKey;
-        foundationInput.printProfileKey = input.printProfileKey;
-        foundationInput.filmProfile = input.filmProfile;
-        foundationInput.scanRoute =
-            input.filmProfile->info.type == ProfilePolarity::Positive
-                ? ScanRoute::PositiveDirectScan
-                : ScanRoute::NegativeDirectScan;
-        foundationInput.directRoutePrintProfileExcluded = true;
-        foundationInput.directRouteNeutralCalibrationExcluded = true;
-        const DirectRecipeBuildResult foundation = build_direct_render_recipe(foundationInput);
-        if (!foundation.valid) {
-            result.diagnostic = foundation.diagnostic.empty()
-                                    ? "ResourceDescriptorMismatch phase=4C field=film_foundation"
-                                    : foundation.diagnostic;
-            return result;
-        }
-
-        ProfileRoute& route = result.recipe.profileRoute;
-        route.captureSupport = input.filmProfile->info.support;
-        route.captureStage = input.filmProfile->info.stage;
-        route.capturePolarity = input.filmProfile->info.type;
-        route.captureUse = input.filmProfile->info.use;
-        route.captureAntihalation = input.filmProfile->info.antihalation;
-        route.captureChannelModel = input.filmProfile->info.channelModel;
-        route.filmProfileAssetVersionToken = input.filmProfile->assetVersionToken;
-        route.printProfileAssetVersionToken = input.printProfile->assetVersionToken;
-        route.filmProfile = input.filmProfile;
+        ProfileRoute& route = recipe.profileRoute;
+        route.printProfileAssetVersionToken =
+            input.printProfile->assetVersionToken;
         route.printProfile = input.printProfile;
         route.hash = hash_profile_route(route);
 
-        result.recipe.filmRaw = foundation.recipe.filmRaw;
-        if (!build_spatial_optics_recipe(
-                *input.filmProfile,
-                input.filmFoundation.spatialOptics,
-                true,
-                result.recipe.spatialOptics,
-                result.diagnostic)) {
-            return result;
-        }
-        result.recipe.filmDevelop = foundation.recipe.filmDevelop;
-        result.recipe.dirCouplers = foundation.recipe.dirCouplers;
-        result.recipe.visualGrain = foundation.recipe.visualGrain;
-        result.recipe.filmJuicerEffects =
-            foundation.recipe.filmJuicerEffects;
-        result.recipe.grainContract = foundation.recipe.grainContract;
-        result.recipe.enlargerFilmBounds = foundation.recipe.densityBounds;
-        result.recipe.enlargerFilmBounds.route = input.scanRoute;
-        result.recipe.enlargerFilmBounds.source =
-            DensityBoundsSource::EnlargerFilmGrainContractAndAuthoredCurves;
-        result.recipe.enlargerFilmBounds.hash =
-            hash_density_bounds_recipe(result.recipe.enlargerFilmBounds);
         if (!build_print_density_bounds(
                 *input.printProfile,
-                input.scanRoute,
-                input.filmProfile->info.type,
-                result.recipe.densityBounds)) {
-            result.diagnostic = "MalformedRequiredProfileData phase=4C field=print_density_bounds";
+                film.scanRoute,
+                film.filmProfile->info.type,
+                recipe.densityBounds)) {
+            result.diagnostic =
+                "MalformedRequiredProfileData phase=4C field=print_density_bounds";
             return result;
         }
 
-        ScannerOutputRecipe& scanner = result.recipe.scannerOutput;
-        scanner.route = input.scanRoute;
+        ScannerOutputRecipe& scanner = recipe.scannerOutput;
+        scanner.route = film.scanRoute;
         scanner.medium = DensityMedium::Print;
-        scanner.polarity = input.filmProfile->info.type;
-        scanner.viewingIlluminant = input.printProfile->info.viewingIlluminant.value;
-        scanner.lutResolution = std::clamp(input.scannerLutResolution, 17u, 128u);
+        scanner.polarity = film.filmProfile->info.type;
+        scanner.viewingIlluminant =
+            input.printProfile->info.viewingIlluminant.value;
+        scanner.lutResolution =
+            std::clamp(input.scannerLutResolution, 17u, 128u);
         scanner.outputColorSpace = input.outputColorSpace;
         scanner.outputCctfEncoding = input.outputCctfEncoding;
         scanner.outputLinearPassThrough = false;
@@ -1798,7 +1891,6 @@ namespace Spektrafilm {
         scanner.whiteCorrection = input.scannerWhiteCorrection;
         scanner.blackLevel = input.scannerBlackLevel;
         scanner.whiteLevel = input.scannerWhiteLevel;
-        scanner.directGlareDisabled = false;
         scanner.glareActive = input.glareActive;
         scanner.glarePercent = input.glarePercent;
         scanner.glareRoughness = input.glareRoughness;
@@ -1806,129 +1898,102 @@ namespace Spektrafilm {
         scanner.lensBlurSigmaPx = input.scannerLensBlurSigmaPx;
         scanner.unsharpSigmaPx = input.scannerUnsharpSigmaPx;
         scanner.unsharpAmount = input.scannerUnsharpAmount;
-        const bool scannerPostEffectsIdentity =
-            scanner.lensBlurSigmaPx <= 0.0f &&
-            (scanner.unsharpSigmaPx <= 0.0f || scanner.unsharpAmount <= 0.0f);
-        scanner.postEffectsDisposition = scannerPostEffectsIdentity && !scanner.glareActive
-                                             ? ScannerPostEffectDisposition::Identity
-                                             : ScannerPostEffectDisposition::Implemented;
-        scanner.blockingDiagnostic.clear();
         scanner.hash = hash_scanner_output_recipe(scanner);
 
-        PrintRecipe& print = result.recipe.print;
+        PrintRecipe& print = recipe.print;
         print.filters.dichroic = input.dichroic;
         if (!dichroic_resource_identity_valid(print.filters.dichroic)) {
-            result.diagnostic = "ResourceDescriptorMismatch phase=4A field=dichroic_resource_identity";
+            result.diagnostic =
+                "ResourceDescriptorMismatch phase=4A field=dichroic_resource_identity";
             return result;
         }
         print.filters.dichroic.hash =
             hash_dichroic_resource_identity(print.filters.dichroic);
         if (print.filters.dichroic.hash == 0) {
-            result.diagnostic = "ResourceDescriptorMismatch phase=4A field=dichroic_resource_identity";
+            result.diagnostic =
+                "ResourceDescriptorMismatch phase=4A field=dichroic_resource_identity";
             return result;
         }
-        print.filters.neutralCalibration.status = input.neutralCalibrationStatus;
-        print.filters.neutralCalibration.printProfileKey = input.printProfileKey;
-        print.filters.neutralCalibration.printIlluminantKey = input.printIlluminantKey;
-        print.filters.neutralCalibration.filmProfileKey = input.filmProfileKey;
-        print.filters.neutralCalibration.resourceHash = input.neutralCalibrationResourceHash;
-        print.filters.neutralCalibration.hash =
-            Hash::hash_uint64_values({input.neutralCalibrationHash,
-                                      hash_neutral_calibration(print.filters.neutralCalibration)});
-        print.filters.neutralCmyCc =
-            input.neutralCalibrationStatus == NeutralCalibrationStatus::Calibrated
+        const CmyCcTriplet neutralCmyCc =
+            input.neutralCalibrationStatus ==
+                    NeutralCalibrationStatus::Calibrated
                 ? input.calibratedNeutralCmyCc
                 : input.currentNeutralCmyCc;
-        print.filters.userCmyCc =
-            CmyCcTriplet{input.uiYmcCc[2], input.uiYmcCc[1], input.uiYmcCc[0]};
-        print.filters.filmJuicerMainCFilterShiftCc = print.filters.userCmyCc.c;
-        print.filters.mainCmyCc = CmyCcTriplet{
-            print.filters.neutralCmyCc.c + print.filters.filmJuicerMainCFilterShiftCc,
-            print.filters.neutralCmyCc.m + print.filters.userCmyCc.m,
-            print.filters.neutralCmyCc.y + print.filters.userCmyCc.y};
-        print.filters.preflashUserCmyCc =
-            CmyCcTriplet{0.0f, input.preflashMFilterCc, input.preflashYFilterCc};
-        print.filters.preflashCmyCc = CmyCcTriplet{
-            print.filters.neutralCmyCc.c,
-            print.filters.neutralCmyCc.m + input.preflashMFilterCc,
-            print.filters.neutralCmyCc.y + input.preflashYFilterCc};
+        const CmyCcTriplet userCmyCc = {
+            input.uiYmcCc[2],
+            input.uiYmcCc[1],
+            input.uiYmcCc[0]};
+        print.filters.mainCmyCc = {
+            neutralCmyCc.c + userCmyCc.c,
+            neutralCmyCc.m + userCmyCc.m,
+            neutralCmyCc.y + userCmyCc.y};
+        print.filters.preflashCmyCc = {
+            neutralCmyCc.c,
+            neutralCmyCc.m + input.preflashMFilterCc,
+            neutralCmyCc.y + input.preflashYFilterCc};
         print.filters.hash = hash_print_filter_recipe(print.filters);
 
         print.exposure.printExposure = input.printExposure;
         print.exposure.preflashExposure = input.preflashExposure;
-        print.exposure.cameraExposureCompensationEv = input.cameraExposureCompensationEv;
+        print.exposure.cameraExposureCompensationEv =
+            film.manualExposureCompensationEv;
         print.exposure.normalizePrintExposure = input.normalizePrintExposure;
-        print.exposure.printExposureCompensation = input.printExposureCompensation;
-        print.exposure.normalizationMode =
-            print_normalization_mode(input.normalizePrintExposure, input.printExposureCompensation);
-        print.exposure.normalizerExpression =
-            print_normalizer_expression(print.exposure.normalizationMode);
+        print.exposure.printExposureCompensation =
+            input.printExposureCompensation;
+        print.exposure.normalizationMode = print_normalization_mode(
+            input.normalizePrintExposure,
+            input.printExposureCompensation);
         print.exposure.hash = hash_print_exposure_recipe(print.exposure);
 
         print.illuminant.key = input.printIlluminantKey;
         print.illuminant.hash = Hash::kFnvOffset;
         hash_string(print.illuminant.hash, print.illuminant.key);
 
-        print.mediumHandoff.printProfileKey = input.printProfileKey;
-        print.mediumHandoff.printProfileAssetVersionToken = input.printProfile->assetVersionToken;
-        print.mediumHandoff.viewingIlluminant = input.printProfile->info.viewingIlluminant.value;
-        {
-            std::uint64_t hash = Hash::kFnvOffset;
-            hash_value(hash, print.mediumHandoff.medium);
-            hash_string(hash, print.mediumHandoff.printProfileKey);
-            hash_value(hash, print.mediumHandoff.printProfileAssetVersionToken);
-            hash_string(hash, print.mediumHandoff.viewingIlluminant);
-            print.mediumHandoff.hash = hash;
-        }
-
-        print.hash = Hash::hash_uint64_values({print.filters.hash,
-                                               print.exposure.hash,
-                                               print.illuminant.hash,
-                                               print.mediumHandoff.hash});
-        result.recipe.printStructuralReady = true;
-        if (result.recipe.dirCouplers.active) {
-            result.recipe.hash = Hash::hash_uint64_values({route.hash,
-                                                           result.recipe.filmRaw.hash,
-                                                           result.recipe.filmDevelop.hash,
-                                                           result.recipe.dirCouplers.hash,
-                                                           result.recipe.enlargerFilmBounds.hash,
-                                                           result.recipe.densityBounds.hash,
-                                                           scanner.hash,
-                                                           print.hash});
+        print.hash = Hash::hash_uint64_values(
+            {print.filters.hash,
+             print.exposure.hash,
+             print.illuminant.hash});
+        recipe.printStructuralReady = true;
+        if (recipe.dirCouplers.active) {
+            recipe.hash = Hash::hash_uint64_values(
+                {route.hash,
+                 recipe.filmRaw.hash,
+                 recipe.filmDevelop.hash,
+                 recipe.dirCouplers.hash,
+                 recipe.enlargerFilmBounds.hash,
+                 recipe.densityBounds.hash,
+                 scanner.hash,
+                 print.hash});
         } else {
-            result.recipe.hash = Hash::hash_uint64_values({route.hash,
-                                                           result.recipe.filmRaw.hash,
-                                                           result.recipe.filmDevelop.hash,
-                                                           result.recipe.enlargerFilmBounds.hash,
-                                                           result.recipe.densityBounds.hash,
-                                                           scanner.hash,
-                                                           print.hash});
+            recipe.hash = Hash::hash_uint64_values(
+                {route.hash,
+                 recipe.filmRaw.hash,
+                 recipe.filmDevelop.hash,
+                 recipe.enlargerFilmBounds.hash,
+                 recipe.densityBounds.hash,
+                 scanner.hash,
+                 print.hash});
         }
-        if (result.recipe.spatialOptics.hash != 0) {
-            result.recipe.hash =
-                Hash::hash_uint64_values({result.recipe.hash, result.recipe.spatialOptics.hash});
-        }
-        if (result.recipe.visualGrain.hash != 0) {
-            result.recipe.hash =
-                Hash::hash_uint64_values({result.recipe.hash, result.recipe.visualGrain.hash});
-        }
-        if (result.recipe.filmJuicerEffects.hash != 0) {
-            result.recipe.hash = Hash::hash_uint64_values(
-                {result.recipe.hash, result.recipe.filmJuicerEffects.hash});
-        }
-        result.valid = route.hash != 0 && print.filters.hash != 0 &&
-                       print.exposure.hash != 0 && print.illuminant.hash != 0 &&
-                       result.recipe.filmRaw.hash != 0 &&
-                       result.recipe.filmDevelop.hash != 0 &&
-                       (!result.recipe.dirCouplers.active ||
-                        result.recipe.dirCouplers.hash != 0) &&
-                       result.recipe.enlargerFilmBounds.hash != 0 &&
-                       result.recipe.densityBounds.hash != 0 &&
+        recipe.hash =
+            append_optional_film_feature_hashes(
+                recipe.hash,
+                recipe);
+        result.valid = route.hash != 0 &&
+                       print.filters.hash != 0 &&
+                       print.exposure.hash != 0 &&
+                       print.illuminant.hash != 0 &&
+                       recipe.filmRaw.hash != 0 &&
+                       recipe.filmDevelop.hash != 0 &&
+                       (!recipe.dirCouplers.active ||
+                        recipe.dirCouplers.hash != 0) &&
+                       recipe.enlargerFilmBounds.hash != 0 &&
+                       recipe.densityBounds.hash != 0 &&
                        scanner.hash != 0 &&
-                       print.mediumHandoff.hash != 0 && print.hash != 0 &&
-                       result.recipe.hash != 0;
+                       print.hash != 0 &&
+                       recipe.hash != 0;
         if (!result.valid) {
-            result.diagnostic = "ResourceDescriptorMismatch phase=4A field=print_recipe_hash";
+            result.diagnostic =
+                "ResourceDescriptorMismatch phase=4A field=print_recipe_hash";
         }
         return result;
     }
@@ -1949,6 +2014,99 @@ namespace Spektrafilm {
             default:
                 return std::numeric_limits<float>::quiet_NaN();
         }
+    }
+
+    bool build_diffusion_frame_set_descriptor(
+        const SpatialOptics& optics,
+        ScanRoute route,
+        double pixelSizeUm,
+        DiffusionFrameDomain fullFrame,
+        std::optional<DiffusionFrameSetDescriptor>& out,
+        std::string& diagnostic) {
+        out.reset();
+        diagnostic.clear();
+
+        const bool cameraActive = optics.cameraDiffusion.hash != 0;
+        const bool enlargerActive = optics.enlargerDiffusion.hash != 0;
+        if (!cameraActive && !enlargerActive) {
+            return true;
+        }
+        if (!valid_diffusion_frame_route(route)) {
+            fail_diffusion_frame_descriptor(diagnostic, "route");
+            return false;
+        }
+        if (fullFrame.width < 2 || fullFrame.height < 2) {
+            fail_diffusion_frame_descriptor(diagnostic, "full_frame_domain");
+            return false;
+        }
+        if (!(std::isfinite(pixelSizeUm) && pixelSizeUm > 0.0)) {
+            fail_diffusion_frame_descriptor(diagnostic, "pixel_size_um");
+            return false;
+        }
+        if (enlargerActive && !scan_route_is_print(route)) {
+            fail_diffusion_frame_descriptor(diagnostic, "enlarger_route");
+            return false;
+        }
+
+        DiffusionFrameSetDescriptor descriptor{};
+        descriptor.route = route;
+        descriptor.fullFrame = fullFrame;
+        if (cameraActive) {
+            DiffusionStageFrameDescriptor camera{};
+            if (!build_diffusion_stage_frame_descriptor(
+                    optics.cameraDiffusion,
+                    DiffusionLinearStage::CameraFilmLinear,
+                    pixelSizeUm,
+                    fullFrame,
+                    camera,
+                    diagnostic)) {
+                return false;
+            }
+            descriptor.camera = camera;
+        }
+        if (enlargerActive) {
+            DiffusionStageFrameDescriptor enlarger{};
+            if (!build_diffusion_stage_frame_descriptor(
+                    optics.enlargerDiffusion,
+                    DiffusionLinearStage::EnlargerPrintLinear,
+                    pixelSizeUm,
+                    fullFrame,
+                    enlarger,
+                    diagnostic)) {
+                return false;
+            }
+            descriptor.enlarger = enlarger;
+        }
+
+        std::uint64_t hash = Hash::kFnvOffset;
+        hash_diffusion_frame_tag(hash, "diffusion-frame-set");
+        hash_diffusion_frame_u32_le(
+            hash,
+            kDiffusionFrameDescriptorSchemaVersion);
+        hash_diffusion_frame_byte(
+            hash,
+            static_cast<std::uint8_t>(descriptor.route));
+        hash_diffusion_frame_domain(hash, descriptor.fullFrame);
+        hash_diffusion_frame_byte(
+            hash,
+            descriptor.camera.has_value() ? 1u : 0u);
+        if (descriptor.camera) {
+            hash_diffusion_frame_u64_le(hash, descriptor.camera->hash);
+        }
+        hash_diffusion_frame_byte(
+            hash,
+            descriptor.enlarger.has_value() ? 1u : 0u);
+        if (descriptor.enlarger) {
+            hash_diffusion_frame_u64_le(hash, descriptor.enlarger->hash);
+        }
+        descriptor.hash = hash;
+        if (descriptor.hash == 0) {
+            fail_diffusion_frame_descriptor(diagnostic, "frame_set_hash");
+            return false;
+        }
+
+        out = descriptor;
+        return true;
     }
 
     bool build_spatial_dir_descriptor(

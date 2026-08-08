@@ -266,7 +266,7 @@ namespace {
             static_cast<double>(m9[8]) * v3[2];
     }
 
-    // --- Scanner glare parity (matches ScannerOptics.cpp) ---
+    // --- Scanner glare helpers ---
     struct GlareRngDevice {
         openrand::Philox rng;
 

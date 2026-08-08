@@ -133,8 +133,6 @@ namespace Profiles {
     struct SelectedProfileResult {
         std::shared_ptr<const ValidatedFilmProfile> filmProfile;
         std::shared_ptr<const ValidatedPrintProfile> printProfile;
-        bool directRoutePrintProfileExcluded = false;
-        bool directRouteNeutralCalibrationExcluded = false;
         bool valid = false;
         std::string diagnostic;
     };
