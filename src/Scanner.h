@@ -1,19 +1,14 @@
 // Scanner.h
 #pragma once
 
-#include <algorithm>
-#include <array>
-#include <cmath>
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "Hash.h"
-#include "ProfileJSONLoader.h"
+#include "OutputColor.h"
 #include "ScanRoute.h"
 #include "SpectralData.h"
-#include "OutputColor.h"
 
 struct DensityBoundsRecipe;
 struct ProfileRoute;
@@ -25,17 +20,6 @@ namespace Scanner {
     enum class ScannerMedium : std::uint8_t {
         Negative = 0,
         Print = 1
-    };
-
-    struct Options {
-        float lensBlurSigmaPx = 0.0f;
-        float unsharpSigmaPx = 0.7f;
-        float unsharpAmount = 0.7f;
-    };
-
-    struct Settings {
-        bool useLut = true;
-        std::uint32_t lutResolution = 17;
     };
 
     struct ScannerIlluminant {
@@ -53,20 +37,6 @@ namespace Scanner {
         std::uint64_t digest = 0;
     };
 
-    struct ScannerStaticKey {
-        ScannerMedium medium = ScannerMedium::Negative;
-        std::uint64_t tablesHash = 0;
-        std::uint64_t densityRangeHash = 0;
-        std::uint32_t lutResolution = 0;
-        std::uint64_t hash = 0;
-    };
-
-    struct ScannerRuntimeEffectsKey {
-        std::uint64_t glareRuntimeHash = 0;
-        std::uint64_t colorRuntimeHash = 0;
-        std::uint64_t hash = 0;
-    };
-
     struct ColorRuntime {
         float cat02[9]{0.0f};
         float xyzToRgb[9]{0.0f};
@@ -79,11 +49,6 @@ namespace Scanner {
         ScannerMedium medium = ScannerMedium::Negative;
         const Spectral::SpectralTables* tables = nullptr;
         ScannerDensityRange range;
-        ScannerIlluminant illuminant;
-        Profiles::ProfileGlare glare;
-        const ColorRuntime* color = nullptr;
-        ScannerStaticKey staticKey;
-        ScannerRuntimeEffectsKey effectsKey;
     };
 
     enum class ScannedMediumKind : std::uint8_t {
@@ -209,47 +174,8 @@ namespace Scanner {
     void normalize_density(const ScannerMediumRuntime& medium, const float D_cmy[3], double D_norm[3]);
 
     ColorRuntime build_color_runtime(
-        const ScannerMediumRuntime& medium,
+        ScannerMedium medium,
+        const ScannerIlluminant& illuminant,
         const OutputEncoding::Params& outputEncoding);
-
-    inline std::uint64_t hash_glare(const Profiles::ProfileGlare& glare) {
-        const float floats[] = {
-            glare.percent,
-            glare.roughness,
-            glare.blur,
-            glare.printShadowCompensationFactor,
-            glare.printShadowCompensationDensity,
-            glare.printShadowCompensationTransition};
-        for (float v : floats) {
-            if (!std::isfinite(v)) {
-                return 0;
-            }
-        }
-        const std::uint64_t activeHash = Hash::hash_bytes(&glare.active, sizeof(glare.active));
-        const std::uint64_t paramsHash = Hash::hash_float_span(
-            floats, sizeof(floats) / sizeof(floats[0]));
-        return Hash::hash_uint64_values({activeHash, paramsHash});
-    }
-
-    inline std::uint64_t compute_static_key_hash(const ScannerStaticKey& key) {
-        return Hash::hash_uint64_values({static_cast<std::uint64_t>(key.medium),
-                                         key.tablesHash,
-                                         key.densityRangeHash,
-                                         static_cast<std::uint64_t>(key.lutResolution)});
-    }
-
-    inline void finalize_static_key(ScannerStaticKey& key) {
-        key.hash = compute_static_key_hash(key);
-    }
-
-    inline std::uint64_t identity_color_runtime_hash() {
-        static const std::uint64_t h =
-            Hash::hash_bytes("identity_color_runtime", sizeof("identity_color_runtime") - 1);
-        return h;
-    }
-
-    inline void finalize_runtime_effects_key(ScannerRuntimeEffectsKey& key) {
-        key.hash = Hash::hash_uint64_values({key.glareRuntimeHash, key.colorRuntimeHash});
-    }
 
 } // namespace Scanner

@@ -17,14 +17,11 @@
 #include <vector>
 
 #include "Cuda/JuicerCudaDeviceLedger.h"
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/Diffusion/JuicerCudaDiffusionResources.h"
-#endif
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "RenderRecipe.h"
 
-struct WorkingState;
 namespace Spectral {
     struct FilmRawConfig;
     struct SpectralTables;
@@ -33,10 +30,6 @@ namespace Scanner {
     struct ColorRuntime;
     struct ScannerSpectralLutDescriptor;
 } // namespace Scanner
-namespace Print {
-    struct Runtime;
-    struct Params;
-} // namespace Print
 namespace JuicerAssets {
     class Library;
     struct StaticNoisePayloadSet;
@@ -309,9 +302,6 @@ namespace JuicerCuda {
             float* weights = nullptr;
             int radius = 0;
             float sigma = 0.0f;
-            int capacity = 0;
-            // Non-zero when this kernel points to the process-shared immutable Gaussian cache.
-            std::uint64_t sharedKernelId = 0;
         };
 
         struct DeviceOpticsScratch {
@@ -366,16 +356,16 @@ namespace JuicerCuda {
         std::map<void*, DeviceByteReservation> deviceAllocationRecords;
         std::map<void*, DeviceByteReservation>
             contextLossOnlyDeviceAllocationRecords;
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        // Owns immutable Gaussian weights for this exact context/epoch. Named
+        // Gaussian slots below are non-owning views into this cache.
+        std::map<std::uint64_t, float*> gaussianKernelCache;
         Diffusion::DiffusionContextResources diffusion;
-#endif
         std::uint64_t filmFinalSensitivityHash = 0;
         std::uint64_t filmDensityCurvesHash = 0;
         std::uint64_t filmDensityLayersHash = 0;
         std::uint64_t filmDirHash = 0;
         std::uint64_t routeDensityBoundsHash = 0;
         std::uint64_t routeScannerDescriptorHash = 0;
-        std::uint64_t focusedPreparationCounter = 0;
         std::size_t retireBytes = 0;
         std::size_t retireScratchBytes = 0;
 
@@ -397,7 +387,6 @@ namespace JuicerCuda {
         std::uint8_t* wangLutData = nullptr;
         std::uint64_t grainStaticAssetVersion = 0;
 
-        std::uint64_t printPreflashKeyHash = 0;
         float* printIllumFiltered = nullptr;
         float* printPreflashIllumFiltered = nullptr;
         std::uint64_t printFilmDensityTablesDescriptorHash = 0;
@@ -407,7 +396,6 @@ namespace JuicerCuda {
         std::uint64_t printPreflashRawDescriptorHash = 0;
         std::uint64_t printBalanceDescriptorHash = 0;
         std::uint64_t printPreparationDescriptorHash = 0;
-        std::uint64_t printPreparationCounter = 0;
 
         // Hanatos LUTs are process-global on CPU and uploaded on demand.
         float* hanatosLut = nullptr;
@@ -553,7 +541,7 @@ namespace JuicerCuda {
     };
 
     // Descriptor-driven film and selected scan-route preparation. This is called only behind
-    // Root's prepared-frame boundary and intentionally has no WorkingState or static-noise input.
+    // Root's prepared-frame boundary and intentionally has no static-noise input.
     bool prepare_focused_route_resources(
         Resources& resources,
         const FocusedRouteResourcePreparation& request,
@@ -585,13 +573,11 @@ namespace JuicerCuda {
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
         float sigma,
-        void* cudaStreamOpaque,
         std::string& outError);
     bool ensure_gaussian_kernel(
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
         float sigma,
-        void* cudaStreamOpaque,
         std::string& outError);
 
     // Reaps deferred retire entries that are ready and returns reclaimed bytes.
@@ -675,17 +661,6 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         const char* label,
         std::string& outError);
-
-    // Purges process-shared Gaussian kernels for one device/context key.
-    bool purge_shared_gaussian_kernels_for_context(
-        int deviceId,
-        void* contextOpaque,
-        std::uint64_t contextEpoch,
-        std::string& outError) noexcept;
-    void invalidate_shared_gaussian_kernels_after_proven_context_loss(
-        int deviceId,
-        void* contextOpaque,
-        std::uint64_t contextEpoch) noexcept;
 
     enum class PinnedUploadPurgeDisposition : std::uint8_t {
         NormalRetire = 0,

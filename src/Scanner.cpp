@@ -1,7 +1,14 @@
 #include "Scanner.h"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <sstream>
+#include <string>
+#include <vector>
 
 #include "ColorTransforms.h"
 #include "GaussianSciPy.h"
@@ -26,7 +33,8 @@ namespace {
     }
 
     std::uint64_t hash_color_runtime(
-        const Scanner::ScannerMediumRuntime& medium,
+        Scanner::ScannerMedium medium,
+        const Scanner::ScannerIlluminant& illuminant,
         const OutputEncoding::Params& encoding,
         const GeneratedColorSpaces::ColorSpaceEntry& outSpace) {
         const std::uint64_t encHash = Hash::hash_uint64_values(
@@ -36,8 +44,8 @@ namespace {
              static_cast<std::uint64_t>(encoding.inputIsOutputSpace)});
         return Hash::hash_uint64_values(
             {outSpace.hash,
-             medium.illuminant.hash,
-             static_cast<std::uint64_t>(medium.medium),
+             illuminant.hash,
+             static_cast<std::uint64_t>(medium),
              encHash});
     }
 
@@ -424,10 +432,11 @@ namespace Scanner {
     }
 
     ColorRuntime build_color_runtime(
-        const ScannerMediumRuntime& medium,
+        ScannerMedium medium,
+        const ScannerIlluminant& illuminant,
         const OutputEncoding::Params& outputEncoding) {
         ColorRuntime rt{};
-        if (medium.illuminant.hash == 0) {
+        if (illuminant.hash == 0) {
             JTRACE("HASH", "FATAL: scanner illuminant hash invalid for color runtime");
             return rt;
         }
@@ -438,7 +447,7 @@ namespace Scanner {
             return rt;
         }
         Spectral::ChromaticAdaptationWhites whites{};
-        whites.source = medium.illuminant.whiteXYZ;
+        whites.source = illuminant.whiteXYZ;
         whites.destination = outSpace.whiteXYZ;
         Spectral::Mat3 adapt = Spectral::build_chromatic_adaptation_matrix(whites);
         for (int i = 0; i < 9; ++i) {
@@ -450,10 +459,10 @@ namespace Scanner {
         }
         rt.encoding = outputEncoding;
         rt.encoding.inputIsOutputSpace = true;
-        rt.illuminantXYZ[0] = medium.illuminant.whiteXYZ[0];
-        rt.illuminantXYZ[1] = medium.illuminant.whiteXYZ[1];
-        rt.illuminantXYZ[2] = medium.illuminant.whiteXYZ[2];
-        rt.hash = hash_color_runtime(medium, rt.encoding, outSpace);
+        rt.illuminantXYZ[0] = illuminant.whiteXYZ[0];
+        rt.illuminantXYZ[1] = illuminant.whiteXYZ[1];
+        rt.illuminantXYZ[2] = illuminant.whiteXYZ[2];
+        rt.hash = hash_color_runtime(medium, illuminant, rt.encoding, outSpace);
         return rt;
     }
 
@@ -613,7 +622,8 @@ namespace Scanner {
             return false;
         }
 
-        const Profiles::SpektrafilmFilmData& data = recipe.profileRoute.filmProfile->data;
+        const Profiles::SpektrafilmProfileSamples& data =
+            recipe.profileRoute.filmProfile->data;
         const ScannerMediumRuntime medium = make_scanner_medium(recipe.densityBounds, scannerTables);
         std::array<float, 3> black = recipe.densityBounds.dataMaxCmy;
         std::array<float, 3> white{};
@@ -704,8 +714,10 @@ namespace Scanner {
             return false;
         }
 
-        const Profiles::SpektrafilmFilmData& film = recipe.profileRoute.filmProfile->data;
-        const Profiles::SpektrafilmPrintData& print = recipe.profileRoute.printProfile->data;
+        const Profiles::SpektrafilmProfileSamples& film =
+            recipe.profileRoute.filmProfile->data;
+        const Profiles::SpektrafilmProfileSamples& print =
+            recipe.profileRoute.printProfile->data;
         const auto film_to_print_density = [&](const std::array<float, 3>& filmDensity) {
             std::array<float, 3> raw{};
             for (int sample = 0; sample < input.spectralSampleCount; ++sample) {

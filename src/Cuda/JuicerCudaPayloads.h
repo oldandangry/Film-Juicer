@@ -117,6 +117,36 @@ namespace JuicerCuda {
         std::size_t rowStrideFloats = 0;
     };
 
+    struct SpatialDirPlanes {
+        float* rawCorrectionY = nullptr;
+        float* rawCorrectionM = nullptr;
+        float* rawCorrectionC = nullptr;
+        float* filteredCorrectionY = nullptr;
+        float* filteredCorrectionM = nullptr;
+        float* filteredCorrectionC = nullptr;
+        float* filterTemp = nullptr;
+        float* filterTempM = nullptr;
+        float* filterTempC = nullptr;
+        float* logRawB = nullptr;
+        float* logRawG = nullptr;
+        float* logRawR = nullptr;
+    };
+
+    struct SpatialDirFilterSpec {
+        const float* kernel = nullptr;
+        int radius = 0;
+        float sigma = 0.0f;
+        float weight = 0.0f;
+    };
+
+    struct SpatialDirBuildRequest {
+        SpatialDirPlanes planes{};
+        CameraFilmLinearExposurePlanes cameraFilmLinear{};
+        SpatialDirFilterSpec gaussian{};
+        SpatialDirFilterSpec tails[3]{};
+        void* streamOpaque = nullptr;
+    };
+
     struct EnlargerPrintLinearExposurePlanes {
         float* redSensitiveCForming = nullptr;
         float* greenSensitiveMForming = nullptr;

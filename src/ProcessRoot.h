@@ -13,17 +13,14 @@
 #include "ResourceAssetLibrary.h"
 #include "FilmEffectsFrameDescriptors.h"
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/JuicerCudaFilmPayloads.h"
 #include "Cuda/JuicerCudaResources.h"
-#endif
 
 struct InstanceState;
 namespace Scanner {
     struct ScannerPostEffectsDescriptor;
 } // namespace Scanner
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 namespace JuicerCuda {
     struct PipelineRunParams;
     namespace ResourceManager {
@@ -33,7 +30,6 @@ namespace JuicerCuda {
         struct SubmissionTransaction;
     } // namespace ResourceManager
 } // namespace JuicerCuda
-#endif
 
 namespace JuicerProcess::detail {
 
@@ -157,14 +153,12 @@ namespace JuicerProcess {
         Root(const Root&) = delete;
         Root& operator=(const Root&) = delete;
 
-        const std::string& data_dir() const noexcept;
         void ensure_bootstrap();
         void shutdown() noexcept;
         void retire_grain_static_instance(std::uint64_t instanceToken) noexcept;
         FramePreparationToken begin_frame_preparation() noexcept;
         bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
         bool retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         struct AutoExposureBufferRequest {
             bool enabled = false;
             JuicerCuda::AutoExposurePreviewDescriptor descriptor{};
@@ -185,7 +179,6 @@ namespace JuicerProcess {
             std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor;
             int requestedWidth = 0;
             int requestedHeight = 0;
-            bool needCompositeProfileWorkspace = false;
         };
 
         class PreparedCudaFrame final {
@@ -280,19 +273,6 @@ namespace JuicerProcess {
                 bool active = false;
             };
 
-            struct UploadTraceView {
-                bool printPreflashValid = false;
-                std::uint64_t printPreflashKeyHash = 0;
-                std::uint64_t focusedPreparationCounter = 0;
-                std::uint64_t finalSensitivityHash = 0;
-                std::uint64_t densityCurvesHash = 0;
-                std::uint64_t densityBoundsHash = 0;
-                std::uint64_t scannerDescriptorHash = 0;
-                std::uint64_t printPreparationCounter = 0;
-                std::uint64_t printPreparationDescriptorHash = 0;
-                bool active = false;
-            };
-
             struct FocusedPreparedView {
                 JuicerCuda::FilmPreparedView film{};
                 const JuicerCuda::Resources::DeviceScanMedium* scanMedium = nullptr;
@@ -376,7 +356,6 @@ namespace JuicerProcess {
             VisualGrainWorkspaceView visual_grain_workspace(
                 const WorkspaceLeaseMarker& workspace) const noexcept;
             AutoExposureBufferView auto_exposure_buffers() const noexcept;
-            UploadTraceView upload_trace_view() const noexcept;
             FocusedPreparedView focused_resources() const noexcept;
             PrintPreparedView print_resources() const noexcept;
             JuicerCuda::Diffusion::DiffusionPreparedView
@@ -410,10 +389,6 @@ namespace JuicerProcess {
                 std::string& outError);
             bool finish(void* cudaStreamOpaque, std::string& outError);
             bool stage_optical_workspace(
-                const WorkspaceLeaseMarker& workspace,
-                void* cudaStreamOpaque,
-                std::string& outError);
-            bool try_stage_profile_optical_workspace(
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
@@ -459,11 +434,9 @@ namespace JuicerProcess {
             bool build_gaussian_kernel_slot(
                 JuicerCuda::Resources::DeviceGaussianKernel& kernel,
                 float sigma,
-                void* cudaStreamOpaque,
                 std::string& outError);
             bool prepare_scanner_post_effects(
                 const Scanner::ScannerPostEffectsDescriptor& descriptor,
-                void* cudaStreamOpaque,
                 std::string& outError);
             bool prepare_visual_grain_resources(
                 Root& root,
@@ -482,7 +455,6 @@ namespace JuicerProcess {
             const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
             std::string& outError);
-#endif
         JuicerAssets::Library& assets() noexcept;
 
     private:
@@ -525,7 +497,6 @@ namespace JuicerProcess {
         std::condition_variable _framePreparationCv;
         std::uint32_t _activeFramePreparations = 0;
         std::uint32_t _activeShutdowns = 0;
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         using CudaResourceOwner = std::shared_ptr<JuicerCuda::Resources>;
 
         struct CudaResourcesDeleter final {
@@ -605,16 +576,13 @@ namespace JuicerProcess {
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             bool contextReset,
             std::string& outError) noexcept;
-#endif
 
         bool _acceptFramePreparation = true;
         bool _shutdownRetireBlocked = false;
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         std::mutex _cudaResourcesMutex;
         std::unordered_map<int, std::shared_ptr<JuicerCuda::DeviceAllocationLedger>>
             _cudaDeviceLedgers;
         CudaContextResourceMap _cudaContextResources;
-#endif
     };
 
     Root& root() noexcept;

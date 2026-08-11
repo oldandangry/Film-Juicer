@@ -30,17 +30,14 @@
 #include "SpectralData.h"
 #include "SpectralProcessing.h"
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
-#endif
 
 namespace JuicerProcess {
 
     namespace {
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         bool query_cuda_device_total_bytes(
             int deviceId,
             std::uint64_t& outDeviceBudgetBytes,
@@ -286,7 +283,6 @@ namespace JuicerProcess {
             return "unknown";
         }
 
-#endif
 
         std::string compute_process_data_dir() {
             namespace fs = std::filesystem;
@@ -390,12 +386,7 @@ namespace JuicerProcess {
             return path.string();
         }
 
-        void load_spectral_globals(const std::string& dataDir) {
-            Spectral::SpectralMutationScope mutationScope(
-                Spectral::SpectralMutationStage::Bootstrap,
-                "process_bootstrap");
-            (void)mutationScope;
-
+        void load_process_spectral_assets(const std::string& dataDir) {
             try {
                 Spectral::lock_shape_to_reference_axis();
                 const auto cmf = Spectral::load_csv_triplets(data_file_string(dataDir, "cie1931_2deg.csv"));
@@ -404,8 +395,6 @@ namespace JuicerProcess {
                     throw std::runtime_error("CMF grid mismatch");
                 }
                 Spectral::set_cie_1931_2deg_cmf(cmf.xbar, cmf.ybar, cmf.zbar);
-                Spectral::ensure_precomputed_up_to_date();
-                Spectral::disable_hanatos_if_reference_mismatch();
             } catch (const std::exception& ex) {
                 Spectral::set_hanatos_available(false);
                 Spectral::set_mallett_available(false);
@@ -444,27 +433,8 @@ namespace JuicerProcess {
             } catch (...) {
                 Spectral::set_mallett_available(false);
             }
-
-            std::vector<std::pair<float, float>> kg3Pairs;
-            try {
-                kg3Pairs = Spectral::load_csv_pairs(data_file_string(
-                    dataDir,
-                    "filters",
-                    "heat_absorbing",
-                    "schott",
-                    "KG3.csv"));
-            } catch (...) {
-                kg3Pairs.clear();
-            }
-            if (kg3Pairs.empty()) {
-                kg3Pairs = {
-                    {Spectral::gShape.lambdaMin, 1.0f},
-                    {Spectral::gShape.lambdaMax, 1.0f}};
-            }
-            Spectral::set_filter_KG3_from_pairs(kg3Pairs);
         }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         JuicerCuda::ResourceManager::ScratchRequestDescriptor make_workspace_scratch_request_descriptor(
             const Root::PreparedCudaFrame::WorkspaceRequest& workspace) noexcept {
             JuicerCuda::ResourceManager::ScratchRequestBuildRequest request{};
@@ -681,7 +651,6 @@ namespace JuicerProcess {
         }
 #endif
 
-#endif
 
     } // namespace
 
@@ -717,7 +686,6 @@ namespace JuicerProcess {
         }
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     struct PreparedCudaFailureStage {
         const char* tag = nullptr;
     };
@@ -974,7 +942,6 @@ namespace JuicerProcess {
         Spektrafilm::ProfilePolarity capturePolarity,
         int requestedWidth,
         int requestedHeight,
-        bool needCompositeProfileWorkspace,
         Root::PreparedCudaFrame::WorkspaceRequest& out,
         std::string& outError) {
         out = Root::PreparedCudaFrame::WorkspaceRequest{};
@@ -1048,10 +1015,6 @@ namespace JuicerProcess {
                 out.needBlurred ||
                 (scannerPostEffects->glareActive &&
                  scannerPostEffects->glareBlurSigmaPx > 0.0f);
-        }
-        if (needCompositeProfileWorkspace) {
-            out.needOptics = true;
-            out.needSharedTmp = true;
         }
         // Positive final develop retains DIR correction as an input while the scanner writes RGB.
         if (!routeDiffusionActive && out.needOptics && out.needSpatialDir &&
@@ -2194,28 +2157,6 @@ namespace JuicerProcess {
         return true;
     }
 
-    bool Root::PreparedCudaFrame::try_stage_profile_optical_workspace(
-        const WorkspaceLeaseMarker& workspace,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
-        if (!validate_workspace_lease_marker(workspace, outError)) {
-            return false;
-        }
-        const WorkspaceRequest& activeRequest = active_workspace_request(workspace);
-        if (!_state->ensure_scratch_workspace(activeRequest, cudaStreamOpaque, outError)) {
-            return false;
-        }
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-            make_workspace_scratch_request_descriptor(activeRequest);
-        return JuicerCuda::ResourceManager::command_ensure_optics_scratch(
-            _state->transaction,
-            *_state->resources,
-            scratchRequest,
-            cudaStreamOpaque,
-            outError);
-    }
-
     bool Root::PreparedCudaFrame::prepare_spatial_dir_resources(
         const Spektrafilm::SpatialDirDescriptor& descriptor,
         const WorkspaceLeaseMarker& workspace,
@@ -2532,7 +2473,6 @@ namespace JuicerProcess {
                     *_state->resources,
                     _state->resources->spatialDirKernels[static_cast<std::size_t>(slot)],
                     sigmas[slot],
-                    cudaStreamOpaque,
                     outError)) {
                 _state->set_failure(
                     PreparedCudaFailureStage{"command_ensure_spatial_dir_kernel"},
@@ -2620,7 +2560,6 @@ namespace JuicerProcess {
 
     bool Root::PreparedCudaFrame::prepare_scanner_post_effects(
         const Scanner::ScannerPostEffectsDescriptor& descriptor,
-        void* cudaStreamOpaque,
         std::string& outError) {
         outError.clear();
         if (!descriptor.active()) {
@@ -2630,7 +2569,6 @@ namespace JuicerProcess {
             !build_gaussian_kernel_slot(
                 _state->resources->scannerLensBlurKernel,
                 descriptor.lensBlurSigmaPx,
-                cudaStreamOpaque,
                 outError)) {
             return false;
         }
@@ -2638,7 +2576,6 @@ namespace JuicerProcess {
             !build_gaussian_kernel_slot(
                 _state->resources->scannerUnsharpKernel,
                 descriptor.unsharpSigmaPx,
-                cudaStreamOpaque,
                 outError)) {
             return false;
         }
@@ -2646,7 +2583,6 @@ namespace JuicerProcess {
             !build_gaussian_kernel_slot(
                 _state->resources->scannerGlareKernel,
                 descriptor.glareBlurSigmaPx,
-                cudaStreamOpaque,
                 outError)) {
             return false;
         }
@@ -2802,7 +2738,6 @@ namespace JuicerProcess {
     bool Root::PreparedCudaFrame::build_gaussian_kernel_slot(
         JuicerCuda::Resources::DeviceGaussianKernel& kernel,
         float sigma,
-        void* cudaStreamOpaque,
         std::string& outError) {
         outError.clear();
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
@@ -2814,7 +2749,6 @@ namespace JuicerProcess {
                 *_state->resources,
                 kernel,
                 sigma,
-                cudaStreamOpaque,
                 outError)) {
             _state->set_failure(
                 PreparedCudaFailureStage{"command_ensure_gaussian_kernel"},
@@ -2958,11 +2892,9 @@ namespace JuicerProcess {
                 if (!build_gaussian_kernel_slot(
                         kernel,
                         gaussian.sigmaPx,
-                        cudaStreamOpaque,
                         outError) ||
                     !kernel.weights || kernel.radius != gaussian.radius ||
-                    kernel.sigma != gaussian.sigmaPx ||
-                    kernel.sharedKernelId == 0) {
+                    kernel.sigma != gaussian.sigmaPx) {
                     if (outError.empty()) {
                         outError =
                             "ResourceDescriptorMismatch phase=grain_gaussian field=prepared_identity";
@@ -3340,27 +3272,6 @@ namespace JuicerProcess {
             partialsReady &&
             weightsReady &&
             view.deviceState.exposureScale;
-        return view;
-    }
-
-    Root::PreparedCudaFrame::UploadTraceView Root::PreparedCudaFrame::upload_trace_view() const noexcept {
-        UploadTraceView view{};
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            return view;
-        }
-
-        std::lock_guard<std::mutex> lock(_state->resources->m);
-        view.printPreflashValid = _state->resources->printPreflashValid;
-        view.printPreflashKeyHash = _state->resources->printPreflashKeyHash;
-        view.focusedPreparationCounter = _state->resources->focusedPreparationCounter;
-        view.finalSensitivityHash = _state->resources->filmFinalSensitivityHash;
-        view.densityCurvesHash = _state->resources->filmDensityCurvesHash;
-        view.densityBoundsHash = _state->resources->routeDensityBoundsHash;
-        view.scannerDescriptorHash = _state->resources->routeScannerDescriptorHash;
-        view.printPreparationCounter = _state->resources->printPreparationCounter;
-        view.printPreparationDescriptorHash =
-            _state->resources->printPreparationDescriptorHash;
-        view.active = true;
         return view;
     }
 
@@ -3818,7 +3729,6 @@ namespace JuicerProcess {
         return _state ? _state->failurePrefix : "CUDA prepared frame failed";
     }
 
-#endif
 
     Root::ShutdownToken::ShutdownToken(Root* root) noexcept
         : _root(root) {
@@ -3861,14 +3771,10 @@ namespace JuicerProcess {
         : _dataDir(compute_process_data_dir()), _assets(_dataDir) {
     }
 
-    const std::string& Root::data_dir() const noexcept {
-        return _dataDir;
-    }
-
     void Root::ensure_bootstrap() {
         resume_frame_preparation();
         std::call_once(_bootstrapOnce, [this]() {
-            load_spectral_globals(_dataDir);
+            load_process_spectral_assets(_dataDir);
         });
     }
 
@@ -3902,7 +3808,6 @@ namespace JuicerProcess {
 
     void Root::retire_grain_static_instance(
         std::uint64_t instanceToken) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (instanceToken == 0) {
             return;
         }
@@ -3923,9 +3828,6 @@ namespace JuicerProcess {
         } catch (...) {
             JuicerLogging::discard_current_exception();
         }
-#else
-        (void)instanceToken;
-#endif
     }
 
     JuicerAssets::Library& Root::assets() noexcept {
@@ -3946,34 +3848,19 @@ namespace JuicerProcess {
     }
 
     bool Root::retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         JuicerCuda::ResourceManager::DeviceContextKey key{};
         key.deviceId = deviceId;
         key.contextOpaque = contextOpaque;
         return retire_cuda_context(key, false, outError);
-#else
-        (void)deviceId;
-        (void)contextOpaque;
-        outError.clear();
-        return true;
-#endif
     }
 
     bool Root::retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         JuicerCuda::ResourceManager::DeviceContextKey key{};
         key.deviceId = deviceId;
         key.contextOpaque = contextOpaque;
         return retire_cuda_context(key, true, outError);
-#else
-        (void)deviceId;
-        (void)contextOpaque;
-        outError.clear();
-        return true;
-#endif
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     bool Root::retire_cuda_context(
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         bool contextReset,
@@ -4037,18 +3924,6 @@ namespace JuicerProcess {
                     break;
                 }
             }
-            if (physicalDrainSucceeded) {
-                for (std::uint64_t epoch : epochs) {
-                    if (!JuicerCuda::purge_shared_gaussian_kernels_for_context(
-                            deviceContextKey.deviceId,
-                            deviceContextKey.contextOpaque,
-                            epoch,
-                            outError)) {
-                        physicalDrainSucceeded = false;
-                        break;
-                    }
-                }
-            }
             if (!physicalDrainSucceeded) {
                 if (!contextReset || !deviceLedger) {
                     if (outError.empty()) {
@@ -4066,10 +3941,6 @@ namespace JuicerProcess {
                             outError)) {
                         return false;
                     }
-                    JuicerCuda::invalidate_shared_gaussian_kernels_after_proven_context_loss(
-                        deviceContextKey.deviceId,
-                        deviceContextKey.contextOpaque,
-                        epoch);
                 }
                 for (const CudaResourceOwner& owner : owners) {
                     if (owner) {
@@ -4583,7 +4454,6 @@ namespace JuicerProcess {
                 request.recipe->profileRoute.capturePolarity,
                 request.requestedWidth,
                 request.requestedHeight,
-                request.needCompositeProfileWorkspace,
                 frame._state->workspaceRequest,
                 outError)) {
             recordFailure(
@@ -4693,7 +4563,6 @@ namespace JuicerProcess {
         if (request.scannerPostEffects) {
             if (!frame.prepare_scanner_post_effects(
                     *request.scannerPostEffects,
-                    cudaStreamOpaque,
                     outError)) {
                 recordFailure(
                     "prepare_scanner_post_effects",
@@ -4749,11 +4618,9 @@ namespace JuicerProcess {
             outError);
     }
 
-#endif
 
     bool Root::retire_known_contexts(std::string& outError) noexcept {
         outError.clear();
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         try {
             std::vector<JuicerCuda::ResourceManager::DeviceContextKey> keys;
             JuicerCuda::ResourceManager::registry_snapshot_context_keys(keys);
@@ -4810,13 +4677,9 @@ namespace JuicerProcess {
             }
             return false;
         }
-#else
-        return true;
-#endif
     }
 
     void Root::release_cuda_context_resource_owners() noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         try {
             CudaContextResourceMap contextResources;
             std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
@@ -4825,7 +4688,6 @@ namespace JuicerProcess {
         } catch (...) {
             JuicerLogging::discard_current_exception();
         }
-#endif
     }
 
     void Root::release_process_host_services() noexcept {

@@ -37,12 +37,6 @@
     <ClCompile Include="src\Scanner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\ProfileJSONLoader.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Print.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\ProfileAssets.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -59,9 +53,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\JuicerEffect.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\PipelineStages.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\ProcessRoot.cpp">
@@ -120,9 +111,6 @@
     <ClInclude Include="src\FilmEffectsFrameDescriptors.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\Cuda\JuicerCudaDirProfile.h">
-      <Filter>Cuda</Filter>
-    </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaDeviceHelpers.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
@@ -138,13 +126,7 @@
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceCore.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="src\AkimaInterpolator.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\ColorTransforms.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\FilmProcessing.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\GaussianSciPy.h">
@@ -177,19 +159,10 @@
     <ClInclude Include="src\ParamNames.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\PipelineTypes.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Print.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\ProfileAssets.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\ProfileCatalog.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\ProfileJSONLoader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\ProcessRoot.h">

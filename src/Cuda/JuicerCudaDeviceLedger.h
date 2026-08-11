@@ -65,7 +65,6 @@ namespace JuicerCuda {
         bool commit(std::uint64_t actualBytes, std::string& outError);
         bool mark_retiring(std::string& outError);
         bool release_after_physical_free(bool physicalFreeSucceeded, std::string& outError);
-        bool rollback_reserved(std::string& outError);
 
     private:
         friend class DeviceAllocationLedger;
@@ -146,7 +145,6 @@ namespace JuicerCuda {
             std::uint64_t recordId,
             bool physicalFreeSucceeded,
             std::string& outError);
-        bool rollback_reserved_record(std::uint64_t recordId, std::string& outError);
         void abandon_or_rollback_record(std::uint64_t recordId) noexcept;
         [[nodiscard]] std::uint64_t record_bytes(std::uint64_t recordId) const noexcept;
         [[nodiscard]] DeviceReservationState record_state(std::uint64_t recordId) const noexcept;

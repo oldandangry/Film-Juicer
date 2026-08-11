@@ -1,12 +1,8 @@
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 
 #include "Cuda/Diffusion/JuicerCudaDiffusionResources.h"
 
 #include <algorithm>
 #include <array>
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-#include <atomic>
-#endif
 #include <limits>
 #include <utility>
 
@@ -22,20 +18,6 @@ namespace JuicerCuda::Diffusion {
             std::numeric_limits<std::size_t>::max();
         constexpr std::size_t kRetainedSpectrumSlots = 2;
         constexpr std::size_t kRetainedWorkspaceSlots = 1;
-
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-        std::atomic<DiffusionLifecycleFaultPoint> gLifecycleFault{
-            DiffusionLifecycleFaultPoint::None};
-
-        bool consume_lifecycle_fault(
-            DiffusionLifecycleFaultPoint point) noexcept {
-            DiffusionLifecycleFaultPoint expected = point;
-            return gLifecycleFault.compare_exchange_strong(
-                expected,
-                DiffusionLifecycleFaultPoint::None,
-                std::memory_order_relaxed);
-        }
-#endif
 
         bool checked_add(
             std::uint64_t left,
@@ -178,14 +160,6 @@ namespace JuicerCuda::Diffusion {
             if (!aggregate.split(bytes, reservation, outError)) {
                 return false;
             }
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-            if (consume_lifecycle_fault(
-                    DiffusionLifecycleFaultPoint::DeviceAllocation)) {
-                outError =
-                    "cudaMalloc(diffusion) injected failure code=2";
-                return false;
-            }
-#endif
             void* pointer = nullptr;
             const cudaError_t allocationResult = cudaMalloc(
                 &pointer,
@@ -454,13 +428,6 @@ namespace JuicerCuda::Diffusion {
                 outResult = cudaSuccess;
                 return true;
             }
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-            if (consume_lifecycle_fault(
-                    DiffusionLifecycleFaultPoint::AsyncCompletionQuery)) {
-                outResult = cudaErrorUnknown;
-                return false;
-            }
-#endif
             outResult = cudaEventQuery(
                 reinterpret_cast<cudaEvent_t>(eventOpaque));
             return outResult == cudaSuccess;
@@ -729,15 +696,6 @@ namespace JuicerCuda::Diffusion {
                     outError)) {
                 return false;
             }
-
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-            if (consume_lifecycle_fault(
-                    DiffusionLifecycleFaultPoint::PlanCreate)) {
-                outError =
-                    "cufftCreate(diffusion R2C) injected failure code=2";
-                return false;
-            }
-#endif
             cufftResult result = cufftCreate(&slot.r2cPlan);
             if (result != CUFFT_SUCCESS) {
                 outError = "cufftCreate(diffusion R2C) failed code=" +
@@ -774,14 +732,6 @@ namespace JuicerCuda::Diffusion {
                                   descriptor.layout.physicalRealRowFloats};
             std::size_t actualR2cWork = 0;
             std::size_t actualC2rWork = 0;
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-            if (consume_lifecycle_fault(
-                    DiffusionLifecycleFaultPoint::PlanQuery)) {
-                outError =
-                    "cufftMakePlanMany(diffusion R2C) injected failure code=5";
-                return false;
-            }
-#endif
             result = cufftMakePlanMany(
                 slot.r2cPlan,
                 2,
@@ -839,14 +789,6 @@ namespace JuicerCuda::Diffusion {
                 }
                 slot.workArea = work;
             }
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-            if (consume_lifecycle_fault(
-                    DiffusionLifecycleFaultPoint::PlanBind)) {
-                outError =
-                    "cufftSetWorkArea(diffusion R2C) injected failure code=1";
-                return false;
-            }
-#endif
             result = cufftSetWorkArea(slot.r2cPlan, slot.workArea);
             if (result != CUFFT_SUCCESS) {
                 outError = "cufftSetWorkArea(diffusion R2C) failed code=" +
@@ -987,14 +929,6 @@ namespace JuicerCuda::Diffusion {
             request.r2cPlan = workspace.r2cPlan;
             request.destination = entry.spectra;
             request.stream = stream;
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-            if (consume_lifecycle_fault(
-                    DiffusionLifecycleFaultPoint::SpectrumBuild)) {
-                outError =
-                    "diffusion spectrum build injected failure code=719";
-                return false;
-            }
-#endif
             const LaunchResult result = build_spectrum_package(request);
             if (!result.ok()) {
                 outError = std::string("diffusion spectrum build failed stage=") +
@@ -1002,14 +936,6 @@ namespace JuicerCuda::Diffusion {
                            " code=" + std::to_string(result.code);
                 return false;
             }
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-            if (consume_lifecycle_fault(
-                    DiffusionLifecycleFaultPoint::SpectrumBuildEventRecord)) {
-                outError =
-                    "cudaEventRecord(diffusion spectrum) injected failure code=999";
-                return false;
-            }
-#endif
             const cudaError_t recordResult = cudaEventRecord(buildEvent, stream);
             if (recordResult != cudaSuccess) {
                 outError =
@@ -1021,13 +947,6 @@ namespace JuicerCuda::Diffusion {
         }
 
     } // namespace
-
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-    void set_diffusion_lifecycle_fault(
-        DiffusionLifecycleFaultPoint point) noexcept {
-        gLifecycleFault.store(point, std::memory_order_relaxed);
-    }
-#endif
 
     PreparedDiffusionLease::~PreparedDiffusionLease() noexcept {
         if (_active && _owner) {
@@ -1073,10 +992,6 @@ namespace JuicerCuda::Diffusion {
 
     bool PreparedDiffusionLease::active() const noexcept {
         return _active;
-    }
-
-    bool PreparedDiffusionLease::work_enqueued() const noexcept {
-        return _active && _workEnqueued;
     }
 
     DiffusionPreparedView PreparedDiffusionLease::view() const noexcept {
@@ -1353,17 +1268,6 @@ namespace JuicerCuda::Diffusion {
             rollbackSpectrumLeases();
             return failClaimedPreparation();
         }
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-        if (prospectiveBytes > 0 &&
-            consume_lifecycle_fault(
-                DiffusionLifecycleFaultPoint::AggregateReservation)) {
-            outError =
-                "ExactAdmissionFailure component=diffusion class=aggregate_reservation requested_new_bytes=" +
-                std::to_string(prospectiveBytes) + " injected=1";
-            rollbackSpectrumLeases();
-            return failClaimedPreparation();
-        }
-#endif
         if (prospectiveBytes > 0) {
             std::string ledgerError;
             if (!ledger->reserve(
@@ -1543,14 +1447,6 @@ namespace JuicerCuda::Diffusion {
             lease._streamOpaque = reinterpret_cast<void*>(stream);
 
             bool completionRecorded = false;
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-            const bool injectReleaseRecordAndSync =
-                consume_lifecycle_fault(
-                    DiffusionLifecycleFaultPoint::ReleaseEventRecordAndStreamSync);
-            const bool injectReleaseRecord = injectReleaseRecordAndSync ||
-                                             consume_lifecycle_fault(
-                                                 DiffusionLifecycleFaultPoint::ReleaseEventRecord);
-#endif
             if (lease._workEnqueued) {
                 DiffusionWorkspaceSlot& workspace =
                     resources.workspaces[lease._workspaceIndex];
@@ -1565,19 +1461,10 @@ namespace JuicerCuda::Diffusion {
                     }
                 }
                 if (workspace.completionEventOpaque) {
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-                    const cudaError_t recordResult = injectReleaseRecord
-                                                         ? cudaErrorUnknown
-                                                         : cudaEventRecord(
-                                                               reinterpret_cast<cudaEvent_t>(
-                                                                   workspace.completionEventOpaque),
-                                                               stream);
-#else
                     const cudaError_t recordResult = cudaEventRecord(
                         reinterpret_cast<cudaEvent_t>(
                             workspace.completionEventOpaque),
                         stream);
-#endif
                     completionRecorded = recordResult == cudaSuccess;
                     if (!completionRecorded) {
                         outError =
@@ -1592,13 +1479,7 @@ namespace JuicerCuda::Diffusion {
 
             bool completionCertain = !lease._workEnqueued || completionRecorded;
             if (lease._workEnqueued && !completionRecorded) {
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-                const cudaError_t syncResult = injectReleaseRecordAndSync
-                                                   ? cudaErrorUnknown
-                                                   : cudaStreamSynchronize(stream);
-#else
                 const cudaError_t syncResult = cudaStreamSynchronize(stream);
-#endif
                 completionCertain = syncResult == cudaSuccess;
                 if (!completionCertain && outError.empty()) {
                     outError =
@@ -1908,5 +1789,3 @@ namespace JuicerCuda::Diffusion {
     }
 
 } // namespace JuicerCuda::Diffusion
-
-#endif

@@ -59,7 +59,6 @@ namespace JuicerCuda {
         FilmPayloadPack& out,
         std::string& diagnostic);
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     struct VisualGrainStaticAssetsView {
         const std::uint8_t* stbn = nullptr;
         int stbnWidth = 0;
@@ -113,6 +112,5 @@ namespace JuicerCuda {
         GrainPayload& outDefects,
         GateWeavePayload& outWeave,
         std::string& diagnostic);
-#endif
 
 } // namespace JuicerCuda

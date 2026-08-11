@@ -7,77 +7,10 @@
 #include <cstdint>
 #include <limits>
 
-#include "Cuda/JuicerCudaDirProfile.h"
 #include "Cuda/JuicerCudaDeviceHelpers.cuh"
 #include "openrand/philox.h"
 
 namespace {
-
-    struct CudaProfileStageTimer {
-        cudaEvent_t start = nullptr;
-        cudaEvent_t stop = nullptr;
-        bool active = false;
-
-        ~CudaProfileStageTimer() {
-            destroy();
-        }
-
-        cudaError_t begin(cudaStream_t stream) {
-            cudaError_t err = cudaEventCreateWithFlags(&start, cudaEventDefault);
-            if (err != cudaSuccess) {
-                destroy();
-                return err;
-            }
-            err = cudaEventCreateWithFlags(&stop, cudaEventDefault);
-            if (err != cudaSuccess) {
-                destroy();
-                return err;
-            }
-            err = cudaEventRecord(start, stream);
-            if (err != cudaSuccess) {
-                destroy();
-                return err;
-            }
-            active = true;
-            return cudaSuccess;
-        }
-
-        cudaError_t finish(cudaStream_t stream, JuicerCuda::SpatialDirStageProfile* stage, int launches) {
-            if (!active) {
-                return cudaErrorInvalidResourceHandle;
-            }
-            cudaError_t err = cudaEventRecord(stop, stream);
-            if (err != cudaSuccess) {
-                destroy();
-                return err;
-            }
-            err = cudaEventSynchronize(stop);
-            if (err != cudaSuccess) {
-                destroy();
-                return err;
-            }
-            float elapsedMs = 0.0f;
-            err = cudaEventElapsedTime(&elapsedMs, start, stop);
-            if (err == cudaSuccess && stage) {
-                stage->launches += launches;
-                stage->elapsedMs += elapsedMs;
-            }
-            destroy();
-            return err;
-        }
-
-        void destroy() {
-            if (start) {
-                cudaEventDestroy(start);
-                start = nullptr;
-            }
-            if (stop) {
-                cudaEventDestroy(stop);
-                stop = nullptr;
-            }
-            active = false;
-        }
-    };
 
     JuicerCuda::PipelineRunParams focused_params_from_direct(
         const JuicerCuda::DirectPipelineRunParams& params) {
@@ -113,20 +46,6 @@ namespace {
                 params.filmRaw});
         out.printExpose = params.printExpose;
         out.printDevelop = params.printDevelop;
-        return out;
-    }
-
-    JuicerCuda::PipelineRunParams profile_params_from_direct(
-        const JuicerCuda::DirectPipelineRunParams& params) {
-        JuicerCuda::PipelineRunParams out = focused_params_from_direct(params);
-        out.scanStage.scanErrorFlag = nullptr;
-        return out;
-    }
-
-    JuicerCuda::PipelineRunParams profile_params_from_print(
-        const JuicerCuda::PrintPipelineRunParams& params) {
-        JuicerCuda::PipelineRunParams out = focused_params_from_print(params);
-        out.scanStage.scanErrorFlag = nullptr;
         return out;
     }
 
@@ -1243,125 +1162,6 @@ __global__ void develop_print_density_from_enlarger_linear_kernel(
     }
 }
 
-__global__ void profile_print_develop_spectral_integrate_kernel(
-    JuicerCuda::PipelineRunParams params,
-    float* ioC,
-    float* ioM,
-    float* ioY) {
-    if (!params.printExpose.active) {
-        return;
-    }
-
-    if (!ioC || !ioM || !ioY || params.width <= 0 || params.height <= 0) {
-        return;
-    }
-
-    const std::size_t width = static_cast<std::size_t>(params.width);
-    const std::size_t height = static_cast<std::size_t>(params.height);
-    const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
-    const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
-    for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
-        for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
-            const std::size_t idx = y * width + x;
-            float D_cmy[3] = {ioC[idx], ioM[idx], ioY[idx]};
-            float rawPrint[3] = {0.0f, 0.0f, 0.0f};
-            (void)print_spectral_integrate_device(params.printExpose, D_cmy, rawPrint);
-            ioC[idx] = rawPrint[0];
-            ioM[idx] = rawPrint[1];
-            ioY[idx] = rawPrint[2];
-        }
-    }
-}
-
-__global__ void profile_print_develop_exposure_scale_kernel(
-    JuicerCuda::PipelineRunParams params,
-    float* ioC,
-    float* ioM,
-    float* ioY) {
-    if (!params.printExpose.active) {
-        return;
-    }
-
-    if (!ioC || !ioM || !ioY || params.width <= 0 || params.height <= 0) {
-        return;
-    }
-
-    const std::size_t width = static_cast<std::size_t>(params.width);
-    const std::size_t height = static_cast<std::size_t>(params.height);
-    const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
-    const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
-    for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
-        for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
-            const std::size_t idx = y * width + x;
-            float rawPrint[3] = {ioC[idx], ioM[idx], ioY[idx]};
-            print_apply_exposure_scale_device(params.printExpose, rawPrint);
-            ioC[idx] = rawPrint[0];
-            ioM[idx] = rawPrint[1];
-            ioY[idx] = rawPrint[2];
-        }
-    }
-}
-
-__global__ void profile_print_develop_log_encode_kernel(
-    JuicerCuda::PipelineRunParams params,
-    float* ioC,
-    float* ioM,
-    float* ioY) {
-    if (!params.printExpose.active) {
-        return;
-    }
-
-    if (!ioC || !ioM || !ioY || params.width <= 0 || params.height <= 0) {
-        return;
-    }
-
-    const std::size_t width = static_cast<std::size_t>(params.width);
-    const std::size_t height = static_cast<std::size_t>(params.height);
-    const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
-    const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
-    for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
-        for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
-            const std::size_t idx = y * width + x;
-            const float rawPrint[3] = {ioC[idx], ioM[idx], ioY[idx]};
-            float logPrint[3] = {0.0f, 0.0f, 0.0f};
-            print_log_encode_device(rawPrint, logPrint);
-            ioC[idx] = logPrint[0];
-            ioM[idx] = logPrint[1];
-            ioY[idx] = logPrint[2];
-        }
-    }
-}
-
-__global__ void profile_print_develop_density_curve_kernel(
-    JuicerCuda::PipelineRunParams params,
-    float* ioC,
-    float* ioM,
-    float* ioY) {
-    if (!params.printExpose.active) {
-        return;
-    }
-
-    if (!ioC || !ioM || !ioY || params.width <= 0 || params.height <= 0) {
-        return;
-    }
-
-    const std::size_t width = static_cast<std::size_t>(params.width);
-    const std::size_t height = static_cast<std::size_t>(params.height);
-    const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
-    const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
-    for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
-        for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
-            const std::size_t idx = y * width + x;
-            const float logPrint[3] = {ioC[idx], ioM[idx], ioY[idx]};
-            float D_cmy[3] = {0.0f, 0.0f, 0.0f};
-            print_sample_density_curves_device(params.printDevelop, logPrint, D_cmy);
-            ioC[idx] = D_cmy[0];
-            ioM[idx] = D_cmy[1];
-            ioY[idx] = D_cmy[2];
-        }
-    }
-}
-
 namespace {
 
     __device__ __forceinline__ int clamp_index_device(int idx, int maxIndex) {
@@ -1716,76 +1516,6 @@ namespace {
         outY[idx] = D_cmy[2];
     }
 
-    __global__ void profile_focused_scan_linear_rgb_kernel(
-        JuicerCuda::PipelineRunParams params,
-        const float* inC,
-        const float* inM,
-        const float* inY,
-        float* outR,
-        float* outG,
-        float* outB) {
-        const JuicerCuda::ScanStagePayload& scan = params.scanStage;
-        if (!inC || !inM || !inY || !outR || !outG || !outB || params.width <= 0 || params.height <= 0) {
-            return;
-        }
-        const std::size_t width = static_cast<std::size_t>(params.width);
-        const std::size_t height = static_cast<std::size_t>(params.height);
-        const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
-        const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
-        for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
-            for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
-                const std::size_t idx = y * width + x;
-                const float D_cmy[3] = {inC[idx], inM[idx], inY[idx]};
-
-                double D_norm[3];
-                if (scan.scanTables.mediumIsNegative) {
-                    D_norm[0] = (static_cast<double>(D_cmy[0]) + static_cast<double>(scan.scanTables.min_cmy[0])) * static_cast<double>(scan.scanTables.inv_max_cmy[0]);
-                    D_norm[1] = (static_cast<double>(D_cmy[1]) + static_cast<double>(scan.scanTables.min_cmy[1])) * static_cast<double>(scan.scanTables.inv_max_cmy[1]);
-                    D_norm[2] = (static_cast<double>(D_cmy[2]) + static_cast<double>(scan.scanTables.min_cmy[2])) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
-                } else {
-                    D_norm[0] = (static_cast<double>(D_cmy[0]) - static_cast<double>(scan.scanTables.min_cmy[0])) * static_cast<double>(scan.scanTables.inv_max_cmy[0]);
-                    D_norm[1] = (static_cast<double>(D_cmy[1]) - static_cast<double>(scan.scanTables.min_cmy[1])) * static_cast<double>(scan.scanTables.inv_max_cmy[1]);
-                    D_norm[2] = (static_cast<double>(D_cmy[2]) - static_cast<double>(scan.scanTables.min_cmy[2])) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
-                }
-
-                float log2XYZ[3] = {nanf(""), nanf(""), nanf("")};
-                (void)scan_log2_xyz_device(scan, D_norm, log2XYZ);
-                double xyz[3] = {
-                    static_cast<double>(exp2f(log2XYZ[0])),
-                    static_cast<double>(exp2f(log2XYZ[1])),
-                    static_cast<double>(exp2f(log2XYZ[2]))};
-
-                if (scan.correctionActive) {
-                    const double correctedY = fmin(fmax(
-                                                       static_cast<double>(scan.correctionSlope) * xyz[1] +
-                                                           static_cast<double>(scan.correctionOffset),
-                                                       0.0),
-                                                   1.0);
-                    const double scale = correctedY / (xyz[1] + 1e-10);
-                    xyz[0] *= scale;
-                    xyz[1] *= scale;
-                    xyz[2] *= scale;
-                }
-
-                double adapted[3];
-                mat3_mul_vec_double_device(scan.scanColor.cat02, xyz, adapted);
-                double rgbOut[3];
-                mat3_mul_vec_double_device(scan.scanColor.xyzToRgb, adapted, rgbOut);
-
-                if (!isfinite(rgbOut[0]) || !isfinite(rgbOut[1]) || !isfinite(rgbOut[2])) {
-                    outR[idx] = 0.0f;
-                    outG[idx] = 0.0f;
-                    outB[idx] = 0.0f;
-                    continue;
-                }
-
-                outR[idx] = static_cast<float>(rgbOut[0]);
-                outG[idx] = static_cast<float>(rgbOut[1]);
-                outB[idx] = static_cast<float>(rgbOut[2]);
-            }
-        }
-    }
-
     struct ScanLinearDensityPlanes {
         const float* densityC = nullptr;
         const float* densityM = nullptr;
@@ -1883,34 +1613,6 @@ namespace {
                 outR[idx] = static_cast<float>(rgbOut[0]);
                 outG[idx] = static_cast<float>(rgbOut[1]);
                 outB[idx] = static_cast<float>(rgbOut[2]);
-            }
-        }
-    }
-
-    __global__ void profile_focused_output_encode_kernel(
-        JuicerCuda::PipelineRunParams params,
-        float* ioR,
-        float* ioG,
-        float* ioB) {
-        if (!ioR || !ioG || !ioB || params.width <= 0 || params.height <= 0) {
-            return;
-        }
-        const JuicerCuda::ScanStagePayload& scan = params.scanStage;
-        const std::size_t width = static_cast<std::size_t>(params.width);
-        const std::size_t height = static_cast<std::size_t>(params.height);
-        const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
-        const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
-        for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
-            for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
-                const std::size_t idx = y * width + x;
-                double rgbOut[3] = {
-                    static_cast<double>(ioR[idx]),
-                    static_cast<double>(ioG[idx]),
-                    static_cast<double>(ioB[idx])};
-                apply_output_encoding_device(scan.scanColor.encoding, rgbOut);
-                ioR[idx] = static_cast<float>(rgbOut[0]);
-                ioG[idx] = static_cast<float>(rgbOut[1]);
-                ioB[idx] = static_cast<float>(rgbOut[2]);
             }
         }
     }
@@ -2310,36 +2012,6 @@ struct FocusedRgbPlanes {
     float* b = nullptr;
 };
 
-bool alias_profile_active(const JuicerCuda::CompositePipelineProfile* profile) noexcept {
-    return profile && profile->aliasRouteCaptured != 0;
-}
-
-cudaError_t begin_alias_profile_stage(
-    CudaProfileStageTimer& timer,
-    cudaStream_t stream,
-    JuicerCuda::CompositePipelineProfile* profile) {
-    if (!alias_profile_active(profile)) {
-        return cudaSuccess;
-    }
-    return timer.begin(stream);
-}
-
-cudaError_t finish_alias_profile_stage(
-    JuicerCuda::CompositePipelineProfile* profile,
-    JuicerCuda::SpatialDirStageProfile* stage,
-    CudaProfileStageTimer& timer,
-    cudaStream_t stream,
-    int launches) {
-    if (!alias_profile_active(profile) || !stage) {
-        return cudaSuccess;
-    }
-    const cudaError_t error = timer.finish(stream, stage, launches);
-    if (error == cudaSuccess) {
-        profile->totalLaunches += launches;
-    }
-    return error;
-}
-
 cudaError_t blur_plane_in_place(
     float* plane,
     float* tmp,
@@ -2358,7 +2030,6 @@ cudaError_t launch_focused_scan_linear_rgb(
     float* dTmp,
     float* dScratchBlurred,
     const FocusedScannerPostEffectOptions& options,
-    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     if (!hParams || !hParams->src || !hParams->dst || !rgb.r || !rgb.g || !rgb.b) {
         return cudaErrorInvalidValue;
@@ -2389,12 +2060,6 @@ cudaError_t launch_focused_scan_linear_rgb(
         if (options.glareRadius > 0 && options.glareKernel && !dScratchBlurred) {
             return cudaErrorInvalidValue;
         }
-        CudaProfileStageTimer glareTimer;
-        cudaError_t profileError = begin_alias_profile_stage(glareTimer, stream, aliasProfile);
-        if (profileError != cudaSuccess) {
-            return profileError;
-        }
-        int glareLaunches = 1;
         const std::uint64_t mediumId = params.scanStage.scanTables.mediumIsNegative ? 0ULL : 1ULL;
         GlareGenerationInput glareInput{};
         glareInput.output = dTmp;
@@ -2425,39 +2090,15 @@ cudaError_t launch_focused_scan_linear_rgb(
             if (error != cudaSuccess) {
                 return error;
             }
-            glareLaunches += 2;
-        }
-        profileError = finish_alias_profile_stage(
-            aliasProfile,
-            aliasProfile ? &aliasProfile->aliasGlare : nullptr,
-            glareTimer,
-            stream,
-            glareLaunches);
-        if (profileError != cudaSuccess) {
-            return profileError;
         }
         params.scanStage.glarePercent = dTmp;
     }
 
-    CudaProfileStageTimer scanLinearTimer;
-    cudaError_t profileError = begin_alias_profile_stage(scanLinearTimer, stream, aliasProfile);
-    if (profileError != cudaSuccess) {
-        return profileError;
-    }
     params.scanStage.linearRgbR = rgb.r;
     params.scanStage.linearRgbG = rgb.g;
     params.scanStage.linearRgbB = rgb.b;
     pipeline_direct_kernel<<<blocks, threads, 0, stream>>>(params);
-    cudaError_t error = cudaGetLastError();
-    if (error != cudaSuccess) {
-        return error;
-    }
-    return finish_alias_profile_stage(
-        aliasProfile,
-        aliasProfile ? &aliasProfile->aliasFinalDevelopScanLinear : nullptr,
-        scanLinearTimer,
-        stream,
-        1);
+    return cudaGetLastError();
 }
 
 template <typename Params>
@@ -2788,7 +2429,6 @@ cudaError_t launch_focused_scanner_post_output(
     const float* gateMask,
     int gateMaskWidth,
     int gateMaskHeight,
-    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     if (!hParams || !hParams->src || !hParams->dst || !rgb.r || !rgb.g || !rgb.b) {
         return cudaErrorInvalidValue;
@@ -2838,11 +2478,6 @@ cudaError_t launch_focused_scanner_post_output(
     cudaError_t error = cudaSuccess;
     const bool doLensBlur = lensBlurRadius > 0 && dLensBlurKernel;
     if (doLensBlur) {
-        CudaProfileStageTimer lensBlurTimer;
-        cudaError_t profileError = begin_alias_profile_stage(lensBlurTimer, stream, aliasProfile);
-        if (profileError != cudaSuccess) {
-            return profileError;
-        }
         error = blur_plane(rgb.r, dLensBlurKernel, lensBlurRadius);
         if (error != cudaSuccess) {
             return error;
@@ -2854,15 +2489,6 @@ cudaError_t launch_focused_scanner_post_output(
         error = blur_plane(rgb.b, dLensBlurKernel, lensBlurRadius);
         if (error != cudaSuccess) {
             return error;
-        }
-        profileError = finish_alias_profile_stage(
-            aliasProfile,
-            aliasProfile ? &aliasProfile->aliasLensBlur : nullptr,
-            lensBlurTimer,
-            stream,
-            6);
-        if (profileError != cudaSuccess) {
-            return profileError;
         }
     }
 
@@ -2909,11 +2535,6 @@ cudaError_t launch_focused_scanner_post_output(
             optics_unsharp_vertical_combine_kernel<<<blocks, threads, verticalShared, stream>>>(unsharpInput);
             return cudaGetLastError();
         };
-        CudaProfileStageTimer unsharpTimer;
-        cudaError_t profileError = begin_alias_profile_stage(unsharpTimer, stream, aliasProfile);
-        if (profileError != cudaSuccess) {
-            return profileError;
-        }
         error = unsharp_plane_in_place(rgb.r);
         if (error != cudaSuccess) {
             return error;
@@ -2926,20 +2547,6 @@ cudaError_t launch_focused_scanner_post_output(
         if (error != cudaSuccess) {
             return error;
         }
-        profileError = finish_alias_profile_stage(
-            aliasProfile,
-            aliasProfile ? &aliasProfile->aliasUnsharp : nullptr,
-            unsharpTimer,
-            stream,
-            6);
-        if (profileError != cudaSuccess) {
-            return profileError;
-        }
-    }
-    CudaProfileStageTimer outputEncodeTimer;
-    cudaError_t profileError = begin_alias_profile_stage(outputEncodeTimer, stream, aliasProfile);
-    if (profileError != cudaSuccess) {
-        return profileError;
     }
     focused_scan_output_encode_kernel<<<blocks, threads, 0, stream>>>(
         params,
@@ -2951,243 +2558,7 @@ cudaError_t launch_focused_scanner_post_output(
         gateMask,
         gateMaskWidth,
         gateMaskHeight);
-    error = cudaGetLastError();
-    if (error != cudaSuccess) {
-        return error;
-    }
-    return finish_alias_profile_stage(
-        aliasProfile,
-        aliasProfile ? &aliasProfile->aliasOutputEncode : nullptr,
-        outputEncodeTimer,
-        stream,
-        1);
-}
-
-template <typename Params>
-cudaError_t profile_focused_pipeline_stages_impl(
-    const Params* hParams,
-    float* dPlane0,
-    float* dPlane1,
-    float* dPlane2,
-    JuicerCuda::CompositePipelineProfile* profile,
-    void* cudaStreamOpaque) {
-    if (!hParams || !profile || !dPlane0 || !dPlane1 || !dPlane2) {
-        return cudaErrorInvalidValue;
-    }
-    const Params focusedParams = *hParams;
-    if (!focusedParams.src) {
-        return cudaErrorInvalidValue;
-    }
-    if (focusedParams.width <= 0 || focusedParams.height <= 0) {
-        *profile = JuicerCuda::CompositePipelineProfile{};
-        profile->captured = 1;
-        profile->profileKind = "focused_split_attribution";
-        profile->profileNote = "empty_frame";
-        return cudaSuccess;
-    }
-    if (!(focusedParams.nComponents == 3 || focusedParams.nComponents == 4) ||
-        focusedParams.srcRowBytes == 0) {
-        return cudaErrorInvalidValue;
-    }
-
-    const JuicerCuda::PipelineRunParams params = [&]() {
-        if constexpr (requires { focusedParams.printExpose; focusedParams.printDevelop; }) {
-            return profile_params_from_print(focusedParams);
-        } else {
-            return profile_params_from_direct(focusedParams);
-        }
-    }();
-
-    cudaStream_t stream =
-        cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-    dim3 threads(32, 8);
-    dim3 blocks(
-        (params.width + threads.x - 1) / threads.x,
-        (params.height + threads.y - 1) / threads.y);
-
-    *profile = JuicerCuda::CompositePipelineProfile{};
-    profile->width = params.width;
-    profile->height = params.height;
-    profile->captured = 1;
-    profile->profileKind = "focused_split_attribution";
-    profile->profileNote = "scratch_only_print_develop_split_real_focused_pipeline_still_renders_frame";
-
-    CudaProfileStageTimer totalTimer;
-    cudaError_t err = totalTimer.begin(stream);
-    if (err != cudaSuccess) {
-        return err;
-    }
-
-    auto run_stage = [&](JuicerCuda::SpatialDirStageProfile& stage, int launches, auto launch) -> cudaError_t {
-        CudaProfileStageTimer timer;
-        cudaError_t stageErr = timer.begin(stream);
-        if (stageErr != cudaSuccess) {
-            return stageErr;
-        }
-        stageErr = launch();
-        if (stageErr != cudaSuccess) {
-            return stageErr;
-        }
-        profile->totalLaunches += launches;
-        return timer.finish(stream, &stage, launches);
-    };
-
-    err = run_stage(profile->filmRaw, 1, [&]() {
-        expose_film_raw_kernel<<<blocks, threads, 0, stream>>>(params, dPlane0, dPlane1, dPlane2);
-        return cudaGetLastError();
-    });
-    if (err != cudaSuccess) {
-        return err;
-    }
-
-    err = run_stage(profile->filmDevelop, 1, [&]() {
-        develop_film_density_from_raw_kernel<<<blocks, threads, 0, stream>>>(
-            params,
-            dPlane0,
-            dPlane1,
-            dPlane2,
-            dPlane0,
-            dPlane1,
-            dPlane2);
-        return cudaGetLastError();
-    });
-    if (err != cudaSuccess) {
-        return err;
-    }
-
-    if (params.printExpose.active) {
-        JuicerCuda::PrintDevelopBreakdownProfile& printBreakdown =
-            profile->printDevelopBreakdown;
-        printBreakdown.captured = 1;
-        printBreakdown.profileKind = "print_develop_split_attribution";
-        printBreakdown.profileNote = "profile_only_four_kernel_split_total_is_diagnostic";
-
-        CudaProfileStageTimer printTotalTimer;
-        err = printTotalTimer.begin(stream);
-        if (err != cudaSuccess) {
-            return err;
-        }
-
-        err = run_stage(printBreakdown.spectralIntegrate, 1, [&]() {
-            profile_print_develop_spectral_integrate_kernel<<<blocks, threads, 0, stream>>>(
-                params,
-                dPlane0,
-                dPlane1,
-                dPlane2);
-            return cudaGetLastError();
-        });
-        if (err != cudaSuccess) {
-            return err;
-        }
-
-        err = run_stage(printBreakdown.exposureScale, 1, [&]() {
-            profile_print_develop_exposure_scale_kernel<<<blocks, threads, 0, stream>>>(
-                params,
-                dPlane0,
-                dPlane1,
-                dPlane2);
-            return cudaGetLastError();
-        });
-        if (err != cudaSuccess) {
-            return err;
-        }
-
-        err = run_stage(printBreakdown.logEncode, 1, [&]() {
-            profile_print_develop_log_encode_kernel<<<blocks, threads, 0, stream>>>(
-                params,
-                dPlane0,
-                dPlane1,
-                dPlane2);
-            return cudaGetLastError();
-        });
-        if (err != cudaSuccess) {
-            return err;
-        }
-
-        err = run_stage(printBreakdown.densityCurve, 1, [&]() {
-            profile_print_develop_density_curve_kernel<<<blocks, threads, 0, stream>>>(
-                params,
-                dPlane0,
-                dPlane1,
-                dPlane2);
-            return cudaGetLastError();
-        });
-        if (err != cudaSuccess) {
-            return err;
-        }
-
-        const int printLaunches =
-            printBreakdown.spectralIntegrate.launches +
-            printBreakdown.exposureScale.launches +
-            printBreakdown.logEncode.launches +
-            printBreakdown.densityCurve.launches;
-        err = printTotalTimer.finish(stream, &profile->printDevelop, printLaunches);
-        if (err != cudaSuccess) {
-            return err;
-        }
-        printBreakdown.total = profile->printDevelop;
-    }
-
-    err = run_stage(profile->scannerLinear, 1, [&]() {
-        profile_focused_scan_linear_rgb_kernel<<<blocks, threads, 0, stream>>>(
-            params,
-            dPlane0,
-            dPlane1,
-            dPlane2,
-            dPlane0,
-            dPlane1,
-            dPlane2);
-        return cudaGetLastError();
-    });
-    if (err != cudaSuccess) {
-        return err;
-    }
-
-    err = run_stage(profile->outputEncode, 1, [&]() {
-        profile_focused_output_encode_kernel<<<blocks, threads, 0, stream>>>(
-            params,
-            dPlane0,
-            dPlane1,
-            dPlane2);
-        return cudaGetLastError();
-    });
-    if (err != cudaSuccess) {
-        return err;
-    }
-
-    return totalTimer.finish(stream, &profile->total, profile->totalLaunches);
-}
-
-extern "C" cudaError_t juicer_cuda_profile_direct_focused_pipeline_stages(
-    const JuicerCuda::DirectPipelineRunParams* hParams,
-    float* dPlane0,
-    float* dPlane1,
-    float* dPlane2,
-    JuicerCuda::CompositePipelineProfile* profile,
-    void* cudaStreamOpaque) {
-    return profile_focused_pipeline_stages_impl(
-        hParams,
-        dPlane0,
-        dPlane1,
-        dPlane2,
-        profile,
-        cudaStreamOpaque);
-}
-
-extern "C" cudaError_t juicer_cuda_profile_print_focused_pipeline_stages(
-    const JuicerCuda::PrintPipelineRunParams* hParams,
-    float* dPlane0,
-    float* dPlane1,
-    float* dPlane2,
-    JuicerCuda::CompositePipelineProfile* profile,
-    void* cudaStreamOpaque) {
-    return profile_focused_pipeline_stages_impl(
-        hParams,
-        dPlane0,
-        dPlane1,
-        dPlane2,
-        profile,
-        cudaStreamOpaque);
+    return cudaGetLastError();
 }
 
 extern "C" cudaError_t juicer_cuda_direct_focused_capture_density(
@@ -3329,7 +2700,6 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_rgb(
     float* dRgbR,
     float* dRgbG,
     float* dRgbB,
-    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     return launch_focused_scan_linear_rgb(
         hParams,
@@ -3337,7 +2707,6 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_rgb(
         nullptr,
         nullptr,
         FocusedScannerPostEffectOptions{},
-        aliasProfile,
         cudaStreamOpaque);
 }
 
@@ -3355,7 +2724,6 @@ extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_rgb(
     float glareRoughness,
     const float* dGlareKernel,
     int glareRadius,
-    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     return launch_focused_scan_linear_rgb(
         hParams,
@@ -3371,7 +2739,6 @@ extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_rgb(
             glareRoughness,
             dGlareKernel,
             glareRadius},
-        aliasProfile,
         cudaStreamOpaque);
 }
 
@@ -3391,7 +2758,6 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
     const float* gateMask,
     int gateMaskWidth,
     int gateMaskHeight,
-    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     return launch_focused_scanner_post_output(
         hParams,
@@ -3407,7 +2773,6 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
         gateMask,
         gateMaskWidth,
         gateMaskHeight,
-        aliasProfile,
         cudaStreamOpaque);
 }
 
@@ -3427,7 +2792,6 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
     const float* gateMask,
     int gateMaskWidth,
     int gateMaskHeight,
-    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     return launch_focused_scanner_post_output(
         hParams,
@@ -3443,7 +2807,6 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
         gateMask,
         gateMaskWidth,
         gateMaskHeight,
-        aliasProfile,
         cudaStreamOpaque);
 }
 
@@ -3461,14 +2824,7 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     float* deltaAccum,
     float* layerWork,
     float* sharedDelta,
-    JuicerCuda::VisualGrainRuntimeProfile* profile,
     void* cudaStreamOpaque) {
-    if (profile) {
-        *profile = JuicerCuda::VisualGrainRuntimeProfile{};
-        profile->width = width;
-        profile->height = height;
-        profile->captured = 1;
-    }
     if (!grain || !kernels) {
         return cudaErrorInvalidValue;
     }
@@ -3582,18 +2938,9 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
         (width + threads2D.x - 1) / threads2D.x,
         (height + threads2D.y - 1) / threads2D.y);
 
-    auto record_launch = [&](int JuicerCuda::VisualGrainRuntimeProfile::* counter) {
-        if (!profile) {
-            return;
-        }
-        ++(profile->*counter);
-        ++profile->totalLaunches;
-    };
-
     auto launch_grain_blur_horizontal = [&](float* plane,
                                             const float* kernel,
-                                            int radius,
-                                            bool dyeCloud) -> cudaError_t {
+                                            int radius) -> cudaError_t {
         if (!plane || !kernel) {
             return cudaErrorInvalidValue;
         }
@@ -3608,10 +2955,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
             threads2D,
             horizontalSharedBytes,
             stream>>>(plane, filterTemp, width, height, kernel, radius);
-        record_launch(
-            dyeCloud
-                ? &JuicerCuda::VisualGrainRuntimeProfile::dyeBlurPassLaunches
-                : &JuicerCuda::VisualGrainRuntimeProfile::correlationBlurPassLaunches);
         cudaError_t error = cudaGetLastError();
         if (error != cudaSuccess) {
             return error;
@@ -3629,9 +2972,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                               bool applyCorrelation,
                               float weight,
                               bool initializeDeltaAccum) -> cudaError_t {
-        if (profile) {
-            ++profile->scaleEvaluations;
-        }
         JuicerCuda::GrainPayload pass = base;
         pass.seedBase ^= salt;
         pass.seedBaseNext ^= salt;
@@ -3684,8 +3024,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                     density,
                     layerWork,
                     channel);
-                record_launch(
-                    &JuicerCuda::VisualGrainRuntimeProfile::layerParticleLaunches);
                 error = cudaGetLastError();
                 if (error != cudaSuccess) {
                     return error;
@@ -3694,8 +3032,7 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                     error = launch_grain_blur_horizontal(
                         layerWork,
                         dyeKernel0,
-                        dyeRadius0,
-                        true);
+                        dyeRadius0);
                     if (error != cudaSuccess) {
                         return error;
                     }
@@ -3718,8 +3055,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                         threads2D,
                         verticalSharedBytes,
                         stream>>>(finishInput);
-                    record_launch(
-                        &JuicerCuda::VisualGrainRuntimeProfile::dyeBlurPassLaunches);
                     error = cudaGetLastError();
                     if (error != cudaSuccess) {
                         return error;
@@ -3730,8 +3065,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                         layerWork,
                         total,
                         1);
-                    record_launch(
-                        &JuicerCuda::VisualGrainRuntimeProfile::layerAccumulateLaunches);
                     error = cudaGetLastError();
                     if (error != cudaSuccess) {
                         return error;
@@ -3747,8 +3080,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                         layerWork,
                         channel,
                         layer);
-                    record_launch(
-                        &JuicerCuda::VisualGrainRuntimeProfile::layerParticleLaunches);
                     error = cudaGetLastError();
                     if (error != cudaSuccess) {
                         return error;
@@ -3759,8 +3090,7 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                         error = launch_grain_blur_horizontal(
                             layerWork,
                             dyeKernel,
-                            dyeRadius,
-                            true);
+                            dyeRadius);
                         if (error != cudaSuccess) {
                             return error;
                         }
@@ -3783,8 +3113,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                             threads2D,
                             verticalSharedBytes,
                             stream>>>(finishInput);
-                        record_launch(
-                            &JuicerCuda::VisualGrainRuntimeProfile::dyeBlurPassLaunches);
                         error = cudaGetLastError();
                         if (error != cudaSuccess) {
                             return error;
@@ -3795,8 +3123,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                             layerWork,
                             total,
                             layer == 0 ? 1 : 0);
-                        record_launch(
-                            &JuicerCuda::VisualGrainRuntimeProfile::layerAccumulateLaunches);
                         error = cudaGetLastError();
                         if (error != cudaSuccess) {
                             return error;
@@ -3812,8 +3138,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 density,
                 scaleWork,
                 channel);
-            record_launch(
-                &JuicerCuda::VisualGrainRuntimeProfile::simpleParticleLaunches);
             error = cudaGetLastError();
             if (error != cudaSuccess) {
                 return error;
@@ -3827,8 +3151,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 density,
                 total,
                 densityBias);
-            record_launch(
-                &JuicerCuda::VisualGrainRuntimeProfile::formDeltaLaunches);
             error = cudaGetLastError();
             if (error != cudaSuccess) {
                 return error;
@@ -3839,8 +3161,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 density,
                 total,
                 1.0f);
-            record_launch(
-                &JuicerCuda::VisualGrainRuntimeProfile::subtractLaunches);
             error = cudaGetLastError();
             if (error != cudaSuccess) {
                 return error;
@@ -3850,8 +3170,7 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
             error = launch_grain_blur_horizontal(
                 scaleWork,
                 correlationKernel,
-                correlationRadius,
-                false);
+                correlationRadius);
             if (error != cudaSuccess) {
                 return error;
             }
@@ -3875,8 +3194,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 threads2D,
                 verticalSharedBytes,
                 stream>>>(finishInput);
-            record_launch(
-                &JuicerCuda::VisualGrainRuntimeProfile::correlationBlurPassLaunches);
             return cudaGetLastError();
         }
         grain_accumulate_weighted_kernel<<<
@@ -3889,8 +3206,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
             total,
             weight,
             initializeDeltaAccum ? 1 : 0);
-        record_launch(
-            &JuicerCuda::VisualGrainRuntimeProfile::weightedAccumulateLaunches);
         return cudaGetLastError();
     };
 
@@ -3898,9 +3213,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     auto generate_mix = [&](const JuicerCuda::GrainPayload& base,
                             const float* density,
                             int channel) -> cudaError_t {
-        if (profile) {
-            ++profile->mixEvaluations;
-        }
         cudaError_t error = cudaSuccess;
         bool initializeDeltaAccum = true;
         if (wFine > 0.0f) {
@@ -3958,7 +3270,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
             deltaAccum,
             total,
             sizeMixGain);
-        record_launch(&JuicerCuda::VisualGrainRuntimeProfile::scaleLaunches);
         return cudaGetLastError();
     };
 
@@ -3976,13 +3287,10 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
         debugInput.offset = 0.0f;
         debugInput.scale = grain->debugScale * 4.0f;
         grain_debug_encode_avg3_kernel<<<blocks1D, threads1D, 0, stream>>>(debugInput);
-        record_launch(&JuicerCuda::VisualGrainRuntimeProfile::debugLaunches);
         return cudaGetLastError();
     }
 
     grain_prepare_frame_uniforms_kernel<<<1, 1, 0, stream>>>(*grain);
-    record_launch(
-        &JuicerCuda::VisualGrainRuntimeProfile::frameUniformPreparationLaunches);
     error = cudaGetLastError();
     if (error != cudaSuccess) {
         return error;
@@ -4016,8 +3324,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 grain_clear_kernel<<<blocks1D, threads1D, 0, stream>>>(
                     deltaAccum,
                     total);
-                record_launch(
-                    &JuicerCuda::VisualGrainRuntimeProfile::clearLaunches);
                 error = cudaGetLastError();
                 if (error != cudaSuccess) {
                     return error;
@@ -4029,8 +3335,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 total,
                 amplitude,
                 0);
-            record_launch(
-                &JuicerCuda::VisualGrainRuntimeProfile::reconstructLaunches);
             error = cudaGetLastError();
             if (error != cudaSuccess) {
                 return error;
@@ -4054,11 +3358,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
             if (error != cudaSuccess) {
                 return error;
             }
-            if (profile) {
-                ++profile->copyOperations;
-                profile->copyBytes +=
-                    static_cast<std::uint64_t>(total) * sizeof(float);
-            }
         }
         for (int channel = 0; channel < 3; ++channel) {
             if (grain->chromaIndWeight > 0.0f || !sharedChroma) {
@@ -4070,7 +3369,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 grain_clear_kernel<<<blocks1D, threads1D, 0, stream>>>(
                     deltaAccum,
                     total);
-                record_launch(&JuicerCuda::VisualGrainRuntimeProfile::clearLaunches);
                 error = cudaGetLastError();
                 if (error != cudaSuccess) {
                     return error;
@@ -4086,8 +3384,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 mixInput.independentWeight = grain->chromaIndWeight;
                 mixInput.amplitude = amplitude;
                 grain_mix_shared_kernel<<<blocks1D, threads1D, 0, stream>>>(mixInput);
-                record_launch(
-                    &JuicerCuda::VisualGrainRuntimeProfile::sharedMixLaunches);
                 error = cudaGetLastError();
                 if (error != cudaSuccess) {
                     return error;
@@ -4099,8 +3395,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                 total,
                 sharedChroma ? 1.0f : amplitude,
                 grain->debugView == 0 ? 1 : 0);
-            record_launch(
-                &JuicerCuda::VisualGrainRuntimeProfile::reconstructLaunches);
             error = cudaGetLastError();
             if (error != cudaSuccess) {
                 return error;
@@ -4120,7 +3414,6 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
         debugInput.offset = 0.5f;
         debugInput.scale = grain->debugScale;
         grain_debug_encode_avg3_kernel<<<blocks1D, threads1D, 0, stream>>>(debugInput);
-        record_launch(&JuicerCuda::VisualGrainRuntimeProfile::debugLaunches);
         return cudaGetLastError();
     }
     return cudaSuccess;

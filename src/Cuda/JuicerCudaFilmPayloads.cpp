@@ -183,7 +183,6 @@ namespace JuicerCuda {
 
 } // namespace JuicerCuda
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 namespace {
 
     template <typename Payload>
@@ -585,4 +584,3 @@ namespace JuicerCuda {
     }
 
 } // namespace JuicerCuda
-#endif

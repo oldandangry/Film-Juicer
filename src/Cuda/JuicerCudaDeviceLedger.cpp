@@ -138,19 +138,6 @@ namespace JuicerCuda {
         return true;
     }
 
-    bool DeviceByteReservation::rollback_reserved(std::string& outError) {
-        outError.clear();
-        if (!active()) {
-            return fail(outError, "reservation_not_active");
-        }
-        if (!_ledger->rollback_reserved_record(_recordId, outError)) {
-            return false;
-        }
-        _recordId = 0;
-        _ledger.reset();
-        return true;
-    }
-
     void DeviceByteReservation::abandon_or_rollback() noexcept {
         if (_ledger != nullptr && _recordId != 0) {
             _ledger->abandon_or_rollback_record(_recordId);
@@ -374,21 +361,6 @@ namespace JuicerCuda {
         } else {
             _retiringBytes -= it->second.bytes;
         }
-        _records.erase(it);
-        return true;
-    }
-
-    bool DeviceAllocationLedger::rollback_reserved_record(
-        std::uint64_t recordId,
-        std::string& outError) {
-        std::scoped_lock lock(_mutex);
-        auto it = _records.find(recordId);
-        if (it == _records.end() ||
-            it->second.state != DeviceReservationState::Reserved ||
-            it->second.abandoned) {
-            return fail(outError, "record_not_reserved");
-        }
-        _reservedBytes -= it->second.bytes;
         _records.erase(it);
         return true;
     }

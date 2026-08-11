@@ -1,6 +1,5 @@
 #pragma once
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 
 #include <array>
 #include <cstddef>
@@ -105,7 +104,6 @@ namespace JuicerCuda::Diffusion {
         PreparedDiffusionLease& operator=(PreparedDiffusionLease&& other) noexcept;
 
         [[nodiscard]] bool active() const noexcept;
-        [[nodiscard]] bool work_enqueued() const noexcept;
         [[nodiscard]] DiffusionPreparedView view() const noexcept;
 
     private:
@@ -173,25 +171,4 @@ namespace JuicerCuda::Diffusion {
     void invalidate_diffusion_resources_after_proven_context_loss(
         DiffusionContextResources& resources) noexcept;
 
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-    enum class DiffusionLifecycleFaultPoint : std::uint8_t {
-        None,
-        AggregateReservation,
-        DeviceAllocation,
-        PlanCreate,
-        PlanQuery,
-        PlanBind,
-        SpectrumBuild,
-        SpectrumBuildEventRecord,
-        ReleaseEventRecord,
-        ReleaseEventRecordAndStreamSync,
-        AsyncCompletionQuery
-    };
-
-    void set_diffusion_lifecycle_fault(
-        DiffusionLifecycleFaultPoint point) noexcept;
-#endif
-
 } // namespace JuicerCuda::Diffusion
-
-#endif

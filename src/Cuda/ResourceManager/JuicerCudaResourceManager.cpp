@@ -9,15 +9,7 @@
 #include <cctype>
 #include <cstddef>
 #include <limits>
-#include <memory>
-#include <mutex>
 #include <string>
-#include <thread>
-#include <utility>
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-#include <cuda_runtime.h>
-#endif
 
 namespace JuicerCuda {
 
@@ -69,36 +61,6 @@ namespace JuicerCuda {
                 return std::string(" device_id=") + std::to_string(contextKey.deviceId) + " context=" + std::to_string(contextBits);
             }
 #endif
-
-            template <typename Action>
-            bool with_explicit_cuda_device(int targetDevice, Action&& action) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-                if (targetDevice < 0) {
-                    return false;
-                }
-
-                int previousDevice = -1;
-                if (cudaGetDevice(&previousDevice) != cudaSuccess) {
-                    return false;
-                }
-                if (previousDevice != targetDevice &&
-                    cudaSetDevice(targetDevice) != cudaSuccess) {
-                    return false;
-                }
-
-                action();
-
-                if (previousDevice != targetDevice &&
-                    cudaSetDevice(previousDevice) != cudaSuccess) {
-                    return false;
-                }
-                return true;
-#else
-                (void)targetDevice;
-                (void)action;
-                return false;
-#endif
-            }
 
             constexpr std::uint64_t kLargeFrameThresholdPixels = static_cast<std::uint64_t>(7680ull * 4320ull);
 
@@ -445,20 +407,6 @@ namespace JuicerCuda {
             }
 
             return true;
-        }
-
-        const char* bool_reason(bool value, const char* whenTrue, const char* whenFalse) noexcept {
-            if (value) {
-                return whenTrue;
-            }
-            return whenFalse;
-        }
-
-        std::uint32_t bool_u32(bool value) noexcept {
-            if (value) {
-                return 1u;
-            }
-            return 0u;
         }
 
         const char* commands_error_or_cstr(const std::string& error, const char* fallback) noexcept {

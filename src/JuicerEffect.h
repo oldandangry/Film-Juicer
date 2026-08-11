@@ -7,31 +7,12 @@
 
 struct InstanceState;
 struct ParamSnapshot;
-struct WorkingState;
-
-namespace Profiles {
-    struct HalationMetadata;
-    struct GrainMetadata;
-    struct ProfileGlare;
-} // namespace Profiles
-
-namespace Scanner {
-    struct Options;
-    struct Settings;
-} // namespace Scanner
-
-namespace Print {
-    struct Params;
-    struct Runtime;
-} // namespace Print
-
-namespace OutputEncoding {
-    struct Params;
-}
+struct VisualGrainControls;
 
 namespace Spektrafilm {
     struct DiffusionFilterAuthoredControls;
-}
+    using ::VisualGrainControls;
+} // namespace Spektrafilm
 
 namespace OFX {
     class Clip;
@@ -78,13 +59,6 @@ private:
         int meteringMethod = 0;
     };
 
-    struct WorkingStateInfo {
-        std::shared_ptr<const WorkingState> workingState;
-        const Print::Runtime* printRt = nullptr;
-        bool workingStateReady = false;
-        bool printRtReady = false;
-    };
-
     struct DiffusionUiParams {
         OFX::BooleanParam* enabled = nullptr;
         OFX::ChoiceParam* family = nullptr;
@@ -100,28 +74,19 @@ private:
     };
 
     ExposureParams gatherExposureParams() const;
-    Scanner::Options gatherScannerOptions() const;
-    Scanner::Settings gatherScannerSettings() const;
-    Print::Params gatherPrintParams() const;
-    Profiles::HalationMetadata gatherHalationUi() const;
-    Profiles::GrainMetadata gatherGrainUi() const;
-    Profiles::ProfileGlare gatherGlareUi() const;
+    Spektrafilm::VisualGrainControls gatherGrainUi() const;
     Spektrafilm::DiffusionFilterAuthoredControls gatherDiffusionUi(
         const DiffusionUiParams& params) const;
-    OutputEncoding::Params gatherOutputEncodingParams() const;
     void applyDirGammaProfileDefaults();
-    void applyHalationProfileDefaults();
     void applyGrainPresetDefaults(int presetIndex);
     void resetGrainAdvancedControls();
     void updateGrainPresetLabel(bool custom);
     void updateGrainChromaEnabled();
     void updateDiffusionControlState();
     [[noreturn]] void throw_spektrafilm_phase1a_render_cutoff(const OFX::RenderArguments& args) const;
-    WorkingStateInfo prepareWorkingState() const;
-
     ParamSnapshot snapshotParams() const;
     void onParamsPossiblyChanged(const char* changedNameOrNull);
-    void bootstrap_after_attach();
+    void initialize_pending_render_state();
 
     OFX::Clip* _src = nullptr;
     OFX::Clip* _dst = nullptr;
@@ -176,15 +141,6 @@ private:
     OFX::DoubleParam* _pEnlargerC = nullptr;
 
     OFX::BooleanParam* _pHalationActive = nullptr;
-    OFX::DoubleParam* _pHalationStrengthMaster = nullptr;
-    OFX::DoubleParam* _pHalationSizeUmMaster = nullptr;
-    OFX::DoubleParam* _pHalationSecondaryAmountMaster = nullptr;
-    OFX::DoubleParam* _pHalationSecondarySizeUmMaster = nullptr;
-    OFX::PushButtonParam* _pHalationRevertToStock = nullptr;
-    OFX::Double3DParam* _pHalationStrength = nullptr;
-    OFX::Double3DParam* _pHalationSizeUm = nullptr;
-    OFX::Double3DParam* _pHalationSecondaryAmount = nullptr;
-    OFX::Double3DParam* _pHalationSecondarySizeUm = nullptr;
 
     OFX::BooleanParam* _pGrainActive = nullptr;
     OFX::BooleanParam* _pGrainSublayersActive = nullptr;
@@ -235,10 +191,6 @@ private:
 
     std::unique_ptr<InstanceState> _state;
 
-    double _halationPrimaryAmountMasterLast = 0.0;
-    double _halationSizeUmMasterLast = 0.0;
-    double _halationSecondaryAmountMasterLast = 0.0;
-    double _halationSecondarySizeUmMasterLast = 0.0;
     double _grainParticleScaleMasterLast = 0.0;
     double _grainParticleScaleLayersMasterLast = 0.0;
     double _grainDensityMinMasterLast = 0.0;

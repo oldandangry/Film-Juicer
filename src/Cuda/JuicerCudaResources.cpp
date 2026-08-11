@@ -1,20 +1,17 @@
 // Cuda/JuicerCudaResources.cpp
 //
-// WorkingState uploads + primitive validation hooks.
+// Descriptor-driven CUDA uploads and primitive validation hooks.
 //
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
-#include "FilmProcessing.h"
 #include "ColorTransforms.h"
-#include "PipelineTypes.h"
 #include "SpectralProcessing.h"
-#include "Print.h"
-#include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
+#include "Scanner.h"
 
 #include "GaussianSciPy.h"
 
@@ -22,12 +19,10 @@
 #include "Hash.h"
 #include "nlohmann/json.hpp"
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
 #include <cuda.h>
 #if defined(_WIN32)
 #include <windows.h>
-#endif
 #endif
 
 #include <algorithm>
@@ -400,74 +395,16 @@ namespace JuicerCuda {
             return true;
         }
 
-        void build_hanatos_integrated_lut_cpu(const Spectral::SpectralContext& ctx, const WorkingState& ws, std::vector<float>& out) {
-            const int N = ctx.hanSpectra.size;
-            const int K = ctx.hanSpectra.numSamples;
-            out.clear();
-            out.resize(static_cast<size_t>(N) * static_cast<size_t>(N) * 4u, 0.0f);
-
-            const float* lut = ctx.hanSpectra.data.data();
-            const float* sB = ws.sensB.linear.data();
-            const float* sG = ws.sensG.linear.data();
-            const float* sR = ws.sensR.linear.data();
-            const size_t stride = static_cast<size_t>(K);
-            for (int x = 0; x < N; ++x) {
-                for (int y = 0; y < N; ++y) {
-                    double accB = 0.0;
-                    double accG = 0.0;
-                    double accR = 0.0;
-                    const size_t base = (static_cast<size_t>(x) * static_cast<size_t>(N) + static_cast<size_t>(y)) * stride;
-                    for (int k = 0; k < K; ++k) {
-                        const float raw = lut[base + static_cast<size_t>(k)];
-                        if (!std::isfinite(raw)) {
-                            continue;
-                        }
-                        const float e = (raw > 0.0f) ? raw : 0.0f;
-                        if (!std::isfinite(e)) {
-                            continue;
-                        }
-                        const double e64 = static_cast<double>(e);
-                        const float sb = sB[k];
-                        const float sg = sG[k];
-                        const float sr = sR[k];
-                        if (std::isfinite(sb))
-                            accB += e64 * static_cast<double>(sb);
-                        if (std::isfinite(sg))
-                            accG += e64 * static_cast<double>(sg);
-                        if (std::isfinite(sr))
-                            accR += e64 * static_cast<double>(sr);
-                    }
-
-                    const size_t outBase = (static_cast<size_t>(x) * static_cast<size_t>(N) + static_cast<size_t>(y)) * 4u;
-                    out[outBase + 0] = static_cast<float>(accR);
-                    out[outBase + 1] = static_cast<float>(accG);
-                    out[outBase + 2] = static_cast<float>(accB);
-                    out[outBase + 3] = 0.0f;
-                }
-            }
-        }
-
-        bool build_print_preflash_raw(const WorkingState& ws, const Print::Runtime& prt, float outRaw[3], int& outShapeK) {
-            return Pipeline::compute_preflash_raw(ws, prt, outRaw, outShapeK);
-        }
     } // namespace Precompute
 } // namespace JuicerCuda
 
 namespace JuicerCuda {
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static bool query_current_cuda_context(
         void*& outContextOpaque,
         std::string& outError);
-#endif
 
     bool validate_resource_owner_locked(Resources& resources, std::string& outError, bool bindIfUnset) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)bindIfUnset;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         (void)bindIfUnset;
         int cur = -1;
         const cudaError_t devErr = cudaGetDevice(&cur);
@@ -491,10 +428,8 @@ namespace JuicerCuda {
             return false;
         }
         return true;
-#endif
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     struct HostToDeviceCopyRequest {
         const char* stage = nullptr;
         const char* label = nullptr;
@@ -508,7 +443,6 @@ namespace JuicerCuda {
         std::size_t bytes,
         void* cudaStreamOpaque,
         std::string& outError);
-#endif
 
     static void free_stbn(Resources& resources) noexcept;
     static void free_wang(Resources& resources) noexcept;
@@ -516,7 +450,8 @@ namespace JuicerCuda {
     static void free_tables(Resources& resources) noexcept;
     static void free_scan_medium(Resources& resources, Resources::DeviceScanMedium& m) noexcept;
     static void free_scan_lut(Resources& resources, Resources::DeviceSpectralLut& lut) noexcept;
-    static void free_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& k) noexcept;
+    static void clear_gaussian_kernel_views(Resources& resources) noexcept;
+    static void free_gaussian_cache(Resources& resources) noexcept;
     static void free_optics_scratch(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque) noexcept;
     static void free_spatial_dir_scratch(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque) noexcept;
     static void free_shared_tmp_plane(Resources& resources) noexcept;
@@ -524,7 +459,6 @@ namespace JuicerCuda {
 } // namespace JuicerCuda
 
 namespace JuicerCuda {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     struct DeferredDestroyEntry {
         Resources* resources = nullptr;
         int ownerDeviceId = -1;
@@ -756,10 +690,8 @@ namespace JuicerCuda {
             }
         }
     }
-#endif
 
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static bool allocate_owned_device(
         Resources& resources,
         void** outPtr,
@@ -964,10 +896,8 @@ namespace JuicerCuda {
             ++i;
         }
     }
-#endif
 
     static bool drain_retire_queue_blocking(Resources& resources) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         bool allReleased = true;
         for (std::size_t i = 0; i < resources.retireQueue.size();) {
             Resources::RetireEntry& e = resources.retireQueue[i];
@@ -1034,20 +964,9 @@ namespace JuicerCuda {
             resources.completionEventPoolOpaque.clear();
         }
         return allReleased;
-#else
-        (void)resources;
-        return true;
-#endif
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static bool acquire_retire_event_locked(Resources& resources, void*& outEventOpaque, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)outEventOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (!resources.completionEventPoolOpaque.empty()) {
             outEventOpaque = resources.completionEventPoolOpaque.back();
             resources.completionEventPoolOpaque.pop_back();
@@ -1062,15 +981,12 @@ namespace JuicerCuda {
         }
         outEventOpaque = reinterpret_cast<void*>(ev);
         return true;
-#endif
     }
-#endif
 
     static void release_frame_use_event_entry(
         Resources& resources,
         Resources::PendingFrameUseEvent& entry,
         bool recycle) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (entry.eventOpaque) {
             if (recycle) {
                 recycle_completion_event_locked(
@@ -1082,14 +998,9 @@ namespace JuicerCuda {
                 entry.eventOpaque = nullptr;
             }
         }
-#else
-        (void)resources;
-        (void)recycle;
-#endif
         entry = Resources::PendingFrameUseEvent{};
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static void reap_frame_use_events_locked(Resources& resources) noexcept {
         std::vector<Resources::PendingFrameUseEvent>& pending = resources.pendingFrameUseEvents;
         for (std::size_t i = 0; i < pending.size();) {
@@ -1117,13 +1028,6 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         const char* label,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         reap_frame_use_events_locked(resources);
         if (resources.pendingFrameUseEvents.empty()) {
             return true;
@@ -1144,7 +1048,6 @@ namespace JuicerCuda {
             }
         }
         return true;
-#endif
     }
 
     struct RetireFenceRecord {
@@ -1157,12 +1060,6 @@ namespace JuicerCuda {
         Resources& resources,
         const RetireFenceRecord& record,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)record;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         cudaEvent_t retireEv = reinterpret_cast<cudaEvent_t>(record.retireEventOpaque);
         if (!retireEv) {
             outError = "retire fence event missing";
@@ -1180,20 +1077,9 @@ namespace JuicerCuda {
             return false;
         }
         return true;
-#endif
     }
 
     static bool retire_ptr_locked(Resources& resources, void* ptr, std::size_t bytes, Resources::RetireKind kind, void* cudaStreamOpaque, const char* label, std::string& outError, bool scratchTier = false, DeviceByteReservation* externalReservation = nullptr) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)ptr;
-        (void)bytes;
-        (void)kind;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (!ptr) {
             return true;
         }
@@ -1297,13 +1183,10 @@ namespace JuicerCuda {
             resources.retireScratchBytes += bytes;
         }
         return true;
-#endif
     }
 
-#endif
 
     static void free_curve(Resources& resources, DeviceCurve& c) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (c.x) {
             free_owned_device_noexcept(resources, c.x);
             c.x = nullptr;
@@ -1312,22 +1195,12 @@ namespace JuicerCuda {
             free_owned_device_noexcept(resources, c.y);
             c.y = nullptr;
         }
-#endif
         c.n = 0;
         c.domainBegin = 0;
         c.domainEnd = 0;
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static bool retire_curve_locked(Resources& resources, DeviceCurve& c, void* cudaStreamOpaque, const char* label, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)c;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         const size_t bytes = static_cast<size_t>(std::max(0, c.n)) * sizeof(float);
         if (c.x) {
             if (!retire_ptr_locked(resources, c.x, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
@@ -1345,12 +1218,9 @@ namespace JuicerCuda {
         c.domainBegin = 0;
         c.domainEnd = 0;
         return true;
-#endif
     }
-#endif
 
     static void free_density_layers(Resources& resources) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         for (int layer = 0; layer < 3; ++layer) {
             for (int ch = 0; ch < 3; ++ch) {
                 if (resources.densityCurvesLayers[layer][ch]) {
@@ -1361,7 +1231,6 @@ namespace JuicerCuda {
                 }
             }
         }
-#endif
         for (int ch = 0; ch < 3; ++ch) {
             resources.densityCurvesLayersChannelN[ch] = 0;
         }
@@ -1369,15 +1238,7 @@ namespace JuicerCuda {
         resources.filmDensityLayersHash = 0;
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static bool retire_density_layers_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         for (int ch = 0; ch < 3; ++ch) {
             const size_t bytes =
                 static_cast<size_t>(std::max(0, resources.densityCurvesLayersChannelN[ch])) *
@@ -1395,38 +1256,30 @@ namespace JuicerCuda {
         resources.hasDensityCurvesLayers = 0;
         resources.filmDensityLayersHash = 0;
         return true;
-#endif
     }
-#endif
 
     static void free_hanatos(Resources& resources) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (resources.hanatosLut) {
             free_owned_device_noexcept(resources, resources.hanatosLut);
             resources.hanatosLut = nullptr;
         }
-#endif
         resources.hanatosN = 0;
     }
 
     static void free_hanatos_integrated(Resources& resources) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (resources.hanatosLutIntegrated) {
             free_owned_device_noexcept(resources, resources.hanatosLutIntegrated);
             resources.hanatosLutIntegrated = nullptr;
         }
-#endif
         resources.hanatosNIntegrated = 0;
         resources.hanatosIntegratedKeyHash = 0;
     }
 
     static void free_mallett_basis(Resources& resources) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (resources.mallettBasis) {
             free_owned_device_noexcept(resources, resources.mallettBasis);
             resources.mallettBasis = nullptr;
         }
-#endif
         resources.mallettBasisK = 0;
     }
 
@@ -1444,7 +1297,6 @@ namespace JuicerCuda {
         free_curve(resources, resources.printSensY);
         free_spectral_tables(resources, resources.printFilmDensityTables);
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (resources.printIllumFiltered) {
             free_owned_device_noexcept(resources, resources.printIllumFiltered);
             resources.printIllumFiltered = nullptr;
@@ -1455,7 +1307,6 @@ namespace JuicerCuda {
                 resources.printPreflashIllumFiltered);
             resources.printPreflashIllumFiltered = nullptr;
         }
-#endif
         resources.printIllumK = 0;
         resources.printPreflashIllumK = 0;
         resources.printIllumFilteredHostValid = false;
@@ -1467,7 +1318,6 @@ namespace JuicerCuda {
 
         resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
         resources.printPreflashValid = false;
-        resources.printPreflashKeyHash = 0;
         resources.printPreflashShapeK = 0;
         resources.printBalanceFactorMidgray = 1.0f;
         resources.printBalanceFactorMidgrayComp = 1.0f;
@@ -1479,20 +1329,9 @@ namespace JuicerCuda {
         resources.printPreflashRawDescriptorHash = 0;
         resources.printBalanceDescriptorHash = 0;
         resources.printPreparationDescriptorHash = 0;
-        resources.printPreparationCounter = 0;
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static bool alloc_and_upload_array(Resources& resources, float*& dst, const float* src, int n, void* cudaStreamOpaque, const char* label, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)dst;
-        (void)src;
-        (void)n;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (!src || n <= 0) {
             outError = std::string(label) + " array is empty";
             return false;
@@ -1519,7 +1358,6 @@ namespace JuicerCuda {
             return false;
         }
         return true;
-#endif
     }
 
     static bool relock_resources_after_offlock_upload(
@@ -1542,15 +1380,6 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         const char* label,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)dst;
-        (void)src;
-        (void)bytes;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (!src || bytes == 0) {
             outError = std::string(label ? label : "buffer") + " buffer is empty";
             return false;
@@ -1579,7 +1408,6 @@ namespace JuicerCuda {
         }
 
         return true;
-#endif
     }
 
     static bool alloc_and_upload_bytes_locked(
@@ -1591,17 +1419,6 @@ namespace JuicerCuda {
         std::unique_lock<std::mutex>* resourcesLock,
         const char* label,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)dst;
-        (void)src;
-        (void)bytes;
-        (void)cudaStreamOpaque;
-        (void)resourcesLock;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (resourcesLock) {
             resourcesLock->unlock();
         }
@@ -1615,7 +1432,6 @@ namespace JuicerCuda {
             return false;
         }
         return allocOk;
-#endif
     }
 
     static bool upload_array_locked(
@@ -1628,18 +1444,6 @@ namespace JuicerCuda {
         std::unique_lock<std::mutex>* resourcesLock,
         const char* label,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)dst;
-        (void)currentN;
-        (void)src;
-        (void)n;
-        (void)cudaStreamOpaque;
-        (void)resourcesLock;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (!src || n <= 0) {
             outError = std::string(label ? label : "array") + " array is empty";
             return false;
@@ -1689,17 +1493,9 @@ namespace JuicerCuda {
 
         dst = tmp;
         return true;
-#endif
     }
 
     static bool alloc_and_upload_curve(Resources& resources, DeviceCurve& dst, const Spectral::Curve& src, void* cudaStreamOpaque, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)dst;
-        (void)src;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (src.lambda_nm.empty() || src.linear.empty() || src.lambda_nm.size() != src.linear.size()) {
             outError = "curve has no samples or mismatched arrays";
             return false;
@@ -1769,7 +1565,6 @@ namespace JuicerCuda {
 
         dst.n = n;
         return true;
-#endif
     }
 
     static bool upload_curve_locked(
@@ -1780,16 +1575,6 @@ namespace JuicerCuda {
         std::unique_lock<std::mutex>* resourcesLock,
         const char* label,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)dst;
-        (void)src;
-        (void)cudaStreamOpaque;
-        (void)resourcesLock;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (src.lambda_nm.empty() || src.linear.empty() || src.lambda_nm.size() != src.linear.size()) {
             outError = std::string(label) + ": curve has no samples or mismatched arrays";
             return false;
@@ -1885,18 +1670,9 @@ namespace JuicerCuda {
 
         dst = tmp;
         return true;
-#endif
     }
 
     static bool alloc_and_upload_spectral_samples(Resources& resources, DeviceCurve& dst, const std::vector<float>& src, void* cudaStreamOpaque, const char* label, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)dst;
-        (void)src;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (src.empty()) {
             outError = std::string(label) + " array is empty";
             return false;
@@ -1931,7 +1707,6 @@ namespace JuicerCuda {
         dst.domainBegin = 0;
         dst.domainEnd = n - 1;
         return true;
-#endif
     }
 
     static bool upload_spectral_samples_locked(
@@ -1942,16 +1717,6 @@ namespace JuicerCuda {
         std::unique_lock<std::mutex>* resourcesLock,
         const char* label,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)dst;
-        (void)src;
-        (void)cudaStreamOpaque;
-        (void)resourcesLock;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (src.empty()) {
             outError = std::string(label ? label : "spectral samples") + " array is empty";
             return false;
@@ -2008,14 +1773,11 @@ namespace JuicerCuda {
 
         dst = tmp;
         return true;
-#endif
     }
 
-#endif
 
     static bool drain_all_resource_allocations(Resources& resources) noexcept {
         bool eventsReady = true;
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         for (Resources::PendingFrameUseEvent& entry :
              resources.pendingFrameUseEvents) {
             const cudaEvent_t event = entry.eventOpaque
@@ -2026,15 +1788,12 @@ namespace JuicerCuda {
                 eventsReady = false;
             }
         }
-#endif
         const bool retiredReady = drain_retire_queue_blocking(resources);
         bool diffusionReady = true;
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         std::string diffusionDrainError;
         diffusionReady = Diffusion::drain_diffusion_resources(
             resources.diffusion,
             diffusionDrainError);
-#endif
         if (!eventsReady || !retiredReady || !diffusionReady) {
             return false;
         }
@@ -2054,23 +1813,9 @@ namespace JuicerCuda {
         free_scan_medium(resources, resources.scanPrint);
         free_scan_lut(resources, resources.scanNegativeLut);
         free_scan_lut(resources, resources.scanPrintLut);
-        free_gaussian_kernel(resources, resources.scannerLensBlurKernel);
-        free_gaussian_kernel(resources, resources.scannerUnsharpKernel);
-        free_gaussian_kernel(resources, resources.scannerGlareKernel);
-        free_gaussian_kernel(resources, resources.grainBlurKernel);
-        free_gaussian_kernel(resources, resources.grainBlurKernelMid);
-        free_gaussian_kernel(resources, resources.grainBlurKernelCoarse);
-        for (int layer = 0; layer < 3; ++layer) {
-            for (int channel = 0; channel < 3; ++channel) {
-                free_gaussian_kernel(
-                    resources,
-                    resources.grainDyeKernel[layer][channel]);
-            }
-        }
+        clear_gaussian_kernel_views(resources);
+        free_gaussian_cache(resources);
         free_optics_scratch(resources, resources.scannerScratch, nullptr);
-        for (auto& kernel : resources.spatialDirKernels) {
-            free_gaussian_kernel(resources, kernel);
-        }
         free_spatial_dir_scratch(
             resources,
             resources.spatialDirScratch,
@@ -2089,7 +1834,6 @@ namespace JuicerCuda {
         }
         resources.pendingFrameUseEvents.clear();
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         for (;;) {
             void* orphanedPtr = nullptr;
             {
@@ -2105,7 +1849,6 @@ namespace JuicerCuda {
                 break;
             }
         }
-#endif
 
         std::lock_guard<std::mutex> allocationLock(
             resources.deviceAllocationRecordsMutex);
@@ -2160,10 +1903,10 @@ namespace JuicerCuda {
             std::lock_guard<std::mutex> allocationLock(
                 resources.deviceAllocationRecordsMutex);
             resources.contextInvalidatedByProvenLoss = true;
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
             Diffusion::invalidate_diffusion_resources_after_proven_context_loss(
                 resources.diffusion);
-#endif
+            clear_gaussian_kernel_views(resources);
+            resources.gaussianKernelCache.clear();
             resources.deviceAllocationRecords.clear();
             resources.contextLossOnlyDeviceAllocationRecords.clear();
             resources.retireQueue.clear();
@@ -2204,9 +1947,7 @@ namespace JuicerCuda {
                     "ResourceDescriptorMismatch component=cuda_resources field=allocation_identity";
                 return nullptr;
             }
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
             reap_deferred_destroy_queue("create");
-#endif
             return new Resources(
                 contextKey,
                 contextEpoch,
@@ -2222,13 +1963,6 @@ namespace JuicerCuda {
     }
 
     void destroy(Resources* resources) noexcept {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        try {
-            delete resources;
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-        }
-#else
         try {
             if (!resources) {
                 return;
@@ -2419,17 +2153,11 @@ namespace JuicerCuda {
         } catch (...) {
             JuicerLogging::discard_current_exception();
         }
-#endif
     }
 
     bool reap_retired_allocations(Resources& resources, std::size_t& reclaimedBytes, std::string& outError) {
         reclaimedBytes = 0;
         outError.clear();
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         std::lock_guard<std::mutex> lock(resources.m);
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
@@ -2439,7 +2167,6 @@ namespace JuicerCuda {
         const std::size_t afterBytes = resources.retireBytes;
         reclaimedBytes = (beforeBytes >= afterBytes) ? (beforeBytes - afterBytes) : 0;
         return true;
-#endif
     }
 
     static bool acquire_frame_use_event(
@@ -2447,13 +2174,6 @@ namespace JuicerCuda {
         const char* label,
         void*& outEventOpaque,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)label;
-        outEventOpaque = nullptr;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         outEventOpaque = nullptr;
         outError.clear();
         {
@@ -2486,19 +2206,12 @@ namespace JuicerCuda {
         }
         outEventOpaque = reinterpret_cast<void*>(event);
         return true;
-#endif
     }
 
     static bool retain_frame_use_event(
         Resources& resources,
         void*& eventOpaque,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)eventOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         outError.clear();
         if (!eventOpaque) {
             return true;
@@ -2520,7 +2233,6 @@ namespace JuicerCuda {
 
         eventOpaque = nullptr;
         return true;
-#endif
     }
 
     bool record_frame_use_event(
@@ -2528,13 +2240,6 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         const char* label,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         void* eventOpaque = nullptr;
         if (!acquire_frame_use_event(
                 resources,
@@ -2573,11 +2278,8 @@ namespace JuicerCuda {
             return false;
         }
         return true;
-#endif
     }
 
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 
     struct PinnedUploadContextKey {
         int deviceId = -1;
@@ -3310,15 +3012,12 @@ namespace JuicerCuda {
         return true;
     }
 
-#endif // defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 
     static void free_stbn(Resources& resources) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (resources.stbnData) {
             free_owned_device_noexcept(resources, resources.stbnData);
             resources.stbnData = nullptr;
         }
-#endif
         resources.stbnWidth = 0;
         resources.stbnHeight = 0;
         resources.stbnFrames = 0;
@@ -3326,7 +3025,6 @@ namespace JuicerCuda {
     }
 
     static void free_wang(Resources& resources) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (resources.wangTilesData) {
             free_owned_device_noexcept(resources, resources.wangTilesData);
             resources.wangTilesData = nullptr;
@@ -3335,7 +3033,6 @@ namespace JuicerCuda {
             free_owned_device_noexcept(resources, resources.wangLutData);
             resources.wangLutData = nullptr;
         }
-#endif
         resources.wangWidth = 0;
         resources.wangHeight = 0;
         resources.wangCount = 0;
@@ -3346,7 +3043,6 @@ namespace JuicerCuda {
     static void release_scan_error_readback_entry(
         Resources::PendingScanErrorReadback& entry,
         bool waitForEvent) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         cudaEvent_t ev = entry.eventOpaque
                              ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
                              : nullptr;
@@ -3359,9 +3055,6 @@ namespace JuicerCuda {
         if (ev) {
             cudaEventDestroy(ev);
         }
-#else
-        (void)waitForEvent;
-#endif
         entry = Resources::PendingScanErrorReadback{};
     }
 
@@ -3378,13 +3071,6 @@ namespace JuicerCuda {
         int*& host,
         void*& eventOpaque,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)host;
-        (void)eventOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         outError.clear();
         if (!host || !eventOpaque) {
             outError = "scan error readback staging missing";
@@ -3409,7 +3095,6 @@ namespace JuicerCuda {
         host = nullptr;
         eventOpaque = nullptr;
         return true;
-#endif
     }
 
     bool poll_scan_error_readbacks(
@@ -3417,13 +3102,6 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         bool& outDetected,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        outDetected = false;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         outDetected = false;
         outError.clear();
 
@@ -3476,7 +3154,6 @@ namespace JuicerCuda {
             return false;
         }
         return true;
-#endif
     }
 
 
@@ -3486,14 +3163,6 @@ namespace JuicerCuda {
         std::uint64_t expectedAssetVersion,
         void* cudaStreamOpaque,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)payloads;
-        (void)expectedAssetVersion;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         outError.clear();
         if (expectedAssetVersion == 0) {
             outError = "grain static asset version is invalid";
@@ -3649,7 +3318,6 @@ namespace JuicerCuda {
         }
         resources.grainStaticAssetVersion = expectedAssetVersion;
         return true;
-#endif
     }
 
     void purge_pinned_upload_staging_for_context(
@@ -3657,7 +3325,6 @@ namespace JuicerCuda {
         void* contextOpaque,
         PinnedUploadPurgeDisposition disposition) noexcept {
         try {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
             if (deviceId < 0 || contextOpaque == nullptr) {
                 return;
             }
@@ -3759,11 +3426,6 @@ namespace JuicerCuda {
                     cudaSetDevice(previousDevice),
                     0);
             }
-#else
-            (void)deviceId;
-            (void)contextOpaque;
-            (void)disposition;
-#endif
         } catch (...) {
             JuicerLogging::discard_current_exception();
         }
@@ -3773,13 +3435,6 @@ namespace JuicerCuda {
         const FocusedRouteResourcePreparation& request,
         void* cudaStreamOpaque,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)request;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         outError.clear();
         if (!request.recipe || !request.exposureTables || !request.spdSInv ||
             !request.filmRawConfig || !request.scannerTables || !request.scannerColor ||
@@ -4122,7 +3777,6 @@ namespace JuicerCuda {
         Scanner::ScannerMediumRuntime medium{};
         medium.medium = printRoute ? Scanner::ScannerMedium::Print : Scanner::ScannerMedium::Negative;
         medium.tables = request.scannerTables;
-        medium.color = request.scannerColor;
         for (int channel = 0; channel < 3; ++channel) {
             medium.range.min_cmy[channel] = scan.min_cmy[channel];
             medium.range.inv_max_cmy[channel] = scan.inv_max_cmy[channel];
@@ -4237,9 +3891,7 @@ namespace JuicerCuda {
         resources.routeDensityBoundsHash = densityBounds.hash;
         resources.routeScannerDescriptorHash = scannerDescriptor.hash;
         resources.filmRgbToRawMethod = filmRaw.rgbToRawMethod;
-        ++resources.focusedPreparationCounter;
         return true;
-#endif
     }
 
     namespace {
@@ -4255,7 +3907,8 @@ namespace JuicerCuda {
             hash_print_descriptor_value(hash, value.y);
         }
 
-        std::uint64_t hash_profile_density_curves(const Profiles::SpektrafilmPrintData& data) {
+        std::uint64_t hash_profile_density_curves(
+            const Profiles::SpektrafilmProfileSamples& data) {
             if (data.logExposure.empty() || data.densityCurves.empty() ||
                 data.logExposure.size() != data.densityCurves.size()) {
                 return 0;
@@ -4268,7 +3921,8 @@ namespace JuicerCuda {
                                              curves.nanMaskHash});
         }
 
-        std::uint64_t hash_profile_sensitivities(const Profiles::SpektrafilmPrintData& data) {
+        std::uint64_t hash_profile_sensitivities(
+            const Profiles::SpektrafilmProfileSamples& data) {
             const Hash::FloatSpanHash sensitivities = Hash::hash_float_span_with_nan_mask(
                 &data.linearSensitivity[0][0],
                 data.linearSensitivity.size() * 3u);
@@ -4276,7 +3930,8 @@ namespace JuicerCuda {
                                              sensitivities.nanMaskHash});
         }
 
-        std::uint64_t hash_profile_film_density_tables(const Profiles::SpektrafilmFilmData& data) {
+        std::uint64_t hash_profile_film_density_tables(
+            const Profiles::SpektrafilmProfileSamples& data) {
             const Hash::FloatSpanHash channelDensity = Hash::hash_float_span_with_nan_mask(
                 &data.channelDensity[0][0],
                 data.channelDensity.size() * 3u);
@@ -4296,7 +3951,6 @@ namespace JuicerCuda {
                    curve.domainEnd < curve.n;
         }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         const Spectral::Curve* select_print_illuminant(
             const JuicerAssets::IlluminantFilterCurveSet& curves,
             const std::string& key) {
@@ -4801,7 +4455,6 @@ namespace JuicerCuda {
             }
             return true;
         }
-#endif
 
     } // namespace
 
@@ -4946,13 +4599,6 @@ namespace JuicerCuda {
         const PrintResourcePreparation& request,
         void* cudaStreamOpaque,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)request;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         outError.clear();
         if (!request.recipe || !request.assets) {
             outError = "MissingRequiredResource phase=4B field=print_preparation_request";
@@ -5265,10 +4911,8 @@ namespace JuicerCuda {
             resources.printBalanceDescriptorHash = descriptors.balance.hash;
         }
         resources.printPreparationDescriptorHash = descriptors.hash;
-        ++resources.printPreparationCounter;
         trace_main_illuminant("rebuilt", mainHit ? "retained" : "rebuilt");
         return true;
-#endif
     }
 
     bool pack_print_cuda_payloads(
@@ -5364,135 +5008,6 @@ namespace JuicerCuda {
     // Cuda/JuicerCudaResourcesScratch.cpp
     //
     // Included by JuicerCudaResources.cpp (single-TU split).
-    enum class SharedGaussianKind : std::uint8_t {
-        Standard = 0,
-        SpatialDir = 2
-    };
-
-    struct SharedGaussianSpec {
-        SharedGaussianKind kind = SharedGaussianKind::Standard;
-        int radius = 0;
-        float sigma = 0.0f;
-    };
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-
-    struct SharedGaussianKey {
-        int deviceId = -1;
-        void* contextOpaque = nullptr;
-        std::uint64_t contextEpoch = 0;
-        SharedGaussianKind kind = SharedGaussianKind::Standard;
-        int radius = 0;
-        std::uint32_t sigmaBits = 0;
-
-        bool operator==(const SharedGaussianKey& other) const noexcept {
-            return deviceId == other.deviceId &&
-                   contextOpaque == other.contextOpaque &&
-                   contextEpoch == other.contextEpoch &&
-                   kind == other.kind &&
-                   radius == other.radius &&
-                   sigmaBits == other.sigmaBits;
-        }
-    };
-
-    struct SharedGaussianKeyHash {
-        std::size_t operator()(const SharedGaussianKey& key) const noexcept {
-            const std::size_t hDevice = std::hash<int>{}(key.deviceId);
-            const std::size_t hContext = std::hash<std::uintptr_t>{}(
-                reinterpret_cast<std::uintptr_t>(key.contextOpaque));
-            const std::size_t hKind = std::hash<std::uint8_t>{}(
-                static_cast<std::uint8_t>(key.kind));
-            const std::size_t hEpoch =
-                std::hash<std::uint64_t>{}(key.contextEpoch);
-            const std::size_t hRadius = std::hash<int>{}(key.radius);
-            const std::size_t hSigma = std::hash<std::uint32_t>{}(key.sigmaBits);
-            std::size_t h = hDevice;
-            h ^= hContext + 0x9e3779b9u + (h << 6u) + (h >> 2u);
-            h ^= hEpoch + 0x9e3779b9u + (h << 6u) + (h >> 2u);
-            h ^= hKind + 0x9e3779b9u + (h << 6u) + (h >> 2u);
-            h ^= hRadius + 0x9e3779b9u + (h << 6u) + (h >> 2u);
-            h ^= hSigma + 0x9e3779b9u + (h << 6u) + (h >> 2u);
-            return h;
-        }
-    };
-
-    struct SharedGaussianEntry {
-        SharedGaussianKey key{};
-        float* weights = nullptr;
-        int radius = 0;
-        float sigma = 0.0f;
-        int capacity = 0;
-        std::uint64_t id = 0;
-        DeviceByteReservation deviceReservation;
-    };
-
-    struct SharedGaussianView {
-        float* weights = nullptr;
-        int radius = 0;
-        float sigma = 0.0f;
-        int capacity = 0;
-        std::uint64_t id = 0;
-    };
-
-    struct SharedGaussianCacheState {
-        std::mutex mutex;
-        std::unordered_map<SharedGaussianKey, SharedGaussianEntry, SharedGaussianKeyHash> byKey;
-        std::vector<SharedGaussianEntry> quarantine;
-    };
-
-    static SharedGaussianCacheState& shared_gaussian_cache_state() {
-        static SharedGaussianCacheState state;
-        return state;
-    }
-
-    static std::uint32_t gaussian_sigma_bits(float sigma) noexcept {
-        float canonical = sigma;
-        if (canonical == 0.0f) {
-            canonical = 0.0f;
-        }
-        std::uint32_t bits = 0;
-        std::memcpy(&bits, &canonical, sizeof(bits));
-        return bits;
-    }
-
-    static void hash_shared_gaussian_bytes(
-        std::uint64_t& h,
-        const void* data,
-        std::size_t numBytes) noexcept {
-        const auto* bytes = static_cast<const std::uint8_t*>(data);
-        for (std::size_t i = 0; i < numBytes; ++i) {
-            h ^= static_cast<std::uint64_t>(bytes[i]);
-            h *= Hash::kFnvPrime;
-        }
-    }
-
-    static std::uint64_t make_shared_gaussian_id(const SharedGaussianKey& key) noexcept {
-        std::uint64_t h = Hash::kFnvOffset;
-        hash_shared_gaussian_bytes(h, &key.deviceId, sizeof(key.deviceId));
-        const std::uintptr_t contextBits =
-            reinterpret_cast<std::uintptr_t>(key.contextOpaque);
-        hash_shared_gaussian_bytes(h, &contextBits, sizeof(contextBits));
-        hash_shared_gaussian_bytes(h, &key.contextEpoch, sizeof(key.contextEpoch));
-        const std::uint8_t kindValue = static_cast<std::uint8_t>(key.kind);
-        hash_shared_gaussian_bytes(h, &kindValue, sizeof(kindValue));
-        hash_shared_gaussian_bytes(h, &key.radius, sizeof(key.radius));
-        hash_shared_gaussian_bytes(h, &key.sigmaBits, sizeof(key.sigmaBits));
-        return h;
-    }
-
-    static SharedGaussianKey make_shared_gaussian_key(
-        const Resources& resources,
-        SharedGaussianSpec spec) noexcept {
-        SharedGaussianKey key{};
-        key.deviceId = resources.deviceId;
-        key.contextOpaque = resources.ownerContextKey.contextOpaque;
-        key.contextEpoch = resources.contextEpoch;
-        key.kind = spec.kind;
-        key.radius = spec.radius;
-        key.sigmaBits = gaussian_sigma_bits(spec.sigma);
-        return key;
-    }
-
     static void build_gaussian_weights_cpu(
         int radius,
         float sigma,
@@ -5516,160 +5031,6 @@ namespace JuicerCuda {
         for (float& w : outWeights) {
             w = static_cast<float>(static_cast<double>(w) * invW);
         }
-    }
-
-    static bool acquire_shared_gaussian_entry(
-        Resources& resources,
-        const SharedGaussianKey& key,
-        SharedGaussianSpec spec,
-        const std::vector<float>& cpuWeights,
-        SharedGaussianView& outEntry,
-        std::string& outError) {
-        outEntry = SharedGaussianView{};
-        outError.clear();
-        SharedGaussianCacheState& cache = shared_gaussian_cache_state();
-        {
-            std::lock_guard<std::mutex> lock(cache.mutex);
-            const auto it = cache.byKey.find(key);
-            if (it != cache.byKey.end()) {
-                outEntry.weights = it->second.weights;
-                outEntry.radius = it->second.radius;
-                outEntry.sigma = it->second.sigma;
-                outEntry.capacity = it->second.capacity;
-                outEntry.id = it->second.id;
-                return true;
-            }
-            try {
-                cache.byKey.reserve(cache.byKey.size() + 1u);
-                cache.quarantine.reserve(cache.quarantine.size() + 1u);
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-                outError = "failed to reserve shared Gaussian ownership record";
-                return false;
-            }
-        }
-
-        float* dWeights = nullptr;
-        const std::size_t bytes = cpuWeights.size() * sizeof(float);
-        DeviceByteReservation reservation;
-        if (!resources.deviceLedger ||
-            !resources.deviceLedger->reserve(
-                DeviceReservationRequest{
-                    .contextKey = resources.ownerContextKey,
-                    .contextEpoch = resources.contextEpoch,
-                    .bytes = static_cast<std::uint64_t>(bytes)},
-                reservation,
-                outError)) {
-            return false;
-        }
-        const cudaError_t allocErr = cudaMalloc(reinterpret_cast<void**>(&dWeights), bytes);
-        if (allocErr != cudaSuccess || !dWeights) {
-            outError = std::string("cudaMalloc(shared gaussian kernel) failed: ") + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
-            dWeights = nullptr;
-            return false;
-        }
-        if (!reservation.commit(static_cast<std::uint64_t>(bytes), outError)) {
-            (void)cudaFree(dWeights);
-            return false;
-        }
-
-        SharedGaussianEntry candidate{};
-        candidate.key = key;
-        candidate.weights = dWeights;
-        candidate.radius = spec.radius;
-        candidate.sigma = spec.sigma;
-        candidate.capacity = static_cast<int>(cpuWeights.size());
-        candidate.id = make_shared_gaussian_id(key);
-        candidate.deviceReservation = std::move(reservation);
-        auto release_candidate = [&]() {
-            std::string releaseError;
-            if (candidate.deviceReservation.state() ==
-                    DeviceReservationState::Committed &&
-                !candidate.deviceReservation.mark_retiring(releaseError)) {
-                return false;
-            }
-            const cudaError_t freeError = cudaFree(candidate.weights);
-            if (freeError != cudaSuccess) {
-                return false;
-            }
-            candidate.weights = nullptr;
-            return candidate.deviceReservation.release_after_physical_free(
-                true,
-                releaseError);
-        };
-        auto quarantine_candidate = [&]() noexcept {
-            try {
-                std::lock_guard<std::mutex> lock(cache.mutex);
-                cache.quarantine.push_back(std::move(candidate));
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-            }
-        };
-        const cudaError_t copyErr = cudaMemcpy(
-            dWeights,
-            cpuWeights.data(),
-            bytes,
-            cudaMemcpyHostToDevice);
-        if (copyErr != cudaSuccess) {
-            outError = std::string("cudaMemcpy(shared gaussian kernel) failed: ") + (cudaGetErrorString(copyErr) ? cudaGetErrorString(copyErr) : "(unknown)");
-            if (!release_candidate()) {
-                quarantine_candidate();
-            }
-            return false;
-        }
-
-        bool duplicate = false;
-        try {
-            std::lock_guard<std::mutex> lock(cache.mutex);
-            const auto existingIt = cache.byKey.find(key);
-            if (existingIt != cache.byKey.end()) {
-                duplicate = true;
-                outEntry.weights = existingIt->second.weights;
-                outEntry.radius = existingIt->second.radius;
-                outEntry.sigma = existingIt->second.sigma;
-                outEntry.capacity = existingIt->second.capacity;
-                outEntry.id = existingIt->second.id;
-            } else {
-                const auto inserted = cache.byKey.emplace(key, std::move(candidate));
-                if (!inserted.second) {
-                    outError = "shared Gaussian cache insertion failed";
-                    return false;
-                }
-                const SharedGaussianEntry& entry = inserted.first->second;
-                outEntry.weights = entry.weights;
-                outEntry.radius = entry.radius;
-                outEntry.sigma = entry.sigma;
-                outEntry.capacity = entry.capacity;
-                outEntry.id = entry.id;
-            }
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-            outError = "shared Gaussian cache bookkeeping failed";
-            if (candidate.weights && !release_candidate()) {
-                quarantine_candidate();
-            }
-            return false;
-        }
-        if (duplicate && !release_candidate()) {
-            quarantine_candidate();
-        }
-        return true;
-    }
-
-    static bool shared_gaussian_entry_matches_cache(
-        const SharedGaussianKey& key,
-        const Resources::DeviceGaussianKernel& kernel) {
-        if (kernel.sharedKernelId == 0 || !kernel.weights) {
-            return false;
-        }
-        SharedGaussianCacheState& cache = shared_gaussian_cache_state();
-        std::lock_guard<std::mutex> lock(cache.mutex);
-        const auto it = cache.byKey.find(key);
-        if (it == cache.byKey.end()) {
-            return false;
-        }
-        return it->second.id == kernel.sharedKernelId &&
-               it->second.weights == kernel.weights;
     }
 
     static void free_tracked_device_ptr_locked(
@@ -5735,10 +5096,8 @@ namespace JuicerCuda {
         outPtr = reinterpret_cast<T*>(raw);
         return ok;
     }
-#endif
 
     static void free_tables(Resources& resources) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (resources.tablesAx) {
             free_owned_device_noexcept(resources, resources.tablesAx);
             resources.tablesAx = nullptr;
@@ -5755,14 +5114,12 @@ namespace JuicerCuda {
             free_owned_device_noexcept(resources, resources.tablesIllum);
             resources.tablesIllum = nullptr;
         }
-#endif
         resources.tablesK = 0;
     }
 
     static void free_spectral_tables(
         Resources& resources,
         Resources::DeviceSpectralTables& t) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (t.epsC) {
             free_owned_device_noexcept(resources, t.epsC);
             t.epsC = nullptr;
@@ -5791,7 +5148,6 @@ namespace JuicerCuda {
             free_owned_device_noexcept(resources, t.baseDensityMin);
             t.baseDensityMin = nullptr;
         }
-#endif
         t.K = 0;
         t.hasBaseline = 0;
         t.invYn = 1.0f;
@@ -5809,7 +5165,6 @@ namespace JuicerCuda {
     static void free_scan_lut(
         Resources& resources,
         Resources::DeviceSpectralLut& lut) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (lut.log2PchipXYZ) {
             free_owned_device_noexcept(resources, lut.log2PchipXYZ);
             lut.log2PchipXYZ = nullptr;
@@ -5834,30 +5189,40 @@ namespace JuicerCuda {
             free_owned_device_noexcept(resources, lut.cellMax);
             lut.cellMax = nullptr;
         }
-#endif
         lut.res = 0;
         lut.hash = 0;
     }
 
-    static void free_gaussian_kernel(
-        Resources& resources,
-        Resources::DeviceGaussianKernel& k) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (k.weights) {
-            if (k.sharedKernelId == 0) {
-                free_owned_device_noexcept(resources, k.weights);
+    static void clear_gaussian_kernel(
+        Resources::DeviceGaussianKernel& kernel) noexcept {
+        kernel = Resources::DeviceGaussianKernel{};
+    }
+
+    static void clear_gaussian_kernel_views(Resources& resources) noexcept {
+        clear_gaussian_kernel(resources.scannerLensBlurKernel);
+        clear_gaussian_kernel(resources.scannerUnsharpKernel);
+        clear_gaussian_kernel(resources.scannerGlareKernel);
+        clear_gaussian_kernel(resources.grainBlurKernel);
+        clear_gaussian_kernel(resources.grainBlurKernelMid);
+        clear_gaussian_kernel(resources.grainBlurKernelCoarse);
+        for (auto& kernels : resources.grainDyeKernel) {
+            for (auto& kernel : kernels) {
+                clear_gaussian_kernel(kernel);
             }
-            k.weights = nullptr;
         }
-#endif
-        k.radius = 0;
-        k.sigma = 0.0f;
-        k.capacity = 0;
-        k.sharedKernelId = 0;
+        for (auto& kernel : resources.spatialDirKernels) {
+            clear_gaussian_kernel(kernel);
+        }
+    }
+
+    static void free_gaussian_cache(Resources& resources) noexcept {
+        for (auto& entry : resources.gaussianKernelCache) {
+            free_owned_device_noexcept(resources, entry.second);
+        }
+        resources.gaussianKernelCache.clear();
     }
 
     static void free_optics_scratch(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque = nullptr) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         free_tracked_device_ptr_locked(resources, s.rgbR, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.rgbG, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.rgbB, cudaStreamOpaque);
@@ -5870,7 +5235,6 @@ namespace JuicerCuda {
         free_tracked_device_ptr_locked(resources, s.grainTmp, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.grainTmpShared, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.gateMask, cudaStreamOpaque);
-#endif
         s.tmp = nullptr;
         s.width = 0;
         s.height = 0;
@@ -5881,16 +5245,7 @@ namespace JuicerCuda {
         s.gateMaskHash = 0;
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static bool retire_optics_scratch_locked(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque, const char* label, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)s;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         const size_t planeBytes = s.capacityElements * sizeof(float);
         if (s.rgbR) {
             if (!retire_ptr_locked(resources, s.rgbR, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
@@ -5957,12 +5312,9 @@ namespace JuicerCuda {
         s.gateMaskCapacityElements = 0;
         s.gateMaskHash = 0;
         return true;
-#endif
     }
-#endif
 
     static void free_spatial_dir_scratch(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque = nullptr) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         free_tracked_device_ptr_locked(resources, s.rawCorrectionY, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.rawCorrectionM, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.rawCorrectionC, cudaStreamOpaque);
@@ -5974,23 +5326,13 @@ namespace JuicerCuda {
         free_tracked_device_ptr_locked(resources, s.logRawB, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.logRawG, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.logRawR, cudaStreamOpaque);
-#endif
         s.filterTemp = nullptr;
         s.width = 0;
         s.height = 0;
         s.capacityElements = 0;
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static bool retire_spatial_dir_scratch_locked(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque, const char* label, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)s;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         const size_t bytes = s.capacityElements * sizeof(float);
         if (s.rawCorrectionY) {
             if (!retire_ptr_locked(resources, s.rawCorrectionY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
@@ -6052,24 +5394,19 @@ namespace JuicerCuda {
         s.height = 0;
         s.capacityElements = 0;
         return true;
-#endif
     }
-#endif
 
     static void free_shared_tmp_plane(Resources& resources) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         free_tracked_device_ptr_locked(
             resources,
             resources.sharedTmpPlane,
             nullptr);
-#endif
         resources.sharedTmpPlane = nullptr;
         resources.sharedTmpWidth = 0;
         resources.sharedTmpHeight = 0;
         resources.sharedTmpCapacityElements = 0;
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static bool optics_base_live_locked(const Resources& resources) noexcept {
         const auto& scratch = resources.scannerScratch;
         return scratch.rgbR || scratch.rgbG || scratch.rgbB ||
@@ -6201,13 +5538,6 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         const char* label,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (!resources.sharedTmpPlane) {
             return true;
         }
@@ -6231,7 +5561,6 @@ namespace JuicerCuda {
         resources.scannerScratch.tmp = nullptr;
         resources.spatialDirScratch.filterTemp = nullptr;
         return true;
-#endif
     }
 
     static bool retire_orphaned_shared_tmp_plane_locked(
@@ -6239,13 +5568,6 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         const char* label,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (!resources.sharedTmpPlane) {
             return true;
         }
@@ -6257,10 +5579,7 @@ namespace JuicerCuda {
             cudaStreamOpaque,
             label ? label : "orphaned shared tmp plane",
             outError);
-#endif
     }
-
-#endif
 
 
     bool acquire_retained_frame_scratch_lease(
@@ -6268,13 +5587,6 @@ namespace JuicerCuda {
         std::uint64_t leaseGeneration,
         void* cudaStreamOpaque,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)leaseGeneration;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         outError.clear();
         if (leaseGeneration == 0) {
             outError = "retained frame scratch lease generation is invalid";
@@ -6304,19 +5616,12 @@ namespace JuicerCuda {
         }
         resources.retainedScratchLeaseGeneration = leaseGeneration;
         return true;
-#endif
     }
 
     bool release_retained_frame_scratch_lease(
         Resources& resources,
         std::uint64_t leaseGeneration,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)leaseGeneration;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         outError.clear();
         if (leaseGeneration == 0) {
             outError = "retained frame scratch lease generation is invalid";
@@ -6333,7 +5638,6 @@ namespace JuicerCuda {
         }
         resources.retainedScratchLeaseGeneration = 0;
         return true;
-#endif
     }
 
     bool ensure_retained_spatial_dir_cached_log_raw_stage(
@@ -6343,15 +5647,6 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         SpatialDirCachedLogRawStageStats& outStats,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)leaseGeneration;
-        (void)scratchRequest;
-        (void)cudaStreamOpaque;
-        outStats = SpatialDirCachedLogRawStageStats{};
-        outError = "CUDA is not enabled";
-        return false;
-#else
         outStats = SpatialDirCachedLogRawStageStats{};
         outError.clear();
         if (leaseGeneration == 0) {
@@ -6431,7 +5726,6 @@ namespace JuicerCuda {
             return false;
         }
         return true;
-#endif
     }
 
     bool reclaim_large_scratch_transition(
@@ -6440,14 +5734,6 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         LargeScratchTransitionReclaimStats& outStats,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)scratchRequest;
-        (void)cudaStreamOpaque;
-        outStats = LargeScratchTransitionReclaimStats{};
-        outError = "CUDA is not enabled";
-        return false;
-#else
         outStats = LargeScratchTransitionReclaimStats{};
         outError.clear();
         if (!ResourceManager::scratch_request_descriptor_is_valid(scratchRequest)) {
@@ -6555,7 +5841,6 @@ namespace JuicerCuda {
             return false;
         }
         return reap_retired_allocations(resources, outStats.reclaimedBytes, outError);
-#endif
     }
 
 
@@ -6564,13 +5849,6 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         PostFrameScratchShedStats& outStats,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        outStats = PostFrameScratchShedStats{};
-        outError = "CUDA is not enabled";
-        return false;
-#else
         outStats = PostFrameScratchShedStats{};
         outError.clear();
 
@@ -6645,7 +5923,6 @@ namespace JuicerCuda {
             return false;
         }
         return reap_retired_allocations(resources, outStats.reclaimedBytes, outError);
-#endif
     }
 
     bool retire_frame_scratch_allocation(
@@ -6656,16 +5933,6 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         const char* label,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)ptr;
-        (void)bytes;
-        (void)reservation;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (!ptr) {
             return true;
         }
@@ -6684,7 +5951,6 @@ namespace JuicerCuda {
             outError,
             true,
             &reservation);
-#endif
     }
 
     bool adopt_failed_frame_allocation_record(
@@ -6722,17 +5988,7 @@ namespace JuicerCuda {
         }
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     static bool ensure_shared_tmp_plane_locked(Resources& resources, int width, int height, void* cudaStreamOpaque, const char* label, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)width;
-        (void)height;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         if (width <= 0 || height <= 0) {
             outError = std::string(label ? label : "shared tmp") + " dimensions invalid";
             return false;
@@ -6773,22 +6029,13 @@ namespace JuicerCuda {
         resources.sharedTmpHeight = height;
         resources.sharedTmpCapacityElements = requiredElements;
         return true;
-#endif
     }
-#endif
 
     bool ensure_optics_scratch(
         Resources& resources,
         const ResourceManager::ScratchRequestDescriptor& request,
         void* cudaStreamOpaque,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)request;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         const int width = request.requestedWidth;
         const int height = request.requestedHeight;
         const bool needBlurredScratch = request.needBlurred;
@@ -7068,7 +6315,6 @@ namespace JuicerCuda {
         }
 
         return true;
-#endif
     }
 
     bool ensure_spatial_dir_scratch(
@@ -7076,13 +6322,6 @@ namespace JuicerCuda {
         const ResourceManager::ScratchRequestDescriptor& request,
         void* cudaStreamOpaque,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)request;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         const int width = request.requestedWidth;
         const int height = request.requestedHeight;
         const Spektrafilm::DirScratchTier scratchTier = request.spatialDirScratchTier;
@@ -7341,68 +6580,16 @@ namespace JuicerCuda {
         scratch.height = height;
         scratch.capacityElements = requiredElements;
         return true;
-#endif
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    static bool retire_or_clear_gaussian_kernel_locked(
+    static bool ensure_cached_gaussian_kernel(
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
-        void* cudaStreamOpaque,
+        int radius,
+        float sigma,
         const char* label,
         std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)kernel;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        if (kernel.weights) {
-            if (kernel.sharedKernelId == 0) {
-                const std::size_t bytes =
-                    static_cast<std::size_t>(std::max(0, kernel.capacity)) * sizeof(float);
-                if (!retire_ptr_locked(
-                        resources,
-                        kernel.weights,
-                        bytes,
-                        Resources::RetireKind::DeviceFree,
-                        cudaStreamOpaque,
-                        label,
-                        outError)) {
-                    return false;
-                }
-            }
-            kernel.weights = nullptr;
-        }
-        kernel.radius = 0;
-        kernel.sigma = 0.0f;
-        kernel.capacity = 0;
-        kernel.sharedKernelId = 0;
-        return true;
-#endif
-    }
-#endif
-
-    static bool ensure_shared_gaussian_kernel(
-        Resources& resources,
-        Resources::DeviceGaussianKernel& kernel,
-        SharedGaussianSpec spec,
-        void* cudaStreamOpaque,
-        const char* label,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)kernel;
-        (void)spec;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        const float sigma = spec.sigma;
-        const int radius = spec.radius;
+        outError.clear();
         const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
         if (!sigmaOk || radius <= 0) {
             std::lock_guard<std::mutex> lock(resources.m);
@@ -7410,31 +6597,27 @@ namespace JuicerCuda {
             if (!validate_resource_owner_locked(resources, outError, true)) {
                 return false;
             }
-            return retire_or_clear_gaussian_kernel_locked(
-                resources,
-                kernel,
-                cudaStreamOpaque,
-                label,
-                outError);
+            clear_gaussian_kernel(kernel);
+            return true;
         }
 
-        SharedGaussianKey key{};
-        std::uint64_t kernelId = 0;
+        std::uint32_t sigmaBits = 0;
+        std::memcpy(&sigmaBits, &sigma, sizeof(sigmaBits));
+        const std::uint64_t key =
+            (static_cast<std::uint64_t>(static_cast<std::uint32_t>(radius)) << 32u) |
+            static_cast<std::uint64_t>(sigmaBits);
         {
             std::lock_guard<std::mutex> lock(resources.m);
             reap_retire_queue_locked(resources);
             if (!validate_resource_owner_locked(resources, outError, true)) {
                 return false;
             }
-            key = make_shared_gaussian_key(resources, spec);
-            kernelId = make_shared_gaussian_id(key);
-            const bool same =
-                kernel.weights &&
-                kernel.sharedKernelId == kernelId &&
-                kernel.radius == radius &&
-                std::fabs(kernel.sigma - sigma) <= 1e-6f &&
-                shared_gaussian_entry_matches_cache(key, kernel);
-            if (same) {
+            const auto cached = resources.gaussianKernelCache.find(key);
+            if (cached != resources.gaussianKernelCache.end()) {
+                kernel = Resources::DeviceGaussianKernel{
+                    cached->second,
+                    radius,
+                    sigma};
                 return true;
             }
         }
@@ -7446,67 +6629,65 @@ namespace JuicerCuda {
             return false;
         }
 
-        SharedGaussianView sharedEntry{};
-        if (!acquire_shared_gaussian_entry(
+        const std::size_t bytes = cpuWeights.size() * sizeof(float);
+        void* candidateRaw = nullptr;
+        if (!allocate_owned_device(
                 resources,
-                key,
-                spec,
-                cpuWeights,
-                sharedEntry,
+                &candidateRaw,
+                bytes,
+                label ? label : "gaussian kernel",
                 outError)) {
             return false;
         }
-
-        std::lock_guard<std::mutex> lock(resources.m);
-        reap_retire_queue_locked(resources);
-        if (!validate_resource_owner_locked(resources, outError, true)) {
+        auto* candidateWeights = static_cast<float*>(candidateRaw);
+        const cudaError_t copyError = cudaMemcpy(
+            candidateWeights,
+            cpuWeights.data(),
+            bytes,
+            cudaMemcpyHostToDevice);
+        if (copyError != cudaSuccess) {
+            outError = std::string("cudaMemcpy(") +
+                       (label ? label : "gaussian kernel") + ") failed: " +
+                       (cudaGetErrorString(copyError)
+                            ? cudaGetErrorString(copyError)
+                            : "(unknown)");
+            free_owned_device_noexcept(resources, candidateWeights);
             return false;
         }
 
-        key = make_shared_gaussian_key(resources, spec);
-        kernelId = make_shared_gaussian_id(key);
-        if (kernelId != sharedEntry.id) {
-            if (!acquire_shared_gaussian_entry(
-                    resources,
-                    key,
-                    spec,
-                    cpuWeights,
-                    sharedEntry,
-                    outError)) {
-                return false;
+        bool cacheOwnsCandidate = false;
+        bool success = false;
+        {
+            std::lock_guard<std::mutex> lock(resources.m);
+            reap_retire_queue_locked(resources);
+            if (validate_resource_owner_locked(resources, outError, true)) {
+                try {
+                    const auto inserted = resources.gaussianKernelCache.emplace(
+                        key,
+                        candidateWeights);
+                    cacheOwnsCandidate = inserted.second;
+                    kernel = Resources::DeviceGaussianKernel{
+                        inserted.first->second,
+                        radius,
+                        sigma};
+                    success = true;
+                } catch (...) {
+                    JuicerLogging::discard_current_exception();
+                    outError = "Gaussian cache bookkeeping failed";
+                }
             }
-            kernelId = sharedEntry.id;
         }
-
-        const bool same =
-            kernel.weights &&
-            kernel.sharedKernelId == kernelId &&
-            kernel.radius == radius &&
-            std::fabs(kernel.sigma - sigma) <= 1e-6f &&
-            shared_gaussian_entry_matches_cache(key, kernel);
-        if (same) {
-            return true;
+        if (!cacheOwnsCandidate) {
+            free_owned_device_noexcept(resources, candidateWeights);
         }
-
-        if (!retire_or_clear_gaussian_kernel_locked(
-                resources,
-                kernel,
-                cudaStreamOpaque,
-                label,
-                outError)) {
-            return false;
-        }
-
-        kernel.weights = sharedEntry.weights;
-        kernel.radius = sharedEntry.radius;
-        kernel.sigma = sharedEntry.sigma;
-        kernel.capacity = 0;
-        kernel.sharedKernelId = sharedEntry.id;
-        return true;
-#endif
+        return success;
     }
 
-    bool ensure_spatial_dir_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError) {
+    bool ensure_spatial_dir_kernel(
+        Resources& resources,
+        Resources::DeviceGaussianKernel& kernel,
+        float sigma,
+        std::string& outError) {
         constexpr int kMaxRadius = 2048;
         const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
         const int radiusRaw = sigmaOk
@@ -7516,175 +6697,32 @@ namespace JuicerCuda {
             outError = "spatial DIR kernel radius exceeds prepared-frame limit";
             return false;
         }
-        const int radius = radiusRaw;
-        SharedGaussianSpec spec{};
-        spec.kind = SharedGaussianKind::SpatialDir;
-        spec.radius = radius;
-        spec.sigma = sigma;
-        return ensure_shared_gaussian_kernel(
+        return ensure_cached_gaussian_kernel(
             resources,
             kernel,
-            spec,
-            cudaStreamOpaque,
+            radiusRaw,
+            sigma,
             "spatial DIR kernel",
             outError);
     }
 
-    bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError) {
+    bool ensure_gaussian_kernel(
+        Resources& resources,
+        Resources::DeviceGaussianKernel& kernel,
+        float sigma,
+        std::string& outError) {
         constexpr int kMaxRadius = 75;
         const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
         const int radiusRaw = sigmaOk
                                   ? JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f)
                                   : 0;
         const int radius = std::min(radiusRaw, kMaxRadius);
-        SharedGaussianSpec spec{};
-        spec.kind = SharedGaussianKind::Standard;
-        spec.radius = radius;
-        spec.sigma = sigma;
-        return ensure_shared_gaussian_kernel(
+        return ensure_cached_gaussian_kernel(
             resources,
             kernel,
-            spec,
-            cudaStreamOpaque,
+            radius,
+            sigma,
             "gaussian kernel",
             outError);
-    }
-
-    bool purge_shared_gaussian_kernels_for_context(
-        int deviceId,
-        void* contextOpaque,
-        std::uint64_t contextEpoch,
-        std::string& outError) noexcept {
-        outError.clear();
-        try {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-            if (deviceId < 0 || contextOpaque == nullptr || contextEpoch == 0) {
-                outError = "invalid shared Gaussian purge identity";
-                return false;
-            }
-            int currentDevice = -1;
-            void* currentContext = nullptr;
-            std::string contextError;
-            if (cudaGetDevice(&currentDevice) != cudaSuccess ||
-                currentDevice != deviceId ||
-                !query_current_cuda_context(currentContext, contextError) ||
-                currentContext != contextOpaque) {
-                outError = contextError.empty()
-                               ? "shared Gaussian purge requires owning CUDA context"
-                               : contextError;
-                return false;
-            }
-
-            auto release_entry = [](SharedGaussianEntry& entry) {
-                std::string releaseError;
-                if (entry.deviceReservation.state() ==
-                        DeviceReservationState::Committed &&
-                    !entry.deviceReservation.mark_retiring(releaseError)) {
-                    return false;
-                }
-                if (entry.weights) {
-                    if (cudaFree(entry.weights) != cudaSuccess) {
-                        return false;
-                    }
-                    entry.weights = nullptr;
-                }
-                return !entry.deviceReservation.active() ||
-                       entry.deviceReservation.release_after_physical_free(
-                           true,
-                           releaseError);
-            };
-
-            bool allReleased = true;
-            SharedGaussianCacheState& cache = shared_gaussian_cache_state();
-            std::lock_guard<std::mutex> lock(cache.mutex);
-            for (auto it = cache.byKey.begin(); it != cache.byKey.end();) {
-                if (it->first.deviceId != deviceId ||
-                    it->first.contextOpaque != contextOpaque ||
-                    it->first.contextEpoch != contextEpoch) {
-                    ++it;
-                    continue;
-                }
-                if (release_entry(it->second)) {
-                    it = cache.byKey.erase(it);
-                } else {
-                    allReleased = false;
-                    ++it;
-                }
-            }
-            for (std::size_t index = 0; index < cache.quarantine.size();) {
-                SharedGaussianEntry& entry = cache.quarantine[index];
-                if (entry.key.deviceId != deviceId ||
-                    entry.key.contextOpaque != contextOpaque ||
-                    entry.key.contextEpoch != contextEpoch) {
-                    ++index;
-                    continue;
-                }
-                if (release_entry(entry)) {
-                    cache.quarantine[index] =
-                        std::move(cache.quarantine.back());
-                    cache.quarantine.pop_back();
-                } else {
-                    allReleased = false;
-                    ++index;
-                }
-            }
-            if (!allReleased) {
-                outError = "shared Gaussian purge retained failed CUDA frees";
-            }
-            return allReleased;
-#else
-            (void)deviceId;
-            (void)contextOpaque;
-            (void)contextEpoch;
-            return true;
-#endif
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-            try {
-                outError = "shared Gaussian purge failed";
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-            }
-            return false;
-        }
-    }
-
-    void invalidate_shared_gaussian_kernels_after_proven_context_loss(
-        int deviceId,
-        void* contextOpaque,
-        std::uint64_t contextEpoch) noexcept {
-        try {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-            SharedGaussianCacheState& cache = shared_gaussian_cache_state();
-            std::lock_guard<std::mutex> lock(cache.mutex);
-            for (auto it = cache.byKey.begin(); it != cache.byKey.end();) {
-                if (it->first.deviceId == deviceId &&
-                    it->first.contextOpaque == contextOpaque &&
-                    it->first.contextEpoch == contextEpoch) {
-                    it = cache.byKey.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-            for (std::size_t index = 0; index < cache.quarantine.size();) {
-                const SharedGaussianKey& key = cache.quarantine[index].key;
-                if (key.deviceId == deviceId &&
-                    key.contextOpaque == contextOpaque &&
-                    key.contextEpoch == contextEpoch) {
-                    cache.quarantine[index] =
-                        std::move(cache.quarantine.back());
-                    cache.quarantine.pop_back();
-                } else {
-                    ++index;
-                }
-            }
-#else
-            (void)deviceId;
-            (void)contextOpaque;
-            (void)contextEpoch;
-#endif
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-        }
     }
 } // namespace JuicerCuda

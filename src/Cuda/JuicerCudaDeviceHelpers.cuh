@@ -452,20 +452,6 @@ static __device__ __forceinline__ float sample_hanatos_integrated_cubic_device(
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
-static __device__ __forceinline__ int reflect_index_repeat_device(int idx, int size) {
-    if (size <= 1) {
-        return 0;
-    }
-    while (idx < 0 || idx >= size) {
-        if (idx < 0) {
-            idx = -idx;
-        } else {
-            idx = 2 * size - idx - 2;
-        }
-    }
-    return idx;
-}
-
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 static __device__ __forceinline__ float scan_lut_fetch_float_cmy_device(
     const float* JUICER_RESTRICT lut,

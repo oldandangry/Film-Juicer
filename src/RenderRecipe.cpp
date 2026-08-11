@@ -1823,9 +1823,7 @@ namespace Spektrafilm {
                 "MissingRequiredResource phase=4A field=selected_profile";
             return result;
         }
-        if (input.printProfile->digest.profileRole !=
-                Profiles::ProfileRole::Print ||
-            input.printProfile->info.stage != ProfileStage::Printing) {
+        if (input.printProfile->info.stage != ProfileStage::Printing) {
             result.diagnostic =
                 "UnsupportedMode phase=4A selected profile route mismatch";
             return result;
