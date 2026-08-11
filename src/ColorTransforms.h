@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+
 #include "SpectralData.h"
 
 // Forward declarations
@@ -17,10 +18,6 @@ namespace Spectral {
     inline void rgbDWG_to_layerExposures_from_tables_with_curves(
         const float rgbDWG[3], float E[3], float exposureScale, const SpectralTables* tables, const float* S_inv, const Curve& sB, const Curve& sG, const Curve& sR, SpectralUpsamplingMode spectralUpsamplingMode, const float refIllumWhiteXYZ[3]);
 
-#if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
-    bool spd_probe_begin_capture(const float rgbIn[3], const float rgbDWG[3], bool spdEnabled);
-    void spd_probe_finalize(float midgrayScale, const float E_afterMidgray[3]);
-#endif
 } // namespace Spectral
 
 namespace Spectral {
@@ -44,11 +41,6 @@ namespace Spectral {
         "sRGB / Rec.709"};
 
     inline constexpr std::size_t kInputColorSpaceCount = static_cast<std::size_t>(InputColorSpace::Count);
-
-    constexpr const char* inputColorSpaceLabel(InputColorSpace cs) {
-        const std::size_t idx = static_cast<std::size_t>(cs);
-        return idx < kInputColorSpaceCount ? kInputColorSpaceLabels[idx] : "DaVinci Wide Gamut";
-    }
 
     constexpr int inputColorSpaceToIndex(InputColorSpace cs) {
         return static_cast<int>(cs);
@@ -132,13 +124,6 @@ namespace Spectral {
         dst[0] = v0;
         dst[1] = v1;
         dst[2] = v2;
-    }
-
-    inline void scale_triplet_nonnegative_inplace(float values[3], float scale) {
-        float* valueIt = values;
-        for (int i = 0; i < 3; ++i, ++valueIt) {
-            *valueIt = std::max(0.0f, *valueIt * scale);
-        }
     }
 
     inline void clamp_triplet_nonnegative_inplace(float values[3]) {
@@ -276,11 +261,6 @@ namespace Spectral {
     inline float sanitize_raw_midgray_green_or_one(float value) {
         const float sanitized = sanitize_channel(value);
         return (sanitized > 1e-9f) ? sanitized : 1.0f;
-    }
-
-    inline float sanitize_exposure_scale_or_one(float value) {
-        const float sanitized = sanitize_channel(value);
-        return (sanitized > 0.0f) ? sanitized : 1.0f;
     }
 
     inline bool is_positive_finite(float v) {
@@ -738,94 +718,6 @@ namespace Spectral {
         if (!is_positive_finite(cfg.midgrayScale)) {
             cfg.midgrayScale = 1.0f;
         }
-    }
-
-    inline void rgb_input_to_film_raw(
-        const float rgbIn[3],
-        float E[3],
-        float exposureScale,
-        const FilmRawConfig& cfg,
-        const SpectralTables* tablesSPD,
-        const float* S_inv,
-        bool useSPD,
-        const Curve& sB,
-        const Curve& sG,
-        const Curve& sR) {
-        const SpectralReconstructionPath path = select_spectral_reconstruction_path(
-            cfg,
-            tablesSPD,
-            S_inv,
-            useSPD,
-            sB,
-            sG,
-            sR);
-        float rgbDWG[3];
-        float xyzWorking[3];
-        convert_input_rgb_to_DWG(cfg, rgbIn, rgbDWG, xyzWorking, !path.useHanatos);
-
-#if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
-        spd_probe_begin_capture(rgbIn, rgbDWG, path.spdReady);
-#endif
-
-#if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
-        float normScale = cfg.midgrayScale;
-#endif
-        if (path.spdReady) {
-            ReconstructionRgbInputs rgbInputs{};
-            rgbInputs.input = rgbIn;
-            rgbInputs.davinciWideGamut = rgbDWG;
-            compute_layer_exposures_from_reconstruction_path(
-                cfg,
-                rgbInputs,
-                tablesSPD,
-                S_inv,
-                sB,
-                sG,
-                sR,
-                path,
-                E);
-            scale_triplet_nonnegative_inplace(E, cfg.midgrayScale);
-        } else {
-            std::fill_n(E, 3, 0.0f);
-        }
-
-#if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
-        spd_probe_finalize(normScale, E);
-#endif
-
-        const float sExp = sanitize_exposure_scale_or_one(exposureScale);
-        if (sExp != 1.0f) {
-            scale_triplet_nonnegative_inplace(E, sExp);
-        }
-    }
-
-    // ============================================================================
-    // DWG � XYZ Transforms
-    // ============================================================================
-
-    inline void XYZ_to_DWG_linear_adapted(
-        const SpectralTables& tables,
-        const float XYZ[3],
-        float RGB[3]) {
-        float srcWhite[3];
-        sanitize_white_or_dwg(tables.whiteXYZ, srcWhite);
-
-        float adaptedXYZ[3];
-        ChromaticAdaptationWhites whites{};
-        whites.source = srcWhite;
-        whites.destination = gDWG_WhitePoint_XYZ;
-        chromatic_adapt_XYZ_CAT02(XYZ, whites, adaptedXYZ);
-        gDWG_XYZ_to_RGB.mul(adaptedXYZ, RGB);
-    }
-
-    inline float neutral_blend_weight_from_DWG_rgb(const float rgbDWG[3]) {
-        // Y = row 2 of DWG_RGB_to_XYZ dot rgb
-        const float Y = std::max(0.0f,
-                                 gDWG_RGB_to_XYZ.m[3] * rgbDWG[0] +
-                                     gDWG_RGB_to_XYZ.m[4] * rgbDWG[1] +
-                                     gDWG_RGB_to_XYZ.m[5] * rgbDWG[2]);
-        const float w = Y / 0.18f;
-        return std::clamp(w, 0.0f, 1.0f);
     }
 
 } // namespace Spectral

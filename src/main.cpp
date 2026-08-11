@@ -41,9 +41,7 @@
 #include "SpectralProcessing.h"
 #include "ColorTransforms.h"
 #include "ParamNames.h"
-#include "Print.h"
 #include "ProcessRoot.h"
-#include "ProfileJSONLoader.h"
 
 // === Resolve support library factory (Step 1) ===
 // The factory owns the plugin identity and wires descriptor/instance creation.
@@ -89,12 +87,12 @@ void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc) {
     desc.setHostFrameThreading(false);
     desc.setSupportsMultiResolution(true);
     desc.setSupportsTiles(false);
-    desc.setRenderThreadSafety(OFX::eRenderFullySafe);
+    // One mutable CUDA scratch workspace is retained per context. Serialize
+    // render actions across instances so that workspace has one exact owner.
+    desc.setRenderThreadSafety(OFX::eRenderUnsafe);
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     desc.setSupportsCudaRender(true);
     desc.setSupportsCudaStream(true);
-#endif
 }
 
 void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context) {
@@ -554,121 +552,16 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         if (grpHalation) {
             grpHalation->setLabel("Halation");
             grpHalation->setOpen(false);
-            grpHalation->setIsSecret(true);
         }
         {
-            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kHalationActive);
+            OFX::BooleanParamDescriptor* p =
+                desc.defineBooleanParam(JuicerParams::kHalationActive);
             p->setLabel("Add halation");
             p->setDefault(false);
-            p->setHint("Add halation to the negative raw exposure.");
-            if (grpHalation)
+            p->setHint("Add profile-derived scatter and halation to the negative raw exposure.");
+            if (grpHalation) {
                 p->setParent(*grpHalation);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationSecondaryAmountMaster);
-            p->setLabel("Secondary amount (M)");
-            p->setHint("Master control for the secondary halation amount; adjusts RGB values together.");
-            p->setDefault((1.0 + 2.0 + 4.0) / 3.0);
-            p->setRange(0.0, 100.0);
-            p->setDisplayRange(0.0, 25.0);
-            if (grpHalation)
-                p->setParent(*grpHalation);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationSecondarySizeUmMaster);
-            p->setLabel("Secondary size (M)");
-            p->setHint("Master control for the secondary halation size; adjusts RGB values together.");
-            p->setDefault((30.0 + 20.0 + 15.0) / 3.0);
-            p->setRange(0.0, 1000.0);
-            p->setDisplayRange(0.0, 500.0);
-            if (grpHalation)
-                p->setParent(*grpHalation);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationStrengthMaster);
-            p->setLabel("Halation strength (M)");
-            p->setHint("Master control for halation strength; adjusts RGB values together.");
-            p->setDefault((3.0 + 0.30 + 0.10) / 3.0);
-            p->setRange(0.0, 100.0);
-            p->setDisplayRange(0.0, 25.0);
-            if (grpHalation)
-                p->setParent(*grpHalation);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationSizeUmMaster);
-            p->setLabel("Halation size (M)");
-            p->setHint("Master control for halation size; adjusts RGB values together.");
-            p->setDefault(200.0);
-            p->setRange(0.0, 1000.0);
-            p->setDisplayRange(0.0, 1000.0);
-            if (grpHalation)
-                p->setParent(*grpHalation);
-            p->setEvaluateOnChange(true);
-        }
-        OFX::GroupParamDescriptor* grpHalationAdvanced = desc.defineGroupParam("HalationAdvancedGroup");
-        if (grpHalationAdvanced) {
-            grpHalationAdvanced->setLabel("Advanced");
-            grpHalationAdvanced->setOpen(false);
-            if (grpHalation)
-                grpHalationAdvanced->setParent(*grpHalation);
-        }
-        {
-            OFX::PushButtonParamDescriptor* p = desc.definePushButtonParam(JuicerParams::kHalationRevertToStock);
-            p->setLabel("Revert to stock defaults");
-            p->setHint("Reset halation parameters to the current film stock defaults.");
-            if (grpHalationAdvanced)
-                p->setParent(*grpHalationAdvanced);
-        }
-        {
-            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationSecondaryAmount);
-            p->setLabel("Secondary amount (%)");
-            p->setHint("Secondary halation amount (0-100, percentage) per channel.");
-            p->setDefault(1.0, 2.0, 4.0);
-            p->setRange(0.0, 0.0, 0.0, 100.0, 100.0, 100.0);
-            p->setDisplayRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
-            p->setDimensionLabels("R", "G", "B");
-            if (grpHalationAdvanced)
-                p->setParent(*grpHalationAdvanced);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationSecondarySizeUm);
-            p->setLabel("Secondary size (\xC2\xB5m)");
-            p->setHint("Sigma of the secondary halation blur in micrometers per channel.");
-            p->setDefault(30.0, 20.0, 15.0);
-            p->setRange(0.0, 0.0, 0.0, 1000.0, 1000.0, 1000.0);
-            p->setDisplayRange(0.0, 0.0, 0.0, 300.0, 300.0, 300.0);
-            p->setDimensionLabels("R", "G", "B");
-            if (grpHalationAdvanced)
-                p->setParent(*grpHalationAdvanced);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationStrength);
-            p->setLabel("Halation strength (%)");
-            p->setHint("Fraction of halation light (0-100, percentage) per channel.");
-            p->setDefault(3.0, 0.30, 0.10);
-            p->setRange(0.0, 0.0, 0.0, 100.0, 100.0, 100.0);
-            p->setDisplayRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
-            p->setDimensionLabels("R", "G", "B");
-            if (grpHalationAdvanced)
-                p->setParent(*grpHalationAdvanced);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationSizeUm);
-            p->setLabel("Halation size (\xC2\xB5m)");
-            p->setHint("Sigma of the halation blur in micrometers per channel.");
-            p->setDefault(200.0, 200.0, 200.0);
-            p->setRange(0.0, 0.0, 0.0, 1000.0, 1000.0, 1000.0);
-            p->setDisplayRange(0.0, 0.0, 0.0, 400.0, 400.0, 400.0);
-            p->setDimensionLabels("R", "G", "B");
-            if (grpHalationAdvanced)
-                p->setParent(*grpHalationAdvanced);
+            }
             p->setEvaluateOnChange(true);
         }
     }
@@ -1463,7 +1356,7 @@ OFX::ImageEffect* JuicerPluginFactory::createInstance(OfxImageEffectHandle handl
 }
 
 // Resolve support library entry: register our factory.
-void OFX::Plugin::getPluginIDs(OFX::PluginFactoryArray& arr) {
+void OFX::Plugin::getPluginIDs(OFX::PluginFactoryArray& id) {
     static JuicerPluginFactory factory;
-    arr.push_back(&factory);
+    id.push_back(&factory);
 }

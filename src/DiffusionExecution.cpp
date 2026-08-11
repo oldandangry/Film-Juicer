@@ -1,4 +1,4 @@
-#include "DiffusionExecutionProfile.h"
+#include "DiffusionExecution.h"
 
 #include <algorithm>
 #include <array>
@@ -13,72 +13,44 @@ namespace {
 
     constexpr std::uint64_t kFnvOffset = 0xcbf29ce484222325ULL;
     constexpr std::uint64_t kFnvPrime = 0x100000001b3ULL;
-    constexpr std::string_view kAcceptedProfileKeyDigestHex =
-        "63335b9008e3974c4206513750615f6cfa1515717a92e7c82ee15d8628c1b400";
-    constexpr std::string_view kAcceptedProfileDigestHex =
-        "fcdf3e9919114df8f48b06611939ec72dfd810309e393a1f5f1de6d27e4f7d31";
 
-    consteval std::uint8_t hex_nibble(char value) {
-        if (value >= '0' && value <= '9') {
-            return static_cast<std::uint8_t>(value - '0');
-        }
-        if (value >= 'a' && value <= 'f') {
-            return static_cast<std::uint8_t>(value - 'a' + 10);
-        }
-        return 0xffu;
-    }
+    struct ExecutionCandidate {
+        Spektrafilm::CandidateExtent extent;
+        std::uint64_t reservedSharedWorkBytes = 0;
+        std::uint64_t planAllowanceBytes = 0;
+        std::uint64_t pairMedianNanoseconds = 0;
+        std::uint64_t twoFrameBytes = 0;
+    };
 
-    consteval std::array<std::uint8_t, 32> decode_digest(std::string_view text) {
-        std::array<std::uint8_t, 32> digest{};
-        if (text.size() != digest.size() * 2) {
-            return {};
-        }
-        for (std::size_t index = 0; index < digest.size(); ++index) {
-            const std::uint8_t high = hex_nibble(text[index * 2]);
-            const std::uint8_t low = hex_nibble(text[index * 2 + 1]);
-            if (high > 0x0fu || low > 0x0fu) {
-                return {};
-            }
-            digest[index] = static_cast<std::uint8_t>((high << 4u) | low);
-        }
-        return digest;
-    }
+    struct CandidateSelection {
+        std::size_t candidateIndex = 0;
+        std::array<Spektrafilm::DiffusionStageTileGeometry, 2> stages{};
+        std::array<const Spektrafilm::DiffusionStageFrameDescriptor*, 2>
+            sourceStages{};
+        std::size_t stageCount = 0;
+        std::uint64_t stagePlaneBytes = 0;
+    };
 
-    constexpr std::array<Spektrafilm::DiffusionExecutionCandidate, 10>
-        kAcceptedCandidates{{{{1024, 1024}, 4202496, 0, 0, 0, 77594624, 32432, 673243136, 8021745664},
-                             {{2048, 2048}, 16793600, 0, 0, 0, 69206016, 114080, 752992256, 8219017216},
-                             {{3072, 3072}, 37773312, 0, 0, 0, 69206016, 396288, 899850240, 8575672320},
-                             {{4096, 4096}, 67141632, 67141632, 67141632, 67141632, 69206016, 1088512, 1172570112, 9209217024},
-                             {{4608, 4608}, 84971520, 84971520, 84971520, 84971520, 69206016, 2892800, 1315209216, 9547984896},
-                             {{5120, 5120}, 104898560, 104898560, 104898560, 104898560, 69206016, 3808768, 1474625536, 9926598656},
-                             {{6144, 6144}, 151044096, 151044096, 151044096, 151044096, 69206016, 6086144, 1843789824, 10803363840},
-                             {{8192, 6144}, 201375744, 201375744, 201375744, 201375744, 69206016, 5111808, 2246443008, 11797561344},
-                             {{6144, 8192}, 201392128, 201392128, 201392128, 201392128, 69206016, 7418880, 2246574080, 11797921792},
-                             {{8192, 8192}, 268500992, 268500992, 268500992, 268500992, 69206016, 5972480, 2783444992, 13274316800}}};
+    struct ValidatedFrameSet {
+        std::array<const Spektrafilm::DiffusionStageFrameDescriptor*, 2> stages{};
+        std::size_t stageCount = 0;
+        std::uint64_t stagePlaneBytes = 0;
+    };
 
-    constexpr Spektrafilm::SupportedDiffusionExecutionProfile kAcceptedProfile{
-        {13020,
-         13020,
-         13020,
-         12300,
-         8,
-         9,
-         Spektrafilm::kDiffusionPrecisionSchemaVersion,
-         Spektrafilm::kDiffusionPlanLayoutSchemaVersion,
-         Spektrafilm::kDiffusionCandidateTableVersion,
-         Spektrafilm::kDiffusionSelectionPolicyVersion},
-        decode_digest(kAcceptedProfileKeyDigestHex),
-        decode_digest(kAcceptedProfileDigestHex),
-        16902520832ULL,
-        kAcceptedCandidates};
+    constexpr std::array<ExecutionCandidate, 10>
+        kCandidates{{{{1024, 1024}, 0, 77594624, 32432, 8021745664},
+                     {{2048, 2048}, 0, 69206016, 114080, 8219017216},
+                     {{3072, 3072}, 0, 69206016, 396288, 8575672320},
+                     {{4096, 4096}, 67141632, 69206016, 1088512, 9209217024},
+                     {{4608, 4608}, 84971520, 69206016, 2892800, 9547984896},
+                     {{5120, 5120}, 104898560, 69206016, 3808768, 9926598656},
+                     {{6144, 6144}, 151044096, 69206016, 6086144, 10803363840},
+                     {{8192, 6144}, 201375744, 69206016, 5111808, 11797561344},
+                     {{6144, 8192}, 201392128, 69206016, 7418880, 11797921792},
+                     {{8192, 8192}, 268500992, 69206016, 5972480, 13274316800}}};
 
     void fail(std::string& diagnostic, std::string_view field) {
         diagnostic = "InvalidDiffusionExecutionDescriptor field=";
-        diagnostic.append(field);
-    }
-
-    void profile_mismatch(std::string& diagnostic, std::string_view field) {
-        diagnostic = "UnsupportedCudaExecutionProfile field=";
         diagnostic.append(field);
     }
 
@@ -139,29 +111,11 @@ namespace {
         hash_u64_le(hash, std::bit_cast<std::uint64_t>(value));
     }
 
-    template <std::size_t Size>
-    void hash_bytes(
-        std::uint64_t& hash,
-        const std::array<std::uint8_t, Size>& values) noexcept {
-        for (const std::uint8_t value : values) {
-            hash_byte(hash, value);
-        }
-    }
-
     void hash_extent(
         std::uint64_t& hash,
         const Spektrafilm::CandidateExtent& extent) noexcept {
         hash_u32_le(hash, static_cast<std::uint32_t>(extent.width));
         hash_u32_le(hash, static_cast<std::uint32_t>(extent.height));
-    }
-
-    void hash_domain(
-        std::uint64_t& hash,
-        const Spektrafilm::DiffusionFrameDomain& domain) noexcept {
-        hash_u32_le(hash, static_cast<std::uint32_t>(domain.originX));
-        hash_u32_le(hash, static_cast<std::uint32_t>(domain.originY));
-        hash_u32_le(hash, static_cast<std::uint32_t>(domain.width));
-        hash_u32_le(hash, static_cast<std::uint32_t>(domain.height));
     }
 
     void hash_layout(
@@ -191,22 +145,13 @@ namespace {
 
     bool validate_stage(
         const Spektrafilm::DiffusionStageFrameDescriptor& stage,
-        const Spektrafilm::DiffusionFrameSetDescriptor& frameSet,
         Spektrafilm::DiffusionLinearStage expectedStage,
         std::string& diagnostic) {
-        if (stage.route != frameSet.route) {
-            fail(diagnostic, "stage_route");
-            return false;
-        }
         if (stage.stage != expectedStage) {
             fail(diagnostic, "stage_order");
             return false;
         }
-        if (stage.fullFrame != frameSet.fullFrame) {
-            fail(diagnostic, "stage_full_frame");
-            return false;
-        }
-        if (stage.recipeComponentHash == 0 || stage.hash == 0) {
+        if (stage.hash == 0) {
             fail(diagnostic, "stage_hash");
             return false;
         }
@@ -215,12 +160,12 @@ namespace {
             fail(diagnostic, "stage_scatter_fraction");
             return false;
         }
-        if (!std::isfinite(stage.pixelSizeUm) || stage.pixelSizeUm <= 0.0) {
+        if (!std::isfinite(stage.sample.pixelSizeUm) ||
+            stage.sample.pixelSizeUm <= 0.0) {
             fail(diagnostic, "stage_pixel_size_um");
             return false;
         }
-        if (stage.radiusPixels <= 0 ||
-            stage.sample.radiusPixels != stage.radiusPixels || stage.sample.hash == 0) {
+        if (stage.sample.radiusPixels <= 0 || stage.sample.hash == 0) {
             fail(diagnostic, "stage_sample");
             return false;
         }
@@ -229,11 +174,9 @@ namespace {
 
     bool validate_frame_set(
         const Spektrafilm::DiffusionFrameSetDescriptor& frameSet,
-        std::array<const Spektrafilm::DiffusionStageFrameDescriptor*, 2>& stages,
-        std::size_t& stageCount,
+        ValidatedFrameSet& out,
         std::string& diagnostic) {
-        stages = {};
-        stageCount = 0;
+        out = {};
         if (!valid_route(frameSet.route)) {
             fail(diagnostic, "frame_route");
             return false;
@@ -246,15 +189,6 @@ namespace {
             fail(diagnostic, "frame_set_hash");
             return false;
         }
-        if (frameSet.candidatePolicyVersion !=
-            Spektrafilm::kDiffusionCandidatePolicyVersion) {
-            fail(diagnostic, "candidate_policy_version");
-            return false;
-        }
-        if (frameSet.planeRoles != Spektrafilm::kDiffusionSemanticPlaneRoles) {
-            fail(diagnostic, "semantic_plane_roles");
-            return false;
-        }
         if (!frameSet.camera && !frameSet.enlarger) {
             fail(diagnostic, "active_stage_count");
             return false;
@@ -264,42 +198,34 @@ namespace {
             return false;
         }
 
-        int maximumRadius = 0;
         if (frameSet.camera) {
             if (!validate_stage(
                     *frameSet.camera,
-                    frameSet,
                     Spektrafilm::DiffusionLinearStage::CameraFilmLinear,
                     diagnostic)) {
                 return false;
             }
-            stages[stageCount++] = &*frameSet.camera;
-            maximumRadius = frameSet.camera->radiusPixels;
+            out.stages[out.stageCount++] = &*frameSet.camera;
         }
         if (frameSet.enlarger) {
             if (!validate_stage(
                     *frameSet.enlarger,
-                    frameSet,
                     Spektrafilm::DiffusionLinearStage::EnlargerPrintLinear,
                     diagnostic)) {
                 return false;
             }
-            stages[stageCount++] = &*frameSet.enlarger;
-            maximumRadius = std::max(maximumRadius, frameSet.enlarger->radiusPixels);
-        }
-        if (maximumRadius != frameSet.maximumRadiusPixels) {
-            fail(diagnostic, "maximum_radius_pixels");
-            return false;
+            out.stages[out.stageCount++] = &*frameSet.enlarger;
         }
 
-        std::uint64_t expectedWorkspace = 0;
         if (!checked_multiply(
                 static_cast<std::uint64_t>(frameSet.fullFrame.width),
                 static_cast<std::uint64_t>(frameSet.fullFrame.height),
-                expectedWorkspace) ||
-            !checked_multiply(expectedWorkspace, 4, expectedWorkspace) ||
-            !checked_multiply(expectedWorkspace, sizeof(float), expectedWorkspace) ||
-            expectedWorkspace != frameSet.workspaceBytes) {
+                out.stagePlaneBytes) ||
+            !checked_multiply(out.stagePlaneBytes, 4, out.stagePlaneBytes) ||
+            !checked_multiply(
+                out.stagePlaneBytes,
+                sizeof(float),
+                out.stagePlaneBytes)) {
             fail(diagnostic, "stage_plane_bytes");
             return false;
         }
@@ -307,25 +233,18 @@ namespace {
     }
 
     bool validate_candidate(
-        const Spektrafilm::DiffusionExecutionCandidate& candidate,
+        const ExecutionCandidate& candidate,
         Spektrafilm::PlanLayout& layout,
         std::string& diagnostic) {
         if (!Spektrafilm::make_plan_layout(
                 candidate.extent.width,
                 candidate.extent.height,
-                layout) ||
-            layout.transformBytes != candidate.transformBytes) {
+                layout)) {
             fail(diagnostic, "candidate_transform_layout");
             return false;
         }
-        if (candidate.acceptedSharedWorkBytes < candidate.maximumR2cWorkBytes ||
-            candidate.acceptedSharedWorkBytes < candidate.maximumC2rWorkBytes) {
-            fail(diagnostic, "candidate_shared_work_bytes");
-            return false;
-        }
         if (candidate.pairMedianNanoseconds == 0 ||
-            candidate.oneFrameBytes == 0 || candidate.twoFrameBytes == 0 ||
-            candidate.oneFrameBytes > candidate.twoFrameBytes) {
+            candidate.twoFrameBytes == 0) {
             fail(diagnostic, "candidate_measurement");
             return false;
         }
@@ -362,7 +281,7 @@ namespace {
     }
 
     bool evaluate_candidate(
-        const Spektrafilm::DiffusionExecutionCandidate& candidate,
+        const ExecutionCandidate& candidate,
         std::size_t candidateIndex,
         const Spektrafilm::DiffusionFrameSetDescriptor& frameSet,
         const std::array<const Spektrafilm::DiffusionStageFrameDescriptor*, 2>& stages,
@@ -383,7 +302,9 @@ namespace {
             const auto& stage = *stages[index];
             std::uint64_t border = 0;
             if (!checked_multiply(
-                    static_cast<std::uint64_t>(stage.radiusPixels), 2, border)) {
+                    static_cast<std::uint64_t>(stage.sample.radiusPixels),
+                    2,
+                    border)) {
                 fail(diagnostic, "candidate_radius_border");
                 return false;
             }
@@ -421,7 +342,7 @@ namespace {
                 stage.hash,
                 stage.scatterFraction,
                 0,
-                stage.radiusPixels,
+                stage.sample.radiusPixels,
                 static_cast<int>(validWidth),
                 static_cast<int>(validHeight),
                 static_cast<int>(tileCountX),
@@ -443,15 +364,15 @@ namespace {
             !checked_add(spectrumAndTransformCount, 1, spectrumAndTransformCount) ||
             !checked_multiply(
                 spectrumAndTransformCount,
-                candidate.transformBytes,
+                layout.transformBytes,
                 out.memoryBytes) ||
             !checked_add(
                 out.memoryBytes,
-                candidate.acceptedSharedWorkBytes,
+                candidate.reservedSharedWorkBytes,
                 out.memoryBytes) ||
             !checked_add(
                 out.memoryBytes,
-                candidate.acceptedPlanAllowanceBytes,
+                candidate.planAllowanceBytes,
                 out.memoryBytes)) {
             fail(diagnostic, "candidate_incremental_bytes");
             return false;
@@ -550,19 +471,15 @@ namespace {
         const Spektrafilm::CandidateExtent& extent) noexcept {
         std::uint64_t hash = kFnvOffset;
         hash_tag(hash, "diffusion-spectrum-key");
-        hash_u32_le(hash, Spektrafilm::kDiffusionPlanLayoutSchemaVersion);
         hash_u64_le(hash, sampleHash);
         hash_extent(hash, extent);
         return hash;
     }
 
     std::uint64_t hash_plan_key(
-        const std::array<std::uint8_t, 32>& profileDigest,
         const Spektrafilm::CandidateExtent& extent) noexcept {
         std::uint64_t hash = kFnvOffset;
         hash_tag(hash, "diffusion-plan-key");
-        hash_u32_le(hash, Spektrafilm::kDiffusionPlanLayoutSchemaVersion);
-        hash_bytes(hash, profileDigest);
         hash_extent(hash, extent);
         return hash;
     }
@@ -571,47 +488,45 @@ namespace {
         const Spektrafilm::DiffusionExecutionDescriptor& descriptor) noexcept {
         std::uint64_t hash = kFnvOffset;
         hash_tag(hash, "diffusion-execution-descriptor");
-        hash_u32_le(hash, Spektrafilm::kDiffusionFrameDescriptorSchemaVersion);
-        hash_u32_le(hash, Spektrafilm::kDiffusionPlanLayoutSchemaVersion);
-        hash_u32_le(hash, Spektrafilm::kDiffusionPrecisionSchemaVersion);
-        hash_u32_le(hash, Spektrafilm::kDiffusionSelectionPolicyVersion);
-        hash_bytes(hash, descriptor.profileKeyDigest);
-        hash_bytes(hash, descriptor.profileDigest);
         hash_u64_le(hash, descriptor.contextEpoch);
-        hash_u64_le(hash, descriptor.selectionCapBytes);
         hash_u64_le(hash, descriptor.frameSetHash);
-        hash_domain(hash, descriptor.fullFrame);
-        hash_extent(hash, descriptor.extent);
         hash_layout(hash, descriptor.layout);
         hash_u64_le(hash, static_cast<std::uint64_t>(descriptor.stageCount));
         for (std::size_t index = 0; index < descriptor.stageCount; ++index) {
-            const auto& stage = descriptor.stages[index];
-            hash_byte(hash, static_cast<std::uint8_t>(stage.stage));
-            hash_u64_le(hash, stage.stageDescriptorHash);
-            hash_double(hash, stage.scatterFraction);
-            hash_u64_le(hash, static_cast<std::uint64_t>(stage.spectrumKeyIndex));
-            hash_u32_le(hash, static_cast<std::uint32_t>(stage.radiusPixels));
-            hash_u32_le(hash, static_cast<std::uint32_t>(stage.validTileWidth));
-            hash_u32_le(hash, static_cast<std::uint32_t>(stage.validTileHeight));
-            hash_u32_le(hash, static_cast<std::uint32_t>(stage.tileCountX));
-            hash_u32_le(hash, static_cast<std::uint32_t>(stage.tileCountY));
+            const auto& geometry = descriptor.stages[index];
+            hash_byte(hash, static_cast<std::uint8_t>(geometry.stage));
+            hash_u64_le(hash, geometry.stageDescriptorHash);
+            hash_double(hash, geometry.scatterFraction);
+            hash_u64_le(
+                hash,
+                static_cast<std::uint64_t>(geometry.spectrumKeyIndex));
+            hash_u32_le(
+                hash,
+                static_cast<std::uint32_t>(geometry.radiusPixels));
+            hash_u32_le(
+                hash,
+                static_cast<std::uint32_t>(geometry.validTileWidth));
+            hash_u32_le(
+                hash,
+                static_cast<std::uint32_t>(geometry.validTileHeight));
+            hash_u32_le(
+                hash,
+                static_cast<std::uint32_t>(geometry.tileCountX));
+            hash_u32_le(
+                hash,
+                static_cast<std::uint32_t>(geometry.tileCountY));
         }
         hash_u64_le(hash, static_cast<std::uint64_t>(descriptor.uniqueSpectrumCount));
         for (std::size_t index = 0; index < descriptor.uniqueSpectrumCount; ++index) {
             const auto& key = descriptor.spectrumKeys[index];
             hash_u64_le(hash, key.sampleHash);
             hash_extent(hash, key.extent);
-            hash_u32_le(hash, key.layoutSchema);
             hash_u64_le(hash, key.hash);
         }
         hash_u64_le(hash, descriptor.planKey.hash);
-        hash_u64_le(hash, descriptor.transformBufferBytes);
-        hash_u64_le(hash, descriptor.spectrumPackageBytes);
         hash_u64_le(hash, descriptor.stagePlaneBytes);
-        hash_u64_le(hash, descriptor.acceptedR2cWorkBytes);
-        hash_u64_le(hash, descriptor.acceptedC2rWorkBytes);
-        hash_u64_le(hash, descriptor.acceptedSharedWorkBytes);
-        hash_u64_le(hash, descriptor.acceptedPlanAllowanceBytes);
+        hash_u64_le(hash, descriptor.reservedSharedWorkBytes);
+        hash_u64_le(hash, descriptor.planAllowanceBytes);
         return hash;
     }
 
@@ -619,66 +534,25 @@ namespace {
 
 namespace Spektrafilm {
 
-    const SupportedDiffusionExecutionProfile&
-    supported_diffusion_execution_profile() noexcept {
-        return kAcceptedProfile;
-    }
-
-    bool diffusion_execution_profile_matches(
-        const DiffusionExecutionProfileKey& observed,
-        std::string& diagnostic) {
-        diagnostic.clear();
-        const auto& accepted = kAcceptedProfile.key;
-        if (observed.cudaCompileVersion != accepted.cudaCompileVersion) {
-            profile_mismatch(diagnostic, "cuda_compile_version");
-        } else if (observed.cudaRuntimeVersion != accepted.cudaRuntimeVersion) {
-            profile_mismatch(diagnostic, "cuda_runtime_version");
-        } else if (observed.cudaDriverVersion != accepted.cudaDriverVersion) {
-            profile_mismatch(diagnostic, "cuda_driver_version");
-        } else if (observed.cufftVersion != accepted.cufftVersion) {
-            profile_mismatch(diagnostic, "cufft_version");
-        } else if (observed.computeCapabilityMajor != accepted.computeCapabilityMajor) {
-            profile_mismatch(diagnostic, "compute_capability_major");
-        } else if (observed.computeCapabilityMinor != accepted.computeCapabilityMinor) {
-            profile_mismatch(diagnostic, "compute_capability_minor");
-        } else if (observed.precisionSchema != accepted.precisionSchema) {
-            profile_mismatch(diagnostic, "precision_schema");
-        } else if (observed.layoutSchema != accepted.layoutSchema) {
-            profile_mismatch(diagnostic, "layout_schema");
-        } else if (observed.candidateTableVersion != accepted.candidateTableVersion) {
-            profile_mismatch(diagnostic, "candidate_table_version");
-        } else if (observed.selectionPolicyVersion != accepted.selectionPolicyVersion) {
-            profile_mismatch(diagnostic, "selection_policy_version");
-        }
-        return diagnostic.empty();
-    }
-
-    bool select_diffusion_execution_candidate(
-        const SupportedDiffusionExecutionProfile& profile,
+    static bool select_candidate(
+        const std::array<ExecutionCandidate, 10>& candidates,
         const DiffusionFrameSetDescriptor& frameSet,
         std::uint64_t resolvedDeviceCapBytes,
-        DiffusionCandidateSelection& out,
+        CandidateSelection& out,
         std::string& diagnostic) {
         out = {};
         diagnostic.clear();
 
-        std::array<const DiffusionStageFrameDescriptor*, 2> stages{};
-        std::size_t stageCount = 0;
-        if (!validate_frame_set(frameSet, stages, stageCount, diagnostic)) {
+        ValidatedFrameSet validated{};
+        if (!validate_frame_set(frameSet, validated, diagnostic)) {
             return false;
         }
-        if (profile.referenceCapBytes == 0) {
-            fail(diagnostic, "reference_cap_bytes");
-            return false;
-        }
-        const std::uint64_t selectionCap =
-            std::min(resolvedDeviceCapBytes, profile.referenceCapBytes);
 
         std::array<EvaluatedCandidate, 10> evaluated{};
         std::size_t evaluatedCount = 0;
-        for (std::size_t index = 0; index < profile.candidates.size(); ++index) {
-            const auto& candidate = profile.candidates[index];
-            if (candidate.twoFrameBytes >= selectionCap) {
+        for (std::size_t index = 0; index < candidates.size(); ++index) {
+            const auto& candidate = candidates[index];
+            if (candidate.twoFrameBytes >= resolvedDeviceCapBytes) {
                 continue;
             }
             EvaluatedCandidate value{};
@@ -686,8 +560,8 @@ namespace Spektrafilm {
                     candidate,
                     index,
                     frameSet,
-                    stages,
-                    stageCount,
+                    validated.stages,
+                    validated.stageCount,
                     value,
                     diagnostic)) {
                 return false;
@@ -780,79 +654,56 @@ namespace Spektrafilm {
 
         out.candidateIndex = selected->candidateIndex;
         out.stages = selected->stages;
+        out.sourceStages = validated.stages;
         out.stageCount = selected->stageCount;
-        out.incrementalBytes = selected->memoryBytes;
-        out.workloadNanoseconds = selected->workloadNanoseconds;
+        out.stagePlaneBytes = validated.stagePlaneBytes;
         return true;
     }
 
+    // Both integer inputs are independently named and validated at this narrow boundary.
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
     bool build_diffusion_execution_descriptor(
         const DiffusionFrameSetDescriptor& frameSet,
         std::uint64_t contextEpoch,
-        const DiffusionExecutionProfileKey& observedProfile,
         std::uint64_t resolvedDeviceCapBytes,
         DiffusionExecutionDescriptor& out,
         std::string& diagnostic) {
         out = {};
         diagnostic.clear();
-        if (!diffusion_execution_profile_matches(observedProfile, diagnostic)) {
-            return false;
-        }
         if (contextEpoch == 0) {
             fail(diagnostic, "context_epoch");
             return false;
         }
 
-        DiffusionCandidateSelection selection{};
-        if (!select_diffusion_execution_candidate(
-                kAcceptedProfile,
+        CandidateSelection selection{};
+        if (!select_candidate(
+                kCandidates,
                 frameSet,
                 resolvedDeviceCapBytes,
                 selection,
                 diagnostic)) {
             return false;
         }
-        const auto& candidate = kAcceptedProfile.candidates[selection.candidateIndex];
+        const auto& candidate = kCandidates[selection.candidateIndex];
         PlanLayout layout{};
-        if (!make_plan_layout(candidate.extent.width, candidate.extent.height, layout) ||
-            layout.transformBytes != candidate.transformBytes) {
+        if (!make_plan_layout(candidate.extent.width, candidate.extent.height, layout)) {
             fail(diagnostic, "selected_plan_layout");
             return false;
         }
 
-        std::array<const DiffusionStageFrameDescriptor*, 2> sourceStages{};
-        std::size_t sourceStageCount = 0;
-        if (!validate_frame_set(
-                frameSet,
-                sourceStages,
-                sourceStageCount,
-                diagnostic) ||
-            sourceStageCount != selection.stageCount) {
-            if (diagnostic.empty()) {
-                fail(diagnostic, "selected_stage_count");
-            }
-            return false;
-        }
-
-        out.profileKeyDigest = kAcceptedProfile.profileKeyDigest;
-        out.profileDigest = kAcceptedProfile.profileDigest;
         out.contextEpoch = contextEpoch;
-        out.selectionCapBytes =
-            std::min(resolvedDeviceCapBytes, kAcceptedProfile.referenceCapBytes);
         out.frameSetHash = frameSet.hash;
-        out.fullFrame = frameSet.fullFrame;
-        out.extent = candidate.extent;
         out.layout = layout;
         out.stages = selection.stages;
         out.stageCount = selection.stageCount;
 
-        for (std::size_t stageIndex = 0; stageIndex < sourceStageCount; ++stageIndex) {
-            const std::uint64_t sampleHash = sourceStages[stageIndex]->sample.hash;
+        for (std::size_t stageIndex = 0; stageIndex < selection.stageCount; ++stageIndex) {
+            const std::uint64_t sampleHash =
+                selection.sourceStages[stageIndex]->sample.hash;
             std::size_t spectrumIndex = out.uniqueSpectrumCount;
             for (std::size_t keyIndex = 0; keyIndex < out.uniqueSpectrumCount; ++keyIndex) {
                 const auto& key = out.spectrumKeys[keyIndex];
-                if (key.sampleHash == sampleHash && key.extent == out.extent &&
-                    key.layoutSchema == kDiffusionPlanLayoutSchemaVersion) {
+                if (key.sampleHash == sampleHash && key.extent == candidate.extent) {
                     spectrumIndex = keyIndex;
                     break;
                 }
@@ -860,9 +711,8 @@ namespace Spektrafilm {
             if (spectrumIndex == out.uniqueSpectrumCount) {
                 auto& key = out.spectrumKeys[out.uniqueSpectrumCount++];
                 key.sampleHash = sampleHash;
-                key.extent = out.extent;
-                key.layoutSchema = kDiffusionPlanLayoutSchemaVersion;
-                key.hash = hash_spectrum_key(sampleHash, out.extent);
+                key.extent = candidate.extent;
+                key.hash = hash_spectrum_key(sampleHash, candidate.extent);
                 if (key.hash == 0) {
                     fail(diagnostic, "spectrum_key_hash");
                     out = {};
@@ -872,29 +722,11 @@ namespace Spektrafilm {
             out.stages[stageIndex].spectrumKeyIndex = spectrumIndex;
         }
 
-        out.planKey.profileDigest = out.profileDigest;
-        out.planKey.extent = out.extent;
-        out.planKey.layoutSchema = kDiffusionPlanLayoutSchemaVersion;
-        out.planKey.hash = hash_plan_key(out.profileDigest, out.extent);
-        out.transformBufferBytes = candidate.transformBytes;
-        std::uint64_t spectrumPlaneCount = 0;
-        if (!checked_multiply(
-                static_cast<std::uint64_t>(out.uniqueSpectrumCount),
-                3,
-                spectrumPlaneCount) ||
-            !checked_multiply(
-                spectrumPlaneCount,
-                out.transformBufferBytes,
-                out.spectrumPackageBytes)) {
-            fail(diagnostic, "spectrum_package_bytes");
-            out = {};
-            return false;
-        }
-        out.stagePlaneBytes = frameSet.workspaceBytes;
-        out.acceptedR2cWorkBytes = candidate.maximumR2cWorkBytes;
-        out.acceptedC2rWorkBytes = candidate.maximumC2rWorkBytes;
-        out.acceptedSharedWorkBytes = candidate.acceptedSharedWorkBytes;
-        out.acceptedPlanAllowanceBytes = candidate.acceptedPlanAllowanceBytes;
+        out.planKey.extent = candidate.extent;
+        out.planKey.hash = hash_plan_key(candidate.extent);
+        out.stagePlaneBytes = selection.stagePlaneBytes;
+        out.reservedSharedWorkBytes = candidate.reservedSharedWorkBytes;
+        out.planAllowanceBytes = candidate.planAllowanceBytes;
         out.hash = hash_execution_descriptor(out);
         if (out.planKey.hash == 0 || out.hash == 0) {
             fail(diagnostic, "execution_hash");
@@ -903,27 +735,6 @@ namespace Spektrafilm {
         }
         return true;
     }
-
-    bool diffusion_plan_work_fits(
-        const DiffusionExecutionDescriptor& descriptor,
-        std::uint64_t actualR2cWorkBytes,
-        std::uint64_t actualC2rWorkBytes,
-        std::string& diagnostic) {
-        diagnostic.clear();
-        if (actualR2cWorkBytes > descriptor.acceptedR2cWorkBytes) {
-            fail(diagnostic, "actual_r2c_work_bytes");
-            return false;
-        }
-        if (actualC2rWorkBytes > descriptor.acceptedC2rWorkBytes) {
-            fail(diagnostic, "actual_c2r_work_bytes");
-            return false;
-        }
-        if (std::max(actualR2cWorkBytes, actualC2rWorkBytes) >
-            descriptor.acceptedSharedWorkBytes) {
-            fail(diagnostic, "actual_shared_work_bytes");
-            return false;
-        }
-        return true;
-    }
+    // NOLINTEND(bugprone-easily-swappable-parameters)
 
 } // namespace Spektrafilm

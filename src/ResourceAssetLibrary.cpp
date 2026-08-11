@@ -2,8 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
@@ -12,14 +10,10 @@
 #include <memory>
 #include <sstream>
 #include <system_error>
-#include <tuple>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 
 #include "Logging.h"
 #include "Illuminants.h"
-#include "ProfileJSONLoader.h"
 #include "nlohmann/json.hpp"
 
 namespace JuicerAssets {
@@ -42,86 +36,17 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
-    struct Library::NeutralFilterDatabasePathSet {
-        std::string selectedPath;
-        std::uint64_t version = 0;
-    };
-
     namespace {
         namespace fs = std::filesystem;
-        using Clock = std::chrono::steady_clock;
         using Json = nlohmann::json;
 
-        constexpr std::int64_t kNeutralFilterDiagnosticsReloadCheckMs = 1000;
         constexpr std::uint64_t kFnvOffsetBasis64 = 1469598103934665603ull;
         constexpr std::uint64_t kFnvPrime64 = 1099511628211ull;
-        constexpr int kNeutralFilterDatabaseCount = 3;
-
-        struct NeutralFilterFileStamp {
-            bool valid = false;
-            std::uint64_t sizeBytes = 0;
-            std::int64_t writeTimeTicks = 0;
-        };
-
-        struct ProfileFileStamp {
-            bool valid = false;
-            std::uint64_t sizeBytes = 0;
-            std::int64_t writeTimeTicks = 0;
-        };
-
-        struct ParsedNeutralFilterDb {
-            ParsedNeutralFilterDb() = default;
-            ParsedNeutralFilterDb(const ParsedNeutralFilterDb&) = delete;
-            ParsedNeutralFilterDb& operator=(const ParsedNeutralFilterDb&) = delete;
-            ParsedNeutralFilterDb(ParsedNeutralFilterDb&&) = delete;
-            ParsedNeutralFilterDb& operator=(ParsedNeutralFilterDb&&) = delete;
-
-            std::unordered_map<std::string, std::tuple<float, float, float>> lookup;
-            NeutralFilterFileStamp stamp;
-            std::string versionHash;
-        };
-
-        struct NeutralFilterCacheEntry {
-            std::shared_ptr<const ParsedNeutralFilterDb> db;
-            Clock::time_point lastDiagnosticsReloadCheck;
-            bool hasDiagnosticsReloadCheck = false;
-        };
 
         struct IlluminantFilterCurveCacheEntry {
             IlluminantFilterCurveSet curves;
             bool ready = false;
         };
-
-        struct FilterDbRead {
-            std::shared_ptr<const ParsedNeutralFilterDb> db;
-            bool stop = false;
-        };
-
-        struct ProfileCacheEntry {
-            std::string cacheKey;
-            ProfileFileStamp stamp;
-            Profiles::SpektrafilmProfileJson profile;
-        };
-
-        constexpr std::size_t kProfileCacheCapacity = 2;
-
-        std::string to_lower(std::string s) {
-            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-                return static_cast<char>(std::tolower(c));
-            });
-            return s;
-        }
-
-        const char* thread_class_name(NeutralFilterLookupThread threadClass) {
-            switch (threadClass) {
-                case NeutralFilterLookupThread::Control:
-                    return "control";
-                case NeutralFilterLookupThread::RenderWorker:
-                    return "render_worker";
-                default:
-                    return "unknown";
-            }
-        }
 
         std::uint64_t fnv1a_append(std::uint64_t hash, const void* data, size_t sizeBytes) {
             const unsigned char* bytes = static_cast<const unsigned char*>(data);
@@ -130,12 +55,6 @@ namespace JuicerAssets {
                 hash *= kFnvPrime64;
             }
             return hash;
-        }
-
-        std::string hash_to_hex(std::uint64_t hash) {
-            std::ostringstream oss;
-            oss << std::hex << hash;
-            return oss.str();
         }
 
         void hash_string(std::uint64_t& hash, const std::string& value) {
@@ -147,9 +66,14 @@ namespace JuicerAssets {
             hash = fnv1a_append(hash, &value, sizeof(value));
         }
 
-        bool read_file_bytes(const std::string& path, std::string& out, std::uint64_t& outHash) {
+        bool read_file_bytes(
+            const std::string& path,
+            std::string& out,
+            std::uint64_t* outHash = nullptr) {
             out.clear();
-            outHash = 0;
+            if (outHash) {
+                *outHash = 0;
+            }
             std::ifstream file(path, std::ios::binary | std::ios::ate);
             if (!file) {
                 return false;
@@ -164,373 +88,10 @@ namespace JuicerAssets {
                 out.clear();
                 return false;
             }
-            outHash = fnv1a_append(kFnvOffsetBasis64, out.data(), out.size());
+            if (outHash) {
+                *outHash = fnv1a_append(kFnvOffsetBasis64, out.data(), out.size());
+            }
             return true;
-        }
-
-        std::string make_lookup_key(const std::string& printProfileKey, const std::string& illuminantKey, const std::string& filmProfileKey) {
-            std::string key;
-            key.reserve(printProfileKey.size() + illuminantKey.size() + filmProfileKey.size() + 2);
-            key += to_lower(printProfileKey);
-            key.push_back('\x1f');
-            key += to_lower(illuminantKey);
-            key.push_back('\x1f');
-            key += to_lower(filmProfileKey);
-            return key;
-        }
-
-        std::string normalize_path_for_cache_key(const std::string& jsonPath) {
-            fs::path path(jsonPath);
-            path.make_preferred();
-            return to_lower(path.lexically_normal().string());
-        }
-
-        bool same_file_stamp(const NeutralFilterFileStamp& a, const NeutralFilterFileStamp& b) {
-            return a.valid && b.valid && a.sizeBytes == b.sizeBytes && a.writeTimeTicks == b.writeTimeTicks;
-        }
-
-        bool same_file_stamp(const ProfileFileStamp& a, const ProfileFileStamp& b) {
-            return a.valid && b.valid && a.sizeBytes == b.sizeBytes && a.writeTimeTicks == b.writeTimeTicks;
-        }
-
-        NeutralFilterFileStamp read_file_stamp(const std::string& jsonPath) {
-            fs::path path(jsonPath);
-            std::error_code ec;
-            const auto sizeBytes = fs::file_size(path, ec);
-            if (ec) {
-                return {};
-            }
-            const auto writeTime = fs::last_write_time(path, ec);
-            if (ec) {
-                return {};
-            }
-
-            NeutralFilterFileStamp stamp;
-            stamp.valid = true;
-            stamp.sizeBytes = static_cast<std::uint64_t>(sizeBytes);
-            stamp.writeTimeTicks = static_cast<std::int64_t>(writeTime.time_since_epoch().count());
-            return stamp;
-        }
-
-        ProfileFileStamp read_profile_file_stamp(const std::string& jsonPath) {
-            fs::path path(jsonPath);
-            std::error_code ec;
-            const auto sizeBytes = fs::file_size(path, ec);
-            if (ec) {
-                return {};
-            }
-            const auto writeTime = fs::last_write_time(path, ec);
-            if (ec) {
-                return {};
-            }
-
-            ProfileFileStamp stamp;
-            stamp.valid = true;
-            stamp.sizeBytes = static_cast<std::uint64_t>(sizeBytes);
-            stamp.writeTimeTicks = static_cast<std::int64_t>(writeTime.time_since_epoch().count());
-            return stamp;
-        }
-
-        bool get_profile(
-            std::vector<ProfileCacheEntry>& cache,
-            const std::string& cacheKey,
-            const ProfileFileStamp& stamp,
-            Profiles::SpektrafilmProfileJson& outProfile) {
-            if (cacheKey.empty() || !stamp.valid) {
-                return false;
-            }
-
-            for (std::size_t i = 0; i < cache.size(); ++i) {
-                ProfileCacheEntry& entry = cache[i];
-                if (entry.cacheKey != cacheKey || !same_file_stamp(entry.stamp, stamp)) {
-                    continue;
-                }
-
-                if (i != 0) {
-                    std::swap(cache[0], cache[i]);
-                }
-                outProfile = cache[0].profile;
-                return true;
-            }
-
-            return false;
-        }
-
-        void store_profile(
-            std::vector<ProfileCacheEntry>& cache,
-            std::string cacheKey,
-            const ProfileFileStamp& stamp,
-            const Profiles::SpektrafilmProfileJson& profile) {
-            if (cacheKey.empty() || !stamp.valid) {
-                return;
-            }
-
-            for (std::size_t i = 0; i < cache.size(); ++i) {
-                if (cache[i].cacheKey == cacheKey) {
-                    cache.erase(cache.begin() + static_cast<std::ptrdiff_t>(i));
-                    break;
-                }
-            }
-
-            cache.insert(
-                cache.begin(),
-                ProfileCacheEntry{
-                    std::move(cacheKey),
-                    stamp,
-                    profile});
-            if (cache.size() > kProfileCacheCapacity) {
-                cache.resize(kProfileCacheCapacity);
-            }
-        }
-
-        bool parse_array_triplet(const Json& arrNode, std::tuple<float, float, float>& outCmyCc) {
-            if (!arrNode.is_array() || arrNode.size() < 3) {
-                return false;
-            }
-            float vals[3] = {};
-            for (size_t i = 0; i < 3; ++i) {
-                const Json& element = arrNode[i];
-                if (!(element.is_number_float() || element.is_number_integer())) {
-                    return false;
-                }
-                float v = static_cast<float>(element.get<double>());
-                if (!std::isfinite(v)) {
-                    return false;
-                }
-                v = std::clamp(v, 0.0f, 1.0f);
-                vals[i] = v;
-            }
-
-            outCmyCc = std::make_tuple(vals[0], vals[1], vals[2]);
-            return true;
-        }
-
-        bool build_neutral_filter_lookup_table(
-            const Json& root,
-            std::unordered_map<std::string, std::tuple<float, float, float>>& outLookup) {
-            if (!root.is_object()) {
-                return false;
-            }
-
-            size_t validEntryCount = 0;
-            for (auto paperIt = root.cbegin(); paperIt != root.cend(); ++paperIt) {
-                if (!paperIt->is_object()) {
-                    continue;
-                }
-                const std::string& printProfileKey = paperIt.key();
-                for (auto illuminantIt = paperIt->cbegin(); illuminantIt != paperIt->cend(); ++illuminantIt) {
-                    if (!illuminantIt->is_object()) {
-                        continue;
-                    }
-                    const std::string& illuminantKey = illuminantIt.key();
-                    for (auto negativeIt = illuminantIt->cbegin(); negativeIt != illuminantIt->cend(); ++negativeIt) {
-                        std::tuple<float, float, float> cmyCc{};
-                        if (!parse_array_triplet(*negativeIt, cmyCc)) {
-                            continue;
-                        }
-                        outLookup[make_lookup_key(printProfileKey, illuminantKey, negativeIt.key())] = cmyCc;
-                        ++validEntryCount;
-                    }
-                }
-            }
-
-            return validEntryCount > 0;
-        }
-
-        std::string compute_version_hash(const Json& root, const NeutralFilterFileStamp& stamp) {
-            std::uint64_t hash = kFnvOffsetBasis64;
-            const std::uint8_t validByte = stamp.valid ? 1u : 0u;
-            hash = fnv1a_append(hash, &validByte, sizeof(validByte));
-            hash = fnv1a_append(hash, &stamp.sizeBytes, sizeof(stamp.sizeBytes));
-            hash = fnv1a_append(hash, &stamp.writeTimeTicks, sizeof(stamp.writeTimeTicks));
-            const std::string jsonBlob = root.dump();
-            hash = fnv1a_append(hash, jsonBlob.data(), jsonBlob.size());
-            return hash_to_hex(hash);
-        }
-
-        bool parse_neutral_filter_db_from_disk(
-            const std::string& jsonPath,
-            ParsedNeutralFilterDb& outDb,
-            std::string& outReason) {
-            std::ifstream file(jsonPath, std::ios::binary);
-            if (!file.is_open()) {
-                outReason = "open_failed";
-                return false;
-            }
-
-            Json root = Json::parse(file, nullptr, false);
-            if (root.is_discarded()) {
-                outReason = "parse_failed";
-                return false;
-            }
-
-            std::unordered_map<std::string, std::tuple<float, float, float>> lookup;
-            if (!build_neutral_filter_lookup_table(root, lookup)) {
-                outReason = "schema_or_entries_invalid";
-                return false;
-            }
-
-            outDb.lookup = std::move(lookup);
-            outDb.stamp = read_file_stamp(jsonPath);
-            outDb.versionHash = compute_version_hash(root, outDb.stamp);
-            return true;
-        }
-
-        bool diagnostics_reload_enabled() {
-            return JTRACE_ENABLED(3);
-        }
-
-        void trace_neutral_filter_event(
-            const char* operation,
-            const std::string& selectedDbVersionHash,
-            NeutralFilterLookupThread threadClass,
-            const char* reason = nullptr,
-            const std::string* path = nullptr) {
-            if (!JTRACE_ENABLED(1)) {
-                return;
-            }
-            std::ostringstream oss;
-            oss << "operation=" << (operation ? operation : "unknown")
-                << " selected_db_version_hash=" << (selectedDbVersionHash.empty() ? "none" : selectedDbVersionHash)
-                << " check_interval_ms=" << kNeutralFilterDiagnosticsReloadCheckMs
-                << " thread_class=" << thread_class_name(threadClass);
-            if (reason && *reason) {
-                oss << " reason=" << reason;
-            }
-            if (path && !path->empty()) {
-                oss << " path=" << *path;
-            }
-            JTRACE("MSNFD", oss.str());
-        }
-
-        void refresh_filter_db(
-            NeutralFilterCacheEntry& cacheEntry,
-            std::shared_ptr<const ParsedNeutralFilterDb>& dbSnapshot,
-            const std::string& jsonPath,
-            NeutralFilterLookupThread threadClass,
-            Clock::time_point now) {
-            bool shouldCheckReload = false;
-            if (!cacheEntry.hasDiagnosticsReloadCheck) {
-                shouldCheckReload = true;
-            } else {
-                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                         now - cacheEntry.lastDiagnosticsReloadCheck)
-                                         .count();
-                shouldCheckReload = elapsed >= kNeutralFilterDiagnosticsReloadCheckMs;
-            }
-
-            if (!shouldCheckReload) {
-                trace_neutral_filter_event("reload_skip", dbSnapshot->versionHash, threadClass, "interval_not_elapsed", &jsonPath);
-                return;
-            }
-
-            cacheEntry.lastDiagnosticsReloadCheck = now;
-            cacheEntry.hasDiagnosticsReloadCheck = true;
-            trace_neutral_filter_event("reload_check", dbSnapshot->versionHash, threadClass, nullptr, &jsonPath);
-
-            const NeutralFilterFileStamp newStamp = read_file_stamp(jsonPath);
-            if (!newStamp.valid) {
-                trace_neutral_filter_event("reload_failed", dbSnapshot->versionHash, threadClass, "stamp_unavailable", &jsonPath);
-                return;
-            }
-            if (!dbSnapshot->stamp.valid) {
-                trace_neutral_filter_event("reload_failed", dbSnapshot->versionHash, threadClass, "cached_stamp_unavailable", &jsonPath);
-                return;
-            }
-            if (same_file_stamp(newStamp, dbSnapshot->stamp)) {
-                trace_neutral_filter_event("reload_skip", dbSnapshot->versionHash, threadClass, "file_stamp_unchanged", &jsonPath);
-                return;
-            }
-
-            std::shared_ptr<ParsedNeutralFilterDb> parsedDb = std::make_shared<ParsedNeutralFilterDb>();
-            std::string parseReason;
-            if (!parse_neutral_filter_db_from_disk(jsonPath, *parsedDb, parseReason)) {
-                trace_neutral_filter_event("reload_failed", dbSnapshot->versionHash, threadClass, parseReason.c_str(), &jsonPath);
-                return;
-            }
-
-            dbSnapshot = std::move(parsedDb);
-            cacheEntry.db = dbSnapshot;
-            trace_neutral_filter_event("reload_commit", dbSnapshot->versionHash, threadClass, nullptr, &jsonPath);
-        }
-
-        FilterDbRead get_filter_db(
-            std::mutex& cacheMutex,
-            std::unordered_map<std::string, NeutralFilterCacheEntry>& cacheEntries,
-            const std::string& jsonPath,
-            NeutralFilterLookupThread threadClass,
-            bool diagnosticsReload,
-            Clock::time_point now) {
-            FilterDbRead read;
-            const std::string cacheKey = normalize_path_for_cache_key(jsonPath);
-            if (cacheKey.empty()) {
-                trace_neutral_filter_event("miss", "none", threadClass, "empty_path", &jsonPath);
-                read.stop = true;
-                return read;
-            }
-
-            std::lock_guard<std::mutex> lock(cacheMutex);
-            auto cacheIt = cacheEntries.find(cacheKey);
-            NeutralFilterCacheEntry* cacheEntry = (cacheIt != cacheEntries.end())
-                                                      ? &cacheIt->second
-                                                      : nullptr;
-            read.db = cacheEntry ? cacheEntry->db : nullptr;
-
-            if (!read.db) {
-                if (threadClass == NeutralFilterLookupThread::RenderWorker) {
-                    trace_neutral_filter_event("miss", "none", threadClass, "cache_cold_render_worker", &jsonPath);
-                    read.stop = true;
-                    return read;
-                }
-
-                std::shared_ptr<ParsedNeutralFilterDb> parsedDb = std::make_shared<ParsedNeutralFilterDb>();
-                std::string parseReason;
-                if (!parse_neutral_filter_db_from_disk(jsonPath, *parsedDb, parseReason)) {
-                    trace_neutral_filter_event("reload_failed", "none", threadClass, parseReason.c_str(), &jsonPath);
-                    read.stop = true;
-                    return read;
-                }
-
-                read.db = std::move(parsedDb);
-                cacheIt = cacheEntries.emplace(cacheKey, NeutralFilterCacheEntry{}).first;
-                cacheEntry = &cacheIt->second;
-                cacheEntry->db = read.db;
-                if (diagnosticsReload) {
-                    cacheEntry->lastDiagnosticsReloadCheck = now;
-                    cacheEntry->hasDiagnosticsReloadCheck = true;
-                }
-                trace_neutral_filter_event("load", read.db->versionHash, threadClass, nullptr, &jsonPath);
-            }
-
-            if (diagnosticsReload && threadClass == NeutralFilterLookupThread::Control && read.db) {
-                if (!cacheEntry) {
-                    trace_neutral_filter_event("reload_failed", read.db->versionHash, threadClass, "cache_entry_missing", &jsonPath);
-                    read.db.reset();
-                    read.stop = true;
-                    return read;
-                }
-                refresh_filter_db(*cacheEntry, read.db, jsonPath, threadClass, now);
-            }
-
-            return read;
-        }
-
-        NeutralFilterLookupResult lookup_filter_cmy_cc(
-            const ParsedNeutralFilterDb& db,
-            const std::string& lookupKey,
-            NeutralFilterLookupThread threadClass) {
-            NeutralFilterLookupResult result;
-            const auto it = db.lookup.find(lookupKey);
-            if (it == db.lookup.end()) {
-                trace_neutral_filter_event("miss", db.versionHash, threadClass, "entry_not_found");
-                return result;
-            }
-
-            result.found = true;
-            result.cmyCc = it->second;
-            result.selectedDbVersionHash = db.versionHash;
-            trace_neutral_filter_event("hit", db.versionHash, threadClass);
-            return result;
         }
 
         std::string data_path_string(const std::string& dataDir, std::initializer_list<const char*> segments) {
@@ -544,22 +105,40 @@ namespace JuicerAssets {
             return path.string();
         }
 
-        struct ProfilePathRequest {
-            const std::string& dataDir;
-            const std::string& jsonKey;
-        };
-
-        std::string profile_path_for_key(const ProfilePathRequest& request) {
-            if (request.jsonKey.empty()) {
-                return {};
-            }
-            std::string fileName = request.jsonKey;
-            fileName += ".json";
-            return data_path_string(request.dataDir, {"profiles", fileName.c_str()});
-        }
-
         std::string neutral_print_calibration_path(const std::string& dataDir) {
             return data_path_string(dataDir, {"filters", "neutral_print_filters.json"});
+        }
+
+        struct NeutralPrintCalibrationSnapshot {
+            NeutralPrintCalibrationStatus rootStatus =
+                NeutralPrintCalibrationStatus::MissingFile;
+            Json root;
+            std::string diagnostic;
+        };
+
+        std::shared_ptr<const NeutralPrintCalibrationSnapshot>
+        load_neutral_print_calibration_snapshot(const std::string& path) {
+            auto snapshot = std::make_shared<NeutralPrintCalibrationSnapshot>();
+            std::string bytes;
+            if (!read_file_bytes(path, bytes)) {
+                std::error_code ec;
+                if (fs::exists(path, ec) && !ec) {
+                    snapshot->rootStatus = NeutralPrintCalibrationStatus::Malformed;
+                    snapshot->diagnostic =
+                        "MalformedNeutralPrintCalibration phase=4A field=resource_read";
+                }
+                return snapshot;
+            }
+            Json root = Json::parse(bytes, nullptr, false);
+            if (root.is_discarded() || !root.is_object()) {
+                snapshot->rootStatus = NeutralPrintCalibrationStatus::Malformed;
+                snapshot->diagnostic =
+                    "MalformedNeutralPrintCalibration phase=4A field=root";
+                return snapshot;
+            }
+            snapshot->rootStatus = NeutralPrintCalibrationStatus::Found;
+            snapshot->root = std::move(root);
+            return snapshot;
         }
 
         std::string measured_dichroic_relative_path(const std::string& setKey, const char* channel) {
@@ -578,7 +157,7 @@ namespace JuicerAssets {
             std::string& diagnostic) {
             std::string bytes;
             std::uint64_t fileHash = 0;
-            if (!read_file_bytes(request.path, bytes, fileHash)) {
+            if (!read_file_bytes(request.path, bytes, &fileHash)) {
                 diagnostic = "SelectedDichroicResourceMissing phase=4A resource=" + request.relativePath;
                 return false;
             }
@@ -657,43 +236,6 @@ namespace JuicerAssets {
                 return {};
             }
             return data_path_string(dataDir, segments);
-        }
-
-        struct FilmProfileAssetRequest {
-            std::string optionLabel;
-            std::string jsonKey;
-        };
-
-        SelectedFilmProfileAsset make_film_profile_asset(FilmProfileAssetRequest request) {
-            SelectedFilmProfileAsset asset;
-            asset.optionLabel = std::move(request.optionLabel);
-            asset.jsonKey = std::move(request.jsonKey);
-            asset.version = Library::kProcessAssetVersion;
-            return asset;
-        }
-
-        SelectedPrintProfileAsset make_print_profile_asset(
-            std::string optionLabel,
-            std::string jsonKey) {
-            SelectedPrintProfileAsset asset;
-            asset.optionLabel = std::move(optionLabel);
-            asset.jsonKey = std::move(jsonKey);
-            asset.version = Library::kProcessAssetVersion;
-            return asset;
-        }
-
-        void add_print_profile(
-            std::vector<SelectedPrintProfileAsset>& assets,
-            std::string optionLabel,
-            std::string jsonKey) {
-            assets.emplace_back(make_print_profile_asset(std::move(optionLabel), std::move(jsonKey)));
-        }
-
-        NeutralFilterDatabaseAsset make_neutral_filter_database(std::uint32_t databaseId) {
-            NeutralFilterDatabaseAsset asset;
-            asset.databaseId = databaseId;
-            asset.version = Library::kProcessAssetVersion;
-            return asset;
         }
 
         Library::StaticNoiseAssetSet make_static_noise_assets(const std::string& dataDir) {
@@ -937,11 +479,6 @@ namespace JuicerAssets {
 
     } // namespace
 
-    struct Library::NeutralFilterCacheState {
-        std::mutex mutex;
-        std::unordered_map<std::string, NeutralFilterCacheEntry> entries;
-    };
-
     struct Library::StaticNoisePayloadCacheState {
         std::mutex mutex;
         std::shared_ptr<const StaticNoisePayloadSet> payloads;
@@ -952,21 +489,22 @@ namespace JuicerAssets {
         IlluminantFilterCurveCacheEntry entry;
     };
 
-    struct Library::ProfileCacheState {
+    struct Library::NeutralPrintCalibrationCacheState {
         std::mutex mutex;
-        std::vector<ProfileCacheEntry> profiles;
+        std::shared_ptr<const NeutralPrintCalibrationSnapshot> snapshot;
     };
 
     Library::Library(std::string dataDir)
         : _dataDir(std::move(dataDir)),
-          _neutralFilterDatabasePaths(std::make_unique<NeutralFilterDatabasePathSet[]>(kNeutralFilterDatabaseCount)),
           _staticNoiseAssets(std::make_unique<StaticNoiseAssetSet>()),
           _illuminantFilterAssets(std::make_unique<IlluminantFilterAssetSet>()),
-          _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()),
           _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
-          _illuminantFilterCurveCache(std::make_unique<IlluminantFilterCurveCacheState>()),
-          _profileCache(std::make_unique<ProfileCacheState>()),
-          _selectedProfileAssets(std::make_unique<Profiles::ProfileAssetStore>()) {
+          _illuminantFilterCurveCache(
+              std::make_unique<IlluminantFilterCurveCacheState>()),
+          _neutralPrintCalibrationCache(
+              std::make_unique<NeutralPrintCalibrationCacheState>()),
+          _selectedProfileAssets(
+              std::make_unique<Profiles::ProfileAssetStore>()) {
     }
 
     Library::~Library() = default;
@@ -974,12 +512,6 @@ namespace JuicerAssets {
     void Library::ensure_catalogs() {
         std::call_once(_catalogOnce, [this]() {
             load_catalogs();
-        });
-    }
-
-    void Library::ensure_neutral_filter_databases() {
-        std::call_once(_neutralFilterOnce, [this]() {
-            load_neutral_filter_databases();
         });
     }
 
@@ -997,104 +529,30 @@ namespace JuicerAssets {
 
     void Library::load_catalogs() {
         const bool traceCatalog = JTRACE_ENABLED(1);
-        _filmStocks.clear();
-        _printPapers.clear();
-
-        _spektrafilmProfileCatalog = Spektrafilm::build_profile_catalog(_dataDir);
+        _spektrafilmProfileCatalog =
+            Spektrafilm::build_profile_catalog(_dataDir);
         if (!_spektrafilmProfileCatalog.valid) {
             if (traceCatalog) {
-                JTRACE("CATALOG", "spektrafilm profile catalog unavailable: " + _spektrafilmProfileCatalog.failure);
+                JTRACE(
+                    "CATALOG",
+                    "spektrafilm profile catalog unavailable: " +
+                        _spektrafilmProfileCatalog.failure);
             }
             return;
         }
 
-        _filmStocks.reserve(_spektrafilmProfileCatalog.filmProfiles.size());
-        for (const Spektrafilm::ProfileCatalogEntry& entry : _spektrafilmProfileCatalog.filmProfiles) {
-            _filmStocks.emplace_back(make_film_profile_asset(FilmProfileAssetRequest{entry.label, entry.key}));
-            _filmStocks.back().version = entry.sourceVersion;
-        }
-
-        _printPapers.reserve(_spektrafilmProfileCatalog.printProfiles.size());
-        for (const Spektrafilm::ProfileCatalogEntry& entry : _spektrafilmProfileCatalog.printProfiles) {
-            add_print_profile(_printPapers, entry.label, entry.key);
-            _printPapers.back().version = entry.sourceVersion;
-        }
-
         if (traceCatalog) {
             std::ostringstream oss;
-            oss << "spektrafilm profile catalog film=" << _filmStocks.size()
-                << " print=" << _printPapers.size()
-                << " defaultFilm=" << (_spektrafilmProfileCatalog.defaultFilmPresent ? 1 : 0)
-                << " defaultPrint=" << (_spektrafilmProfileCatalog.defaultPrintPresent ? 1 : 0);
+            oss << "spektrafilm profile catalog film="
+                << _spektrafilmProfileCatalog.filmProfiles.size()
+                << " print="
+                << _spektrafilmProfileCatalog.printProfiles.size()
+                << " defaultFilm="
+                << (_spektrafilmProfileCatalog.defaultFilmPresent ? 1 : 0)
+                << " defaultPrint="
+                << (_spektrafilmProfileCatalog.defaultPrintPresent ? 1 : 0);
             JTRACE("CATALOG", oss.str());
         }
-    }
-
-    void Library::load_neutral_filter_databases() {
-        auto makePaths = [this]() {
-            NeutralFilterDatabasePathSet paths;
-            paths.selectedPath = neutral_print_calibration_path(_dataDir);
-            paths.version = Library::kProcessAssetVersion;
-            return paths;
-        };
-
-        _neutralFilterDatabases[0] = make_neutral_filter_database(0);
-        _neutralFilterDatabasePaths[0] = makePaths();
-        _neutralFilterDatabases[1] = make_neutral_filter_database(1);
-        _neutralFilterDatabasePaths[1] = makePaths();
-        _neutralFilterDatabases[2] = make_neutral_filter_database(2);
-        _neutralFilterDatabasePaths[2] = makePaths();
-    }
-
-    NeutralFilterLookupResult Library::lookup_neutral_filter_path(
-        const NeutralFilterPathLookup& lookup) {
-        NeutralFilterLookupResult result;
-        const NeutralFilterLookupKey& key = lookup.lookupKey;
-
-        if (key.printProfileKey.empty() || key.illuminantKey.empty() || key.filmProfileKey.empty()) {
-            trace_neutral_filter_event("miss", "none", lookup.threadClass, "missing_lookup_key", &lookup.jsonPath);
-            return result;
-        }
-
-        const std::string lookupKey = make_lookup_key(key.printProfileKey, key.illuminantKey, key.filmProfileKey);
-        const bool diagnosticsReload = diagnostics_reload_enabled();
-        const Clock::time_point now = Clock::now();
-
-        FilterDbRead dbRead = get_filter_db(
-            _neutralFilterCache->mutex,
-            _neutralFilterCache->entries,
-            lookup.jsonPath,
-            lookup.threadClass,
-            diagnosticsReload,
-            now);
-
-        if (!dbRead.db) {
-            if (!dbRead.stop) {
-                trace_neutral_filter_event("miss", "none", lookup.threadClass, "cache_unavailable", &lookup.jsonPath);
-            }
-            return result;
-        }
-
-        return lookup_filter_cmy_cc(*dbRead.db, lookupKey, lookup.threadClass);
-    }
-
-    NeutralFilterLookupResult Library::lookup_neutral_filters(
-        const NeutralFilterDatabaseAsset& database,
-        const NeutralFilterLookupKey& lookupKey,
-        NeutralFilterLookupThread threadClass) {
-        ensure_neutral_filter_databases();
-        const std::size_t databaseIndex = static_cast<std::size_t>(database.databaseId);
-        if (!_neutralFilterDatabasePaths || database.version == 0 || databaseIndex >= _neutralFilterDatabases.size()) {
-            return {};
-        }
-
-        const NeutralFilterDatabasePathSet& paths = _neutralFilterDatabasePaths[databaseIndex];
-        if (paths.version != database.version) {
-            return {};
-        }
-
-        return lookup_neutral_filter_path(
-            NeutralFilterPathLookup{paths.selectedPath, lookupKey, threadClass});
     }
 
     void Library::load_static_noise_assets() {
@@ -1110,70 +568,45 @@ namespace JuicerAssets {
         return _spektrafilmProfileCatalog;
     }
 
-    const SelectedFilmProfileAsset& Library::film_profile_for_key(const std::string& key) {
+    std::shared_ptr<const Profiles::ValidatedFilmProfile>
+    Library::selected_film_profile_for_key(const std::string& key) {
         ensure_catalogs();
-        static const SelectedFilmProfileAsset empty{};
-        for (const SelectedFilmProfileAsset& asset : _filmStocks) {
-            if (asset.jsonKey == key) {
-                return asset;
-            }
-        }
-        return empty;
+        return _selectedProfileAssets->load_film_profile_by_key(
+            _spektrafilmProfileCatalog,
+            key);
     }
 
-    const SelectedPrintProfileAsset& Library::print_profile_for_key(const std::string& key) {
+    SelectedProfileResult Library::selected_profiles_for_route(
+        const SelectedProfileRequest& request) {
         ensure_catalogs();
-        static const SelectedPrintProfileAsset empty{};
-        for (const SelectedPrintProfileAsset& asset : _printPapers) {
-            if (asset.jsonKey == key) {
-                return asset;
-            }
-        }
-        return empty;
+        return _selectedProfileAssets->selected_profiles_for_route(
+            _spektrafilmProfileCatalog,
+            request);
     }
 
-    std::shared_ptr<const Profiles::ValidatedFilmProfile> Library::selected_film_profile_for_key(
-        const std::string& key) {
-        ensure_catalogs();
-        return _selectedProfileAssets->load_film_profile_by_key(_spektrafilmProfileCatalog, key);
-    }
-
-    std::shared_ptr<const Profiles::ValidatedPrintProfile> Library::selected_print_profile_for_key(
-        const std::string& key) {
-        ensure_catalogs();
-        return _selectedProfileAssets->load_print_profile_by_key(_spektrafilmProfileCatalog, key);
-    }
-
-    SelectedProfileResult Library::selected_profiles_for_route(const SelectedProfileRequest& request) {
-        ensure_catalogs();
-        return _selectedProfileAssets->selected_profiles_for_route(_spektrafilmProfileCatalog, request);
-    }
-
-    const NeutralFilterDatabaseAsset& Library::neutral_filter_database_for_dichroic_set(int dichroicSetChoice) {
-        ensure_neutral_filter_databases();
-        if (dichroicSetChoice < 0 || dichroicSetChoice >= static_cast<int>(_neutralFilterDatabases.size())) {
-            dichroicSetChoice = 0;
-        }
-        return _neutralFilterDatabases[static_cast<size_t>(dichroicSetChoice)];
-    }
-
-    std::shared_ptr<const StaticNoisePayloadSet> Library::static_noise_payloads() {
+    std::shared_ptr<const StaticNoisePayloadSet>
+    Library::static_noise_payloads() {
         ensure_static_noise_assets();
         std::lock_guard<std::mutex> lock(_staticNoisePayloadCache->mutex);
         if (!_staticNoisePayloadCache->payloads) {
             _staticNoisePayloadCache->payloads =
-                std::make_shared<StaticNoisePayloadSet>(load_static_noise_payloads(*_staticNoiseAssets));
+                std::make_shared<StaticNoisePayloadSet>(
+                    load_static_noise_payloads(*_staticNoiseAssets));
         }
         return _staticNoisePayloadCache->payloads;
     }
 
     const IlluminantFilterCurveSet& Library::illuminant_filter_curves() {
         ensure_illuminant_filter_assets();
-        std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);
-        IlluminantFilterCurveCacheEntry& entry = _illuminantFilterCurveCache->entry;
+        std::lock_guard<std::mutex> lock(
+            _illuminantFilterCurveCache->mutex);
+        IlluminantFilterCurveCacheEntry& entry =
+            _illuminantFilterCurveCache->entry;
         if (!entry.ready) {
-            entry.curves = load_illuminant_filter_curves(*_illuminantFilterAssets);
-            entry.ready = illuminant_filter_curves_complete(entry.curves);
+            entry.curves =
+                load_illuminant_filter_curves(*_illuminantFilterAssets);
+            entry.ready =
+                illuminant_filter_curves_complete(entry.curves);
         }
         return entry.curves;
     }
@@ -1243,149 +676,91 @@ namespace JuicerAssets {
         const std::string& printIlluminantKey,
         const std::string& filmProfileKey) {
         NeutralPrintCalibrationResult result;
-        const std::string path = neutral_print_calibration_path(_dataDir);
-        std::string bytes;
-        if (!read_file_bytes(path, bytes, result.resourceHash)) {
-            std::error_code ec;
-            if (fs::exists(path, ec) && !ec) {
-                result.status = NeutralPrintCalibrationStatus::Malformed;
-                result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=resource_read";
-            } else {
-                result.status = NeutralPrintCalibrationStatus::MissingFile;
+        std::shared_ptr<const NeutralPrintCalibrationSnapshot> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(_neutralPrintCalibrationCache->mutex);
+            snapshot = _neutralPrintCalibrationCache->snapshot;
+        }
+        if (!snapshot) {
+            std::shared_ptr<const NeutralPrintCalibrationSnapshot> loaded =
+                load_neutral_print_calibration_snapshot(
+                    neutral_print_calibration_path(_dataDir));
+            {
+                std::lock_guard<std::mutex> lock(_neutralPrintCalibrationCache->mutex);
+                if (!_neutralPrintCalibrationCache->snapshot) {
+                    _neutralPrintCalibrationCache->snapshot = std::move(loaded);
+                }
+                snapshot = _neutralPrintCalibrationCache->snapshot;
             }
+        }
+        if (snapshot->rootStatus != NeutralPrintCalibrationStatus::Found) {
+            result.status = snapshot->rootStatus;
+            result.diagnostic = snapshot->diagnostic;
+            return result;
+        }
+
+        const Json& root = snapshot->root;
+        const auto printIt = root.find(printProfileKey);
+        if (printIt == root.end()) {
+            result.status = NeutralPrintCalibrationStatus::MissingEntry;
+        } else if (!printIt->is_object()) {
+            result.status = NeutralPrintCalibrationStatus::Malformed;
+            result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=print_profile";
         } else {
-            const Json root = Json::parse(bytes, nullptr, false);
-            if (root.is_discarded() || !root.is_object()) {
+            const auto illuminantIt = printIt->find(printIlluminantKey);
+            if (illuminantIt == printIt->end()) {
+                result.status = NeutralPrintCalibrationStatus::MissingEntry;
+            } else if (!illuminantIt->is_object()) {
                 result.status = NeutralPrintCalibrationStatus::Malformed;
-                result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=root";
+                result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=print_illuminant";
             } else {
-                const auto printIt = root.find(printProfileKey);
-                if (printIt == root.end()) {
+                const auto filmIt = illuminantIt->find(filmProfileKey);
+                if (filmIt == illuminantIt->end()) {
                     result.status = NeutralPrintCalibrationStatus::MissingEntry;
-                } else if (!printIt->is_object()) {
+                } else if (!filmIt->is_array() || filmIt->size() != result.cmyCc.size()) {
                     result.status = NeutralPrintCalibrationStatus::Malformed;
-                    result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=print_profile";
+                    result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
                 } else {
-                    const auto illuminantIt = printIt->find(printIlluminantKey);
-                    if (illuminantIt == printIt->end()) {
-                        result.status = NeutralPrintCalibrationStatus::MissingEntry;
-                    } else if (!illuminantIt->is_object()) {
-                        result.status = NeutralPrintCalibrationStatus::Malformed;
-                        result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=print_illuminant";
-                    } else {
-                        const auto filmIt = illuminantIt->find(filmProfileKey);
-                        if (filmIt == illuminantIt->end()) {
-                            result.status = NeutralPrintCalibrationStatus::MissingEntry;
-                        } else if (!filmIt->is_array() || filmIt->size() != result.cmyCc.size()) {
+                    result.status = NeutralPrintCalibrationStatus::Found;
+                    for (std::size_t channel = 0; channel < result.cmyCc.size(); ++channel) {
+                        const Json& value = (*filmIt)[channel];
+                        if (!value.is_number()) {
                             result.status = NeutralPrintCalibrationStatus::Malformed;
                             result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
-                        } else {
-                            result.status = NeutralPrintCalibrationStatus::Found;
-                            for (std::size_t channel = 0; channel < result.cmyCc.size(); ++channel) {
-                                const Json& value = (*filmIt)[channel];
-                                if (!value.is_number()) {
-                                    result.status = NeutralPrintCalibrationStatus::Malformed;
-                                    result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
-                                    break;
-                                }
-                                const double cc = value.get<double>();
-                                if (!std::isfinite(cc)) {
-                                    result.status = NeutralPrintCalibrationStatus::Malformed;
-                                    result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
-                                    break;
-                                }
-                                result.cmyCc[channel] = static_cast<float>(cc);
-                            }
+                            break;
                         }
+                        const double cc = value.get<double>();
+                        if (!std::isfinite(cc)) {
+                            result.status = NeutralPrintCalibrationStatus::Malformed;
+                            result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
+                            break;
+                        }
+                        result.cmyCc[channel] = static_cast<float>(cc);
                     }
                 }
             }
         }
 
-        std::uint64_t hash = kFnvOffsetBasis64;
-        constexpr std::uint32_t kSchemaVersion = 1u;
-        hash_value(hash, kSchemaVersion);
-        hash_string(hash, result.resourcePath);
-        hash_string(hash, printProfileKey);
-        hash_string(hash, printIlluminantKey);
-        hash_string(hash, filmProfileKey);
-        hash_value(hash, result.status);
-        hash_value(hash, result.resourceHash);
-        if (result.status == NeutralPrintCalibrationStatus::Found) {
-            hash = fnv1a_append(hash, result.cmyCc.data(), sizeof(result.cmyCc));
-        }
-        result.hash = hash;
         return result;
-    }
-
-    PrintRuntimeAssetSet Library::print_runtime_assets_for_profile_keys(const PrintRuntimeProfileKeyChoices& choices) {
-        PrintRuntimeAssetSet assets;
-        assets.filmStock = film_profile_for_key(choices.filmProfileKey);
-        assets.printPaper = print_profile_for_key(choices.printProfileKey);
-        assets.neutralFilters = neutral_filter_database_for_dichroic_set(choices.dichroicSetChoice);
-        return assets;
-    }
-
-    bool Library::load_spektrafilm_film_profile(const SelectedFilmProfileAsset& asset, Profiles::SpektrafilmProfileJson& outProfile) {
-        const std::string jsonPath = profile_path_for_key(ProfilePathRequest{_dataDir, asset.jsonKey});
-        if (jsonPath.empty()) {
-            outProfile = Profiles::SpektrafilmProfileJson{};
-            return false;
-        }
-        return load_spektrafilm_profile_path(jsonPath, outProfile);
-    }
-
-    bool Library::load_spektrafilm_print_profile(const SelectedPrintProfileAsset& asset, Profiles::SpektrafilmProfileJson& outProfile) {
-        const std::string jsonPath = profile_path_for_key(ProfilePathRequest{_dataDir, asset.jsonKey});
-        if (jsonPath.empty()) {
-            outProfile = Profiles::SpektrafilmProfileJson{};
-            return false;
-        }
-        return load_spektrafilm_profile_path(jsonPath, outProfile);
-    }
-
-    bool Library::load_spektrafilm_profile_path(const std::string& jsonPath, Profiles::SpektrafilmProfileJson& outProfile) {
-        outProfile = Profiles::SpektrafilmProfileJson{};
-
-        const std::string cacheKey = normalize_path_for_cache_key(jsonPath);
-        const ProfileFileStamp stamp = read_profile_file_stamp(jsonPath);
-        {
-            std::lock_guard<std::mutex> lock(_profileCache->mutex);
-            if (get_profile(_profileCache->profiles, cacheKey, stamp, outProfile)) {
-                return true;
-            }
-        }
-
-        Profiles::SpektrafilmProfileJson parsedProfile;
-        if (!Profiles::load_spektrafilm_profile_json(jsonPath, parsedProfile)) {
-            return false;
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(_profileCache->mutex);
-            store_profile(_profileCache->profiles, cacheKey, stamp, parsedProfile);
-        }
-        outProfile = std::move(parsedProfile);
-        return true;
     }
 
     void Library::release_cached_payloads() noexcept {
         try {
-            if (_neutralFilterCache) {
-                std::lock_guard<std::mutex> lock(_neutralFilterCache->mutex);
-                _neutralFilterCache->entries.clear();
-            }
             if (_staticNoisePayloadCache) {
-                std::lock_guard<std::mutex> lock(_staticNoisePayloadCache->mutex);
+                std::lock_guard<std::mutex> lock(
+                    _staticNoisePayloadCache->mutex);
                 _staticNoisePayloadCache->payloads.reset();
             }
             if (_illuminantFilterCurveCache) {
-                std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);
-                _illuminantFilterCurveCache->entry = IlluminantFilterCurveCacheEntry{};
+                std::lock_guard<std::mutex> lock(
+                    _illuminantFilterCurveCache->mutex);
+                _illuminantFilterCurveCache->entry =
+                    IlluminantFilterCurveCacheEntry{};
             }
-            if (_profileCache) {
-                std::lock_guard<std::mutex> lock(_profileCache->mutex);
-                _profileCache->profiles.clear();
+            if (_neutralPrintCalibrationCache) {
+                std::lock_guard<std::mutex> lock(
+                    _neutralPrintCalibrationCache->mutex);
+                _neutralPrintCalibrationCache->snapshot.reset();
             }
             if (_selectedProfileAssets) {
                 _selectedProfileAssets->release_cached_payloads();
@@ -1393,16 +768,6 @@ namespace JuicerAssets {
         } catch (...) {
             JuicerLogging::discard_current_exception();
         }
-    }
-
-    int Library::film_stock_count() {
-        ensure_catalogs();
-        return static_cast<int>(_filmStocks.size());
-    }
-
-    int Library::print_paper_count() {
-        ensure_catalogs();
-        return static_cast<int>(_printPapers.size());
     }
 
 } // namespace JuicerAssets

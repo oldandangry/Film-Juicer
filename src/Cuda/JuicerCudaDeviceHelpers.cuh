@@ -452,20 +452,6 @@ static __device__ __forceinline__ float sample_hanatos_integrated_cubic_device(
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
-static __device__ __forceinline__ int reflect_index_repeat_device(int idx, int size) {
-    if (size <= 1) {
-        return 0;
-    }
-    while (idx < 0 || idx >= size) {
-        if (idx < 0) {
-            idx = -idx;
-        } else {
-            idx = 2 * size - idx - 2;
-        }
-    }
-    return idx;
-}
-
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 static __device__ __forceinline__ float scan_lut_fetch_float_cmy_device(
     const float* JUICER_RESTRICT lut,
@@ -1028,9 +1014,10 @@ static __device__ void mallett_layer_exposures_device(
 
     for (int i = 0; i < K; ++i) {
         const float illum_i = ldg_f(illum + i);
-        const float b0 = ldg_f(mallettBasis + i * 3 + 0);
-        const float b1 = ldg_f(mallettBasis + i * 3 + 1);
-        const float b2 = ldg_f(mallettBasis + i * 3 + 2);
+        const std::ptrdiff_t basisOffset = static_cast<std::ptrdiff_t>(i) * 3;
+        const float b0 = ldg_f(mallettBasis + basisOffset);
+        const float b1 = ldg_f(mallettBasis + basisOffset + 1);
+        const float b2 = ldg_f(mallettBasis + basisOffset + 2);
         const float spd = (r * b0 + g * b1 + b * b2) * illum_i;
         if (!device_isfinite(spd)) {
             continue;

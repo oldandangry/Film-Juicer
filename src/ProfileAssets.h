@@ -11,11 +11,6 @@
 
 namespace Profiles {
 
-    enum class ProfileRole : unsigned char {
-        Film,
-        Print
-    };
-
     enum class ProfileUse : unsigned char {
         Still,
         Cine,
@@ -50,14 +45,6 @@ namespace Profiles {
         ProfileChannelModel channelModel = ProfileChannelModel::Color;
         IlluminantKey referenceIlluminant{"D55"};
         IlluminantKey viewingIlluminant{"D50"};
-        bool supportDefaulted = false;
-        bool stageDefaulted = false;
-        bool typeDefaulted = false;
-        bool useDefaulted = false;
-        bool antihalationDefaulted = false;
-        bool channelModelDefaulted = false;
-        bool referenceIlluminantDefaulted = false;
-        bool viewingIlluminantDefaulted = false;
     };
 
     struct SpektrafilmProfileSamples {
@@ -78,50 +65,28 @@ namespace Profiles {
         bool hasHanatos2025AdaptationSurfaceParams = false;
     };
 
-    struct SpektrafilmFilmData : SpektrafilmProfileSamples {
-    };
-
-    struct SpektrafilmPrintData : SpektrafilmProfileSamples {
-    };
-
     struct ProfileDigest {
-        ProfileRole profileRole = ProfileRole::Film;
         std::array<float, 3> gammaSamelayerRgb{{0.336f, 0.319f, 0.273f}};
         std::array<float, 2> gammaInterlayerRToGb{{0.353f, 0.302f}};
         std::array<float, 2> gammaInterlayerGToRb{{0.154f, 0.353f}};
         std::array<float, 2> gammaInterlayerBToRg{{0.168f, 0.226f}};
-        std::string dirGammaSource = "negative-default";
         std::array<float, 3> halationFirstSigmaUm{{65.0f, 65.0f, 65.0f}};
         std::array<float, 3> halationPrimaryAmount{{0.08f, 0.02f, 0.0f}};
         bool halationPresetApplied = true;
         float hanatosSpectralGaussianBlurDefault = 0.0f;
     };
 
-    struct SelectedProfileDiagnostic {
-        std::string message;
-        std::string profileKey;
-        std::string sourcePath;
-        std::string field;
-        std::string route;
-        bool failed = false;
-    };
-
     struct ValidatedFilmProfile {
         SpektrafilmProfileInfo info;
-        SpektrafilmFilmData data;
+        SpektrafilmProfileSamples data;
         ProfileDigest digest;
-        SelectedProfileDiagnostic diagnostic;
         std::uint64_t assetVersionToken = 0;
-        std::string sourcePath;
     };
 
     struct ValidatedPrintProfile {
         SpektrafilmProfileInfo info;
-        SpektrafilmPrintData data;
-        ProfileDigest digest;
-        SelectedProfileDiagnostic diagnostic;
+        SpektrafilmProfileSamples data;
         std::uint64_t assetVersionToken = 0;
-        std::string sourcePath;
     };
 
     struct SelectedProfileRequest {
@@ -133,16 +98,9 @@ namespace Profiles {
     struct SelectedProfileResult {
         std::shared_ptr<const ValidatedFilmProfile> filmProfile;
         std::shared_ptr<const ValidatedPrintProfile> printProfile;
-        bool directRoutePrintProfileExcluded = false;
-        bool directRouteNeutralCalibrationExcluded = false;
         bool valid = false;
         std::string diagnostic;
     };
-
-    ProfileDigest build_profile_digest(const SpektrafilmProfileInfo& info, ProfileRole role);
-    std::uint64_t build_profile_asset_version_token(
-        const SpektrafilmProfileInfo& info,
-        const SpektrafilmProfileSamples& data);
 
     class ProfileAssetStore {
     public:

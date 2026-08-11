@@ -34,16 +34,7 @@
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
-    <ClCompile Include="src\ScannerOptics.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\Scanner.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\ProfileJSONLoader.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Print.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\ProfileAssets.cpp">
@@ -64,31 +55,22 @@
     <ClCompile Include="src\JuicerEffect.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\PipelineStages.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\ProcessRoot.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\DiffusionHostBehavior.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\DiffusionFrameDescriptor.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\DiffusionExecutionProfile.cpp">
+    <ClCompile Include="src\DiffusionExecution.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\RenderRecipe.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\Cuda\JuicerCudaFilmFoundationPayloads.cpp">
+    <ClCompile Include="src\Cuda\JuicerCudaFilmPayloads.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
-    <ClCompile Include="src\FilmJuicerEffectsFrameDescriptor.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\VisualGrainFrameDescriptor.cpp">
+    <ClCompile Include="src\FilmEffectsFrameDescriptors.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\ResourceAssetLibrary.cpp">
@@ -120,34 +102,14 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerAdmission.inc">
-      <Filter>Cuda</Filter>
-    </None>
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerCommands.inc">
-      <Filter>Cuda</Filter>
-    </None>
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerSubmission.inc">
-      <Filter>Cuda</Filter>
-    </None>
-    <None Include="src\Cuda\JuicerCudaResourcesServing.inc">
-      <Filter>Cuda</Filter>
-    </None>
-  </ItemGroup>
-  <ItemGroup>
     <ClInclude Include="src\Cuda\JuicerCudaPayloads.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="src\Cuda\JuicerCudaDirectFilmPayloads.h">
+    <ClInclude Include="src\Cuda\JuicerCudaFilmPayloads.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="src\Cuda\JuicerCudaFilmFoundationPayloads.h">
-      <Filter>Cuda</Filter>
-    </ClInclude>
-    <ClInclude Include="src\FilmJuicerEffectsFrameDescriptor.h">
+    <ClInclude Include="src\FilmEffectsFrameDescriptors.h">
       <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Cuda\JuicerCudaDirProfile.h">
-      <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaDeviceHelpers.cuh">
       <Filter>Cuda</Filter>
@@ -164,22 +126,10 @@
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceCore.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="src\AkimaInterpolator.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\ColorTransforms.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\Couplers.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\FilmProcessing.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\GaussianSciPy.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\GrainStaticActivityState.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\Hash.h">
@@ -209,37 +159,19 @@
     <ClInclude Include="src\ParamNames.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\PipelineTypes.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Print.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\ProfileAssets.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\ProfileCatalog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\ProfileJSONLoader.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\ProcessRoot.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\RenderFrameRequest.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\DiffusionHostBehavior.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\DiffusionFrameDescriptor.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\DiffusionPlanLayout.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\DiffusionExecutionProfile.h">
+    <ClInclude Include="src\DiffusionExecution.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\Diffusion\JuicerCudaDiffusion.h">
@@ -249,9 +181,6 @@
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\RenderRecipe.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\VisualGrainFrameDescriptor.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\ResourceAssetLibrary.h">

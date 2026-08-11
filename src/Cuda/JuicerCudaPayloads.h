@@ -117,6 +117,36 @@ namespace JuicerCuda {
         std::size_t rowStrideFloats = 0;
     };
 
+    struct SpatialDirPlanes {
+        float* rawCorrectionY = nullptr;
+        float* rawCorrectionM = nullptr;
+        float* rawCorrectionC = nullptr;
+        float* filteredCorrectionY = nullptr;
+        float* filteredCorrectionM = nullptr;
+        float* filteredCorrectionC = nullptr;
+        float* filterTemp = nullptr;
+        float* filterTempM = nullptr;
+        float* filterTempC = nullptr;
+        float* logRawB = nullptr;
+        float* logRawG = nullptr;
+        float* logRawR = nullptr;
+    };
+
+    struct SpatialDirFilterSpec {
+        const float* kernel = nullptr;
+        int radius = 0;
+        float sigma = 0.0f;
+        float weight = 0.0f;
+    };
+
+    struct SpatialDirBuildRequest {
+        SpatialDirPlanes planes{};
+        CameraFilmLinearExposurePlanes cameraFilmLinear{};
+        SpatialDirFilterSpec gaussian{};
+        SpatialDirFilterSpec tails[3]{};
+        void* streamOpaque = nullptr;
+    };
+
     struct EnlargerPrintLinearExposurePlanes {
         float* redSensitiveCForming = nullptr;
         float* greenSensitiveMForming = nullptr;
@@ -159,19 +189,6 @@ namespace JuicerCuda {
         DeviceCurveView dirDensB{};
         DeviceCurveView dirDensG{};
         DeviceCurveView dirDensR{};
-    };
-
-    struct HalationPayload {
-        int active = 0;
-        float primaryAmount[3] = {0.0f, 0.0f, 0.0f};
-        float secondaryAmount[3] = {0.0f, 0.0f, 0.0f};
-    };
-
-    struct HalationKernelPayload {
-        const float* JUICER_RESTRICT halationKernel[3] = {nullptr, nullptr, nullptr};
-        int halationRadius[3] = {0, 0, 0};
-        const float* JUICER_RESTRICT scatteringKernel[3] = {nullptr, nullptr, nullptr};
-        int scatteringRadius[3] = {0, 0, 0};
     };
 
     struct alignas(16) GrainFrameUniforms {
@@ -344,21 +361,6 @@ namespace JuicerCuda {
         int* scanErrorFlag = nullptr;
     };
 
-    struct ScannerOpticsPayload {
-        const float* JUICER_RESTRICT lensBlurKernel = nullptr;
-        int lensBlurRadius = 0;
-        const float* JUICER_RESTRICT unsharpKernel = nullptr;
-        int unsharpRadius = 0;
-        float unsharpAmount = 0.0f;
-        int glareOriginX = 0;
-        int glareOriginY = 0;
-        std::uint64_t glareSeed = 0;
-        float glarePercent = 0.0f;
-        float glareRoughness = 0.0f;
-        const float* JUICER_RESTRICT glareKernel = nullptr;
-        int glareRadius = 0;
-    };
-
     struct DirectPipelineRunParams {
         const void* src = nullptr;
         std::size_t srcRowBytes = 0;
@@ -403,12 +405,9 @@ namespace JuicerCuda {
         // Stage-scoped payloads.
         FilmExposurePayload filmExpose{};
         FilmDevelopPayload filmDevelop{};
-        HalationPayload halation{};
-        HalationKernelPayload halationKernels{};
         PrintExposePayload printExpose{};
         PrintDevelopPayload printDevelop{};
         ScanStagePayload scanStage{};
-        ScannerOpticsPayload scannerOptics{};
 
         FilmRawPayload filmRaw{};
     };

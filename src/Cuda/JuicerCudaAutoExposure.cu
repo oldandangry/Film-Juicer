@@ -704,8 +704,7 @@ extern "C" int juicer_cuda_auto_exposure_meter_to_device(
     if (descriptor.sourceX2 < descriptor.sourceX1 ||
         descriptor.sourceY2 < descriptor.sourceY1 ||
         sourceWidth <= 0 ||
-        sourceHeight <= 0 ||
-        descriptor.sampling != JuicerCuda::AutoExposurePreviewDescriptor::Sampling::NearestNeighbor) {
+        sourceHeight <= 0) {
         if (outErrorMsg)
             *outErrorMsg = set_error(sError, "invalid source bounds");
         return 5;

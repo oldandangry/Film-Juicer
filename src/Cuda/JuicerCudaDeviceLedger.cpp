@@ -26,19 +26,12 @@ namespace JuicerCuda {
             return true;
         }
 
-        bool allocation_class_is_valid(DeviceAllocationClass value) noexcept {
-            return static_cast<std::size_t>(value) < kDeviceAllocationClassCount;
-        }
-
-        bool identity_is_valid(
-            const DeviceAllocationIdentity& identity,
+        bool context_identity_is_valid(
+            const ResourceManager::DeviceContextKey& contextKey,
+            std::uint64_t contextEpoch,
             int ledgerDeviceId) noexcept {
-            return identity.deviceId == ledgerDeviceId &&
-                   identity.contextKey.deviceId == ledgerDeviceId &&
-                   identity.contextKey.contextOpaque != nullptr &&
-                   identity.contextEpoch != 0 &&
-                   allocation_class_is_valid(identity.allocationClass) &&
-                   !identity.diagnosticIdentity.empty();
+            return contextKey.deviceId == ledgerDeviceId &&
+                   contextKey.contextOpaque != nullptr && contextEpoch != 0;
         }
 
     } // namespace
@@ -82,7 +75,6 @@ namespace JuicerCuda {
     }
 
     bool DeviceByteReservation::split(
-        const DeviceAllocationIdentity& childIdentity,
         std::uint64_t childBytes,
         DeviceByteReservation& outChild,
         std::string& outError) {
@@ -95,9 +87,9 @@ namespace JuicerCuda {
         }
         DeviceAllocationLedger::SplitResult result{};
         if (!_ledger->split_reserved(
-                _recordId,
-                childIdentity,
-                childBytes,
+                DeviceAllocationLedger::SplitRecordRequest{
+                    .parentRecordId = _recordId,
+                    .childBytes = childBytes},
                 result,
                 outError)) {
             return false;
@@ -146,19 +138,6 @@ namespace JuicerCuda {
         return true;
     }
 
-    bool DeviceByteReservation::rollback_reserved(std::string& outError) {
-        outError.clear();
-        if (!active()) {
-            return fail(outError, "reservation_not_active");
-        }
-        if (!_ledger->rollback_reserved_record(_recordId, outError)) {
-            return false;
-        }
-        _recordId = 0;
-        _ledger.reset();
-        return true;
-    }
-
     void DeviceByteReservation::abandon_or_rollback() noexcept {
         if (_ledger != nullptr && _recordId != 0) {
             _ledger->abandon_or_rollback_record(_recordId);
@@ -168,62 +147,69 @@ namespace JuicerCuda {
     }
 
     std::shared_ptr<DeviceAllocationLedger> DeviceAllocationLedger::create(
-        int deviceId,
+        DeviceLedgerBudget budget,
         std::string& outError) {
         outError.clear();
-        if (deviceId < 0) {
+        if (budget.deviceId < 0) {
             fail(outError, "invalid_device_id");
+            return nullptr;
+        }
+        if (budget.bytes <= 1) {
+            fail(outError, "invalid_device_budget");
             return nullptr;
         }
         try {
             return std::shared_ptr<DeviceAllocationLedger>(
-                new DeviceAllocationLedger(deviceId));
+                new DeviceAllocationLedger(budget));
         } catch (...) {
             fail(outError, "ledger_allocation_failed");
             return nullptr;
         }
     }
 
-    DeviceAllocationLedger::DeviceAllocationLedger(int deviceId)
-        : _deviceId(deviceId) {
+    DeviceAllocationLedger::DeviceAllocationLedger(DeviceLedgerBudget budget)
+        : _deviceId(budget.deviceId),
+          _deviceBudgetBytes(budget.bytes) {
     }
 
     bool DeviceAllocationLedger::bind_or_validate_cap(
-        std::uint64_t deviceBudgetBytes,
         std::uint64_t softTargetBytes,
         std::string& outError) {
         outError.clear();
-        if (deviceBudgetBytes == 0 || softTargetBytes == 0 ||
-            softTargetBytes > deviceBudgetBytes) {
+        if (softTargetBytes == 0 || softTargetBytes > _deviceBudgetBytes) {
             return fail(outError, "invalid_device_cap");
         }
         std::scoped_lock lock(_mutex);
-        if (_capBytes == softTargetBytes &&
-            _deviceBudgetBytes == deviceBudgetBytes) {
+        if (_capBytes == softTargetBytes) {
             return true;
         }
         if (_reservedBytes != 0 || _committedBytes != 0 ||
             _retiringBytes != 0 || !_records.empty()) {
             return fail(outError, "device_cap_change_while_charged");
         }
-        _deviceBudgetBytes = deviceBudgetBytes;
         _capBytes = softTargetBytes;
         return true;
     }
 
+    std::uint64_t DeviceAllocationLedger::device_budget_bytes() const noexcept {
+        return _deviceBudgetBytes;
+    }
+
     bool DeviceAllocationLedger::reserve(
-        const DeviceAllocationIdentity& identity,
-        std::uint64_t bytes,
+        const DeviceReservationRequest& request,
         DeviceByteReservation& outReservation,
         std::string& outError) {
         outError.clear();
         if (outReservation.active()) {
             return fail(outError, "output_reservation_not_empty");
         }
-        if (bytes == 0) {
+        if (request.bytes == 0) {
             return fail(outError, "zero_byte_reservation");
         }
-        if (!identity_is_valid(identity, _deviceId)) {
+        if (!context_identity_is_valid(
+                request.contextKey,
+                request.contextEpoch,
+                _deviceId)) {
             return fail(outError, "invalid_allocation_identity");
         }
 
@@ -241,7 +227,7 @@ namespace JuicerCuda {
         std::uint64_t charged = 0;
         if (!checked_add(_reservedBytes, _committedBytes, charged) ||
             !checked_add(charged, _retiringBytes, charged) ||
-            !checked_add(charged, bytes, charged)) {
+            !checked_add(charged, request.bytes, charged)) {
             return fail(outError, "device_charge_overflow");
         }
         if (charged >= _capBytes) {
@@ -253,9 +239,10 @@ namespace JuicerCuda {
         const std::uint64_t recordId = _nextRecordId;
         Record record{};
         try {
-            record.identity = identity;
-            record.bytes = bytes;
-            const auto inserted = _records.emplace(recordId, std::move(record));
+            record.contextKey = request.contextKey;
+            record.contextEpoch = request.contextEpoch;
+            record.bytes = request.bytes;
+            const auto inserted = _records.emplace(recordId, record);
             if (!inserted.second) {
                 return fail(outError, "record_id_collision");
             }
@@ -263,46 +250,32 @@ namespace JuicerCuda {
             return fail(outError, "record_allocation_failed");
         }
         _nextRecordId += 1;
-        _reservedBytes += bytes;
+        _reservedBytes += request.bytes;
         outReservation = DeviceByteReservation(std::move(self), recordId);
         return true;
     }
 
     bool DeviceAllocationLedger::split_reserved(
-        std::uint64_t parentRecordId,
-        const DeviceAllocationIdentity& childIdentity,
-        std::uint64_t childBytes,
+        const SplitRecordRequest& request,
         SplitResult& outResult,
         std::string& outError) {
         outResult = SplitResult{};
-        if (childBytes == 0) {
+        if (request.childBytes == 0) {
             return fail(outError, "zero_byte_split");
         }
-        if (!identity_is_valid(childIdentity, _deviceId)) {
-            return fail(outError, "invalid_child_identity");
-        }
-
-        DeviceAllocationIdentity identityCopy;
-        try {
-            identityCopy = childIdentity;
-        } catch (const std::bad_alloc&) {
-            return fail(outError, "child_identity_allocation_failed");
-        }
-
         std::scoped_lock lock(_mutex);
-        auto parentIt = _records.find(parentRecordId);
+        auto parentIt = _records.find(request.parentRecordId);
         if (parentIt == _records.end() ||
             parentIt->second.state != DeviceReservationState::Reserved ||
             parentIt->second.abandoned) {
             return fail(outError, "parent_not_reserved");
         }
         Record& parent = parentIt->second;
-        if (childBytes > parent.bytes) {
+        if (request.childBytes > parent.bytes) {
             return fail(outError, "split_exceeds_parent");
         }
-        if (childBytes == parent.bytes) {
-            parent.identity = std::move(identityCopy);
-            outResult.childRecordId = parentRecordId;
+        if (request.childBytes == parent.bytes) {
+            outResult.childRecordId = request.parentRecordId;
             outResult.parentReleased = true;
             return true;
         }
@@ -311,10 +284,11 @@ namespace JuicerCuda {
         }
         const std::uint64_t childRecordId = _nextRecordId;
         Record child{};
-        child.identity = std::move(identityCopy);
-        child.bytes = childBytes;
+        child.contextKey = parent.contextKey;
+        child.contextEpoch = parent.contextEpoch;
+        child.bytes = request.childBytes;
         try {
-            const auto inserted = _records.emplace(childRecordId, std::move(child));
+            const auto inserted = _records.emplace(childRecordId, child);
             if (!inserted.second) {
                 return fail(outError, "record_id_collision");
             }
@@ -322,7 +296,7 @@ namespace JuicerCuda {
             return fail(outError, "record_allocation_failed");
         }
         _nextRecordId += 1;
-        parent.bytes -= childBytes;
+        parent.bytes -= request.childBytes;
         outResult.childRecordId = childRecordId;
         return true;
     }
@@ -391,21 +365,6 @@ namespace JuicerCuda {
         return true;
     }
 
-    bool DeviceAllocationLedger::rollback_reserved_record(
-        std::uint64_t recordId,
-        std::string& outError) {
-        std::scoped_lock lock(_mutex);
-        auto it = _records.find(recordId);
-        if (it == _records.end() ||
-            it->second.state != DeviceReservationState::Reserved ||
-            it->second.abandoned) {
-            return fail(outError, "record_not_reserved");
-        }
-        _reservedBytes -= it->second.bytes;
-        _records.erase(it);
-        return true;
-    }
-
     void DeviceAllocationLedger::abandon_or_rollback_record(
         std::uint64_t recordId) noexcept {
         try {
@@ -451,27 +410,12 @@ namespace JuicerCuda {
     DeviceLedgerSnapshot DeviceAllocationLedger::snapshot() const {
         std::scoped_lock lock(_mutex);
         DeviceLedgerSnapshot result{};
-        result.deviceId = _deviceId;
-        result.deviceBudgetBytes = _deviceBudgetBytes;
         result.capBytes = _capBytes;
         result.reservedBytes = _reservedBytes;
         result.committedBytes = _committedBytes;
         result.retiringBytes = _retiringBytes;
         result.chargedBytes = _reservedBytes + _committedBytes + _retiringBytes;
         result.recordCount = static_cast<std::uint64_t>(_records.size());
-        for (const auto& [recordId, record] : _records) {
-            (void)recordId;
-            const std::size_t stateIndex = static_cast<std::size_t>(record.state);
-            const std::size_t classIndex =
-                static_cast<std::size_t>(record.identity.allocationClass);
-            if (stateIndex < kDeviceReservationStateCount &&
-                classIndex < kDeviceAllocationClassCount) {
-                result.recordCountsByStateAndClass[stateIndex][classIndex] += 1;
-            }
-            if (record.abandoned) {
-                result.abandonedRecordCount += 1;
-            }
-        }
         return result;
     }
 
@@ -482,8 +426,8 @@ namespace JuicerCuda {
         std::uint64_t count = 0;
         for (const auto& [recordId, record] : _records) {
             (void)recordId;
-            if (record.identity.contextKey == contextKey &&
-                record.identity.contextEpoch == contextEpoch) {
+            if (record.contextKey == contextKey &&
+                record.contextEpoch == contextEpoch) {
                 count += 1;
             }
         }
@@ -506,8 +450,8 @@ namespace JuicerCuda {
             std::scoped_lock lock(_mutex);
             for (auto it = _records.begin(); it != _records.end();) {
                 Record& record = it->second;
-                if (!(record.identity.contextKey == contextKey) ||
-                    record.identity.contextEpoch != contextEpoch) {
+                if (!(record.contextKey == contextKey) ||
+                    record.contextEpoch != contextEpoch) {
                     ++it;
                     continue;
                 }
@@ -522,7 +466,6 @@ namespace JuicerCuda {
                         _retiringBytes -= record.bytes;
                         break;
                     case DeviceReservationState::Released:
-                    case DeviceReservationState::Count:
                     default:
                         outError = "invalid_proven_context_loss_record_state";
                         return false;

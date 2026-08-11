@@ -155,8 +155,7 @@ namespace {
         hash_double_array(hash, resolved.groupWeightsCoreHaloBloom);
         hash_double_array(hash, resolved.groupCenterLambdaUm);
         hash_double(hash, resolved.effectiveWarmth);
-        hash_double(hash, resolved.radiusScale);
-        hash_double(hash, resolved.samplingScale);
+        hash_double(hash, resolved.spatialScale);
         return hash;
     }
 
@@ -169,7 +168,7 @@ namespace {
         hash_double_array(hash, descriptor.groupWeightsCoreHaloBloom);
         hash_double_array(hash, descriptor.groupCenterLambdaUm);
         hash_double(hash, descriptor.effectiveWarmth);
-        hash_double(hash, descriptor.samplingScale);
+        hash_double(hash, descriptor.spatialScale);
         hash_double(hash, descriptor.pixelSizeUm);
         hash_u32_le(hash, static_cast<std::uint32_t>(descriptor.radiusPixels));
         return hash;
@@ -235,12 +234,8 @@ namespace {
             fail(diagnostic, "effective_warmth");
             return false;
         }
-        if (!(std::isfinite(resolved.radiusScale) && resolved.radiusScale > 0.0)) {
-            fail(diagnostic, "radius_scale");
-            return false;
-        }
-        if (!(std::isfinite(resolved.samplingScale) && resolved.samplingScale > 0.0)) {
-            fail(diagnostic, "sampling_scale");
+        if (!(std::isfinite(resolved.spatialScale) && resolved.spatialScale > 0.0)) {
+            fail(diagnostic, "spatial_scale");
             return false;
         }
         if (resolved_hash(resolved) != resolved.hash) {
@@ -284,8 +279,8 @@ namespace {
             fail(diagnostic, "effective_warmth");
             return false;
         }
-        if (!(std::isfinite(descriptor.samplingScale) && descriptor.samplingScale > 0.0)) {
-            fail(diagnostic, "sampling_scale");
+        if (!(std::isfinite(descriptor.spatialScale) && descriptor.spatialScale > 0.0)) {
+            fail(diagnostic, "spatial_scale");
             return false;
         }
         if (!(std::isfinite(descriptor.pixelSizeUm) && descriptor.pixelSizeUm > 0.0)) {
@@ -545,8 +540,7 @@ namespace Spektrafilm {
             config->haloWarmthBase + authored.haloWarmth,
             -1.5,
             1.5);
-        out.radiusScale = authored.spatialScale;
-        out.samplingScale = std::max(authored.spatialScale, kMinimumScale);
+        out.spatialScale = authored.spatialScale;
         out.hash = resolved_hash(out);
         if (out.hash == 0) {
             fail(diagnostic, "resolved_hash");
@@ -582,7 +576,7 @@ namespace Spektrafilm {
         const double bloomMaximumLambdaUm =
             resolved.groupCenterLambdaUm[2] * config->bloom.spread;
         const double requestedRadius = std::ceil(std::max(
-            8.0 * bloomMaximumLambdaUm * resolved.radiusScale / pixelSizeUm,
+            8.0 * bloomMaximumLambdaUm * resolved.spatialScale / pixelSizeUm,
             5.0));
         if (!(std::isfinite(requestedRadius) && requestedRadius > 0.0)) {
             fail(diagnostic, "radius_pixels");
@@ -602,7 +596,7 @@ namespace Spektrafilm {
         out.groupWeightsCoreHaloBloom = resolved.groupWeightsCoreHaloBloom;
         out.groupCenterLambdaUm = resolved.groupCenterLambdaUm;
         out.effectiveWarmth = resolved.effectiveWarmth;
-        out.samplingScale = resolved.samplingScale;
+        out.spatialScale = resolved.spatialScale;
         out.pixelSizeUm = pixelSizeUm;
         out.radiusPixels = radius;
         out.hash = sample_descriptor_hash(out);
@@ -645,9 +639,11 @@ namespace Spektrafilm {
             return false;
         }
 
+        const double componentSpatialScale =
+            std::max(descriptor.spatialScale, kMinimumScale);
         const auto lambda_pixels = [&](double lambdaUm) {
             return std::max(
-                lambdaUm * descriptor.samplingScale / descriptor.pixelSizeUm,
+                lambdaUm * componentSpatialScale / descriptor.pixelSizeUm,
                 kMinimumScale);
         };
         for (std::size_t index = 0; index < core.count; ++index) {

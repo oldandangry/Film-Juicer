@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,7 +25,7 @@
 // - OpticsRecipe owns lens, halation, scattering, and diffusion behavior when Phase 6 introduces it.
 // - GrainContract owns Spektrafilm density_min; VisualGrainRecipe owns Film-Juicer grain behavior.
 //   The visual particle density minimum is independent of scanner/enlarger density bounds.
-// - FrameRequest owns frame-local extent, pixel size, temporal tokens, and metering request facts.
+// - DirectFrameRequest and PrintFrameRequest own frame-local extent, pixel size, and temporal tokens.
 // - PreparedCudaFrame/context resource internals own durable GPU handles, scratch, staging, and views.
 // This is source-adjacent orientation, not a runtime registry.
 namespace Spektrafilm {
@@ -60,13 +61,6 @@ namespace Spektrafilm {
         PrintMediaAuthoredCurves
     };
 
-    enum class ScannerPostEffectDisposition : std::uint8_t {
-        Identity,
-        Implemented,
-        BlockedNotImplementedForPhase3,
-        BlockedNotImplementedForPhase4
-    };
-
     enum class DichroicFilterSet : std::uint8_t {
         Custom,
         DurstDigitalLight,
@@ -90,17 +84,6 @@ namespace Spektrafilm {
         CompensationOnly,
         NormalizeOnly,
         NormalizeAndCompensate
-    };
-
-    enum class PrintNormalizerExpression : std::uint8_t {
-        One,
-        FactorMidgrayCompOverFactorMidgray,
-        FactorMidgray,
-        FactorMidgrayComp
-    };
-
-    enum class PrintExposureScalingOrder : std::uint8_t {
-        NormalizeBaseThenAddPreflashThenScaleExposureAndCorrection
     };
 
     enum class SpatialOpticsDomain : std::uint8_t {
@@ -161,18 +144,11 @@ struct ProfileRoute {
     std::string filmProfileKey;
     std::string printProfileKey;
     Spektrafilm::ScanRoute scanRoute = Spektrafilm::kDefaultScanRoute;
-    Spektrafilm::ProfileSupport captureSupport = Spektrafilm::ProfileSupport::Unsupported;
-    Spektrafilm::ProfileStage captureStage = Spektrafilm::ProfileStage::Unsupported;
     Spektrafilm::ProfilePolarity capturePolarity = Spektrafilm::ProfilePolarity::Unsupported;
-    Profiles::ProfileUse captureUse = Profiles::ProfileUse::Unsupported;
-    Profiles::ProfileAntihalation captureAntihalation = Profiles::ProfileAntihalation::Unsupported;
-    Profiles::ProfileChannelModel captureChannelModel = Profiles::ProfileChannelModel::Unsupported;
     std::uint64_t filmProfileAssetVersionToken = 0;
     std::uint64_t printProfileAssetVersionToken = 0;
     std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
     std::shared_ptr<const Profiles::ValidatedPrintProfile> printProfile;
-    bool directRoutePrintProfileExcluded = false;
-    bool directRouteNeutralCalibrationExcluded = false;
     std::uint64_t hash = 0;
 };
 
@@ -239,6 +215,43 @@ struct SpatialOptics {
     std::uint64_t hash = 0;
 };
 
+namespace Spektrafilm {
+
+    inline constexpr std::uint32_t kDiffusionFrameDescriptorSchemaVersion = 2;
+
+    enum class DiffusionLinearStage : std::uint8_t {
+        CameraFilmLinear,
+        EnlargerPrintLinear
+    };
+
+    struct DiffusionFrameDomain {
+        int originX = 0;
+        int originY = 0;
+        int width = 0;
+        int height = 0;
+
+        friend bool operator==(
+            const DiffusionFrameDomain&,
+            const DiffusionFrameDomain&) = default;
+    };
+
+    struct DiffusionStageFrameDescriptor {
+        DiffusionLinearStage stage = DiffusionLinearStage::CameraFilmLinear;
+        double scatterFraction = 0.0;
+        DiffusionPsfSampleDescriptor sample;
+        std::uint64_t hash = 0;
+    };
+
+    struct DiffusionFrameSetDescriptor {
+        ScanRoute route = kDefaultScanRoute;
+        DiffusionFrameDomain fullFrame;
+        std::optional<DiffusionStageFrameDescriptor> camera;
+        std::optional<DiffusionStageFrameDescriptor> enlarger;
+        std::uint64_t hash = 0;
+    };
+
+} // namespace Spektrafilm
+
 struct ExactOpticsFrameExtent {
     int width = 0;
     int height = 0;
@@ -288,10 +301,6 @@ struct FilmRawRecipe {
     float filmFormatLongEdgeMm = 36.0f;
     CameraBandPassRecipe cameraBandPass;
     HanatosAdaptationRecipe hanatos;
-    // Loader-linear sensitivity is retained as provenance. finalSensitivity is the only
-    // sensitivity payload/resource identity consumed by direct film-raw processing.
-    std::array<std::array<float, 3>, 81> linearSensitivity{};
-    std::uint64_t linearSensitivityHash = 0;
     std::array<std::array<float, 3>, 81> finalSensitivity{};
     std::uint64_t finalSensitivityHash = 0;
     std::uint64_t hanatosLutHash = 0;
@@ -309,7 +318,6 @@ struct FilmDevelopRecipe {
     std::array<float, 3> densityCurveGamma{{1.0f, 1.0f, 1.0f}};
     std::array<float, 3> authoredMinCmy{};
     std::array<float, 3> authoredMaxCmy{};
-    std::uint64_t authoredDensityCurvesHash = 0;
     std::uint64_t normalizedDensityCurvesHash = 0;
     std::uint64_t densityCurvesLayersHash = 0;
     std::uint64_t hash = 0;
@@ -331,13 +339,6 @@ struct DirCouplersControls {
 struct DirCouplersRecipe {
     Spektrafilm::ProfilePolarity polarity = Spektrafilm::ProfilePolarity::Unsupported;
     bool active = false;
-    float amount = 1.0f;
-    float inhibitionSameLayer = 1.0f;
-    float inhibitionInterlayer = 1.0f;
-    std::array<float, 3> gammaSameLayerRgb{};
-    std::array<float, 2> gammaInterlayerRToGb{};
-    std::array<float, 2> gammaInterlayerGToRb{};
-    std::array<float, 2> gammaInterlayerBToRg{};
     std::array<std::array<float, 3>, 3> matrixRgb{};
     float diffusionSizeUm = 0.0f;
     float diffusionTailUm = 0.0f;
@@ -649,7 +650,6 @@ struct FilmJuicerEffectsRecipe final {
 
 struct GrainContract {
     std::array<float, 3> densityMinCmy{{0.07f, 0.08f, 0.12f}};
-    std::uint64_t hash = 0;
 };
 
 struct DensityBoundsRecipe {
@@ -679,7 +679,6 @@ struct ScannerOutputRecipe {
     bool whiteCorrection = false;
     float blackLevel = 0.01f;
     float whiteLevel = 0.98f;
-    bool directGlareDisabled = true;
     bool glareActive = false;
     float glarePercent = 0.0f;
     float glareRoughness = 0.0f;
@@ -687,9 +686,6 @@ struct ScannerOutputRecipe {
     float lensBlurSigmaPx = 0.0f;
     float unsharpSigmaPx = 0.7f;
     float unsharpAmount = 0.7f;
-    Spektrafilm::ScannerPostEffectDisposition postEffectsDisposition =
-        Spektrafilm::ScannerPostEffectDisposition::Identity;
-    std::string blockingDiagnostic;
     std::uint64_t hash = 0;
 };
 
@@ -713,25 +709,10 @@ struct DichroicResourceIdentity {
     std::uint64_t hash = 0;
 };
 
-struct NeutralCalibrationRecipe {
-    Spektrafilm::NeutralCalibrationStatus status = Spektrafilm::NeutralCalibrationStatus::MissingEntry;
-    std::string resourcePath = "Resources/filters/neutral_print_filters.json";
-    std::string printProfileKey;
-    std::string printIlluminantKey;
-    std::string filmProfileKey;
-    std::uint64_t resourceHash = 0;
-    std::uint64_t hash = 0;
-};
-
 struct PrintFilterRecipe {
-    CmyCcTriplet neutralCmyCc{0.0f, 65.0f, 55.0f};
-    CmyCcTriplet userCmyCc;
-    float filmJuicerMainCFilterShiftCc = 0.0f;
     CmyCcTriplet mainCmyCc;
-    CmyCcTriplet preflashUserCmyCc;
     CmyCcTriplet preflashCmyCc;
     DichroicResourceIdentity dichroic;
-    NeutralCalibrationRecipe neutralCalibration;
     std::uint64_t hash = 0;
 };
 
@@ -743,10 +724,6 @@ struct PrintExposureRecipe {
     bool printExposureCompensation = true;
     Spektrafilm::PrintNormalizationMode normalizationMode =
         Spektrafilm::PrintNormalizationMode::NormalizeAndCompensate;
-    Spektrafilm::PrintNormalizerExpression normalizerExpression =
-        Spektrafilm::PrintNormalizerExpression::FactorMidgrayComp;
-    Spektrafilm::PrintExposureScalingOrder scalingOrder =
-        Spektrafilm::PrintExposureScalingOrder::NormalizeBaseThenAddPreflashThenScaleExposureAndCorrection;
     std::uint64_t hash = 0;
 };
 
@@ -755,19 +732,10 @@ struct PrintIlluminantRecipe {
     std::uint64_t hash = 0;
 };
 
-struct PrintMediumHandoffRecipe {
-    Spektrafilm::DensityMedium medium = Spektrafilm::DensityMedium::Print;
-    std::string printProfileKey;
-    std::uint64_t printProfileAssetVersionToken = 0;
-    std::string viewingIlluminant;
-    std::uint64_t hash = 0;
-};
-
 struct PrintRecipe {
     PrintFilterRecipe filters;
     PrintExposureRecipe exposure;
     PrintIlluminantRecipe illuminant;
-    PrintMediumHandoffRecipe mediumHandoff;
     std::uint64_t hash = 0;
 };
 
@@ -785,7 +753,6 @@ struct RenderRecipe {
     ScannerOutputRecipe scannerOutput;
     PrintRecipe print;
     bool directStructuralReady = false;
-    bool directPixelAcceptance = false;
     bool printStructuralReady = false;
     std::uint64_t hash = 0;
 };
@@ -819,9 +786,8 @@ namespace Spektrafilm {
         DiffusionFilterAuthoredControls enlargerDiffusion;
     };
 
-    struct DirectRecipeBuildInput {
+    struct FilmFoundationBuildInput {
         std::string filmProfileKey;
-        std::string printProfileKey;
         ScanRoute scanRoute = kDefaultScanRoute;
         std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
         VisualGrainControls visualGrain;
@@ -833,8 +799,6 @@ namespace Spektrafilm {
         GrainContract grainContract;
         DirCouplersControls dirCouplers;
         SpatialOpticsControls spatialOptics;
-        bool directRoutePrintProfileExcluded = false;
-        bool directRouteNeutralCalibrationExcluded = false;
         int spectralUpsamplingMode = 0;
         int inputColorSpace = 0;
         bool inputCctfDecoding = false;
@@ -849,6 +813,10 @@ namespace Spektrafilm {
         std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
         std::array<float, 81> referenceIlluminant{};
         bool referenceIlluminantValid = false;
+    };
+
+    struct DirectRecipeBuildInput {
+        FilmFoundationBuildInput film;
         std::uint32_t scannerLutResolution = 17;
         int outputColorSpace = 0;
         bool outputCctfEncoding = true;
@@ -869,16 +837,11 @@ namespace Spektrafilm {
     };
 
     struct PrintRecipeBuildInput {
-        std::string filmProfileKey;
+        FilmFoundationBuildInput film;
         std::string printProfileKey;
-        ScanRoute scanRoute = kDefaultScanRoute;
-        std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
         std::shared_ptr<const Profiles::ValidatedPrintProfile> printProfile;
-        DirectRecipeBuildInput filmFoundation;
         DichroicResourceIdentity dichroic;
         NeutralCalibrationStatus neutralCalibrationStatus = NeutralCalibrationStatus::MissingEntry;
-        std::uint64_t neutralCalibrationResourceHash = 0;
-        std::uint64_t neutralCalibrationHash = 0;
         CmyCcTriplet currentNeutralCmyCc{0.0f, 65.0f, 55.0f};
         CmyCcTriplet calibratedNeutralCmyCc{0.0f, 65.0f, 55.0f};
         // UI remains Y/M/C. These values are converted once to internal C/M/Y here.
@@ -887,7 +850,6 @@ namespace Spektrafilm {
         float preflashYFilterCc = 0.0f;
         float printExposure = 1.0f;
         float preflashExposure = 0.0f;
-        float cameraExposureCompensationEv = 0.0f;
         bool normalizePrintExposure = true;
         bool printExposureCompensation = true;
         std::string printIlluminantKey = "TH-KG3";
@@ -937,6 +899,13 @@ namespace Spektrafilm {
         PrintNormalizationMode mode,
         float factorMidgray,
         float factorMidgrayComp);
+    bool build_diffusion_frame_set_descriptor(
+        const SpatialOptics& optics,
+        ScanRoute route,
+        double pixelSizeUm,
+        DiffusionFrameDomain fullFrame,
+        std::optional<DiffusionFrameSetDescriptor>& out,
+        std::string& diagnostic);
     bool build_spatial_dir_descriptor(
         const DirCouplersRecipe& recipe,
         float pixelSizeUm,

@@ -22,15 +22,6 @@ namespace JuicerParams {
     inline constexpr const char kDirCouplersGammaInterlayerGToRb[] = "CouplersGammaInterlayerGToRb";
     inline constexpr const char kDirCouplersGammaInterlayerBToRg[] = "CouplersGammaInterlayerBToRg";
     inline constexpr const char kHalationActive[] = "HalationActive";
-    inline constexpr const char kHalationStrengthMaster[] = "HalationStrengthMaster";
-    inline constexpr const char kHalationSizeUmMaster[] = "HalationSizeUmMaster";
-    inline constexpr const char kHalationSecondaryAmountMaster[] = "HalationSecondaryAmountMaster";
-    inline constexpr const char kHalationSecondarySizeUmMaster[] = "HalationSecondarySizeUmMaster";
-    inline constexpr const char kHalationRevertToStock[] = "HalationRevertToStock";
-    inline constexpr const char kHalationStrength[] = "HalationStrength";
-    inline constexpr const char kHalationSizeUm[] = "HalationSizeUm";
-    inline constexpr const char kHalationSecondaryAmount[] = "HalationSecondaryAmount";
-    inline constexpr const char kHalationSecondarySizeUm[] = "HalationSecondarySizeUm";
     inline constexpr const char kGrainActive[] = "GrainActive";
     inline constexpr const char kGrainSublayersActive[] = "GrainSublayersActive";
     inline constexpr const char kGrainParticleAreaUm2[] = "GrainParticleAreaUm2";
@@ -57,7 +48,6 @@ namespace JuicerParams {
     inline constexpr const char kGrainClumpMorphPeriodSec[] = "GrainClumpMorphPeriodSec";
     inline constexpr const char kGrainDebugView[] = "GrainDebugView";
     inline constexpr const char kGrainMicroStructure[] = "GrainMicroStructure";
-    inline constexpr const char kGrainSubLayers[] = "GrainSubLayers";
     inline constexpr const char kGateWeaveAmount[] = "GateWeaveAmount";
     inline constexpr const char kFilmDustAmount[] = "FilmDustAmount";
     inline constexpr const char kGateDustAmount[] = "GateDustAmount";

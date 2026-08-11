@@ -14,28 +14,6 @@ namespace Spektrafilm {
         namespace fs = std::filesystem;
         using Json = nlohmann::json;
 
-        constexpr std::uint64_t kFnvOffsetBasis64 = 1469598103934665603ull;
-        constexpr std::uint64_t kFnvPrime64 = 1099511628211ull;
-
-        std::uint64_t hash_string(std::uint64_t h, const std::string& value) {
-            for (const unsigned char c : value) {
-                h ^= static_cast<std::uint64_t>(c);
-                h *= kFnvPrime64;
-            }
-            return h;
-        }
-
-        std::uint64_t source_version_for_path(const fs::path& path) {
-            std::uint64_t h = hash_string(kFnvOffsetBasis64, path.generic_string());
-            std::error_code ec;
-            const std::uintmax_t size = fs::file_size(path, ec);
-            if (!ec) {
-                h ^= static_cast<std::uint64_t>(size);
-                h *= kFnvPrime64;
-            }
-            return h;
-        }
-
         std::string json_string_member_or(const Json& object, const char* key, std::string fallback) {
             const auto it = object.find(key);
             if (it == object.end() || !it->is_string()) {
@@ -174,7 +152,6 @@ namespace Spektrafilm {
                 ProfilePolarity::Unsupported,
                 entry.polarityDefaulted,
                 parse_polarity);
-            entry.sourceVersion = source_version_for_path(path);
             return EntryReadDisposition::Profile;
         }
 

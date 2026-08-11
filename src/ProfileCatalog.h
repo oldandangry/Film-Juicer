@@ -37,7 +37,6 @@ namespace Spektrafilm {
         bool supportDefaulted = false;
         bool stageDefaulted = false;
         bool polarityDefaulted = false;
-        std::uint64_t sourceVersion = 0;
     };
 
     struct ProfileCatalog {

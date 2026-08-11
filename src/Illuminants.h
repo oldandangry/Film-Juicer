@@ -10,6 +10,7 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
 #include "SpectralData.h"
 
 namespace IlluminantKeys {
@@ -47,10 +48,6 @@ namespace IlluminantKeys {
         return result;
     }
 
-    inline bool equals(std::string_view a, std::string_view b) {
-        return normalize(a) == normalize(b);
-    }
-
     inline bool matches_any(std::string_view value, std::initializer_list<std::string_view> keys) {
         const std::string norm = normalize(value);
         for (std::string_view key : keys) {
@@ -65,11 +62,6 @@ namespace IlluminantKeys {
 
 
 namespace Spectral {
-
-    inline void set_illuminant_equal_energy();
-
-    // Build an illuminant and set it into Spectral::gIlluminantCurve via set_illuminant_from_pairs.
-    // During precompute_spectral_tables(), gIllumTable will be filled from this curve if present.
 
     // --------------------------
     // Physics: Planck blackbody
@@ -192,100 +184,6 @@ namespace Spectral {
             return false;
         }
         return true;
-    }
-
-    // --------------------------
-    // Placeholder filters
-    // --------------------------
-    inline float schott_KG3_transmission(float /*lambda_nm*/) {
-        // Placeholder until measured KG3 transmission data is installed; unity means "no attenuation".
-        return 1.0f;
-    }
-    inline float generic_lens_transmission(float lambda_nm) {
-        // Smooth attenuation: ~0.88 at 400 nm, ~0.95 at 550 nm, ~0.92 at 700 nm.
-        const float blue = 1.0f - 0.12f * std::exp(-0.5f * std::pow((lambda_nm - 420.0f) / 35.0f, 2.0f));
-        const float red = 1.0f - 0.06f * std::exp(-0.5f * std::pow((lambda_nm - 700.0f) / 60.0f, 2.0f));
-        float t = blue * red;
-        if (t < 0.0f)
-            t = 0.0f;
-        if (t > 1.0f)
-            t = 1.0f;
-        return t;
-    }
-
-    // Optional: allow user to feed measured filter curves (wavelength, transmission 0..1).
-    // These are multiplied into the illuminant build if provided.
-    inline Curve gFilterKG3Curve;        // leave empty to use schott_KG3_transmission()
-    inline Curve gLensTransmissionCurve; // leave empty to use generic_lens_transmission()
-
-    inline void set_filter_KG3_from_pairs(const std::vector<std::pair<float, float>>& pairs) {
-        if (!build_curve_on_reference_axis_from_linear_pairs(
-                gFilterKG3Curve, pairs, ReferenceResampleKernel::Akima)) {
-            Spectral::log_spectral_warning("KG3 filter resample failed (all samples filtered)");
-        }
-    }
-    inline void set_lens_transmission_from_pairs(const std::vector<std::pair<float, float>>& pairs) {
-        if (!build_curve_on_reference_axis_from_linear_pairs(
-                gLensTransmissionCurve, pairs, ReferenceResampleKernel::Akima)) {
-            Spectral::log_spectral_warning("Lens transmission resample failed (all samples filtered)");
-        }
-    }
-
-    // Cache for D65 loaded from disk and pinned to current SpectralShape
-    inline Curve gIllumD65CurveLoaded;
-
-    inline void set_illuminant_from_loaded_curve_or_pairs(const Curve& curve,
-                                                          const std::vector<std::pair<float, float>>& pairs) {
-        if (!curve.lambda_nm.empty()) {
-            // Curve is already pinned to SpectralShape
-            const bool sameSize =
-                curve.linear.size() == gIlluminantCurve.linear.size() &&
-                curve.lambda_nm.size() == gIlluminantCurve.lambda_nm.size();
-
-            bool identical = sameSize;
-            if (identical) {
-                for (size_t i = 0; i < curve.lambda_nm.size(); ++i) {
-                    if (curve.lambda_nm[i] != gIlluminantCurve.lambda_nm[i]) {
-                        identical = false;
-                        break;
-                    }
-                }
-                if (identical) {
-                    constexpr float eps = 1e-6f;
-                    for (size_t i = 0; i < curve.linear.size(); ++i) {
-                        if (std::fabs(curve.linear[i] - gIlluminantCurve.linear[i]) > eps) {
-                            identical = false;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (identical) {
-                return; // no change
-            }
-
-            gIlluminantCurve = curve;
-            increment_illum_version();
-            mark_spectral_tables_dirty();
-            return;
-        }
-        if (!pairs.empty()) {
-            set_illuminant_from_pairs(pairs);
-            return;
-        }
-        // If both are empty, leave to caller to fall back.
-    }
-
-    inline void install_illuminant_curve_or_clear(const Spectral::Curve& curve) {
-        if (!curve.lambda_nm.empty() && !curve.linear.empty()) {
-            gIlluminantCurve = curve;
-        } else {
-            gIlluminantCurve.lambda_nm.clear();
-            gIlluminantCurve.linear.clear();
-        }
-        increment_illum_version();
-        mark_spectral_tables_dirty();
     }
 
     // --------------------------
@@ -454,36 +352,6 @@ namespace Spectral {
         Spectral::assign_reference_axis(c.lambda_nm);
         c.linear.assign(Spectral::gShape.K, 1.0f);
         return c;
-    }
-
-
-    inline void set_illuminant_D65(const std::string& csvPath) {
-        install_illuminant_curve_or_clear(build_curve_D65_pinned(csvPath));
-    }
-
-    inline void set_illuminant_D55(const std::string& csvPath) {
-        install_illuminant_curve_or_clear(build_curve_D55_pinned(csvPath));
-    }
-
-    inline void set_illuminant_D50(const std::string& csvPath) {
-        install_illuminant_curve_or_clear(build_curve_D50_pinned(csvPath));
-    }
-
-    inline void set_illuminant_TH_KG3_L(const std::string& kg3CsvPath, const std::string& lensCsvPath) {
-        install_illuminant_curve_or_clear(build_curve_TH_KG3_L_pinned(kg3CsvPath, lensCsvPath));
-    }
-
-
-    // --------------------------
-    // Public presets
-    // --------------------------
-    inline void set_illuminant_equal_energy() {
-        install_illuminant_curve_or_clear(build_curve_equal_energy_pinned());
-    }
-
-
-    inline void set_illuminant_T_incandescent(const std::string& csvPath) {
-        install_illuminant_curve_or_clear(build_curve_T_pinned(csvPath));
     }
 
 

@@ -1,9 +1,7 @@
 #pragma once
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 
 #include <array>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -12,8 +10,7 @@
 
 #include "Cuda/Diffusion/JuicerCudaDiffusion.h"
 #include "Cuda/JuicerCudaDeviceLedger.h"
-#include "DiffusionExecutionProfile.h"
-#include "DiffusionFrameDescriptor.h"
+#include "DiffusionExecution.h"
 
 namespace JuicerCuda::Diffusion {
 
@@ -30,7 +27,6 @@ namespace JuicerCuda::Diffusion {
         Building,
         Leased,
         Retiring,
-        WaitingForCompletion,
         FailedQuarantined
     };
 
@@ -38,18 +34,11 @@ namespace JuicerCuda::Diffusion {
         Spektrafilm::DiffusionSpectrumKey key{};
         SpectrumPackageView spectra{};
         std::array<DeviceByteReservation, 3> spectrumReservations{};
-        Spektrafilm::DiffusionPsfComponents expandedComponents{};
         void* buildEventOpaque = nullptr;
         std::uint64_t releaseSequence = 0;
-        std::size_t leaseCount = 0;
-        int radiusPixels = 0;
         std::uint8_t pendingWorkspaceMask = 0;
         SpectrumEntryState state = SpectrumEntryState::Vacant;
-        FailureApi failureApi = FailureApi::None;
-        int failureCode = 0;
-        const char* failureStage = nullptr;
-        bool buildEventPublished = false;
-        bool retainedRole = false;
+        bool leased = false;
     };
 
     struct DiffusionWorkspaceSlot {
@@ -63,29 +52,24 @@ namespace JuicerCuda::Diffusion {
         DeviceByteReservation transformReservation;
         StagePlaneSet stagePlanes{};
         std::array<DeviceByteReservation, 4> stagePlaneReservations{};
-        std::uint64_t workAreaCapacityBytes = 0;
         std::uint64_t transformCapacityBytes = 0;
         std::uint64_t stagePlaneCapacityElements = 0;
         std::uint64_t releaseSequence = 0;
         void* completionEventOpaque = nullptr;
         WorkspaceSlotState state = WorkspaceSlotState::Vacant;
-        FailureApi failureApi = FailureApi::None;
-        int failureCode = 0;
-        const char* failureStage = nullptr;
         bool completionUnknown = false;
-        bool retainedRole = false;
     };
 
     struct DiffusionContextResources {
+        // Guards admission flags; the active host lease exclusively owns slots.
         std::mutex metadataMutex;
-        std::condition_variable buildPublication;
-        std::condition_variable workspaceAvailability;
         std::array<DiffusionSpectrumEntry, 4> spectra{};
         std::array<DiffusionWorkspaceSlot, 2> workspaces{};
         std::uint64_t nextReleaseSequence = 1;
         bool acceptingPreparations = true;
+        bool hostLeaseActive = false;
 
-        DiffusionContextResources() noexcept;
+        DiffusionContextResources() noexcept = default;
         DiffusionContextResources(const DiffusionContextResources&) = delete;
         DiffusionContextResources& operator=(const DiffusionContextResources&) = delete;
     };
@@ -120,7 +104,6 @@ namespace JuicerCuda::Diffusion {
         PreparedDiffusionLease& operator=(PreparedDiffusionLease&& other) noexcept;
 
         [[nodiscard]] bool active() const noexcept;
-        [[nodiscard]] bool work_enqueued() const noexcept;
         [[nodiscard]] DiffusionPreparedView view() const noexcept;
 
     private:
@@ -129,7 +112,6 @@ namespace JuicerCuda::Diffusion {
             const ResourceManager::DeviceContextKey&,
             std::uint64_t,
             const std::shared_ptr<DeviceAllocationLedger>&,
-            const Spektrafilm::DiffusionExecutionProfileKey&,
             const Spektrafilm::DiffusionFrameSetDescriptor&,
             const Spektrafilm::DiffusionExecutionDescriptor&,
             void*,
@@ -157,16 +139,11 @@ namespace JuicerCuda::Diffusion {
         bool _workEnqueued = false;
     };
 
-    bool query_observed_diffusion_execution_profile(
-        Spektrafilm::DiffusionExecutionProfileKey& out,
-        std::string& outError) noexcept;
-
     bool prepare_diffusion_resources(
         DiffusionContextResources& resources,
         const ResourceManager::DeviceContextKey& contextKey,
         std::uint64_t contextEpoch,
         const std::shared_ptr<DeviceAllocationLedger>& ledger,
-        const Spektrafilm::DiffusionExecutionProfileKey& observedProfile,
         const Spektrafilm::DiffusionFrameSetDescriptor& frameSet,
         const Spektrafilm::DiffusionExecutionDescriptor& descriptor,
         void* cudaStreamOpaque,
@@ -194,25 +171,4 @@ namespace JuicerCuda::Diffusion {
     void invalidate_diffusion_resources_after_proven_context_loss(
         DiffusionContextResources& resources) noexcept;
 
-#if defined(JUICER_DIFFUSION_LIFECYCLE_TEST_FAULTS)
-    enum class DiffusionLifecycleFaultPoint : std::uint8_t {
-        None,
-        AggregateReservation,
-        DeviceAllocation,
-        PlanCreate,
-        PlanQuery,
-        PlanBind,
-        SpectrumBuild,
-        SpectrumBuildEventRecord,
-        ReleaseEventRecord,
-        ReleaseEventRecordAndStreamSync,
-        AsyncCompletionQuery
-    };
-
-    void set_diffusion_lifecycle_fault(
-        DiffusionLifecycleFaultPoint point) noexcept;
-#endif
-
 } // namespace JuicerCuda::Diffusion
-
-#endif

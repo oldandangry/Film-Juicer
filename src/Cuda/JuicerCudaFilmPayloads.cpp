@@ -1,12 +1,197 @@
-#include "Cuda/JuicerCudaFilmFoundationPayloads.h"
+#include "Cuda/JuicerCudaFilmPayloads.h"
 
+#include <cmath>
 #include <cstddef>
-#include <cstring>
+#include <memory>
 
 #include "Hash.h"
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 namespace {
+
+    void copy_film_floats(float* dst, const float* src, int count) {
+        for (int index = 0; index < count; ++index) {
+            dst[index] = src[index];
+        }
+    }
+
+    bool film_curve_ready(const JuicerCuda::DeviceCurveView& curve, int expectedSamples) {
+        return curve.x && curve.y && curve.n == expectedSamples &&
+               curve.domainBegin >= 0 && curve.domainEnd >= curve.domainBegin &&
+               curve.domainEnd < curve.n;
+    }
+
+} // namespace
+
+namespace JuicerCuda {
+
+    bool pack_film_payloads(
+        const FilmRawRecipe& filmRaw,
+        const FilmDevelopRecipe& filmDevelop,
+        const DirCouplersRecipe& dirCouplers,
+        const DensityBoundsRecipe& densityBounds,
+        const FilmPreparedView& prepared,
+        const float* autoExposureScaleDevice,
+        float routeCorrectionScale,
+        FilmPayloadPack& out,
+        std::string& diagnostic) {
+        diagnostic.clear();
+        out = FilmPayloadPack{};
+        if (filmRaw.finalSensitivityHash == 0 ||
+            prepared.finalSensitivityHash != filmRaw.finalSensitivityHash) {
+            diagnostic = "ResourceDescriptorMismatch phase=3B field=final_sensitivity";
+            return false;
+        }
+        if (filmDevelop.normalizedDensityCurvesHash == 0 ||
+            prepared.normalizedDensityCurvesHash != filmDevelop.normalizedDensityCurvesHash) {
+            diagnostic = "ResourceDescriptorMismatch phase=3B field=normalized_density_curves";
+            return false;
+        }
+        if (densityBounds.hash == 0) {
+            diagnostic = "ResourceDescriptorMismatch phase=3B field=density_bounds";
+            return false;
+        }
+        const int densitySamples = static_cast<int>(filmDevelop.logExposure.size());
+        if (dirCouplers.active) {
+            if (dirCouplers.hash == 0 ||
+                dirCouplers.precorrectedDensityCurvesHash == 0 ||
+                prepared.dirCouplersHash != dirCouplers.hash) {
+                diagnostic = "ResourceDescriptorMismatch phase=3D-3 field=dirCouplers";
+                return false;
+            }
+            if (!film_curve_ready(prepared.dirDensB, densitySamples) ||
+                !film_curve_ready(prepared.dirDensG, densitySamples) ||
+                !film_curve_ready(prepared.dirDensR, densitySamples)) {
+                diagnostic = "MissingRequiredResource phase=3D-3 field=dir_density_device_curves";
+                return false;
+            }
+        } else if (prepared.dirCouplersHash != 0) {
+            diagnostic = "ResourceDescriptorMismatch phase=3D-3 field=disabled_dir_resources";
+            return false;
+        }
+        if (!film_curve_ready(prepared.finalSensB, 81) ||
+            !film_curve_ready(prepared.finalSensG, 81) ||
+            !film_curve_ready(prepared.finalSensR, 81)) {
+            diagnostic = "MissingRequiredResource phase=3B field=final_sensitivity_device_curves";
+            return false;
+        }
+        if (densitySamples <= 0 ||
+            !film_curve_ready(prepared.normalizedDensB, densitySamples) ||
+            !film_curve_ready(prepared.normalizedDensG, densitySamples) ||
+            !film_curve_ready(prepared.normalizedDensR, densitySamples)) {
+            diagnostic = "MissingRequiredResource phase=3B field=normalized_density_device_curves";
+            return false;
+        }
+        if (!prepared.tablesAx || !prepared.tablesAy || !prepared.tablesAz ||
+            !prepared.tablesIllum || prepared.tablesK != 81) {
+            diagnostic = "MissingRequiredResource phase=3B field=spectral_tables";
+            return false;
+        }
+        if (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025) {
+            if (!prepared.hanatosLut || prepared.hanatosN <= 0) {
+                diagnostic = "MissingRequiredResource phase=3B field=hanatos_lut";
+                return false;
+            }
+        } else if (!prepared.mallettBasis || prepared.mallettBasisK != 81) {
+            diagnostic = "MissingRequiredResource phase=3B field=mallett_basis";
+            return false;
+        }
+
+        const double manualScale64 =
+            std::exp2(static_cast<double>(filmRaw.manualExposureCompensationEv));
+        const float manualScale = static_cast<float>(manualScale64);
+        if (!std::isfinite(filmRaw.manualExposureCompensationEv) ||
+            !std::isfinite(manualScale64) || !std::isfinite(manualScale) ||
+            !(manualScale > 0.0f) ||
+            !std::isfinite(routeCorrectionScale) ||
+            !(routeCorrectionScale > 0.0f)) {
+            diagnostic =
+                "ResourceDescriptorMismatch phase=3B field=film_exposure_scale";
+            return false;
+        }
+        if (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019 &&
+            (!std::isfinite(filmRaw.mallettGreenMidgrayScale) ||
+             !(filmRaw.mallettGreenMidgrayScale > 0.0f))) {
+            diagnostic =
+                "ResourceDescriptorMismatch phase=3B field=mallett_midgray_scale";
+            return false;
+        }
+        for (float gamma : filmDevelop.densityCurveGamma) {
+            if (!std::isfinite(gamma) || !(gamma > 0.0f)) {
+                diagnostic =
+                    "ResourceDescriptorMismatch phase=3B field=density_curve_gamma";
+                return false;
+            }
+        }
+        out.filmRaw.inputColorSpaceIndex = filmRaw.inputColorSpace;
+        out.filmRaw.applyCctfDecoding = filmRaw.inputCctfDecoding ? 1 : 0;
+        out.filmRaw.applyInputChromaticAdapt = prepared.applyInputChromaticAdapt;
+        out.filmRaw.spectralUpsamplingMode =
+            filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019 ? 1 : 0;
+        out.filmRaw.mallettGreenMidgrayScale = filmRaw.mallettGreenMidgrayScale;
+        copy_film_floats(out.filmRaw.inputRGBToXYZ, prepared.inputRGBToXYZ, 9);
+        copy_film_floats(out.filmRaw.inputXYZAdapt, prepared.inputXYZAdapt, 9);
+        copy_film_floats(out.filmRaw.refIllumWhiteXYZ, prepared.refIllumWhiteXYZ, 3);
+
+        out.filmExposure.manualExposureScale = manualScale;
+        out.filmExposure.routeCorrectionScale = routeCorrectionScale;
+        out.filmExposure.exposureScaleDevice = autoExposureScaleDevice;
+        out.filmExposure.sensB = prepared.finalSensB;
+        out.filmExposure.sensG = prepared.finalSensG;
+        out.filmExposure.sensR = prepared.finalSensR;
+        out.filmExposure.tablesAx = prepared.tablesAx;
+        out.filmExposure.tablesAy = prepared.tablesAy;
+        out.filmExposure.tablesAz = prepared.tablesAz;
+        out.filmExposure.tablesIllum = prepared.tablesIllum;
+        out.filmExposure.tablesK = prepared.tablesK;
+        copy_film_floats(out.filmExposure.spdSInv, prepared.spdSInv, 9);
+        if (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025) {
+            out.filmExposure.hanatosLut = prepared.hanatosLut;
+            out.filmExposure.hanatosN = prepared.hanatosN;
+            out.filmExposure.hanatosLutIntegrated = prepared.hanatosLutIntegrated;
+            out.filmExposure.hanatosNIntegrated = prepared.hanatosNIntegrated;
+        } else {
+            out.filmExposure.mallettBasis = prepared.mallettBasis;
+            out.filmExposure.mallettBasisK = prepared.mallettBasisK;
+        }
+
+        out.filmDevelop.gammaFactorB = filmDevelop.densityCurveGamma[2];
+        out.filmDevelop.gammaFactorG = filmDevelop.densityCurveGamma[1];
+        out.filmDevelop.gammaFactorR = filmDevelop.densityCurveGamma[0];
+        out.filmDevelop.densB = prepared.normalizedDensB;
+        out.filmDevelop.densG = prepared.normalizedDensG;
+        out.filmDevelop.densR = prepared.normalizedDensR;
+        if (dirCouplers.active) {
+            out.filmDevelop.dirPrecorrected = 1;
+            out.filmDevelop.dir.active = 1;
+            out.filmDevelop.dir.positive =
+                dirCouplers.polarity == Spektrafilm::ProfilePolarity::Positive ? 1 : 0;
+            for (int donorBgr = 0; donorBgr < 3; ++donorBgr) {
+                for (int receiverBgr = 0; receiverBgr < 3; ++receiverBgr) {
+                    out.filmDevelop.dir.M[donorBgr * 3 + receiverBgr] =
+                        dirCouplers.matrixRgb[2 - donorBgr][2 - receiverBgr];
+                }
+                out.filmDevelop.dir.dMax[donorBgr] =
+                    dirCouplers.densityMaxRgb[2 - donorBgr];
+            }
+            out.filmDevelop.dirDensB = prepared.dirDensB;
+            out.filmDevelop.dirDensG = prepared.dirDensG;
+            out.filmDevelop.dirDensR = prepared.dirDensR;
+        }
+        out.densityBoundsHash = densityBounds.hash;
+        return true;
+    }
+
+} // namespace JuicerCuda
+
+namespace {
+
+    template <typename Payload>
+    void reset_payload_to_defaults(Payload& payload) noexcept {
+        // Clang cannot synthesize assignment for payloads containing arrays
+        // of restrict-qualified pointers, so reconstruct the aggregate in place.
+        std::destroy_at(std::addressof(payload));
+        std::construct_at(std::addressof(payload));
+    }
 
     // NOLINTBEGIN(bugprone-easily-swappable-parameters) STBN helpers mirror the reviewed seed formula.
     int stbn_offset(
@@ -42,17 +227,17 @@ namespace {
 
     bool gaussian_binding_ready(
         const Spektrafilm::VisualGrainGaussian& descriptor,
-        const JuicerProcess::Root::PreparedCudaFrame::PreparedGaussianView& prepared) {
+        const JuicerCuda::VisualGrainPreparedGaussianView& prepared) {
         if (descriptor.radius <= 0) {
             return descriptor.hash == 0 && !prepared.active &&
-                   !prepared.kernel.weights && prepared.kernel.radius == 0 &&
+                   !prepared.weights && prepared.radius == 0 &&
                    prepared.descriptorHash == 0;
         }
         return descriptor.hash != 0 && prepared.active &&
                prepared.descriptorHash == descriptor.hash &&
-               prepared.kernel.weights &&
-               prepared.kernel.radius == descriptor.radius &&
-               prepared.kernel.sigma == descriptor.sigmaPx;
+               prepared.weights &&
+               prepared.radius == descriptor.radius &&
+               prepared.sigma == descriptor.sigmaPx;
     }
 
     template <typename T>
@@ -103,12 +288,12 @@ namespace JuicerCuda {
 
     bool pack_visual_grain_payload(
         const Spektrafilm::VisualGrainRecipe& recipe,
-        const JuicerProcess::Root::PreparedCudaFrame::PreparedVisualGrainView& prepared,
+        const PreparedVisualGrainView& prepared,
         GrainPayload& outGrain,
         GrainKernelPayload& outKernels,
         std::string& diagnostic) {
-        std::memset(&outGrain, 0, sizeof(outGrain));
-        std::memset(&outKernels, 0, sizeof(outKernels));
+        reset_payload_to_defaults(outGrain);
+        reset_payload_to_defaults(outKernels);
         diagnostic.clear();
 
         if (!recipe.active) {
@@ -320,20 +505,20 @@ namespace JuicerCuda {
                         ? prepared.densityLayers.curves[layer][channel]
                         : nullptr;
                 outKernels.dyeKernel[layer][channel] =
-                    prepared.dyeCloud[layer][channel].kernel.weights;
+                    prepared.dyeCloud[layer][channel].weights;
                 outKernels.dyeRadius[layer][channel] =
-                    prepared.dyeCloud[layer][channel].kernel.radius;
+                    prepared.dyeCloud[layer][channel].radius;
             }
         }
 
-        outKernels.blurKernel = prepared.correlation[0].kernel.weights;
-        outKernels.blurRadius = prepared.correlation[0].kernel.radius;
-        outKernels.blurKernelMid = prepared.correlation[1].kernel.weights;
-        outKernels.blurRadiusMid = prepared.correlation[1].kernel.radius;
+        outKernels.blurKernel = prepared.correlation[0].weights;
+        outKernels.blurRadius = prepared.correlation[0].radius;
+        outKernels.blurKernelMid = prepared.correlation[1].weights;
+        outKernels.blurRadiusMid = prepared.correlation[1].radius;
         outKernels.blurKernelCoarse =
-            prepared.correlation[2].kernel.weights;
+            prepared.correlation[2].weights;
         outKernels.blurRadiusCoarse =
-            prepared.correlation[2].kernel.radius;
+            prepared.correlation[2].radius;
         return true;
     }
 
@@ -342,8 +527,8 @@ namespace JuicerCuda {
         GrainPayload& outDefects,
         GateWeavePayload& outWeave,
         std::string& diagnostic) {
-        std::memset(&outDefects, 0, sizeof(outDefects));
-        std::memset(&outWeave, 0, sizeof(outWeave));
+        reset_payload_to_defaults(outDefects);
+        reset_payload_to_defaults(outWeave);
         diagnostic.clear();
 
         if (!descriptor.filmActive && !descriptor.gateOutputActive) {
@@ -399,4 +584,3 @@ namespace JuicerCuda {
     }
 
 } // namespace JuicerCuda
-#endif

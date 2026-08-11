@@ -1,12 +1,14 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string>
+
+#include "RenderRecipe.h"
 
 namespace Spektrafilm {
-
-    inline constexpr std::uint32_t kDiffusionPlanLayoutSchemaVersion = 1;
 
     struct CandidateExtent {
         int width = 0;
@@ -14,17 +16,6 @@ namespace Spektrafilm {
 
         friend bool operator==(const CandidateExtent&, const CandidateExtent&) = default;
     };
-
-    inline constexpr std::array<CandidateExtent, 10> kDiffusionCandidateExtents{{{1024, 1024},
-                                                                                 {2048, 2048},
-                                                                                 {3072, 3072},
-                                                                                 {4096, 4096},
-                                                                                 {4608, 4608},
-                                                                                 {5120, 5120},
-                                                                                 {6144, 6144},
-                                                                                 {8192, 6144},
-                                                                                 {6144, 8192},
-                                                                                 {8192, 8192}}};
 
     struct PlanLayout {
         int width = 0;
@@ -110,5 +101,50 @@ namespace Spektrafilm {
             static_cast<std::uint64_t>(transformBytes)};
         return true;
     }
+
+    struct DiffusionStageTileGeometry {
+        DiffusionLinearStage stage = DiffusionLinearStage::CameraFilmLinear;
+        std::uint64_t stageDescriptorHash = 0;
+        double scatterFraction = 0.0;
+        std::size_t spectrumKeyIndex = 0;
+        int radiusPixels = 0;
+        int validTileWidth = 0;
+        int validTileHeight = 0;
+        int tileCountX = 0;
+        int tileCountY = 0;
+    };
+
+    struct DiffusionSpectrumKey {
+        std::uint64_t sampleHash = 0;
+        CandidateExtent extent;
+        std::uint64_t hash = 0;
+    };
+
+    struct DiffusionPlanKey {
+        CandidateExtent extent;
+        std::uint64_t hash = 0;
+    };
+
+    struct DiffusionExecutionDescriptor {
+        std::uint64_t contextEpoch = 0;
+        std::uint64_t frameSetHash = 0;
+        PlanLayout layout;
+        std::array<DiffusionStageTileGeometry, 2> stages{};
+        std::array<DiffusionSpectrumKey, 2> spectrumKeys{};
+        std::size_t stageCount = 0;
+        std::size_t uniqueSpectrumCount = 0;
+        DiffusionPlanKey planKey;
+        std::uint64_t stagePlaneBytes = 0;
+        std::uint64_t reservedSharedWorkBytes = 0;
+        std::uint64_t planAllowanceBytes = 0;
+        std::uint64_t hash = 0;
+    };
+
+    bool build_diffusion_execution_descriptor(
+        const DiffusionFrameSetDescriptor& frameSet,
+        std::uint64_t contextEpoch,
+        std::uint64_t resolvedDeviceCapBytes,
+        DiffusionExecutionDescriptor& out,
+        std::string& diagnostic);
 
 } // namespace Spektrafilm

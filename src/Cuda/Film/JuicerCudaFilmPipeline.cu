@@ -7,8 +7,8 @@
 #include <cstdint>
 #include <limits>
 
-#include "Cuda/JuicerCudaDirProfile.h"
 #include "Cuda/JuicerCudaDeviceHelpers.cuh"
+#include "Cuda/JuicerCudaPayloads.h"
 #include "openrand/philox.h"
 
 __global__ void expose_film_raw_kernel(
@@ -78,73 +78,6 @@ namespace {
         const JuicerCuda::CameraFilmLinearExposurePlanes& planes,
         int width,
         int height) noexcept;
-
-    struct CudaProfileStageTimer {
-        cudaEvent_t start = nullptr;
-        cudaEvent_t stop = nullptr;
-        bool active = false;
-
-        ~CudaProfileStageTimer() {
-            destroy();
-        }
-
-        cudaError_t begin(cudaStream_t stream) {
-            if (active) {
-                return cudaErrorInvalidValue;
-            }
-            cudaError_t err = cudaEventCreateWithFlags(&start, cudaEventDefault);
-            if (err != cudaSuccess) {
-                return err;
-            }
-            err = cudaEventCreateWithFlags(&stop, cudaEventDefault);
-            if (err != cudaSuccess) {
-                destroy();
-                return err;
-            }
-            err = cudaEventRecord(start, stream);
-            if (err != cudaSuccess) {
-                destroy();
-                return err;
-            }
-            active = true;
-            return cudaSuccess;
-        }
-
-        cudaError_t finish(cudaStream_t stream, JuicerCuda::SpatialDirStageProfile* stage) {
-            if (!active) {
-                return cudaSuccess;
-            }
-            cudaError_t err = cudaEventRecord(stop, stream);
-            if (err != cudaSuccess) {
-                destroy();
-                return err;
-            }
-            err = cudaEventSynchronize(stop);
-            if (err != cudaSuccess) {
-                destroy();
-                return err;
-            }
-            float elapsedMs = 0.0f;
-            err = cudaEventElapsedTime(&elapsedMs, start, stop);
-            if (err == cudaSuccess && stage) {
-                stage->elapsedMs += elapsedMs;
-            }
-            destroy();
-            return err;
-        }
-
-        void destroy() {
-            if (start) {
-                cudaEventDestroy(start);
-                start = nullptr;
-            }
-            if (stop) {
-                cudaEventDestroy(stop);
-                stop = nullptr;
-            }
-            active = false;
-        }
-    };
 
     __device__ __forceinline__ int spatial_dir_reflect_index_device(int index, int size) {
         if (size <= 1) {
@@ -770,7 +703,6 @@ cudaError_t build_spatial_dir_impl(
     const float tailSigma2 = request.tails[2].sigma;
     const float tailWeight2 = request.tails[2].weight;
     void* cudaStreamOpaque = request.streamOpaque;
-    JuicerCuda::SpatialDirBuildProfile* profile = request.profile;
     if (params.width <= 0 || params.height <= 0) {
         return cudaSuccess;
     }
@@ -810,67 +742,12 @@ cudaError_t build_spatial_dir_impl(
 
     cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
     cudaError_t err = cudaSuccess;
-    CudaProfileStageTimer totalTimer;
-    if (profile) {
-        *profile = JuicerCuda::SpatialDirBuildProfile{};
-        profile->width = params.width;
-        profile->height = params.height;
-        profile->gaussianRadius = gaussianRadius;
-        profile->gaussianSigma = gaussianSigma;
-        profile->gaussianWeight = gaussianWeight;
-        profile->tailRadius[0] = tailRadius0;
-        profile->tailRadius[1] = tailRadius1;
-        profile->tailRadius[2] = tailRadius2;
-        profile->tailSigma[0] = tailSigma0;
-        profile->tailSigma[1] = tailSigma1;
-        profile->tailSigma[2] = tailSigma2;
-        profile->tailWeight[0] = tailWeight0;
-        profile->tailWeight[1] = tailWeight1;
-        profile->tailWeight[2] = tailWeight2;
-        err = totalTimer.begin(stream);
-        if (err != cudaSuccess) {
-            return err;
-        }
-    }
-
-    auto finish_profile = [&](cudaError_t result) -> cudaError_t {
-        cudaError_t finalErr = result;
-        if (profile) {
-            const cudaError_t totalErr = totalTimer.finish(stream, &profile->total);
-            profile->total.launches = profile->totalLaunches;
-            if (finalErr == cudaSuccess && totalErr != cudaSuccess) {
-                finalErr = totalErr;
-            }
-        }
-        return finalErr;
-    };
-
-    auto mark_launch = [&](JuicerCuda::SpatialDirStageProfile* stage, int* counter) {
-        if (!profile) {
-            return;
-        }
-        if (stage) {
-            ++stage->launches;
-        }
-        if (counter) {
-            ++(*counter);
-        }
-        ++profile->totalLaunches;
-    };
-
     dim3 threads2D(32, 8);
     dim3 blocks2D(
         static_cast<unsigned int>((params.width + threads2D.x - 1) / threads2D.x),
         static_cast<unsigned int>((params.height + threads2D.y - 1) / threads2D.y));
 
     auto launch_corrections = [&]() -> cudaError_t {
-        CudaProfileStageTimer timer;
-        if (profile) {
-            cudaError_t e = timer.begin(stream);
-            if (e != cudaSuccess) {
-                return e;
-            }
-        }
         DirRawCorrectionOutputs outputs{};
         outputs.correctionY = rawCorrectionY;
         outputs.correctionM = rawCorrectionM;
@@ -882,69 +759,38 @@ cudaError_t build_spatial_dir_impl(
             params,
             outputs,
             request.cameraFilmLinear);
-        mark_launch(
-            profile ? &profile->correction : nullptr,
-            profile ? &profile->correctionLaunches : nullptr);
-        cudaError_t e = cudaGetLastError();
-        if (e != cudaSuccess) {
-            return e;
-        }
-        return profile ? timer.finish(stream, &profile->correction) : cudaSuccess;
+        return cudaGetLastError();
     };
 
     auto launch_streamed_channel_corrections = [&](int channel) -> cudaError_t {
-        CudaProfileStageTimer timer;
-        if (profile) {
-            cudaError_t e = timer.begin(stream);
-            if (e != cudaSuccess) {
-                return e;
-            }
-        }
         dir_raw_correction_channel_source_build_kernel<<<blocks2D, threads2D, 0, stream>>>(
             params,
             channel,
             rawCorrectionY,
             request.cameraFilmLinear);
-        mark_launch(
-            profile ? &profile->correction : nullptr,
-            profile ? &profile->correctionLaunches : nullptr);
-        cudaError_t e = cudaGetLastError();
-        if (e != cudaSuccess) {
-            return e;
-        }
-        return profile ? timer.finish(stream, &profile->correction) : cudaSuccess;
+        return cudaGetLastError();
     };
 
     if (!haveComponentStreamedScratch) {
         err = launch_corrections();
         if (err != cudaSuccess) {
-            return finish_profile(err);
+            return err;
         }
     }
 
     auto accumulate_fir_plane = [&](const float* rawCorrection, float* filteredCorrection, const float* k, int r, float sigma, // NOLINT(bugprone-easily-swappable-parameters)
                                     float weight,
-                                    bool initialize,
-                                    JuicerCuda::SpatialDirStageProfile* stage,
-                                    int* launchCounter)
+                                    bool initialize)
         -> cudaError_t {
         if (!rawCorrection || !filteredCorrection || !(sigma > 0.0f) ||
             !(sigma < 3.0f) || !(weight >= 0.0f)) {
             return cudaErrorInvalidValue;
-        }
-        CudaProfileStageTimer timer;
-        if (profile) {
-            cudaError_t e = timer.begin(stream);
-            if (e != cudaSuccess) {
-                return e;
-            }
         }
         if (!k || r <= 0) {
             return cudaErrorInvalidValue;
         }
         spatial_dir_blur_horizontal_reflect_kernel<<<blocks2D, threads2D, 0, stream>>>(
             rawCorrection, filterTemp, params.width, params.height, k, r);
-        mark_launch(stage, launchCounter);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
@@ -958,26 +804,14 @@ cudaError_t build_spatial_dir_impl(
             r,
             weight,
             initialize ? 1 : 0);
-        mark_launch(stage, launchCounter);
-        e = cudaGetLastError();
-        if (e != cudaSuccess) {
-            return e;
-        }
-        return profile ? timer.finish(stream, stage) : cudaSuccess;
+        return cudaGetLastError();
     };
 
-    auto accumulate_yvv_channels = [&](const float* raw0, const float* raw1, const float* raw2, float* filtered0, float* filtered1, float* filtered2, float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter) -> cudaError_t {
+    auto accumulate_yvv_channels = [&](const float* raw0, const float* raw1, const float* raw2, float* filtered0, float* filtered1, float* filtered2, float sigma, float weight, bool initialize) -> cudaError_t {
         if (!raw0 || !raw1 || !raw2 || !filtered0 || !filtered1 || !filtered2 ||
             !(sigma > 0.0f) || !(weight >= 0.0f) ||
             !haveAliasedForwardYvvScratch) {
             return cudaErrorInvalidValue;
-        }
-        CudaProfileStageTimer timer;
-        if (profile) {
-            cudaError_t e = timer.begin(stream);
-            if (e != cudaSuccess) {
-                return e;
-            }
         }
         const double q = 0.98711 * static_cast<double>(sigma) - 0.96330;
         const double q2 = q * q;
@@ -1008,7 +842,6 @@ cudaError_t build_spatial_dir_impl(
             B1,
             B2,
             B3);
-        mark_launch(stage, launchCounter);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
@@ -1035,28 +868,16 @@ cudaError_t build_spatial_dir_impl(
             B3,
             weight,
             initialize ? 1 : 0);
-        mark_launch(stage, launchCounter);
-        e = cudaGetLastError();
-        if (e != cudaSuccess) {
-            return e;
-        }
-        return profile ? timer.finish(stream, stage) : cudaSuccess;
+        return cudaGetLastError();
     };
 
     const float* rawCorrections[3] = {rawCorrectionY, rawCorrectionM, rawCorrectionC};
     float* filteredCorrections[3] = {filteredCorrectionY, filteredCorrectionM, filteredCorrectionC};
-    auto accumulate_yvv_low_scratch_pair = [&](float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter) -> cudaError_t {
+    auto accumulate_yvv_low_scratch_pair = [&](float sigma, float weight, bool initialize) -> cudaError_t {
         if (!rawCorrectionY || !rawCorrectionM || !rawCorrectionC ||
             !filteredCorrectionY || !filteredCorrectionM || !filteredCorrectionC ||
             !(sigma > 0.0f) || !(weight >= 0.0f) || !haveLowScratchPairYvvScratch) {
             return cudaErrorInvalidValue;
-        }
-        CudaProfileStageTimer timer;
-        if (profile) {
-            cudaError_t e = timer.begin(stream);
-            if (e != cudaSuccess) {
-                return e;
-            }
         }
         const double q = 0.98711 * static_cast<double>(sigma) - 0.96330;
         const double q2 = q * q;
@@ -1093,7 +914,6 @@ cudaError_t build_spatial_dir_impl(
             B1,
             B2,
             B3);
-        mark_launch(stage, launchCounter);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
@@ -1120,7 +940,6 @@ cudaError_t build_spatial_dir_impl(
             B3,
             weight,
             initialize ? 1 : 0);
-        mark_launch(stage, launchCounter);
         e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
@@ -1143,7 +962,6 @@ cudaError_t build_spatial_dir_impl(
             B1,
             B2,
             B3);
-        mark_launch(stage, launchCounter);
         e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
@@ -1164,25 +982,13 @@ cudaError_t build_spatial_dir_impl(
             B3,
             weight,
             initialize ? 1 : 0);
-        mark_launch(stage, launchCounter);
-        e = cudaGetLastError();
-        if (e != cudaSuccess) {
-            return e;
-        }
-        return profile ? timer.finish(stream, stage) : cudaSuccess;
+        return cudaGetLastError();
     };
 
-    auto accumulate_yvv_sequential_single_channel = [&](float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter) -> cudaError_t {
+    auto accumulate_yvv_sequential_single_channel = [&](float sigma, float weight, bool initialize) -> cudaError_t {
         if (!(sigma > 0.0f) || !(weight >= 0.0f) ||
             !haveSingleTempSequentialYvvScratch) {
             return cudaErrorInvalidValue;
-        }
-        CudaProfileStageTimer timer;
-        if (profile) {
-            cudaError_t e = timer.begin(stream);
-            if (e != cudaSuccess) {
-                return e;
-            }
         }
         const double q = 0.98711 * static_cast<double>(sigma) - 0.96330;
         const double q2 = q * q;
@@ -1214,7 +1020,6 @@ cudaError_t build_spatial_dir_impl(
                 B1,
                 B2,
                 B3);
-            mark_launch(stage, launchCounter);
             cudaError_t e = cudaGetLastError();
             if (e != cudaSuccess) {
                 return e;
@@ -1235,26 +1040,18 @@ cudaError_t build_spatial_dir_impl(
                 B3,
                 weight,
                 initialize ? 1 : 0);
-            mark_launch(stage, launchCounter);
             e = cudaGetLastError();
             if (e != cudaSuccess) {
                 return e;
             }
         }
-        return profile ? timer.finish(stream, stage) : cudaSuccess;
+        return cudaSuccess;
     };
 
-    auto accumulate_yvv_component_streamed = [&](float* filteredCorrection, float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter) -> cudaError_t {
+    auto accumulate_yvv_component_streamed = [&](float* filteredCorrection, float sigma, float weight, bool initialize) -> cudaError_t {
         if (!filteredCorrection || !(sigma > 0.0f) || !(weight >= 0.0f) ||
             !haveComponentStreamedYvvScratch) {
             return cudaErrorInvalidValue;
-        }
-        CudaProfileStageTimer timer;
-        if (profile) {
-            cudaError_t e = timer.begin(stream);
-            if (e != cudaSuccess) {
-                return e;
-            }
         }
         const double q = 0.98711 * static_cast<double>(sigma) - 0.96330;
         const double q2 = q * q;
@@ -1285,7 +1082,6 @@ cudaError_t build_spatial_dir_impl(
             B1,
             B2,
             B3);
-        mark_launch(stage, launchCounter);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
@@ -1306,15 +1102,10 @@ cudaError_t build_spatial_dir_impl(
             B3,
             weight,
             initialize ? 1 : 0);
-        mark_launch(stage, launchCounter);
-        e = cudaGetLastError();
-        if (e != cudaSuccess) {
-            return e;
-        }
-        return profile ? timer.finish(stream, stage) : cudaSuccess;
+        return cudaGetLastError();
     };
 
-    auto accumulate_component = [&](const float* k, int r, float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter)
+    auto accumulate_component = [&](const float* k, int r, float sigma, float weight, bool initialize)
         -> cudaError_t {
         if (sigma >= 3.0f) {
             if (haveAliasedForwardYvvScratch) {
@@ -1327,24 +1118,18 @@ cudaError_t build_spatial_dir_impl(
                     filteredCorrectionC,
                     sigma,
                     weight,
-                    initialize,
-                    stage,
-                    launchCounter);
+                    initialize);
             }
             if (haveLowScratchPairYvvScratch) {
                 return accumulate_yvv_low_scratch_pair(
                     sigma,
                     weight,
-                    initialize,
-                    stage,
-                    launchCounter);
+                    initialize);
             }
             return accumulate_yvv_sequential_single_channel(
                 sigma,
                 weight,
-                initialize,
-                stage,
-                launchCounter);
+                initialize);
         }
         for (int channel = 0; channel < 3; ++channel) {
             cudaError_t componentErr = accumulate_fir_plane(
@@ -1354,9 +1139,7 @@ cudaError_t build_spatial_dir_impl(
                 r,
                 sigma,
                 weight,
-                initialize,
-                stage,
-                launchCounter);
+                initialize);
             if (componentErr != cudaSuccess) {
                 return componentErr;
             }
@@ -1364,7 +1147,7 @@ cudaError_t build_spatial_dir_impl(
         return cudaSuccess;
     };
 
-    auto accumulate_streamed_component = [&](int channel, const float* k, int r, float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter)
+    auto accumulate_streamed_component = [&](int channel, const float* k, int r, float sigma, float weight, bool initialize)
         -> cudaError_t {
         if (channel < 0 || channel >= 3 || !(weight >= 0.0f)) {
             return cudaErrorInvalidValue;
@@ -1375,9 +1158,7 @@ cudaError_t build_spatial_dir_impl(
                 filteredCorrection,
                 sigma,
                 weight,
-                initialize,
-                stage,
-                launchCounter);
+                initialize);
         }
         return accumulate_fir_plane(
             rawCorrectionY,
@@ -1386,16 +1167,14 @@ cudaError_t build_spatial_dir_impl(
             r,
             sigma,
             weight,
-            initialize,
-            stage,
-            launchCounter);
+            initialize);
     };
 
     if (haveComponentStreamedYvvScratch) {
         for (int channel = 0; channel < 3; ++channel) {
             err = launch_streamed_channel_corrections(channel);
             if (err != cudaSuccess) {
-                return finish_profile(err);
+                return err;
             }
             bool channelAccumulatorInitialized = false;
             if (gaussianWeight > 0.0f) {
@@ -1405,11 +1184,9 @@ cudaError_t build_spatial_dir_impl(
                     gaussianRadius,
                     gaussianSigma,
                     gaussianWeight,
-                    true,
-                    profile ? &profile->baseFilter : nullptr,
-                    profile ? &profile->baseFilterLaunches : nullptr);
+                    true);
                 if (err != cudaSuccess) {
-                    return finish_profile(err);
+                    return err;
                 }
                 channelAccumulatorInitialized = true;
             }
@@ -1424,7 +1201,7 @@ cudaError_t build_spatial_dir_impl(
                 if (!(streamedTailSigmas[component] > 0.0f) ||
                     (streamedTailSigmas[component] < 3.0f &&
                      (!streamedTailKernels[component] || streamedTailRadii[component] <= 0))) {
-                    return finish_profile(cudaErrorInvalidValue);
+                    return cudaErrorInvalidValue;
                 }
                 const bool initializeComponent = !channelAccumulatorInitialized;
                 err = accumulate_streamed_component(
@@ -1433,19 +1210,17 @@ cudaError_t build_spatial_dir_impl(
                     streamedTailRadii[component],
                     streamedTailSigmas[component],
                     streamedTailWeights[component],
-                    initializeComponent,
-                    profile ? &profile->tailFilter[component] : nullptr,
-                    profile ? &profile->tailFilterLaunches[component] : nullptr);
+                    initializeComponent);
                 if (err != cudaSuccess) {
-                    return finish_profile(err);
+                    return err;
                 }
                 channelAccumulatorInitialized = true;
             }
             if (!channelAccumulatorInitialized) {
-                return finish_profile(cudaErrorInvalidValue);
+                return cudaErrorInvalidValue;
             }
         }
-        return finish_profile(cudaGetLastError());
+        return cudaGetLastError();
     }
 
     bool accumulatorInitialized = false;
@@ -1455,11 +1230,9 @@ cudaError_t build_spatial_dir_impl(
             gaussianRadius,
             gaussianSigma,
             gaussianWeight,
-            true,
-            profile ? &profile->baseFilter : nullptr,
-            profile ? &profile->baseFilterLaunches : nullptr);
+            true);
         if (err != cudaSuccess)
-            return finish_profile(err);
+            return err;
         accumulatorInitialized = true;
     }
 
@@ -1474,7 +1247,7 @@ cudaError_t build_spatial_dir_impl(
         if (!(tailSigmas[component] > 0.0f) ||
             (tailSigmas[component] < 3.0f &&
              (!tailKernels[component] || tailRadii[component] <= 0))) {
-            return finish_profile(cudaErrorInvalidValue);
+            return cudaErrorInvalidValue;
         }
         const bool initializeComponent = !accumulatorInitialized;
         err = accumulate_component(
@@ -1482,18 +1255,16 @@ cudaError_t build_spatial_dir_impl(
             tailRadii[component],
             tailSigmas[component],
             tailWeights[component],
-            initializeComponent,
-            profile ? &profile->tailFilter[component] : nullptr,
-            profile ? &profile->tailFilterLaunches[component] : nullptr);
+            initializeComponent);
         if (err != cudaSuccess)
-            return finish_profile(err);
+            return err;
         accumulatorInitialized = true;
     }
     if (!accumulatorInitialized) {
-        return finish_profile(cudaErrorInvalidValue);
+        return cudaErrorInvalidValue;
     }
 
-    return finish_profile(cudaGetLastError());
+    return cudaGetLastError();
 }
 
 template <typename Params>
