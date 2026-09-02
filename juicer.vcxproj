@@ -189,12 +189,14 @@
     <ClCompile Include="src\Cuda\JuicerCudaFilmPayloads.cpp" />
     <ClCompile Include="src\FilmEffectsFrameDescriptors.cpp" />
     <ClCompile Include="src\ResourceAssetLibrary.cpp" />
+    <ClCompile Include="src\ScatterHalation.cpp" />
     <ClCompile Include="src\Scanner.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\ColorTransforms.h" />
     <ClInclude Include="src\Cuda\JuicerCudaPayloads.h" />
     <ClInclude Include="src\Cuda\JuicerCudaFilmPayloads.h" />
+    <ClInclude Include="src\Cuda\Film\JuicerCudaScatterHalation.h" />
     <ClInclude Include="src\FilmEffectsFrameDescriptors.h" />
     <ClInclude Include="src\Cuda\JuicerCudaDeviceHelpers.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaDeviceLedger.h" />
@@ -221,12 +223,14 @@
     <ClInclude Include="src\RenderRecipe.h" />
     <ClInclude Include="src\ResourceAssetLibrary.h" />
     <ClInclude Include="src\ScanRoute.h" />
+    <ClInclude Include="src\ScatterHalation.h" />
     <ClInclude Include="src\Scanner.h" />
     <ClInclude Include="src\SpectralData.h" />
     <ClInclude Include="src\SpectralProcessing.h" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="src\Cuda\Diffusion\JuicerCudaDiffusion.cu" />
+    <CudaCompile Include="src\Cuda\Film\JuicerCudaScatterHalation.cu" />
     <CudaCompile Include="src\Cuda\Film\JuicerCudaFilmPipeline.cu" />
     <CudaCompile Include="src\Cuda\JuicerCudaAutoExposure.cu" />
     <CudaCompile Include="src\Cuda\Scan\JuicerCudaScanPipeline.cu" />

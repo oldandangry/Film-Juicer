@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -279,51 +280,6 @@ namespace {
                payload.scannerHash != 0;
     }
 
-    inline std::shared_ptr<DirectRenderState> make_direct_render_state(const RenderRecipe& recipe) {
-        if (Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ||
-            !recipe.directStructuralReady ||
-            !recipe.profileRoute.filmProfile) {
-            return nullptr;
-        }
-
-        auto direct = std::make_shared<DirectRenderState>();
-        direct->recipe = recipe;
-        if (!build_focused_film_payload(recipe, direct->payload) ||
-            !build_direct_scanner_payload(recipe, direct->payload)) {
-            return nullptr;
-        }
-        return direct;
-    }
-
-    inline std::shared_ptr<PrintRenderState> make_print_render_state(const RenderRecipe& recipe) {
-        if (!Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ||
-            !recipe.printStructuralReady ||
-            !recipe.profileRoute.filmProfile ||
-            !recipe.profileRoute.printProfile) {
-            return nullptr;
-        }
-
-        auto print = std::make_shared<PrintRenderState>();
-        print->recipe = recipe;
-        if (!build_focused_film_payload(recipe, print->payload) ||
-            !build_print_scanner_payload(recipe, print->payload)) {
-            return nullptr;
-        }
-        return print;
-    }
-
-    inline std::uint64_t load_pending_full_hash(InstanceState& state) {
-        std::lock_guard<std::mutex> lock(state.pending.m);
-        return state.pending.fullHash;
-    }
-
-    inline bool pending_hash_is_current_or_unset(
-        InstanceState& state,
-        std::uint64_t fullHash) {
-        const std::uint64_t pendingHash = load_pending_full_hash(state);
-        return pendingHash == 0 || pendingHash == fullHash;
-    }
-
     inline bool is_finite(float value) {
         return std::isfinite(value);
     }
@@ -344,6 +300,16 @@ namespace {
     template <typename MixFn, typename TValue>
     inline void mix_hash_field(uint64_t& h, TValue value, const MixFn& mix) {
         h = mix(h, static_cast<uint64_t>(value));
+    }
+
+    inline std::uint32_t canonical_float_bits(float value) {
+        const float canonical = value == 0.0f ? 0.0f : value;
+        return std::bit_cast<std::uint32_t>(canonical);
+    }
+
+    template <typename MixFn>
+    inline void mix_canonical_float_bits(uint64_t& h, float value, const MixFn& mix) {
+        mix_hash_field(h, canonical_float_bits(value), mix);
     }
 
     template <typename MixFn>
@@ -464,12 +430,14 @@ namespace {
             p.cameraExposureCompensationEv,
             10000.0,
             mix);
-        mix_hash_field_scaled_rounded_if_finite(
-            h,
-            p.cameraFilmFormatLongEdgeMm,
-            10000.0,
-            mix);
-        mix_hash_field(h, p.exactScatterHalationActive, mix);
+        mix_canonical_float_bits(h, p.cameraFilmFormatLongEdgeMm, mix);
+        mix_hash_field(h, p.scatterHalationControls.active ? 1 : 0, mix);
+        if (p.scatterHalationControls.active) {
+            mix_canonical_float_bits(h, p.scatterHalationControls.scatterAmount, mix);
+            mix_canonical_float_bits(h, p.scatterHalationControls.scatterSpatialScale, mix);
+            mix_canonical_float_bits(h, p.scatterHalationControls.halationAmount, mix);
+            mix_canonical_float_bits(h, p.scatterHalationControls.halationSpatialScale, mix);
+        }
         mix_hash_field_scaled_rounded_if_finite(h, p.scannerLensBlurSigmaPx, 10000.0, mix);
         mix_hash_field_scaled_rounded_if_finite(h, p.scannerUnsharpMask[0], 10000.0, mix);
         mix_hash_field_scaled_rounded_if_finite(h, p.scannerUnsharpMask[1], 10000.0, mix);
@@ -633,7 +601,7 @@ namespace {
         const ParamSnapshot& params) {
         Spektrafilm::SpatialOpticsControls controls{};
         controls.cameraDiffusion = params.cameraDiffusion;
-        controls.scatterHalationActive = params.exactScatterHalationActive != 0;
+        controls.scatterHalation = params.scatterHalationControls;
         controls.enlargerDiffusion = params.enlargerDiffusion;
         return controls;
     }
@@ -995,9 +963,15 @@ namespace {
         return input;
     }
 
-    bool publish_direct_recipe_if_selected(const ParamSnapshot& params, RenderRecipe& outRecipe) {
+    bool build_direct_render_state_product_impl(
+        const ParamSnapshot& params,
+        FocusedRenderStateBuildProduct& out,
+        std::string& outError) {
+        out = FocusedRenderStateBuildProduct{};
+        outError.clear();
         if (Spektrafilm::scan_route_is_print(params.scanRoute)) {
-            return true;
+            outError = "ResourceDescriptorMismatch route=direct field=scan_route";
+            return false;
         }
 
         JuicerAssets::Library& assets = JuicerProcess::root().assets();
@@ -1007,6 +981,12 @@ namespace {
                     params.filmProfileKey,
                     params.printProfileKey,
                     params.scanRoute});
+        if (!selected.valid || !selected.filmProfile) {
+            outError = selected.diagnostic.empty()
+                           ? "MissingRequiredResource route=direct field=selected_profile"
+                           : selected.diagnostic;
+            return false;
+        }
         Spektrafilm::DirectRecipeBuildInput input{};
         input.film = film_foundation_input_from_snapshot(
             params,
@@ -1029,11 +1009,9 @@ namespace {
         Spektrafilm::DirectRecipeBuildResult built =
             Spektrafilm::build_direct_render_recipe(input);
         if (!built.valid) {
-            JTRACE(
-                "SPEKTRAFILM",
-                built.diagnostic.empty()
-                    ? "ResourceDescriptorMismatch phase=3A direct recipe build failed"
-                    : built.diagnostic);
+            outError = built.diagnostic.empty()
+                           ? "ResourceDescriptorMismatch phase=3A direct recipe build failed"
+                           : built.diagnostic;
             return false;
         }
 
@@ -1046,21 +1024,32 @@ namespace {
                     &built.recipe.scannerOutput},
                 descriptor,
                 descriptorDiagnostic)) {
-            JTRACE(
-                "SPEKTRAFILM",
-                descriptorDiagnostic.empty()
-                    ? "ResourceDescriptorMismatch phase=3A scanner descriptor build failed"
-                    : descriptorDiagnostic);
+            outError = descriptorDiagnostic.empty()
+                           ? "ResourceDescriptorMismatch phase=3A scanner descriptor build failed"
+                           : descriptorDiagnostic;
             return false;
         }
 
-        outRecipe = std::move(built.recipe);
+        out.recipe = std::move(built.recipe);
+        if (!build_focused_film_payload(out.recipe, out.payload) ||
+            !build_direct_scanner_payload(out.recipe, out.payload)) {
+            out = FocusedRenderStateBuildProduct{};
+            outError =
+                "ResourceDescriptorMismatch focused direct publication payload build failed";
+            return false;
+        }
         return true;
     }
 
-    bool publish_print_recipe_if_selected(const ParamSnapshot& params, RenderRecipe& outRecipe) {
+    bool build_print_render_state_product_impl(
+        const ParamSnapshot& params,
+        FocusedRenderStateBuildProduct& out,
+        std::string& outError) {
+        out = FocusedRenderStateBuildProduct{};
+        outError.clear();
         if (!Spektrafilm::scan_route_is_print(params.scanRoute)) {
-            return true;
+            outError = "ResourceDescriptorMismatch route=print field=scan_route";
+            return false;
         }
 
         JuicerAssets::Library& assets = JuicerProcess::root().assets();
@@ -1071,11 +1060,9 @@ namespace {
                     params.printProfileKey,
                     params.scanRoute});
         if (!selected.valid || !selected.filmProfile || !selected.printProfile) {
-            JTRACE(
-                "SPEKTRAFILM",
-                selected.diagnostic.empty()
-                    ? "MissingRequiredResource phase=4A field=selected_profile"
-                    : selected.diagnostic);
+            outError = selected.diagnostic.empty()
+                           ? "MissingRequiredResource phase=4A field=selected_profile"
+                           : selected.diagnostic;
             return false;
         }
 
@@ -1097,11 +1084,9 @@ namespace {
             const JuicerAssets::MeasuredDichroicResourceIdentity measured =
                 assets.measured_dichroic_resource_identity(input.dichroic.setKey);
             if (!measured.valid) {
-                JTRACE(
-                    "SPEKTRAFILM",
-                    measured.diagnostic.empty()
-                        ? "MalformedSelectedDichroicResource phase=4A"
-                        : measured.diagnostic);
+                outError = measured.diagnostic.empty()
+                               ? "MalformedSelectedDichroicResource phase=4A"
+                               : measured.diagnostic;
                 return false;
             }
             input.dichroic.resourcePathsCmy = measured.resourcePathsCmy;
@@ -1116,11 +1101,9 @@ namespace {
                 input.printIlluminantKey,
                 selected.filmProfile->info.stock);
         if (neutral.status == JuicerAssets::NeutralPrintCalibrationStatus::Malformed) {
-            JTRACE(
-                "SPEKTRAFILM",
-                neutral.diagnostic.empty()
-                    ? "MalformedNeutralPrintCalibration phase=4A"
-                    : neutral.diagnostic);
+            outError = neutral.diagnostic.empty()
+                           ? "MalformedNeutralPrintCalibration phase=4A"
+                           : neutral.diagnostic;
             return false;
         }
         switch (neutral.status) {
@@ -1170,14 +1153,61 @@ namespace {
         Spektrafilm::PrintRecipeBuildResult built =
             Spektrafilm::build_print_render_recipe(input);
         if (!built.valid) {
-            JTRACE(
-                "SPEKTRAFILM",
-                built.diagnostic.empty()
-                    ? "ResourceDescriptorMismatch phase=4A print recipe build failed"
-                    : built.diagnostic);
+            outError = built.diagnostic.empty()
+                           ? "ResourceDescriptorMismatch phase=4A print recipe build failed"
+                           : built.diagnostic;
             return false;
         }
-        outRecipe = std::move(built.recipe);
+        out.recipe = std::move(built.recipe);
+        if (!build_focused_film_payload(out.recipe, out.payload) ||
+            !build_print_scanner_payload(out.recipe, out.payload)) {
+            out = FocusedRenderStateBuildProduct{};
+            outError =
+                "ResourceDescriptorMismatch phase=4C focused print publication payload build failed";
+            return false;
+        }
+        return true;
+    }
+} // namespace
+
+bool build_direct_render_state_product(
+    const ParamSnapshot& snapshot,
+    FocusedRenderStateBuildProduct& out,
+    std::string& outError) {
+    return build_direct_render_state_product_impl(snapshot, out, outError);
+}
+
+bool build_print_render_state_product(
+    const ParamSnapshot& snapshot,
+    FocusedRenderStateBuildProduct& out,
+    std::string& outError) {
+    return build_print_render_state_product_impl(snapshot, out, outError);
+}
+
+namespace {
+    bool publish_direct_recipe_if_selected(
+        const ParamSnapshot& params,
+        FocusedRenderStateBuildProduct& outProduct) {
+        FocusedRenderStateBuildProduct product;
+        std::string diagnostic;
+        if (!build_direct_render_state_product(params, product, diagnostic)) {
+            JTRACE("SPEKTRAFILM", diagnostic);
+            return false;
+        }
+        outProduct = std::move(product);
+        return true;
+    }
+
+    bool publish_print_recipe_if_selected(
+        const ParamSnapshot& params,
+        FocusedRenderStateBuildProduct& outProduct) {
+        FocusedRenderStateBuildProduct product;
+        std::string diagnostic;
+        if (!build_print_render_state_product(params, product, diagnostic)) {
+            JTRACE("SPEKTRAFILM", diagnostic);
+            return false;
+        }
+        outProduct = std::move(product);
         return true;
     }
 } // namespace
@@ -1256,130 +1286,180 @@ const char* print_profile_option_label(int index) {
     return entry ? entry->label.c_str() : "";
 }
 
-bool rebuild_direct_render_state(InstanceState& S, const ParamSnapshot& P) {
-    if (Spektrafilm::scan_route_is_print(P.scanRoute)) {
-        return false;
-    }
+namespace {
+    bool rebuild_direct_render_state_for_hash(
+        InstanceState& S,
+        const ParamSnapshot& P,
+        std::uint64_t fullHash) {
+        if (Spektrafilm::scan_route_is_print(P.scanRoute)) {
+            return false;
+        }
 
-    JTRACE_SCOPE("BUILD", "rebuild_direct_render_state");
-    std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
-    const std::uint64_t fullHash = hash_params(P);
-    const std::uint64_t pendingHash = load_pending_full_hash(S);
-    if (pendingHash != 0 && pendingHash != fullHash) {
-        return false;
-    }
-    if (pendingHash == fullHash &&
-        S.lastHash.load(std::memory_order_acquire) == fullHash &&
-        JuicerAtomic::load_shared_ptr(&S.activeDirectState)) {
+        JTRACE_SCOPE("BUILD", "rebuild_direct_render_state");
+        std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
+        if (S.lastHash.load(std::memory_order_acquire) == fullHash) {
+            const std::shared_ptr<const DirectRenderState> active =
+                JuicerAtomic::load_shared_ptr(&S.activeDirectState);
+            if (active && active->buildCounter != 0 && active->recipe.directStructuralReady) {
+                return true;
+            }
+        }
+        FocusedRenderStateBuildProduct product;
+        if (!publish_direct_recipe_if_selected(P, product)) {
+            std::lock_guard<std::mutex> stateLock(S.m);
+            JuicerAtomic::store_shared_ptr(
+                &S.activeDirectState,
+                std::shared_ptr<const DirectRenderState>{});
+            return false;
+        }
+
+        auto next = std::make_shared<DirectRenderState>();
+        next->recipe = std::move(product.recipe);
+        next->payload = std::move(product.payload);
+
+        next->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
+        {
+            std::lock_guard<std::mutex> stateLock(S.m);
+            JuicerAtomic::store_shared_ptr(
+                &S.activeDirectState,
+                std::shared_ptr<const DirectRenderState>(next));
+            JuicerAtomic::store_shared_ptr(
+                &S.activePrintState,
+                std::shared_ptr<const PrintRenderState>{});
+            S.lastHash.store(fullHash, std::memory_order_release);
+        }
         return true;
     }
-    RenderRecipe recipe =
-        Spektrafilm::make_render_recipe(P.filmProfileKey, P.printProfileKey, P.scanRoute);
-    if (!publish_direct_recipe_if_selected(P, recipe)) {
-        if (!pending_hash_is_current_or_unset(S, fullHash)) {
+
+    bool rebuild_print_render_state_for_hash(
+        InstanceState& S,
+        const ParamSnapshot& P,
+        std::uint64_t fullHash) {
+        if (!Spektrafilm::scan_route_is_print(P.scanRoute)) {
             return false;
         }
-        std::lock_guard<std::mutex> stateLock(S.m);
-        JuicerAtomic::store_shared_ptr(
-            &S.activeDirectState,
-            std::shared_ptr<const DirectRenderState>{});
-        return false;
-    }
 
-    std::shared_ptr<DirectRenderState> next = make_direct_render_state(recipe);
-    if (!next) {
-        JTRACE(
+        JTRACE_SCOPE("BUILD", "rebuild_print_render_state");
+        std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
+        if (S.lastHash.load(std::memory_order_acquire) == fullHash) {
+            const std::shared_ptr<const PrintRenderState> active =
+                JuicerAtomic::load_shared_ptr(&S.activePrintState);
+            if (active && active->buildCounter != 0 && active->recipe.printStructuralReady) {
+                return true;
+            }
+        }
+        FocusedRenderStateBuildProduct product;
+        if (!publish_print_recipe_if_selected(P, product)) {
+            std::lock_guard<std::mutex> stateLock(S.m);
+            JuicerAtomic::store_shared_ptr(
+                &S.activePrintState,
+                std::shared_ptr<const PrintRenderState>{});
+            return false;
+        }
+
+        auto next = std::make_shared<PrintRenderState>();
+        next->recipe = std::move(product.recipe);
+        next->payload = std::move(product.payload);
+
+        next->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
+        {
+            std::lock_guard<std::mutex> stateLock(S.m);
+            JuicerAtomic::store_shared_ptr(
+                &S.activeDirectState,
+                std::shared_ptr<const DirectRenderState>{});
+            JuicerAtomic::store_shared_ptr(
+                &S.activePrintState,
+                std::shared_ptr<const PrintRenderState>(next));
+            S.lastHash.store(fullHash, std::memory_order_release);
+        }
+
+        JTRACE_VERBOSE(
             "SPEKTRAFILM",
-            "ResourceDescriptorMismatch focused direct publication payload build failed");
-        if (!pending_hash_is_current_or_unset(S, fullHash)) {
-            return false;
-        }
-        std::lock_guard<std::mutex> stateLock(S.m);
-        JuicerAtomic::store_shared_ptr(
-            &S.activeDirectState,
-            std::shared_ptr<const DirectRenderState>{});
-        return false;
+            "phase=4C focused print state published from validated profiles and RenderRecipe");
+        return true;
     }
+} // namespace
 
-    if (!pending_hash_is_current_or_unset(S, fullHash)) {
-        return false;
-    }
-    next->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
-    {
-        std::lock_guard<std::mutex> stateLock(S.m);
-        JuicerAtomic::store_shared_ptr(
-            &S.activeDirectState,
-            std::shared_ptr<const DirectRenderState>(next));
-        JuicerAtomic::store_shared_ptr(
-            &S.activePrintState,
-            std::shared_ptr<const PrintRenderState>{});
-        S.lastHash.store(fullHash, std::memory_order_release);
-    }
-    return true;
+bool rebuild_direct_render_state(InstanceState& S, const ParamSnapshot& P) {
+    return rebuild_direct_render_state_for_hash(S, P, hash_params(P));
 }
 
 bool rebuild_print_render_state(InstanceState& S, const ParamSnapshot& P) {
-    if (!Spektrafilm::scan_route_is_print(P.scanRoute)) {
-        return false;
-    }
+    return rebuild_print_render_state_for_hash(S, P, hash_params(P));
+}
 
-    JTRACE_SCOPE("BUILD", "rebuild_print_render_state");
-    std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
-    const std::uint64_t fullHash = hash_params(P);
-    const std::uint64_t pendingHash = load_pending_full_hash(S);
-    if (pendingHash != 0 && pendingHash != fullHash) {
-        return false;
-    }
-    if (pendingHash == fullHash &&
-        S.lastHash.load(std::memory_order_acquire) == fullHash &&
-        JuicerAtomic::load_shared_ptr(&S.activePrintState)) {
-        return true;
-    }
-    RenderRecipe recipe =
-        Spektrafilm::make_render_recipe(P.filmProfileKey, P.printProfileKey, P.scanRoute);
-    if (!publish_print_recipe_if_selected(P, recipe)) {
-        if (!pending_hash_is_current_or_unset(S, fullHash)) {
-            return false;
+PendingRenderAdmissionResult admit_pending_render_state(InstanceState& state) {
+    for (;;) {
+        ParamSnapshot snapshot;
+        std::uint64_t fullHash = 0;
+        {
+            std::lock_guard<std::mutex> pendingLock(state.pending.m);
+            if (std::holds_alternative<PendingParamsState::Uninitialized>(
+                    state.pending.value)) {
+                return PendingRenderAdmissionResult{};
+            }
+            if (const auto* invalid =
+                    std::get_if<PendingParamsState::InvalidSnapshotControls>(
+                        &state.pending.value)) {
+                PendingRenderAdmissionResult result;
+                result.status = PendingRenderAdmissionStatus::InvalidSnapshotControls;
+                result.diagnostic = invalid->diagnostic;
+                return result;
+            }
+            const auto& valid = std::get<PendingParamsState::Valid>(state.pending.value);
+            snapshot = valid.params;
+            fullHash = valid.fullHash;
         }
-        std::lock_guard<std::mutex> stateLock(S.m);
-        JuicerAtomic::store_shared_ptr(
-            &S.activePrintState,
-            std::shared_ptr<const PrintRenderState>{});
-        return false;
-    }
 
-    std::shared_ptr<PrintRenderState> next = make_print_render_state(recipe);
-    if (!next) {
-        JTRACE(
-            "SPEKTRAFILM",
-            "ResourceDescriptorMismatch phase=4C focused print publication payload build failed");
-        if (!pending_hash_is_current_or_unset(S, fullHash)) {
-            return false;
+        const bool rebuilt = Spektrafilm::scan_route_is_print(snapshot.scanRoute)
+                                 ? rebuild_print_render_state_for_hash(
+                                       state,
+                                       snapshot,
+                                       fullHash)
+                                 : rebuild_direct_render_state_for_hash(
+                                       state,
+                                       snapshot,
+                                       fullHash);
+
+        std::lock_guard<std::mutex> pendingLock(state.pending.m);
+        const auto* current = std::get_if<PendingParamsState::Valid>(&state.pending.value);
+        if (!current || current->fullHash != fullHash) {
+            continue;
         }
-        std::lock_guard<std::mutex> stateLock(S.m);
-        JuicerAtomic::store_shared_ptr(
-            &S.activePrintState,
-            std::shared_ptr<const PrintRenderState>{});
-        return false;
-    }
 
-    if (!pending_hash_is_current_or_unset(S, fullHash)) {
-        return false;
-    }
-    next->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
-    {
-        std::lock_guard<std::mutex> stateLock(S.m);
-        JuicerAtomic::store_shared_ptr(
-            &S.activeDirectState,
-            std::shared_ptr<const DirectRenderState>{});
-        JuicerAtomic::store_shared_ptr(
-            &S.activePrintState,
-            std::shared_ptr<const PrintRenderState>(next));
-        S.lastHash.store(fullHash, std::memory_order_release);
-    }
+        PendingRenderAdmissionResult result;
+        result.snapshot = snapshot;
+        if (!rebuilt || state.lastHash.load(std::memory_order_acquire) != fullHash) {
+            result.status = PendingRenderAdmissionStatus::RebuildFailed;
+            result.diagnostic =
+                "ResourceDescriptorMismatch focused render state rebuild failed";
+            return result;
+        }
 
-    JTRACE_VERBOSE(
-        "SPEKTRAFILM",
-        "phase=4C focused print state published from validated profiles and RenderRecipe");
-    return true;
+        if (Spektrafilm::scan_route_is_print(snapshot.scanRoute)) {
+            result.printState = JuicerAtomic::load_shared_ptr(&state.activePrintState);
+            if (!result.printState || result.printState->buildCounter == 0 ||
+                !result.printState->recipe.printStructuralReady) {
+                result.status = PendingRenderAdmissionStatus::RebuildFailed;
+                result.diagnostic =
+                    "ResourceDescriptorMismatch focused print render state not ready";
+                result.printState.reset();
+                return result;
+            }
+            result.status = PendingRenderAdmissionStatus::AdmittedPrint;
+            return result;
+        }
+
+        result.directState = JuicerAtomic::load_shared_ptr(&state.activeDirectState);
+        if (!result.directState || result.directState->buildCounter == 0 ||
+            !result.directState->recipe.directStructuralReady) {
+            result.status = PendingRenderAdmissionStatus::RebuildFailed;
+            result.diagnostic =
+                "ResourceDescriptorMismatch focused direct render state not ready";
+            result.directState.reset();
+            return result;
+        }
+        result.status = PendingRenderAdmissionStatus::AdmittedDirect;
+        return result;
+    }
 }

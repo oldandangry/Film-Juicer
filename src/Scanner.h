@@ -137,10 +137,13 @@ namespace Scanner {
         float glarePercent = 0.0f;
         float glareRoughness = 0.0f;
         float glareBlurSigmaPx = 0.0f;
+        int glareBlurRadius = 0;
         float lensBlurSigmaPx = 0.0f;
+        int lensBlurRadius = 0;
         float unsharpSigmaPx = 0.0f;
+        int unsharpRadius = 0;
         float unsharpAmount = 0.0f;
-        std::uint32_t schemaVersion = 1;
+        std::uint32_t schemaVersion = 2;
         std::uint64_t hash = 0;
 
         bool active() const noexcept {

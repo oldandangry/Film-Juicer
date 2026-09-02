@@ -229,15 +229,15 @@ namespace {
         return expf(mu + sigma * sample.normalSample);
     }
 
-    __device__ __forceinline__ int reflect_index_repeat_wide_device(std::int64_t idx, int size) {
+    __device__ __forceinline__ int reflect_index_half_sample_wide_device(std::int64_t idx, int size) {
         if (size <= 1) {
             return 0;
         }
         while (idx < 0 || idx >= static_cast<std::int64_t>(size)) {
             if (idx < 0) {
-                idx = -idx;
+                idx = -idx - 1;
             } else {
-                idx = 2 * static_cast<std::int64_t>(size) - idx - 2;
+                idx = 2 * static_cast<std::int64_t>(size) - idx - 1;
             }
         }
         return static_cast<int>(idx);
@@ -331,7 +331,7 @@ __global__ void optics_blur_horizontal_kernel(
                 const std::size_t rowBase = yLoad * widthCount;
                 for (std::size_t i = static_cast<std::size_t>(threadIdx.x); i < tileW; i += static_cast<std::size_t>(blockDim.x)) {
                     const std::int64_t xLoad = static_cast<std::int64_t>(blockX) + static_cast<std::int64_t>(i) - static_cast<std::int64_t>(radius);
-                    const int xx = reflect_index_repeat_wide_device(xLoad, width);
+                    const int xx = reflect_index_half_sample_wide_device(xLoad, width);
                     sTile[yLocal * tileW + i] = in[rowBase + static_cast<size_t>(xx)];
                 }
             }
@@ -400,7 +400,7 @@ __global__ void optics_blur_vertical_kernel(
             if (xLoad < widthCount) {
                 for (std::size_t i = static_cast<std::size_t>(threadIdx.y); i < tileH; i += static_cast<std::size_t>(blockDim.y)) {
                     const std::int64_t yLoad = static_cast<std::int64_t>(blockY) + static_cast<std::int64_t>(i) - static_cast<std::int64_t>(radius);
-                    const int yy = reflect_index_repeat_wide_device(yLoad, height);
+                    const int yy = reflect_index_half_sample_wide_device(yLoad, height);
                     sTile[i * tileW + xLocal] =
                         in[static_cast<std::size_t>(yy) * widthCount + xLoad];
                 }
@@ -484,7 +484,7 @@ __device__ __forceinline__ void grain_blur_vertical_accumulate_device(
             if (xLoad < widthCount) {
                 for (std::size_t i = static_cast<std::size_t>(threadIdx.y); i < tileH; i += static_cast<std::size_t>(blockDim.y)) {
                     const std::int64_t yLoad = static_cast<std::int64_t>(blockY) + static_cast<std::int64_t>(i) - static_cast<std::int64_t>(radius);
-                    const int yy = reflect_index_repeat_wide_device(yLoad, height);
+                    const int yy = reflect_index_half_sample_wide_device(yLoad, height);
                     sTile[i * tileW + xLocal] =
                         in[static_cast<std::size_t>(yy) * widthCount + xLoad];
                 }
@@ -586,7 +586,7 @@ __global__ void optics_unsharp_vertical_combine_kernel(VerticalUnsharpInput inpu
             if (xLoad < widthCount) {
                 for (std::size_t i = static_cast<std::size_t>(threadIdx.y); i < tileH; i += static_cast<std::size_t>(blockDim.y)) {
                     const std::int64_t yLoad = static_cast<std::int64_t>(blockY) + static_cast<std::int64_t>(i) - static_cast<std::int64_t>(radius);
-                    const int yy = reflect_index_repeat_wide_device(yLoad, height);
+                    const int yy = reflect_index_half_sample_wide_device(yLoad, height);
                     sTile[i * tileW + xLocal] =
                         in[static_cast<std::size_t>(yy) * widthCount + xLoad];
                 }

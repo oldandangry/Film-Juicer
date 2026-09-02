@@ -20,6 +20,7 @@
 #include "Illuminants.h"
 #include "ParamNames.h"
 #include "ProcessRoot.h"
+#include "ScatterHalation.h"
 #include "SpectralData.h"
 #include "SpectralProcessing.h"
 #include "Logging.h"
@@ -144,71 +145,29 @@ namespace {
         return labels;
     }
 
-    struct PendingStateSnapshot {
-        ParamSnapshot params{};
-        std::uint64_t fullHash = 0ull;
-    };
-
-    inline PendingStateSnapshot load_pending_state_snapshot(InstanceState& state) {
-        PendingStateSnapshot snapshot{};
+    inline bool pending_snapshot_acquisition_needed(InstanceState& state) {
         std::lock_guard<std::mutex> lock(state.pending.m);
-        snapshot.params = state.pending.params;
-        snapshot.fullHash = state.pending.fullHash;
-        return snapshot;
+        return std::holds_alternative<PendingParamsState::Uninitialized>(
+            state.pending.value);
     }
 
-    inline bool pending_state_uninitialized(InstanceState& state) {
-        return load_pending_state_snapshot(state).fullHash == 0;
-    }
-
-    inline void store_pending_state_snapshot(
+    inline void store_pending_valid_snapshot(
         InstanceState& state,
-        const ParamSnapshot& params,
-        std::uint64_t fullHash) {
+        const ParamSnapshot& snapshot) {
+        PendingParamsState::Valid valid;
+        valid.params = snapshot;
+        valid.fullHash = hash_params(snapshot);
         std::lock_guard<std::mutex> lock(state.pending.m);
-        state.pending.params = params;
-        state.pending.fullHash = fullHash;
+        state.pending.value = std::move(valid);
     }
 
-    inline bool focused_state_ready_for_pending(
-        const InstanceState& state,
-        const PendingStateSnapshot& pending) {
-        if (Spektrafilm::scan_route_is_print(pending.params.scanRoute)) {
-            const std::shared_ptr<const PrintRenderState> active =
-                load_active_print_state_if(&state);
-            return active && active->buildCounter != 0 && active->recipe.printStructuralReady;
-        }
-        const std::shared_ptr<const DirectRenderState> active =
-            load_active_direct_state_if(&state);
-        return active && active->buildCounter != 0 && active->recipe.directStructuralReady;
-    }
-
-    inline bool pending_rebuild_required(
-        const InstanceState& state,
-        const PendingStateSnapshot& pending,
-        std::uint64_t builtFullHash) {
-        return pending.fullHash != 0 &&
-               (pending.fullHash != builtFullHash ||
-                !focused_state_ready_for_pending(state, pending));
-    }
-
-    inline void rebuild_pending_state_if_needed(InstanceState& state) {
-        for (;;) {
-            const PendingStateSnapshot pending = load_pending_state_snapshot(state);
-            const std::uint64_t builtFullHash =
-                state.lastHash.load(std::memory_order_acquire);
-            if (!pending_rebuild_required(state, pending, builtFullHash)) {
-                return;
-            }
-            if (Spektrafilm::scan_route_is_print(pending.params.scanRoute)) {
-                (void)rebuild_print_render_state(state, pending.params);
-            } else {
-                (void)rebuild_direct_render_state(state, pending.params);
-            }
-            if (load_pending_state_snapshot(state).fullHash == pending.fullHash) {
-                return;
-            }
-        }
+    inline void store_pending_invalid_snapshot(
+        InstanceState& state,
+        std::string diagnostic) {
+        PendingParamsState::InvalidSnapshotControls invalid;
+        invalid.diagnostic = std::move(diagnostic);
+        std::lock_guard<std::mutex> lock(state.pending.m);
+        state.pending.value = std::move(invalid);
     }
 
     inline bool is_grain_preset_input_param(const std::string& paramName) {
@@ -312,10 +271,6 @@ namespace {
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
 
-    inline void store_pending_hashes_for_snapshot(InstanceState& state, const ParamSnapshot& snapshot) {
-        store_pending_state_snapshot(state, snapshot, hash_params(snapshot));
-    }
-
     inline double sanitize_finite_or(double value, double fallback) {
         return is_finite(value) ? value : fallback;
     }
@@ -344,12 +299,33 @@ namespace {
         return bool_to_i32(value);
     }
 
-    inline double sanitize_positive_finite_or(double value, double fallback) {
-        return (is_finite(value) && value > 0.0) ? value : fallback;
-    }
+    inline bool read_camera_film_format_mm(
+        OFX::DoubleParam* param,
+        float& out,
+        std::string& outDiagnostic) {
+        if (!param) {
+            out = 35.0f;
+            return true;
+        }
 
-    inline double read_camera_film_format_mm_or_default(OFX::DoubleParam* param) {
-        return sanitize_positive_finite_or(read_double_param_or(param, 35.0), 35.0);
+        double raw = 35.0;
+        param->getValue(raw);
+        const char* reason = nullptr;
+        if (!is_finite(raw)) {
+            reason = "non_finite";
+        } else if (raw < 8.0) {
+            reason = "below_minimum";
+        } else if (raw > 120.0) {
+            reason = "above_maximum";
+        }
+        if (reason) {
+            outDiagnostic =
+                "InvalidAuthoredControl component=camera field=film_format_mm reason=";
+            outDiagnostic += reason;
+            return false;
+        }
+        out = static_cast<float>(raw);
+        return true;
     }
 
     inline bool is_positive_finite(double value) {
@@ -1441,6 +1417,23 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _dst = nullptr;
     }
 
+    const auto fetchOptionalBooleanParam = [this](const char* name) {
+        try {
+            return fetchBooleanParam(name);
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+            return static_cast<OFX::BooleanParam*>(nullptr);
+        }
+    };
+    const auto fetchOptionalDoubleParam = [this](const char* name) {
+        try {
+            return fetchDoubleParam(name);
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+            return static_cast<OFX::DoubleParam*>(nullptr);
+        }
+    };
+
     // Cache parameter handles (wrappers)
     try {
         _pExposure = fetchDoubleParam(kParamExposure);
@@ -1502,7 +1495,14 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pEnlargerM = fetchDoubleParam("EnlargerM");
         _pEnlargerC = fetchDoubleParam("EnlargerC");
 
-        _pHalationActive = fetchBooleanParam(JuicerParams::kHalationActive);
+        _pHalationActive = fetchOptionalBooleanParam(JuicerParams::kHalationActive);
+        _pHalationScatterAmount =
+            fetchOptionalDoubleParam(JuicerParams::kHalationScatterAmount);
+        _pHalationScatterSpatialScale =
+            fetchOptionalDoubleParam(JuicerParams::kHalationScatterSpatialScale);
+        _pHalationAmount = fetchOptionalDoubleParam(JuicerParams::kHalationAmount);
+        _pHalationSpatialScale =
+            fetchOptionalDoubleParam(JuicerParams::kHalationSpatialScale);
 
         _pGrainActive = fetchBooleanParam(JuicerParams::kGrainActive);
         _pGrainSublayersActive = fetchBooleanParam(JuicerParams::kGrainSublayersActive);
@@ -1676,11 +1676,7 @@ JuicerEffect::~JuicerEffect() {
 }
 
 void JuicerEffect::render(const OFX::RenderArguments& args) {
-    const Spektrafilm::ScanRoute requestedRoute = Spektrafilm::scan_route_from_key_or(
-        read_str_choice_param_or(_pScanRoute, Spektrafilm::scan_route_key(Spektrafilm::kDefaultScanRoute)),
-        Spektrafilm::kDefaultScanRoute);
     const bool cudaRoute = args.isEnabledCudaRender;
-    const bool directCudaRoute = cudaRoute && !Spektrafilm::scan_route_is_print(requestedRoute);
     if (!cudaRoute) {
         throw_spektrafilm_phase1a_render_cutoff(args);
     }
@@ -1739,28 +1735,40 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const int fullHeight = fullBounds.y2 - fullBounds.y1;
     const bool fullFrame = (roi.x1 == fullBounds.x1 && roi.y1 == fullBounds.y1 &&
                             roi.x2 == fullBounds.x2 && roi.y2 == fullBounds.y2);
+
+    PendingRenderAdmissionResult admission = admit_pending_render_state(*_state);
+    if (admission.status == PendingRenderAdmissionStatus::NeedsSnapshotAcquisition) {
+        initialize_pending_render_state();
+        admission = admit_pending_render_state(*_state);
+    }
+    switch (admission.status) {
+        case PendingRenderAdmissionStatus::NeedsSnapshotAcquisition:
+            trace_and_throw_render_fatal(RenderFatalTrace{
+                "BUILD",
+                "FATAL: focused render snapshot acquisition did not publish state"});
+        case PendingRenderAdmissionStatus::InvalidSnapshotControls:
+        case PendingRenderAdmissionStatus::RebuildFailed:
+            trace_and_throw_render_fatal(RenderFatalTrace{
+                "BUILD",
+                admission.diagnostic.empty()
+                    ? "FATAL: focused render admission failed"
+                    : admission.diagnostic.c_str()});
+        case PendingRenderAdmissionStatus::AdmittedDirect:
+        case PendingRenderAdmissionStatus::AdmittedPrint:
+            break;
+    }
+
+    const bool printRoute =
+        admission.status == PendingRenderAdmissionStatus::AdmittedPrint;
+    const bool directCudaRoute = cudaRoute && !printRoute;
     if (!fullFrame && !directCudaRoute) {
         JTRACE("RENDER", "FATAL: render window must match full frame; tiles/ROIs are unsupported");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
     const double longEdgePx = static_cast<double>(std::max(fullWidth, fullHeight));
-
-    if (pending_state_uninitialized(*_state)) {
-        initialize_pending_render_state();
-    }
-    rebuild_pending_state_if_needed(*_state);
-    const bool printRoute = Spektrafilm::scan_route_is_print(requestedRoute);
-    const std::shared_ptr<const DirectRenderState> directState =
-        printRoute ? nullptr : load_active_direct_state_if(_state.get());
-    const std::shared_ptr<const PrintRenderState> printState =
-        printRoute ? load_active_print_state_if(_state.get()) : nullptr;
-    if ((!printRoute &&
-         (!directState || directState->buildCounter == 0 || !directState->recipe.directStructuralReady)) ||
-        (printRoute &&
-         (!printState || printState->buildCounter == 0 || !printState->recipe.printStructuralReady))) {
-        trace_and_throw_render_fatal(RenderFatalTrace{"BUILD", "FATAL: focused render state not ready; aborting render"});
-    }
+    const std::shared_ptr<const DirectRenderState> directState = admission.directState;
+    const std::shared_ptr<const PrintRenderState> printState = admission.printState;
     const RenderRecipe& focusedRecipe = printRoute ? printState->recipe : directState->recipe;
     const double filmFormatMm = focusedRecipe.filmRaw.filmFormatLongEdgeMm;
     const float pixelSizeUm =
@@ -1792,6 +1800,17 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
+    std::optional<ScatterHalationFrameDescriptor> scatterHalationDescriptor;
+    std::string scatterHalationDiagnostic;
+    if (!Spektrafilm::build_scatter_halation_frame_descriptor(
+            focusedRecipe.spatialOptics.scatterHalation,
+            pixelSizeUm,
+            scatterHalationDescriptor,
+            scatterHalationDiagnostic)) {
+        JTRACE("SPEKTRAFILM", scatterHalationDiagnostic);
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
     // Tile-based multithreaded processing via OFX::ImageProcessor
     JuicerProcessor proc(*this);
     JuicerProcessor::SourceDestinationImages images{};
@@ -1806,6 +1825,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         JuicerProcessor::PrintFrameRequest frameRequest{};
         frameRequest.state = printState;
         frameRequest.diffusionFrameSet = diffusionFrameSet;
+        frameRequest.scatterHalation = scatterHalationDescriptor;
         frameRequest.components = nComponents;
         frameRequest.renderWindow = roi;
         frameRequest.fullFrameExtent = fullBounds;
@@ -1820,6 +1840,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         JuicerProcessor::DirectFrameRequest frameRequest{};
         frameRequest.state = directState;
         frameRequest.diffusionFrameSet = diffusionFrameSet;
+        frameRequest.scatterHalation = scatterHalationDescriptor;
         frameRequest.components = nComponents;
         frameRequest.renderWindow = roi;
         frameRequest.fullFrameExtent = fullBounds;
@@ -2162,8 +2183,35 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     onParamsPossiblyChanged(paramName.c_str());
 }
 
-ParamSnapshot JuicerEffect::snapshotParams() const {
+bool JuicerEffect::snapshotParams(
+    ParamSnapshot& out,
+    std::string& outDiagnostic) const {
     ParamSnapshot P;
+    outDiagnostic.clear();
+
+    ScatterHalationRawControls rawControls{};
+    rawControls.active = read_bool_param_or(_pHalationActive, true);
+    if (rawControls.active) {
+        rawControls.scatterAmount = read_double_param_or(_pHalationScatterAmount, 1.0);
+        rawControls.scatterSpatialScale =
+            read_double_param_or(_pHalationScatterSpatialScale, 1.0);
+        rawControls.halationAmount = read_double_param_or(_pHalationAmount, 1.0);
+        rawControls.halationSpatialScale =
+            read_double_param_or(_pHalationSpatialScale, 1.0);
+    }
+    if (!Spektrafilm::build_scatter_halation_controls(
+            rawControls,
+            P.scatterHalationControls,
+            outDiagnostic)) {
+        return false;
+    }
+    if (!read_camera_film_format_mm(
+            _pCameraFilmFormat,
+            P.cameraFilmFormatLongEdgeMm,
+            outDiagnostic)) {
+        return false;
+    }
+
     ProfileSnapshotChoiceParams profileChoiceParams{};
     profileChoiceParams.filmProfileKey = _pFilmProfileKey;
     profileChoiceParams.printProfileKey = _pPrintProfileKey;
@@ -2224,8 +2272,6 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     P.cameraAutoExposureEnabled = exposure.cameraAutoEnabled ? 1 : 0;
     P.cameraMeteringMethod = exposure.meteringMethod;
     P.cameraExposureCompensationEv = exposure.sliderEV;
-    P.cameraFilmFormatLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
-    P.exactScatterHalationActive = read_bool_param_or(_pHalationActive, false) ? 1 : 0;
     P.grainControls = gatherGrainUi();
     const GrainSurfaceArtifacts artifacts = read_grain_surface_artifacts(
         _pFilmDustAmount,
@@ -2267,7 +2313,8 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
         _pOutputCctfEncoding,
         _pOutputLinearPassThrough,
         P);
-    return P;
+    out = std::move(P);
+    return true;
 }
 
 void JuicerEffect::initialize_pending_render_state() {
@@ -2277,8 +2324,13 @@ void JuicerEffect::initialize_pending_render_state() {
     JuicerProcess::root().ensure_bootstrap();
     JTRACE("BUILD", "spectral globals ensured; publishing initial pending render state");
     applyDirGammaProfileDefaults();
-    const ParamSnapshot params = snapshotParams();
-    store_pending_hashes_for_snapshot(*_state, params);
+    ParamSnapshot params;
+    std::string diagnostic;
+    if (snapshotParams(params, diagnostic)) {
+        store_pending_valid_snapshot(*_state, params);
+    } else {
+        store_pending_invalid_snapshot(*_state, std::move(diagnostic));
+    }
 }
 
 void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
@@ -2289,7 +2341,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         JTRACE("BUILD", "onParamsPossiblyChanged suppressed");
         return;
     }
-    if (pending_state_uninitialized(*_state)) {
+    if (pending_snapshot_acquisition_needed(*_state)) {
         initialize_pending_render_state();
         return;
     }
@@ -2303,7 +2355,12 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         applyDirGammaProfileDefaults();
     }
 
-    const ParamSnapshot params = snapshotParams();
+    ParamSnapshot params;
+    std::string diagnostic;
+    if (!snapshotParams(params, diagnostic)) {
+        store_pending_invalid_snapshot(*_state, std::move(diagnostic));
+        return;
+    }
     trace_param_change_verbose_if(
         JTRACE_ENABLED(3),
         params,
@@ -2314,5 +2371,5 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
             "SPEKTRAFILM",
             "parameter change queued focused print recipe publication");
     }
-    store_pending_hashes_for_snapshot(*_state, params);
+    store_pending_valid_snapshot(*_state, params);
 }

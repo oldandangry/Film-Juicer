@@ -578,6 +578,7 @@ namespace JuicerCuda {
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
         float sigma,
+        int radius,
         std::string& outError);
 
     // Reaps deferred retire entries that are ready and returns reclaimed bytes.

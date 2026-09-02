@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release-Clang|x64">
+      <Configuration>Release-Clang</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{5DFE585E-28DB-43E0-B53C-12210C1B1961}</ProjectGuid>
+    <RootNamespace>ScatterHalationValidation</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Clang|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>ClangCl</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Label="JuicerBuildFlavor">
+    <JuicerIsDebugBuild Condition="'$(Configuration)'=='Debug'">1</JuicerIsDebugBuild>
+    <JuicerIsDebugBuild Condition="'$(JuicerIsDebugBuild)'==''">0</JuicerIsDebugBuild>
+    <JuicerIsReleaseBuild Condition="'$(Configuration)'=='Release' or '$(Configuration)'=='Release-Clang'">1</JuicerIsReleaseBuild>
+    <JuicerIsReleaseBuild Condition="'$(JuicerIsReleaseBuild)'==''">0</JuicerIsReleaseBuild>
+  </PropertyGroup>
+  <PropertyGroup Label="JuicerCudaConfig">
+    <CudaToolkitDir Condition="'$(CudaToolkitDir)'=='' and '$(CUDA_PATH_V13_2)'!=''">$(CUDA_PATH_V13_2)\</CudaToolkitDir>
+    <CudaToolkitDir Condition="'$(CudaToolkitDir)'=='' and '$(CUDA_PATH)'!=''">$(CUDA_PATH)\</CudaToolkitDir>
+    <JuicerCudaBuildCustomizationsAvailable Condition="Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.props')">1</JuicerCudaBuildCustomizationsAvailable>
+    <JuicerUseCudaMsbuildTargets Condition="'$(JuicerUseCudaMsbuildTargets)'=='' and '$(PlatformToolset)'!='ClangCl' and '$(JuicerCudaBuildCustomizationsAvailable)'=='1'">1</JuicerUseCudaMsbuildTargets>
+    <JuicerUseCudaMsbuildTargets Condition="'$(JuicerUseCudaMsbuildTargets)'==''">0</JuicerUseCudaMsbuildTargets>
+    <JuicerUseManualNvcc Condition="'$(JuicerUseManualNvcc)'=='' and '$(PlatformToolset)'=='ClangCl'">1</JuicerUseManualNvcc>
+    <JuicerUseManualNvcc Condition="'$(JuicerUseManualNvcc)'==''">0</JuicerUseManualNvcc>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.props" Condition="'$(JuicerUseCudaMsbuildTargets)'=='1' and Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.props')" />
+  </ImportGroup>
+  <PropertyGroup Label="JuicerCudaToolchain">
+    <JuicerNvccHostCompilerBin Condition="'$(JuicerNvccHostCompilerBin)'=='' and '$(VCToolsInstallDir)'!=''">$(VCToolsInstallDir)bin\Hostx64\x64</JuicerNvccHostCompilerBin>
+    <JuicerNvccHostIncludePath Condition="'$(JuicerNvccHostIncludePath)'==''">$(VC_IncludePath);$(WindowsSDK_IncludePath)</JuicerNvccHostIncludePath>
+  </PropertyGroup>
+  <PropertyGroup Label="JuicerClangCudaReleaseOptimization">
+    <JuicerClangThinLto Condition="'$(JuicerClangThinLto)'==''">1</JuicerClangThinLto>
+    <JuicerClangReleaseOptions Condition="'$(JuicerClangReleaseOptions)'=='' and '$(JuicerIsReleaseBuild)'=='1' and '$(PlatformToolset)'=='ClangCl'">/Ob2 /Gw /GF</JuicerClangReleaseOptions>
+    <JuicerClangReleaseLtoOptions Condition="'$(JuicerClangReleaseLtoOptions)'=='' and '$(JuicerIsReleaseBuild)'=='1' and '$(PlatformToolset)'=='ClangCl' and '$(JuicerClangThinLto)'=='1'">-flto=thin</JuicerClangReleaseLtoOptions>
+    <JuicerClangReleaseLinkOptions Condition="'$(JuicerClangReleaseLinkOptions)'=='' and '$(JuicerIsReleaseBuild)'=='1' and '$(PlatformToolset)'=='ClangCl'">/OPT:REF /OPT:ICF</JuicerClangReleaseLinkOptions>
+    <JuicerNvccReleaseDeviceOptions Condition="'$(JuicerNvccReleaseDeviceOptions)'=='' and '$(JuicerIsReleaseBuild)'=='1'">-O3 -Xptxas -O3</JuicerNvccReleaseDeviceOptions>
+    <JuicerNvccHostCompilerOptions Condition="'$(JuicerNvccHostCompilerOptions)'=='' and '$(JuicerIsReleaseBuild)'=='1'">/EHsc /O2 /Oi /Ob2 /Gy /Gw /GF /MD</JuicerNvccHostCompilerOptions>
+    <JuicerNvccHostCompilerOptions Condition="'$(JuicerNvccHostCompilerOptions)'==''">/EHsc /MD</JuicerNvccHostCompilerOptions>
+    <JuicerNvccFastMathOptions Condition="'$(JuicerNvccFastMath)'=='1'">--use_fast_math</JuicerNvccFastMathOptions>
+  </PropertyGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64' or '$(Configuration)|$(Platform)'=='Release-Clang|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\..\UserOverrides.props" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros">
+    <JuicerDiagnosticsCompiled Condition="'$(JuicerDiagnosticsCompiled)'=='' and '$(JuicerIsDebugBuild)'=='1'">1</JuicerDiagnosticsCompiled>
+    <JuicerDiagnosticsCompiled Condition="'$(JuicerDiagnosticsCompiled)'=='' and '$(JuicerIsReleaseBuild)'=='1'">0</JuicerDiagnosticsCompiled>
+  </PropertyGroup>
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)x64\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)x64\$(Configuration)\obj\</IntDir>
+    <TargetName>ScatterHalationValidation</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\src;$(ProjectDir)..\..\third_party;$(CudaToolkitDir)include;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <CudaCompile>
+      <CodeGeneration>compute_75,sm_75;compute_75,compute_75</CodeGeneration>
+      <AdditionalOptions>--std=c++20 %(AdditionalOptions)</AdditionalOptions>
+      <Include>$(ProjectDir)..\..\src;$(ProjectDir)..\..\third_party;%(Include)</Include>
+    </CudaCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+      <AdditionalLibraryDirectories>$(CudaToolkitDir)lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>cuda.lib;cudart.lib;cufft.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(JuicerIsReleaseBuild)'=='1' and '$(Platform)'=='x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\src;$(ProjectDir)..\..\third_party;$(CudaToolkitDir)include;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <AdditionalOptions Condition="'$(PlatformToolset)'=='ClangCl'">$(JuicerClangReleaseOptions) $(JuicerClangReleaseLtoOptions) %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <CudaCompile>
+      <CodeGeneration>compute_75,sm_75;compute_75,compute_75</CodeGeneration>
+      <Include>$(ProjectDir)..\..\src;$(ProjectDir)..\..\third_party;%(Include)</Include>
+      <AdditionalOptions>--std=c++20 %(AdditionalOptions)</AdditionalOptions>
+    </CudaCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+      <AdditionalLibraryDirectories>$(CudaToolkitDir)lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>cuda.lib;cudart.lib;cufft.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalOptions Condition="'$(PlatformToolset)'=='ClangCl'">$(JuicerClangReleaseLinkOptions) %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="ScatterHalationValidation.cpp" />
+    <ClCompile Include="..\..\src\ScatterHalation.cpp" />
+    <ClCompile Include="..\..\src\JuicerState.cpp" />
+    <ClCompile Include="..\..\src\ProfileAssets.cpp" />
+    <ClCompile Include="..\..\src\ProfileCatalog.cpp" />
+    <ClCompile Include="..\..\src\RenderRecipe.cpp" />
+    <ClCompile Include="..\..\src\ProcessRoot.cpp" />
+    <ClCompile Include="..\..\src\DiffusionHostBehavior.cpp" />
+    <ClCompile Include="..\..\src\DiffusionExecution.cpp" />
+    <ClCompile Include="..\..\src\Cuda\JuicerCudaDeviceLedger.cpp" />
+    <ClCompile Include="..\..\src\Cuda\Diffusion\JuicerCudaDiffusionResources.cpp" />
+    <ClCompile Include="..\..\src\Cuda\JuicerCudaResources.cpp" />
+    <ClCompile Include="..\..\src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp" />
+    <ClCompile Include="..\..\src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp" />
+    <ClCompile Include="..\..\src\Cuda\JuicerCudaFilmPayloads.cpp" />
+    <ClCompile Include="..\..\src\FilmEffectsFrameDescriptors.cpp" />
+    <ClCompile Include="..\..\src\ResourceAssetLibrary.cpp" />
+    <ClCompile Include="..\..\src\Scanner.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ScatterHalationValidation.h" />
+    <ClInclude Include="..\..\src\Cuda\Film\JuicerCudaScatterHalation.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="..\..\src\Cuda\Diffusion\JuicerCudaDiffusion.cu" />
+    <CudaCompile Include="..\..\src\Cuda\Film\JuicerCudaScatterHalation.cu" />
+    <CudaCompile Include="..\..\src\Cuda\Film\JuicerCudaFilmPipeline.cu" />
+    <CudaCompile Include="..\..\src\Cuda\JuicerCudaAutoExposure.cu" />
+    <CudaCompile Include="..\..\src\Cuda\Scan\JuicerCudaScanPipeline.cu" />
+    <CudaCompile Include="ScatterHalationValidation.cu" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(JuicerUseManualNvcc)'=='1'">
+    <ScatterHalationManualCudaCompile Include="@(CudaCompile)">
+      <ObjectFile>$(IntDir)manual_cuda\%(Filename).obj</ObjectFile>
+    </ScatterHalationManualCudaCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ScatterHalationValidationResource Include="$(ProjectDir)..\..\Resources\**\*" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="ScatterHalationRequireCudaToolchain" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(Platform)'!='x64'" Text="ScatterHalationValidation supports only x64 builds." />
+    <Error Condition="'$(CudaToolkitDir)'=='' or !Exists('$(CudaToolkitDir)bin\nvcc.exe')" Text="ScatterHalationValidation requires CUDA 13.2 and nvcc.exe." />
+    <Error Condition="'$(PlatformToolset)'!='ClangCl' and '$(JuicerCudaBuildCustomizationsAvailable)'!='1'" Text="ScatterHalationValidation MSVC builds require CUDA 13.2 MSBuild customizations." />
+    <Error Condition="'$(JuicerNvccFastMath)'=='1'" Text="ScatterHalationValidation forbids --use_fast_math." />
+  </Target>
+  <Target Name="ScatterHalationManualNvccCompile" Condition="'$(JuicerUseManualNvcc)'=='1'" BeforeTargets="ComputeLinkInputsFromProject">
+    <Error Condition="'$(JuicerNvccHostCompilerBin)'=='' or !Exists('$(JuicerNvccHostCompilerBin)\cl.exe')" Text="ScatterHalationValidation manual CUDA requires MSVC cl.exe." />
+    <MakeDir Directories="$(IntDir)manual_cuda" />
+    <Message Importance="High" Text="Compiling validation CUDA owner: %(ScatterHalationManualCudaCompile.Identity)" />
+    <Exec Command="set &quot;CL=&quot; &amp;&amp; set &quot;INCLUDE=$(JuicerNvccHostIncludePath)&quot; &amp;&amp; &quot;$(CudaToolkitDir)bin\nvcc.exe&quot; -c &quot;%(ScatterHalationManualCudaCompile.FullPath)&quot; --std=c++20 --cudart hybrid $(JuicerNvccReleaseDeviceOptions) $(JuicerNvccFastMathOptions) -ccbin &quot;$(JuicerNvccHostCompilerBin)&quot; -I&quot;$(ProjectDir)..\..\src&quot; -I&quot;$(ProjectDir)..\..\third_party&quot; -I&quot;$(CudaToolkitDir)include&quot; -DWIN32 -DNOMINMAX -D_CRT_SECURE_NO_WARNINGS -DJUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled) -gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_75,code=compute_75 -Xcompiler &quot;$(JuicerNvccHostCompilerOptions)&quot; -o &quot;%(ScatterHalationManualCudaCompile.ObjectFile)&quot;" />
+  </Target>
+  <Target Name="ScatterHalationManualCudaLinkInputs" Condition="'$(JuicerUseManualNvcc)'=='1'" DependsOnTargets="ScatterHalationManualNvccCompile" BeforeTargets="ComputeLinkInputsFromProject">
+    <ItemGroup>
+      <Object Include="@(ScatterHalationManualCudaCompile->'%(ObjectFile)')">
+        <LinkCompiled>true</LinkCompiled>
+      </Object>
+    </ItemGroup>
+  </Target>
+  <Target Name="ScatterHalationCleanManualCudaObjects" Condition="'$(JuicerUseManualNvcc)'=='1'" BeforeTargets="Clean">
+    <Delete Files="@(ScatterHalationManualCudaCompile->'%(ObjectFile)')" />
+  </Target>
+  <Target Name="StageScatterHalationValidationResources" AfterTargets="Build">
+    <Copy SourceFiles="@(ScatterHalationValidationResource)" DestinationFiles="@(ScatterHalationValidationResource->'$(ProjectDir)x64\Resources\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CleanScatterHalationValidationResources" BeforeTargets="Clean">
+    <RemoveDir Directories="$(ProjectDir)x64\Resources" />
+  </Target>
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.targets" Condition="'$(JuicerUseCudaMsbuildTargets)'=='1' and Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.targets')" />
+  </ImportGroup>
+</Project>

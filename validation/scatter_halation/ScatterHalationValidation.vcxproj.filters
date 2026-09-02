@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Validation">
+      <UniqueIdentifier>{1668E880-7309-43F9-AC62-D2EB6F2B7160}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Production Host">
+      <UniqueIdentifier>{48E1E247-804C-4146-A1B7-C23C1CD69253}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Production CUDA">
+      <UniqueIdentifier>{88E7E3D0-87E2-46D3-BC33-C9EB55D8A475}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="ScatterHalationValidation.cpp"><Filter>Validation</Filter></ClCompile>
+    <ClCompile Include="..\..\src\ScatterHalation.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\JuicerState.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\ProfileAssets.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\ProfileCatalog.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\RenderRecipe.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\ProcessRoot.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\DiffusionHostBehavior.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\DiffusionExecution.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\Cuda\JuicerCudaDeviceLedger.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\Cuda\Diffusion\JuicerCudaDiffusionResources.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\Cuda\JuicerCudaResources.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\Cuda\JuicerCudaFilmPayloads.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\FilmEffectsFrameDescriptors.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\ResourceAssetLibrary.cpp"><Filter>Production Host</Filter></ClCompile>
+    <ClCompile Include="..\..\src\Scanner.cpp"><Filter>Production Host</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ScatterHalationValidation.h"><Filter>Validation</Filter></ClInclude>
+    <ClInclude Include="..\..\src\Cuda\Film\JuicerCudaScatterHalation.h"><Filter>Production CUDA</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="..\..\src\Cuda\Diffusion\JuicerCudaDiffusion.cu"><Filter>Production CUDA</Filter></CudaCompile>
+    <CudaCompile Include="..\..\src\Cuda\Film\JuicerCudaScatterHalation.cu"><Filter>Production CUDA</Filter></CudaCompile>
+    <CudaCompile Include="..\..\src\Cuda\Film\JuicerCudaFilmPipeline.cu"><Filter>Production CUDA</Filter></CudaCompile>
+    <CudaCompile Include="..\..\src\Cuda\JuicerCudaAutoExposure.cu"><Filter>Production CUDA</Filter></CudaCompile>
+    <CudaCompile Include="..\..\src\Cuda\Scan\JuicerCudaScanPipeline.cu"><Filter>Production CUDA</Filter></CudaCompile>
+    <CudaCompile Include="ScatterHalationValidation.cu"><Filter>Validation</Filter></CudaCompile>
+  </ItemGroup>
+</Project>

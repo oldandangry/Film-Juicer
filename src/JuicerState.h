@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "ColorTransforms.h"
@@ -14,6 +15,7 @@
 #include "RenderRecipe.h"
 #include "ScanRoute.h"
 #include "Scanner.h"
+#include "ScatterHalation.h"
 #include "SpectralData.h"
 #include "ofxImageEffect.h"
 
@@ -58,6 +60,11 @@ struct FocusedRenderPayload {
     std::uint64_t scannerHash = 0;
 };
 
+struct FocusedRenderStateBuildProduct {
+    Spektrafilm::RenderRecipe recipe;
+    FocusedRenderPayload payload;
+};
+
 struct DirectRenderState {
     Spektrafilm::RenderRecipe recipe;
     FocusedRenderPayload payload;
@@ -90,7 +97,7 @@ struct ParamSnapshot {
     double couplersInhibitionInterlayer = 1.0;
     double couplersDiffusionSizeUm = 20.0;
     double cameraExposureCompensationEv = 0.0;
-    double cameraFilmFormatLongEdgeMm = 36.0;
+    float cameraFilmFormatLongEdgeMm = 35.0f;
     double scannerLensBlurSigmaPx = 0.0;
     double scannerBlackLevel = 0.01;
     double scannerWhiteLevel = 0.98;
@@ -125,7 +132,7 @@ struct ParamSnapshot {
     int hanatos2025AdaptationSurface = 0;
     int cameraAutoExposureEnabled = 1;
     int cameraMeteringMethod = 0;
-    int exactScatterHalationActive = 0;
+    ScatterHalationControls scatterHalationControls;
     int scannerBlackCorrection = 0;
     int scannerWhiteCorrection = 0;
     int scannerUseLut = 1;
@@ -147,10 +154,20 @@ struct ParamSnapshot {
 uint64_t hash_params(const ParamSnapshot& p);
 
 struct PendingParamsState {
+    struct Uninitialized {};
+
+    struct Valid {
+        ParamSnapshot params;
+        std::uint64_t fullHash = 0;
+    };
+
+    struct InvalidSnapshotControls {
+        std::string diagnostic;
+    };
+
     // Leaf lock for the coalesced pending-params snapshot. Do not nest with InstanceState::m.
     std::mutex m;
-    ParamSnapshot params;
-    std::uint64_t fullHash = 0;
+    std::variant<Uninitialized, Valid, InvalidSnapshotControls> value{Uninitialized{}};
 };
 
 struct InstanceState {
@@ -184,6 +201,23 @@ struct InstanceState {
     JuicerCuda::ResourceManager::SubmissionSnapshot submissionSnapshotLatch{};
 };
 
+enum class PendingRenderAdmissionStatus : std::uint8_t {
+    NeedsSnapshotAcquisition = 0,
+    InvalidSnapshotControls,
+    RebuildFailed,
+    AdmittedDirect,
+    AdmittedPrint
+};
+
+struct PendingRenderAdmissionResult {
+    PendingRenderAdmissionStatus status =
+        PendingRenderAdmissionStatus::NeedsSnapshotAcquisition;
+    ParamSnapshot snapshot;
+    std::shared_ptr<const DirectRenderState> directState;
+    std::shared_ptr<const PrintRenderState> printState;
+    std::string diagnostic;
+};
+
 bool spektrafilm_profile_catalog_ready();
 const char* spektrafilm_profile_catalog_failure();
 int film_profile_option_count();
@@ -194,3 +228,12 @@ const char* print_profile_option_key(int index);
 const char* print_profile_option_label(int index);
 bool rebuild_direct_render_state(InstanceState& S, const ParamSnapshot& P);
 bool rebuild_print_render_state(InstanceState& S, const ParamSnapshot& P);
+bool build_direct_render_state_product(
+    const ParamSnapshot& snapshot,
+    FocusedRenderStateBuildProduct& out,
+    std::string& outError);
+bool build_print_render_state_product(
+    const ParamSnapshot& snapshot,
+    FocusedRenderStateBuildProduct& out,
+    std::string& outError);
+PendingRenderAdmissionResult admit_pending_render_state(InstanceState& state);

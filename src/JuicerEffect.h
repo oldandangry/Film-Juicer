@@ -84,7 +84,7 @@ private:
     void updateGrainChromaEnabled();
     void updateDiffusionControlState();
     [[noreturn]] void throw_spektrafilm_phase1a_render_cutoff(const OFX::RenderArguments& args) const;
-    ParamSnapshot snapshotParams() const;
+    bool snapshotParams(ParamSnapshot& out, std::string& outDiagnostic) const;
     void onParamsPossiblyChanged(const char* changedNameOrNull);
     void initialize_pending_render_state();
 
@@ -141,6 +141,10 @@ private:
     OFX::DoubleParam* _pEnlargerC = nullptr;
 
     OFX::BooleanParam* _pHalationActive = nullptr;
+    OFX::DoubleParam* _pHalationScatterAmount = nullptr;
+    OFX::DoubleParam* _pHalationScatterSpatialScale = nullptr;
+    OFX::DoubleParam* _pHalationAmount = nullptr;
+    OFX::DoubleParam* _pHalationSpatialScale = nullptr;
 
     OFX::BooleanParam* _pGrainActive = nullptr;
     OFX::BooleanParam* _pGrainSublayersActive = nullptr;

@@ -1,0 +1,2095 @@
+{
+  "schema": "spektrafilm-scatter-halation-reference.v1",
+  "reference": {
+    "commit": "48645a2b4bf58c20b6a3b75c8022d0f462db754a",
+    "worktreeClean": true,
+    "uvLockSha256": "b4b3ade97b95875ac6dc6363f9ccc024ebd09496b3087aa7ac197ce2b38a8ca8",
+    "operatorModule": "spektrafilm.model.diffusion.apply_halation_um",
+    "operatorSourceSha256": "640006bef2fc89d4861f69add2a5c388658b0dde1fc694ac75d0e7a9c2b13d88",
+    "gaussianSourceSha256": "d82120001fc431c5ac094cc544d17642f6e9382f515365f383b7dc91f4f32865",
+    "generatorSha256": "bb28402c5fca53d9e9c3d6494a70460242e92ab4d4245a51b2c33ce831a9a327",
+    "hostGate1Identity": {
+      "case": "recipe/still-strong",
+      "expectedRecipeHash": "4812af8cf93cb3af",
+      "source": "production resolver host-gate-1 output"
+    }
+  },
+  "environment": {
+    "python": "3.14.4 (main, Apr  7 2026, 20:47:53) [Clang 22.1.1 ]",
+    "pythonImplementation": "CPython",
+    "numpy": "2.4.6",
+    "numba": "0.65.1",
+    "scipy": "1.17.1",
+    "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "os": "posix",
+    "architecture": "x86_64",
+    "processor": "x86_64",
+    "numbaCodeGeneration": {
+      "cpuName": "None",
+      "cpuFeatures": "None",
+      "threadingLayerConfigured": "default",
+      "threadingLayerActive": "omp",
+      "numThreads": 20
+    },
+    "environmentOverrides": {}
+  },
+  "binary": {
+    "file": "scatter_halation_reference.bin",
+    "byteCount": 85680,
+    "sha256": "b68f4704335263c3d95fd4fcb9152d54aca227264a8ee3081a87edae740f6cbe",
+    "byteOrder": "little",
+    "expectedPlaneEncoding": "IEEE-754 Float64",
+    "sourcePlaneEncoding": "IEEE-754 Float32"
+  },
+  "nativeDoubleAcquisitionRows": [
+    {
+      "id": "native-double-narrows-onto-dispatch-seam",
+      "rawDoubleHex": "0x1.8000000000001p+0",
+      "retainedFloat32Bits": "3fc00000"
+    },
+    {
+      "id": "native-double-below-seam-narrows-below",
+      "rawDoubleHex": "0x1.7ffffefffffffp+0",
+      "retainedFloat32Bits": "3fbfffff"
+    }
+  ],
+  "rows": [
+    {
+      "id": "fir_center_impulse",
+      "category": "scatter-only/fir/center-impulse",
+      "comparison": "fir",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3f800000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "00000000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/strong",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3c75c28f",
+            "3ba3d70a",
+            "00000000"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "41200000",
+        "fullFrameWidth": 19,
+        "fullFrameHeight": 17
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 0,
+            "elementCount": 323,
+            "shape": [
+              17,
+              19
+            ],
+            "dtype": "<f4",
+            "sha256": "eaaf5e8b366d29e3c1188a17e52c879575235cbac7fc8adb1502663a32241a2f"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 1292,
+            "elementCount": 323,
+            "shape": [
+              17,
+              19
+            ],
+            "dtype": "<f4",
+            "sha256": "891fabeda23ed005ffb43112d38f5752b2f1edd9b5b24d419cdedf77ea7dcb25"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 2584,
+            "elementCount": 323,
+            "shape": [
+              17,
+              19
+            ],
+            "dtype": "<f4",
+            "sha256": "12662067a0209cc0db4294b97e585f808c640f33d7b7c0390dc308c122db8e4f"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 3876,
+            "elementCount": 323,
+            "shape": [
+              17,
+              19
+            ],
+            "dtype": "<f8",
+            "sha256": "1afe62e72048b595e481f99ce0ceab990989c403256121c270ec2f040cd099d5"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 6460,
+            "elementCount": 323,
+            "shape": [
+              17,
+              19
+            ],
+            "dtype": "<f8",
+            "sha256": "3f63adee2ac2d7b7ba2dee0674e2b64b7bf99767773b91d0608c32c7b6caa29e"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 9044,
+            "elementCount": 323,
+            "shape": [
+              17,
+              19
+            ],
+            "dtype": "<f8",
+            "sha256": "ef8a04e764c09d41f23cc5f354424e91a12a49317ac838ff17e4b40a20f9e282"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": false
+    },
+    {
+      "id": "fir_corner_tiny",
+      "category": "scatter-only/fir/corner/tiny-frame/maximum-amount",
+      "comparison": "fir",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "40000000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "00000000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/no",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3e99999a",
+            "3dcccccd",
+            "3c75c28f"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "41200000",
+        "fullFrameWidth": 3,
+        "fullFrameHeight": 2
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 11628,
+            "elementCount": 6,
+            "shape": [
+              2,
+              3
+            ],
+            "dtype": "<f4",
+            "sha256": "190814a8d060874beae538975be3009b5d4c24226f545e7dec055cef1067f111"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 11652,
+            "elementCount": 6,
+            "shape": [
+              2,
+              3
+            ],
+            "dtype": "<f4",
+            "sha256": "06cb6ffe8c3c0dbe26d1737c901be9b2c6976938fdda662b567f95df0d103d11"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 11676,
+            "elementCount": 6,
+            "shape": [
+              2,
+              3
+            ],
+            "dtype": "<f4",
+            "sha256": "76d8f3f98a45e3ee1027516634ec6b89daf1f03943a55f0e2e4f205518614fa2"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 11700,
+            "elementCount": 6,
+            "shape": [
+              2,
+              3
+            ],
+            "dtype": "<f8",
+            "sha256": "77559820a87d44db9bc9ccca3393296cba599476f54f4e8c320b4a1864550295"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 11748,
+            "elementCount": 6,
+            "shape": [
+              2,
+              3
+            ],
+            "dtype": "<f8",
+            "sha256": "6f57d8312cebe3094f85ca79ad6a4715becd1fb80f7a78d4ca8b8c3740b14a46"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 11796,
+            "elementCount": 6,
+            "shape": [
+              2,
+              3
+            ],
+            "dtype": "<f8",
+            "sha256": "576eb81932f593be54f9618f29e5f595a0326545a8f95726fb664e742c3a9345"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": true
+    },
+    {
+      "id": "fir_constant",
+      "category": "scatter-only/fir/constant",
+      "comparison": "fir",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3f800000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "00000000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/strong",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3c75c28f",
+            "3ba3d70a",
+            "00000000"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "41200000",
+        "fullFrameWidth": 7,
+        "fullFrameHeight": 5
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 11844,
+            "elementCount": 35,
+            "shape": [
+              5,
+              7
+            ],
+            "dtype": "<f4",
+            "sha256": "162d7c297f38b8430df865d73700f5e7ab3e6d68f5cc0e1355a96c4ab172e8b0"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 11984,
+            "elementCount": 35,
+            "shape": [
+              5,
+              7
+            ],
+            "dtype": "<f4",
+            "sha256": "eeac3ac89245b2bc4e766f7d834428f57f2d24814ac5e21f15317365cc32fd3d"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 12124,
+            "elementCount": 35,
+            "shape": [
+              5,
+              7
+            ],
+            "dtype": "<f4",
+            "sha256": "4899a7b7189954a0506bf9f37a52c000b16660a39563bd0d8e1d3f939491d4fb"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 12264,
+            "elementCount": 35,
+            "shape": [
+              5,
+              7
+            ],
+            "dtype": "<f8",
+            "sha256": "e2b5bb7a0fd7cbc8cc5959574fbf81f47413360ea06319ca6906b57db7752da4"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 12544,
+            "elementCount": 35,
+            "shape": [
+              5,
+              7
+            ],
+            "dtype": "<f8",
+            "sha256": "fd6b435ddadbb898c1263366b6ff4a512ea43c91289f1609721f2bdce6dcdb2e"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 12824,
+            "elementCount": 35,
+            "shape": [
+              5,
+              7
+            ],
+            "dtype": "<f8",
+            "sha256": "0bc782bd0cf65346a9d52f2e65a0ba93f1e404b759eaf03de732b04bac000f38"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": true
+    },
+    {
+      "id": "yvv_asymmetric_ramp",
+      "category": "scatter-only/yvv/asymmetric-top-bottom/ramp",
+      "comparison": "yvv",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3f800000",
+          "scatterSpatialScaleFloat32Bits": "3fc00000",
+          "halationAmountFloat32Bits": "00000000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "cine/weak",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42480000",
+            "42480000",
+            "42480000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3da3d70a",
+            "3ca3d70a",
+            "00000000"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "3f800000",
+        "fullFrameWidth": 11,
+        "fullFrameHeight": 13
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 13104,
+            "elementCount": 143,
+            "shape": [
+              13,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "7b12b25716453acb66ccb278e57b58a5278fcae4d8c4e3ac81a89074c469d1bd"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 13676,
+            "elementCount": 143,
+            "shape": [
+              13,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "ce8d6f6c1b3251a9c1004643bfa142568d025420dd4ec360cbcd6a4c87a75445"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 14248,
+            "elementCount": 143,
+            "shape": [
+              13,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "585ed8dd01b8bfd7cf073ec82e921dcef87f7b6c3efa4a822ac5e31aa89c463e"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 14820,
+            "elementCount": 143,
+            "shape": [
+              13,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "009bb460484857133990eb40f6524bf8012b68f7e863f12aba6154d5b1228962"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 15964,
+            "elementCount": 143,
+            "shape": [
+              13,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "4edb2c6a44af76142c027a86267171b6d10e7ada6b43ad281681d0769e1935a8"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 17108,
+            "elementCount": 143,
+            "shape": [
+              13,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "bd82209b35f169cc9be2e731a9ee93b35224b84df99e9e9477e12004c4dfd806"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": false
+    },
+    {
+      "id": "dispatch_below_three",
+      "category": "scatter-only/dispatch-seam/below-three",
+      "comparison": "yvv",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3f800000",
+          "scatterSpatialScaleFloat32Bits": "3fbfffff",
+          "halationAmountFloat32Bits": "00000000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/strong",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3c75c28f",
+            "3ba3d70a",
+            "00000000"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "3f800000",
+        "fullFrameWidth": 15,
+        "fullFrameHeight": 15
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 18252,
+            "elementCount": 225,
+            "shape": [
+              15,
+              15
+            ],
+            "dtype": "<f4",
+            "sha256": "6b9b84565abd5b816c8c845897ded06ca9949f14a0383dd362fc76d145f9f73f"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 19152,
+            "elementCount": 225,
+            "shape": [
+              15,
+              15
+            ],
+            "dtype": "<f4",
+            "sha256": "b287d35a01ffc0d772826fa6c3829d540551adaf5e26b518a7ed9043076d5033"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 20052,
+            "elementCount": 225,
+            "shape": [
+              15,
+              15
+            ],
+            "dtype": "<f4",
+            "sha256": "50ef2dca07965566f864d9f6408c7b774114396bc9465144e209e7d640844051"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 20952,
+            "elementCount": 225,
+            "shape": [
+              15,
+              15
+            ],
+            "dtype": "<f8",
+            "sha256": "a5c8eed48981ae1cdc2c0cf3e67c335c85b140ca502533a2dadaa2dbec5b181e"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 22752,
+            "elementCount": 225,
+            "shape": [
+              15,
+              15
+            ],
+            "dtype": "<f8",
+            "sha256": "6b0b3ad0ccabd2b578da3f709da275ea642b70037e7ab9e4865b81d21c891f74"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 24552,
+            "elementCount": 225,
+            "shape": [
+              15,
+              15
+            ],
+            "dtype": "<f8",
+            "sha256": "9edce78823c6604d55b4beaeee04b3ce8b5d9389458d5da56162002d6f34afa8"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": false
+    },
+    {
+      "id": "dispatch_exact_three",
+      "category": "scatter-only/dispatch-seam/exact-three/edge",
+      "comparison": "yvv",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3f800000",
+          "scatterSpatialScaleFloat32Bits": "3fc00000",
+          "halationAmountFloat32Bits": "00000000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/strong",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3c75c28f",
+            "3ba3d70a",
+            "00000000"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "3f800000",
+        "fullFrameWidth": 15,
+        "fullFrameHeight": 15
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 26352,
+            "elementCount": 225,
+            "shape": [
+              15,
+              15
+            ],
+            "dtype": "<f4",
+            "sha256": "1523de94df56a84895c874657d0882ab2b1c0310220e163589c725f20ee1a285"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 27252,
+            "elementCount": 225,
+            "shape": [
+              15,
+              15
+            ],
+            "dtype": "<f4",
+            "sha256": "0a3a621a13dc986625bf04d3967e7bfa9bcbee135a6f98ae0be7e47e07d5bc7f"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 28152,
+            "elementCount": 225,
+            "shape": [
+              15,
+              15
+            ],
+            "dtype": "<f4",
+            "sha256": "04fdb50312545ceb7397eb0699fdb8dd36cbdb8d23a7f331f88dbd676e9851c3"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 29052,
+            "elementCount": 225,
+            "shape": [
+              15,
+              15
+            ],
+            "dtype": "<f8",
+            "sha256": "7431e5d07601705a745f5e5dca0ea516382dbd888e4096a4b67ef5cbbba460e9"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 30852,
+            "elementCount": 225,
+            "shape": [
+              15,
+              15
+            ],
+            "dtype": "<f8",
+            "sha256": "cb663d66b94d389542b7e6058d62d05ddf4460f512ad43a7f67d8bbc80789f56"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 32652,
+            "elementCount": 225,
+            "shape": [
+              15,
+              15
+            ],
+            "dtype": "<f8",
+            "sha256": "302bbab3aaff6726bce7620a679c5539e4b1bd8d28afc29493bc0eab2b17958c"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": false
+    },
+    {
+      "id": "back_reflection_only",
+      "category": "back-reflection-only/normalized/asymmetric",
+      "comparison": "yvv",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "00000000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "3f800000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/no",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3e99999a",
+            "3dcccccd",
+            "3c75c28f"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "41200000",
+        "fullFrameWidth": 9,
+        "fullFrameHeight": 11
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 34452,
+            "elementCount": 99,
+            "shape": [
+              11,
+              9
+            ],
+            "dtype": "<f4",
+            "sha256": "595c3ca98cc3c947fe65b15ac75b926525fa0c920ad855ace9bfdfb1bbc41e7f"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 34848,
+            "elementCount": 99,
+            "shape": [
+              11,
+              9
+            ],
+            "dtype": "<f4",
+            "sha256": "5a70c9afc7843d33bc60c5cc2c38590eded9715f081727c473bf2433c19e6564"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 35244,
+            "elementCount": 99,
+            "shape": [
+              11,
+              9
+            ],
+            "dtype": "<f4",
+            "sha256": "09dc6ac090493e312e3e207f2683522f39c51c883c41a75204597da651674767"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 35640,
+            "elementCount": 99,
+            "shape": [
+              11,
+              9
+            ],
+            "dtype": "<f8",
+            "sha256": "1767b11d4dc469e724fe619ec1cc12297b4af943d76fa051ae0658e50b951df8"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 36432,
+            "elementCount": 99,
+            "shape": [
+              11,
+              9
+            ],
+            "dtype": "<f8",
+            "sha256": "3f42119b1f0792d338e070a02c3db0d42099c76605c16dc530fbcad9120f1428"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 37224,
+            "elementCount": 99,
+            "shape": [
+              11,
+              9
+            ],
+            "dtype": "<f8",
+            "sha256": "81d6b0833af1b8737a578559704a67dd7992da8a61384b9dcd8b4887d3113289"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": true
+    },
+    {
+      "id": "back_reflection_identity_bounces_tiny",
+      "category": "back-reflection-only/all-radius-zero/tiny-frame",
+      "comparison": "fir",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "00000000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "3f800000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/no",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3e99999a",
+            "3dcccccd",
+            "3c75c28f"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "447a0000",
+        "fullFrameWidth": 1,
+        "fullFrameHeight": 1
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 38016,
+            "elementCount": 1,
+            "shape": [
+              1,
+              1
+            ],
+            "dtype": "<f4",
+            "sha256": "75e253f50979177eba47b2d0805ad36038789108924514d2a761a70de057d16f"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 38020,
+            "elementCount": 1,
+            "shape": [
+              1,
+              1
+            ],
+            "dtype": "<f4",
+            "sha256": "e00e5eb9444182f352323374ef4e08ebcb784725fdd4fd612d7730540b3e0c8c"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 38024,
+            "elementCount": 1,
+            "shape": [
+              1,
+              1
+            ],
+            "dtype": "<f4",
+            "sha256": "4f4b9b7d8b86633e2824e2f439819357b0cd010ab410ea1a691b12c5f94e91e0"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 38028,
+            "elementCount": 1,
+            "shape": [
+              1,
+              1
+            ],
+            "dtype": "<f8",
+            "sha256": "272f78036db6721f7cf7444315e5f6360426d14c3d446d6ae8a89ef70d134002"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 38036,
+            "elementCount": 1,
+            "shape": [
+              1,
+              1
+            ],
+            "dtype": "<f8",
+            "sha256": "6c3c396ed6b5c36dcae172271f462051b1266b851e92df3deea8ac65478fd712"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 38044,
+            "elementCount": 1,
+            "shape": [
+              1,
+              1
+            ],
+            "dtype": "<f8",
+            "sha256": "400c52dd5bd0047d64c0582af027b387a7938a64283d0d4f727331140cb6462c"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": true
+    },
+    {
+      "id": "combined_still_strong_1920",
+      "category": "combined/still-strong/35mm-1920/ramp/active-carrier",
+      "comparison": "combined",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3f800000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "3f800000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/strong",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3c75c28f",
+            "3ba3d70a",
+            "00000000"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "4191d555",
+        "fullFrameWidth": 13,
+        "fullFrameHeight": 9
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 38052,
+            "elementCount": 117,
+            "shape": [
+              9,
+              13
+            ],
+            "dtype": "<f4",
+            "sha256": "50684d6e546866be0a085954103bc23aec91febbcbbcae3dbc37c837d666afd0"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 38520,
+            "elementCount": 117,
+            "shape": [
+              9,
+              13
+            ],
+            "dtype": "<f4",
+            "sha256": "35f69af66880e07edde0338b63416633bdf78351c14b539e689bda15050750b5"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 38988,
+            "elementCount": 117,
+            "shape": [
+              9,
+              13
+            ],
+            "dtype": "<f4",
+            "sha256": "0fd4237baac359b9c36eabbe46c6817e30798bc11c27a131eb061ef6299ab96d"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 39456,
+            "elementCount": 117,
+            "shape": [
+              9,
+              13
+            ],
+            "dtype": "<f8",
+            "sha256": "b141cf8ed2dd27a24f5cbf1f16db348ae5a3acda4c87a4a967729b4b1a40a690"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 40392,
+            "elementCount": 117,
+            "shape": [
+              9,
+              13
+            ],
+            "dtype": "<f8",
+            "sha256": "3b43142ce5130a76d53808530edeb31ba63832e4bb536329efd7744802376fba"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 41328,
+            "elementCount": 117,
+            "shape": [
+              9,
+              13
+            ],
+            "dtype": "<f8",
+            "sha256": "e9d1487dd8c8c1a0301e27a5980a597126a056c9828649cc60c9e8d0b2d3ec11"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": true,
+      "descriptorInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3f800000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "3f800000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/strong",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3c75c28f",
+            "3ba3d70a",
+            "00000000"
+          ],
+          "filmProfileKey": "kodak_portra_400",
+          "filmProfileAssetVersionToken": 16343725478736492178
+        },
+        "pixelSizeUmFloat32Bits": "4191d555",
+        "fullFrameWidth": 13,
+        "fullFrameHeight": 9,
+        "expectedRecipeHash": "4812af8cf93cb3af"
+      }
+    },
+    {
+      "id": "combined_still_no_3840",
+      "category": "combined/still-no/35mm-3840/impulse",
+      "comparison": "combined",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3f800000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "3f800000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/no",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3e99999a",
+            "3dcccccd",
+            "3c75c28f"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "4111d555",
+        "fullFrameWidth": 13,
+        "fullFrameHeight": 13
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 42264,
+            "elementCount": 169,
+            "shape": [
+              13,
+              13
+            ],
+            "dtype": "<f4",
+            "sha256": "4e14e3ca8fcd7d8eff119d68fba632183afbcee7aa6da68f411979280a9b9ee0"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 42940,
+            "elementCount": 169,
+            "shape": [
+              13,
+              13
+            ],
+            "dtype": "<f4",
+            "sha256": "5ddee39c1eef266d52b5075ba001d74e08a5592022c1b832cb53e12850b5cba1"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 43616,
+            "elementCount": 169,
+            "shape": [
+              13,
+              13
+            ],
+            "dtype": "<f4",
+            "sha256": "23d6e4ebdeb5c293da73ef5a84078f88f544c8a342c0c2cbd60efb2da9dde051"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 44292,
+            "elementCount": 169,
+            "shape": [
+              13,
+              13
+            ],
+            "dtype": "<f8",
+            "sha256": "93bf0dc317257dea77edb65bae73b40eef0322865390f1dcacf16952a72631d0"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 45644,
+            "elementCount": 169,
+            "shape": [
+              13,
+              13
+            ],
+            "dtype": "<f8",
+            "sha256": "df9bc983dc43ed34da55f4aaa880c3f68d1dbb7a72ad2ac67ada8fc9e99249e9"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 46996,
+            "elementCount": 169,
+            "shape": [
+              13,
+              13
+            ],
+            "dtype": "<f8",
+            "sha256": "a22f5339e0daf53838a0e5262aa70780ab0ecb4faf0b7b67587637487306e610"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": false
+    },
+    {
+      "id": "combined_cine_weak_7680_hdr",
+      "category": "combined/cine-weak/35mm-7680/hdr",
+      "comparison": "combined",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3f800000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "3f800000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "cine/weak",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42480000",
+            "42480000",
+            "42480000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3da3d70a",
+            "3ca3d70a",
+            "00000000"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "4091d555",
+        "fullFrameWidth": 15,
+        "fullFrameHeight": 9
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 48348,
+            "elementCount": 135,
+            "shape": [
+              9,
+              15
+            ],
+            "dtype": "<f4",
+            "sha256": "48bcb8cfdffe4a065edee5db9722f942cccd531d0df3b7e0f9806ab4352e8c0c"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 48888,
+            "elementCount": 135,
+            "shape": [
+              9,
+              15
+            ],
+            "dtype": "<f4",
+            "sha256": "732b04e18c3c91fdf0b5bcae2f9bea446cdbd59f2fcad6a619d56a6283f1a0ee"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 49428,
+            "elementCount": 135,
+            "shape": [
+              9,
+              15
+            ],
+            "dtype": "<f4",
+            "sha256": "89081f0a615c5beaf112b7fe275b04b2a064621cb7f5e06a1c494669429f8bc0"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 49968,
+            "elementCount": 135,
+            "shape": [
+              9,
+              15
+            ],
+            "dtype": "<f8",
+            "sha256": "594f95899f66dec9116b021a5fa826aa03f63c3c67fc78990255a8e3267ffd5c"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 51048,
+            "elementCount": 135,
+            "shape": [
+              9,
+              15
+            ],
+            "dtype": "<f8",
+            "sha256": "1bff3dad8753d62cf2ff2c17ba7f4a56d829190af817f071978b353e756b53df"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 52128,
+            "elementCount": 135,
+            "shape": [
+              9,
+              15
+            ],
+            "dtype": "<f8",
+            "sha256": "0323d52e49eccbca2a15aa9fd47e98c51f27122298872b3c2137a4880e6235ce"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": true
+    },
+    {
+      "id": "combined_zero_channel",
+      "category": "combined/zero-channel/crosstalk",
+      "comparison": "combined",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3f800000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "3f800000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/no",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3e99999a",
+            "3dcccccd",
+            "3c75c28f"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "41200000",
+        "fullFrameWidth": 11,
+        "fullFrameHeight": 7
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 53208,
+            "elementCount": 77,
+            "shape": [
+              7,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "5d54af64ceec77bbe8e6f9dc09342767fa773498d7e0166946937097aa9c7ef4"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 53516,
+            "elementCount": 77,
+            "shape": [
+              7,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "9575b2125169377b2ade7b401ea36c81228331d971f49664d9648d4f255d4868"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 53824,
+            "elementCount": 77,
+            "shape": [
+              7,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "9575b2125169377b2ade7b401ea36c81228331d971f49664d9648d4f255d4868"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 54132,
+            "elementCount": 77,
+            "shape": [
+              7,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "35796eb9d6649d31a88a73b1ab1258e3d4c59fee25dd9f9aad7680a7ed0b1b28"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 54748,
+            "elementCount": 77,
+            "shape": [
+              7,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "f9d54bbe3ccaf08564c2928c55218a3f696989a05dffc8edf057773751aae153"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 55364,
+            "elementCount": 77,
+            "shape": [
+              7,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "f9d54bbe3ccaf08564c2928c55218a3f696989a05dffc8edf057773751aae153"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": true
+    },
+    {
+      "id": "extrapolative_amounts_downstream",
+      "category": "combined/downstream/extrapolative-amounts",
+      "comparison": "combined",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3fa00000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "3fc00000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/no",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3e99999a",
+            "3dcccccd",
+            "3c75c28f"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "41200000",
+        "fullFrameWidth": 11,
+        "fullFrameHeight": 9
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 55980,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "b2f1479db242c2f1720c786756dd02b1500e4d8ef4c9f83efc8ca5f6eb0436f3"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 56376,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "ae6921fcc176e204eaf45e45c199ce48cc27764d8495635175aaa8d221e9bfd5"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 56772,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "189966e4f8fd581138ac3b4c4bb54319ac546de83d34e4b4d40aa6da8d6c6328"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 57168,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "9b5cdf9ef23b1fc4b86c776ee1421acc120eea0189292a7fbbdc1df566c4c406"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 57960,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "7bda024978d185465701487562c2232a4eab3cfce4c30f1449810c18bb9d6753"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 58752,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "726a0a5a3d94b237de285d0f9980069597382c21ae93c11a0c1ecb43726b337e"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": true,
+      "downstreamExpected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 59544,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "a781d7b02b9cb24fd6c02aa4a617476c8a34aa7aedf25a2db0d570e436d36e65"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 60336,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "e92757bfcf9fde836586cfd9bc7c78f01f5f4d720dfac6f0562ed11c02a08533"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 61128,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "b1eee367bad09ed162b01f8c7fc2460770dc00047046cf8d553e429333094a77"
+          }
+        ]
+      }
+    },
+    {
+      "id": "maximum_scatter_amount_downstream",
+      "category": "combined/downstream/maximum-scatter-amount",
+      "comparison": "combined",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "40000000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "3f800000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/no",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3e99999a",
+            "3dcccccd",
+            "3c75c28f"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "41200000",
+        "fullFrameWidth": 11,
+        "fullFrameHeight": 9
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 61920,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "b2f1479db242c2f1720c786756dd02b1500e4d8ef4c9f83efc8ca5f6eb0436f3"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 62316,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "ae6921fcc176e204eaf45e45c199ce48cc27764d8495635175aaa8d221e9bfd5"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 62712,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "189966e4f8fd581138ac3b4c4bb54319ac546de83d34e4b4d40aa6da8d6c6328"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 63108,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "a3ba4b5d2ab27006a2d5f2a4bae47eb15c1325b2cfab043676e5dc3cb159c3bc"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 63900,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "bd3ff770d5c4e61a92b420ed1c07bf19a3398dc126d869f6258d41d83c12a0d7"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 64692,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "d0d4784e9d41779ffa30d3868f4bce191041c9cbd9e16b344011f1a089f7b753"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": true,
+      "downstreamExpected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 65484,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "9e1b2fdd4a560eff04dbf24af52da06e6b87e11593be39d531230bef0b8af5e8"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 66276,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "d152cf57f73fab04b13fa15d003f35a22c3ae5042fe211c48c758c8c3295e991"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 67068,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "64721d8cffe3a28df514ae5bc47dbae3bd7f3623f73cac89ad70a10e4af78d7d"
+          }
+        ]
+      }
+    },
+    {
+      "id": "maximum_scatter_scale_downstream",
+      "category": "combined/downstream/maximum-scatter-spatial-scale",
+      "comparison": "combined",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3f800000",
+          "scatterSpatialScaleFloat32Bits": "40000000",
+          "halationAmountFloat32Bits": "3f800000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/no",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3e99999a",
+            "3dcccccd",
+            "3c75c28f"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "41200000",
+        "fullFrameWidth": 11,
+        "fullFrameHeight": 9
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 67860,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "b2f1479db242c2f1720c786756dd02b1500e4d8ef4c9f83efc8ca5f6eb0436f3"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 68256,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "ae6921fcc176e204eaf45e45c199ce48cc27764d8495635175aaa8d221e9bfd5"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 68652,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "189966e4f8fd581138ac3b4c4bb54319ac546de83d34e4b4d40aa6da8d6c6328"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 69048,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "a34332b4ba364e07246c11009d6b6903c1d86e1f173527f505c029ef37684e9e"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 69840,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "785091e0d417a9771186ae0bb283fbbdbd473fe9209570e3c3290b6b12bf1d02"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 70632,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "9aadadffb158a277f873497e3ce046de722d8a56b48dc5927eeb4196928b753b"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": true,
+      "downstreamExpected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 71424,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "6eac3183126bd64c5a07ce039094508d22e0bfe65877f57e743a745934a11528"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 72216,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "1d5addb455814146fcff2ea8e30902533365c02f30f6e5d65f13a89b838cb479"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 73008,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "450cb12e8693a50ab43799340b531d95b8cee0d4faa1f815a6128fdc064bdb32"
+          }
+        ]
+      }
+    },
+    {
+      "id": "maximum_halation_amount_downstream",
+      "category": "combined/downstream/maximum-halation-amount",
+      "comparison": "combined",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3f800000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "40000000",
+          "halationSpatialScaleFloat32Bits": "3f800000"
+        },
+        "profile": {
+          "preset": "still/no",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3e99999a",
+            "3dcccccd",
+            "3c75c28f"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "41200000",
+        "fullFrameWidth": 11,
+        "fullFrameHeight": 9
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 73800,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "b2f1479db242c2f1720c786756dd02b1500e4d8ef4c9f83efc8ca5f6eb0436f3"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 74196,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "ae6921fcc176e204eaf45e45c199ce48cc27764d8495635175aaa8d221e9bfd5"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 74592,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "189966e4f8fd581138ac3b4c4bb54319ac546de83d34e4b4d40aa6da8d6c6328"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 74988,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "fd0daace60cdcd3a14b9a7a2233a1f9b580e157adf483db0cca3012d707b70d3"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 75780,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "153a0c71157757e7c5b90bb52ab45d5dfa890f01dcf3afbfab9ab109a9a6c243"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 76572,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "f359f1d72f97a6685e93721b61bfd13a22491c2395630d2a459c56e9054badc5"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": true,
+      "downstreamExpected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 77364,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "a3b9485bc29d60f8bf85e4b7b58f71561a880415d408ada07115197839ba5082"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 78156,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "0f668a8aa0c96161873e34650c304ee17e59a73eee7b8871e4eb819bd7e131e8"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 78948,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "f229d8ef61d856b99757d3e97ce12bb5d02506020857d16db58e69234244caa3"
+          }
+        ]
+      }
+    },
+    {
+      "id": "maximum_halation_scale_downstream",
+      "category": "combined/downstream/maximum-halation-spatial-scale",
+      "comparison": "combined",
+      "recipeInput": {
+        "controls": {
+          "active": true,
+          "scatterAmountFloat32Bits": "3f800000",
+          "scatterSpatialScaleFloat32Bits": "3f800000",
+          "halationAmountFloat32Bits": "3f800000",
+          "halationSpatialScaleFloat32Bits": "40000000"
+        },
+        "profile": {
+          "preset": "still/no",
+          "halationFirstSigmaUmFloat32Bits": [
+            "42820000",
+            "42820000",
+            "42820000"
+          ],
+          "halationPrimaryAmountFloat32Bits": [
+            "3e99999a",
+            "3dcccccd",
+            "3c75c28f"
+          ]
+        },
+        "pixelSizeUmFloat32Bits": "41200000",
+        "fullFrameWidth": 11,
+        "fullFrameHeight": 9
+      },
+      "source": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 79740,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "b2f1479db242c2f1720c786756dd02b1500e4d8ef4c9f83efc8ca5f6eb0436f3"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 80136,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "ae6921fcc176e204eaf45e45c199ce48cc27764d8495635175aaa8d221e9bfd5"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 80532,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f4",
+            "sha256": "189966e4f8fd581138ac3b4c4bb54319ac546de83d34e4b4d40aa6da8d6c6328"
+          }
+        ]
+      },
+      "expected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 80928,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "3dbc4ec5408c09710212671691efc6bf5d1007557bc283cecc9647cfc709f142"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 81720,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "2a36ad5de830c09acb442658e163adc2c023d691d1743c11cef4a3146454c83c"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 82512,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "c7ce21b9cefc36101fca6c0c304fa1ebff479a71ea5c7e82ffd8247924e152a5"
+          }
+        ]
+      },
+      "referenceOutsideUnitInterval": true,
+      "downstreamExpected": {
+        "carrierEncoding": "visual-top row-major planar semantic RGB",
+        "planes": [
+          {
+            "semanticChannel": "R",
+            "byteOffset": 83304,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "8f2f38111e5904781d9d4ceca6c6cd6f60e82df740eda22e31d4c56b2639894a"
+          },
+          {
+            "semanticChannel": "G",
+            "byteOffset": 84096,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "6d0f152ab2b989c42217fb6b87cdbe3a9115b48927fbdaf17ca46edc3b8076c8"
+          },
+          {
+            "semanticChannel": "B",
+            "byteOffset": 84888,
+            "elementCount": 99,
+            "shape": [
+              9,
+              11
+            ],
+            "dtype": "<f8",
+            "sha256": "f2ad29a545c6d153d8f9b04540d2004c37dea8a23e978620eace54953e0a7cb0"
+          }
+        ]
+      }
+    }
+  ]
+}
