@@ -6710,13 +6710,14 @@ namespace JuicerCuda {
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
         float sigma,
+        int radius,
         std::string& outError) {
         constexpr int kMaxRadius = 75;
-        const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
-        const int radiusRaw = sigmaOk
-                                  ? JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f)
-                                  : 0;
-        const int radius = std::min(radiusRaw, kMaxRadius);
+        if (!std::isfinite(sigma) || sigma <= 0.0f || radius <= 0 ||
+            radius > kMaxRadius) {
+            outError = "gaussian descriptor is invalid";
+            return false;
+        }
         return ensure_cached_gaussian_kernel(
             resources,
             kernel,

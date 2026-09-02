@@ -18,6 +18,9 @@
 
 namespace {
 
+    constexpr float kScannerGaussianTruncate = 3.0f;
+    constexpr int kMaxScannerGaussianRadius = 75;
+
     template <typename T>
     void hash_value(std::uint64_t& hash, const T& value) {
         Hash::hash_bytes_update(hash, &value, sizeof(value));
@@ -49,6 +52,17 @@ namespace {
              encHash});
     }
 
+    int scanner_gaussian_radius_or_zero(float sigma) noexcept {
+        if (!std::isfinite(sigma) || sigma <= 0.0f) {
+            return 0;
+        }
+        return std::min(
+            JuicerGaussian::scipy_gaussian_radius(
+                sigma,
+                kScannerGaussianTruncate),
+            kMaxScannerGaussianRadius);
+    }
+
     float scanner_gaussian_sigma_with_device_kernel_or_zero(float sigma) noexcept {
         if (!std::isfinite(sigma)) {
             return sigma;
@@ -56,7 +70,7 @@ namespace {
         if (sigma <= 0.0f) {
             return 0.0f;
         }
-        return JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f) > 0 ? sigma : 0.0f;
+        return scanner_gaussian_radius_or_zero(sigma) > 0 ? sigma : 0.0f;
     }
 
     float remove_srgb_cctf(float value) {
@@ -829,12 +843,18 @@ namespace Scanner {
             outDescriptor.glareActive
                 ? scanner_gaussian_sigma_with_device_kernel_or_zero(recipe.glareBlurSigmaPx)
                 : 0.0f;
+        outDescriptor.glareBlurRadius =
+            scanner_gaussian_radius_or_zero(outDescriptor.glareBlurSigmaPx);
         outDescriptor.lensBlurSigmaPx =
             scanner_gaussian_sigma_with_device_kernel_or_zero(recipe.lensBlurSigmaPx);
+        outDescriptor.lensBlurRadius =
+            scanner_gaussian_radius_or_zero(outDescriptor.lensBlurSigmaPx);
         const float unsharpSigmaPx =
             scanner_gaussian_sigma_with_device_kernel_or_zero(recipe.unsharpSigmaPx);
         const bool unsharpActive = unsharpSigmaPx > 0.0f && recipe.unsharpAmount > 0.0f;
         outDescriptor.unsharpSigmaPx = unsharpActive ? unsharpSigmaPx : 0.0f;
+        outDescriptor.unsharpRadius =
+            scanner_gaussian_radius_or_zero(outDescriptor.unsharpSigmaPx);
         outDescriptor.unsharpAmount = unsharpActive ? recipe.unsharpAmount : 0.0f;
         const float values[] = {
             outDescriptor.glarePercent,
@@ -859,6 +879,9 @@ namespace Scanner {
         for (float value : values) {
             hash_value(hash, value);
         }
+        hash_value(hash, outDescriptor.glareBlurRadius);
+        hash_value(hash, outDescriptor.lensBlurRadius);
+        hash_value(hash, outDescriptor.unsharpRadius);
         hash_value(hash, outDescriptor.schemaVersion);
         outDescriptor.hash = hash;
         return outDescriptor.hash != 0;

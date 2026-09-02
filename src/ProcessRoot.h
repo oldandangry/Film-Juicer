@@ -15,6 +15,7 @@
 
 #include "Cuda/JuicerCudaFilmPayloads.h"
 #include "Cuda/JuicerCudaResources.h"
+#include "Cuda/Film/JuicerCudaScatterHalation.h"
 
 struct InstanceState;
 namespace Scanner {
@@ -175,6 +176,7 @@ namespace JuicerProcess {
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
             const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSetDescriptor = nullptr;
+            const ScatterHalationFrameDescriptor* scatterHalationDescriptor = nullptr;
             std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
             std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor;
             int requestedWidth = 0;
@@ -360,6 +362,8 @@ namespace JuicerProcess {
             PrintPreparedView print_resources() const noexcept;
             JuicerCuda::Diffusion::DiffusionPreparedView
             diffusion_resources() const noexcept;
+            JuicerCuda::ScatterHalationPreparedView
+            scatter_halation_resources() const noexcept;
             void mark_diffusion_work_enqueued() noexcept;
             bool release_diffusion_resources_after_use(
                 void* cudaStreamOpaque,
@@ -388,6 +392,7 @@ namespace JuicerProcess {
                 void* cudaStreamOpaque,
                 std::string& outError);
             bool finish(void* cudaStreamOpaque, std::string& outError);
+            void abort() noexcept;
             bool stage_optical_workspace(
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
@@ -423,7 +428,6 @@ namespace JuicerProcess {
             struct State;
 
             explicit PreparedCudaFrame(std::unique_ptr<State> state) noexcept;
-            void abort() noexcept;
 
             const WorkspaceRequest& active_workspace_request(
                 const WorkspaceLeaseMarker& workspace) const noexcept;
@@ -434,6 +438,7 @@ namespace JuicerProcess {
             bool build_gaussian_kernel_slot(
                 JuicerCuda::Resources::DeviceGaussianKernel& kernel,
                 float sigma,
+                int radius,
                 std::string& outError);
             bool prepare_scanner_post_effects(
                 const Scanner::ScannerPostEffectsDescriptor& descriptor,

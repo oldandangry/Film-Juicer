@@ -172,34 +172,12 @@ namespace {
         return hash;
     }
 
-    SpatialOpticsComponentPolicy active_exact_policy(
-        Spektrafilm::SpatialOpticsDomain domain,
-        Spektrafilm::SpatialOpticsBackendSource source =
-            Spektrafilm::SpatialOpticsBackendSource::ProductDefault) {
-        SpatialOpticsComponentPolicy policy{};
-        policy.domain = domain;
-        policy.requestedBackend = Spektrafilm::SpatialOpticsBackend::Exact;
-        policy.resolvedBackend = Spektrafilm::SpatialOpticsBackend::BlockedNotImplementedForPhase6;
-        policy.backendSource = source;
-        return policy;
-    }
-
-    std::uint64_t hash_spatial_optics_policy(const SpatialOpticsComponentPolicy& policy) {
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, policy.domain);
-        hash_value(hash, policy.requestedBackend);
-        hash_value(hash, policy.resolvedBackend);
-        hash_value(hash, policy.backendSource);
-        hash_value(hash, policy.exactnessPolicy);
-        return hash;
-    }
-
     std::uint64_t hash_diffusion_filter_optics(const DiffusionFilterOpticsRecipe& recipe) {
         if (!recipe.resolved.active || recipe.resolved.hash == 0) {
             return 0;
         }
         std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, hash_spatial_optics_policy(recipe.policy));
+        hash_value(hash, recipe.domain);
         hash_value(hash, recipe.resolved.hash);
         return hash;
     }
@@ -209,50 +187,8 @@ namespace {
             return 0;
         }
         std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, hash_spatial_optics_policy(recipe.policy));
         hash_value(hash, recipe.sigmaUm);
         return hash;
-    }
-
-    std::uint64_t hash_scatter_halation_optics(const ScatterHalationOpticsRecipe& recipe) {
-        if (!recipe.active) {
-            return 0;
-        }
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, hash_spatial_optics_policy(recipe.policy));
-        hash_value(hash, recipe.scatterAmount);
-        hash_value(hash, recipe.scatterSpatialScale);
-        hash_value(hash, recipe.halationAmount);
-        hash_value(hash, recipe.halationSpatialScale);
-        Hash::hash_bytes_update(hash, recipe.scatterCoreUm.data(), sizeof(recipe.scatterCoreUm));
-        Hash::hash_bytes_update(hash, recipe.scatterTailUm.data(), sizeof(recipe.scatterTailUm));
-        Hash::hash_bytes_update(hash, recipe.scatterTailWeight.data(), sizeof(recipe.scatterTailWeight));
-        Hash::hash_bytes_update(hash, recipe.halationPrimaryAmount.data(), sizeof(recipe.halationPrimaryAmount));
-        Hash::hash_bytes_update(hash, recipe.halationFirstSigmaUm.data(), sizeof(recipe.halationFirstSigmaUm));
-        hash_value(hash, recipe.halationBounceCount);
-        hash_value(hash, recipe.halationBounceDecay);
-        hash_value(hash, recipe.halationRenormalize);
-        return hash;
-    }
-
-    bool finite_positive(float value) {
-        return std::isfinite(value) && value > 0.0f;
-    }
-
-    bool finite_nonnegative_optics(float value) {
-        return std::isfinite(value) && value >= 0.0f;
-    }
-
-    bool finite_unit(float value) {
-        return std::isfinite(value) && value >= 0.0f && value <= 1.0f;
-    }
-
-    bool finite_nonnegative_triplet(const std::array<float, 3>& values) {
-        return std::all_of(values.begin(), values.end(), finite_nonnegative_optics);
-    }
-
-    bool finite_unit_triplet(const std::array<float, 3>& values) {
-        return std::all_of(values.begin(), values.end(), finite_unit);
     }
 
     bool build_spatial_optics_recipe(
@@ -286,8 +222,8 @@ namespace {
             return false;
         }
         if (cameraDiffusion.resolved.active) {
-            cameraDiffusion.policy =
-                active_exact_policy(Spektrafilm::SpatialOpticsDomain::FilmLinearExposure);
+            cameraDiffusion.domain =
+                Spektrafilm::SpatialOpticsDomain::FilmLinearExposure;
             cameraDiffusion.hash = hash_diffusion_filter_optics(cameraDiffusion);
         }
 
@@ -299,40 +235,16 @@ namespace {
         }
         lensBlur.sigmaUm = std::max(controls.cameraLensBlurUm, 0.0f);
         if (lensBlur.sigmaUm > 0.0f) {
-            lensBlur.policy =
-                active_exact_policy(Spektrafilm::SpatialOpticsDomain::FilmLinearExposure);
             lensBlur.hash = hash_camera_lens_blur_optics(lensBlur);
         }
 
         ScatterHalationOpticsRecipe& scatterHalation = out.scatterHalation;
-        scatterHalation.active = controls.scatterHalationActive;
-        if (scatterHalation.active) {
-            if (!profile.digest.halationPresetApplied) {
-                diagnostic = "ResourceDescriptorMismatch phase=6A "
-                             "component=scatter_halation field=profile_antihalation_preset";
-                return false;
-            }
-            scatterHalation.policy = active_exact_policy(
-                Spektrafilm::SpatialOpticsDomain::FilmLinearExposure,
-                Spektrafilm::SpatialOpticsBackendSource::ProfileAntihalationPreset);
-            scatterHalation.halationPrimaryAmount = profile.digest.halationPrimaryAmount;
-            scatterHalation.halationFirstSigmaUm = profile.digest.halationFirstSigmaUm;
-            if (!finite_nonnegative_optics(scatterHalation.scatterAmount) ||
-                !finite_nonnegative_optics(scatterHalation.halationAmount) ||
-                !finite_positive(scatterHalation.scatterSpatialScale) ||
-                !finite_positive(scatterHalation.halationSpatialScale) ||
-                !finite_nonnegative_triplet(scatterHalation.scatterCoreUm) ||
-                !finite_nonnegative_triplet(scatterHalation.scatterTailUm) ||
-                !finite_unit_triplet(scatterHalation.scatterTailWeight) ||
-                !finite_nonnegative_triplet(scatterHalation.halationPrimaryAmount) ||
-                !finite_nonnegative_triplet(scatterHalation.halationFirstSigmaUm) ||
-                scatterHalation.halationBounceCount == 0 ||
-                !finite_nonnegative_optics(scatterHalation.halationBounceDecay)) {
-                diagnostic = "ResourceDescriptorMismatch phase=6A "
-                             "component=scatter_halation field=resolved_parameters";
-                return false;
-            }
-            scatterHalation.hash = hash_scatter_halation_optics(scatterHalation);
+        if (!Spektrafilm::resolve_scatter_halation_recipe(
+                controls.scatterHalation,
+                profile.digest,
+                scatterHalation,
+                diagnostic)) {
+            return false;
         }
 
         DiffusionFilterOpticsRecipe& enlargerDiffusion = out.enlargerDiffusion;
@@ -345,8 +257,8 @@ namespace {
                 return false;
             }
             if (enlargerDiffusion.resolved.active) {
-                enlargerDiffusion.policy =
-                    active_exact_policy(Spektrafilm::SpatialOpticsDomain::PrintLinearExposure);
+                enlargerDiffusion.domain =
+                    Spektrafilm::SpatialOpticsDomain::PrintLinearExposure;
                 enlargerDiffusion.hash = hash_diffusion_filter_optics(enlargerDiffusion);
             }
         }
@@ -1490,7 +1402,7 @@ namespace {
             cameraStage
                 ? Spektrafilm::SpatialOpticsDomain::FilmLinearExposure
                 : Spektrafilm::SpatialOpticsDomain::PrintLinearExposure;
-        if (component.policy.domain != expectedDomain) {
+        if (component.domain != expectedDomain) {
             fail_diffusion_frame_descriptor(diagnostic, domainField);
             return false;
         }
@@ -2212,188 +2124,16 @@ namespace Spektrafilm {
         return out.hash != 0;
     }
 
-    bool build_exact_optics_execution_plan(
-        const SpatialOptics& recipe,
-        ScanRoute route,
-        float pixelSizeUm,
-        ExactOpticsFrameExtent fullFrameExtent,
-        ExactOpticsExecutionPlan& out) {
-        out = ExactOpticsExecutionPlan{};
-        if (recipe.cameraLensBlur.hash == 0 &&
-            recipe.scatterHalation.hash == 0) {
+    bool preflight_camera_lens_blur(
+        const CameraLensBlurOpticsRecipe& recipe,
+        std::string& outDiagnostic) {
+        outDiagnostic.clear();
+        if (recipe.hash == 0) {
             return true;
         }
-        if (!(std::isfinite(pixelSizeUm) && pixelSizeUm > 0.0f) ||
-            fullFrameExtent.width <= 0 ||
-            fullFrameExtent.height <= 0) {
-            return false;
-        }
-
-        const auto next_power_of_two = [](int value) -> int {
-            if (value <= 0 || value > (1 << 30)) {
-                return 0;
-            }
-            unsigned power = 1;
-            const unsigned requested = static_cast<unsigned>(value);
-            while (power < requested) {
-                power <<= 1u;
-            }
-            return static_cast<int>(power);
-        };
-        const int radiusCap =
-            std::max(std::min(fullFrameExtent.width, fullFrameExtent.height) / 2 - 1, 1);
-        const auto capped_radius = [&](double requested) -> int {
-            if (!(std::isfinite(requested) && requested > 0.0)) {
-                return 0;
-            }
-            return std::min(static_cast<int>(std::ceil(requested)), radiusCap);
-        };
-        const auto finalize_descriptor = [&](ExactOpticsExecutionDescriptor& descriptor,
-                                             bool usesFft) -> bool {
-            descriptor.route = route;
-            descriptor.requestedBackend = SpatialOpticsBackend::Exact;
-            descriptor.resolvedBackend = SpatialOpticsBackend::BlockedNotImplementedForPhase6;
-            descriptor.precision = ExactOpticsPrecision::Float32;
-            descriptor.channelGrouping = ExactOpticsChannelGrouping::SequentialRgb;
-            descriptor.unavailableResourceClass =
-                ExactOpticsUnavailableResourceClass::BackendNotImplementedForPhase6;
-            descriptor.pixelSizeUm = pixelSizeUm;
-            descriptor.fullFrameExtent = fullFrameExtent;
-            descriptor.paddedImageExtent = {
-                fullFrameExtent.width + 2 * descriptor.reflectedPaddingRadiusPixels,
-                fullFrameExtent.height + 2 * descriptor.reflectedPaddingRadiusPixels};
-            if (usesFft) {
-                descriptor.paddedFftExtent = {
-                    next_power_of_two(
-                        fullFrameExtent.width + 4 * descriptor.reflectedPaddingRadiusPixels),
-                    next_power_of_two(
-                        fullFrameExtent.height + 4 * descriptor.reflectedPaddingRadiusPixels)};
-                if (descriptor.paddedFftExtent.width <= 0 ||
-                    descriptor.paddedFftExtent.height <= 0) {
-                    return false;
-                }
-            }
-            if (descriptor.sampledPsfHash == 0) {
-                std::uint64_t psfHash = Hash::kFnvOffset;
-                hash_value(psfHash, descriptor.recipeComponentHash);
-                hash_value(psfHash, descriptor.pixelSizeUm);
-                hash_value(psfHash, descriptor.reflectedPaddingRadiusPixels);
-                hash_value(psfHash, descriptor.paddedImageExtent.width);
-                hash_value(psfHash, descriptor.paddedImageExtent.height);
-                hash_value(psfHash, descriptor.normalization);
-                descriptor.sampledPsfHash = psfHash;
-            }
-
-            std::uint64_t hash = Hash::kFnvOffset;
-            hash_value(hash, descriptor.route);
-            hash_value(hash, descriptor.domain);
-            hash_value(hash, descriptor.component);
-            hash_value(hash, descriptor.requestedBackend);
-            hash_value(hash, descriptor.resolvedBackend);
-            hash_value(hash, descriptor.convolution);
-            hash_value(hash, descriptor.normalization);
-            hash_value(hash, descriptor.precision);
-            hash_value(hash, descriptor.channelGrouping);
-            hash_value(hash, descriptor.unavailableResourceClass);
-            hash_value(hash, descriptor.recipeComponentHash);
-            hash_value(hash, descriptor.sampledPsfHash);
-            hash_value(hash, descriptor.pixelSizeUm);
-            hash_value(hash, descriptor.fullFrameExtent.width);
-            hash_value(hash, descriptor.fullFrameExtent.height);
-            hash_value(hash, descriptor.reflectedPaddingRadiusPixels);
-            hash_value(hash, descriptor.paddedImageExtent.width);
-            hash_value(hash, descriptor.paddedImageExtent.height);
-            hash_value(hash, descriptor.paddedFftExtent.width);
-            hash_value(hash, descriptor.paddedFftExtent.height);
-            hash_value(hash, descriptor.requestedScratchBytes);
-            hash_value(hash, descriptor.requestedDurableBytes);
-            hash_value(hash, descriptor.requestedCufftWorkBytes);
-            descriptor.hash = hash;
-            return descriptor.hash != 0;
-        };
-        const auto append_descriptor = [&](ExactOpticsExecutionDescriptor descriptor,
-                                           bool usesFft) -> bool {
-            if (out.descriptorCount >= out.descriptors.size() ||
-                !finalize_descriptor(descriptor, usesFft)) {
-                return false;
-            }
-            out.descriptors[out.descriptorCount++] = descriptor;
-            return true;
-        };
-        if (recipe.cameraLensBlur.hash != 0) {
-            ExactOpticsExecutionDescriptor descriptor{};
-            descriptor.domain = recipe.cameraLensBlur.policy.domain;
-            descriptor.component = SpatialOpticsComponent::CameraLensBlur;
-            descriptor.convolution = ExactOpticsConvolution::ReflectFastGaussian;
-            descriptor.normalization = ExactOpticsNormalization::PerChannelUnitSum;
-            descriptor.recipeComponentHash = recipe.cameraLensBlur.hash;
-            descriptor.reflectedPaddingRadiusPixels =
-                capped_radius(3.0 * static_cast<double>(recipe.cameraLensBlur.sigmaUm) /
-                              static_cast<double>(pixelSizeUm));
-            if (descriptor.reflectedPaddingRadiusPixels <= 0 ||
-                !append_descriptor(descriptor, false)) {
-                return false;
-            }
-        }
-        if (recipe.scatterHalation.hash != 0) {
-            const ScatterHalationOpticsRecipe& component = recipe.scatterHalation;
-            double maxSigmaUm = 0.0;
-            for (std::size_t channel = 0; channel < 3; ++channel) {
-                maxSigmaUm = std::max(
-                    maxSigmaUm,
-                    static_cast<double>(component.scatterCoreUm[channel]) *
-                        static_cast<double>(component.scatterSpatialScale));
-                maxSigmaUm = std::max(
-                    maxSigmaUm,
-                    static_cast<double>(component.scatterTailUm[channel]) *
-                        static_cast<double>(component.scatterSpatialScale) *
-                        static_cast<double>(SpatialDirDescriptor::kExponentialSigmaRatios.back()));
-                maxSigmaUm = std::max(
-                    maxSigmaUm,
-                    static_cast<double>(component.halationFirstSigmaUm[channel]) *
-                        static_cast<double>(component.halationSpatialScale) *
-                        std::sqrt(static_cast<double>(component.halationBounceCount)));
-            }
-            ExactOpticsExecutionDescriptor descriptor{};
-            descriptor.domain = component.policy.domain;
-            descriptor.component = SpatialOpticsComponent::InEmulsionScatterHalation;
-            descriptor.convolution = ExactOpticsConvolution::ReflectScatterHalation;
-            descriptor.normalization =
-                ExactOpticsNormalization::EnergyConservingScatterAndBounceRenormalized;
-            descriptor.recipeComponentHash = component.hash;
-            descriptor.reflectedPaddingRadiusPixels =
-                capped_radius(3.0 * maxSigmaUm / static_cast<double>(pixelSizeUm));
-            if (descriptor.reflectedPaddingRadiusPixels <= 0 ||
-                !append_descriptor(descriptor, false)) {
-                return false;
-            }
-        }
-        if (out.descriptorCount == 0) {
-            return true;
-        }
-
-        std::uint64_t planHash = Hash::kFnvOffset;
-        for (std::size_t index = 0; index < out.descriptorCount; ++index) {
-            hash_value(planHash, out.descriptors[index].hash);
-        }
-        out.hash = planHash;
-        const ExactOpticsExecutionDescriptor& blocked = out.descriptors[0];
-        out.blockingDiagnostic =
-            std::string(kExactOpticsNotImplementedForPhase6) +
-            " route=" + std::to_string(static_cast<unsigned>(blocked.route)) +
-            " domain=" + std::to_string(static_cast<unsigned>(blocked.domain)) +
-            " descriptor_hash=" + std::to_string(blocked.hash) +
-            " sampled_psf_hash=" + std::to_string(blocked.sampledPsfHash) +
-            " requested_scratch_bytes=" + std::to_string(blocked.requestedScratchBytes) +
-            " requested_durable_bytes=" + std::to_string(blocked.requestedDurableBytes) +
-            " requested_cufft_work_bytes=" + std::to_string(blocked.requestedCufftWorkBytes) +
-            " unavailable_resource_class=" +
-            std::to_string(static_cast<unsigned>(blocked.unavailableResourceClass)) +
-            " requested_backend=" +
-            std::to_string(static_cast<unsigned>(blocked.requestedBackend)) +
-            " resolved_backend=" +
-            std::to_string(static_cast<unsigned>(blocked.resolvedBackend));
-        return out.hash != 0;
+        outDiagnostic = std::string(kExactOpticsNotImplementedForPhase6) +
+                        " component=camera_lens_blur";
+        return false;
     }
 
 } // namespace Spektrafilm

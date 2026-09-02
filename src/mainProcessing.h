@@ -27,6 +27,7 @@ public:
     struct DirectFrameRequest {
         std::shared_ptr<const DirectRenderState> state;
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
+        std::optional<ScatterHalationFrameDescriptor> scatterHalation;
         int components = 0;
         OfxRectI renderWindow{0, 0, 0, 0};
         OfxRectI fullFrameExtent{0, 0, 0, 0};
@@ -41,6 +42,7 @@ public:
     struct PrintFrameRequest {
         std::shared_ptr<const PrintRenderState> state;
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
+        std::optional<ScatterHalationFrameDescriptor> scatterHalation;
         int components = 0;
         OfxRectI renderWindow{0, 0, 0, 0};
         OfxRectI fullFrameExtent{0, 0, 0, 0};
@@ -74,5 +76,6 @@ private:
     double _frameRate = 0.0;
     OfxRectI _fullFrameExtent{0, 0, 0, 0};
     std::optional<Spektrafilm::DiffusionFrameSetDescriptor> _diffusionFrameSetDescriptor;
+    std::optional<ScatterHalationFrameDescriptor> _scatterHalationDescriptor;
     float _pixelSizeUm = 0.0f;
 };

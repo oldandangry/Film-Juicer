@@ -902,7 +902,38 @@ namespace Profiles {
             }
         }
 
-        ProfileDigest build_film_profile_digest(const SpektrafilmProfileInfo& info) {
+        bool validate_halation_profile_digest(
+            const ProfileDigest& digest,
+            const SelectedProfileContext& ctx,
+            std::string& error) {
+            const auto validate = [&](const std::array<float, 3>& values,
+                                      const char* field) {
+                for (std::size_t channel = 0; channel < values.size(); ++channel) {
+                    const float value = values[channel];
+                    if (!std::isfinite(value) || value < 0.0f) {
+                        return set_error(
+                            error,
+                            ctx,
+                            std::string(field) + "[" + std::to_string(channel) + "]",
+                            "finite-nonnegative-Float32",
+                            std::to_string(value));
+                    }
+                }
+                return true;
+            };
+            return validate(
+                       digest.halationFirstSigmaUm,
+                       "digest.halation_first_sigma_um") &&
+                   validate(
+                       digest.halationPrimaryAmount,
+                       "digest.halation_primary_amount");
+        }
+
+        bool build_film_profile_digest(
+            const SpektrafilmProfileInfo& info,
+            const SelectedProfileContext& ctx,
+            ProfileDigest& out,
+            std::string& error) {
             ProfileDigest digest{};
             const bool positive = info.type == Spektrafilm::ProfilePolarity::Positive;
             if (positive) {
@@ -943,10 +974,18 @@ namespace Profiles {
                     digest.halationPrimaryAmount = {{0.30f, 0.10f, 0.015f}};
                     break;
                 default:
-                    digest.halationPresetApplied = false;
-                    break;
+                    return set_error(
+                        error,
+                        ctx,
+                        "info.antihalation",
+                        "strong|weak|no",
+                        "unsupported-enum");
             }
-            return digest;
+            if (!validate_halation_profile_digest(digest, ctx, error)) {
+                return false;
+            }
+            out = digest;
+            return true;
         }
 
         std::uint64_t build_profile_asset_version_token(
@@ -1023,7 +1062,22 @@ namespace Profiles {
                     outDiagnostic)) {
                 return false;
             }
-            outProfile.digest = build_film_profile_digest(outProfile.info);
+            SelectedProfileContext ctx;
+            ctx.path = jsonPath;
+            ctx.key = outProfile.info.stock;
+            ctx.role = "film";
+            std::string error;
+            if (!build_film_profile_digest(
+                    outProfile.info,
+                    ctx,
+                    outProfile.digest,
+                    error)) {
+                outProfile = ValidatedFilmProfile{};
+                if (outDiagnostic) {
+                    *outDiagnostic = error;
+                }
+                return false;
+            }
             return true;
         }
 

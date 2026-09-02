@@ -76,6 +76,9 @@
     <ClCompile Include="src\ResourceAssetLibrary.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\ScatterHalation.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\OFXS\Support\Library\ofxsCore.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -106,6 +109,9 @@
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaFilmPayloads.h">
+      <Filter>Cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Cuda\Film\JuicerCudaScatterHalation.h">
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\FilmEffectsFrameDescriptors.h">
@@ -189,6 +195,9 @@
     <ClInclude Include="src\ScanRoute.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\ScatterHalation.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\Scanner.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -201,6 +210,9 @@
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="src\Cuda\Diffusion\JuicerCudaDiffusion.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="src\Cuda\Film\JuicerCudaScatterHalation.cu">
       <Filter>Cuda</Filter>
     </CudaCompile>
     <CudaCompile Include="src\Cuda\JuicerCudaAutoExposure.cu">

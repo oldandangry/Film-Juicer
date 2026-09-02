@@ -150,8 +150,9 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kCameraFilmFormatMm);
         p->setLabel("Camera film format (mm)");
         p->setDefault(35.0);
-        p->setRange(5.0, 400.0);
-        p->setDisplayRange(8.0, 70.0);
+        p->setRange(8.0, 120.0);
+        p->setDisplayRange(8.0, 120.0);
+        p->setIncrement(1.0);
         p->setHint("Longest capture dimension in millimeters; used for micrometer-to-pixel conversions.");
         p->setEvaluateOnChange(true);
     }
@@ -557,8 +558,64 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::BooleanParamDescriptor* p =
                 desc.defineBooleanParam(JuicerParams::kHalationActive);
             p->setLabel("Add halation");
-            p->setDefault(false);
+            p->setDefault(true);
             p->setHint("Add profile-derived scatter and halation to the negative raw exposure.");
+            if (grpHalation) {
+                p->setParent(*grpHalation);
+            }
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kHalationScatterAmount);
+            p->setLabel("Scatter amount");
+            p->setDefault(1.0);
+            p->setRange(0.0, 2.0);
+            p->setDisplayRange(0.0, 2.0);
+            p->setIncrement(0.05);
+            p->setHint("Scale in-emulsion scatter strength in the capture film.");
+            if (grpHalation) {
+                p->setParent(*grpHalation);
+            }
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kHalationScatterSpatialScale);
+            p->setLabel("Scatter spatial scale");
+            p->setDefault(1.0);
+            p->setRange(0.0, 2.0);
+            p->setDisplayRange(0.0, 2.0);
+            p->setIncrement(0.1);
+            p->setHint("Scale the in-emulsion scatter radius in the capture film.");
+            if (grpHalation) {
+                p->setParent(*grpHalation);
+            }
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kHalationAmount);
+            p->setLabel("Halation amount");
+            p->setDefault(1.0);
+            p->setRange(0.0, 2.0);
+            p->setDisplayRange(0.0, 2.0);
+            p->setIncrement(0.05);
+            p->setHint("Scale profile-derived back-reflection strength in the capture film.");
+            if (grpHalation) {
+                p->setParent(*grpHalation);
+            }
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kHalationSpatialScale);
+            p->setLabel("Halation spatial scale");
+            p->setDefault(1.0);
+            p->setRange(0.0, 2.0);
+            p->setDisplayRange(0.0, 2.0);
+            p->setIncrement(0.1);
+            p->setHint("Scale the profile-derived back-reflection radius in the capture film.");
             if (grpHalation) {
                 p->setParent(*grpHalation);
             }

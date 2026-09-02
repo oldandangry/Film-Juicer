@@ -22,6 +22,10 @@ namespace JuicerParams {
     inline constexpr const char kDirCouplersGammaInterlayerGToRb[] = "CouplersGammaInterlayerGToRb";
     inline constexpr const char kDirCouplersGammaInterlayerBToRg[] = "CouplersGammaInterlayerBToRg";
     inline constexpr const char kHalationActive[] = "HalationActive";
+    inline constexpr const char kHalationScatterAmount[] = "HalationScatterAmount";
+    inline constexpr const char kHalationScatterSpatialScale[] = "HalationScatterSpatialScale";
+    inline constexpr const char kHalationAmount[] = "HalationAmount";
+    inline constexpr const char kHalationSpatialScale[] = "HalationSpatialScale";
     inline constexpr const char kGrainActive[] = "GrainActive";
     inline constexpr const char kGrainSublayersActive[] = "GrainSublayersActive";
     inline constexpr const char kGrainParticleAreaUm2[] = "GrainParticleAreaUm2";

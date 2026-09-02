@@ -725,6 +725,14 @@ namespace JuicerProcess {
         JuicerCuda::Resources* grainStaticResources = nullptr;
         Spektrafilm::DiffusionExecutionDescriptor diffusionExecutionDescriptor{};
         JuicerCuda::Diffusion::PreparedDiffusionLease diffusionLease;
+        std::optional<ScatterHalationFrameDescriptor> scatterHalationDescriptor;
+        void* scatterHalationFilterBlock = nullptr;
+        void* scatterHalationCarrierBlock = nullptr;
+        JuicerCuda::ScatterHalationCarrierSource scatterHalationCarrierSource =
+            JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes;
+        JuicerCuda::CameraFilmLinearExposurePlanes scatterHalationCarrier{};
+        float* scatterHalationFilterTemp = nullptr;
+        float* scatterHalationWeightedAccumulation = nullptr;
         const Spectral::FilmRawConfig* focusedFilmRawConfig = nullptr;
         const Scanner::ColorRuntime* focusedScannerColor = nullptr;
         const JuicerCuda::Resources::DeviceScanMedium* focusedScanMedium = nullptr;
@@ -776,7 +784,6 @@ namespace JuicerProcess {
             std::string& outError);
         bool retire_device_bytes(
             void* ptr,
-            std::size_t bytes,
             void* cudaStreamOpaque,
             const char* label,
             std::string& outError);
@@ -789,6 +796,17 @@ namespace JuicerProcess {
             const Spektrafilm::DiffusionFrameSetDescriptor* frameSet,
             int requestedWidth,
             int requestedHeight,
+            void* cudaStreamOpaque,
+            std::string& outError);
+        bool prepare_scatter_halation_resources(
+            const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
+            const Spektrafilm::RenderRecipe& recipe,
+            const ScatterHalationFrameDescriptor* descriptor,
+            const Spektrafilm::DiffusionFrameSetDescriptor* frameSet,
+            int requestedWidth,
+            int requestedHeight,
+            std::string& outError);
+        bool release_scatter_halation_resources(
             void* cudaStreamOpaque,
             std::string& outError);
 
@@ -933,15 +951,210 @@ namespace JuicerProcess {
         return true;
     }
 
+    struct ScatterHalationAllocationShape {
+        std::size_t planeBytes = 0;
+        std::size_t filterBytes = 0;
+        std::size_t carrierBytes = 0;
+        std::size_t requestedBytes = 0;
+        std::size_t filterSecondPlaneOffset = 0;
+        std::size_t carrierGreenPlaneOffset = 0;
+        std::size_t carrierBluePlaneOffset = 0;
+        std::size_t physicalAllocationCount = 0;
+    };
+
+    bool checked_size_multiply(
+        std::size_t left,
+        std::size_t right,
+        std::size_t& out) noexcept {
+        if (left != 0 && right > std::numeric_limits<std::size_t>::max() / left) {
+            return false;
+        }
+        out = left * right;
+        return true;
+    }
+
+    bool checked_size_add(
+        std::size_t left,
+        std::size_t right,
+        std::size_t& out) noexcept {
+        if (right > std::numeric_limits<std::size_t>::max() - left) {
+            return false;
+        }
+        out = left + right;
+        return true;
+    }
+
+    const char* scatter_halation_carrier_source_label(
+        JuicerCuda::ScatterHalationCarrierSource source) noexcept {
+        switch (source) {
+            case JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes:
+                return "DedicatedPreparedPlanes";
+            case JuicerCuda::ScatterHalationCarrierSource::CameraDiffusionStagePlanes:
+                return "CameraDiffusionStagePlanes";
+            default:
+                return "Unknown";
+        }
+    }
+
+    bool derive_scatter_halation_allocation_shape(
+        int width,
+        int height,
+        JuicerCuda::ScatterHalationCarrierSource carrierSource,
+        ScatterHalationAllocationShape& out,
+        const char*& failedFact) noexcept {
+        out = ScatterHalationAllocationShape{};
+        failedFact = nullptr;
+        out.physicalAllocationCount =
+            carrierSource ==
+                    JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes
+                ? 2u
+                : 1u;
+
+        std::size_t pixelCount = 0;
+        if (!checked_size_multiply(
+                static_cast<std::size_t>(width),
+                static_cast<std::size_t>(height),
+                pixelCount)) {
+            failedFact = "pixel_count";
+            return false;
+        }
+        if (!checked_size_multiply(pixelCount, sizeof(float), out.planeBytes)) {
+            failedFact = "plane_bytes";
+            return false;
+        }
+        out.filterSecondPlaneOffset = out.planeBytes;
+        if (!checked_size_multiply(2u, out.planeBytes, out.filterBytes)) {
+            failedFact = "filter_bytes";
+            return false;
+        }
+        std::size_t filterEnd = 0;
+        if (!checked_size_add(
+                out.filterSecondPlaneOffset,
+                out.planeBytes,
+                filterEnd) ||
+            filterEnd != out.filterBytes) {
+            failedFact = "filter_second_plane_offset";
+            return false;
+        }
+
+        if (carrierSource ==
+            JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes) {
+            out.carrierGreenPlaneOffset = out.planeBytes;
+            if (!checked_size_add(
+                    out.carrierGreenPlaneOffset,
+                    out.planeBytes,
+                    out.carrierBluePlaneOffset)) {
+                failedFact = "carrier_blue_plane_offset";
+                return false;
+            }
+            if (!checked_size_multiply(3u, out.planeBytes, out.carrierBytes)) {
+                failedFact = "carrier_bytes";
+                return false;
+            }
+            std::size_t carrierEnd = 0;
+            if (!checked_size_add(
+                    out.carrierBluePlaneOffset,
+                    out.planeBytes,
+                    carrierEnd) ||
+                carrierEnd != out.carrierBytes) {
+                failedFact = "carrier_end_offset";
+                return false;
+            }
+        }
+        if (!checked_size_add(
+                out.filterBytes,
+                out.carrierBytes,
+                out.requestedBytes)) {
+            failedFact = "requested_bytes";
+            return false;
+        }
+        return true;
+    }
+
+    void set_scatter_halation_exact_admission_failure(
+        const Spektrafilm::RenderRecipe& recipe,
+        const ScatterHalationFrameDescriptor& descriptor,
+        int width,
+        int height,
+        JuicerCuda::ScatterHalationCarrierSource carrierSource,
+        const ScatterHalationAllocationShape& shape,
+        std::size_t admittedBytes,
+        const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
+        std::uint64_t contextEpoch,
+        const char* failedFact,
+        const std::string& cause,
+        std::string& outError) {
+        outError = "ExactAdmissionFailure route=";
+        outError += Spektrafilm::scan_route_key(recipe.profileRoute.scanRoute);
+        outError += " domain=FilmLinearExposure film_profile_key=";
+        outError += recipe.profileRoute.filmProfileKey;
+        outError += " film_profile_asset_version_token=" +
+                    std::to_string(recipe.profileRoute.filmProfileAssetVersionToken);
+        outError += " backend=Exact descriptor_recipe_hash=" +
+                    std::to_string(
+                        static_cast<unsigned long long>(descriptor.recipeHash));
+        outError += " full_frame_width=" + std::to_string(width);
+        outError += " full_frame_height=" + std::to_string(height);
+        if (shape.filterBytes != 0) {
+            outError += " logical_filter_scratch_bytes=" +
+                        std::to_string(
+                            static_cast<unsigned long long>(shape.filterBytes));
+        }
+        outError += " carrier_source=";
+        outError += scatter_halation_carrier_source_label(carrierSource);
+        if (shape.carrierBytes != 0 ||
+            carrierSource ==
+                JuicerCuda::ScatterHalationCarrierSource::CameraDiffusionStagePlanes) {
+            outError += " logical_carrier_bytes=" +
+                        std::to_string(
+                            static_cast<unsigned long long>(shape.carrierBytes));
+        }
+        if (shape.requestedBytes != 0) {
+            outError += " physical_bytes_requested=" +
+                        std::to_string(
+                            static_cast<unsigned long long>(shape.requestedBytes));
+        }
+        outError += " bytes_admitted_before_failure=" +
+                    std::to_string(
+                        static_cast<unsigned long long>(admittedBytes));
+        outError += " device_id=" + std::to_string(contextKey.deviceId);
+        outError += " context=" +
+                    std::to_string(static_cast<unsigned long long>(
+                        reinterpret_cast<std::uintptr_t>(
+                            contextKey.contextOpaque)));
+        outError += " context_epoch=" +
+                    std::to_string(
+                        static_cast<unsigned long long>(contextEpoch));
+        outError += " attempted_block_shape=";
+        outError +=
+            carrierSource ==
+                    JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes
+                ? "filter_2_planes+carrier_3_planes"
+                : "filter_2_planes";
+        outError += " physical_allocation_count=" +
+                    std::to_string(
+                        static_cast<unsigned long long>(
+                            shape.physicalAllocationCount));
+        outError += " failed_fact=";
+        outError += failedFact && failedFact[0] ? failedFact : "unknown";
+        if (!cause.empty()) {
+            outError += " cause=" + cause;
+        }
+    }
+
     bool derive_workspace_request(
+        const Spektrafilm::RenderRecipe& recipe,
         const Spektrafilm::SpatialDirDescriptor* spatialDir,
         const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects,
         const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSet,
+        const ScatterHalationFrameDescriptor* scatterHalationDescriptor,
         const std::optional<Spektrafilm::VisualGrainFrameDescriptor>& visualGrain,
         const std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor>& effects,
         Spektrafilm::ProfilePolarity capturePolarity,
         int requestedWidth,
         int requestedHeight,
+        const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
+        std::uint64_t contextEpoch,
         Root::PreparedCudaFrame::WorkspaceRequest& out,
         std::string& outError) {
         out = Root::PreparedCudaFrame::WorkspaceRequest{};
@@ -965,6 +1178,89 @@ namespace JuicerProcess {
             return false;
         }
         if (routeDiffusionActive) {
+            out.needOptics = true;
+        }
+
+        const std::uint64_t scatterHalationRecipeHash =
+            recipe.spatialOptics.scatterHalation.hash;
+        if (scatterHalationRecipeHash == 0) {
+            if (scatterHalationDescriptor) {
+                outError =
+                    "ResourceDescriptorMismatch phase=scatter_halation_admission field=recipe_hash expected=0 actual=" +
+                    std::to_string(static_cast<unsigned long long>(
+                        scatterHalationDescriptor->recipeHash));
+                return false;
+            }
+        } else {
+            if (!scatterHalationDescriptor) {
+                outError =
+                    "MissingRequiredResource phase=scatter_halation_admission field=descriptor recipe_hash=" +
+                    std::to_string(static_cast<unsigned long long>(
+                        scatterHalationRecipeHash));
+                return false;
+            }
+            if (scatterHalationDescriptor->recipeHash == 0 ||
+                scatterHalationDescriptor->recipeHash !=
+                    scatterHalationRecipeHash) {
+                outError =
+                    "ResourceDescriptorMismatch phase=scatter_halation_admission field=recipe_hash expected=" +
+                    std::to_string(static_cast<unsigned long long>(
+                        scatterHalationRecipeHash)) +
+                    " actual=" +
+                    std::to_string(static_cast<unsigned long long>(
+                        scatterHalationDescriptor->recipeHash));
+                return false;
+            }
+
+            const bool cameraCarrier =
+                diffusionFrameSet && diffusionFrameSet->camera.has_value();
+            const JuicerCuda::ScatterHalationCarrierSource carrierSource =
+                cameraCarrier
+                    ? JuicerCuda::ScatterHalationCarrierSource::
+                          CameraDiffusionStagePlanes
+                    : JuicerCuda::ScatterHalationCarrierSource::
+                          DedicatedPreparedPlanes;
+            ScatterHalationAllocationShape shape{};
+            const char* failedFact = nullptr;
+            if (!derive_scatter_halation_allocation_shape(
+                    requestedWidth,
+                    requestedHeight,
+                    carrierSource,
+                    shape,
+                    failedFact)) {
+                set_scatter_halation_exact_admission_failure(
+                    recipe,
+                    *scatterHalationDescriptor,
+                    requestedWidth,
+                    requestedHeight,
+                    carrierSource,
+                    shape,
+                    0,
+                    contextKey,
+                    contextEpoch,
+                    failedFact,
+                    {},
+                    outError);
+                return false;
+            }
+            if (cameraCarrier &&
+                diffusionFrameSet->camera->stage !=
+                    Spektrafilm::DiffusionLinearStage::CameraFilmLinear) {
+                set_scatter_halation_exact_admission_failure(
+                    recipe,
+                    *scatterHalationDescriptor,
+                    requestedWidth,
+                    requestedHeight,
+                    carrierSource,
+                    shape,
+                    0,
+                    contextKey,
+                    contextEpoch,
+                    "camera_carrier_stage",
+                    {},
+                    outError);
+                return false;
+            }
             out.needOptics = true;
         }
 
@@ -1098,7 +1394,6 @@ namespace JuicerProcess {
 
     bool Root::PreparedCudaFrame::State::retire_device_bytes(
         void* ptr,
-        std::size_t bytes,
         void* cudaStreamOpaque,
         const char* label,
         std::string& outError) {
@@ -1106,15 +1401,20 @@ namespace JuicerProcess {
             return true;
         }
         const auto allocation = deviceAllocationRecords.find(ptr);
-        if (allocation == deviceAllocationRecords.end() ||
-            allocation->second.bytes() != bytes) {
+        if (allocation == deviceAllocationRecords.end()) {
             outError = "unregistered prepared-frame CUDA retirement";
+            return false;
+        }
+        const std::size_t recordedBytes = static_cast<std::size_t>(
+            allocation->second.bytes());
+        if (recordedBytes == 0) {
+            outError = "invalid prepared-frame CUDA retirement record";
             return false;
         }
         if (!JuicerCuda::retire_frame_scratch_allocation(
                 *resources,
                 ptr,
-                bytes,
+                recordedBytes,
                 std::move(allocation->second),
                 cudaStreamOpaque,
                 label,
@@ -1183,12 +1483,9 @@ namespace JuicerProcess {
             while (!deviceAllocationRecords.empty()) {
                 const auto allocation = deviceAllocationRecords.begin();
                 void* ptr = allocation->first;
-                const std::size_t bytes = static_cast<std::size_t>(
-                    allocation->second.bytes());
                 std::string retireError;
                 if (retire_device_bytes(
                         ptr,
-                        bytes,
                         lastCudaStreamOpaque,
                         "remaining frame allocation",
                         retireError)) {
@@ -1364,6 +1661,202 @@ namespace JuicerProcess {
         return true;
     }
 
+    bool Root::PreparedCudaFrame::State::prepare_scatter_halation_resources(
+        const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
+        const Spektrafilm::RenderRecipe& recipe,
+        const ScatterHalationFrameDescriptor* descriptor,
+        const Spektrafilm::DiffusionFrameSetDescriptor* frameSet,
+        int requestedWidth,
+        int requestedHeight,
+        std::string& outError) {
+        outError.clear();
+        if (!descriptor) {
+            return true;
+        }
+        if (!resources || !transaction.active || transaction.committed ||
+            scatterHalationDescriptor || scatterHalationFilterBlock ||
+            scatterHalationCarrierBlock) {
+            outError =
+                "prepared scatter-halation resource state is not empty";
+            return false;
+        }
+
+        const bool cameraCarrier = frameSet && frameSet->camera.has_value();
+        const JuicerCuda::ScatterHalationCarrierSource carrierSource =
+            cameraCarrier
+                ? JuicerCuda::ScatterHalationCarrierSource::
+                      CameraDiffusionStagePlanes
+                : JuicerCuda::ScatterHalationCarrierSource::
+                      DedicatedPreparedPlanes;
+        ScatterHalationAllocationShape shape{};
+        const char* failedFact = nullptr;
+        if (!derive_scatter_halation_allocation_shape(
+                requestedWidth,
+                requestedHeight,
+                carrierSource,
+                shape,
+                failedFact)) {
+            set_scatter_halation_exact_admission_failure(
+                recipe,
+                *descriptor,
+                requestedWidth,
+                requestedHeight,
+                carrierSource,
+                shape,
+                0,
+                contextKey,
+                transaction.snapshot.contextEpoch,
+                failedFact,
+                {},
+                outError);
+            return false;
+        }
+
+        if (cameraCarrier) {
+            const JuicerCuda::Diffusion::DiffusionPreparedView diffusionView =
+                diffusionLease.view();
+            if (!diffusionLease.active() || !diffusionView.active ||
+                diffusionView.executionDescriptor.contextEpoch !=
+                    transaction.snapshot.contextEpoch ||
+                diffusionView.executionDescriptor.frameSetHash !=
+                    frameSet->hash ||
+                resources->ownerContextKey != contextKey ||
+                resources->contextEpoch != transaction.snapshot.contextEpoch) {
+                set_scatter_halation_exact_admission_failure(
+                    recipe,
+                    *descriptor,
+                    requestedWidth,
+                    requestedHeight,
+                    carrierSource,
+                    shape,
+                    0,
+                    contextKey,
+                    transaction.snapshot.contextEpoch,
+                    "camera_diffusion_exact_context_lease",
+                    {},
+                    outError);
+                return false;
+            }
+        }
+
+        void* filterBlock = nullptr;
+        std::string allocationError;
+        if (!allocate_device_bytes(
+                &filterBlock,
+                shape.filterBytes,
+                "scatter halation filter scratch",
+                allocationError)) {
+            set_scatter_halation_exact_admission_failure(
+                recipe,
+                *descriptor,
+                requestedWidth,
+                requestedHeight,
+                carrierSource,
+                shape,
+                0,
+                contextKey,
+                transaction.snapshot.contextEpoch,
+                "filter_allocation_block",
+                allocationError,
+                outError);
+            return false;
+        }
+
+        void* carrierBlock = nullptr;
+        if (carrierSource ==
+                JuicerCuda::ScatterHalationCarrierSource::
+                    DedicatedPreparedPlanes &&
+            !allocate_device_bytes(
+                &carrierBlock,
+                shape.carrierBytes,
+                "scatter halation dedicated carrier",
+                allocationError)) {
+            set_scatter_halation_exact_admission_failure(
+                recipe,
+                *descriptor,
+                requestedWidth,
+                requestedHeight,
+                carrierSource,
+                shape,
+                shape.filterBytes,
+                contextKey,
+                transaction.snapshot.contextEpoch,
+                "carrier_allocation_block",
+                allocationError,
+                outError);
+            return false;
+        }
+
+        auto* filterBytes = static_cast<std::byte*>(filterBlock);
+        scatterHalationFilterBlock = filterBlock;
+        scatterHalationFilterTemp = reinterpret_cast<float*>(filterBytes);
+        scatterHalationWeightedAccumulation = reinterpret_cast<float*>(
+            filterBytes + shape.filterSecondPlaneOffset);
+        scatterHalationCarrierSource = carrierSource;
+        if (carrierBlock) {
+            auto* carrierBytes = static_cast<std::byte*>(carrierBlock);
+            scatterHalationCarrierBlock = carrierBlock;
+            scatterHalationCarrier.redSensitive =
+                reinterpret_cast<float*>(carrierBytes);
+            scatterHalationCarrier.greenSensitive = reinterpret_cast<float*>(
+                carrierBytes + shape.carrierGreenPlaneOffset);
+            scatterHalationCarrier.blueSensitive = reinterpret_cast<float*>(
+                carrierBytes + shape.carrierBluePlaneOffset);
+            scatterHalationCarrier.rowStrideFloats =
+                static_cast<std::size_t>(requestedWidth);
+        }
+        scatterHalationDescriptor = *descriptor;
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::State::release_scatter_halation_resources(
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!scatterHalationDescriptor && !scatterHalationFilterBlock &&
+            !scatterHalationCarrierBlock) {
+            return true;
+        }
+        if (!resources) {
+            outError =
+                "CUDA resources unavailable for scatter-halation release";
+            return false;
+        }
+
+        remember_stream(cudaStreamOpaque);
+        void* retireStreamOpaque =
+            cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
+        if (scatterHalationCarrierBlock) {
+            void* carrierBlock = scatterHalationCarrierBlock;
+            if (!retire_device_bytes(
+                    carrierBlock,
+                    retireStreamOpaque,
+                    "scatter halation dedicated carrier",
+                    outError)) {
+                return false;
+            }
+            scatterHalationCarrierBlock = nullptr;
+            scatterHalationCarrier = {};
+        }
+        if (scatterHalationFilterBlock) {
+            void* filterBlock = scatterHalationFilterBlock;
+            if (!retire_device_bytes(
+                    filterBlock,
+                    retireStreamOpaque,
+                    "scatter halation filter scratch",
+                    outError)) {
+                return false;
+            }
+            scatterHalationFilterBlock = nullptr;
+            scatterHalationFilterTemp = nullptr;
+            scatterHalationWeightedAccumulation = nullptr;
+        }
+        scatterHalationDescriptor.reset();
+        scatterHalationCarrierSource =
+            JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes;
+        return true;
+    }
+
     bool Root::PreparedCudaFrame::State::allocate_scan_error_stage(std::string& outError) {
         outError.clear();
         free_scan_error_stage_now();
@@ -1440,7 +1933,6 @@ namespace JuicerProcess {
             int* flag = stage.deviceFlag;
             if (!retire_device_bytes(
                     flag,
-                    sizeof(int),
                     retireStreamOpaque,
                     "frame scan error flag",
                     outError)) {
@@ -1578,7 +2070,7 @@ namespace JuicerProcess {
             remember_stream(cudaStreamOpaque);
             void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
             bool retiredAll = true;
-            auto retire_ptr = [&](auto*& ptr, std::size_t bytes, const char* label) {
+            auto retire_ptr = [&](auto*& ptr, const char* label) {
                 if (!ptr || !retiredAll) {
                     return;
                 }
@@ -1586,7 +2078,6 @@ namespace JuicerProcess {
                 std::string localError;
                 if (retire_device_bytes(
                         raw,
-                        bytes,
                         retireStreamOpaque,
                         label,
                         localError)) {
@@ -1602,26 +2093,20 @@ namespace JuicerProcess {
                 }
             };
 
-            retire_ptr(workspace.deviceState.exposureScale, sizeof(float), "frame auto-exposure scale");
-            retire_ptr(workspace.scratch.maxYBits, sizeof(unsigned int), "frame auto-exposure maxYBits");
-            retire_ptr(workspace.scratch.histogram, sizeof(unsigned int) * 2048u, "frame auto-exposure histogram");
+            retire_ptr(workspace.deviceState.exposureScale, "frame auto-exposure scale");
+            retire_ptr(workspace.scratch.maxYBits, "frame auto-exposure maxYBits");
+            retire_ptr(workspace.scratch.histogram, "frame auto-exposure histogram");
             retire_ptr(
                 workspace.scratch.weightsX,
-                static_cast<std::size_t>(std::max(0, workspace.weightsXCapacity)) * sizeof(float),
                 "frame auto-exposure weightsX");
             retire_ptr(
                 workspace.scratch.weightsY,
-                static_cast<std::size_t>(std::max(0, workspace.weightsYCapacity)) * sizeof(float),
                 "frame auto-exposure weightsY");
             retire_ptr(
                 workspace.scratch.partialsA,
-                static_cast<std::size_t>(std::max(0, workspace.scratch.partialCapacity)) *
-                    sizeof(JuicerCudaAutoExposurePartial),
                 "frame auto-exposure partialsA");
             retire_ptr(
                 workspace.scratch.partialsB,
-                static_cast<std::size_t>(std::max(0, workspace.scratch.partialCapacity)) *
-                    sizeof(JuicerCudaAutoExposurePartial),
                 "frame auto-exposure partialsB");
 
             if (retiredAll) {
@@ -1951,6 +2436,14 @@ namespace JuicerProcess {
         const JuicerCuda::ResourceManager::ScratchRequestDescriptor postFrameScratchRequest =
             _state->post_frame_scratch_request_descriptor();
         std::string releaseError;
+        if (!_state->release_scatter_halation_resources(
+                cudaStreamOpaque,
+                releaseError)) {
+            outError = releaseError.empty()
+                           ? "scatter-halation resource release failed"
+                           : releaseError;
+            return false;
+        }
         if (_state->diffusionLease.active() &&
             !JuicerCuda::Diffusion::release_diffusion_resources(
                 _state->resources->diffusion,
@@ -2023,6 +2516,18 @@ namespace JuicerProcess {
                 std::string releaseError;
                 const JuicerCuda::ResourceManager::ScratchRequestDescriptor postFrameScratchRequest =
                     _state->post_frame_scratch_request_descriptor();
+                if (!_state->release_scatter_halation_resources(
+                        _state->lastCudaStreamOpaque,
+                        releaseError) &&
+                    JTRACE_ENABLED(1)) {
+                    std::string msg =
+                        "scatter_halation_resource_release_failed abort=1";
+                    if (!releaseError.empty()) {
+                        msg += " error=";
+                        msg += releaseError;
+                    }
+                    JTRACE("CUDA", msg);
+                }
                 if (_state->resources && _state->diffusionLease.active() &&
                     !JuicerCuda::Diffusion::release_diffusion_resources(
                         _state->resources->diffusion,
@@ -2569,6 +3074,7 @@ namespace JuicerProcess {
             !build_gaussian_kernel_slot(
                 _state->resources->scannerLensBlurKernel,
                 descriptor.lensBlurSigmaPx,
+                descriptor.lensBlurRadius,
                 outError)) {
             return false;
         }
@@ -2576,6 +3082,7 @@ namespace JuicerProcess {
             !build_gaussian_kernel_slot(
                 _state->resources->scannerUnsharpKernel,
                 descriptor.unsharpSigmaPx,
+                descriptor.unsharpRadius,
                 outError)) {
             return false;
         }
@@ -2583,6 +3090,7 @@ namespace JuicerProcess {
             !build_gaussian_kernel_slot(
                 _state->resources->scannerGlareKernel,
                 descriptor.glareBlurSigmaPx,
+                descriptor.glareBlurRadius,
                 outError)) {
             return false;
         }
@@ -2738,6 +3246,7 @@ namespace JuicerProcess {
     bool Root::PreparedCudaFrame::build_gaussian_kernel_slot(
         JuicerCuda::Resources::DeviceGaussianKernel& kernel,
         float sigma,
+        int radius,
         std::string& outError) {
         outError.clear();
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
@@ -2749,6 +3258,7 @@ namespace JuicerProcess {
                 *_state->resources,
                 kernel,
                 sigma,
+                radius,
                 outError)) {
             _state->set_failure(
                 PreparedCudaFailureStage{"command_ensure_gaussian_kernel"},
@@ -2892,6 +3402,7 @@ namespace JuicerProcess {
                 if (!build_gaussian_kernel_slot(
                         kernel,
                         gaussian.sigmaPx,
+                        gaussian.radius,
                         outError) ||
                     !kernel.weights || kernel.radius != gaussian.radius ||
                     kernel.sigma != gaussian.sigmaPx) {
@@ -3333,6 +3844,23 @@ namespace JuicerProcess {
         return _state->diffusionLease.view();
     }
 
+    JuicerCuda::ScatterHalationPreparedView
+    Root::PreparedCudaFrame::scatter_halation_resources() const noexcept {
+        JuicerCuda::ScatterHalationPreparedView view{};
+        if (!active() || !_state->scatterHalationDescriptor) {
+            return view;
+        }
+        view.descriptor = &*_state->scatterHalationDescriptor;
+        view.fullFrameWidth = _state->workspaceRequest.requestedWidth;
+        view.fullFrameHeight = _state->workspaceRequest.requestedHeight;
+        view.carrierSource = _state->scatterHalationCarrierSource;
+        view.currentCarrier = _state->scatterHalationCarrier;
+        view.filterTemp = _state->scatterHalationFilterTemp;
+        view.weightedAccumulation =
+            _state->scatterHalationWeightedAccumulation;
+        return view;
+    }
+
     void Root::PreparedCudaFrame::mark_diffusion_work_enqueued() noexcept {
         if (!active() || !_state->diffusionLease.active()) {
             return;
@@ -3664,14 +4192,20 @@ namespace JuicerProcess {
             view.scratch.blurred != nullptr;
         const bool lensReady =
             descriptor.lensBlurSigmaPx <= 0.0f ||
-            (view.lensBlur.weights && view.lensBlur.radius > 0);
+            (view.lensBlur.weights &&
+             view.lensBlur.radius == descriptor.lensBlurRadius &&
+             view.lensBlur.sigma == descriptor.lensBlurSigmaPx);
         const bool unsharpReady =
             descriptor.unsharpSigmaPx <= 0.0f ||
-            (view.unsharp.weights && view.unsharp.radius > 0);
+            (view.unsharp.weights &&
+             view.unsharp.radius == descriptor.unsharpRadius &&
+             view.unsharp.sigma == descriptor.unsharpSigmaPx);
         const bool glareReady =
             !descriptor.glareActive ||
             descriptor.glareBlurSigmaPx <= 0.0f ||
-            (view.glare.weights && view.glare.radius > 0);
+            (view.glare.weights &&
+             view.glare.radius == descriptor.glareBlurRadius &&
+             view.glare.sigma == descriptor.glareBlurSigmaPx);
         view.active = sharedTmpReady && glareScratchReady &&
                       lensReady && unsharpReady && glareReady;
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -4445,22 +4979,6 @@ namespace JuicerProcess {
         frame._state->visualGrainDescriptor =
             request.visualGrainDescriptor;
         frame._state->effectsDescriptor = request.effectsDescriptor;
-        if (!derive_workspace_request(
-                request.spatialDirDescriptor,
-                request.scannerPostEffects,
-                request.diffusionFrameSetDescriptor,
-                request.visualGrainDescriptor,
-                request.effectsDescriptor,
-                request.recipe->profileRoute.capturePolarity,
-                request.requestedWidth,
-                request.requestedHeight,
-                frame._state->workspaceRequest,
-                outError)) {
-            recordFailure(
-                "derive_cuda_frame_workspace_request",
-                "CUDA frame workspace derivation failed");
-            return frame;
-        }
         if (printRoute) {
             if (!JuicerCuda::build_print_resource_descriptors(
                     *request.recipe,
@@ -4481,6 +4999,27 @@ namespace JuicerProcess {
             recordFailure(
                 "begin_submission",
                 "CUDA frame begin_submission failed");
+            return frame;
+        }
+        if (!derive_workspace_request(
+                *request.recipe,
+                request.spatialDirDescriptor,
+                request.scannerPostEffects,
+                request.diffusionFrameSetDescriptor,
+                request.scatterHalationDescriptor,
+                request.visualGrainDescriptor,
+                request.effectsDescriptor,
+                request.recipe->profileRoute.capturePolarity,
+                request.requestedWidth,
+                request.requestedHeight,
+                deviceContextKey,
+                frame._state->transaction.snapshot.contextEpoch,
+                frame._state->workspaceRequest,
+                outError)) {
+            recordFailure(
+                "derive_cuda_frame_workspace_request",
+                "CUDA frame workspace derivation failed");
+            frame.abort();
             return frame;
         }
         if (!resolve_cuda_frame_resources(
@@ -4508,6 +5047,20 @@ namespace JuicerProcess {
             recordFailure(
                 "prepare_diffusion_resources",
                 "CUDA diffusion resource preparation failed");
+            frame.abort();
+            return frame;
+        }
+        if (!frame._state->prepare_scatter_halation_resources(
+                deviceContextKey,
+                *request.recipe,
+                request.scatterHalationDescriptor,
+                request.diffusionFrameSetDescriptor,
+                request.requestedWidth,
+                request.requestedHeight,
+                outError)) {
+            recordFailure(
+                "prepare_scatter_halation_resources",
+                "CUDA scatter-halation resource preparation failed");
             frame.abort();
             return frame;
         }
