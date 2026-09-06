@@ -1,7 +1,7 @@
 # Film-Juicer
 
 <p align="center">
-  <img src="Resources/juicer-flat-icon-640x360.png" alt="Film-Juicer" width="640">
+  <img src="Resources/banner.jpg" alt="Film-Juicer" width="1280">
 </p>
 
 <p align="center">
@@ -9,7 +9,7 @@
 </p>
 
 > [!IMPORTANT]
-> Film-Juicer is built on **[spektrafilm](https://github.com/andreavolpato/spektrafilm)** by [Andrea Volpato](https://github.com/andreavolpato). Most of the difficult work happened before Film-Juicer existed: the research, the photographic model, the profile work, and the reference implementation. Without that, there would be very little here besides a stupidly ambitious idea and a lot of CUDA.
+> Film-Juicer is built on **[spektrafilm](https://github.com/andreavolpato/spektrafilm)** by [Andrea Volpato](https://github.com/andreavolpato). Most of the difficult work happened before Film-Juicer existed: the research, the photographic model, the profile work, and the reference implementation. Without that, there would be very little here besides a stupidly ambitious idea.
 
 Film-Juicer is a Windows CUDA OpenFX plug-in for DaVinci Resolve. It takes scene-linear RGB, reconstructs spectra from it, exposes modeled film layers, develops those exposures into dye density, optionally sends the resulting film through an enlarger and print medium, and finally scans the thing back into RGB.
 
@@ -92,12 +92,12 @@ If the basic rendering is wrong, adding more effects will mostly give you a more
 
 Film-Juicer has four explicit routes. The selected capture profile determines whether the film is negative or positive.
 
-| Route | Photographic path |
-| --- | --- |
-| **Negative direct scan** | Negative film → scanner |
-| **Negative print scan** | Negative film → enlarger → print medium → scanner |
-| **Positive direct scan** | Positive film → scanner |
-| **Positive print scan** | Positive film → enlarger → print medium → scanner |
+| Route                    | Photographic path                                 |
+| ------------------------ | ------------------------------------------------- |
+| **Negative direct scan** | Negative film → scanner                           |
+| **Negative print scan**  | Negative film → enlarger → print medium → scanner |
+| **Positive direct scan** | Positive film → scanner                           |
+| **Positive print scan**  | Positive film → enlarger → print medium → scanner |
 
 The default workflow is a negative film printed to a selected paper or print-film profile and then scanned.
 
@@ -117,9 +117,8 @@ Supported input color spaces:
 - ITU-R BT.2020
 - ACES2065-1
 - sRGB / Rec.709
-
-### Resolve Color Management or ACES
-
+  
+  ### Resolve Color Management or ACES
 1. Ensure that the signal entering Film-Juicer is scene-linear. If the timeline signal is log-encoded, use a Color Space Transform before the plug-in.
 2. Select the matching input primaries in Film-Juicer.
 3. Leave **Decode input CCTF** off for an already-linear signal.
@@ -238,7 +237,6 @@ Then you need it.
 ### 4. Optical print
 
 On a print route, the developed capture film becomes a spectral filter in a virtual enlarger.
-
 The enlarger combines its illuminant with a calibrated neutral position and user Y/M/C filtration before exposing the selected paper or print film. The Y, M, and C controls are offsets in Kodak CC units around that neutral position.
 
 Print exposure, preflash, and exposure compensation operate before the print medium is developed through its own sensitivity and density curves.
@@ -358,7 +356,6 @@ There is nothing inherently wrong with eyeballing gas stations. It is simply a d
 Film-Juicer does a lot of work.
 
 There is no profound insight hidden in that sentence. Spectral calculations cost something. Spatial DIR costs something. Grain, diffusion, halation, glare, large blur radii and high resolutions all cost something. Eventually these somethings become milliseconds, and then those milliseconds become you staring at Resolve wondering why the GPU sounds like a small aircraft.
-
 For interactive grading:
 
 - Establish the stock, route, exposure, and print balance first.
