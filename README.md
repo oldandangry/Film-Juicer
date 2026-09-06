@@ -1,4 +1,4 @@
-# Film-Juicer
+<h1 align="center">Film-Juicer</h1>
 
 <p align="center">
   <img src="Resources/banner.jpg" alt="Film-Juicer" width="1280">
