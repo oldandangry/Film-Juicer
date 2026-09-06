@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1040" height="1660" viewBox="0 0 1040 1660" role="img" aria-labelledby="title description">
   <title id="title">Film-Juicer photographic pipeline</title>
-  <desc id="description">Input RGB is decoded and converted, then Hanatos or Mallett spectral reconstruction and film sensitivity produce linear film-layer exposure. Optional camera diffusion, emulsion scatter, and halation precede film development with DIR couplers. Density-domain grain and film-local scratches and dust precede the route split. Negative or positive capture film is scanned directly, or optically printed using an enlarger, optional print diffusion, and print development. The selected medium is scanned to XYZ under its viewing illuminant, with optional scanner LUT acceleration, route-specific black and white correction, and glare. Color adaptation and conversion produce output-space linear RGB before scanner lens blur, unsharp masking, gate weave, and gate-local dust and scratches. Optional output transfer-function encoding precedes the RGB handoff to DaVinci Resolve.</desc>
+  <desc id="description">Input RGB is decoded and converted, then Hanatos or Mallett spectral reconstruction and film sensitivity produce linear film-layer exposure. Optional camera diffusion, emulsion scatter, and halation precede film development with DIR couplers. Density-domain grain and film-local scratches and dust precede the route split. Negative or positive capture film is scanned directly, or optically printed using an enlarger, optional print diffusion, and print development. The selected medium is scanned to XYZ under its viewing illuminant, with optional scanner LUT acceleration, route-specific black and white correction, and print-route glare. Color adaptation and conversion produce output-space linear RGB before scanner lens blur, unsharp masking, gate weave, and gate-local dust and scratches. Optional output transfer-function encoding precedes the RGB handoff to DaVinci Resolve.</desc>
   <style>
     text { font-family: "Segoe UI", Inter, Arial, sans-serif; fill: #f3f4e9; }
     .heading { font-size: 24px; font-weight: 600; }
@@ -92,7 +92,7 @@
   <rect x="48" y="1264" width="4" height="76" rx="2" fill="#c064ba"/>
   <text x="76" y="1310.0" class="heading" >Spectral scan</text>
   <text x="368" y="1281.0" class="detail" >Viewing illuminant · density → CIE XYZ (or LUT)</text>
-  <text x="368" y="1309.0" class="detail" >Black/white correction → glare</text>
+  <text x="368" y="1309.0" class="detail" >Black/white correction → glare (print routes)</text>
   <text x="368" y="1337.0" class="detail" >Chromatic adaptation → output-space linear RGB</text>
   <path class="flow" d="M520 1358 V1378" marker-end="url(#arrow)"/>
   <rect class="card" x="48" y="1384" width="944" height="84" rx="14"/>
@@ -104,7 +104,7 @@
   <rect class="card" x="48" y="1494" width="944" height="76" rx="14"/>
   <rect x="48" y="1512" width="4" height="40" rx="2" fill="#ffcf57"/>
   <text x="76" y="1540.0" class="heading" >Output RGB</text>
-  <text x="368" y="1525.0" class="detail" >Optional output CCTF / linear pass-through</text>
+  <text x="368" y="1525.0" class="detail" >Optional output CCTF encoding</text>
   <text x="368" y="1553.0" class="detail" >Back to DaVinci Resolve</text>
   <text x="48" y="1607" class="small" >Both branches support negative or positive capture film.</text>
   <text x="48" y="1634" class="small" >Optional effects run only when enabled. Arrows show photographic stage order.</text>
