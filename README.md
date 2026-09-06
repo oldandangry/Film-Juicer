@@ -9,7 +9,7 @@
 </p>
 
 > [!IMPORTANT]
-> Film-Juicer is built on **[spektrafilm](https://github.com/andreavolpato/spektrafilm)** by [Andrea Volpato](https://github.com/andreavolpato). Most of the difficult work happened before Film-Juicer existed: the research, the photographic model, the profile work, and the reference implementation. Without that, there would be very little here besides a stupidly ambitious idea and a lot of CUDA.
+> Film-Juicer is built on **[spektrafilm](https://github.com/andreavolpato/spektrafilm)** by [Andrea Volpato](https://github.com/andreavolpato). Most of the difficult work happened before Film-Juicer existed: the research, the photographic model, the profile work, and the reference implementation. Without that, there would be very little here besides a stupidly ambitious idea.
 
 Film-Juicer is a Windows CUDA OpenFX plug-in for DaVinci Resolve. It takes scene-linear RGB, reconstructs spectra from it, exposes modeled film layers, develops those exposures into dye density, optionally sends the resulting film through an enlarger and print medium, and finally scans the thing back into RGB.
 
@@ -92,12 +92,12 @@ If the basic rendering is wrong, adding more effects will mostly give you a more
 
 Film-Juicer has four explicit routes. The selected capture profile determines whether the film is negative or positive.
 
-| Route | Photographic path |
-| --- | --- |
-| **Negative direct scan** | Negative film → scanner |
-| **Negative print scan** | Negative film → enlarger → print medium → scanner |
-| **Positive direct scan** | Positive film → scanner |
-| **Positive print scan** | Positive film → enlarger → print medium → scanner |
+| Route                    | Photographic path                                 |
+| ------------------------ | ------------------------------------------------- |
+| **Negative direct scan** | Negative film → scanner                           |
+| **Negative print scan**  | Negative film → enlarger → print medium → scanner |
+| **Positive direct scan** | Positive film → scanner                           |
+| **Positive print scan**  | Positive film → enlarger → print medium → scanner |
 
 The default workflow is a negative film printed to a selected paper or print-film profile and then scanned.
 
