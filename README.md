@@ -1,7 +1,7 @@
 # Film-Juicer
 
 <p align="center">
-  <img src="Resources/banner.jpg" alt="Film-Juicer" width="640">
+  <img src="Resources/banner.jpg" alt="Film-Juicer" width="1280">
 </p>
 
 <p align="center">
