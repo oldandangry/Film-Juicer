@@ -1,7 +1,7 @@
 # Film-Juicer
 
 <p align="center">
-  <img src="Resources/readme/film-juicer-header.svg" alt="Film-Juicer" width="640">
+  <img src="Resources/banner.jpg" alt="Film-Juicer" width="640">
 </p>
 
 <p align="center">
@@ -117,7 +117,6 @@ Supported input color spaces:
 - ITU-R BT.2020
 - ACES2065-1
 - sRGB / Rec.709
-
 ### Resolve Color Management or ACES
 
 1. Ensure that the signal entering Film-Juicer is scene-linear. If the timeline signal is log-encoded, use a Color Space Transform before the plug-in.
@@ -238,7 +237,6 @@ Then you need it.
 ### 4. Optical print
 
 On a print route, the developed capture film becomes a spectral filter in a virtual enlarger.
-
 The enlarger combines its illuminant with a calibrated neutral position and user Y/M/C filtration before exposing the selected paper or print film. The Y, M, and C controls are offsets in Kodak CC units around that neutral position.
 
 Print exposure, preflash, and exposure compensation operate before the print medium is developed through its own sensitivity and density curves.
@@ -358,7 +356,6 @@ There is nothing inherently wrong with eyeballing gas stations. It is simply a d
 Film-Juicer does a lot of work.
 
 There is no profound insight hidden in that sentence. Spectral calculations cost something. Spatial DIR costs something. Grain, diffusion, halation, glare, large blur radii and high resolutions all cost something. Eventually these somethings become milliseconds, and then those milliseconds become you staring at Resolve wondering why the GPU sounds like a small aircraft.
-
 For interactive grading:
 
 - Establish the stock, route, exposure, and print balance first.
