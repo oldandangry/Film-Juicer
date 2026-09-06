@@ -36,12 +36,10 @@ namespace OFX {
 #define kParamSpectralMode "SpectralUpsampling"
 #define kParamReferenceIlluminant "ReferenceIlluminant"
 #define kParamEnlargerIlluminant "EnlargerIlluminant"
-#define kParamDichroicFilterSet "DichroicFilterSet"
 
 // Output encoding parameters
 #define kParamOutputColorSpace "OutputColorSpace"
 #define kParamOutputCctfEncoding "OutputCctfEncoding"
-#define kParamOutputLinearPassThrough "OutputLinearPassThrough"
 
 class JuicerEffect : public OFX::ImageEffect {
 public:
@@ -101,7 +99,6 @@ private:
     OFX::StrChoiceParam* _pPrintProfileKey = nullptr;
     OFX::ChoiceParam* _pRefIll = nullptr;
     OFX::ChoiceParam* _pEnlIll = nullptr;
-    OFX::ChoiceParam* _pEnlDichroicSet = nullptr;
     OFX::ChoiceParam* _pInputColorSpace = nullptr;
     OFX::BooleanParam* _pInputCctfDecoding = nullptr;
     OFX::BooleanParam* _pHanatos2025AdaptationWindow = nullptr;
@@ -109,7 +106,6 @@ private:
     OFX::StrChoiceParam* _pScanRoute = nullptr;
     OFX::ChoiceParam* _pOutputColorSpace = nullptr;
     OFX::BooleanParam* _pOutputCctfEncoding = nullptr;
-    OFX::BooleanParam* _pOutputLinearPassThrough = nullptr;
 
 
     OFX::BooleanParam* _pCouplersActive = nullptr;

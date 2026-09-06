@@ -2412,7 +2412,6 @@ void JuicerProcessor::processImagesCUDA() {
         copy_float3(run.scanStage.scanColor.illuminantXYZ, color.illuminantXYZ);
         run.scanStage.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
         run.scanStage.scanColor.encoding.applyCctfEncoding = bool_to_i32(color.encoding.applyCctfEncoding);
-        run.scanStage.scanColor.encoding.preserveLinearRange = bool_to_i32(color.encoding.preserveLinearRange);
         run.scanStage.scanColor.encoding.inputIsOutputSpace = bool_to_i32(color.encoding.inputIsOutputSpace);
         const auto& outputSpace = GeneratedColorSpaces::get(color.encoding.colorSpace);
         run.scanStage.scanColor.encoding.cctf.kind = static_cast<int>(outputSpace.cctf.kind);
@@ -3398,8 +3397,6 @@ void JuicerProcessor::processImagesCUDA() {
             OutputEncoding::toIndex(color.encoding.colorSpace);
         run.scanStage.scanColor.encoding.applyCctfEncoding =
             bool_to_i32(color.encoding.applyCctfEncoding);
-        run.scanStage.scanColor.encoding.preserveLinearRange =
-            bool_to_i32(color.encoding.preserveLinearRange);
         run.scanStage.scanColor.encoding.inputIsOutputSpace =
             bool_to_i32(color.encoding.inputIsOutputSpace);
         const auto& outputSpace = GeneratedColorSpaces::get(color.encoding.colorSpace);

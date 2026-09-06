@@ -53,23 +53,6 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
-    struct MeasuredDichroicResourceIdentity {
-        std::string setKey;
-        std::array<std::string, 3> resourcePathsCmy;
-        std::array<std::uint64_t, 3> resourceHashesCmy{};
-        std::uint64_t hash = 0;
-        bool valid = false;
-        std::string diagnostic;
-    };
-
-    struct MeasuredDichroicCurveResult {
-        std::array<std::array<float, 81>, 3> transmittanceCmy{};
-        std::array<std::uint64_t, 3> resourceHashesCmy{};
-        std::uint64_t hash = 0;
-        bool valid = false;
-        std::string diagnostic;
-    };
-
     enum class NeutralPrintCalibrationStatus : unsigned char {
         MissingFile,
         MissingEntry,
@@ -104,10 +87,6 @@ namespace JuicerAssets {
             const SelectedProfileRequest& request);
         std::shared_ptr<const StaticNoisePayloadSet> static_noise_payloads();
         const IlluminantFilterCurveSet& illuminant_filter_curves();
-        MeasuredDichroicResourceIdentity measured_dichroic_resource_identity(
-            const std::string& setKey);
-        MeasuredDichroicCurveResult measured_dichroic_curves(
-            const std::string& setKey);
         NeutralPrintCalibrationResult neutral_print_calibration(
             const std::string& printProfileKey,
             const std::string& printIlluminantKey,

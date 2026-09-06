@@ -279,7 +279,7 @@ This is also a decent way to debug a bad result: start near the beginning and wo
 - **Scan route** chooses direct scanning or optical printing for negative or positive film.
 - **Print paper** selects a paper or print-film profile.
 - **Enlarger illuminant** selects the enlarger light source.
-- **Dichroic filter set** selects the spektrafilm reference filter model or a measured filter set.
+- The enlarger uses the **spektrafilm Custom dichroic filters**.
 - **Enlarger Y/M/C offsets** adjust filtration around the neutral calibration in Kodak CC units.
 - **Print exposure**, **preflash**, and **exposure compensation** shape the exposure entering print development.
 
@@ -295,7 +295,7 @@ This is also a decent way to debug a bad result: start near the beginning and wo
 - **Grain presets** provide fine, medium, and coarse starting points.
 - **Grain Amount, Size, Sharpness, Chroma, and Texture** are the principal creative controls.
 - Advanced controls expose particle area, sublayers, density, uniformity, dye-cloud blur, size mixtures, and micro-structure.
-- **Gate weave**, **film/gate dust**, and **film/gate scratches** model transport and physical contamination.
+- **Gate weave**, **film/gate dust**, and **film/gate scratches** model transport and physical contamination. Gate weave defaults to zero.
 
 You are, of course, free to add a heroic quantity of dirt to the image.
 
@@ -308,7 +308,7 @@ The software will not stage an intervention.
 - **Scanner black/white correction** controls route-specific normalization.
 - **Glare** models scanner-stage veiling light on print routes.
 - **Scanner lens blur** and **unsharp mask** control final optical softness and sharpening.
-- **Output color space** and **Apply output CCTF** define the handoff back to Resolve.
+- **Output color space** and **Apply output CCTF** define the handoff back to Resolve. Disable Apply output CCTF for linear RGB in the selected output color space; output remains clipped to 0–1.
 
 ## Included profiles
 

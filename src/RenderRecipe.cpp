@@ -1234,7 +1234,6 @@ namespace {
         hash_value(hash, recipe.lutResolution);
         hash_value(hash, recipe.outputColorSpace);
         hash_value(hash, recipe.outputCctfEncoding);
-        hash_value(hash, recipe.outputLinearPassThrough);
         hash_value(hash, recipe.blackCorrection);
         hash_value(hash, recipe.whiteCorrection);
         hash_value(hash, recipe.blackLevel);
@@ -1328,51 +1327,11 @@ namespace {
                    : Spektrafilm::PrintNormalizationMode::None;
     }
 
-    std::uint64_t hash_dichroic_resource_identity(const DichroicResourceIdentity& identity) {
+    std::uint64_t hash_dichroic_filter_recipe(const DichroicFilterRecipe& recipe) {
         std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, identity.set);
-        hash_value(hash, identity.kind);
-        hash_string(hash, identity.setKey);
-        hash_value(hash, identity.percentTransmittanceDividedBy100);
-        hash_value(hash, identity.duplicateWavelengthsKeepFirst);
-        hash_value(hash, identity.akimaResampledToReferenceAxis);
-        if (identity.kind == Spektrafilm::DichroicResourceKind::CustomAnalyticModel) {
-            Hash::hash_bytes_update(hash, identity.customEdgesNm.data(), sizeof(identity.customEdgesNm));
-            Hash::hash_bytes_update(hash, identity.customTransitionsNm.data(), sizeof(identity.customTransitionsNm));
-        } else {
-            for (std::size_t channel = 0; channel < identity.resourcePathsCmy.size(); ++channel) {
-                hash_string(hash, identity.resourcePathsCmy[channel]);
-                hash_value(hash, identity.resourceHashesCmy[channel]);
-            }
-        }
+        Hash::hash_bytes_update(hash, recipe.customEdgesNm.data(), sizeof(recipe.customEdgesNm));
+        Hash::hash_bytes_update(hash, recipe.customTransitionsNm.data(), sizeof(recipe.customTransitionsNm));
         return hash;
-    }
-
-    bool dichroic_resource_identity_valid(const DichroicResourceIdentity& identity) {
-        if (identity.kind == Spektrafilm::DichroicResourceKind::CustomAnalyticModel) {
-            return identity.set == Spektrafilm::DichroicFilterSet::Custom &&
-                   identity.setKey == "custom" &&
-                   std::all_of(identity.customEdgesNm.begin(), identity.customEdgesNm.end(), [](float value) {
-                       return std::isfinite(value);
-                   }) &&
-                   std::all_of(identity.customTransitionsNm.begin(), identity.customTransitionsNm.end(), [](float value) {
-                       return std::isfinite(value) && value > 0.0f;
-                   });
-        }
-
-        if (identity.set == Spektrafilm::DichroicFilterSet::Custom ||
-            identity.setKey.empty() ||
-            !identity.percentTransmittanceDividedBy100 ||
-            !identity.duplicateWavelengthsKeepFirst ||
-            !identity.akimaResampledToReferenceAxis) {
-            return false;
-        }
-        for (std::size_t channel = 0; channel < identity.resourcePathsCmy.size(); ++channel) {
-            if (identity.resourcePathsCmy[channel].empty() || identity.resourceHashesCmy[channel] == 0) {
-                return false;
-            }
-        }
-        return true;
     }
 
     std::uint64_t hash_print_filter_recipe(const PrintFilterRecipe& recipe) {
@@ -1802,7 +1761,6 @@ namespace Spektrafilm {
             std::clamp(input.scannerLutResolution, 17u, 128u);
         scanner.outputColorSpace = input.outputColorSpace;
         scanner.outputCctfEncoding = input.outputCctfEncoding;
-        scanner.outputLinearPassThrough = false;
         scanner.blackCorrection = input.scannerBlackCorrection;
         scanner.whiteCorrection = input.scannerWhiteCorrection;
         scanner.blackLevel = input.scannerBlackLevel;
@@ -1920,7 +1878,6 @@ namespace Spektrafilm {
             std::clamp(input.scannerLutResolution, 17u, 128u);
         scanner.outputColorSpace = input.outputColorSpace;
         scanner.outputCctfEncoding = input.outputCctfEncoding;
-        scanner.outputLinearPassThrough = false;
         scanner.blackCorrection = input.scannerBlackCorrection;
         scanner.whiteCorrection = input.scannerWhiteCorrection;
         scanner.blackLevel = input.scannerBlackLevel;
@@ -1935,19 +1892,8 @@ namespace Spektrafilm {
         scanner.hash = hash_scanner_output_recipe(scanner);
 
         PrintRecipe& print = recipe.print;
-        print.filters.dichroic = input.dichroic;
-        if (!dichroic_resource_identity_valid(print.filters.dichroic)) {
-            result.diagnostic =
-                "ResourceDescriptorMismatch phase=4A field=dichroic_resource_identity";
-            return result;
-        }
-        print.filters.dichroic.hash =
-            hash_dichroic_resource_identity(print.filters.dichroic);
-        if (print.filters.dichroic.hash == 0) {
-            result.diagnostic =
-                "ResourceDescriptorMismatch phase=4A field=dichroic_resource_identity";
-            return result;
-        }
+        print.filters.dichroic = DichroicFilterRecipe{};
+        print.filters.dichroic.hash = hash_dichroic_filter_recipe(print.filters.dichroic);
         const CmyCcTriplet neutralCmyCc =
             input.neutralCalibrationStatus ==
                     NeutralCalibrationStatus::Calibrated

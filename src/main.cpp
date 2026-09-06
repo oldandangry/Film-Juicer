@@ -505,19 +505,6 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamDichroicFilterSet);
-            p->setLabel("Dichroic filter set");
-            p->setHint("Select the spektrafilm custom/reference dichroic model or a measured C/M/Y resource set.");
-            p->appendOption("Spektrafilm Custom");
-            p->appendOption("Durst Digital Light");
-            p->appendOption("Thorlabs");
-            p->appendOption("Edmund Optics");
-            p->setDefault(0);
-            if (grpPrint)
-                p->setParent(*grpPrint);
-            p->setEvaluateOnChange(true);
-        }
-        {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerY");
             p->setLabel("Enlarger Y offset (Kodak CC)");
             p->setDefault(0.0);
@@ -558,7 +545,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::BooleanParamDescriptor* p =
                 desc.defineBooleanParam(JuicerParams::kHalationActive);
             p->setLabel("Add halation");
-            p->setDefault(true);
+            p->setDefault(false);
             p->setHint("Add profile-derived scatter and halation to the negative raw exposure.");
             if (grpHalation) {
                 p->setParent(*grpHalation);
@@ -946,7 +933,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGateWeaveAmount);
             p->setLabel("Gate weave");
             p->setHint("Scales the global gate weave (film transport jitter).");
-            p->setDefault(1.0);
+            p->setDefault(0.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
             if (grpEffects)
@@ -1391,15 +1378,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(kParamOutputCctfEncoding);
             p->setLabel("Apply output CCTF");
+            p->setHint("Disable to output linear RGB in the selected output color space. Output remains clipped to 0-1.");
             p->setDefault(true);
-            if (grpOutput)
-                p->setParent(*grpOutput);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(kParamOutputLinearPassThrough);
-            p->setLabel("Output linear pass-through");
-            p->setDefault(false);
             if (grpOutput)
                 p->setParent(*grpOutput);
             p->setEvaluateOnChange(true);

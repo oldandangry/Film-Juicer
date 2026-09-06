@@ -26,7 +26,6 @@ namespace OutputEncoding {
     struct Params {
         ColorSpace colorSpace = ColorSpace::sRGB;
         bool applyCctfEncoding = true;
-        bool preserveLinearRange = false;
         bool inputIsOutputSpace = false;
     };
 
@@ -437,13 +436,6 @@ namespace OutputEncoding {
             tmp.mul(rgb, linear);
         }
 
-        if (params.preserveLinearRange) {
-            rgb[0] = linear[0];
-            rgb[1] = linear[1];
-            rgb[2] = linear[2];
-            return;
-        }
-
         if (params.applyCctfEncoding) {
             rgb[0] = detail::encode_channel(outSpace.cctf, linear[0]);
             rgb[1] = detail::encode_channel(outSpace.cctf, linear[1]);
@@ -473,13 +465,6 @@ namespace OutputEncoding {
             linear[0] = mat[0] * rgb[0] + mat[1] * rgb[1] + mat[2] * rgb[2];
             linear[1] = mat[3] * rgb[0] + mat[4] * rgb[1] + mat[5] * rgb[2];
             linear[2] = mat[6] * rgb[0] + mat[7] * rgb[1] + mat[8] * rgb[2];
-        }
-
-        if (params.preserveLinearRange) {
-            rgb[0] = linear[0];
-            rgb[1] = linear[1];
-            rgb[2] = linear[2];
-            return;
         }
 
         if (params.applyCctfEncoding) {
