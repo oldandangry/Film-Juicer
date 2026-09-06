@@ -1,116 +1,113 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="1660" viewBox="0 0 1040 1660" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="1230" viewBox="0 0 1040 1230" role="img" aria-labelledby="title description">
   <title id="title">Film-Juicer photographic pipeline</title>
-  <desc id="description">Input RGB is decoded and converted, then Hanatos or Mallett spectral reconstruction and film sensitivity produce linear film-layer exposure. Optional camera diffusion, emulsion scatter, and halation precede film development with DIR couplers. Density-domain grain and film-local scratches and dust precede the route split. Negative or positive capture film is scanned directly, or optically printed using an enlarger, optional print diffusion, and print development. The selected medium is scanned to XYZ under its viewing illuminant, with optional scanner LUT acceleration, route-specific black and white correction, and print-route glare. Color adaptation and conversion produce output-space linear RGB before scanner lens blur, unsharp masking, gate weave, and gate-local dust and scratches. Optional output transfer-function encoding precedes the RGB handoff to DaVinci Resolve.</desc>
+  <desc id="description">Input RGB is decoded as needed and converted to the exposure working space. Hanatos or Mallett reconstruction, film sensitivity, UV/IR filtration, and exposure controls produce linear film-layer exposure. Optional camera diffusion, scatter, and halation precede film development with DIR couplers. Optional density-domain grain and film scratches and dust precede the route split. Negative or positive capture film can go directly to the shared scanner, or through a spectral enlarger, optional print diffusion, and print development. The selected film or print medium is scanned to XYZ, with optional LUT acceleration, black and white correction, and print-route glare. Chromatic adaptation and output color conversion produce linear RGB before optional scanner lens blur, unsharp masking, gate weave, and gate dust and scratches. Optional output CCTF encoding precedes the RGB handoff to DaVinci Resolve. Dashed stage outlines and explicit labels identify optional stages.</desc>
   <style>
-    text { font-family: "Segoe UI", Inter, Arial, sans-serif; fill: #f3f4e9; }
-    .heading { font-size: 24px; font-weight: 600; }
-    .detail { font-size: 21px; fill: #c4cdd0; }
-    .small { font-size: 18px; fill: #aab7bc; }
-    .label { font-size: 16px; font-weight: 700; letter-spacing: 2.2px; }
-    .card { fill: #20272c; stroke: #3b464b; stroke-width: 1.5; }
-    .flow { fill: none; stroke: #82959d; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    :root { color-scheme: light dark; }
+    .background { fill: #ffffff; }
+    text { fill: #24292f; font-family: Inter, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; }
+    .heading { font-size: 24px; font-weight: 650; letter-spacing: -.3px; }
+    .detail { font-size: 21px; fill: #49545f; }
+    .label { font-size: 17px; font-weight: 650; letter-spacing: 1.8px; }
+    .optional-label { font-size: 15px; font-weight: 550; letter-spacing: 1.1px; fill: #596570; }
+    .medium { font-size: 18px; fill: #596570; }
+    .note { font-size: 18px; fill: #596570; }
+    .stage { fill: #ffffff; stroke: #c2c9cf; stroke-width: 1.4; }
+    .optional { stroke-dasharray: 5 5; }
+    .flow { fill: none; stroke: #77838c; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+    .arrow { fill: none; stroke: #77838c; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+    .junction { fill: #77838c; }
+    .capture { fill: #28748a; }
+    .print { fill: #90612b; }
+    .scan { fill: #885270; }
+    @media (prefers-color-scheme: dark) {
+      .background, .stage { fill: #0d1117; }
+      text { fill: #e6edf3; }
+      .detail { fill: #bac4cd; }
+      .optional-label, .medium, .note { fill: #9ca9b5; }
+      .stage { stroke: #46515d; }
+      .flow, .arrow { stroke: #8694a2; }
+      .junction { fill: #8694a2; }
+      .capture { fill: #71b1c4; }
+      .print { fill: #d1ab75; }
+      .scan { fill: #c795b0; }
+    }
   </style>
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse" markerUnits="userSpaceOnUse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#aab7bc" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="9" markerHeight="9" orient="auto" markerUnits="userSpaceOnUse"><path class="arrow" d="M2 1 L8 5 L2 9"/></marker>
   </defs>
-  <rect x="1" y="1" width="1038" height="1658" rx="26" fill="#171c20" stroke="#3b464b" stroke-width="2"/>
+  <rect class="background" width="1040" height="1230"/>
 
-  <text x="48" y="49" class="label" style="fill:#28abe0">FILM-JUICER</text>
-  <text x="48" y="99" font-size="38" font-weight="650" letter-spacing="-1">The photographic pipeline</text>
-  <text x="48" y="132" class="detail" >Spectral capture · optional optical print · scan to RGB</text>
-  <rect x="828" y="31" width="22" height="26" rx="5" fill="#28abe0"/>
-  <rect x="862" y="31" width="22" height="26" rx="5" fill="#1ec58b"/>
-  <rect x="896" y="31" width="22" height="26" rx="5" fill="#ffcf57"/>
-  <rect x="930" y="31" width="22" height="26" rx="5" fill="#f36b45"/>
-  <rect x="964" y="31" width="22" height="26" rx="5" fill="#c064ba"/>
-  <rect class="card" x="48" y="174" width="944" height="76" rx="14"/>
-  <rect x="48" y="192" width="4" height="40" rx="2" fill="#28abe0"/>
-  <text x="76" y="220.0" class="heading" >Input RGB</text>
-  <text x="368" y="205.0" class="detail" >Optional input CCTF decoding</text>
-  <text x="368" y="233.0" class="detail" >Convert input primaries to the exposure working space</text>
-  <path class="flow" d="M520 250 V270" marker-end="url(#arrow)"/>
-  <rect class="card" x="48" y="276" width="944" height="112" rx="14"/>
-  <rect x="48" y="294" width="4" height="76" rx="2" fill="#28abe0"/>
-  <text x="76" y="325.0" class="heading" >Spectral film</text>
-  <text x="76" y="355.0" class="heading" >exposure</text>
-  <text x="368" y="311.0" class="detail" >Hanatos 2025 or Mallett 2019 reconstruction</text>
-  <text x="368" y="339.0" class="detail" >81 wavelengths · 380–780 nm · 5 nm steps</text>
-  <text x="368" y="367.0" class="detail" >Film sensitivity + UV/IR · exposure + auto exposure</text>
-  <path class="flow" d="M520 388 V408" marker-end="url(#arrow)"/>
-  <rect class="card" x="48" y="414" width="944" height="80" rx="14"/>
-  <rect x="48" y="432" width="4" height="44" rx="2" fill="#28abe0"/>
-  <text x="76" y="462.0" class="heading" >Exposure optics</text>
-  <text x="368" y="447.0" class="detail" >Camera diffusion → scatter → halation</text>
-  <text x="368" y="475.0" class="detail" >Applied to linear film-layer exposure</text>
-  <path class="flow" d="M520 494 V514" marker-end="url(#arrow)"/>
-  <rect class="card" x="48" y="520" width="944" height="84" rx="14"/>
-  <rect x="48" y="538" width="4" height="48" rx="2" fill="#1ec58b"/>
-  <text x="76" y="570.0" class="heading" >Film development</text>
-  <text x="368" y="555.0" class="detail" >Log exposure → characteristic curves → CMY density</text>
-  <text x="368" y="583.0" class="detail" >DIR: same-layer, inter-layer and spatial inhibition</text>
-  <path class="flow" d="M520 604 V624" marker-end="url(#arrow)"/>
-  <rect class="card" x="48" y="630" width="944" height="80" rx="14"/>
-  <rect x="48" y="648" width="4" height="44" rx="2" fill="#1ec58b"/>
-  <text x="76" y="678.0" class="heading" >Grain + film defects</text>
-  <text x="368" y="663.0" class="detail" >Density-domain grain</text>
-  <text x="368" y="691.0" class="detail" >Film scratches + dust carried into the scan or print</text>
-  <path class="flow" d="M520 710 V736" marker-end="url(#arrow)"/>
-  <rect x="420" y="742" width="200" height="46" rx="23" fill="#283333" stroke="#536762" stroke-width="1.5"/>
-  <text x="520" y="772" class="heading" text-anchor="middle">Scan route</text>
-  <path class="flow" d="M420 765 H264 V814" marker-end="url(#arrow)"/>
-  <path class="flow" d="M620 765 H776 V814" marker-end="url(#arrow)"/>
-  <rect class="card" x="48" y="820" width="432" height="100" rx="14"/>
-  <rect x="48" y="838" width="4" height="64" rx="2" fill="#1ec58b"/>
-  <text x="76" y="859" class="heading" >Direct film scan</text>
-  <text x="76" y="891" class="detail" >Negative or positive capture film</text>
-  <path class="flow" d="M264 920 V1040"/>
-  <circle cx="264" cy="982" r="5" fill="#1ec58b"/>
-  <text x="264" y="1072" class="label" text-anchor="middle" style="fill:#1ec58b;font-size:15px;letter-spacing:1.5px">CAPTURE-FILM DENSITY</text>
-  <text x="264" y="1103" class="detail" text-anchor="middle">To the scanner</text>
-  <path class="flow" d="M264 1124 V1200 H520"/>
-  <rect class="card" x="560" y="820" width="432" height="136" rx="14"/>
-  <rect x="560" y="838" width="4" height="100" rx="2" fill="#f36b45"/>
-  <text x="588" y="855" class="heading" >Spectral enlarger</text>
-  <text x="588" y="885" class="detail" >Illuminant + neutral / YMC filtration</text>
-  <text x="588" y="913" class="detail" >Film transmittance → print exposure</text>
-  <text x="588" y="941" class="detail" >Exposure balance + preflash</text>
-  <path class="flow" d="M776 956 V974" marker-end="url(#arrow)"/>
-  <rect class="card" x="560" y="980" width="432" height="76" rx="14"/>
-  <rect x="560" y="998" width="4" height="40" rx="2" fill="#f36b45"/>
-  <text x="588" y="1012" class="heading" >Print diffusion</text>
-  <text x="588" y="1040" class="detail" >Linear print-layer exposure</text>
-  <path class="flow" d="M776 1056 V1074" marker-end="url(#arrow)"/>
-  <rect class="card" x="560" y="1080" width="432" height="88" rx="14"/>
-  <rect x="560" y="1098" width="4" height="52" rx="2" fill="#f36b45"/>
-  <text x="588" y="1115" class="heading" >Print development</text>
-  <text x="588" y="1145" class="detail" >Paper / print-film curves → density</text>
-  <path class="flow" d="M776 1168 V1200 H520"/>
-  <circle cx="520" cy="1200" r="4" fill="#aab7bc"/>
-  <path class="flow" d="M520 1200 V1240" marker-end="url(#arrow)"/>
-  <text x="48" y="1224" class="label" style="fill:#c064ba">SCAN / OUTPUT</text>
-  <rect class="card" x="48" y="1246" width="944" height="112" rx="14"/>
-  <rect x="48" y="1264" width="4" height="76" rx="2" fill="#c064ba"/>
-  <text x="76" y="1310.0" class="heading" >Spectral scan</text>
-  <text x="368" y="1281.0" class="detail" >Viewing illuminant · density → CIE XYZ (or LUT)</text>
-  <text x="368" y="1309.0" class="detail" >Black/white correction → glare (print routes)</text>
-  <text x="368" y="1337.0" class="detail" >Chromatic adaptation → output-space linear RGB</text>
-  <path class="flow" d="M520 1358 V1378" marker-end="url(#arrow)"/>
-  <rect class="card" x="48" y="1384" width="944" height="84" rx="14"/>
-  <rect x="48" y="1402" width="4" height="48" rx="2" fill="#c064ba"/>
-  <text x="76" y="1434.0" class="heading" >Scanner finishing</text>
-  <text x="368" y="1419.0" class="detail" >Lens blur → unsharp mask</text>
-  <text x="368" y="1447.0" class="detail" >Gate weave → gate dust / scratches</text>
-  <path class="flow" d="M520 1468 V1488" marker-end="url(#arrow)"/>
-  <rect class="card" x="48" y="1494" width="944" height="76" rx="14"/>
-  <rect x="48" y="1512" width="4" height="40" rx="2" fill="#ffcf57"/>
-  <text x="76" y="1540.0" class="heading" >Output RGB</text>
-  <text x="368" y="1525.0" class="detail" >Optional output CCTF encoding</text>
-  <text x="368" y="1553.0" class="detail" >Back to DaVinci Resolve</text>
-  <text x="48" y="1607" class="small" >Both branches support negative or positive capture film.</text>
-  <text x="48" y="1634" class="small" >Optional effects run only when enabled. Arrows show photographic stage order.</text>
-  <rect x="832" y="1615" width="22" height="18" rx="4" fill="#28abe0"/>
-  <rect x="866" y="1615" width="22" height="18" rx="4" fill="#1ec58b"/>
-  <rect x="900" y="1615" width="22" height="18" rx="4" fill="#ffcf57"/>
-  <rect x="934" y="1615" width="22" height="18" rx="4" fill="#f36b45"/>
-  <rect x="968" y="1615" width="22" height="18" rx="4" fill="#c064ba"/>
+  <text x="40" y="29" class="label capture" >CAPTURE</text>
+  <text x="1000" y="29" class="note" text-anchor="end">81 wavelengths · 380–780 nm · 5 nm steps</text>
+  <rect class="stage" x="40" y="46" width="960" height="56" rx="5"/>
+  <text x="64" y="82.0" class="heading" >Input RGB</text>
+  <text x="370" y="81.0" class="detail" >Decode input CCTF as needed · convert primaries</text>
+  <path class="flow" d="M520 102 V114" marker-end="url(#arrow)"/>
+  <rect class="stage" x="40" y="120" width="960" height="78" rx="5"/>
+  <text x="64" y="153.0" class="heading" >Spectral film</text>
+  <text x="64" y="181.0" class="heading" >exposure</text>
+  <text x="370" y="153.0" class="detail" >Hanatos 2025 or Mallett 2019 reconstruction</text>
+  <text x="370" y="179.0" class="detail" >Film sensitivity · UV/IR · exposure + auto exposure</text>
+  <path class="flow" d="M520 198 V236" marker-end="url(#arrow)"/>
+  <text x="538" y="224" class="medium" >linear layer exposure</text>
+  <rect class="stage optional" x="40" y="242" width="960" height="60" rx="5"/>
+  <text x="64" y="268" class="heading" >Exposure optics</text>
+  <text x="64" y="289" class="optional-label" >OPTIONAL</text>
+  <text x="370" y="279.0" class="detail" >Camera diffusion → scatter → halation</text>
+  <path class="flow" d="M520 302 V314" marker-end="url(#arrow)"/>
+  <rect class="stage" x="40" y="320" width="960" height="68" rx="5"/>
+  <text x="64" y="362.0" class="heading" >Film development</text>
+  <text x="370" y="348.0" class="detail" >Characteristic curves → CMY density</text>
+  <text x="370" y="374.0" class="detail" >Same-layer, inter-layer + spatial DIR</text>
+  <path class="flow" d="M520 388 V400" marker-end="url(#arrow)"/>
+  <rect class="stage optional" x="40" y="406" width="960" height="60" rx="5"/>
+  <text x="64" y="432" class="heading" >Grain + film defects</text>
+  <text x="64" y="453" class="optional-label" >OPTIONAL</text>
+  <text x="370" y="430.0" class="detail" >Density-domain grain</text>
+  <text x="370" y="456.0" class="detail" >Film scratches + dust</text>
+  <path class="flow" d="M520 466 V502"/>
+  <text x="538" y="491" class="medium" >developed film density</text>
+  <circle class="junction" cx="520" cy="502" r="3"/>
+  <path class="flow" d="M520 502 H260 V850 H520"/>
+  <path class="flow" d="M520 502 H780 V542" marker-end="url(#arrow)"/>
+  <text x="40" y="534" class="label capture" >DIRECT SCAN</text>
+  <text x="560" y="534" class="label print" >OPTICAL PRINT</text>
+  <text x="282" y="685" class="medium" >Capture-film</text>
+  <text x="282" y="710" class="medium" >density</text>
+  <rect class="stage" x="560" y="548" width="440" height="114" rx="5"/>
+  <text x="584" y="577" class="heading" >Spectral enlarger</text>
+  <text x="584" y="605" class="detail" >Illuminant · neutral / YMC filtration</text>
+  <text x="584" y="629" class="detail" >Film transmittance → print exposure</text>
+  <text x="584" y="653" class="detail" >Exposure balance + preflash</text>
+  <path class="flow" d="M780 662 V670" marker-end="url(#arrow)"/>
+  <rect class="stage optional" x="560" y="676" width="440" height="58" rx="5"/>
+  <text x="584" y="699" class="heading" >Print diffusion</text>
+  <text x="979" y="700" class="optional-label" text-anchor="end">OPTIONAL</text>
+  <text x="584" y="727" class="detail" >Linear print-layer exposure</text>
+  <path class="flow" d="M780 734 V748" marker-end="url(#arrow)"/>
+  <rect class="stage" x="560" y="754" width="440" height="68" rx="5"/>
+  <text x="584" y="782" class="heading" >Print development</text>
+  <text x="584" y="807" class="detail" >Paper / print-film curves → density</text>
+  <path class="flow" d="M780 822 V850 H520"/>
+  <circle class="junction" cx="520" cy="850" r="3"/>
+  <path class="flow" d="M520 850 V886" marker-end="url(#arrow)"/>
+  <text x="40" y="875" class="label scan" >SCAN / OUTPUT</text>
+  <text x="538" y="875" class="medium" >selected medium density</text>
+  <rect class="stage" x="40" y="892" width="960" height="94" rx="5"/>
+  <text x="64" y="947.0" class="heading" >Spectral scan</text>
+  <text x="370" y="920.0" class="detail" >Viewing illuminant · density → XYZ (or LUT)</text>
+  <text x="370" y="946.0" class="detail" >Black/white correction → glare (print routes)</text>
+  <text x="370" y="972.0" class="detail" >Chromatic adaptation → output color space</text>
+  <path class="flow" d="M520 986 V1020" marker-end="url(#arrow)"/>
+  <text x="538" y="1011" class="medium" >linear RGB</text>
+  <rect class="stage optional" x="40" y="1026" width="960" height="66" rx="5"/>
+  <text x="64" y="1052" class="heading" >Scanner finishing</text>
+  <text x="64" y="1073" class="optional-label" >OPTIONAL</text>
+  <text x="370" y="1053.0" class="detail" >Lens blur → unsharp mask</text>
+  <text x="370" y="1079.0" class="detail" >Gate weave → gate dust / scratches</text>
+  <path class="flow" d="M520 1092 V1104" marker-end="url(#arrow)"/>
+  <rect class="stage" x="40" y="1110" width="960" height="60" rx="5"/>
+  <text x="64" y="1148.0" class="heading" >Output RGB</text>
+  <text x="370" y="1147.0" class="detail" >Optional output CCTF encoding · RGB to Resolve</text>
+  <text x="40" y="1205" class="note" >Both routes accept negative or positive capture film. Dashed stages are optional.</text>
 </svg>
