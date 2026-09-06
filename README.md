@@ -22,7 +22,7 @@ It is also rather close to the point.
 This is considerably more troublesome than mapping one RGB value to another. Good.
 
 > [!NOTE]
-> Film-Juicer is currently preparing for its first public release. The Windows installer will be published here when it is ready.
+> **Film-Juicer 0.9.5-RC is available now as a release candidate.** The Windows installer can be downloaded from the [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases) page. This is a prerelease build; dust and scratch behavior is still being refined ahead of v1.0.
 
 ## Highlights
 
@@ -56,15 +56,15 @@ Film-Juicer is not especially interested in modest hardware.
 
 ## Installation
 
-The public release will use a Windows installer:
+Windows builds of Film-Juicer are distributed through GitHub Releases:
 
-1. Download the latest Film-Juicer installer from the GitHub Releases page.
+1. Download the latest Film-Juicer Windows installer from the [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases) page.
 2. Run the installer.
 3. Restart DaVinci Resolve.
 
 Film-Juicer will appear in Resolve under **OpenFX → Negative-juice → Juicer**.
 
-The installer package has not been uploaded yet. This section will link directly to the first release when it becomes available.
+Release-candidate builds are prereleases and may change before v1.0.
 
 There should not be anything clever about installation. The cleverness belongs elsewhere.
 
@@ -398,17 +398,19 @@ In particular:
 - **Johannes Hanika (Hanatos)** developed the visible-locus spectral reconstruction direction used by the Hanatos path.
 - **Mallett and Cem Yuksel** authored *Spectral Primary Decomposition for Rendering with sRGB Reflectance* (2019), the basis of the Mallett reconstruction path.
 
-The profile figures in this README are Film-Juicer visualizations of spektrafilm profile data and fitted models. The underlying profile data remains subject to the upstream spektrafilm terms, including CC BY-SA 4.0 where applicable.
+The profile figures in this README are Film-Juicer visualizations derived from spektrafilm profile data. The bundled spektrafilm profiles, LUTs, and direct derivatives of those assets remain licensed under **CC BY-SA 4.0** and retain their upstream attribution requirements.
 
 If Film-Juicer is useful to you, please visit, star, and support the original [spektrafilm project](https://github.com/andreavolpato/spektrafilm).
 
 ## License
 
-spektrafilm source code is licensed under GPL-3.0, while profiles and other upstream assets carry their respective spektrafilm terms.
+Film-Juicer software is licensed under the **GNU General Public License v3.0 (GPL-3.0-only)**. See [LICENSE](LICENSE).
 
-Film-Juicer's repository-level license and third-party notices will be finalized before the first public release.
+Film-Juicer is built on the work of **Andrea Volpato's [spektrafilm](https://github.com/andreavolpato/spektrafilm)**. Spektrafilm software is licensed under GPLv3.
 
-Until then, the absence of the finished paperwork should not be interpreted as some sort of legal wilderness where everything may be carried away under cover of darkness.
+Spektrafilm profiles, LUTs, and direct derivatives distributed with Film-Juicer are separately licensed under **Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)**. Their upstream copyright, attribution, license notices, and modification history must be preserved as required by the applicable spektrafilm asset license.
+
+Other third-party components retain their respective licenses and copyright notices. Product and company names are used only for identification and reference; Film-Juicer is not affiliated with or endorsed by their respective manufacturers or rights holders.
 
 ## References
 
