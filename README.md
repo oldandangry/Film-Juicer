@@ -1,7 +1,7 @@
 # Film-Juicer
 
 <p align="center">
-  <img src="Resources/juicer-flat-icon-640x360.png" alt="Film-Juicer" width="640">
+  <img src="Resources/readme/film-juicer-header.svg" alt="Film-Juicer" width="640">
 </p>
 
 <p align="center">
