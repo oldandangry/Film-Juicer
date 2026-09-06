@@ -245,42 +245,6 @@ namespace {
         Hash::hash_bytes_update(hash, &value, sizeof(value));
     }
 
-    void hash_effects_extent(
-        std::uint64_t& hash,
-        const Spektrafilm::FilmJuicerEffectsFrameExtent& extent) {
-        hash_value(hash, extent.x);
-        hash_value(hash, extent.y);
-        hash_value(hash, extent.width);
-        hash_value(hash, extent.height);
-    }
-
-    std::uint64_t hash_effects_descriptor(
-        const Spektrafilm::FilmJuicerEffectsFrameDescriptor& descriptor) {
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_effects_extent(hash, descriptor.renderExtent);
-        hash_effects_extent(hash, descriptor.fullFrameExtent);
-        hash_value(hash, descriptor.pixelSizeUm);
-        hash_value(hash, descriptor.frame0);
-        hash_value(hash, descriptor.frameAlpha);
-        hash_value(hash, descriptor.sessionSeed);
-        hash_value(hash, descriptor.clipToken);
-        hash_value(hash, descriptor.pitchPx);
-        hash_value(hash, descriptor.filmDustAmount);
-        hash_value(hash, descriptor.filmScratchAmount);
-        hash_value(hash, descriptor.gateDustAmount);
-        hash_value(hash, descriptor.gateScratchAmount);
-        hash_value(hash, descriptor.weaveActive);
-        hash_value(hash, descriptor.weaveDxPx);
-        hash_value(hash, descriptor.weaveDyPx);
-        hash_value(hash, descriptor.weaveCosRot);
-        hash_value(hash, descriptor.weaveSinRot);
-        hash_value(hash, descriptor.filmActive);
-        hash_value(hash, descriptor.gateMaskActive);
-        hash_value(hash, descriptor.gateOutputActive);
-        hash_value(hash, descriptor.requiresFullFrame);
-        hash_value(hash, descriptor.recipeHash);
-        return hash;
-    }
 
 } // namespace
 
@@ -524,57 +488,105 @@ namespace JuicerCuda {
 
     bool pack_film_juicer_effects_payload(
         const Spektrafilm::FilmJuicerEffectsFrameDescriptor& descriptor,
-        GrainPayload& outDefects,
+        FilmDefectsPayload& outDefects,
         GateWeavePayload& outWeave,
         std::string& diagnostic) {
-        reset_payload_to_defaults(outDefects);
-        reset_payload_to_defaults(outWeave);
+        outDefects = {};
+        outWeave = {};
         diagnostic.clear();
-
-        if (!descriptor.filmActive && !descriptor.gateOutputActive) {
-            if (descriptor.hash != 0 || descriptor.recipeHash != 0) {
-                diagnostic =
-                    "ResourceDescriptorMismatch phase=effects_payload field=inactive_descriptor";
-                return false;
-            }
-            return true;
-        }
-        const bool predicatesMatch =
-            descriptor.filmActive ==
-                (descriptor.filmDustAmount > 0.0f ||
-                 descriptor.filmScratchAmount > 0.0f) &&
-            descriptor.gateMaskActive ==
-                (descriptor.gateDustAmount > 0.0f ||
-                 descriptor.gateScratchAmount > 0.0f) &&
-            descriptor.gateOutputActive ==
-                (descriptor.weaveActive || descriptor.gateMaskActive) &&
-            descriptor.requiresFullFrame == descriptor.gateOutputActive;
-        if (descriptor.hash == 0 || descriptor.recipeHash == 0 ||
-            descriptor.renderExtent.width <= 0 ||
-            descriptor.renderExtent.height <= 0 ||
-            descriptor.fullFrameExtent.width <= 0 ||
-            descriptor.fullFrameExtent.height <= 0 ||
-            !(descriptor.pixelSizeUm > 0.0f) || descriptor.pitchPx <= 0 ||
-            descriptor.sessionSeed == 0 || !predicatesMatch ||
-            descriptor.hash != hash_effects_descriptor(descriptor)) {
-            diagnostic =
-                "ResourceDescriptorMismatch phase=effects_payload field=descriptor";
+        if (!Spektrafilm::validate_film_juicer_effects_frame_descriptor(descriptor)) {
+            diagnostic = "ResourceDescriptorMismatch phase=effects_payload field=descriptor";
             return false;
         }
-
-        outDefects.originX = descriptor.renderExtent.x;
-        outDefects.originY = descriptor.renderExtent.y;
-        outDefects.frameIndex = descriptor.frame0;
-        outDefects.timeAlpha = descriptor.frameAlpha;
-        outDefects.stbnSessionSeed = descriptor.sessionSeed;
+        if (!descriptor.filmActive && !descriptor.gateOutputActive) {
+            return true;
+        }
+        outDefects.filmDust.cellWidthMm = descriptor.filmDust.cellWidthMm;
+        outDefects.filmDust.cellHeightMm = descriptor.filmDust.cellHeightMm;
+        outDefects.filmDust.slotProbability = descriptor.filmDust.slotProbability;
+        outDefects.filmDust.softnessMm = descriptor.filmDust.softnessMm;
+        outDefects.filmDust.supportXMm = descriptor.filmDust.supportXMm;
+        outDefects.filmDust.supportYMm = descriptor.filmDust.supportYMm;
+        outDefects.filmDust.fiberFraction = descriptor.filmDust.fiberFraction;
+        outDefects.filmDust.fiberDriftFraction = descriptor.filmDust.fiberDriftFraction;
+        outDefects.filmDust.fiberTaperFraction = descriptor.filmDust.fiberTaperFraction;
+        outDefects.filmDust.diameterMinMm = descriptor.filmDust.diameterMinMm;
+        outDefects.filmDust.diameterBulkMaxMm = descriptor.filmDust.diameterBulkMaxMm;
+        outDefects.filmDust.diameterMaxMm = descriptor.filmDust.diameterMaxMm;
+        outDefects.filmDust.diameterTailFraction = descriptor.filmDust.diameterTailFraction;
+        outDefects.filmDust.fiberLengthMinMm = descriptor.filmDust.fiberLengthMinMm;
+        outDefects.filmDust.fiberLengthMaxMm = descriptor.filmDust.fiberLengthMaxMm;
+        outDefects.filmDust.fiberWidthMinMm = descriptor.filmDust.fiberWidthMinMm;
+        outDefects.filmDust.fiberWidthMaxMm = descriptor.filmDust.fiberWidthMaxMm;
+        outDefects.filmDust.opticalDepthMin = descriptor.filmDust.opticalDepthMin;
+        outDefects.filmDust.opticalDepthMax = descriptor.filmDust.opticalDepthMax;
+        outDefects.filmScratch.cellWidthMm = descriptor.filmScratch.cellWidthMm;
+        outDefects.filmScratch.cellHeightMm = descriptor.filmScratch.cellHeightMm;
+        outDefects.filmScratch.slotProbability = descriptor.filmScratch.slotProbability;
+        outDefects.filmScratch.softnessMm = descriptor.filmScratch.softnessMm;
+        outDefects.filmScratch.supportXMm = descriptor.filmScratch.supportXMm;
+        outDefects.filmScratch.supportYMm = descriptor.filmScratch.supportYMm;
+        outDefects.filmScratch.lengthMinMm = descriptor.filmScratch.lengthMinMm;
+        outDefects.filmScratch.lengthBulkMaxMm = descriptor.filmScratch.lengthBulkMaxMm;
+        outDefects.filmScratch.lengthMaxMm = descriptor.filmScratch.lengthMaxMm;
+        outDefects.filmScratch.lengthTailFraction = descriptor.filmScratch.lengthTailFraction;
+        outDefects.filmScratch.widthMinMm = descriptor.filmScratch.widthMinMm;
+        outDefects.filmScratch.widthBulkMaxMm = descriptor.filmScratch.widthBulkMaxMm;
+        outDefects.filmScratch.widthMaxMm = descriptor.filmScratch.widthMaxMm;
+        outDefects.filmScratch.widthTailFraction = descriptor.filmScratch.widthTailFraction;
+        outDefects.filmScratch.driftFraction = descriptor.filmScratch.driftFraction;
+        outDefects.filmScratch.taperFraction = descriptor.filmScratch.taperFraction;
+        outDefects.filmScratch.fadeFraction = descriptor.filmScratch.fadeFraction;
+        outDefects.filmScratch.strengthMin = descriptor.filmScratch.strengthMin;
+        outDefects.filmScratch.strengthMax = descriptor.filmScratch.strengthMax;
+        outDefects.gateDust.cellWidthMm = descriptor.gateDust.cellWidthMm;
+        outDefects.gateDust.cellHeightMm = descriptor.gateDust.cellHeightMm;
+        outDefects.gateDust.slotProbability = descriptor.gateDust.slotProbability;
+        outDefects.gateDust.softnessMm = descriptor.gateDust.softnessMm;
+        outDefects.gateDust.supportXMm = descriptor.gateDust.supportXMm;
+        outDefects.gateDust.supportYMm = descriptor.gateDust.supportYMm;
+        outDefects.gateDust.fiberFraction = descriptor.gateDust.fiberFraction;
+        outDefects.gateDust.fiberDriftFraction = descriptor.gateDust.fiberDriftFraction;
+        outDefects.gateDust.fiberTaperFraction = descriptor.gateDust.fiberTaperFraction;
+        outDefects.gateDust.diameterMinMm = descriptor.gateDust.diameterMinMm;
+        outDefects.gateDust.diameterBulkMaxMm = descriptor.gateDust.diameterBulkMaxMm;
+        outDefects.gateDust.diameterMaxMm = descriptor.gateDust.diameterMaxMm;
+        outDefects.gateDust.diameterTailFraction = descriptor.gateDust.diameterTailFraction;
+        outDefects.gateDust.fiberLengthMinMm = descriptor.gateDust.fiberLengthMinMm;
+        outDefects.gateDust.fiberLengthMaxMm = descriptor.gateDust.fiberLengthMaxMm;
+        outDefects.gateDust.fiberWidthMinMm = descriptor.gateDust.fiberWidthMinMm;
+        outDefects.gateDust.fiberWidthMaxMm = descriptor.gateDust.fiberWidthMaxMm;
+        outDefects.gateDust.opticalDepthMin = descriptor.gateDust.opticalDepthMin;
+        outDefects.gateDust.opticalDepthMax = descriptor.gateDust.opticalDepthMax;
+        outDefects.gateScratch.cellWidthMm = descriptor.gateScratch.cellWidthMm;
+        outDefects.gateScratch.cellHeightMm = descriptor.gateScratch.cellHeightMm;
+        outDefects.gateScratch.slotProbability = descriptor.gateScratch.slotProbability;
+        outDefects.gateScratch.softnessMm = descriptor.gateScratch.softnessMm;
+        outDefects.gateScratch.supportXMm = descriptor.gateScratch.supportXMm;
+        outDefects.gateScratch.supportYMm = descriptor.gateScratch.supportYMm;
+        outDefects.gateScratch.lengthMinMm = descriptor.gateScratch.lengthMinMm;
+        outDefects.gateScratch.lengthBulkMaxMm = descriptor.gateScratch.lengthBulkMaxMm;
+        outDefects.gateScratch.lengthMaxMm = descriptor.gateScratch.lengthMaxMm;
+        outDefects.gateScratch.lengthTailFraction = descriptor.gateScratch.lengthTailFraction;
+        outDefects.gateScratch.widthMinMm = descriptor.gateScratch.widthMinMm;
+        outDefects.gateScratch.widthBulkMaxMm = descriptor.gateScratch.widthBulkMaxMm;
+        outDefects.gateScratch.widthMaxMm = descriptor.gateScratch.widthMaxMm;
+        outDefects.gateScratch.widthTailFraction = descriptor.gateScratch.widthTailFraction;
+        outDefects.gateScratch.driftFraction = descriptor.gateScratch.driftFraction;
+        outDefects.gateScratch.taperFraction = descriptor.gateScratch.taperFraction;
+        outDefects.gateScratch.fadeFraction = descriptor.gateScratch.fadeFraction;
+        outDefects.gateScratch.strengthMin = descriptor.gateScratch.strengthMin;
+        outDefects.gateScratch.strengthMax = descriptor.gateScratch.strengthMax;
+        for (int i = 0; i < 4; ++i) {
+            const auto& o = descriptor.origins[static_cast<std::size_t>(i)];
+            outDefects.origins[i] = {o.cellX, o.cellY, o.localXMm, o.localYMm};
+        }
+        outDefects.sampleStepXMm = descriptor.sampleStepXMm;
+        outDefects.sampleStepYMm = descriptor.sampleStepYMm;
+        outDefects.roiOffsetX = descriptor.roiOffsetX;
+        outDefects.roiOffsetY = descriptor.roiOffsetY;
+        outDefects.sessionSeed = descriptor.sessionSeed;
         outDefects.clipToken = descriptor.clipToken;
-        outDefects.pixelSizeUm = descriptor.pixelSizeUm;
-        outDefects.pitchPx = descriptor.pitchPx;
-        outDefects.filmDustAmount = descriptor.filmDustAmount;
-        outDefects.filmScratchAmount = descriptor.filmScratchAmount;
-        outDefects.gateDustAmount = descriptor.gateDustAmount;
-        outDefects.gateScratchAmount = descriptor.gateScratchAmount;
-
         outWeave.active = descriptor.weaveActive ? 1 : 0;
         outWeave.dxPx = descriptor.weaveDxPx;
         outWeave.dyPx = descriptor.weaveDyPx;
@@ -582,5 +594,4 @@ namespace JuicerCuda {
         outWeave.sinRot = descriptor.weaveSinRot;
         return true;
     }
-
 } // namespace JuicerCuda

@@ -746,63 +746,47 @@ namespace JuicerCuda {
         {
             std::lock_guard<std::mutex> lock(resources.deviceAllocationRecordsMutex);
             auto insertion = resources.deviceAllocationRecords.insert(std::move(stagedNode));
-            if (!insertion.inserted) {
-                DeviceByteReservation duplicateReservation =
-                    std::move(insertion.node.mapped());
-                std::string retireError;
-                (void)duplicateReservation.mark_retiring(retireError);
-                const cudaError_t freeError = cudaFree(allocated);
-                (void)duplicateReservation.release_after_physical_free(
-                    freeError == cudaSuccess,
-                    retireError);
-                outError = "owned CUDA allocation pointer collision";
-                return false;
-            }
+            stagedNode = std::move(insertion.node);
+        }
+        if (!stagedNode.empty()) {
+            std::string retireError;
+            (void)stagedNode.mapped().mark_retiring(retireError);
+            const cudaError_t freeError = cudaFree(allocated);
+            (void)stagedNode.mapped().release_after_physical_free(freeError == cudaSuccess, retireError);
+            outError = "owned CUDA allocation pointer collision";
+            return false;
         }
         *outPtr = allocated;
         return true;
     }
 
-    static bool free_owned_device(
-        Resources& resources,
-        void* ptr,
-        std::string& outError) noexcept {
+    static bool free_owned_device(Resources& resources, void* ptr, std::string& outError) noexcept {
         outError.clear();
         if (!ptr) {
             return true;
         }
         try {
-            std::lock_guard<std::mutex> lock(resources.deviceAllocationRecordsMutex);
-            const auto it = resources.deviceAllocationRecords.find(ptr);
-            if (it == resources.deviceAllocationRecords.end()) {
+            std::map<void*, DeviceByteReservation>::node_type record;
+            {
+                std::lock_guard<std::mutex> lock(resources.deviceAllocationRecordsMutex);
+                record = resources.deviceAllocationRecords.extract(ptr);
+            }
+            if (record.empty()) {
                 outError = "unregistered owned CUDA free";
                 return false;
             }
-            DeviceByteReservation& reservation = it->second;
-            if (reservation.state() == DeviceReservationState::Committed &&
-                !reservation.mark_retiring(outError)) {
+            auto& reservation = record.mapped();
+            const bool retiring = reservation.state() != DeviceReservationState::Committed || reservation.mark_retiring(outError);
+            const cudaError_t error = retiring ? cudaFree(ptr) : cudaErrorUnknown;
+            if (error != cudaSuccess) {
+                std::lock_guard<std::mutex> lock(resources.deviceAllocationRecordsMutex);
+                resources.deviceAllocationRecords.insert(std::move(record));
+                outError = "owned CUDA physical free failed";
                 return false;
             }
-            const cudaError_t freeError = cudaFree(ptr);
-            if (freeError != cudaSuccess) {
-                outError = std::string("cudaFree failed: ") +
-                           (cudaGetErrorString(freeError)
-                                ? cudaGetErrorString(freeError)
-                                : "(unknown)");
-                return false;
-            }
-            if (!reservation.release_after_physical_free(true, outError)) {
-                return false;
-            }
-            resources.deviceAllocationRecords.erase(it);
-            return true;
+            return reservation.release_after_physical_free(true, outError);
         } catch (...) {
             JuicerLogging::discard_current_exception();
-            try {
-                outError = "owned CUDA free bookkeeping failed";
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-            }
             return false;
         }
     }
@@ -1874,6 +1858,27 @@ namespace JuicerCuda {
         outError.clear();
         try {
             std::lock_guard<std::mutex> servingLock(resources.servingUpdateMutex);
+            // Root has closed registry admission and rejected active submissions.
+            // Drain the defect attachments before entering the existing state-locked
+            // teardown of unrelated resource families.
+            if (!validate_resource_owner_locked(resources, outError, false)) {
+                return false;
+            }
+            if (resources.scannerScratch.filmDustTransmittance || resources.scannerScratch.gateTransmittance) {
+                for (const auto& entry : resources.pendingFrameUseEvents) {
+                    if (entry.eventOpaque && cudaEventSynchronize(reinterpret_cast<cudaEvent_t>(entry.eventOpaque)) != cudaSuccess) {
+                        outError = "context defect attachment completion wait failed";
+                        return false;
+                    }
+                }
+                for (float** plane : {&resources.scannerScratch.filmDustTransmittance, &resources.scannerScratch.gateTransmittance}) {
+                    if (!free_owned_device(resources, *plane, outError)) {
+                        return false;
+                    }
+                    std::lock_guard<std::mutex> lock(resources.m);
+                    *plane = nullptr;
+                }
+            }
             std::lock_guard<std::mutex> resourceLock(resources.m);
             if (!validate_resource_owner_locked(resources, outError, false)) {
                 return false;
@@ -5234,18 +5239,23 @@ namespace JuicerCuda {
             cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.grainTmp, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.grainTmpShared, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, s.gateMask, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.gateTransmittance, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.filmDustTransmittance, cudaStreamOpaque);
         s.tmp = nullptr;
         s.width = 0;
         s.height = 0;
         s.capacityElements = 0;
         s.gateWidth = 0;
         s.gateHeight = 0;
-        s.gateMaskCapacityElements = 0;
-        s.gateMaskHash = 0;
+        s.gateTransmittanceCapacityElements = 0;
+        s.filmDustCapacityElements = 0;
     }
 
     static bool retire_optics_scratch_locked(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque, const char* label, std::string& outError) {
+        if (s.filmDustTransmittance || s.gateTransmittance) {
+            outError = "whole-optics retirement requires staged defect attachment retirement";
+            return false;
+        }
         const size_t planeBytes = s.capacityElements * sizeof(float);
         if (s.rgbR) {
             if (!retire_ptr_locked(resources, s.rgbR, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
@@ -5296,12 +5306,6 @@ namespace JuicerCuda {
                 return false;
             s.grainTmpShared = nullptr;
         }
-        const size_t gateBytes = s.gateMaskCapacityElements * sizeof(float);
-        if (s.gateMask) {
-            if (!retire_ptr_locked(resources, s.gateMask, gateBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
-                return false;
-            s.gateMask = nullptr;
-        }
 
         s.tmp = nullptr;
         s.width = 0;
@@ -5309,8 +5313,8 @@ namespace JuicerCuda {
         s.capacityElements = 0;
         s.gateWidth = 0;
         s.gateHeight = 0;
-        s.gateMaskCapacityElements = 0;
-        s.gateMaskHash = 0;
+        s.gateTransmittanceCapacityElements = 0;
+        s.filmDustCapacityElements = 0;
         return true;
     }
 
@@ -5418,7 +5422,7 @@ namespace JuicerCuda {
                scratch.blurred || scratch.aux ||
                scratch.grainTmp || scratch.grainTmpShared ||
                scratch.grainFrameUniforms ||
-               scratch.gateMask;
+               scratch.gateTransmittance || scratch.filmDustTransmittance;
     }
 
     static std::size_t optics_stage_live_bytes_locked(
@@ -5440,8 +5444,11 @@ namespace JuicerCuda {
         }
         add_plane(scratch.grainTmp);
         add_plane(scratch.grainTmpShared);
-        if (scratch.gateMask) {
-            bytes += scratch.gateMaskCapacityElements * sizeof(float);
+        if (scratch.filmDustTransmittance) {
+            bytes += scratch.filmDustCapacityElements * sizeof(float);
+        }
+        if (scratch.gateTransmittance) {
+            bytes += scratch.gateTransmittanceCapacityElements * sizeof(float);
         }
         return bytes;
     }
@@ -5728,6 +5735,12 @@ namespace JuicerCuda {
         return true;
     }
 
+    static bool prepare_defect_attachments(Resources& resources,
+                                           const ResourceManager::ScratchRequestDescriptor& request,
+                                           std::uint64_t expectedLease,
+                                           void* streamOpaque,
+                                           std::string& outError);
+
     bool reclaim_large_scratch_transition(
         Resources& resources,
         const ResourceManager::ScratchRequestDescriptor& scratchRequest,
@@ -5748,6 +5761,27 @@ namespace JuicerCuda {
             return false;
         }
         const std::size_t requiredElements = requestedWidth * requestedHeight;
+
+        bool retireAttachments = false;
+        {
+            std::lock_guard<std::mutex> lock(resources.m);
+            if (resources.retainedScratchLeaseGeneration != 0) {
+                return true;
+            }
+            const auto& optics = resources.scannerScratch;
+            const bool baseLive = optics.rgbR && optics.rgbG && optics.rgbB;
+            retireAttachments = !scratchRequest.needOptics || optics.capacityElements < requiredElements ||
+                                (scratchRequest.aliasScannerRgbFromSpatialDirFiltered ? baseLive : !baseLive);
+            if (retireAttachments) {
+                outStats.opticsRetiredBytes =
+                    (optics.filmDustTransmittance ? optics.filmDustCapacityElements * sizeof(float) : 0) +
+                    (optics.gateTransmittance ? optics.gateTransmittanceCapacityElements * sizeof(float) : 0);
+            }
+        }
+        if (retireAttachments && !prepare_defect_attachments(
+                                     resources, ResourceManager::ScratchRequestDescriptor{}, 0, cudaStreamOpaque, outError)) {
+            return false;
+        }
 
         bool syncBeforeReap = false;
         {
@@ -5770,7 +5804,7 @@ namespace JuicerCuda {
                     !capacityMatch ||
                     (scratchRequest.aliasScannerRgbFromSpatialDirFiltered ? baseLive : !baseLive);
                 if (retireOptics) {
-                    outStats.opticsRetiredBytes = optics_stage_live_bytes_locked(optics);
+                    outStats.opticsRetiredBytes += optics_stage_live_bytes_locked(optics);
                     if (!retire_optics_scratch_locked(
                             resources,
                             optics,
@@ -5852,6 +5886,25 @@ namespace JuicerCuda {
         outStats = PostFrameScratchShedStats{};
         outError.clear();
 
+        bool retireAttachments = false;
+        {
+            std::lock_guard<std::mutex> lock(resources.m);
+            if (resources.retainedScratchLeaseGeneration != 0) {
+                return true;
+            }
+            const auto& optics = resources.scannerScratch;
+            retireAttachments = true;
+            if (retireAttachments) {
+                outStats.opticsRetiredBytes =
+                    (optics.filmDustTransmittance ? optics.filmDustCapacityElements * sizeof(float) : 0) +
+                    (optics.gateTransmittance ? optics.gateTransmittanceCapacityElements * sizeof(float) : 0);
+            }
+        }
+        if (retireAttachments && !prepare_defect_attachments(
+                                     resources, ResourceManager::ScratchRequestDescriptor{}, 0, cudaStreamOpaque, outError)) {
+            return false;
+        }
+
         bool syncBeforeReap = false;
         {
             std::lock_guard<std::mutex> lock(resources.m);
@@ -5866,7 +5919,7 @@ namespace JuicerCuda {
 
             Resources::DeviceOpticsScratch& optics = resources.scannerScratch;
             if (optics_any_live_locked(optics)) {
-                outStats.opticsRetiredBytes = optics_stage_live_bytes_locked(optics);
+                outStats.opticsRetiredBytes += optics_stage_live_bytes_locked(optics);
                 if (!retire_optics_scratch_locked(
                         resources,
                         optics,
@@ -6031,9 +6084,156 @@ namespace JuicerCuda {
         return true;
     }
 
+    static bool prepare_defect_attachments(Resources& resources,
+                                           const ResourceManager::ScratchRequestDescriptor& request,
+                                           std::uint64_t expectedLease,
+                                           void* streamOpaque,
+                                           std::string& outError) {
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+        ResourceManager::DeviceContextKey context{};
+        std::uint64_t epoch = 0;
+        float* previous[2]{};
+        std::size_t capacity[2]{};
+        const std::size_t desired[2] = {
+            request.needFilmDustTransmittance ? static_cast<std::size_t>(request.requestedWidth) * request.requestedHeight : 0,
+            request.needGateTransmittance ? static_cast<std::size_t>(request.gateWidth) * request.gateHeight : 0};
+        {
+            std::lock_guard<std::mutex> lock(resources.m);
+            if (resources.retainedScratchLeaseGeneration != expectedLease ||
+                (expectedLease == 0 && (desired[0] != 0 || desired[1] != 0))) {
+                outError = "defect attachment lease mismatch";
+                return false;
+            }
+            context = resources.ownerContextKey;
+            epoch = resources.contextEpoch;
+            previous[0] = resources.scannerScratch.filmDustTransmittance;
+            previous[1] = resources.scannerScratch.gateTransmittance;
+            capacity[0] = resources.scannerScratch.filmDustCapacityElements;
+            capacity[1] = resources.scannerScratch.gateTransmittanceCapacityElements;
+        }
+        struct PendingAttachments {
+            Resources& owner;
+            void* pointers[2]{};
+            cudaEvent_t events[2]{};
+            ~PendingAttachments() {
+                for (int i = 0; i < 2; ++i) {
+                    if (pointers[i]) {
+                        free_owned_device_noexcept(owner, pointers[i]);
+                    }
+                    if (events[i]) {
+                        (void)cudaEventDestroy(events[i]);
+                    }
+                }
+            }
+        } pending{resources};
+        bool replace[2]{};
+        for (int i = 0; i < 2; ++i) {
+            if (desired[i] > std::numeric_limits<std::size_t>::max() / sizeof(float)) {
+                outError = "defect attachment byte overflow";
+                return false;
+            }
+            replace[i] = desired[i] == 0 ? previous[i] != nullptr : !previous[i] || capacity[i] < desired[i];
+            if (!replace[i]) {
+                continue;
+            }
+            if (desired[i] && !allocate_owned_device(resources, &pending.pointers[i], desired[i] * sizeof(float), i == 0 ? "film dust transmittance" : "gate transmittance", outError)) {
+                return false;
+            }
+            if (previous[i]) {
+                cudaError_t error = cudaEventCreateWithFlags(&pending.events[i], cudaEventDisableTiming);
+                if (error == cudaSuccess) {
+                    error = cudaEventRecord(pending.events[i], reinterpret_cast<cudaStream_t>(streamOpaque));
+                }
+                if (error != cudaSuccess) {
+                    outError = "defect attachment retirement fence failed";
+                    return false;
+                }
+            }
+        }
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(resources.m);
+            if (resources.retainedScratchLeaseGeneration != expectedLease || resources.contextEpoch != epoch ||
+                !(resources.ownerContextKey == context) || resources.scannerScratch.filmDustTransmittance != previous[0] ||
+                resources.scannerScratch.gateTransmittance != previous[1]) {
+                outError = "defect attachment publication identity mismatch";
+                return false;
+            }
+            // State precedes allocation bookkeeping; no CUDA call occurs under either lock.
+            std::lock_guard<std::mutex> recordsLock(resources.deviceAllocationRecordsMutex);
+            std::size_t retiringBytes = 0;
+            for (int i = 0; i < 2; ++i) {
+                if (replace[i] && previous[i]) {
+                    const auto record = resources.deviceAllocationRecords.find(previous[i]);
+                    if (record == resources.deviceAllocationRecords.end() || record->second.bytes() != capacity[i] * sizeof(float)) {
+                        outError = "defect attachment retirement inventory mismatch";
+                        return false;
+                    }
+                    retiringBytes += capacity[i] * sizeof(float);
+                }
+            }
+            if (retiringBytes > std::numeric_limits<std::size_t>::max() - resources.retireBytes ||
+                retiringBytes > std::numeric_limits<std::size_t>::max() - resources.retireScratchBytes) {
+                outError = "defect attachment retirement byte overflow";
+                return false;
+            }
+            try {
+                resources.retireQueue.reserve(resources.retireQueue.size() + 2);
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+                outError = "defect attachment retirement reservation failed";
+                return false;
+            }
+            for (int i = 0; i < 2; ++i) {
+                if (replace[i] && previous[i]) {
+                    auto& reservation = resources.deviceAllocationRecords.find(previous[i])->second;
+                    if (!reservation.mark_retiring(outError)) {
+                        return false;
+                    }
+                }
+            }
+            for (int i = 0; i < 2; ++i) {
+                if (!replace[i]) {
+                    continue;
+                }
+                if (previous[i]) {
+                    Resources::RetireEntry entry{};
+                    entry.ptr = previous[i];
+                    entry.bytes = capacity[i] * sizeof(float);
+                    entry.kind = Resources::RetireKind::DeviceFree;
+                    entry.scratchTier = true;
+                    entry.doneEventOpaque = pending.events[i];
+                    pending.events[i] = nullptr;
+                    auto record = resources.deviceAllocationRecords.find(previous[i]);
+                    entry.deviceReservation = std::move(record->second);
+                    resources.deviceAllocationRecords.erase(record);
+                    resources.retireQueue.push_back(std::move(entry));
+                }
+                if (i == 0) {
+                    resources.scannerScratch.filmDustTransmittance = static_cast<float*>(pending.pointers[i]);
+                    resources.scannerScratch.filmDustCapacityElements = desired[i];
+                } else {
+                    resources.scannerScratch.gateTransmittance = static_cast<float*>(pending.pointers[i]);
+                    resources.scannerScratch.gateTransmittanceCapacityElements = desired[i];
+                }
+                pending.pointers[i] = nullptr;
+            }
+            resources.retireBytes += retiringBytes;
+            resources.retireScratchBytes += retiringBytes;
+            resources.scannerScratch.gateWidth = request.gateWidth;
+            resources.scannerScratch.gateHeight = request.gateHeight;
+        }
+        return true;
+    }
+
     bool ensure_optics_scratch(
         Resources& resources,
         const ResourceManager::ScratchRequestDescriptor& request,
+        std::uint64_t expectedLease,
         void* cudaStreamOpaque,
         std::string& outError) {
         const int width = request.requestedWidth;
@@ -6046,19 +6246,35 @@ namespace JuicerCuda {
         const bool needGrainFrameUniforms = request.needGrainFrameUniforms;
         const bool needGrainLayerWorkScratch = request.needGrainLayerWork;
         const bool needGrainSharedScratch = request.needGrainShared;
-        const bool needGateMask = request.needGateMask;
+
         if (width <= 0 || height <= 0) {
             outError = "optics scratch dimensions invalid";
             return false;
         }
 
-        std::lock_guard<std::mutex> lock(resources.m);
+        bool replaceBase = false;
+        {
+            std::lock_guard<std::mutex> snapshotLock(resources.m);
+            const auto& scratch = resources.scannerScratch;
+            replaceBase = scratch.capacityElements < static_cast<std::size_t>(width) * height ||
+                          (!aliasScannerRgbFromSpatialDirFiltered && (!scratch.rgbR || !scratch.rgbG || !scratch.rgbB));
+        }
+        if (replaceBase) {
+            auto cleared = request;
+            cleared.needFilmDustTransmittance = false;
+            cleared.needGateTransmittance = false;
+            cleared.gateWidth = cleared.gateHeight = 0;
+            if (!prepare_defect_attachments(resources, cleared, expectedLease, cudaStreamOpaque, outError)) {
+                return false;
+            }
+        }
+
+        std::unique_lock<std::mutex> lock(resources.m);
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
 
         const size_t requiredElements = static_cast<size_t>(width) * static_cast<size_t>(height);
-        const bool dimsMatch = (resources.scannerScratch.width == width && resources.scannerScratch.height == height);
         const bool capacityMatch = resources.scannerScratch.capacityElements >= requiredElements;
         const bool needScannerRgbScratch = !aliasScannerRgbFromSpatialDirFiltered;
         const bool haveBase =
@@ -6071,7 +6287,7 @@ namespace JuicerCuda {
                 resources.scannerScratch.blurred || resources.scannerScratch.aux || resources.scannerScratch.grainTmp ||
                 resources.scannerScratch.grainTmpShared ||
                 resources.scannerScratch.grainFrameUniforms ||
-                resources.scannerScratch.gateMask) {
+                resources.scannerScratch.gateTransmittance || resources.scannerScratch.filmDustTransmittance) {
                 if (!retire_optics_scratch_locked(resources, resources.scannerScratch, cudaStreamOpaque, "optics scratch", outError)) {
                     return false;
                 }
@@ -6117,9 +6333,6 @@ namespace JuicerCuda {
         }
         resources.scannerScratch.width = width;
         resources.scannerScratch.height = height;
-        if (!dimsMatch) {
-            resources.scannerScratch.gateMaskHash = 0;
-        }
 
         if (needSharedTmpScratch) {
             if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
@@ -6267,54 +6480,8 @@ namespace JuicerCuda {
             }
         }
 
-        const int gateWidth = (width + 1) / 2;
-        const int gateHeight = (height + 1) / 2;
-        if (needGateMask) {
-            const size_t requiredGateElements = static_cast<size_t>(gateWidth) * static_cast<size_t>(gateHeight);
-            const bool gateDimsMatch = (resources.scannerScratch.gateWidth == gateWidth &&
-                                        resources.scannerScratch.gateHeight == gateHeight);
-            const bool gateCapacityMatch =
-                resources.scannerScratch.gateMaskCapacityElements >= requiredGateElements;
-            if (!resources.scannerScratch.gateMask || !gateCapacityMatch) {
-                if (resources.scannerScratch.gateMask) {
-                    const size_t oldBytes =
-                        resources.scannerScratch.gateMaskCapacityElements * sizeof(float);
-                    if (!retire_ptr_locked(resources, resources.scannerScratch.gateMask, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gate defect mask", outError, true)) {
-                        return false;
-                    }
-                    resources.scannerScratch.gateMask = nullptr;
-                }
-                const size_t bytes = requiredGateElements * sizeof(float);
-                if (!allocate_scratch_device_ptr_locked(
-                        resources,
-                        resources.scannerScratch.gateMask,
-                        bytes,
-                        cudaStreamOpaque,
-                        "scannerScratch.gateMask",
-                        outError)) {
-                    return false;
-                }
-                resources.scannerScratch.gateMaskCapacityElements = requiredGateElements;
-            }
-            if (!gateDimsMatch) {
-                resources.scannerScratch.gateMaskHash = 0;
-            }
-            resources.scannerScratch.gateWidth = gateWidth;
-            resources.scannerScratch.gateHeight = gateHeight;
-        } else if (resources.scannerScratch.gateMask) {
-            const size_t oldBytes =
-                resources.scannerScratch.gateMaskCapacityElements * sizeof(float);
-            if (!retire_ptr_locked(resources, resources.scannerScratch.gateMask, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gate defect mask", outError, true)) {
-                return false;
-            }
-            resources.scannerScratch.gateMask = nullptr;
-            resources.scannerScratch.gateWidth = 0;
-            resources.scannerScratch.gateHeight = 0;
-            resources.scannerScratch.gateMaskCapacityElements = 0;
-            resources.scannerScratch.gateMaskHash = 0;
-        }
-
-        return true;
+        lock.unlock();
+        return prepare_defect_attachments(resources, request, expectedLease, cudaStreamOpaque, outError);
     }
 
     bool ensure_spatial_dir_scratch(

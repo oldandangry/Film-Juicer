@@ -1511,7 +1511,8 @@ static __device__ __forceinline__ void print_apply_exposure_scale_device(
 static __device__ __forceinline__ bool print_inner_raw_device(
     const JuicerCuda::PrintExposePayload& expose,
     const float filmDensityCmy[3],
-    float innerRaw[3]) {
+    float innerRaw[3],
+    float filmTransmittance) {
     if (!print_spectral_integrate_device(
             expose,
             filmDensityCmy,
@@ -1519,6 +1520,11 @@ static __device__ __forceinline__ bool print_inner_raw_device(
         return false;
     }
 
+    if (filmTransmittance != 1.0f) {
+        innerRaw[0] *= filmTransmittance;
+        innerRaw[1] *= filmTransmittance;
+        innerRaw[2] *= filmTransmittance;
+    }
     innerRaw[0] *= expose.printMidgrayFactor;
     innerRaw[1] *= expose.printMidgrayFactor;
     innerRaw[2] *= expose.printMidgrayFactor;
@@ -1586,7 +1592,8 @@ static __device__ __forceinline__ void print_sample_density_curves_device(
 static __device__ __forceinline__ void apply_print_pipeline_device(
     const JuicerCuda::PrintExposePayload& expose,
     const JuicerCuda::PrintDevelopPayload& develop,
-    float D_cmy[3]) {
+    float D_cmy[3],
+    float filmTransmittance) {
     if (!expose.active || !D_cmy) {
         return;
     }
@@ -1597,6 +1604,11 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
         return;
     }
 
+    if (filmTransmittance != 1.0f) {
+        rawPrint[0] *= filmTransmittance;
+        rawPrint[1] *= filmTransmittance;
+        rawPrint[2] *= filmTransmittance;
+    }
     print_apply_exposure_scale_device(expose, rawPrint);
     float logPrint[3] = {0.0f, 0.0f, 0.0f};
     print_log_encode_device(rawPrint, logPrint);

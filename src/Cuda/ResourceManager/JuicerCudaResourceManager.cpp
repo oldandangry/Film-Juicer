@@ -17,6 +17,7 @@ namespace JuicerCuda {
     bool ensure_optics_scratch(
         Resources& resources,
         const ResourceManager::ScratchRequestDescriptor& request,
+        std::uint64_t expectedLease,
         void* cudaStreamOpaque,
         std::string& outError);
     bool ensure_spatial_dir_scratch(
@@ -510,7 +511,7 @@ namespace JuicerCuda {
                     scratchRequest.needGrainFrameUniforms ||
                     scratchRequest.needGrainLayerWork ||
                     scratchRequest.needGrainShared ||
-                    scratchRequest.needGateMask) {
+                    scratchRequest.needGateTransmittance || scratchRequest.needFilmDustTransmittance) {
                     outError = std::string(trace_or_non_empty(commandName, "scratch_request")) + ": invalid scratch request descriptor";
                     return false;
                 }
@@ -837,6 +838,7 @@ namespace JuicerCuda {
                     return JuicerCuda::ensure_optics_scratch(
                         resources,
                         scratchRequest,
+                        transaction.leaseGeneration,
                         cudaStreamOpaque,
                         actionError);
                 },

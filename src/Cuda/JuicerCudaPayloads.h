@@ -253,10 +253,6 @@ namespace JuicerCuda {
         float microStructure[2] = {0.0f, 0.0f}; // [cell_um, clump_sigma_x1e-3]
         float clumpTemporalMix = 0.0f;
         int clumpMorphPeriodFrames = 0;
-        float filmDustAmount = 0.0f;
-        float gateDustAmount = 0.0f;
-        float filmScratchAmount = 0.0f;
-        float gateScratchAmount = 0.0f;
         float densityMin[3] = {0.0f, 0.0f, 0.0f};
         float uniformity[3] = {0.0f, 0.0f, 0.0f};
         float densityMax[3] = {0.0f, 0.0f, 0.0f};
@@ -292,6 +288,71 @@ namespace JuicerCuda {
             {nullptr, nullptr, nullptr},
             {nullptr, nullptr, nullptr},
             {nullptr, nullptr, nullptr}};
+    };
+
+    struct DefectDustPayload {
+        float cellWidthMm = 0.0f;
+        float cellHeightMm = 0.0f;
+        float slotProbability = 0.0f;
+        float softnessMm = 0.0f;
+        float supportXMm = 0.0f;
+        float supportYMm = 0.0f;
+        float fiberFraction = 0.0f;
+        float fiberDriftFraction = 0.0f;
+        float fiberTaperFraction = 0.0f;
+        float diameterMinMm = 0.0f;
+        float diameterBulkMaxMm = 0.0f;
+        float diameterMaxMm = 0.0f;
+        float diameterTailFraction = 0.0f;
+        float fiberLengthMinMm = 0.0f;
+        float fiberLengthMaxMm = 0.0f;
+        float fiberWidthMinMm = 0.0f;
+        float fiberWidthMaxMm = 0.0f;
+        float opticalDepthMin = 0.0f;
+        float opticalDepthMax = 0.0f;
+    };
+
+    struct DefectScratchPayload {
+        float cellWidthMm = 0.0f;
+        float cellHeightMm = 0.0f;
+        float slotProbability = 0.0f;
+        float softnessMm = 0.0f;
+        float supportXMm = 0.0f;
+        float supportYMm = 0.0f;
+        float lengthMinMm = 0.0f;
+        float lengthBulkMaxMm = 0.0f;
+        float lengthMaxMm = 0.0f;
+        float lengthTailFraction = 0.0f;
+        float widthMinMm = 0.0f;
+        float widthBulkMaxMm = 0.0f;
+        float widthMaxMm = 0.0f;
+        float widthTailFraction = 0.0f;
+        float driftFraction = 0.0f;
+        float taperFraction = 0.0f;
+        float fadeFraction = 0.0f;
+        float strengthMin = 0.0f;
+        float strengthMax = 0.0f;
+    };
+
+    struct DefectOriginPayload {
+        std::int64_t cellX = 0;
+        std::int64_t cellY = 0;
+        float localXMm = 0.0f;
+        float localYMm = 0.0f;
+    };
+
+    struct FilmDefectsPayload {
+        DefectDustPayload filmDust{};
+        DefectScratchPayload filmScratch{};
+        DefectDustPayload gateDust{};
+        DefectScratchPayload gateScratch{};
+        DefectOriginPayload origins[4]{};
+        float sampleStepXMm = 0.0f;
+        float sampleStepYMm = 0.0f;
+        int roiOffsetX = 0;
+        int roiOffsetY = 0;
+        std::uint64_t sessionSeed = 0;
+        std::uint64_t clipToken = 0;
     };
 
     struct GateWeavePayload {

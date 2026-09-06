@@ -668,127 +668,746 @@ namespace {
     }
     // NOLINTEND(bugprone-easily-swappable-parameters)
 
-    std::uint64_t hash_descriptor(
-        const Spektrafilm::FilmJuicerEffectsFrameDescriptor& descriptor) {
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_extent(hash, descriptor.renderExtent);
-        hash_extent(hash, descriptor.fullFrameExtent);
-        hash_value(hash, descriptor.pixelSizeUm);
-        hash_value(hash, descriptor.frame0);
-        hash_value(hash, descriptor.frameAlpha);
-        hash_value(hash, descriptor.sessionSeed);
-        hash_value(hash, descriptor.clipToken);
-        hash_value(hash, descriptor.pitchPx);
-        hash_value(hash, descriptor.filmDustAmount);
-        hash_value(hash, descriptor.filmScratchAmount);
-        hash_value(hash, descriptor.gateDustAmount);
-        hash_value(hash, descriptor.gateScratchAmount);
-        hash_value(hash, descriptor.weaveActive);
-        hash_value(hash, descriptor.weaveDxPx);
-        hash_value(hash, descriptor.weaveDyPx);
-        hash_value(hash, descriptor.weaveCosRot);
-        hash_value(hash, descriptor.weaveSinRot);
-        hash_value(hash, descriptor.filmActive);
-        hash_value(hash, descriptor.gateMaskActive);
-        hash_value(hash, descriptor.gateOutputActive);
-        hash_value(hash, descriptor.requiresFullFrame);
-        hash_value(hash, descriptor.recipeHash);
-        return hash;
-    }
-
 } // namespace
 
 namespace Spektrafilm {
+
+    std::uint64_t hash_film_juicer_effects_descriptor(const FilmJuicerEffectsFrameDescriptor& d) {
+        if (!d.filmActive && !d.gateOutputActive) {
+            return 0;
+        }
+        std::uint64_t hash = Hash::kFnvOffset;
+        hash_extent(hash, d.renderExtent);
+        hash_extent(hash, d.fullFrameExtent);
+        hash_value(hash, d.sampleStepXMm);
+        hash_value(hash, d.sampleStepYMm);
+        hash_value(hash, d.roiOffsetX);
+        hash_value(hash, d.roiOffsetY);
+        hash_value(hash, d.gateWidth);
+        hash_value(hash, d.gateHeight);
+        hash_value(hash, d.sessionSeed);
+        hash_value(hash, d.clipToken);
+        hash_value(hash, d.weaveActive);
+        hash_value(hash, d.weaveDxPx);
+        hash_value(hash, d.weaveDyPx);
+        hash_value(hash, d.weaveCosRot);
+        hash_value(hash, d.weaveSinRot);
+        hash_value(hash, d.filmActive);
+        hash_value(hash, d.gateTransmittanceActive);
+        hash_value(hash, d.gateOutputActive);
+        hash_value(hash, d.requiresFullFrame);
+        hash_value(hash, d.recipeHash);
+        if (d.filmDust.slotProbability > 0.0f) {
+            hash_value(hash, d.filmDust.cellWidthMm);
+            hash_value(hash, d.filmDust.cellHeightMm);
+            hash_value(hash, d.filmDust.slotProbability);
+            hash_value(hash, d.filmDust.softnessMm);
+            hash_value(hash, d.filmDust.supportXMm);
+            hash_value(hash, d.filmDust.supportYMm);
+            hash_value(hash, d.filmDust.fiberFraction);
+            hash_value(hash, d.filmDust.fiberDriftFraction);
+            hash_value(hash, d.filmDust.fiberTaperFraction);
+            hash_value(hash, d.filmDust.diameterMinMm);
+            hash_value(hash, d.filmDust.diameterBulkMaxMm);
+            hash_value(hash, d.filmDust.diameterMaxMm);
+            hash_value(hash, d.filmDust.diameterTailFraction);
+            hash_value(hash, d.filmDust.fiberLengthMinMm);
+            hash_value(hash, d.filmDust.fiberLengthMaxMm);
+            hash_value(hash, d.filmDust.fiberWidthMinMm);
+            hash_value(hash, d.filmDust.fiberWidthMaxMm);
+            hash_value(hash, d.filmDust.opticalDepthMin);
+            hash_value(hash, d.filmDust.opticalDepthMax);
+            hash_value(hash, d.origins[0].cellX);
+            hash_value(hash, d.origins[0].cellY);
+            hash_value(hash, d.origins[0].localXMm);
+            hash_value(hash, d.origins[0].localYMm);
+        }
+        if (d.filmScratch.slotProbability > 0.0f) {
+            hash_value(hash, d.filmScratch.cellWidthMm);
+            hash_value(hash, d.filmScratch.cellHeightMm);
+            hash_value(hash, d.filmScratch.slotProbability);
+            hash_value(hash, d.filmScratch.softnessMm);
+            hash_value(hash, d.filmScratch.supportXMm);
+            hash_value(hash, d.filmScratch.supportYMm);
+            hash_value(hash, d.filmScratch.lengthMinMm);
+            hash_value(hash, d.filmScratch.lengthBulkMaxMm);
+            hash_value(hash, d.filmScratch.lengthMaxMm);
+            hash_value(hash, d.filmScratch.lengthTailFraction);
+            hash_value(hash, d.filmScratch.widthMinMm);
+            hash_value(hash, d.filmScratch.widthBulkMaxMm);
+            hash_value(hash, d.filmScratch.widthMaxMm);
+            hash_value(hash, d.filmScratch.widthTailFraction);
+            hash_value(hash, d.filmScratch.driftFraction);
+            hash_value(hash, d.filmScratch.taperFraction);
+            hash_value(hash, d.filmScratch.fadeFraction);
+            hash_value(hash, d.filmScratch.strengthMin);
+            hash_value(hash, d.filmScratch.strengthMax);
+            hash_value(hash, d.origins[1].cellX);
+            hash_value(hash, d.origins[1].cellY);
+            hash_value(hash, d.origins[1].localXMm);
+            hash_value(hash, d.origins[1].localYMm);
+        }
+        if (d.gateDust.slotProbability > 0.0f) {
+            hash_value(hash, d.gateDust.cellWidthMm);
+            hash_value(hash, d.gateDust.cellHeightMm);
+            hash_value(hash, d.gateDust.slotProbability);
+            hash_value(hash, d.gateDust.softnessMm);
+            hash_value(hash, d.gateDust.supportXMm);
+            hash_value(hash, d.gateDust.supportYMm);
+            hash_value(hash, d.gateDust.fiberFraction);
+            hash_value(hash, d.gateDust.fiberDriftFraction);
+            hash_value(hash, d.gateDust.fiberTaperFraction);
+            hash_value(hash, d.gateDust.diameterMinMm);
+            hash_value(hash, d.gateDust.diameterBulkMaxMm);
+            hash_value(hash, d.gateDust.diameterMaxMm);
+            hash_value(hash, d.gateDust.diameterTailFraction);
+            hash_value(hash, d.gateDust.fiberLengthMinMm);
+            hash_value(hash, d.gateDust.fiberLengthMaxMm);
+            hash_value(hash, d.gateDust.fiberWidthMinMm);
+            hash_value(hash, d.gateDust.fiberWidthMaxMm);
+            hash_value(hash, d.gateDust.opticalDepthMin);
+            hash_value(hash, d.gateDust.opticalDepthMax);
+            hash_value(hash, d.origins[2].cellX);
+            hash_value(hash, d.origins[2].cellY);
+            hash_value(hash, d.origins[2].localXMm);
+            hash_value(hash, d.origins[2].localYMm);
+        }
+        if (d.gateScratch.slotProbability > 0.0f) {
+            hash_value(hash, d.gateScratch.cellWidthMm);
+            hash_value(hash, d.gateScratch.cellHeightMm);
+            hash_value(hash, d.gateScratch.slotProbability);
+            hash_value(hash, d.gateScratch.softnessMm);
+            hash_value(hash, d.gateScratch.supportXMm);
+            hash_value(hash, d.gateScratch.supportYMm);
+            hash_value(hash, d.gateScratch.lengthMinMm);
+            hash_value(hash, d.gateScratch.lengthBulkMaxMm);
+            hash_value(hash, d.gateScratch.lengthMaxMm);
+            hash_value(hash, d.gateScratch.lengthTailFraction);
+            hash_value(hash, d.gateScratch.widthMinMm);
+            hash_value(hash, d.gateScratch.widthBulkMaxMm);
+            hash_value(hash, d.gateScratch.widthMaxMm);
+            hash_value(hash, d.gateScratch.widthTailFraction);
+            hash_value(hash, d.gateScratch.driftFraction);
+            hash_value(hash, d.gateScratch.taperFraction);
+            hash_value(hash, d.gateScratch.fadeFraction);
+            hash_value(hash, d.gateScratch.strengthMin);
+            hash_value(hash, d.gateScratch.strengthMax);
+            hash_value(hash, d.origins[3].cellX);
+            hash_value(hash, d.origins[3].cellY);
+            hash_value(hash, d.origins[3].localXMm);
+            hash_value(hash, d.origins[3].localYMm);
+        }
+        return hash;
+    }
+
+    namespace {
+        struct DefectAxisSplit {
+            std::int64_t cell = 0;
+            float localMm = 0;
+        };
+
+        bool split_defect_origin(const std::array<double, 2>& product, float cellMm, DefectAxisSplit& out) {
+            const double size = static_cast<double>(cellMm);
+            const double estimate = std::floor(product[0] / size);
+            constexpr double kCellLimit = 4503599627370496.0;
+            if (!std::isfinite(estimate) || std::abs(estimate) >= kCellLimit) {
+                return false;
+            }
+            double remainder = std::fma(-estimate, size, product[0]) + product[1];
+            const double correction = std::floor(remainder / size);
+            const double index = estimate + correction;
+            remainder = std::fma(-correction, size, remainder);
+            if (!std::isfinite(index) || std::abs(index) >= kCellLimit ||
+                !std::isfinite(remainder) || remainder < 0.0 || remainder >= size) {
+                return false;
+            }
+            out.cell = static_cast<std::int64_t>(index);
+            out.localMm = static_cast<float>(remainder);
+            if (out.localMm >= cellMm) {
+                ++out.cell;
+                out.localMm = 0.0f;
+            }
+            return std::abs(static_cast<double>(out.cell)) < kCellLimit;
+        }
+
+        template <typename Policy>
+        bool valid_defect_grid(const Policy& p, const DefectCellOrigin& o, const FilmJuicerEffectsFrameDescriptor& d) {
+            if (p.slotProbability == 0.0f) {
+                return true;
+            }
+            if (!(p.slotProbability > 0.0f && p.slotProbability < 0.25f) ||
+                !(p.cellWidthMm > 0.0f && p.cellHeightMm > 0.0f) ||
+                !(p.softnessMm >= 0.0f && p.supportXMm > 0.0f && p.supportYMm > 0.0f) ||
+                !(o.localXMm >= 0.0f && o.localXMm < p.cellWidthMm &&
+                  o.localYMm >= 0.0f && o.localYMm < p.cellHeightMm)) {
+                return false;
+            }
+            const double nx = std::ceil((static_cast<double>(d.fullFrameExtent.width) * d.sampleStepXMm +
+                                         2.0 * (p.supportXMm + p.softnessMm + d.sampleStepXMm)) /
+                                        p.cellWidthMm) +
+                              2.0;
+            const double ny = std::ceil((static_cast<double>(d.fullFrameExtent.height) * d.sampleStepYMm +
+                                         2.0 * (p.supportYMm + p.softnessMm + d.sampleStepYMm)) /
+                                        p.cellHeightMm) +
+                              2.0;
+            constexpr double kCellLimit = 4503599627370496.0;
+            return std::isfinite(nx) && std::isfinite(ny) && nx > 0 && ny > 0 &&
+                   nx * ny * 2.0 < static_cast<double>(std::numeric_limits<int>::max()) &&
+                   std::abs(static_cast<double>(o.cellX)) + nx < kCellLimit &&
+                   std::abs(static_cast<double>(o.cellY)) + ny < kCellLimit;
+        }
+    } // namespace
+
+    bool validate_film_juicer_effects_frame_descriptor(const FilmJuicerEffectsFrameDescriptor& d) {
+        if (d.filmDust.slotProbability == 0.0f) {
+            if (d.filmDust.cellWidthMm != 0.0f ||
+                d.filmDust.cellHeightMm != 0.0f ||
+                d.filmDust.slotProbability != 0.0f ||
+                d.filmDust.softnessMm != 0.0f ||
+                d.filmDust.supportXMm != 0.0f ||
+                d.filmDust.supportYMm != 0.0f ||
+                d.filmDust.fiberFraction != 0.0f ||
+                d.filmDust.fiberDriftFraction != 0.0f || d.filmDust.fiberTaperFraction != 0.0f ||
+                d.filmDust.diameterMinMm != 0.0f ||
+                d.filmDust.diameterBulkMaxMm != 0.0f ||
+                d.filmDust.diameterMaxMm != 0.0f ||
+                d.filmDust.diameterTailFraction != 0.0f ||
+                d.filmDust.fiberLengthMinMm != 0.0f ||
+                d.filmDust.fiberLengthMaxMm != 0.0f ||
+                d.filmDust.fiberWidthMinMm != 0.0f ||
+                d.filmDust.fiberWidthMaxMm != 0.0f ||
+                d.filmDust.opticalDepthMin != 0.0f ||
+                d.filmDust.opticalDepthMax != 0.0f ||
+                d.origins[0].cellX != 0 || d.origins[0].cellY != 0 ||
+                d.origins[0].localXMm != 0 || d.origins[0].localYMm != 0) {
+                return false;
+            }
+        }
+        if (d.filmScratch.slotProbability == 0.0f) {
+            if (d.filmScratch.cellWidthMm != 0.0f ||
+                d.filmScratch.cellHeightMm != 0.0f ||
+                d.filmScratch.slotProbability != 0.0f ||
+                d.filmScratch.softnessMm != 0.0f ||
+                d.filmScratch.supportXMm != 0.0f ||
+                d.filmScratch.supportYMm != 0.0f ||
+                d.filmScratch.lengthMinMm != 0.0f ||
+                d.filmScratch.lengthBulkMaxMm != 0.0f ||
+                d.filmScratch.lengthMaxMm != 0.0f ||
+                d.filmScratch.lengthTailFraction != 0.0f ||
+                d.filmScratch.widthMinMm != 0.0f ||
+                d.filmScratch.widthBulkMaxMm != 0.0f ||
+                d.filmScratch.widthMaxMm != 0.0f ||
+                d.filmScratch.widthTailFraction != 0.0f ||
+                d.filmScratch.driftFraction != 0.0f ||
+                d.filmScratch.taperFraction != 0.0f ||
+                d.filmScratch.fadeFraction != 0.0f ||
+                d.filmScratch.strengthMin != 0.0f ||
+                d.filmScratch.strengthMax != 0.0f ||
+                d.origins[1].cellX != 0 || d.origins[1].cellY != 0 ||
+                d.origins[1].localXMm != 0 || d.origins[1].localYMm != 0) {
+                return false;
+            }
+        }
+        if (d.gateDust.slotProbability == 0.0f) {
+            if (d.gateDust.cellWidthMm != 0.0f ||
+                d.gateDust.cellHeightMm != 0.0f ||
+                d.gateDust.slotProbability != 0.0f ||
+                d.gateDust.softnessMm != 0.0f ||
+                d.gateDust.supportXMm != 0.0f ||
+                d.gateDust.supportYMm != 0.0f ||
+                d.gateDust.fiberFraction != 0.0f ||
+                d.gateDust.fiberDriftFraction != 0.0f || d.gateDust.fiberTaperFraction != 0.0f ||
+                d.gateDust.diameterMinMm != 0.0f ||
+                d.gateDust.diameterBulkMaxMm != 0.0f ||
+                d.gateDust.diameterMaxMm != 0.0f ||
+                d.gateDust.diameterTailFraction != 0.0f ||
+                d.gateDust.fiberLengthMinMm != 0.0f ||
+                d.gateDust.fiberLengthMaxMm != 0.0f ||
+                d.gateDust.fiberWidthMinMm != 0.0f ||
+                d.gateDust.fiberWidthMaxMm != 0.0f ||
+                d.gateDust.opticalDepthMin != 0.0f ||
+                d.gateDust.opticalDepthMax != 0.0f ||
+                d.origins[2].cellX != 0 || d.origins[2].cellY != 0 ||
+                d.origins[2].localXMm != 0 || d.origins[2].localYMm != 0) {
+                return false;
+            }
+        }
+        if (d.gateScratch.slotProbability == 0.0f) {
+            if (d.gateScratch.cellWidthMm != 0.0f ||
+                d.gateScratch.cellHeightMm != 0.0f ||
+                d.gateScratch.slotProbability != 0.0f ||
+                d.gateScratch.softnessMm != 0.0f ||
+                d.gateScratch.supportXMm != 0.0f ||
+                d.gateScratch.supportYMm != 0.0f ||
+                d.gateScratch.lengthMinMm != 0.0f ||
+                d.gateScratch.lengthBulkMaxMm != 0.0f ||
+                d.gateScratch.lengthMaxMm != 0.0f ||
+                d.gateScratch.lengthTailFraction != 0.0f ||
+                d.gateScratch.widthMinMm != 0.0f ||
+                d.gateScratch.widthBulkMaxMm != 0.0f ||
+                d.gateScratch.widthMaxMm != 0.0f ||
+                d.gateScratch.widthTailFraction != 0.0f ||
+                d.gateScratch.driftFraction != 0.0f ||
+                d.gateScratch.taperFraction != 0.0f ||
+                d.gateScratch.fadeFraction != 0.0f ||
+                d.gateScratch.strengthMin != 0.0f ||
+                d.gateScratch.strengthMax != 0.0f ||
+                d.origins[3].cellX != 0 || d.origins[3].cellY != 0 ||
+                d.origins[3].localXMm != 0 || d.origins[3].localYMm != 0) {
+                return false;
+            }
+        }
+        if (!d.filmActive && !d.gateOutputActive) {
+            if (d.renderExtent.x != 0 || d.renderExtent.y != 0 || d.renderExtent.width != 0 || d.renderExtent.height != 0 ||
+                d.fullFrameExtent.x != 0 || d.fullFrameExtent.y != 0 || d.fullFrameExtent.width != 0 || d.fullFrameExtent.height != 0 ||
+                d.sampleStepXMm != 0 || d.sampleStepYMm != 0 || d.roiOffsetX != 0 || d.roiOffsetY != 0 ||
+                d.gateWidth != 0 || d.gateHeight != 0 || d.sessionSeed != 0 || d.clipToken != 0 ||
+                d.weaveDxPx != 0 || d.weaveDyPx != 0 || d.weaveCosRot != 1 || d.weaveSinRot != 0 || d.requiresFullFrame) {
+                return false;
+            }
+            return d.hash == 0 && d.recipeHash == 0 && !d.weaveActive && !d.gateTransmittanceActive &&
+                   d.filmDust.slotProbability == 0.0f && d.filmScratch.slotProbability == 0.0f &&
+                   d.gateDust.slotProbability == 0.0f && d.gateScratch.slotProbability == 0.0f;
+        }
+        if (d.fullFrameExtent.width > std::numeric_limits<int>::max() - 64 ||
+            d.fullFrameExtent.height > std::numeric_limits<int>::max() - 64) {
+            return false;
+        }
+        if (!valid_extent(d.renderExtent) || !valid_extent(d.fullFrameExtent) ||
+            !extent_contains(d.fullFrameExtent, d.renderExtent) ||
+            d.sessionSeed == 0 || d.recipeHash == 0 || d.hash == 0 ||
+            d.hash != hash_film_juicer_effects_descriptor(d) ||
+            d.filmActive != (d.filmDust.slotProbability > 0 || d.filmScratch.slotProbability > 0) ||
+            d.gateTransmittanceActive != (d.gateDust.slotProbability > 0 || d.gateScratch.slotProbability > 0) ||
+            d.gateOutputActive != (d.weaveActive || d.gateTransmittanceActive) ||
+            d.requiresFullFrame != d.weaveActive ||
+            (d.requiresFullFrame && !same_extent(d.renderExtent, d.fullFrameExtent)) ||
+            d.roiOffsetX != static_cast<std::int64_t>(d.renderExtent.x) - d.fullFrameExtent.x ||
+            d.roiOffsetY != static_cast<std::int64_t>(d.renderExtent.y) - d.fullFrameExtent.y ||
+            !std::isfinite(d.weaveDxPx) || !std::isfinite(d.weaveDyPx) ||
+            !std::isfinite(d.weaveCosRot) || !std::isfinite(d.weaveSinRot)) {
+            return false;
+        }
+        if (d.filmActive || d.gateTransmittanceActive) {
+            if (!(d.sampleStepXMm > 0.0f && d.sampleStepYMm > 0.0f) ||
+                !std::isfinite(d.sampleStepXMm) || !std::isfinite(d.sampleStepYMm)) {
+                return false;
+            }
+        }
+        if (d.gateTransmittanceActive && (d.gateWidth != d.fullFrameExtent.width / 2 + d.fullFrameExtent.width % 2 ||
+                                          d.gateHeight != d.fullFrameExtent.height / 2 + d.fullFrameExtent.height % 2)) {
+            return false;
+        }
+        if (d.filmDust.slotProbability != 0.0f) {
+            const auto& p = d.filmDust;
+            if (p.supportXMm < std::max(p.diameterMaxMm, p.fiberLengthMaxMm + p.fiberWidthMaxMm) * 0.5f ||
+                p.supportYMm < std::max(p.diameterMaxMm, p.fiberLengthMaxMm + p.fiberWidthMaxMm) * 0.5f) {
+                return false;
+            }
+            if (!std::isfinite(p.cellWidthMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.cellHeightMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.slotProbability)) {
+                return false;
+            }
+            if (!std::isfinite(p.softnessMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.supportXMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.supportYMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.fiberFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.diameterMinMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.diameterBulkMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.diameterMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.diameterTailFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.fiberLengthMinMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.fiberLengthMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.fiberWidthMinMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.fiberWidthMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.opticalDepthMin)) {
+                return false;
+            }
+            if (!std::isfinite(p.opticalDepthMax)) {
+                return false;
+            }
+            if (!valid_defect_grid(p, d.origins[0], d)) {
+                return false;
+            }
+            if (!(p.fiberFraction >= 0 && p.fiberFraction <= 1 &&
+                  std::isfinite(p.fiberDriftFraction) && p.fiberDriftFraction >= 0 && p.fiberDriftFraction <= 0.1f &&
+                  std::isfinite(p.fiberTaperFraction) && p.fiberTaperFraction > 0 && p.fiberTaperFraction <= 0.5f &&
+                  p.diameterMinMm > 0 && p.diameterBulkMaxMm >= p.diameterMinMm &&
+                  p.diameterMaxMm >= p.diameterBulkMaxMm && p.diameterTailFraction >= 0 && p.diameterTailFraction <= 1 &&
+                  p.fiberLengthMinMm > 0 && p.fiberLengthMaxMm >= p.fiberLengthMinMm &&
+                  p.fiberWidthMinMm > 0 && p.fiberWidthMaxMm >= p.fiberWidthMinMm &&
+                  p.opticalDepthMin >= 0 && p.opticalDepthMax >= p.opticalDepthMin)) {
+                return false;
+            }
+        }
+        if (d.filmScratch.slotProbability != 0.0f) {
+            const auto& p = d.filmScratch;
+            if (p.supportXMm < p.lengthMaxMm * p.driftFraction + p.widthMaxMm * 0.5f ||
+                p.supportYMm < p.lengthMaxMm * 0.5f + p.widthMaxMm * 0.5f) {
+                return false;
+            }
+            if (!std::isfinite(p.cellWidthMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.cellHeightMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.slotProbability)) {
+                return false;
+            }
+            if (!std::isfinite(p.softnessMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.supportXMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.supportYMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.lengthMinMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.lengthBulkMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.lengthMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.lengthTailFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.widthMinMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.widthBulkMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.widthMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.widthTailFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.driftFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.taperFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.fadeFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.strengthMin)) {
+                return false;
+            }
+            if (!std::isfinite(p.strengthMax)) {
+                return false;
+            }
+            if (!valid_defect_grid(p, d.origins[1], d)) {
+                return false;
+            }
+            if (!(p.lengthMinMm > 0 && p.lengthBulkMaxMm >= p.lengthMinMm && p.lengthMaxMm >= p.lengthBulkMaxMm &&
+                  p.lengthTailFraction >= 0 && p.lengthTailFraction <= 1 && p.widthMinMm > 0 &&
+                  p.widthBulkMaxMm >= p.widthMinMm && p.widthMaxMm >= p.widthBulkMaxMm &&
+                  p.widthTailFraction >= 0 && p.widthTailFraction <= 1 && p.driftFraction >= 0 &&
+                  p.taperFraction > 0 && p.taperFraction <= 0.5f && p.fadeFraction >= 0 && p.fadeFraction <= 1 &&
+                  p.strengthMin >= 0 && p.strengthMax >= p.strengthMin && p.strengthMax <= 1)) {
+                return false;
+            }
+        }
+        if (d.gateDust.slotProbability != 0.0f) {
+            const auto& p = d.gateDust;
+            if (p.supportXMm < std::max(p.diameterMaxMm, p.fiberLengthMaxMm + p.fiberWidthMaxMm) * 0.5f ||
+                p.supportYMm < std::max(p.diameterMaxMm, p.fiberLengthMaxMm + p.fiberWidthMaxMm) * 0.5f) {
+                return false;
+            }
+            if (!std::isfinite(p.cellWidthMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.cellHeightMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.slotProbability)) {
+                return false;
+            }
+            if (!std::isfinite(p.softnessMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.supportXMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.supportYMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.fiberFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.diameterMinMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.diameterBulkMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.diameterMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.diameterTailFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.fiberLengthMinMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.fiberLengthMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.fiberWidthMinMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.fiberWidthMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.opticalDepthMin)) {
+                return false;
+            }
+            if (!std::isfinite(p.opticalDepthMax)) {
+                return false;
+            }
+            if (!valid_defect_grid(p, d.origins[2], d)) {
+                return false;
+            }
+            if (!(p.fiberFraction >= 0 && p.fiberFraction <= 1 &&
+                  std::isfinite(p.fiberDriftFraction) && p.fiberDriftFraction >= 0 && p.fiberDriftFraction <= 0.1f &&
+                  std::isfinite(p.fiberTaperFraction) && p.fiberTaperFraction > 0 && p.fiberTaperFraction <= 0.5f &&
+                  p.diameterMinMm > 0 && p.diameterBulkMaxMm >= p.diameterMinMm &&
+                  p.diameterMaxMm >= p.diameterBulkMaxMm && p.diameterTailFraction >= 0 && p.diameterTailFraction <= 1 &&
+                  p.fiberLengthMinMm > 0 && p.fiberLengthMaxMm >= p.fiberLengthMinMm &&
+                  p.fiberWidthMinMm > 0 && p.fiberWidthMaxMm >= p.fiberWidthMinMm &&
+                  p.opticalDepthMin >= 0 && p.opticalDepthMax >= p.opticalDepthMin)) {
+                return false;
+            }
+        }
+        if (d.gateScratch.slotProbability != 0.0f) {
+            const auto& p = d.gateScratch;
+            if (p.supportXMm < p.lengthMaxMm * p.driftFraction + p.widthMaxMm * 0.5f ||
+                p.supportYMm < p.lengthMaxMm * 0.5f + p.widthMaxMm * 0.5f) {
+                return false;
+            }
+            if (!std::isfinite(p.cellWidthMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.cellHeightMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.slotProbability)) {
+                return false;
+            }
+            if (!std::isfinite(p.softnessMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.supportXMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.supportYMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.lengthMinMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.lengthBulkMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.lengthMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.lengthTailFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.widthMinMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.widthBulkMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.widthMaxMm)) {
+                return false;
+            }
+            if (!std::isfinite(p.widthTailFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.driftFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.taperFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.fadeFraction)) {
+                return false;
+            }
+            if (!std::isfinite(p.strengthMin)) {
+                return false;
+            }
+            if (!std::isfinite(p.strengthMax)) {
+                return false;
+            }
+            if (!valid_defect_grid(p, d.origins[3], d)) {
+                return false;
+            }
+            if (!(p.lengthMinMm > 0 && p.lengthBulkMaxMm >= p.lengthMinMm && p.lengthMaxMm >= p.lengthBulkMaxMm &&
+                  p.lengthTailFraction >= 0 && p.lengthTailFraction <= 1 && p.widthMinMm > 0 &&
+                  p.widthBulkMaxMm >= p.widthMinMm && p.widthMaxMm >= p.widthBulkMaxMm &&
+                  p.widthTailFraction >= 0 && p.widthTailFraction <= 1 && p.driftFraction >= 0 &&
+                  p.taperFraction > 0 && p.taperFraction <= 0.5f && p.fadeFraction >= 0 && p.fadeFraction <= 1 &&
+                  p.strengthMin >= 0 && p.strengthMax >= p.strengthMin && p.strengthMax <= 1)) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     bool build_film_juicer_effects_frame_descriptor(
         const FilmJuicerEffectsFrameDescriptorInput& input,
         FilmJuicerEffectsFrameDescriptor& out,
         std::string& diagnostic) {
+        out = {};
         diagnostic.clear();
-        out = FilmJuicerEffectsFrameDescriptor{};
-        if (!input.recipe) {
-            diagnostic =
-                "MissingRequiredResource phase=effects_descriptor field=recipe";
+        const auto fail = [&]() {
+            out = {};
+            diagnostic = "ResourceDescriptorMismatch phase=effects_descriptor field=geometry_or_policy";
             return false;
+        };
+        if (!input.recipe) {
+            return fail();
         }
         if (!input.recipe->active) {
             return input.recipe->hash == 0;
         }
-        if (input.recipe->hash == 0 ||
-            !valid_extent(input.renderExtent) ||
-            !valid_extent(input.fullFrameExtent) ||
-            !extent_contains(input.fullFrameExtent, input.renderExtent) ||
-            !std::isfinite(input.pixelSizeUm) ||
-            !(input.pixelSizeUm > 0.0f) ||
-            !std::isfinite(input.frameTime) ||
-            !std::isfinite(input.frameRate) ||
-            !(input.frameRate > 0.0)) {
-            diagnostic =
-                "ResourceDescriptorMismatch phase=effects_descriptor field=frame_input";
-            return false;
+        const auto& g = input.geometry;
+        const double x0 = g.canonicalX / g.pixelAspectRatio;
+        const double w0 = g.canonicalWidth / g.pixelAspectRatio;
+        const double h0 = g.canonicalHeight;
+        if (!valid_extent(g.pixelDefinition) || !valid_extent(input.renderExtent) ||
+            !extent_contains(g.pixelDefinition, input.renderExtent) ||
+            !std::isfinite(x0) || !std::isfinite(g.canonicalY) ||
+            !std::isfinite(w0) || !(w0 > 0) || !std::isfinite(h0) || !(h0 > 0) ||
+            !std::isfinite(g.pixelAspectRatio) || !(g.pixelAspectRatio > 0) ||
+            !std::isfinite(g.scaleX) || !(g.scaleX > 0) || !std::isfinite(g.scaleY) || !(g.scaleY > 0) ||
+            !std::isfinite(input.filmFormatLongEdgeMm) || !(input.filmFormatLongEdgeMm > 0)) {
+            return fail();
         }
-
-        const double frameFloor = std::floor(input.frameTime);
-        if (frameFloor <
-                static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
-            frameFloor >=
-                static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
-            diagnostic =
-                "UnsupportedMode phase=effects_descriptor field=frame_time";
-            return false;
-        }
-
         out.renderExtent = input.renderExtent;
-        out.fullFrameExtent = input.fullFrameExtent;
-        out.pixelSizeUm = input.pixelSizeUm;
-        out.frame0 = static_cast<std::int64_t>(frameFloor);
-        out.frameAlpha = static_cast<float>(
-            std::clamp(input.frameTime - frameFloor, 0.0, 1.0));
-        out.sessionSeed = input.sessionSeed != 0 ? input.sessionSeed : 1;
+        out.fullFrameExtent = g.pixelDefinition;
+        out.sessionSeed = input.sessionSeed ? input.sessionSeed : 1;
         out.clipToken = input.clipToken;
-        out.pitchPx = input.fullFrameExtent.height;
-        out.filmDustAmount = input.recipe->filmDustAmount;
-        out.filmScratchAmount = input.recipe->filmScratchAmount;
-        out.gateDustAmount = input.recipe->gateDustAmount;
-        out.gateScratchAmount = input.recipe->gateScratchAmount;
-        out.filmActive =
-            out.filmDustAmount > 0.0f || out.filmScratchAmount > 0.0f;
-        out.gateMaskActive =
-            out.gateDustAmount > 0.0f || out.gateScratchAmount > 0.0f;
-        out.weaveActive = input.recipe->gateWeaveAmount > 0.0;
-        out.gateOutputActive = out.weaveActive || out.gateMaskActive;
-        out.requiresFullFrame = out.gateOutputActive;
-        if (out.requiresFullFrame &&
-            !same_extent(input.renderExtent, input.fullFrameExtent)) {
-            diagnostic =
-                "UnsupportedMode phase=effects_descriptor field=full_frame_required";
-            out = FilmJuicerEffectsFrameDescriptor{};
-            return false;
+        out.filmDust = input.recipe->filmDust;
+        out.filmScratch = input.recipe->filmScratch;
+        out.gateDust = input.recipe->gateDust;
+        out.gateScratch = input.recipe->gateScratch;
+        out.filmActive = out.filmDust.slotProbability > 0 || out.filmScratch.slotProbability > 0;
+        out.gateTransmittanceActive = out.gateDust.slotProbability > 0 || out.gateScratch.slotProbability > 0;
+        out.weaveActive = input.recipe->gateWeaveAmount > 0;
+        out.gateOutputActive = out.weaveActive || out.gateTransmittanceActive;
+        out.requiresFullFrame = out.weaveActive;
+        out.roiOffsetX = static_cast<int>(static_cast<std::int64_t>(out.renderExtent.x) - out.fullFrameExtent.x);
+        out.roiOffsetY = static_cast<int>(static_cast<std::int64_t>(out.renderExtent.y) - out.fullFrameExtent.y);
+        const double mm = static_cast<double>(input.filmFormatLongEdgeMm) / std::max(w0, h0);
+        const double phaseX = (static_cast<double>(g.pixelDefinition.x) / g.scaleX - x0) * mm;
+        const double phaseY = (static_cast<double>(g.pixelDefinition.y) / g.scaleY - g.canonicalY) * mm;
+        if (out.filmActive || out.gateTransmittanceActive) {
+            out.sampleStepXMm = static_cast<float>(mm / g.scaleX);
+            out.sampleStepYMm = static_cast<float>(mm / g.scaleY);
         }
-
-        const double timeSeconds =
-            (static_cast<double>(out.frame0) + out.frameAlpha) /
-            input.frameRate;
-        const GateWeaveSignal weave = compute_gate_weave(
-            out.sessionSeed,
-            timeSeconds,
-            6.0,
-            0.005,
-            static_cast<double>(out.pixelSizeUm),
-            input.recipe->gateWeaveAmount);
-        out.weaveDxPx = weave.dxPx;
-        out.weaveDyPx = weave.dyPx;
-        out.weaveCosRot = weave.cosRot;
-        out.weaveSinRot = weave.sinRot;
+        if (out.gateTransmittanceActive) {
+            out.gateWidth = out.fullFrameExtent.width / 2 + out.fullFrameExtent.width % 2;
+            out.gateHeight = out.fullFrameExtent.height / 2 + out.fullFrameExtent.height % 2;
+        }
+        double high = 0.0;
+        double low = 0.0;
+        if (out.filmActive) {
+            const double advance = mm * h0;
+            high = input.frameTime * advance;
+            low = std::fma(input.frameTime, advance, -high);
+            if (!std::isfinite(high) || !std::isfinite(low)) {
+                return fail();
+            }
+        }
+        if (out.filmDust.slotProbability > 0) {
+            auto& o = out.origins[0];
+            DefectAxisSplit x{}, y{};
+            if (!split_defect_origin({phaseX, 0.0}, out.filmDust.cellWidthMm, x) ||
+                !split_defect_origin({high, low + phaseY}, out.filmDust.cellHeightMm, y)) {
+                return fail();
+            }
+            o = {x.cell, y.cell, x.localMm, y.localMm};
+        }
+        if (out.filmScratch.slotProbability > 0) {
+            auto& o = out.origins[1];
+            DefectAxisSplit x{}, y{};
+            if (!split_defect_origin({phaseX, 0.0}, out.filmScratch.cellWidthMm, x) ||
+                !split_defect_origin({high, low + phaseY}, out.filmScratch.cellHeightMm, y)) {
+                return fail();
+            }
+            o = {x.cell, y.cell, x.localMm, y.localMm};
+        }
+        if (out.gateDust.slotProbability > 0) {
+            auto& o = out.origins[2];
+            DefectAxisSplit x{}, y{};
+            if (!split_defect_origin({phaseX, 0.0}, out.gateDust.cellWidthMm, x) ||
+                !split_defect_origin({phaseY, 0.0}, out.gateDust.cellHeightMm, y)) {
+                return fail();
+            }
+            o = {x.cell, y.cell, x.localMm, y.localMm};
+        }
+        if (out.gateScratch.slotProbability > 0) {
+            auto& o = out.origins[3];
+            DefectAxisSplit x{}, y{};
+            if (!split_defect_origin({phaseX, 0.0}, out.gateScratch.cellWidthMm, x) ||
+                !split_defect_origin({phaseY, 0.0}, out.gateScratch.cellHeightMm, y)) {
+                return fail();
+            }
+            o = {x.cell, y.cell, x.localMm, y.localMm};
+        }
+        if (out.weaveActive) {
+            if (!std::isfinite(input.frameTime) || !std::isfinite(input.frameRate) || !(input.frameRate > 0) ||
+                !std::isfinite(input.pixelSizeUm) || !(input.pixelSizeUm > 0)) {
+                return fail();
+            }
+            const auto weave = compute_gate_weave(out.sessionSeed, input.frameTime / input.frameRate, 6.0, 0.005, static_cast<double>(input.pixelSizeUm), input.recipe->gateWeaveAmount);
+            out.weaveDxPx = weave.dxPx;
+            out.weaveDyPx = weave.dyPx;
+            out.weaveCosRot = weave.cosRot;
+            out.weaveSinRot = weave.sinRot;
+        }
         out.recipeHash = input.recipe->hash;
-        out.hash = hash_descriptor(out);
-        if (out.hash == 0) {
-            diagnostic =
-                "ResourceDescriptorMismatch phase=effects_descriptor field=hash";
-            out = FilmJuicerEffectsFrameDescriptor{};
-            return false;
-        }
-        return true;
+        out.hash = hash_film_juicer_effects_descriptor(out);
+        return validate_film_juicer_effects_frame_descriptor(out) || fail();
     }
-
 } // namespace Spektrafilm
