@@ -161,12 +161,14 @@ A spektrafilm profile describes several different pieces of photographic behavio
 Kodak Portra 800 is a useful example:
 
 <p align="center">
-  <img src="Resources/readme/kodak_portra_800_spektrafilm_with_spectral_density.svg" alt="Kodak Portra 800 spektrafilm profile: spectral sensitivity, characteristic curves, and processed-medium spectral density" width="100%">
+  <img src="Resources/readme/kodak_portra_800_spektrafilm_with_spectral_density.svg" alt="Kodak Portra 800 spektrafilm profile: spectral sensitivity, stored characteristic curves, and C, M, Y, Min, and Mid spectral density" width="100%">
 </p>
 
-<p align="center"><sub>Kodak Portra 800 profile data. From left to right: spectral sensitivity, fitted characteristic behavior, and processed-medium spectral density.</sub></p>
+<p align="center"><sub>Kodak Portra 800 profile data. From left to right: spectral sensitivity, stored characteristic curves, and C/M/Y dye-density contributions with Min/Mid reference spectra.</sub></p>
 
-The three panels are not three different ways of drawing the same "Portra look." They describe different parts of the material model, and they are consumed at different stages of the pipeline. The right-hand panel concerns the wavelength-dependent density of the processed medium rather than the RGB appearance of a finished image.
+The three panels are not three different ways of drawing the same "Portra look." They describe different parts of the material model, and they are consumed at different stages of the pipeline. The right-hand panel shows the profile's cyan, magenta, and yellow dye-density contributions (**C**, **M**, **Y**), plus the spectral density of the processed unexposed medium (**Min**) and the neutral midscale reference (**Mid**). C/M/Y are the channel contributions used to build the medium's spectral density; Min and Mid are reference spectra, not additional dye channels. Missing source samples are left blank, and negative dye contributions are retained, consistent with spektrafilm's treatment of masking couplers.
+
+These figures plot the data bundled with Film-Juicer: `log_sensitivity`, the stored `density_curves`, and `channel_density` plus `base_density` and `midscale_neutral_density`. The characteristic panel uses the stored curves directly; it does not reconstruct them from the separate fitted layer model.
 
 None of this contains the final answer for Portra 800. It contains ingredients. Film-Juicer still has to expose the material, develop it, pass light through it, print it or scan it, and let the consequences accumulate.
 
@@ -233,10 +235,10 @@ Light has to make the trip.
 Ektacolor Edge shows what the other end of that trip looks like:
 
 <p align="center">
-  <img src="Resources/readme/kodak_ektacolor_edge_spektrafilm_with_spectral_density.svg" alt="Kodak Ektacolor Edge spektrafilm profile: spectral sensitivity, characteristic curves, and processed-medium spectral density" width="100%">
+  <img src="Resources/readme/kodak_ektacolor_edge_spektrafilm_with_spectral_density.svg" alt="Kodak Ektacolor Edge spektrafilm profile: spectral sensitivity, stored characteristic curves, and C, M, Y, Min, and Mid spectral density" width="100%">
 </p>
 
-<p align="center"><sub>Kodak Ektacolor Edge print-medium profile. Like the capture film, the print material has its own spectral sensitivity, characteristic behavior, and processed-medium spectral density.</sub></p>
+<p align="center"><sub>Kodak Ektacolor Edge print-medium profile. Like the capture film, the print material has its own spectral sensitivity, stored characteristic curves, and C/M/Y dye-density contributions with Min/Mid reference spectra.</sub></p>
 
 The negative does not hand RGB values to a generic print curve. It filters the enlarger spectrum; that spectrum exposes the print layers; and those exposures develop according to the print profile. The very different characteristic behavior of Portra 800 and Ektacolor Edge is therefore not a cosmetic difference between two presets. They are different photosensitive materials doing different jobs.
 
