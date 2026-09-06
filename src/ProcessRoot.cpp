@@ -456,7 +456,10 @@ namespace JuicerProcess {
                 workspace.needGrainFrameUniforms;
             request.attachments.needGrainLayerWork = workspace.needGrainLayerWork;
             request.attachments.needGrainShared = workspace.needGrainShared;
-            request.attachments.needGateMask = workspace.needGateMask;
+            request.attachments.needGateTransmittance = workspace.needGateTransmittance;
+            request.attachments.needFilmDustTransmittance = workspace.needFilmDustTransmittance;
+            request.attachments.gateWidth = workspace.gateWidth;
+            request.attachments.gateHeight = workspace.gateHeight;
             return JuicerCuda::ResourceManager::make_scratch_request_descriptor(
                 request);
         }
@@ -524,7 +527,7 @@ namespace JuicerProcess {
                 request.needGrainFrameUniforms);
             append_bool("need_grain_layer_work", request.needGrainLayerWork);
             append_bool("need_grain_shared", request.needGrainShared);
-            append_bool("need_gate_mask", request.needGateMask);
+            append_bool("need_gate_transmittance", request.needGateTransmittance);
         }
 
         void trace_workspace_request_mismatch(
@@ -599,11 +602,11 @@ namespace JuicerProcess {
                 append_scratch_bool("tmp", scratch ? scratch->tmp : nullptr);
                 append_scratch_bool("blurred", scratch ? scratch->blurred : nullptr);
                 append_scratch_bool("aux", scratch ? scratch->aux : nullptr);
-                append_scratch_bool("gate_mask", scratch ? scratch->gateMask : nullptr);
-                msg += " scratch_gate_mask_width=";
-                msg += std::to_string(scratch ? scratch->gateMaskWidth : 0);
-                msg += " scratch_gate_mask_height=";
-                msg += std::to_string(scratch ? scratch->gateMaskHeight : 0);
+                append_scratch_bool("gate_transmittance", scratch ? scratch->gateTransmittance : nullptr);
+                msg += " scratch_gate_transmittance_width=";
+                msg += std::to_string(scratch ? scratch->gateTransmittanceWidth : 0);
+                msg += " scratch_gate_transmittance_height=";
+                msg += std::to_string(scratch ? scratch->gateTransmittanceHeight : 0);
 
                 const auto append_kernel =
                     [&](const char* prefix, const Root::PreparedCudaFrame::KernelView* kernel) {
@@ -905,8 +908,9 @@ namespace JuicerProcess {
         if (frame.hash == 0 || frame.recipeHash != effects.hash ||
             (!frame.filmActive && !frame.gateOutputActive) ||
             frame.gateOutputActive !=
-                (frame.weaveActive || frame.gateMaskActive) ||
-            frame.requiresFullFrame != frame.gateOutputActive) {
+                (frame.weaveActive || frame.gateTransmittanceActive) ||
+            frame.requiresFullFrame != frame.weaveActive ||
+            !Spektrafilm::validate_film_juicer_effects_frame_descriptor(frame)) {
             outError =
                 "ResourceDescriptorMismatch phase=effects_descriptor field=identity";
             return false;
@@ -1302,7 +1306,10 @@ namespace JuicerProcess {
                 return false;
             }
             out.needOptics = true;
-            out.needGateMask = effects->gateMaskActive;
+            out.needGateTransmittance = effects->gateTransmittanceActive;
+            out.needFilmDustTransmittance = effects->filmDust.slotProbability > 0.0f;
+            out.gateWidth = effects->gateWidth;
+            out.gateHeight = effects->gateHeight;
         }
         if (scannerPostEffects && scannerPostEffects->active()) {
             out.needOptics = true;
@@ -2262,7 +2269,9 @@ namespace JuicerProcess {
                    a.needGrainFrameUniforms == b.needGrainFrameUniforms &&
                    a.needGrainLayerWork == b.needGrainLayerWork &&
                    a.needGrainShared == b.needGrainShared &&
-                   a.needGateMask == b.needGateMask;
+                   a.needGateTransmittance == b.needGateTransmittance &&
+                   a.needFilmDustTransmittance == b.needFilmDustTransmittance &&
+                   a.gateWidth == b.gateWidth && a.gateHeight == b.gateHeight;
         };
 
         if (scratchWorkspace.retainedLeaseActive) {
@@ -4084,12 +4093,12 @@ namespace JuicerProcess {
         view.aux = scratch.aux;
         view.grainTmp = scratch.grainTmp;
         view.grainTmpShared = scratch.grainTmpShared;
-        view.gateMask = scratch.gateMask;
-        view.gateMaskWidth = scratch.gateWidth;
-        view.gateMaskHeight = scratch.gateHeight;
-        view.gateMaskHash = scratch.gateMaskHash;
+        view.gateTransmittance = scratch.gateTransmittance;
+        view.filmDustTransmittance = scratch.filmDustTransmittance;
+        view.gateTransmittanceWidth = scratch.gateWidth;
+        view.gateTransmittanceHeight = scratch.gateHeight;
         view.active = view.rgbR && view.rgbG && view.rgbB;
-        view.hasGateMask = view.gateMask && view.gateMaskWidth > 0 && view.gateMaskHeight > 0;
+        view.hasGateTransmittance = view.gateTransmittance && view.gateTransmittanceWidth > 0 && view.gateTransmittanceHeight > 0;
         return view;
     }
 
@@ -4224,15 +4233,6 @@ namespace JuicerProcess {
         return view;
     }
 
-    void Root::PreparedCudaFrame::mark_gate_mask_built(std::uint64_t gateMaskHash) noexcept {
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            return;
-        }
-        if (!_state->scratchWorkspace.retainedLeaseActive) {
-            return;
-        }
-        _state->resources->scannerScratch.gateMaskHash = gateMaskHash;
-    }
 
     bool Root::PreparedCudaFrame::record_use(
         void* cudaStreamOpaque,

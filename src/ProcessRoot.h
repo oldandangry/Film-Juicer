@@ -209,7 +209,10 @@ namespace JuicerProcess {
                 bool needGrainFrameUniforms = false;
                 bool needGrainLayerWork = false;
                 bool needGrainShared = false;
-                bool needGateMask = false;
+                bool needGateTransmittance = false;
+                bool needFilmDustTransmittance = false;
+                int gateWidth = 0;
+                int gateHeight = 0;
 
                 [[nodiscard]] bool has_any_family() const noexcept {
                     return needOptics || needSpatialDir;
@@ -325,13 +328,13 @@ namespace JuicerProcess {
                 float* aux = nullptr;
                 float* grainTmp = nullptr;
                 float* grainTmpShared = nullptr;
-                float* gateMask = nullptr;
-                int gateMaskWidth = 0;
-                int gateMaskHeight = 0;
-                std::uint64_t gateMaskHash = 0;
+                float* gateTransmittance = nullptr;
+                float* filmDustTransmittance = nullptr;
+                int gateTransmittanceWidth = 0;
+                int gateTransmittanceHeight = 0;
                 bool active = false;
                 bool rgbAliasedFromSpatialDirFiltered = false;
-                bool hasGateMask = false;
+                bool hasGateTransmittance = false;
             };
 
             struct ScannerPostEffectsPreparedView {
@@ -387,7 +390,6 @@ namespace JuicerProcess {
 
             void mark_auto_exposure_weights_built(const AutoExposureWeightsExtent& weights) noexcept;
             void mark_auto_exposure_metered(const AutoExposureMeteredResult& result) noexcept;
-            void mark_gate_mask_built(std::uint64_t gateMaskHash) noexcept;
             bool record_use(
                 void* cudaStreamOpaque,
                 std::string& outError);

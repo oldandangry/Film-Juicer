@@ -956,7 +956,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kFilmDustAmount);
             p->setLabel("Film dust");
-            p->setHint("Amount of film-local dust specks (strip space).");
+            p->setHint("Dust carried by the moving film.");
             p->setDefault(0.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
@@ -967,7 +967,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGateDustAmount);
             p->setLabel("Gate dust");
-            p->setHint("Amount of gate-local dust specks (sensor/gate space).");
+            p->setHint("Dust that stays fixed while the picture moves through the gate.");
             p->setDefault(0.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
@@ -978,7 +978,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kFilmScratchAmount);
             p->setLabel("Film scratches");
-            p->setHint("Amount of film-local scratches (strip space).");
+            p->setHint("Light damage carried by the moving film.");
             p->setDefault(0.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
@@ -989,7 +989,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGateScratchAmount);
             p->setLabel("Gate scratches");
-            p->setHint("Amount of gate-local scratches (sensor/gate space).");
+            p->setHint("Fine persistent marks in the scan/gate path.");
             p->setDefault(0.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);

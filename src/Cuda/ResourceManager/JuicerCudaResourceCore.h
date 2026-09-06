@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <functional>
+#include <limits>
 
 #include "../../RenderRecipe.h"
 
@@ -63,7 +64,10 @@ namespace JuicerCuda {
             bool needGrainFrameUniforms = false;
             bool needGrainLayerWork = false;
             bool needGrainShared = false;
-            bool needGateMask = false;
+            bool needGateTransmittance = false;
+            bool needFilmDustTransmittance = false;
+            int gateWidth = 0;
+            int gateHeight = 0;
         };
 
         struct ScratchRequestBuildRequest {
@@ -94,7 +98,10 @@ namespace JuicerCuda {
             bool needGrainFrameUniforms = false;
             bool needGrainLayerWork = false;
             bool needGrainShared = false;
-            bool needGateMask = false;
+            bool needGateTransmittance = false;
+            bool needFilmDustTransmittance = false;
+            int gateWidth = 0;
+            int gateHeight = 0;
             std::uint64_t generation = 0;
 
             bool has_any_family() const noexcept {
@@ -103,6 +110,11 @@ namespace JuicerCuda {
         };
 
         inline bool scratch_request_descriptor_is_valid(const ScratchRequestDescriptor& descriptor) noexcept {
+            if (descriptor.needGateTransmittance && (descriptor.gateWidth <= 0 || descriptor.gateHeight <= 0 ||
+                                                     static_cast<std::uint64_t>(descriptor.gateWidth) * descriptor.gateHeight >
+                                                         std::numeric_limits<std::size_t>::max() / sizeof(float))) {
+                return false;
+            }
             if (!descriptor.has_any_family()) {
                 return false;
             }
@@ -136,7 +148,7 @@ namespace JuicerCuda {
                  descriptor.needGrainFrameUniforms ||
                  descriptor.needGrainLayerWork ||
                  descriptor.needGrainShared ||
-                 descriptor.needGateMask)) {
+                 descriptor.needGateTransmittance || descriptor.needFilmDustTransmittance)) {
                 return false;
             }
             const bool spatialDirNeedsSharedTmp =
@@ -190,7 +202,10 @@ namespace JuicerCuda {
             mix(descriptor.needGrainFrameUniforms ? 1ull : 0ull);
             mix(descriptor.needGrainLayerWork ? 1ull : 0ull);
             mix(descriptor.needGrainShared ? 1ull : 0ull);
-            mix(descriptor.needGateMask ? 1ull : 0ull);
+            mix(descriptor.needGateTransmittance ? 1ull : 0ull);
+            mix(descriptor.needFilmDustTransmittance ? 1ull : 0ull);
+            mix(static_cast<std::uint64_t>(descriptor.gateWidth));
+            mix(static_cast<std::uint64_t>(descriptor.gateHeight));
             return hash;
         }
 
@@ -223,7 +238,10 @@ namespace JuicerCuda {
                 request.attachments.needGrainFrameUniforms;
             descriptor.needGrainLayerWork = request.families.needOptics && request.attachments.needGrainLayerWork;
             descriptor.needGrainShared = request.families.needOptics && request.attachments.needGrainShared;
-            descriptor.needGateMask = request.families.needOptics && request.attachments.needGateMask;
+            descriptor.needGateTransmittance = request.families.needOptics && request.attachments.needGateTransmittance;
+            descriptor.needFilmDustTransmittance = request.families.needOptics && request.attachments.needFilmDustTransmittance;
+            descriptor.gateWidth = descriptor.needGateTransmittance ? request.attachments.gateWidth : 0;
+            descriptor.gateHeight = descriptor.needGateTransmittance ? request.attachments.gateHeight : 0;
             descriptor.generation = hash_scratch_request_descriptor(descriptor);
             return descriptor;
         }

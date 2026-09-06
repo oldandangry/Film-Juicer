@@ -30,6 +30,7 @@ public:
         std::optional<ScatterHalationFrameDescriptor> scatterHalation;
         int components = 0;
         OfxRectI renderWindow{0, 0, 0, 0};
+        Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{};
         OfxRectI fullFrameExtent{0, 0, 0, 0};
         std::uint64_t sessionSeed = 1;
         std::uint64_t instanceToken = 1;
@@ -45,6 +46,7 @@ public:
         std::optional<ScatterHalationFrameDescriptor> scatterHalation;
         int components = 0;
         OfxRectI renderWindow{0, 0, 0, 0};
+        Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{};
         OfxRectI fullFrameExtent{0, 0, 0, 0};
         std::uint64_t sessionSeed = 1;
         std::uint64_t instanceToken = 1;
@@ -74,6 +76,7 @@ private:
     std::int64_t _frameIndex = 0;
     double _timeFrames = 0.0;
     double _frameRate = 0.0;
+    Spektrafilm::FilmJuicerEffectsGeometry _effectsGeometry{};
     OfxRectI _fullFrameExtent{0, 0, 0, 0};
     std::optional<Spektrafilm::DiffusionFrameSetDescriptor> _diffusionFrameSetDescriptor;
     std::optional<ScatterHalationFrameDescriptor> _scatterHalationDescriptor;

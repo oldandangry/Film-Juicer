@@ -98,26 +98,47 @@ namespace Spektrafilm {
         int height = 0;
     };
 
+    struct DefectCellOrigin final {
+        std::int64_t cellX = 0;
+        std::int64_t cellY = 0;
+        float localXMm = 0.0f;
+        float localYMm = 0.0f;
+    };
+
+    struct FilmJuicerEffectsGeometry final {
+        FilmJuicerEffectsFrameExtent pixelDefinition{};
+        double canonicalX = 0.0;
+        double canonicalY = 0.0;
+        double canonicalWidth = 0.0;
+        double canonicalHeight = 0.0;
+        double scaleX = 0.0;
+        double scaleY = 0.0;
+        double pixelAspectRatio = 0.0;
+    };
+
     struct FilmJuicerEffectsFrameDescriptor final {
         FilmJuicerEffectsFrameExtent renderExtent{};
         FilmJuicerEffectsFrameExtent fullFrameExtent{};
-        float pixelSizeUm = 0.0f;
-        std::int64_t frame0 = 0;
-        float frameAlpha = 0.0f;
+        DefectDustRecipe filmDust{};
+        DefectScratchRecipe filmScratch{};
+        DefectDustRecipe gateDust{};
+        DefectScratchRecipe gateScratch{};
+        std::array<DefectCellOrigin, 4> origins{};
+        float sampleStepXMm = 0.0f;
+        float sampleStepYMm = 0.0f;
+        int roiOffsetX = 0;
+        int roiOffsetY = 0;
+        int gateWidth = 0;
+        int gateHeight = 0;
         std::uint64_t sessionSeed = 0;
         std::uint64_t clipToken = 0;
-        int pitchPx = 0;
-        float filmDustAmount = 0.0f;
-        float filmScratchAmount = 0.0f;
-        float gateDustAmount = 0.0f;
-        float gateScratchAmount = 0.0f;
         bool weaveActive = false;
         float weaveDxPx = 0.0f;
         float weaveDyPx = 0.0f;
         float weaveCosRot = 1.0f;
         float weaveSinRot = 0.0f;
         bool filmActive = false;
-        bool gateMaskActive = false;
+        bool gateTransmittanceActive = false;
         bool gateOutputActive = false;
         bool requiresFullFrame = false;
         std::uint64_t recipeHash = 0;
@@ -133,7 +154,15 @@ namespace Spektrafilm {
         double frameRate = 0.0;
         std::uint64_t sessionSeed = 0;
         std::uint64_t clipToken = 0;
+        FilmJuicerEffectsGeometry geometry{};
+        float filmFormatLongEdgeMm = 0.0f;
     };
+
+    std::uint64_t hash_film_juicer_effects_descriptor(
+        const FilmJuicerEffectsFrameDescriptor& descriptor);
+
+    bool validate_film_juicer_effects_frame_descriptor(
+        const FilmJuicerEffectsFrameDescriptor& descriptor);
 
     bool build_film_juicer_effects_frame_descriptor(
         const FilmJuicerEffectsFrameDescriptorInput& input,

@@ -775,225 +775,353 @@ namespace {
         return static_cast<float>((h >> 40) & 0xFFFFFFu) * kInv;
     }
 
-    __device__ __forceinline__ float smoothstep_device(float edge0, float edge1, float x) {
-        if (edge1 <= edge0) {
-            return (x < edge0) ? 0.0f : 1.0f;
-        }
-        float t = (x - edge0) / (edge1 - edge0);
-        t = fminf(fmaxf(t, 0.0f), 1.0f);
-        return t * t * (3.0f - 2.0f * t);
+    __device__ __forceinline__ float defect_attribute_unit_device(
+        std::uint64_t primitiveHash,
+        std::uint64_t attributeSalt) {
+        // Remix before truncation so event selection does not constrain attributes.
+        return hash_to_unit_device(splitmix64_device(primitiveHash ^ attributeSalt));
     }
 
-    struct DefectSampleLocation {
-        float xMm = 0.0f;
-        float yMm = 0.0f;
-        float pixelSizeUm = 0.0f;
+    struct DefectPrimitive {
+        float cx;
+        float cy;
+        float xmin;
+        float xmax;
+        float ymin;
+        float ymax;
+        float strength;
+        float softness;
+        // Ellipses: center, quadratic coefficients for horizontal intersections.
+        float ex[3];
+        float ey[3];
+        float ea[3];
+        float eb[3];
+        float ec[3];
+        // Four connected vertices; widths are full physical widths.
+        float px[4];
+        float py[4];
+        float widths[4];
+        float depths[4];
+        int stroke;
+        int active;
     };
 
-    struct DustMaskParams {
-        float amount = 0.0f;
-        std::uint64_t seed = 0;
-        float cellMm = 0.0f;
-        float lambdaPerMm2 = 0.0f;
-        float sizeUm = 0.0f;
-        float strength = 0.0f;
-        float brightMix = 0.0f;
-        float brightScale = 0.0f;
-    };
-
-    struct ScratchMaskParams {
-        float amount = 0.0f;
-        std::uint64_t seed = 0;
-        float cellMmX = 0.0f;
-        float cellMmY = 0.0f;
-        float lambdaPerMm = 0.0f;
-        float widthUm = 0.0f;
-        float strength = 0.0f;
-        float maxAngleRad = 0.0f;
-        float brightMix = 0.0f;
-        float brightScale = 0.0f;
-    };
-
-    struct GateMaskParams {
-        float dustAmount = 0.0f;
-        float scratchAmount = 0.0f;
-        std::uint64_t dustSeed = 0;
-        std::uint64_t scratchSeed = 0;
-    };
-
-    __device__ __forceinline__ float dust_mask_device(
-        DefectSampleLocation location,
-        DustMaskParams params) {
-        const float amount = params.amount;
-        const float x = location.xMm;
-        const float y = location.yMm;
-        const float pixelSizeUm = location.pixelSizeUm;
-        const std::uint64_t seed = params.seed;
-        const float cellMm = params.cellMm;
-        const float lambdaPerMm2 = params.lambdaPerMm2;
-        const float sizeUm = params.sizeUm;
-        const float strength = params.strength;
-        const float brightMix = params.brightMix;
-        const float brightScale = params.brightScale;
-        if (!(amount > 0.0f) || !(pixelSizeUm > 0.0f) || !(cellMm > 0.0f)) {
-            return 0.0f;
-        }
-        const float amountProb = fmaxf(amount, 0.0f);
-        const float probScale = amountProb * amountProb;
-        const float intensityScale = amountProb;
-        const int cellX = static_cast<int>(floorf(x / cellMm));
-        const int cellY = static_cast<int>(floorf(y / cellMm));
-        std::uint64_t h = splitmix64_device(seed ^
-                                            (static_cast<std::uint64_t>(cellX) * 0x8EBC6AF09C88C6E3ULL) ^
-                                            (static_cast<std::uint64_t>(cellY) * 0x9E3779B97F4A7C15ULL));
-        const float u = hash_to_unit_device(h);
-        const float areaMm2 = cellMm * cellMm;
-        const float p = 1.0f - expf(-lambdaPerMm2 * probScale * areaMm2);
-        if (u >= p) {
-            return 0.0f;
-        }
-        const float u1 = hash_to_unit_device(h ^ 0xBF58476D1CE4E5B9ULL);
-        const float u2 = hash_to_unit_device(h ^ 0x94D049BB133111EBULL);
-        const float u3 = hash_to_unit_device(h ^ 0xD6E8FEB86659FD93ULL);
-        const float u4 = hash_to_unit_device(h ^ 0xA5A5A5A5A5A5A5A5ULL);
-        const float u5 = hash_to_unit_device(h ^ 0x8EBC6AF09C88C6E3ULL);
-        const float cx = (static_cast<float>(cellX) + u1) * cellMm;
-        const float cy = (static_cast<float>(cellY) + u2) * cellMm;
-        const float baseRadius = fmaxf(0.0005f, sizeUm * 0.001f);
-        const float radius = baseRadius * (0.5f + 1.2f * u3);
-        const float dx = x - cx;
-        const float dy = y - cy;
-        const float dist = sqrtf(dx * dx + dy * dy);
-        const float edge = fmaxf(0.0005f, radius * 0.6f);
-        const float mask = 1.0f - smoothstep_device(radius, radius + edge, dist);
-        float intensity = strength * intensityScale * (0.5f + 0.5f * u4);
-        if (u5 < brightMix) {
-            intensity *= brightScale;
-            return -mask * intensity;
-        }
-        return mask * intensity;
+    __device__ float defect_lane(std::uint64_t identity, unsigned int lane) {
+        return defect_attribute_unit_device(identity,
+                                            0xD6E8FEB86659FD93ULL * (static_cast<std::uint64_t>(lane) + 1ULL));
     }
 
-    __device__ __forceinline__ float scratch_mask_device(
-        DefectSampleLocation location,
-        ScratchMaskParams params) {
-        const float amount = params.amount;
-        const float x = location.xMm;
-        const float y = location.yMm;
-        const float pixelSizeUm = location.pixelSizeUm;
-        const std::uint64_t seed = params.seed;
-        const float cellMmX = params.cellMmX;
-        const float cellMmY = params.cellMmY;
-        const float lambdaPerMm = params.lambdaPerMm;
-        const float widthUm = params.widthUm;
-        const float strength = params.strength;
-        const float maxAngleRad = params.maxAngleRad;
-        const float brightMix = params.brightMix;
-        const float brightScale = params.brightScale;
-        if (!(amount > 0.0f) || !(pixelSizeUm > 0.0f) || !(cellMmX > 0.0f) || !(cellMmY > 0.0f)) {
-            return 0.0f;
+    struct DefectCandidateAddress {
+        std::int64_t cellX;
+        std::int64_t cellY;
+        int family;
+        int slot;
+        int offsetX;
+        int offsetY;
+    };
+
+    struct DefectLengthMixture {
+        float minimum;
+        float bulkMaximum;
+        float maximum;
+        float tailFraction;
+    };
+
+    struct DefectStrokeGeometry {
+        float lengthMm;
+        float widthMm;
+        float driftFraction;
+        float taperFraction;
+        float fadeFraction;
+        float angleRadians;
+    };
+
+    struct DefectTileFootprint {
+        int pixelX;
+        int pixelY;
+        int tileX;
+        int tileY;
+        int width;
+        int height;
+        float scale;
+    };
+
+    __device__ std::uint64_t defect_identity(const JuicerCuda::FilmDefectsPayload& p,
+                                             const DefectCandidateAddress& address) {
+        std::uint64_t h = splitmix64_device(p.sessionSeed);
+        if (address.family < 2) {
+            h = splitmix64_device(h ^ splitmix64_device(p.clipToken));
         }
-        const float amountProb = fmaxf(amount, 0.0f);
-        const float probScale = amountProb * amountProb;
-        const float intensityScale = amountProb;
-        const int cellX = static_cast<int>(floorf(x / cellMmX));
-        const int cellY = static_cast<int>(floorf(y / cellMmY));
-        std::uint64_t h = splitmix64_device(seed ^
-                                            (static_cast<std::uint64_t>(cellX) * 0xC6A4A7935BD1E995ULL) ^
-                                            (static_cast<std::uint64_t>(cellY) * 0xD2B74407B1CE6E93ULL));
-        const float u = hash_to_unit_device(h);
-        const float p = 1.0f - expf(-lambdaPerMm * probScale * cellMmY);
-        if (u >= p) {
-            return 0.0f;
-        }
-        const float u1 = hash_to_unit_device(h ^ 0xBF58476D1CE4E5B9ULL);
-        const float u2 = hash_to_unit_device(h ^ 0x94D049BB133111EBULL);
-        const float u3 = hash_to_unit_device(h ^ 0xA5A5A5A5A5A5A5A5ULL);
-        const float u4 = hash_to_unit_device(h ^ 0xD6E8FEB86659FD93ULL);
-        const float u5 = hash_to_unit_device(h ^ 0x9E3779B97F4A7C15ULL);
-        const float u6 = hash_to_unit_device(h ^ 0x8EBC6AF09C88C6E3ULL);
-        const float cx = (static_cast<float>(cellX) + u1) * cellMmX;
-        const float cy = (static_cast<float>(cellY) + u2) * cellMmY;
-        const float baseWidth = fmaxf(0.0005f, widthUm * 0.001f);
-        const float width = baseWidth * (0.6f + 1.4f * u3);
-        const float halfLen = cellMmY * (0.35f + 0.4f * u4);
-        const float angle = (u5 * 2.0f - 1.0f) * maxAngleRad;
-        const float c = cosf(angle);
-        const float s = sinf(angle);
-        const float dx = x - cx;
-        const float dy = y - cy;
-        const float dist = fabsf(dx * c - dy * s);
-        const float along = fabsf(dx * s + dy * c);
-        if (along > halfLen) {
-            return 0.0f;
-        }
-        const float edge = fmaxf(0.0005f, width * 0.8f);
-        const float mask = 1.0f - smoothstep_device(width, width + edge, dist);
-        float intensity = strength * intensityScale * (0.5f + 0.5f * u2);
-        if (u6 < brightMix) {
-            intensity *= brightScale;
-            return -mask * intensity;
-        }
-        return mask * intensity;
+        h = splitmix64_device(h ^ static_cast<std::uint64_t>(address.cellX));
+        h = splitmix64_device(h ^ static_cast<std::uint64_t>(address.cellY));
+        h = splitmix64_device(h ^ (0x8EBC6AF09C88C6E3ULL * static_cast<std::uint64_t>(address.family + 1)));
+        return splitmix64_device(h ^ static_cast<std::uint64_t>(address.slot));
     }
 
-    __device__ __forceinline__ float gate_mask_device(
-        DefectSampleLocation location,
-        GateMaskParams params) {
-        if (!(location.pixelSizeUm > 0.0f)) {
-            return 0.0f;
-        }
-        constexpr float kGateDustCellUm = 600.0f;
-        constexpr float kGateDustBaseProb = 0.01f;
-        constexpr float kGateDustSizeUm = 28.0f;
-        constexpr float kGateDustStrength = 0.35f;
-        constexpr float kGateDustBrightMix = 0.15f;
-        constexpr float kGateDustBrightScale = 0.5f;
-
-        constexpr float kGateScratchCellUmX = 3500.0f;
-        constexpr float kGateScratchCellUmY = 3500.0f;
-        constexpr float kGateScratchBaseProb = 0.008f;
-        constexpr float kGateScratchWidthUm = 12.0f;
-        constexpr float kGateScratchStrength = 0.30f;
-        constexpr float kGateScratchBrightMix = 0.08f;
-        constexpr float kGateScratchBrightScale = 0.4f;
-        constexpr float kGateScratchMaxAngle = 0.08726646f;
-
-        const float gateDustCellMm = kGateDustCellUm * 0.001f;
-        const float gateScratchCellMmX = kGateScratchCellUmX * 0.001f;
-        const float gateScratchCellMmY = kGateScratchCellUmY * 0.001f;
-
-        DustMaskParams dustParams{};
-        dustParams.amount = params.dustAmount;
-        dustParams.seed = params.dustSeed;
-        dustParams.cellMm = gateDustCellMm;
-        dustParams.lambdaPerMm2 = kGateDustBaseProb;
-        dustParams.sizeUm = kGateDustSizeUm;
-        dustParams.strength = kGateDustStrength;
-        dustParams.brightMix = kGateDustBrightMix;
-        dustParams.brightScale = kGateDustBrightScale;
-        const float gateDust = dust_mask_device(location, dustParams);
-
-        ScratchMaskParams scratchParams{};
-        scratchParams.amount = params.scratchAmount;
-        scratchParams.seed = params.scratchSeed;
-        scratchParams.cellMmX = gateScratchCellMmX;
-        scratchParams.cellMmY = gateScratchCellMmY;
-        scratchParams.lambdaPerMm = kGateScratchBaseProb;
-        scratchParams.widthUm = kGateScratchWidthUm;
-        scratchParams.strength = kGateScratchStrength;
-        scratchParams.maxAngleRad = kGateScratchMaxAngle;
-        scratchParams.brightMix = kGateScratchBrightMix;
-        scratchParams.brightScale = kGateScratchBrightScale;
-        const float gateScratch = scratch_mask_device(location, scratchParams);
-        float gateMask = gateDust + gateScratch;
-        if (!device_isfinite(gateMask)) {
-            gateMask = 0.0f;
-        }
-        return gateMask;
+    __device__ float defect_mixture(float2 random, const DefectLengthMixture& distribution) {
+        const float t = random.y * random.y * random.y;
+        return random.x < distribution.tailFraction ? distribution.bulkMaximum + (distribution.maximum - distribution.bulkMaximum) * t : distribution.minimum + (distribution.bulkMaximum - distribution.minimum) * t;
     }
 
-    struct GateMaskSample {
+    __device__ void build_defect_stroke(DefectPrimitive& q, std::uint64_t h, const DefectStrokeGeometry& geometry) {
+        float dx[4] = {0.0f, (defect_lane(h, 12) - 0.5f) * geometry.driftFraction * geometry.lengthMm, (defect_lane(h, 13) - 0.5f) * geometry.driftFraction * geometry.lengthMm, (defect_lane(h, 14) - 0.5f) * geometry.driftFraction * geometry.lengthMm};
+        const float fraction[4] = {0.0f, geometry.taperFraction, 1.0f - geometry.taperFraction, 1.0f};
+        float total = 0.0f;
+        for (int i = 1; i < 4; ++i) {
+            total += hypotf(dx[i] - dx[i - 1], geometry.lengthMm * (fraction[i] - fraction[i - 1]));
+        }
+        const float norm = geometry.lengthMm / total;
+        const float c = cosf(geometry.angleRadians);
+        const float s = sinf(geometry.angleRadians);
+        q.stroke = 1;
+        q.xmin = q.ymin = 1.0e30f;
+        q.xmax = q.ymax = -1.0e30f;
+        for (int i = 0; i < 4; ++i) {
+            const float y = (fraction[i] - 0.5f) * geometry.lengthMm * norm;
+            const float x = dx[i] * norm;
+            q.px[i] = x * c - y * s;
+            q.py[i] = x * s + y * c;
+            const float end = (i == 0 || i == 3) ? 0.0f : (0.8f + 0.2f * defect_lane(h, 20 + i));
+            q.widths[i] = geometry.widthMm * end;
+            q.depths[i] = 1.0f - geometry.fadeFraction * defect_lane(h, 16 + i);
+            q.xmin = fminf(q.xmin, q.px[i] - geometry.widthMm * 0.5f);
+            q.xmax = fmaxf(q.xmax, q.px[i] + geometry.widthMm * 0.5f);
+            q.ymin = fminf(q.ymin, q.py[i] - geometry.widthMm * 0.5f);
+            q.ymax = fmaxf(q.ymax, q.py[i] + geometry.widthMm * 0.5f);
+        }
+    }
+
+    __device__ DefectPrimitive build_defect_candidate(const JuicerCuda::FilmDefectsPayload& p,
+                                                      const DefectCandidateAddress& address) {
+        DefectPrimitive q{};
+        const auto& dust = address.family == 0 ? p.filmDust : p.gateDust;
+        const auto& scratch = address.family == 1 ? p.filmScratch : p.gateScratch;
+        const bool isDust = address.family == 0 || address.family == 2;
+        const float probability = isDust ? dust.slotProbability : scratch.slotProbability;
+        const std::uint64_t h = defect_identity(p, address);
+        if (defect_lane(h, 0) >= probability) {
+            return q;
+        }
+        const float cellWidth = isDust ? dust.cellWidthMm : scratch.cellWidthMm;
+        const float cellHeight = isDust ? dust.cellHeightMm : scratch.cellHeightMm;
+        q.cx = (static_cast<float>(address.offsetX) + defect_lane(h, 1)) * cellWidth;
+        q.cy = (static_cast<float>(address.offsetY) + defect_lane(h, 2)) * cellHeight;
+        q.softness = isDust ? dust.softnessMm : scratch.softnessMm;
+        q.active = 1;
+        if (isDust) {
+            const float tau = dust.opticalDepthMin +
+                              (dust.opticalDepthMax - dust.opticalDepthMin) * defect_lane(h, 3);
+            q.strength = -expm1f(-tau);
+            const float angle = defect_lane(h, 4) * 6.28318530718f;
+            if (defect_lane(h, 5) < dust.fiberFraction) {
+                const float length = dust.fiberLengthMinMm +
+                                     (dust.fiberLengthMaxMm - dust.fiberLengthMinMm) * defect_lane(h, 6);
+                const float width = dust.fiberWidthMinMm +
+                                    (dust.fiberWidthMaxMm - dust.fiberWidthMinMm) * defect_lane(h, 7);
+                build_defect_stroke(q, h, DefectStrokeGeometry{length, width, dust.fiberDriftFraction, dust.fiberTaperFraction, 0.0f, angle});
+            } else {
+                const float diameter = defect_mixture(make_float2(defect_lane(h, 6), defect_lane(h, 7)), DefectLengthMixture{dust.diameterMinMm, dust.diameterBulkMaxMm, dust.diameterMaxMm, dust.diameterTailFraction});
+                const float c = cosf(angle);
+                const float s = sinf(angle);
+                for (int i = 0; i < 3; ++i) {
+                    const float rx = diameter * (i == 0 ? 0.34f : 0.23f);
+                    const float ry = rx * (0.5f + 0.35f * defect_lane(h, 20 + i));
+                    const float shift = (static_cast<float>(i) - 1.0f) * diameter * 0.15f;
+                    q.ex[i] = shift * c;
+                    q.ey[i] = shift * s;
+                    q.ea[i] = c * c / (rx * rx) + s * s / (ry * ry);
+                    q.eb[i] = c * s * (1.0f / (rx * rx) - 1.0f / (ry * ry));
+                    q.ec[i] = s * s / (rx * rx) + c * c / (ry * ry);
+                }
+                q.xmin = q.ymin = -diameter * 0.5f;
+                q.xmax = q.ymax = diameter * 0.5f;
+            }
+        } else {
+            q.strength = scratch.strengthMin +
+                         (scratch.strengthMax - scratch.strengthMin) * defect_lane(h, 3);
+            const float length = defect_mixture(make_float2(defect_lane(h, 6), defect_lane(h, 7)), DefectLengthMixture{scratch.lengthMinMm, scratch.lengthBulkMaxMm, scratch.lengthMaxMm, scratch.lengthTailFraction});
+            const float width = defect_mixture(make_float2(defect_lane(h, 8), defect_lane(h, 9)), DefectLengthMixture{scratch.widthMinMm, scratch.widthBulkMaxMm, scratch.widthMaxMm, scratch.widthTailFraction});
+            build_defect_stroke(q, h, DefectStrokeGeometry{length, width, scratch.driftFraction, scratch.taperFraction, scratch.fadeFraction, 0.0f});
+        }
+        return q;
+    }
+
+    // Integrate the union's horizontal intervals before applying one particle strength.
+    __device__ float defect_cross_section(const DefectPrimitive& q, float y, float2 horizontalBounds) {
+        float lo[5]{};
+        float hi[5]{};
+        float depth[5]{};
+        int count = 0;
+        for (int i = 0; i < 3; ++i) {
+            float a = 0.0f;
+            float b = 0.0f;
+            if (!q.stroke) {
+                const float dy = y - q.ey[i];
+                const float disc = q.ea[i] - (q.ea[i] * q.ec[i] - q.eb[i] * q.eb[i]) * dy * dy;
+                if (disc <= 0.0f) {
+                    continue;
+                }
+                const float center = q.ex[i] - q.eb[i] * dy / q.ea[i];
+                const float radius = sqrtf(disc) / q.ea[i];
+                a = center - radius;
+                b = center + radius;
+            } else {
+                // A tapered quadrilateral for each connected centerline segment.
+                const float dx = q.px[i + 1] - q.px[i];
+                const float dy = q.py[i + 1] - q.py[i];
+                const float invLength = rsqrtf(dx * dx + dy * dy);
+                const float nx = -dy * invLength * 0.5f;
+                const float ny = dx * invLength * 0.5f;
+                const float vx[4] = {q.px[i] + nx * q.widths[i], q.px[i + 1] + nx * q.widths[i + 1], q.px[i + 1] - nx * q.widths[i + 1], q.px[i] - nx * q.widths[i]};
+                const float vy[4] = {q.py[i] + ny * q.widths[i], q.py[i + 1] + ny * q.widths[i + 1], q.py[i + 1] - ny * q.widths[i + 1], q.py[i] - ny * q.widths[i]};
+                a = 1.0e30f;
+                b = -1.0e30f;
+                for (int edge = 0; edge < 4; ++edge) {
+                    const int next = (edge + 1) % 4;
+                    if (y >= fminf(vy[edge], vy[next]) && y < fmaxf(vy[edge], vy[next])) {
+                        const float x = vx[edge] + (y - vy[edge]) / (vy[next] - vy[edge]) * (vx[next] - vx[edge]);
+                        a = fminf(a, x);
+                        b = fmaxf(b, x);
+                    }
+                }
+            }
+            a = fmaxf(horizontalBounds.x, a);
+            b = fminf(horizontalBounds.y, b);
+            if (b > a) {
+                depth[count] = 1.0f;
+                if (q.stroke) {
+                    const float span = q.py[i + 1] - q.py[i];
+                    const float t = span != 0 ? fminf(1.0f, fmaxf(0.0f, (y - q.py[i]) / span)) : 0.5f;
+                    depth[count] = q.depths[i] + (q.depths[i + 1] - q.depths[i]) * t;
+                }
+                lo[count] = a;
+                hi[count] = b;
+                ++count;
+            }
+        }
+        if (q.stroke) {
+            for (int i = 1; i < 3; ++i) {
+                const float radius = q.widths[i] * 0.5f;
+                const float dy = y - q.py[i];
+                if (fabsf(dy) >= radius) {
+                    continue;
+                }
+                const float halfChord = sqrtf(fmaxf(0.0f, radius * radius - dy * dy));
+                const float a = fmaxf(horizontalBounds.x, q.px[i] - halfChord);
+                const float b = fminf(horizontalBounds.y, q.px[i] + halfChord);
+                if (b > a) {
+                    lo[count] = a;
+                    hi[count] = b;
+                    depth[count] = q.depths[i];
+                    ++count;
+                }
+            }
+        }
+        float ends[10]{};
+        for (int i = 0; i < count; ++i) {
+            ends[2 * static_cast<std::size_t>(i)] = lo[i];
+            ends[2 * static_cast<std::size_t>(i) + 1] = hi[i];
+        }
+        for (int i = 1; i < 2 * count; ++i) {
+            for (int j = i; j > 0 && ends[j] < ends[j - 1]; --j) {
+                const float value = ends[j];
+                ends[j] = ends[j - 1];
+                ends[j - 1] = value;
+            }
+        }
+        float length = 0.0f;
+        for (int i = 1; i < 2 * count; ++i) {
+            const float middle = (ends[i - 1] + ends[i]) * 0.5f;
+            float strength = 0.0f;
+            for (int segment = 0; segment < count; ++segment) {
+                if (middle >= lo[segment] && middle <= hi[segment]) {
+                    strength = fmaxf(strength, depth[segment]);
+                }
+            }
+            length += (ends[i] - ends[i - 1]) * strength;
+        }
+        return length;
+    }
+
+    __device__ float defect_coverage(const DefectPrimitive& q, float x, float y, float sx, float sy) {
+        x -= q.cx;
+        y -= q.cy;
+        if (x + sx * 0.5f + q.softness < q.xmin || x - sx * 0.5f - q.softness > q.xmax ||
+            y + sy * 0.5f + q.softness < q.ymin || y - sy * 0.5f - q.softness > q.ymax) {
+            return 0.0f;
+        }
+        // Compact, normalized physical box softness followed by the pixel footprint.
+        // Integrating over the clipped shape interval retains unresolved particle area.
+        float area = 0.0f;
+        for (int soft = 0; soft < 3; ++soft) {
+            const float shift = (static_cast<float>(soft) - 1.0f) * q.softness;
+            const float bottom = fmaxf(q.ymin, y - sy * 0.5f + shift);
+            const float top = fminf(q.ymax, y + sy * 0.5f + shift);
+            if (!(top > bottom)) {
+                continue;
+            }
+            float sum = 0.0f;
+            for (int row = 0; row < 8; ++row) {
+                const float sampleY = bottom + (static_cast<float>(row) + 0.5f) * (top - bottom) / 8.0f;
+                for (int col = 0; col < 3; ++col) {
+                    const float offset = (static_cast<float>(col) - 1.0f) * q.softness;
+                    sum += defect_cross_section(q, sampleY, make_float2(x - sx * 0.5f + offset, x + sx * 0.5f + offset));
+                }
+            }
+            area += sum * (top - bottom) / 72.0f;
+        }
+        return fminf(1.0f, fmaxf(0.0f, area / (sx * sy)));
+    }
+
+    template <int Capacity>
+    __device__ float evaluate_defect_family(const JuicerCuda::FilmDefectsPayload& p, int family, const DefectTileFootprint& footprint, DefectPrimitive (&batch)[Capacity]) {
+        const bool dust = family == 0 || family == 2;
+        const auto& dp = family == 0 ? p.filmDust : p.gateDust;
+        const auto& sp = family == 1 ? p.filmScratch : p.gateScratch;
+        const float probability = dust ? dp.slotProbability : sp.slotProbability;
+        if (!(probability > 0.0f)) {
+            return 1.0f;
+        }
+        const float cw = dust ? dp.cellWidthMm : sp.cellWidthMm;
+        const float ch = dust ? dp.cellHeightMm : sp.cellHeightMm;
+        const float supportX = dust ? dp.supportXMm + dp.softnessMm : sp.supportXMm + sp.softnessMm;
+        const float supportY = dust ? dp.supportYMm + dp.softnessMm : sp.supportYMm + sp.softnessMm;
+        const auto& origin = p.origins[family];
+        const float stepX = p.sampleStepXMm * footprint.scale;
+        const float stepY = p.sampleStepYMm * footprint.scale;
+        const float baseX = origin.localXMm;
+        const float baseY = origin.localYMm;
+        const int x0 = static_cast<int>(floorf((baseX + static_cast<float>(footprint.tileX) * stepX - supportX) / cw));
+        const int y0 = static_cast<int>(floorf((baseY + static_cast<float>(footprint.tileY) * stepY - supportY) / ch));
+        const int x1 = static_cast<int>(floorf((baseX + static_cast<float>(footprint.tileX + footprint.width) * stepX + supportX) / cw));
+        const int y1 = static_cast<int>(floorf((baseY + static_cast<float>(footprint.tileY + footprint.height) * stepY + supportY) / ch));
+        const int columns = x1 - x0 + 1;
+        const int total = columns * (y1 - y0 + 1) * 2;
+        const int lane = static_cast<int>(threadIdx.y * blockDim.x + threadIdx.x);
+        const int lanes = static_cast<int>(blockDim.x * blockDim.y);
+        float retained = 1.0f;
+        const float x = baseX + (static_cast<float>(footprint.pixelX) + 0.5f) * stepX;
+        const float y = baseY + (static_cast<float>(footprint.pixelY) + 0.5f) * stepY;
+        for (int first = 0; first < total; first += Capacity) {
+            const int count = min(Capacity, total - first);
+            for (int i = lane; i < count; i += lanes) {
+                const int ordinal = first + i;
+                const int dx = x0 + (ordinal / 2) % columns;
+                const int dy = y0 + (ordinal / 2) / columns;
+                batch[i] = build_defect_candidate(p, DefectCandidateAddress{origin.cellX + dx, origin.cellY + dy, family, ordinal % 2, dx, dy});
+            }
+            __syncthreads();
+            for (int i = 0; i < count; ++i) {
+                if (batch[i].active) {
+                    retained *= 1.0f - batch[i].strength * defect_coverage(batch[i], x, y, stepX, stepY);
+                }
+            }
+            __syncthreads();
+        }
+        return retained;
+    }
+
+    struct GateTransmittanceSample {
         const float* mask = nullptr;
         int width = 0;
         int height = 0;
@@ -1001,7 +1129,7 @@ namespace {
         float y = 0.0f;
     };
 
-    __device__ __forceinline__ float sample_gate_mask_device(GateMaskSample sample) {
+    __device__ __forceinline__ float sample_gate_transmittance_device(GateTransmittanceSample sample) {
         const float* mask = sample.mask;
         const int width = sample.width;
         const int height = sample.height;
@@ -1035,7 +1163,8 @@ __global__ void develop_print_density_kernel(
     JuicerCuda::PipelineRunParams params,
     float* ioC,
     float* ioM,
-    float* ioY) {
+    float* ioY,
+    const float* filmDustTransmittance) {
     if (!params.printExpose.active) {
         return;
     }
@@ -1052,7 +1181,7 @@ __global__ void develop_print_density_kernel(
         for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
             const std::size_t idx = y * width + x;
             float D_cmy[3] = {ioC[idx], ioM[idx], ioY[idx]};
-            apply_print_pipeline_device(params.printExpose, params.printDevelop, D_cmy);
+            apply_print_pipeline_device(params.printExpose, params.printDevelop, D_cmy, filmDustTransmittance ? filmDustTransmittance[idx] : 1.0f);
             ioC[idx] = D_cmy[0];
             ioM[idx] = D_cmy[1];
             ioY[idx] = D_cmy[2];
@@ -1065,7 +1194,8 @@ __global__ void build_enlarger_print_linear_exposure_kernel(
     const float* densityC,
     const float* densityM,
     const float* densityY,
-    JuicerCuda::EnlargerPrintLinearExposurePlanes planes) {
+    JuicerCuda::EnlargerPrintLinearExposurePlanes planes,
+    const float* filmDustTransmittance) {
     const std::size_t width = static_cast<std::size_t>(params.width);
     const std::size_t height = static_cast<std::size_t>(params.height);
     const std::size_t yStep =
@@ -1096,7 +1226,8 @@ __global__ void build_enlarger_print_linear_exposure_kernel(
             if (!print_inner_raw_device(
                     params.printExpose,
                     filmDensityCmy,
-                    innerRaw)) {
+                    innerRaw,
+                    filmDustTransmittance ? filmDustTransmittance[frameOffset] : 1.0f)) {
                 continue;
             }
             print_linear_for_diffusion_device(
@@ -1383,7 +1514,7 @@ namespace {
         }
 
         if constexpr (requires { params.printExpose; params.printDevelop; }) {
-            apply_print_pipeline_device(params.printExpose, params.printDevelop, D_cmy);
+            apply_print_pipeline_device(params.printExpose, params.printDevelop, D_cmy, 1.0f);
         }
 
         // Scan: normalize density -> logXYZ
@@ -1521,6 +1652,7 @@ namespace {
         const float* densityM = nullptr;
         const float* densityY = nullptr;
         const float* glarePercent = nullptr;
+        const float* filmDustTransmittance = nullptr;
         float* outputR = nullptr;
         float* outputG = nullptr;
         float* outputB = nullptr;
@@ -1579,6 +1711,12 @@ namespace {
                     static_cast<double>(exp2f(log2XYZ[1])),
                     static_cast<double>(exp2f(log2XYZ[2]))};
 
+                if (planes.filmDustTransmittance) {
+                    const double transmittance = planes.filmDustTransmittance[idx];
+                    xyz[0] *= transmittance;
+                    xyz[1] *= transmittance;
+                    xyz[2] *= transmittance;
+                }
                 if (scan.correctionActive) {
                     const double correctedY = fmin(fmax(
                                                        static_cast<double>(scan.correctionSlope) * xyz[1] +
@@ -1620,158 +1758,41 @@ namespace {
     // CUDA dimensions and C/M/Y planes follow the focused ABI.
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
     __global__ void apply_film_defects_kernel(
-        JuicerCuda::GrainPayload grain,
-        int width,
-        int height,
-        float* ioC,
-        float* ioM,
-        float* ioY) {
-        if (!ioC || !ioM || !ioY || width <= 0 || height <= 0) {
-            return;
-        }
-        const float dustAmount = grain.filmDustAmount;
-        const float scratchAmount = grain.filmScratchAmount;
-        if (!(dustAmount > 0.0f) && !(scratchAmount > 0.0f)) {
-            return;
-        }
-        if (!(grain.pixelSizeUm > 0.0f)) {
-            return;
-        }
-
-        const std::uint64_t sessionSeed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
-        const std::uint64_t clipSeed = splitmix64_device(grain.clipToken ^ 0xD1B54A32D192ED03ULL);
-        const std::uint64_t seedBase = sessionSeed ^ clipSeed;
-        const std::uint64_t seedDust = splitmix64_device(seedBase ^ 0xF0D0C0B0A0908071ULL);
-        const std::uint64_t seedScratch = splitmix64_device(seedBase ^ 0x8EBC6AF09C88C6E3ULL);
-
-        const float time = static_cast<float>(grain.frameIndex) + grain.timeAlpha;
-        const float rollPx = (grain.pitchPx > 0) ? static_cast<float>(grain.pitchPx) : 0.0f;
-
-        constexpr float kDustCellUm = 400.0f;
-        constexpr float kDustBaseProb = 0.02f;
-        constexpr float kDustSizeUm = 25.0f;
-        constexpr float kDustStrength = 0.45f;
-        constexpr float kDustBrightMix = 0.20f;
-        constexpr float kDustBrightScale = 0.5f;
-
-        constexpr float kScratchCellUmX = 3500.0f;
-        constexpr float kScratchCellUmY = 7000.0f;
-        constexpr float kScratchBaseProb = 0.01f;
-        constexpr float kScratchWidthUm = 15.0f;
-        constexpr float kScratchStrength = 0.35f;
-        constexpr float kScratchBrightMix = 0.10f;
-        constexpr float kScratchBrightScale = 0.4f;
-        constexpr float kScratchMaxAngle = 0.08726646f; // 5 deg
-
-        const float pixelToMm = grain.pixelSizeUm * 0.001f;
-        const float dustCellMm = kDustCellUm * 0.001f;
-        const float scratchCellMmX = kScratchCellUmX * 0.001f;
-        const float scratchCellMmY = kScratchCellUmY * 0.001f;
-        const std::size_t widthCount = static_cast<std::size_t>(width);
-        const std::size_t heightCount = static_cast<std::size_t>(height);
-        const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
-        const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
-        for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < heightCount; y += yStep) {
-            for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < widthCount; x += xStep) {
-                const std::int64_t absXSigned = static_cast<std::int64_t>(grain.originX) + static_cast<std::int64_t>(x);
-                const std::int64_t absYSigned = static_cast<std::int64_t>(grain.originY) + static_cast<std::int64_t>(y);
-                const float absX = static_cast<float>(absXSigned);
-                const float absY = static_cast<float>(absYSigned);
-                const float rollY = absY + rollPx * time;
-                const float xMm = absX * pixelToMm;
-                const float rollYMm = rollY * pixelToMm;
-
-                DefectSampleLocation location{};
-                location.xMm = xMm;
-                location.yMm = rollYMm;
-                location.pixelSizeUm = grain.pixelSizeUm;
-
-                DustMaskParams dustParams{};
-                dustParams.amount = dustAmount;
-                dustParams.seed = seedDust;
-                dustParams.cellMm = dustCellMm;
-                dustParams.lambdaPerMm2 = kDustBaseProb;
-                dustParams.sizeUm = kDustSizeUm;
-                dustParams.strength = kDustStrength;
-                dustParams.brightMix = kDustBrightMix;
-                dustParams.brightScale = kDustBrightScale;
-                const float dustMask = dust_mask_device(location, dustParams);
-
-                ScratchMaskParams scratchParams{};
-                scratchParams.amount = scratchAmount;
-                scratchParams.seed = seedScratch;
-                scratchParams.cellMmX = scratchCellMmX;
-                scratchParams.cellMmY = scratchCellMmY;
-                scratchParams.lambdaPerMm = kScratchBaseProb;
-                scratchParams.widthUm = kScratchWidthUm;
-                scratchParams.strength = kScratchStrength;
-                scratchParams.maxAngleRad = kScratchMaxAngle;
-                scratchParams.brightMix = kScratchBrightMix;
-                scratchParams.brightScale = kScratchBrightScale;
-                const float scratchMask = scratch_mask_device(location, scratchParams);
-                float delta = dustMask + scratchMask;
-                if (!device_isfinite(delta)) {
-                    delta = 0.0f;
-                }
-                if (delta != 0.0f) {
-                    const std::size_t idx = y * widthCount + x;
-                    ioC[idx] = ioC[idx] + delta;
-                    ioM[idx] = ioM[idx] + delta;
-                    ioY[idx] = ioY[idx] + delta;
-                }
+        JuicerCuda::FilmDefectsPayload defects, int width, int height, float* ioC, float* ioM, float* ioY, float* dustTransmittance) {
+        __shared__ DefectPrimitive batch[32];
+        const int tx = static_cast<int>(blockIdx.x * blockDim.x);
+        const int ty = static_cast<int>(blockIdx.y * blockDim.y);
+        const int x = tx + static_cast<int>(threadIdx.x);
+        const int y = ty + static_cast<int>(threadIdx.y);
+        const int fullX = x + defects.roiOffsetX;
+        const int fullY = y + defects.roiOffsetY;
+        const float dust = evaluate_defect_family(defects, 0, DefectTileFootprint{fullX, fullY, tx + defects.roiOffsetX, ty + defects.roiOffsetY, static_cast<int>(blockDim.x), static_cast<int>(blockDim.y), 1.0f}, batch);
+        const float retained = evaluate_defect_family(defects, 1, DefectTileFootprint{fullX, fullY, tx + defects.roiOffsetX, ty + defects.roiOffsetY, static_cast<int>(blockDim.x), static_cast<int>(blockDim.y), 1.0f}, batch);
+        if (x < width && y < height) {
+            const std::size_t i = static_cast<std::size_t>(y) * width + x;
+            if (dustTransmittance) {
+                dustTransmittance[i] = dust;
+            }
+            if (defects.filmScratch.slotProbability > 0.0f) {
+                ioC[i] *= retained;
+                ioM[i] *= retained;
+                ioY[i] *= retained;
             }
         }
     }
     // NOLINTEND(bugprone-easily-swappable-parameters)
 
-    __global__ void gate_defect_mask_kernel(
-        JuicerCuda::GrainPayload grain,
-        float* outMask,
-        int maskWidth,
-        int maskHeight) {
-        if (!outMask || maskWidth <= 0 || maskHeight <= 0) {
-            return;
-        }
-
-        const float dustAmount = grain.gateDustAmount;
-        const float scratchAmount = grain.gateScratchAmount;
-        const bool gateActive = (dustAmount > 0.0f) || (scratchAmount > 0.0f);
-        const bool pixelSizeValid = (grain.pixelSizeUm > 0.0f);
-
-        const std::uint64_t sessionSeed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
-        const std::uint64_t seedGateDust = splitmix64_device(sessionSeed ^ 0xA1B2C3D4E5F60718ULL);
-        const std::uint64_t seedGateScratch = splitmix64_device(sessionSeed ^ 0xC6A4A7935BD1E995ULL);
-
-        const float pixelToMm = grain.pixelSizeUm * 0.001f;
-        const std::size_t width = static_cast<std::size_t>(maskWidth);
-        const std::size_t height = static_cast<std::size_t>(maskHeight);
-        const std::size_t yStep = static_cast<std::size_t>(blockDim.y) * static_cast<std::size_t>(gridDim.y);
-        const std::size_t xStep = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(gridDim.x);
-        for (std::size_t y = static_cast<std::size_t>(blockIdx.y) * static_cast<std::size_t>(blockDim.y) + static_cast<std::size_t>(threadIdx.y); y < height; y += yStep) {
-            for (std::size_t x = static_cast<std::size_t>(blockIdx.x) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x); x < width; x += xStep) {
-                if (!gateActive || !pixelSizeValid) {
-                    outMask[y * width + x] = 0.0f;
-                    continue;
-                }
-
-                const float absX = static_cast<float>(grain.originX) + static_cast<float>(x) * 2.0f;
-                const float absY = static_cast<float>(grain.originY) + static_cast<float>(y) * 2.0f;
-                const float xMm = absX * pixelToMm;
-                const float yMm = absY * pixelToMm;
-
-                DefectSampleLocation location{};
-                location.xMm = xMm;
-                location.yMm = yMm;
-                location.pixelSizeUm = grain.pixelSizeUm;
-                GateMaskParams gateParams{};
-                gateParams.dustAmount = dustAmount;
-                gateParams.scratchAmount = scratchAmount;
-                gateParams.dustSeed = seedGateDust;
-                gateParams.scratchSeed = seedGateScratch;
-                const float gateMask = gate_mask_device(location, gateParams);
-
-                outMask[y * width + x] = gateMask;
-            }
+    __global__ void gate_defect_transmittance_kernel(
+        JuicerCuda::FilmDefectsPayload defects, float* output, int width, int height) {
+        __shared__ DefectPrimitive batch[32];
+        const int tx = static_cast<int>(blockIdx.x * blockDim.x);
+        const int ty = static_cast<int>(blockIdx.y * blockDim.y);
+        const int x = tx + static_cast<int>(threadIdx.x);
+        const int y = ty + static_cast<int>(threadIdx.y);
+        const float dust = evaluate_defect_family(defects, 2, DefectTileFootprint{x, y, tx, ty, static_cast<int>(blockDim.x), static_cast<int>(blockDim.y), 2.0f}, batch);
+        const float scratch = evaluate_defect_family(defects, 3, DefectTileFootprint{x, y, tx, ty, static_cast<int>(blockDim.x), static_cast<int>(blockDim.y), 2.0f}, batch);
+        if (x < width && y < height) {
+            output[static_cast<std::size_t>(y) * width + x] = dust * scratch;
         }
     }
 
@@ -1781,11 +1802,11 @@ namespace {
         const float* rgbR,
         const float* rgbG,
         const float* rgbB,
-        JuicerCuda::GrainPayload gateDefects,
+        JuicerCuda::FilmDefectsPayload gateDefects,
         JuicerCuda::GateWeavePayload weave,
-        const float* gateMask,
-        int gateMaskWidth,
-        int gateMaskHeight) {
+        const float* gateTransmittance,
+        int gateTransmittanceWidth,
+        int gateTransmittanceHeight) {
         if (!params.src || !params.dst || !rgbR || !rgbG || !rgbB ||
             params.srcRowBytes == 0 || params.dstRowBytes == 0) {
             return;
@@ -1831,33 +1852,19 @@ namespace {
             rgbOut[1] = static_cast<double>(rgbG[idx]);
             rgbOut[2] = static_cast<double>(rgbB[idx]);
         }
-        if (gateMask && gateMaskWidth > 0 && gateMaskHeight > 0) {
-            const float absoluteX =
-                static_cast<float>(gateDefects.originX) +
-                static_cast<float>(x);
-            const float absoluteY =
-                static_cast<float>(gateDefects.originY) +
-                static_cast<float>(y);
-            const float maskX =
-                (absoluteX - static_cast<float>(gateDefects.originX)) * 0.5f;
-            const float maskY =
-                (absoluteY - static_cast<float>(gateDefects.originY)) * 0.5f;
-            GateMaskSample maskSample{};
-            maskSample.mask = gateMask;
-            maskSample.width = gateMaskWidth;
-            maskSample.height = gateMaskHeight;
-            maskSample.x = maskX;
-            maskSample.y = maskY;
-            float mask = sample_gate_mask_device(maskSample);
-            if (device_isfinite(mask) && mask != 0.0f) {
-                mask = fminf(fmaxf(mask, -0.5f), 0.95f);
-                const double transmittance =
-                    static_cast<double>(1.0f - mask);
-                rgbOut[0] *= transmittance;
-                rgbOut[1] *= transmittance;
-                rgbOut[2] *= transmittance;
-            }
+        if (gateTransmittance && gateTransmittanceWidth > 0 && gateTransmittanceHeight > 0) {
+            GateTransmittanceSample maskSample{};
+            maskSample.mask = gateTransmittance;
+            maskSample.width = gateTransmittanceWidth;
+            maskSample.height = gateTransmittanceHeight;
+            maskSample.x = (static_cast<float>(gateDefects.roiOffsetX + static_cast<int>(x))) * 0.5f - 0.25f;
+            maskSample.y = (static_cast<float>(gateDefects.roiOffsetY + static_cast<int>(y))) * 0.5f - 0.25f;
+            const double transmittance = static_cast<double>(sample_gate_transmittance_device(maskSample));
+            rgbOut[0] *= transmittance;
+            rgbOut[1] *= transmittance;
+            rgbOut[2] *= transmittance;
         }
+
         apply_output_encoding_device(params.scanStage.scanColor.encoding, rgbOut);
 
         const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
@@ -1881,15 +1888,19 @@ namespace {
 } // namespace
 
 extern "C" cudaError_t juicer_cuda_apply_film_defects(
-    const JuicerCuda::GrainPayload* defects,
+    const JuicerCuda::FilmDefectsPayload* defects,
     int width,
     int height,
     float* densityC,
     float* densityM,
     float* densityY,
+    float* dustTransmittance,
     void* cudaStreamOpaque) {
     if (!defects || !densityC || !densityM || !densityY ||
         width <= 0 || height <= 0) {
+        return cudaErrorInvalidValue;
+    }
+    if (defects->filmDust.slotProbability > 0.0f && !dustTransmittance) {
         return cudaErrorInvalidValue;
     }
     cudaStream_t stream = cudaStreamOpaque
@@ -1905,17 +1916,18 @@ extern "C" cudaError_t juicer_cuda_apply_film_defects(
         height,
         densityC,
         densityM,
-        densityY);
+        densityY,
+        dustTransmittance);
     return cudaGetLastError();
 }
 
-extern "C" cudaError_t juicer_cuda_build_gate_defect_mask_focused(
-    const JuicerCuda::GrainPayload* defects,
-    float* gateMask,
-    int gateMaskWidth,
-    int gateMaskHeight,
+extern "C" cudaError_t juicer_cuda_build_gate_defect_transmittance_focused(
+    const JuicerCuda::FilmDefectsPayload* defects,
+    float* gateTransmittance,
+    int gateTransmittanceWidth,
+    int gateTransmittanceHeight,
     void* cudaStreamOpaque) {
-    if (!defects || !gateMask || gateMaskWidth <= 0 || gateMaskHeight <= 0) {
+    if (!defects || !gateTransmittance || gateTransmittanceWidth <= 0 || gateTransmittanceHeight <= 0) {
         return cudaErrorInvalidValue;
     }
     cudaStream_t stream = cudaStreamOpaque
@@ -1923,13 +1935,13 @@ extern "C" cudaError_t juicer_cuda_build_gate_defect_mask_focused(
                               : nullptr;
     dim3 threads(32, 8);
     dim3 blocks(
-        (static_cast<unsigned int>(gateMaskWidth) + threads.x - 1) / threads.x,
-        (static_cast<unsigned int>(gateMaskHeight) + threads.y - 1) / threads.y);
-    gate_defect_mask_kernel<<<blocks, threads, 0, stream>>>(
+        (static_cast<unsigned int>(gateTransmittanceWidth) + threads.x - 1) / threads.x,
+        (static_cast<unsigned int>(gateTransmittanceHeight) + threads.y - 1) / threads.y);
+    gate_defect_transmittance_kernel<<<blocks, threads, 0, stream>>>(
         *defects,
-        gateMask,
-        gateMaskWidth,
-        gateMaskHeight);
+        gateTransmittance,
+        gateTransmittanceWidth,
+        gateTransmittanceHeight);
     return cudaGetLastError();
 }
 
@@ -2150,6 +2162,7 @@ cudaError_t launch_focused_print_continuation_from_capture_density(
     float* dDensityC,
     float* dDensityM,
     float* dDensityY,
+    const float* filmDustTransmittance,
     void* cudaStreamOpaque) {
     if (!hParams || !dDensityC || !dDensityM || !dDensityY) {
         return cudaErrorInvalidValue;
@@ -2169,7 +2182,8 @@ cudaError_t launch_focused_print_continuation_from_capture_density(
         params,
         dDensityC,
         dDensityM,
-        dDensityY);
+        dDensityY,
+        filmDustTransmittance);
     return cudaGetLastError();
 }
 
@@ -2201,6 +2215,7 @@ cudaError_t launch_focused_enlarger_print_linear_exposure(
     const float* dDensityM,
     const float* dDensityY,
     JuicerCuda::EnlargerPrintLinearExposurePlanes planes,
+    const float* filmDustTransmittance,
     void* cudaStreamOpaque) {
     if (!hParams || !dDensityC || !dDensityM || !dDensityY) {
         return cudaErrorInvalidValue;
@@ -2228,7 +2243,8 @@ cudaError_t launch_focused_enlarger_print_linear_exposure(
         dDensityC,
         dDensityM,
         dDensityY,
-        planes);
+        planes,
+        filmDustTransmittance);
     return cudaGetLastError();
 }
 
@@ -2279,6 +2295,7 @@ cudaError_t launch_focused_scan_linear_density_rgb(
     float* dTmp,
     float* dScratchBlurred,
     const FocusedScannerPostEffectOptions& options,
+    const float* filmDustTransmittance,
     void* cudaStreamOpaque) {
     if (!hParams || !dDensityC || !dDensityM || !dDensityY || !rgb.r || !rgb.g || !rgb.b) {
         return cudaErrorInvalidValue;
@@ -2360,6 +2377,7 @@ cudaError_t launch_focused_scan_linear_density_rgb(
     scanPlanes.densityM = dDensityM;
     scanPlanes.densityY = dDensityY;
     scanPlanes.glarePercent = glarePercent;
+    scanPlanes.filmDustTransmittance = filmDustTransmittance;
     scanPlanes.outputR = rgb.r;
     scanPlanes.outputG = rgb.g;
     scanPlanes.outputB = rgb.b;
@@ -2424,11 +2442,11 @@ cudaError_t launch_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
-    const JuicerCuda::GrainPayload* gateDefects,
+    const JuicerCuda::FilmDefectsPayload* gateDefects,
     const JuicerCuda::GateWeavePayload* weave,
-    const float* gateMask,
-    int gateMaskWidth,
-    int gateMaskHeight,
+    const float* gateTransmittance,
+    int gateTransmittanceWidth,
+    int gateTransmittanceHeight,
     void* cudaStreamOpaque) {
     if (!hParams || !hParams->src || !hParams->dst || !rgb.r || !rgb.g || !rgb.b) {
         return cudaErrorInvalidValue;
@@ -2441,9 +2459,9 @@ cudaError_t launch_focused_scanner_post_output(
         params.srcRowBytes == 0 || params.dstRowBytes == 0) {
         return cudaErrorInvalidValue;
     }
-    if ((gateMask != nullptr) !=
-            (gateMaskWidth > 0 && gateMaskHeight > 0) ||
-        (gateMask && !gateDefects)) {
+    if ((gateTransmittance != nullptr) !=
+            (gateTransmittanceWidth > 0 && gateTransmittanceHeight > 0) ||
+        (gateTransmittance && !gateDefects)) {
         return cudaErrorInvalidValue;
     }
     cudaStream_t stream =
@@ -2553,11 +2571,11 @@ cudaError_t launch_focused_scanner_post_output(
         rgb.r,
         rgb.g,
         rgb.b,
-        gateDefects ? *gateDefects : JuicerCuda::GrainPayload{},
+        gateDefects ? *gateDefects : JuicerCuda::FilmDefectsPayload{},
         weave ? *weave : JuicerCuda::GateWeavePayload{},
-        gateMask,
-        gateMaskWidth,
-        gateMaskHeight);
+        gateTransmittance,
+        gateTransmittanceWidth,
+        gateTransmittanceHeight);
     return cudaGetLastError();
 }
 
@@ -2594,12 +2612,14 @@ extern "C" cudaError_t juicer_cuda_print_focused_continue_from_capture_density(
     float* dDensityC,
     float* dDensityM,
     float* dDensityY,
+    const float* filmDustTransmittance,
     void* cudaStreamOpaque) {
     return launch_focused_print_continuation_from_capture_density(
         hParams,
         dDensityC,
         dDensityM,
         dDensityY,
+        filmDustTransmittance,
         cudaStreamOpaque);
 }
 
@@ -2609,6 +2629,7 @@ extern "C" cudaError_t juicer_cuda_print_focused_enlarger_linear_exposure(
     const float* dDensityM,
     const float* dDensityY,
     JuicerCuda::EnlargerPrintLinearExposurePlanes planes,
+    const float* filmDustTransmittance,
     void* cudaStreamOpaque) {
     return launch_focused_enlarger_print_linear_exposure(
         hParams,
@@ -2616,6 +2637,7 @@ extern "C" cudaError_t juicer_cuda_print_focused_enlarger_linear_exposure(
         dDensityM,
         dDensityY,
         planes,
+        filmDustTransmittance,
         cudaStreamOpaque);
 }
 
@@ -2644,6 +2666,7 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_density_rgb(
     float* dRgbR,
     float* dRgbG,
     float* dRgbB,
+    const float* filmDustTransmittance,
     void* cudaStreamOpaque) {
     return launch_focused_scan_linear_density_rgb(
         hParams,
@@ -2654,6 +2677,7 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_density_rgb(
         nullptr,
         nullptr,
         FocusedScannerPostEffectOptions{},
+        filmDustTransmittance,
         cudaStreamOpaque);
 }
 
@@ -2692,6 +2716,7 @@ extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_density_rgb(
             glareRoughness,
             dGlareKernel,
             glareRadius},
+        nullptr,
         cudaStreamOpaque);
 }
 
@@ -2753,11 +2778,11 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
-    const JuicerCuda::GrainPayload* gateDefects,
+    const JuicerCuda::FilmDefectsPayload* gateDefects,
     const JuicerCuda::GateWeavePayload* weave,
-    const float* gateMask,
-    int gateMaskWidth,
-    int gateMaskHeight,
+    const float* gateTransmittance,
+    int gateTransmittanceWidth,
+    int gateTransmittanceHeight,
     void* cudaStreamOpaque) {
     return launch_focused_scanner_post_output(
         hParams,
@@ -2770,9 +2795,9 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
         unsharpAmount,
         gateDefects,
         weave,
-        gateMask,
-        gateMaskWidth,
-        gateMaskHeight,
+        gateTransmittance,
+        gateTransmittanceWidth,
+        gateTransmittanceHeight,
         cudaStreamOpaque);
 }
 
@@ -2787,11 +2812,11 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
-    const JuicerCuda::GrainPayload* gateDefects,
+    const JuicerCuda::FilmDefectsPayload* gateDefects,
     const JuicerCuda::GateWeavePayload* weave,
-    const float* gateMask,
-    int gateMaskWidth,
-    int gateMaskHeight,
+    const float* gateTransmittance,
+    int gateTransmittanceWidth,
+    int gateTransmittanceHeight,
     void* cudaStreamOpaque) {
     return launch_focused_scanner_post_output(
         hParams,
@@ -2804,9 +2829,9 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
         unsharpAmount,
         gateDefects,
         weave,
-        gateMask,
-        gateMaskWidth,
-        gateMaskHeight,
+        gateTransmittance,
+        gateTransmittanceWidth,
+        gateTransmittanceHeight,
         cudaStreamOpaque);
 }
 

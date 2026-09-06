@@ -556,38 +556,160 @@ namespace {
                    : 0.0;
     }
 
-    std::uint64_t hash_film_juicer_effects_recipe(
-        const FilmJuicerEffectsRecipe& recipe) {
+    void hash_defect_policy(std::uint64_t& hash, const DefectDustRecipe& policy) {
+        if (!(policy.slotProbability > 0.0f)) {
+            return;
+        }
+        hash_value(hash, policy.cellWidthMm);
+        hash_value(hash, policy.cellHeightMm);
+        hash_value(hash, policy.slotProbability);
+        hash_value(hash, policy.softnessMm);
+        hash_value(hash, policy.supportXMm);
+        hash_value(hash, policy.supportYMm);
+        hash_value(hash, policy.fiberFraction);
+        hash_value(hash, policy.fiberDriftFraction);
+        hash_value(hash, policy.fiberTaperFraction);
+        hash_value(hash, policy.diameterMinMm);
+        hash_value(hash, policy.diameterBulkMaxMm);
+        hash_value(hash, policy.diameterMaxMm);
+        hash_value(hash, policy.diameterTailFraction);
+        hash_value(hash, policy.fiberLengthMinMm);
+        hash_value(hash, policy.fiberLengthMaxMm);
+        hash_value(hash, policy.fiberWidthMinMm);
+        hash_value(hash, policy.fiberWidthMaxMm);
+        hash_value(hash, policy.opticalDepthMin);
+        hash_value(hash, policy.opticalDepthMax);
+    }
+
+    void hash_defect_policy(std::uint64_t& hash, const DefectScratchRecipe& policy) {
+        if (!(policy.slotProbability > 0.0f)) {
+            return;
+        }
+        hash_value(hash, policy.cellWidthMm);
+        hash_value(hash, policy.cellHeightMm);
+        hash_value(hash, policy.slotProbability);
+        hash_value(hash, policy.softnessMm);
+        hash_value(hash, policy.supportXMm);
+        hash_value(hash, policy.supportYMm);
+        hash_value(hash, policy.lengthMinMm);
+        hash_value(hash, policy.lengthBulkMaxMm);
+        hash_value(hash, policy.lengthMaxMm);
+        hash_value(hash, policy.lengthTailFraction);
+        hash_value(hash, policy.widthMinMm);
+        hash_value(hash, policy.widthBulkMaxMm);
+        hash_value(hash, policy.widthMaxMm);
+        hash_value(hash, policy.widthTailFraction);
+        hash_value(hash, policy.driftFraction);
+        hash_value(hash, policy.taperFraction);
+        hash_value(hash, policy.fadeFraction);
+        hash_value(hash, policy.strengthMin);
+        hash_value(hash, policy.strengthMax);
+    }
+
+    std::uint64_t hash_film_juicer_effects_recipe(const FilmJuicerEffectsRecipe& recipe) {
         if (!recipe.active) {
             return 0;
         }
         std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, recipe.filmDustAmount);
-        hash_value(hash, recipe.filmScratchAmount);
-        hash_value(hash, recipe.gateDustAmount);
-        hash_value(hash, recipe.gateScratchAmount);
+        hash_value(hash, recipe.filmDust.slotProbability > 0.0f);
+        hash_defect_policy(hash, recipe.filmDust);
+        hash_value(hash, recipe.filmScratch.slotProbability > 0.0f);
+        hash_defect_policy(hash, recipe.filmScratch);
+        hash_value(hash, recipe.gateDust.slotProbability > 0.0f);
+        hash_defect_policy(hash, recipe.gateDust);
+        hash_value(hash, recipe.gateScratch.slotProbability > 0.0f);
+        hash_defect_policy(hash, recipe.gateScratch);
         hash_value(hash, recipe.gateWeaveAmount);
         hash_value(hash, recipe.active);
         return hash;
     }
 
-    void build_film_juicer_effects_recipe(
+    bool build_film_juicer_effects_recipe(
         const Spektrafilm::FilmFoundationBuildInput& input,
+        const VisualGrainRecipe& grain,
         FilmJuicerEffectsRecipe& out) {
-        out = FilmJuicerEffectsRecipe{};
-        out.filmDustAmount = normalize_effect_amount(input.filmDustAmount);
-        out.filmScratchAmount =
-            normalize_effect_amount(input.filmScratchAmount);
-        out.gateDustAmount = normalize_effect_amount(input.gateDustAmount);
-        out.gateScratchAmount =
-            normalize_effect_amount(input.gateScratchAmount);
+        out = {};
+        if (grain.active && grain.debugView != 0) {
+            return true;
+        }
+        const auto dust = [](float amount, float maximumRate) {
+            DefectDustRecipe p{};
+            if (!(amount > 0.0f)) {
+                return p;
+            }
+            p.cellWidthMm = 0.5f;
+            p.cellHeightMm = 0.5f;
+            p.slotProbability = maximumRate * std::pow(amount / 10.0f, 2.2f) *
+                                p.cellWidthMm * p.cellHeightMm / 2.0f;
+            p.softnessMm = 0.001f;
+            p.fiberFraction = 0.25f;
+            p.fiberDriftFraction = 0.10f;
+            p.fiberTaperFraction = 0.2f;
+            p.diameterMinMm = 0.008f;
+            p.diameterBulkMaxMm = 0.080f;
+            p.diameterMaxMm = 0.250f;
+            p.diameterTailFraction = 0.20f;
+            p.fiberLengthMinMm = 0.04f;
+            p.fiberLengthMaxMm = 0.65f;
+            p.fiberWidthMinMm = 0.003f;
+            p.fiberWidthMaxMm = 0.025f;
+            p.opticalDepthMin = 0.20f;
+            p.opticalDepthMax = 4.5f;
+            p.supportXMm = p.fiberLengthMaxMm * (0.5f + p.fiberDriftFraction) + p.fiberWidthMaxMm;
+            p.supportYMm = p.supportXMm;
+            return p;
+        };
+        const auto scratch = [](float amount, const std::array<float, 2>& maximumLengthDensityAndStrength) {
+            const float maximumLengthDensity = maximumLengthDensityAndStrength[0];
+            const float strengthMax = maximumLengthDensityAndStrength[1];
+            DefectScratchRecipe p{};
+            if (!(amount > 0.0f)) {
+                return p;
+            }
+            p.cellWidthMm = 1.0f;
+            p.cellHeightMm = 8.0f;
+            p.lengthMinMm = 0.25f;
+            p.lengthBulkMaxMm = 6.0f;
+            p.lengthMaxMm = 24.0f;
+            p.lengthTailFraction = 0.16f;
+            // Each mixture branch uses u^3: E[u^3] = 1/4. Length is arc length.
+            const float expectedLength =
+                (1.0f - p.lengthTailFraction) * (p.lengthMinMm +
+                                                 (p.lengthBulkMaxMm - p.lengthMinMm) * 0.25f) +
+                p.lengthTailFraction * (p.lengthBulkMaxMm +
+                                        (p.lengthMaxMm - p.lengthBulkMaxMm) * 0.25f);
+            p.slotProbability = maximumLengthDensity * std::pow(amount / 10.0f, 2.2f) /
+                                expectedLength * p.cellWidthMm * p.cellHeightMm / 2.0f;
+            p.widthMinMm = 0.002f;
+            p.widthBulkMaxMm = 0.025f;
+            p.widthMaxMm = 0.080f;
+            p.widthTailFraction = 0.18f;
+            p.driftFraction = 0.025f;
+            p.taperFraction = 0.15f;
+            p.fadeFraction = 0.35f;
+            p.strengthMin = strengthMax * 0.15f;
+            p.strengthMax = strengthMax;
+            p.softnessMm = 0.0005f;
+            p.supportXMm = p.lengthMaxMm * p.driftFraction + p.widthMaxMm;
+            p.supportYMm = p.lengthMaxMm * 0.5f + p.widthMaxMm;
+            return p;
+        };
+        out.filmDust = dust(normalize_effect_amount(input.filmDustAmount), 0.80f);
+        out.gateDust = dust(normalize_effect_amount(input.gateDustAmount), 0.40f);
+        out.filmScratch = scratch(normalize_effect_amount(input.filmScratchAmount), {0.080f, 0.95f});
+        out.gateScratch = scratch(normalize_effect_amount(input.gateScratchAmount), {0.040f, 0.85f});
         out.gateWeaveAmount = normalize_effect_amount(input.gateWeaveAmount);
-        out.active = out.filmDustAmount > 0.0f ||
-                     out.filmScratchAmount > 0.0f ||
-                     out.gateDustAmount > 0.0f ||
-                     out.gateScratchAmount > 0.0f ||
+        for (float probability : {out.filmDust.slotProbability, out.gateDust.slotProbability, out.filmScratch.slotProbability, out.gateScratch.slotProbability}) {
+            if (!std::isfinite(probability) || probability < 0.0f || probability >= 0.25f) {
+                out = {};
+                return false;
+            }
+        }
+        out.active = out.filmDust.slotProbability > 0.0f || out.filmScratch.slotProbability > 0.0f ||
+                     out.gateDust.slotProbability > 0.0f || out.gateScratch.slotProbability > 0.0f ||
                      out.gateWeaveAmount > 0.0;
         out.hash = hash_film_juicer_effects_recipe(out);
+        return true;
     }
 
     bool build_visual_grain_recipe(
@@ -1596,7 +1718,9 @@ namespace Spektrafilm {
                     recipe.visualGrain)) {
                 return fail("MalformedRequiredProfileData phase=9A field=visual_grain");
             }
-            build_film_juicer_effects_recipe(input, recipe.filmJuicerEffects);
+            if (!build_film_juicer_effects_recipe(input, recipe.visualGrain, recipe.filmJuicerEffects)) {
+                return fail("ResourceDescriptorMismatch phase=effects_recipe field=physical_policy");
+            }
 
             if (!build_dir_couplers_recipe(
                     profile,
