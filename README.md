@@ -170,6 +170,24 @@ Camera diffusion acting on film-linear exposure before development is not the sa
 
 The order is part of the model.
 
+### What a profile actually contains
+
+The stock name is the least interesting part of a profile.
+
+A spektrafilm profile describes several different pieces of photographic behavior which Film-Juicer uses at different points in the pipeline. Spectral sensitivity determines how wavelength-dependent light contributes to exposure in the modeled layers. Characteristic curves describe how those layer exposures become developed density. Spectral-density data describes how the processed material itself absorbs light after development.
+
+Kodak Portra 800 is a useful example:
+
+<p align="center">
+  <img src="Resources/readme/kodak_portra_800_spektrafilm_with_spectral_density.svg" alt="Kodak Portra 800 spektrafilm profile: spectral sensitivity, characteristic curves, and processed-medium spectral density" width="100%">
+</p>
+
+<p align="center"><sub>Kodak Portra 800 profile data. From left to right: spectral sensitivity, fitted characteristic behavior, and processed-medium spectral density.</sub></p>
+
+The three panels are not three different ways of drawing the same "Portra look." They describe different parts of the material model, and they are consumed at different stages of the pipeline. The right-hand panel concerns the wavelength-dependent density of the processed medium rather than the RGB appearance of a finished image.
+
+None of this contains the final answer for Portra 800. It contains ingredients. Film-Juicer still has to expose the material, develop it, pass light through it, print it or scan it, and let the consequences accumulate.
+
 ### 1. RGB to spectral exposure
 
 The input to Film-Juicer is RGB. Film, inconveniently, does not expose itself to RGB.
@@ -230,6 +248,16 @@ There is an appealingly stupid amount of machinery involved in reproducing the f
 But that intermediate step matters. The print is not merely the negative with a tone curve attached to it. The negative modulates the enlarger spectrum, the print medium sees that spectrum through its own sensitivities, and the result develops into another set of densities.
 
 Light has to make the trip.
+
+Ektacolor Edge shows what the other end of that trip looks like:
+
+<p align="center">
+  <img src="Resources/readme/kodak_ektacolor_edge_spektrafilm_with_spectral_density.svg" alt="Kodak Ektacolor Edge spektrafilm profile: spectral sensitivity, characteristic curves, and processed-medium spectral density" width="100%">
+</p>
+
+<p align="center"><sub>Kodak Ektacolor Edge print-medium profile. Like the capture film, the print material has its own spectral sensitivity, characteristic behavior, and processed-medium spectral density.</sub></p>
+
+The negative does not hand RGB values to a generic print curve. It filters the enlarger spectrum; that spectrum exposes the print layers; and those exposures develop according to the print profile. The very different characteristic behavior of Portra 800 and Ektacolor Edge is therefore not a cosmetic difference between two presets. They are different photosensitive materials doing different jobs.
 
 ### 5. Scan and output
 
@@ -306,6 +334,8 @@ Film-Juicer currently ships with 20 capture-film profiles and 8 print-media prof
 The names will be familiar. The useful part is not the name.
 
 These profiles provide the data used by the model: sensitivities, characteristic behavior, dye information, illuminants and other stock-specific parameters. Selecting Portra 400 is therefore not the same thing as selecting a preset called "Portra 400" which somebody made by eyeballing a photograph of a gas station.
+
+They are still models, not declarations that every roll, processing line, paper batch, enlarger, or scanner in the physical world has one immutable response. Film-Juicer inherits the measurements, fitted models, reference conditions, and limitations of the upstream profiles. The useful distinction is not "perfectly true film" versus "fake film." It is a rendering derived from a coherent photographic model rather than a final RGB look assembled by eye.
 
 There is nothing inherently wrong with eyeballing gas stations. It is simply a different activity.
 
@@ -385,6 +415,8 @@ In particular:
 - **Andrea Volpato** created [spektrafilm](https://github.com/andreavolpato/spektrafilm), the behavioral reference, photographic model, and source of the profile framework on which Film-Juicer is built.
 - **Johannes Hanika (Hanatos)** developed the visible-locus spectral reconstruction direction used by the Hanatos path.
 - **Mallett and Cem Yuksel** authored *Spectral Primary Decomposition for Rendering with sRGB Reflectance* (2019), the basis of the Mallett reconstruction path.
+
+The profile figures in this README are Film-Juicer visualizations of spektrafilm profile data and fitted models. The underlying profile data remains subject to the upstream spektrafilm terms, including CC BY-SA 4.0 where applicable.
 
 If Film-Juicer is useful to you, please visit, star, and support the original [spektrafilm project](https://github.com/andreavolpato/spektrafilm).
 
