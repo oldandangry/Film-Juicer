@@ -117,8 +117,8 @@ Supported input color spaces:
 - ITU-R BT.2020
 - ACES2065-1
 - sRGB / Rec.709
-  
-  ### Resolve Color Management or ACES
+### Resolve Color Management or ACES
+
 1. Ensure that the signal entering Film-Juicer is scene-linear. If the timeline signal is log-encoded, use a Color Space Transform before the plug-in.
 2. Select the matching input primaries in Film-Juicer.
 3. Leave **Decode input CCTF** off for an already-linear signal.
