@@ -109,7 +109,7 @@ namespace JuicerCuda {
 
     bool pack_film_juicer_effects_payload(
         const Spektrafilm::FilmJuicerEffectsFrameDescriptor& descriptor,
-        GrainPayload& outDefects,
+        FilmDefectsPayload& outDefects,
         GateWeavePayload& outWeave,
         std::string& diagnostic);
 

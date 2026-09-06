@@ -532,11 +532,55 @@ struct VisualGrainRecipe {
     std::uint64_t hash = 0;
 };
 
+struct DefectDustRecipe final {
+    float cellWidthMm = 0.0f;
+    float cellHeightMm = 0.0f;
+    float slotProbability = 0.0f;
+    float softnessMm = 0.0f;
+    float supportXMm = 0.0f;
+    float supportYMm = 0.0f;
+    float fiberFraction = 0.0f;
+    float fiberDriftFraction = 0.0f;
+    float fiberTaperFraction = 0.0f;
+    float diameterMinMm = 0.0f;
+    float diameterBulkMaxMm = 0.0f;
+    float diameterMaxMm = 0.0f;
+    float diameterTailFraction = 0.0f;
+    float fiberLengthMinMm = 0.0f;
+    float fiberLengthMaxMm = 0.0f;
+    float fiberWidthMinMm = 0.0f;
+    float fiberWidthMaxMm = 0.0f;
+    float opticalDepthMin = 0.0f;
+    float opticalDepthMax = 0.0f;
+};
+
+struct DefectScratchRecipe final {
+    float cellWidthMm = 0.0f;
+    float cellHeightMm = 0.0f;
+    float slotProbability = 0.0f;
+    float softnessMm = 0.0f;
+    float supportXMm = 0.0f;
+    float supportYMm = 0.0f;
+    float lengthMinMm = 0.0f;
+    float lengthBulkMaxMm = 0.0f;
+    float lengthMaxMm = 0.0f;
+    float lengthTailFraction = 0.0f;
+    float widthMinMm = 0.0f;
+    float widthBulkMaxMm = 0.0f;
+    float widthMaxMm = 0.0f;
+    float widthTailFraction = 0.0f;
+    float driftFraction = 0.0f;
+    float taperFraction = 0.0f;
+    float fadeFraction = 0.0f;
+    float strengthMin = 0.0f;
+    float strengthMax = 0.0f;
+};
+
 struct FilmJuicerEffectsRecipe final {
-    float filmDustAmount = 0.0f;
-    float filmScratchAmount = 0.0f;
-    float gateDustAmount = 0.0f;
-    float gateScratchAmount = 0.0f;
+    DefectDustRecipe filmDust{};
+    DefectScratchRecipe filmScratch{};
+    DefectDustRecipe gateDust{};
+    DefectScratchRecipe gateScratch{};
     double gateWeaveAmount = 0.0;
     bool active = false;
     std::uint64_t hash = 0;

@@ -1811,6 +1811,21 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
+    Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{};
+    if (focusedRecipe.filmJuicerEffects.active) {
+        const auto definition = srcImg->getRegionOfDefinition();
+        const auto canonical = _src->getRegionOfDefinition(args.time);
+        const auto scale = srcImg->getRenderScale();
+        effectsGeometry.pixelDefinition = {definition.x1, definition.y1, definition.x2 - definition.x1, definition.y2 - definition.y1};
+        effectsGeometry.canonicalX = canonical.x1;
+        effectsGeometry.canonicalY = canonical.y1;
+        effectsGeometry.canonicalWidth = canonical.x2 - canonical.x1;
+        effectsGeometry.canonicalHeight = canonical.y2 - canonical.y1;
+        effectsGeometry.scaleX = scale.x;
+        effectsGeometry.scaleY = scale.y;
+        effectsGeometry.pixelAspectRatio = srcImg->getPixelAspectRatio();
+    }
+
     // Tile-based multithreaded processing via OFX::ImageProcessor
     JuicerProcessor proc(*this);
     JuicerProcessor::SourceDestinationImages images{};
@@ -1828,6 +1843,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         frameRequest.scatterHalation = scatterHalationDescriptor;
         frameRequest.components = nComponents;
         frameRequest.renderWindow = roi;
+        frameRequest.effectsGeometry = effectsGeometry;
         frameRequest.fullFrameExtent = fullBounds;
         frameRequest.sessionSeed = sessionTokens.sessionSeed;
         frameRequest.instanceToken = sessionTokens.instanceToken;
@@ -1843,6 +1859,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         frameRequest.scatterHalation = scatterHalationDescriptor;
         frameRequest.components = nComponents;
         frameRequest.renderWindow = roi;
+        frameRequest.effectsGeometry = effectsGeometry;
         frameRequest.fullFrameExtent = fullBounds;
         frameRequest.sessionSeed = sessionTokens.sessionSeed;
         frameRequest.instanceToken = sessionTokens.instanceToken;

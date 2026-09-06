@@ -106,6 +106,7 @@ extern "C" cudaError_t juicer_cuda_print_focused_continue_from_capture_density(
     float* dDensityC,
     float* dDensityM,
     float* dDensityY,
+    const float* filmDustTransmittance,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_print_focused_enlarger_linear_exposure(
@@ -114,6 +115,7 @@ extern "C" cudaError_t juicer_cuda_print_focused_enlarger_linear_exposure(
     const float* dDensityM,
     const float* dDensityY,
     JuicerCuda::EnlargerPrintLinearExposurePlanes planes,
+    const float* filmDustTransmittance,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t
@@ -133,6 +135,7 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_density_rgb(
     float* dRgbR,
     float* dRgbG,
     float* dRgbB,
+    const float* filmDustTransmittance,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_density_rgb(
@@ -165,11 +168,11 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
-    const JuicerCuda::GrainPayload* gateDefects,
+    const JuicerCuda::FilmDefectsPayload* gateDefects,
     const JuicerCuda::GateWeavePayload* weave,
-    const float* gateMask,
-    int gateMaskWidth,
-    int gateMaskHeight,
+    const float* gateTransmittance,
+    int gateTransmittanceWidth,
+    int gateTransmittanceHeight,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
@@ -183,11 +186,11 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
-    const JuicerCuda::GrainPayload* gateDefects,
+    const JuicerCuda::FilmDefectsPayload* gateDefects,
     const JuicerCuda::GateWeavePayload* weave,
-    const float* gateMask,
-    int gateMaskWidth,
-    int gateMaskHeight,
+    const float* gateTransmittance,
+    int gateTransmittanceWidth,
+    int gateTransmittanceHeight,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_apply_visual_grain(
@@ -206,19 +209,20 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_apply_film_defects(
-    const JuicerCuda::GrainPayload* defects,
+    const JuicerCuda::FilmDefectsPayload* defects,
     int width,
     int height,
     float* densityC,
     float* densityM,
     float* densityY,
+    float* filmDustTransmittance,
     void* cudaStreamOpaque);
 
-extern "C" cudaError_t juicer_cuda_build_gate_defect_mask_focused(
-    const JuicerCuda::GrainPayload* defects,
-    float* gateMask,
-    int gateMaskWidth,
-    int gateMaskHeight,
+extern "C" cudaError_t juicer_cuda_build_gate_defect_transmittance_focused(
+    const JuicerCuda::FilmDefectsPayload* defects,
+    float* gateTransmittance,
+    int gateTransmittanceWidth,
+    int gateTransmittanceHeight,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
@@ -1074,6 +1078,8 @@ namespace {
         const Spektrafilm::FilmJuicerEffectsRecipe& recipe,
         const Spektrafilm::FilmJuicerEffectsFrameExtent& renderExtent,
         const Spektrafilm::FilmJuicerEffectsFrameExtent& fullFrameExtent,
+        const Spektrafilm::FilmJuicerEffectsGeometry& geometry,
+        float filmFormatLongEdgeMm,
         float pixelSizeUm,
         double frameTime,
         double frameRate,
@@ -1095,7 +1101,9 @@ namespace {
                  frameTime,
                  frameRate,
                  sessionSeed,
-                 clipToken},
+                 clipToken,
+                 geometry,
+                 filmFormatLongEdgeMm},
                 descriptor,
                 diagnostic)) {
             return false;
@@ -1247,6 +1255,7 @@ void JuicerProcessor::setSrcDst(const SourceDestinationImages& images) {
 
 void JuicerProcessor::setDirectFrameRequest(const DirectFrameRequest& request) {
     setRenderWindow(request.renderWindow);
+    _effectsGeometry = request.effectsGeometry;
     _fullFrameExtent = request.fullFrameExtent;
     _diffusionFrameSetDescriptor = request.diffusionFrameSet;
     _scatterHalationDescriptor = request.scatterHalation;
@@ -1268,6 +1277,7 @@ void JuicerProcessor::setDirectFrameRequest(const DirectFrameRequest& request) {
 
 void JuicerProcessor::setPrintFrameRequest(const PrintFrameRequest& request) {
     setRenderWindow(request.renderWindow);
+    _effectsGeometry = request.effectsGeometry;
     _fullFrameExtent = request.fullFrameExtent;
     _diffusionFrameSetDescriptor = request.diffusionFrameSet;
     _scatterHalationDescriptor = request.scatterHalation;
@@ -1804,6 +1814,8 @@ void JuicerProcessor::processImagesCUDA() {
                  directFullFrameRect.y1,
                  directFullFrameRect.x2 - directFullFrameRect.x1,
                  directFullFrameRect.y2 - directFullFrameRect.y1},
+                _effectsGeometry,
+                directRecipe->filmRaw.filmFormatLongEdgeMm,
                 _pixelSizeUm,
                 _timeFrames,
                 _frameRate,
@@ -2183,7 +2195,7 @@ void JuicerProcessor::processImagesCUDA() {
             directEffectsWorkspace{};
         JuicerCuda::GrainPayload directGrainPayload{};
         JuicerCuda::GrainKernelPayload directGrainKernels{};
-        JuicerCuda::GrainPayload directEffectsPayload{};
+        JuicerCuda::FilmDefectsPayload directEffectsPayload{};
         JuicerCuda::GateWeavePayload directWeavePayload{};
         const Spektrafilm::FilmJuicerEffectsFrameDescriptor*
             preparedDirectEffectsDescriptor =
@@ -2231,9 +2243,11 @@ void JuicerProcessor::processImagesCUDA() {
             directEffectsWorkspace =
                 preparedFrame.scanner_workspace(focusedWorkspace);
             if (!directEffectsWorkspace.active ||
+                (directEffectsDescriptor.has_value() && directEffectsDescriptor->filmDust.slotProbability > 0.0f &&
+                 !directEffectsWorkspace.filmDustTransmittance) ||
                 (directEffectsDescriptor.has_value() &&
-                 directEffectsDescriptor->gateMaskActive &&
-                 !directEffectsWorkspace.hasGateMask)) {
+                 directEffectsDescriptor->gateTransmittanceActive &&
+                 !directEffectsWorkspace.hasGateTransmittance)) {
                 throw_direct_restriction(
                     "MissingRequiredResource phase=effects_route field=effects_workspace");
             }
@@ -2478,6 +2492,7 @@ void JuicerProcessor::processImagesCUDA() {
                     directCaptureDensity.c,
                     directCaptureDensity.m,
                     directCaptureDensity.y,
+                    directEffectsWorkspace.filmDustTransmittance,
                     _pCudaStream);
                 if (launchError != cudaSuccess) {
                     throw_cuda_stage_fatal(
@@ -2503,21 +2518,19 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         if (gateOutputActive && !grainDebugActive &&
-            directEffectsDescriptor->gateMaskActive) {
-            launchError = juicer_cuda_build_gate_defect_mask_focused(
+            directEffectsDescriptor->gateTransmittanceActive) {
+            launchError = juicer_cuda_build_gate_defect_transmittance_focused(
                 &directEffectsPayload,
-                directEffectsWorkspace.gateMask,
-                directEffectsWorkspace.gateMaskWidth,
-                directEffectsWorkspace.gateMaskHeight,
+                directEffectsWorkspace.gateTransmittance,
+                directEffectsWorkspace.gateTransmittanceWidth,
+                directEffectsWorkspace.gateTransmittanceHeight,
                 _pCudaStream);
             if (launchError != cudaSuccess) {
                 throw_cuda_stage_fatal(
-                    "direct_gate_mask_launch",
+                    "direct_gate_transmittance_launch",
                     "direct gate defect mask launch failed",
                     launchError);
             }
-            preparedFrame.mark_gate_mask_built(
-                directEffectsDescriptor->hash);
         }
 
         if (directUseFocusedSplit) {
@@ -2556,6 +2569,7 @@ void JuicerProcessor::processImagesCUDA() {
                         directFocusedRgb.r,
                         directFocusedRgb.g,
                         directFocusedRgb.b,
+                        directEffectsWorkspace.filmDustTransmittance,
                         _pCudaStream);
                 }
                 if (launchError != cudaSuccess) {
@@ -2588,16 +2602,16 @@ void JuicerProcessor::processImagesCUDA() {
                     ? &directWeavePayload
                     : nullptr,
                 gateOutputActive && !grainDebugActive &&
-                        directEffectsDescriptor->gateMaskActive
-                    ? directEffectsWorkspace.gateMask
+                        directEffectsDescriptor->gateTransmittanceActive
+                    ? directEffectsWorkspace.gateTransmittance
                     : nullptr,
                 gateOutputActive && !grainDebugActive &&
-                        directEffectsDescriptor->gateMaskActive
-                    ? directEffectsWorkspace.gateMaskWidth
+                        directEffectsDescriptor->gateTransmittanceActive
+                    ? directEffectsWorkspace.gateTransmittanceWidth
                     : 0,
                 gateOutputActive && !grainDebugActive &&
-                        directEffectsDescriptor->gateMaskActive
-                    ? directEffectsWorkspace.gateMaskHeight
+                        directEffectsDescriptor->gateTransmittanceActive
+                    ? directEffectsWorkspace.gateTransmittanceHeight
                     : 0,
                 _pCudaStream);
             // Focused RGB can alias the spatial-DIR filtered planes, so scanner output is their final consumer.
@@ -2723,6 +2737,8 @@ void JuicerProcessor::processImagesCUDA() {
                  printFullFrameRect.y1,
                  printFullFrameRect.x2 - printFullFrameRect.x1,
                  printFullFrameRect.y2 - printFullFrameRect.y1},
+                _effectsGeometry,
+                printRecipe->filmRaw.filmFormatLongEdgeMm,
                 _pixelSizeUm,
                 _timeFrames,
                 _frameRate,
@@ -3163,7 +3179,7 @@ void JuicerProcessor::processImagesCUDA() {
             printEffectsWorkspace{};
         JuicerCuda::GrainPayload printGrainPayload{};
         JuicerCuda::GrainKernelPayload printGrainKernels{};
-        JuicerCuda::GrainPayload printEffectsPayload{};
+        JuicerCuda::FilmDefectsPayload printEffectsPayload{};
         JuicerCuda::GateWeavePayload printWeavePayload{};
         const Spektrafilm::FilmJuicerEffectsFrameDescriptor*
             preparedPrintEffectsDescriptor =
@@ -3211,9 +3227,11 @@ void JuicerProcessor::processImagesCUDA() {
             printEffectsWorkspace =
                 preparedFrame.scanner_workspace(focusedWorkspace);
             if (!printEffectsWorkspace.active ||
+                (printEffectsDescriptor.has_value() && printEffectsDescriptor->filmDust.slotProbability > 0.0f &&
+                 !printEffectsWorkspace.filmDustTransmittance) ||
                 (printEffectsDescriptor.has_value() &&
-                 printEffectsDescriptor->gateMaskActive &&
-                 !printEffectsWorkspace.hasGateMask)) {
+                 printEffectsDescriptor->gateTransmittanceActive &&
+                 !printEffectsWorkspace.hasGateTransmittance)) {
                 throw_print_restriction(
                     "MissingRequiredResource phase=effects_route field=effects_workspace");
             }
@@ -3468,6 +3486,7 @@ void JuicerProcessor::processImagesCUDA() {
                     printCaptureDensity.c,
                     printCaptureDensity.m,
                     printCaptureDensity.y,
+                    printEffectsWorkspace.filmDustTransmittance,
                     _pCudaStream);
                 if (launchError != cudaSuccess) {
                     throw_cuda_stage_fatal(
@@ -3493,6 +3512,7 @@ void JuicerProcessor::processImagesCUDA() {
                             printCaptureDensity.m,
                             printCaptureDensity.y,
                             printEnlargerLinear,
+                            printEffectsWorkspace.filmDustTransmittance,
                             _pCudaStream);
                     if (launchError != cudaSuccess) {
                         throw_cuda_stage_fatal(
@@ -3557,6 +3577,7 @@ void JuicerProcessor::processImagesCUDA() {
                             printCaptureDensity.c,
                             printCaptureDensity.m,
                             printCaptureDensity.y,
+                            printEffectsWorkspace.filmDustTransmittance,
                             _pCudaStream);
                     if (launchError != cudaSuccess) {
                         throw_cuda_stage_fatal(
@@ -3584,21 +3605,19 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         if (gateOutputActive && !grainDebugActive &&
-            printEffectsDescriptor->gateMaskActive) {
-            launchError = juicer_cuda_build_gate_defect_mask_focused(
+            printEffectsDescriptor->gateTransmittanceActive) {
+            launchError = juicer_cuda_build_gate_defect_transmittance_focused(
                 &printEffectsPayload,
-                printEffectsWorkspace.gateMask,
-                printEffectsWorkspace.gateMaskWidth,
-                printEffectsWorkspace.gateMaskHeight,
+                printEffectsWorkspace.gateTransmittance,
+                printEffectsWorkspace.gateTransmittanceWidth,
+                printEffectsWorkspace.gateTransmittanceHeight,
                 _pCudaStream);
             if (launchError != cudaSuccess) {
                 throw_cuda_stage_fatal(
-                    "print_gate_mask_launch",
+                    "print_gate_transmittance_launch",
                     "print gate defect mask launch failed",
                     launchError);
             }
-            preparedFrame.mark_gate_mask_built(
-                printEffectsDescriptor->hash);
         }
 
         if (printUseFocusedSplit) {
@@ -3692,16 +3711,16 @@ void JuicerProcessor::processImagesCUDA() {
                     ? &printWeavePayload
                     : nullptr,
                 gateOutputActive && !grainDebugActive &&
-                        printEffectsDescriptor->gateMaskActive
-                    ? printEffectsWorkspace.gateMask
+                        printEffectsDescriptor->gateTransmittanceActive
+                    ? printEffectsWorkspace.gateTransmittance
                     : nullptr,
                 gateOutputActive && !grainDebugActive &&
-                        printEffectsDescriptor->gateMaskActive
-                    ? printEffectsWorkspace.gateMaskWidth
+                        printEffectsDescriptor->gateTransmittanceActive
+                    ? printEffectsWorkspace.gateTransmittanceWidth
                     : 0,
                 gateOutputActive && !grainDebugActive &&
-                        printEffectsDescriptor->gateMaskActive
-                    ? printEffectsWorkspace.gateMaskHeight
+                        printEffectsDescriptor->gateTransmittanceActive
+                    ? printEffectsWorkspace.gateTransmittanceHeight
                     : 0,
                 _pCudaStream);
             // Focused RGB can alias the spatial-DIR filtered planes, so scanner output is their final consumer.

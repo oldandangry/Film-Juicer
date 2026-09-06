@@ -314,14 +314,15 @@ namespace JuicerCuda {
             float* grainTmp = nullptr;
             float* grainTmpShared = nullptr;
             GrainFrameUniforms* grainFrameUniforms = nullptr;
-            float* gateMask = nullptr;
+            float* gateTransmittance = nullptr;
+            float* filmDustTransmittance = nullptr;
             int width = 0;
             int height = 0;
             std::size_t capacityElements = 0;
             int gateWidth = 0;
             int gateHeight = 0;
-            std::size_t gateMaskCapacityElements = 0;
-            std::uint64_t gateMaskHash = 0;
+            std::size_t gateTransmittanceCapacityElements = 0;
+            std::size_t filmDustCapacityElements = 0;
         };
 
         struct DeviceSpatialDirScratch {
