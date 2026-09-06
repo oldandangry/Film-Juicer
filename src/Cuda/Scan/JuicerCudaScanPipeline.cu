@@ -142,13 +142,6 @@ namespace {
                 static_cast<double>(enc.dwgToOutput[8]) * rgb[2];
         }
 
-        if (enc.preserveLinearRange) {
-            rgb[0] = linear[0];
-            rgb[1] = linear[1];
-            rgb[2] = linear[2];
-            return;
-        }
-
         if (enc.applyCctfEncoding) {
             rgb[0] = encode_channel_double_device(enc.cctf, linear[0]);
             rgb[1] = encode_channel_double_device(enc.cctf, linear[1]);

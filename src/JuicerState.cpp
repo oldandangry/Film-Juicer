@@ -191,7 +191,6 @@ namespace {
         OutputEncoding::Params encoding{};
         encoding.colorSpace = OutputEncoding::colorSpaceFromIndex(recipe.scannerOutput.outputColorSpace);
         encoding.applyCctfEncoding = recipe.scannerOutput.outputCctfEncoding;
-        encoding.preserveLinearRange = recipe.scannerOutput.outputLinearPassThrough;
         encoding.inputIsOutputSpace = true;
         payload.scannerColor = Scanner::build_color_runtime(
             Scanner::ScannerMedium::Negative,
@@ -264,7 +263,6 @@ namespace {
         OutputEncoding::Params encoding{};
         encoding.colorSpace = OutputEncoding::colorSpaceFromIndex(recipe.scannerOutput.outputColorSpace);
         encoding.applyCctfEncoding = recipe.scannerOutput.outputCctfEncoding;
-        encoding.preserveLinearRange = recipe.scannerOutput.outputLinearPassThrough;
         encoding.inputIsOutputSpace = true;
         payload.scannerColor = Scanner::build_color_runtime(
             Scanner::ScannerMedium::Print,
@@ -384,7 +382,6 @@ namespace {
             mix_hash_string(h, p.printProfileKey, mix);
             mix_hash_field(h, p.printProfileAssetVersionToken, mix);
             mix_hash_field(h, p.enlIll, mix);
-            mix_hash_field(h, p.enlDichroicSet, mix);
             mix_hash_field_scaled_rounded_if_finite(h, p.printExposure, 10000.0, mix);
             mix_hash_field_scaled_rounded_if_finite(h, p.printPreflashExposure, 10000.0, mix);
             mix_hash_field(h, p.normalizePrintExposure, mix);
@@ -406,7 +403,6 @@ namespace {
         mix_hash_field(h, p.inputCctfDecoding, mix);
         mix_hash_field(h, p.outputColorSpace, mix);
         mix_hash_field(h, p.outputCctfEncoding, mix);
-        mix_hash_field(h, p.outputLinearPassThrough, mix);
     }
 
     template <typename MixFn>
@@ -843,33 +839,6 @@ namespace {
         return true;
     }
 
-    Spektrafilm::DichroicFilterSet dichroic_filter_set_from_choice(int choice) {
-        switch (choice) {
-            case 1:
-                return Spektrafilm::DichroicFilterSet::DurstDigitalLight;
-            case 2:
-                return Spektrafilm::DichroicFilterSet::Thorlabs;
-            case 3:
-                return Spektrafilm::DichroicFilterSet::EdmundOptics;
-            default:
-                return Spektrafilm::DichroicFilterSet::Custom;
-        }
-    }
-
-    std::string dichroic_filter_set_key(Spektrafilm::DichroicFilterSet set) {
-        switch (set) {
-            case Spektrafilm::DichroicFilterSet::DurstDigitalLight:
-                return "durst_digital_light";
-            case Spektrafilm::DichroicFilterSet::Thorlabs:
-                return "thorlabs";
-            case Spektrafilm::DichroicFilterSet::EdmundOptics:
-                return "edmund_optics";
-            case Spektrafilm::DichroicFilterSet::Custom:
-            default:
-                return "custom";
-        }
-    }
-
     std::string print_illuminant_key_from_choice(int choice) {
         switch (choice) {
             case 0:
@@ -997,7 +966,6 @@ namespace {
             static_cast<std::uint32_t>(std::clamp(params.scannerLutResolution, 17, 128));
         input.outputColorSpace = params.outputColorSpace;
         input.outputCctfEncoding = params.outputCctfEncoding != 0;
-        input.outputLinearPassThrough = params.outputLinearPassThrough != 0;
         input.scannerBlackCorrection = params.scannerBlackCorrection != 0;
         input.scannerWhiteCorrection = params.scannerWhiteCorrection != 0;
         input.scannerBlackLevel = static_cast<float>(params.scannerBlackLevel);
@@ -1074,26 +1042,6 @@ namespace {
             assets.illuminant_filter_curves());
         input.printProfileKey = params.printProfileKey;
         input.printProfile = selected.printProfile;
-        input.dichroic.set = dichroic_filter_set_from_choice(params.enlDichroicSet);
-        input.dichroic.setKey = dichroic_filter_set_key(input.dichroic.set);
-        if (input.dichroic.set != Spektrafilm::DichroicFilterSet::Custom) {
-            input.dichroic.kind = Spektrafilm::DichroicResourceKind::MeasuredCsv;
-            input.dichroic.percentTransmittanceDividedBy100 = true;
-            input.dichroic.duplicateWavelengthsKeepFirst = true;
-            input.dichroic.akimaResampledToReferenceAxis = true;
-            const JuicerAssets::MeasuredDichroicResourceIdentity measured =
-                assets.measured_dichroic_resource_identity(input.dichroic.setKey);
-            if (!measured.valid) {
-                outError = measured.diagnostic.empty()
-                               ? "MalformedSelectedDichroicResource phase=4A"
-                               : measured.diagnostic;
-                return false;
-            }
-            input.dichroic.resourcePathsCmy = measured.resourcePathsCmy;
-            input.dichroic.resourceHashesCmy = measured.resourceHashesCmy;
-            input.dichroic.hash = measured.hash;
-        }
-
         input.printIlluminantKey = print_illuminant_key_from_choice(params.enlIll);
         const JuicerAssets::NeutralPrintCalibrationResult neutral =
             assets.neutral_print_calibration(
@@ -1137,7 +1085,6 @@ namespace {
             static_cast<std::uint32_t>(std::clamp(params.scannerLutResolution, 17, 128));
         input.outputColorSpace = params.outputColorSpace;
         input.outputCctfEncoding = params.outputCctfEncoding != 0;
-        input.outputLinearPassThrough = params.outputLinearPassThrough != 0;
         input.scannerBlackCorrection = params.scannerBlackCorrection != 0;
         input.scannerWhiteCorrection = params.scannerWhiteCorrection != 0;
         input.scannerBlackLevel = static_cast<float>(params.scannerBlackLevel);

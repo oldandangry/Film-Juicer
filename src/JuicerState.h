@@ -101,7 +101,7 @@ struct ParamSnapshot {
     double scannerLensBlurSigmaPx = 0.0;
     double scannerBlackLevel = 0.01;
     double scannerWhiteLevel = 0.98;
-    double gateWeaveAmount = 1.0;
+    double gateWeaveAmount = 0.0;
 
     std::array<double, 2> couplersGammaInterlayerRToGb{{0.353, 0.302}};
     std::array<double, 2> couplersGammaInterlayerGToRb{{0.154, 0.353}};
@@ -121,7 +121,6 @@ struct ParamSnapshot {
     int spectralUpsamplingMode = 0;
     int refIll = 0;
     int enlIll = 3;
-    int enlDichroicSet = 0;
     int normalizePrintExposure = 1;
     int printExposureCompensation = 1;
     int couplersActive = 1;
@@ -139,7 +138,6 @@ struct ParamSnapshot {
     int scannerLutResolution = 17;
     int outputColorSpace = OutputEncoding::toIndex(OutputEncoding::ColorSpace::sRGB);
     int outputCctfEncoding = 1;
-    int outputLinearPassThrough = 0;
     Spektrafilm::VisualGrainControls grainControls;
     float filmDustAmount = 0.0f;
     float filmScratchAmount = 0.0f;

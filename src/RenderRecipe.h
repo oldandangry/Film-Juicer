@@ -62,18 +62,6 @@ namespace Spektrafilm {
         PrintMediaAuthoredCurves
     };
 
-    enum class DichroicFilterSet : std::uint8_t {
-        Custom,
-        DurstDigitalLight,
-        Thorlabs,
-        EdmundOptics
-    };
-
-    enum class DichroicResourceKind : std::uint8_t {
-        CustomAnalyticModel,
-        MeasuredCsv
-    };
-
     enum class NeutralCalibrationStatus : std::uint8_t {
         MissingFile,
         MissingEntry,
@@ -612,7 +600,6 @@ struct ScannerOutputRecipe {
     std::uint32_t lutResolution = 17;
     int outputColorSpace = 0;
     bool outputCctfEncoding = true;
-    bool outputLinearPassThrough = false;
     bool blackCorrection = false;
     bool whiteCorrection = false;
     float blackLevel = 0.01f;
@@ -633,24 +620,16 @@ struct CmyCcTriplet {
     float y = 0.0f;
 };
 
-struct DichroicResourceIdentity {
-    Spektrafilm::DichroicFilterSet set = Spektrafilm::DichroicFilterSet::Custom;
-    Spektrafilm::DichroicResourceKind kind = Spektrafilm::DichroicResourceKind::CustomAnalyticModel;
-    std::string setKey = "custom";
-    std::array<std::string, 3> resourcePathsCmy;
-    std::array<std::uint64_t, 3> resourceHashesCmy{};
+struct DichroicFilterRecipe {
     std::array<float, 4> customEdgesNm{{516.0f, 500.0f, 610.0f, 607.0f}};
     std::array<float, 4> customTransitionsNm{{12.0f, 8.0f, 8.0f, 8.0f}};
-    bool percentTransmittanceDividedBy100 = false;
-    bool duplicateWavelengthsKeepFirst = false;
-    bool akimaResampledToReferenceAxis = false;
     std::uint64_t hash = 0;
 };
 
 struct PrintFilterRecipe {
     CmyCcTriplet mainCmyCc;
     CmyCcTriplet preflashCmyCc;
-    DichroicResourceIdentity dichroic;
+    DichroicFilterRecipe dichroic;
     std::uint64_t hash = 0;
 };
 
@@ -754,7 +733,6 @@ namespace Spektrafilm {
         std::uint32_t scannerLutResolution = 17;
         int outputColorSpace = 0;
         bool outputCctfEncoding = true;
-        bool outputLinearPassThrough = false;
         bool scannerBlackCorrection = false;
         bool scannerWhiteCorrection = false;
         float scannerBlackLevel = 0.01f;
@@ -774,7 +752,6 @@ namespace Spektrafilm {
         FilmFoundationBuildInput film;
         std::string printProfileKey;
         std::shared_ptr<const Profiles::ValidatedPrintProfile> printProfile;
-        DichroicResourceIdentity dichroic;
         NeutralCalibrationStatus neutralCalibrationStatus = NeutralCalibrationStatus::MissingEntry;
         CmyCcTriplet currentNeutralCmyCc{0.0f, 65.0f, 55.0f};
         CmyCcTriplet calibratedNeutralCmyCc{0.0f, 65.0f, 55.0f};
@@ -790,7 +767,6 @@ namespace Spektrafilm {
         std::uint32_t scannerLutResolution = 17;
         int outputColorSpace = 0;
         bool outputCctfEncoding = true;
-        bool outputLinearPassThrough = false;
         bool scannerBlackCorrection = false;
         bool scannerWhiteCorrection = false;
         float scannerBlackLevel = 0.01f;

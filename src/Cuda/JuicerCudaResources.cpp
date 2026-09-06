@@ -4022,47 +4022,29 @@ namespace JuicerCuda {
             return valid;
         }
 
-        bool build_dichroic_curves(
-            JuicerAssets::Library& assets,
-            const DichroicResourceIdentity& identity,
-            std::array<std::array<float, Spectral::kNumSamples>, 3>& out,
-            std::string& diagnostic) {
-            if (identity.kind == Spektrafilm::DichroicResourceKind::MeasuredCsv) {
-                const JuicerAssets::MeasuredDichroicCurveResult measured =
-                    assets.measured_dichroic_curves(identity.setKey);
-                if (!measured.valid ||
-                    measured.hash != identity.hash ||
-                    measured.resourceHashesCmy != identity.resourceHashesCmy) {
-                    diagnostic = measured.diagnostic.empty()
-                                     ? "ResourceDescriptorMismatch phase=4B field=measured_dichroic"
-                                     : measured.diagnostic;
-                    return false;
-                }
-                out = measured.transmittanceCmy;
-                return true;
-            }
-
+        void build_dichroic_curves(
+            const DichroicFilterRecipe& recipe,
+            std::array<std::array<float, Spectral::kNumSamples>, 3>& out) {
             for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
                 const float wavelength = Spectral::gShape.wavelengths[sample];
                 const float y =
-                    0.5f * std::erf((wavelength - identity.customEdgesNm[0]) /
-                                    identity.customTransitionsNm[0]) +
+                    0.5f * std::erf((wavelength - recipe.customEdgesNm[0]) /
+                                    recipe.customTransitionsNm[0]) +
                     0.5f;
                 const float mErf =
                     wavelength <= 550.0f
-                        ? -std::erf((wavelength - identity.customEdgesNm[1]) /
-                                    identity.customTransitionsNm[1])
-                        : std::erf((wavelength - identity.customEdgesNm[2]) /
-                                   identity.customTransitionsNm[2]);
+                        ? -std::erf((wavelength - recipe.customEdgesNm[1]) /
+                                    recipe.customTransitionsNm[1])
+                        : std::erf((wavelength - recipe.customEdgesNm[2]) /
+                                   recipe.customTransitionsNm[2]);
                 const float c =
-                    -0.5f * std::erf((wavelength - identity.customEdgesNm[3]) /
-                                     identity.customTransitionsNm[3]) +
+                    -0.5f * std::erf((wavelength - recipe.customEdgesNm[3]) /
+                                     recipe.customTransitionsNm[3]) +
                     0.5f;
                 out[0][static_cast<std::size_t>(sample)] = c;
                 out[1][static_cast<std::size_t>(sample)] = 0.5f * mErf + 0.5f;
                 out[2][static_cast<std::size_t>(sample)] = y;
             }
-            return true;
         }
 
         bool derive_filtered_print_illuminant(
@@ -4079,10 +4061,10 @@ namespace JuicerCuda {
                     recipe.illuminant.key,
                     sourceIlluminantAssetVersion,
                     source,
-                    diagnostic) ||
-                !build_dichroic_curves(assets, recipe.filters.dichroic, filters, diagnostic)) {
+                    diagnostic)) {
                 return false;
             }
+            build_dichroic_curves(recipe.filters.dichroic, filters);
             const std::array<float, 3> transmittance{{std::pow(10.0f, -cc.c / 100.0f),
                                                       std::pow(10.0f, -cc.m / 100.0f),
                                                       std::pow(10.0f, -cc.y / 100.0f)}};

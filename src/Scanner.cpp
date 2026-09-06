@@ -43,7 +43,6 @@ namespace {
         const std::uint64_t encHash = Hash::hash_uint64_values(
             {static_cast<std::uint64_t>(OutputEncoding::toIndex(encoding.colorSpace)),
              static_cast<std::uint64_t>(encoding.applyCctfEncoding),
-             static_cast<std::uint64_t>(encoding.preserveLinearRange),
              static_cast<std::uint64_t>(encoding.inputIsOutputSpace)});
         return Hash::hash_uint64_values(
             {outSpace.hash,

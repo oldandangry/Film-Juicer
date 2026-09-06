@@ -751,11 +751,9 @@ namespace {
     inline void read_output_snapshot_values(
         OFX::ChoiceParam* outputColorSpaceParam,
         OFX::BooleanParam* outputCctfEncodingParam,
-        OFX::BooleanParam* outputLinearPassThroughParam,
         ParamSnapshot& snapshot) {
         snapshot.outputColorSpace = read_choice_param_or(outputColorSpaceParam, snapshot.outputColorSpace);
         snapshot.outputCctfEncoding = read_bool_param_as_i32(outputCctfEncodingParam, true);
-        snapshot.outputLinearPassThrough = read_bool_param_as_i32(outputLinearPassThroughParam, false);
     }
 
     struct ProfileSnapshotChoiceParams {
@@ -765,7 +763,6 @@ namespace {
         OFX::ChoiceParam* spectralMode = nullptr;
         OFX::ChoiceParam* referenceIlluminant = nullptr;
         OFX::ChoiceParam* enlargerIlluminant = nullptr;
-        OFX::ChoiceParam* enlargerDichroicSet = nullptr;
     };
 
     inline void read_profile_snapshot_choices(
@@ -777,7 +774,6 @@ namespace {
         snapshot.spectralUpsamplingMode = read_choice_param_or(params.spectralMode, snapshot.spectralUpsamplingMode);
         snapshot.refIll = read_choice_param_or(params.referenceIlluminant, snapshot.refIll);
         snapshot.enlIll = read_choice_param_or(params.enlargerIlluminant, snapshot.enlIll);
-        snapshot.enlDichroicSet = read_choice_param_or(params.enlargerDichroicSet, snapshot.enlDichroicSet);
     }
 
     inline void read_print_recipe_snapshot_values(
@@ -1445,7 +1441,6 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pPrintProfileKey = fetchStrChoiceParam(JuicerParams::kPrintProfileKey);
         _pRefIll = fetchChoiceParam("ReferenceIlluminant");
         _pEnlIll = fetchChoiceParam("EnlargerIlluminant");
-        _pEnlDichroicSet = fetchChoiceParam(kParamDichroicFilterSet);
         _pInputColorSpace = fetchChoiceParam(JuicerParams::kInputColorSpace);
         _pInputCctfDecoding = fetchBooleanParam(JuicerParams::kInputCctfDecoding);
         _pHanatos2025AdaptationWindow =
@@ -1455,7 +1450,6 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pScanRoute = fetchStrChoiceParam(JuicerParams::kParamScanRoute);
         _pOutputColorSpace = fetchChoiceParam(kParamOutputColorSpace);
         _pOutputCctfEncoding = fetchBooleanParam(kParamOutputCctfEncoding);
-        _pOutputLinearPassThrough = fetchBooleanParam(kParamOutputLinearPassThrough);
 
 
         _pCouplersActive = fetchBooleanParam(JuicerParams::kDirCouplersActive);
@@ -2207,7 +2201,7 @@ bool JuicerEffect::snapshotParams(
     outDiagnostic.clear();
 
     ScatterHalationRawControls rawControls{};
-    rawControls.active = read_bool_param_or(_pHalationActive, true);
+    rawControls.active = read_bool_param_or(_pHalationActive, false);
     if (rawControls.active) {
         rawControls.scatterAmount = read_double_param_or(_pHalationScatterAmount, 1.0);
         rawControls.scatterSpatialScale =
@@ -2236,7 +2230,6 @@ bool JuicerEffect::snapshotParams(
     profileChoiceParams.spectralMode = _pSpectralMode;
     profileChoiceParams.referenceIlluminant = _pRefIll;
     profileChoiceParams.enlargerIlluminant = _pEnlIll;
-    profileChoiceParams.enlargerDichroicSet = _pEnlDichroicSet;
     read_profile_snapshot_choices(profileChoiceParams, P);
     P.cameraDiffusion = gatherDiffusionUi(_cameraDiffusionUi);
     P.enlargerDiffusion = gatherDiffusionUi(_printDiffusionUi);
@@ -2301,7 +2294,7 @@ bool JuicerEffect::snapshotParams(
     P.gateScratchAmount = artifacts.gateScratchAmount;
     P.gateWeaveAmount = read_sanitized_double(
         _pGateWeaveAmount,
-        1.0,
+        0.0,
         SanitizedDoubleRange{0.0, 10.0});
     read_coupler_snapshot_values(
         _pCouplersActive,
@@ -2328,7 +2321,6 @@ bool JuicerEffect::snapshotParams(
     read_output_snapshot_values(
         _pOutputColorSpace,
         _pOutputCctfEncoding,
-        _pOutputLinearPassThrough,
         P);
     out = std::move(P);
     return true;

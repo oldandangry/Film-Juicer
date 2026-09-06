@@ -61,7 +61,6 @@ namespace JuicerCuda {
     struct OutputEncodingPayload {
         int outputColorSpaceIndex = 0;
         int applyCctfEncoding = 1;
-        int preserveLinearRange = 0;
         int inputIsOutputSpace = 1;
         float dwgToOutput[9] = {
             1, 0, 0, 0, 1, 0, 0, 0, 1};
