@@ -91,7 +91,6 @@ struct ParamSnapshot {
     double glarePercent = 0.03;
     double glareRoughness = 0.7;
     double glareBlurSigmaPx = 0.5;
-    double printDminFactor = 0.4;
     double couplersAmount = 1.0;
     double couplersInhibitionSameLayer = 1.0;
     double couplersInhibitionInterlayer = 1.0;
