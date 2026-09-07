@@ -563,12 +563,19 @@ namespace {
         hash_value(hash, policy.cellWidthMm);
         hash_value(hash, policy.cellHeightMm);
         hash_value(hash, policy.slotProbability);
-        hash_value(hash, policy.softnessMm);
+        hash_value(hash, policy.softnessMinMm);
+        hash_value(hash, policy.softnessMaxMm);
+        hash_value(hash, policy.softnessSizeCapFraction);
         hash_value(hash, policy.supportXMm);
         hash_value(hash, policy.supportYMm);
         hash_value(hash, policy.fiberFraction);
         hash_value(hash, policy.fiberDriftFraction);
-        hash_value(hash, policy.fiberTaperFraction);
+        hash_value(hash, policy.fiberFirstKnotMin);
+        hash_value(hash, policy.fiberFirstKnotMax);
+        hash_value(hash, policy.fiberSecondKnotMin);
+        hash_value(hash, policy.fiberSecondKnotMax);
+        hash_value(hash, policy.fiberInteriorWidthMinFraction);
+        hash_value(hash, policy.fiberInteriorWidthMaxFraction);
         hash_value(hash, policy.diameterMinMm);
         hash_value(hash, policy.diameterBulkMaxMm);
         hash_value(hash, policy.diameterMaxMm);
@@ -577,8 +584,24 @@ namespace {
         hash_value(hash, policy.fiberLengthMaxMm);
         hash_value(hash, policy.fiberWidthMinMm);
         hash_value(hash, policy.fiberWidthMaxMm);
-        hash_value(hash, policy.opticalDepthMin);
-        hash_value(hash, policy.opticalDepthMax);
+        hash_value(hash, policy.opacityFaintCumulative);
+        hash_value(hash, policy.opacityIntermediateCumulative);
+        hash_value(hash, policy.compactOpacityMin);
+        hash_value(hash, policy.compactOpacityFaintEnd);
+        hash_value(hash, policy.compactOpacityIntermediateEnd);
+        hash_value(hash, policy.compactOpacityMax);
+        hash_value(hash, policy.fiberOpacityMin);
+        hash_value(hash, policy.fiberOpacityFaintEnd);
+        hash_value(hash, policy.fiberOpacityIntermediateEnd);
+        hash_value(hash, policy.fiberOpacityMax);
+        hash_value(hash, policy.compactDominantAspectMin);
+        hash_value(hash, policy.compactDominantAspectMax);
+        hash_value(hash, policy.compactSubsidiaryScaleMin);
+        hash_value(hash, policy.compactSubsidiaryScaleMax);
+        hash_value(hash, policy.compactSubsidiaryAspectMin);
+        hash_value(hash, policy.compactSubsidiaryAspectMax);
+        hash_value(hash, policy.compactSubsidiaryOffsetMax);
+        hash_value(hash, policy.compactSubsidiaryAngleMaxRadians);
     }
 
     void hash_defect_policy(std::uint64_t& hash, const DefectScratchRecipe& policy) {
@@ -588,7 +611,9 @@ namespace {
         hash_value(hash, policy.cellWidthMm);
         hash_value(hash, policy.cellHeightMm);
         hash_value(hash, policy.slotProbability);
-        hash_value(hash, policy.softnessMm);
+        hash_value(hash, policy.softnessMinMm);
+        hash_value(hash, policy.softnessMaxMm);
+        hash_value(hash, policy.softnessSizeCapFraction);
         hash_value(hash, policy.supportXMm);
         hash_value(hash, policy.supportYMm);
         hash_value(hash, policy.lengthMinMm);
@@ -600,8 +625,23 @@ namespace {
         hash_value(hash, policy.widthMaxMm);
         hash_value(hash, policy.widthTailFraction);
         hash_value(hash, policy.driftFraction);
-        hash_value(hash, policy.taperFraction);
-        hash_value(hash, policy.fadeFraction);
+        hash_value(hash, policy.firstKnotMin);
+        hash_value(hash, policy.firstKnotMax);
+        hash_value(hash, policy.secondKnotMin);
+        hash_value(hash, policy.secondKnotMax);
+        hash_value(hash, policy.interiorWidthMinFraction);
+        hash_value(hash, policy.interiorWidthMaxFraction);
+        hash_value(hash, policy.interiorDepthMinFraction);
+        hash_value(hash, policy.interiorDepthMaxFraction);
+        hash_value(hash, policy.endpointAbruptProbability);
+        hash_value(hash, policy.interruptionProbability);
+        hash_value(hash, policy.gapCenterMin);
+        hash_value(hash, policy.gapCenterMax);
+        hash_value(hash, policy.gapSpanMin);
+        hash_value(hash, policy.gapSpanMax);
+        hash_value(hash, policy.scuffProbability);
+        hash_value(hash, policy.scuffLengthMaxMm);
+        hash_value(hash, policy.scuffAngleMaxRadians);
         hash_value(hash, policy.strengthMin);
         hash_value(hash, policy.strengthMax);
     }
@@ -632,19 +672,31 @@ namespace {
         if (grain.active && grain.debugView != 0) {
             return true;
         }
-        const auto dust = [](float amount, float maximumRate) {
+        struct DustDefaults {
+            float maximumRate;
+            float softnessMinMm;
+            float softnessMaxMm;
+        };
+        const auto dust = [](float amount, const DustDefaults& defaults) {
             DefectDustRecipe p{};
             if (!(amount > 0.0f)) {
                 return p;
             }
             p.cellWidthMm = 0.5f;
             p.cellHeightMm = 0.5f;
-            p.slotProbability = maximumRate * std::pow(amount / 10.0f, 2.2f) *
+            p.slotProbability = defaults.maximumRate * std::pow(amount / 10.0f, 2.2f) *
                                 p.cellWidthMm * p.cellHeightMm / 2.0f;
-            p.softnessMm = 0.001f;
+            p.softnessMinMm = defaults.softnessMinMm;
+            p.softnessMaxMm = defaults.softnessMaxMm;
+            p.softnessSizeCapFraction = 0.25f;
             p.fiberFraction = 0.25f;
             p.fiberDriftFraction = 0.10f;
-            p.fiberTaperFraction = 0.2f;
+            p.fiberFirstKnotMin = 0.08f;
+            p.fiberFirstKnotMax = 0.35f;
+            p.fiberSecondKnotMin = 0.65f;
+            p.fiberSecondKnotMax = 0.92f;
+            p.fiberInteriorWidthMinFraction = 0.45f;
+            p.fiberInteriorWidthMaxFraction = 1.0f;
             p.diameterMinMm = 0.008f;
             p.diameterBulkMaxMm = 0.080f;
             p.diameterMaxMm = 0.250f;
@@ -653,13 +705,37 @@ namespace {
             p.fiberLengthMaxMm = 0.65f;
             p.fiberWidthMinMm = 0.003f;
             p.fiberWidthMaxMm = 0.025f;
-            p.opticalDepthMin = 0.20f;
-            p.opticalDepthMax = 4.5f;
-            p.supportXMm = p.fiberLengthMaxMm * (0.5f + p.fiberDriftFraction) + p.fiberWidthMaxMm;
+            p.opacityFaintCumulative = 0.50f;
+            p.opacityIntermediateCumulative = 0.85f;
+            p.compactOpacityMin = 0.10f;
+            p.compactOpacityFaintEnd = 0.45f;
+            p.compactOpacityIntermediateEnd = 0.85f;
+            p.compactOpacityMax = 0.99f;
+            p.fiberOpacityMin = 0.08f;
+            p.fiberOpacityFaintEnd = 0.35f;
+            p.fiberOpacityIntermediateEnd = 0.75f;
+            p.fiberOpacityMax = 0.97f;
+            p.compactDominantAspectMin = 0.52f;
+            p.compactDominantAspectMax = 0.95f;
+            p.compactSubsidiaryScaleMin = 0.30f;
+            p.compactSubsidiaryScaleMax = 0.75f;
+            p.compactSubsidiaryAspectMin = 0.45f;
+            p.compactSubsidiaryAspectMax = 1.0f;
+            p.compactSubsidiaryOffsetMax = 0.68f;
+            p.compactSubsidiaryAngleMaxRadians = 3.14159265359f;
+            // Descriptor validation recomputes this bound, so keep its rounding explicit.
+            p.supportXMm =
+                std::fma(p.fiberLengthMaxMm, 0.5f + p.fiberDriftFraction, p.fiberWidthMaxMm);
             p.supportYMm = p.supportXMm;
             return p;
         };
-        const auto scratch = [](float amount, const std::array<float, 2>& maximumLengthDensityAndStrength) {
+        struct ScratchDefaults {
+            std::array<float, 2> maximumLengthDensityAndStrength;
+            float softnessMinMm;
+            float softnessMaxMm;
+        };
+        const auto scratch = [](float amount, const ScratchDefaults& defaults) {
+            const auto& maximumLengthDensityAndStrength = defaults.maximumLengthDensityAndStrength;
             const float maximumLengthDensity = maximumLengthDensityAndStrength[0];
             const float strengthMax = maximumLengthDensityAndStrength[1];
             DefectScratchRecipe p{};
@@ -685,19 +761,45 @@ namespace {
             p.widthMaxMm = 0.080f;
             p.widthTailFraction = 0.18f;
             p.driftFraction = 0.025f;
-            p.taperFraction = 0.15f;
-            p.fadeFraction = 0.35f;
+            p.firstKnotMin = 0.06f;
+            p.firstKnotMax = 0.28f;
+            p.secondKnotMin = 0.72f;
+            p.secondKnotMax = 0.94f;
+            p.interiorWidthMinFraction = 0.35f;
+            p.interiorWidthMaxFraction = 1.0f;
+            p.interiorDepthMinFraction = 0.35f;
+            p.interiorDepthMaxFraction = 1.0f;
+            p.endpointAbruptProbability = 0.30f;
+            p.interruptionProbability = 0.15f;
+            p.gapCenterMin = 0.25f;
+            p.gapCenterMax = 0.75f;
+            p.gapSpanMin = 0.02f;
+            p.gapSpanMax = 0.12f;
+            p.scuffProbability = 0.10f;
+            p.scuffLengthMaxMm = 0.75f;
+            p.scuffAngleMaxRadians = 0.61086523820f;
             p.strengthMin = strengthMax * 0.15f;
             p.strengthMax = strengthMax;
-            p.softnessMm = 0.0005f;
-            p.supportXMm = p.lengthMaxMm * p.driftFraction + p.widthMaxMm;
-            p.supportYMm = p.lengthMaxMm * 0.5f + p.widthMaxMm;
+            p.softnessMinMm = defaults.softnessMinMm;
+            p.softnessMaxMm = defaults.softnessMaxMm;
+            p.softnessSizeCapFraction = 0.25f;
+            const float transportSupportX = p.lengthMaxMm * p.driftFraction + p.widthMaxMm;
+            const float scuffSupportX = 0.5f * p.scuffLengthMaxMm * std::sin(p.scuffAngleMaxRadians) +
+                                        p.scuffLengthMaxMm * p.driftFraction + p.widthMaxMm;
+            const float scuffSupportY = 0.5f * p.scuffLengthMaxMm * std::cos(p.scuffAngleMaxRadians) +
+                                        p.scuffLengthMaxMm * p.driftFraction + p.widthMaxMm;
+            p.supportXMm = std::max(transportSupportX, scuffSupportX);
+            p.supportYMm = std::max(p.lengthMaxMm * 0.5f + p.widthMaxMm, scuffSupportY);
             return p;
         };
-        out.filmDust = dust(normalize_effect_amount(input.filmDustAmount), 0.80f);
-        out.gateDust = dust(normalize_effect_amount(input.gateDustAmount), 0.40f);
-        out.filmScratch = scratch(normalize_effect_amount(input.filmScratchAmount), {0.080f, 0.95f});
-        out.gateScratch = scratch(normalize_effect_amount(input.gateScratchAmount), {0.040f, 0.85f});
+        out.filmDust = dust(normalize_effect_amount(input.filmDustAmount), {0.80f, 0.00025f, 0.003f});
+        out.gateDust = dust(normalize_effect_amount(input.gateDustAmount), {0.40f, 0.0005f, 0.005f});
+        out.filmScratch = scratch(
+            normalize_effect_amount(input.filmScratchAmount),
+            {{0.080f, 0.95f}, 0.00015f, 0.0015f});
+        out.gateScratch = scratch(
+            normalize_effect_amount(input.gateScratchAmount),
+            {{0.040f, 0.85f}, 0.00025f, 0.003f});
         out.gateWeaveAmount = normalize_effect_amount(input.gateWeaveAmount);
         for (float probability : {out.filmDust.slotProbability, out.gateDust.slotProbability, out.filmScratch.slotProbability, out.gateScratch.slotProbability}) {
             if (!std::isfinite(probability) || probability < 0.0f || probability >= 0.25f) {

@@ -822,11 +822,11 @@ namespace {
 
     struct DefectStrokeGeometry {
         float lengthMm;
-        float widthMm;
         float driftFraction;
-        float taperFraction;
-        float fadeFraction;
         float angleRadians;
+        float fractions[4];
+        float widths[4];
+        float depths[4];
     };
 
     struct DefectTileFootprint {
@@ -858,10 +858,14 @@ namespace {
 
     __device__ void build_defect_stroke(DefectPrimitive& q, std::uint64_t h, const DefectStrokeGeometry& geometry) {
         float dx[4] = {0.0f, (defect_lane(h, 12) - 0.5f) * geometry.driftFraction * geometry.lengthMm, (defect_lane(h, 13) - 0.5f) * geometry.driftFraction * geometry.lengthMm, (defect_lane(h, 14) - 0.5f) * geometry.driftFraction * geometry.lengthMm};
-        const float fraction[4] = {0.0f, geometry.taperFraction, 1.0f - geometry.taperFraction, 1.0f};
         float total = 0.0f;
+        float maximumWidth = 0.0f;
         for (int i = 1; i < 4; ++i) {
-            total += hypotf(dx[i] - dx[i - 1], geometry.lengthMm * (fraction[i] - fraction[i - 1]));
+            total += hypotf(dx[i] - dx[i - 1],
+                            geometry.lengthMm * (geometry.fractions[i] - geometry.fractions[i - 1]));
+        }
+        for (float width : geometry.widths) {
+            maximumWidth = fmaxf(maximumWidth, width);
         }
         const float norm = geometry.lengthMm / total;
         const float c = cosf(geometry.angleRadians);
@@ -870,18 +874,51 @@ namespace {
         q.xmin = q.ymin = 1.0e30f;
         q.xmax = q.ymax = -1.0e30f;
         for (int i = 0; i < 4; ++i) {
-            const float y = (fraction[i] - 0.5f) * geometry.lengthMm * norm;
+            const float y = (geometry.fractions[i] - 0.5f) * geometry.lengthMm * norm;
             const float x = dx[i] * norm;
             q.px[i] = x * c - y * s;
             q.py[i] = x * s + y * c;
-            const float end = (i == 0 || i == 3) ? 0.0f : (0.8f + 0.2f * defect_lane(h, 20 + i));
-            q.widths[i] = geometry.widthMm * end;
-            q.depths[i] = 1.0f - geometry.fadeFraction * defect_lane(h, 16 + i);
-            q.xmin = fminf(q.xmin, q.px[i] - geometry.widthMm * 0.5f);
-            q.xmax = fmaxf(q.xmax, q.px[i] + geometry.widthMm * 0.5f);
-            q.ymin = fminf(q.ymin, q.py[i] - geometry.widthMm * 0.5f);
-            q.ymax = fmaxf(q.ymax, q.py[i] + geometry.widthMm * 0.5f);
+            q.widths[i] = geometry.widths[i];
+            q.depths[i] = geometry.depths[i];
+            q.xmin = fminf(q.xmin, q.px[i] - maximumWidth * 0.5f);
+            q.xmax = fmaxf(q.xmax, q.px[i] + maximumWidth * 0.5f);
+            q.ymin = fminf(q.ymin, q.py[i] - maximumWidth * 0.5f);
+            q.ymax = fmaxf(q.ymax, q.py[i] + maximumWidth * 0.5f);
         }
+    }
+
+    __device__ float defect_dust_opacity(
+        const JuicerCuda::DefectDustPayload& dust,
+        bool fiber,
+        float u) {
+        const float minimum = fiber ? dust.fiberOpacityMin : dust.compactOpacityMin;
+        const float faintEnd = fiber ? dust.fiberOpacityFaintEnd : dust.compactOpacityFaintEnd;
+        const float intermediateEnd =
+            fiber ? dust.fiberOpacityIntermediateEnd : dust.compactOpacityIntermediateEnd;
+        const float maximum = fiber ? dust.fiberOpacityMax : dust.compactOpacityMax;
+        const float faintCumulative = dust.opacityFaintCumulative;
+        const float intermediateCumulative = dust.opacityIntermediateCumulative;
+        if (u < faintCumulative) {
+            return minimum + (faintEnd - minimum) * (u / faintCumulative);
+        }
+        if (u < intermediateCumulative) {
+            return faintEnd + (intermediateEnd - faintEnd) *
+                                  ((u - faintCumulative) /
+                                   (intermediateCumulative - faintCumulative));
+        }
+        return intermediateEnd + (maximum - intermediateEnd) *
+                                     ((u - intermediateCumulative) /
+                                      (1.0f - intermediateCumulative));
+    }
+
+    __device__ float defect_candidate_softness(
+        float u,
+        float minimumMm,
+        float maximumMm,
+        float sizeCapFraction,
+        float nominalSizeMm) {
+        return fminf(minimumMm + (maximumMm - minimumMm) * u * u,
+                     nominalSizeMm * sizeCapFraction);
     }
 
     __device__ DefectPrimitive build_defect_candidate(const JuicerCuda::FilmDefectsPayload& p,
@@ -899,42 +936,161 @@ namespace {
         const float cellHeight = isDust ? dust.cellHeightMm : scratch.cellHeightMm;
         q.cx = (static_cast<float>(address.offsetX) + defect_lane(h, 1)) * cellWidth;
         q.cy = (static_cast<float>(address.offsetY) + defect_lane(h, 2)) * cellHeight;
-        q.softness = isDust ? dust.softnessMm : scratch.softnessMm;
         q.active = 1;
         if (isDust) {
-            const float tau = dust.opticalDepthMin +
-                              (dust.opticalDepthMax - dust.opticalDepthMin) * defect_lane(h, 3);
-            q.strength = -expm1f(-tau);
             const float angle = defect_lane(h, 4) * 6.28318530718f;
-            if (defect_lane(h, 5) < dust.fiberFraction) {
+            const bool fiber = defect_lane(h, 5) < dust.fiberFraction;
+            const float opacityDraw = defect_lane(h, 3);
+            q.strength = defect_dust_opacity(dust, fiber, opacityDraw);
+            if (fiber) {
                 const float length = dust.fiberLengthMinMm +
                                      (dust.fiberLengthMaxMm - dust.fiberLengthMinMm) * defect_lane(h, 6);
                 const float width = dust.fiberWidthMinMm +
                                     (dust.fiberWidthMaxMm - dust.fiberWidthMinMm) * defect_lane(h, 7);
-                build_defect_stroke(q, h, DefectStrokeGeometry{length, width, dust.fiberDriftFraction, dust.fiberTaperFraction, 0.0f, angle});
+                q.softness = defect_candidate_softness(defect_lane(h, 47),
+                                                       dust.softnessMinMm,
+                                                       dust.softnessMaxMm,
+                                                       dust.softnessSizeCapFraction,
+                                                       width);
+                const float firstKnot = dust.fiberFirstKnotMin +
+                                        (dust.fiberFirstKnotMax - dust.fiberFirstKnotMin) * defect_lane(h, 30);
+                const float secondKnot = dust.fiberSecondKnotMin +
+                                         (dust.fiberSecondKnotMax - dust.fiberSecondKnotMin) * defect_lane(h, 31);
+                DefectStrokeGeometry geometry{};
+                geometry.lengthMm = length;
+                geometry.driftFraction = dust.fiberDriftFraction;
+                geometry.angleRadians = angle;
+                geometry.fractions[0] = 0.0f;
+                geometry.fractions[1] = firstKnot;
+                geometry.fractions[2] = secondKnot;
+                geometry.fractions[3] = 1.0f;
+                geometry.widths[1] = width *
+                                     (dust.fiberInteriorWidthMinFraction +
+                                      (dust.fiberInteriorWidthMaxFraction -
+                                       dust.fiberInteriorWidthMinFraction) *
+                                          defect_lane(h, 21));
+                geometry.widths[2] = width *
+                                     (dust.fiberInteriorWidthMinFraction +
+                                      (dust.fiberInteriorWidthMaxFraction -
+                                       dust.fiberInteriorWidthMinFraction) *
+                                          defect_lane(h, 22));
+                for (float& depth : geometry.depths) {
+                    depth = 1.0f;
+                }
+                build_defect_stroke(q, h, geometry);
             } else {
                 const float diameter = defect_mixture(make_float2(defect_lane(h, 6), defect_lane(h, 7)), DefectLengthMixture{dust.diameterMinMm, dust.diameterBulkMaxMm, dust.diameterMaxMm, dust.diameterTailFraction});
-                const float c = cosf(angle);
-                const float s = sinf(angle);
+                q.softness = defect_candidate_softness(defect_lane(h, 47),
+                                                       dust.softnessMinMm,
+                                                       dust.softnessMaxMm,
+                                                       dust.softnessSizeCapFraction,
+                                                       diameter);
+                float centerX[3]{};
+                float centerY[3]{};
+                float radiusX[3]{};
+                float radiusY[3]{};
+                float ellipseAngle[3]{};
+                radiusX[0] = 1.0f;
+                radiusY[0] = dust.compactDominantAspectMin +
+                             (dust.compactDominantAspectMax - dust.compactDominantAspectMin) *
+                                 defect_lane(h, 32);
+                ellipseAngle[0] = angle;
+                const float dominantCos = cosf(angle);
+                const float dominantSin = sinf(angle);
+                float enclosingRadius = 1.0f;
+                for (int i = 1; i < 3; ++i) {
+                    radiusX[i] = dust.compactSubsidiaryScaleMin +
+                                 (dust.compactSubsidiaryScaleMax - dust.compactSubsidiaryScaleMin) *
+                                     defect_lane(h, 32 + i * 5);
+                    const float aspect = dust.compactSubsidiaryAspectMin +
+                                         (dust.compactSubsidiaryAspectMax - dust.compactSubsidiaryAspectMin) *
+                                             defect_lane(h, 33 + i * 5);
+                    radiusY[i] = radiusX[i] * aspect;
+                    const float polar = defect_lane(h, 34 + i * 5) * 6.28318530718f;
+                    const float radial = dust.compactSubsidiaryOffsetMax * sqrtf(defect_lane(h, 35 + i * 5));
+                    const float localX = radial * cosf(polar);
+                    const float localY = radial * radiusY[0] * sinf(polar);
+                    centerX[i] = localX * dominantCos - localY * dominantSin;
+                    centerY[i] = localX * dominantSin + localY * dominantCos;
+                    ellipseAngle[i] = angle +
+                                      (2.0f * defect_lane(h, 36 + i * 5) - 1.0f) *
+                                          dust.compactSubsidiaryAngleMaxRadians;
+                    enclosingRadius = fmaxf(enclosingRadius,
+                                            hypotf(centerX[i], centerY[i]) +
+                                                fmaxf(radiusX[i], radiusY[i]));
+                }
+                const float scale = diameter * 0.5f / enclosingRadius;
+                q.xmin = q.ymin = 1.0e30f;
+                q.xmax = q.ymax = -1.0e30f;
                 for (int i = 0; i < 3; ++i) {
-                    const float rx = diameter * (i == 0 ? 0.34f : 0.23f);
-                    const float ry = rx * (0.5f + 0.35f * defect_lane(h, 20 + i));
-                    const float shift = (static_cast<float>(i) - 1.0f) * diameter * 0.15f;
-                    q.ex[i] = shift * c;
-                    q.ey[i] = shift * s;
+                    const float rx = radiusX[i] * scale;
+                    const float ry = radiusY[i] * scale;
+                    const float c = cosf(ellipseAngle[i]);
+                    const float s = sinf(ellipseAngle[i]);
+                    q.ex[i] = centerX[i] * scale;
+                    q.ey[i] = centerY[i] * scale;
                     q.ea[i] = c * c / (rx * rx) + s * s / (ry * ry);
                     q.eb[i] = c * s * (1.0f / (rx * rx) - 1.0f / (ry * ry));
                     q.ec[i] = s * s / (rx * rx) + c * c / (ry * ry);
+                    const float extentX = sqrtf(rx * rx * c * c + ry * ry * s * s);
+                    const float extentY = sqrtf(rx * rx * s * s + ry * ry * c * c);
+                    q.xmin = fminf(q.xmin, q.ex[i] - extentX);
+                    q.xmax = fmaxf(q.xmax, q.ex[i] + extentX);
+                    q.ymin = fminf(q.ymin, q.ey[i] - extentY);
+                    q.ymax = fmaxf(q.ymax, q.ey[i] + extentY);
                 }
-                q.xmin = q.ymin = -diameter * 0.5f;
-                q.xmax = q.ymax = diameter * 0.5f;
             }
         } else {
             q.strength = scratch.strengthMin +
                          (scratch.strengthMax - scratch.strengthMin) * defect_lane(h, 3);
             const float length = defect_mixture(make_float2(defect_lane(h, 6), defect_lane(h, 7)), DefectLengthMixture{scratch.lengthMinMm, scratch.lengthBulkMaxMm, scratch.lengthMaxMm, scratch.lengthTailFraction});
             const float width = defect_mixture(make_float2(defect_lane(h, 8), defect_lane(h, 9)), DefectLengthMixture{scratch.widthMinMm, scratch.widthBulkMaxMm, scratch.widthMaxMm, scratch.widthTailFraction});
-            build_defect_stroke(q, h, DefectStrokeGeometry{length, width, scratch.driftFraction, scratch.taperFraction, scratch.fadeFraction, 0.0f});
+            q.softness = defect_candidate_softness(defect_lane(h, 47),
+                                                   scratch.softnessMinMm,
+                                                   scratch.softnessMaxMm,
+                                                   scratch.softnessSizeCapFraction,
+                                                   width);
+            DefectStrokeGeometry geometry{};
+            geometry.lengthMm = length;
+            geometry.driftFraction = scratch.driftFraction;
+            const bool interrupted = defect_lane(h, 30) < scratch.interruptionProbability;
+            if (interrupted) {
+                const float gapCenter = scratch.gapCenterMin +
+                                        (scratch.gapCenterMax - scratch.gapCenterMin) * defect_lane(h, 31);
+                const float gapSpan = scratch.gapSpanMin +
+                                      (scratch.gapSpanMax - scratch.gapSpanMin) * defect_lane(h, 32);
+                geometry.fractions[1] = gapCenter - gapSpan * 0.5f;
+                geometry.fractions[2] = gapCenter + gapSpan * 0.5f;
+            } else {
+                geometry.fractions[1] = scratch.firstKnotMin +
+                                        (scratch.firstKnotMax - scratch.firstKnotMin) * defect_lane(h, 31);
+                geometry.fractions[2] = scratch.secondKnotMin +
+                                        (scratch.secondKnotMax - scratch.secondKnotMin) * defect_lane(h, 32);
+            }
+            geometry.fractions[3] = 1.0f;
+            for (int i = 0; i < 4; ++i) {
+                const float widthFraction = scratch.interiorWidthMinFraction +
+                                            (scratch.interiorWidthMaxFraction -
+                                             scratch.interiorWidthMinFraction) *
+                                                defect_lane(h, 33 + i);
+                geometry.widths[i] =
+                    (i == 1 || i == 2 || defect_lane(h, 37 + i) < scratch.endpointAbruptProbability)
+                        ? width * widthFraction
+                        : 0.0f;
+                geometry.depths[i] = scratch.interiorDepthMinFraction +
+                                     (scratch.interiorDepthMaxFraction -
+                                      scratch.interiorDepthMinFraction) *
+                                         defect_lane(h, 41 + i);
+            }
+            if (interrupted) {
+                geometry.depths[1] = 0.0f;
+                geometry.depths[2] = 0.0f;
+            }
+            if (length <= scratch.scuffLengthMaxMm && defect_lane(h, 45) < scratch.scuffProbability) {
+                geometry.angleRadians =
+                    (2.0f * defect_lane(h, 46) - 1.0f) * scratch.scuffAngleMaxRadians;
+            }
+            build_defect_stroke(q, h, geometry);
         }
         return q;
     }
@@ -983,8 +1139,15 @@ namespace {
             if (b > a) {
                 depth[count] = 1.0f;
                 if (q.stroke) {
-                    const float span = q.py[i + 1] - q.py[i];
-                    const float t = span != 0 ? fminf(1.0f, fmaxf(0.0f, (y - q.py[i]) / span)) : 0.5f;
+                    const float dx = q.px[i + 1] - q.px[i];
+                    const float dy = q.py[i + 1] - q.py[i];
+                    const float midpointX = 0.5f * (a + b);
+                    const float denominator = dx * dx + dy * dy;
+                    const float t = fminf(
+                        1.0f,
+                        fmaxf(0.0f,
+                              ((midpointX - q.px[i]) * dx + (y - q.py[i]) * dy) /
+                                  denominator));
                     depth[count] = q.depths[i] + (q.depths[i + 1] - q.depths[i]) * t;
                 }
                 lo[count] = a;
@@ -1077,8 +1240,8 @@ namespace {
         }
         const float cw = dust ? dp.cellWidthMm : sp.cellWidthMm;
         const float ch = dust ? dp.cellHeightMm : sp.cellHeightMm;
-        const float supportX = dust ? dp.supportXMm + dp.softnessMm : sp.supportXMm + sp.softnessMm;
-        const float supportY = dust ? dp.supportYMm + dp.softnessMm : sp.supportYMm + sp.softnessMm;
+        const float supportX = dust ? dp.supportXMm + dp.softnessMaxMm : sp.supportXMm + sp.softnessMaxMm;
+        const float supportY = dust ? dp.supportYMm + dp.softnessMaxMm : sp.supportYMm + sp.softnessMaxMm;
         const auto& origin = p.origins[family];
         const float stepX = p.sampleStepXMm * footprint.scale;
         const float stepY = p.sampleStepYMm * footprint.scale;

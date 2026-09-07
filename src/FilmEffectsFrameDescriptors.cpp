@@ -701,12 +701,19 @@ namespace Spektrafilm {
             hash_value(hash, d.filmDust.cellWidthMm);
             hash_value(hash, d.filmDust.cellHeightMm);
             hash_value(hash, d.filmDust.slotProbability);
-            hash_value(hash, d.filmDust.softnessMm);
+            hash_value(hash, d.filmDust.softnessMinMm);
+            hash_value(hash, d.filmDust.softnessMaxMm);
+            hash_value(hash, d.filmDust.softnessSizeCapFraction);
             hash_value(hash, d.filmDust.supportXMm);
             hash_value(hash, d.filmDust.supportYMm);
             hash_value(hash, d.filmDust.fiberFraction);
             hash_value(hash, d.filmDust.fiberDriftFraction);
-            hash_value(hash, d.filmDust.fiberTaperFraction);
+            hash_value(hash, d.filmDust.fiberFirstKnotMin);
+            hash_value(hash, d.filmDust.fiberFirstKnotMax);
+            hash_value(hash, d.filmDust.fiberSecondKnotMin);
+            hash_value(hash, d.filmDust.fiberSecondKnotMax);
+            hash_value(hash, d.filmDust.fiberInteriorWidthMinFraction);
+            hash_value(hash, d.filmDust.fiberInteriorWidthMaxFraction);
             hash_value(hash, d.filmDust.diameterMinMm);
             hash_value(hash, d.filmDust.diameterBulkMaxMm);
             hash_value(hash, d.filmDust.diameterMaxMm);
@@ -715,8 +722,24 @@ namespace Spektrafilm {
             hash_value(hash, d.filmDust.fiberLengthMaxMm);
             hash_value(hash, d.filmDust.fiberWidthMinMm);
             hash_value(hash, d.filmDust.fiberWidthMaxMm);
-            hash_value(hash, d.filmDust.opticalDepthMin);
-            hash_value(hash, d.filmDust.opticalDepthMax);
+            hash_value(hash, d.filmDust.opacityFaintCumulative);
+            hash_value(hash, d.filmDust.opacityIntermediateCumulative);
+            hash_value(hash, d.filmDust.compactOpacityMin);
+            hash_value(hash, d.filmDust.compactOpacityFaintEnd);
+            hash_value(hash, d.filmDust.compactOpacityIntermediateEnd);
+            hash_value(hash, d.filmDust.compactOpacityMax);
+            hash_value(hash, d.filmDust.fiberOpacityMin);
+            hash_value(hash, d.filmDust.fiberOpacityFaintEnd);
+            hash_value(hash, d.filmDust.fiberOpacityIntermediateEnd);
+            hash_value(hash, d.filmDust.fiberOpacityMax);
+            hash_value(hash, d.filmDust.compactDominantAspectMin);
+            hash_value(hash, d.filmDust.compactDominantAspectMax);
+            hash_value(hash, d.filmDust.compactSubsidiaryScaleMin);
+            hash_value(hash, d.filmDust.compactSubsidiaryScaleMax);
+            hash_value(hash, d.filmDust.compactSubsidiaryAspectMin);
+            hash_value(hash, d.filmDust.compactSubsidiaryAspectMax);
+            hash_value(hash, d.filmDust.compactSubsidiaryOffsetMax);
+            hash_value(hash, d.filmDust.compactSubsidiaryAngleMaxRadians);
             hash_value(hash, d.origins[0].cellX);
             hash_value(hash, d.origins[0].cellY);
             hash_value(hash, d.origins[0].localXMm);
@@ -726,7 +749,9 @@ namespace Spektrafilm {
             hash_value(hash, d.filmScratch.cellWidthMm);
             hash_value(hash, d.filmScratch.cellHeightMm);
             hash_value(hash, d.filmScratch.slotProbability);
-            hash_value(hash, d.filmScratch.softnessMm);
+            hash_value(hash, d.filmScratch.softnessMinMm);
+            hash_value(hash, d.filmScratch.softnessMaxMm);
+            hash_value(hash, d.filmScratch.softnessSizeCapFraction);
             hash_value(hash, d.filmScratch.supportXMm);
             hash_value(hash, d.filmScratch.supportYMm);
             hash_value(hash, d.filmScratch.lengthMinMm);
@@ -738,8 +763,23 @@ namespace Spektrafilm {
             hash_value(hash, d.filmScratch.widthMaxMm);
             hash_value(hash, d.filmScratch.widthTailFraction);
             hash_value(hash, d.filmScratch.driftFraction);
-            hash_value(hash, d.filmScratch.taperFraction);
-            hash_value(hash, d.filmScratch.fadeFraction);
+            hash_value(hash, d.filmScratch.firstKnotMin);
+            hash_value(hash, d.filmScratch.firstKnotMax);
+            hash_value(hash, d.filmScratch.secondKnotMin);
+            hash_value(hash, d.filmScratch.secondKnotMax);
+            hash_value(hash, d.filmScratch.interiorWidthMinFraction);
+            hash_value(hash, d.filmScratch.interiorWidthMaxFraction);
+            hash_value(hash, d.filmScratch.interiorDepthMinFraction);
+            hash_value(hash, d.filmScratch.interiorDepthMaxFraction);
+            hash_value(hash, d.filmScratch.endpointAbruptProbability);
+            hash_value(hash, d.filmScratch.interruptionProbability);
+            hash_value(hash, d.filmScratch.gapCenterMin);
+            hash_value(hash, d.filmScratch.gapCenterMax);
+            hash_value(hash, d.filmScratch.gapSpanMin);
+            hash_value(hash, d.filmScratch.gapSpanMax);
+            hash_value(hash, d.filmScratch.scuffProbability);
+            hash_value(hash, d.filmScratch.scuffLengthMaxMm);
+            hash_value(hash, d.filmScratch.scuffAngleMaxRadians);
             hash_value(hash, d.filmScratch.strengthMin);
             hash_value(hash, d.filmScratch.strengthMax);
             hash_value(hash, d.origins[1].cellX);
@@ -751,12 +791,19 @@ namespace Spektrafilm {
             hash_value(hash, d.gateDust.cellWidthMm);
             hash_value(hash, d.gateDust.cellHeightMm);
             hash_value(hash, d.gateDust.slotProbability);
-            hash_value(hash, d.gateDust.softnessMm);
+            hash_value(hash, d.gateDust.softnessMinMm);
+            hash_value(hash, d.gateDust.softnessMaxMm);
+            hash_value(hash, d.gateDust.softnessSizeCapFraction);
             hash_value(hash, d.gateDust.supportXMm);
             hash_value(hash, d.gateDust.supportYMm);
             hash_value(hash, d.gateDust.fiberFraction);
             hash_value(hash, d.gateDust.fiberDriftFraction);
-            hash_value(hash, d.gateDust.fiberTaperFraction);
+            hash_value(hash, d.gateDust.fiberFirstKnotMin);
+            hash_value(hash, d.gateDust.fiberFirstKnotMax);
+            hash_value(hash, d.gateDust.fiberSecondKnotMin);
+            hash_value(hash, d.gateDust.fiberSecondKnotMax);
+            hash_value(hash, d.gateDust.fiberInteriorWidthMinFraction);
+            hash_value(hash, d.gateDust.fiberInteriorWidthMaxFraction);
             hash_value(hash, d.gateDust.diameterMinMm);
             hash_value(hash, d.gateDust.diameterBulkMaxMm);
             hash_value(hash, d.gateDust.diameterMaxMm);
@@ -765,8 +812,24 @@ namespace Spektrafilm {
             hash_value(hash, d.gateDust.fiberLengthMaxMm);
             hash_value(hash, d.gateDust.fiberWidthMinMm);
             hash_value(hash, d.gateDust.fiberWidthMaxMm);
-            hash_value(hash, d.gateDust.opticalDepthMin);
-            hash_value(hash, d.gateDust.opticalDepthMax);
+            hash_value(hash, d.gateDust.opacityFaintCumulative);
+            hash_value(hash, d.gateDust.opacityIntermediateCumulative);
+            hash_value(hash, d.gateDust.compactOpacityMin);
+            hash_value(hash, d.gateDust.compactOpacityFaintEnd);
+            hash_value(hash, d.gateDust.compactOpacityIntermediateEnd);
+            hash_value(hash, d.gateDust.compactOpacityMax);
+            hash_value(hash, d.gateDust.fiberOpacityMin);
+            hash_value(hash, d.gateDust.fiberOpacityFaintEnd);
+            hash_value(hash, d.gateDust.fiberOpacityIntermediateEnd);
+            hash_value(hash, d.gateDust.fiberOpacityMax);
+            hash_value(hash, d.gateDust.compactDominantAspectMin);
+            hash_value(hash, d.gateDust.compactDominantAspectMax);
+            hash_value(hash, d.gateDust.compactSubsidiaryScaleMin);
+            hash_value(hash, d.gateDust.compactSubsidiaryScaleMax);
+            hash_value(hash, d.gateDust.compactSubsidiaryAspectMin);
+            hash_value(hash, d.gateDust.compactSubsidiaryAspectMax);
+            hash_value(hash, d.gateDust.compactSubsidiaryOffsetMax);
+            hash_value(hash, d.gateDust.compactSubsidiaryAngleMaxRadians);
             hash_value(hash, d.origins[2].cellX);
             hash_value(hash, d.origins[2].cellY);
             hash_value(hash, d.origins[2].localXMm);
@@ -776,7 +839,9 @@ namespace Spektrafilm {
             hash_value(hash, d.gateScratch.cellWidthMm);
             hash_value(hash, d.gateScratch.cellHeightMm);
             hash_value(hash, d.gateScratch.slotProbability);
-            hash_value(hash, d.gateScratch.softnessMm);
+            hash_value(hash, d.gateScratch.softnessMinMm);
+            hash_value(hash, d.gateScratch.softnessMaxMm);
+            hash_value(hash, d.gateScratch.softnessSizeCapFraction);
             hash_value(hash, d.gateScratch.supportXMm);
             hash_value(hash, d.gateScratch.supportYMm);
             hash_value(hash, d.gateScratch.lengthMinMm);
@@ -788,8 +853,23 @@ namespace Spektrafilm {
             hash_value(hash, d.gateScratch.widthMaxMm);
             hash_value(hash, d.gateScratch.widthTailFraction);
             hash_value(hash, d.gateScratch.driftFraction);
-            hash_value(hash, d.gateScratch.taperFraction);
-            hash_value(hash, d.gateScratch.fadeFraction);
+            hash_value(hash, d.gateScratch.firstKnotMin);
+            hash_value(hash, d.gateScratch.firstKnotMax);
+            hash_value(hash, d.gateScratch.secondKnotMin);
+            hash_value(hash, d.gateScratch.secondKnotMax);
+            hash_value(hash, d.gateScratch.interiorWidthMinFraction);
+            hash_value(hash, d.gateScratch.interiorWidthMaxFraction);
+            hash_value(hash, d.gateScratch.interiorDepthMinFraction);
+            hash_value(hash, d.gateScratch.interiorDepthMaxFraction);
+            hash_value(hash, d.gateScratch.endpointAbruptProbability);
+            hash_value(hash, d.gateScratch.interruptionProbability);
+            hash_value(hash, d.gateScratch.gapCenterMin);
+            hash_value(hash, d.gateScratch.gapCenterMax);
+            hash_value(hash, d.gateScratch.gapSpanMin);
+            hash_value(hash, d.gateScratch.gapSpanMax);
+            hash_value(hash, d.gateScratch.scuffProbability);
+            hash_value(hash, d.gateScratch.scuffLengthMaxMm);
+            hash_value(hash, d.gateScratch.scuffAngleMaxRadians);
             hash_value(hash, d.gateScratch.strengthMin);
             hash_value(hash, d.gateScratch.strengthMax);
             hash_value(hash, d.origins[3].cellX);
@@ -837,17 +917,18 @@ namespace Spektrafilm {
             }
             if (!(p.slotProbability > 0.0f && p.slotProbability < 0.25f) ||
                 !(p.cellWidthMm > 0.0f && p.cellHeightMm > 0.0f) ||
-                !(p.softnessMm >= 0.0f && p.supportXMm > 0.0f && p.supportYMm > 0.0f) ||
+                !(p.softnessMinMm >= 0.0f && p.softnessMaxMm >= p.softnessMinMm &&
+                  p.softnessSizeCapFraction > 0.0f && p.supportXMm > 0.0f && p.supportYMm > 0.0f) ||
                 !(o.localXMm >= 0.0f && o.localXMm < p.cellWidthMm &&
                   o.localYMm >= 0.0f && o.localYMm < p.cellHeightMm)) {
                 return false;
             }
             const double nx = std::ceil((static_cast<double>(d.fullFrameExtent.width) * d.sampleStepXMm +
-                                         2.0 * (p.supportXMm + p.softnessMm + d.sampleStepXMm)) /
+                                         2.0 * (p.supportXMm + p.softnessMaxMm + d.sampleStepXMm)) /
                                         p.cellWidthMm) +
                               2.0;
             const double ny = std::ceil((static_cast<double>(d.fullFrameExtent.height) * d.sampleStepYMm +
-                                         2.0 * (p.supportYMm + p.softnessMm + d.sampleStepYMm)) /
+                                         2.0 * (p.supportYMm + p.softnessMaxMm + d.sampleStepYMm)) /
                                         p.cellHeightMm) +
                               2.0;
             constexpr double kCellLimit = 4503599627370496.0;
@@ -856,6 +937,190 @@ namespace Spektrafilm {
                    std::abs(static_cast<double>(o.cellX)) + nx < kCellLimit &&
                    std::abs(static_cast<double>(o.cellY)) + ny < kCellLimit;
         }
+
+        bool valid_opacity_boundaries(float minimum, float faintEnd, float intermediateEnd, float maximum) {
+            return minimum >= 0.0f && minimum < faintEnd && faintEnd < intermediateEnd &&
+                   intermediateEnd < maximum && maximum < 1.0f;
+        }
+
+        bool valid_dust_policy(const DefectDustRecipe& p) {
+            const float values[] = {
+                p.cellWidthMm,
+                p.cellHeightMm,
+                p.slotProbability,
+                p.softnessMinMm,
+                p.softnessMaxMm,
+                p.softnessSizeCapFraction,
+                p.supportXMm,
+                p.supportYMm,
+                p.fiberFraction,
+                p.fiberDriftFraction,
+                p.fiberFirstKnotMin,
+                p.fiberFirstKnotMax,
+                p.fiberSecondKnotMin,
+                p.fiberSecondKnotMax,
+                p.fiberInteriorWidthMinFraction,
+                p.fiberInteriorWidthMaxFraction,
+                p.diameterMinMm,
+                p.diameterBulkMaxMm,
+                p.diameterMaxMm,
+                p.diameterTailFraction,
+                p.fiberLengthMinMm,
+                p.fiberLengthMaxMm,
+                p.fiberWidthMinMm,
+                p.fiberWidthMaxMm,
+                p.opacityFaintCumulative,
+                p.opacityIntermediateCumulative,
+                p.compactOpacityMin,
+                p.compactOpacityFaintEnd,
+                p.compactOpacityIntermediateEnd,
+                p.compactOpacityMax,
+                p.fiberOpacityMin,
+                p.fiberOpacityFaintEnd,
+                p.fiberOpacityIntermediateEnd,
+                p.fiberOpacityMax,
+                p.compactDominantAspectMin,
+                p.compactDominantAspectMax,
+                p.compactSubsidiaryScaleMin,
+                p.compactSubsidiaryScaleMax,
+                p.compactSubsidiaryAspectMin,
+                p.compactSubsidiaryAspectMax,
+                p.compactSubsidiaryOffsetMax,
+                p.compactSubsidiaryAngleMaxRadians};
+            if (!std::all_of(std::begin(values), std::end(values), [](float value) {
+                    return std::isfinite(value);
+                })) {
+                return false;
+            }
+            const float fiberSupport =
+                std::fma(p.fiberLengthMaxMm, 0.5f + p.fiberDriftFraction, p.fiberWidthMaxMm);
+            const float geometrySupport = std::max(p.diameterMaxMm * 0.5f, fiberSupport);
+            return p.cellWidthMm > 0.0f && p.cellHeightMm > 0.0f &&
+                   p.slotProbability > 0.0f && p.slotProbability < 0.25f &&
+                   p.softnessMinMm >= 0.0f && p.softnessMaxMm >= p.softnessMinMm &&
+                   p.softnessSizeCapFraction > 0.0f && p.softnessSizeCapFraction <= 0.5f &&
+                   p.supportXMm >= geometrySupport && p.supportYMm >= geometrySupport &&
+                   p.fiberFraction >= 0.0f && p.fiberFraction <= 1.0f &&
+                   p.fiberDriftFraction >= 0.0f && p.fiberDriftFraction <= 0.1f &&
+                   p.fiberFirstKnotMin > 0.0f && p.fiberFirstKnotMin <= p.fiberFirstKnotMax &&
+                   p.fiberFirstKnotMax < p.fiberSecondKnotMin &&
+                   p.fiberSecondKnotMin <= p.fiberSecondKnotMax && p.fiberSecondKnotMax < 1.0f &&
+                   p.fiberInteriorWidthMinFraction > 0.0f &&
+                   p.fiberInteriorWidthMinFraction <= p.fiberInteriorWidthMaxFraction &&
+                   p.fiberInteriorWidthMaxFraction <= 1.0f &&
+                   p.diameterMinMm > 0.0f && p.diameterBulkMaxMm >= p.diameterMinMm &&
+                   p.diameterMaxMm >= p.diameterBulkMaxMm &&
+                   p.diameterTailFraction >= 0.0f && p.diameterTailFraction <= 1.0f &&
+                   p.fiberLengthMinMm > 0.0f && p.fiberLengthMaxMm >= p.fiberLengthMinMm &&
+                   p.fiberWidthMinMm > 0.0f && p.fiberWidthMaxMm >= p.fiberWidthMinMm &&
+                   p.opacityFaintCumulative > 0.0f &&
+                   p.opacityFaintCumulative < p.opacityIntermediateCumulative &&
+                   p.opacityIntermediateCumulative < 1.0f &&
+                   valid_opacity_boundaries(p.compactOpacityMin,
+                                            p.compactOpacityFaintEnd,
+                                            p.compactOpacityIntermediateEnd,
+                                            p.compactOpacityMax) &&
+                   valid_opacity_boundaries(p.fiberOpacityMin,
+                                            p.fiberOpacityFaintEnd,
+                                            p.fiberOpacityIntermediateEnd,
+                                            p.fiberOpacityMax) &&
+                   p.compactDominantAspectMin > 0.0f &&
+                   p.compactDominantAspectMin <= p.compactDominantAspectMax &&
+                   p.compactDominantAspectMax <= 1.0f &&
+                   p.compactSubsidiaryScaleMin > 0.0f &&
+                   p.compactSubsidiaryScaleMin <= p.compactSubsidiaryScaleMax &&
+                   p.compactSubsidiaryScaleMax <= 1.0f &&
+                   p.compactSubsidiaryAspectMin > 0.0f &&
+                   p.compactSubsidiaryAspectMin <= p.compactSubsidiaryAspectMax &&
+                   p.compactSubsidiaryAspectMax <= 1.0f &&
+                   p.compactSubsidiaryOffsetMax >= 0.0f && p.compactSubsidiaryOffsetMax < 1.0f &&
+                   p.compactSubsidiaryAngleMaxRadians > 0.0f &&
+                   p.compactSubsidiaryAngleMaxRadians <= 3.14159265359f;
+        }
+
+        bool valid_scratch_policy(const DefectScratchRecipe& p) {
+            const float values[] = {
+                p.cellWidthMm,
+                p.cellHeightMm,
+                p.slotProbability,
+                p.softnessMinMm,
+                p.softnessMaxMm,
+                p.softnessSizeCapFraction,
+                p.supportXMm,
+                p.supportYMm,
+                p.lengthMinMm,
+                p.lengthBulkMaxMm,
+                p.lengthMaxMm,
+                p.lengthTailFraction,
+                p.widthMinMm,
+                p.widthBulkMaxMm,
+                p.widthMaxMm,
+                p.widthTailFraction,
+                p.driftFraction,
+                p.firstKnotMin,
+                p.firstKnotMax,
+                p.secondKnotMin,
+                p.secondKnotMax,
+                p.interiorWidthMinFraction,
+                p.interiorWidthMaxFraction,
+                p.interiorDepthMinFraction,
+                p.interiorDepthMaxFraction,
+                p.endpointAbruptProbability,
+                p.interruptionProbability,
+                p.gapCenterMin,
+                p.gapCenterMax,
+                p.gapSpanMin,
+                p.gapSpanMax,
+                p.scuffProbability,
+                p.scuffLengthMaxMm,
+                p.scuffAngleMaxRadians,
+                p.strengthMin,
+                p.strengthMax};
+            if (!std::all_of(std::begin(values), std::end(values), [](float value) {
+                    return std::isfinite(value);
+                })) {
+                return false;
+            }
+            const float transportSupportX = p.lengthMaxMm * p.driftFraction + p.widthMaxMm;
+            const float scuffSupportX = 0.5f * p.scuffLengthMaxMm * std::sin(p.scuffAngleMaxRadians) +
+                                        p.scuffLengthMaxMm * p.driftFraction + p.widthMaxMm;
+            const float transportSupportY = p.lengthMaxMm * 0.5f + p.widthMaxMm;
+            const float scuffSupportY = 0.5f * p.scuffLengthMaxMm * std::cos(p.scuffAngleMaxRadians) +
+                                        p.scuffLengthMaxMm * p.driftFraction + p.widthMaxMm;
+            return p.cellWidthMm > 0.0f && p.cellHeightMm > 0.0f &&
+                   p.slotProbability > 0.0f && p.slotProbability < 0.25f &&
+                   p.softnessMinMm >= 0.0f && p.softnessMaxMm >= p.softnessMinMm &&
+                   p.softnessSizeCapFraction > 0.0f && p.softnessSizeCapFraction <= 0.5f &&
+                   p.supportXMm >= std::max(transportSupportX, scuffSupportX) &&
+                   p.supportYMm >= std::max(transportSupportY, scuffSupportY) &&
+                   p.lengthMinMm > 0.0f && p.lengthBulkMaxMm >= p.lengthMinMm &&
+                   p.lengthMaxMm >= p.lengthBulkMaxMm &&
+                   p.lengthTailFraction >= 0.0f && p.lengthTailFraction <= 1.0f &&
+                   p.widthMinMm > 0.0f && p.widthBulkMaxMm >= p.widthMinMm &&
+                   p.widthMaxMm >= p.widthBulkMaxMm &&
+                   p.widthTailFraction >= 0.0f && p.widthTailFraction <= 1.0f &&
+                   p.driftFraction >= 0.0f &&
+                   p.firstKnotMin > 0.0f && p.firstKnotMin <= p.firstKnotMax &&
+                   p.firstKnotMax < p.secondKnotMin &&
+                   p.secondKnotMin <= p.secondKnotMax && p.secondKnotMax < 1.0f &&
+                   p.interiorWidthMinFraction > 0.0f &&
+                   p.interiorWidthMinFraction <= p.interiorWidthMaxFraction &&
+                   p.interiorWidthMaxFraction <= 1.0f &&
+                   p.interiorDepthMinFraction > 0.0f &&
+                   p.interiorDepthMinFraction <= p.interiorDepthMaxFraction &&
+                   p.interiorDepthMaxFraction <= 1.0f &&
+                   p.endpointAbruptProbability >= 0.0f && p.endpointAbruptProbability <= 1.0f &&
+                   p.interruptionProbability >= 0.0f && p.interruptionProbability <= 1.0f &&
+                   p.gapCenterMin > 0.0f && p.gapCenterMin <= p.gapCenterMax &&
+                   p.gapCenterMax < 1.0f && p.gapSpanMin > 0.0f &&
+                   p.gapSpanMin <= p.gapSpanMax &&
+                   p.gapCenterMin - 0.5f * p.gapSpanMax > 0.0f &&
+                   p.gapCenterMax + 0.5f * p.gapSpanMax < 1.0f &&
+                   p.scuffProbability >= 0.0f && p.scuffProbability <= 1.0f &&
+                   p.scuffLengthMaxMm >= p.lengthMinMm && p.scuffLengthMaxMm <= p.lengthMaxMm &&
+                   p.scuffAngleMaxRadians > 0.0f && p.scuffAngleMaxRadians <= 1.57079632679f &&
+                   p.strengthMin >= 0.0f && p.strengthMax >= p.strengthMin && p.strengthMax <= 1.0f;
+        }
     } // namespace
 
     bool validate_film_juicer_effects_frame_descriptor(const FilmJuicerEffectsFrameDescriptor& d) {
@@ -863,11 +1128,15 @@ namespace Spektrafilm {
             if (d.filmDust.cellWidthMm != 0.0f ||
                 d.filmDust.cellHeightMm != 0.0f ||
                 d.filmDust.slotProbability != 0.0f ||
-                d.filmDust.softnessMm != 0.0f ||
+                d.filmDust.softnessMinMm != 0.0f || d.filmDust.softnessMaxMm != 0.0f ||
+                d.filmDust.softnessSizeCapFraction != 0.0f ||
                 d.filmDust.supportXMm != 0.0f ||
                 d.filmDust.supportYMm != 0.0f ||
                 d.filmDust.fiberFraction != 0.0f ||
-                d.filmDust.fiberDriftFraction != 0.0f || d.filmDust.fiberTaperFraction != 0.0f ||
+                d.filmDust.fiberDriftFraction != 0.0f ||
+                d.filmDust.fiberFirstKnotMin != 0.0f || d.filmDust.fiberFirstKnotMax != 0.0f ||
+                d.filmDust.fiberSecondKnotMin != 0.0f || d.filmDust.fiberSecondKnotMax != 0.0f ||
+                d.filmDust.fiberInteriorWidthMinFraction != 0.0f || d.filmDust.fiberInteriorWidthMaxFraction != 0.0f ||
                 d.filmDust.diameterMinMm != 0.0f ||
                 d.filmDust.diameterBulkMaxMm != 0.0f ||
                 d.filmDust.diameterMaxMm != 0.0f ||
@@ -876,8 +1145,15 @@ namespace Spektrafilm {
                 d.filmDust.fiberLengthMaxMm != 0.0f ||
                 d.filmDust.fiberWidthMinMm != 0.0f ||
                 d.filmDust.fiberWidthMaxMm != 0.0f ||
-                d.filmDust.opticalDepthMin != 0.0f ||
-                d.filmDust.opticalDepthMax != 0.0f ||
+                d.filmDust.opacityFaintCumulative != 0.0f || d.filmDust.opacityIntermediateCumulative != 0.0f ||
+                d.filmDust.compactOpacityMin != 0.0f || d.filmDust.compactOpacityFaintEnd != 0.0f ||
+                d.filmDust.compactOpacityIntermediateEnd != 0.0f || d.filmDust.compactOpacityMax != 0.0f ||
+                d.filmDust.fiberOpacityMin != 0.0f || d.filmDust.fiberOpacityFaintEnd != 0.0f ||
+                d.filmDust.fiberOpacityIntermediateEnd != 0.0f || d.filmDust.fiberOpacityMax != 0.0f ||
+                d.filmDust.compactDominantAspectMin != 0.0f || d.filmDust.compactDominantAspectMax != 0.0f ||
+                d.filmDust.compactSubsidiaryScaleMin != 0.0f || d.filmDust.compactSubsidiaryScaleMax != 0.0f ||
+                d.filmDust.compactSubsidiaryAspectMin != 0.0f || d.filmDust.compactSubsidiaryAspectMax != 0.0f ||
+                d.filmDust.compactSubsidiaryOffsetMax != 0.0f || d.filmDust.compactSubsidiaryAngleMaxRadians != 0.0f ||
                 d.origins[0].cellX != 0 || d.origins[0].cellY != 0 ||
                 d.origins[0].localXMm != 0 || d.origins[0].localYMm != 0) {
                 return false;
@@ -887,7 +1163,8 @@ namespace Spektrafilm {
             if (d.filmScratch.cellWidthMm != 0.0f ||
                 d.filmScratch.cellHeightMm != 0.0f ||
                 d.filmScratch.slotProbability != 0.0f ||
-                d.filmScratch.softnessMm != 0.0f ||
+                d.filmScratch.softnessMinMm != 0.0f || d.filmScratch.softnessMaxMm != 0.0f ||
+                d.filmScratch.softnessSizeCapFraction != 0.0f ||
                 d.filmScratch.supportXMm != 0.0f ||
                 d.filmScratch.supportYMm != 0.0f ||
                 d.filmScratch.lengthMinMm != 0.0f ||
@@ -899,8 +1176,15 @@ namespace Spektrafilm {
                 d.filmScratch.widthMaxMm != 0.0f ||
                 d.filmScratch.widthTailFraction != 0.0f ||
                 d.filmScratch.driftFraction != 0.0f ||
-                d.filmScratch.taperFraction != 0.0f ||
-                d.filmScratch.fadeFraction != 0.0f ||
+                d.filmScratch.firstKnotMin != 0.0f || d.filmScratch.firstKnotMax != 0.0f ||
+                d.filmScratch.secondKnotMin != 0.0f || d.filmScratch.secondKnotMax != 0.0f ||
+                d.filmScratch.interiorWidthMinFraction != 0.0f || d.filmScratch.interiorWidthMaxFraction != 0.0f ||
+                d.filmScratch.interiorDepthMinFraction != 0.0f || d.filmScratch.interiorDepthMaxFraction != 0.0f ||
+                d.filmScratch.endpointAbruptProbability != 0.0f || d.filmScratch.interruptionProbability != 0.0f ||
+                d.filmScratch.gapCenterMin != 0.0f || d.filmScratch.gapCenterMax != 0.0f ||
+                d.filmScratch.gapSpanMin != 0.0f || d.filmScratch.gapSpanMax != 0.0f ||
+                d.filmScratch.scuffProbability != 0.0f || d.filmScratch.scuffLengthMaxMm != 0.0f ||
+                d.filmScratch.scuffAngleMaxRadians != 0.0f ||
                 d.filmScratch.strengthMin != 0.0f ||
                 d.filmScratch.strengthMax != 0.0f ||
                 d.origins[1].cellX != 0 || d.origins[1].cellY != 0 ||
@@ -912,11 +1196,15 @@ namespace Spektrafilm {
             if (d.gateDust.cellWidthMm != 0.0f ||
                 d.gateDust.cellHeightMm != 0.0f ||
                 d.gateDust.slotProbability != 0.0f ||
-                d.gateDust.softnessMm != 0.0f ||
+                d.gateDust.softnessMinMm != 0.0f || d.gateDust.softnessMaxMm != 0.0f ||
+                d.gateDust.softnessSizeCapFraction != 0.0f ||
                 d.gateDust.supportXMm != 0.0f ||
                 d.gateDust.supportYMm != 0.0f ||
                 d.gateDust.fiberFraction != 0.0f ||
-                d.gateDust.fiberDriftFraction != 0.0f || d.gateDust.fiberTaperFraction != 0.0f ||
+                d.gateDust.fiberDriftFraction != 0.0f ||
+                d.gateDust.fiberFirstKnotMin != 0.0f || d.gateDust.fiberFirstKnotMax != 0.0f ||
+                d.gateDust.fiberSecondKnotMin != 0.0f || d.gateDust.fiberSecondKnotMax != 0.0f ||
+                d.gateDust.fiberInteriorWidthMinFraction != 0.0f || d.gateDust.fiberInteriorWidthMaxFraction != 0.0f ||
                 d.gateDust.diameterMinMm != 0.0f ||
                 d.gateDust.diameterBulkMaxMm != 0.0f ||
                 d.gateDust.diameterMaxMm != 0.0f ||
@@ -925,8 +1213,15 @@ namespace Spektrafilm {
                 d.gateDust.fiberLengthMaxMm != 0.0f ||
                 d.gateDust.fiberWidthMinMm != 0.0f ||
                 d.gateDust.fiberWidthMaxMm != 0.0f ||
-                d.gateDust.opticalDepthMin != 0.0f ||
-                d.gateDust.opticalDepthMax != 0.0f ||
+                d.gateDust.opacityFaintCumulative != 0.0f || d.gateDust.opacityIntermediateCumulative != 0.0f ||
+                d.gateDust.compactOpacityMin != 0.0f || d.gateDust.compactOpacityFaintEnd != 0.0f ||
+                d.gateDust.compactOpacityIntermediateEnd != 0.0f || d.gateDust.compactOpacityMax != 0.0f ||
+                d.gateDust.fiberOpacityMin != 0.0f || d.gateDust.fiberOpacityFaintEnd != 0.0f ||
+                d.gateDust.fiberOpacityIntermediateEnd != 0.0f || d.gateDust.fiberOpacityMax != 0.0f ||
+                d.gateDust.compactDominantAspectMin != 0.0f || d.gateDust.compactDominantAspectMax != 0.0f ||
+                d.gateDust.compactSubsidiaryScaleMin != 0.0f || d.gateDust.compactSubsidiaryScaleMax != 0.0f ||
+                d.gateDust.compactSubsidiaryAspectMin != 0.0f || d.gateDust.compactSubsidiaryAspectMax != 0.0f ||
+                d.gateDust.compactSubsidiaryOffsetMax != 0.0f || d.gateDust.compactSubsidiaryAngleMaxRadians != 0.0f ||
                 d.origins[2].cellX != 0 || d.origins[2].cellY != 0 ||
                 d.origins[2].localXMm != 0 || d.origins[2].localYMm != 0) {
                 return false;
@@ -936,7 +1231,8 @@ namespace Spektrafilm {
             if (d.gateScratch.cellWidthMm != 0.0f ||
                 d.gateScratch.cellHeightMm != 0.0f ||
                 d.gateScratch.slotProbability != 0.0f ||
-                d.gateScratch.softnessMm != 0.0f ||
+                d.gateScratch.softnessMinMm != 0.0f || d.gateScratch.softnessMaxMm != 0.0f ||
+                d.gateScratch.softnessSizeCapFraction != 0.0f ||
                 d.gateScratch.supportXMm != 0.0f ||
                 d.gateScratch.supportYMm != 0.0f ||
                 d.gateScratch.lengthMinMm != 0.0f ||
@@ -948,8 +1244,15 @@ namespace Spektrafilm {
                 d.gateScratch.widthMaxMm != 0.0f ||
                 d.gateScratch.widthTailFraction != 0.0f ||
                 d.gateScratch.driftFraction != 0.0f ||
-                d.gateScratch.taperFraction != 0.0f ||
-                d.gateScratch.fadeFraction != 0.0f ||
+                d.gateScratch.firstKnotMin != 0.0f || d.gateScratch.firstKnotMax != 0.0f ||
+                d.gateScratch.secondKnotMin != 0.0f || d.gateScratch.secondKnotMax != 0.0f ||
+                d.gateScratch.interiorWidthMinFraction != 0.0f || d.gateScratch.interiorWidthMaxFraction != 0.0f ||
+                d.gateScratch.interiorDepthMinFraction != 0.0f || d.gateScratch.interiorDepthMaxFraction != 0.0f ||
+                d.gateScratch.endpointAbruptProbability != 0.0f || d.gateScratch.interruptionProbability != 0.0f ||
+                d.gateScratch.gapCenterMin != 0.0f || d.gateScratch.gapCenterMax != 0.0f ||
+                d.gateScratch.gapSpanMin != 0.0f || d.gateScratch.gapSpanMax != 0.0f ||
+                d.gateScratch.scuffProbability != 0.0f || d.gateScratch.scuffLengthMaxMm != 0.0f ||
+                d.gateScratch.scuffAngleMaxRadians != 0.0f ||
                 d.gateScratch.strengthMin != 0.0f ||
                 d.gateScratch.strengthMax != 0.0f ||
                 d.origins[3].cellX != 0 || d.origins[3].cellY != 0 ||
@@ -1000,293 +1303,25 @@ namespace Spektrafilm {
         }
         if (d.filmDust.slotProbability != 0.0f) {
             const auto& p = d.filmDust;
-            if (p.supportXMm < std::max(p.diameterMaxMm, p.fiberLengthMaxMm + p.fiberWidthMaxMm) * 0.5f ||
-                p.supportYMm < std::max(p.diameterMaxMm, p.fiberLengthMaxMm + p.fiberWidthMaxMm) * 0.5f) {
-                return false;
-            }
-            if (!std::isfinite(p.cellWidthMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.cellHeightMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.slotProbability)) {
-                return false;
-            }
-            if (!std::isfinite(p.softnessMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.supportXMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.supportYMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.fiberFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.diameterMinMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.diameterBulkMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.diameterMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.diameterTailFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.fiberLengthMinMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.fiberLengthMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.fiberWidthMinMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.fiberWidthMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.opticalDepthMin)) {
-                return false;
-            }
-            if (!std::isfinite(p.opticalDepthMax)) {
-                return false;
-            }
-            if (!valid_defect_grid(p, d.origins[0], d)) {
-                return false;
-            }
-            if (!(p.fiberFraction >= 0 && p.fiberFraction <= 1 &&
-                  std::isfinite(p.fiberDriftFraction) && p.fiberDriftFraction >= 0 && p.fiberDriftFraction <= 0.1f &&
-                  std::isfinite(p.fiberTaperFraction) && p.fiberTaperFraction > 0 && p.fiberTaperFraction <= 0.5f &&
-                  p.diameterMinMm > 0 && p.diameterBulkMaxMm >= p.diameterMinMm &&
-                  p.diameterMaxMm >= p.diameterBulkMaxMm && p.diameterTailFraction >= 0 && p.diameterTailFraction <= 1 &&
-                  p.fiberLengthMinMm > 0 && p.fiberLengthMaxMm >= p.fiberLengthMinMm &&
-                  p.fiberWidthMinMm > 0 && p.fiberWidthMaxMm >= p.fiberWidthMinMm &&
-                  p.opticalDepthMin >= 0 && p.opticalDepthMax >= p.opticalDepthMin)) {
+            if (!valid_dust_policy(p) || !valid_defect_grid(p, d.origins[0], d)) {
                 return false;
             }
         }
         if (d.filmScratch.slotProbability != 0.0f) {
             const auto& p = d.filmScratch;
-            if (p.supportXMm < p.lengthMaxMm * p.driftFraction + p.widthMaxMm * 0.5f ||
-                p.supportYMm < p.lengthMaxMm * 0.5f + p.widthMaxMm * 0.5f) {
-                return false;
-            }
-            if (!std::isfinite(p.cellWidthMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.cellHeightMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.slotProbability)) {
-                return false;
-            }
-            if (!std::isfinite(p.softnessMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.supportXMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.supportYMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.lengthMinMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.lengthBulkMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.lengthMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.lengthTailFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.widthMinMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.widthBulkMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.widthMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.widthTailFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.driftFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.taperFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.fadeFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.strengthMin)) {
-                return false;
-            }
-            if (!std::isfinite(p.strengthMax)) {
-                return false;
-            }
-            if (!valid_defect_grid(p, d.origins[1], d)) {
-                return false;
-            }
-            if (!(p.lengthMinMm > 0 && p.lengthBulkMaxMm >= p.lengthMinMm && p.lengthMaxMm >= p.lengthBulkMaxMm &&
-                  p.lengthTailFraction >= 0 && p.lengthTailFraction <= 1 && p.widthMinMm > 0 &&
-                  p.widthBulkMaxMm >= p.widthMinMm && p.widthMaxMm >= p.widthBulkMaxMm &&
-                  p.widthTailFraction >= 0 && p.widthTailFraction <= 1 && p.driftFraction >= 0 &&
-                  p.taperFraction > 0 && p.taperFraction <= 0.5f && p.fadeFraction >= 0 && p.fadeFraction <= 1 &&
-                  p.strengthMin >= 0 && p.strengthMax >= p.strengthMin && p.strengthMax <= 1)) {
+            if (!valid_scratch_policy(p) || !valid_defect_grid(p, d.origins[1], d)) {
                 return false;
             }
         }
         if (d.gateDust.slotProbability != 0.0f) {
             const auto& p = d.gateDust;
-            if (p.supportXMm < std::max(p.diameterMaxMm, p.fiberLengthMaxMm + p.fiberWidthMaxMm) * 0.5f ||
-                p.supportYMm < std::max(p.diameterMaxMm, p.fiberLengthMaxMm + p.fiberWidthMaxMm) * 0.5f) {
-                return false;
-            }
-            if (!std::isfinite(p.cellWidthMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.cellHeightMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.slotProbability)) {
-                return false;
-            }
-            if (!std::isfinite(p.softnessMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.supportXMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.supportYMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.fiberFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.diameterMinMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.diameterBulkMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.diameterMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.diameterTailFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.fiberLengthMinMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.fiberLengthMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.fiberWidthMinMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.fiberWidthMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.opticalDepthMin)) {
-                return false;
-            }
-            if (!std::isfinite(p.opticalDepthMax)) {
-                return false;
-            }
-            if (!valid_defect_grid(p, d.origins[2], d)) {
-                return false;
-            }
-            if (!(p.fiberFraction >= 0 && p.fiberFraction <= 1 &&
-                  std::isfinite(p.fiberDriftFraction) && p.fiberDriftFraction >= 0 && p.fiberDriftFraction <= 0.1f &&
-                  std::isfinite(p.fiberTaperFraction) && p.fiberTaperFraction > 0 && p.fiberTaperFraction <= 0.5f &&
-                  p.diameterMinMm > 0 && p.diameterBulkMaxMm >= p.diameterMinMm &&
-                  p.diameterMaxMm >= p.diameterBulkMaxMm && p.diameterTailFraction >= 0 && p.diameterTailFraction <= 1 &&
-                  p.fiberLengthMinMm > 0 && p.fiberLengthMaxMm >= p.fiberLengthMinMm &&
-                  p.fiberWidthMinMm > 0 && p.fiberWidthMaxMm >= p.fiberWidthMinMm &&
-                  p.opticalDepthMin >= 0 && p.opticalDepthMax >= p.opticalDepthMin)) {
+            if (!valid_dust_policy(p) || !valid_defect_grid(p, d.origins[2], d)) {
                 return false;
             }
         }
         if (d.gateScratch.slotProbability != 0.0f) {
             const auto& p = d.gateScratch;
-            if (p.supportXMm < p.lengthMaxMm * p.driftFraction + p.widthMaxMm * 0.5f ||
-                p.supportYMm < p.lengthMaxMm * 0.5f + p.widthMaxMm * 0.5f) {
-                return false;
-            }
-            if (!std::isfinite(p.cellWidthMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.cellHeightMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.slotProbability)) {
-                return false;
-            }
-            if (!std::isfinite(p.softnessMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.supportXMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.supportYMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.lengthMinMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.lengthBulkMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.lengthMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.lengthTailFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.widthMinMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.widthBulkMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.widthMaxMm)) {
-                return false;
-            }
-            if (!std::isfinite(p.widthTailFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.driftFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.taperFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.fadeFraction)) {
-                return false;
-            }
-            if (!std::isfinite(p.strengthMin)) {
-                return false;
-            }
-            if (!std::isfinite(p.strengthMax)) {
-                return false;
-            }
-            if (!valid_defect_grid(p, d.origins[3], d)) {
-                return false;
-            }
-            if (!(p.lengthMinMm > 0 && p.lengthBulkMaxMm >= p.lengthMinMm && p.lengthMaxMm >= p.lengthBulkMaxMm &&
-                  p.lengthTailFraction >= 0 && p.lengthTailFraction <= 1 && p.widthMinMm > 0 &&
-                  p.widthBulkMaxMm >= p.widthMinMm && p.widthMaxMm >= p.widthBulkMaxMm &&
-                  p.widthTailFraction >= 0 && p.widthTailFraction <= 1 && p.driftFraction >= 0 &&
-                  p.taperFraction > 0 && p.taperFraction <= 0.5f && p.fadeFraction >= 0 && p.fadeFraction <= 1 &&
-                  p.strengthMin >= 0 && p.strengthMax >= p.strengthMin && p.strengthMax <= 1)) {
+            if (!valid_scratch_policy(p) || !valid_defect_grid(p, d.origins[3], d)) {
                 return false;
             }
         }
