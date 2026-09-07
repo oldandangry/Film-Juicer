@@ -341,7 +341,6 @@ namespace {
         mix_hash_field_scaled(h, p.printShadowCompensationFactor, 10000.0, mix);
         mix_hash_field_scaled(h, p.printShadowCompensationDensity, 10000.0, mix);
         mix_hash_field_scaled(h, p.printShadowCompensationTransition, 10000.0, mix);
-        mix_hash_field_scaled(h, p.printDminFactor, 10000.0, mix);
         mix_hash_field(h, p.glareActive ? 1 : 0, mix);
         mix_hash_field_scaled(h, p.glarePercent, 10000.0, mix);
         mix_hash_field_scaled(h, p.glareRoughness, 10000.0, mix);

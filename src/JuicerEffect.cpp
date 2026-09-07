@@ -1434,6 +1434,8 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     try {
         _pExposure = fetchDoubleParam(kParamExposure);
         _pCameraAutoExposure = fetchBooleanParam(kParamCameraAutoExposure);
+        _pCameraFilmFormatPreset =
+            fetchChoiceParam(JuicerParams::kCameraFilmFormatPreset);
         _pCameraFilmFormat = fetchDoubleParam(JuicerParams::kCameraFilmFormatMm);
         _pCameraMeteringMethod = fetchChoiceParam(JuicerParams::kCameraMeteringMethod);
         _pFilmProfileKey = fetchStrChoiceParam(JuicerParams::kFilmProfileKey);
@@ -1583,7 +1585,6 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pGlareCompRemovalFactor = fetchDoubleParam(JuicerParams::kPrintShadowCompensationFactor);
         _pGlareCompRemovalDensity = fetchDoubleParam(JuicerParams::kPrintShadowCompensationDensity);
         _pGlareCompRemovalTransition = fetchDoubleParam(JuicerParams::kPrintShadowCompensationTransition);
-        _pPrintDminFactor = fetchDoubleParam(JuicerParams::kPrintDminFactor);
     } catch (...) {
         // Safe: any missing param will remain nullptr and defaults are used in snapshot/usage paths.
         JTRACE("PARAM", "parameter cache bootstrap incomplete; defaults will be used for missing handles");
@@ -1884,6 +1885,26 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     };
 
     const bool userEdit = (args.reason == OFX::eChangeUserEdit);
+
+    if (userEdit && param_name_is(paramName, JuicerParams::kCameraFilmFormatPreset)) {
+        const int presetIndex = read_choice_param_clamped(
+            _pCameraFilmFormatPreset,
+            0,
+            0,
+            static_cast<int>(JuicerParams::kCameraFilmFormatPresets.size()));
+        if (presetIndex > 0) {
+            const ScopedParamEventSuppression suppressEvents(_state.get());
+            set_double_param_if(
+                _pCameraFilmFormat,
+                JuicerParams::kCameraFilmFormatPresets[static_cast<std::size_t>(presetIndex - 1)]
+                    .longEdgeMm);
+        }
+    } else if (userEdit && param_name_is(paramName, JuicerParams::kCameraFilmFormatMm)) {
+        const ScopedParamEventSuppression suppressEvents(_state.get());
+        if (_pCameraFilmFormatPreset) {
+            _pCameraFilmFormatPreset->setValue(0);
+        }
+    }
 
     if (userEdit && is_coupler_gamma_numeric_param_name(paramName)) {
         const ScopedParamEventSuppression suppressEvents(_state.get());
@@ -2270,8 +2291,6 @@ bool JuicerEffect::snapshotParams(
     P.glareRoughness = read_sanitized_unit_float(_pGlareRoughness, 0.7f);
     P.glareBlurSigmaPx =
         read_sanitized_0_to_10_float(_pGlareBlurSigmaPx, 0.5f);
-    P.printDminFactor =
-        read_sanitized_unit_double(_pPrintDminFactor, P.printDminFactor);
     read_input_snapshot_values(
         _pInputColorSpace,
         _pInputCctfDecoding,

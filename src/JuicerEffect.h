@@ -92,6 +92,7 @@ private:
     // Cached params (wrappers)
     OFX::DoubleParam* _pExposure = nullptr;
     OFX::BooleanParam* _pCameraAutoExposure = nullptr;
+    OFX::ChoiceParam* _pCameraFilmFormatPreset = nullptr;
     OFX::DoubleParam* _pCameraFilmFormat = nullptr;
     OFX::ChoiceParam* _pCameraMeteringMethod = nullptr;
     OFX::StrChoiceParam* _pFilmProfileKey = nullptr;
@@ -187,7 +188,6 @@ private:
     OFX::DoubleParam* _pGlareCompRemovalFactor = nullptr;
     OFX::DoubleParam* _pGlareCompRemovalDensity = nullptr;
     OFX::DoubleParam* _pGlareCompRemovalTransition = nullptr;
-    OFX::DoubleParam* _pPrintDminFactor = nullptr;
 
     std::unique_ptr<InstanceState> _state;
 
