@@ -5,418 +5,251 @@
 </p>
 
 <p align="center">
-  <strong>Spectral photochemical film simulation for DaVinci Resolve</strong>
+  <strong>Spectral film emulation for DaVinci Resolve</strong>
 </p>
 
 > [!IMPORTANT]
-> Film-Juicer is built on **[spektrafilm](https://github.com/andreavolpato/spektrafilm)** by [Andrea Volpato](https://github.com/andreavolpato). Most of the difficult work happened before Film-Juicer existed: the research, the photographic model, the profile work, and the reference implementation. Without that, there would be very little here besides a stupidly ambitious idea.
+> Film-Juicer is built on **[spektrafilm](https://github.com/andreavolpato/spektrafilm)** by [Andrea Volpato](https://github.com/andreavolpato). Its photographic model, profile data, and reference implementation are the foundation of this plug-in. Film-Juicer would not exist without that work.
 
-Film-Juicer is a Windows CUDA OpenFX plug-in for DaVinci Resolve. It takes scene-linear RGB, reconstructs spectra from it, exposes modeled film layers, develops those exposures into dye density, optionally sends the resulting film through an enlarger and print medium, and finally scans the thing back into RGB.
+Film-Juicer brings the exposure, development, printing, and scanning of photographic film into DaVinci Resolve. It is a Windows OpenFX plug-in, with rendering handled by NVIDIA CUDA.
 
-That is an unnecessarily complicated way of making a picture.
+You choose a capture stock, expose it, and decide whether to scan the film directly or print it onto another photosensitive material first. Exposure, filtration, grain, and diffusion act at their respective stages, so changing how the negative is exposed also changes what the enlarger and scanner have to work with.
 
-It is also rather close to the point.
+Underneath, the model works with light sampled at 81 wavelengths, from 380 to 780 nm. It uses the stock's spectral sensitivity to calculate exposure, develops that exposure into dye density, and calculates how light passes through the resulting material. LUTs accelerate parts of this process, including spectral reconstruction and scanning. The overall response comes from the interaction of these stages.
 
-**Film-Juicer is not a single input-to-output look LUT.** It does use LUTs internally where a table is a useful numerical shortcut, but there is no table somewhere containing the correct answer for "Portra." The result falls out of a sequence of modeled operations: exposure, spectral sensitivity, characteristic curves, dye formation, filtration, illuminants, development interactions, grain, scatter, halation, printing and scanning. Change something early in the chain and the consequences continue downstream.
-
-This is considerably more troublesome than mapping one RGB value to another. Good.
+This is quite a lot of machinery to put between two RGB images. The attraction is being able to work with the photographic process itself, and follow an adjustment through to its consequences.
 
 > [!NOTE]
-> **Film-Juicer 0.9.5-RC is available now as a release candidate.** The Windows installer can be downloaded from the [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases) page. This is a prerelease build; dust and scratch behavior is still being refined ahead of v1.0.
+> **Film-Juicer 0.9.5-RC** is available from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases). This is a release candidate; dust and scratches are still being refined ahead of v1.0.
 
-## Highlights
+## Features
 
-The short version:
+- 20 capture-film profiles and 8 paper or print-film profiles, derived from spektrafilm.
+- Direct and optical-print scanning for negative and positive capture film.
+- Hanatos 2025 and Mallett 2019 spectral reconstruction.
+- Stock-specific sensitivity, development curves, and spectral dye density.
+- DIR couplers for interactions within and between film layers, including spatial effects.
+- Grain formed in film-density space, with physical format scaling and creative controls.
+- Emulsion scatter, halation, and camera or enlarger diffusion.
+- Spectral enlarger filtration, print exposure, and preflash.
+- Scanner black/white correction, print-scan glare, lens blur, and sharpening.
+- Gate weave, with separate film and gate dust and scratches.
 
-- Spectral film exposure sampled at 81 wavelengths from 380–780 nm
-- Negative and positive capture-film profiles
-- Direct-film and optical-print scan routes
-- 20 capture-film profiles and 8 print-media profiles
-- Hanatos 2025 and Mallett 2019 spectral reconstruction
-- Profile-driven characteristic curves and dye densities
-- DIR couplers with same-layer, inter-layer, and spatial behavior
-- Density-domain, format-scaled film grain
-- Profile/model-driven emulsion scatter and halation with user amount and spatial-scale controls
-- Camera and enlarger diffusion filters
-- Spectral enlarger filtration, print exposure, and preflash
-- Scanner correction, print-scan glare, blur, sharpening, and spectral LUT acceleration
-- Film and gate artifacts including weave, dust, and scratches
+## Requirements and installation
 
-Some of this exists because it is central to the photographic model. Some of it exists because once you have already built the enlarger, adding dust to the gate starts to seem perfectly reasonable.
+You need Windows 10/11 x64, DaVinci Resolve configured for CUDA rendering, and an NVIDIA Turing GPU or newer (compute capability 7.5 or higher). Production rendering requires CUDA; there is no CPU, OpenCL, or Metal render path.
 
-This is how these things happen.
+1. Download the Windows installer from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases).
+2. Run the installer, then restart Resolve.
+3. Find **Juicer** under **OpenFX → Negative-juice**.
 
-## System requirements
+## Getting started
 
-Film-Juicer is not especially interested in modest hardware.
+Start with a shot whose exposure and colour you know reasonably well. A familiar face and a few highlights will tell you more than an image already carrying six creative transforms.
 
-- Windows 10/11 x64
-- DaVinci Resolve with CUDA rendering
-- NVIDIA Turing / SM75 or newer
+1. Prepare a scene-linear signal and set **Input color space** to match its primaries. Leave **Decode input CCTF** off when the input is already linear. See the colour-management section below for the supported encodings.
+2. Select a **Film stock** and **Scan route**. The defaults are Portra 400 and Negative print scan, printing onto Portra Endura.
+3. Set capture exposure with **Exposure Compensation Ev**. Camera auto exposure is on by default; turn it off when you want to set exposure manually without the meter responding to changes in the image.
+4. On a print route, choose **Print paper**, then adjust **Print exposure** and the enlarger Y/M/C offsets to balance the print.
+5. Set **Output color space** and **Apply output CCTF** for the signal your next node expects. The default output is encoded sRGB, so change it if you are returning to a different working space.
+6. Once the colour and tonal response are in place, set the film format and refine grain, diffusion, halation, and scanner finishing.
 
-## Installation
+Get stock, exposure, route, and colour management right first. Adding dirt to a colour-management problem gives you a dirty colour-management problem. The dust has done its job. The rest is still up to you.
 
-Windows builds of Film-Juicer are distributed through GitHub Releases:
+## Colour management
 
-1. Download the latest Film-Juicer Windows installer from the [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases) page.
-2. Run the installer.
-3. Restart DaVinci Resolve.
+Film-Juicer needs to know what the incoming RGB values mean. Selecting the right gamut is only half of that: the transfer function must also be accounted for.
 
-Film-Juicer will appear in Resolve under **OpenFX → Negative-juice → Juicer**.
+The exposure model expects scene-linear light. DaVinci Intermediate and ACEScct are log encodings, and selecting DWG or ACES primaries does not decode them. In the UI, **CCTF** means *colour component transfer function*: the encoding or decoding applied to each RGB channel.
 
-Release-candidate builds are prereleases and may change before v1.0.
+| Input color space | With Decode input CCTF off | With Decode input CCTF on |
+| --- | --- | --- |
+| DaVinci Wide Gamut | Linear DWG | No additional decoding |
+| ITU-R BT.2020 | Linear BT.2020 | BT.2020 transfer-function decoding |
+| ACES2065-1 | Linear ACES AP0 | No additional decoding |
+| sRGB / Rec.709 | Linear sRGB/Rec.709 primaries | sRGB transfer-function decoding |
 
-There should not be anything clever about installation. The cleverness belongs elsewhere.
+The combined **sRGB / Rec.709** label refers to their shared primaries. Its decoder uses the sRGB curve, which is different from gamma 2.4 and the BT.709 camera encoding. Linearise other encodings in Resolve before they enter the plug-in.
 
-## Quick start
+### Working in DWG / DaVinci Intermediate
 
-You do not need to understand every control before getting a sensible image out of Film-Juicer. In fact, trying to adjust everything at once is a very efficient way of making it impossible to tell what anything does.
+For a node receiving DWG/Intermediate, use a Color Space Transform before Juicer to convert **DaVinci Wide Gamut / DaVinci Intermediate** to **DaVinci Wide Gamut / Linear**. Set Juicer's input to **DaVinci Wide Gamut**, with input decoding off.
 
-Start here:
+To return DWG/Intermediate, select **DaVinci Wide Gamut Intermediate** as the output and enable **Apply output CCTF**. Your downstream nodes then receive that encoding. If you disable the checkbox, the output uses DWG primaries with linear values instead.
 
-1. Add **Juicer** to a node.
-2. Set **Input color space** to match the RGB signal entering the plug-in.
-3. Enable **Decode input CCTF** only when the incoming signal uses a supported nonlinear display encoding.
-4. Select a **Film stock**.
-5. Choose a **Scan route**.
-6. For a print route, select a **Print paper** and adjust the enlarger and print controls.
-7. Set the output color space and encoding for your Resolve workflow.
+The same principle applies to ACES: convert the incoming encoding and primaries to a supported linear input, then make the return transform explicit. For example, ACEScct uses AP1 primaries, while Film-Juicer's **ACES2065-1** entry uses AP0. Both the gamut and encoding need to match.
 
-Get exposure, stock, route, and color management right first.
+These conversions establish the signal format. They do not decide where the film rendering belongs in your grade or how a downstream display transform should treat it. Check the whole chain, particularly if a display or look transform is already present.
 
-Then start touching DIR, grain, diffusion, halation, glare, dust, scratches and the other things that make the clean mathematical image progressively less clean and mathematical.
+### Output and range
 
-If the basic rendering is wrong, adding more effects will mostly give you a more complicated wrong rendering.
+Output choices are sRGB, DCI-P3, Display P3, Adobe RGB (1998), BT.2020, ProPhoto RGB, ACES2065-1, DaVinci Wide Gamut Intermediate, and Rec.709. **Apply output CCTF** enables the selected space's encoding; with it off, Film-Juicer returns linear RGB in those primaries. ACES2065-1 is linear in either case.
 
-## Scan routes
+Rec.709 output uses gamma 2.4, even though the input's combined sRGB / Rec.709 entry decodes sRGB. Keep that difference in mind if you are sending an encoded image through the plug-in.
 
-Film-Juicer has four explicit routes. The selected capture profile determines whether the film is negative or positive.
+> [!IMPORTANT]
+> Final RGB values are clipped to **0–1 after output encoding**, or after colour conversion when encoding is disabled. Turning off **Apply output CCTF** does not provide an unrestricted linear output. Any values clipped here are unavailable to downstream nodes, so check the output range before relying on later highlight or gamut recovery.
 
-| Route                    | Photographic path                                 |
-| ------------------------ | ------------------------------------------------- |
-| **Negative direct scan** | Negative film → scanner                           |
-| **Negative print scan**  | Negative film → enlarger → print medium → scanner |
-| **Positive direct scan** | Positive film → scanner                           |
-| **Positive print scan**  | Positive film → enlarger → print medium → scanner |
+Decoding a display-encoded image removes its transfer function; it cannot undo a tone map or recover scene information already lost upstream. For scene-based exposure work, feed Film-Juicer the image before those operations.
 
-The default workflow is a negative film printed to a selected paper or print-film profile and then scanned.
+## Direct scan or optical print?
 
-You can take the shorter road and scan the film directly. The longer road has an enlarger, another photosensitive medium, another development stage, and several more opportunities for the image to change on the way through.
+The route determines which developed material reaches the scanner.
 
-Naturally, that is the default.
+| Scan route | Path |
+| --- | --- |
+| **Negative direct scan** | Negative film → scanner |
+| **Negative print scan** | Negative film → enlarger → paper or print film → scanner |
+| **Positive direct scan** | Positive film → scanner |
+| **Positive print scan** | Positive film → enlarger → paper or print film → scanner |
 
-## Color management
+The capture profile determines the negative or positive behaviour. Film-Juicer resolves the route to that profile while retaining your choice of direct scan or printing.
 
-This part is boring until it is wrong. Then it becomes the only thing that matters.
+Direct scanning gives you the capture material's response through the scanner. A print route adds another material, with its own sensitivity, development response, and dyes. The **Print paper** menu includes both photographic papers and motion-picture print films.
 
-Film exposure should be driven by scene-linear light. Film-Juicer can decode supported input transfer functions, but it does not treat log working encodings such as DaVinci Intermediate or ACEScct as scene-linear, because they are not.
+Printing is a substantial part of the colour rendering. Light from the enlarger passes through the developed capture film and exposes the print layers. Change the capture stock, enlarger filtration, or print medium and you change that interaction. Expect to rebalance when moving between them.
 
-Supported input color spaces:
+## Inside the photographic process
 
-- DaVinci Wide Gamut
-- ITU-R BT.2020
-- ACES2065-1
-- sRGB / Rec.709
-### Resolve Color Management or ACES
+![Film-Juicer pipeline: spectral exposure, film development, direct or optical-print scanning, and RGB output.](Resources/readme/photographic_pipeline.svg)
 
-1. Ensure that the signal entering Film-Juicer is scene-linear. If the timeline signal is log-encoded, use a Color Space Transform before the plug-in.
-2. Select the matching input primaries in Film-Juicer.
-3. Leave **Decode input CCTF** off for an already-linear signal.
-4. Set Film-Juicer's **Output color space** and **Apply output CCTF** state to match the signal you want to hand back to Resolve.
-5. Keep any downstream Resolve transforms consistent with that handoff.
+The order matters. Camera diffusion spreads exposure before film development; scanner blur acts on the developed image near the end. Grain becomes part of the film density and is carried through printing and scanning. These operations can produce different results even when they appear to soften or texture the same image.
 
-### Explicit display-referred workflow
+### Spectral exposure
 
-1. Select **sRGB / Rec.709** or **ITU-R BT.2020** as the input color space.
-2. Enable **Decode input CCTF** only when the incoming signal uses the transfer function Film-Juicer actually supports for that entry.
-3. Select the desired output color space.
-4. Enable **Apply output CCTF** for display-encoded delivery.
+RGB gives us three values. Photographic layers respond to a range of wavelengths, so the model needs a spectral representation of the incoming light before it can expose them.
 
-The input decoder is deliberately limited. The **sRGB / Rec.709** entry uses the sRGB CCTF; it is not a generic decoder for every Rec.709 workflow. **ITU-R BT.2020** uses the BT.2020 transfer function. DaVinci Intermediate, ACEScct, gamma-encoded Rec.709 workflows, and other log or display encodings should be linearized in Resolve before Film-Juicer.
+**Hanatos 2025**, the default, uses a precomputed spectral reconstruction LUT. **Mallett 2019** uses a compact set of spectral basis functions defined for linear sRGB. That sRGB basis makes Mallett a more constrained model for wide-gamut colours; Hanatos is the default starting point for those workflows.
 
-Film-Juicer can output sRGB, DCI-P3, Display P3, Adobe RGB, BT.2020, ProPhoto RGB, ACES2065-1, DaVinci Wide Gamut Intermediate, or Rec.709.
+Neither method can recover the original scene spectrum from RGB. Many different spectra can produce the same three values. Reconstruction supplies a plausible spectrum that the film model can work with, and its assumptions are part of the result.
 
-The important bit is not what the drop-down says. The important bit is that the numbers entering the film model mean what the film model thinks they mean.
+The selected stock's spectral sensitivities determine the exposure of the red-, green-, and blue-sensitive layers. Camera UV/IR filtration modifies that sensitivity, while the exposure controls set how much light reaches the model.
 
-Computers are remarkably tolerant of nonsense right up until they produce it for you.
+### Profiles and development
 
-## The photographic pipeline
-
-The pipeline is deliberately fairly literal:
-
-![Film-Juicer photographic pipeline: spectral film exposure, development, direct or optical-print scanning, and RGB output.](Resources/readme/photographic_pipeline.svg)
-
-It is tempting with software like this to think of the controls as a collection of independent looks. They are not. Most of them live somewhere specific in the imaging chain, and where they live matters.
-
-Camera diffusion acting on film-linear exposure before development is not the same operation as blurring the scan afterwards. Grain before printing is not the same thing as adding noise to the final RGB image. Enlarger filtration does not become equivalent to an arbitrary color correction just because both can make something more yellow.
-
-The order is part of the model.
-
-### What a profile actually contains
-
-The stock name is the least interesting part of a profile.
-
-A spektrafilm profile describes several different pieces of photographic behavior which Film-Juicer uses at different points in the pipeline. Spectral sensitivity determines how wavelength-dependent light contributes to exposure in the modeled layers. Characteristic curves describe how those layer exposures become developed density. Spectral-density data describes how the processed material itself absorbs light after development.
-
-Kodak Portra 800 is a useful example:
+A stock profile describes several stages of photographic behaviour. The Portra 800 data makes the distinction easier to see:
 
 <p align="center">
-  <img src="Resources/readme/kodak_portra_800_spektrafilm_with_spectral_density.svg" alt="Kodak Portra 800 spektrafilm profile: spectral sensitivity, stored characteristic curves, and C, M, Y, Min, and Mid spectral density" width="100%">
+  <img src="Resources/readme/kodak_portra_800_spektrafilm_with_spectral_density.svg" alt="Portra 800 profile showing spectral sensitivity, characteristic curves, and spectral density" width="100%">
 </p>
 
-<p align="center"><sub>Kodak Portra 800 profile data. From left to right: spectral sensitivity, stored characteristic curves, and C/M/Y dye-density contributions with Min/Mid reference spectra.</sub></p>
+From left to right:
 
-The three panels are not three different ways of drawing the same "Portra look." They describe different parts of the material model, and they are consumed at different stages of the pipeline. The right-hand panel shows the profile's cyan, magenta, and yellow dye-density contributions (**C**, **M**, **Y**), plus the spectral density of the processed unexposed medium (**Min**) and the neutral midscale reference (**Mid**). C/M/Y are the channel contributions used to build the medium's spectral density; Min and Mid are reference spectra, not additional dye channels. Missing source samples are left blank, and negative dye contributions are retained, consistent with spektrafilm's treatment of masking couplers.
+- **Spectral sensitivity** describes how each layer responds across the wavelength range.
+- **Characteristic curves** relate exposure to developed density, including the toe, contrast, and shoulder.
+- **Spectral density** describes how the developed material absorbs light at different wavelengths.
 
-These figures plot the data bundled with Film-Juicer: `log_sensitivity`, the stored `density_curves`, and `channel_density` plus `base_density` and `midscale_neutral_density`. The characteristic panel uses the stored curves directly; it does not reconstruct them from the separate fitted layer model.
+The density panel shows the cyan, magenta, and yellow contributions (**C**, **M**, **Y**), the processed unexposed material (**Min**), and a neutral midscale reference (**Mid**). Min and Mid are reference spectra, not two extra dye layers. The figure retains negative dye contributions associated with the profile's masking-coupler model and leaves missing source samples blank.
 
-None of this contains the final answer for Portra 800. It contains ingredients. Film-Juicer still has to expose the material, develop it, pass light through it, print it or scan it, and let the consequences accumulate.
+These figures show the bundled profile data. In particular, the characteristic panel plots the stored curves; it is not a reconstruction of the separate fitted layer model.
 
-### 1. RGB to spectral exposure
+During development, layer exposures become dye densities. **DIR**, short for developer-inhibitor-releasing couplers, models how development in one layer inhibits development within that layer and in the others. Its spatial component spreads the interaction across neighbouring areas, affecting colour separation, local contrast, and apparent sharpness.
 
-The input to Film-Juicer is RGB. Film, inconveniently, does not expose itself to RGB.
+For grading, this means an exposure change can alter more than brightness. It moves the image through the stock's response and changes the densities handed to the next stage.
 
-Film layers respond to wavelength-dependent light, so Film-Juicer reconstructs spectra from the incoming RGB values and uses those spectra to determine exposure in the modeled red-, green-, and blue-sensitive layers.
+### Scatter, halation, and diffusion
 
-Two reconstruction methods are available:
+Emulsion scatter spreads light within the film. Halation models light returning through the emulsion after reflection, contributing to the coloured spread around bright features. Both act on film-layer exposure before development.
 
-- **Hanatos 2025** uses a precomputed visible-locus spectral LUT and is the default, particularly for wide-gamut input.
-- **Mallett 2019** reconstructs spectra from a compact set of basis functions after conversion to linear sRGB. It is therefore limited by the sRGB gamut and is best treated as the narrower alternative path.
+**Add halation** enables the scatter/halation stage and is off by default. Separate amount and spatial-scale controls adjust scatter and halation, with the film profile supplying the halation response. The scale controls change the spread; the amount controls change its contribution.
 
-The selected film profile supplies the spectral sensitivity data used by the exposure model. Optional camera UV/IR filtration can further modify the effective sensitivity before exposure is calculated.
+Camera and print diffusion are separate stages, with Glimmerglass, Black Pro-Mist, Pro-Mist, and CineBloom families. Camera diffusion acts before film development. Print diffusion acts on the enlarger exposure before print development. Core, halo, bloom, warmth, and scale controls let you adjust the selected family's response.
 
-The reconstruction is not an attempt to divine the original spectrum from three numbers. That information is gone. What it gives us is a plausible spectral representation that can be passed into a model whose behavior actually depends on wavelength.
+Start by choosing where you want the diffusion to happen. That decision usually matters more than another small adjustment to its radius.
 
-That is enough to make things interesting.
+### Grain, format, and physical artifacts
 
-### 2. Film development and DIR
+Grain is generated in film-density space. Its appearance depends on exposure and density, particle statistics, layer structure, and the subsequent print and scan. Fine, Medium, and Coarse presets provide starting points; **Grain Amount, Size, Sharpness, Chroma, and Texture** are the main creative controls. Advanced settings expose particle area, sublayers, uniformity, dye-cloud blur, size mixtures, and micro-structure.
 
-Layer exposure is converted into developed density through the selected stock's characteristic curves. Cyan, magenta, and yellow dye densities form the spectral absorption of the developed film.
+**Camera film format (mm)** sets the longest dimension of the simulated capture area. It is a physical length, not a stock or gauge selector: a value of 35 means a 35 mm long image area. The current range is 8–120 mm. This scale feeds grain, DIR, diffusion, and halation, so establish it before refining their appearance.
 
-So far, reasonably civilised.
+Film dust and scratches are attached to the virtual strip. Gate artifacts are attached to the gate, with weave introducing movement between the two. Keeping them separate makes their behaviour under motion more convincing. Gate weave defaults to zero.
 
-Then the layers start interfering with each other.
+Dust and scratches remain under refinement in this release candidate. You can already add enough dirt to suggest that the archive was stored in a cement mixer, but restraint tends to survive client review better.
 
-Developer-inhibitor-releasing couplers model interactions within and between film layers. Spatial DIR allows those interactions to spread across the film plane, which can affect color separation, local contrast, and apparent sharpness.
+### The enlarger and print medium
 
-This is one of the reasons the pipeline is built as a sequence of physical-ish stages rather than a pile of final-image adjustments. Something can alter the image not because it directly changes the final pixel, but because it changes what the next stage receives.
+The enlarger combines its illuminant with spektrafilm's Custom dichroic filter model. **Enlarger Y/M/C offsets** are expressed in Kodak CC units around the neutral calibration for the selected combination. At zero, the calibration's filtration is still in place.
 
-Cause, consequence, more consequence.
+**Print exposure** is a multiplier: 1.0 is the baseline and 2.0 doubles the exposure. It is different from the camera's exposure compensation, which is expressed in stops. **Print preflash** adds a uniform exposure before print development, changing the response most noticeably where the image contributes little exposure. **Print exposure compensation** uses a simulated mid-grey reference to compensate for the camera exposure adjustment when calculating print exposure.
 
-### 3. Grain and film-plane effects
-
-Grain is generated in film-density space rather than pasted over the finished RGB image.
-
-That sounds like an unnecessarily fussy distinction until you start printing the negative, changing film format, blurring dye clouds, or doing anything else where the grain should participate in later stages instead of hovering above them like a Photoshop layer.
-
-Particle statistics, sublayers, density, dye-cloud blur, clumping, and film format all contribute to its appearance before the image reaches the print or scanner stage.
-
-Physical scale matters here. A 35 mm negative and an 8×10 sheet are not different merely because somebody typed another number into an EXIF field.
-
-Film-local dust and scratches travel with the film strip. Gate-local dust, scratches, and weave remain tied to the virtual camera or scanner gate.
-
-This sounds like the sort of distinction nobody needs until the gate starts moving and the scratch moves with the wrong thing.
-
-Then you need it.
-
-### 4. Optical print
-
-On a print route, the developed capture film becomes a spectral filter in a virtual enlarger.
-The enlarger combines its illuminant with a calibrated neutral position and user Y/M/C filtration before exposing the selected paper or print film. The Y, M, and C controls are offsets in Kodak CC units around that neutral position.
-
-Print exposure, preflash, and exposure compensation operate before the print medium is developed through its own sensitivity and density curves.
-
-There is an appealingly stupid amount of machinery involved in reproducing the fact that, historically, somebody shone a lamp through a negative onto another piece of photosensitive material.
-
-But that intermediate step matters. The print is not merely the negative with a tone curve attached to it. The negative modulates the enlarger spectrum, the print medium sees that spectrum through its own sensitivities, and the result develops into another set of densities.
-
-Light has to make the trip.
-
-Ektacolor Edge shows what the other end of that trip looks like:
+The selected print medium then develops that exposure according to its own response. Here is Kodak Ektacolor Edge:
 
 <p align="center">
-  <img src="Resources/readme/kodak_ektacolor_edge_spektrafilm_with_spectral_density.svg" alt="Kodak Ektacolor Edge spektrafilm profile: spectral sensitivity, stored characteristic curves, and C, M, Y, Min, and Mid spectral density" width="100%">
+  <img src="Resources/readme/kodak_ektacolor_edge_spektrafilm_with_spectral_density.svg" alt="Ektacolor Edge print profile showing spectral sensitivity, characteristic curves, and spectral density" width="100%">
 </p>
 
-<p align="center"><sub>Kodak Ektacolor Edge print-medium profile. Like the capture film, the print material has its own spectral sensitivity, stored characteristic curves, and C/M/Y dye-density contributions with Min/Mid reference spectra.</sub></p>
+The panels describe the same properties as the Portra figure, but for the receiving material. Together, the two profiles describe both sides of the printing process. There is an appealingly stupid amount of work involved in recreating the act of shining a lamp through a negative. At least you can turn the room lights on.
 
-The negative does not hand RGB values to a generic print curve. It filters the enlarger spectrum; that spectrum exposes the print layers; and those exposures develop according to the print profile. The very different characteristic behavior of Portra 800 and Ektacolor Edge is therefore not a cosmetic difference between two presets. They are different photosensitive materials doing different jobs.
+### Scanning and finishing
 
-### 5. Scan and output
+The scanner calculates the colour of the developed film or print under its viewing illuminant, converts it through CIE XYZ, and returns RGB in the selected output space. The current CUDA renderer uses a spectral scanner LUT for this conversion. **Scanner LUT resolution** controls its sampling density, with a cost in memory and preparation time.
 
-Eventually all of this needs to come back to RGB, otherwise DaVinci Resolve is going to be rather unhappy with us.
+**Scanner black correction** and **Scanner white correction** set the route's black/white normalisation. Print routes can also add **Glare**, which introduces veiling light at the scan stage. **Scanner lens blur** and **Scanner unsharp mask** provide final softness and sharpening before output encoding.
 
-The scanner converts developed film or print density back into color under a viewing illuminant. Spectral density is integrated to CIE XYZ and transformed into the selected output RGB space.
+These controls are useful for finishing the scan. If you are trying to change how the film was exposed or how the print was balanced, return to those earlier stages first.
 
-Scanner finishing includes route-specific black and white correction, spectral LUT acceleration, lens blur, unsharp masking, output color conversion, and optional transfer-function encoding. Print routes can also add scanner-stage glare.
+## Included stocks
 
-The image starts as RGB and ends as RGB.
+### Capture film — 20 profiles
 
-It is what happens in between that makes this whole exercise worth the electricity.
+- Fujifilm C200, Pro 400H, Provia 100F, Velvia 100, and X-Tra 400.
+- Kodak Ektachrome 100, Ektar 100, Gold 200, Kodachrome 64, Ultramax 400, and Verita 200D.
+- Kodak Portra 160, 400, and 800, plus separate Portra 800 Push 1 and Push 2 profiles.
+- Kodak Vision3 50D, 200T, 250D, and 500T.
 
-## Controls by stage
+### Print media — 8 profiles
 
-The controls are grouped roughly according to where they act in the pipeline.
+- Fujifilm Crystal Archive Type II.
+- Kodak Vision 2383 and Vision Premier 2393.
+- Kodak Ektacolor Edge.
+- Kodak Professional Endura Premier, Portra Endura, Supra Endura, and Ultra Endura.
 
-This is also a decent way to debug a bad result: start near the beginning and work forward. Do not immediately compensate for one mysterious thing with three other mysterious things. That way lies madness, node trees with 47 corrections, and eventually blaming color management.
-
-### Camera and exposure
-
-- **Camera auto exposure** meters the incoming image before film exposure.
-- **Camera metering** offers center-weighted, average, median, partial, matrix, multi-zone, and highlight-weighted methods.
-- **Exposure Compensation Ev** adjusts capture exposure in stops; +1 EV doubles exposure.
-- **Camera film format (mm)** sets the physical scale used by grain, DIR, diffusion, halation, and other film-plane effects.
-
-### Film and spectral reconstruction
-
-- **Film stock** selects the capture profile.
-- **Spectral upsampling** selects Hanatos or Mallett reconstruction.
-- Optional camera UV/IR filtration modifies the effective spectral sensitivity used for exposure.
-- **DIR couplers** control same-layer and inter-layer inhibition, strength, and spatial diffusion.
-
-### Print and enlarger
-
-- **Scan route** chooses direct scanning or optical printing for negative or positive film.
-- **Print paper** selects a paper or print-film profile.
-- **Enlarger illuminant** selects the enlarger light source.
-- The enlarger uses the **spektrafilm Custom dichroic filters**.
-- **Enlarger Y/M/C offsets** adjust filtration around the neutral calibration in Kodak CC units.
-- **Print exposure**, **preflash**, and **exposure compensation** shape the exposure entering print development.
-
-### Halation and diffusion
-
-- **Scatter and halation** combine profile/model parameters with user amount and spatial-scale controls. Halation is off by default.
-- **Camera diffusion** operates on film-linear exposure before film development.
-- **Print diffusion** operates on enlarger/print-linear exposure before print development.
-- Diffusion families include Glimmerglass, Black Pro-Mist, Pro-Mist, and CineBloom, with controls for core, halo, bloom, warmth, and scale.
-
-### Grain and artifacts
-
-- **Grain presets** provide fine, medium, and coarse starting points.
-- **Grain Amount, Size, Sharpness, Chroma, and Texture** are the principal creative controls.
-- Advanced controls expose particle area, sublayers, density, uniformity, dye-cloud blur, size mixtures, and micro-structure.
-- **Gate weave**, **film/gate dust**, and **film/gate scratches** model transport and physical contamination. Gate weave defaults to zero.
-
-You are, of course, free to add a heroic quantity of dirt to the image.
-
-The software will not stage an intervention.
-
-### Scanner and output
-
-- **Scanner use LUT** accelerates spectral density-to-color conversion internally; it does not turn the overall film simulation into a single look LUT.
-- **Scanner LUT resolution** trades memory and preparation time for precision.
-- **Scanner black/white correction** controls route-specific normalization.
-- **Glare** models scanner-stage veiling light on print routes.
-- **Scanner lens blur** and **unsharp mask** control final optical softness and sharpening.
-- **Output color space** and **Apply output CCTF** define the handoff back to Resolve. Disable Apply output CCTF for linear RGB in the selected output color space; output remains clipped to 0–1.
-
-## Included profiles
-
-Film-Juicer currently ships with 20 capture-film profiles and 8 print-media profiles derived from the spektrafilm profile set.
-
-The names will be familiar. The useful part is not the name.
-
-These profiles provide the data used by the model: sensitivities, characteristic behavior, dye information, illuminants and other stock-specific parameters. Selecting Portra 400 is therefore not the same thing as selecting a preset called "Portra 400" which somebody made by eyeballing a photograph of a gas station.
-
-They are still models, not declarations that every roll, processing line, paper batch, enlarger, or scanner in the physical world has one immutable response. Film-Juicer inherits the measurements, fitted models, reference conditions, and limitations of the upstream profiles. The useful distinction is not "perfectly true film" versus "fake film." It is a rendering derived from a coherent photographic model rather than a final RGB look assembled by eye.
-
-There is nothing inherently wrong with eyeballing gas stations. It is simply a different activity.
-
-### Capture film
-
-- Fujifilm C200, Pro 400H, Provia 100F, Velvia 100, and X-Tra 400
-- Kodak Ektachrome 100, Ektar 100, Gold 200, Kodachrome 64, Ultramax 400, and Verita 200D
-- Kodak Portra 160, 400, and 800, including Portra 800 Push 1 and Push 2 profiles
-- Kodak Vision3 50D, 200T, 250D, and 500T
-
-### Print media
-
-- Fujifilm Crystal Archive Type II
-- Kodak Vision 2383 and Vision Premier 2393
-- Kodak Ektacolor Edge
-- Kodak Professional Endura Premier, Portra Endura, Supra Endura, and Ultra Endura
+The profiles inherit spektrafilm's measurements, fitted models, and reference conditions. They give each stock a defined response within the simulation. Real rolls, processing lines, paper batches, and scanners vary, so a stock name cannot promise an exact match to every physical example. Use the profiles as photographic materials to work with, and judge the resulting image in the context of your grade.
 
 ## Performance
 
-Film-Juicer does a lot of work.
+Spectral calculations, spatial DIR, grain, diffusion, halation, and scanner finishing all contribute to render time. Resolution and the spatial extent of an effect matter too, so there is no single useful frame-rate claim for every combination.
 
-There is no profound insight hidden in that sentence. Spectral calculations cost something. Spatial DIR costs something. Grain, diffusion, halation, glare, large blur radii and high resolutions all cost something. Eventually these somethings become milliseconds, and then those milliseconds become you staring at Resolve wondering why the GPU sounds like a small aircraft.
-For interactive grading:
-
-- Establish the stock, route, exposure, and print balance first.
-- Enable **Scanner use LUT**.
-- Add spatial and stochastic effects after the base color response is established.
-- Judge grain and other physically scaled effects at the intended output resolution.
+For interactive work, establish the stock, route, exposure, and print balance first, then add the spatial effects you need. Keep scanner LUT resolution at its default while establishing the look. Judge grain and other small-scale detail at the intended output resolution; a reduced preview cannot show exactly how those features will resolve in the final image.
 
 The GPU will suffer according to your ambitions.
 
-Fortunately GPUs are manufactured specifically so that we may do unreasonable things to them.
-
 ## Building from source
 
-The current Windows build uses:
+The default Windows build is **Release-Clang**, using ClangCl from Visual Studio 2026, CUDA Toolkit 13.2, and C++20 for both host and CUDA code. It also requires OpenFX 1.4 headers, the OpenFX support library, and Eigen 3.4.
 
-- Visual Studio 2026 / MSVC v145 or ClangCl
-- CUDA Toolkit 13.2
-- C++20 for host and CUDA code
-- OpenFX 1.4 headers and the OpenFX support library
-- Eigen 3.4
+The project contains local dependency paths. Adjust those to your installation before building; cloning the repository alone does not supply a complete build environment.
 
-Build the Visual Studio solution from a configured developer environment:
+From a configured developer environment, run:
 
 ```powershell
-& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" juicer.sln /p:Configuration=Release /p:Platform=x64
+& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" juicer.sln /p:Configuration=Release-Clang /p:Platform=x64
 ```
 
-The linker produces `juicer.ofx` in the configured MSBuild output directory.
-
-If you are building it yourself, you presumably already know that "just compile it" is one of computing's great lies. Still, that is the command.
+The `Release` configuration is also available for MSVC v145. The linker writes `juicer.ofx` to the configured MSBuild output directory. A usable OFX bundle also needs its runtime resources; the binary alone is not the installed plug-in.
 
 ## Project status
 
-Film-Juicer is under active development as its historical agx-emulsion behavior is replaced by the current spektrafilm model.
+Film-Juicer is under active development. Changes to the photographic model and its implementation can change existing renders, so treat version changes as something to check against your grade.
 
-The public contract is the spektrafilm-based CUDA pipeline described in this README. Old behavior does not automatically become sacred because it existed first. If something can be replaced by a cleaner, more coherent implementation of the current model, it probably should be.
+The aim is to bring the photographic model into Resolve with native CUDA rendering and controls suited to grading. Film-Juicer does not reproduce every option in the Python reference application, and its grain and artifact controls have their own implementation. The shared model is the foundation; the two applications should not be assumed to produce identical results under every setting.
 
-At the same time, the goal is not to duplicate every workflow or every UI option from the Python reference application or from other spektrafilm integrations.
+More features from spektrafilm may be added as the plug-in develops. Metal support is planned, but there is no timeline yet.
 
-That would be an excellent way to turn one complicated program into two complicated programs.
+## Credits and licence
 
-Film-Juicer has a more specific job: bring the model into DaVinci Resolve, keep it native and GPU-driven, and provide the grain and physical-artifact controls that make sense for this implementation.
+**Andrea Volpato** created [spektrafilm](https://github.com/andreavolpato/spektrafilm), whose photographic model, profiles, and reference implementation make Film-Juicer possible. The reconstruction methods also draw on the work of **Johannes Hanika (Hanatos)** and **Ian Mallett and Cem Yuksel**.
 
-There is always another parameter that could be exposed. There is usually a less obvious question: would exposing it actually make the software better?
+The profile figures above are Film-Juicer visualisations of spektrafilm data. If the plug-in is useful to you, please visit and support the original project. A considerable amount of the work you are benefiting from happened there.
 
-## Credits and acknowledgements
+Film-Juicer software is licensed under **GPL-3.0-only**; see [LICENSE](LICENSE). Spektrafilm software is licensed under GPLv3. Spektrafilm profiles, LUTs, and their direct derivatives are separately licensed under **CC BY-SA 4.0**, with their upstream attribution and modification notices retained. See the [spektrafilm asset licence](https://github.com/andreavolpato/spektrafilm/blob/main/SPEKTRAFILM_LICENSE.txt).
 
-Film-Juicer did not appear out of the fog fully armed with spectral tables.
+Other third-party components retain their respective licences and copyright notices. Product and company names identify the materials and models being referenced; Film-Juicer is not affiliated with or endorsed by their manufacturers or rights holders.
 
-It sits on top of a lot of other people's work: research, measurements, code, profile building, experiments, papers and all the tedious checking that makes the interesting parts possible.
+## Further reading
 
-In particular:
-
-- **Andrea Volpato** created [spektrafilm](https://github.com/andreavolpato/spektrafilm), the behavioral reference, photographic model, and source of the profile framework on which Film-Juicer is built.
-- **Johannes Hanika (Hanatos)** developed the visible-locus spectral reconstruction direction used by the Hanatos path.
-- **Mallett and Cem Yuksel** authored *Spectral Primary Decomposition for Rendering with sRGB Reflectance* (2019), the basis of the Mallett reconstruction path.
-
-The profile figures in this README are Film-Juicer visualizations derived from spektrafilm profile data. The bundled spektrafilm profiles, LUTs, and direct derivatives of those assets remain licensed under **CC BY-SA 4.0** and retain their upstream attribution requirements.
-
-If Film-Juicer is useful to you, please visit, star, and support the original [spektrafilm project](https://github.com/andreavolpato/spektrafilm).
-
-## License
-
-Film-Juicer software is licensed under the **GNU General Public License v3.0 (GPL-3.0-only)**. See [LICENSE](LICENSE).
-
-Film-Juicer is built on the work of **Andrea Volpato's [spektrafilm](https://github.com/andreavolpato/spektrafilm)**. Spektrafilm software is licensed under GPLv3.
-
-Spektrafilm profiles, LUTs, and direct derivatives distributed with Film-Juicer are separately licensed under **Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)**. Their upstream copyright, attribution, license notices, and modification history must be preserved as required by the applicable spektrafilm asset license.
-
-Other third-party components retain their respective licenses and copyright notices. Product and company names are used only for identification and reference; Film-Juicer is not affiliated with or endorsed by their respective manufacturers or rights holders.
-
-## References
-
-A few useful holes to disappear into:
-
-- [spektrafilm — reference implementation](https://github.com/andreavolpato/spektrafilm)
-- [Mallett and Yuksel — Spectral Primary Decomposition for Rendering with sRGB Reflectance](https://diglib.eg.org/items/bbffa865-e99c-4c1f-bd33-70102dc8af78)
-- Giorgianni and Madden — *Digital Color Management*, 2nd edition
-- Hunt — *The Reproduction of Colour*, 6th edition
+- [spektrafilm](https://github.com/andreavolpato/spektrafilm) — the reference implementation and photographic model.
+- [Mallett and Yuksel — Spectral Primary Decomposition for Rendering with sRGB Reflectance](https://diglib.eg.org/items/bbffa865-e99c-4c1f-bd33-70102dc8af78).
+- Giorgianni and Madden — *Digital Color Management*, 2nd edition.
+- Hunt — *The Reproduction of Colour*, 6th edition.
