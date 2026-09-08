@@ -9,7 +9,7 @@
 </p>
 
 > [!IMPORTANT]
-> Film-Juicer is built on **[spektrafilm](https://github.com/andreavolpato/spektrafilm)** by [Andrea Volpato](https://github.com/andreavolpato). Its photographic model, profile data, and reference implementation are the foundation of this plug-in. Film-Juicer would not exist without that work.
+> Film-Juicer is built on **[spektrafilm](https://github.com/andreavolpato/spektrafilm)** by [Andrea Volpato](https://github.com/andreavolpato). Its photographic model, profile data, and reference implementation are the foundation of this plug-in. Film-Juicer would not exist without that work. Please consider adding your support to this project.
 
 Film-Juicer brings the exposure, development, printing, and scanning of photographic film into DaVinci Resolve. It is a Windows OpenFX plug-in, with rendering handled by NVIDIA CUDA.
 
@@ -20,7 +20,10 @@ Underneath, the model works with light sampled at 81 wavelengths, from 380 to 78
 This is quite a lot of machinery to put between two RGB images. The attraction is being able to work with the photographic process itself, and follow an adjustment through to its consequences.
 
 > [!NOTE]
-> **Film-Juicer 0.9.5-RC** is available from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases). This is a release candidate; dust and scratches are still being refined ahead of v1.0.
+> **Film-Juicer 1.0.0** is available from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases). This is the first major release version.
+> ## Support Film-Juicer
+> If Film-Juicer is useful to you and you'd like to support its development:
+>[☕ Buy me a coffee](https://buymeacoffee.com/oldandangry)
 
 ## Features
 
