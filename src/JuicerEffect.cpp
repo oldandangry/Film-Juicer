@@ -1354,6 +1354,19 @@ void JuicerEffect::updateDiffusionControlState() {
     setStageControlState(_printDiffusionUi, printRoute, printEnabled);
 }
 
+void JuicerEffect::updateGammaControlState() {
+    const std::string filmProfileKey =
+        read_str_choice_param_or(
+            _pFilmProfileKey,
+            Spektrafilm::kDefaultFilmProfileKey);
+    const Spektrafilm::ScanRoute selectedRoute =
+        read_resolved_scan_route(_pScanRoute, filmProfileKey);
+    if (_pPrintGammaFactor) {
+        _pPrintGammaFactor->setEnabled(
+            Spektrafilm::scan_route_is_print(selectedRoute));
+    }
+}
+
 void JuicerEffect::applyDirGammaProfileDefaults() {
     if (!_state || !read_bool_param_or(_pCouplersGammaUseStock, true)) {
         return;
@@ -1450,6 +1463,8 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pHanatos2025AdaptationSurface =
             fetchBooleanParam(JuicerParams::kHanatos2025AdaptationSurface);
         _pScanRoute = fetchStrChoiceParam(JuicerParams::kParamScanRoute);
+        _pFilmGammaFactor = fetchDoubleParam(JuicerParams::kFilmGammaFactor);
+        _pPrintGammaFactor = fetchDoubleParam(JuicerParams::kPrintGammaFactor);
         _pOutputColorSpace = fetchChoiceParam(kParamOutputColorSpace);
         _pOutputCctfEncoding = fetchBooleanParam(kParamOutputCctfEncoding);
 
@@ -1636,6 +1651,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     }
 
     updateDiffusionControlState();
+    updateGammaControlState();
 
     // Defer heavy bootstrap until first param change
 }
@@ -2212,6 +2228,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     }
     apply_grain_linked_updates();
     updateDiffusionControlState();
+    updateGammaControlState();
     onParamsPossiblyChanged(paramName.c_str());
 }
 
@@ -2252,6 +2269,22 @@ bool JuicerEffect::snapshotParams(
     profileChoiceParams.referenceIlluminant = _pRefIll;
     profileChoiceParams.enlargerIlluminant = _pEnlIll;
     read_profile_snapshot_choices(profileChoiceParams, P);
+    if (!_pFilmGammaFactor || !_pPrintGammaFactor) {
+        outDiagnostic =
+            "MissingRequiredParameter component=tuning field=gamma_factor";
+        return false;
+    }
+    double authoredFilmGammaFactor = 1.0;
+    double authoredPrintGammaFactor = 1.0;
+    _pFilmGammaFactor->getValue(authoredFilmGammaFactor);
+    _pPrintGammaFactor->getValue(authoredPrintGammaFactor);
+    if (!set_gamma_snapshot_values(
+            authoredFilmGammaFactor,
+            authoredPrintGammaFactor,
+            P,
+            outDiagnostic)) {
+        return false;
+    }
     P.cameraDiffusion = gatherDiffusionUi(_cameraDiffusionUi);
     P.enlargerDiffusion = gatherDiffusionUi(_printDiffusionUi);
     read_print_recipe_snapshot_values(

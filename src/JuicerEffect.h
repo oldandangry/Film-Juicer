@@ -81,6 +81,7 @@ private:
     void updateGrainPresetLabel(bool custom);
     void updateGrainChromaEnabled();
     void updateDiffusionControlState();
+    void updateGammaControlState();
     [[noreturn]] void throw_spektrafilm_phase1a_render_cutoff(const OFX::RenderArguments& args) const;
     bool snapshotParams(ParamSnapshot& out, std::string& outDiagnostic) const;
     void onParamsPossiblyChanged(const char* changedNameOrNull);
@@ -105,6 +106,8 @@ private:
     OFX::BooleanParam* _pHanatos2025AdaptationWindow = nullptr;
     OFX::BooleanParam* _pHanatos2025AdaptationSurface = nullptr;
     OFX::StrChoiceParam* _pScanRoute = nullptr;
+    OFX::DoubleParam* _pFilmGammaFactor = nullptr;
+    OFX::DoubleParam* _pPrintGammaFactor = nullptr;
     OFX::ChoiceParam* _pOutputColorSpace = nullptr;
     OFX::BooleanParam* _pOutputCctfEncoding = nullptr;
 

@@ -82,9 +82,17 @@ namespace Profiles {
         std::uint64_t assetVersionToken = 0;
     };
 
+    struct PrintDensityModel {
+        std::array<std::array<double, 3>, 3> centers{};
+        std::array<std::array<double, 3>, 3> amplitudes{};
+        std::array<std::array<double, 3>, 3> sigmas{};
+    };
+
     struct ValidatedPrintProfile {
         SpektrafilmProfileInfo info;
         SpektrafilmProfileSamples data;
+        std::vector<double> sourceLogExposure;
+        PrintDensityModel densityModel;
         std::uint64_t assetVersionToken = 0;
     };
 

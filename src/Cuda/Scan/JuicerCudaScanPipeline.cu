@@ -1608,10 +1608,7 @@ namespace {
             apply_dir_runtime_logE_device(
                 logE_corr,
                 layerPre,
-                dev.dir,
-                dev.densB,
-                dev.densG,
-                dev.densR);
+                dev.dir);
 
             const JuicerCuda::DeviceCurveView cB =
                 dev.dirPrecorrected ? dev.dirDensB : dev.densB;

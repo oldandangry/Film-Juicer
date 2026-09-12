@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release-Clang|x64"><Configuration>Release-Clang</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{3F204C20-F6DD-46C8-A2D7-EE66A9D0F2AA}</ProjectGuid>
+    <RootNamespace>GammaValidation</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries><PlatformToolset>v145</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>v145</PlatformToolset><WholeProgramOptimization>true</WholeProgramOptimization><CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-Clang|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>ClangCl</PlatformToolset><WholeProgramOptimization>true</WholeProgramOptimization><CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Label="GammaBuildFlavor">
+    <VcpkgEnabled>false</VcpkgEnabled>
+    <VcpkgAutoLink>false</VcpkgAutoLink>
+    <GammaIsDebugBuild Condition="'$(Configuration)'=='Debug'">1</GammaIsDebugBuild>
+    <GammaIsDebugBuild Condition="'$(GammaIsDebugBuild)'==''">0</GammaIsDebugBuild>
+    <GammaIsReleaseBuild Condition="'$(Configuration)'=='Release' or '$(Configuration)'=='Release-Clang'">1</GammaIsReleaseBuild>
+    <GammaIsReleaseBuild Condition="'$(GammaIsReleaseBuild)'==''">0</GammaIsReleaseBuild>
+  </PropertyGroup>
+  <PropertyGroup Label="GammaCudaConfig">
+    <CudaToolkitDir Condition="'$(CudaToolkitDir)'=='' and '$(CUDA_PATH_V13_2)'!=''">$(CUDA_PATH_V13_2)\</CudaToolkitDir>
+    <CudaToolkitDir Condition="'$(CudaToolkitDir)'=='' and '$(CUDA_PATH)'!=''">$(CUDA_PATH)\</CudaToolkitDir>
+    <GammaCudaBuildCustomizationsAvailable Condition="Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.props')">1</GammaCudaBuildCustomizationsAvailable>
+    <GammaUseCudaMsbuildTargets Condition="'$(GammaUseCudaMsbuildTargets)'=='' and '$(PlatformToolset)'!='ClangCl' and '$(GammaCudaBuildCustomizationsAvailable)'=='1'">1</GammaUseCudaMsbuildTargets>
+    <GammaUseCudaMsbuildTargets Condition="'$(GammaUseCudaMsbuildTargets)'==''">0</GammaUseCudaMsbuildTargets>
+    <GammaUseManualNvcc Condition="'$(GammaUseManualNvcc)'=='' and '$(PlatformToolset)'=='ClangCl'">1</GammaUseManualNvcc>
+    <GammaUseManualNvcc Condition="'$(GammaUseManualNvcc)'==''">0</GammaUseManualNvcc>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.props" Condition="'$(GammaUseCudaMsbuildTargets)'=='1' and Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.props')" />
+  </ImportGroup>
+  <PropertyGroup Label="GammaCudaToolchain">
+    <GammaNvccHostCompilerBin Condition="'$(GammaNvccHostCompilerBin)'=='' and '$(VCToolsInstallDir)'!=''">$(VCToolsInstallDir)bin\Hostx64\x64</GammaNvccHostCompilerBin>
+    <GammaNvccHostIncludePath Condition="'$(GammaNvccHostIncludePath)'==''">$(VC_IncludePath);$(WindowsSDK_IncludePath)</GammaNvccHostIncludePath>
+    <GammaNvccReleaseDeviceOptions Condition="'$(GammaNvccReleaseDeviceOptions)'=='' and '$(GammaIsReleaseBuild)'=='1'">-O3 -Xptxas -O3</GammaNvccReleaseDeviceOptions>
+    <GammaNvccHostCompilerOptions Condition="'$(GammaNvccHostCompilerOptions)'=='' and '$(GammaIsReleaseBuild)'=='1'">/EHsc /O2 /Oi /Ob2 /Gy /Gw /GF /MD</GammaNvccHostCompilerOptions>
+    <GammaNvccHostCompilerOptions Condition="'$(GammaNvccHostCompilerOptions)'==''">/EHsc /MD</GammaNvccHostCompilerOptions>
+  </PropertyGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64' or '$(Configuration)|$(Platform)'=='Release-Clang|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\..\UserOverrides.props" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros">
+    <JuicerDiagnosticsCompiled Condition="'$(JuicerDiagnosticsCompiled)'=='' and '$(GammaIsDebugBuild)'=='1'">1</JuicerDiagnosticsCompiled>
+    <JuicerDiagnosticsCompiled Condition="'$(JuicerDiagnosticsCompiled)'=='' and '$(GammaIsReleaseBuild)'=='1'">0</JuicerDiagnosticsCompiled>
+  </PropertyGroup>
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)x64\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)x64\$(Configuration)\obj\</IntDir>
+    <TargetName>GammaValidation</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel><TreatWarningAsError>true</TreatWarningAsError><SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode><PrecompiledHeader>NotUsing</PrecompiledHeader><LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\src;$(ProjectDir)..\..\third_party;$(CudaToolkitDir)include;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary><DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <CudaCompile><CodeGeneration>compute_75,sm_75;compute_75,compute_75</CodeGeneration><AdditionalOptions>--std=c++20 %(AdditionalOptions)</AdditionalOptions><Include>$(ProjectDir)..\..\src;$(ProjectDir)..\..\third_party;%(Include)</Include></CudaCompile>
+    <Link><SubSystem>Console</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation><EnableUAC>false</EnableUAC><AdditionalLibraryDirectories>$(CudaToolkitDir)lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories><AdditionalDependencies>cuda.lib;cudart.lib;cufft.lib</AdditionalDependencies><IgnoreSpecificDefaultLibraries>LIBCMT;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries></Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(GammaIsReleaseBuild)'=='1' and '$(Platform)'=='x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel><TreatWarningAsError>true</TreatWarningAsError><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions><SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode><PrecompiledHeader>NotUsing</PrecompiledHeader><LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\src;$(ProjectDir)..\..\third_party;$(CudaToolkitDir)include;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary><DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <AdditionalOptions Condition="'$(PlatformToolset)'=='ClangCl'">/Ob2 /Gw /GF -flto=thin %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <CudaCompile><CodeGeneration>compute_75,sm_75;compute_75,compute_75</CodeGeneration><Include>$(ProjectDir)..\..\src;$(ProjectDir)..\..\third_party;%(Include)</Include><AdditionalOptions>--std=c++20 %(AdditionalOptions)</AdditionalOptions></CudaCompile>
+    <Link><SubSystem>Console</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation><EnableUAC>false</EnableUAC><AdditionalLibraryDirectories>$(CudaToolkitDir)lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories><AdditionalDependencies>cuda.lib;cudart.lib;cufft.lib</AdditionalDependencies><IgnoreSpecificDefaultLibraries>LIBCMT;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries><AdditionalOptions Condition="'$(PlatformToolset)'=='ClangCl'">/OPT:REF /OPT:ICF %(AdditionalOptions)</AdditionalOptions></Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="GammaValidation.cpp" />
+    <ClCompile Include="..\..\src\ScatterHalation.cpp" />
+    <ClCompile Include="..\..\src\JuicerState.cpp" />
+    <ClCompile Include="..\..\src\ProfileAssets.cpp" />
+    <ClCompile Include="..\..\src\ProfileCatalog.cpp" />
+    <ClCompile Include="..\..\src\RenderRecipe.cpp" />
+    <ClCompile Include="..\..\src\ProcessRoot.cpp" />
+    <ClCompile Include="..\..\src\DiffusionHostBehavior.cpp" />
+    <ClCompile Include="..\..\src\DiffusionExecution.cpp" />
+    <ClCompile Include="..\..\src\Cuda\JuicerCudaDeviceLedger.cpp" />
+    <ClCompile Include="..\..\src\Cuda\Diffusion\JuicerCudaDiffusionResources.cpp" />
+    <ClCompile Include="..\..\src\Cuda\JuicerCudaResources.cpp" />
+    <ClCompile Include="..\..\src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp" />
+    <ClCompile Include="..\..\src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp" />
+    <ClCompile Include="..\..\src\Cuda\JuicerCudaFilmPayloads.cpp" />
+    <ClCompile Include="..\..\src\FilmEffectsFrameDescriptors.cpp" />
+    <ClCompile Include="..\..\src\ResourceAssetLibrary.cpp" />
+    <ClCompile Include="..\..\src\Scanner.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="GammaValidation.cu" />
+    <CudaCompile Include="..\..\src\Cuda\Diffusion\JuicerCudaDiffusion.cu" />
+    <CudaCompile Include="..\..\src\Cuda\Film\JuicerCudaScatterHalation.cu" />
+    <CudaCompile Include="..\..\src\Cuda\Film\JuicerCudaFilmPipeline.cu" />
+    <CudaCompile Include="..\..\src\Cuda\JuicerCudaAutoExposure.cu" />
+    <CudaCompile Include="..\..\src\Cuda\Scan\JuicerCudaScanPipeline.cu" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(GammaUseManualNvcc)'=='1'">
+    <GammaManualCudaCompile Include="@(CudaCompile)"><ObjectFile>$(IntDir)manual_cuda\%(Filename).obj</ObjectFile></GammaManualCudaCompile>
+  </ItemGroup>
+  <ItemGroup><GammaValidationResource Include="$(ProjectDir)..\..\Resources\**\*" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="GammaRequireCudaToolchain" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(Platform)'!='x64'" Text="GammaValidation supports only x64 builds." />
+    <Error Condition="'$(CudaToolkitDir)'=='' or !Exists('$(CudaToolkitDir)bin\nvcc.exe')" Text="GammaValidation requires CUDA 13.2 and nvcc.exe." />
+    <Error Condition="'$(PlatformToolset)'!='ClangCl' and '$(GammaCudaBuildCustomizationsAvailable)'!='1'" Text="GammaValidation MSVC builds require CUDA 13.2 MSBuild customizations." />
+    <Error Condition="'$(JuicerNvccFastMath)'=='1'" Text="GammaValidation forbids --use_fast_math." />
+  </Target>
+  <Target Name="GammaManualNvccCompile" Condition="'$(GammaUseManualNvcc)'=='1'" BeforeTargets="ComputeLinkInputsFromProject">
+    <Error Condition="'$(GammaNvccHostCompilerBin)'=='' or !Exists('$(GammaNvccHostCompilerBin)\cl.exe')" Text="GammaValidation manual CUDA requires MSVC cl.exe." />
+    <MakeDir Directories="$(IntDir)manual_cuda" />
+    <Message Importance="High" Text="Compiling gamma validation CUDA owner: %(GammaManualCudaCompile.Identity)" />
+    <Exec Command="set &quot;CL=&quot; &amp;&amp; set &quot;INCLUDE=$(GammaNvccHostIncludePath)&quot; &amp;&amp; &quot;$(CudaToolkitDir)bin\nvcc.exe&quot; -c &quot;%(GammaManualCudaCompile.FullPath)&quot; --std=c++20 --cudart hybrid $(GammaNvccReleaseDeviceOptions) -ccbin &quot;$(GammaNvccHostCompilerBin)&quot; -I&quot;$(ProjectDir)..\..\src&quot; -I&quot;$(ProjectDir)..\..\third_party&quot; -I&quot;$(CudaToolkitDir)include&quot; -DWIN32 -DNOMINMAX -D_CRT_SECURE_NO_WARNINGS -DJUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled) -gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_75,code=compute_75 -Xcompiler &quot;$(GammaNvccHostCompilerOptions)&quot; -o &quot;%(GammaManualCudaCompile.ObjectFile)&quot;" />
+  </Target>
+  <Target Name="GammaManualCudaLinkInputs" Condition="'$(GammaUseManualNvcc)'=='1'" DependsOnTargets="GammaManualNvccCompile" BeforeTargets="ComputeLinkInputsFromProject">
+    <ItemGroup><Object Include="@(GammaManualCudaCompile->'%(ObjectFile)')"><LinkCompiled>true</LinkCompiled></Object></ItemGroup>
+  </Target>
+  <Target Name="GammaCleanManualCudaObjects" Condition="'$(GammaUseManualNvcc)'=='1'" BeforeTargets="Clean"><Delete Files="@(GammaManualCudaCompile->'%(ObjectFile)')" /></Target>
+  <Target Name="StageGammaValidationResources" AfterTargets="Build">
+    <Copy SourceFiles="@(GammaValidationResource)" DestinationFiles="@(GammaValidationResource->'$(ProjectDir)x64\Resources\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CleanGammaValidationResources" BeforeTargets="Clean"><RemoveDir Directories="$(ProjectDir)x64\Resources" /></Target>
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.targets" Condition="'$(GammaUseCudaMsbuildTargets)'=='1' and Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.targets')" />
+  </ImportGroup>
+</Project>

@@ -24,6 +24,16 @@ ipch/
 *.opendb
 *.VC.db
 
+# Frozen gamma acceptance evidence uses compiler-configuration directory names.
+!/validation/gamma/fixtures/baseline/Release/
+!/validation/gamma/fixtures/baseline/Release/**
+!/validation/gamma/fixtures/baseline/Release-Clang/
+!/validation/gamma/fixtures/baseline/Release-Clang/**
+!/validation/gamma/fixtures/route-probe/Release/
+!/validation/gamma/fixtures/route-probe/Release/**
+!/validation/gamma/fixtures/route-probe/Release-Clang/
+!/validation/gamma/fixtures/route-probe/Release-Clang/**
+
 # Intermediates
 *.obj
 *.pch

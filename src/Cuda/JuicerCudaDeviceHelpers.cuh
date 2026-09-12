@@ -75,7 +75,7 @@ static __device__ __forceinline__ float sample_density_at_logE_device(
     while (left <= right) {
         const int mid = left + ((right - left) >> 1);
         const float xm = ldg_f(curve.x + mid);
-        if (!(xm < xq)) {
+        if (xq < xm) {
             i1 = mid;
             right = mid - 1;
         } else {
@@ -1584,9 +1584,9 @@ static __device__ __forceinline__ void print_sample_density_curves_device(
         return;
     }
 
-    D_cmy[0] = sample_density_at_logE_device(develop.printDcC, logPrint[0], develop.printGammaC);
-    D_cmy[1] = sample_density_at_logE_device(develop.printDcM, logPrint[1], develop.printGammaM);
-    D_cmy[2] = sample_density_at_logE_device(develop.printDcY, logPrint[2], develop.printGammaY);
+    D_cmy[0] = sample_density_at_logE_device(develop.printDcC, logPrint[0], 1.0f);
+    D_cmy[1] = sample_density_at_logE_device(develop.printDcM, logPrint[1], 1.0f);
+    D_cmy[2] = sample_density_at_logE_device(develop.printDcY, logPrint[2], 1.0f);
 }
 
 static __device__ __forceinline__ void apply_print_pipeline_device(
@@ -1615,28 +1615,33 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
     print_sample_density_curves_device(develop, logPrint, D_cmy);
 }
 
-static __device__ __forceinline__ float clamp_to_curve_domain_device(float logE, const JuicerCuda::DeviceCurveView& c) {
-    if (!c.x || c.n <= 0) {
-        return logE;
+static __device__ __forceinline__ void compute_dir_corrections_device(
+    const JuicerCuda::DirPayload& dir,
+    const float layerDensities[3],
+    float outLayerCorrections[3]) {
+    if (!outLayerCorrections) {
+        return;
     }
-    const float xmin = ldg_f(c.x);
-    const float xmax = ldg_f(c.x + (c.n - 1));
-    if (!isfinite(logE)) {
-        return xmin;
+    if (!dir.active) {
+        outLayerCorrections[0] = 0.0f;
+        outLayerCorrections[1] = 0.0f;
+        outLayerCorrections[2] = 0.0f;
+        return;
     }
-    float v = logE;
-    v = fmaxf(v, xmin);
-    v = fminf(v, xmax);
-    return v;
+
+    const float nB = dir.positive ? dir.dMax[0] - layerDensities[0] : layerDensities[0];
+    const float nG = dir.positive ? dir.dMax[1] - layerDensities[1] : layerDensities[1];
+    const float nR = dir.positive ? dir.dMax[2] - layerDensities[2] : layerDensities[2];
+
+    outLayerCorrections[0] = dir.M[0] * nB + dir.M[3] * nG + dir.M[6] * nR;
+    outLayerCorrections[1] = dir.M[1] * nB + dir.M[4] * nG + dir.M[7] * nR;
+    outLayerCorrections[2] = dir.M[2] * nB + dir.M[5] * nG + dir.M[8] * nR;
 }
 
 static __device__ __forceinline__ void apply_dir_runtime_logE_device(
     float logE_BGR[3],
     const float layerD_BGR[3],
-    const JuicerCuda::DirPayload& dir,
-    const JuicerCuda::DeviceCurveView& densB,
-    const JuicerCuda::DeviceCurveView& densG,
-    const JuicerCuda::DeviceCurveView& densR) {
+    const JuicerCuda::DirPayload& dir) {
     if (!logE_BGR || !layerD_BGR) {
         return;
     }
@@ -1644,47 +1649,11 @@ static __device__ __forceinline__ void apply_dir_runtime_logE_device(
         return;
     }
 
-    auto silver_density = [&](float density, float dmax) -> float {
-        const float finiteDensity = isfinite(density) ? density : 0.0f;
-        const float silver = dir.positive ? dmax - finiteDensity : finiteDensity;
-        return isfinite(silver) ? fmaxf(0.0f, silver) : 0.0f;
-    };
-
-    const float nB = silver_density(layerD_BGR[0], dir.dMax[0]);
-    const float nG = silver_density(layerD_BGR[1], dir.dMax[1]);
-    const float nR = silver_density(layerD_BGR[2], dir.dMax[2]);
-
-    float aY = dir.M[0] * nB + dir.M[3] * nG + dir.M[6] * nR;
-    float aM = dir.M[1] * nB + dir.M[4] * nG + dir.M[7] * nR;
-    float aC = dir.M[2] * nB + dir.M[5] * nG + dir.M[8] * nR;
-
-    if (!isfinite(aY))
-        aY = 0.0f;
-    if (!isfinite(aM))
-        aM = 0.0f;
-    if (!isfinite(aC))
-        aC = 0.0f;
-
-    auto clamp_corr = [](float v) -> float {
-        if (!isfinite(v))
-            return 0.0f;
-        if (v < -10.0f)
-            return -10.0f;
-        if (v > 10.0f)
-            return 10.0f;
-        return v;
-    };
-    aY = clamp_corr(aY);
-    aM = clamp_corr(aM);
-    aC = clamp_corr(aC);
-
-    logE_BGR[0] -= aY;
-    logE_BGR[1] -= aM;
-    logE_BGR[2] -= aC;
-
-    logE_BGR[0] = clamp_to_curve_domain_device(logE_BGR[0], densB);
-    logE_BGR[1] = clamp_to_curve_domain_device(logE_BGR[1], densG);
-    logE_BGR[2] = clamp_to_curve_domain_device(logE_BGR[2], densR);
+    float corrections[3] = {0.0f, 0.0f, 0.0f};
+    compute_dir_corrections_device(dir, layerD_BGR, corrections);
+    logE_BGR[0] -= corrections[0];
+    logE_BGR[1] -= corrections[1];
+    logE_BGR[2] -= corrections[2];
 }
 
 static __device__ __forceinline__ bool juicer_cuda_spatial_dir_filtered_correction_active_device(

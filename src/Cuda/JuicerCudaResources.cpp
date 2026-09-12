@@ -1296,9 +1296,6 @@ namespace JuicerCuda {
         resources.printIllumFilteredHostValid = false;
         resources.printPreflashIllumFilteredHostValid = false;
 
-        resources.printGammaC = 1.0f;
-        resources.printGammaM = 1.0f;
-        resources.printGammaY = 1.0f;
 
         resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
         resources.printPreflashValid = false;
@@ -3912,20 +3909,6 @@ namespace JuicerCuda {
             hash_print_descriptor_value(hash, value.y);
         }
 
-        std::uint64_t hash_profile_density_curves(
-            const Profiles::SpektrafilmProfileSamples& data) {
-            if (data.logExposure.empty() || data.densityCurves.empty() ||
-                data.logExposure.size() != data.densityCurves.size()) {
-                return 0;
-            }
-            const Hash::FloatSpanHash curves = Hash::hash_float_span_with_nan_mask(
-                &data.densityCurves[0][0],
-                data.densityCurves.size() * 3u);
-            return Hash::hash_uint64_values({Hash::hash_float_span(data.logExposure.data(), data.logExposure.size()),
-                                             curves.valueHash,
-                                             curves.nanMaskHash});
-        }
-
         std::uint64_t hash_profile_sensitivities(
             const Profiles::SpektrafilmProfileSamples& data) {
             const Hash::FloatSpanHash sensitivities = Hash::hash_float_span_with_nan_mask(
@@ -4458,7 +4441,9 @@ namespace JuicerCuda {
             recipe.print.hash == 0 ||
             recipe.print.filters.hash == 0 ||
             recipe.print.exposure.hash == 0 ||
-            recipe.print.illuminant.hash == 0) {
+            recipe.print.illuminant.hash == 0 ||
+            recipe.print.develop.densityCurvesHash == 0 ||
+            recipe.print.develop.densityCurves.empty()) {
             diagnostic = "ResourceDescriptorMismatch phase=4B field=print_recipe";
             return false;
         }
@@ -4467,9 +4452,10 @@ namespace JuicerCuda {
         const Profiles::ValidatedPrintProfile& print = *recipe.profileRoute.printProfile;
         PrintProfileTablesDescriptor& profile = out.profileTables;
         profile.printProfileAssetVersionToken = recipe.profileRoute.printProfileAssetVersionToken;
-        profile.densityCurvesHash = hash_profile_density_curves(print.data);
+        profile.densityCurvesHash = recipe.print.develop.densityCurvesHash;
         profile.sensitivitiesHash = hash_profile_sensitivities(print.data);
-        profile.densitySampleCount = static_cast<std::uint32_t>(print.data.logExposure.size());
+        profile.densitySampleCount =
+            static_cast<std::uint32_t>(recipe.print.develop.densityCurves.size());
         profile.spectralSampleCount = static_cast<std::uint32_t>(print.data.linearSensitivity.size());
         profile.hash = Hash::kFnvOffset;
         hash_print_descriptor_value(profile.hash, PrintProfileTablesDescriptor::kSchemaVersion);
@@ -4517,12 +4503,15 @@ namespace JuicerCuda {
             build_illuminant(out.preflashIlluminant, recipe.print.filters.preflashCmyCc, true);
             out.preflashRaw.filmProfileAssetVersionToken =
                 recipe.profileRoute.filmProfileAssetVersionToken;
-            out.preflashRaw.printProfileTablesHash = profile.hash;
+            out.preflashRaw.printProfileAssetVersionToken =
+                recipe.profileRoute.printProfileAssetVersionToken;
             out.preflashRaw.filteredPreflashIlluminantHash = out.preflashIlluminant.hash;
             out.preflashRaw.hash = Hash::kFnvOffset;
             hash_print_descriptor_value(out.preflashRaw.hash, PrintPreflashRawDescriptor::kSchemaVersion);
             hash_print_descriptor_value(out.preflashRaw.hash, out.preflashRaw.filmProfileAssetVersionToken);
-            hash_print_descriptor_value(out.preflashRaw.hash, out.preflashRaw.printProfileTablesHash);
+            hash_print_descriptor_value(
+                out.preflashRaw.hash,
+                out.preflashRaw.printProfileAssetVersionToken);
             hash_print_descriptor_value(out.preflashRaw.hash, out.preflashRaw.filteredPreflashIlluminantHash);
         }
 
@@ -4531,7 +4520,8 @@ namespace JuicerCuda {
             JuicerAssets::Library::kProcessAssetVersion;
         out.balance.filmRawRecipeHash = recipe.filmRaw.hash;
         out.balance.filmDevelopRecipeHash = recipe.filmDevelop.hash;
-        out.balance.printProfileTablesHash = profile.hash;
+        out.balance.printProfileAssetVersionToken =
+            recipe.profileRoute.printProfileAssetVersionToken;
         out.balance.filteredMainIlluminantHash = out.mainIlluminant.hash;
         out.balance.normalizationMode = recipe.print.exposure.normalizationMode;
         out.balance.cameraExposureCompensationEv =
@@ -4546,7 +4536,9 @@ namespace JuicerCuda {
             out.balance.filmReferenceIlluminantAssetVersionToken);
         hash_print_descriptor_value(out.balance.hash, out.balance.filmRawRecipeHash);
         hash_print_descriptor_value(out.balance.hash, out.balance.filmDevelopRecipeHash);
-        hash_print_descriptor_value(out.balance.hash, out.balance.printProfileTablesHash);
+        hash_print_descriptor_value(
+            out.balance.hash,
+            out.balance.printProfileAssetVersionToken);
         hash_print_descriptor_value(out.balance.hash, out.balance.filteredMainIlluminantHash);
         hash_print_descriptor_value(out.balance.hash, out.balance.normalizationMode);
         hash_print_descriptor_value(out.balance.hash, out.balance.cameraExposureCompensationEv);
@@ -4797,16 +4789,18 @@ namespace JuicerCuda {
             dcC.lambda_nm = print.data.logExposure;
             dcM.lambda_nm = print.data.logExposure;
             dcY.lambda_nm = print.data.logExposure;
-            dcC.linear.resize(print.data.densityCurves.size());
-            dcM.linear.resize(print.data.densityCurves.size());
-            dcY.linear.resize(print.data.densityCurves.size());
+            dcC.linear.resize(request.recipe->print.develop.densityCurves.size());
+            dcM.linear.resize(request.recipe->print.develop.densityCurves.size());
+            dcY.linear.resize(request.recipe->print.develop.densityCurves.size());
             std::vector<float> sensC(Spectral::kNumSamples);
             std::vector<float> sensM(Spectral::kNumSamples);
             std::vector<float> sensY(Spectral::kNumSamples);
-            for (std::size_t sample = 0; sample < print.data.densityCurves.size(); ++sample) {
-                dcC.linear[sample] = print.data.densityCurves[sample][0];
-                dcM.linear[sample] = print.data.densityCurves[sample][1];
-                dcY.linear[sample] = print.data.densityCurves[sample][2];
+            for (std::size_t sample = 0;
+                 sample < request.recipe->print.develop.densityCurves.size();
+                 ++sample) {
+                dcC.linear[sample] = request.recipe->print.develop.densityCurves[sample][0];
+                dcM.linear[sample] = request.recipe->print.develop.densityCurves[sample][1];
+                dcY.linear[sample] = request.recipe->print.develop.densityCurves[sample][2];
             }
             for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
                 const auto& cmy = print.data.linearSensitivity[static_cast<std::size_t>(sample)];
@@ -4843,23 +4837,25 @@ namespace JuicerCuda {
             resources.printMainIlluminantDescriptorHash = descriptors.mainIlluminant.hash;
         }
         if (descriptors.preflashActive) {
-            if (!preflashIlluminantHit &&
-                !upload_array_locked(
-                    resources,
-                    resources.printPreflashIllumFiltered,
-                    resources.printPreflashIllumK,
-                    preflashIlluminant.data(),
-                    Spectral::kNumSamples,
-                    cudaStreamOpaque,
-                    &lock,
-                    "phase4B filtered preflash print illuminant",
-                    outError)) {
-                return false;
+            if (!preflashIlluminantHit) {
+                if (!upload_array_locked(
+                        resources,
+                        resources.printPreflashIllumFiltered,
+                        resources.printPreflashIllumK,
+                        preflashIlluminant.data(),
+                        Spectral::kNumSamples,
+                        cudaStreamOpaque,
+                        &lock,
+                        "phase4B filtered preflash print illuminant",
+                        outError)) {
+                    return false;
+                }
+                resources.printPreflashIllumK = Spectral::kNumSamples;
+                resources.printPreflashIllumFilteredHost = preflashIlluminant;
+                resources.printPreflashIllumFilteredHostValid = true;
+                resources.printPreflashIlluminantDescriptorHash =
+                    descriptors.preflashIlluminant.hash;
             }
-            resources.printPreflashIllumK = Spectral::kNumSamples;
-            resources.printPreflashIllumFilteredHost = preflashIlluminant;
-            resources.printPreflashIllumFilteredHostValid = true;
-            resources.printPreflashIlluminantDescriptorHash = descriptors.preflashIlluminant.hash;
             if (!preflashRawHit) {
                 std::copy(preflashRaw.begin(), preflashRaw.end(), resources.printPreflashRaw);
                 resources.printPreflashValid = true;

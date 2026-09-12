@@ -1,0 +1,559 @@
+{
+  "schema_version": 1,
+  "curve_cases": [
+    {
+      "id": "internal-repeat-rightmost",
+      "classification": "supported-semantic-defect",
+      "axis_float32": [
+        -1.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "density_float32": [
+        0.0,
+        1.0,
+        2.0,
+        3.0
+      ],
+      "queries_float32": [
+        -2.0,
+        -1.0,
+        -0.5,
+        0.0,
+        9.999999747378752e-05,
+        0.5,
+        1.0,
+        2.0
+      ],
+      "gamma_float32": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "domain_begin": 0,
+      "domain_end": 3,
+      "expected_float64": [
+        0.0,
+        0.0,
+        0.5,
+        2.0,
+        2.000099999997474,
+        2.5,
+        3.0,
+        3.0
+      ]
+    },
+    {
+      "id": "endpoint-repeats",
+      "classification": "supported-endpoint-semantics",
+      "axis_float32": [
+        -1.0,
+        -1.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "density_float32": [
+        10.0,
+        11.0,
+        20.0,
+        30.0,
+        31.0
+      ],
+      "queries_float32": [
+        -2.0,
+        -1.0,
+        -0.9998999834060669,
+        0.0,
+        0.9998999834060669,
+        1.0,
+        2.0
+      ],
+      "gamma_float32": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "domain_begin": 0,
+      "domain_end": 4,
+      "expected_float64": [
+        10.0,
+        10.0,
+        11.000900149345398,
+        20.0,
+        29.99899983406067,
+        31.0,
+        31.0
+      ]
+    },
+    {
+      "id": "single-sample",
+      "classification": "supported-single-sample",
+      "axis_float32": [
+        0.25
+      ],
+      "density_float32": [
+        3.5
+      ],
+      "queries_float32": [
+        -10.0,
+        0.25,
+        10.0
+      ],
+      "gamma_float32": [
+        0.05000000074505806,
+        1.0,
+        4.0
+      ],
+      "domain_begin": 0,
+      "domain_end": 0,
+      "expected_float64": [
+        3.5,
+        3.5,
+        3.5
+      ]
+    },
+    {
+      "id": "nonuniform-factor-sweep",
+      "classification": "supported-float32-sampling-arithmetic",
+      "axis_float32": [
+        -3.0,
+        -1.25,
+        -0.5,
+        0.20000000298023224,
+        2.4000000953674316
+      ],
+      "density_float32": [
+        -0.25,
+        0.4000000059604645,
+        1.100000023841858,
+        1.7999999523162842,
+        4.199999809265137
+      ],
+      "queries_float32": [
+        -12.0,
+        -2.5,
+        -0.699999988079071,
+        0.0,
+        0.18000000715255737,
+        0.9100000262260437,
+        3.0,
+        12.0
+      ],
+      "gamma_float32": [
+        0.05000000074505806,
+        0.5,
+        1.0,
+        1.100000023841858,
+        1.25,
+        2.0,
+        4.0,
+        4.0
+      ],
+      "domain_begin": 0,
+      "domain_end": 4,
+      "expected_float64": [
+        1.0066666797796884,
+        0.4000000059604645,
+        0.9133333635330203,
+        1.5999999706234254,
+        1.8272726833204587,
+        3.5672725540054753,
+        4.199999809265137,
+        4.199999809265137
+      ]
+    }
+  ],
+  "dir_cases": [
+    {
+      "id": "negative-boundary-crossing-gamma-half",
+      "classification": "supported-semantic-defect",
+      "positive": false,
+      "axis_float32": [
+        -2.0,
+        2.0
+      ],
+      "curve_density_bgr_float32": [
+        [
+          0.0,
+          4.0
+        ],
+        [
+          0.0,
+          8.0
+        ],
+        [
+          0.0,
+          12.0
+        ]
+      ],
+      "log_exposure_bgr_float32": [
+        [
+          -2.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "initial_density_bgr_float32": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "matrix_float32": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "dmax_float32": [
+        4.0,
+        8.0,
+        12.0
+      ],
+      "gamma_bgr_float32": [
+        0.5,
+        1.0,
+        1.0
+      ],
+      "expected_corrected_log_exposure_bgr_float64": [
+        [
+          -3.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "expected_final_density_bgr_float64": [
+        [
+          0.5,
+          4.0,
+          6.0
+        ]
+      ]
+    },
+    {
+      "id": "positive-boundary-crossing-gamma-half",
+      "classification": "supported-polarity-mapping",
+      "positive": true,
+      "axis_float32": [
+        -2.0,
+        2.0
+      ],
+      "curve_density_bgr_float32": [
+        [
+          0.0,
+          4.0
+        ],
+        [
+          0.0,
+          8.0
+        ],
+        [
+          0.0,
+          12.0
+        ]
+      ],
+      "log_exposure_bgr_float32": [
+        [
+          -2.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "initial_density_bgr_float32": [
+        [
+          3.0,
+          8.0,
+          12.0
+        ]
+      ],
+      "matrix_float32": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "dmax_float32": [
+        4.0,
+        8.0,
+        12.0
+      ],
+      "gamma_bgr_float32": [
+        0.5,
+        1.0,
+        1.0
+      ],
+      "expected_corrected_log_exposure_bgr_float64": [
+        [
+          -3.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "expected_final_density_bgr_float64": [
+        [
+          0.5,
+          4.0,
+          6.0
+        ]
+      ]
+    },
+    {
+      "id": "finite-correction-above-old-cap",
+      "classification": "operator-only-semantic-sentinel",
+      "positive": false,
+      "axis_float32": [
+        -30.0,
+        30.0
+      ],
+      "curve_density_bgr_float32": [
+        [
+          0.0,
+          60.0
+        ],
+        [
+          10.0,
+          70.0
+        ],
+        [
+          20.0,
+          80.0
+        ]
+      ],
+      "log_exposure_bgr_float32": [
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "initial_density_bgr_float32": [
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "matrix_float32": [
+        20.0,
+        0.0,
+        0.0,
+        0.0,
+        21.0,
+        0.0,
+        0.0,
+        0.0,
+        22.0
+      ],
+      "dmax_float32": [
+        60.0,
+        70.0,
+        80.0
+      ],
+      "gamma_bgr_float32": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "expected_corrected_log_exposure_bgr_float64": [
+        [
+          -19.0,
+          -20.0,
+          -21.0
+        ]
+      ],
+      "expected_final_density_bgr_float64": [
+        [
+          11.0,
+          20.0,
+          29.0
+        ]
+      ]
+    },
+    {
+      "id": "positive-finite-silver-below-zero",
+      "classification": "operator-only-semantic-sentinel",
+      "positive": true,
+      "axis_float32": [
+        -4.0,
+        4.0
+      ],
+      "curve_density_bgr_float32": [
+        [
+          0.0,
+          8.0
+        ],
+        [
+          1.0,
+          9.0
+        ],
+        [
+          2.0,
+          10.0
+        ]
+      ],
+      "log_exposure_bgr_float32": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "initial_density_bgr_float32": [
+        [
+          2.0,
+          3.0,
+          4.0
+        ]
+      ],
+      "matrix_float32": [
+        1.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0,
+        0.20000000298023224,
+        0.10000000149011612,
+        0.30000001192092896,
+        1.0
+      ],
+      "dmax_float32": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "gamma_bgr_float32": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "expected_corrected_log_exposure_bgr_float64": [
+        [
+          2.8000000044703484,
+          3.150000035762787,
+          3.9000000059604645
+        ]
+      ],
+      "expected_final_density_bgr_float64": [
+        [
+          6.800000004470348,
+          8.150000035762787,
+          9.900000005960464
+        ]
+      ]
+    },
+    {
+      "id": "negative-donor-receiver-mapping",
+      "classification": "supported-channel-order",
+      "positive": false,
+      "axis_float32": [
+        -5.0,
+        5.0
+      ],
+      "curve_density_bgr_float32": [
+        [
+          0.0,
+          10.0
+        ],
+        [
+          1.0,
+          11.0
+        ],
+        [
+          2.0,
+          12.0
+        ]
+      ],
+      "log_exposure_bgr_float32": [
+        [
+          2.0,
+          2.0,
+          2.0
+        ],
+        [
+          -1.0,
+          0.5,
+          1.5
+        ]
+      ],
+      "initial_density_bgr_float32": [
+        [
+          0.20000000298023224,
+          0.4000000059604645,
+          0.6000000238418579
+        ],
+        [
+          1.0,
+          0.5,
+          0.25
+        ]
+      ],
+      "matrix_float32": [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0
+      ],
+      "dmax_float32": [
+        10.0,
+        11.0,
+        12.0
+      ],
+      "gamma_bgr_float32": [
+        1.0,
+        2.0,
+        4.0
+      ],
+      "expected_corrected_log_exposure_bgr_float64": [
+        [
+          -4.0000001937150955,
+          -5.20000022649765,
+          -6.400000259280205
+        ],
+        [
+          -5.75,
+          -6.0,
+          -6.75
+        ]
+      ],
+      "expected_final_density_bgr_float64": [
+        [
+          0.9999998062849046,
+          1.0,
+          2.0
+        ],
+        [
+          0.0,
+          1.0,
+          2.0
+        ]
+      ]
+    }
+  ]
+}

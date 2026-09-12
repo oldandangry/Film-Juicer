@@ -65,16 +65,17 @@ namespace JuicerCuda {
     // - update frequency: descriptor miss only; descriptor hits perform no asset lookup,
     //   spectral derivation, profile packing, allocation, or upload.
     // - layouts/units: canonical 81-sample host/device spectra, capture-film spectral density,
-    //   density curves on authored logE, and C/M/Y channel order. Filter values are Kodak CC units.
+    //   resolved density curves on the selected Float32 logE axis, and C/M/Y channel order.
+    //   Filter values are Kodak CC units.
     // - ownership/lifetime: immutable host derivations are temporary; device arrays and scalar
     //   results are exact-context/epoch Resources residency exposed through PreparedCudaFrame.
-    // - schema/hash: schema v1 includes selected profile tokens, process-owned source illuminant
-    //   asset version, and Phase 4A recipe/resource identities; excludes file discovery, CUDA
-    //   pointers, frame tokens, and launch policy.
+    // - schema/hash: profile-table schema v2 separates resolved density-table content from selected
+    //   stock identity. Balance/preflash schema v2 retain stock identity without creative curves.
+    //   Descriptors exclude file discovery, CUDA pointers, frame tokens, and launch policy.
     // - preparation point: Root's Phase 4B print prelaunch prepared-frame overload.
     // - disabled behavior: disabled preflash has zero descriptor identity and no derivation/upload.
     struct PrintProfileTablesDescriptor {
-        static constexpr std::uint32_t kSchemaVersion = 1u;
+        static constexpr std::uint32_t kSchemaVersion = 2u;
 
         std::uint64_t printProfileAssetVersionToken = 0;
         std::uint64_t densityCurvesHash = 0;
@@ -105,22 +106,22 @@ namespace JuicerCuda {
     };
 
     struct PrintPreflashRawDescriptor {
-        static constexpr std::uint32_t kSchemaVersion = 1u;
+        static constexpr std::uint32_t kSchemaVersion = 2u;
 
         std::uint64_t filmProfileAssetVersionToken = 0;
-        std::uint64_t printProfileTablesHash = 0;
+        std::uint64_t printProfileAssetVersionToken = 0;
         std::uint64_t filteredPreflashIlluminantHash = 0;
         std::uint64_t hash = 0;
     };
 
     struct PrintBalanceDescriptor {
-        static constexpr std::uint32_t kSchemaVersion = 1u;
+        static constexpr std::uint32_t kSchemaVersion = 2u;
 
         std::uint64_t filmProfileAssetVersionToken = 0;
         std::uint64_t filmReferenceIlluminantAssetVersionToken = 0;
         std::uint64_t filmRawRecipeHash = 0;
         std::uint64_t filmDevelopRecipeHash = 0;
-        std::uint64_t printProfileTablesHash = 0;
+        std::uint64_t printProfileAssetVersionToken = 0;
         std::uint64_t filteredMainIlluminantHash = 0;
         Spektrafilm::PrintNormalizationMode normalizationMode =
             Spektrafilm::PrintNormalizationMode::None;
@@ -476,9 +477,6 @@ namespace JuicerCuda {
         int wangHeight = 0;
         int wangCount = 0;
         int wangColors = 0;
-        float printGammaC = 1.0f;
-        float printGammaM = 1.0f;
-        float printGammaY = 1.0f;
         int printPreflashShapeK = 0;
         int printIllumK = 0;
         int printPreflashIllumK = 0;

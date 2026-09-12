@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "reference_manifest": {
+    "path": "fixtures/manifest.json",
+    "sha256": "7e6b1c06a9426daaddca280abe24b8ebbf36f4d3d4f54654f952871b70da2363"
+  },
+  "pinned_reference": {
+    "revision": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+    "historical_generator_sha256": "5fd57fac3113614078e82097199b7b7abe728e425708784399cd198a6d4eaa26",
+    "params_builder_sha256": "edc4537e2b1e021eea4a46e746550185525f9bcc25610ae577f936ad513d99c2"
+  },
+  "issues": [
+    {
+      "case_id": "enlarger-diffusion-black-pro-mist-half",
+      "acceptance_status": "configuration-invalid",
+      "reason": "The historical generator requested enlarger diffusion but digest_params disabled it through debug.deactivate_spatial_effects.",
+      "intended_effective_settings": {
+        "dir_diffusion_size_um": 0.0,
+        "enlarger_diffusion_active": true,
+        "enlarger_diffusion_family": "black_pro_mist",
+        "enlarger_diffusion_strength": 0.5,
+        "enlarger_diffusion_spatial_scale": 1.0,
+        "halation_active": false,
+        "scanner_unsharp_mask": [
+          0.0,
+          0.0
+        ]
+      },
+      "historical_effective_settings": {
+        "debug_deactivate_spatial_effects": true,
+        "enlarger_diffusion_active": false
+      },
+      "affected_comparisons": [
+        "film_density",
+        "print_density",
+        "scanner_linear_rgb",
+        "output_rgb"
+      ],
+      "capture_evidence": {
+        "identical_to_default_paper": true,
+        "film_density": "b9d14ee50f2a41d3f4d4e0d101655e1babb1741e3987abd2f703fe20885e7227",
+        "print_density": "75fe4d64a677adeb5403bada78ab5a9f7886f28f28ba56313f180e98d126b8c6",
+        "scanner_linear_rgb": "4d379734672db2cf5ab7a6e5313f6f56f446bbed9095acdb2a9874438f5c5b67",
+        "output_rgb": "5cdca01a54ea8f751db60c4c79e210021d2465cdb2dc11c87ca23f5cacf1b321"
+      }
+    },
+    {
+      "case_id": "spatial-dir-ramp-edge-direct",
+      "acceptance_status": "configuration-invalid",
+      "reason": "The historical spatial-DIR reference retained unrelated halation and scanner unsharp processing.",
+      "intended_effective_settings": {
+        "dir_diffusion_size_um": 2187.5,
+        "enlarger_diffusion_active": false,
+        "halation_active": false,
+        "scanner_unsharp_mask": [
+          0.0,
+          0.0
+        ]
+      },
+      "historical_effective_settings": {
+        "debug_deactivate_spatial_effects": false,
+        "dir_diffusion_size_um": 2187.5,
+        "halation_active": true,
+        "scanner_unsharp_mask": [
+          0.7,
+          0.7
+        ]
+      },
+      "affected_comparisons": [
+        "film_density",
+        "scanner_linear_rgb",
+        "output_rgb"
+      ],
+      "capture_evidence": {
+        "film_density": "3cd6caf6b26fe56ca89f1d04399f15422d0e3b358ae285f3c801edc5ef4a77ab",
+        "scanner_linear_rgb": "eb7350b96b896a57415f1671d092f03e54c37b89acd399ec780087284a5ba690",
+        "output_rgb": "fa802dfd6238c12a0c61cc8d781f5dd2c79a12e6f95ec226a5216d51a3e2609d"
+      }
+    }
+  ]
+}

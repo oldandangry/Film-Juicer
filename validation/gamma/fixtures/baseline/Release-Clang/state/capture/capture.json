@@ -1,0 +1,46 @@
+{
+  "case": "state",
+  "direct_build_counter": 1,
+  "direct_hash": 8016892207105160900,
+  "inputs": {
+    "film_authored_values": [
+      0.05,
+      0.049999999999999996,
+      1.0,
+      1.00000001,
+      4.0,
+      4.000000000000001
+    ],
+    "nonfinite_values": [
+      "negative-infinity",
+      "positive-infinity",
+      "nan"
+    ],
+    "print_authored_values": [
+      0.5,
+      0.49999999999999994,
+      0.9999999999999999,
+      1.0,
+      1.0000000000000002,
+      1.00000001,
+      2.0,
+      2.0000000000000004
+    ],
+    "required_transitions": [
+      "initial-valid",
+      "initial-invalid",
+      "ordinary-edit",
+      "invalid-with-old-publication",
+      "recovery",
+      "retained-admitted-snapshot",
+      "direct-unused-invalid-print",
+      "route-switch-validation"
+    ],
+    "schema_version": 1
+  },
+  "invalid_blocks_old_publication": true,
+  "print_build_counter": 2,
+  "print_hash": 3379954120297244931,
+  "retained_admitted_direct_state_survived": true,
+  "uninitialized_status": 0
+}

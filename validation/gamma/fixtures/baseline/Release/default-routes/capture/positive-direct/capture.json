@@ -1,0 +1,14 @@
+{
+  "case": "positive-direct",
+  "film_profile_asset_version_token": 17316414876133306140,
+  "film_profile_key": "kodak_ektachrome_100",
+  "fused_maximum_absolute_difference": 5.960464477539063e-08,
+  "height": 4,
+  "prepare_elapsed_ms": 13.2644,
+  "recipe_hash": 2990398838649194109,
+  "render_and_capture_elapsed_ms": 0.2237,
+  "scan_route": 2,
+  "scanner_descriptor_hash": 9755100965589961134,
+  "spatial_dir_descriptor_hash": 0,
+  "width": 16
+}

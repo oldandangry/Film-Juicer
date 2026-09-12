@@ -305,6 +305,10 @@ namespace {
         return std::bit_cast<std::uint32_t>(canonical);
     }
 
+    inline std::uint64_t exact_double_bits(double value) {
+        return std::bit_cast<std::uint64_t>(value);
+    }
+
     template <typename MixFn>
     inline void mix_canonical_float_bits(uint64_t& h, float value, const MixFn& mix) {
         mix_hash_field(h, canonical_float_bits(value), mix);
@@ -383,6 +387,7 @@ namespace {
             mix_hash_field(h, p.enlIll, mix);
             mix_hash_field_scaled_rounded_if_finite(h, p.printExposure, 10000.0, mix);
             mix_hash_field_scaled_rounded_if_finite(h, p.printPreflashExposure, 10000.0, mix);
+            mix_hash_field(h, exact_double_bits(p.printGammaFactor), mix);
             mix_hash_field(h, p.normalizePrintExposure, mix);
             mix_hash_field(h, p.printExposureCompensation, mix);
             for (double value : p.printUiYmcCc) {
@@ -426,6 +431,7 @@ namespace {
             10000.0,
             mix);
         mix_canonical_float_bits(h, p.cameraFilmFormatLongEdgeMm, mix);
+        mix_canonical_float_bits(h, p.filmGammaFactor, mix);
         mix_hash_field(h, p.scatterHalationControls.active ? 1 : 0, mix);
         if (p.scatterHalationControls.active) {
             mix_canonical_float_bits(h, p.scatterHalationControls.scatterAmount, mix);
@@ -893,6 +899,7 @@ namespace {
             static_cast<float>(params.cameraExposureCompensationEv);
         input.filmFormatLongEdgeMm =
             static_cast<float>(params.cameraFilmFormatLongEdgeMm);
+        input.filmGammaFactor = params.filmGammaFactor;
         input.cameraFilterOverride = params.cameraFilterOverride;
         input.cameraFilterUV = params.cameraFilterUV;
         input.cameraFilterIR = params.cameraFilterIR;
@@ -1078,6 +1085,7 @@ namespace {
         input.preflashYFilterCc = static_cast<float>(params.preflashYFilterCc);
         input.printExposure = static_cast<float>(params.printExposure);
         input.preflashExposure = static_cast<float>(params.printPreflashExposure);
+        input.printGammaFactor = params.printGammaFactor;
         input.normalizePrintExposure = params.normalizePrintExposure != 0;
         input.printExposureCompensation = params.printExposureCompensation != 0;
         input.scannerLutResolution =
@@ -1157,6 +1165,42 @@ namespace {
         return true;
     }
 } // namespace
+
+bool set_gamma_snapshot_values(
+    double authoredFilmGammaFactor,
+    double authoredPrintGammaFactor,
+    ParamSnapshot& snapshot,
+    std::string& outDiagnostic) {
+    outDiagnostic.clear();
+    if (!std::isfinite(authoredFilmGammaFactor) ||
+        authoredFilmGammaFactor < Spektrafilm::kFilmGammaFactorMinimum ||
+        authoredFilmGammaFactor > Spektrafilm::kFilmGammaFactorMaximum) {
+        outDiagnostic =
+            "InvalidAuthoredControl component=film_development field=film_gamma_factor";
+        return false;
+    }
+
+    const float retainedFilmGammaFactor =
+        static_cast<float>(authoredFilmGammaFactor);
+    if (!std::isfinite(retainedFilmGammaFactor) ||
+        retainedFilmGammaFactor <= 0.0f) {
+        outDiagnostic =
+            "InvalidAuthoredControl component=film_development field=film_gamma_factor";
+        return false;
+    }
+    if (Spektrafilm::scan_route_is_print(snapshot.scanRoute) &&
+        (!std::isfinite(authoredPrintGammaFactor) ||
+         authoredPrintGammaFactor < Spektrafilm::kPrintGammaFactorMinimum ||
+         authoredPrintGammaFactor > Spektrafilm::kPrintGammaFactorMaximum)) {
+        outDiagnostic =
+            "InvalidAuthoredControl component=print_development field=print_gamma_factor";
+        return false;
+    }
+
+    snapshot.filmGammaFactor = retainedFilmGammaFactor;
+    snapshot.printGammaFactor = authoredPrintGammaFactor;
+    return true;
+}
 
 uint64_t hash_params(const ParamSnapshot& p) {
     uint64_t h = 0;

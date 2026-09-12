@@ -24,6 +24,9 @@ namespace JuicerParams {
     inline constexpr const char kFilmProfileKey[] = "FilmProfileKey";
     inline constexpr const char kPrintProfileKey[] = "PrintProfileKey";
     inline constexpr const char kParamScanRoute[] = "ScanRoute";
+    inline constexpr const char kTuningGroup[] = "TuningGroup";
+    inline constexpr const char kFilmGammaFactor[] = "FilmGammaFactor";
+    inline constexpr const char kPrintGammaFactor[] = "PrintGammaFactor";
     inline constexpr const char kInputColorSpace[] = "InputColorSpace";
     inline constexpr const char kInputCctfDecoding[] = "InputCctfDecoding";
     inline constexpr const char kHanatos2025AdaptationWindow[] = "Hanatos2025AdaptationWindow";

@@ -1350,6 +1350,51 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setEvaluateOnChange(true);
     }
 
+    // Tuning group
+    {
+        OFX::GroupParamDescriptor* grpTuning =
+            desc.defineGroupParam(JuicerParams::kTuningGroup);
+        if (grpTuning) {
+            grpTuning->setLabel("Tuning");
+            grpTuning->setOpen(false);
+        }
+
+        {
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kFilmGammaFactor);
+            p->setLabel("Film gamma factor");
+            p->setDefault(1.0);
+            p->setRange(
+                Spektrafilm::kFilmGammaFactorMinimum,
+                Spektrafilm::kFilmGammaFactorMaximum);
+            p->setDisplayRange(0.5, 2.0);
+            p->setIncrement(0.05);
+            p->setHint(
+                "Adjust film-development contrast. Below 1 reduces contrast; above 1 increases contrast.");
+            if (grpTuning)
+                p->setParent(*grpTuning);
+            p->setEvaluateOnChange(true);
+            p->setAnimates(false);
+        }
+        {
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kPrintGammaFactor);
+            p->setLabel("Print gamma factor");
+            p->setDefault(1.0);
+            p->setRange(
+                Spektrafilm::kPrintGammaFactorMinimum,
+                Spektrafilm::kPrintGammaFactorMaximum);
+            p->setDisplayRange(0.5, 2.0);
+            p->setIncrement(0.05);
+            p->setHint(
+                "Adjust print-medium development contrast. Below 1 reduces contrast; above 1 increases contrast.");
+            if (grpTuning)
+                p->setParent(*grpTuning);
+            p->setEvaluateOnChange(true);
+            p->setAnimates(false);
+        }
+    }
+
     // Output encoding group
     {
         OFX::GroupParamDescriptor* grpOutput = desc.defineGroupParam("OutputEncodingGroup");

@@ -91,36 +91,6 @@ namespace {
         return index >= size ? period - 1 - index : index;
     }
 
-    __device__ __forceinline__ void compute_dir_corrections_device(
-        const JuicerCuda::DirPayload& dir,
-        const float layerDensities[3],
-        float outLayerCorrections[3]) {
-        if (!outLayerCorrections) {
-            return;
-        }
-        if (!dir.active) {
-            outLayerCorrections[0] = 0.0f;
-            outLayerCorrections[1] = 0.0f;
-            outLayerCorrections[2] = 0.0f;
-            return;
-        }
-        auto silver_density = [&](float density, float dmax) -> float {
-            return dir.positive ? dmax - density : density;
-        };
-
-        const float nB = silver_density(layerDensities[0], dir.dMax[0]);
-        const float nG = silver_density(layerDensities[1], dir.dMax[1]);
-        const float nR = silver_density(layerDensities[2], dir.dMax[2]);
-
-        float aY = dir.M[0] * nB + dir.M[3] * nG + dir.M[6] * nR;
-        float aM = dir.M[1] * nB + dir.M[4] * nG + dir.M[7] * nR;
-        float aC = dir.M[2] * nB + dir.M[5] * nG + dir.M[8] * nR;
-
-        outLayerCorrections[0] = aY;
-        outLayerCorrections[1] = aM;
-        outLayerCorrections[2] = aC;
-    }
-
     struct DirRawCorrectionOutputs {
         float* correctionY = nullptr;
         float* correctionM = nullptr;
@@ -2305,7 +2275,7 @@ __global__ void develop_film_density_kernel(
 
                 if (dev.dir.active) {
                     float logE_corr[3] = {logE_sanitized[0], logE_sanitized[1], logE_sanitized[2]};
-                    apply_dir_runtime_logE_device(logE_corr, layerPre, dev.dir, dev.densB, dev.densG, dev.densR);
+                    apply_dir_runtime_logE_device(logE_corr, layerPre, dev.dir);
 
                     const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
                     const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
@@ -2938,7 +2908,7 @@ __global__ void develop_film_density_from_raw_kernel(
 
                 if (dev.dir.active) {
                     float logE_corr[3] = {logE_sanitized[0], logE_sanitized[1], logE_sanitized[2]};
-                    apply_dir_runtime_logE_device(logE_corr, layerPre, dev.dir, dev.densB, dev.densG, dev.densR);
+                    apply_dir_runtime_logE_device(logE_corr, layerPre, dev.dir);
 
                     const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
                     const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
@@ -3147,10 +3117,7 @@ namespace {
                         apply_dir_runtime_logE_device(
                             correctedLogBgr,
                             layerPreBgr,
-                            develop.dir,
-                            develop.densB,
-                            develop.densG,
-                            develop.densR);
+                            develop.dir);
                         const JuicerCuda::DeviceCurveView curveB =
                             develop.dirPrecorrected
                                 ? develop.dirDensB
