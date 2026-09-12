@@ -35,6 +35,10 @@ namespace Spektrafilm {
         "QuantizedMedianNotAcceptedForPhase3";
     inline constexpr const char kExactOpticsNotImplementedForPhase6[] =
         "ExactOpticsNotImplementedForPhase6";
+    inline constexpr double kFilmGammaFactorMinimum = 0.05;
+    inline constexpr double kFilmGammaFactorMaximum = 4.0;
+    inline constexpr double kPrintGammaFactorMinimum = 0.5;
+    inline constexpr double kPrintGammaFactorMaximum = 2.0;
 
     enum class RgbToRawMethod : std::uint8_t {
         Hanatos2025,
@@ -689,10 +693,17 @@ struct PrintIlluminantRecipe {
     std::uint64_t hash = 0;
 };
 
+struct PrintDevelopRecipe {
+    double gammaFactor = 1.0;
+    std::vector<std::array<float, 3>> densityCurves;
+    std::uint64_t densityCurvesHash = 0;
+};
+
 struct PrintRecipe {
     PrintFilterRecipe filters;
     PrintExposureRecipe exposure;
     PrintIlluminantRecipe illuminant;
+    PrintDevelopRecipe develop;
     std::uint64_t hash = 0;
 };
 
@@ -761,6 +772,7 @@ namespace Spektrafilm {
         int cameraMeteringMethod = 0;
         float manualExposureCompensationEv = 0.0f;
         float filmFormatLongEdgeMm = 35.0f;
+        float filmGammaFactor = 1.0f;
         bool cameraFilterOverride = false;
         std::array<double, 3> cameraFilterUV{{1.0, 410.0, 8.0}};
         std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
@@ -801,6 +813,7 @@ namespace Spektrafilm {
         float preflashYFilterCc = 0.0f;
         float printExposure = 1.0f;
         float preflashExposure = 0.0f;
+        double printGammaFactor = 1.0;
         bool normalizePrintExposure = true;
         bool printExposureCompensation = true;
         std::string printIlluminantKey = "TH-KG3";
@@ -845,6 +858,11 @@ namespace Spektrafilm {
 
     DirectRecipeBuildResult build_direct_render_recipe(const DirectRecipeBuildInput& input);
     PrintRecipeBuildResult build_print_render_recipe(const PrintRecipeBuildInput& input);
+    std::array<double, 3> evaluate_print_density_sample(
+        const Profiles::PrintDensityModel& model,
+        double gammaFactor,
+        ProfilePolarity polarity,
+        double logExposure);
     float print_exposure_normalizer(
         PrintNormalizationMode mode,
         float factorMidgray,

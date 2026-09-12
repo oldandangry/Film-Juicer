@@ -83,6 +83,7 @@ struct ParamSnapshot {
 
     double printExposure = 1.0;
     double printPreflashExposure = 0.0;
+    double printGammaFactor = 1.0;
     double preflashMFilterCc = 0.0;
     double preflashYFilterCc = 0.0;
     double printShadowCompensationFactor = 0.0;
@@ -97,6 +98,7 @@ struct ParamSnapshot {
     double couplersDiffusionSizeUm = 20.0;
     double cameraExposureCompensationEv = 0.0;
     float cameraFilmFormatLongEdgeMm = 35.0f;
+    float filmGammaFactor = 1.0f;
     double scannerLensBlurSigmaPx = 0.0;
     double scannerBlackLevel = 0.01;
     double scannerWhiteLevel = 0.98;
@@ -149,6 +151,11 @@ struct ParamSnapshot {
 };
 
 uint64_t hash_params(const ParamSnapshot& p);
+bool set_gamma_snapshot_values(
+    double authoredFilmGammaFactor,
+    double authoredPrintGammaFactor,
+    ParamSnapshot& snapshot,
+    std::string& outDiagnostic);
 
 struct PendingParamsState {
     struct Uninitialized {};

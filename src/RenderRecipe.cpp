@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <numbers>
 #include <string_view>
 
 #include "Hash.h"
@@ -19,6 +20,10 @@ namespace {
 
     void hash_string(std::uint64_t& hash, const std::string& value) {
         Hash::hash_bytes_update(hash, value.data(), value.size());
+    }
+
+    double normal_cdf(double z) {
+        return 0.5 * std::erfc(-z / std::numbers::sqrt2);
     }
 
     std::uint64_t hash_nan_preserving_floats(const float* values, std::size_t count) {
@@ -1630,7 +1635,92 @@ namespace {
 } // namespace
 
 namespace Spektrafilm {
+    std::array<double, 3> evaluate_print_density_sample(
+        const Profiles::PrintDensityModel& model,
+        double gammaFactor,
+        ProfilePolarity polarity,
+        double logExposure) {
+        std::array<double, 3> density{};
+        if (polarity != ProfilePolarity::Negative &&
+            polarity != ProfilePolarity::Positive) {
+            density.fill(std::numeric_limits<double>::quiet_NaN());
+            return density;
+        }
+        for (std::size_t channel = 0; channel < density.size(); ++channel) {
+            for (std::size_t layer = 0; layer < model.centers[channel].size(); ++layer) {
+                double center = model.centers[channel][layer];
+                double sigma = model.sigmas[channel][layer];
+                if (gammaFactor != 1.0) {
+                    center /= gammaFactor;
+                    sigma = std::max(sigma / gammaFactor, 0.05);
+                }
+                double z = (logExposure - center) / sigma;
+                if (polarity == ProfilePolarity::Positive) {
+                    z = -z;
+                }
+                density[channel] +=
+                    model.amplitudes[channel][layer] * normal_cdf(z);
+            }
+        }
+        return density;
+    }
+
     namespace {
+
+        bool build_print_develop_recipe(
+            const Profiles::ValidatedPrintProfile& profile,
+            double gammaFactor,
+            PrintDevelopRecipe& out) {
+            out = PrintDevelopRecipe{};
+            const std::size_t sampleCount = profile.sourceLogExposure.size();
+            if (sampleCount == 0u ||
+                sampleCount != profile.data.logExposure.size() ||
+                sampleCount > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+                (profile.info.type != ProfilePolarity::Negative &&
+                 profile.info.type != ProfilePolarity::Positive)) {
+                return false;
+            }
+
+            out.gammaFactor = gammaFactor;
+            out.densityCurves.resize(sampleCount);
+            for (std::size_t sample = 0; sample < sampleCount; ++sample) {
+                const double sourceExposure = profile.sourceLogExposure[sample];
+                const float uploadExposure = profile.data.logExposure[sample];
+                if (!std::isfinite(sourceExposure) ||
+                    !std::isfinite(uploadExposure) ||
+                    static_cast<float>(sourceExposure) != uploadExposure ||
+                    (sample > 0u &&
+                     (sourceExposure < profile.sourceLogExposure[sample - 1u] ||
+                      uploadExposure < profile.data.logExposure[sample - 1u]))) {
+                    return false;
+                }
+                const std::array<double, 3> derived =
+                    evaluate_print_density_sample(
+                        profile.densityModel,
+                        gammaFactor,
+                        profile.info.type,
+                        sourceExposure);
+                for (std::size_t channel = 0; channel < derived.size(); ++channel) {
+                    const float converted = static_cast<float>(derived[channel]);
+                    if (!std::isfinite(derived[channel]) || !std::isfinite(converted)) {
+                        return false;
+                    }
+                    out.densityCurves[sample][channel] = converted;
+                }
+            }
+
+            out.densityCurvesHash = Hash::kFnvOffset;
+            hash_value(out.densityCurvesHash, sampleCount);
+            Hash::hash_bytes_update(
+                out.densityCurvesHash,
+                profile.data.logExposure.data(),
+                sampleCount * sizeof(profile.data.logExposure.front()));
+            Hash::hash_bytes_update(
+                out.densityCurvesHash,
+                &out.densityCurves[0][0],
+                sampleCount * 3u * sizeof(float));
+            return out.densityCurvesHash != 0;
+        }
 
         bool build_film_foundation(
             const FilmFoundationBuildInput& input,
@@ -1648,6 +1738,14 @@ namespace Spektrafilm {
             }
             if (!auto_exposure_method_index_valid(input.cameraMeteringMethod)) {
                 return fail("UnsupportedMode phase=3B field=auto_exposure_method");
+            }
+            if (!std::isfinite(input.filmGammaFactor) ||
+                input.filmGammaFactor <
+                    static_cast<float>(kFilmGammaFactorMinimum) ||
+                input.filmGammaFactor >
+                    static_cast<float>(kFilmGammaFactorMaximum)) {
+                return fail(
+                    "InvalidAuthoredControl component=film_development field=film_gamma_factor");
             }
 
             const Profiles::ValidatedFilmProfile& profile = *input.filmProfile;
@@ -1727,6 +1825,7 @@ namespace Spektrafilm {
 
             FilmDevelopRecipe& filmDevelop = recipe.filmDevelop;
             filmDevelop.polarity = profile.info.type;
+            filmDevelop.densityCurveGamma.fill(input.filmGammaFactor);
             filmDevelop.logExposure = profile.data.logExposure;
             filmDevelop.authoredDensityCurves = profile.data.densityCurves;
             if (!normalize_density_curves(
@@ -1919,6 +2018,13 @@ namespace Spektrafilm {
                 "MissingRequiredResource phase=4A field=selected_profile";
             return result;
         }
+        if (!std::isfinite(input.printGammaFactor) ||
+            input.printGammaFactor < kPrintGammaFactorMinimum ||
+            input.printGammaFactor > kPrintGammaFactorMaximum) {
+            result.diagnostic =
+                "InvalidAuthoredControl component=print_development field=print_gamma_factor";
+            return result;
+        }
         if (input.printProfile->info.stage != ProfileStage::Printing) {
             result.diagnostic =
                 "UnsupportedMode phase=4A selected profile route mismatch";
@@ -1994,6 +2100,14 @@ namespace Spektrafilm {
         scanner.hash = hash_scanner_output_recipe(scanner);
 
         PrintRecipe& print = recipe.print;
+        if (!build_print_develop_recipe(
+                *input.printProfile,
+                input.printGammaFactor,
+                print.develop)) {
+            result.diagnostic =
+                "MalformedRequiredProfileData phase=3B field=print_development_table";
+            return result;
+        }
         print.filters.dichroic = DichroicFilterRecipe{};
         print.filters.dichroic.hash = hash_dichroic_filter_recipe(print.filters.dichroic);
         const CmyCcTriplet neutralCmyCc =
@@ -2034,7 +2148,9 @@ namespace Spektrafilm {
         print.hash = Hash::hash_uint64_values(
             {print.filters.hash,
              print.exposure.hash,
-             print.illuminant.hash});
+             print.illuminant.hash,
+             print.develop.densityCurvesHash,
+             std::bit_cast<std::uint64_t>(print.develop.gammaFactor)});
         recipe.printStructuralReady = true;
         if (recipe.dirCouplers.active) {
             recipe.hash = Hash::hash_uint64_values(
@@ -2064,6 +2180,8 @@ namespace Spektrafilm {
                        print.filters.hash != 0 &&
                        print.exposure.hash != 0 &&
                        print.illuminant.hash != 0 &&
+                       print.develop.densityCurvesHash != 0 &&
+                       !print.develop.densityCurves.empty() &&
                        recipe.filmRaw.hash != 0 &&
                        recipe.filmDevelop.hash != 0 &&
                        (!recipe.dirCouplers.active ||

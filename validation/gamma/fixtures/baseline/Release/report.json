@@ -1,0 +1,55 @@
+{
+  "operation": "baseline",
+  "case_group": "all",
+  "reference_manifest_sha256": "7e6b1c06a9426daaddca280abe24b8ebbf36f4d3d4f54654f952871b70da2363",
+  "source_executable": "/mnt/c/dev/codex/validation/gamma/x64/Release/GammaValidation.exe",
+  "source_executable_sha256": "383be3126c15283aa02b82b88be4c450908f8c853e37e54684c1bdc65efa3cf6",
+  "runs": {
+    "default-paper-1": {
+      "case_group": "default-paper",
+      "report": "default-paper-1/report.json",
+      "report_sha256": "a4a5cc7b96f407b3874eb1231f731b977b286ad8e59a67be70772818e790da5d"
+    },
+    "default-paper-2": {
+      "case_group": "default-paper",
+      "report": "default-paper-2/report.json",
+      "report_sha256": "3e360b83ea8c56419dc51d26eaddba85963628f00e629488e174aff4fa5ba723"
+    },
+    "default-routes": {
+      "case_group": "default-routes",
+      "report": "default-routes/report.json",
+      "report_sha256": "1ab58b23968cdf7592ab8270557c2441eae1778aa65bfe1ffcacc318eb3fe449"
+    },
+    "sampling-dir": {
+      "case_group": "sampling-dir",
+      "report": "sampling-dir/report.json",
+      "report_sha256": "0488cc799f2a19bf0c16d32d1cedf736b633a5938905f0a3cf9955b95d9b197d"
+    },
+    "print-backend": {
+      "case_group": "print-backend",
+      "report": "print-backend/report.json",
+      "report_sha256": "ca0992e47790c367a66da0042b8e99e0b44db9bab013eb2f65ea280613a7d30a"
+    },
+    "state": {
+      "case_group": "state",
+      "report": "state/report.json",
+      "report_sha256": "7a582d158e6b96bf84e4abc47f4df08d6f9ac5bae16a89ad369bcc572a5e5c89"
+    },
+    "routes": {
+      "case_group": "routes",
+      "report": "routes/report.json",
+      "report_sha256": "748538c31c6c56e64fe941c500d93609e4c0b2910e05db780f36d4aa41d01d95"
+    },
+    "lifetime": {
+      "case_group": "lifetime",
+      "report": "lifetime/report.json",
+      "report_sha256": "e09593a04b3990437ee6a23e51a0dd385d86952b7f887da76f859510c370e3ce"
+    },
+    "performance": {
+      "case_group": "performance",
+      "report": "performance/report.json",
+      "report_sha256": "9c4cec365ed01a14600612cc99377086395fb9b9a300c7f07a7c787ccd50908e"
+    }
+  },
+  "default_paper_numeric_reproducible": true
+}

@@ -150,6 +150,14 @@ During development, layer exposures become dye densities. **DIR**, short for dev
 
 For grading, this means an exposure change can alter more than brightness. It moves the image through the stock's response and changes the densities handed to the next stage.
 
+### Development tuning
+
+The collapsed **Tuning** group sits immediately above **Output encoding**. **Film gamma factor** adjusts capture-film development on every route from 0.05 to 4.0. **Print gamma factor** adjusts the selected print medium from 0.5 to 2.0 and is enabled only on print routes. Both controls reset to 1.0, use a 0.5–2.0 slider display range, and accept in-range typed values without quantizing them to the 0.05 drag increment.
+
+Values below 1 reduce development contrast; values above 1 increase it. Neither control is animated. Switching to a direct route disables the print control but retains its authored value for the next print route. The host snapshot validates the bounded Double values; film gamma is then retained once as Float32 for the existing CUDA film tables, while print gamma remains Float64 during fitted-model derivation before the resulting density table is uploaded as Float32.
+
+At exactly print gamma 1, print development uses the fitted stock model's inactive mapping. Other accepted values apply the reference global gamma morph to that same fitted model. This intentionally corrects the default print-development model and its interpolation knots, along with the stock DIR defaults used by film development. Print balance, preflash, scanner bounds, and other stock-anchored corrections continue to use the authored stock tables. These reference corrections can change an established render even when both new controls remain at 1.
+
 ### Scatter, halation, and diffusion
 
 Emulsion scatter spreads light within the film. Halation models light returning through the emulsion after reflection, contributing to the coloured spread around bright features. Both act on film-layer exposure before development.

@@ -435,9 +435,6 @@ namespace JuicerCuda {
         DeviceCurveView printDcC{};
         DeviceCurveView printDcM{};
         DeviceCurveView printDcY{};
-        float printGammaC = 1.0f;
-        float printGammaM = 1.0f;
-        float printGammaY = 1.0f;
     };
 
     struct ScanStagePayload {
