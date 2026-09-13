@@ -20,10 +20,11 @@ Underneath, the model works with light sampled at 81 wavelengths, from 380 to 78
 This is quite a lot of machinery to put between two RGB images. The attraction is being able to work with the photographic process itself, and follow an adjustment through to its consequences.
 
 > [!NOTE]
-> **Film-Juicer 1.0.0** is available from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases). This is the first major release version.
-> ## Support Film-Juicer
-> If Film-Juicer is useful to you and you'd like to support its development:
->[☕ Buy me a coffee](https://buymeacoffee.com/oldandangry)
+> **Film-Juicer 1.0.1** is available for Windows and Linux from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases/tag/v1.0.1). This version adds a Linux bundle and film and print gamma controls.
+
+## Support Film-Juicer
+
+If Film-Juicer is useful to you and you'd like to support its development: [☕ Buy me a coffee](https://buymeacoffee.com/oldandangry).
 
 ## Features
 
@@ -31,6 +32,7 @@ This is quite a lot of machinery to put between two RGB images. The attraction i
 - Direct and optical-print scanning for negative and positive capture film.
 - Hanatos 2025 and Mallett 2019 spectral reconstruction.
 - Stock-specific sensitivity, development curves, and spectral dye density.
+- Separate film and print gamma controls for development contrast.
 - DIR couplers for interactions within and between film layers, including spatial effects.
 - Grain formed in film-density space, with physical format scaling and creative controls.
 - Emulsion scatter, halation, and camera or enlarger diffusion.
@@ -40,17 +42,53 @@ This is quite a lot of machinery to put between two RGB images. The attraction i
 
 ## Requirements and installation
 
-You need Windows 10/11 x64, DaVinci Resolve configured for CUDA rendering, and an NVIDIA Turing GPU or newer (compute capability 7.5 or higher). Production rendering requires CUDA; there is no CPU, OpenCL, or Metal render path.
+- Windows 10/11 x64 or x86-64 Linux.
+- A working DaVinci Resolve installation configured for CUDA GPU processing.
+- An NVIDIA Turing GPU or newer (compute capability 7.5 or higher), with a driver that supports CUDA 13.2.
 
-1. Download the Windows installer from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases).
-2. Run the installer, then restart Resolve.
-3. Find **Juicer** under **OpenFX → Negative-juice**.
+Rendering requires CUDA; there is no CPU, OpenCL, or Metal render path. The release packages include the required CUDA runtime components. You do not need to install the CUDA Toolkit, Python, or spektrafilm to use the plug-in.
 
-For Linux, close Resolve and copy the complete `juicer.ofx.bundle` directory to
-`/usr/OFX/Plugins` or another configured OFX search directory. Keep its
-`Contents/Resources` and `Contents/Legal` directories beside the binary. The
-current x86-64 Linux artifact requires a compatible NVIDIA driver and glibc and
-remains a primary-machine build rather than a general cross-distro release.
+### Windows
+
+1. Download **Juicer-Setup-1.0.1.exe** from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases/tag/v1.0.1).
+2. Close Resolve and run the installer.
+3. Restart Resolve and find **Juicer** under **OpenFX → Negative-juice**.
+
+### Linux
+
+Download **juicer-Linux.1.0.1-x86-64.tar.gz** from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases/tag/v1.0.1). Choose the bundle under **Assets**, rather than GitHub's source-code archives.
+
+The published v1.0.1 bundle requires **glibc 2.38 or newer**, including the system C math library and x86-64 dynamic loader, plus the NVIDIA driver's **libcuda.so.1**. CUDA, cuFFT, and the GNU C++ support runtime are statically linked into the plug-in; no separate CUDA or C++ runtime package is needed for Film-Juicer. Resolve still needs its own normal system dependencies.
+
+Use a current NVIDIA driver compatible with CUDA 13.2. NVIDIA lists **595.45.04** as the corresponding Linux driver baseline; this is a driver recommendation, not a minimum version independently tested for Film-Juicer. See [NVIDIA's CUDA 13.2 release notes](https://docs.nvidia.com/cuda/archive/13.2.0/cuda-toolkit-release-notes/index.html). Linux Resolve use has been reported working on Arch/CachyOS; compatibility with other distributions has not yet been broadly validated. Meeting the glibc requirement alone does not establish Resolve compatibility.
+
+Close Resolve. If updating an existing installation, move the old `juicer.ofx.bundle` outside the OFX search directories before copying the new bundle.
+
+In a terminal opened in the directory containing the download, run:
+
+```sh
+tar -xzf juicer-Linux.1.0.1-x86-64.tar.gz
+sudo mkdir -p /usr/OFX/Plugins/
+sudo cp -a juicer.ofx.bundle /usr/OFX/Plugins/
+```
+
+The installed binary should be at:
+
+```text
+/usr/OFX/Plugins/juicer.ofx.bundle/Contents/Linux-x86-64/juicer.ofx
+```
+
+Copy the **entire bundle**, keeping `Contents/Resources` and `Contents/Legal` intact. Restart Resolve and find **Juicer** under **OpenFX → Negative-juice**.
+
+If the plug-in does not appear or cannot render, check your driver and system libraries:
+
+```sh
+nvidia-smi
+getconf GNU_LIBC_VERSION
+ldd /usr/OFX/Plugins/juicer.ofx.bundle/Contents/Linux-x86-64/juicer.ofx
+```
+
+Look for missing libraries or a `GLIBC_… not found` message, and confirm that Resolve is using CUDA. The driver library is loaded at runtime, so it will not appear in this `ldd` listing. Systems with glibc older than 2.38 need a compatible build or a newer distribution to use this release bundle.
 
 ## Getting started
 
@@ -158,11 +196,16 @@ For grading, this means an exposure change can alter more than brightness. It mo
 
 ### Development tuning
 
-The collapsed **Tuning** group sits immediately above **Output encoding**. **Film gamma factor** adjusts capture-film development on every route from 0.05 to 4.0. **Print gamma factor** adjusts the selected print medium from 0.5 to 2.0 and is enabled only on print routes. Both controls reset to 1.0, use a 0.5–2.0 slider display range, and accept in-range typed values without quantizing them to the 0.05 drag increment.
+The collapsed **Tuning** group above **Output encoding** contains two development-contrast controls:
 
-Values below 1 reduce development contrast; values above 1 increase it. Neither control is animated. Switching to a direct route disables the print control but retains its authored value for the next print route. The host snapshot validates the bounded Double values; film gamma is then retained once as Float32 for the existing CUDA film tables, while print gamma remains Float64 during fitted-model derivation before the resulting density table is uploaded as Float32.
+| Control | Applies to | Range | Default |
+| --- | --- | --- | --- |
+| **Film gamma factor** | Capture-film development on every route | 0.05–4.0 | 1.0 |
+| **Print gamma factor** | Print-medium development on print routes | 0.5–2.0 | 1.0 |
 
-At exactly print gamma 1, print development uses the fitted stock model's inactive mapping. Other accepted values apply the reference global gamma morph to that same fitted model. This intentionally corrects the default print-development model and its interpolation knots, along with the stock DIR defaults used by film development. Print balance, preflash, scanner bounds, and other stock-anchored corrections continue to use the authored stock tables. These reference corrections can change an established render even when both new controls remain at 1.
+Values below 1 reduce development contrast; values above 1 increase it. Both sliders display 0.5–2.0; type a value to use the wider film-gamma range. Neither control is animated. Switching to a direct route disables print gamma and retains its value for when you return to printing.
+
+This release also corrects the default print-development model and stock DIR defaults. Existing grades can therefore change even with both gamma controls at 1.0; check established renders after updating.
 
 ### Scatter, halation, and diffusion
 
@@ -182,7 +225,7 @@ Grain is generated in film-density space. Its appearance depends on exposure and
 
 Film dust and scratches are attached to the virtual strip. Gate artifacts are attached to the gate, with weave introducing movement between the two. Keeping them separate makes their behaviour under motion more convincing. Gate weave defaults to zero.
 
-Dust and scratches remain under refinement in this release candidate. You can already add enough dirt to suggest that the archive was stored in a cement mixer, but restraint tends to survive client review better.
+Dust and scratches remain under refinement. You can already add enough dirt to suggest that the archive was stored in a cement mixer, but restraint tends to survive client review better.
 
 ### The enlarger and print medium
 
