@@ -46,9 +46,11 @@ You need Windows 10/11 x64, DaVinci Resolve configured for CUDA rendering, and a
 2. Run the installer, then restart Resolve.
 3. Find **Juicer** under **OpenFX → Negative-juice**.
 
-For the current x86-64 Linux bundle requirements and copy-install procedure,
-see [Linux bundle installation](docs/linux.md). The Linux artifact remains under
-migration qualification and is not yet a general cross-distro release.
+For Linux, close Resolve and copy the complete `juicer.ofx.bundle` directory to
+`/usr/OFX/Plugins` or another configured OFX search directory. Keep its
+`Contents/Resources` and `Contents/Legal` directories beside the binary. The
+current x86-64 Linux artifact requires a compatible NVIDIA driver and glibc and
+remains a primary-machine build rather than a general cross-distro release.
 
 ## Getting started
 
@@ -233,8 +235,14 @@ The GPU will suffer according to your ambitions.
 ## Building from source
 
 Open the repository folder directly in Visual Studio and select a shared CMake
-preset. See [build instructions](docs/building.md) and
-[Linux bundle installation](docs/linux.md).
+preset. The shared build uses Ninja, C++20, CUDA C++20, and CUDA Toolkit 13.2.
+
+| Preset | Host compiler | Configuration |
+| --- | --- | --- |
+| `windows-clang-debug` | ClangCL + NVCC/MSVC | Debug |
+| `windows-clang-release` | ClangCL + NVCC/MSVC | Release with ThinLTO |
+| `linux-debug` | GCC 13 + NVCC/GCC | Debug |
+| `linux-release` | GCC 13 + NVCC/GCC | Release |
 
 The Windows presets are **windows-clang-debug** and
 **windows-clang-release**, using ClangCl from Visual Studio 2026, CUDA Toolkit
@@ -255,6 +263,19 @@ cmake --install out/build/windows-clang-release
 Replace `release` with `debug` for the Debug configuration. CMake stages the
 complete OFX bundle under `out/stage/<preset>`; the binary alone is not the
 installed plug-in.
+
+On Linux or WSL, use the corresponding Linux preset:
+
+```sh
+cmake --preset linux-release
+cmake --build --preset linux-release
+cmake --install out/build/linux-release
+```
+
+The shared Linux presets use `/usr/bin/g++-13` and
+`/usr/local/cuda-13.2/bin/nvcc`. WSL and native Linux should use separate
+checkouts or build caches. Build `bundle-archive` in a configured tree to
+produce a compressed platform bundle.
 
 ## Project status
 

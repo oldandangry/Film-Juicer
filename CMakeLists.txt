@@ -100,8 +100,12 @@ if(UNIX)
     set_property(TARGET juicer APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/cmake/juicer.exports")
 endif()
 
-option(JUICER_BUILD_VALIDATION "Build the tracked scatter/halation acceptance executable" OFF)
+option(JUICER_BUILD_VALIDATION "Build the local scatter/halation acceptance executable" OFF)
 if(JUICER_BUILD_VALIDATION)
+    if(NOT EXISTS "${PROJECT_SOURCE_DIR}/validation/scatter_halation/CMakeLists.txt")
+        message(FATAL_ERROR
+            "JUICER_BUILD_VALIDATION requires the local validation workspace")
+    endif()
     add_subdirectory(validation/scatter_halation)
 endif()
 include(cmake/JuicerBundle.cmake)
