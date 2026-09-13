@@ -1,0 +1,28 @@
+# Product implementation shared by the OFX module and opt-in acceptance executable.
+set(JUICER_SOURCES
+    src/Cuda/JuicerCudaDeviceLedger.cpp
+    src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp
+    src/Cuda/JuicerCudaDriver.cpp
+    src/Cuda/JuicerCudaResources.cpp
+    src/Cuda/ResourceManager/JuicerCudaManagerRegistry.cpp
+    src/Cuda/ResourceManager/JuicerCudaResourceManager.cpp
+    src/JuicerEffect.cpp
+    src/JuicerState.cpp
+    src/mainProcessing.cpp
+    src/ProfileAssets.cpp
+    src/ProfileCatalog.cpp
+    src/ProcessRoot.cpp
+    src/DiffusionHostBehavior.cpp
+    src/DiffusionExecution.cpp
+    src/RenderRecipe.cpp
+    src/Cuda/JuicerCudaFilmPayloads.cpp
+    src/FilmEffectsFrameDescriptors.cpp
+    src/ResourceAssetLibrary.cpp
+    src/ScatterHalation.cpp
+    src/Scanner.cpp
+    src/Cuda/Diffusion/JuicerCudaDiffusion.cu
+    src/Cuda/Film/JuicerCudaScatterHalation.cu
+    src/Cuda/Film/JuicerCudaFilmPipeline.cu
+    src/Cuda/JuicerCudaAutoExposure.cu
+    src/Cuda/Scan/JuicerCudaScanPipeline.cu
+)

@@ -1,0 +1,225 @@
+{
+  "source": "Local Resolve OFXS / OpenFX-1.4 SDK snapshot consumed by Film-Juicer before CMake migration",
+  "source_revision": null,
+  "capture_date": "2026-09-12",
+  "files": [
+    {
+      "destination": "OpenFX-1.4/include/ofxCore.h",
+      "sha256": "728fdf5bfb2a06323277f5570acd44ddd8cece2809134de09b941d0d25641a4a",
+      "vendored_sha256": "728fdf5bfb2a06323277f5570acd44ddd8cece2809134de09b941d0d25641a4a"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxDrawSuite.h",
+      "sha256": "75006eb1d885551fb872eb8619f57a54ea018621115bfc5940b754e42e428bf1",
+      "vendored_sha256": "75006eb1d885551fb872eb8619f57a54ea018621115bfc5940b754e42e428bf1"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxImageEffect.h",
+      "sha256": "3371b1a355fea1bdeedd542a8c7f43d5de7764c9ecce61f2eb577ce7533c92b9",
+      "vendored_sha256": "3371b1a355fea1bdeedd542a8c7f43d5de7764c9ecce61f2eb577ce7533c92b9"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxImageEffectExt.h",
+      "sha256": "b90220d6b7e43df5383419937c02651bd89a44b7f7a34b9244b5395ad569b316",
+      "vendored_sha256": "b90220d6b7e43df5383419937c02651bd89a44b7f7a34b9244b5395ad569b316"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxInteract.h",
+      "sha256": "d7a73bb07ff9ff9cf1559203f6765fc56545bd058f849e295e1378bde70143b3",
+      "vendored_sha256": "d7a73bb07ff9ff9cf1559203f6765fc56545bd058f849e295e1378bde70143b3"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxKeySyms.h",
+      "sha256": "8faa8dc35d4bb229a1b2e4822ffd842e98d746f5d57d8397e16667da6a80f8dd",
+      "vendored_sha256": "8faa8dc35d4bb229a1b2e4822ffd842e98d746f5d57d8397e16667da6a80f8dd"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxMemory.h",
+      "sha256": "52369384ef8f46ab1ddcbdce124111a77af0bcfe26f3c8fbc3a4a830131e83f1",
+      "vendored_sha256": "52369384ef8f46ab1ddcbdce124111a77af0bcfe26f3c8fbc3a4a830131e83f1"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxMessage.h",
+      "sha256": "c50bccc25d996033a6486d8a97de5966e395cb3290185069dffb6b353e9f4a20",
+      "vendored_sha256": "c50bccc25d996033a6486d8a97de5966e395cb3290185069dffb6b353e9f4a20"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxMultiThread.h",
+      "sha256": "037a8095dbe76368260b3a3d2b635cf56caee5a3e6fe1e1e18b5cf48da19cc96",
+      "vendored_sha256": "037a8095dbe76368260b3a3d2b635cf56caee5a3e6fe1e1e18b5cf48da19cc96"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxOpenGLRender.h",
+      "sha256": "42d97ca6afd283d818207cca9b41f13a3ce1a5afa618bcdd8011503612a7b6e3",
+      "vendored_sha256": "42d97ca6afd283d818207cca9b41f13a3ce1a5afa618bcdd8011503612a7b6e3"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxParam.h",
+      "sha256": "3db9e9d42a46424c626b8e9e8c8fdac0d2a6c48494c00ada276e5de2e13f57c1",
+      "vendored_sha256": "3db9e9d42a46424c626b8e9e8c8fdac0d2a6c48494c00ada276e5de2e13f57c1"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxParamExt.h",
+      "sha256": "a22d138dcb7628c494d379f16feacf409d7c482a17e6acb38009239ba48c3cb7",
+      "vendored_sha256": "a22d138dcb7628c494d379f16feacf409d7c482a17e6acb38009239ba48c3cb7"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxParametricParam.h",
+      "sha256": "3ee981575306c8145a27019217c40a3a7c7de2f9a10212d96ab966694dd3715b",
+      "vendored_sha256": "3ee981575306c8145a27019217c40a3a7c7de2f9a10212d96ab966694dd3715b"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxPixels.h",
+      "sha256": "cbefcaa55ed92539fdaf8ec86d8d139c7f29da2ac65259476e3f29d40b8caf0b",
+      "vendored_sha256": "cbefcaa55ed92539fdaf8ec86d8d139c7f29da2ac65259476e3f29d40b8caf0b"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxProgress.h",
+      "sha256": "1bb96a2c370e0652adf0ea4e61cbbcc2f0b581d09a6b9ba8a410c1c823ae6ff4",
+      "vendored_sha256": "1bb96a2c370e0652adf0ea4e61cbbcc2f0b581d09a6b9ba8a410c1c823ae6ff4"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxProperty.h",
+      "sha256": "9014d27b24c6d2119475780db5b12c73d6f6beacad6064d22f23f21e18a348c2",
+      "vendored_sha256": "9014d27b24c6d2119475780db5b12c73d6f6beacad6064d22f23f21e18a348c2"
+    },
+    {
+      "destination": "OpenFX-1.4/include/ofxTimeLine.h",
+      "sha256": "d96decacc59db3a51ff28d896b481faa85eb804e9813b7ddb5b52aeb4c94ca9b",
+      "vendored_sha256": "d96decacc59db3a51ff28d896b481faa85eb804e9813b7ddb5b52aeb4c94ca9b"
+    },
+    {
+      "destination": "Support/Library/ofxsCore.cpp",
+      "sha256": "71a6698971883080217eaa68bce612a5ec5e2bedf0dbd8831310f93402b02df4",
+      "vendored_sha256": "3b40c46a54aa2cce171676ba4d62bbf6f24bbd9f8438b3b5f1d2ebeaebb66d0e"
+    },
+    {
+      "destination": "Support/Library/ofxsImageEffect.cpp",
+      "sha256": "27fdf354741a924d743074dc0a23dbd42438eae7b1225afa21e37ec60901aa1a",
+      "vendored_sha256": "1211dc095ba08b189a921d741b17c86159bddc020b60a962ed8ba7051b2ef9f7"
+    },
+    {
+      "destination": "Support/Library/ofxsInteract.cpp",
+      "sha256": "2a5b0d69e5cca676c3872c4b04aa05560484b91c07edc370dc64c79197ea0da3",
+      "vendored_sha256": "2a5b0d69e5cca676c3872c4b04aa05560484b91c07edc370dc64c79197ea0da3"
+    },
+    {
+      "destination": "Support/Library/ofxsLog.cpp",
+      "sha256": "fda652cc56543e6ae0082263d92c42457b81a9e4ced7c8b62e4142a5c9867f75",
+      "vendored_sha256": "fda652cc56543e6ae0082263d92c42457b81a9e4ced7c8b62e4142a5c9867f75"
+    },
+    {
+      "destination": "Support/Library/ofxsMultiThread.cpp",
+      "sha256": "e528cf9c4c43c2b917d16e4c5082eb849b1345cda7204ccb6b7878d2dc948efb",
+      "vendored_sha256": "e528cf9c4c43c2b917d16e4c5082eb849b1345cda7204ccb6b7878d2dc948efb"
+    },
+    {
+      "destination": "Support/Library/ofxsParams.cpp",
+      "sha256": "e17fecd306f31efca0ffb06ea8e2aa5a2b332e3d3af2955f711a770b2ee97cb8",
+      "vendored_sha256": "0b087d2eb5a6a8f151ea591695da5826a8a9da46e240c2f5ecf862a2d95d7f39"
+    },
+    {
+      "destination": "Support/Library/ofxsProperty.cpp",
+      "sha256": "63b339dd20b7e4ff3f0fd364856ab724d849808f863bc7c4c0c6790be993e8da",
+      "vendored_sha256": "cfc6ad6f5a85d808d883ea785a63ccde6d537068185ce0115f6e6eae95c5704f"
+    },
+    {
+      "destination": "Support/Library/ofxsPropertyValidation.cpp",
+      "sha256": "10f0e3e1f3e057c64b6de8df62198198bf0243760da4a1921ebf859fd41b80be",
+      "vendored_sha256": "10f0e3e1f3e057c64b6de8df62198198bf0243760da4a1921ebf859fd41b80be"
+    },
+    {
+      "destination": "Support/include/ofxsCore.h",
+      "sha256": "f6f1431121e7667834edbd1520e99f09749609d65021ad7cb8fffe488188e060",
+      "vendored_sha256": "f8de3dded300caa06bc632298c9e3fbd60c63344b625403d305e3170557dc1f7"
+    },
+    {
+      "destination": "Support/include/ofxsImageEffect.h",
+      "sha256": "6e4b29ab1f70463b408dadd80818b5bf035a4aa5cf665ef7bdab364a9b4049bc",
+      "vendored_sha256": "c87551a27d53b7c6fcae54136f8916ae833cce4c9fbc70cc7b60d2cddc17d397"
+    },
+    {
+      "destination": "Support/include/ofxsInteract.h",
+      "sha256": "e90eb17c92806711ec5bd3278f6f82553da34e593a9fe21beb0d02c46c5c7888",
+      "vendored_sha256": "e90eb17c92806711ec5bd3278f6f82553da34e593a9fe21beb0d02c46c5c7888"
+    },
+    {
+      "destination": "Support/include/ofxsLog.h",
+      "sha256": "eeefe5f2108f2f02559578108a996b9ce4359942a912d90107979e47da34dca6",
+      "vendored_sha256": "eeefe5f2108f2f02559578108a996b9ce4359942a912d90107979e47da34dca6"
+    },
+    {
+      "destination": "Support/include/ofxsMemory.h",
+      "sha256": "e0a990c3dceb64a9079cc609415fd38208cf00d2f13b2dc9fb1df44cb9c81589",
+      "vendored_sha256": "e6479bad903c79d610cc5b1d2948b144fb1c18b94f237e6bc93fbe932e6535d0"
+    },
+    {
+      "destination": "Support/include/ofxsMessage.h",
+      "sha256": "e2f886125696e1334a91011b12de90e39e8a4e741d6886b7e4fc36c6071d180f",
+      "vendored_sha256": "e2f886125696e1334a91011b12de90e39e8a4e741d6886b7e4fc36c6071d180f"
+    },
+    {
+      "destination": "Support/include/ofxsMultiThread.h",
+      "sha256": "e6222002d60f8e952c75b019f33de5c81a328d7f4a4f10c236f927ea17383581",
+      "vendored_sha256": "e6222002d60f8e952c75b019f33de5c81a328d7f4a4f10c236f927ea17383581"
+    },
+    {
+      "destination": "Support/include/ofxsParam.h",
+      "sha256": "366099146be7249cfff2265c71ca465aa3431ac2e2c98595a1a8627edfcacf25",
+      "vendored_sha256": "cc31af3ea64a356e25638e89478184434a9ad5529611d58227baffdf57a98a35"
+    },
+    {
+      "destination": "Support/include/ofxsProcessing.h",
+      "sha256": "66310bb119118e6b9d97c7beb4d48a34bd73d7fbfb1fb98f1fd676b00ae31c6a",
+      "vendored_sha256": "66310bb119118e6b9d97c7beb4d48a34bd73d7fbfb1fb98f1fd676b00ae31c6a"
+    },
+    {
+      "destination": "Support/include/ofxsSupportPrivate.h",
+      "sha256": "68ecacb5c2855acb9c078be0176fcac6d83eec4bd732f3d442f45a5d75ed0bdb",
+      "vendored_sha256": "68ecacb5c2855acb9c078be0176fcac6d83eec4bd732f3d442f45a5d75ed0bdb"
+    }
+  ],
+  "compatibility_edits": [
+    {
+      "file": "Support/Library/ofxsCore.cpp",
+      "typed_exception_specs_removed": 3,
+      "platform_macros": 3
+    },
+    {
+      "file": "Support/Library/ofxsImageEffect.cpp",
+      "typed_exception_specs_removed": 9,
+      "platform_macros": 1
+    },
+    {
+      "file": "Support/Library/ofxsParams.cpp",
+      "typed_exception_specs_removed": 1,
+      "platform_macros": 0
+    },
+    {
+      "file": "Support/Library/ofxsProperty.cpp",
+      "typed_exception_specs_removed": 13,
+      "platform_macros": 0
+    },
+    {
+      "file": "Support/include/ofxsCore.h",
+      "typed_exception_specs_removed": 22,
+      "platform_macros": 0
+    },
+    {
+      "file": "Support/include/ofxsImageEffect.h",
+      "typed_exception_specs_removed": 8,
+      "platform_macros": 0
+    },
+    {
+      "file": "Support/include/ofxsMemory.h",
+      "typed_exception_specs_removed": 1,
+      "platform_macros": 0
+    },
+    {
+      "file": "Support/include/ofxsParam.h",
+      "typed_exception_specs_removed": 1,
+      "platform_macros": 0
+    }
+  ],
+  "compatibility_whitespace": "Remove whitespace artifacts on declarations and definitions after typed exception specification removal."
+}

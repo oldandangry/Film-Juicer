@@ -38,6 +38,10 @@ namespace JuicerProcess {
 
     namespace {
 
+        // OFX unload may follow load without description or instance creation.
+        // Publish only completed construction so teardown can remain non-creating.
+        constinit std::atomic<Root*> gRootInstance{nullptr};
+
         bool query_cuda_device_total_bytes(
             int deviceId,
             std::uint64_t& outDeviceBudgetBytes,
@@ -370,7 +374,8 @@ namespace JuicerProcess {
 
             fs::path resourcesDir = (contentsDir / "Resources").lexically_normal();
             resourcesDir.make_preferred();
-            std::string path = resourcesDir.u8string();
+            const std::u8string utf8Path = resourcesDir.u8string();
+            std::string path(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
             if (!path.empty() && path.back() != '/') {
                 path.push_back('/');
             }
@@ -4294,6 +4299,7 @@ namespace JuicerProcess {
 
     Root& Root::instance() noexcept {
         static Root root;
+        gRootInstance.store(&root, std::memory_order_release);
         return root;
     }
 
@@ -4301,8 +4307,19 @@ namespace JuicerProcess {
         return Root::instance();
     }
 
+    void shutdown_if_initialized() noexcept {
+        Root* root = gRootInstance.load(std::memory_order_acquire);
+        if (root) {
+            root->shutdown();
+        }
+    }
+
     Root::Root()
         : _dataDir(compute_process_data_dir()), _assets(_dataDir) {
+    }
+
+    Root::~Root() {
+        gRootInstance.store(nullptr, std::memory_order_release);
     }
 
     void Root::ensure_bootstrap() {

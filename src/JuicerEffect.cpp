@@ -36,7 +36,11 @@ namespace {
     };
 
     [[noreturn]] inline void trace_and_throw_render_fatal(const RenderFatalTrace& fatal) {
+#if JUICER_DIAGNOSTICS_COMPILED
         JTRACE(fatal.tag, cstr_or_default_if_null(fatal.message, "fatal render error"));
+#else
+        (void)fatal;
+#endif
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 

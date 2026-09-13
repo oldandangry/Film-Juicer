@@ -167,6 +167,12 @@ namespace JuicerCuda {
                 msg += error;
             }
             JTRACE("MSEVICT", msg);
+#else
+            (void)transaction;
+            (void)commandName;
+            (void)reclaimedBytes;
+            (void)success;
+            (void)error;
 #endif
         }
 
@@ -183,6 +189,12 @@ namespace JuicerCuda {
 
             const std::string msg = trace_event_prefix("reap_pass", transaction, commandName) + " reclaimed_bytes=" + std::to_string(static_cast<unsigned long long>(reclaimedBytes)) + " success=" + std::to_string(success ? 1 : 0) + trace_device_context_fields(transaction) + " reason=" + trace_or_unspecified(reason) + " reason_class=" + (success ? "resource_contention" : "orchestration_failure");
             JTRACE("MSREAP", msg);
+#else
+            (void)transaction;
+            (void)commandName;
+            (void)reclaimedBytes;
+            (void)success;
+            (void)reason;
 #endif
         }
 

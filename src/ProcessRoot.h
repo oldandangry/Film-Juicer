@@ -151,6 +151,8 @@ namespace JuicerProcess {
 
         static Root& instance() noexcept;
 
+        ~Root();
+
         Root(const Root&) = delete;
         Root& operator=(const Root&) = delete;
 
@@ -593,5 +595,6 @@ namespace JuicerProcess {
     };
 
     Root& root() noexcept;
+    void shutdown_if_initialized() noexcept;
 
 } // namespace JuicerProcess

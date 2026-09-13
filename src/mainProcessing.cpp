@@ -16,12 +16,9 @@
 #include "GaussianSciPy.h"
 
 #include <cuda_runtime.h>
-#include <cuda.h>
-#if defined(_WIN32)
-#include <windows.h>
-#endif
 
 #include "Cuda/Diffusion/JuicerCudaDiffusion.h"
+#include "Cuda/JuicerCudaDriver.h"
 #include "Cuda/JuicerCudaFilmPayloads.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
@@ -269,12 +266,9 @@ extern "C" cudaError_t juicer_cuda_print_pipeline(
     const JuicerCuda::PipelineRunParams* hParams,
     void* cudaStreamOpaque);
 
-// Resolve OFX support library C++ wrappers — suppress MSVC C5040 for dynamic exception specs
-#pragma warning(push)
-#pragma warning(disable : 5040)
+// Resolve OFX support library C++ wrappers.
 #include "ofxsProcessing.h"
 #include "ofxsImageEffect.h"
-#pragma warning(pop)
 #include "Logging.h"
 #include "Hash.h"
 #include "SpectralData.h"
@@ -848,67 +842,6 @@ namespace {
         return std::isfinite(value);
     }
 
-    using CuCtxGetCurrentFn = CUresult(CUDAAPI*)(CUcontext*);
-
-    struct CudaDriverDispatch {
-        CuCtxGetCurrentFn cuCtxGetCurrent = nullptr;
-        const char* loadError = nullptr;
-    };
-
-    const CudaDriverDispatch& cuda_driver_dispatch() {
-        static CudaDriverDispatch dispatch{};
-        static std::once_flag once;
-        std::call_once(once, []() {
-#if defined(_WIN32)
-            HMODULE module = GetModuleHandleA("nvcuda.dll");
-            if (!module) {
-                module = LoadLibraryA("nvcuda.dll");
-            }
-            if (!module) {
-                dispatch.loadError = "nvcuda.dll not available";
-                return;
-            }
-            dispatch.cuCtxGetCurrent =
-                reinterpret_cast<CuCtxGetCurrentFn>(GetProcAddress(module, "cuCtxGetCurrent"));
-            if (!dispatch.cuCtxGetCurrent) {
-                dispatch.loadError = "cuCtxGetCurrent symbol not found";
-                return;
-            }
-#else
-            dispatch.loadError = "dynamic cuCtxGetCurrent loader unsupported on this platform";
-            return;
-#endif
-        });
-        return dispatch;
-    }
-
-    bool query_current_cuda_context(void*& outContextOpaque, std::string& outError) {
-        outContextOpaque = nullptr;
-        outError.clear();
-
-        const CudaDriverDispatch& dispatch = cuda_driver_dispatch();
-        if (!dispatch.cuCtxGetCurrent) {
-            outError = nonempty_cstr_or(dispatch.loadError, "driver dispatch unavailable");
-            return false;
-        }
-
-        CUcontext currentContext = nullptr;
-        const CUresult ctxResult = dispatch.cuCtxGetCurrent(&currentContext);
-        if (ctxResult != CUDA_SUCCESS) {
-            outError = "cuCtxGetCurrent failed (code=";
-            outError += std::to_string(static_cast<int>(ctxResult));
-            outError += ")";
-            return false;
-        }
-        if (!currentContext) {
-            outError = "current CUDA context is null";
-            return false;
-        }
-
-        outContextOpaque = reinterpret_cast<void*>(currentContext);
-        return true;
-    }
-
     std::string ascii_lower_copy(const std::string& value) {
         std::string out = value;
         std::transform(out.begin(), out.end(), out.begin(), [](unsigned char ch) {
@@ -972,6 +905,7 @@ namespace {
             key.contextOpaque,
             retireError);
 #else
+        (void)stage;
         JuicerProcess::root().retire_reset_context(
             key.deviceId,
             key.contextOpaque,
@@ -1404,7 +1338,7 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         std::string contextError;
-        if (!query_current_cuda_context(contextOpaque, contextError)) {
+        if (!JuicerCuda::query_current_cuda_context(contextOpaque, contextError)) {
             trace_cuda_fatal_prefixed_if(
                 traceInfo,
                 CudaFailureTrace{

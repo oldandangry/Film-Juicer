@@ -100,7 +100,7 @@
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\src;$(ProjectDir)..\..\third_party;$(CudaToolkitDir)include;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\src;$(ProjectDir)..\..\third_party;$(CudaToolkitDir)include;$(ProjectDir)..\..\third_party\ofxs\OpenFX-1.4\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
     </ClCompile>
@@ -128,7 +128,7 @@
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\src;$(ProjectDir)..\..\third_party;$(CudaToolkitDir)include;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\src;$(ProjectDir)..\..\third_party;$(CudaToolkitDir)include;$(ProjectDir)..\..\third_party\ofxs\OpenFX-1.4\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <AdditionalOptions Condition="'$(PlatformToolset)'=='ClangCl'">$(JuicerClangReleaseOptions) $(JuicerClangReleaseLtoOptions) %(AdditionalOptions)</AdditionalOptions>
@@ -159,6 +159,7 @@
     <ClCompile Include="..\..\src\DiffusionExecution.cpp" />
     <ClCompile Include="..\..\src\Cuda\JuicerCudaDeviceLedger.cpp" />
     <ClCompile Include="..\..\src\Cuda\Diffusion\JuicerCudaDiffusionResources.cpp" />
+    <ClCompile Include="..\..\src\Cuda\JuicerCudaDriver.cpp" />
     <ClCompile Include="..\..\src\Cuda\JuicerCudaResources.cpp" />
     <ClCompile Include="..\..\src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp" />
     <ClCompile Include="..\..\src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp" />
