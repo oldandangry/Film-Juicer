@@ -617,7 +617,9 @@ namespace Spektrafilm {
         std::sort(
             frontier.begin(),
             frontier.begin() + static_cast<std::ptrdiff_t>(frontierCount),
-            lower_cost_tie);
+            [](const EvaluatedCandidate& left, const EvaluatedCandidate& right) {
+                return lower_cost_tie(left, right);
+            });
 
         const EvaluatedCandidate& lowestMemory = frontier[0];
         const EvaluatedCandidate* fastest = &frontier[0];

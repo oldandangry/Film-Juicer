@@ -3,6 +3,7 @@
 // Descriptor-driven CUDA uploads and primitive validation hooks.
 //
 #include "Cuda/JuicerCudaResources.h"
+#include "Cuda/JuicerCudaDriver.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
@@ -20,10 +21,6 @@
 #include "nlohmann/json.hpp"
 
 #include <cuda_runtime.h>
-#include <cuda.h>
-#if defined(_WIN32)
-#include <windows.h>
-#endif
 
 #include <algorithm>
 #include <array>
@@ -400,10 +397,6 @@ namespace JuicerCuda {
 
 namespace JuicerCuda {
 
-    static bool query_current_cuda_context(
-        void*& outContextOpaque,
-        std::string& outError);
-
     bool validate_resource_owner_locked(Resources& resources, std::string& outError, bool bindIfUnset) {
         (void)bindIfUnset;
         int cur = -1;
@@ -473,63 +466,6 @@ namespace JuicerCuda {
     static std::vector<DeferredDestroyEntry>& deferred_destroy_queue() {
         static std::vector<DeferredDestroyEntry> queue;
         return queue;
-    }
-
-#if defined(_WIN32)
-    using CuCtxGetCurrentFn = CUresult(CUDAAPI*)(CUcontext*);
-
-    struct CudaDriverDispatch {
-        CuCtxGetCurrentFn cuCtxGetCurrent = nullptr;
-        const char* loadError = nullptr;
-    };
-
-    static const CudaDriverDispatch& cuda_driver_dispatch_for_teardown() {
-        static CudaDriverDispatch dispatch{};
-        static std::once_flag once;
-        std::call_once(once, []() {
-            HMODULE module = GetModuleHandleA("nvcuda.dll");
-            if (!module) {
-                module = LoadLibraryA("nvcuda.dll");
-            }
-            if (!module) {
-                dispatch.loadError = "nvcuda.dll not available";
-                return;
-            }
-            dispatch.cuCtxGetCurrent =
-                reinterpret_cast<CuCtxGetCurrentFn>(GetProcAddress(module, "cuCtxGetCurrent"));
-            if (!dispatch.cuCtxGetCurrent) {
-                dispatch.loadError = "cuCtxGetCurrent symbol not found";
-            }
-        });
-        return dispatch;
-    }
-#endif
-
-    static bool query_current_cuda_context(void*& outContextOpaque, std::string& outError) {
-        outContextOpaque = nullptr;
-        outError.clear();
-#if defined(_WIN32)
-        const CudaDriverDispatch& dispatch = cuda_driver_dispatch_for_teardown();
-        if (!dispatch.cuCtxGetCurrent) {
-            outError = dispatch.loadError ? dispatch.loadError : "driver dispatch unavailable";
-            return false;
-        }
-        CUcontext currentContext = nullptr;
-        const CUresult result = dispatch.cuCtxGetCurrent(&currentContext);
-        if (result != CUDA_SUCCESS) {
-            outError = std::string("cuCtxGetCurrent failed (code=") + std::to_string(static_cast<int>(result)) + ")";
-            return false;
-        }
-        if (!currentContext) {
-            outError = "current CUDA context is null";
-            return false;
-        }
-        outContextOpaque = reinterpret_cast<void*>(currentContext);
-        return true;
-#else
-        outError = "cuCtxGetCurrent loader unsupported on this platform";
-        return false;
-#endif
     }
 
     static bool query_current_cuda_device(int& outDeviceId, std::string& outError) {

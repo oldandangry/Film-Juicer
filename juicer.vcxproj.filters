@@ -25,6 +25,9 @@
     <ClCompile Include="src\Cuda\Diffusion\JuicerCudaDiffusionResources.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
+    <ClCompile Include="src\Cuda\JuicerCudaDriver.cpp">
+      <Filter>Cuda</Filter>
+    </ClCompile>
     <ClCompile Include="src\Cuda\JuicerCudaResources.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
@@ -79,28 +82,28 @@
     <ClCompile Include="src\ScatterHalation.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\OFXS\Support\Library\ofxsCore.cpp">
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsCore.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\OFXS\Support\Library\ofxsImageEffect.cpp">
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsImageEffect.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\OFXS\Support\Library\ofxsInteract.cpp">
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsInteract.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\OFXS\Support\Library\ofxsLog.cpp">
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsLog.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\OFXS\Support\Library\ofxsMultiThread.cpp">
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsMultiThread.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\OFXS\Support\Library\ofxsParams.cpp">
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsParams.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\OFXS\Support\Library\ofxsProperty.cpp">
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsProperty.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\OFXS\Support\Library\ofxsPropertyValidation.cpp">
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsPropertyValidation.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -121,6 +124,9 @@
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaDeviceLedger.h">
+      <Filter>Cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Cuda\JuicerCudaDriver.h">
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaResources.h">

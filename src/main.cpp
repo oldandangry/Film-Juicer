@@ -11,15 +11,12 @@
 #include <limits>
 
 // Resolve OFX support library C++ wrappers (OpenFX 1.4 compliant)
-#pragma warning(push)
-#pragma warning(disable : 5040)
 #include "ofxsCore.h"
 #include "ofxsImageEffect.h"
 #include "ofxsParam.h"
 #include "ofxsProcessing.h"
 #include "ofxsMemory.h"
 #include "ofxsLog.h"
-#pragma warning(pop)
 // Note: These headers provide the factory macros, ImageEffect base, descriptors,
 // Param wrappers, Clip/Image RAII, RenderArguments, and optional processors.
 
@@ -68,7 +65,7 @@ public:
 
 
 void JuicerPluginFactory::unload() {
-    JuicerProcess::root().shutdown();
+    JuicerProcess::shutdown_if_initialized();
 }
 
 void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc) {

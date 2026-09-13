@@ -11,7 +11,7 @@
 > [!IMPORTANT]
 > Film-Juicer is built on **[spektrafilm](https://github.com/andreavolpato/spektrafilm)** by [Andrea Volpato](https://github.com/andreavolpato). Its photographic model, profile data, and reference implementation are the foundation of this plug-in. Film-Juicer would not exist without that work. Please consider adding your support to this project.
 
-Film-Juicer brings the exposure, development, printing, and scanning of photographic film into DaVinci Resolve. It is a Windows OpenFX plug-in, with rendering handled by NVIDIA CUDA.
+Film-Juicer brings the exposure, development, printing, and scanning of photographic film into DaVinci Resolve. It is an OpenFX plug-in for Windows and x86-64 Linux, with rendering handled by NVIDIA CUDA.
 
 You choose a capture stock, expose it, and decide whether to scan the film directly or print it onto another photosensitive material first. Exposure, filtration, grain, and diffusion act at their respective stages, so changing how the negative is exposed also changes what the enlarger and scanner have to work with.
 
@@ -45,6 +45,10 @@ You need Windows 10/11 x64, DaVinci Resolve configured for CUDA rendering, and a
 1. Download the Windows installer from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases).
 2. Run the installer, then restart Resolve.
 3. Find **Juicer** under **OpenFX → Negative-juice**.
+
+For the current x86-64 Linux bundle requirements and copy-install procedure,
+see [Linux bundle installation](docs/linux.md). The Linux artifact remains under
+migration qualification and is not yet a general cross-distro release.
 
 ## Getting started
 
@@ -228,9 +232,12 @@ The GPU will suffer according to your ambitions.
 
 ## Building from source
 
-The default Windows build is **Release-Clang**, using ClangCl from Visual Studio 2026, CUDA Toolkit 13.2, and C++20 for both host and CUDA code. It also requires OpenFX 1.4 headers, the OpenFX support library, and Eigen 3.4.
+Open the repository folder directly in Visual Studio and select a shared CMake
+preset. See [build instructions](docs/building.md) and
+[Linux bundle installation](docs/linux.md). MSBuild remains available until
+the remaining Windows revalidation and migration cleanup are complete.
 
-The project contains local dependency paths. Adjust those to your installation before building; cloning the repository alone does not supply a complete build environment.
+The preferred Windows preset is **windows-clang-release**, using ClangCl from Visual Studio 2026, CUDA Toolkit 13.2, and C++20 for both host and CUDA code. The consumed OpenFX 1.4 headers, Resolve OFXS support sources, and JSON header are vendored with provenance and notices. No sibling SDK checkout or Eigen installation is required.
 
 From a configured developer environment, run:
 

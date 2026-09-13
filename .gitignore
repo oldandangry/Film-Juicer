@@ -13,6 +13,11 @@
 *.sln.docstates
 
 # Build output
+/out/
+/CMakeUserPresets.json
+# Product CMake inputs remain visible even with a local *.txt exclusion.
+!CMakeLists.txt
+!/third_party/**/*.txt
 [Bb]in/
 [Oo]bj/
 Debug*/
@@ -49,7 +54,6 @@ vcpkg_installed/
 *.rsp
 *.lastbuildstate
 *.zip
-/third_party/nlohmann/json.hpp
 /DaVinci_Resolve_17_Wide_Gamut_Intermediate.pdf
 /before-juicer.ofx
 

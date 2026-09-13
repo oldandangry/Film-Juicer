@@ -108,10 +108,10 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)third_party;$(CudaToolkitDir)include;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\OFXS\Support\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)third_party;$(CudaToolkitDir)include;$(ProjectDir)third_party\ofxs\OpenFX-1.4\include;$(ProjectDir)third_party\ofxs\Support\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
-      <AdditionalOptions Condition="'$(PlatformToolset)'=='ClangCl'">-Wno-dynamic-exception-spec %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions Condition="'$(PlatformToolset)'=='ClangCl'">%(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <CudaCompile>
       <CodeGeneration>compute_75,sm_75;compute_75,compute_75</CodeGeneration>
@@ -138,10 +138,10 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)third_party;$(CudaToolkitDir)include;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\OFXS\Support\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)third_party;$(CudaToolkitDir)include;$(ProjectDir)third_party\ofxs\OpenFX-1.4\include;$(ProjectDir)third_party\ofxs\Support\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
-      <AdditionalOptions Condition="'$(PlatformToolset)'=='ClangCl'">$(JuicerClangReleaseOptions) $(JuicerClangReleaseLtoOptions) -Wno-dynamic-exception-spec %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions Condition="'$(PlatformToolset)'=='ClangCl'">$(JuicerClangReleaseOptions) $(JuicerClangReleaseLtoOptions) %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <CudaCompile>
       <CodeGeneration>compute_75,sm_75;compute_75,compute_75</CodeGeneration>
@@ -161,18 +161,19 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\OFXS\Support\Library\ofxsCore.cpp" />
-    <ClCompile Include="..\OFXS\Support\Library\ofxsImageEffect.cpp">
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsCore.cpp" />
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsImageEffect.cpp">
       <PreprocessorDefinitions>DEBUG_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
-    <ClCompile Include="..\OFXS\Support\Library\ofxsInteract.cpp" />
-    <ClCompile Include="..\OFXS\Support\Library\ofxsLog.cpp" />
-    <ClCompile Include="..\OFXS\Support\Library\ofxsMultiThread.cpp" />
-    <ClCompile Include="..\OFXS\Support\Library\ofxsParams.cpp" />
-    <ClCompile Include="..\OFXS\Support\Library\ofxsProperty.cpp" />
-    <ClCompile Include="..\OFXS\Support\Library\ofxsPropertyValidation.cpp" />
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsInteract.cpp" />
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsLog.cpp" />
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsMultiThread.cpp" />
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsParams.cpp" />
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsProperty.cpp" />
+    <ClCompile Include="third_party\ofxs\Support\Library\ofxsPropertyValidation.cpp" />
     <ClCompile Include="src\Cuda\JuicerCudaDeviceLedger.cpp" />
     <ClCompile Include="src\Cuda\Diffusion\JuicerCudaDiffusionResources.cpp" />
+    <ClCompile Include="src\Cuda\JuicerCudaDriver.cpp" />
     <ClCompile Include="src\Cuda\JuicerCudaResources.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp" />
@@ -200,6 +201,7 @@
     <ClInclude Include="src\FilmEffectsFrameDescriptors.h" />
     <ClInclude Include="src\Cuda\JuicerCudaDeviceHelpers.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaDeviceLedger.h" />
+    <ClInclude Include="src\Cuda\JuicerCudaDriver.h" />
     <ClInclude Include="src\Cuda\JuicerCudaResources.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceCore.h" />
