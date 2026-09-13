@@ -234,18 +234,27 @@ The GPU will suffer according to your ambitions.
 
 Open the repository folder directly in Visual Studio and select a shared CMake
 preset. See [build instructions](docs/building.md) and
-[Linux bundle installation](docs/linux.md). MSBuild remains available until
-the remaining Windows revalidation and migration cleanup are complete.
+[Linux bundle installation](docs/linux.md).
 
-The preferred Windows preset is **windows-clang-release**, using ClangCl from Visual Studio 2026, CUDA Toolkit 13.2, and C++20 for both host and CUDA code. The consumed OpenFX 1.4 headers, Resolve OFXS support sources, and JSON header are vendored with provenance and notices. No sibling SDK checkout or Eigen installation is required.
+The Windows presets are **windows-clang-debug** and
+**windows-clang-release**, using ClangCl from Visual Studio 2026, CUDA Toolkit
+13.2, and C++20 for both host and CUDA code. MSVC v145 and the Windows SDK
+remain required for the Windows ABI and as NVCC's host toolchain. The consumed
+OpenFX 1.4 headers, Resolve OFXS support sources, and JSON header are vendored
+with provenance and notices. No sibling SDK checkout or Eigen installation is
+required.
 
 From a configured developer environment, run:
 
 ```powershell
-& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" juicer.sln /p:Configuration=Release-Clang /p:Platform=x64
+cmake --preset windows-clang-release
+cmake --build --preset windows-clang-release
+cmake --install out/build/windows-clang-release
 ```
 
-The `Release` configuration is also available for MSVC v145. The linker writes `juicer.ofx` to the configured MSBuild output directory. A usable OFX bundle also needs its runtime resources; the binary alone is not the installed plug-in.
+Replace `release` with `debug` for the Debug configuration. CMake stages the
+complete OFX bundle under `out/stage/<preset>`; the binary alone is not the
+installed plug-in.
 
 ## Project status
 
