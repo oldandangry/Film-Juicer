@@ -11,12 +11,11 @@ MSVC v145, the Windows SDK, and CUDA 13.2. Set `CUDA_PATH_V13_2` to that toolkit
 Visual Studio supplies the x64 developer environment when selecting a Windows
 preset. Command-line Windows builds need an x64 developer command prompt with
 CMake, Ninja and the VS LLVM tools available. ClangCl builds use MSVC explicitly
-as NVCC's host compiler and retain ThinLTO for C++.
+as NVCC's host compiler; Release retains ThinLTO for C++.
 
 | Preset | Compiler | Configuration |
 | --- | --- | --- |
-| `windows-msvc-debug` | MSVC + NVCC/MSVC | Debug |
-| `windows-msvc-release` | MSVC + NVCC/MSVC | Release |
+| `windows-clang-debug` | ClangCl + NVCC/MSVC | Debug |
 | `windows-clang-release` | ClangCl + NVCC/MSVC | Release with ThinLTO |
 | `linux-debug` | GCC + NVCC/GCC | Debug |
 | `linux-release` | GCC + NVCC/GCC | Release |
@@ -75,7 +74,6 @@ both normally and with Resolve's `libProResRAW.so` preloaded as documented in
 `validation/ofx_host_compat/README.md`. This protects Load/Describe/Unload from
 host C++ runtime symbol collisions; it still does not replace a Resolve render.
 
-The existing MSBuild solution remains available during migration. A native
-Linux bundle is now working on the primary Arch/CachyOS machine, but retirement
-still requires the current Windows CMake/Resolve revalidation and final migration
-cleanup.
+Visual Studio uses this CMake project directly; the retired MSBuild solution and
+project files are not required. MSVC v145 and the Windows SDK remain required as
+the Windows ABI, standard-library, and NVCC host toolchain.

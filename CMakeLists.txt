@@ -33,7 +33,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-# The existing Windows Release configurations retain standard assertions.
+# The supported Release configurations retain standard assertions.
 # Keep that behavior on both platforms instead of CMake's default NDEBUG.
 foreach(language IN ITEMS CXX CUDA)
     string(REGEX REPLACE "(^| )[/-]DNDEBUG( |$)" " "
@@ -65,16 +65,11 @@ if(WIN32)
         $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Release>>:-O3;-Xptxas=-O3;-Xcompiler=/EHsc,/O2,/Oi,/Ob2,/Gy,/Gw,/GF>)
     target_link_options(juicer_settings INTERFACE /DEBUG /INCREMENTAL:NO
         $<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>)
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(juicer_settings INTERFACE
-            $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:/Gw;/GF;-flto=thin>)
-    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-        target_compile_options(juicer_settings INTERFACE
-            $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:/GL>)
-        target_link_options(juicer_settings INTERFACE $<$<CONFIG:Release>:/LTCG>)
-    else()
-        message(FATAL_ERROR "Windows requires MSVC or ClangCl with NVCC/MSVC")
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        message(FATAL_ERROR "Windows requires ClangCl with NVCC/MSVC")
     endif()
+    target_compile_options(juicer_settings INTERFACE
+        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:/Gw;/GF;-flto=thin>)
 else()
     if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
        CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10 OR
