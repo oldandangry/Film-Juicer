@@ -4,6 +4,12 @@
 # Existing path-sensitive harnesses remain a single quarantined legacy bucket.
 /tools/
 
+# Local support material; these directories are intentionally absent from the
+# published source tree.
+/docs/
+/installer/
+/validation/
+
 # VS user state
 .vs/
 *.vcxproj.user
@@ -28,9 +34,6 @@ ARM*/
 ipch/
 *.opendb
 *.VC.db
-
-# Gamma validation and its frozen evidence remain local workbench material.
-/validation/gamma/
 
 # Intermediates
 *.obj

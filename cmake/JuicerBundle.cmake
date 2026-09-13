@@ -39,7 +39,7 @@ if(WIN32)
     set(CMAKE_INSTALL_UCRT_LIBRARIES FALSE)
     include(InstallRequiredSystemLibraries)
 else()
-    install(FILES docs/linux.md DESTINATION "${JUICER_BUNDLE}" RENAME INSTALL.md)
+    install(FILES README.md DESTINATION "${JUICER_BUNDLE}" RENAME INSTALL.md)
     install(FILES
         third_party/gcc-runtime/GPL-3.0-only.txt
         third_party/gcc-runtime/GCC-RUNTIME-LIBRARY-EXCEPTION-3.1.txt
