@@ -370,6 +370,18 @@ namespace JuicerAssets {
         IlluminantFilterCurveCacheEntry entry;
     };
 
+    struct Library::InputCompressionHullCacheState {
+        std::mutex mutex;
+        std::shared_ptr<const Gamut::InputCompressionHull> hull;
+    };
+
+    struct Library::OutputBoundaryTableCacheState {
+        std::mutex mutex;
+        std::array<std::shared_ptr<const Gamut::OutputBoundaryTable>,
+                   OutputEncoding::kColorSpaceCount>
+            tables;
+    };
+
     struct Library::NeutralPrintCalibrationCacheState {
         std::mutex mutex;
         std::shared_ptr<const NeutralPrintCalibrationSnapshot> snapshot;
@@ -382,6 +394,10 @@ namespace JuicerAssets {
           _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
           _illuminantFilterCurveCache(
               std::make_unique<IlluminantFilterCurveCacheState>()),
+          _inputCompressionHullCache(
+              std::make_unique<InputCompressionHullCacheState>()),
+          _outputBoundaryTableCache(
+              std::make_unique<OutputBoundaryTableCacheState>()),
           _neutralPrintCalibrationCache(
               std::make_unique<NeutralPrintCalibrationCacheState>()),
           _selectedProfileAssets(
@@ -492,6 +508,69 @@ namespace JuicerAssets {
         return entry.curves;
     }
 
+    std::shared_ptr<const Gamut::InputCompressionHull>
+    Library::input_compression_hull() {
+        {
+            std::lock_guard<std::mutex> lock(_inputCompressionHullCache->mutex);
+            if (_inputCompressionHullCache->hull) {
+                return _inputCompressionHullCache->hull;
+            }
+        }
+        const IlluminantFilterCurveSet& curves = illuminant_filter_curves();
+        auto candidate = std::make_shared<Gamut::InputCompressionHull>();
+        if (!Gamut::build_input_compression_hull(
+                Spectral::gXBar,
+                Spectral::gYBar,
+                Spectral::gZBar,
+                curves.d65,
+                *candidate)) {
+            return {};
+        }
+        std::lock_guard<std::mutex> lock(_inputCompressionHullCache->mutex);
+        if (!_inputCompressionHullCache->hull) {
+            _inputCompressionHullCache->hull = std::move(candidate);
+        }
+        return _inputCompressionHullCache->hull;
+    }
+
+    std::shared_ptr<const Gamut::OutputBoundaryTable>
+    Library::output_boundary_table(
+        const Gamut::OutputGamutTransform& transform,
+        std::string& diagnostic) {
+        diagnostic.clear();
+        const int outputIndex =
+            OutputEncoding::toIndex(transform.outputColorSpace);
+        if (!transform.valid || transform.hash == 0 || outputIndex < 0 ||
+            outputIndex >= static_cast<int>(OutputEncoding::kColorSpaceCount)) {
+            diagnostic =
+                "ResourceDescriptorMismatch component=output_boundary_cache field=transform";
+            return {};
+        }
+        const std::size_t index = static_cast<std::size_t>(outputIndex);
+        std::lock_guard<std::mutex> lock(_outputBoundaryTableCache->mutex);
+        auto& cached = _outputBoundaryTableCache->tables[index];
+        if (!cached) {
+            auto candidate = std::make_shared<Gamut::OutputBoundaryTable>();
+            if (!Gamut::build_output_boundary_table(transform, *candidate)) {
+                diagnostic = candidate->diagnostic;
+                return {};
+            }
+            cached = std::move(candidate);
+        }
+        if (cached->transformHash != transform.hash) {
+            diagnostic =
+                "ResourceDescriptorMismatch component=output_boundary_cache field=published_identity";
+            return {};
+        }
+        if (cached->contractHash !=
+            Gamut::output_boundary_contract_hash(transform)) {
+            diagnostic =
+                "ResourceDescriptorMismatch component=output_boundary_cache field=contract_identity";
+            return {};
+        }
+        return cached;
+    }
+
     NeutralPrintCalibrationResult Library::neutral_print_calibration(
         const std::string& printProfileKey,
         const std::string& printIlluminantKey,
@@ -582,6 +661,11 @@ namespace JuicerAssets {
                 std::lock_guard<std::mutex> lock(
                     _neutralPrintCalibrationCache->mutex);
                 _neutralPrintCalibrationCache->snapshot.reset();
+            }
+            if (_outputBoundaryTableCache) {
+                std::lock_guard<std::mutex> lock(
+                    _outputBoundaryTableCache->mutex);
+                _outputBoundaryTableCache->tables = {};
             }
             if (_selectedProfileAssets) {
                 _selectedProfileAssets->release_cached_payloads();

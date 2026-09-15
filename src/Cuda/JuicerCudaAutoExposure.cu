@@ -16,7 +16,7 @@
 namespace {
 
     constexpr int kMedianHistogramBins = 2048;
-    constexpr double kCameraMeterTargetY = 0.184;
+    constexpr double kCameraMeterTargetRaw = 1.0;
     constexpr int kMethodCenterWeighted = static_cast<int>(Spektrafilm::AutoExposureMethod::CenterWeighted);
     constexpr int kMethodAverage = static_cast<int>(Spektrafilm::AutoExposureMethod::Average);
     constexpr int kMethodMedian = static_cast<int>(Spektrafilm::AutoExposureMethod::Median);
@@ -35,9 +35,8 @@ namespace {
         std::size_t sourceRowBytes = 0;
         JuicerCuda::AutoExposurePreviewDescriptor descriptor{};
         int nComponents = 0;
-        int inputColorSpaceIndex = 0;
-        int applyCctfDecoding = 0;
-        Mat3 rgbToXYZ{};
+        JuicerCuda::FilmRawPayload filmRaw{};
+        JuicerCuda::FilmReconstructionPayload reconstruction{};
     };
 
     struct MeteringSample {
@@ -59,8 +58,21 @@ namespace {
         unsigned int* histogram = nullptr;
     };
 
-    __device__ __forceinline__ float mulY(const Mat3& m, const float rgb[3]) {
-        return m.m[3] * rgb[0] + m.m[4] * rgb[1] + m.m[5] * rgb[2];
+    __device__ __forceinline__ bool reconstructed_raw_mean(
+        const AutoExposureKernelInput& input,
+        const float rgb[3],
+        float& outMean) {
+        float raw[3] = {};
+        if (!reconstruct_film_raw_device(
+                input.filmRaw,
+                input.reconstruction,
+                rgb,
+                raw)) {
+            outMean = 0.0f;
+            return false;
+        }
+        outMean = (raw[0] + raw[1] + raw[2]) * (1.0f / 3.0f);
+        return isfinite(outMean);
     }
 
     __device__ __forceinline__ int preview_source_coordinate(
@@ -160,10 +172,6 @@ namespace {
         verticalSampling.previewSize = height;
         verticalSampling.sourceSize = descriptor.meterY2 - descriptor.meterY1;
 
-        InputCctfDecodingDevice decoding{};
-        decoding.inputColorSpaceIndex = input.inputColorSpaceIndex;
-        decoding.applyCctfDecoding = input.applyCctfDecoding;
-
         float localMax = 0.0f;
         const std::size_t pixelStrideBytes = static_cast<std::size_t>(input.nComponents) * sizeof(float);
         const std::size_t widthCount = static_cast<std::size_t>(width);
@@ -186,12 +194,9 @@ namespace {
                     rowPtr + static_cast<std::size_t>(px - descriptor.sourceX1) * pixelStrideBytes);
 
                 float inRgb[3] = {pix[0], pix[1], pix[2]};
-                float lin[3];
-                apply_input_cctf_decoding_device(decoding, inRgb, lin);
-
-                const float Y = mulY(input.rgbToXYZ, lin);
-                if (isfinite(Y)) {
-                    localMax = fmaxf(localMax, fmaxf(0.0f, Y));
+                float rawMean = 0.0f;
+                if (reconstructed_raw_mean(input, inRgb, rawMean)) {
+                    localMax = fmaxf(localMax, fmaxf(0.0f, rawMean));
                 }
             }
         }
@@ -227,6 +232,29 @@ namespace {
         }
         storage += (cudaMsg ? cudaMsg : "(unknown)");
         return storage.c_str();
+    }
+
+    bool reconstruction_source_format_ready(
+        const JuicerCuda::AutoExposureSourceFormat& sourceFormat) {
+        const JuicerCuda::FilmReconstructionPayload& reconstruction =
+            sourceFormat.reconstruction;
+        switch (sourceFormat.filmRaw.rgbToRawMethod) {
+            case JuicerCuda::kFilmRawMethodHanatos2025:
+            case JuicerCuda::kFilmRawMethodArctic2026beta04:
+                return reconstruction.filmTcLut &&
+                       reconstruction.filmTcLutExtent ==
+                           JuicerCuda::kFilmTcLutExtent;
+            case JuicerCuda::kFilmRawMethodMallett2019:
+                return reconstruction.tablesIllum &&
+                       reconstruction.tablesK == 81 &&
+                       reconstruction.mallettBasis &&
+                       reconstruction.mallettBasisK == 81 &&
+                       reconstruction.sensB.y && reconstruction.sensB.n >= 81 &&
+                       reconstruction.sensG.y && reconstruction.sensG.n >= 81 &&
+                       reconstruction.sensR.y && reconstruction.sensR.n >= 81;
+            default:
+                return false;
+        }
     }
 
     __global__ void reset_auto_exposure_state_kernel(float* outExposureScale) {
@@ -304,10 +332,6 @@ namespace {
         verticalSampling.previewSize = height;
         verticalSampling.sourceSize = descriptor.meterY2 - descriptor.meterY1;
 
-        InputCctfDecodingDevice decoding{};
-        decoding.inputColorSpaceIndex = input.inputColorSpaceIndex;
-        decoding.applyCctfDecoding = input.applyCctfDecoding;
-
         double localSumY[JuicerCudaAutoExposurePartial::kLaneCount] = {};
         double localSumW[JuicerCudaAutoExposurePartial::kLaneCount] = {};
         const std::size_t pixelStrideBytes = static_cast<std::size_t>(input.nComponents) * sizeof(float);
@@ -333,11 +357,8 @@ namespace {
                     rowPtr + static_cast<std::size_t>(px - descriptor.sourceX1) * pixelStrideBytes);
 
                 float inRgb[3] = {pix[0], pix[1], pix[2]};
-                float lin[3];
-                apply_input_cctf_decoding_device(decoding, inRgb, lin);
-
-                const float Y = mulY(input.rgbToXYZ, lin);
-                if (isfinite(Y)) {
+                float rawMean = 0.0f;
+                if (reconstructed_raw_mean(input, inRgb, rawMean)) {
                     float weights[JuicerCudaAutoExposurePartial::kLaneCount];
                     MeteringSample sample{};
                     sample.method = static_cast<int>(descriptor.method);
@@ -345,14 +366,14 @@ namespace {
                     sample.y = meterY;
                     sample.width = width;
                     sample.height = height;
-                    sample.luminance = Y;
+                    sample.luminance = rawMean;
                     metering_weights(sample, weightTables, weights);
                     for (int lane = 0; lane < JuicerCudaAutoExposurePartial::kLaneCount; ++lane) {
                         float weight = weights[lane];
                         if (!isfinite(weight) || !(weight > 0.0f)) {
                             weight = 0.0f;
                         }
-                        localSumY[lane] += static_cast<double>(Y) * static_cast<double>(weight);
+                        localSumY[lane] += static_cast<double>(rawMean) * static_cast<double>(weight);
                         localSumW[lane] += static_cast<double>(weight);
                     }
                 }
@@ -486,8 +507,8 @@ namespace {
                 hasExposure = true;
             }
             if (hasExposure && isfinite(Yexp)) {
-                if ((Yexp > 0.0) && (kCameraMeterTargetY > 0.0)) {
-                    const double exposureRatio = Yexp / kCameraMeterTargetY;
+                if ((Yexp > 0.0) && (kCameraMeterTargetRaw > 0.0)) {
+                    const double exposureRatio = Yexp / kCameraMeterTargetRaw;
                     const double evComp = -log(exposureRatio) / log(2.0);
                     if (isfinite(evComp)) {
                         autoEV = evComp;
@@ -527,10 +548,6 @@ namespace {
         verticalSampling.previewSize = height;
         verticalSampling.sourceSize = descriptor.meterY2 - descriptor.meterY1;
 
-        InputCctfDecodingDevice decoding{};
-        decoding.inputColorSpaceIndex = input.inputColorSpaceIndex;
-        decoding.applyCctfDecoding = input.applyCctfDecoding;
-
         __shared__ unsigned int sHist[kMedianHistogramBins];
         const std::size_t t = static_cast<std::size_t>(threadIdx.y) * static_cast<std::size_t>(blockDim.x) + static_cast<std::size_t>(threadIdx.x);
         const std::size_t threads = static_cast<std::size_t>(blockDim.x) * static_cast<std::size_t>(blockDim.y);
@@ -561,15 +578,12 @@ namespace {
                     rowPtr + static_cast<std::size_t>(px - descriptor.sourceX1) * pixelStrideBytes);
 
                 float inRgb[3] = {pix[0], pix[1], pix[2]};
-                float lin[3];
-                apply_input_cctf_decoding_device(decoding, inRgb, lin);
-
-                float Y = mulY(input.rgbToXYZ, lin);
-                if (isfinite(Y)) {
-                    if (Y < 0.0f) {
-                        Y = 0.0f;
+                float rawMean = 0.0f;
+                if (reconstructed_raw_mean(input, inRgb, rawMean)) {
+                    if (rawMean < 0.0f) {
+                        rawMean = 0.0f;
                     }
-                    const float norm = fminf(1.0f, Y / maxY);
+                    const float norm = fminf(1.0f, rawMean / maxY);
                     const int bin = static_cast<int>(norm * static_cast<float>(kMedianHistogramBins - 1));
                     atomicAdd(&sHist[bin], 1U);
                 }
@@ -636,8 +650,8 @@ namespace {
         const double medianY = (static_cast<double>(medianBin) + fraction) * binWidth;
 
         double autoEV = 0.0;
-        if ((medianY > 0.0) && isfinite(medianY) && (kCameraMeterTargetY > 0.0)) {
-            const double exposureRatio = medianY / kCameraMeterTargetY;
+        if ((medianY > 0.0) && isfinite(medianY) && (kCameraMeterTargetRaw > 0.0)) {
+            const double exposureRatio = medianY / kCameraMeterTargetRaw;
             const double evComp = -log(exposureRatio) / log(2.0);
             if (isfinite(evComp)) {
                 autoEV = evComp;
@@ -658,7 +672,6 @@ extern "C" int juicer_cuda_auto_exposure_meter_to_device(
     std::size_t srcRowBytes,
     JuicerCuda::AutoExposurePreviewDescriptor descriptor,
     JuicerCuda::AutoExposureSourceFormat sourceFormat,
-    const float* rgbToXYZ9,
     JuicerCudaAutoExposureScratch scratch,
     JuicerCudaAutoExposureDeviceState outState,
     void* cudaStreamOpaque,
@@ -668,7 +681,7 @@ extern "C" int juicer_cuda_auto_exposure_meter_to_device(
         *outErrorMsg = nullptr;
     }
 
-    if (!srcDeviceBase || srcRowBytes == 0 || !rgbToXYZ9) {
+    if (!srcDeviceBase || srcRowBytes == 0) {
         if (outErrorMsg)
             *outErrorMsg = set_error(sError, "invalid arguments");
         return 1;
@@ -677,6 +690,11 @@ extern "C" int juicer_cuda_auto_exposure_meter_to_device(
         if (outErrorMsg)
             *outErrorMsg = set_error(sError, "unsupported component count");
         return 2;
+    }
+    if (!reconstruction_source_format_ready(sourceFormat)) {
+        if (outErrorMsg)
+            *outErrorMsg = set_error(sError, "invalid film reconstruction view");
+        return 19;
     }
     if (!outState.exposureScale) {
         if (outErrorMsg)
@@ -715,19 +733,13 @@ extern "C" int juicer_cuda_auto_exposure_meter_to_device(
         return 18;
     }
 
-    Mat3 m{};
-    for (int i = 0; i < 9; ++i) {
-        m.m[i] = rgbToXYZ9[i];
-    }
-
     AutoExposureKernelInput kernelInput{};
     kernelInput.sourceBase = reinterpret_cast<const unsigned char*>(srcDeviceBase);
     kernelInput.sourceRowBytes = srcRowBytes;
     kernelInput.descriptor = descriptor;
     kernelInput.nComponents = sourceFormat.componentCount;
-    kernelInput.inputColorSpaceIndex = sourceFormat.inputColorSpaceIndex;
-    kernelInput.applyCctfDecoding = sourceFormat.applyCctfDecoding;
-    kernelInput.rgbToXYZ = m;
+    kernelInput.filmRaw = sourceFormat.filmRaw;
+    kernelInput.reconstruction = sourceFormat.reconstruction;
 
     const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
 

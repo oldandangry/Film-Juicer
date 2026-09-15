@@ -402,6 +402,7 @@ namespace JuicerProcess {
                 Spectral::set_cie_1931_2deg_cmf(cmf.xbar, cmf.ybar, cmf.zbar);
             } catch (const std::exception& ex) {
                 Spectral::set_hanatos_available(false);
+                Spectral::set_arctic_available(false);
                 Spectral::set_mallett_available(false);
                 (void)ex;
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -413,6 +414,7 @@ namespace JuicerProcess {
 #endif
             } catch (...) {
                 Spectral::set_hanatos_available(false);
+                Spectral::set_arctic_available(false);
                 Spectral::set_mallett_available(false);
                 JTRACE("INIT", "FATAL: spectral bootstrap failed with unknown error");
             }
@@ -426,6 +428,17 @@ namespace JuicerProcess {
                 Spectral::load_hanatos_spectra_lut(lutPath);
             } catch (...) {
                 Spectral::set_hanatos_available(false);
+            }
+
+            try {
+                const std::string lutPath = data_file_string(
+                    dataDir,
+                    "luts",
+                    "spectral_upsampling",
+                    "arctic2026beta04_reflectance_xy_tc.npy");
+                Spectral::load_arctic2026beta04_spectra_lut(lutPath);
+            } catch (...) {
+                Spectral::set_arctic_available(false);
             }
 
             try {
@@ -743,6 +756,7 @@ namespace JuicerProcess {
         float* scatterHalationWeightedAccumulation = nullptr;
         const Spectral::FilmRawConfig* focusedFilmRawConfig = nullptr;
         const Scanner::ColorRuntime* focusedScannerColor = nullptr;
+        const Gamut::OutputGamutTransform* focusedOutputGamutTransform = nullptr;
         const JuicerCuda::Resources::DeviceScanMedium* focusedScanMedium = nullptr;
         const JuicerCuda::Resources::DeviceSpectralLut* focusedScanLut = nullptr;
         const PrintRecipe* printRecipe = nullptr;
@@ -3820,33 +3834,48 @@ namespace JuicerProcess {
             view.film.dirDensG = {resources.dirDensG.x, resources.dirDensG.y, resources.dirDensG.n, resources.dirDensG.domainBegin, resources.dirDensG.domainEnd};
             view.film.dirDensR = {resources.dirDensR.x, resources.dirDensR.y, resources.dirDensR.n, resources.dirDensR.domainBegin, resources.dirDensR.domainEnd};
         }
-        view.film.tablesAx = resources.tablesAx;
-        view.film.tablesAy = resources.tablesAy;
-        view.film.tablesAz = resources.tablesAz;
         view.film.tablesIllum = resources.tablesIllum;
         view.film.tablesK = resources.tablesK;
-        std::copy_n(resources.spdSInv, 9, view.film.spdSInv);
-        view.film.hanatosLut = resources.hanatosLut;
-        view.film.hanatosN = resources.hanatosN;
-        view.film.hanatosLutIntegrated = resources.hanatosLutIntegrated;
-        view.film.hanatosNIntegrated = resources.hanatosNIntegrated;
+        view.film.filmTcLut = resources.filmTcLut;
+        view.film.filmTcLutExtent = resources.filmTcLutExtent;
         view.film.mallettBasis = resources.mallettBasis;
         view.film.mallettBasisK = resources.mallettBasisK;
         std::copy_n(_state->focusedFilmRawConfig->inputRGBToXYZ.m, 9, view.film.inputRGBToXYZ);
         std::copy_n(_state->focusedFilmRawConfig->inputXYZAdapt.m, 9, view.film.inputXYZAdapt);
+        std::copy_n(
+            _state->focusedFilmRawConfig->xyzToLinearSrgb.m,
+            9,
+            view.film.xyzToLinearSrgb);
         view.film.applyInputChromaticAdapt = _state->focusedFilmRawConfig->applyInputChromaticAdapt ? 1 : 0;
-        std::copy_n(resources.refIllumWhiteXYZ, 3, view.film.refIllumWhiteXYZ);
         view.film.finalSensitivityHash = resources.filmFinalSensitivityHash;
         view.film.normalizedDensityCurvesHash = resources.filmDensityCurvesHash;
         view.film.dirCouplersHash = resources.filmDirHash;
         view.scanMedium = _state->focusedScanMedium;
         view.scanLut = _state->focusedScanLut;
         view.scannerColor = _state->focusedScannerColor;
+        view.outputGamutTransform = _state->focusedOutputGamutTransform;
+        view.outputGamutCmax = resources.outputGamutCmax;
+        view.outputGamutTableHash = resources.outputGamutTableHash;
+        view.outputGamutRecipeHash = resources.outputGamutRecipeHash;
         view.densityBoundsHash = resources.routeDensityBoundsHash;
         view.scannerDescriptorHash = resources.routeScannerDescriptorHash;
         view.selectedMethod = resources.filmRgbToRawMethod;
+        const bool outputGamutExpected =
+            view.scannerColor->outputGamutRecipeHash != 0;
+        const bool outputGamutReady = outputGamutExpected
+                                          ? view.outputGamutTransform &&
+                                                view.outputGamutTransform->valid &&
+                                                view.outputGamutCmax &&
+                                                view.outputGamutTableHash != 0 &&
+                                                view.outputGamutRecipeHash ==
+                                                    view.scannerColor->outputGamutRecipeHash
+                                          : !view.outputGamutTransform &&
+                                                !view.outputGamutCmax &&
+                                                view.outputGamutTableHash == 0 &&
+                                                view.outputGamutRecipeHash == 0;
         view.active = view.scanMedium && view.scanLut->canonical_ready() &&
-                      view.densityBoundsHash != 0 && view.scannerDescriptorHash != 0;
+                      view.densityBoundsHash != 0 &&
+                      view.scannerDescriptorHash != 0 && outputGamutReady;
         return view;
     }
 
@@ -4965,11 +4994,31 @@ namespace JuicerProcess {
                 prefix);
             appendRoute();
         };
-        if (!request.exposureTables || !request.spdSInv ||
-            !request.filmRawConfig || !request.scannerTables || !request.scannerColor ||
+        if (!request.exposureTables || !request.filmRawConfig ||
+            !request.scannerTables || !request.scannerColor ||
             !request.scannerLutDescriptor) {
             outError =
                 "MissingRequiredResource component=cuda_frame_preparation field=serving_inputs";
+            recordFailure(
+                "validate_cuda_frame_preparation_request",
+                "CUDA frame preparation request validation failed");
+            return frame;
+        }
+        const OutputGamutRecipe& outputGamut =
+            request.recipe->scannerOutput.outputGamut;
+        if ((outputGamut.enabled &&
+             (!request.outputGamutTransform ||
+              !request.outputBoundaryTable ||
+              !request.outputGamutTransform->valid ||
+              !request.outputBoundaryTable->valid ||
+              request.outputBoundaryTable->transformHash !=
+                  request.outputGamutTransform->hash ||
+              request.outputBoundaryTable->contractHash !=
+                  outputGamut.transformTableVersionHash)) ||
+            (!outputGamut.enabled &&
+             (request.outputGamutTransform || request.outputBoundaryTable))) {
+            outError =
+                "ResourceDescriptorMismatch component=cuda_frame_preparation field=output_gamut_binding";
             recordFailure(
                 "validate_cuda_frame_preparation_request",
                 "CUDA frame preparation request validation failed");
@@ -5084,11 +5133,13 @@ namespace JuicerProcess {
         JuicerCuda::FocusedRouteResourcePreparation focusedPreparation{};
         focusedPreparation.recipe = request.recipe;
         focusedPreparation.exposureTables = request.exposureTables;
-        focusedPreparation.spdSInv = request.spdSInv;
         focusedPreparation.filmRawConfig = request.filmRawConfig;
+        focusedPreparation.filmTcLut = request.filmTcLut;
         focusedPreparation.scannerTables = request.scannerTables;
         focusedPreparation.scannerColor = request.scannerColor;
         focusedPreparation.scannerLutDescriptor = request.scannerLutDescriptor;
+        focusedPreparation.outputGamutTransform = request.outputGamutTransform;
+        focusedPreparation.outputBoundaryTable = request.outputBoundaryTable;
         if (!JuicerCuda::prepare_focused_route_resources(
                 *frame._state->resources,
                 focusedPreparation,
@@ -5104,6 +5155,7 @@ namespace JuicerProcess {
             JuicerCuda::PrintResourcePreparation preparation{};
             preparation.recipe = request.recipe;
             preparation.assets = &_assets;
+            preparation.mainIlluminant = request.printMainIlluminant;
             if (!JuicerCuda::prepare_print_resources(
                     *frame._state->resources,
                     preparation,
@@ -5130,6 +5182,7 @@ namespace JuicerProcess {
             request.recipe->profileRoute.capturePolarity;
         frame._state->focusedFilmRawConfig = request.filmRawConfig;
         frame._state->focusedScannerColor = request.scannerColor;
+        frame._state->focusedOutputGamutTransform = request.outputGamutTransform;
         if (request.scannerPostEffects) {
             if (!frame.prepare_scanner_post_effects(
                     *request.scannerPostEffects,

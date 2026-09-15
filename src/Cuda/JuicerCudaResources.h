@@ -23,6 +23,7 @@
 #include "RenderRecipe.h"
 
 namespace Spectral {
+    struct FilmTcLut;
     struct FilmRawConfig;
     struct SpectralTables;
 } // namespace Spectral
@@ -30,6 +31,10 @@ namespace Scanner {
     struct ColorRuntime;
     struct ScannerSpectralLutDescriptor;
 } // namespace Scanner
+namespace Gamut {
+    struct OutputGamutTransform;
+    struct OutputBoundaryTable;
+} // namespace Gamut
 namespace JuicerAssets {
     class Library;
     struct StaticNoisePayloadSet;
@@ -115,7 +120,7 @@ namespace JuicerCuda {
     };
 
     struct PrintBalanceDescriptor {
-        static constexpr std::uint32_t kSchemaVersion = 2u;
+        static constexpr std::uint32_t kSchemaVersion = 3u;
 
         std::uint64_t filmProfileAssetVersionToken = 0;
         std::uint64_t filmReferenceIlluminantAssetVersionToken = 0;
@@ -126,6 +131,7 @@ namespace JuicerCuda {
         Spektrafilm::PrintNormalizationMode normalizationMode =
             Spektrafilm::PrintNormalizationMode::None;
         float cameraExposureCompensationEv = 0.0f;
+        std::uint64_t printBalanceRecipeHash = 0;
         std::uint64_t hash = 0;
     };
 
@@ -143,6 +149,7 @@ namespace JuicerCuda {
     struct PrintResourcePreparation {
         const RenderRecipe* recipe = nullptr;
         JuicerAssets::Library* assets = nullptr;
+        const std::array<float, 81>* mainIlluminant = nullptr;
     };
 
     struct PrintPreparedView {
@@ -195,8 +202,8 @@ namespace JuicerCuda {
 
     struct AutoExposureSourceFormat {
         int componentCount = 0;
-        int inputColorSpaceIndex = 0;
-        int applyCctfDecoding = 0;
+        FilmRawPayload filmRaw{};
+        FilmReconstructionPayload reconstruction{};
     };
 
 } // namespace JuicerCuda
@@ -209,7 +216,6 @@ extern "C" int juicer_cuda_auto_exposure_meter_to_device(
     std::size_t srcRowBytes,
     JuicerCuda::AutoExposurePreviewDescriptor descriptor,
     JuicerCuda::AutoExposureSourceFormat sourceFormat,
-    const float* rgbToXYZ9,
     JuicerCudaAutoExposureScratch scratch,
     JuicerCudaAutoExposureDeviceState outState,
     void* cudaStreamOpaque,
@@ -368,13 +374,12 @@ namespace JuicerCuda {
         std::uint64_t filmDirHash = 0;
         std::uint64_t routeDensityBoundsHash = 0;
         std::uint64_t routeScannerDescriptorHash = 0;
+        std::uint64_t outputGamutTableHash = 0;
+        std::uint64_t outputGamutRecipeHash = 0;
         std::size_t retireBytes = 0;
         std::size_t retireScratchBytes = 0;
 
         // SPD reconstruction (reference illuminant tables; Mallett basis uses illum + sensitivities).
-        float* tablesAx = nullptr;
-        float* tablesAy = nullptr;
-        float* tablesAz = nullptr;
         float* tablesIllum = nullptr;
         float* mallettBasis = nullptr;
 
@@ -399,10 +404,13 @@ namespace JuicerCuda {
         std::uint64_t printBalanceDescriptorHash = 0;
         std::uint64_t printPreparationDescriptorHash = 0;
 
-        // Hanatos LUTs are process-global on CPU and uploaded on demand.
-        float* hanatosLut = nullptr;
-        float* hanatosLutIntegrated = nullptr;
-        std::uint64_t hanatosIntegratedKeyHash = 0;
+        // The selected TC method owns one integrated 192x192x4 table.
+        float* filmTcLut = nullptr;
+        std::uint64_t filmTcLutKeyHash = 0;
+
+        // The active output space owns one 64x720 Cmax table for this exact
+        // context/epoch. Prepared views borrow this pointer.
+        float* outputGamutCmax = nullptr;
 
         // Submitted prepared-frame use events retained until reuse-gating waits can observe
         // completion. These events are never recorded again after insertion.
@@ -483,12 +491,9 @@ namespace JuicerCuda {
         float printBalanceFactorMidgray = 1.0f;
         float printBalanceFactorMidgrayComp = 1.0f;
         float printBalanceNormalizer = 1.0f;
-        int hanatosN = 0;
-        int hanatosNIntegrated = 0;
+        int filmTcLutExtent = 0;
         int densityCurvesLayersChannelN[3] = {0, 0, 0};
-        float refIllumWhiteXYZ[3] = {0.950455f, 1.0f, 1.089058f};
         float printPreflashRaw[3] = {0.0f, 0.0f, 0.0f};
-        float spdSInv[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
         std::array<float, 81> printIllumFilteredHost{};
         std::array<float, 81> printPreflashIllumFilteredHost{};
 
@@ -532,11 +537,13 @@ namespace JuicerCuda {
     struct FocusedRouteResourcePreparation {
         const RenderRecipe* recipe = nullptr;
         const Spectral::SpectralTables* exposureTables = nullptr;
-        const float* spdSInv = nullptr;
         const Spectral::FilmRawConfig* filmRawConfig = nullptr;
+        const Spectral::FilmTcLut* filmTcLut = nullptr;
         const Spectral::SpectralTables* scannerTables = nullptr;
         const Scanner::ColorRuntime* scannerColor = nullptr;
         const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
+        const Gamut::OutputGamutTransform* outputGamutTransform = nullptr;
+        const Gamut::OutputBoundaryTable* outputBoundaryTable = nullptr;
     };
 
     // Descriptor-driven film and selected scan-route preparation. This is called only behind

@@ -14,6 +14,7 @@
 struct NpySpectraLUT {
     int size = 0;       // LUT is square
     int numSamples = 0; // wavelengths per spectrum
+    int sourceElementBytes = 0;
     std::vector<float> data;
 };
 
@@ -67,7 +68,7 @@ inline float npy_half_to_float(uint16_t h) {
                 ++shift;
             }
             h_sig &= 0x03FFu;
-            f_exp = (127 - 15 - shift) << 23;
+            f_exp = (127 - 14 - shift) << 23;
             f_sig = h_sig << 13;
         }
     } else { // normal
@@ -163,6 +164,7 @@ inline bool load_npy_spectra_lut(const std::string& path, NpySpectraLUT& out) {
     const size_t count = static_cast<size_t>(N0) * static_cast<size_t>(N1) * static_cast<size_t>(K);
     out.size = N0;
     out.numSamples = K;
+    out.sourceElementBytes = isF16 ? 2 : (isF32 ? 4 : 8);
     out.data.resize(count);
 
     if (isF64) {

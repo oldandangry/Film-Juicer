@@ -5,12 +5,14 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "ColorTransforms.h"
+#include "GamutCompression.h"
 #include "ProfileCatalog.h"
 #include "RenderRecipe.h"
 #include "ScanRoute.h"
@@ -54,8 +56,12 @@ struct FocusedRenderPayload {
     Spectral::SpectralTables exposureTables;
     std::array<float, 9> spdSInv{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
     Spectral::FilmRawConfig filmRawConfig;
+    std::optional<Spectral::FilmTcLut> filmTcLut;
+    std::optional<std::array<float, Spectral::kNumSamples>> printMainIlluminant;
     Spectral::SpectralTables scannerTables;
     Scanner::ColorRuntime scannerColor;
+    Gamut::OutputGamutTransform outputGamutTransform;
+    std::shared_ptr<const Gamut::OutputBoundaryTable> outputBoundaryTable;
     std::uint64_t uploadCoreHash = 0;
     std::uint64_t scannerHash = 0;
 };
@@ -128,6 +134,7 @@ struct ParamSnapshot {
     int couplersGammaUseStock = 1;
     int inputColorSpace = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut);
     int inputCctfDecoding = 0;
+    int inputCompressionEnabled = 1;
     int hanatos2025AdaptationWindow = 1;
     int hanatos2025AdaptationSurface = 0;
     int cameraAutoExposureEnabled = 1;
@@ -139,6 +146,7 @@ struct ParamSnapshot {
     int scannerLutResolution = 17;
     int outputColorSpace = OutputEncoding::toIndex(OutputEncoding::ColorSpace::sRGB);
     int outputCctfEncoding = 1;
+    int outputGamutCompressionEnabled = 1;
     Spektrafilm::VisualGrainControls grainControls;
     float filmDustAmount = 0.0f;
     float filmScratchAmount = 0.0f;

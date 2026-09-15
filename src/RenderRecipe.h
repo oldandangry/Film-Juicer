@@ -13,6 +13,14 @@
 #include "ScanRoute.h"
 #include "ScatterHalation.h"
 
+namespace Gamut {
+    struct InputCompressionHull;
+} // namespace Gamut
+
+namespace Spectral {
+    struct FilmTcLut;
+} // namespace Spectral
+
 // RenderRecipe owner map:
 // - ProfileRoute owns selected profile identity, typed metadata, immutable selected payload
 //   references, asset tokens, and resolved ScanRoute.
@@ -42,7 +50,8 @@ namespace Spektrafilm {
 
     enum class RgbToRawMethod : std::uint8_t {
         Hanatos2025,
-        Mallett2019
+        Mallett2019,
+        Arctic2026beta04
     };
 
     enum class AutoExposureMethod : std::uint8_t {
@@ -187,9 +196,20 @@ struct FilmRawRecipe {
     float filmFormatLongEdgeMm = 35.0f;
     CameraBandPassRecipe cameraBandPass;
     HanatosAdaptationRecipe hanatos;
+    std::array<float, 9> inputRgbToXyz{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
+    std::array<float, 9> inputXyzAdapt{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
+    std::array<float, 9> xyzToLinearSrgb{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
+    std::array<float, 3> inputNominalWhiteXYZ{{0.9504559f, 1.0f, 1.0890578f}};
+    std::array<float, 3> projectionWhiteXYZ{{0.9504559f, 1.0f, 1.0890578f}};
+    std::string referenceIlluminant;
+    std::string projectionIlluminant;
+    bool inputCompressionActive = true;
+    std::uint64_t inputCompressionHullHash = 0;
+    std::shared_ptr<const Gamut::InputCompressionHull> inputCompressionHull;
+    std::uint64_t tcSourceAssetHash = 0;
     std::array<std::array<float, 3>, 81> finalSensitivity{};
     std::uint64_t finalSensitivityHash = 0;
-    std::uint64_t hanatosLutHash = 0;
+    std::uint64_t tcLutHash = 0;
     float mallettGreenMidgrayScale = 1.0f;
     std::uint64_t hash = 0;
 };
@@ -636,6 +656,28 @@ struct DensityBoundsRecipe {
     std::uint64_t hash = 0;
 };
 
+struct SyntheticFilmReferenceRecipe {
+    std::array<float, 3> baselineRawRgb{};
+    std::array<float, 3> compensatedRawRgb{};
+    std::array<float, 3> baselineDensityCmy{};
+    std::array<float, 3> compensatedDensityCmy{};
+    float baselineMeterScale = 1.0f;
+    std::uint64_t hash = 0;
+};
+
+struct OutputGamutRecipe {
+    bool enabled = false;
+    float lightnessKneeThreshold = 0.95f;
+    float lightnessKneeLimit = 1.0f;
+    float lightnessKneePower = 1.6f;
+    float chromaKneeThreshold = 0.95f;
+    float chromaKneeLimit = 1.0f;
+    float chromaKneePower = 1.6f;
+    int outputColorSpace = 0;
+    std::uint64_t transformTableVersionHash = 0;
+    std::uint64_t hash = 0;
+};
+
 struct ScannerOutputRecipe {
     Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
     Spektrafilm::DensityMedium medium = Spektrafilm::DensityMedium::Film;
@@ -655,6 +697,8 @@ struct ScannerOutputRecipe {
     float lensBlurSigmaPx = 0.0f;
     float unsharpSigmaPx = 0.7f;
     float unsharpAmount = 0.7f;
+    SyntheticFilmReferenceRecipe syntheticFilmReference;
+    OutputGamutRecipe outputGamut;
     std::uint64_t hash = 0;
 };
 
@@ -699,11 +743,22 @@ struct PrintDevelopRecipe {
     std::uint64_t densityCurvesHash = 0;
 };
 
+struct PrintBalanceRecipe {
+    std::array<float, 3> baselinePrintRawRgb{};
+    std::array<float, 3> compensatedPrintRawRgb{};
+    float factorMidgray = 1.0f;
+    float factorMidgrayComp = 1.0f;
+    float normalizer = 1.0f;
+    std::uint64_t filteredMainIlluminantHash = 0;
+    std::uint64_t hash = 0;
+};
+
 struct PrintRecipe {
     PrintFilterRecipe filters;
     PrintExposureRecipe exposure;
     PrintIlluminantRecipe illuminant;
     PrintDevelopRecipe develop;
+    PrintBalanceRecipe balance;
     std::uint64_t hash = 0;
 };
 
@@ -751,33 +806,42 @@ namespace Spektrafilm {
     };
 
     struct FilmFoundationBuildInput {
-        std::string filmProfileKey;
-        ScanRoute scanRoute = kDefaultScanRoute;
+        double gateWeaveAmount = 0.0;
+        std::uint64_t tcSourceAssetHash = 0;
         std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
-        VisualGrainControls visualGrain;
+        std::shared_ptr<const Gamut::InputCompressionHull> inputCompressionHull;
+        std::array<double, 3> cameraFilterUV{{1.0, 410.0, 8.0}};
+        std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
+        std::string filmProfileKey;
+        SpatialOpticsControls spatialOptics;
         float filmDustAmount = 0.0f;
         float filmScratchAmount = 0.0f;
         float gateDustAmount = 0.0f;
         float gateScratchAmount = 0.0f;
-        double gateWeaveAmount = 0.0;
-        GrainContract grainContract;
-        DirCouplersControls dirCouplers;
-        SpatialOpticsControls spatialOptics;
         int spectralUpsamplingMode = 0;
         int inputColorSpace = 0;
-        bool inputCctfDecoding = false;
-        bool applyHanatos2025AdaptationWindow = true;
-        bool applyHanatos2025AdaptationSurface = false;
-        bool cameraAutoExposureEnabled = true;
         int cameraMeteringMethod = 0;
         float manualExposureCompensationEv = 0.0f;
         float filmFormatLongEdgeMm = 35.0f;
         float filmGammaFactor = 1.0f;
-        bool cameraFilterOverride = false;
-        std::array<double, 3> cameraFilterUV{{1.0, 410.0, 8.0}};
-        std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
+        GrainContract grainContract;
+        std::array<float, 3> referenceIlluminantWhiteXYZ{};
+        std::array<float, 3> projectionWhiteXYZ{};
+        DirCouplersControls dirCouplers;
+        VisualGrainControls visualGrain;
         std::array<float, 81> referenceIlluminant{};
+        std::array<float, 81> reconstructedReferenceWhite{};
+        ScanRoute scanRoute = kDefaultScanRoute;
+        bool inputCctfDecoding = false;
+        bool applyHanatos2025AdaptationWindow = true;
+        bool applyHanatos2025AdaptationSurface = false;
+        bool inputCompressionActive = true;
+        bool cameraAutoExposureEnabled = true;
+        bool cameraFilterOverride = false;
         bool referenceIlluminantValid = false;
+        bool referenceIlluminantWhiteValid = false;
+        bool projectionWhiteValid = false;
+        bool reconstructedReferenceWhiteValid = false;
     };
 
     struct DirectRecipeBuildInput {
@@ -785,6 +849,7 @@ namespace Spektrafilm {
         std::uint32_t scannerLutResolution = 17;
         int outputColorSpace = 0;
         bool outputCctfEncoding = true;
+        bool outputGamutCompression = true;
         bool scannerBlackCorrection = false;
         bool scannerWhiteCorrection = false;
         float scannerBlackLevel = 0.01f;
@@ -820,6 +885,7 @@ namespace Spektrafilm {
         std::uint32_t scannerLutResolution = 17;
         int outputColorSpace = 0;
         bool outputCctfEncoding = true;
+        bool outputGamutCompression = true;
         bool scannerBlackCorrection = false;
         bool scannerWhiteCorrection = false;
         float scannerBlackLevel = 0.01f;
@@ -859,7 +925,7 @@ namespace Spektrafilm {
     DirectRecipeBuildResult build_direct_render_recipe(const DirectRecipeBuildInput& input);
     PrintRecipeBuildResult build_print_render_recipe(const PrintRecipeBuildInput& input);
     std::array<double, 3> evaluate_print_density_sample(
-        const Profiles::PrintDensityModel& model,
+        const Profiles::DensityCurveModel& model,
         double gammaFactor,
         ProfilePolarity polarity,
         double logExposure);
@@ -867,6 +933,18 @@ namespace Spektrafilm {
         PrintNormalizationMode mode,
         float factorMidgray,
         float factorMidgrayComp);
+    bool build_filtered_print_illuminant(
+        const PrintRecipe& recipe,
+        const std::array<float, 81>& sourceIlluminant,
+        const CmyCcTriplet& cmyCc,
+        std::array<float, 81>& out,
+        std::string& diagnostic);
+    bool finish_synthetic_reference_recipes(
+        RenderRecipe& recipe,
+        const Spectral::FilmTcLut* filmTcLut,
+        const std::array<float, 81>& filmIlluminant,
+        const std::array<float, 81>* filteredMainIlluminant,
+        std::string& diagnostic);
     bool build_diffusion_frame_set_descriptor(
         const SpatialOptics& optics,
         ScanRoute route,

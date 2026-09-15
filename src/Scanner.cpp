@@ -39,7 +39,8 @@ namespace {
         Scanner::ScannerMedium medium,
         const Scanner::ScannerIlluminant& illuminant,
         const OutputEncoding::Params& encoding,
-        const GeneratedColorSpaces::ColorSpaceEntry& outSpace) {
+        const GeneratedColorSpaces::ColorSpaceEntry& outSpace,
+        std::uint64_t activeOutputGamutRecipeHash) {
         const std::uint64_t encHash = Hash::hash_uint64_values(
             {static_cast<std::uint64_t>(OutputEncoding::toIndex(encoding.colorSpace)),
              static_cast<std::uint64_t>(encoding.applyCctfEncoding),
@@ -48,7 +49,8 @@ namespace {
             {outSpace.hash,
              illuminant.hash,
              static_cast<std::uint64_t>(medium),
-             encHash});
+             encHash,
+             activeOutputGamutRecipeHash});
     }
 
     int scanner_gaussian_radius_or_zero(float sigma) noexcept {
@@ -447,7 +449,8 @@ namespace Scanner {
     ColorRuntime build_color_runtime(
         ScannerMedium medium,
         const ScannerIlluminant& illuminant,
-        const OutputEncoding::Params& outputEncoding) {
+        const OutputEncoding::Params& outputEncoding,
+        std::uint64_t activeOutputGamutRecipeHash) {
         ColorRuntime rt{};
         if (illuminant.hash == 0) {
             JTRACE("HASH", "FATAL: scanner illuminant hash invalid for color runtime");
@@ -475,7 +478,13 @@ namespace Scanner {
         rt.illuminantXYZ[0] = illuminant.whiteXYZ[0];
         rt.illuminantXYZ[1] = illuminant.whiteXYZ[1];
         rt.illuminantXYZ[2] = illuminant.whiteXYZ[2];
-        rt.hash = hash_color_runtime(medium, illuminant, rt.encoding, outSpace);
+        rt.outputGamutRecipeHash = activeOutputGamutRecipeHash;
+        rt.hash = hash_color_runtime(
+            medium,
+            illuminant,
+            rt.encoding,
+            outSpace,
+            activeOutputGamutRecipeHash);
         return rt;
     }
 
@@ -637,6 +646,13 @@ namespace Scanner {
 
         const Profiles::SpektrafilmProfileSamples& data =
             recipe.profileRoute.filmProfile->data;
+        const SyntheticFilmReferenceRecipe& syntheticReference =
+            output.syntheticFilmReference;
+        if (syntheticReference.hash == 0) {
+            outDiagnostic =
+                "ResourceDescriptorMismatch phase=8B direct synthetic reference";
+            return false;
+        }
         const ScannerMediumRuntime medium = make_scanner_medium(recipe.densityBounds, scannerTables);
         std::array<float, 3> black = recipe.densityBounds.dataMaxCmy;
         std::array<float, 3> white{};
@@ -676,14 +692,20 @@ namespace Scanner {
                 outDiagnostic.c_str());
             return false;
         }
-        const float densityMidgray = -std::log10(0.184f);
-        const float correctedDensityMidgray = -std::log10(correctedMidgray);
-        std::vector<float> average = average_density_curves(data.densityCurves);
+        const float baseAverage =
+            finite_average(data.baseDensity.data(), data.baseDensity.size());
+        const float densityMidgray =
+            baseAverage + finite_average(
+                              syntheticReference.baselineDensityCmy.data(),
+                              syntheticReference.baselineDensityCmy.size());
+        const float correctedDensityMidgray =
+            densityMidgray - std::log10(correctedMidgray) + std::log10(0.184f);
+        std::vector<float> average =
+            average_density_curves(recipe.filmDevelop.authoredDensityCurves);
         std::vector<float> negativeAverage = average;
         for (float& value : negativeAverage) {
             value = -value;
         }
-        const float baseAverage = finite_average(data.baseDensity.data(), data.baseDensity.size());
         const float correctedLogExposure = -interp_clamped_monotonic(
             -(correctedDensityMidgray - baseAverage),
             negativeAverage,

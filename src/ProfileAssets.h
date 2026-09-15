@@ -75,24 +75,39 @@ namespace Profiles {
         float hanatosSpectralGaussianBlurDefault = 0.0f;
     };
 
-    struct ValidatedFilmProfile {
-        SpektrafilmProfileInfo info;
-        SpektrafilmProfileSamples data;
-        ProfileDigest digest;
-        std::uint64_t assetVersionToken = 0;
-    };
+    inline constexpr std::uint64_t kDensityCurveEvaluatorVersion = 1u;
 
-    struct PrintDensityModel {
+    struct DensityCurveModel {
         std::array<std::array<double, 3>, 3> centers{};
         std::array<std::array<double, 3>, 3> amplitudes{};
         std::array<std::array<double, 3>, 3> sigmas{};
+    };
+
+    struct DensityCurveSample {
+        std::array<float, 3> total{};
+        std::array<std::array<float, 3>, 3> layers{}; // [layer][channel]
+        bool valid = false;
+    };
+
+    DensityCurveSample evaluate_density_curve_sample(
+        const DensityCurveModel& model,
+        Spektrafilm::ProfilePolarity polarity,
+        double sourceLogExposure);
+
+    struct ValidatedFilmProfile {
+        SpektrafilmProfileInfo info;
+        SpektrafilmProfileSamples data;
+        std::vector<double> sourceLogExposure;
+        DensityCurveModel densityModel;
+        ProfileDigest digest;
+        std::uint64_t assetVersionToken = 0;
     };
 
     struct ValidatedPrintProfile {
         SpektrafilmProfileInfo info;
         SpektrafilmProfileSamples data;
         std::vector<double> sourceLogExposure;
-        PrintDensityModel densityModel;
+        DensityCurveModel densityModel;
         std::uint64_t assetVersionToken = 0;
     };
 

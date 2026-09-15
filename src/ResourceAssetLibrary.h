@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "GamutCompression.h"
 #include "ProfileAssets.h"
 #include "ProfileCatalog.h"
 #include "ScanRoute.h"
@@ -75,7 +76,7 @@ namespace JuicerAssets {
         struct StaticNoiseAssetSet;
         struct IlluminantFilterAssetSet;
 
-        static constexpr std::uint64_t kProcessAssetVersion = 1ull;
+        static constexpr std::uint64_t kProcessAssetVersion = 2ull;
 
         explicit Library(std::string dataDir);
         ~Library();
@@ -87,6 +88,12 @@ namespace JuicerAssets {
             const SelectedProfileRequest& request);
         std::shared_ptr<const StaticNoisePayloadSet> static_noise_payloads();
         const IlluminantFilterCurveSet& illuminant_filter_curves();
+        std::shared_ptr<const Gamut::InputCompressionHull>
+        input_compression_hull();
+        std::shared_ptr<const Gamut::OutputBoundaryTable>
+        output_boundary_table(
+            const Gamut::OutputGamutTransform& transform,
+            std::string& diagnostic);
         NeutralPrintCalibrationResult neutral_print_calibration(
             const std::string& printProfileKey,
             const std::string& printIlluminantKey,
@@ -103,6 +110,8 @@ namespace JuicerAssets {
 
         struct StaticNoisePayloadCacheState;
         struct IlluminantFilterCurveCacheState;
+        struct InputCompressionHullCacheState;
+        struct OutputBoundaryTableCacheState;
         struct NeutralPrintCalibrationCacheState;
 
         std::once_flag _catalogOnce;
@@ -115,6 +124,10 @@ namespace JuicerAssets {
         std::unique_ptr<StaticNoisePayloadCacheState> _staticNoisePayloadCache;
         std::unique_ptr<IlluminantFilterCurveCacheState>
             _illuminantFilterCurveCache;
+        std::unique_ptr<InputCompressionHullCacheState>
+            _inputCompressionHullCache;
+        std::unique_ptr<OutputBoundaryTableCacheState>
+            _outputBoundaryTableCache;
         std::unique_ptr<NeutralPrintCalibrationCacheState>
             _neutralPrintCalibrationCache;
         std::unique_ptr<Profiles::ProfileAssetStore> _selectedProfileAssets;

@@ -10,6 +10,11 @@
 
 namespace JuicerCuda {
 
+    inline constexpr int kFilmRawMethodHanatos2025 = 0;
+    inline constexpr int kFilmRawMethodMallett2019 = 1;
+    inline constexpr int kFilmRawMethodArctic2026beta04 = 2;
+    inline constexpr int kFilmTcLutExtent = 192;
+
 #if !defined(JUICER_RESTRICT)
 #if defined(_MSC_VER)
 #define JUICER_RESTRICT __restrict
@@ -34,15 +39,15 @@ namespace JuicerCuda {
         int inputColorSpaceIndex = 0;
         int applyCctfDecoding = 0;
         int applyInputChromaticAdapt = 0;
-        int spectralUpsamplingMode = 0; // 0=PreferHanatos, 1=ForceMallett (Spectral::SpectralUpsamplingMode)
+        int rgbToRawMethod = kFilmRawMethodHanatos2025;
 
         float inputRGBToXYZ[9] = {
             1, 0, 0, 0, 1, 0, 0, 0, 1};
         float inputXYZAdapt[9] = {
             1, 0, 0, 0, 1, 0, 0, 0, 1};
-
+        float xyzToLinearSrgb[9] = {
+            1, 0, 0, 0, 1, 0, 0, 0, 1};
         float mallettGreenMidgrayScale = 1.0f;
-        float refIllumWhiteXYZ[3] = {0.950455f, 1.0f, 1.089058f};
     };
 
     struct CctfPayload {
@@ -80,6 +85,16 @@ namespace JuicerCuda {
         float cat02[9] = {0.0f};
         float xyzToRgb[9] = {0.0f};
         float illuminantXYZ[3] = {0.0f, 0.0f, 0.0f};
+        const float* JUICER_RESTRICT outputGamutCmax = nullptr;
+        float outputGamutNativeRgbToD65Xyz[9] = {0.0f};
+        float outputGamutD65XyzToNativeRgb[9] = {0.0f};
+        float outputGamutOklabXyzToLms[9] = {0.0f};
+        float outputGamutOklabLmsToXyz[9] = {0.0f};
+        float outputGamutOklabLmsRootToLab[9] = {0.0f};
+        float outputGamutOklabLabToLmsRoot[9] = {0.0f};
+        float outputGamutLightnessKnee[3] = {0.95f, 1.0f, 1.6f};
+        float outputGamutChromaKnee[3] = {0.95f, 1.0f, 1.6f};
+        int outputGamutActive = 0;
         OutputEncodingPayload encoding{};
     };
 
@@ -153,25 +168,23 @@ namespace JuicerCuda {
         std::size_t rowStrideFloats = 0;
     };
 
-    struct FilmExposurePayload {
-        float manualExposureScale = 1.0f;
-        float routeCorrectionScale = 1.0f;
-        const float* JUICER_RESTRICT exposureScaleDevice = nullptr;
+    struct FilmReconstructionPayload {
         DeviceCurveView sensB{};
         DeviceCurveView sensG{};
         DeviceCurveView sensR{};
-        const float* JUICER_RESTRICT tablesAx = nullptr;
-        const float* JUICER_RESTRICT tablesAy = nullptr;
-        const float* JUICER_RESTRICT tablesAz = nullptr;
         const float* JUICER_RESTRICT tablesIllum = nullptr;
         int tablesK = 0;
-        float spdSInv[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-        const float* JUICER_RESTRICT hanatosLut = nullptr;
-        int hanatosN = 0;
-        const float* JUICER_RESTRICT hanatosLutIntegrated = nullptr;
-        int hanatosNIntegrated = 0;
+        const float* JUICER_RESTRICT filmTcLut = nullptr;
+        int filmTcLutExtent = 0;
         const float* JUICER_RESTRICT mallettBasis = nullptr;
         int mallettBasisK = 0;
+    };
+
+    struct FilmExposurePayload {
+        FilmReconstructionPayload reconstruction{};
+        float manualExposureScale = 1.0f;
+        float routeCorrectionScale = 1.0f;
+        const float* JUICER_RESTRICT exposureScaleDevice = nullptr;
     };
 
     struct FilmDevelopPayload {

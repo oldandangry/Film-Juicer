@@ -33,8 +33,12 @@ namespace {
 
     inline bool build_focused_film_payload(
         const RenderRecipe& recipe,
-        FocusedRenderPayload& payload) {
+        FocusedRenderPayload& payload,
+        std::string& diagnostic) {
+        diagnostic.clear();
         if (!recipe.profileRoute.filmProfile) {
+            diagnostic =
+                "MissingRequiredResource component=focused_film_payload field=film_profile";
             return false;
         }
 
@@ -62,6 +66,8 @@ namespace {
                 profile.info.referenceIlluminant.value,
                 "focused film reference",
                 referenceIlluminant)) {
+            diagnostic =
+                "MissingRequiredResource component=focused_film_payload field=reference_illuminant";
             return false;
         }
         Spectral::build_tables_from_curves_non_global(
@@ -88,6 +94,8 @@ namespace {
             payload.exposureTables.tablesHash == 0 ||
             !valid_white(payload.exposureTables.whiteXYZ) ||
             !valid_white(payload.exposureTables.refIllumWhiteXYZ)) {
+            diagnostic =
+                "MalformedRequiredResource component=focused_film_payload field=exposure_tables";
             return false;
         }
         Spectral::compute_S_inverse_from_tables(
@@ -102,12 +110,85 @@ namespace {
             recipe.filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019
                 ? Spectral::SpectralUpsamplingMode::ForceMallett
                 : Spectral::SpectralUpsamplingMode::PreferHanatos;
-        Spectral::prepare_film_raw_config(payload.filmRawConfig);
+        std::copy(
+            recipe.filmRaw.inputRgbToXyz.begin(),
+            recipe.filmRaw.inputRgbToXyz.end(),
+            payload.filmRawConfig.inputRGBToXYZ.m);
+        std::copy(
+            recipe.filmRaw.inputXyzAdapt.begin(),
+            recipe.filmRaw.inputXyzAdapt.end(),
+            payload.filmRawConfig.inputXYZAdapt.m);
+        std::copy(
+            recipe.filmRaw.xyzToLinearSrgb.begin(),
+            recipe.filmRaw.xyzToLinearSrgb.end(),
+            payload.filmRawConfig.xyzToLinearSrgb.m);
+        std::copy(
+            recipe.filmRaw.inputNominalWhiteXYZ.begin(),
+            recipe.filmRaw.inputNominalWhiteXYZ.end(),
+            payload.filmRawConfig.inputWhiteXYZ);
+        std::copy(
+            recipe.filmRaw.projectionWhiteXYZ.begin(),
+            recipe.filmRaw.projectionWhiteXYZ.end(),
+            payload.filmRawConfig.workingWhiteXYZ);
+        payload.filmRawConfig.applyInputChromaticAdapt = true;
+        payload.filmRawConfig.valid = true;
         std::copy_n(
-            payload.exposureTables.refIllumWhiteXYZ,
+            recipe.filmRaw.projectionWhiteXYZ.data(),
             3,
             payload.filmRawConfig.refIllumWhiteXYZ);
         payload.filmRawConfig.hasRefIllumWhite = true;
+
+        const bool tcMethod =
+            recipe.filmRaw.rgbToRawMethod ==
+                Spektrafilm::RgbToRawMethod::Hanatos2025 ||
+            recipe.filmRaw.rgbToRawMethod ==
+                Spektrafilm::RgbToRawMethod::Arctic2026beta04;
+        if (tcMethod) {
+            const NpySpectraLUT* spectra =
+                recipe.filmRaw.rgbToRawMethod ==
+                        Spektrafilm::RgbToRawMethod::Arctic2026beta04
+                    ? &Spectral::context().arcticSpectra
+                    : &Spectral::gHanSpectra;
+            std::array<float, Spectral::kNumSamples> referenceSamples{};
+            if (referenceIlluminant.curve.linear.size() !=
+                referenceSamples.size()) {
+                diagnostic =
+                    "MalformedRequiredResource component=film_tc_lut requirement=reference_illuminant_81_samples";
+                return false;
+            }
+            std::copy(
+                referenceIlluminant.curve.linear.begin(),
+                referenceIlluminant.curve.linear.end(),
+                referenceSamples.begin());
+            Spectral::FilmTcLut integrated;
+            if (!Spectral::build_film_tc_lut(
+                    recipe.filmRaw,
+                    *spectra,
+                    referenceSamples,
+                    integrated,
+                    diagnostic)) {
+                return false;
+            }
+            payload.filmTcLut = std::move(integrated);
+
+            const float inputMidgray[3] = {0.184f, 0.184f, 0.184f};
+            float xyz[3]{};
+            float projected[3]{};
+            payload.filmRawConfig.inputRGBToXYZ.mul(inputMidgray, xyz);
+            payload.filmRawConfig.inputXYZAdapt.mul(xyz, projected);
+            const std::array<float, 3> raw =
+                Spectral::sample_film_tc_lut(
+                    *payload.filmTcLut,
+                    {projected[0], projected[1], projected[2]});
+            std::copy(raw.begin(), raw.end(), payload.filmRawConfig.rawMidgray);
+            const float safeGreen =
+                Spectral::sanitize_raw_midgray_green_or_one(raw[1]);
+            payload.filmRawConfig.rawMidgrayGreen = safeGreen;
+            payload.filmRawConfig.midgrayScale = 1.0f / safeGreen;
+            std::copy_n(inputMidgray, 3, payload.filmRawConfig.midgrayDWG);
+            return payload.filmRawConfig.valid;
+        }
+        payload.filmTcLut.reset();
 
         Spectral::Curve sensB;
         Spectral::Curve sensG;
@@ -195,12 +276,16 @@ namespace {
         payload.scannerColor = Scanner::build_color_runtime(
             Scanner::ScannerMedium::Negative,
             scannerIlluminant,
-            encoding);
+            encoding,
+            recipe.scannerOutput.outputGamut.enabled
+                ? recipe.scannerOutput.outputGamut.hash
+                : 0);
         payload.uploadCoreHash = recipe.hash;
         payload.scannerHash = Hash::hash_uint64_values(
             {recipe.densityBounds.hash,
              payload.scannerTables.tablesHash,
-             static_cast<std::uint64_t>(recipe.scannerOutput.lutResolution)});
+             static_cast<std::uint64_t>(recipe.scannerOutput.lutResolution),
+             payload.scannerColor.outputGamutRecipeHash});
         return payload.scannerColor.hash != 0 &&
                payload.uploadCoreHash != 0 &&
                payload.scannerHash != 0;
@@ -267,15 +352,63 @@ namespace {
         payload.scannerColor = Scanner::build_color_runtime(
             Scanner::ScannerMedium::Print,
             scannerIlluminant,
-            encoding);
+            encoding,
+            recipe.scannerOutput.outputGamut.enabled
+                ? recipe.scannerOutput.outputGamut.hash
+                : 0);
         payload.uploadCoreHash = recipe.hash;
         payload.scannerHash = Hash::hash_uint64_values(
             {recipe.densityBounds.hash,
              payload.scannerTables.tablesHash,
-             static_cast<std::uint64_t>(recipe.scannerOutput.lutResolution)});
+             static_cast<std::uint64_t>(recipe.scannerOutput.lutResolution),
+             payload.scannerColor.outputGamutRecipeHash});
         return payload.scannerColor.hash != 0 &&
                payload.uploadCoreHash != 0 &&
                payload.scannerHash != 0;
+    }
+
+    bool finish_output_gamut_payload(
+        const RenderRecipe& recipe,
+        JuicerAssets::Library& assets,
+        FocusedRenderPayload& payload,
+        std::string& diagnostic) {
+        payload.outputGamutTransform = Gamut::OutputGamutTransform{};
+        payload.outputBoundaryTable.reset();
+        const OutputGamutRecipe& outputGamut =
+            recipe.scannerOutput.outputGamut;
+        if (!outputGamut.enabled) {
+            return true;
+        }
+        if (!Gamut::build_output_gamut_transform(
+                OutputEncoding::colorSpaceFromIndex(
+                    outputGamut.outputColorSpace),
+                payload.outputGamutTransform,
+                diagnostic) ||
+            Gamut::output_boundary_contract_hash(
+                payload.outputGamutTransform) !=
+                outputGamut.transformTableVersionHash) {
+            if (diagnostic.empty()) {
+                diagnostic =
+                    "ResourceDescriptorMismatch component=output_gamut_payload field=transform_identity";
+            }
+            return false;
+        }
+        payload.outputBoundaryTable = assets.output_boundary_table(
+            payload.outputGamutTransform,
+            diagnostic);
+        if (!payload.outputBoundaryTable ||
+            payload.outputBoundaryTable->transformHash !=
+                payload.outputGamutTransform.hash ||
+            payload.outputBoundaryTable->contractHash !=
+                outputGamut.transformTableVersionHash ||
+            payload.outputBoundaryTable->hash == 0) {
+            if (diagnostic.empty()) {
+                diagnostic =
+                    "MissingRequiredResource component=output_gamut_payload field=boundary_table";
+            }
+            return false;
+        }
+        return true;
     }
 
     inline bool is_finite(float value) {
@@ -407,15 +540,26 @@ namespace {
         mix_hash_field(h, p.inputCctfDecoding, mix);
         mix_hash_field(h, p.outputColorSpace, mix);
         mix_hash_field(h, p.outputCctfEncoding, mix);
+        mix_hash_field(h, p.outputGamutCompressionEnabled, mix);
     }
 
     template <typename MixFn>
     inline void mix_hanatos_adaptation_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
-        if (p.spectralUpsamplingMode == 1) {
+        if (p.spectralUpsamplingMode != 0) {
             return;
         }
         mix_hash_field(h, p.hanatos2025AdaptationWindow, mix);
         mix_hash_field(h, p.hanatos2025AdaptationSurface, mix);
+    }
+
+    template <typename MixFn>
+    inline void mix_input_compression_hash_field(
+        uint64_t& h,
+        const ParamSnapshot& p,
+        const MixFn& mix) {
+        if (p.spectralUpsamplingMode == 0 || p.spectralUpsamplingMode == 2) {
+            mix_hash_field(h, p.inputCompressionEnabled, mix);
+        }
     }
 
     template <typename MixFn>
@@ -674,6 +818,12 @@ namespace {
             },
                                 "TH-KG3-L");
         }
+        if (IlluminantKeys::matches_any(normalized, {"TH-KG3", "THKG3"})) {
+            return build_or_log([&]() {
+                return curveAssets.tungstenKg3;
+            },
+                                "TH-KG3");
+        }
         if (IlluminantKeys::matches_any(normalized, {"T", "INCANDESCENT"})) {
             return build_or_log([&]() {
                 return curveAssets.tungsten;
@@ -844,6 +994,67 @@ namespace {
         return true;
     }
 
+    bool copy_reference_illuminant_samples(
+        const std::string& key,
+        std::array<float, Spectral::kNumSamples>& out) {
+        const Spectral::Curve curve = build_illuminant_from_string(key);
+        if (!curve_matches_reference_axis(curve)) {
+            return false;
+        }
+        std::copy(curve.linear.begin(), curve.linear.end(), out.begin());
+        return true;
+    }
+
+    bool finish_state_reference_recipes(
+        RenderRecipe& recipe,
+        FocusedRenderPayload& payload,
+        std::string& diagnostic) {
+        std::array<float, Spectral::kNumSamples> filmIlluminant{};
+        if (!copy_reference_illuminant_samples(
+                recipe.filmRaw.referenceIlluminant,
+                filmIlluminant)) {
+            diagnostic =
+                "MissingRequiredResource phase=3B field=film_reference_illuminant";
+            return false;
+        }
+        const Spectral::FilmTcLut* filmTcLut =
+            payload.filmTcLut ? &*payload.filmTcLut : nullptr;
+        if (!Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute)) {
+            return Spektrafilm::finish_synthetic_reference_recipes(
+                recipe,
+                filmTcLut,
+                filmIlluminant,
+                nullptr,
+                diagnostic);
+        }
+
+        std::array<float, Spectral::kNumSamples> sourcePrintIlluminant{};
+        if (!copy_reference_illuminant_samples(
+                recipe.print.illuminant.key,
+                sourcePrintIlluminant)) {
+            diagnostic =
+                "MissingRequiredResource phase=4A field=print_illuminant";
+            return false;
+        }
+        payload.printMainIlluminant.emplace();
+        if (!Spektrafilm::build_filtered_print_illuminant(
+                recipe.print,
+                sourcePrintIlluminant,
+                recipe.print.filters.mainCmyCc,
+                *payload.printMainIlluminant,
+                diagnostic) ||
+            !Spektrafilm::finish_synthetic_reference_recipes(
+                recipe,
+                filmTcLut,
+                filmIlluminant,
+                &*payload.printMainIlluminant,
+                diagnostic)) {
+            payload.printMainIlluminant.reset();
+            return false;
+        }
+        return true;
+    }
+
     std::string print_illuminant_key_from_choice(int choice) {
         switch (choice) {
             case 0:
@@ -870,8 +1081,10 @@ namespace {
         const ParamSnapshot& params,
         const std::shared_ptr<const Profiles::ValidatedFilmProfile>& filmProfile,
         Spektrafilm::ScanRoute route,
-        const JuicerAssets::IlluminantFilterCurveSet& illuminants) {
+        JuicerAssets::Library& assets) {
         Spektrafilm::FilmFoundationBuildInput input{};
+        const JuicerAssets::IlluminantFilterCurveSet& illuminants =
+            assets.illuminant_filter_curves();
         input.filmProfileKey = params.filmProfileKey;
         input.scanRoute = route;
         input.filmProfile = filmProfile;
@@ -935,6 +1148,56 @@ namespace {
                 input.referenceIlluminant.begin());
             input.referenceIlluminantValid = true;
         }
+        Scanner::ScannerIlluminant integratedReference;
+        if (build_scanner_illuminant(
+                filmProfile->info.referenceIlluminant.value,
+                "film TC reference",
+                integratedReference)) {
+            std::copy_n(
+                integratedReference.whiteXYZ,
+                input.referenceIlluminantWhiteXYZ.size(),
+                input.referenceIlluminantWhiteXYZ.begin());
+            input.referenceIlluminantWhiteValid = true;
+        }
+
+        if (params.spectralUpsamplingMode == 0) {
+            input.projectionWhiteXYZ = input.referenceIlluminantWhiteXYZ;
+            input.projectionWhiteValid = input.referenceIlluminantWhiteValid;
+            input.tcSourceAssetHash = Spectral::context().hanatosAssetHash;
+            if (params.hanatos2025AdaptationWindow != 0 &&
+                input.projectionWhiteValid && Spectral::hanatos_available()) {
+                std::string diagnostic;
+                input.reconstructedReferenceWhiteValid =
+                    Spectral::build_hanatos_reconstructed_reference_white(
+                        Spectral::gHanSpectra,
+                        filmProfile->digest.hanatosSpectralGaussianBlurDefault,
+                        input.projectionWhiteXYZ,
+                        input.reconstructedReferenceWhite,
+                        diagnostic);
+            }
+        } else if (params.spectralUpsamplingMode == 2) {
+            Scanner::ScannerIlluminant integratedD65;
+            if (build_scanner_illuminant(
+                    "D65",
+                    "Arctic TC projection",
+                    integratedD65)) {
+                std::copy_n(
+                    integratedD65.whiteXYZ,
+                    input.projectionWhiteXYZ.size(),
+                    input.projectionWhiteXYZ.begin());
+                input.projectionWhiteValid = true;
+            }
+            input.tcSourceAssetHash = Spectral::context().arcticAssetHash;
+        }
+        if (params.spectralUpsamplingMode == 0 ||
+            params.spectralUpsamplingMode == 2) {
+            input.inputCompressionActive = params.inputCompressionEnabled != 0;
+            if (input.inputCompressionActive) {
+                input.inputCompressionHull = assets.input_compression_hull();
+            }
+        } else {
+            input.inputCompressionActive = false;
+        }
         return input;
     }
 
@@ -967,11 +1230,13 @@ namespace {
             params,
             selected.filmProfile,
             params.scanRoute,
-            assets.illuminant_filter_curves());
+            assets);
         input.scannerLutResolution =
             static_cast<std::uint32_t>(std::clamp(params.scannerLutResolution, 17, 128));
         input.outputColorSpace = params.outputColorSpace;
         input.outputCctfEncoding = params.outputCctfEncoding != 0;
+        input.outputGamutCompression =
+            params.outputGamutCompressionEnabled != 0;
         input.scannerBlackCorrection = params.scannerBlackCorrection != 0;
         input.scannerWhiteCorrection = params.scannerWhiteCorrection != 0;
         input.scannerBlackLevel = static_cast<float>(params.scannerBlackLevel);
@@ -1005,11 +1270,25 @@ namespace {
         }
 
         out.recipe = std::move(built.recipe);
-        if (!build_focused_film_payload(out.recipe, out.payload) ||
-            !build_direct_scanner_payload(out.recipe, out.payload)) {
+        std::string payloadDiagnostic;
+        if (!build_focused_film_payload(
+                out.recipe,
+                out.payload,
+                payloadDiagnostic) ||
+            !finish_state_reference_recipes(
+                out.recipe,
+                out.payload,
+                payloadDiagnostic) ||
+            !build_direct_scanner_payload(out.recipe, out.payload) ||
+            !finish_output_gamut_payload(
+                out.recipe,
+                assets,
+                out.payload,
+                payloadDiagnostic)) {
             out = FocusedRenderStateBuildProduct{};
-            outError =
-                "ResourceDescriptorMismatch focused direct publication payload build failed";
+            outError = payloadDiagnostic.empty()
+                           ? "ResourceDescriptorMismatch focused direct publication payload build failed"
+                           : payloadDiagnostic;
             return false;
         }
         return true;
@@ -1045,7 +1324,7 @@ namespace {
             params,
             selected.filmProfile,
             params.scanRoute,
-            assets.illuminant_filter_curves());
+            assets);
         input.printProfileKey = params.printProfileKey;
         input.printProfile = selected.printProfile;
         input.printIlluminantKey = print_illuminant_key_from_choice(params.enlIll);
@@ -1092,6 +1371,8 @@ namespace {
             static_cast<std::uint32_t>(std::clamp(params.scannerLutResolution, 17, 128));
         input.outputColorSpace = params.outputColorSpace;
         input.outputCctfEncoding = params.outputCctfEncoding != 0;
+        input.outputGamutCompression =
+            params.outputGamutCompressionEnabled != 0;
         input.scannerBlackCorrection = params.scannerBlackCorrection != 0;
         input.scannerWhiteCorrection = params.scannerWhiteCorrection != 0;
         input.scannerBlackLevel = static_cast<float>(params.scannerBlackLevel);
@@ -1113,11 +1394,25 @@ namespace {
             return false;
         }
         out.recipe = std::move(built.recipe);
-        if (!build_focused_film_payload(out.recipe, out.payload) ||
-            !build_print_scanner_payload(out.recipe, out.payload)) {
+        std::string payloadDiagnostic;
+        if (!build_focused_film_payload(
+                out.recipe,
+                out.payload,
+                payloadDiagnostic) ||
+            !finish_state_reference_recipes(
+                out.recipe,
+                out.payload,
+                payloadDiagnostic) ||
+            !build_print_scanner_payload(out.recipe, out.payload) ||
+            !finish_output_gamut_payload(
+                out.recipe,
+                assets,
+                out.payload,
+                payloadDiagnostic)) {
             out = FocusedRenderStateBuildProduct{};
-            outError =
-                "ResourceDescriptorMismatch phase=4C focused print publication payload build failed";
+            outError = payloadDiagnostic.empty()
+                           ? "ResourceDescriptorMismatch phase=4C focused print publication payload build failed"
+                           : payloadDiagnostic;
             return false;
         }
         return true;
@@ -1209,6 +1504,7 @@ uint64_t hash_params(const ParamSnapshot& p) {
     mix_coupler_hash_fields(h, p, hash_mix);
     mix_output_encoding_hash_fields(h, p, hash_mix);
     mix_hanatos_adaptation_hash_fields(h, p, hash_mix);
+    mix_input_compression_hash_field(h, p, hash_mix);
     mix_camera_filter_hash(h, p, hash_mix);
     mix_direct_phase3a_recipe_hash_fields(h, p, hash_mix);
     mix_diffusion_authored_hash_fields(h, p, hash_mix);

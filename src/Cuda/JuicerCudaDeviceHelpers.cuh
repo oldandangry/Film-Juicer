@@ -280,30 +280,6 @@ static __device__ __forceinline__ void mat3_mul9_device(const float m[9], const 
     out[2] = m[6] * v[0] + m[7] * v[1] + m[8] * v[2];
 }
 
-static __device__ __forceinline__ void XYZ_to_DWG_linear_device(const float XYZ[3], float RGB[3]) {
-    const float DWG_XYZ_to_RGB[9] = {
-        1.51667204f, -0.28147805f, -0.14696363f, -0.46491710f, 1.25142378f, 0.17488461f, 0.07578536f, 0.08076209f, 0.76034476f};
-    float out[3];
-    mat3_mul9_device(DWG_XYZ_to_RGB, XYZ, out);
-    for (int i = 0; i < 3; ++i) {
-        float v = out[i];
-        if (!device_isfinite(v) || v < 0.0f) {
-            v = 0.0f;
-        }
-        RGB[i] = v;
-    }
-}
-
-static __device__ __forceinline__ void XYZ_to_DWG_linear_unclamped_device(const float XYZ[3], float RGB[3]) {
-    const float DWG_XYZ_to_RGB[9] = {
-        1.51667204f, -0.28147805f, -0.14696363f, -0.46491710f, 1.25142378f, 0.17488461f, 0.07578536f, 0.08076209f, 0.76034476f};
-    float out[3];
-    mat3_mul9_device(DWG_XYZ_to_RGB, XYZ, out);
-    for (int i = 0; i < 3; ++i) {
-        RGB[i] = device_sanitize_channel(out[i]);
-    }
-}
-
 static __device__ __forceinline__ void tri2quad_device(float tx, float ty, float& qx, float& qy) {
     const float denom = fmaxf(1.0f - tx, 1e-10f);
     float x = (1.0f - tx);
@@ -313,18 +289,7 @@ static __device__ __forceinline__ void tri2quad_device(float tx, float ty, float
     qy = fminf(1.0f, fmaxf(0.0f, y));
 }
 
-static __device__ __forceinline__ float hanatos_bilinear_at(
-    const float* JUICER_RESTRICT lut,
-    int N,
-    int K,
-    int x,
-    int y,
-    int k) {
-    const std::size_t idx = (static_cast<std::size_t>(x) * static_cast<std::size_t>(N) + static_cast<std::size_t>(y)) * static_cast<std::size_t>(K) + static_cast<std::size_t>(k);
-    return ldg_f(lut + idx);
-}
-
-static __device__ __forceinline__ float hanatos_integrated_at(
+static __device__ __forceinline__ float film_tc_lut_at(
     const float* JUICER_RESTRICT lut,
     int N,
     int x,
@@ -344,76 +309,36 @@ static __device__ __forceinline__ int reflect_index_device(int idx, int size) {
     return idx;
 }
 
-static __device__ __forceinline__ double mitchell_weight_device(double t) {
-    const double B = 1.0 / 3.0;
-    const double C = 1.0 / 3.0;
-    const double x = fabs(t);
-    if (x < 1.0) {
-        return (1.0 / 6.0) * ((12.0 - 9.0 * B - 6.0 * C) * x * x * x + (-18.0 + 12.0 * B + 6.0 * C) * x * x + (6.0 - 2.0 * B));
-    } else if (x < 2.0) {
-        return (1.0 / 6.0) * ((-B - 6.0 * C) * x * x * x + (6.0 * B + 30.0 * C) * x * x + (-12.0 * B - 48.0 * C) * x + (8.0 * B + 24.0 * C));
+static __device__ __forceinline__ float mitchell_weight_device(float t) {
+    constexpr float B = 1.0f / 3.0f;
+    constexpr float C = 1.0f / 3.0f;
+    const float x = fabsf(t);
+    if (x < 1.0f) {
+        return (1.0f / 6.0f) * ((12.0f - 9.0f * B - 6.0f * C) * x * x * x + (-18.0f + 12.0f * B + 6.0f * C) * x * x + (6.0f - 2.0f * B));
+    } else if (x < 2.0f) {
+        return (1.0f / 6.0f) * ((-B - 6.0f * C) * x * x * x + (6.0f * B + 30.0f * C) * x * x + (-12.0f * B - 48.0f * C) * x + (8.0f * B + 24.0f * C));
     }
-    return 0.0;
+    return 0.0f;
 }
 
-static __device__ __forceinline__ void hanatos_cubic_coordinate_device(
+static __device__ __forceinline__ void film_tc_cubic_coordinate_device(
     float normalized,
     int size,
     int& base,
-    double& fraction) {
-    double coordinate =
-        static_cast<double>(fminf(1.0f, fmaxf(0.0f, normalized))) *
-        static_cast<double>(size - 1);
-    if (coordinate >= static_cast<double>(size - 1)) {
+    float& fraction) {
+    float coordinate =
+        fminf(1.0f, fmaxf(0.0f, normalized)) * static_cast<float>(size - 1);
+    if (coordinate >= static_cast<float>(size - 1)) {
         base = size - 2;
-        fraction = 1.0;
+        fraction = 1.0f;
         return;
     }
-    base = static_cast<int>(floor(coordinate));
-    fraction = coordinate - static_cast<double>(base);
+    base = static_cast<int>(floorf(coordinate));
+    fraction = coordinate - static_cast<float>(base);
 }
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
-static __device__ __forceinline__ float sample_hanatos_spectrum_cubic_device(
-    const float* JUICER_RESTRICT lut,
-    int size,
-    int samples,
-    int sample,
-    float tcC,
-    float tcM) {
-    int cBase = 0;
-    int mBase = 0;
-    double cFraction = 0.0;
-    double mFraction = 0.0;
-    hanatos_cubic_coordinate_device(tcC, size, cBase, cFraction);
-    hanatos_cubic_coordinate_device(tcM, size, mBase, mFraction);
-
-    const double wc[4] = {
-        mitchell_weight_device(cFraction + 1.0),
-        mitchell_weight_device(cFraction),
-        mitchell_weight_device(cFraction - 1.0),
-        mitchell_weight_device(cFraction - 2.0)};
-    const double wm[4] = {
-        mitchell_weight_device(mFraction + 1.0),
-        mitchell_weight_device(mFraction),
-        mitchell_weight_device(mFraction - 1.0),
-        mitchell_weight_device(mFraction - 2.0)};
-
-    double value = 0.0;
-    double weightSum = 0.0;
-    for (int dc = 0; dc < 4; ++dc) {
-        const int c = reflect_index_device(cBase - 1 + dc, size);
-        for (int dm = 0; dm < 4; ++dm) {
-            const int m = reflect_index_device(mBase - 1 + dm, size);
-            const double weight = wc[dc] * wm[dm];
-            weightSum += weight;
-            value += weight * static_cast<double>(hanatos_bilinear_at(lut, size, samples, c, m, sample));
-        }
-    }
-    return static_cast<float>(weightSum != 0.0 ? value / weightSum : 0.0);
-}
-
-static __device__ __forceinline__ float sample_hanatos_integrated_cubic_device(
+static __device__ __forceinline__ float sample_film_tc_lut_cubic_device(
     const float* JUICER_RESTRICT lut,
     int size,
     int channel,
@@ -421,34 +346,34 @@ static __device__ __forceinline__ float sample_hanatos_integrated_cubic_device(
     float tcM) {
     int cBase = 0;
     int mBase = 0;
-    double cFraction = 0.0;
-    double mFraction = 0.0;
-    hanatos_cubic_coordinate_device(tcC, size, cBase, cFraction);
-    hanatos_cubic_coordinate_device(tcM, size, mBase, mFraction);
+    float cFraction = 0.0f;
+    float mFraction = 0.0f;
+    film_tc_cubic_coordinate_device(tcC, size, cBase, cFraction);
+    film_tc_cubic_coordinate_device(tcM, size, mBase, mFraction);
 
-    const double wc[4] = {
-        mitchell_weight_device(cFraction + 1.0),
+    const float wc[4] = {
+        mitchell_weight_device(cFraction + 1.0f),
         mitchell_weight_device(cFraction),
-        mitchell_weight_device(cFraction - 1.0),
-        mitchell_weight_device(cFraction - 2.0)};
-    const double wm[4] = {
-        mitchell_weight_device(mFraction + 1.0),
+        mitchell_weight_device(cFraction - 1.0f),
+        mitchell_weight_device(cFraction - 2.0f)};
+    const float wm[4] = {
+        mitchell_weight_device(mFraction + 1.0f),
         mitchell_weight_device(mFraction),
-        mitchell_weight_device(mFraction - 1.0),
-        mitchell_weight_device(mFraction - 2.0)};
+        mitchell_weight_device(mFraction - 1.0f),
+        mitchell_weight_device(mFraction - 2.0f)};
 
-    double value = 0.0;
-    double weightSum = 0.0;
+    float value = 0.0f;
+    float weightSum = 0.0f;
     for (int dc = 0; dc < 4; ++dc) {
         const int c = reflect_index_device(cBase - 1 + dc, size);
         for (int dm = 0; dm < 4; ++dm) {
             const int m = reflect_index_device(mBase - 1 + dm, size);
-            const double weight = wc[dc] * wm[dm];
+            const float weight = wc[dc] * wm[dm];
             weightSum += weight;
-            value += weight * static_cast<double>(hanatos_integrated_at(lut, size, c, m, channel));
+            value += weight * film_tc_lut_at(lut, size, c, m, channel);
         }
     }
-    return static_cast<float>(weightSum != 0.0 ? value / weightSum : 0.0);
+    return weightSum != 0.0f ? value / weightSum : 0.0f;
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
@@ -632,38 +557,6 @@ static __device__ __forceinline__ bool sample_pchip_float_log2_scan_lut_device(
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
-static __device__ __forceinline__ void convert_input_to_DWG_device(
-    const JuicerCuda::FilmRawPayload& cfg,
-    const float rgbIn[3],
-    float rgbDWG[3],
-    bool clampNonNegative) {
-    float linear[3];
-    InputCctfDecodingDevice decoding{};
-    decoding.inputColorSpaceIndex = cfg.inputColorSpaceIndex;
-    decoding.applyCctfDecoding = cfg.applyCctfDecoding;
-    apply_input_cctf_decoding_device(decoding, rgbIn, linear);
-
-    float XYZ[3];
-    mat3_mul9_device(cfg.inputRGBToXYZ, linear, XYZ);
-
-    const float* xyzPtr = XYZ;
-    float adapted[3];
-    if (cfg.applyInputChromaticAdapt) {
-        mat3_mul9_device(cfg.inputXYZAdapt, XYZ, adapted);
-        xyzPtr = adapted;
-    }
-
-    float dwg[3];
-    if (clampNonNegative) {
-        XYZ_to_DWG_linear_device(xyzPtr, dwg);
-    } else {
-        XYZ_to_DWG_linear_unclamped_device(xyzPtr, dwg);
-    }
-    rgbDWG[0] = dwg[0];
-    rgbDWG[1] = dwg[1];
-    rgbDWG[2] = dwg[2];
-}
-
 static __device__ __forceinline__ void convert_input_to_sRGB_device(
     const JuicerCuda::FilmRawPayload& cfg,
     const float rgbIn[3],
@@ -684,11 +577,8 @@ static __device__ __forceinline__ void convert_input_to_sRGB_device(
         xyzPtr = adapted;
     }
 
-    const float XYZ_to_sRGB[9] = {
-        3.2404542f, -1.5371385f, -0.4985314f, -0.9692660f, 1.8760108f, 0.0415560f, 0.0556434f, -0.2040259f, 1.0572252f};
-
     float srgb[3];
-    mat3_mul9_device(XYZ_to_sRGB, xyzPtr, srgb);
+    mat3_mul9_device(cfg.xyzToLinearSrgb, xyzPtr, srgb);
 
     rgbSRGB[0] = device_isfinite(srgb[0]) ? srgb[0] : 0.0f;
     rgbSRGB[1] = device_isfinite(srgb[1]) ? srgb[1] : 0.0f;
@@ -721,19 +611,15 @@ static __device__ __forceinline__ void convert_input_to_working_xyz_device(
     workingXYZ[2] = device_sanitize_channel(workingXYZ[2]);
 }
 
-static __device__ void hanatos_layer_exposures_device(
+static __device__ __forceinline__ void film_tc_layer_exposures_device(
     const float workingXYZ[3],
-    const float* JUICER_RESTRICT hanatosLut,
-    int hanatosN,
-    const float refIllumWhiteXYZ[3],
-    const float* JUICER_RESTRICT sensB,
-    const float* JUICER_RESTRICT sensG,
-    const float* JUICER_RESTRICT sensR,
+    const float* JUICER_RESTRICT filmTcLut,
+    int filmTcLutExtent,
     float E_out[3]) {
     if (!E_out) {
         return;
     }
-    if (!hanatosLut || hanatosN <= 0 || !sensB || !sensG || !sensR) {
+    if (!filmTcLut || filmTcLutExtent != JuicerCuda::kFilmTcLutExtent) {
         E_out[0] = E_out[1] = E_out[2] = 0.0f;
         return;
     }
@@ -743,125 +629,33 @@ static __device__ void hanatos_layer_exposures_device(
         device_sanitize_channel(workingXYZ[1]),
         device_sanitize_channel(workingXYZ[2])};
 
-    const float D65[3] = {0.950455f, 1.0f, 1.089058f};
-
-    float refWhite[3] = {
-        device_sanitize_channel(refIllumWhiteXYZ[0]),
-        device_sanitize_channel(refIllumWhiteXYZ[1]),
-        device_sanitize_channel(refIllumWhiteXYZ[2])};
-    if (!(refWhite[1] > 0.0f)) {
-        refWhite[0] = D65[0];
-        refWhite[1] = D65[1];
-        refWhite[2] = D65[2];
-    }
-
-    float adaptedXYZ[3];
-    ChromaticAdaptationDeviceInput adaptation{};
-    adaptation.xyz = XYZ;
-    adaptation.sourceWhiteXYZ = D65;
-    adaptation.destinationWhiteXYZ = refWhite;
-    chromatic_adapt_XYZ_CAT02_device(adaptation, adaptedXYZ);
-    adaptedXYZ[0] = device_sanitize_channel(adaptedXYZ[0]);
-    adaptedXYZ[1] = device_sanitize_channel(adaptedXYZ[1]);
-    adaptedXYZ[2] = device_sanitize_channel(adaptedXYZ[2]);
-
-    const float sumXYZ = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
+    const float sumXYZ = XYZ[0] + XYZ[1] + XYZ[2];
     const float denom = fmaxf(sumXYZ, 1e-10f);
 
-    float x = adaptedXYZ[0] / denom;
-    float y = adaptedXYZ[1] / denom;
-    x = fminf(1.0f, fmaxf(0.0f, x));
-    y = fminf(1.0f, fmaxf(0.0f, y));
+    const float x = XYZ[0] / denom;
+    const float y = XYZ[1] / denom;
 
     float qx, qy;
     tri2quad_device(x, y, qx, qy);
 
-    const int N = hanatosN;
-    const int K = 81;
-    double Eb = 0.0;
-    double Eg = 0.0;
-    double Er = 0.0;
-    for (int k = 0; k < K; ++k) {
-        const float raw = sample_hanatos_spectrum_cubic_device(hanatosLut, N, K, k, qx, qy);
-
-        const float e = device_sanitize_channel(sumXYZ * raw);
-        if (!device_isfinite(e)) {
-            continue;
-        }
-        const double e64 = static_cast<double>(e);
-
-        const float sb = ldg_f(sensB + k);
-        const float sg = ldg_f(sensG + k);
-        const float sr = ldg_f(sensR + k);
-        if (isfinite(sb))
-            Eb += e64 * static_cast<double>(sb);
-        if (isfinite(sg))
-            Eg += e64 * static_cast<double>(sg);
-        if (isfinite(sr))
-            Er += e64 * static_cast<double>(sr);
-    }
-
-    E_out[0] = device_isfinite(static_cast<float>(Eb)) ? static_cast<float>(Eb) : 0.0f;
-    E_out[1] = device_isfinite(static_cast<float>(Eg)) ? static_cast<float>(Eg) : 0.0f;
-    E_out[2] = device_isfinite(static_cast<float>(Er)) ? static_cast<float>(Er) : 0.0f;
-}
-
-static __device__ void hanatos_integrated_exposures_device(
-    const float workingXYZ[3],
-    const float* JUICER_RESTRICT lutIntegrated,
-    int hanatosN,
-    const float refIllumWhiteXYZ[3],
-    float E_out[3]) {
-    if (!E_out) {
-        return;
-    }
-    if (!lutIntegrated || hanatosN <= 0) {
-        E_out[0] = E_out[1] = E_out[2] = 0.0f;
-        return;
-    }
-
-    float XYZ[3] = {
-        device_sanitize_channel(workingXYZ[0]),
-        device_sanitize_channel(workingXYZ[1]),
-        device_sanitize_channel(workingXYZ[2])};
-
-    const float D65[3] = {0.950455f, 1.0f, 1.089058f};
-
-    float refWhite[3] = {
-        device_sanitize_channel(refIllumWhiteXYZ[0]),
-        device_sanitize_channel(refIllumWhiteXYZ[1]),
-        device_sanitize_channel(refIllumWhiteXYZ[2])};
-    if (!(refWhite[1] > 0.0f)) {
-        refWhite[0] = D65[0];
-        refWhite[1] = D65[1];
-        refWhite[2] = D65[2];
-    }
-
-    float adaptedXYZ[3];
-    ChromaticAdaptationDeviceInput adaptation{};
-    adaptation.xyz = XYZ;
-    adaptation.sourceWhiteXYZ = D65;
-    adaptation.destinationWhiteXYZ = refWhite;
-    chromatic_adapt_XYZ_CAT02_device(adaptation, adaptedXYZ);
-    adaptedXYZ[0] = device_sanitize_channel(adaptedXYZ[0]);
-    adaptedXYZ[1] = device_sanitize_channel(adaptedXYZ[1]);
-    adaptedXYZ[2] = device_sanitize_channel(adaptedXYZ[2]);
-
-    const float sumXYZ = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
-    const float denom = fmaxf(sumXYZ, 1e-10f);
-
-    float x = adaptedXYZ[0] / denom;
-    float y = adaptedXYZ[1] / denom;
-    x = fminf(1.0f, fmaxf(0.0f, x));
-    y = fminf(1.0f, fmaxf(0.0f, y));
-
-    float qx, qy;
-    tri2quad_device(x, y, qx, qy);
-
-    const int N = hanatosN;
-    const float r = sample_hanatos_integrated_cubic_device(lutIntegrated, N, 0, qx, qy);
-    const float g = sample_hanatos_integrated_cubic_device(lutIntegrated, N, 1, qx, qy);
-    const float b = sample_hanatos_integrated_cubic_device(lutIntegrated, N, 2, qx, qy);
+    const float r = sample_film_tc_lut_cubic_device(
+        filmTcLut,
+        filmTcLutExtent,
+        0,
+        qx,
+        qy);
+    const float g = sample_film_tc_lut_cubic_device(
+        filmTcLut,
+        filmTcLutExtent,
+        1,
+        qx,
+        qy);
+    const float b = sample_film_tc_lut_cubic_device(
+        filmTcLut,
+        filmTcLutExtent,
+        2,
+        qx,
+        qy);
 
     const float rSafe = device_isfinite(r) ? r : 0.0f;
     const float gSafe = device_isfinite(g) ? g : 0.0f;
@@ -871,120 +665,6 @@ static __device__ void hanatos_integrated_exposures_device(
     E_out[0] = device_sanitize_channel(sumXYZ * bSafe);
     E_out[1] = device_sanitize_channel(sumXYZ * gSafe);
     E_out[2] = device_sanitize_channel(sumXYZ * rSafe);
-}
-
-static __device__ void tables_layer_exposures_device(
-    const float rgbDWG[3],
-    const float S_inv[9],
-    const float refIllumWhiteXYZ[3],
-    const float* JUICER_RESTRICT Ax,
-    const float* JUICER_RESTRICT Ay,
-    const float* JUICER_RESTRICT Az,
-    const float* JUICER_RESTRICT sensB,
-    const float* JUICER_RESTRICT sensG,
-    const float* JUICER_RESTRICT sensR,
-    float E_out[3]) {
-    if (!E_out) {
-        return;
-    }
-    if (!rgbDWG || !S_inv || !refIllumWhiteXYZ || !Ax || !Ay || !Az || !sensB || !sensG || !sensR) {
-        E_out[0] = E_out[1] = E_out[2] = 0.0f;
-        return;
-    }
-
-    const float DWG_RGB_to_XYZ[9] = {
-        0.70062239f, 0.14877482f, 0.10105872f, 0.27411851f, 0.87363190f, -0.14775041f, -0.09896291f, -0.13789533f, 1.32591599f};
-
-    float XYZ[3] = {
-        DWG_RGB_to_XYZ[0] * rgbDWG[0] + DWG_RGB_to_XYZ[1] * rgbDWG[1] + DWG_RGB_to_XYZ[2] * rgbDWG[2],
-        DWG_RGB_to_XYZ[3] * rgbDWG[0] + DWG_RGB_to_XYZ[4] * rgbDWG[1] + DWG_RGB_to_XYZ[5] * rgbDWG[2],
-        DWG_RGB_to_XYZ[6] * rgbDWG[0] + DWG_RGB_to_XYZ[7] * rgbDWG[1] + DWG_RGB_to_XYZ[8] * rgbDWG[2]};
-
-    float sanitizedXYZ[3] = {
-        device_sanitize_nonneg(XYZ[0]),
-        device_sanitize_nonneg(XYZ[1]),
-        device_sanitize_nonneg(XYZ[2])};
-
-    const float D65[3] = {0.950455f, 1.0f, 1.089058f};
-
-    float refWhite[3] = {
-        device_sanitize_nonneg(refIllumWhiteXYZ[0]),
-        device_sanitize_nonneg(refIllumWhiteXYZ[1]),
-        device_sanitize_nonneg(refIllumWhiteXYZ[2])};
-    if (!(refWhite[1] > 0.0f)) {
-        refWhite[0] = D65[0];
-        refWhite[1] = D65[1];
-        refWhite[2] = D65[2];
-    }
-
-    float adaptedXYZ[3];
-    ChromaticAdaptationDeviceInput adaptation{};
-    adaptation.xyz = sanitizedXYZ;
-    adaptation.sourceWhiteXYZ = D65;
-    adaptation.destinationWhiteXYZ = refWhite;
-    chromatic_adapt_XYZ_CAT02_device(adaptation, adaptedXYZ);
-    adaptedXYZ[0] = fmaxf(0.0f, adaptedXYZ[0]);
-    adaptedXYZ[1] = fmaxf(0.0f, adaptedXYZ[1]);
-    adaptedXYZ[2] = fmaxf(0.0f, adaptedXYZ[2]);
-
-    const float targetScale = (adaptedXYZ[1] > 0.0f) ? adaptedXYZ[1] : sanitizedXYZ[1];
-
-    float cx =
-        S_inv[0] * adaptedXYZ[0] +
-        S_inv[1] * adaptedXYZ[1] +
-        S_inv[2] * adaptedXYZ[2];
-    float cy =
-        S_inv[3] * adaptedXYZ[0] +
-        S_inv[4] * adaptedXYZ[1] +
-        S_inv[5] * adaptedXYZ[2];
-    float cz =
-        S_inv[6] * adaptedXYZ[0] +
-        S_inv[7] * adaptedXYZ[1] +
-        S_inv[8] * adaptedXYZ[2];
-    cx = fmaxf(0.0f, cx);
-    cy = fmaxf(0.0f, cy);
-    cz = fmaxf(0.0f, cz);
-
-    double Y_recon = 0.0;
-    double Eb = 0.0;
-    double Eg = 0.0;
-    double Er = 0.0;
-
-    const int K = 81;
-    for (int i = 0; i < K; ++i) {
-        const float bx = fmaxf(0.0f, device_sanitize_nonneg(ldg_f(Ax + i)));
-        const float by = fmaxf(0.0f, device_sanitize_nonneg(ldg_f(Ay + i)));
-        const float bz = fmaxf(0.0f, device_sanitize_nonneg(ldg_f(Az + i)));
-        const float Ei = fmaxf(1e-6f, cx * bx + cy * by + cz * bz);
-
-        Y_recon += static_cast<double>(Ei) * static_cast<double>(by);
-
-        const float sb = ldg_f(sensB + i);
-        const float sg = ldg_f(sensG + i);
-        const float sr = ldg_f(sensR + i);
-        const double e64 = static_cast<double>(Ei);
-        if (isfinite(sb))
-            Eb += e64 * static_cast<double>(sb);
-        if (isfinite(sg))
-            Eg += e64 * static_cast<double>(sg);
-        if (isfinite(sr))
-            Er += e64 * static_cast<double>(sr);
-    }
-
-    if (Y_recon > 1e-20 && targetScale > 0.0f) {
-        const double s = static_cast<double>(targetScale) / Y_recon;
-        Eb *= s;
-        Eg *= s;
-        Er *= s;
-    } else if (!(targetScale > 0.0f)) {
-        Eb = Eg = Er = 0.0;
-    }
-
-    // Table-based SPD path applies Δλ=5nm; exposure scale is applied later in the pipeline.
-    const double dl = 5.0;
-    E_out[0] = fmaxf(0.0f, static_cast<float>(Eb * dl));
-    E_out[1] = fmaxf(0.0f, static_cast<float>(Eg * dl));
-    E_out[2] = fmaxf(0.0f, static_cast<float>(Er * dl));
 }
 
 static __device__ void mallett_layer_exposures_device(
@@ -1008,9 +688,9 @@ static __device__ void mallett_layer_exposures_device(
     const float g = fmaxf(0.0f, device_sanitize_channel(rgbSRGB[1]));
     const float b = fmaxf(0.0f, device_sanitize_channel(rgbSRGB[2]));
 
-    double Eb = 0.0;
-    double Eg = 0.0;
-    double Er = 0.0;
+    float Eb = 0.0f;
+    float Eg = 0.0f;
+    float Er = 0.0f;
 
     for (int i = 0; i < K; ++i) {
         const float illum_i = ldg_f(illum + i);
@@ -1022,21 +702,75 @@ static __device__ void mallett_layer_exposures_device(
         if (!device_isfinite(spd)) {
             continue;
         }
-        const double e64 = static_cast<double>(spd);
         const float sb = ldg_f(sensB + i);
         const float sg = ldg_f(sensG + i);
         const float sr = ldg_f(sensR + i);
         if (isfinite(sb))
-            Eb += e64 * static_cast<double>(sb);
+            Eb += spd * sb;
         if (isfinite(sg))
-            Eg += e64 * static_cast<double>(sg);
+            Eg += spd * sg;
         if (isfinite(sr))
-            Er += e64 * static_cast<double>(sr);
+            Er += spd * sr;
     }
 
-    E_out[0] = device_isfinite(static_cast<float>(Eb)) ? static_cast<float>(Eb) : 0.0f;
-    E_out[1] = device_isfinite(static_cast<float>(Eg)) ? static_cast<float>(Eg) : 0.0f;
-    E_out[2] = device_isfinite(static_cast<float>(Er)) ? static_cast<float>(Er) : 0.0f;
+    E_out[0] = device_isfinite(Eb) ? fmaxf(0.0f, Eb) : 0.0f;
+    E_out[1] = device_isfinite(Eg) ? fmaxf(0.0f, Eg) : 0.0f;
+    E_out[2] = device_isfinite(Er) ? fmaxf(0.0f, Er) : 0.0f;
+}
+
+static __device__ __forceinline__ bool reconstruct_film_raw_device(
+    const JuicerCuda::FilmRawPayload& config,
+    const JuicerCuda::FilmReconstructionPayload& reconstruction,
+    const float rgbIn[3],
+    float filmRaw[3]) {
+    filmRaw[0] = filmRaw[1] = filmRaw[2] = 0.0f;
+    switch (config.rgbToRawMethod) {
+        case JuicerCuda::kFilmRawMethodHanatos2025:
+        case JuicerCuda::kFilmRawMethodArctic2026beta04: {
+            if (!reconstruction.filmTcLut ||
+                reconstruction.filmTcLutExtent != JuicerCuda::kFilmTcLutExtent) {
+                return false;
+            }
+            float workingXYZ[3] = {};
+            convert_input_to_working_xyz_device(config, rgbIn, workingXYZ);
+            film_tc_layer_exposures_device(
+                workingXYZ,
+                reconstruction.filmTcLut,
+                reconstruction.filmTcLutExtent,
+                filmRaw);
+            return true;
+        }
+        case JuicerCuda::kFilmRawMethodMallett2019: {
+            const bool ready =
+                reconstruction.tablesIllum && reconstruction.tablesK == 81 &&
+                reconstruction.mallettBasis && reconstruction.mallettBasisK == 81 &&
+                reconstruction.sensB.y && reconstruction.sensB.n >= 81 &&
+                reconstruction.sensG.y && reconstruction.sensG.n >= 81 &&
+                reconstruction.sensR.y && reconstruction.sensR.n >= 81;
+            if (!ready) {
+                return false;
+            }
+            float rgbSRGB[3] = {};
+            convert_input_to_sRGB_device(config, rgbIn, rgbSRGB);
+            mallett_layer_exposures_device(
+                rgbSRGB,
+                reconstruction.mallettBasis,
+                reconstruction.tablesIllum,
+                reconstruction.tablesK,
+                reconstruction.sensB.y,
+                reconstruction.sensG.y,
+                reconstruction.sensR.y,
+                filmRaw);
+            for (int channel = 0; channel < 3; ++channel) {
+                filmRaw[channel] = fmaxf(
+                    0.0f,
+                    filmRaw[channel] * config.mallettGreenMidgrayScale);
+            }
+            return true;
+        }
+        default:
+            return false;
+    }
 }
 
 template <bool ApplyRouteCorrection, typename Params>
@@ -1045,35 +779,11 @@ static __device__ __forceinline__ void compute_film_linear_exposure_device(
     const float rgbIn[3],
     float filmRaw[3]) {
     const JuicerCuda::FilmExposurePayload& expose = params.filmExpose;
-
-    float E_raw[3] = {0.0f, 0.0f, 0.0f};
-    const bool allowHanatos = (params.filmRaw.spectralUpsamplingMode == 0);
-    const bool allowMallett = (params.filmRaw.spectralUpsamplingMode != 0);
-    const bool spdReady = expose.tablesAx && expose.tablesAy && expose.tablesAz && expose.tablesK == 81;
-    const bool useHanatos = allowHanatos &&
-                            spdReady &&
-                            expose.hanatosLut &&
-                            (expose.hanatosN > 0) &&
-                            (expose.sensB.n >= 81) &&
-                            (expose.sensG.n >= 81) &&
-                            (expose.sensR.n >= 81);
-    const bool useHanatosIntegrated =
-        useHanatos &&
-        expose.hanatosLutIntegrated &&
-        (expose.hanatosNIntegrated > 0) &&
-        (expose.hanatosNIntegrated == expose.hanatosN);
-    const bool canTables =
-        spdReady &&
-        expose.sensB.y && expose.sensG.y && expose.sensR.y &&
-        (expose.sensB.n >= 81) &&
-        (expose.sensG.n >= 81) &&
-        (expose.sensR.n >= 81);
-    const bool useMallett = allowMallett &&
-                            spdReady &&
-                            expose.tablesIllum &&
-                            expose.mallettBasis &&
-                            (expose.mallettBasisK == 81) &&
-                            canTables;
+    reconstruct_film_raw_device(
+        params.filmRaw,
+        expose.reconstruction,
+        rgbIn,
+        filmRaw);
 
     float autoExposureScale = 1.0f;
     if (expose.exposureScaleDevice) {
@@ -1082,82 +792,14 @@ static __device__ __forceinline__ void compute_film_linear_exposure_device(
             autoExposureScale = deviceScale;
         }
     }
-    const float autoExposedRgb[3] = {
-        rgbIn[0] * autoExposureScale,
-        rgbIn[1] * autoExposureScale,
-        rgbIn[2] * autoExposureScale};
-
-    float rgbDWG[3] = {0.0f, 0.0f, 0.0f};
-    float workingXYZ[3] = {0.0f, 0.0f, 0.0f};
-    if (useHanatos) {
-        convert_input_to_working_xyz_device(params.filmRaw, autoExposedRgb, workingXYZ);
-    } else if (!useMallett) {
-        convert_input_to_DWG_device(params.filmRaw, autoExposedRgb, rgbDWG, !useHanatos);
+    float exposureScale = autoExposureScale * expose.manualExposureScale;
+    if constexpr (ApplyRouteCorrection) {
+        exposureScale *= expose.routeCorrectionScale;
     }
-
-    if (useHanatosIntegrated) {
-        hanatos_integrated_exposures_device(
-            workingXYZ,
-            expose.hanatosLutIntegrated,
-            expose.hanatosNIntegrated,
-            params.filmRaw.refIllumWhiteXYZ,
-            E_raw);
-    } else if (useHanatos) {
-        hanatos_layer_exposures_device(
-            workingXYZ,
-            expose.hanatosLut,
-            expose.hanatosN,
-            params.filmRaw.refIllumWhiteXYZ,
-            expose.sensB.y,
-            expose.sensG.y,
-            expose.sensR.y,
-            E_raw);
-    } else if (useMallett) {
-        float rgbSRGB[3];
-        convert_input_to_sRGB_device(params.filmRaw, autoExposedRgb, rgbSRGB);
-        mallett_layer_exposures_device(
-            rgbSRGB,
-            expose.mallettBasis,
-            expose.tablesIllum,
-            expose.tablesK,
-            expose.sensB.y,
-            expose.sensG.y,
-            expose.sensR.y,
-            E_raw);
-    } else if (canTables) {
-        tables_layer_exposures_device(
-            rgbDWG,
-            expose.spdSInv,
-            params.filmRaw.refIllumWhiteXYZ,
-            expose.tablesAx,
-            expose.tablesAy,
-            expose.tablesAz,
-            expose.sensB.y,
-            expose.sensG.y,
-            expose.sensR.y,
-            E_raw);
-    }
-
-    const float mallettGreenMidgrayScale =
-        params.filmRaw.mallettGreenMidgrayScale;
-    const float manualExposureScale = expose.manualExposureScale;
-    const float routeCorrectionScale = expose.routeCorrectionScale;
-    for (int i = 0; i < 3; ++i) {
-        float v = E_raw[i];
-        if (!isfinite(v) || v < 0.0f)
-            v = 0.0f;
-        if (useMallett) {
-            v = fmaxf(0.0f, v * mallettGreenMidgrayScale);
-        }
-        if constexpr (ApplyRouteCorrection) {
-            // Preserve the established disabled-path multiplication and rounding.
-            v = fmaxf(
-                0.0f,
-                v * manualExposureScale * routeCorrectionScale);
-        } else {
-            v = fmaxf(0.0f, v * manualExposureScale);
-        }
-        filmRaw[i] = v;
+    exposureScale =
+        isfinite(exposureScale) && exposureScale > 0.0f ? exposureScale : 1.0f;
+    for (int channel = 0; channel < 3; ++channel) {
+        filmRaw[channel] = fmaxf(0.0f, filmRaw[channel] * exposureScale);
     }
 }
 
@@ -1215,123 +857,6 @@ static constexpr int kJuicerLogRawMaskR = 0x4;
 static constexpr int kJuicerLogRawMaskBgr =
     kJuicerLogRawMaskB | kJuicerLogRawMaskG | kJuicerLogRawMaskR;
 
-// NOLINTBEGIN(bugprone-easily-swappable-parameters)
-static __device__ __forceinline__ float compute_hanatos_integrated_log_raw_channel_from_quad_device(
-    const JuicerCuda::FilmExposurePayload& expose,
-    float qx,
-    float qy,
-    float sumXYZ,
-    float exposureScale,
-    int lutChannel) {
-    const float raw = sample_hanatos_integrated_cubic_device(
-        expose.hanatosLutIntegrated,
-        expose.hanatosNIntegrated,
-        lutChannel,
-        qx,
-        qy);
-    float exposure = device_sanitize_channel(sumXYZ * (device_isfinite(raw) ? raw : 0.0f));
-    exposure = fmaxf(0.0f, exposure * exposureScale);
-    constexpr float kLogEps = 1e-10f;
-    return log10f(fmaxf(exposure, 0.0f) + kLogEps);
-}
-// NOLINTEND(bugprone-easily-swappable-parameters)
-
-template <typename Params>
-static __device__ __forceinline__ bool compute_logE_raw_selected_hanatos_integrated_device(
-    const Params& params,
-    const float rgbIn[3],
-    int channelMask,
-    float logE_raw[3]) {
-    const JuicerCuda::FilmExposurePayload& expose = params.filmExpose;
-    const bool allowHanatos = (params.filmRaw.spectralUpsamplingMode == 0);
-    const bool spdReady = expose.tablesAx && expose.tablesAy && expose.tablesAz && expose.tablesK == 81;
-    const bool useHanatos =
-        allowHanatos &&
-        spdReady &&
-        expose.hanatosLut &&
-        (expose.hanatosN > 0) &&
-        (expose.sensB.n >= 81) &&
-        (expose.sensG.n >= 81) &&
-        (expose.sensR.n >= 81);
-    const bool useHanatosIntegrated =
-        useHanatos &&
-        expose.hanatosLutIntegrated &&
-        (expose.hanatosNIntegrated > 0) &&
-        (expose.hanatosNIntegrated == expose.hanatosN);
-    if (!useHanatosIntegrated) {
-        return false;
-    }
-
-    float autoExposureScale = 1.0f;
-    if (expose.exposureScaleDevice) {
-        const float deviceScale = *expose.exposureScaleDevice;
-        if (isfinite(deviceScale) && deviceScale > 0.0f) {
-            autoExposureScale = deviceScale;
-        }
-    }
-    const float autoExposedRgb[3] = {
-        rgbIn[0] * autoExposureScale,
-        rgbIn[1] * autoExposureScale,
-        rgbIn[2] * autoExposureScale};
-
-    float workingXYZ[3] = {0.0f, 0.0f, 0.0f};
-    convert_input_to_working_xyz_device(params.filmRaw, autoExposedRgb, workingXYZ);
-
-    float XYZ[3] = {
-        device_sanitize_channel(workingXYZ[0]),
-        device_sanitize_channel(workingXYZ[1]),
-        device_sanitize_channel(workingXYZ[2])};
-    const float D65[3] = {0.950455f, 1.0f, 1.089058f};
-    float refWhite[3] = {
-        device_sanitize_channel(params.filmRaw.refIllumWhiteXYZ[0]),
-        device_sanitize_channel(params.filmRaw.refIllumWhiteXYZ[1]),
-        device_sanitize_channel(params.filmRaw.refIllumWhiteXYZ[2])};
-    if (!(refWhite[1] > 0.0f)) {
-        refWhite[0] = D65[0];
-        refWhite[1] = D65[1];
-        refWhite[2] = D65[2];
-    }
-
-    float adaptedXYZ[3];
-    ChromaticAdaptationDeviceInput adaptation{};
-    adaptation.xyz = XYZ;
-    adaptation.sourceWhiteXYZ = D65;
-    adaptation.destinationWhiteXYZ = refWhite;
-    chromatic_adapt_XYZ_CAT02_device(adaptation, adaptedXYZ);
-    adaptedXYZ[0] = device_sanitize_channel(adaptedXYZ[0]);
-    adaptedXYZ[1] = device_sanitize_channel(adaptedXYZ[1]);
-    adaptedXYZ[2] = device_sanitize_channel(adaptedXYZ[2]);
-
-    const float sumXYZ = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
-    const float denom = fmaxf(sumXYZ, 1e-10f);
-    float x = adaptedXYZ[0] / denom;
-    float y = adaptedXYZ[1] / denom;
-    x = fminf(1.0f, fmaxf(0.0f, x));
-    y = fminf(1.0f, fmaxf(0.0f, y));
-
-    float qx = 0.0f;
-    float qy = 0.0f;
-    tri2quad_device(x, y, qx, qy);
-
-    const float manualExposureScale = expose.manualExposureScale;
-    const float routeCorrectionScale = expose.routeCorrectionScale;
-    const float scale = manualExposureScale * routeCorrectionScale;
-
-    if (channelMask & kJuicerLogRawMaskB) {
-        logE_raw[0] =
-            compute_hanatos_integrated_log_raw_channel_from_quad_device(expose, qx, qy, sumXYZ, scale, 2);
-    }
-    if (channelMask & kJuicerLogRawMaskG) {
-        logE_raw[1] =
-            compute_hanatos_integrated_log_raw_channel_from_quad_device(expose, qx, qy, sumXYZ, scale, 1);
-    }
-    if (channelMask & kJuicerLogRawMaskR) {
-        logE_raw[2] =
-            compute_hanatos_integrated_log_raw_channel_from_quad_device(expose, qx, qy, sumXYZ, scale, 0);
-    }
-    return true;
-}
-
 template <typename Params>
 static __device__ __forceinline__ void compute_logE_raw_selected_device(
     const Params& params,
@@ -1342,19 +867,16 @@ static __device__ __forceinline__ void compute_logE_raw_selected_device(
     if (channelMask == 0) {
         return;
     }
-    if (channelMask == kJuicerLogRawMaskBgr ||
-        !compute_logE_raw_selected_hanatos_integrated_device(params, rgbIn, channelMask, logE_raw)) {
-        float fullLogRaw[3] = {0.0f, 0.0f, 0.0f};
-        compute_logE_raw_device(params, rgbIn, fullLogRaw);
-        if (channelMask & kJuicerLogRawMaskB) {
-            logE_raw[0] = fullLogRaw[0];
-        }
-        if (channelMask & kJuicerLogRawMaskG) {
-            logE_raw[1] = fullLogRaw[1];
-        }
-        if (channelMask & kJuicerLogRawMaskR) {
-            logE_raw[2] = fullLogRaw[2];
-        }
+    float fullLogRaw[3] = {0.0f, 0.0f, 0.0f};
+    compute_logE_raw_device(params, rgbIn, fullLogRaw);
+    if (channelMask & kJuicerLogRawMaskB) {
+        logE_raw[0] = fullLogRaw[0];
+    }
+    if (channelMask & kJuicerLogRawMaskG) {
+        logE_raw[1] = fullLogRaw[1];
+    }
+    if (channelMask & kJuicerLogRawMaskR) {
+        logE_raw[2] = fullLogRaw[2];
     }
 }
 

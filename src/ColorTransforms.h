@@ -153,7 +153,12 @@ namespace Spectral {
 
     inline constexpr Mat3 kRGB_to_XYZ_ACES2065 = {{0.95255238f, 0.00000000f, 0.00009368f, 0.34396645f, 0.72816610f, -0.07213255f, 0.00000000f, 0.00000000f, 1.00882518f}};
 
-    inline constexpr Mat3 kRGB_to_XYZ_sRGB_Rec709 = {{0.4124564f, 0.3575761f, 0.1804375f, 0.2126729f, 0.7151522f, 0.0721750f, 0.0193339f, 0.1191920f, 0.9503041f}};
+    inline constexpr Mat3 kRGB_to_XYZ_sRGB_Rec709 = {{0.4124f, 0.3576f, 0.1805f, 0.2126f, 0.7152f, 0.0722f, 0.0193f, 0.1192f, 0.9505f}};
+
+    inline constexpr float kInputD65WhiteXYZ[3] = {
+        0.95045590f, 1.0f, 1.08905780f};
+    inline constexpr float kInputAcesWhiteXYZ[3] = {
+        0.95264608f, 1.0f, 1.00882518f};
 
     // Global DWG�XYZ matrices
     inline Mat3 gDWG_RGB_to_XYZ = {{0.70062239f, 0.14877482f, 0.10105872f, 0.27411851f, 0.87363190f, -0.14775041f, -0.09896291f, -0.13789533f, 1.32591599f}};
@@ -188,18 +193,17 @@ namespace Spectral {
     }
 
     inline void input_colorspace_white_xyz(InputColorSpace cs, float whiteXYZ[3]) {
-        static constexpr float kACES2065WhiteXYZ[3] = {0.95264608f, 1.0f, 1.00882518f};
         switch (cs) {
             case InputColorSpace::DaVinciWideGamut:
             case InputColorSpace::ITU_R_BT2020:
             case InputColorSpace::SRGB_Rec709:
-                copy_triplet(whiteXYZ, gDWG_WhitePoint_XYZ);
+                copy_triplet(whiteXYZ, kInputD65WhiteXYZ);
                 break;
             case InputColorSpace::ACES2065_1:
-                copy_triplet(whiteXYZ, kACES2065WhiteXYZ);
+                copy_triplet(whiteXYZ, kInputAcesWhiteXYZ);
                 break;
             default:
-                copy_triplet(whiteXYZ, gDWG_WhitePoint_XYZ);
+                copy_triplet(whiteXYZ, kInputD65WhiteXYZ);
                 break;
         }
     }
@@ -398,6 +402,50 @@ namespace Spectral {
         return adapt;
     }
 
+    inline void chromatic_adapt_XYZ_CAT16(
+        const float XYZ[3],
+        const ChromaticAdaptationWhites& whites,
+        float outXYZ[3]) {
+        static constexpr Mat3 kCat16 = {{0.401288f, 0.650173f, -0.051461f, -0.250268f, 1.204414f, 0.045854f, -0.002079f, 0.048952f, 0.953127f}};
+        static const Mat3 kCat16Inverse = kCat16.inverse();
+
+        float sourceWhite[3];
+        float destinationWhite[3];
+        sanitize_nonnegative_triplet(sourceWhite, whites.source);
+        sanitize_nonnegative_triplet(destinationWhite, whites.destination);
+        normalize_triplet_to_unit_y(sourceWhite);
+        normalize_triplet_to_unit_y(destinationWhite);
+
+        float sourceLms[3];
+        float destinationLms[3];
+        float valueLms[3];
+        kCat16.mul(sourceWhite, sourceLms);
+        kCat16.mul(destinationWhite, destinationLms);
+        kCat16.mul(XYZ, valueLms);
+        for (int channel = 0; channel < 3; ++channel) {
+            const float scale = sourceLms[channel] > 1e-6f
+                                    ? destinationLms[channel] / sourceLms[channel]
+                                    : 1.0f;
+            valueLms[channel] *= scale;
+        }
+        kCat16Inverse.mul(valueLms, outXYZ);
+    }
+
+    inline Mat3 build_chromatic_adaptation_matrix_CAT16(
+        const ChromaticAdaptationWhites& whites) {
+        Mat3 adaptation = make_identity_mat3();
+        for (int column = 0; column < 3; ++column) {
+            float basis[3] = {0.0f, 0.0f, 0.0f};
+            basis[column] = 1.0f;
+            float adapted[3];
+            chromatic_adapt_XYZ_CAT16(basis, whites, adapted);
+            for (int row = 0; row < 3; ++row) {
+                adaptation.m[row * 3 + column] = adapted[row];
+            }
+        }
+        return adaptation;
+    }
+
     // ============================================================================
     // Film Raw Input
     // ============================================================================
@@ -407,6 +455,7 @@ namespace Spectral {
         bool applyCctfDecoding = false;
         Mat3 inputRGBToXYZ = make_identity_mat3();
         Mat3 inputXYZAdapt = make_identity_mat3();
+        Mat3 xyzToLinearSrgb = kRGB_to_XYZ_sRGB_Rec709.inverse();
         bool applyInputChromaticAdapt = false;
         SpectralUpsamplingMode spectralUpsamplingMode = SpectralUpsamplingMode::PreferHanatos;
         float midgrayScale = 1.0f;
@@ -524,9 +573,8 @@ namespace Spectral {
             copy_triplet_sanitized(outXYZ, xyzPtr, false);
         }
 
-        static const Mat3 kXYZ_to_sRGB = kRGB_to_XYZ_sRGB_Rec709.inverse();
         float rgbLinear[3];
-        kXYZ_to_sRGB.mul(xyzPtr, rgbLinear);
+        cfg.xyzToLinearSrgb.mul(xyzPtr, rgbLinear);
         copy_triplet_sanitized(rgbSRGB, rgbLinear, false);
     }
 

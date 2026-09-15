@@ -755,9 +755,12 @@ namespace {
     inline void read_output_snapshot_values(
         OFX::ChoiceParam* outputColorSpaceParam,
         OFX::BooleanParam* outputCctfEncodingParam,
+        OFX::BooleanParam* outputGamutCompressionParam,
         ParamSnapshot& snapshot) {
         snapshot.outputColorSpace = read_choice_param_or(outputColorSpaceParam, snapshot.outputColorSpace);
         snapshot.outputCctfEncoding = read_bool_param_as_i32(outputCctfEncodingParam, true);
+        snapshot.outputGamutCompressionEnabled =
+            read_bool_param_as_i32(outputGamutCompressionParam, true);
     }
 
     struct ProfileSnapshotChoiceParams {
@@ -806,11 +809,14 @@ namespace {
     inline void read_input_snapshot_values(
         OFX::ChoiceParam* inputColorSpaceParam,
         OFX::BooleanParam* inputCctfDecodingParam,
+        OFX::BooleanParam* inputCompressionParam,
         OFX::BooleanParam* hanatos2025AdaptationWindowParam,
         OFX::BooleanParam* hanatos2025AdaptationSurfaceParam,
         ParamSnapshot& snapshot) {
         snapshot.inputColorSpace = read_choice_param_or(inputColorSpaceParam, snapshot.inputColorSpace);
         snapshot.inputCctfDecoding = read_bool_param_as_i32(inputCctfDecodingParam, false);
+        snapshot.inputCompressionEnabled =
+            read_bool_param_as_i32(inputCompressionParam, true);
         snapshot.hanatos2025AdaptationWindow =
             read_bool_param_as_i32(hanatos2025AdaptationWindowParam, true);
         snapshot.hanatos2025AdaptationSurface =
@@ -1371,6 +1377,20 @@ void JuicerEffect::updateGammaControlState() {
     }
 }
 
+void JuicerEffect::updateSpectralControlState() {
+    const int mode = read_choice_param_or(_pSpectralMode, 0);
+    if (_pInputCompression) {
+        _pInputCompression->setEnabled(mode != 1);
+    }
+    const bool hanatos = mode == 0;
+    if (_pHanatos2025AdaptationWindow) {
+        _pHanatos2025AdaptationWindow->setEnabled(hanatos);
+    }
+    if (_pHanatos2025AdaptationSurface) {
+        _pHanatos2025AdaptationSurface->setEnabled(hanatos);
+    }
+}
+
 void JuicerEffect::applyDirGammaProfileDefaults() {
     if (!_state || !read_bool_param_or(_pCouplersGammaUseStock, true)) {
         return;
@@ -1462,6 +1482,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pEnlIll = fetchChoiceParam("EnlargerIlluminant");
         _pInputColorSpace = fetchChoiceParam(JuicerParams::kInputColorSpace);
         _pInputCctfDecoding = fetchBooleanParam(JuicerParams::kInputCctfDecoding);
+        _pInputCompression = fetchBooleanParam(JuicerParams::kInputCompression);
         _pHanatos2025AdaptationWindow =
             fetchBooleanParam(JuicerParams::kHanatos2025AdaptationWindow);
         _pHanatos2025AdaptationSurface =
@@ -1471,6 +1492,8 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pPrintGammaFactor = fetchDoubleParam(JuicerParams::kPrintGammaFactor);
         _pOutputColorSpace = fetchChoiceParam(kParamOutputColorSpace);
         _pOutputCctfEncoding = fetchBooleanParam(kParamOutputCctfEncoding);
+        _pOutputGamutCompression =
+            fetchBooleanParam(JuicerParams::kOutputGamutCompression);
 
 
         _pCouplersActive = fetchBooleanParam(JuicerParams::kDirCouplersActive);
@@ -1656,6 +1679,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
 
     updateDiffusionControlState();
     updateGammaControlState();
+    updateSpectralControlState();
 
     // Defer heavy bootstrap until first param change
 }
@@ -2233,6 +2257,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     apply_grain_linked_updates();
     updateDiffusionControlState();
     updateGammaControlState();
+    updateSpectralControlState();
     onParamsPossiblyChanged(paramName.c_str());
 }
 
@@ -2331,6 +2356,7 @@ bool JuicerEffect::snapshotParams(
     read_input_snapshot_values(
         _pInputColorSpace,
         _pInputCctfDecoding,
+        _pInputCompression,
         _pHanatos2025AdaptationWindow,
         _pHanatos2025AdaptationSurface,
         P);
@@ -2377,6 +2403,7 @@ bool JuicerEffect::snapshotParams(
     read_output_snapshot_values(
         _pOutputColorSpace,
         _pOutputCctfEncoding,
+        _pOutputGamutCompression,
         P);
     out = std::move(P);
     return true;

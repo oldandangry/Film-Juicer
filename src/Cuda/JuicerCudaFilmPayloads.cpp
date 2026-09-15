@@ -81,26 +81,29 @@ namespace JuicerCuda {
             diagnostic = "MissingRequiredResource phase=3B field=normalized_density_device_curves";
             return false;
         }
-        if (!prepared.tablesAx || !prepared.tablesAy || !prepared.tablesAz ||
-            !prepared.tablesIllum || prepared.tablesK != 81) {
-            diagnostic = "MissingRequiredResource phase=3B field=spectral_tables";
-            return false;
-        }
-        if (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025) {
-            if (!prepared.hanatosLut || prepared.hanatosN <= 0) {
-                diagnostic = "MissingRequiredResource phase=3B field=hanatos_lut";
+        const bool tcMethod =
+            filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025 ||
+            filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Arctic2026beta04;
+        if (tcMethod) {
+            if (!prepared.filmTcLut ||
+                prepared.filmTcLutExtent != kFilmTcLutExtent) {
+                diagnostic = "MissingRequiredResource phase=3B field=film_tc_lut";
                 return false;
             }
-        } else if (!prepared.mallettBasis || prepared.mallettBasisK != 81) {
-            diagnostic = "MissingRequiredResource phase=3B field=mallett_basis";
+        } else if (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019) {
+            if (!prepared.tablesIllum || prepared.tablesK != 81 ||
+                !prepared.mallettBasis || prepared.mallettBasisK != 81) {
+                diagnostic = "MissingRequiredResource phase=3B field=mallett_reconstruction";
+                return false;
+            }
+        } else {
+            diagnostic = "UnsupportedMode phase=3B field=rgb_to_raw_method";
             return false;
         }
 
-        const double manualScale64 =
-            std::exp2(static_cast<double>(filmRaw.manualExposureCompensationEv));
-        const float manualScale = static_cast<float>(manualScale64);
+        const float manualScale = std::exp2(filmRaw.manualExposureCompensationEv);
         if (!std::isfinite(filmRaw.manualExposureCompensationEv) ||
-            !std::isfinite(manualScale64) || !std::isfinite(manualScale) ||
+            !std::isfinite(manualScale) ||
             !(manualScale > 0.0f) ||
             !std::isfinite(routeCorrectionScale) ||
             !(routeCorrectionScale > 0.0f)) {
@@ -125,33 +128,39 @@ namespace JuicerCuda {
         out.filmRaw.inputColorSpaceIndex = filmRaw.inputColorSpace;
         out.filmRaw.applyCctfDecoding = filmRaw.inputCctfDecoding ? 1 : 0;
         out.filmRaw.applyInputChromaticAdapt = prepared.applyInputChromaticAdapt;
-        out.filmRaw.spectralUpsamplingMode =
-            filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019 ? 1 : 0;
+        static_assert(
+            static_cast<int>(Spektrafilm::RgbToRawMethod::Hanatos2025) ==
+            kFilmRawMethodHanatos2025);
+        static_assert(
+            static_cast<int>(Spektrafilm::RgbToRawMethod::Mallett2019) ==
+            kFilmRawMethodMallett2019);
+        static_assert(
+            static_cast<int>(Spektrafilm::RgbToRawMethod::Arctic2026beta04) ==
+            kFilmRawMethodArctic2026beta04);
+        out.filmRaw.rgbToRawMethod = static_cast<int>(filmRaw.rgbToRawMethod);
         out.filmRaw.mallettGreenMidgrayScale = filmRaw.mallettGreenMidgrayScale;
         copy_film_floats(out.filmRaw.inputRGBToXYZ, prepared.inputRGBToXYZ, 9);
         copy_film_floats(out.filmRaw.inputXYZAdapt, prepared.inputXYZAdapt, 9);
-        copy_film_floats(out.filmRaw.refIllumWhiteXYZ, prepared.refIllumWhiteXYZ, 3);
+        copy_film_floats(
+            out.filmRaw.xyzToLinearSrgb,
+            prepared.xyzToLinearSrgb,
+            9);
 
         out.filmExposure.manualExposureScale = manualScale;
         out.filmExposure.routeCorrectionScale = routeCorrectionScale;
         out.filmExposure.exposureScaleDevice = autoExposureScaleDevice;
-        out.filmExposure.sensB = prepared.finalSensB;
-        out.filmExposure.sensG = prepared.finalSensG;
-        out.filmExposure.sensR = prepared.finalSensR;
-        out.filmExposure.tablesAx = prepared.tablesAx;
-        out.filmExposure.tablesAy = prepared.tablesAy;
-        out.filmExposure.tablesAz = prepared.tablesAz;
-        out.filmExposure.tablesIllum = prepared.tablesIllum;
-        out.filmExposure.tablesK = prepared.tablesK;
-        copy_film_floats(out.filmExposure.spdSInv, prepared.spdSInv, 9);
-        if (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025) {
-            out.filmExposure.hanatosLut = prepared.hanatosLut;
-            out.filmExposure.hanatosN = prepared.hanatosN;
-            out.filmExposure.hanatosLutIntegrated = prepared.hanatosLutIntegrated;
-            out.filmExposure.hanatosNIntegrated = prepared.hanatosNIntegrated;
+        out.filmExposure.reconstruction.sensB = prepared.finalSensB;
+        out.filmExposure.reconstruction.sensG = prepared.finalSensG;
+        out.filmExposure.reconstruction.sensR = prepared.finalSensR;
+        if (tcMethod) {
+            out.filmExposure.reconstruction.filmTcLut = prepared.filmTcLut;
+            out.filmExposure.reconstruction.filmTcLutExtent =
+                prepared.filmTcLutExtent;
         } else {
-            out.filmExposure.mallettBasis = prepared.mallettBasis;
-            out.filmExposure.mallettBasisK = prepared.mallettBasisK;
+            out.filmExposure.reconstruction.tablesIllum = prepared.tablesIllum;
+            out.filmExposure.reconstruction.tablesK = prepared.tablesK;
+            out.filmExposure.reconstruction.mallettBasis = prepared.mallettBasis;
+            out.filmExposure.reconstruction.mallettBasisK = prepared.mallettBasisK;
         }
 
         out.filmDevelop.gammaFactorB = filmDevelop.densityCurveGamma[2];

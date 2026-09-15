@@ -22,6 +22,14 @@ This is quite a lot of machinery to put between two RGB images. The attraction i
 > [!NOTE]
 > **Film-Juicer 1.0.1** is available for Windows and Linux from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases/tag/v1.0.1). This version adds a Linux bundle and film and print gamma controls.
 
+### Experimental spectral update compatibility
+
+The next release refreshes the existing 20 capture and 8 print profiles from the pinned spektrafilm experimental colour cohort and derives both capture and print density curves from their fitted Gaussian models. It also adds Arctic 2026 beta04 reconstruction and input/output gamut compression; both compression controls default on where applicable. Hanatos remains the reconstruction default, and Mallett remains available as a basis method without TC input compression.
+
+This is an intentional rendering-behaviour replacement. Existing parameter IDs, stock IDs, saved selections, and their meanings are retained, but existing projects can produce different pixels. Changes include the profile and filtration refit, corrected sRGB/Rec.709 input coefficients shared by Mallett input conversion, corrected Hanatos input projection and window white, film-raw auto-exposure metering with exposure applied after reconstruction, model-derived density curves, and native-white/first-boundary output compression. There is no hidden legacy mode, old-profile substitution, or preset conversion layer.
+
+The testing integration is deliberately selective: it does not yet adopt spektrafilm experimental's revised DIR presets or Langmuir donor model. A full experimental-branch render with DIR enabled is therefore not expected to match Film-Juicer even when Arctic reconstruction and the imported assets agree. Scanner unsharp must also be set explicitly to `0, 0` for an unsharpened reference comparison because the plug-in default remains `0.7, 0.7`. See [Experimental spectral update testing](docs/experimental-spectral-update-testing.md) for the measured comparison and current acceptance boundary.
+
 ## Support Film-Juicer
 
 If Film-Juicer is useful to you and you'd like to support its development: [☕ Buy me a coffee](https://buymeacoffee.com/oldandangry).
@@ -30,7 +38,8 @@ If Film-Juicer is useful to you and you'd like to support its development: [☕ 
 
 - 20 capture-film profiles and 8 paper or print-film profiles, derived from spektrafilm.
 - Direct and optical-print scanning for negative and positive capture film.
-- Hanatos 2025 and Mallett 2019 spectral reconstruction.
+- Hanatos 2025, Mallett 2019, and Arctic 2026 beta04 spectral reconstruction.
+- Input gamut compression for TC reconstruction and white-aware OkLch output compression.
 - Stock-specific sensitivity, development curves, and spectral dye density.
 - Separate film and print gamma controls for development contrast.
 - DIR couplers for interactions within and between film layers, including spatial effects.

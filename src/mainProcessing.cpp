@@ -1544,6 +1544,62 @@ void JuicerProcessor::processImagesCUDA() {
         copy_float3(dstInvMaxCmy, scanMedium.inv_max_cmy);
     };
 
+    auto pack_output_gamut_payload = [&throw_submission_fatal](
+                                         JuicerCuda::ScanColorPayload& destination,
+                                         const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView& prepared,
+                                         const OutputGamutRecipe& recipe) {
+        destination.outputGamutActive = 0;
+        destination.outputGamutCmax = nullptr;
+        if (!recipe.enabled) {
+            return;
+        }
+        if (!prepared.outputGamutTransform ||
+            !prepared.outputGamutTransform->valid ||
+            !prepared.outputGamutCmax ||
+            prepared.outputGamutTableHash == 0 ||
+            prepared.outputGamutRecipeHash != recipe.hash ||
+            prepared.outputGamutTransform->outputColorSpace !=
+                OutputEncoding::colorSpaceFromIndex(
+                    recipe.outputColorSpace)) {
+            throw_submission_fatal(
+                "pack_output_gamut_payload",
+                "CUDA output gamut payload binding failed",
+                "ResourceDescriptorMismatch component=scan_color_payload field=output_gamut_identity");
+        }
+        destination.outputGamutCmax = prepared.outputGamutCmax;
+        copy_float9(
+            destination.outputGamutNativeRgbToD65Xyz,
+            prepared.outputGamutTransform->nativeRgbToD65Xyz.data());
+        copy_float9(
+            destination.outputGamutD65XyzToNativeRgb,
+            prepared.outputGamutTransform->d65XyzToNativeRgb.data());
+        copy_float9(
+            destination.outputGamutOklabXyzToLms,
+            Gamut::kOklabXyzToLms.data());
+        copy_float9(
+            destination.outputGamutOklabLmsToXyz,
+            Gamut::kOklabLmsToXyz.data());
+        copy_float9(
+            destination.outputGamutOklabLmsRootToLab,
+            Gamut::kOklabLmsRootToLab.data());
+        copy_float9(
+            destination.outputGamutOklabLabToLmsRoot,
+            Gamut::kOklabLabToLmsRoot.data());
+        destination.outputGamutLightnessKnee[0] =
+            recipe.lightnessKneeThreshold;
+        destination.outputGamutLightnessKnee[1] =
+            recipe.lightnessKneeLimit;
+        destination.outputGamutLightnessKnee[2] =
+            recipe.lightnessKneePower;
+        destination.outputGamutChromaKnee[0] =
+            recipe.chromaKneeThreshold;
+        destination.outputGamutChromaKnee[1] =
+            recipe.chromaKneeLimit;
+        destination.outputGamutChromaKnee[2] =
+            recipe.chromaKneePower;
+        destination.outputGamutActive = 1;
+    };
+
     if (should_abort_effect()) {
         return;
     }
@@ -1789,11 +1845,19 @@ void JuicerProcessor::processImagesCUDA() {
         JuicerProcess::Root::CudaFramePreparationRequest directPreparation{};
         directPreparation.recipe = directRecipe;
         directPreparation.exposureTables = &directPayload->exposureTables;
-        directPreparation.spdSInv = directPayload->spdSInv.data();
         directPreparation.filmRawConfig = &directPayload->filmRawConfig;
+        directPreparation.filmTcLut = directPayload->filmTcLut
+                                          ? &*directPayload->filmTcLut
+                                          : nullptr;
         directPreparation.scannerTables = &directPayload->scannerTables;
         directPreparation.scannerColor = &directPayload->scannerColor;
         directPreparation.scannerLutDescriptor = &scannerDescriptor;
+        directPreparation.outputGamutTransform =
+            directPayload->outputBoundaryTable
+                ? &directPayload->outputGamutTransform
+                : nullptr;
+        directPreparation.outputBoundaryTable =
+            directPayload->outputBoundaryTable.get();
         directPreparation.scannerPostEffects = &scannerPostEffects;
         directPreparation.spatialDirDescriptor = &directSpatialDir;
         directPreparation.diffusionFrameSetDescriptor =
@@ -1927,11 +1991,25 @@ void JuicerProcessor::processImagesCUDA() {
         run.height = height;
         run.nComponents = _nComponents;
 
+        JuicerCuda::FilmPayloadPack directFilmPayloads{};
+        std::string packDiagnostic;
+        if (!JuicerCuda::pack_film_payloads(
+                directRecipe->filmRaw,
+                directRecipe->filmDevelop,
+                directRecipe->dirCouplers,
+                directRecipe->densityBounds,
+                prepared.film,
+                nullptr,
+                scannerCorrection.exposureScale,
+                directFilmPayloads,
+                packDiagnostic)) {
+            throw_direct_restriction(packDiagnostic.c_str());
+        }
+
         const int fullSourceWidth = srcBounds.x2 - srcBounds.x1;
         const int fullSourceHeight = srcBounds.y2 - srcBounds.y1;
         (void)fullSourceWidth;
         (void)fullSourceHeight;
-        const float* autoExposureScaleDevice = nullptr;
         if (cameraAutoEnabled) {
             const auto buffers = preparedFrame.auto_exposure_buffers();
             if (!buffers.active) {
@@ -1958,14 +2036,14 @@ void JuicerProcessor::processImagesCUDA() {
             }
             JuicerCuda::AutoExposureSourceFormat autoExposureSourceFormat{};
             autoExposureSourceFormat.componentCount = run.nComponents;
-            autoExposureSourceFormat.inputColorSpaceIndex = directRecipe->filmRaw.inputColorSpace;
-            autoExposureSourceFormat.applyCctfDecoding = bool_to_i32(directRecipe->filmRaw.inputCctfDecoding);
+            autoExposureSourceFormat.filmRaw = directFilmPayloads.filmRaw;
+            autoExposureSourceFormat.reconstruction =
+                directFilmPayloads.filmExposure.reconstruction;
             const int meterRc = juicer_cuda_auto_exposure_meter_to_device(
                 srcBase,
                 static_cast<std::size_t>(srcRowBytes),
                 autoExposureDescriptor,
                 autoExposureSourceFormat,
-                prepared.film.inputRGBToXYZ,
                 buffers.scratch,
                 buffers.deviceState,
                 _pCudaStream,
@@ -1976,23 +2054,10 @@ void JuicerProcessor::processImagesCUDA() {
             preparedFrame.mark_auto_exposure_metered(
                 JuicerProcess::Root::PreparedCudaFrame::AutoExposureMeteredResult{
                     autoExposureDescriptor.hash});
-            autoExposureScaleDevice = buffers.deviceState.exposureScale;
+            directFilmPayloads.filmExposure.exposureScaleDevice =
+                buffers.deviceState.exposureScale;
         }
 
-        JuicerCuda::FilmPayloadPack directFilmPayloads{};
-        std::string packDiagnostic;
-        if (!JuicerCuda::pack_film_payloads(
-                directRecipe->filmRaw,
-                directRecipe->filmDevelop,
-                directRecipe->dirCouplers,
-                directRecipe->densityBounds,
-                prepared.film,
-                autoExposureScaleDevice,
-                scannerCorrection.exposureScale,
-                directFilmPayloads,
-                packDiagnostic)) {
-            throw_direct_restriction(packDiagnostic.c_str());
-        }
         run.filmRaw = directFilmPayloads.filmRaw;
         run.filmExpose = directFilmPayloads.filmExposure;
         run.filmDevelop = directFilmPayloads.filmDevelop;
@@ -2344,6 +2409,10 @@ void JuicerProcessor::processImagesCUDA() {
         copy_float9(run.scanStage.scanColor.cat02, color.cat02);
         copy_float9(run.scanStage.scanColor.xyzToRgb, color.xyzToRgb);
         copy_float3(run.scanStage.scanColor.illuminantXYZ, color.illuminantXYZ);
+        pack_output_gamut_payload(
+            run.scanStage.scanColor,
+            prepared,
+            directRecipe->scannerOutput.outputGamut);
         run.scanStage.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
         run.scanStage.scanColor.encoding.applyCctfEncoding = bool_to_i32(color.encoding.applyCctfEncoding);
         run.scanStage.scanColor.encoding.inputIsOutputSpace = bool_to_i32(color.encoding.inputIsOutputSpace);
@@ -2716,11 +2785,22 @@ void JuicerProcessor::processImagesCUDA() {
         JuicerProcess::Root::CudaFramePreparationRequest preparation{};
         preparation.recipe = printRecipe;
         preparation.exposureTables = &printPayload->exposureTables;
-        preparation.spdSInv = printPayload->spdSInv.data();
         preparation.filmRawConfig = &printPayload->filmRawConfig;
+        preparation.filmTcLut = printPayload->filmTcLut
+                                    ? &*printPayload->filmTcLut
+                                    : nullptr;
+        preparation.printMainIlluminant = printPayload->printMainIlluminant
+                                              ? &*printPayload->printMainIlluminant
+                                              : nullptr;
         preparation.scannerTables = &printPayload->scannerTables;
         preparation.scannerColor = &printPayload->scannerColor;
         preparation.scannerLutDescriptor = &scannerDescriptor;
+        preparation.outputGamutTransform =
+            printPayload->outputBoundaryTable
+                ? &printPayload->outputGamutTransform
+                : nullptr;
+        preparation.outputBoundaryTable =
+            printPayload->outputBoundaryTable.get();
         preparation.scannerPostEffects = &scannerPostEffects;
         preparation.spatialDirDescriptor = &spatialDir;
         preparation.diffusionFrameSetDescriptor =
@@ -2901,7 +2981,21 @@ void JuicerProcessor::processImagesCUDA() {
         run.height = height;
         run.nComponents = _nComponents;
 
-        const float* autoExposureScaleDevice = nullptr;
+        JuicerCuda::FilmPayloadPack filmPayloads{};
+        std::string payloadDiagnostic;
+        if (!JuicerCuda::pack_film_payloads(
+                printRecipe->filmRaw,
+                printRecipe->filmDevelop,
+                printRecipe->dirCouplers,
+                printRecipe->enlargerFilmBounds,
+                prepared.film,
+                nullptr,
+                1.0f,
+                filmPayloads,
+                payloadDiagnostic)) {
+            throw_print_restriction(payloadDiagnostic.c_str());
+        }
+
         if (cameraAutoEnabled) {
             const auto buffers = preparedFrame.auto_exposure_buffers();
             if (!buffers.active) {
@@ -2929,14 +3023,14 @@ void JuicerProcessor::processImagesCUDA() {
             }
             JuicerCuda::AutoExposureSourceFormat autoExposureSourceFormat{};
             autoExposureSourceFormat.componentCount = run.nComponents;
-            autoExposureSourceFormat.inputColorSpaceIndex = printRecipe->filmRaw.inputColorSpace;
-            autoExposureSourceFormat.applyCctfDecoding = bool_to_i32(printRecipe->filmRaw.inputCctfDecoding);
+            autoExposureSourceFormat.filmRaw = filmPayloads.filmRaw;
+            autoExposureSourceFormat.reconstruction =
+                filmPayloads.filmExposure.reconstruction;
             const int meterRc = juicer_cuda_auto_exposure_meter_to_device(
                 srcBase,
                 static_cast<std::size_t>(srcRowBytes),
                 autoExposureDescriptor,
                 autoExposureSourceFormat,
-                prepared.film.inputRGBToXYZ,
                 buffers.scratch,
                 buffers.deviceState,
                 _pCudaStream,
@@ -2947,23 +3041,10 @@ void JuicerProcessor::processImagesCUDA() {
             preparedFrame.mark_auto_exposure_metered(
                 JuicerProcess::Root::PreparedCudaFrame::AutoExposureMeteredResult{
                     autoExposureDescriptor.hash});
-            autoExposureScaleDevice = buffers.deviceState.exposureScale;
+            filmPayloads.filmExposure.exposureScaleDevice =
+                buffers.deviceState.exposureScale;
         }
 
-        JuicerCuda::FilmPayloadPack filmPayloads{};
-        std::string payloadDiagnostic;
-        if (!JuicerCuda::pack_film_payloads(
-                printRecipe->filmRaw,
-                printRecipe->filmDevelop,
-                printRecipe->dirCouplers,
-                printRecipe->enlargerFilmBounds,
-                prepared.film,
-                autoExposureScaleDevice,
-                1.0f,
-                filmPayloads,
-                payloadDiagnostic)) {
-            throw_print_restriction(payloadDiagnostic.c_str());
-        }
         JuicerCuda::PrintCudaPayloadPack printPayloads{};
         if (!JuicerCuda::pack_print_cuda_payloads(
                 printRecipe->print,
@@ -3327,6 +3408,10 @@ void JuicerProcessor::processImagesCUDA() {
         copy_float9(run.scanStage.scanColor.cat02, color.cat02);
         copy_float9(run.scanStage.scanColor.xyzToRgb, color.xyzToRgb);
         copy_float3(run.scanStage.scanColor.illuminantXYZ, color.illuminantXYZ);
+        pack_output_gamut_payload(
+            run.scanStage.scanColor,
+            prepared,
+            printRecipe->scannerOutput.outputGamut);
         run.scanStage.scanColor.encoding.outputColorSpaceIndex =
             OutputEncoding::toIndex(color.encoding.colorSpace);
         run.scanStage.scanColor.encoding.applyCctfEncoding =

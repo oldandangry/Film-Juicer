@@ -25,6 +25,55 @@
 #include "nlohmann/json.hpp"
 
 namespace Profiles {
+    DensityCurveSample evaluate_density_curve_sample(
+        const DensityCurveModel& model,
+        Spektrafilm::ProfilePolarity polarity,
+        double sourceLogExposure) {
+        DensityCurveSample result{};
+        if ((polarity != Spektrafilm::ProfilePolarity::Negative &&
+             polarity != Spektrafilm::ProfilePolarity::Positive) ||
+            !std::isfinite(sourceLogExposure)) {
+            return result;
+        }
+        const float exposure = static_cast<float>(sourceLogExposure);
+        if (!std::isfinite(exposure)) {
+            return result;
+        }
+        const float sign =
+            polarity == Spektrafilm::ProfilePolarity::Positive ? -1.0f : 1.0f;
+        constexpr float kInverseSqrtTwo = 0.7071067811865475244f;
+        for (std::size_t channel = 0; channel < 3u; ++channel) {
+            float total = 0.0f;
+            for (std::size_t layer = 0; layer < 3u; ++layer) {
+                const float center =
+                    static_cast<float>(model.centers[channel][layer]);
+                const float amplitude =
+                    static_cast<float>(model.amplitudes[channel][layer]);
+                const float sigma =
+                    static_cast<float>(model.sigmas[channel][layer]);
+                if (!std::isfinite(center) || !std::isfinite(amplitude) ||
+                    !std::isfinite(sigma) || sigma <= 0.0f) {
+                    return DensityCurveSample{};
+                }
+                const float z = sign * (exposure - center) / sigma;
+                const float cdf =
+                    0.5f * std::erfc(-z * kInverseSqrtTwo);
+                const float value = amplitude * cdf;
+                if (!std::isfinite(value)) {
+                    return DensityCurveSample{};
+                }
+                result.layers[layer][channel] = value;
+                total += value;
+            }
+            if (!std::isfinite(total)) {
+                return DensityCurveSample{};
+            }
+            result.total[channel] = total;
+        }
+        result.valid = true;
+        return result;
+    }
+
     namespace {
 
         using Json = nlohmann::json;
@@ -838,6 +887,7 @@ namespace Profiles {
             SpektrafilmProfileSamples& out,
             const SelectedProfileContext& ctx,
             std::string& error) {
+            const bool printRole = std::string_view(ctx.role) == "print";
             if (!root.contains("data") || !root["data"].is_object()) {
                 return set_error(error, ctx, "data", "object", root.contains("data") ? json_type_name(root["data"]) : "missing");
             }
@@ -944,8 +994,15 @@ namespace Profiles {
                 }
                 copy_vector_to_array(window, out.hanatos2025AdaptationWindowParams);
                 out.hasHanatos2025AdaptationWindowParams = true;
-            } else if (windowIt != data.end() && !(windowIt->is_array() && windowIt->empty())) {
-                return set_error(error, ctx, "data.hanatos2025_adaptation_window_params", "array[4] or []", json_type_name(*windowIt));
+            } else if (windowIt != data.end() &&
+                       !(windowIt->is_array() && windowIt->empty()) &&
+                       !(printRole && windowIt->is_null())) {
+                return set_error(
+                    error,
+                    ctx,
+                    "data.hanatos2025_adaptation_window_params",
+                    printRole ? "array[4], [], or null" : "array[4] or []",
+                    json_type_name(*windowIt));
             }
 
             const auto surfaceIt = data.find("hanatos2025_adaptation_surface_params");
@@ -972,17 +1029,24 @@ namespace Profiles {
                     }
                 }
                 out.hasHanatos2025AdaptationSurfaceParams = true;
-            } else if (surfaceIt != data.end() && !(surfaceIt->is_array() && surfaceIt->empty())) {
-                return set_error(error, ctx, "data.hanatos2025_adaptation_surface_params", "array[3][15] or []", json_type_name(*surfaceIt));
+            } else if (surfaceIt != data.end() &&
+                       !(surfaceIt->is_array() && surfaceIt->empty()) &&
+                       !(printRole && surfaceIt->is_null())) {
+                return set_error(
+                    error,
+                    ctx,
+                    "data.hanatos2025_adaptation_surface_params",
+                    printRole ? "array[3][15], [], or null" : "array[3][15] or []",
+                    json_type_name(*surfaceIt));
             }
 
             return true;
         }
 
-        bool parse_print_density_model(
+        bool parse_density_curve_model(
             const Json& root,
             std::vector<double>& sourceLogExposure,
-            PrintDensityModel& densityModel,
+            DensityCurveModel& densityModel,
             const SelectedProfileContext& ctx,
             std::string& error) {
             const Json& data = root["data"];
@@ -1019,16 +1083,16 @@ namespace Profiles {
                     error,
                     ctx,
                     "data.density_curves_model.model_type",
-                    "cdfs",
+                    "norm_cdfs",
                     modelTypeIt == model.end() ? "missing" : json_type_name(*modelTypeIt));
             }
             const std::string modelType = modelTypeIt->get<std::string>();
-            if (modelType != "cdfs") {
+            if (modelType != "norm_cdfs") {
                 return set_error(
                     error,
                     ctx,
                     "data.density_curves_model.model_type",
-                    "cdfs",
+                    "norm_cdfs",
                     modelType);
             }
             if (!parse_selected_double_matrix_3x3(
@@ -1064,6 +1128,88 @@ namespace Profiles {
                     }
                 }
             }
+            const auto alphasIt = model.find("alphas");
+            if (alphasIt == model.end() || !alphasIt->is_null()) {
+                return set_error(
+                    error,
+                    ctx,
+                    "data.density_curves_model.alphas",
+                    "null",
+                    alphasIt == model.end() ? "missing" : json_type_name(*alphasIt));
+            }
+            const auto developmentTimeIt = data.find("development_time");
+            if (developmentTimeIt == data.end() || !developmentTimeIt->is_null()) {
+                return set_error(
+                    error,
+                    ctx,
+                    "data.development_time",
+                    "null",
+                    developmentTimeIt == data.end()
+                        ? "missing"
+                        : json_type_name(*developmentTimeIt));
+            }
+            return true;
+        }
+
+        bool regenerate_density_curves_from_model(
+            SpektrafilmProfileSamples& data,
+            const std::vector<double>& sourceLogExposure,
+            const DensityCurveModel& model,
+            Spektrafilm::ProfilePolarity polarity,
+            const SelectedProfileContext& ctx,
+            std::string& error) {
+            if (sourceLogExposure.size() != data.logExposure.size()) {
+                return set_error(
+                    error,
+                    ctx,
+                    "data.log_exposure",
+                    "matching double/float source axes",
+                    "size-mismatch");
+            }
+            data.densityCurves.assign(
+                sourceLogExposure.size(),
+                std::array<float, 3>{});
+            for (auto& layer : data.densityCurvesLayers) {
+                for (auto& channel : layer) {
+                    channel.assign(sourceLogExposure.size(), 0.0f);
+                }
+            }
+            for (std::size_t sample = 0;
+                 sample < sourceLogExposure.size();
+                 ++sample) {
+                if (static_cast<float>(sourceLogExposure[sample]) !=
+                    data.logExposure[sample]) {
+                    return set_error(
+                        error,
+                        ctx,
+                        "data.log_exposure[" + std::to_string(sample) + "]",
+                        "source double exactly narrows to published float axis",
+                        std::to_string(sourceLogExposure[sample]));
+                }
+                const DensityCurveSample evaluated =
+                    evaluate_density_curve_sample(
+                        model,
+                        polarity,
+                        sourceLogExposure[sample]);
+                if (!evaluated.valid) {
+                    return set_error(
+                        error,
+                        ctx,
+                        "data.density_curves_model",
+                        "finite Gaussian evaluation",
+                        "non-finite");
+                }
+                data.densityCurves[sample] = evaluated.total;
+                for (std::size_t layer = 0; layer < 3u; ++layer) {
+                    for (std::size_t channel = 0; channel < 3u; ++channel) {
+                        data.densityCurvesLayers[layer][channel][sample] =
+                            evaluated.layers[layer][channel];
+                    }
+                }
+            }
+            data.hasDensityCurvesLayers = true;
+            data.densityCurvesLayersMalformed = false;
+            data.densityCurvesLayersDiagnostic.clear();
             return true;
         }
 
@@ -1225,7 +1371,9 @@ namespace Profiles {
 
         std::uint64_t build_profile_asset_version_token(
             const SpektrafilmProfileInfo& info,
-            const SpektrafilmProfileSamples& data) {
+            const SpektrafilmProfileSamples& data,
+            const std::vector<double>& sourceLogExposure,
+            const DensityCurveModel& densityModel) {
             std::uint64_t hash = Hash::kFnvOffset;
             hash_string_update(hash, info.stock);
             hash_u64_update(hash, static_cast<std::uint64_t>(info.support));
@@ -1237,15 +1385,8 @@ namespace Profiles {
             hash_string_update(hash, info.referenceIlluminant.value);
             hash_string_update(hash, info.viewingIlluminant.value);
             hash_consumed_profile_samples(hash, data);
-            return hash == 0 ? 1u : hash;
-        }
-
-        std::uint64_t build_print_profile_asset_version_token(
-            const SpektrafilmProfileInfo& info,
-            const SpektrafilmProfileSamples& data,
-            const std::vector<double>& sourceLogExposure,
-            const PrintDensityModel& densityModel) {
-            std::uint64_t hash = build_profile_asset_version_token(info, data);
+            hash_string_update(hash, "density-curve-evaluator-version");
+            hash_u64_update(hash, kDensityCurveEvaluatorVersion);
             hash_string_update(hash, "data.log_exposure.source-double");
             hash_u64_update(hash, static_cast<std::uint64_t>(sourceLogExposure.size()));
             Hash::hash_bytes_update(
@@ -1298,35 +1439,35 @@ namespace Profiles {
             }
 
             std::vector<double> sourceLogExposure;
-            PrintDensityModel densityModel;
-            if constexpr (std::is_same_v<ProfileT, ValidatedPrintProfile>) {
-                if (!parse_print_density_model(
-                        root,
-                        sourceLogExposure,
-                        densityModel,
-                        ctx,
-                        error)) {
-                    if (outDiagnostic) {
-                        *outDiagnostic = error;
-                    }
-                    return false;
+            DensityCurveModel densityModel;
+            if (!parse_density_curve_model(
+                    root,
+                    sourceLogExposure,
+                    densityModel,
+                    ctx,
+                    error) ||
+                !regenerate_density_curves_from_model(
+                    data,
+                    sourceLogExposure,
+                    densityModel,
+                    info.type,
+                    ctx,
+                    error)) {
+                if (outDiagnostic) {
+                    *outDiagnostic = error;
                 }
+                return false;
             }
 
             outProfile.info = std::move(info);
             outProfile.data = std::move(data);
-            if constexpr (std::is_same_v<ProfileT, ValidatedPrintProfile>) {
-                outProfile.sourceLogExposure = std::move(sourceLogExposure);
-                outProfile.densityModel = densityModel;
-                outProfile.assetVersionToken = build_print_profile_asset_version_token(
-                    outProfile.info,
-                    outProfile.data,
-                    outProfile.sourceLogExposure,
-                    outProfile.densityModel);
-            } else {
-                outProfile.assetVersionToken =
-                    build_profile_asset_version_token(outProfile.info, outProfile.data);
-            }
+            outProfile.sourceLogExposure = std::move(sourceLogExposure);
+            outProfile.densityModel = densityModel;
+            outProfile.assetVersionToken = build_profile_asset_version_token(
+                outProfile.info,
+                outProfile.data,
+                outProfile.sourceLogExposure,
+                outProfile.densityModel);
             if (outDiagnostic) {
                 outDiagnostic->clear();
             }

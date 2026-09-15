@@ -189,9 +189,11 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setLabel("Spectral upsampling");
         p->appendOption("Hanatos");
         p->appendOption("Mallett");
+        p->appendOption("Arctic");
         p->setHint("Choose the spectral reconstruction method used for film exposure. "
                    "Hanatos uses the Hanatos 2025 LUT when available; "
-                   "Mallett uses the Mallett 2019 sRGB basis reconstruction.");
+                   "Mallett uses the Mallett 2019 sRGB basis reconstruction; "
+                   "Arctic uses the Arctic 2026 beta04 reflectance LUT.");
         p->setDefault(0);
         p->setEvaluateOnChange(true);
     }
@@ -209,6 +211,14 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kInputCctfDecoding);
         p->setLabel("Decode input CCTF");
         p->setDefault(false);
+        p->setEvaluateOnChange(true);
+    }
+    {
+        OFX::BooleanParamDescriptor* p =
+            desc.defineBooleanParam(JuicerParams::kInputCompression);
+        p->setLabel("Input gamut compression");
+        p->setHint("Compress out-of-domain input chromaticities before TC spectral reconstruction.");
+        p->setDefault(true);
         p->setEvaluateOnChange(true);
     }
     {
@@ -1413,6 +1423,17 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(kParamOutputCctfEncoding);
             p->setLabel("Apply output CCTF");
             p->setHint("Disable to output linear RGB in the selected output color space. Output remains clipped to 0-1.");
+            p->setDefault(true);
+            if (grpOutput)
+                p->setParent(*grpOutput);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::BooleanParamDescriptor* p =
+                desc.defineBooleanParam(JuicerParams::kOutputGamutCompression);
+            p->setLabel("Output gamut compression");
+            p->setHint(
+                "Compress destination-linear highlights and chroma before scanner optics.");
             p->setDefault(true);
             if (grpOutput)
                 p->setParent(*grpOutput);

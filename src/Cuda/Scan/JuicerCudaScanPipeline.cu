@@ -8,6 +8,7 @@
 #include <limits>
 
 #include "Cuda/JuicerCudaDeviceHelpers.cuh"
+#include "GamutCompression.h"
 #include "openrand/philox.h"
 
 namespace {
@@ -62,6 +63,44 @@ namespace {
         if (v >= 1.0)
             return 1.0;
         return v;
+    }
+
+    __device__ __forceinline__ bool apply_output_gamut_compression_device(
+        const JuicerCuda::ScanColorPayload& color,
+        double rgb[3]) {
+        if (!color.outputGamutActive) {
+            return true;
+        }
+        if (!color.outputGamutCmax) {
+            return false;
+        }
+        float compressed[3] = {
+            static_cast<float>(rgb[0]),
+            static_cast<float>(rgb[1]),
+            static_cast<float>(rgb[2])};
+        const Gamut::OutputCompressionView view{
+            color.outputGamutCmax,
+            color.outputGamutNativeRgbToD65Xyz,
+            color.outputGamutD65XyzToNativeRgb,
+            color.outputGamutOklabXyzToLms,
+            color.outputGamutOklabLmsToXyz,
+            color.outputGamutOklabLmsRootToLab,
+            color.outputGamutOklabLabToLmsRoot,
+            {color.outputGamutLightnessKnee[0],
+             color.outputGamutLightnessKnee[1],
+             color.outputGamutLightnessKnee[2]},
+            {color.outputGamutChromaKnee[0],
+             color.outputGamutChromaKnee[1],
+             color.outputGamutChromaKnee[2]}};
+        Gamut::compress_output_oklch(view, compressed);
+        if (!isfinite(compressed[0]) || !isfinite(compressed[1]) ||
+            !isfinite(compressed[2])) {
+            return false;
+        }
+        rgb[0] = static_cast<double>(compressed[0]);
+        rgb[1] = static_cast<double>(compressed[1]);
+        rgb[2] = static_cast<double>(compressed[2]);
+        return true;
     }
 
     __device__ __forceinline__ double encode_sRGBd_device(double v) {
@@ -1713,7 +1752,11 @@ namespace {
         double rgbOut[3];
         mat3_mul_vec_double_device(scan.scanColor.xyzToRgb, adapted, rgbOut);
 
-        if (!isfinite(rgbOut[0]) || !isfinite(rgbOut[1]) || !isfinite(rgbOut[2])) {
+        if (!isfinite(rgbOut[0]) || !isfinite(rgbOut[1]) ||
+            !isfinite(rgbOut[2]) ||
+            !apply_output_gamut_compression_device(
+                scan.scanColor,
+                rgbOut)) {
             signal_scan_error_device(scan.scanErrorFlag);
             if (scan.linearRgbR && scan.linearRgbG && scan.linearRgbB) {
                 scan.linearRgbR[idx] = 0.0f;
@@ -1893,7 +1936,11 @@ namespace {
                 double rgbOut[3];
                 mat3_mul_vec_double_device(scan.scanColor.xyzToRgb, adapted, rgbOut);
 
-                if (!isfinite(rgbOut[0]) || !isfinite(rgbOut[1]) || !isfinite(rgbOut[2])) {
+                if (!isfinite(rgbOut[0]) || !isfinite(rgbOut[1]) ||
+                    !isfinite(rgbOut[2]) ||
+                    !apply_output_gamut_compression_device(
+                        scan.scanColor,
+                        rgbOut)) {
                     signal_scan_error_device(scan.scanErrorFlag);
                     outR[idx] = 0.0f;
                     outG[idx] = 0.0f;

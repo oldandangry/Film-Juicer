@@ -4,15 +4,36 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "ColorTransforms.h"
 #include "Hash.h"
 #include "SpectralData.h"
 
+struct FilmRawRecipe;
 namespace Spectral {
+
+    bool build_hanatos_reconstructed_reference_white(
+        const NpySpectraLUT& spectra,
+        float spectralGaussianBlur,
+        const std::array<float, 3>& referenceWhiteXYZ,
+        std::array<float, kNumSamples>& out,
+        std::string& diagnostic);
+
+    bool build_film_tc_lut(
+        const ::FilmRawRecipe& recipe,
+        const NpySpectraLUT& spectra,
+        const std::array<float, kNumSamples>& referenceIlluminant,
+        FilmTcLut& out,
+        std::string& diagnostic);
+
+    std::array<float, 3> sample_film_tc_lut(
+        const FilmTcLut& lut,
+        const std::array<float, 3>& projectedXYZ);
 
     inline bool is_finite_sp(float value) {
         return std::isfinite(value);

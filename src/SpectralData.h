@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "Logging.h"
+#include "Hash.h"
 #include "NpyLoader.h"
 
 namespace Spectral {
@@ -47,11 +48,24 @@ namespace Spectral {
         }
     };
 
+    struct FilmTcLut {
+        static constexpr int kSize = 192;
+        static constexpr int kChannels = 4;
+
+        // Fixed C-order [192][192][4]; RGB are followed by one padding channel.
+        std::vector<float> rgba;
+    };
+
     struct SpectralContext {
         SpectralShape shape;
         Curve xBar, yBar, zBar;
         std::atomic<bool> hanatosAvailable{false};
         NpySpectraLUT hanSpectra;
+        std::uint64_t hanatosAssetHash = 0;
+        std::atomic<bool> arcticAvailable{false};
+        NpySpectraLUT arcticSpectra;
+        std::uint64_t arcticAssetHash = 0;
+        std::string arcticFailure;
         std::atomic<bool> mallettAvailable{false};
         NpyFloat2D mallettBasis;
     };
@@ -338,11 +352,89 @@ namespace Spectral {
     }
 
     inline void load_hanatos_spectra_lut(const std::string& path) {
-        bool success = load_npy_spectra_lut(path, gHanSpectra);
-        set_hanatos_available(success && gHanSpectra.size > 0 && gHanSpectra.numSamples > 0);
+        NpySpectraLUT spectra;
+        const bool success = load_npy_spectra_lut(path, spectra);
+        if (success && spectra.size > 0 && spectra.numSamples > 0) {
+            gHanSpectra = std::move(spectra);
+            context().hanatosAssetHash = Hash::hash_float_span(
+                gHanSpectra.data.data(),
+                gHanSpectra.data.size());
+        } else {
+            gHanSpectra = NpySpectraLUT{};
+            context().hanatosAssetHash = 0;
+        }
+        set_hanatos_available(success && gHanSpectra.size > 0 &&
+                              gHanSpectra.numSamples > 0 &&
+                              context().hanatosAssetHash != 0);
         if (hanatos_available() && !hanatos_matches_reference_shape()) {
             disable_hanatos_if_reference_mismatch();
         }
+    }
+
+    inline bool arctic_available() {
+        return context().arcticAvailable.load(std::memory_order_acquire);
+    }
+
+    inline void set_arctic_available(bool available) {
+        context().arcticAvailable.store(available, std::memory_order_release);
+    }
+
+    inline const std::string& arctic_failure() {
+        return context().arcticFailure;
+    }
+
+    inline void load_arctic2026beta04_spectra_lut(const std::string& path) {
+        constexpr std::uint64_t kExpectedDecodedAssetHash =
+            0x9262ffb765e3289eULL;
+        SpectralContext& spectralContext = context();
+        spectralContext.arcticFailure.clear();
+        NpySpectraLUT spectra;
+        if (!load_npy_spectra_lut(path, spectra)) {
+            spectralContext.arcticFailure =
+                "MissingRequiredResource resource=arctic2026beta04_reflectance_xy_tc.npy requirement=readable_float16_c_order_192x192x81";
+        } else if (spectra.size != FilmTcLut::kSize ||
+                   spectra.numSamples != kNumSamples ||
+                   spectra.sourceElementBytes != 2 ||
+                   spectra.data.size() !=
+                       static_cast<std::size_t>(FilmTcLut::kSize) *
+                           static_cast<std::size_t>(FilmTcLut::kSize) *
+                           static_cast<std::size_t>(kNumSamples)) {
+            spectralContext.arcticFailure =
+                "MalformedRequiredResource resource=arctic2026beta04_reflectance_xy_tc.npy requirement=float16_c_order_192x192x81";
+        } else {
+            const auto [minimum, maximum] =
+                std::minmax_element(spectra.data.begin(), spectra.data.end());
+            const bool finite = std::all_of(
+                spectra.data.begin(),
+                spectra.data.end(),
+                [](float value) {
+                    return std::isfinite(value);
+                });
+            if (!finite || minimum == spectra.data.end() ||
+                *minimum != 0.0f || *maximum != 41.0625f) {
+                spectralContext.arcticFailure =
+                    "MalformedRequiredResource resource=arctic2026beta04_reflectance_xy_tc.npy requirement=finite_range_0_to_41.0625";
+            }
+        }
+        if (!spectralContext.arcticFailure.empty()) {
+            spectralContext.arcticSpectra = NpySpectraLUT{};
+            spectralContext.arcticAssetHash = 0;
+            set_arctic_available(false);
+            return;
+        }
+        spectralContext.arcticAssetHash = Hash::hash_float_span(
+            spectra.data.data(),
+            spectra.data.size());
+        if (spectralContext.arcticAssetHash != kExpectedDecodedAssetHash) {
+            spectralContext.arcticFailure =
+                "MalformedRequiredResource resource=arctic2026beta04_reflectance_xy_tc.npy requirement=sha256_cf5b3dafad6470cdd3981038149374c967820654b94142332808681d364083a6";
+            spectralContext.arcticSpectra = NpySpectraLUT{};
+            spectralContext.arcticAssetHash = 0;
+            set_arctic_available(false);
+            return;
+        }
+        spectralContext.arcticSpectra = std::move(spectra);
+        set_arctic_available(true);
     }
 
     inline bool mallett_available() {
@@ -404,7 +496,8 @@ namespace Spectral {
     // Note: "Mallett" refers to the Mallett 2019 sRGB basis reconstruction (when Hanatos LUT is not selected/available).
     enum class SpectralUpsamplingMode : std::uint8_t {
         PreferHanatos = 0,
-        ForceMallett = 1
+        ForceMallett = 1,
+        Arctic2026beta04 = 2
     };
 
     // ============================================================================

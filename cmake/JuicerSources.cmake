@@ -14,12 +14,14 @@ set(JUICER_SOURCES
     src/ProcessRoot.cpp
     src/DiffusionHostBehavior.cpp
     src/DiffusionExecution.cpp
+    src/GamutCompression.cpp
     src/RenderRecipe.cpp
     src/Cuda/JuicerCudaFilmPayloads.cpp
     src/FilmEffectsFrameDescriptors.cpp
     src/ResourceAssetLibrary.cpp
     src/ScatterHalation.cpp
     src/Scanner.cpp
+    src/SpectralProcessing.cpp
     src/Cuda/Diffusion/JuicerCudaDiffusion.cu
     src/Cuda/Film/JuicerCudaScatterHalation.cu
     src/Cuda/Film/JuicerCudaFilmPipeline.cu
