@@ -198,7 +198,7 @@ namespace {
 
     __device__ __forceinline__ void signal_scan_error_device(int* flag) {
         if (flag) {
-            atomicExch(flag, 1);
+            atomicOr(reinterpret_cast<unsigned int*>(flag), 1u);
         }
     }
 
@@ -1626,7 +1626,9 @@ namespace {
                     logE_raw)) {
                 return false;
             }
-            juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, densityCmy);
+            const unsigned int failures =
+                juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, densityCmy);
+            signal_dir_failure_device(params.scanStage.scanErrorFlag, failures);
             return true;
         }
 
@@ -1639,22 +1641,24 @@ namespace {
         intermediates.layerPre = layerPre;
         compute_logE_and_layer_pre_device(params, rgbIn, intermediates);
 
-        if (dev.dir.active) {
+        if (dev.dir.mode != JuicerCuda::DirMode::Inactive) {
             float logE_corr[3] = {
                 logE_sanitized[0],
                 logE_sanitized[1],
                 logE_sanitized[2]};
-            apply_dir_runtime_logE_device(
+            const unsigned int failures = apply_dir_runtime_logE_device(
                 logE_corr,
                 layerPre,
                 dev.dir);
+            signal_dir_failure_device(params.scanStage.scanErrorFlag, failures);
+            if (failures != 0u) {
+                densityCmy[0] = densityCmy[1] = densityCmy[2] = nanf("");
+                return true;
+            }
 
-            const JuicerCuda::DeviceCurveView cB =
-                dev.dirPrecorrected ? dev.dirDensB : dev.densB;
-            const JuicerCuda::DeviceCurveView cG =
-                dev.dirPrecorrected ? dev.dirDensG : dev.densG;
-            const JuicerCuda::DeviceCurveView cR =
-                dev.dirPrecorrected ? dev.dirDensR : dev.densR;
+            const JuicerCuda::DeviceCurveView cB = dev.dirDensB;
+            const JuicerCuda::DeviceCurveView cG = dev.dirDensG;
+            const JuicerCuda::DeviceCurveView cR = dev.dirDensR;
 
             densityCmy[2] =
                 sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);

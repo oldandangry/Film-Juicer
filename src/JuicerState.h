@@ -98,10 +98,6 @@ struct ParamSnapshot {
     double glarePercent = 0.03;
     double glareRoughness = 0.7;
     double glareBlurSigmaPx = 0.5;
-    double couplersAmount = 1.0;
-    double couplersInhibitionSameLayer = 1.0;
-    double couplersInhibitionInterlayer = 1.0;
-    double couplersDiffusionSizeUm = 20.0;
     double cameraExposureCompensationEv = 0.0;
     float cameraFilmFormatLongEdgeMm = 35.0f;
     float filmGammaFactor = 1.0f;
@@ -110,17 +106,14 @@ struct ParamSnapshot {
     double scannerWhiteLevel = 0.98;
     double gateWeaveAmount = 0.0;
 
-    std::array<double, 2> couplersGammaInterlayerRToGb{{0.353, 0.302}};
-    std::array<double, 2> couplersGammaInterlayerGToRb{{0.154, 0.353}};
-    std::array<double, 2> couplersGammaInterlayerBToRg{{0.168, 0.226}};
     std::array<double, 2> scannerUnsharpMask{{0.7, 0.7}};
     std::array<double, 3> printUiYmcCc{};
-    std::array<double, 3> couplersGammaSameLayerRgb{{0.336, 0.319, 0.273}};
     std::array<double, 3> cameraFilterUV{{1.0, 410.0, 8.0}};
     std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
 
     Spektrafilm::DiffusionFilterAuthoredControls cameraDiffusion;
     Spektrafilm::DiffusionFilterAuthoredControls enlargerDiffusion;
+    Spektrafilm::DirCouplersControls dirCouplers;
 
     std::string filmProfileKey = Spektrafilm::kDefaultFilmProfileKey;
     std::string printProfileKey = Spektrafilm::kDefaultPrintProfileKey;
@@ -130,8 +123,6 @@ struct ParamSnapshot {
     int enlIll = 3;
     int normalizePrintExposure = 1;
     int printExposureCompensation = 1;
-    int couplersActive = 1;
-    int couplersGammaUseStock = 1;
     int inputColorSpace = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut);
     int inputCctfDecoding = 0;
     int inputCompressionEnabled = 1;

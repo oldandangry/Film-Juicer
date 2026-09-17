@@ -83,29 +83,6 @@ namespace Profiles {
             Print
         };
 
-        bool is_identifier_char(char c) {
-            return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.' || c == '#';
-        }
-        bool matches_case_insensitive(const std::string& text, std::size_t index, std::string_view token) {
-            if (index + token.size() > text.size()) {
-                return false;
-            }
-            for (std::size_t j = 0; j < token.size(); ++j) {
-                const unsigned char tc = static_cast<unsigned char>(text[index + j]);
-                const unsigned char lc = static_cast<unsigned char>(token[j]);
-                if (std::tolower(tc) != lc) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        std::string to_lower_ascii(std::string value) {
-            for (char& c : value) {
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            }
-            return value;
-        }
-
         enum class SelectedNumericPolicy : unsigned char {
             FiniteOnly,
             NullableNan
@@ -167,133 +144,6 @@ namespace Profiles {
             return "unknown";
         }
 
-        bool is_nan_string_token(const std::string& value) {
-            const std::string lower = to_lower_ascii(value);
-            return lower == "nan" || lower == "+nan" || lower == "-nan" || lower == "__nan__";
-        }
-
-        bool is_inf_string_token(const std::string& value) {
-            const std::string lower = to_lower_ascii(value);
-            return lower == "inf" || lower == "+inf" || lower == "-inf" ||
-                   lower == "infinity" || lower == "+infinity" || lower == "-infinity" ||
-                   lower == "__inf__" || lower == "__-inf__";
-        }
-
-        bool quote_bare_nan_literals_for_json_parse(std::string& text) {
-            bool inString = false;
-            bool escaping = false;
-
-            for (std::size_t i = 0; i < text.size();) {
-                const char c = text[i];
-                if (inString) {
-                    if (escaping) {
-                        escaping = false;
-                        ++i;
-                        continue;
-                    }
-                    if (c == '\\') {
-                        escaping = true;
-                        ++i;
-                        continue;
-                    }
-                    if (c == '"') {
-                        inString = false;
-                    }
-                    ++i;
-                    continue;
-                }
-
-                if (c == '"') {
-                    inString = true;
-                    ++i;
-                    continue;
-                }
-
-                std::size_t tokenOffset = 0;
-                if ((c == '+' || c == '-') && i + 1 < text.size()) {
-                    tokenOffset = 1;
-                }
-                const std::size_t tokenIndex = i + tokenOffset;
-                if (matches_case_insensitive(text, tokenIndex, "nan")) {
-                    const std::size_t end = tokenIndex + 3u;
-                    const bool hasPrev = i > 0 && is_identifier_char(text[i - 1]);
-                    const bool hasNext = end < text.size() && is_identifier_char(text[end]);
-                    if (!hasPrev && !hasNext) {
-                        text.replace(i, end - i, "\"NaN\"");
-                        i += 5u;
-                        continue;
-                    }
-                }
-                ++i;
-            }
-
-            return true;
-        }
-
-        void quote_overflowed_json_numbers_for_field_validation(std::string& text) {
-            bool inString = false;
-            bool escaping = false;
-            for (std::size_t index = 0; index < text.size();) {
-                const char c = text[index];
-                if (inString) {
-                    if (escaping) {
-                        escaping = false;
-                    } else if (c == '\\') {
-                        escaping = true;
-                    } else if (c == '"') {
-                        inString = false;
-                    }
-                    ++index;
-                    continue;
-                }
-                if (c == '"') {
-                    inString = true;
-                    ++index;
-                    continue;
-                }
-                if (!(c == '-' || std::isdigit(static_cast<unsigned char>(c)))) {
-                    ++index;
-                    continue;
-                }
-
-                const std::size_t begin = index;
-                if (text[index] == '-') {
-                    ++index;
-                }
-                while (index < text.size() &&
-                       std::isdigit(static_cast<unsigned char>(text[index]))) {
-                    ++index;
-                }
-                if (index < text.size() && text[index] == '.') {
-                    ++index;
-                    while (index < text.size() &&
-                           std::isdigit(static_cast<unsigned char>(text[index]))) {
-                        ++index;
-                    }
-                }
-                if (index < text.size() &&
-                    (text[index] == 'e' || text[index] == 'E')) {
-                    ++index;
-                    if (index < text.size() &&
-                        (text[index] == '+' || text[index] == '-')) {
-                        ++index;
-                    }
-                    while (index < text.size() &&
-                           std::isdigit(static_cast<unsigned char>(text[index]))) {
-                        ++index;
-                    }
-                }
-
-                const std::string token = text.substr(begin, index - begin);
-                char* end = nullptr;
-                const double value = std::strtod(token.c_str(), &end);
-                if (end == token.c_str() + token.size() && !std::isfinite(value)) {
-                    text.replace(begin, token.size(), "\"Inf\"");
-                    index = begin + 5u;
-                }
-            }
-        }
-
         bool parse_selected_json_file(const std::string& path, Json& out, std::string& error) {
             errno = 0;
             std::ifstream file(path, std::ios::binary);
@@ -306,14 +156,10 @@ namespace Profiles {
 
             std::ostringstream oss;
             oss << file.rdbuf();
-            std::string text = oss.str();
-            quote_bare_nan_literals_for_json_parse(text);
-            quote_overflowed_json_numbers_for_field_validation(text);
-
             try {
-                out = Json::parse(text, nullptr, true, true);
+                out = Json::parse(oss.str());
             } catch (const Json::exception& ex) {
-                error = std::string("MalformedRequiredProfileData phase=2 field=<json> expected=strict-json-or-field-gated-NaN actual=parse-error path=") +
+                error = std::string("MalformedRequiredProfileData phase=2 field=<json> expected=strict-json actual=parse-error path=") +
                         path + " reason=" + ex.what();
                 return false;
             }
@@ -349,14 +195,6 @@ namespace Profiles {
             }
 
             if (node.is_string()) {
-                const std::string value = node.get<std::string>();
-                if (is_nan_string_token(value) && policy == SelectedNumericPolicy::NullableNan) {
-                    out = std::numeric_limits<float>::quiet_NaN();
-                    return true;
-                }
-                if (is_inf_string_token(value)) {
-                    return set_error(error, ctx, field, "finite-or-field-gated-NaN", value);
-                }
                 return set_error(error, ctx, field, "numeric-token", "string");
             }
 
@@ -430,34 +268,6 @@ namespace Profiles {
             return true;
         }
 
-        bool parse_selected_double_matrix_3x3(
-            const Json& node,
-            const SelectedProfileContext& ctx,
-            const std::string& field,
-            std::array<std::array<double, 3>, 3>& out,
-            std::string& error) {
-            if (!require_array_size(node, 3u, ctx, field, error)) {
-                return false;
-            }
-            for (std::size_t row = 0; row < out.size(); ++row) {
-                const std::string rowField = field + "[" + std::to_string(row) + "]";
-                if (!require_array_size(node[row], 3u, ctx, rowField, error)) {
-                    return false;
-                }
-                for (std::size_t column = 0; column < out[row].size(); ++column) {
-                    if (!parse_selected_double(
-                            node[row][column],
-                            ctx,
-                            rowField + "[" + std::to_string(column) + "]",
-                            out[row][column],
-                            error)) {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        }
-
         bool parse_selected_vector(
             const Json& node,
             std::size_t expected,
@@ -514,88 +324,6 @@ namespace Profiles {
                 }
             }
             return true;
-        }
-
-        bool parse_selected_density_curves_layers_required(
-            const Json& node,
-            std::size_t expectedRows,
-            const SelectedProfileContext& ctx,
-            std::array<std::array<std::vector<float>, 3>, 3>& out,
-            std::string& error) {
-            if (!require_array_size(node, expectedRows, ctx, "data.density_curves_layers", error)) {
-                return false;
-            }
-            for (std::size_t layer = 0; layer < 3u; ++layer) {
-                for (std::size_t ch = 0; ch < 3u; ++ch) {
-                    out[layer][ch].assign(expectedRows, std::numeric_limits<float>::quiet_NaN());
-                }
-            }
-            for (std::size_t row = 0; row < expectedRows; ++row) {
-                const Json& rowNode = node[row];
-                const std::string rowField =
-                    "data.density_curves_layers[" + std::to_string(row) + "]";
-                if (!require_array_size(rowNode, 3u, ctx, rowField, error)) {
-                    return false;
-                }
-                for (std::size_t layer = 0; layer < 3u; ++layer) {
-                    const Json& layerNode = rowNode[layer];
-                    const std::string layerField =
-                        rowField + "[" + std::to_string(layer) + "]";
-                    if (!require_array_size(layerNode, 3u, ctx, layerField, error)) {
-                        return false;
-                    }
-                    for (std::size_t ch = 0; ch < 3u; ++ch) {
-                        if (!parse_selected_number(
-                                layerNode[ch],
-                                SelectedNumericPolicy::NullableNan,
-                                ctx,
-                                layerField + "[" + std::to_string(ch) + "]",
-                                out[layer][ch][row],
-                                error)) {
-                            return false;
-                        }
-                    }
-                }
-            }
-            return true;
-        }
-
-        void record_selected_density_curves_layers(
-            const Json& data,
-            SpektrafilmProfileSamples& out,
-            const SelectedProfileContext& ctx) {
-            out.hasDensityCurvesLayers = false;
-            out.densityCurvesLayersMalformed = false;
-            out.densityCurvesLayersDiagnostic.clear();
-            for (auto& layer : out.densityCurvesLayers) {
-                for (auto& channel : layer) {
-                    channel.clear();
-                }
-            }
-
-            const auto it = data.find("density_curves_layers");
-            if (it == data.end() || (it->is_array() && it->empty())) {
-                return;
-            }
-
-            std::array<std::array<std::vector<float>, 3>, 3> layers{};
-            std::string layerError;
-            if (!parse_selected_density_curves_layers_required(
-                    *it,
-                    out.logExposure.size(),
-                    ctx,
-                    layers,
-                    layerError)) {
-                out.densityCurvesLayersMalformed = true;
-                out.densityCurvesLayersDiagnostic =
-                    layerError.empty()
-                        ? "MalformedRequiredProfileData phase=9B field=data.density_curves_layers"
-                        : layerError;
-                return;
-            }
-
-            out.densityCurvesLayers = std::move(layers);
-            out.hasDensityCurvesLayers = true;
         }
 
         template <std::size_t N>
@@ -884,6 +612,7 @@ namespace Profiles {
 
         bool parse_profile_samples(
             const Json& root,
+            const std::vector<double>& sourceLogExposure,
             SpektrafilmProfileSamples& out,
             const SelectedProfileContext& ctx,
             std::string& error) {
@@ -948,35 +677,22 @@ namespace Profiles {
             }
             copy_vector_to_array(baseDensity, out.baseDensity);
 
-            const Json& logExposureNode = data.value("log_exposure", Json{});
-            if (!logExposureNode.is_array()) {
-                return set_error(error, ctx, "data.log_exposure", "array[N]", json_type_name(logExposureNode));
-            }
-            if (!parse_selected_vector(
-                    logExposureNode,
-                    logExposureNode.size(),
-                    SelectedNumericPolicy::FiniteOnly,
-                    ctx,
-                    "data.log_exposure",
-                    out.logExposure,
-                    error)) {
-                return false;
+            out.logExposure.resize(sourceLogExposure.size());
+            for (std::size_t sample = 0; sample < sourceLogExposure.size(); ++sample) {
+                const float narrowed = static_cast<float>(sourceLogExposure[sample]);
+                if (!std::isfinite(narrowed)) {
+                    return set_error(
+                        error,
+                        ctx,
+                        "data.log_exposure[" + std::to_string(sample) + "]",
+                        "float-representable-number",
+                        std::to_string(sourceLogExposure[sample]));
+                }
+                out.logExposure[sample] = narrowed;
             }
             if (!validate_log_exposure_axis(out.logExposure, ctx, error)) {
                 return false;
             }
-
-            if (!parse_selected_triplet_matrix(
-                    data.value("density_curves", Json{}),
-                    out.logExposure.size(),
-                    SelectedNumericPolicy::NullableNan,
-                    ctx,
-                    "data.density_curves",
-                    out.densityCurves,
-                    error)) {
-                return false;
-            }
-            record_selected_density_curves_layers(data, out, ctx);
 
             const auto windowIt = data.find("hanatos2025_adaptation_window_params");
             out.hasHanatos2025AdaptationWindowParams = false;
@@ -1077,76 +793,39 @@ namespace Profiles {
                     json_type_name(*modelIt));
             }
             const Json& model = *modelIt;
-            const auto modelTypeIt = model.find("model_type");
-            if (modelTypeIt == model.end() || !modelTypeIt->is_string()) {
-                return set_error(
-                    error,
-                    ctx,
-                    "data.density_curves_model.model_type",
-                    "norm_cdfs",
-                    modelTypeIt == model.end() ? "missing" : json_type_name(*modelTypeIt));
-            }
-            const std::string modelType = modelTypeIt->get<std::string>();
-            if (modelType != "norm_cdfs") {
-                return set_error(
-                    error,
-                    ctx,
-                    "data.density_curves_model.model_type",
-                    "norm_cdfs",
-                    modelType);
-            }
-            if (!parse_selected_double_matrix_3x3(
-                    model.value("centers", Json{}),
-                    ctx,
-                    "data.density_curves_model.centers",
-                    densityModel.centers,
-                    error) ||
-                !parse_selected_double_matrix_3x3(
-                    model.value("amplitudes", Json{}),
-                    ctx,
-                    "data.density_curves_model.amplitudes",
-                    densityModel.amplitudes,
-                    error) ||
-                !parse_selected_double_matrix_3x3(
-                    model.value("sigmas", Json{}),
-                    ctx,
-                    "data.density_curves_model.sigmas",
-                    densityModel.sigmas,
-                    error)) {
-                return false;
-            }
-            for (std::size_t channel = 0; channel < densityModel.sigmas.size(); ++channel) {
-                for (std::size_t layer = 0; layer < densityModel.sigmas[channel].size(); ++layer) {
-                    if (densityModel.sigmas[channel][layer] <= 0.0) {
-                        return set_error(
-                            error,
-                            ctx,
-                            "data.density_curves_model.sigmas[" + std::to_string(channel) + "][" +
-                                std::to_string(layer) + "]",
-                            "finite-positive-number",
-                            std::to_string(densityModel.sigmas[channel][layer]));
+            const auto extract = [&](const char* key, auto& destination) {
+                const auto member = model.find(key);
+                if (member == model.end() || !member->is_array() || member->size() != 3u) {
+                    return false;
+                }
+                for (std::size_t row = 0; row < 3u; ++row) {
+                    if (!(*member)[row].is_array() || (*member)[row].size() != 3u) {
+                        return false;
+                    }
+                    for (std::size_t column = 0; column < 3u; ++column) {
+                        destination[row][column] = (*member)[row][column].get<double>();
                     }
                 }
-            }
-            const auto alphasIt = model.find("alphas");
-            if (alphasIt == model.end() || !alphasIt->is_null()) {
+                return true;
+            };
+            try {
+                if (!extract("centers", densityModel.centers) ||
+                    !extract("amplitudes", densityModel.amplitudes) ||
+                    !extract("sigmas", densityModel.sigmas)) {
+                    return set_error(
+                        error,
+                        ctx,
+                        "data.density_curves_model",
+                        "three 3x3 numeric coefficient arrays",
+                        "invalid-shape");
+                }
+            } catch (const Json::exception&) {
                 return set_error(
                     error,
                     ctx,
-                    "data.density_curves_model.alphas",
-                    "null",
-                    alphasIt == model.end() ? "missing" : json_type_name(*alphasIt));
-            }
-            const auto developmentTimeIt = data.find("development_time");
-            if (developmentTimeIt == data.end() || !developmentTimeIt->is_null()) {
-                return set_error(
-                    error,
-                    ctx,
-                    "data.development_time",
-                    "null",
-                    developmentTimeIt == data.end()
-                        ? "missing"
-                        : json_type_name(*developmentTimeIt));
+                    "data.density_curves_model",
+                    "three 3x3 numeric coefficient arrays",
+                    "invalid-coefficient");
             }
             return true;
         }
@@ -1177,15 +856,6 @@ namespace Profiles {
             for (std::size_t sample = 0;
                  sample < sourceLogExposure.size();
                  ++sample) {
-                if (static_cast<float>(sourceLogExposure[sample]) !=
-                    data.logExposure[sample]) {
-                    return set_error(
-                        error,
-                        ctx,
-                        "data.log_exposure[" + std::to_string(sample) + "]",
-                        "source double exactly narrows to published float axis",
-                        std::to_string(sourceLogExposure[sample]));
-                }
                 const DensityCurveSample evaluated =
                     evaluate_density_curve_sample(
                         model,
@@ -1207,9 +877,6 @@ namespace Profiles {
                     }
                 }
             }
-            data.hasDensityCurvesLayers = true;
-            data.densityCurvesLayersMalformed = false;
-            data.densityCurvesLayersDiagnostic.clear();
             return true;
         }
 
@@ -1283,90 +950,62 @@ namespace Profiles {
             }
         }
 
-        bool validate_halation_profile_digest(
-            const ProfileDigest& digest,
-            const SelectedProfileContext& ctx,
-            std::string& error) {
-            const auto validate = [&](const std::array<float, 3>& values,
-                                      const char* field) {
-                for (std::size_t channel = 0; channel < values.size(); ++channel) {
-                    const float value = values[channel];
-                    if (!std::isfinite(value) || value < 0.0f) {
-                        return set_error(
-                            error,
-                            ctx,
-                            std::string(field) + "[" + std::to_string(channel) + "]",
-                            "finite-nonnegative-Float32",
-                            std::to_string(value));
-                    }
-                }
-                return true;
-            };
-            return validate(
-                       digest.halationFirstSigmaUm,
-                       "digest.halation_first_sigma_um") &&
-                   validate(
-                       digest.halationPrimaryAmount,
-                       "digest.halation_primary_amount");
-        }
-
-        bool build_film_profile_digest(
-            const SpektrafilmProfileInfo& info,
-            const SelectedProfileContext& ctx,
-            ProfileDigest& out,
-            std::string& error) {
+        ProfileDigest build_film_profile_digest(
+            const SpektrafilmProfileInfo& info) {
             ProfileDigest digest{};
             const bool positive = info.type == Spektrafilm::ProfilePolarity::Positive;
             if (positive) {
-                digest.gammaSamelayerRgb = {{0.12f, 0.08f, 0.06f}};
-                digest.gammaInterlayerRToGb = {{0.12f, 0.06f}};
-                digest.gammaInterlayerGToRb = {{0.08f, 0.06f}};
-                digest.gammaInterlayerBToRg = {{0.06f, 0.06f}};
+                digest.gammaSamelayerRgb = {{0.2291f, 0.1029f, 0.2651f}};
+                digest.gammaInterlayerRToGb = {{0.1449f, 0.1560f}};
+                digest.gammaInterlayerGToRb = {{0.0496f, 0.0874f}};
+                digest.gammaInterlayerBToRg = {{0.0571f, 0.2462f}};
+            } else if (info.use == ProfileUse::Cine &&
+                       !info.referenceIlluminant.value.empty() &&
+                       info.referenceIlluminant.value.front() == 'T') {
+                digest.gammaSamelayerRgb = {{0.4601f, 0.4433f, 0.4414f}};
+                digest.gammaInterlayerRToGb = {{0.4313f, 0.3157f}};
+                digest.gammaInterlayerGToRb = {{0.3145f, 0.3890f}};
+                digest.gammaInterlayerBToRg = {{0.2423f, 0.2506f}};
+            } else if (info.use == ProfileUse::Cine) {
+                digest.gammaSamelayerRgb = {{0.5456f, 0.5434f, 0.3766f}};
+                digest.gammaInterlayerRToGb = {{0.4263f, 0.2781f}};
+                digest.gammaInterlayerGToRb = {{0.2051f, 0.5015f}};
+                digest.gammaInterlayerBToRg = {{0.2950f, 0.2449f}};
             } else {
-                digest.gammaSamelayerRgb = {{0.336f, 0.319f, 0.273f}};
-                digest.gammaInterlayerRToGb = {{0.353f, 0.302f}};
-                digest.gammaInterlayerGToRb = {{0.154f, 0.353f}};
-                digest.gammaInterlayerBToRg = {{0.168f, 0.226f}};
+                digest.gammaSamelayerRgb = {{0.5159f, 0.5934f, 0.2829f}};
+                digest.gammaInterlayerRToGb = {{0.4032f, 0.2488f}};
+                digest.gammaInterlayerGToRb = {{0.2227f, 0.4340f}};
+                digest.gammaInterlayerBToRg = {{0.1829f, 0.1799f}};
             }
 
             if (info.stock == "fujifilm_velvia_100") {
-                digest.gammaSamelayerRgb = {{0.108f, 0.072f, 0.054f}};
-                digest.gammaInterlayerRToGb = {{0.108f, 0.054f}};
-                digest.gammaInterlayerGToRb = {{0.072f, 0.054f}};
-                digest.gammaInterlayerBToRg = {{0.054f, 0.054f}};
+                digest.gammaSamelayerRgb = {{0.2398f, 0.0662f, 0.1440f}};
+                digest.gammaInterlayerRToGb = {{0.0707f, 0.2367f}};
+                digest.gammaInterlayerGToRb = {{0.0119f, 0.0380f}};
+                digest.gammaInterlayerBToRg = {{0.0111f, 0.1413f}};
+            } else if (info.stock == "kodak_kodachrome_64") {
+                digest.gammaSamelayerRgb = {{0.2942f, 0.0841f, 0.2492f}};
+                digest.gammaInterlayerRToGb = {{0.1699f, 0.2188f}};
+                digest.gammaInterlayerGToRb = {{0.0625f, 0.0692f}};
+                digest.gammaInterlayerBToRg = {{0.1153f, 0.2359f}};
             } else if (info.stock == "fujifilm_provia_100f") {
-                digest.gammaSamelayerRgb = {{0.156f, 0.104f, 0.078f}};
-                digest.gammaInterlayerRToGb = {{0.156f, 0.078f}};
-                digest.gammaInterlayerGToRb = {{0.104f, 0.078f}};
-                digest.gammaInterlayerBToRg = {{0.078f, 0.078f}};
+                digest.gammaSamelayerRgb = {{0.2786f, 0.1257f, 0.3480f}};
+                digest.gammaInterlayerRToGb = {{0.1448f, 0.2003f}};
+                digest.gammaInterlayerGToRb = {{0.0516f, 0.1250f}};
+                digest.gammaInterlayerBToRg = {{0.0518f, 0.3089f}};
             }
 
             digest.halationFirstSigmaUm = info.use == ProfileUse::Cine
                                               ? std::array<float, 3>{{50.0f, 50.0f, 50.0f}}
                                               : std::array<float, 3>{{65.0f, 65.0f, 65.0f}};
-            switch (info.antihalation) {
-                case ProfileAntihalation::Strong:
-                    digest.halationPrimaryAmount = {{0.015f, 0.005f, 0.0f}};
-                    break;
-                case ProfileAntihalation::Weak:
-                    digest.halationPrimaryAmount = {{0.08f, 0.02f, 0.0f}};
-                    break;
-                case ProfileAntihalation::No:
-                    digest.halationPrimaryAmount = {{0.30f, 0.10f, 0.015f}};
-                    break;
-                default:
-                    return set_error(
-                        error,
-                        ctx,
-                        "info.antihalation",
-                        "strong|weak|no",
-                        "unsupported-enum");
+            if (info.antihalation == ProfileAntihalation::Strong) {
+                digest.halationPrimaryAmount = {{0.015f, 0.005f, 0.0f}};
+            } else if (info.antihalation == ProfileAntihalation::No) {
+                digest.halationPrimaryAmount = {{0.30f, 0.10f, 0.015f}};
+            } else {
+                digest.halationPrimaryAmount = {{0.08f, 0.02f, 0.0f}};
             }
-            if (!validate_halation_profile_digest(digest, ctx, error)) {
-                return false;
-            }
-            out = digest;
-            return true;
+            return digest;
         }
 
         std::uint64_t build_profile_asset_version_token(
@@ -1430,20 +1069,25 @@ namespace Profiles {
                 return false;
             }
 
-            SpektrafilmProfileSamples data;
-            if (!parse_profile_samples(root, data, ctx, error)) {
-                if (outDiagnostic) {
-                    *outDiagnostic = error;
-                }
-                return false;
-            }
-
             std::vector<double> sourceLogExposure;
             DensityCurveModel densityModel;
             if (!parse_density_curve_model(
                     root,
                     sourceLogExposure,
                     densityModel,
+                    ctx,
+                    error)) {
+                if (outDiagnostic) {
+                    *outDiagnostic = error;
+                }
+                return false;
+            }
+
+            SpektrafilmProfileSamples data;
+            if (!parse_profile_samples(
+                    root,
+                    sourceLogExposure,
+                    data,
                     ctx,
                     error) ||
                 !regenerate_density_curves_from_model(
@@ -1485,22 +1129,7 @@ namespace Profiles {
                     outDiagnostic)) {
                 return false;
             }
-            SelectedProfileContext ctx;
-            ctx.path = jsonPath;
-            ctx.key = outProfile.info.stock;
-            ctx.role = "film";
-            std::string error;
-            if (!build_film_profile_digest(
-                    outProfile.info,
-                    ctx,
-                    outProfile.digest,
-                    error)) {
-                outProfile = ValidatedFilmProfile{};
-                if (outDiagnostic) {
-                    *outDiagnostic = error;
-                }
-                return false;
-            }
+            outProfile.digest = build_film_profile_digest(outProfile.info);
             return true;
         }
 

@@ -28,7 +28,7 @@ The next release refreshes the existing 20 capture and 8 print profiles from the
 
 This is an intentional rendering-behaviour replacement. Existing parameter IDs, stock IDs, saved selections, and their meanings are retained, but existing projects can produce different pixels. Changes include the profile and filtration refit, corrected sRGB/Rec.709 input coefficients shared by Mallett input conversion, corrected Hanatos input projection and window white, film-raw auto-exposure metering with exposure applied after reconstruction, model-derived density curves, and native-white/first-boundary output compression. There is no hidden legacy mode, old-profile substitution, or preset conversion layer.
 
-The testing integration is deliberately selective: it does not yet adopt spektrafilm experimental's revised DIR presets or Langmuir donor model. A full experimental-branch render with DIR enabled is therefore not expected to match Film-Juicer even when Arctic reconstruction and the imported assets agree. Scanner unsharp must also be set explicitly to `0, 0` for an unsharpened reference comparison because the plug-in default remains `0.7, 0.7`. See [Experimental spectral update testing](docs/experimental-spectral-update-testing.md) for the measured comparison and current acceptance boundary.
+The testing integration now also adopts spektrafilm experimental's supported-colour DIR presets and nonlinear chemistry: negative film uses a saturating donor response, while positive film applies the receiver response after the complete spatial mixture. The spatial tail defaults to 200 micrometres at weight `0.03`, and the advanced controls expose donor/receiver K and tail scale/weight without adding a legacy render mode. Scanner unsharp must still be set explicitly to `0, 0` for an unsharpened reference comparison because the plug-in default remains `0.7, 0.7`. See [Experimental spectral update testing](docs/experimental-spectral-update-testing.md) for the historical comparison, numerical validation boundary, and remaining host acceptance.
 
 ## Support Film-Juicer
 
@@ -199,7 +199,7 @@ The density panel shows the cyan, magenta, and yellow contributions (**C**, **M*
 
 These figures show the bundled profile data. In particular, the characteristic panel plots the stored curves; it is not a reconstruction of the separate fitted layer model.
 
-During development, layer exposures become dye densities. **DIR**, short for developer-inhibitor-releasing couplers, models how development in one layer inhibits development within that layer and in the others. Its spatial component spreads the interaction across neighbouring areas, affecting colour separation, local contrast, and apparent sharpness.
+During development, layer exposures become dye densities. **DIR**, short for developer-inhibitor-releasing couplers, models how development in one layer inhibits development within that layer and in the others. Negative stocks use a saturating donor response; positive stocks apply a saturating receiver response after the spatial contributions have arrived. Its spatial component mixes a core and optional tail across neighbouring areas, affecting colour separation, local contrast, and apparent sharpness.
 
 For grading, this means an exposure change can alter more than brightness. It moves the image through the stock's response and changes the densities handed to the next stage.
 
@@ -214,7 +214,7 @@ The collapsed **Tuning** group above **Output encoding** contains two developmen
 
 Values below 1 reduce development contrast; values above 1 increase it. Both sliders display 0.5–2.0; type a value to use the wider film-gamma range. Neither control is animated. Switching to a direct route disables print gamma and retains its value for when you return to printing.
 
-This release also corrects the default print-development model and stock DIR defaults. Existing grades can therefore change even with both gamma controls at 1.0; check established renders after updating.
+This release also corrects the default print-development model and replaces the stock DIR presets, chemistry, and spatial-tail default. Existing grades can therefore change even with both gamma controls at 1.0; check established renders after updating. The DIR **Advanced** group contains the negative-film donor K, positive-film receiver K, tail scale, and tail weight controls. K values must remain positive and all consumed controls must remain finite and representable as the renderer's FP32 values. Some otherwise finite combinations cannot produce monotonic corrected density curves and are rejected before render admission with a detailed error instead of falling back to an older state.
 
 ### Scatter, halation, and diffusion
 

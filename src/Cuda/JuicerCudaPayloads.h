@@ -72,12 +72,21 @@ namespace JuicerCuda {
         CctfPayload cctf{};
     };
 
+    enum class DirMode : std::uint8_t {
+        Inactive = 0,
+        NegativeDonorLangmuir = 1,
+        PositiveReceiverLangmuir = 2
+    };
+
     struct DirPayload {
-        int active = 0;
-        int positive = 0;
+        DirMode mode = DirMode::Inactive;
         float M[9] = {
             0, 0, 0, 0, 0, 0, 0, 0, 0};
-        float dMax[3] = {1.0f, 1.0f, 1.0f};
+        float dMax[3] = {0.0f, 0.0f, 0.0f};
+        float dRef[3] = {0.0f, 0.0f, 0.0f};
+        float donorK[3] = {0.0f, 0.0f, 0.0f};
+        float receiverCRef[3] = {0.0f, 0.0f, 0.0f};
+        float receiverKr[3] = {0.0f, 0.0f, 0.0f};
     };
 
     // Scanner color runtime (CAT + XYZ->RGB) plus output encoding selection.
@@ -146,11 +155,20 @@ namespace JuicerCuda {
         float* logRawR = nullptr;
     };
 
+    enum class SpatialDirFilterOperator : std::uint8_t {
+        None,
+        Identity,
+        FirReflect,
+        YvvReplicate
+    };
+
     struct SpatialDirFilterSpec {
         const float* kernel = nullptr;
         int radius = 0;
         float sigma = 0.0f;
         float weight = 0.0f;
+        SpatialDirFilterOperator filterOperator =
+            SpatialDirFilterOperator::None;
     };
 
     struct SpatialDirBuildRequest {
@@ -192,7 +210,6 @@ namespace JuicerCuda {
         float gammaFactorB = 1.0f;
         float gammaFactorG = 1.0f;
         float gammaFactorR = 1.0f;
-        int dirPrecorrected = 0;
         DirPayload dir{};
         SpatialDirPayload spatialDir{};
         DeviceCurveView densB{};

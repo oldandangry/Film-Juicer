@@ -235,37 +235,42 @@ struct DirCouplersControls {
     float inhibitionSameLayer = 1.0f;
     float inhibitionInterlayer = 1.0f;
     float diffusionSizeUm = 20.0f;
+    float diffusionTailUm = 200.0f;
+    float diffusionTailWeight = 0.03f;
     bool gammaUseStock = true;
-    std::array<float, 3> gammaSameLayerRgb{{0.336f, 0.319f, 0.273f}};
-    std::array<float, 2> gammaInterlayerRToGb{{0.353f, 0.302f}};
-    std::array<float, 2> gammaInterlayerGToRb{{0.154f, 0.353f}};
-    std::array<float, 2> gammaInterlayerBToRg{{0.168f, 0.226f}};
+    std::array<float, 3> gammaSameLayerRgb{{0.341f, 0.324f, 0.273f}};
+    std::array<float, 2> gammaInterlayerRToGb{{0.355f, 0.305f}};
+    std::array<float, 2> gammaInterlayerGToRb{{0.154f, 0.358f}};
+    std::array<float, 2> gammaInterlayerBToRg{{0.171f, 0.225f}};
+    std::array<float, 3> langmuirDonorKRgb{{1.0f, 1.0f, 1.0f}};
+    std::array<float, 3> langmuirReceiverKRgb{{1.0f, 1.0f, 1.0f}};
+};
+
+enum class DirNonlinearMode : std::uint8_t {
+    Inactive,
+    NegativeDonorLangmuir,
+    PositiveReceiverLangmuir
 };
 
 struct DirCouplersRecipe {
     Spektrafilm::ProfilePolarity polarity = Spektrafilm::ProfilePolarity::Unsupported;
     bool active = false;
+    DirNonlinearMode nonlinearMode = DirNonlinearMode::Inactive;
     std::array<std::array<float, 3>, 3> matrixRgb{};
     float diffusionSizeUm = 0.0f;
     float diffusionTailUm = 0.0f;
     float diffusionTailWeight = 0.0f;
     std::array<float, 3> densityMaxRgb{};
+    std::array<float, 3> densityRefRgb{};
+    std::array<float, 3> donorKRgb{};
+    std::array<float, 3> receiverCRefRgb{};
+    std::array<float, 3> receiverKrRgb{};
     std::vector<std::array<float, 3>> precorrectedDensityCurves;
     std::uint64_t precorrectedDensityCurvesHash = 0;
     std::uint64_t hash = 0;
 };
 
 namespace Spektrafilm {
-
-    enum class DirSourceContract : std::uint8_t {
-        None,
-        FilmLogRawToInitialDensityCmy
-    };
-
-    enum class DirBoundaryMode : std::uint8_t {
-        None,
-        SpektrafilmReferencePerOperator
-    };
 
     enum class DirReferenceOperator : std::uint8_t {
         None,
@@ -274,23 +279,12 @@ namespace Spektrafilm {
         SpektrafilmLargeYvvReplicate
     };
 
-    enum class DirFilterBackend : std::uint8_t {
-        None,
-        SmallFir,
-        StrictYvvChannelsAliasedForward
-    };
-
     enum class DirScratchTier : std::uint8_t {
         Tier0,
         Tier1F,
         Tier1IChannels,
         Tier2,
         Unsupported
-    };
-
-    enum class DirApproximationMarker : std::uint8_t {
-        None,
-        SpektrafilmStrict
     };
 
     enum class DirDescriptorSupport : std::uint8_t {
@@ -310,9 +304,8 @@ namespace Spektrafilm {
     struct DirGaussianComponentPlan {
         float sigmaPixels = 0.0f;
         float weight = 0.0f;
+        int radius = 0;
         DirReferenceOperator referenceOperator = DirReferenceOperator::None;
-        DirFilterBackend backend = DirFilterBackend::None;
-        DirFilterBackend targetBackend = DirFilterBackend::None;
         DirScratchTier targetScratchTier = DirScratchTier::Tier0;
     };
 
@@ -372,28 +365,6 @@ namespace Spektrafilm {
         return false;
     }
 
-    inline const char* to_cstr(DirSourceContract value) noexcept {
-        switch (value) {
-            case DirSourceContract::None:
-                return "none";
-            case DirSourceContract::FilmLogRawToInitialDensityCmy:
-                return "film_log_raw_to_initial_density_cmy";
-            default:
-                return "unknown";
-        }
-    }
-
-    inline const char* to_cstr(DirBoundaryMode value) noexcept {
-        switch (value) {
-            case DirBoundaryMode::None:
-                return "none";
-            case DirBoundaryMode::SpektrafilmReferencePerOperator:
-                return "spektrafilm_reference_per_operator";
-            default:
-                return "unknown";
-        }
-    }
-
     inline const char* to_cstr(DirReferenceOperator value) noexcept {
         switch (value) {
             case DirReferenceOperator::None:
@@ -404,19 +375,6 @@ namespace Spektrafilm {
                 return "spektrafilm_small_fir_reflect";
             case DirReferenceOperator::SpektrafilmLargeYvvReplicate:
                 return "spektrafilm_large_yvv_replicate";
-            default:
-                return "unknown";
-        }
-    }
-
-    inline const char* to_cstr(DirFilterBackend value) noexcept {
-        switch (value) {
-            case DirFilterBackend::None:
-                return "none";
-            case DirFilterBackend::SmallFir:
-                return "small_fir";
-            case DirFilterBackend::StrictYvvChannelsAliasedForward:
-                return "strict_yvv_channels_aliased_forward";
             default:
                 return "unknown";
         }
@@ -434,17 +392,6 @@ namespace Spektrafilm {
                 return "Tier2";
             case DirScratchTier::Unsupported:
                 return "unsupported";
-            default:
-                return "unknown";
-        }
-    }
-
-    inline const char* to_cstr(DirApproximationMarker value) noexcept {
-        switch (value) {
-            case DirApproximationMarker::None:
-                return "none";
-            case DirApproximationMarker::SpektrafilmStrict:
-                return "spektrafilm_strict";
             default:
                 return "unknown";
         }
@@ -471,10 +418,7 @@ struct SpatialDirDescriptor {
     static constexpr std::array<float, 3> kExponentialAmplitudes{{0.1633f, 0.6496f, 0.1870f}};
     static constexpr std::array<float, 3> kExponentialSigmaRatios{{0.5360f, 1.5236f, 2.7684f}};
     std::uint64_t dirRecipeHash = 0;
-    Spektrafilm::DirSourceContract sourceContract = Spektrafilm::DirSourceContract::None;
-    Spektrafilm::DirBoundaryMode boundaryMode = Spektrafilm::DirBoundaryMode::None;
     Spektrafilm::DirScratchTier scratchTier = Spektrafilm::DirScratchTier::Tier0;
-    Spektrafilm::DirApproximationMarker approximation = Spektrafilm::DirApproximationMarker::None;
     Spektrafilm::DirDescriptorSupport support = Spektrafilm::DirDescriptorSupport::Inactive;
     Spektrafilm::DirFrameExtent renderExtent{};
     Spektrafilm::DirFrameExtent fullFrameExtent{};
@@ -484,10 +428,6 @@ struct SpatialDirDescriptor {
     Spektrafilm::DirScratchTier targetScratchTier = Spektrafilm::DirScratchTier::Tier0;
     Spektrafilm::DirScratchPlaneRoles targetPlaneRoles{};
     const char* traceRouteLabel = nullptr;
-    float gaussianSigmaPixels = 0.0f;
-    std::array<float, 3> exponentialSigmaPixels{};
-    float gaussianWeight = 0.0f;
-    std::array<float, 3> exponentialWeights{};
     std::uint64_t hash = 0;
 };
 
@@ -785,6 +725,7 @@ namespace Spektrafilm {
     using ::DensityBoundsRecipe;
     using ::DirCouplersControls;
     using ::DirCouplersRecipe;
+    using ::DirNonlinearMode;
     using ::FilmDevelopRecipe;
     using ::FilmJuicerEffectsRecipe;
     using ::FilmRawRecipe;

@@ -823,35 +823,137 @@ namespace {
             read_bool_param_as_i32(hanatos2025AdaptationSurfaceParam, false);
     }
 
-    inline void read_coupler_snapshot_values(
+    inline bool read_coupler_snapshot_values(
         OFX::BooleanParam* couplersActiveParam,
         OFX::DoubleParam* couplersAmountParam,
         OFX::DoubleParam* inhibitionSameLayerParam,
         OFX::DoubleParam* inhibitionInterlayerParam,
         OFX::DoubleParam* diffusionSizeUmParam,
+        OFX::Double3DParam* donorKParam,
+        OFX::Double3DParam* receiverKParam,
+        OFX::DoubleParam* diffusionTailUmParam,
+        OFX::DoubleParam* diffusionTailWeightParam,
         OFX::BooleanParam* gammaUseStockParam,
         OFX::Double3DParam* gammaSameLayerRgbParam,
         OFX::Double2DParam* gammaInterlayerRToGbParam,
         OFX::Double2DParam* gammaInterlayerGToRbParam,
         OFX::Double2DParam* gammaInterlayerBToRgParam,
-        ParamSnapshot& snapshot) {
-        snapshot.couplersActive = read_bool_param_as_i32(couplersActiveParam, true);
-        snapshot.couplersAmount = read_double_param_or(couplersAmountParam, snapshot.couplersAmount);
-        snapshot.couplersInhibitionSameLayer =
-            read_double_param_or(inhibitionSameLayerParam, snapshot.couplersInhibitionSameLayer);
-        snapshot.couplersInhibitionInterlayer =
-            read_double_param_or(inhibitionInterlayerParam, snapshot.couplersInhibitionInterlayer);
-        snapshot.couplersDiffusionSizeUm =
-            read_double_param_or(diffusionSizeUmParam, snapshot.couplersDiffusionSizeUm);
-        snapshot.couplersGammaUseStock = read_bool_param_as_i32(gammaUseStockParam, true);
-        snapshot.couplersGammaSameLayerRgb =
-            read_double3_param_or(gammaSameLayerRgbParam, snapshot.couplersGammaSameLayerRgb);
-        snapshot.couplersGammaInterlayerRToGb =
-            read_double2_param_or(gammaInterlayerRToGbParam, snapshot.couplersGammaInterlayerRToGb);
-        snapshot.couplersGammaInterlayerGToRb =
-            read_double2_param_or(gammaInterlayerGToRbParam, snapshot.couplersGammaInterlayerGToRb);
-        snapshot.couplersGammaInterlayerBToRg =
-            read_double2_param_or(gammaInterlayerBToRgParam, snapshot.couplersGammaInterlayerBToRg);
+        Spektrafilm::ProfilePolarity polarity,
+        ParamSnapshot& snapshot,
+        std::string& diagnostic) {
+        Spektrafilm::DirCouplersControls controls{};
+        controls.active = read_bool_param_or(couplersActiveParam, true);
+        controls.gammaUseStock = read_bool_param_or(gammaUseStockParam, true);
+        const auto narrow = [&](double authored,
+                                double minimum,
+                                double maximum,
+                                const char* field,
+                                float& destination) {
+            if (!std::isfinite(authored) ||
+                authored < minimum ||
+                authored > maximum) {
+                diagnostic = std::string("InvalidSnapshotControls component=dir field=") +
+                             field + " requirement=finite_supported_range";
+                return false;
+            }
+            destination = static_cast<float>(authored);
+            if (!std::isfinite(destination)) {
+                diagnostic = std::string("InvalidSnapshotControls component=dir field=") +
+                             field + " requirement=float_representable";
+                return false;
+            }
+            return true;
+        };
+        if (!controls.active) {
+            snapshot.dirCouplers = controls;
+            return true;
+        }
+        if (!narrow(
+                read_double_param_or(couplersAmountParam, 1.0),
+                0.0,
+                2.0,
+                "amount",
+                controls.amount)) {
+            return false;
+        }
+        if (controls.amount == 0.0f) {
+            snapshot.dirCouplers = controls;
+            return true;
+        }
+        if (!narrow(read_double_param_or(inhibitionSameLayerParam, 1.0), 0.0, 2.0, "inhibition_same", controls.inhibitionSameLayer) ||
+            !narrow(read_double_param_or(inhibitionInterlayerParam, 1.0), 0.0, 2.0, "inhibition_inter", controls.inhibitionInterlayer) ||
+            !narrow(read_double_param_or(diffusionSizeUmParam, 20.0), 0.0, 200.0, "diffusion_core_um", controls.diffusionSizeUm)) {
+            return false;
+        }
+        if (!controls.gammaUseStock) {
+            const auto same = read_double3_param_or(
+                gammaSameLayerRgbParam,
+                std::array<double, 3>{0.341, 0.324, 0.273});
+            const auto rToGb = read_double2_param_or(
+                gammaInterlayerRToGbParam,
+                std::array<double, 2>{0.355, 0.305});
+            const auto gToRb = read_double2_param_or(
+                gammaInterlayerGToRbParam,
+                std::array<double, 2>{0.154, 0.358});
+            const auto bToRg = read_double2_param_or(
+                gammaInterlayerBToRgParam,
+                std::array<double, 2>{0.171, 0.225});
+            for (std::size_t channel = 0; channel < 3u; ++channel) {
+                if (!narrow(same[channel], 0.0, 4.0, "gamma_same", controls.gammaSameLayerRgb[channel])) {
+                    return false;
+                }
+            }
+            for (std::size_t channel = 0; channel < 2u; ++channel) {
+                if (!narrow(rToGb[channel], 0.0, 4.0, "gamma_r_to_gb", controls.gammaInterlayerRToGb[channel]) ||
+                    !narrow(gToRb[channel], 0.0, 4.0, "gamma_g_to_rb", controls.gammaInterlayerGToRb[channel]) ||
+                    !narrow(bToRg[channel], 0.0, 4.0, "gamma_b_to_rg", controls.gammaInterlayerBToRg[channel])) {
+                    return false;
+                }
+            }
+        }
+        OFX::Double3DParam* consumedKParam =
+            polarity == Spektrafilm::ProfilePolarity::Positive
+                ? receiverKParam
+                : donorKParam;
+        const auto authoredK = read_double3_param_or(
+            consumedKParam,
+            std::array<double, 3>{1.0, 1.0, 1.0});
+        auto& consumedK = polarity == Spektrafilm::ProfilePolarity::Positive
+                              ? controls.langmuirReceiverKRgb
+                              : controls.langmuirDonorKRgb;
+        for (std::size_t channel = 0; channel < 3u; ++channel) {
+            if (!narrow(
+                    authoredK[channel],
+                    0.1,
+                    static_cast<double>(std::numeric_limits<float>::max()),
+                    polarity == Spektrafilm::ProfilePolarity::Positive
+                        ? "receiver_k"
+                        : "donor_k",
+                    consumedK[channel])) {
+                return false;
+            }
+        }
+        if (controls.diffusionSizeUm > 0.0f) {
+            if (!narrow(
+                    read_double_param_or(diffusionTailWeightParam, 0.03),
+                    0.0,
+                    1.0,
+                    "diffusion_tail_weight",
+                    controls.diffusionTailWeight)) {
+                return false;
+            }
+            if (controls.diffusionTailWeight > 0.0f &&
+                !narrow(
+                    read_double_param_or(diffusionTailUmParam, 200.0),
+                    0.0,
+                    static_cast<double>(std::numeric_limits<float>::max()),
+                    "diffusion_tail_um",
+                    controls.diffusionTailUm)) {
+                return false;
+            }
+        }
+        snapshot.dirCouplers = controls;
+        return true;
     }
 
     inline int pixel_component_count(OFX::PixelComponentEnum comps) {
@@ -1375,6 +1477,26 @@ void JuicerEffect::updateGammaControlState() {
         _pPrintGammaFactor->setEnabled(
             Spektrafilm::scan_route_is_print(selectedRoute));
     }
+    const bool dirActive = read_bool_param_or(_pCouplersActive, true);
+    const double coreUm = read_double_param_or(_pCouplersDiffusionSizeUm, 20.0);
+    const double tailWeight = read_double_param_or(_pCouplersDiffusionTailWeight, 0.03);
+    const std::shared_ptr<const Profiles::ValidatedFilmProfile> profile =
+        JuicerProcess::root().assets().selected_film_profile_for_key(filmProfileKey);
+    const bool positive = profile &&
+                          profile->info.type == Spektrafilm::ProfilePolarity::Positive;
+    if (_pCouplersLangmuirDonorKRgb) {
+        _pCouplersLangmuirDonorKRgb->setEnabled(dirActive && !positive);
+    }
+    if (_pCouplersLangmuirReceiverKRgb) {
+        _pCouplersLangmuirReceiverKRgb->setEnabled(dirActive && positive);
+    }
+    if (_pCouplersDiffusionTailWeight) {
+        _pCouplersDiffusionTailWeight->setEnabled(dirActive && coreUm > 0.0);
+    }
+    if (_pCouplersDiffusionTailUm) {
+        _pCouplersDiffusionTailUm->setEnabled(
+            dirActive && coreUm > 0.0 && tailWeight > 0.0);
+    }
 }
 
 void JuicerEffect::updateSpectralControlState() {
@@ -1406,19 +1528,6 @@ void JuicerEffect::applyDirGammaProfileDefaults() {
     }
 
     const Profiles::ProfileDigest& digest = profile->digest;
-    const auto finiteNonnegative = [](float value) {
-        return std::isfinite(value) && value >= 0.0f;
-    };
-    const bool valid =
-        std::all_of(digest.gammaSamelayerRgb.begin(), digest.gammaSamelayerRgb.end(), finiteNonnegative) &&
-        std::all_of(digest.gammaInterlayerRToGb.begin(), digest.gammaInterlayerRToGb.end(), finiteNonnegative) &&
-        std::all_of(digest.gammaInterlayerGToRb.begin(), digest.gammaInterlayerGToRb.end(), finiteNonnegative) &&
-        std::all_of(digest.gammaInterlayerBToRg.begin(), digest.gammaInterlayerBToRg.end(), finiteNonnegative);
-    if (!valid) {
-        JTRACE("SPEKTRAFILM", "MalformedRequiredProfileData field=dir_gamma_profile_defaults");
-        return;
-    }
-
     const ScopedParamEventSuppression suppressEvents(_state.get());
     set_double3_param_if(
         _pCouplersGammaSameLayerRgb,
@@ -1504,6 +1613,14 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
             fetchDoubleParam(JuicerParams::kDirCouplersInhibitionInterlayer);
         _pCouplersDiffusionSizeUm =
             fetchDoubleParam(JuicerParams::kDirCouplersDiffusionSizeUm);
+        _pCouplersLangmuirDonorKRgb =
+            fetchDouble3DParam(JuicerParams::kDirCouplersLangmuirDonorKRgb);
+        _pCouplersLangmuirReceiverKRgb =
+            fetchDouble3DParam(JuicerParams::kDirCouplersLangmuirReceiverKRgb);
+        _pCouplersDiffusionTailUm =
+            fetchDoubleParam(JuicerParams::kDirCouplersDiffusionTailUm);
+        _pCouplersDiffusionTailWeight =
+            fetchDoubleParam(JuicerParams::kDirCouplersDiffusionTailWeight);
         _pCouplersGammaUseStock =
             fetchBooleanParam(JuicerParams::kDirCouplersGammaUseStock);
         _pCouplersGammaSameLayerRgb =
@@ -1786,12 +1903,30 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
                 "BUILD",
                 "FATAL: focused render snapshot acquisition did not publish state"});
         case PendingRenderAdmissionStatus::InvalidSnapshotControls:
-        case PendingRenderAdmissionStatus::RebuildFailed:
+        case PendingRenderAdmissionStatus::RebuildFailed: {
+            try {
+                std::string deliveryText = admission.diagnostic.empty()
+                                               ? "focused render admission failed"
+                                               : admission.diagnostic;
+                for (std::size_t position = 0;
+                     (position = deliveryText.find('%', position)) !=
+                     std::string::npos;
+                     position += 2u) {
+                    deliveryText.insert(position, 1u, '%');
+                }
+                sendMessage(
+                    OFX::Message::eMessageError,
+                    "FilmJuicerRenderAdmission",
+                    deliveryText);
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
             trace_and_throw_render_fatal(RenderFatalTrace{
                 "BUILD",
                 admission.diagnostic.empty()
                     ? "FATAL: focused render admission failed"
                     : admission.diagnostic.c_str()});
+        }
         case PendingRenderAdmissionStatus::AdmittedDirect:
         case PendingRenderAdmissionStatus::AdmittedPrint:
             break;
@@ -2378,18 +2513,28 @@ bool JuicerEffect::snapshotParams(
         _pGateWeaveAmount,
         0.0,
         SanitizedDoubleRange{0.0, 10.0});
-    read_coupler_snapshot_values(
-        _pCouplersActive,
-        _pCouplersAmount,
-        _pCouplersInhibitionSameLayer,
-        _pCouplersInhibitionInterlayer,
-        _pCouplersDiffusionSizeUm,
-        _pCouplersGammaUseStock,
-        _pCouplersGammaSameLayerRgb,
-        _pCouplersGammaInterlayerRToGb,
-        _pCouplersGammaInterlayerGToRb,
-        _pCouplersGammaInterlayerBToRg,
-        P);
+    if (!read_coupler_snapshot_values(
+            _pCouplersActive,
+            _pCouplersAmount,
+            _pCouplersInhibitionSameLayer,
+            _pCouplersInhibitionInterlayer,
+            _pCouplersDiffusionSizeUm,
+            _pCouplersLangmuirDonorKRgb,
+            _pCouplersLangmuirReceiverKRgb,
+            _pCouplersDiffusionTailUm,
+            _pCouplersDiffusionTailWeight,
+            _pCouplersGammaUseStock,
+            _pCouplersGammaSameLayerRgb,
+            _pCouplersGammaInterlayerRToGb,
+            _pCouplersGammaInterlayerGToRb,
+            _pCouplersGammaInterlayerBToRg,
+            selectedProfiles.filmProfile
+                ? selectedProfiles.filmProfile->info.type
+                : Spektrafilm::ProfilePolarity::Unsupported,
+            P,
+            outDiagnostic)) {
+        return false;
+    }
     read_scanner_snapshot_values(
         _pScannerLensBlur,
         _pScannerUnsharp,

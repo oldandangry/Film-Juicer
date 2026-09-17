@@ -312,6 +312,62 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
                 grpCouplersAdvanced->setParent(*grpCouplers);
         }
         {
+            OFX::Double3DParamDescriptor* p =
+                desc.defineDouble3DParam(JuicerParams::kDirCouplersLangmuirDonorKRgb);
+            p->setLabel("Langmuir donor K RGB");
+            p->setHint("Negative-film normalized donor knees in RGB order. Values above the display range may be entered numerically.");
+            p->setDefault(1.0, 1.0, 1.0);
+            const double maximum = static_cast<double>(std::numeric_limits<float>::max());
+            p->setRange(0.1, 0.1, 0.1, maximum, maximum, maximum);
+            p->setDisplayRange(0.1, 0.1, 0.1, 10.0, 10.0, 10.0);
+            p->setIncrement(0.1);
+            p->setDimensionLabels("R", "G", "B");
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::Double3DParamDescriptor* p =
+                desc.defineDouble3DParam(JuicerParams::kDirCouplersLangmuirReceiverKRgb);
+            p->setLabel("Langmuir receiver K RGB");
+            p->setHint("Positive-film normalized receiver knees in RGB order. Values above the display range may be entered numerically.");
+            p->setDefault(1.0, 1.0, 1.0);
+            const double maximum = static_cast<double>(std::numeric_limits<float>::max());
+            p->setRange(0.1, 0.1, 0.1, maximum, maximum, maximum);
+            p->setDisplayRange(0.1, 0.1, 0.1, 10.0, 10.0, 10.0);
+            p->setIncrement(0.1);
+            p->setDimensionLabels("R", "G", "B");
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kDirCouplersDiffusionTailUm);
+            p->setLabel("Diffusion tail (um)");
+            p->setHint("Physical DIR tail sigma in micrometers; consumed only when spatial DIR and tail weight are active.");
+            p->setDefault(200.0);
+            p->setRange(0.0, static_cast<double>(std::numeric_limits<float>::max()));
+            p->setDisplayRange(0.0, 1000.0);
+            p->setIncrement(10.0);
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kDirCouplersDiffusionTailWeight);
+            p->setLabel("Diffusion tail weight");
+            p->setHint("Tail mixture weight; consumed only while the spatial DIR core is active.");
+            p->setDefault(0.03);
+            p->setRange(0.0, 1.0);
+            p->setDisplayRange(0.0, 1.0);
+            p->setIncrement(0.01);
+            if (grpCouplersAdvanced)
+                p->setParent(*grpCouplersAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
             OFX::BooleanParamDescriptor* p =
                 desc.defineBooleanParam(JuicerParams::kDirCouplersGammaUseStock);
             p->setLabel("Gamma_use_stock");
@@ -326,7 +382,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
                 desc.defineDouble3DParam(JuicerParams::kDirCouplersGammaSameLayerRgb);
             p->setLabel("Gamma_samelayer_rgb");
             p->setHint("Same-layer DIR gamma in donor RGB order.");
-            p->setDefault(0.336, 0.319, 0.273);
+            p->setDefault(0.341, 0.324, 0.273);
             p->setRange(0.0, 0.0, 0.0, 4.0, 4.0, 4.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
             p->setIncrement(0.02);
@@ -340,7 +396,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
                 desc.defineDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerRToGb);
             p->setLabel("Gamma_interlayer_r_to_gb");
             p->setHint("DIR inhibition from the R layer onto G and B.");
-            p->setDefault(0.353, 0.302);
+            p->setDefault(0.355, 0.305);
             p->setRange(0.0, 0.0, 4.0, 4.0);
             p->setDisplayRange(0.0, 0.0, 1.0, 1.0);
             p->setIncrement(0.02);
@@ -354,7 +410,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
                 desc.defineDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerGToRb);
             p->setLabel("Gamma_interlayer_g_to_rb");
             p->setHint("DIR inhibition from the G layer onto R and B.");
-            p->setDefault(0.154, 0.353);
+            p->setDefault(0.154, 0.358);
             p->setRange(0.0, 0.0, 4.0, 4.0);
             p->setDisplayRange(0.0, 0.0, 1.0, 1.0);
             p->setIncrement(0.02);
@@ -368,7 +424,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
                 desc.defineDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerBToRg);
             p->setLabel("Gamma_interlayer_b_to_rg");
             p->setHint("DIR inhibition from the B layer onto R and G.");
-            p->setDefault(0.168, 0.226);
+            p->setDefault(0.171, 0.225);
             p->setRange(0.0, 0.0, 4.0, 4.0);
             p->setDisplayRange(0.0, 0.0, 1.0, 1.0);
             p->setIncrement(0.02);

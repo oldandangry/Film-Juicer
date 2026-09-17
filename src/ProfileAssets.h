@@ -56,9 +56,6 @@ namespace Profiles {
         std::vector<float> logExposure;
         std::vector<std::array<float, 3>> densityCurves;
         std::array<std::array<std::vector<float>, 3>, 3> densityCurvesLayers{}; // [sublayer][channel]
-        bool hasDensityCurvesLayers = false;
-        bool densityCurvesLayersMalformed = false;
-        std::string densityCurvesLayersDiagnostic;
         std::array<float, 4> hanatos2025AdaptationWindowParams{};
         std::array<std::array<float, 15>, 3> hanatos2025AdaptationSurfaceParams{};
         bool hasHanatos2025AdaptationWindowParams = false;
@@ -66,10 +63,10 @@ namespace Profiles {
     };
 
     struct ProfileDigest {
-        std::array<float, 3> gammaSamelayerRgb{{0.336f, 0.319f, 0.273f}};
-        std::array<float, 2> gammaInterlayerRToGb{{0.353f, 0.302f}};
-        std::array<float, 2> gammaInterlayerGToRb{{0.154f, 0.353f}};
-        std::array<float, 2> gammaInterlayerBToRg{{0.168f, 0.226f}};
+        std::array<float, 3> gammaSamelayerRgb{{0.341f, 0.324f, 0.273f}};
+        std::array<float, 2> gammaInterlayerRToGb{{0.355f, 0.305f}};
+        std::array<float, 2> gammaInterlayerGToRb{{0.154f, 0.358f}};
+        std::array<float, 2> gammaInterlayerBToRg{{0.171f, 0.225f}};
         std::array<float, 3> halationFirstSigmaUm{{65.0f, 65.0f, 65.0f}};
         std::array<float, 3> halationPrimaryAmount{{0.08f, 0.02f, 0.0f}};
         float hanatosSpectralGaussianBlurDefault = 0.0f;

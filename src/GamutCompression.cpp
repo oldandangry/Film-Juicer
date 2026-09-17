@@ -135,7 +135,17 @@ namespace Gamut {
                 cubic,
                 partitions,
                 partitionCount);
-            std::sort(partitions.begin(), partitions.begin() + partitionCount);
+            for (int index = 1; index < partitionCount; ++index) {
+                const double value = partitions[static_cast<std::size_t>(index)];
+                int insertion = index;
+                while (insertion > 0 &&
+                       value < partitions[static_cast<std::size_t>(insertion - 1)]) {
+                    partitions[static_cast<std::size_t>(insertion)] =
+                        partitions[static_cast<std::size_t>(insertion - 1)];
+                    --insertion;
+                }
+                partitions[static_cast<std::size_t>(insertion)] = value;
+            }
             const auto uniqueEnd = std::unique(
                 partitions.begin(),
                 partitions.begin() + partitionCount,

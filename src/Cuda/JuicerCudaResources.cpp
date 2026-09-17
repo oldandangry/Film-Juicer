@@ -222,8 +222,9 @@ namespace JuicerCuda {
 
 namespace JuicerCuda {
 
-    bool validate_resource_owner_locked(Resources& resources, std::string& outError, bool bindIfUnset) {
-        (void)bindIfUnset;
+    static bool validate_resource_context_locked(
+        Resources& resources,
+        std::string& outError) {
         int cur = -1;
         const cudaError_t devErr = cudaGetDevice(&cur);
         if (devErr != cudaSuccess || cur < 0) {
@@ -243,6 +244,18 @@ namespace JuicerCuda {
             outError = contextError.empty()
                            ? "CUDA context mismatch for cached resources"
                            : contextError;
+            return false;
+        }
+        return true;
+    }
+
+    bool validate_resource_owner_locked(Resources& resources, std::string& outError, bool bindIfUnset) {
+        (void)bindIfUnset;
+        if (!validate_resource_context_locked(resources, outError)) {
+            return false;
+        }
+        if (resources.frameUseFenceQuarantined) {
+            outError = "CUDA resources quarantined after unfenced frame use";
             return false;
         }
         return true;
@@ -1697,8 +1710,35 @@ namespace JuicerCuda {
             // Root has closed registry admission and rejected active submissions.
             // Drain the defect attachments before entering the existing state-locked
             // teardown of unrelated resource families.
-            if (!validate_resource_owner_locked(resources, outError, false)) {
+            if (!validate_resource_context_locked(resources, outError)) {
                 return false;
+            }
+            void* unfencedStreamOpaque = nullptr;
+            bool frameUseFenceQuarantined = false;
+            {
+                std::lock_guard<std::mutex> resourceLock(resources.m);
+                frameUseFenceQuarantined =
+                    resources.frameUseFenceQuarantined;
+                if (frameUseFenceQuarantined) {
+                    unfencedStreamOpaque = resources.unfencedFrameUseStreamOpaque;
+                }
+            }
+            if (frameUseFenceQuarantined) {
+                const cudaError_t syncError = cudaStreamSynchronize(
+                    unfencedStreamOpaque
+                        ? reinterpret_cast<cudaStream_t>(unfencedStreamOpaque)
+                        : nullptr);
+                if (syncError != cudaSuccess) {
+                    outError = std::string(
+                                   "quarantined frame-use stream synchronization failed: ") +
+                               (cudaGetErrorString(syncError)
+                                    ? cudaGetErrorString(syncError)
+                                    : "(unknown)");
+                    return false;
+                }
+                std::lock_guard<std::mutex> resourceLock(resources.m);
+                resources.frameUseFenceQuarantined = false;
+                resources.unfencedFrameUseStreamOpaque = nullptr;
             }
             if (resources.scannerScratch.filmDustTransmittance || resources.scannerScratch.gateTransmittance) {
                 for (const auto& entry : resources.pendingFrameUseEvents) {
@@ -1754,6 +1794,8 @@ namespace JuicerCuda {
             resources.completionEventPoolOpaque.clear();
             resources.pendingFrameUseEvents.clear();
             resources.pendingScanErrorReadbacks.clear();
+            resources.frameUseFenceQuarantined = false;
+            resources.unfencedFrameUseStreamOpaque = nullptr;
             resources.retireBytes = 0;
             resources.retireScratchBytes = 0;
         } catch (...) {
@@ -2119,6 +2161,18 @@ namespace JuicerCuda {
             return false;
         }
         return true;
+    }
+
+    void quarantine_unfenced_frame_use(
+        Resources& resources,
+        void* cudaStreamOpaque) noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(resources.m);
+            resources.frameUseFenceQuarantined = true;
+            resources.unfencedFrameUseStreamOpaque = cudaStreamOpaque;
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
     }
 
 
@@ -2911,6 +2965,7 @@ namespace JuicerCuda {
         Resources& resources,
         int*& host,
         void*& eventOpaque,
+        const ScanErrorReadbackIdentity& identity,
         std::string& outError) {
         outError.clear();
         if (!host || !eventOpaque) {
@@ -2927,6 +2982,7 @@ namespace JuicerCuda {
             Resources::PendingScanErrorReadback entry{};
             entry.host = host;
             entry.eventOpaque = eventOpaque;
+            entry.identity = identity;
             resources.pendingScanErrorReadbacks.push_back(entry);
         } catch (...) {
             outError = "scan error readback retention failed";
@@ -2941,9 +2997,9 @@ namespace JuicerCuda {
     bool poll_scan_error_readbacks(
         Resources& resources,
         void* cudaStreamOpaque,
-        bool& outDetected,
+        ScanErrorReadbackResult& outResult,
         std::string& outError) {
-        outDetected = false;
+        outResult = ScanErrorReadbackResult{};
         outError.clear();
 
         std::lock_guard<std::mutex> lock(resources.m);
@@ -2967,11 +3023,17 @@ namespace JuicerCuda {
             const cudaError_t pollErr = cudaEventQuery(ev);
             if (pollErr == cudaSuccess) {
                 if (*entry.host != 0) {
-                    outDetected = true;
+                    outResult.status = *entry.host;
+                    outResult.dirRecipeHash = entry.identity.dirRecipeHash;
+                    outResult.dirDescriptorHash = entry.identity.dirDescriptorHash;
+                    outResult.contextEpoch = entry.identity.contextEpoch;
+                    outResult.profileKey = entry.identity.profileKey;
+                    outResult.scanRoute = entry.identity.scanRoute;
+                    outResult.capturePolarity = entry.identity.capturePolarity;
                 }
                 release_scan_error_readback_entry(entry, false);
                 pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
-                if (outDetected) {
+                if (outResult.status != 0) {
                     return true;
                 }
                 continue;
@@ -3399,6 +3461,11 @@ namespace JuicerCuda {
                 lock,
                 outError);
         }
+        Resources::DeviceSpectralLut& routeLut =
+            printRoute ? resources.scanPrintLut : resources.scanNegativeLut;
+        const bool routeLutAlreadyPrepared =
+            routeLut.canonical_ready() &&
+            routeLut.hash == scannerDescriptor.hash;
 
         Spectral::Curve sensB;
         Spectral::Curve sensG;
@@ -3432,6 +3499,8 @@ namespace JuicerCuda {
             densR.linear[sample] = rgb[0];
         }
 
+        resources.filmFinalSensitivityHash = 0;
+        resources.filmDensityCurvesHash = 0;
         if (!upload_curve_locked(resources, resources.sensB, sensB, cudaStreamOpaque, &lock, "focused film finalSensB", outError) ||
             !upload_curve_locked(resources, resources.sensG, sensG, cudaStreamOpaque, &lock, "focused film finalSensG", outError) ||
             !upload_curve_locked(resources, resources.sensR, sensR, cudaStreamOpaque, &lock, "focused film finalSensR", outError) ||
@@ -3469,6 +3538,7 @@ namespace JuicerCuda {
                     canReuse = canReuse && resources.densityCurvesLayers[layer][ch] != nullptr;
                 }
             }
+            resources.filmDensityLayersHash = 0;
             if (!canReuse) {
                 if (!retire_density_layers_locked(
                         resources,
@@ -3498,8 +3568,8 @@ namespace JuicerCuda {
                 resources.densityCurvesLayersChannelN[ch] = densitySamples;
             }
             resources.hasDensityCurvesLayers = 1;
-            resources.filmDensityLayersHash = filmDevelop.densityCurvesLayersHash;
         } else if (resources.hasDensityCurvesLayers || resources.filmDensityLayersHash != 0) {
+            resources.filmDensityLayersHash = 0;
             if (!retire_density_layers_locked(
                     resources,
                     cudaStreamOpaque,
@@ -3509,6 +3579,7 @@ namespace JuicerCuda {
             }
         }
 
+        resources.filmDirHash = 0;
         if (dirCouplers.active) {
             if (dirCouplers.hash == 0 ||
                 dirCouplers.precorrectedDensityCurvesHash == 0 ||
@@ -3602,6 +3673,8 @@ namespace JuicerCuda {
         const Spectral::SpectralTables& mediumTables = *request.scannerTables;
         Resources::DeviceScanMedium& scan = printRoute ? resources.scanPrint : resources.scanNegative;
         const int scanK = mediumTables.K;
+        resources.routeDensityBoundsHash = 0;
+        resources.routeScannerDescriptorHash = 0;
         if (!upload_array_locked(resources, scan.tables.epsC, scan.tables.K, mediumTables.epsC.data(), scanK, cudaStreamOpaque, &lock, "focused medium epsC", outError) ||
             !upload_array_locked(resources, scan.tables.epsM, scan.tables.K, mediumTables.epsM.data(), scanK, cudaStreamOpaque, &lock, "focused medium epsM", outError) ||
             !upload_array_locked(resources, scan.tables.epsY, scan.tables.K, mediumTables.epsY.data(), scanK, cudaStreamOpaque, &lock, "focused medium epsY", outError) ||
@@ -3642,105 +3715,106 @@ namespace JuicerCuda {
                 scan.inv_max_cmy[channel] > 0.0f ? 1.0f / scan.inv_max_cmy[channel] : 0.0f;
         }
 
-        Precompute::CanonicalScanLutCpu lutCpu;
-        lock.unlock();
-        const bool lutBuilt = Precompute::build_canonical_scan_lut_cpu(
-            medium,
-            scannerDescriptor.lutResolution,
-            lutCpu,
-            outError);
-        lock.lock();
-        if (!validate_resource_owner_locked(resources, outError, false) || !lutBuilt) {
-            return false;
-        }
-        Resources::DeviceSpectralLut& lut = printRoute ? resources.scanPrintLut : resources.scanNegativeLut;
-        struct NextCanonicalScanLut {
-            float* log2PchipXYZ = nullptr;
-            float* slopeC = nullptr;
-            float* slopeM = nullptr;
-            float* slopeY = nullptr;
-            float* cellMin = nullptr;
-            float* cellMax = nullptr;
-        } next;
-        auto free_next = [&]() {
-            free_owned_device_noexcept(resources, next.log2PchipXYZ);
-            free_owned_device_noexcept(resources, next.slopeC);
-            free_owned_device_noexcept(resources, next.slopeM);
-            free_owned_device_noexcept(resources, next.slopeY);
-            free_owned_device_noexcept(resources, next.cellMin);
-            free_owned_device_noexcept(resources, next.cellMax);
-            next = {};
-        };
-        auto upload_next = [&](float*& destination, const std::vector<float>& source, const char* label) {
-            void* raw = nullptr;
-            if (!alloc_and_upload_bytes(
-                    resources,
-                    raw,
-                    source.data(),
-                    source.size() * sizeof(float),
-                    cudaStreamOpaque,
-                    label,
-                    outError)) {
+        if (!routeLutAlreadyPrepared) {
+            Precompute::CanonicalScanLutCpu lutCpu;
+            lock.unlock();
+            const bool lutBuilt = Precompute::build_canonical_scan_lut_cpu(
+                medium,
+                scannerDescriptor.lutResolution,
+                lutCpu,
+                outError);
+            lock.lock();
+            if (!validate_resource_owner_locked(resources, outError, false) || !lutBuilt) {
                 return false;
             }
-            destination = static_cast<float*>(raw);
-            return true;
-        };
-
-        lock.unlock();
-        const bool canonicalUploaded =
-            upload_next(next.log2PchipXYZ, lutCpu.log2XYZ, "focused scan PCHIP log2 XYZ") &&
-            upload_next(next.slopeC, lutCpu.slopeC, "focused scan PCHIP C slopes") &&
-            upload_next(next.slopeM, lutCpu.slopeM, "focused scan PCHIP M slopes") &&
-            upload_next(next.slopeY, lutCpu.slopeY, "focused scan PCHIP Y slopes") &&
-            upload_next(next.cellMin, lutCpu.cellMin, "focused scan PCHIP cell minima") &&
-            upload_next(next.cellMax, lutCpu.cellMax, "focused scan PCHIP cell maxima");
-        lock.lock();
-        if (!validate_resource_owner_locked(resources, outError, false) || !canonicalUploaded) {
-            free_next();
-            return false;
-        }
-
-        const std::size_t oldVoxelBytes =
-            static_cast<std::size_t>(lut.res) * lut.res * lut.res * 3u * sizeof(float);
-        const std::size_t oldCellRes = lut.res > 0u ? static_cast<std::size_t>(lut.res - 1u) : 0u;
-        const std::size_t oldCellBytes = oldCellRes * oldCellRes * oldCellRes * 3u * sizeof(float);
-        auto retire_old = [&](float*& pointer, std::size_t bytes, const char* label) {
-            if (!pointer) {
+            struct NextCanonicalScanLut {
+                float* log2PchipXYZ = nullptr;
+                float* slopeC = nullptr;
+                float* slopeM = nullptr;
+                float* slopeY = nullptr;
+                float* cellMin = nullptr;
+                float* cellMax = nullptr;
+            } next;
+            auto free_next = [&]() {
+                free_owned_device_noexcept(resources, next.log2PchipXYZ);
+                free_owned_device_noexcept(resources, next.slopeC);
+                free_owned_device_noexcept(resources, next.slopeM);
+                free_owned_device_noexcept(resources, next.slopeY);
+                free_owned_device_noexcept(resources, next.cellMin);
+                free_owned_device_noexcept(resources, next.cellMax);
+                next = {};
+            };
+            auto upload_next = [&](float*& destination, const std::vector<float>& source, const char* label) {
+                void* raw = nullptr;
+                if (!alloc_and_upload_bytes(
+                        resources,
+                        raw,
+                        source.data(),
+                        source.size() * sizeof(float),
+                        cudaStreamOpaque,
+                        label,
+                        outError)) {
+                    return false;
+                }
+                destination = static_cast<float*>(raw);
                 return true;
-            }
-            if (!retire_ptr_locked(
-                    resources,
-                    pointer,
-                    bytes,
-                    Resources::RetireKind::DeviceFree,
-                    cudaStreamOpaque,
-                    label,
-                    outError)) {
+            };
+
+            lock.unlock();
+            const bool canonicalUploaded =
+                upload_next(next.log2PchipXYZ, lutCpu.log2XYZ, "focused scan PCHIP log2 XYZ") &&
+                upload_next(next.slopeC, lutCpu.slopeC, "focused scan PCHIP C slopes") &&
+                upload_next(next.slopeM, lutCpu.slopeM, "focused scan PCHIP M slopes") &&
+                upload_next(next.slopeY, lutCpu.slopeY, "focused scan PCHIP Y slopes") &&
+                upload_next(next.cellMin, lutCpu.cellMin, "focused scan PCHIP cell minima") &&
+                upload_next(next.cellMax, lutCpu.cellMax, "focused scan PCHIP cell maxima");
+            lock.lock();
+            if (!validate_resource_owner_locked(resources, outError, false) || !canonicalUploaded) {
+                free_next();
                 return false;
             }
-            pointer = nullptr;
-            return true;
-        };
-        lut.hash = 0;
-        if (!retire_old(lut.log2PchipXYZ, oldVoxelBytes, "focused scan PCHIP log2 XYZ") ||
-            !retire_old(lut.slopeC, oldVoxelBytes, "focused scan PCHIP C slopes") ||
-            !retire_old(lut.slopeM, oldVoxelBytes, "focused scan PCHIP M slopes") ||
-            !retire_old(lut.slopeY, oldVoxelBytes, "focused scan PCHIP Y slopes") ||
-            !retire_old(lut.cellMin, oldCellBytes, "focused scan PCHIP cell minima") ||
-            !retire_old(lut.cellMax, oldCellBytes, "focused scan PCHIP cell maxima")) {
-            free_next();
-            return false;
+
+            const std::size_t oldVoxelBytes =
+                static_cast<std::size_t>(routeLut.res) * routeLut.res * routeLut.res * 3u * sizeof(float);
+            const std::size_t oldCellRes = routeLut.res > 0u ? static_cast<std::size_t>(routeLut.res - 1u) : 0u;
+            const std::size_t oldCellBytes = oldCellRes * oldCellRes * oldCellRes * 3u * sizeof(float);
+            auto retire_old = [&](float*& pointer, std::size_t bytes, const char* label) {
+                if (!pointer) {
+                    return true;
+                }
+                if (!retire_ptr_locked(
+                        resources,
+                        pointer,
+                        bytes,
+                        Resources::RetireKind::DeviceFree,
+                        cudaStreamOpaque,
+                        label,
+                        outError)) {
+                    return false;
+                }
+                pointer = nullptr;
+                return true;
+            };
+            routeLut.hash = 0;
+            if (!retire_old(routeLut.log2PchipXYZ, oldVoxelBytes, "focused scan PCHIP log2 XYZ") ||
+                !retire_old(routeLut.slopeC, oldVoxelBytes, "focused scan PCHIP C slopes") ||
+                !retire_old(routeLut.slopeM, oldVoxelBytes, "focused scan PCHIP M slopes") ||
+                !retire_old(routeLut.slopeY, oldVoxelBytes, "focused scan PCHIP Y slopes") ||
+                !retire_old(routeLut.cellMin, oldCellBytes, "focused scan PCHIP cell minima") ||
+                !retire_old(routeLut.cellMax, oldCellBytes, "focused scan PCHIP cell maxima")) {
+                free_next();
+                return false;
+            }
+            routeLut.log2PchipXYZ = next.log2PchipXYZ;
+            routeLut.slopeC = next.slopeC;
+            routeLut.slopeM = next.slopeM;
+            routeLut.slopeY = next.slopeY;
+            routeLut.cellMin = next.cellMin;
+            routeLut.cellMax = next.cellMax;
+            next = {};
+            routeLut.res = scannerDescriptor.lutResolution;
+            routeLut.hash = scannerDescriptor.hash;
         }
-        lut.log2PchipXYZ = next.log2PchipXYZ;
-        lut.slopeC = next.slopeC;
-        lut.slopeM = next.slopeM;
-        lut.slopeY = next.slopeY;
-        lut.cellMin = next.cellMin;
-        lut.cellMax = next.cellMax;
-        next = {};
-        lut.res = scannerDescriptor.lutResolution;
-        lut.hash = scannerDescriptor.hash;
 
         resources.filmFinalSensitivityHash = filmRaw.finalSensitivityHash;
         resources.filmDensityCurvesHash = filmDevelop.normalizedDensityCurvesHash;
@@ -6286,24 +6360,35 @@ namespace JuicerCuda {
     bool ensure_spatial_dir_kernel(
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
+        int radius,
         float sigma,
         std::string& outError) {
         constexpr int kMaxRadius = 2048;
-        const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
-        const int radiusRaw = sigmaOk
-                                  ? std::max(1, static_cast<int>(std::ceil(3.0f * sigma)))
-                                  : 0;
-        if (radiusRaw > kMaxRadius) {
+        if (!std::isfinite(sigma) || sigma <= 0.0f || radius <= 0 || radius > kMaxRadius) {
             outError = "spatial DIR kernel radius exceeds prepared-frame limit";
             return false;
         }
         return ensure_cached_gaussian_kernel(
             resources,
             kernel,
-            radiusRaw,
+            radius,
             sigma,
             "spatial DIR kernel",
             outError);
+    }
+
+    bool clear_spatial_dir_kernel_binding(
+        Resources& resources,
+        Resources::DeviceGaussianKernel& kernel,
+        std::string& outError) {
+        outError.clear();
+        std::lock_guard<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+        clear_gaussian_kernel(kernel);
+        return true;
     }
 
     bool ensure_gaussian_kernel(

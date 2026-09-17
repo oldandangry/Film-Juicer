@@ -698,48 +698,33 @@ namespace {
 
     template <typename MixFn>
     inline void mix_coupler_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
-        mix_hash_field(h, p.couplersActive, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, p.couplersAmount, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, p.couplersInhibitionSameLayer, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, p.couplersInhibitionInterlayer, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, p.couplersDiffusionSizeUm, 10000.0, mix);
-        mix_hash_field(h, p.couplersGammaUseStock, mix);
-        for (double value : p.couplersGammaSameLayerRgb) {
-            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+        const Spektrafilm::DirCouplersControls& controls = p.dirCouplers;
+        mix_hash_field(h, controls.active, mix);
+        mix_canonical_float_bits(h, controls.amount, mix);
+        mix_canonical_float_bits(h, controls.inhibitionSameLayer, mix);
+        mix_canonical_float_bits(h, controls.inhibitionInterlayer, mix);
+        mix_canonical_float_bits(h, controls.diffusionSizeUm, mix);
+        mix_canonical_float_bits(h, controls.diffusionTailUm, mix);
+        mix_canonical_float_bits(h, controls.diffusionTailWeight, mix);
+        mix_hash_field(h, controls.gammaUseStock, mix);
+        for (float value : controls.gammaSameLayerRgb) {
+            mix_canonical_float_bits(h, value, mix);
         }
-        for (double value : p.couplersGammaInterlayerRToGb) {
-            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+        for (float value : controls.gammaInterlayerRToGb) {
+            mix_canonical_float_bits(h, value, mix);
         }
-        for (double value : p.couplersGammaInterlayerGToRb) {
-            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+        for (float value : controls.gammaInterlayerGToRb) {
+            mix_canonical_float_bits(h, value, mix);
         }
-        for (double value : p.couplersGammaInterlayerBToRg) {
-            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+        for (float value : controls.gammaInterlayerBToRg) {
+            mix_canonical_float_bits(h, value, mix);
         }
-    }
-
-    Spektrafilm::DirCouplersControls focused_dir_couplers_controls_from_snapshot(const ParamSnapshot& p) {
-        Spektrafilm::DirCouplersControls controls{};
-        controls.active = p.couplersActive != 0;
-        controls.amount = static_cast<float>(p.couplersAmount);
-        controls.inhibitionSameLayer = static_cast<float>(p.couplersInhibitionSameLayer);
-        controls.inhibitionInterlayer = static_cast<float>(p.couplersInhibitionInterlayer);
-        controls.diffusionSizeUm = static_cast<float>(p.couplersDiffusionSizeUm);
-        controls.gammaUseStock = p.couplersGammaUseStock != 0;
-        controls.gammaSameLayerRgb = {
-            static_cast<float>(p.couplersGammaSameLayerRgb[0]),
-            static_cast<float>(p.couplersGammaSameLayerRgb[1]),
-            static_cast<float>(p.couplersGammaSameLayerRgb[2])};
-        controls.gammaInterlayerRToGb = {
-            static_cast<float>(p.couplersGammaInterlayerRToGb[0]),
-            static_cast<float>(p.couplersGammaInterlayerRToGb[1])};
-        controls.gammaInterlayerGToRb = {
-            static_cast<float>(p.couplersGammaInterlayerGToRb[0]),
-            static_cast<float>(p.couplersGammaInterlayerGToRb[1])};
-        controls.gammaInterlayerBToRg = {
-            static_cast<float>(p.couplersGammaInterlayerBToRg[0]),
-            static_cast<float>(p.couplersGammaInterlayerBToRg[1])};
-        return controls;
+        for (float value : controls.langmuirDonorKRgb) {
+            mix_canonical_float_bits(h, value, mix);
+        }
+        for (float value : controls.langmuirReceiverKRgb) {
+            mix_canonical_float_bits(h, value, mix);
+        }
     }
 
     Spektrafilm::SpatialOpticsControls focused_spatial_optics_controls_from_snapshot(
@@ -1094,8 +1079,7 @@ namespace {
         input.gateDustAmount = params.gateDustAmount;
         input.gateScratchAmount = params.gateScratchAmount;
         input.gateWeaveAmount = params.gateWeaveAmount;
-        input.dirCouplers =
-            focused_dir_couplers_controls_from_snapshot(params);
+        input.dirCouplers = params.dirCouplers;
         input.spatialOptics =
             focused_spatial_optics_controls_from_snapshot(params);
         input.spectralUpsamplingMode = params.spectralUpsamplingMode;
@@ -1436,11 +1420,12 @@ bool build_print_render_state_product(
 namespace {
     bool publish_direct_recipe_if_selected(
         const ParamSnapshot& params,
-        FocusedRenderStateBuildProduct& outProduct) {
+        FocusedRenderStateBuildProduct& outProduct,
+        std::string& outDiagnostic) {
         FocusedRenderStateBuildProduct product;
-        std::string diagnostic;
-        if (!build_direct_render_state_product(params, product, diagnostic)) {
-            JTRACE("SPEKTRAFILM", diagnostic);
+        outDiagnostic.clear();
+        if (!build_direct_render_state_product(params, product, outDiagnostic)) {
+            JTRACE("SPEKTRAFILM", outDiagnostic);
             return false;
         }
         outProduct = std::move(product);
@@ -1449,11 +1434,12 @@ namespace {
 
     bool publish_print_recipe_if_selected(
         const ParamSnapshot& params,
-        FocusedRenderStateBuildProduct& outProduct) {
+        FocusedRenderStateBuildProduct& outProduct,
+        std::string& outDiagnostic) {
         FocusedRenderStateBuildProduct product;
-        std::string diagnostic;
-        if (!build_print_render_state_product(params, product, diagnostic)) {
-            JTRACE("SPEKTRAFILM", diagnostic);
+        outDiagnostic.clear();
+        if (!build_print_render_state_product(params, product, outDiagnostic)) {
+            JTRACE("SPEKTRAFILM", outDiagnostic);
             return false;
         }
         outProduct = std::move(product);
@@ -1576,8 +1562,15 @@ namespace {
     bool rebuild_direct_render_state_for_hash(
         InstanceState& S,
         const ParamSnapshot& P,
-        std::uint64_t fullHash) {
+        std::uint64_t fullHash,
+        std::string* outDiagnostic = nullptr) {
+        if (outDiagnostic) {
+            outDiagnostic->clear();
+        }
         if (Spektrafilm::scan_route_is_print(P.scanRoute)) {
+            if (outDiagnostic) {
+                *outDiagnostic = "ResourceDescriptorMismatch route=direct field=scan_route";
+            }
             return false;
         }
 
@@ -1591,7 +1584,11 @@ namespace {
             }
         }
         FocusedRenderStateBuildProduct product;
-        if (!publish_direct_recipe_if_selected(P, product)) {
+        std::string diagnostic;
+        if (!publish_direct_recipe_if_selected(P, product, diagnostic)) {
+            if (outDiagnostic) {
+                *outDiagnostic = diagnostic;
+            }
             std::lock_guard<std::mutex> stateLock(S.m);
             JuicerAtomic::store_shared_ptr(
                 &S.activeDirectState,
@@ -1620,8 +1617,15 @@ namespace {
     bool rebuild_print_render_state_for_hash(
         InstanceState& S,
         const ParamSnapshot& P,
-        std::uint64_t fullHash) {
+        std::uint64_t fullHash,
+        std::string* outDiagnostic = nullptr) {
+        if (outDiagnostic) {
+            outDiagnostic->clear();
+        }
         if (!Spektrafilm::scan_route_is_print(P.scanRoute)) {
+            if (outDiagnostic) {
+                *outDiagnostic = "ResourceDescriptorMismatch route=print field=scan_route";
+            }
             return false;
         }
 
@@ -1635,7 +1639,11 @@ namespace {
             }
         }
         FocusedRenderStateBuildProduct product;
-        if (!publish_print_recipe_if_selected(P, product)) {
+        std::string diagnostic;
+        if (!publish_print_recipe_if_selected(P, product, diagnostic)) {
+            if (outDiagnostic) {
+                *outDiagnostic = diagnostic;
+            }
             std::lock_guard<std::mutex> stateLock(S.m);
             JuicerAtomic::store_shared_ptr(
                 &S.activePrintState,
@@ -1697,15 +1705,18 @@ PendingRenderAdmissionResult admit_pending_render_state(InstanceState& state) {
             fullHash = valid.fullHash;
         }
 
+        std::string rebuildDiagnostic;
         const bool rebuilt = Spektrafilm::scan_route_is_print(snapshot.scanRoute)
                                  ? rebuild_print_render_state_for_hash(
                                        state,
                                        snapshot,
-                                       fullHash)
+                                       fullHash,
+                                       &rebuildDiagnostic)
                                  : rebuild_direct_render_state_for_hash(
                                        state,
                                        snapshot,
-                                       fullHash);
+                                       fullHash,
+                                       &rebuildDiagnostic);
 
         std::lock_guard<std::mutex> pendingLock(state.pending.m);
         const auto* current = std::get_if<PendingParamsState::Valid>(&state.pending.value);
@@ -1717,8 +1728,9 @@ PendingRenderAdmissionResult admit_pending_render_state(InstanceState& state) {
         result.snapshot = snapshot;
         if (!rebuilt || state.lastHash.load(std::memory_order_acquire) != fullHash) {
             result.status = PendingRenderAdmissionStatus::RebuildFailed;
-            result.diagnostic =
-                "ResourceDescriptorMismatch focused render state rebuild failed";
+            result.diagnostic = rebuildDiagnostic.empty()
+                                    ? "ResourceDescriptorMismatch focused render state rebuild failed"
+                                    : std::move(rebuildDiagnostic);
             return result;
         }
 

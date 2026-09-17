@@ -173,8 +173,7 @@ namespace JuicerProcess {
 
         bool spatial_dir_descriptor_has_strict_yvv(
             const Spektrafilm::SpatialDirDescriptor& descriptor) noexcept {
-            if (descriptor.approximation != Spektrafilm::DirApproximationMarker::SpektrafilmStrict ||
-                descriptor.scratchTier != Spektrafilm::DirScratchTier::Tier1IChannels ||
+            if (descriptor.scratchTier != Spektrafilm::DirScratchTier::Tier1IChannels ||
                 descriptor.targetScratchTier != Spektrafilm::DirScratchTier::Tier2) {
                 return false;
             }
@@ -730,6 +729,12 @@ namespace JuicerProcess {
             void* eventOpaque = nullptr;
             bool active = false;
             bool readbackPending = false;
+            std::uint64_t dirRecipeHash = 0;
+            std::uint64_t dirDescriptorHash = 0;
+            std::uint64_t contextEpoch = 0;
+            std::string profileKey;
+            int scanRoute = 0;
+            int capturePolarity = 0;
         };
 
         struct FrameScratchWorkspace {
@@ -772,6 +777,9 @@ namespace JuicerProcess {
         Scanner::ScannerPostEffectsDescriptor scannerPostEffectsDescriptor{};
         Spektrafilm::ProfilePolarity capturePolarity =
             Spektrafilm::ProfilePolarity::Unsupported;
+        std::string filmProfileKey;
+        Spektrafilm::ScanRoute scanRoute =
+            Spektrafilm::kDefaultScanRoute;
         std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
         std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor;
         std::array<JuicerCuda::VisualGrainPreparedGaussianView, 3>
@@ -1942,10 +1950,18 @@ namespace JuicerProcess {
         remember_stream(cudaStreamOpaque);
         void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
         if (stage.readbackPending && stage.hostFlag && stage.eventOpaque) {
+            JuicerCuda::ScanErrorReadbackIdentity identity{};
+            identity.dirRecipeHash = stage.dirRecipeHash;
+            identity.dirDescriptorHash = stage.dirDescriptorHash;
+            identity.contextEpoch = stage.contextEpoch;
+            identity.profileKey = stage.profileKey;
+            identity.scanRoute = stage.scanRoute;
+            identity.capturePolarity = stage.capturePolarity;
             if (!JuicerCuda::retain_scan_error_readback(
                     *resources,
                     stage.hostFlag,
                     stage.eventOpaque,
+                    identity,
                     outError)) {
                 if (outError.empty()) {
                     outError = "frame scan-error readback retention failed";
@@ -2192,11 +2208,40 @@ namespace JuicerProcess {
 
         auto record_use_event = [&](JuicerCuda::Resources& target,
                                     const char* label) {
-            return JuicerCuda::record_frame_use_event(
+            std::string recordError;
+            if (JuicerCuda::record_frame_use_event(
+                    target,
+                    cudaStreamOpaque,
+                    label,
+                    recordError)) {
+                return true;
+            }
+            const cudaError_t syncError = cudaStreamSynchronize(
+                cudaStreamOpaque
+                    ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+                    : nullptr);
+            if (syncError == cudaSuccess) {
+#if JUICER_DIAGNOSTICS_COMPILED
+                if (JTRACE_ENABLED(1)) {
+                    std::string message =
+                        std::string("event=frame_use_event_fallback_sync label=") +
+                        (label ? label : "frame use");
+                    JTRACE("CUDALIFE", message);
+                }
+#endif
+                return true;
+            }
+            JuicerCuda::quarantine_unfenced_frame_use(
                 target,
-                cudaStreamOpaque,
-                label,
-                outError);
+                cudaStreamOpaque);
+            outError = recordError.empty()
+                           ? std::string("frame use event submission failed")
+                           : recordError;
+            outError += " | cudaStreamSynchronize(frame use) failed: ";
+            outError += cudaGetErrorString(syncError)
+                            ? cudaGetErrorString(syncError)
+                            : "(unknown)";
+            return false;
         };
 
         if (!record_use_event(*resources, "frame use")) {
@@ -2333,13 +2378,6 @@ namespace JuicerProcess {
         }
 
         remember_stream(cudaStreamOpaque);
-        void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
-        if (!submit_frame_use_event(retireStreamOpaque, outError)) {
-            if (outError.empty()) {
-                outError = "frame scratch use-event submission failed";
-            }
-            return false;
-        }
         if (!JuicerCuda::release_retained_frame_scratch_lease(
                 *resources,
                 transaction.leaseGeneration,
@@ -2461,6 +2499,12 @@ namespace JuicerProcess {
             return false;
         }
         _state->remember_stream(cudaStreamOpaque);
+        if (!_state->submit_frame_use_event(cudaStreamOpaque, outError)) {
+            if (outError.empty()) {
+                outError = "frame use-event submission failed";
+            }
+            return false;
+        }
         const JuicerCuda::ResourceManager::ScratchRequestDescriptor postFrameScratchRequest =
             _state->post_frame_scratch_request_descriptor();
         std::string releaseError;
@@ -2542,6 +2586,20 @@ namespace JuicerProcess {
         if (_state) {
             try {
                 std::string releaseError;
+                if (_state->resources && _state->transaction.active &&
+                    !_state->transaction.committed &&
+                    !_state->submit_frame_use_event(
+                        _state->lastCudaStreamOpaque,
+                        releaseError) &&
+                    JTRACE_ENABLED(1)) {
+                    std::string msg =
+                        "frame_use_event_submission_failed abort=1";
+                    if (!releaseError.empty()) {
+                        msg += " error=";
+                        msg += releaseError;
+                    }
+                    JTRACE("CUDA", msg);
+                }
                 const JuicerCuda::ResourceManager::ScratchRequestDescriptor postFrameScratchRequest =
                     _state->post_frame_scratch_request_descriptor();
                 if (!_state->release_scatter_halation_resources(
@@ -2702,7 +2760,7 @@ namespace JuicerProcess {
             return false;
         }
         if (descriptor.hash == 0 || descriptor.dirRecipeHash == 0 ||
-            !(descriptor.gaussianSigmaPixels > 0.0f)) {
+            descriptor.filterPlan.componentCount <= 0) {
             outError = "spatial DIR descriptor is invalid";
             return false;
         }
@@ -2831,16 +2889,10 @@ namespace JuicerProcess {
             msg += std::to_string(static_cast<unsigned long long>(descriptor.dirRecipeHash));
             msg += " route=";
             msg += descriptor.traceRouteLabel ? descriptor.traceRouteLabel : "unknown";
-            msg += " source_contract=";
-            msg += Spektrafilm::to_cstr(descriptor.sourceContract);
-            msg += " boundary_mode=";
-            msg += Spektrafilm::to_cstr(descriptor.boundaryMode);
             msg += " scratch_tier=";
             msg += Spektrafilm::to_cstr(descriptor.scratchTier);
             msg += " target_scratch_tier=";
             msg += Spektrafilm::to_cstr(descriptor.targetScratchTier);
-            msg += " approximation=";
-            msg += Spektrafilm::to_cstr(descriptor.approximation);
             msg += " scratch_source=pending";
             msg += " component_count=";
             msg += std::to_string(descriptor.filterPlan.componentCount);
@@ -2990,22 +3042,34 @@ namespace JuicerProcess {
             JTRACE("DIR_DESCRIPTOR", msg);
         }
 #endif
-        const float sigmas[4] = {
-            descriptor.gaussianSigmaPixels,
-            descriptor.exponentialSigmaPixels[0],
-            descriptor.exponentialSigmaPixels[1],
-            descriptor.exponentialSigmaPixels[2]};
-        for (int slot = 0; slot < 4; ++slot) {
-            if (slot > 0 && !(descriptor.exponentialWeights[slot - 1] > 0.0f)) {
-                continue;
-            }
-            if (sigmas[slot] >= 3.0f) {
+        for (int slot = 0;
+             slot < Spektrafilm::DirFilterPlan::kMaxComponents;
+             ++slot) {
+            const bool componentPresent =
+                slot < descriptor.filterPlan.componentCount;
+            const Spektrafilm::DirGaussianComponentPlan& component =
+                descriptor.filterPlan.components[static_cast<std::size_t>(slot)];
+            if (!componentPresent || !(component.weight > 0.0f) ||
+                component.referenceOperator !=
+                    Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect) {
+                if (!JuicerCuda::clear_spatial_dir_kernel_binding(
+                        *_state->resources,
+                        _state->resources
+                            ->spatialDirKernels[static_cast<std::size_t>(slot)],
+                        outError)) {
+                    _state->set_failure(
+                        PreparedCudaFailureStage{
+                            "command_clear_spatial_dir_kernel"},
+                        "CUDA spatial DIR kernel binding clear failed");
+                    return false;
+                }
                 continue;
             }
             if (!JuicerCuda::ensure_spatial_dir_kernel(
                     *_state->resources,
                     _state->resources->spatialDirKernels[static_cast<std::size_t>(slot)],
-                    sigmas[slot],
+                    component.radius,
+                    component.sigmaPixels,
                     outError)) {
                 _state->set_failure(
                     PreparedCudaFailureStage{"command_ensure_spatial_dir_kernel"},
@@ -3137,27 +3201,52 @@ namespace JuicerProcess {
             return false;
         }
 
-        bool previousScanErrorDetected = false;
+        JuicerCuda::ScanErrorReadbackResult previousError{};
         if (!JuicerCuda::poll_scan_error_readbacks(
                 *_state->resources,
                 cudaStreamOpaque,
-                previousScanErrorDetected,
+                previousError,
                 outError)) {
             _state->set_failure(
                 PreparedCudaFailureStage{"scan_error_pending_readback"},
                 "CUDA scan error validation failed");
             return false;
         }
-        if (previousScanErrorDetected) {
-            JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
+        if (previousError.status != 0) {
             _state->set_failure(
                 PreparedCudaFailureStage{"scan_error_previous_readback"},
                 "CUDA scan error validation failed");
-            outError = "previous scan produced non-finite RGB";
+            if ((previousError.status & (1 << 8)) != 0) {
+                const int channels = (previousError.status >> 9) & 0x7;
+                outError =
+                    "earlier CUDA DIR submission failed component=dir route=" +
+                    std::string(Spektrafilm::scan_route_key(
+                        static_cast<Spektrafilm::ScanRoute>(
+                            previousError.scanRoute))) +
+                    " profile=" + previousError.profileKey +
+                    " polarity=" + std::to_string(previousError.capturePolarity) +
+                    " recipe_hash=" + std::to_string(previousError.dirRecipeHash) +
+                    " descriptor_hash=" +
+                    std::to_string(previousError.dirDescriptorHash) +
+                    " context_epoch=" +
+                    std::to_string(previousError.contextEpoch) +
+                    " channel_mask=" + std::to_string(channels) +
+                    " requirement=finite_defined_receiver_arithmetic";
+            } else {
+                outError = "previous scan produced non-finite RGB";
+            }
+            JTRACE("CUDA", std::string("FATAL: ") + outError);
             return false;
         }
 
         State::ScanErrorFrameStage& stage = _state->scanErrorStage;
+        stage.dirRecipeHash = _state->resources->filmDirHash;
+        stage.dirDescriptorHash = _state->spatialDirDescriptor.hash;
+        stage.contextEpoch = _state->resources->contextEpoch;
+        stage.profileKey = _state->filmProfileKey;
+        stage.scanRoute =
+            static_cast<int>(_state->scanRoute);
+        stage.capturePolarity = static_cast<int>(_state->capturePolarity);
         outScanErrorFlag = stage.deviceFlag;
         if (!outScanErrorFlag) {
             _state->set_failure(
@@ -4070,25 +4159,35 @@ namespace JuicerProcess {
             return view;
         }
         const auto& kernels = _state->resources->spatialDirKernels;
+        const Spektrafilm::DirFilterPlan& filterPlan =
+            _state->spatialDirDescriptor.filterPlan;
         view.gaussian = {
             kernels[0].weights,
             kernels[0].radius,
-            _state->spatialDirDescriptor.gaussianSigmaPixels};
+            filterPlan.components[0].sigmaPixels};
         for (int slot = 0; slot < 3; ++slot) {
+            const int component = slot + 1;
             view.exponential[slot] = {
-                kernels[static_cast<std::size_t>(slot) + 1].weights,
-                kernels[static_cast<std::size_t>(slot) + 1].radius,
-                _state->spatialDirDescriptor.exponentialSigmaPixels[slot]};
+                kernels[static_cast<std::size_t>(component)].weights,
+                kernels[static_cast<std::size_t>(component)].radius,
+                component < filterPlan.componentCount
+                    ? filterPlan.components[static_cast<std::size_t>(component)].sigmaPixels
+                    : 0.0f};
         }
         view.descriptorHash = descriptorHash;
-        view.active = view.gaussian.sigma >= 3.0f ||
-                      (view.gaussian.weights && view.gaussian.radius > 0);
-        for (int slot = 0; slot < 3; ++slot) {
-            const bool required = _state->spatialDirDescriptor.exponentialWeights[slot] > 0.0f;
-            view.active = view.active &&
-                          (!required ||
-                           view.exponential[slot].sigma >= 3.0f ||
-                           (view.exponential[slot].weights && view.exponential[slot].radius > 0));
+        view.active = true;
+        for (int slot = 0;
+             slot < _state->spatialDirDescriptor.filterPlan.componentCount;
+             ++slot) {
+            const Spektrafilm::DirGaussianComponentPlan& component =
+                _state->spatialDirDescriptor.filterPlan.components[static_cast<std::size_t>(slot)];
+            if (component.weight > 0.0f &&
+                component.referenceOperator ==
+                    Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect) {
+                const auto& kernel = kernels[static_cast<std::size_t>(slot)];
+                view.active = view.active && kernel.weights &&
+                              kernel.radius == component.radius;
+            }
         }
         return view;
     }
@@ -5180,6 +5279,10 @@ namespace JuicerProcess {
         }
         frame._state->capturePolarity =
             request.recipe->profileRoute.capturePolarity;
+        frame._state->filmProfileKey =
+            request.recipe->profileRoute.filmProfileKey;
+        frame._state->scanRoute =
+            request.recipe->profileRoute.scanRoute;
         frame._state->focusedFilmRawConfig = request.filmRawConfig;
         frame._state->focusedScannerColor = request.scannerColor;
         frame._state->focusedOutputGamutTransform = request.outputGamutTransform;

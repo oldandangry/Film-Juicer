@@ -242,6 +242,15 @@ namespace JuicerCuda {
         int domainEnd = 0;
     };
 
+    struct ScanErrorReadbackIdentity {
+        std::uint64_t dirRecipeHash = 0;
+        std::uint64_t dirDescriptorHash = 0;
+        std::uint64_t contextEpoch = 0;
+        std::string profileKey;
+        int scanRoute = 0;
+        int capturePolarity = 0;
+    };
+
     struct Resources {
         static constexpr std::uint32_t kAllocationOwnershipSchemaVersion = 1u;
 
@@ -353,6 +362,7 @@ namespace JuicerCuda {
         struct PendingScanErrorReadback {
             int* host = nullptr;
             void* eventOpaque = nullptr;
+            ScanErrorReadbackIdentity identity{};
         };
 
         // Eight-byte-aligned identity, residency, pointer, and container state is grouped first
@@ -386,6 +396,7 @@ namespace JuicerCuda {
         // Shared single-plane W×H float scratch used as a blur/unsharp intermediate.
         // Spatial DIR and scanner optics reuse this to reduce peak VRAM.
         float* sharedTmpPlane = nullptr;
+        void* unfencedFrameUseStreamOpaque = nullptr;
         std::size_t sharedTmpCapacityElements = 0;
         std::uint64_t retainedScratchLeaseGeneration = 0;
 
@@ -501,6 +512,7 @@ namespace JuicerCuda {
         bool printPreflashValid = false;
         bool printIllumFilteredHostValid = false;
         bool printPreflashIllumFilteredHostValid = false;
+        bool frameUseFenceQuarantined = false;
         bool contextInvalidatedByProvenLoss = false;
 
         Resources(
@@ -578,7 +590,12 @@ namespace JuicerCuda {
     bool ensure_spatial_dir_kernel(
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
+        int radius,
         float sigma,
+        std::string& outError);
+    bool clear_spatial_dir_kernel_binding(
+        Resources& resources,
+        Resources::DeviceGaussianKernel& kernel,
         std::string& outError);
     bool ensure_gaussian_kernel(
         Resources& resources,
@@ -652,15 +669,26 @@ namespace JuicerCuda {
         std::map<void*, DeviceByteReservation>::node_type& allocationRecord,
         bool completionCertain,
         std::string& outError) noexcept;
+    struct ScanErrorReadbackResult {
+        int status = 0;
+        std::uint64_t dirRecipeHash = 0;
+        std::uint64_t dirDescriptorHash = 0;
+        std::uint64_t contextEpoch = 0;
+        std::string profileKey;
+        int scanRoute = 0;
+        int capturePolarity = 0;
+    };
+
     bool retain_scan_error_readback(
         Resources& resources,
         int*& host,
         void*& eventOpaque,
+        const ScanErrorReadbackIdentity& identity,
         std::string& outError);
     bool poll_scan_error_readbacks(
         Resources& resources,
         void* cudaStreamOpaque,
-        bool& outDetected,
+        ScanErrorReadbackResult& outResult,
         std::string& outError);
 
     bool record_frame_use_event(
@@ -668,6 +696,9 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         const char* label,
         std::string& outError);
+    void quarantine_unfenced_frame_use(
+        Resources& resources,
+        void* cudaStreamOpaque) noexcept;
 
     enum class PinnedUploadPurgeDisposition : std::uint8_t {
         NormalRetire = 0,

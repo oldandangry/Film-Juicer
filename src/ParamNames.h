@@ -40,6 +40,10 @@ namespace JuicerParams {
     inline constexpr const char kDirCouplersInhibitionSameLayer[] = "CouplersInhibitionSameLayer";
     inline constexpr const char kDirCouplersInhibitionInterlayer[] = "CouplersInhibitionInterlayer";
     inline constexpr const char kDirCouplersDiffusionSizeUm[] = "CouplersDiffusionSizeUm";
+    inline constexpr const char kDirCouplersLangmuirDonorKRgb[] = "CouplersLangmuirDonorKRgb";
+    inline constexpr const char kDirCouplersLangmuirReceiverKRgb[] = "CouplersLangmuirReceiverKRgb";
+    inline constexpr const char kDirCouplersDiffusionTailUm[] = "CouplersDiffusionTailUm";
+    inline constexpr const char kDirCouplersDiffusionTailWeight[] = "CouplersDiffusionTailWeight";
     inline constexpr const char kDirCouplersGammaUseStock[] = "CouplersGammaUseStock";
     inline constexpr const char kDirCouplersGammaSameLayerRgb[] = "CouplersGammaSameLayerRgb";
     inline constexpr const char kDirCouplersGammaInterlayerRToGb[] = "CouplersGammaInterlayerRToGb";

@@ -668,7 +668,6 @@ namespace {
         return extent;
     }
 
-#if JUICER_DIAGNOSTICS_COMPILED
     const Spektrafilm::DirGaussianComponentPlan& spatial_dir_component_or_empty(
         const Spektrafilm::SpatialDirDescriptor& descriptor,
         int index) {
@@ -678,7 +677,21 @@ namespace {
         }
         return descriptor.filterPlan.components[static_cast<std::size_t>(index)];
     }
-#endif
+
+    JuicerCuda::SpatialDirFilterOperator cuda_dir_filter_operator(
+        Spektrafilm::DirReferenceOperator referenceOperator) noexcept {
+        switch (referenceOperator) {
+            case Spektrafilm::DirReferenceOperator::Identity:
+                return JuicerCuda::SpatialDirFilterOperator::Identity;
+            case Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect:
+                return JuicerCuda::SpatialDirFilterOperator::FirReflect;
+            case Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReplicate:
+                return JuicerCuda::SpatialDirFilterOperator::YvvReplicate;
+            case Spektrafilm::DirReferenceOperator::None:
+            default:
+                return JuicerCuda::SpatialDirFilterOperator::None;
+        }
+    }
 
     void bind_spatial_dir_final_develop_to_payload(
         JuicerCuda::FilmDevelopPayload& payload,
@@ -714,16 +727,10 @@ namespace {
         msg += std::to_string(static_cast<unsigned long long>(descriptor.dirRecipeHash));
         msg += " support=";
         msg += Spektrafilm::to_cstr(descriptor.support);
-        msg += " source_contract=";
-        msg += Spektrafilm::to_cstr(descriptor.sourceContract);
-        msg += " boundary_mode=";
-        msg += Spektrafilm::to_cstr(descriptor.boundaryMode);
         msg += " scratch_tier=";
         msg += Spektrafilm::to_cstr(descriptor.scratchTier);
         msg += " target_scratch_tier=";
         msg += Spektrafilm::to_cstr(descriptor.targetScratchTier);
-        msg += " approximation=";
-        msg += Spektrafilm::to_cstr(descriptor.approximation);
         msg += " component_count=";
         msg += std::to_string(descriptor.filterPlan.componentCount);
         msg += " render_extent=";
@@ -772,14 +779,6 @@ namespace {
             msg += std::to_string(component);
             msg += "_reference_operator=";
             msg += Spektrafilm::to_cstr(plan.referenceOperator);
-            msg += " component";
-            msg += std::to_string(component);
-            msg += "_backend=";
-            msg += Spektrafilm::to_cstr(plan.backend);
-            msg += " component";
-            msg += std::to_string(component);
-            msg += "_target_backend=";
-            msg += Spektrafilm::to_cstr(plan.targetBackend);
             msg += " component";
             msg += std::to_string(component);
             msg += "_target_scratch_tier=";
@@ -1514,6 +1513,28 @@ void JuicerProcessor::processImagesCUDA() {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     };
 
+    auto attempt_deferred_dir_failure_message =
+        [&](const std::string& diagnostic) noexcept {
+            if (diagnostic.find("component=dir") == std::string::npos) {
+                return;
+            }
+            try {
+                std::string deliveryText = diagnostic;
+                for (std::size_t position = 0;
+                     (position = deliveryText.find('%', position)) !=
+                     std::string::npos;
+                     position += 2u) {
+                    deliveryText.insert(position, 1u, '%');
+                }
+                _effect.sendMessage(
+                    OFX::Message::eMessageError,
+                    "FilmJuicerDeferredCudaFailure",
+                    deliveryText);
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+        };
+
     auto record_cuda_use = [&](JuicerProcess::Root::PreparedCudaFrame& frame) {
         std::string useError;
         if (!frame.record_use(_pCudaStream, useError)) {
@@ -2150,8 +2171,6 @@ void JuicerProcessor::processImagesCUDA() {
         const bool directUseFusedScannerPostSpatialDirHandoff =
             !cameraFilmLinearActive && directSpatialDir.hash != 0 &&
             scannerPostEffects.active() &&
-            directSpatialDir.approximation ==
-                Spektrafilm::DirApproximationMarker::SpektrafilmStrict &&
             !captureDensityConsumerActive;
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace =
             preparedFrame.workspace_lease();
@@ -2319,12 +2338,20 @@ void JuicerProcessor::processImagesCUDA() {
             dirBuildRequest.gaussian.kernel = resources.gaussian.weights;
             dirBuildRequest.gaussian.radius = resources.gaussian.radius;
             dirBuildRequest.gaussian.sigma = resources.gaussian.sigma;
-            dirBuildRequest.gaussian.weight = directSpatialDir.gaussianWeight;
+            const Spektrafilm::DirGaussianComponentPlan& coreComponent =
+                spatial_dir_component_or_empty(directSpatialDir, 0);
+            dirBuildRequest.gaussian.weight = coreComponent.weight;
+            dirBuildRequest.gaussian.filterOperator =
+                cuda_dir_filter_operator(coreComponent.referenceOperator);
             for (int tailIndex = 0; tailIndex < 3; ++tailIndex) {
                 dirBuildRequest.tails[tailIndex].kernel = resources.exponential[tailIndex].weights;
                 dirBuildRequest.tails[tailIndex].radius = resources.exponential[tailIndex].radius;
                 dirBuildRequest.tails[tailIndex].sigma = resources.exponential[tailIndex].sigma;
-                dirBuildRequest.tails[tailIndex].weight = directSpatialDir.exponentialWeights[tailIndex];
+                const Spektrafilm::DirGaussianComponentPlan& tailComponent =
+                    spatial_dir_component_or_empty(directSpatialDir, tailIndex + 1);
+                dirBuildRequest.tails[tailIndex].weight = tailComponent.weight;
+                dirBuildRequest.tails[tailIndex].filterOperator =
+                    cuda_dir_filter_operator(tailComponent.referenceOperator);
             }
             dirBuildRequest.streamOpaque = _pCudaStream;
             const cudaError_t dirError = juicer_cuda_build_direct_spatial_dir(
@@ -2433,6 +2460,7 @@ void JuicerProcessor::processImagesCUDA() {
 
         std::string scanError;
         if (!preparedFrame.prepare_scan_error_stage(run.scanStage.scanErrorFlag, _pCudaStream, scanError)) {
+            attempt_deferred_dir_failure_message(scanError);
             throw_submission_fatal("direct_scan_error_stage", "direct scan error stage failed", scanError);
         }
         cudaError_t launchError = cudaSuccess;
@@ -3149,8 +3177,6 @@ void JuicerProcessor::processImagesCUDA() {
             !routeDiffusionActive && !halationExecutable &&
             spatialDir.hash != 0 &&
             scannerPostEffects.active() &&
-            spatialDir.approximation ==
-                Spektrafilm::DirApproximationMarker::SpektrafilmStrict &&
             !captureDensityConsumerActive;
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace =
             preparedFrame.workspace_lease();
@@ -3318,12 +3344,20 @@ void JuicerProcessor::processImagesCUDA() {
             dirBuildRequest.gaussian.kernel = resources.gaussian.weights;
             dirBuildRequest.gaussian.radius = resources.gaussian.radius;
             dirBuildRequest.gaussian.sigma = resources.gaussian.sigma;
-            dirBuildRequest.gaussian.weight = spatialDir.gaussianWeight;
+            const Spektrafilm::DirGaussianComponentPlan& coreComponent =
+                spatial_dir_component_or_empty(spatialDir, 0);
+            dirBuildRequest.gaussian.weight = coreComponent.weight;
+            dirBuildRequest.gaussian.filterOperator =
+                cuda_dir_filter_operator(coreComponent.referenceOperator);
             for (int tailIndex = 0; tailIndex < 3; ++tailIndex) {
                 dirBuildRequest.tails[tailIndex].kernel = resources.exponential[tailIndex].weights;
                 dirBuildRequest.tails[tailIndex].radius = resources.exponential[tailIndex].radius;
                 dirBuildRequest.tails[tailIndex].sigma = resources.exponential[tailIndex].sigma;
-                dirBuildRequest.tails[tailIndex].weight = spatialDir.exponentialWeights[tailIndex];
+                const Spektrafilm::DirGaussianComponentPlan& tailComponent =
+                    spatial_dir_component_or_empty(spatialDir, tailIndex + 1);
+                dirBuildRequest.tails[tailIndex].weight = tailComponent.weight;
+                dirBuildRequest.tails[tailIndex].filterOperator =
+                    cuda_dir_filter_operator(tailComponent.referenceOperator);
             }
             dirBuildRequest.streamOpaque = _pCudaStream;
             const cudaError_t dirError = juicer_cuda_build_print_spatial_dir(
@@ -3438,6 +3472,7 @@ void JuicerProcessor::processImagesCUDA() {
                 run.scanStage.scanErrorFlag,
                 _pCudaStream,
                 scanError)) {
+            attempt_deferred_dir_failure_message(scanError);
             throw_submission_fatal(
                 "print_scan_error_stage",
                 "print scan error stage failed",

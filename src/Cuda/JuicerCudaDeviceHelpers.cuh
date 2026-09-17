@@ -4,6 +4,7 @@
 
 #include <cuda_runtime.h>
 
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1137,45 +1138,174 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
     print_sample_density_curves_device(develop, logPrint, D_cmy);
 }
 
-static __device__ __forceinline__ void compute_dir_corrections_device(
+static __device__ __forceinline__ bool evaluate_langmuir_device(
+    float value,
+    float knee,
+    float reference,
+    float& output) {
+    output = nanf("");
+    if (!isfinite(value) || !isfinite(knee) || !(knee > 0.0f) ||
+        !isfinite(reference)) {
+        return false;
+    }
+
+    const float denominator = knee + value;
+    const float kneePlusReference = knee + reference;
+    const bool directProductSafe =
+        isfinite(denominator) && denominator != 0.0f &&
+        isfinite(kneePlusReference) &&
+        (value == 0.0f ||
+         fabsf(value) <= FLT_MAX / fabsf(kneePlusReference));
+    if (directProductSafe) {
+        output = value * kneePlusReference / denominator;
+        return isfinite(output);
+    }
+
+    const float numeratorScale = 1.0f + reference / knee;
+    if (!isfinite(numeratorScale)) {
+        return false;
+    }
+    if (value >= 0.0f) {
+        const float denominatorScale = 1.0f + value / knee;
+        if (!isfinite(denominatorScale) || denominatorScale == 0.0f) {
+            return false;
+        }
+        output = (value / denominatorScale) * numeratorScale;
+        return isfinite(output);
+    }
+
+    // Retain the directly rounded signed denominator near the receiver pole.
+    if (!isfinite(denominator) || denominator == 0.0f) {
+        return false;
+    }
+    const float denominatorScale = denominator / knee;
+    if (!isfinite(denominatorScale) || denominatorScale == 0.0f) {
+        return false;
+    }
+    if (fabsf(value) <= FLT_MAX / fabsf(numeratorScale)) {
+        output = value * numeratorScale / denominatorScale;
+    } else {
+        output = (value / denominatorScale) * numeratorScale;
+    }
+    return isfinite(output);
+}
+
+static __device__ __forceinline__ unsigned int compute_dir_corrections_device(
     const JuicerCuda::DirPayload& dir,
     const float layerDensities[3],
     float outLayerCorrections[3]) {
     if (!outLayerCorrections) {
-        return;
+        return 0x7u;
     }
-    if (!dir.active) {
+    if (dir.mode == JuicerCuda::DirMode::Inactive) {
         outLayerCorrections[0] = 0.0f;
         outLayerCorrections[1] = 0.0f;
         outLayerCorrections[2] = 0.0f;
-        return;
+        return 0u;
     }
 
-    const float nB = dir.positive ? dir.dMax[0] - layerDensities[0] : layerDensities[0];
-    const float nG = dir.positive ? dir.dMax[1] - layerDensities[1] : layerDensities[1];
-    const float nR = dir.positive ? dir.dMax[2] - layerDensities[2] : layerDensities[2];
+    float donors[3] = {
+        dir.dMax[0] - layerDensities[0],
+        dir.dMax[1] - layerDensities[1],
+        dir.dMax[2] - layerDensities[2]};
+    unsigned int failures = 0u;
+    if (dir.mode == JuicerCuda::DirMode::NegativeDonorLangmuir) {
+#pragma unroll
+        for (int channel = 0; channel < 3; ++channel) {
+            const float density = layerDensities[channel];
+            if (!evaluate_langmuir_device(
+                    density,
+                    dir.donorK[channel],
+                    dir.dRef[channel],
+                    donors[channel])) {
+                failures |= 1u << channel;
+            }
+        }
+    }
 
-    outLayerCorrections[0] = dir.M[0] * nB + dir.M[3] * nG + dir.M[6] * nR;
-    outLayerCorrections[1] = dir.M[1] * nB + dir.M[4] * nG + dir.M[7] * nR;
-    outLayerCorrections[2] = dir.M[2] * nB + dir.M[5] * nG + dir.M[8] * nR;
+    outLayerCorrections[0] = dir.M[0] * donors[0] + dir.M[3] * donors[1] + dir.M[6] * donors[2];
+    outLayerCorrections[1] = dir.M[1] * donors[0] + dir.M[4] * donors[1] + dir.M[7] * donors[2];
+    outLayerCorrections[2] = dir.M[2] * donors[0] + dir.M[5] * donors[1] + dir.M[8] * donors[2];
+#pragma unroll
+    for (int channel = 0; channel < 3; ++channel) {
+        if (!isfinite(outLayerCorrections[channel])) {
+            failures |= 1u << channel;
+        }
+    }
+    return failures;
 }
 
-static __device__ __forceinline__ void apply_dir_runtime_logE_device(
+static __device__ __forceinline__ unsigned int finalize_dir_corrections_device(
+    const JuicerCuda::DirPayload& dir,
+    float corrections[3]) {
+    if (dir.mode != JuicerCuda::DirMode::PositiveReceiverLangmuir) {
+        return 0u;
+    }
+    unsigned int failures = 0u;
+#pragma unroll
+    for (int channel = 0; channel < 3; ++channel) {
+        if (dir.receiverCRef[channel] == 0.0f) {
+            corrections[channel] = 0.0f;
+            continue;
+        }
+        const float value = corrections[channel];
+        if (!evaluate_langmuir_device(
+                value,
+                dir.receiverKr[channel],
+                dir.receiverCRef[channel],
+                corrections[channel])) {
+            failures |= 1u << channel;
+        }
+    }
+    return failures;
+}
+
+static __device__ __forceinline__ void signal_dir_failure_device(
+    int* status,
+    unsigned int channelMask) {
+    if (status && channelMask != 0u) {
+        constexpr unsigned int kDirFailure = 1u << 8u;
+        atomicOr(
+            reinterpret_cast<unsigned int*>(status),
+            kDirFailure | ((channelMask & 0x7u) << 9u));
+    }
+}
+
+static __device__ __forceinline__ unsigned int apply_dir_runtime_logE_device(
     float logE_BGR[3],
     const float layerD_BGR[3],
     const JuicerCuda::DirPayload& dir) {
     if (!logE_BGR || !layerD_BGR) {
-        return;
+        return 0x7u;
     }
-    if (!dir.active) {
-        return;
+    if (dir.mode == JuicerCuda::DirMode::Inactive) {
+        return 0u;
     }
 
     float corrections[3] = {0.0f, 0.0f, 0.0f};
-    compute_dir_corrections_device(dir, layerD_BGR, corrections);
-    logE_BGR[0] -= corrections[0];
-    logE_BGR[1] -= corrections[1];
-    logE_BGR[2] -= corrections[2];
+    unsigned int failures =
+        compute_dir_corrections_device(dir, layerD_BGR, corrections);
+    failures |= finalize_dir_corrections_device(dir, corrections);
+    if (failures != 0u) {
+        return failures;
+    }
+    unsigned int subtractionFailures = 0u;
+#pragma unroll
+    for (int channel = 0; channel < 3; ++channel) {
+        const float original = logE_BGR[channel];
+        if (isnan(original)) {
+            subtractionFailures |= 1u << channel;
+            continue;
+        }
+        logE_BGR[channel] = original - corrections[channel];
+        if ((!isinf(original) && !isfinite(logE_BGR[channel])) ||
+            (isinf(original) &&
+             (!isinf(logE_BGR[channel]) ||
+              signbit(original) != signbit(logE_BGR[channel])))) {
+            subtractionFailures |= 1u << channel;
+        }
+    }
+    return subtractionFailures;
 }
 
 static __device__ __forceinline__ bool juicer_cuda_spatial_dir_filtered_correction_active_device(
@@ -1202,7 +1332,7 @@ static __device__ __forceinline__ void juicer_cuda_load_spatial_dir_cached_log_r
     logRawBgr[2] = ldg_f(develop.spatialDir.logRawR + pixelIndex);
 }
 
-static __device__ __forceinline__ void juicer_cuda_develop_dir_final_device(
+static __device__ __forceinline__ unsigned int juicer_cuda_develop_dir_final_device(
     const JuicerCuda::FilmDevelopPayload& develop,
     const float logRawBgr[3],
     std::size_t pixelIndex,
@@ -1216,23 +1346,52 @@ static __device__ __forceinline__ void juicer_cuda_develop_dir_final_device(
     const float filteredCorrectionC =
         develop.spatialDir.filteredCorrectionC[pixelIndex];
 
-    float correctedLogRawB = logRawBgr[0] - filteredCorrectionY;
-    float correctedLogRawG = logRawBgr[1] - filteredCorrectionM;
-    float correctedLogRawR = logRawBgr[2] - filteredCorrectionC;
+    float corrections[3] = {
+        filteredCorrectionY,
+        filteredCorrectionM,
+        filteredCorrectionC};
+    const unsigned int failures =
+        finalize_dir_corrections_device(develop.dir, corrections);
+    if (failures != 0u) {
+        densityCmy[0] = densityCmy[1] = densityCmy[2] = nanf("");
+        return failures;
+    }
+    float correctedLogRaw[3] = {0.0f, 0.0f, 0.0f};
+    unsigned int subtractionFailures = 0u;
+#pragma unroll
+    for (int channel = 0; channel < 3; ++channel) {
+        const float original = logRawBgr[channel];
+        if (isnan(original)) {
+            subtractionFailures |= 1u << channel;
+            continue;
+        }
+        correctedLogRaw[channel] = original - corrections[channel];
+        if ((!isinf(original) && !isfinite(correctedLogRaw[channel])) ||
+            (isinf(original) &&
+             (!isinf(correctedLogRaw[channel]) ||
+              signbit(original) != signbit(correctedLogRaw[channel])))) {
+            subtractionFailures |= 1u << channel;
+        }
+    }
+    if (subtractionFailures != 0u) {
+        densityCmy[0] = densityCmy[1] = densityCmy[2] = nanf("");
+        return subtractionFailures;
+    }
 
     const JuicerCuda::DeviceCurveView preCorrectedB = develop.dirDensB;
     const JuicerCuda::DeviceCurveView preCorrectedG = develop.dirDensG;
     const JuicerCuda::DeviceCurveView preCorrectedR = develop.dirDensR;
 
-    correctedLogRawB = sanitize_inf_logE_for_curve_device(correctedLogRawB, preCorrectedB);
-    correctedLogRawG = sanitize_inf_logE_for_curve_device(correctedLogRawG, preCorrectedG);
-    correctedLogRawR = sanitize_inf_logE_for_curve_device(correctedLogRawR, preCorrectedR);
+    correctedLogRaw[0] = sanitize_inf_logE_for_curve_device(correctedLogRaw[0], preCorrectedB);
+    correctedLogRaw[1] = sanitize_inf_logE_for_curve_device(correctedLogRaw[1], preCorrectedG);
+    correctedLogRaw[2] = sanitize_inf_logE_for_curve_device(correctedLogRaw[2], preCorrectedR);
 
-    const float densityY = sample_density_at_logE_device(preCorrectedB, correctedLogRawB, develop.gammaFactorB);
-    const float densityM = sample_density_at_logE_device(preCorrectedG, correctedLogRawG, develop.gammaFactorG);
-    const float densityC = sample_density_at_logE_device(preCorrectedR, correctedLogRawR, develop.gammaFactorR);
+    const float densityY = sample_density_at_logE_device(preCorrectedB, correctedLogRaw[0], develop.gammaFactorB);
+    const float densityM = sample_density_at_logE_device(preCorrectedG, correctedLogRaw[1], develop.gammaFactorG);
+    const float densityC = sample_density_at_logE_device(preCorrectedR, correctedLogRaw[2], develop.gammaFactorR);
 
     densityCmy[0] = densityC;
     densityCmy[1] = densityM;
     densityCmy[2] = densityY;
+    return 0u;
 }

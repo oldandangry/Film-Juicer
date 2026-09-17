@@ -170,10 +170,17 @@ namespace JuicerCuda {
         out.filmDevelop.densG = prepared.normalizedDensG;
         out.filmDevelop.densR = prepared.normalizedDensR;
         if (dirCouplers.active) {
-            out.filmDevelop.dirPrecorrected = 1;
-            out.filmDevelop.dir.active = 1;
-            out.filmDevelop.dir.positive =
-                dirCouplers.polarity == Spektrafilm::ProfilePolarity::Positive ? 1 : 0;
+            static_assert(
+                static_cast<int>(DirNonlinearMode::Inactive) ==
+                static_cast<int>(DirMode::Inactive));
+            static_assert(
+                static_cast<int>(DirNonlinearMode::NegativeDonorLangmuir) ==
+                static_cast<int>(DirMode::NegativeDonorLangmuir));
+            static_assert(
+                static_cast<int>(DirNonlinearMode::PositiveReceiverLangmuir) ==
+                static_cast<int>(DirMode::PositiveReceiverLangmuir));
+            out.filmDevelop.dir.mode =
+                static_cast<DirMode>(dirCouplers.nonlinearMode);
             for (int donorBgr = 0; donorBgr < 3; ++donorBgr) {
                 for (int receiverBgr = 0; receiverBgr < 3; ++receiverBgr) {
                     out.filmDevelop.dir.M[donorBgr * 3 + receiverBgr] =
@@ -181,6 +188,14 @@ namespace JuicerCuda {
                 }
                 out.filmDevelop.dir.dMax[donorBgr] =
                     dirCouplers.densityMaxRgb[2 - donorBgr];
+                out.filmDevelop.dir.dRef[donorBgr] =
+                    dirCouplers.densityRefRgb[2 - donorBgr];
+                out.filmDevelop.dir.donorK[donorBgr] =
+                    dirCouplers.donorKRgb[2 - donorBgr];
+                out.filmDevelop.dir.receiverCRef[donorBgr] =
+                    dirCouplers.receiverCRefRgb[2 - donorBgr];
+                out.filmDevelop.dir.receiverKr[donorBgr] =
+                    dirCouplers.receiverKrRgb[2 - donorBgr];
             }
             out.filmDevelop.dirDensB = prepared.dirDensB;
             out.filmDevelop.dirDensG = prepared.dirDensG;

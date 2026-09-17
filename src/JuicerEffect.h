@@ -120,6 +120,10 @@ private:
     OFX::DoubleParam* _pCouplersInhibitionSameLayer = nullptr;
     OFX::DoubleParam* _pCouplersInhibitionInterlayer = nullptr;
     OFX::DoubleParam* _pCouplersDiffusionSizeUm = nullptr;
+    OFX::Double3DParam* _pCouplersLangmuirDonorKRgb = nullptr;
+    OFX::Double3DParam* _pCouplersLangmuirReceiverKRgb = nullptr;
+    OFX::DoubleParam* _pCouplersDiffusionTailUm = nullptr;
+    OFX::DoubleParam* _pCouplersDiffusionTailWeight = nullptr;
     OFX::BooleanParam* _pCouplersGammaUseStock = nullptr;
     OFX::Double3DParam* _pCouplersGammaSameLayerRgb = nullptr;
     OFX::Double2DParam* _pCouplersGammaInterlayerRToGb = nullptr;
