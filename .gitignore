@@ -1,6 +1,8 @@
 # Private workbench material. This is a stable namespace, not a per-file list.
 /.juicer-local/
 /AGENTS.md
+# Retired testing material is kept locally with its original relative paths.
+/ArchiveOldTestingFiles/
 # Existing path-sensitive harnesses remain a single quarantined legacy bucket.
 /tools/
 
@@ -23,6 +25,7 @@
 /CMakeUserPresets.json
 # Product CMake inputs remain visible even with a local *.txt exclusion.
 !CMakeLists.txt
+!/tests/requirements.txt
 !/third_party/**/*.txt
 [Bb]in/
 [Oo]bj/

@@ -329,6 +329,11 @@ The shared Linux presets use `/usr/bin/g++-13` and
 checkouts or build caches. Build `bundle-archive` in a configured tree to
 produce a compressed platform bundle.
 
+The maintained public CMake/CTest suite, Python 3.13 setup, host/GPU labels,
+fixture boundaries, and exact test commands are documented in
+[tests/README.md](tests/README.md). Tests are opt-in with
+`-DBUILD_TESTING=ON`; normal plug-in builds keep testing off by default.
+
 ## Project status
 
 Film-Juicer is under active development. Changes to the photographic model and its implementation can change existing renders, so treat version changes as something to check against your grade.

@@ -1,0 +1,80 @@
+name: Linux host tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  linux-debug-host:
+    name: Linux Debug host and Python checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CUDACXX: /usr/local/cuda-13.2/bin/nvcc
+      CUDAToolkit_ROOT: /usr/local/cuda-13.2
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: tests/requirements.txt
+
+      - name: Install GCC 13, Ninja, and CUDA Toolkit 13.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13 ninja-build cuda-toolkit-13-2
+
+      - name: Install CMake 4.3 and ordinary Python requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install cmake==4.3.1
+          python -m pip install -r tests/requirements.txt
+          cmake --version
+          python --version
+          /usr/local/cuda-13.2/bin/nvcc --version
+
+      - name: Verify host lane has no NVIDIA device
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e /dev/nvidiactl
+
+      - name: Configure and build public tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --preset linux-debug -DBUILD_TESTING=ON
+          cmake --build --preset linux-debug
+
+      - name: List tests and run host selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -E make_directory out/validation/linux-debug
+          ctest --preset linux-debug -N
+          ctest --preset linux-debug -L host \
+            --output-junit out/validation/linux-debug/host-junit.xml
+
+      - name: Upload host test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-debug-host-junit
+          path: out/validation/linux-debug/host-junit.xml
+          if-no-files-found: warn

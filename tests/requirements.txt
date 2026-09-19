@@ -1,0 +1,3 @@
+# Tested dependency for translating the committed diffusion NPZ fixture during
+# the test build. Ordinary test execution does not import spektrafilm.
+numpy==2.4.6
