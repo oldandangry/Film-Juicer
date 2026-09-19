@@ -617,9 +617,6 @@ namespace Profiles {
             const SelectedProfileContext& ctx,
             std::string& error) {
             const bool printRole = std::string_view(ctx.role) == "print";
-            if (!root.contains("data") || !root["data"].is_object()) {
-                return set_error(error, ctx, "data", "object", root.contains("data") ? json_type_name(root["data"]) : "missing");
-            }
             const Json& data = root["data"];
 
             std::vector<float> wavelengths;
@@ -765,6 +762,9 @@ namespace Profiles {
             DensityCurveModel& densityModel,
             const SelectedProfileContext& ctx,
             std::string& error) {
+            if (!root.contains("data") || !root["data"].is_object()) {
+                return set_error(error, ctx, "data", "object", root.contains("data") ? json_type_name(root["data"]) : "missing");
+            }
             const Json& data = root["data"];
             if (!parse_selected_double_vector(
                     data.value("log_exposure", Json{}),
