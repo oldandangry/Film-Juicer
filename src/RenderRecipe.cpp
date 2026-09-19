@@ -1001,13 +1001,13 @@ namespace {
             return Spektrafilm::DirReferenceOperator::Identity;
         }
         return sigmaPixels >= 3.0f
-                   ? Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReplicate
+                   ? Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect
                    : Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect;
     }
 
     Spektrafilm::DirScratchTier dir_target_scratch_tier_for_operator(
         Spektrafilm::DirReferenceOperator referenceOperator) noexcept {
-        return referenceOperator == Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReplicate
+        return referenceOperator == Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect
                    ? Spektrafilm::DirScratchTier::Tier1IChannels
                    : Spektrafilm::DirScratchTier::Tier1F;
     }
@@ -1043,7 +1043,7 @@ namespace {
                 plan.components[static_cast<std::size_t>(component)];
             if (componentPlan.weight > 0.0f &&
                 componentPlan.referenceOperator ==
-                    Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReplicate) {
+                    Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect) {
                 return true;
             }
         }
@@ -1114,6 +1114,44 @@ namespace {
         float weight = 0.0f;
     };
 
+    bool build_dir_iir_coefficients(
+        float sigmaPixels,
+        Spektrafilm::DirGaussianComponentPlan::IirCoefficients& out) noexcept {
+        constexpr double kA1 = 2.44413;
+        constexpr double kA2 = 1.4281;
+        constexpr double kA3 = 0.422205;
+        constexpr double kFeedforwardNumerator = 1.57825;
+        const double q = 0.98711 * static_cast<double>(sigmaPixels) - 0.96330;
+        const double q2 = q * q;
+        const double q3 = q2 * q;
+        out.normalizationDenominator =
+            kFeedforwardNumerator + kA1 * q + kA2 * q2 + kA3 * q3;
+        out.feedforwardNumerator = kFeedforwardNumerator;
+        out.feedbackNumerators = {
+            kA1 * q + 2.0 * kA2 * q2 + 3.0 * kA3 * q3,
+            -(kA2 * q2 + 3.0 * kA3 * q3),
+            kA3 * q3};
+        if (!(out.normalizationDenominator > 0.0) ||
+            !std::isfinite(out.normalizationDenominator)) {
+            return false;
+        }
+        out.feedforward = out.feedforwardNumerator / out.normalizationDenominator;
+        for (std::size_t coefficient = 0; coefficient < out.feedback.size(); ++coefficient) {
+            out.feedback[coefficient] =
+                out.feedbackNumerators[coefficient] / out.normalizationDenominator;
+        }
+        const double dc = out.feedforward + out.feedback[0] +
+                          out.feedback[1] + out.feedback[2];
+        return std::isfinite(out.feedforward) && out.feedforward > 0.0 &&
+               std::all_of(
+                   out.feedback.begin(),
+                   out.feedback.end(),
+                   [](double value) {
+                       return std::isfinite(value);
+                   }) &&
+               std::abs(dc - 1.0) <= 32.0 * std::numeric_limits<double>::epsilon();
+    }
+
     bool add_dir_component(
         Spektrafilm::DirFilterPlan& plan,
         DirComponentBuildInput input,
@@ -1134,6 +1172,11 @@ namespace {
         component.radius = static_cast<int>(radiusValue);
         component.referenceOperator =
             dir_reference_operator_for_sigma(input.sigmaPixels, component.radius);
+        if (component.referenceOperator ==
+                Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect &&
+            !build_dir_iir_coefficients(component.sigmaPixels, component.iir)) {
+            return false;
+        }
         component.targetScratchTier = dir_target_scratch_tier_for_operator(component.referenceOperator);
         if (component.weight > 0.0f) {
             if (component.targetScratchTier == Spektrafilm::DirScratchTier::Tier1IChannels) {
@@ -1170,26 +1213,22 @@ namespace {
             hash_value(hash, component.radius);
             hash_value(hash, component.referenceOperator);
             hash_value(hash, component.targetScratchTier);
+            if (component.referenceOperator ==
+                Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect) {
+                hash_value(hash, component.iir.feedforward);
+                for (double coefficient : component.iir.feedback) {
+                    hash_value(hash, coefficient);
+                }
+                hash_value(hash, component.iir.normalizationDenominator);
+                hash_value(hash, component.iir.feedforwardNumerator);
+                for (double numerator : component.iir.feedbackNumerators) {
+                    hash_value(hash, numerator);
+                }
+                hash_value(hash, component.boundaryTruncationAccuracy);
+                hash_value(hash, component.boundaryCertificationTolerance);
+                hash_value(hash, component.boundaryDerivationVersion);
+            }
         }
-    }
-
-    float interp_clamped(
-        float x,
-        const std::vector<float>& xp,
-        const std::vector<std::array<float, 3>>& values,
-        std::size_t channel) {
-        if (x <= xp.front()) {
-            return values.front()[channel];
-        }
-        if (x >= xp.back()) {
-            return values.back()[channel];
-        }
-        const auto upper = std::upper_bound(xp.begin(), xp.end(), x);
-        const std::size_t hi = static_cast<std::size_t>(upper - xp.begin());
-        const std::size_t lo = hi - 1u;
-        const float span = xp[hi] - xp[lo];
-        const float t = (x - xp[lo]) / span;
-        return values[lo][channel] + t * (values[hi][channel] - values[lo][channel]);
     }
 
     bool evaluate_dir_langmuir(
@@ -1207,7 +1246,7 @@ namespace {
             return 0;
         }
         std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, std::uint64_t{2});
+        hash_value(hash, std::uint64_t{3});
         hash_value(hash, recipe.polarity);
         hash_value(hash, recipe.nonlinearMode);
         for (const auto& row : recipe.matrixRgb) {
@@ -1218,7 +1257,7 @@ namespace {
         Hash::hash_bytes_update(hash, recipe.donorKRgb.data(), sizeof(recipe.donorKRgb));
         Hash::hash_bytes_update(hash, recipe.receiverCRefRgb.data(), sizeof(recipe.receiverCRefRgb));
         Hash::hash_bytes_update(hash, recipe.receiverKrRgb.data(), sizeof(recipe.receiverKrRgb));
-        hash_value(hash, recipe.precorrectedDensityCurvesHash);
+        hash_value(hash, recipe.compensatedDensityCurveAxesHash);
         if (recipe.diffusionSizeUm > 0.0f) {
             hash_value(hash, recipe.diffusionSizeUm);
             hash_value(hash, recipe.diffusionTailWeight);
@@ -1313,6 +1352,16 @@ namespace {
             develop.logExposure.size() != develop.normalizedDensityCurves.size()) {
             return fail("density_curves", "matching_nonempty_axis");
         }
+        for (std::size_t sample = 1u;
+             sample < develop.logExposure.size();
+             ++sample) {
+            const double exposureSpan =
+                static_cast<double>(develop.logExposure[sample]) -
+                static_cast<double>(develop.logExposure[sample - 1u]);
+            if (!(std::isfinite(exposureSpan) && exposureSpan > 0.0)) {
+                return fail("log_exposure", "strictly_increasing", 3u, sample);
+            }
+        }
         out.densityMaxRgb.fill(-std::numeric_limits<float>::infinity());
         for (const auto& row : develop.normalizedDensityCurves) {
             for (std::size_t channel = 0; channel < 3; ++channel) {
@@ -1363,8 +1412,7 @@ namespace {
             }
         }
 
-        std::array<std::vector<float>, 3> shiftedExposure;
-        for (auto& axis : shiftedExposure) {
+        for (auto& axis : out.compensatedDensityCurveAxesRgb) {
             axis.resize(develop.logExposure.size());
         }
         for (std::size_t sample = 0; sample < develop.logExposure.size(); ++sample) {
@@ -1398,40 +1446,29 @@ namespace {
                         return fail("receiver_langmuir", "finite_defined", receiver, sample);
                     }
                 }
-                const double shifted =
+                const double compensatedCoordinate =
                     static_cast<double>(develop.logExposure[sample]) - correction;
-                if (!std::isfinite(shifted) ||
-                    shifted < -static_cast<double>(std::numeric_limits<float>::max()) ||
-                    shifted > static_cast<double>(std::numeric_limits<float>::max())) {
-                    return fail("shifted_axis", "finite_float_representable", receiver, sample);
+                if (!std::isfinite(compensatedCoordinate) ||
+                    compensatedCoordinate < -static_cast<double>(std::numeric_limits<float>::max()) ||
+                    compensatedCoordinate > static_cast<double>(std::numeric_limits<float>::max())) {
+                    return fail("compensated_axis", "finite_float_representable", receiver, sample);
                 }
-                shiftedExposure[receiver][sample] = static_cast<float>(shifted);
-                if (sample > 0u &&
-                    (!std::isfinite(
-                         shiftedExposure[receiver][sample] -
-                         shiftedExposure[receiver][sample - 1u]) ||
-                     !(shiftedExposure[receiver][sample] >
-                       shiftedExposure[receiver][sample - 1u]))) {
-                    return fail("shifted_axis", "strictly_increasing", receiver, sample);
-                }
+                out.compensatedDensityCurveAxesRgb[receiver][sample] =
+                    static_cast<float>(compensatedCoordinate);
             }
         }
 
-        out.precorrectedDensityCurves.resize(develop.normalizedDensityCurves.size());
-        for (std::size_t sample = 0; sample < develop.logExposure.size(); ++sample) {
-            for (std::size_t channel = 0; channel < 3; ++channel) {
-                out.precorrectedDensityCurves[sample][channel] = interp_clamped(
-                    develop.logExposure[sample],
-                    shiftedExposure[channel],
-                    develop.normalizedDensityCurves,
-                    channel);
-            }
+        std::uint64_t axesHash = Hash::kFnvOffset;
+        hash_value(axesHash, std::uint64_t{1});
+        hash_value(axesHash, develop.normalizedDensityCurvesHash);
+        for (const auto& axis : out.compensatedDensityCurveAxesRgb) {
+            hash_value(
+                axesHash,
+                hash_nan_preserving_floats(axis.data(), axis.size()));
         }
-        out.precorrectedDensityCurvesHash = hash_nan_preserving_floats(
-            &out.precorrectedDensityCurves[0][0],
-            out.precorrectedDensityCurves.size() * 3u);
+        out.compensatedDensityCurveAxesHash = axesHash;
         out.hash = hash_dir_couplers_recipe(out);
-        return out.precorrectedDensityCurvesHash != 0 && out.hash != 0;
+        return out.compensatedDensityCurveAxesHash != 0 && out.hash != 0;
     }
 
     std::uint64_t hash_density_bounds_recipe(const DensityBoundsRecipe& recipe) {
@@ -2942,9 +2979,18 @@ namespace Spektrafilm {
                 return false;
             }
             const std::size_t tailComponentCount = SpatialDirDescriptor::kExponentialSigmaRatios.size();
+            const float tailAmplitudeSum =
+                SpatialDirDescriptor::kExponentialAmplitudes[0] +
+                SpatialDirDescriptor::kExponentialAmplitudes[1] +
+                SpatialDirDescriptor::kExponentialAmplitudes[2];
+            if (!(std::isfinite(tailAmplitudeSum) && tailAmplitudeSum > 0.0f)) {
+                return false;
+            }
             for (std::size_t component = 0; component < tailComponentCount; ++component) {
                 const float sigmaRatio = SpatialDirDescriptor::kExponentialSigmaRatios[component];
-                const float amplitude = SpatialDirDescriptor::kExponentialAmplitudes[component];
+                const float amplitude =
+                    SpatialDirDescriptor::kExponentialAmplitudes[component] /
+                    tailAmplitudeSum;
                 const float componentSigmaPixels = tailSigmaPixels * sigmaRatio;
                 const float componentWeight = recipe.diffusionTailWeight * amplitude;
                 if (!(std::isfinite(componentSigmaPixels) &&

@@ -484,10 +484,8 @@ namespace {
         float* outputC,
         int width,
         int height,
-        double B,
-        double B1,
-        double B2,
-        double B3) {
+        JuicerCuda::SpatialDirIirCoefficients coefficients,
+        JuicerCuda::SpatialDirBoundarySpec boundary) {
         const int y = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
         const int channel = static_cast<int>(blockIdx.y);
         if (y >= height || channel >= 3 || width <= 0) {
@@ -499,27 +497,58 @@ namespace {
             return;
         }
         const size_t row = static_cast<size_t>(y) * static_cast<size_t>(width);
-        double w1 = static_cast<double>(input[row]);
-        double w2 = w1;
-        double w3 = w1;
+        const double anchor = static_cast<double>(input[row]);
+        double state[3] = {anchor, anchor, anchor};
+        for (int sample = 0; sample < boundary.initialWeightLength; ++sample) {
+            const double delta =
+                static_cast<double>(input[row + static_cast<std::size_t>(sample)]) - anchor;
+#pragma unroll
+            for (int history = 0; history < 3; ++history) {
+                state[history] +=
+                    boundary.initialWeights[history * boundary.initialWeightLength + sample] *
+                    delta;
+            }
+        }
         for (int x = 0; x < width; ++x) {
             const size_t index = row + static_cast<size_t>(x);
-            const double w = B * static_cast<double>(input[index]) + B1 * w1 + B2 * w2 + B3 * w3;
-            output[index] = static_cast<float>(w);
-            w3 = w2;
-            w2 = w1;
-            w1 = w;
-        }
-        double y1 = static_cast<double>(output[row + static_cast<size_t>(width - 1)]);
-        double y2 = y1;
-        double y3 = y1;
-        for (int x = width - 1; x >= 0; --x) {
-            const size_t index = row + static_cast<size_t>(x);
-            const double value = B * static_cast<double>(output[index]) + B1 * y1 + B2 * y2 + B3 * y3;
+            const double value =
+                coefficients.feedforward * static_cast<double>(input[index]) +
+                coefficients.feedback[0] * state[0] +
+                coefficients.feedback[1] * state[1] +
+                coefficients.feedback[2] * state[2];
             output[index] = static_cast<float>(value);
-            y3 = y2;
-            y2 = y1;
-            y1 = value;
+            state[2] = state[1];
+            state[1] = state[0];
+            state[0] = value;
+        }
+        const int terminalSize = boundary.terminalSize;
+        double terminal[3] = {0.0, 0.0, 0.0};
+        const double last = state[0];
+        for (int terminalRow = 0; terminalRow < terminalSize; ++terminalRow) {
+            double value = last;
+            for (int terminalColumn = 0; terminalColumn < terminalSize; ++terminalColumn) {
+                value += boundary.terminalMatrix[terminalRow * terminalSize + terminalColumn] *
+                         (state[terminalSize - 1 - terminalColumn] - last);
+            }
+            terminal[terminalRow] = value;
+            output[row + static_cast<std::size_t>(
+                             width - terminalSize + terminalRow)] =
+                static_cast<float>(value);
+        }
+        for (int history = 0; history < terminalSize; ++history) {
+            state[history] = terminal[history];
+        }
+        for (int x = width - terminalSize - 1; x >= 0; --x) {
+            const size_t index = row + static_cast<size_t>(x);
+            const double value =
+                coefficients.feedforward * static_cast<double>(output[index]) +
+                coefficients.feedback[0] * state[0] +
+                coefficients.feedback[1] * state[1] +
+                coefficients.feedback[2] * state[2];
+            output[index] = static_cast<float>(value);
+            state[2] = state[1];
+            state[1] = state[0];
+            state[0] = value;
         }
     }
 
@@ -535,10 +564,8 @@ namespace {
         float* inOutC,
         int width,
         int height,
-        double B,
-        double B1,
-        double B2,
-        double B3,
+        JuicerCuda::SpatialDirIirCoefficients coefficients,
+        JuicerCuda::SpatialDirBoundarySpec boundary,
         float weight,
         int initialize) {
         const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
@@ -558,29 +585,65 @@ namespace {
         }
         const size_t visualTop =
             static_cast<size_t>(height - 1) * static_cast<size_t>(width) + static_cast<size_t>(x);
-        double w1 = static_cast<double>(input[visualTop]);
-        double w2 = w1;
-        double w3 = w1;
-        for (int y = height - 1; y >= 0; --y) {
-            const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
-            const double w = B * static_cast<double>(input[index]) + B1 * w1 + B2 * w2 + B3 * w3;
-            forwardTemp[index] = static_cast<float>(w);
-            w3 = w2;
-            w2 = w1;
-            w1 = w;
+        const double anchor = static_cast<double>(input[visualTop]);
+        double state[3] = {anchor, anchor, anchor};
+        for (int sample = 0; sample < boundary.initialWeightLength; ++sample) {
+            const size_t index = static_cast<size_t>(height - 1 - sample) *
+                                     static_cast<size_t>(width) +
+                                 static_cast<size_t>(x);
+            const double delta = static_cast<double>(input[index]) - anchor;
+#pragma unroll
+            for (int history = 0; history < 3; ++history) {
+                state[history] +=
+                    boundary.initialWeights[history * boundary.initialWeightLength + sample] *
+                    delta;
+            }
         }
-        double y1 = static_cast<double>(forwardTemp[x]);
-        double y2 = y1;
-        double y3 = y1;
-        for (int y = 0; y < height; ++y) {
+        for (int visualY = 0; visualY < height; ++visualY) {
+            const int y = height - 1 - visualY;
             const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
-            const double value = B * static_cast<double>(forwardTemp[index]) + B1 * y1 + B2 * y2 + B3 * y3;
-            const float blurred = isfinite(value) ? static_cast<float>(value) : 0.0f;
-            const float weighted = blurred * weight;
+            const double value =
+                coefficients.feedforward * static_cast<double>(input[index]) +
+                coefficients.feedback[0] * state[0] +
+                coefficients.feedback[1] * state[1] +
+                coefficients.feedback[2] * state[2];
+            forwardTemp[index] = static_cast<float>(value);
+            state[2] = state[1];
+            state[1] = state[0];
+            state[0] = value;
+        }
+        const int terminalSize = boundary.terminalSize;
+        double terminal[3] = {0.0, 0.0, 0.0};
+        const double last = state[0];
+        for (int terminalRow = 0; terminalRow < terminalSize; ++terminalRow) {
+            double value = last;
+            for (int terminalColumn = 0; terminalColumn < terminalSize; ++terminalColumn) {
+                value += boundary.terminalMatrix[terminalRow * terminalSize + terminalColumn] *
+                         (state[terminalSize - 1 - terminalColumn] - last);
+            }
+            terminal[terminalRow] = value;
+            const int visualY = height - terminalSize + terminalRow;
+            const int y = height - 1 - visualY;
+            const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const float weighted = static_cast<float>(value) * weight;
             inOut[index] = initialize ? weighted : inOut[index] + weighted;
-            y3 = y2;
-            y2 = y1;
-            y1 = value;
+        }
+        for (int history = 0; history < terminalSize; ++history) {
+            state[history] = terminal[history];
+        }
+        for (int visualY = height - terminalSize - 1; visualY >= 0; --visualY) {
+            const int y = height - 1 - visualY;
+            const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const double value =
+                coefficients.feedforward * static_cast<double>(forwardTemp[index]) +
+                coefficients.feedback[0] * state[0] +
+                coefficients.feedback[1] * state[1] +
+                coefficients.feedback[2] * state[2];
+            const float weighted = static_cast<float>(value) * weight;
+            inOut[index] = initialize ? weighted : inOut[index] + weighted;
+            state[2] = state[1];
+            state[1] = state[0];
+            state[0] = value;
         }
     }
 
@@ -589,36 +652,65 @@ namespace {
         float* output,
         int width,
         int height,
-        double B,
-        double B1,
-        double B2,
-        double B3) {
+        JuicerCuda::SpatialDirIirCoefficients coefficients,
+        JuicerCuda::SpatialDirBoundarySpec boundary) {
         const int y = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
         if (y >= height || width <= 0 || !input || !output) {
             return;
         }
         const size_t row = static_cast<size_t>(y) * static_cast<size_t>(width);
-        double w1 = static_cast<double>(input[row]);
-        double w2 = w1;
-        double w3 = w1;
+        const double anchor = static_cast<double>(input[row]);
+        double state[3] = {anchor, anchor, anchor};
+        for (int sample = 0; sample < boundary.initialWeightLength; ++sample) {
+            const double delta =
+                static_cast<double>(input[row + static_cast<std::size_t>(sample)]) - anchor;
+#pragma unroll
+            for (int history = 0; history < 3; ++history) {
+                state[history] +=
+                    boundary.initialWeights[history * boundary.initialWeightLength + sample] *
+                    delta;
+            }
+        }
         for (int x = 0; x < width; ++x) {
             const size_t index = row + static_cast<size_t>(x);
-            const double w = B * static_cast<double>(input[index]) + B1 * w1 + B2 * w2 + B3 * w3;
-            output[index] = static_cast<float>(w);
-            w3 = w2;
-            w2 = w1;
-            w1 = w;
-        }
-        double y1 = static_cast<double>(output[row + static_cast<size_t>(width - 1)]);
-        double y2 = y1;
-        double y3 = y1;
-        for (int x = width - 1; x >= 0; --x) {
-            const size_t index = row + static_cast<size_t>(x);
-            const double value = B * static_cast<double>(output[index]) + B1 * y1 + B2 * y2 + B3 * y3;
+            const double value =
+                coefficients.feedforward * static_cast<double>(input[index]) +
+                coefficients.feedback[0] * state[0] +
+                coefficients.feedback[1] * state[1] +
+                coefficients.feedback[2] * state[2];
             output[index] = static_cast<float>(value);
-            y3 = y2;
-            y2 = y1;
-            y1 = value;
+            state[2] = state[1];
+            state[1] = state[0];
+            state[0] = value;
+        }
+        const int terminalSize = boundary.terminalSize;
+        double terminal[3] = {0.0, 0.0, 0.0};
+        const double last = state[0];
+        for (int terminalRow = 0; terminalRow < terminalSize; ++terminalRow) {
+            double value = last;
+            for (int terminalColumn = 0; terminalColumn < terminalSize; ++terminalColumn) {
+                value += boundary.terminalMatrix[terminalRow * terminalSize + terminalColumn] *
+                         (state[terminalSize - 1 - terminalColumn] - last);
+            }
+            terminal[terminalRow] = value;
+            output[row + static_cast<std::size_t>(
+                             width - terminalSize + terminalRow)] =
+                static_cast<float>(value);
+        }
+        for (int history = 0; history < terminalSize; ++history) {
+            state[history] = terminal[history];
+        }
+        for (int x = width - terminalSize - 1; x >= 0; --x) {
+            const size_t index = row + static_cast<size_t>(x);
+            const double value =
+                coefficients.feedforward * static_cast<double>(output[index]) +
+                coefficients.feedback[0] * state[0] +
+                coefficients.feedback[1] * state[1] +
+                coefficients.feedback[2] * state[2];
+            output[index] = static_cast<float>(value);
+            state[2] = state[1];
+            state[1] = state[0];
+            state[0] = value;
         }
     }
 
@@ -628,10 +720,8 @@ namespace {
         float* inOut,
         int width,
         int height,
-        double B,
-        double B1,
-        double B2,
-        double B3,
+        JuicerCuda::SpatialDirIirCoefficients coefficients,
+        JuicerCuda::SpatialDirBoundarySpec boundary,
         float weight,
         int initialize) {
         const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
@@ -640,59 +730,68 @@ namespace {
         }
         const size_t visualTop =
             static_cast<size_t>(height - 1) * static_cast<size_t>(width) + static_cast<size_t>(x);
-        double w1 = static_cast<double>(input[visualTop]);
-        double w2 = w1;
-        double w3 = w1;
-        for (int y = height - 1; y >= 0; --y) {
-            const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
-            const double w = B * static_cast<double>(input[index]) + B1 * w1 + B2 * w2 + B3 * w3;
-            forwardTemp[index] = static_cast<float>(w);
-            w3 = w2;
-            w2 = w1;
-            w1 = w;
+        const double anchor = static_cast<double>(input[visualTop]);
+        double state[3] = {anchor, anchor, anchor};
+        for (int sample = 0; sample < boundary.initialWeightLength; ++sample) {
+            const size_t index = static_cast<size_t>(height - 1 - sample) *
+                                     static_cast<size_t>(width) +
+                                 static_cast<size_t>(x);
+            const double delta = static_cast<double>(input[index]) - anchor;
+#pragma unroll
+            for (int history = 0; history < 3; ++history) {
+                state[history] +=
+                    boundary.initialWeights[history * boundary.initialWeightLength + sample] *
+                    delta;
+            }
         }
-        double y1 = static_cast<double>(forwardTemp[static_cast<size_t>(x)]);
-        double y2 = y1;
-        double y3 = y1;
-        for (int y = 0; y < height; ++y) {
+        for (int visualY = 0; visualY < height; ++visualY) {
+            const int y = height - 1 - visualY;
             const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
             const double value =
-                B * static_cast<double>(forwardTemp[index]) + B1 * y1 + B2 * y2 + B3 * y3;
-            const float blurred = isfinite(value) ? static_cast<float>(value) : 0.0f;
-            const float weighted = blurred * weight;
+                coefficients.feedforward * static_cast<double>(input[index]) +
+                coefficients.feedback[0] * state[0] +
+                coefficients.feedback[1] * state[1] +
+                coefficients.feedback[2] * state[2];
+            forwardTemp[index] = static_cast<float>(value);
+            state[2] = state[1];
+            state[1] = state[0];
+            state[0] = value;
+        }
+        const int terminalSize = boundary.terminalSize;
+        double terminal[3] = {0.0, 0.0, 0.0};
+        const double last = state[0];
+        for (int terminalRow = 0; terminalRow < terminalSize; ++terminalRow) {
+            double value = last;
+            for (int terminalColumn = 0; terminalColumn < terminalSize; ++terminalColumn) {
+                value += boundary.terminalMatrix[terminalRow * terminalSize + terminalColumn] *
+                         (state[terminalSize - 1 - terminalColumn] - last);
+            }
+            terminal[terminalRow] = value;
+            const int visualY = height - terminalSize + terminalRow;
+            const int y = height - 1 - visualY;
+            const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const float weighted = static_cast<float>(value) * weight;
             inOut[index] = initialize ? weighted : inOut[index] + weighted;
-            y3 = y2;
-            y2 = y1;
-            y1 = value;
+        }
+        for (int history = 0; history < terminalSize; ++history) {
+            state[history] = terminal[history];
+        }
+        for (int visualY = height - terminalSize - 1; visualY >= 0; --visualY) {
+            const int y = height - 1 - visualY;
+            const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const double value =
+                coefficients.feedforward * static_cast<double>(forwardTemp[index]) +
+                coefficients.feedback[0] * state[0] +
+                coefficients.feedback[1] * state[1] +
+                coefficients.feedback[2] * state[2];
+            const float weighted = static_cast<float>(value) * weight;
+            inOut[index] = initialize ? weighted : inOut[index] + weighted;
+            state[2] = state[1];
+            state[1] = state[0];
+            state[0] = value;
         }
     }
     // NOLINTEND(bugprone-easily-swappable-parameters)
-
-    struct DirYvvCoefficients {
-        double B = 0.0;
-        double B1 = 0.0;
-        double B2 = 0.0;
-        double B3 = 0.0;
-    };
-
-    bool build_dir_yvv_coefficients(
-        float sigmaPixels,
-        DirYvvCoefficients& out) {
-        const double q = 0.98711 * static_cast<double>(sigmaPixels) - 0.96330;
-        const double q2 = q * q;
-        const double q3 = q2 * q;
-        const double b0 = 1.57825 + 2.44413 * q + 1.4281 * q2 + 0.422205 * q3;
-        const double b1 = 2.44413 * q + 2.85619 * q2 + 1.26661 * q3;
-        const double b2 = -(1.4281 * q2 + 1.26661 * q3);
-        const double b3 = 0.422205 * q3;
-        out.B1 = b1 / b0;
-        out.B2 = b2 / b0;
-        out.B3 = b3 / b0;
-        out.B = 1.0 - (b1 + b2 + b3) / b0;
-        return std::isfinite(out.B) && out.B > 0.0 &&
-               std::isfinite(out.B1) && std::isfinite(out.B2) &&
-               std::isfinite(out.B3);
-    }
 
 } // namespace
 
@@ -755,7 +854,6 @@ cudaError_t build_spatial_dir_impl(
         &request.tails[0],
         &request.tails[1],
         &request.tails[2]};
-    DirYvvCoefficients yvvCoefficients[4]{};
     bool anyActiveComponent = false;
     for (int componentIndex = 0; componentIndex < 4; ++componentIndex) {
         const JuicerCuda::SpatialDirFilterSpec& component =
@@ -782,14 +880,31 @@ cudaError_t build_spatial_dir_impl(
                     return cudaErrorInvalidValue;
                 }
                 break;
-            case JuicerCuda::SpatialDirFilterOperator::YvvReplicate:
+            case JuicerCuda::SpatialDirFilterOperator::YvvReflect: {
+                const double dc = component.iir.feedforward +
+                                  component.iir.feedback[0] +
+                                  component.iir.feedback[1] +
+                                  component.iir.feedback[2];
+                const auto validBoundary = [](const JuicerCuda::SpatialDirBoundarySpec& boundary,
+                                              int length) {
+                    return boundary.initialWeights &&
+                           boundary.initialWeightLength > 0 &&
+                           boundary.initialWeightLength <= length &&
+                           boundary.terminalSize == (length < 3 ? length : 3);
+                };
                 if (!(component.sigma >= 3.0f) || component.kernel ||
-                    !build_dir_yvv_coefficients(
-                        component.sigma,
-                        yvvCoefficients[componentIndex])) {
+                    !std::isfinite(component.iir.feedforward) ||
+                    !(component.iir.feedforward > 0.0) ||
+                    !std::isfinite(component.iir.feedback[0]) ||
+                    !std::isfinite(component.iir.feedback[1]) ||
+                    !std::isfinite(component.iir.feedback[2]) ||
+                    !std::isfinite(dc) || std::abs(dc - 1.0) > 1.0e-12 ||
+                    !validBoundary(component.horizontalBoundary, params.width) ||
+                    !validBoundary(component.verticalBoundary, params.height)) {
                     return cudaErrorInvalidValue;
                 }
                 break;
+            }
             case JuicerCuda::SpatialDirFilterOperator::None:
             default:
                 return cudaErrorInvalidValue;
@@ -866,16 +981,12 @@ cudaError_t build_spatial_dir_impl(
         return cudaGetLastError();
     };
 
-    auto accumulate_yvv_channels = [&](const float* raw0, const float* raw1, const float* raw2, float* filtered0, float* filtered1, float* filtered2, const DirYvvCoefficients& coefficients, float weight, bool initialize) -> cudaError_t {
+    auto accumulate_yvv_channels = [&](const float* raw0, const float* raw1, const float* raw2, float* filtered0, float* filtered1, float* filtered2, const JuicerCuda::SpatialDirFilterSpec& component, bool initialize) -> cudaError_t {
         if (!raw0 || !raw1 || !raw2 || !filtered0 || !filtered1 || !filtered2 ||
-            !(weight >= 0.0f) ||
+            !(component.weight >= 0.0f) ||
             !haveAliasedForwardYvvScratch) {
             return cudaErrorInvalidValue;
         }
-        const double B = coefficients.B;
-        const double B1 = coefficients.B1;
-        const double B2 = coefficients.B2;
-        const double B3 = coefficients.B3;
         const int threads = 128;
         spatial_dir_iir_horizontal_channels_kernel<<<
             dim3(static_cast<unsigned int>((params.height + threads - 1) / threads), 3),
@@ -890,10 +1001,8 @@ cudaError_t build_spatial_dir_impl(
             filterTempC,
             params.width,
             params.height,
-            B,
-            B1,
-            B2,
-            B3);
+            component.iir,
+            component.horizontalBoundary);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
@@ -914,27 +1023,21 @@ cudaError_t build_spatial_dir_impl(
             filtered2,
             params.width,
             params.height,
-            B,
-            B1,
-            B2,
-            B3,
-            weight,
+            component.iir,
+            component.verticalBoundary,
+            component.weight,
             initialize ? 1 : 0);
         return cudaGetLastError();
     };
 
     const float* rawCorrections[3] = {rawCorrectionY, rawCorrectionM, rawCorrectionC};
     float* filteredCorrections[3] = {filteredCorrectionY, filteredCorrectionM, filteredCorrectionC};
-    auto accumulate_yvv_low_scratch_pair = [&](const DirYvvCoefficients& coefficients, float weight, bool initialize) -> cudaError_t {
+    auto accumulate_yvv_low_scratch_pair = [&](const JuicerCuda::SpatialDirFilterSpec& component, bool initialize) -> cudaError_t {
         if (!rawCorrectionY || !rawCorrectionM || !rawCorrectionC ||
             !filteredCorrectionY || !filteredCorrectionM || !filteredCorrectionC ||
-            !(weight >= 0.0f) || !haveLowScratchPairYvvScratch) {
+            !(component.weight >= 0.0f) || !haveLowScratchPairYvvScratch) {
             return cudaErrorInvalidValue;
         }
-        const double B = coefficients.B;
-        const double B1 = coefficients.B1;
-        const double B2 = coefficients.B2;
-        const double B3 = coefficients.B3;
         const int threads = 128;
         const dim3 horizontalPairBlocks(
             static_cast<unsigned int>((params.height + threads - 1) / threads),
@@ -955,10 +1058,8 @@ cudaError_t build_spatial_dir_impl(
             nullptr,
             params.width,
             params.height,
-            B,
-            B1,
-            B2,
-            B3);
+            component.iir,
+            component.horizontalBoundary);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
@@ -979,11 +1080,9 @@ cudaError_t build_spatial_dir_impl(
             nullptr,
             params.width,
             params.height,
-            B,
-            B1,
-            B2,
-            B3,
-            weight,
+            component.iir,
+            component.verticalBoundary,
+            component.weight,
             initialize ? 1 : 0);
         e = cudaGetLastError();
         if (e != cudaSuccess) {
@@ -1003,10 +1102,8 @@ cudaError_t build_spatial_dir_impl(
             filterTemp,
             params.width,
             params.height,
-            B,
-            B1,
-            B2,
-            B3);
+            component.iir,
+            component.horizontalBoundary);
         e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
@@ -1021,24 +1118,18 @@ cudaError_t build_spatial_dir_impl(
             filteredCorrectionC,
             params.width,
             params.height,
-            B,
-            B1,
-            B2,
-            B3,
-            weight,
+            component.iir,
+            component.verticalBoundary,
+            component.weight,
             initialize ? 1 : 0);
         return cudaGetLastError();
     };
 
-    auto accumulate_yvv_sequential_single_channel = [&](const DirYvvCoefficients& coefficients, float weight, bool initialize) -> cudaError_t {
-        if (!(weight >= 0.0f) ||
+    auto accumulate_yvv_sequential_single_channel = [&](const JuicerCuda::SpatialDirFilterSpec& component, bool initialize) -> cudaError_t {
+        if (!(component.weight >= 0.0f) ||
             !haveSingleTempSequentialYvvScratch) {
             return cudaErrorInvalidValue;
         }
-        const double B = coefficients.B;
-        const double B1 = coefficients.B1;
-        const double B2 = coefficients.B2;
-        const double B3 = coefficients.B3;
         const int threads = 128;
         const dim3 horizontalBlocks(
             static_cast<unsigned int>((params.height + threads - 1) / threads));
@@ -1054,10 +1145,8 @@ cudaError_t build_spatial_dir_impl(
                 filterTemp,
                 params.width,
                 params.height,
-                B,
-                B1,
-                B2,
-                B3);
+                component.iir,
+                component.horizontalBoundary);
             cudaError_t e = cudaGetLastError();
             if (e != cudaSuccess) {
                 return e;
@@ -1072,11 +1161,9 @@ cudaError_t build_spatial_dir_impl(
                 filteredCorrections[channel],
                 params.width,
                 params.height,
-                B,
-                B1,
-                B2,
-                B3,
-                weight,
+                component.iir,
+                component.verticalBoundary,
+                component.weight,
                 initialize ? 1 : 0);
             e = cudaGetLastError();
             if (e != cudaSuccess) {
@@ -1086,15 +1173,11 @@ cudaError_t build_spatial_dir_impl(
         return cudaSuccess;
     };
 
-    auto accumulate_yvv_component_streamed = [&](float* filteredCorrection, const DirYvvCoefficients& coefficients, float weight, bool initialize) -> cudaError_t {
-        if (!filteredCorrection || !(weight >= 0.0f) ||
+    auto accumulate_yvv_component_streamed = [&](float* filteredCorrection, const JuicerCuda::SpatialDirFilterSpec& component, bool initialize) -> cudaError_t {
+        if (!filteredCorrection || !(component.weight >= 0.0f) ||
             !haveComponentStreamedYvvScratch) {
             return cudaErrorInvalidValue;
         }
-        const double B = coefficients.B;
-        const double B1 = coefficients.B1;
-        const double B2 = coefficients.B2;
-        const double B3 = coefficients.B3;
         const int threads = 128;
         const dim3 horizontalBlocks(
             static_cast<unsigned int>((params.height + threads - 1) / threads));
@@ -1109,10 +1192,8 @@ cudaError_t build_spatial_dir_impl(
             filterTemp,
             params.width,
             params.height,
-            B,
-            B1,
-            B2,
-            B3);
+            component.iir,
+            component.horizontalBoundary);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
@@ -1127,18 +1208,15 @@ cudaError_t build_spatial_dir_impl(
             filteredCorrection,
             params.width,
             params.height,
-            B,
-            B1,
-            B2,
-            B3,
-            weight,
+            component.iir,
+            component.verticalBoundary,
+            component.weight,
             initialize ? 1 : 0);
         return cudaGetLastError();
     };
 
     auto accumulate_component = [&](
                                     const JuicerCuda::SpatialDirFilterSpec& component,
-                                    const DirYvvCoefficients& coefficients,
                                     bool initialize)
         -> cudaError_t {
         if (component.filterOperator == JuicerCuda::SpatialDirFilterOperator::Identity) {
@@ -1161,7 +1239,7 @@ cudaError_t build_spatial_dir_impl(
             }
             return cudaSuccess;
         }
-        if (component.filterOperator == JuicerCuda::SpatialDirFilterOperator::YvvReplicate) {
+        if (component.filterOperator == JuicerCuda::SpatialDirFilterOperator::YvvReflect) {
             if (haveAliasedForwardYvvScratch) {
                 return accumulate_yvv_channels(
                     rawCorrectionY,
@@ -1170,19 +1248,16 @@ cudaError_t build_spatial_dir_impl(
                     filteredCorrectionY,
                     filteredCorrectionM,
                     filteredCorrectionC,
-                    coefficients,
-                    component.weight,
+                    component,
                     initialize);
             }
             if (haveLowScratchPairYvvScratch) {
                 return accumulate_yvv_low_scratch_pair(
-                    coefficients,
-                    component.weight,
+                    component,
                     initialize);
             }
             return accumulate_yvv_sequential_single_channel(
-                coefficients,
-                component.weight,
+                component,
                 initialize);
         }
         if (component.filterOperator != JuicerCuda::SpatialDirFilterOperator::FirReflect) {
@@ -1207,7 +1282,6 @@ cudaError_t build_spatial_dir_impl(
     auto accumulate_streamed_component = [&](
                                              int channel,
                                              const JuicerCuda::SpatialDirFilterSpec& component,
-                                             const DirYvvCoefficients& coefficients,
                                              bool initialize)
         -> cudaError_t {
         if (channel < 0 || channel >= 3 || !(component.weight >= 0.0f)) {
@@ -1228,11 +1302,10 @@ cudaError_t build_spatial_dir_impl(
                            : SpatialDirAccumulationMode::Accumulate);
             return cudaGetLastError();
         }
-        if (component.filterOperator == JuicerCuda::SpatialDirFilterOperator::YvvReplicate) {
+        if (component.filterOperator == JuicerCuda::SpatialDirFilterOperator::YvvReflect) {
             return accumulate_yvv_component_streamed(
                 filteredCorrection,
-                coefficients,
-                component.weight,
+                component,
                 initialize);
         }
         if (component.filterOperator != JuicerCuda::SpatialDirFilterOperator::FirReflect) {
@@ -1259,7 +1332,6 @@ cudaError_t build_spatial_dir_impl(
                 err = accumulate_streamed_component(
                     channel,
                     request.gaussian,
-                    yvvCoefficients[0],
                     true);
                 if (err != cudaSuccess) {
                     return err;
@@ -1274,7 +1346,6 @@ cudaError_t build_spatial_dir_impl(
                 err = accumulate_streamed_component(
                     channel,
                     request.tails[component],
-                    yvvCoefficients[component + 1],
                     initializeComponent);
                 if (err != cudaSuccess) {
                     return err;
@@ -1292,7 +1363,6 @@ cudaError_t build_spatial_dir_impl(
     if (gaussianWeight > 0.0f) {
         err = accumulate_component(
             request.gaussian,
-            yvvCoefficients[0],
             true);
         if (err != cudaSuccess)
             return err;
@@ -1306,7 +1376,6 @@ cudaError_t build_spatial_dir_impl(
         const bool initializeComponent = !accumulatorInitialized;
         err = accumulate_component(
             request.tails[component],
-            yvvCoefficients[component + 1],
             initializeComponent);
         if (err != cudaSuccess)
             return err;

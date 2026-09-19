@@ -181,7 +181,7 @@ namespace JuicerProcess {
                 const Spektrafilm::DirGaussianComponentPlan& plan =
                     descriptor.filterPlan.components[static_cast<std::size_t>(component)];
                 if (plan.weight > 0.0f &&
-                    plan.referenceOperator == Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReplicate) {
+                    plan.referenceOperator == Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect) {
                     return true;
                 }
             }
@@ -3049,9 +3049,15 @@ namespace JuicerProcess {
                 slot < descriptor.filterPlan.componentCount;
             const Spektrafilm::DirGaussianComponentPlan& component =
                 descriptor.filterPlan.components[static_cast<std::size_t>(slot)];
-            if (!componentPresent || !(component.weight > 0.0f) ||
-                component.referenceOperator !=
-                    Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect) {
+            const bool activeFir =
+                componentPresent && component.weight > 0.0f &&
+                component.referenceOperator ==
+                    Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect;
+            const bool activeIir =
+                componentPresent && component.weight > 0.0f &&
+                component.referenceOperator ==
+                    Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect;
+            if (!activeFir) {
                 if (!JuicerCuda::clear_spatial_dir_kernel_binding(
                         *_state->resources,
                         _state->resources
@@ -3063,17 +3069,45 @@ namespace JuicerProcess {
                         "CUDA spatial DIR kernel binding clear failed");
                     return false;
                 }
-                continue;
+            } else {
+                if (!JuicerCuda::ensure_spatial_dir_kernel(
+                        *_state->resources,
+                        _state->resources->spatialDirKernels[static_cast<std::size_t>(slot)],
+                        component.radius,
+                        component.sigmaPixels,
+                        outError)) {
+                    _state->set_failure(
+                        PreparedCudaFailureStage{"command_ensure_spatial_dir_kernel"},
+                        "CUDA spatial DIR kernel upload failed");
+                    return false;
+                }
             }
-            if (!JuicerCuda::ensure_spatial_dir_kernel(
-                    *_state->resources,
-                    _state->resources->spatialDirKernels[static_cast<std::size_t>(slot)],
-                    component.radius,
-                    component.sigmaPixels,
-                    outError)) {
+            if (!activeIir) {
+                if (!JuicerCuda::clear_spatial_dir_boundary_binding(
+                        *_state->resources,
+                        _state->resources
+                            ->spatialDirBoundaries[static_cast<std::size_t>(slot)],
+                        cudaStreamOpaque,
+                        outError)) {
+                    _state->set_failure(
+                        PreparedCudaFailureStage{
+                            "command_clear_spatial_dir_boundary"},
+                        "CUDA spatial DIR boundary binding clear failed");
+                    return false;
+                }
+            } else if (!JuicerCuda::ensure_spatial_dir_boundary(
+                           *_state->resources,
+                           _state->resources
+                               ->spatialDirBoundaries[static_cast<std::size_t>(slot)],
+                           component,
+                           descriptor.filterDomainExtent.width,
+                           descriptor.filterDomainExtent.height,
+                           cudaStreamOpaque,
+                           outError)) {
                 _state->set_failure(
-                    PreparedCudaFailureStage{"command_ensure_spatial_dir_kernel"},
-                    "CUDA spatial DIR kernel upload failed");
+                    PreparedCudaFailureStage{
+                        "command_ensure_spatial_dir_boundary"},
+                    "CUDA spatial DIR reflected-boundary preparation failed");
                 return false;
             }
         }
@@ -4159,6 +4193,7 @@ namespace JuicerProcess {
             return view;
         }
         const auto& kernels = _state->resources->spatialDirKernels;
+        const auto& boundaries = _state->resources->spatialDirBoundaries;
         const Spektrafilm::DirFilterPlan& filterPlan =
             _state->spatialDirDescriptor.filterPlan;
         view.gaussian = {
@@ -4187,6 +4222,29 @@ namespace JuicerProcess {
                 const auto& kernel = kernels[static_cast<std::size_t>(slot)];
                 view.active = view.active && kernel.weights &&
                               kernel.radius == component.radius;
+            } else if (component.weight > 0.0f &&
+                       component.referenceOperator ==
+                           Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect) {
+                const auto& boundary = boundaries[static_cast<std::size_t>(slot)];
+                auto& boundaryView = view.boundaries[static_cast<std::size_t>(slot)];
+                boundaryView.horizontalWeights = boundary.weights;
+                boundaryView.verticalWeights =
+                    boundary.weights
+                        ? boundary.weights +
+                              static_cast<std::ptrdiff_t>(3 * boundary.horizontalLength)
+                        : nullptr;
+                boundaryView.horizontalLength = boundary.horizontalLength;
+                boundaryView.verticalLength = boundary.verticalLength;
+                boundaryView.horizontalTerminalSize = boundary.horizontalTerminalSize;
+                boundaryView.verticalTerminalSize = boundary.verticalTerminalSize;
+                boundaryView.horizontalTerminalMatrix =
+                    boundary.horizontalTerminalMatrix;
+                boundaryView.verticalTerminalMatrix = boundary.verticalTerminalMatrix;
+                view.active = view.active && boundary.weights &&
+                              boundary.horizontalLength > 0 &&
+                              boundary.verticalLength > 0 &&
+                              boundary.horizontalTerminalSize > 0 &&
+                              boundary.verticalTerminalSize > 0;
             }
         }
         return view;

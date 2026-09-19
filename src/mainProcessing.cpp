@@ -685,12 +685,38 @@ namespace {
                 return JuicerCuda::SpatialDirFilterOperator::Identity;
             case Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect:
                 return JuicerCuda::SpatialDirFilterOperator::FirReflect;
-            case Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReplicate:
-                return JuicerCuda::SpatialDirFilterOperator::YvvReplicate;
+            case Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect:
+                return JuicerCuda::SpatialDirFilterOperator::YvvReflect;
             case Spektrafilm::DirReferenceOperator::None:
             default:
                 return JuicerCuda::SpatialDirFilterOperator::None;
         }
+    }
+
+    void bind_spatial_dir_iir(
+        JuicerCuda::SpatialDirFilterSpec& destination,
+        const Spektrafilm::DirGaussianComponentPlan& component,
+        const JuicerProcess::Root::PreparedCudaFrame::SpatialDirPreparedView::BoundaryView&
+            boundary) noexcept {
+        destination.iir.feedforward = component.iir.feedforward;
+        std::copy(
+            component.iir.feedback.begin(),
+            component.iir.feedback.end(),
+            std::begin(destination.iir.feedback));
+        destination.horizontalBoundary.initialWeights = boundary.horizontalWeights;
+        destination.horizontalBoundary.initialWeightLength = boundary.horizontalLength;
+        destination.horizontalBoundary.terminalSize = boundary.horizontalTerminalSize;
+        std::copy(
+            boundary.horizontalTerminalMatrix.begin(),
+            boundary.horizontalTerminalMatrix.end(),
+            std::begin(destination.horizontalBoundary.terminalMatrix));
+        destination.verticalBoundary.initialWeights = boundary.verticalWeights;
+        destination.verticalBoundary.initialWeightLength = boundary.verticalLength;
+        destination.verticalBoundary.terminalSize = boundary.verticalTerminalSize;
+        std::copy(
+            boundary.verticalTerminalMatrix.begin(),
+            boundary.verticalTerminalMatrix.end(),
+            std::begin(destination.verticalBoundary.terminalMatrix));
     }
 
     void bind_spatial_dir_final_develop_to_payload(
@@ -2343,6 +2369,10 @@ void JuicerProcessor::processImagesCUDA() {
             dirBuildRequest.gaussian.weight = coreComponent.weight;
             dirBuildRequest.gaussian.filterOperator =
                 cuda_dir_filter_operator(coreComponent.referenceOperator);
+            bind_spatial_dir_iir(
+                dirBuildRequest.gaussian,
+                coreComponent,
+                resources.boundaries[0]);
             for (int tailIndex = 0; tailIndex < 3; ++tailIndex) {
                 dirBuildRequest.tails[tailIndex].kernel = resources.exponential[tailIndex].weights;
                 dirBuildRequest.tails[tailIndex].radius = resources.exponential[tailIndex].radius;
@@ -2352,6 +2382,10 @@ void JuicerProcessor::processImagesCUDA() {
                 dirBuildRequest.tails[tailIndex].weight = tailComponent.weight;
                 dirBuildRequest.tails[tailIndex].filterOperator =
                     cuda_dir_filter_operator(tailComponent.referenceOperator);
+                bind_spatial_dir_iir(
+                    dirBuildRequest.tails[tailIndex],
+                    tailComponent,
+                    resources.boundaries[static_cast<std::size_t>(tailIndex) + 1u]);
             }
             dirBuildRequest.streamOpaque = _pCudaStream;
             const cudaError_t dirError = juicer_cuda_build_direct_spatial_dir(
@@ -3349,6 +3383,10 @@ void JuicerProcessor::processImagesCUDA() {
             dirBuildRequest.gaussian.weight = coreComponent.weight;
             dirBuildRequest.gaussian.filterOperator =
                 cuda_dir_filter_operator(coreComponent.referenceOperator);
+            bind_spatial_dir_iir(
+                dirBuildRequest.gaussian,
+                coreComponent,
+                resources.boundaries[0]);
             for (int tailIndex = 0; tailIndex < 3; ++tailIndex) {
                 dirBuildRequest.tails[tailIndex].kernel = resources.exponential[tailIndex].weights;
                 dirBuildRequest.tails[tailIndex].radius = resources.exponential[tailIndex].radius;
@@ -3358,6 +3396,10 @@ void JuicerProcessor::processImagesCUDA() {
                 dirBuildRequest.tails[tailIndex].weight = tailComponent.weight;
                 dirBuildRequest.tails[tailIndex].filterOperator =
                     cuda_dir_filter_operator(tailComponent.referenceOperator);
+                bind_spatial_dir_iir(
+                    dirBuildRequest.tails[tailIndex],
+                    tailComponent,
+                    resources.boundaries[static_cast<std::size_t>(tailIndex) + 1u]);
             }
             dirBuildRequest.streamOpaque = _pCudaStream;
             const cudaError_t dirError = juicer_cuda_build_print_spatial_dir(

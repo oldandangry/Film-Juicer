@@ -1648,6 +1648,10 @@ namespace JuicerCuda {
         free_scan_lut(resources, resources.scanPrintLut);
         clear_gaussian_kernel_views(resources);
         free_gaussian_cache(resources);
+        for (auto& boundary : resources.spatialDirBoundaries) {
+            free_owned_device_noexcept(resources, boundary.weights);
+            boundary = Resources::DeviceSpatialDirBoundary{};
+        }
         free_optics_scratch(resources, resources.scannerScratch, nullptr);
         free_spatial_dir_scratch(
             resources,
@@ -1787,6 +1791,9 @@ namespace JuicerCuda {
             Diffusion::invalidate_diffusion_resources_after_proven_context_loss(
                 resources.diffusion);
             clear_gaussian_kernel_views(resources);
+            for (auto& boundary : resources.spatialDirBoundaries) {
+                boundary = Resources::DeviceSpatialDirBoundary{};
+            }
             resources.gaussianKernelCache.clear();
             resources.deviceAllocationRecords.clear();
             resources.contextLossOnlyDeviceAllocationRecords.clear();
@@ -3582,20 +3589,22 @@ namespace JuicerCuda {
         resources.filmDirHash = 0;
         if (dirCouplers.active) {
             if (dirCouplers.hash == 0 ||
-                dirCouplers.precorrectedDensityCurvesHash == 0 ||
-                dirCouplers.precorrectedDensityCurves.size() != filmDevelop.logExposure.size()) {
+                dirCouplers.compensatedDensityCurveAxesHash == 0 ||
+                std::any_of(
+                    dirCouplers.compensatedDensityCurveAxesRgb.begin(),
+                    dirCouplers.compensatedDensityCurveAxesRgb.end(),
+                    [&](const auto& axis) {
+                        return axis.size() != filmDevelop.logExposure.size();
+                    })) {
                 outError = "focused film DIR resource descriptor mismatch";
                 return false;
             }
             Spectral::Curve dirB = densB;
             Spectral::Curve dirG = densG;
             Spectral::Curve dirR = densR;
-            for (std::size_t sample = 0; sample < dirCouplers.precorrectedDensityCurves.size(); ++sample) {
-                const auto& rgb = dirCouplers.precorrectedDensityCurves[sample];
-                dirB.linear[sample] = rgb[2];
-                dirG.linear[sample] = rgb[1];
-                dirR.linear[sample] = rgb[0];
-            }
+            dirB.lambda_nm = dirCouplers.compensatedDensityCurveAxesRgb[2];
+            dirG.lambda_nm = dirCouplers.compensatedDensityCurveAxesRgb[1];
+            dirR.lambda_nm = dirCouplers.compensatedDensityCurveAxesRgb[0];
             if (!upload_curve_locked(resources, resources.dirDensB, dirB, cudaStreamOpaque, &lock, "focused film DIR densB", outError) ||
                 !upload_curve_locked(resources, resources.dirDensG, dirG, cudaStreamOpaque, &lock, "focused film DIR densG", outError) ||
                 !upload_curve_locked(resources, resources.dirDensR, dirR, cudaStreamOpaque, &lock, "focused film DIR densR", outError)) {
@@ -6375,6 +6384,522 @@ namespace JuicerCuda {
             sigma,
             "spatial DIR kernel",
             outError);
+    }
+
+    namespace {
+
+        struct DirDoubleDouble {
+            double hi = 0.0;
+            double lo = 0.0;
+        };
+
+        DirDoubleDouble dir_dd_normalize(double hi, double lo) noexcept {
+            const double sum = hi + lo;
+            return {sum, lo - (sum - hi)};
+        }
+
+        DirDoubleDouble dir_dd_add(
+            DirDoubleDouble lhs,
+            DirDoubleDouble rhs) noexcept {
+            const double sum = lhs.hi + rhs.hi;
+            const double virtualRhs = sum - lhs.hi;
+            const double error = (lhs.hi - (sum - virtualRhs)) +
+                                 (rhs.hi - virtualRhs) + lhs.lo + rhs.lo;
+            return dir_dd_normalize(sum, error);
+        }
+
+        DirDoubleDouble dir_dd_negate(DirDoubleDouble value) noexcept {
+            return {-value.hi, -value.lo};
+        }
+
+        DirDoubleDouble dir_dd_subtract(
+            DirDoubleDouble lhs,
+            DirDoubleDouble rhs) noexcept {
+            return dir_dd_add(lhs, dir_dd_negate(rhs));
+        }
+
+        DirDoubleDouble dir_dd_multiply(
+            DirDoubleDouble lhs,
+            DirDoubleDouble rhs) noexcept {
+            const double product = lhs.hi * rhs.hi;
+            const double error = std::fma(lhs.hi, rhs.hi, -product) +
+                                 lhs.hi * rhs.lo + lhs.lo * rhs.hi +
+                                 lhs.lo * rhs.lo;
+            return dir_dd_normalize(product, error);
+        }
+
+        DirDoubleDouble dir_dd_divide(
+            DirDoubleDouble numerator,
+            DirDoubleDouble denominator) noexcept {
+            const double first = numerator.hi / denominator.hi;
+            const DirDoubleDouble remainder = dir_dd_subtract(
+                numerator,
+                dir_dd_multiply(denominator, {first, 0.0}));
+            const double second = (remainder.hi + remainder.lo) / denominator.hi;
+            return dir_dd_add({first, 0.0}, {second, 0.0});
+        }
+
+        double dir_dd_value(DirDoubleDouble value) noexcept {
+            return value.hi + value.lo;
+        }
+
+        using DirDdMatrix = std::array<std::array<DirDoubleDouble, 3>, 3>;
+        using DirDdVector = std::array<DirDoubleDouble, 3>;
+
+        DirDdMatrix dir_dd_identity() noexcept {
+            DirDdMatrix result{};
+            for (std::size_t index = 0; index < result.size(); ++index) {
+                result[index][index] = {1.0, 0.0};
+            }
+            return result;
+        }
+
+        DirDdMatrix dir_dd_matrix_multiply(
+            const DirDdMatrix& lhs,
+            const DirDdMatrix& rhs) noexcept {
+            DirDdMatrix result{};
+            for (std::size_t row = 0; row < 3u; ++row) {
+                for (std::size_t column = 0; column < 3u; ++column) {
+                    for (std::size_t inner = 0; inner < 3u; ++inner) {
+                        result[row][column] = dir_dd_add(
+                            result[row][column],
+                            dir_dd_multiply(lhs[row][inner], rhs[inner][column]));
+                    }
+                }
+            }
+            return result;
+        }
+
+        DirDdVector dir_dd_matrix_vector_multiply(
+            const DirDdMatrix& matrix,
+            const DirDdVector& vector) noexcept {
+            DirDdVector result{};
+            for (std::size_t row = 0; row < 3u; ++row) {
+                for (std::size_t column = 0; column < 3u; ++column) {
+                    result[row] = dir_dd_add(
+                        result[row],
+                        dir_dd_multiply(matrix[row][column], vector[column]));
+                }
+            }
+            return result;
+        }
+
+        bool dir_dd_invert(
+            DirDdMatrix matrix,
+            int size,
+            DirDdMatrix& inverse) noexcept {
+            inverse = dir_dd_identity();
+            for (int column = 0; column < size; ++column) {
+                int pivot = column;
+                double pivotMagnitude =
+                    std::abs(dir_dd_value(matrix[static_cast<std::size_t>(pivot)]
+                                                [static_cast<std::size_t>(column)]));
+                for (int row = column + 1; row < size; ++row) {
+                    const double magnitude =
+                        std::abs(dir_dd_value(matrix[static_cast<std::size_t>(row)]
+                                                    [static_cast<std::size_t>(column)]));
+                    if (magnitude > pivotMagnitude) {
+                        pivot = row;
+                        pivotMagnitude = magnitude;
+                    }
+                }
+                if (!(pivotMagnitude > 0.0) || !std::isfinite(pivotMagnitude)) {
+                    return false;
+                }
+                if (pivot != column) {
+                    std::swap(matrix[static_cast<std::size_t>(pivot)],
+                              matrix[static_cast<std::size_t>(column)]);
+                    std::swap(inverse[static_cast<std::size_t>(pivot)],
+                              inverse[static_cast<std::size_t>(column)]);
+                }
+                const DirDoubleDouble scale =
+                    matrix[static_cast<std::size_t>(column)]
+                          [static_cast<std::size_t>(column)];
+                for (int entry = 0; entry < size; ++entry) {
+                    matrix[static_cast<std::size_t>(column)]
+                          [static_cast<std::size_t>(entry)] =
+                              dir_dd_divide(
+                                  matrix[static_cast<std::size_t>(column)]
+                                        [static_cast<std::size_t>(entry)],
+                                  scale);
+                    inverse[static_cast<std::size_t>(column)]
+                           [static_cast<std::size_t>(entry)] =
+                               dir_dd_divide(
+                                   inverse[static_cast<std::size_t>(column)]
+                                          [static_cast<std::size_t>(entry)],
+                                   scale);
+                }
+                for (int row = 0; row < size; ++row) {
+                    if (row == column) {
+                        continue;
+                    }
+                    const DirDoubleDouble factor =
+                        matrix[static_cast<std::size_t>(row)]
+                              [static_cast<std::size_t>(column)];
+                    for (int entry = 0; entry < size; ++entry) {
+                        matrix[static_cast<std::size_t>(row)]
+                              [static_cast<std::size_t>(entry)] =
+                                  dir_dd_subtract(
+                                      matrix[static_cast<std::size_t>(row)]
+                                            [static_cast<std::size_t>(entry)],
+                                      dir_dd_multiply(
+                                          factor,
+                                          matrix[static_cast<std::size_t>(column)]
+                                                [static_cast<std::size_t>(entry)]));
+                        inverse[static_cast<std::size_t>(row)]
+                               [static_cast<std::size_t>(entry)] =
+                                   dir_dd_subtract(
+                                       inverse[static_cast<std::size_t>(row)]
+                                              [static_cast<std::size_t>(entry)],
+                                       dir_dd_multiply(
+                                           factor,
+                                           inverse[static_cast<std::size_t>(column)]
+                                                  [static_cast<std::size_t>(entry)]));
+                    }
+                }
+            }
+            return true;
+        }
+
+        struct SpatialDirBoundaryAxisCpu {
+            std::vector<double> initialWeights;
+            int initialWeightLength = 0;
+            int terminalSize = 0;
+            std::array<double, 9> terminalMatrix{};
+        };
+
+        bool build_spatial_dir_boundary_axis_cpu(
+            const Spektrafilm::DirGaussianComponentPlan& component,
+            int length,
+            SpatialDirBoundaryAxisCpu& output,
+            std::string& outError) {
+            if (length <= 0 ||
+                !(component.boundaryTruncationAccuracy > 0.0) ||
+                !(component.boundaryCertificationTolerance > 0.0) ||
+                component.boundaryDerivationVersion != 1u) {
+                outError = "spatial DIR reflected-boundary policy is invalid";
+                return false;
+            }
+            const auto& coefficients = component.iir;
+            DirDdMatrix transition{};
+            for (std::size_t coefficient = 0; coefficient < 3u; ++coefficient) {
+                transition[0][coefficient] = {coefficients.feedback[coefficient], 0.0};
+            }
+            transition[1][0] = {1.0, 0.0};
+            transition[2][1] = {1.0, 0.0};
+
+            const int period = 2 * length;
+            DirDdMatrix periodPower = dir_dd_identity();
+            std::vector<DirDdVector> feedforwardPowers(static_cast<std::size_t>(period));
+            feedforwardPowers[0][0] = {coefficients.feedforward, 0.0};
+            for (int exponent = 1; exponent < period; ++exponent) {
+                feedforwardPowers[static_cast<std::size_t>(exponent)] =
+                    dir_dd_matrix_vector_multiply(
+                        transition,
+                        feedforwardPowers[static_cast<std::size_t>(exponent - 1)]);
+            }
+            for (int exponent = 0; exponent < period; ++exponent) {
+                periodPower = dir_dd_matrix_multiply(transition, periodPower);
+            }
+
+            DirDdMatrix periodicSystem = dir_dd_identity();
+            for (std::size_t row = 0; row < 3u; ++row) {
+                for (std::size_t column = 0; column < 3u; ++column) {
+                    periodicSystem[row][column] = dir_dd_subtract(
+                        periodicSystem[row][column],
+                        periodPower[row][column]);
+                }
+            }
+            DirDdMatrix periodicInverse{};
+            if (!dir_dd_invert(periodicSystem, 3, periodicInverse)) {
+                outError = "spatial DIR causal reflected-boundary solve is singular";
+                return false;
+            }
+
+            std::vector<double> fullWeights(
+                std::size_t{3} * static_cast<std::size_t>(length));
+            std::array<DirDoubleDouble, 3> weightSums{};
+            for (int sample = 0; sample < length; ++sample) {
+                DirDdVector rightHandSide{};
+                const DirDdVector& first =
+                    feedforwardPowers[static_cast<std::size_t>(sample)];
+                const DirDdVector& second =
+                    feedforwardPowers[static_cast<std::size_t>(period - 1 - sample)];
+                for (std::size_t row = 0; row < 3u; ++row) {
+                    rightHandSide[row] = dir_dd_add(first[row], second[row]);
+                }
+                const DirDdVector state =
+                    dir_dd_matrix_vector_multiply(periodicInverse, rightHandSide);
+                for (std::size_t row = 0; row < 3u; ++row) {
+                    const double value = dir_dd_value(state[row]);
+                    if (!std::isfinite(value)) {
+                        outError = "spatial DIR causal reflected-boundary weights are nonfinite";
+                        return false;
+                    }
+                    fullWeights[row * static_cast<std::size_t>(length) +
+                                static_cast<std::size_t>(sample)] = value;
+                    weightSums[row] = dir_dd_add(weightSums[row], {value, 0.0});
+                }
+            }
+            for (DirDoubleDouble sumValue : weightSums) {
+                const double sum = dir_dd_value(sumValue);
+                if (!std::isfinite(sum) ||
+                    std::abs(sum - 1.0) > component.boundaryCertificationTolerance) {
+                    std::ostringstream detail;
+                    detail << "spatial DIR causal reflected-boundary certification failed"
+                           << " length=" << length
+                           << " sigma=" << component.sigmaPixels
+                           << " sum=" << sum
+                           << " tolerance="
+                           << component.boundaryCertificationTolerance;
+                    outError = detail.str();
+                    return false;
+                }
+            }
+
+            const int minimumLength = std::min(3, length);
+            int retainedLength = length;
+            std::array<double, 3> discardedAbsoluteTail{};
+            for (int sample = length - 1; sample >= minimumLength; --sample) {
+                for (std::size_t row = 0; row < 3u; ++row) {
+                    discardedAbsoluteTail[row] += std::abs(
+                        fullWeights[row * static_cast<std::size_t>(length) +
+                                    static_cast<std::size_t>(sample)]);
+                }
+                const double maximumTail = *std::max_element(
+                    discardedAbsoluteTail.begin(), discardedAbsoluteTail.end());
+                if (maximumTail >= component.boundaryTruncationAccuracy) {
+                    retainedLength = sample + 1;
+                    break;
+                }
+                retainedLength = sample;
+            }
+            output.initialWeightLength = retainedLength;
+            output.initialWeights.resize(
+                std::size_t{3} * static_cast<std::size_t>(retainedLength));
+            for (std::size_t row = 0; row < 3u; ++row) {
+                std::copy_n(
+                    fullWeights.begin() +
+                        static_cast<std::ptrdiff_t>(row * static_cast<std::size_t>(length)),
+                    retainedLength,
+                    output.initialWeights.begin() +
+                        static_cast<std::ptrdiff_t>(row * static_cast<std::size_t>(retainedLength)));
+            }
+
+            const int terminalSize = std::min(3, length);
+            const auto reflectHalfSample = [length](int index) noexcept {
+                const std::int64_t period = 2 * static_cast<std::int64_t>(length);
+                std::int64_t wrapped = static_cast<std::int64_t>(index) % period;
+                if (wrapped < 0) {
+                    wrapped += period;
+                }
+                return static_cast<int>(wrapped < length ? wrapped : period - 1 - wrapped);
+            };
+            DirDdMatrix terminalSystem{};
+            for (int diagonal = 0; diagonal < terminalSize; ++diagonal) {
+                terminalSystem[static_cast<std::size_t>(diagonal)]
+                              [static_cast<std::size_t>(diagonal)] = {
+                                  coefficients.normalizationDenominator,
+                                  0.0};
+            }
+            for (int row = 0; row < terminalSize; ++row) {
+                const int outputIndex = length - terminalSize + row;
+                for (int coefficient = 0; coefficient < 3; ++coefficient) {
+                    const int reflected = reflectHalfSample(outputIndex + coefficient + 1);
+                    const int column = reflected - (length - terminalSize);
+                    if (column < 0 || column >= terminalSize) {
+                        outError = "spatial DIR reflected terminal system escaped its tail";
+                        return false;
+                    }
+                    terminalSystem[static_cast<std::size_t>(row)]
+                                  [static_cast<std::size_t>(column)] =
+                                      dir_dd_subtract(
+                                          terminalSystem[static_cast<std::size_t>(row)]
+                                                        [static_cast<std::size_t>(column)],
+                                          {coefficients.feedbackNumerators[static_cast<std::size_t>(coefficient)],
+                                           0.0});
+                }
+            }
+            DirDdMatrix terminalInverse{};
+            if (!dir_dd_invert(terminalSystem, terminalSize, terminalInverse)) {
+                outError = "spatial DIR reflected terminal solve is singular";
+                return false;
+            }
+            output.terminalSize = terminalSize;
+            for (int row = 0; row < terminalSize; ++row) {
+                double rowSum = 0.0;
+                for (int column = 0; column < terminalSize; ++column) {
+                    const double value = dir_dd_value(dir_dd_multiply(
+                        {coefficients.feedforwardNumerator, 0.0},
+                        terminalInverse[static_cast<std::size_t>(row)]
+                                       [static_cast<std::size_t>(column)]));
+                    output.terminalMatrix[static_cast<std::size_t>(row) *
+                                              static_cast<std::size_t>(terminalSize) +
+                                          static_cast<std::size_t>(column)] = value;
+                    rowSum += value;
+                }
+                if (!std::isfinite(rowSum) ||
+                    std::abs(rowSum - 1.0) > component.boundaryCertificationTolerance) {
+                    outError = "spatial DIR reflected terminal certification failed";
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        std::uint64_t spatial_dir_boundary_identity(
+            const Spektrafilm::DirGaussianComponentPlan& component,
+            int width,
+            int height) noexcept {
+            std::uint64_t hash = Hash::kFnvOffset;
+            const auto hashBytes = [&hash](const auto& value) {
+                Hash::hash_bytes_update(hash, &value, sizeof(value));
+            };
+            hashBytes(component.boundaryDerivationVersion);
+            hashBytes(component.iir.feedforward);
+            for (double coefficient : component.iir.feedback) {
+                hashBytes(coefficient);
+            }
+            hashBytes(component.iir.normalizationDenominator);
+            hashBytes(component.iir.feedforwardNumerator);
+            for (double numerator : component.iir.feedbackNumerators) {
+                hashBytes(numerator);
+            }
+            hashBytes(width);
+            hashBytes(height);
+            hashBytes(component.boundaryTruncationAccuracy);
+            hashBytes(component.boundaryCertificationTolerance);
+            return hash;
+        }
+
+    } // namespace
+
+    bool ensure_spatial_dir_boundary(
+        Resources& resources,
+        Resources::DeviceSpatialDirBoundary& boundary,
+        const Spektrafilm::DirGaussianComponentPlan& component,
+        int width,
+        int height,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (component.referenceOperator !=
+                Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReflect ||
+            !(component.weight > 0.0f) || width <= 0 || height <= 0) {
+            outError = "spatial DIR reflected-boundary request is invalid";
+            return false;
+        }
+        const std::uint64_t identity =
+            spatial_dir_boundary_identity(component, width, height);
+        {
+            std::lock_guard<std::mutex> lock(resources.m);
+            reap_retire_queue_locked(resources);
+            if (!validate_resource_owner_locked(resources, outError, true)) {
+                return false;
+            }
+            if (boundary.weights && boundary.identity == identity) {
+                return true;
+            }
+        }
+
+        SpatialDirBoundaryAxisCpu horizontal{};
+        SpatialDirBoundaryAxisCpu vertical{};
+        if (!build_spatial_dir_boundary_axis_cpu(
+                component, width, horizontal, outError) ||
+            !build_spatial_dir_boundary_axis_cpu(
+                component, height, vertical, outError)) {
+            return false;
+        }
+        std::vector<double> combined;
+        combined.reserve(horizontal.initialWeights.size() + vertical.initialWeights.size());
+        combined.insert(
+            combined.end(),
+            horizontal.initialWeights.begin(),
+            horizontal.initialWeights.end());
+        combined.insert(
+            combined.end(),
+            vertical.initialWeights.begin(),
+            vertical.initialWeights.end());
+        if (combined.empty() ||
+            combined.size() > std::numeric_limits<std::size_t>::max() / sizeof(double)) {
+            outError = "spatial DIR reflected-boundary storage size is invalid";
+            return false;
+        }
+        const std::size_t bytes = combined.size() * sizeof(double);
+        void* candidateRaw = nullptr;
+        if (!alloc_and_upload_bytes(
+                resources,
+                candidateRaw,
+                combined.data(),
+                bytes,
+                cudaStreamOpaque,
+                "spatial DIR reflected boundary",
+                outError)) {
+            return false;
+        }
+
+        bool keepCandidate = false;
+        bool success = false;
+        {
+            std::lock_guard<std::mutex> lock(resources.m);
+            reap_retire_queue_locked(resources);
+            if (validate_resource_owner_locked(resources, outError, true)) {
+                if (boundary.weights && boundary.identity == identity) {
+                    keepCandidate = false;
+                    success = true;
+                } else if (!boundary.weights ||
+                           retire_ptr_locked(
+                               resources,
+                               boundary.weights,
+                               boundary.bytes,
+                               Resources::RetireKind::DeviceFree,
+                               cudaStreamOpaque,
+                               "spatial DIR reflected boundary",
+                               outError)) {
+                    boundary.weights = static_cast<double*>(candidateRaw);
+                    boundary.bytes = bytes;
+                    boundary.horizontalLength = horizontal.initialWeightLength;
+                    boundary.verticalLength = vertical.initialWeightLength;
+                    boundary.horizontalTerminalSize = horizontal.terminalSize;
+                    boundary.verticalTerminalSize = vertical.terminalSize;
+                    boundary.horizontalTerminalMatrix = horizontal.terminalMatrix;
+                    boundary.verticalTerminalMatrix = vertical.terminalMatrix;
+                    boundary.identity = identity;
+                    keepCandidate = true;
+                    success = true;
+                }
+            }
+        }
+        if (!keepCandidate) {
+            free_owned_device_noexcept(resources, candidateRaw);
+        }
+        return success;
+    }
+
+    bool clear_spatial_dir_boundary_binding(
+        Resources& resources,
+        Resources::DeviceSpatialDirBoundary& boundary,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        std::lock_guard<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+        if (boundary.weights &&
+            !retire_ptr_locked(
+                resources,
+                boundary.weights,
+                boundary.bytes,
+                Resources::RetireKind::DeviceFree,
+                cudaStreamOpaque,
+                "spatial DIR reflected boundary clear",
+                outError)) {
+            return false;
+        }
+        boundary = Resources::DeviceSpatialDirBoundary{};
+        return true;
     }
 
     bool clear_spatial_dir_kernel_binding(

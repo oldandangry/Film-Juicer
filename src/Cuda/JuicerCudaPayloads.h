@@ -159,7 +159,20 @@ namespace JuicerCuda {
         None,
         Identity,
         FirReflect,
-        YvvReplicate
+        YvvReflect
+    };
+
+    struct SpatialDirIirCoefficients {
+        double feedforward = 0.0;
+        double feedback[3] = {0.0, 0.0, 0.0};
+    };
+
+    struct SpatialDirBoundarySpec {
+        const double* JUICER_RESTRICT initialWeights = nullptr;
+        int initialWeightLength = 0;
+        int terminalSize = 0;
+        double terminalMatrix[9] = {
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     };
 
     struct SpatialDirFilterSpec {
@@ -169,6 +182,9 @@ namespace JuicerCuda {
         float weight = 0.0f;
         SpatialDirFilterOperator filterOperator =
             SpatialDirFilterOperator::None;
+        SpatialDirIirCoefficients iir{};
+        SpatialDirBoundarySpec horizontalBoundary{};
+        SpatialDirBoundarySpec verticalBoundary{};
     };
 
     struct SpatialDirBuildRequest {

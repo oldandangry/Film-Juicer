@@ -322,8 +322,20 @@ namespace JuicerProcess {
             };
 
             struct SpatialDirPreparedView {
+                struct BoundaryView {
+                    const double* horizontalWeights = nullptr;
+                    const double* verticalWeights = nullptr;
+                    int horizontalLength = 0;
+                    int verticalLength = 0;
+                    int horizontalTerminalSize = 0;
+                    int verticalTerminalSize = 0;
+                    std::array<double, 9> horizontalTerminalMatrix{};
+                    std::array<double, 9> verticalTerminalMatrix{};
+                };
+
                 KernelView gaussian{};
                 KernelView exponential[3]{};
+                std::array<BoundaryView, 4> boundaries{};
                 std::uint64_t descriptorHash = 0;
                 bool active = false;
             };

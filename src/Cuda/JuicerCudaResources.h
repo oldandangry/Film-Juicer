@@ -320,6 +320,18 @@ namespace JuicerCuda {
             float sigma = 0.0f;
         };
 
+        struct DeviceSpatialDirBoundary {
+            double* weights = nullptr;
+            std::size_t bytes = 0;
+            int horizontalLength = 0;
+            int verticalLength = 0;
+            int horizontalTerminalSize = 0;
+            int verticalTerminalSize = 0;
+            std::array<double, 9> horizontalTerminalMatrix{};
+            std::array<double, 9> verticalTerminalMatrix{};
+            std::uint64_t identity = 0;
+        };
+
         struct DeviceOpticsScratch {
             float* rgbR = nullptr;
             float* rgbG = nullptr;
@@ -480,6 +492,7 @@ namespace JuicerCuda {
         DeviceOpticsScratch scannerScratch;
         DeviceSpatialDirScratch spatialDirScratch;
         std::array<DeviceGaussianKernel, 4> spatialDirKernels{};
+        std::array<DeviceSpatialDirBoundary, 4> spatialDirBoundaries{};
         DeviceGaussianKernel grainDyeKernel[3][3];
 
         // Four-byte scalar and fixed-array state follows the aligned resource owners.
@@ -596,6 +609,19 @@ namespace JuicerCuda {
     bool clear_spatial_dir_kernel_binding(
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
+        std::string& outError);
+    bool ensure_spatial_dir_boundary(
+        Resources& resources,
+        Resources::DeviceSpatialDirBoundary& boundary,
+        const Spektrafilm::DirGaussianComponentPlan& component,
+        int width,
+        int height,
+        void* cudaStreamOpaque,
+        std::string& outError);
+    bool clear_spatial_dir_boundary_binding(
+        Resources& resources,
+        Resources::DeviceSpatialDirBoundary& boundary,
+        void* cudaStreamOpaque,
         std::string& outError);
     bool ensure_gaussian_kernel(
         Resources& resources,

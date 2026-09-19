@@ -1378,17 +1378,17 @@ static __device__ __forceinline__ unsigned int juicer_cuda_develop_dir_final_dev
         return subtractionFailures;
     }
 
-    const JuicerCuda::DeviceCurveView preCorrectedB = develop.dirDensB;
-    const JuicerCuda::DeviceCurveView preCorrectedG = develop.dirDensG;
-    const JuicerCuda::DeviceCurveView preCorrectedR = develop.dirDensR;
+    const JuicerCuda::DeviceCurveView compensatedB = develop.dirDensB;
+    const JuicerCuda::DeviceCurveView compensatedG = develop.dirDensG;
+    const JuicerCuda::DeviceCurveView compensatedR = develop.dirDensR;
 
-    correctedLogRaw[0] = sanitize_inf_logE_for_curve_device(correctedLogRaw[0], preCorrectedB);
-    correctedLogRaw[1] = sanitize_inf_logE_for_curve_device(correctedLogRaw[1], preCorrectedG);
-    correctedLogRaw[2] = sanitize_inf_logE_for_curve_device(correctedLogRaw[2], preCorrectedR);
+    correctedLogRaw[0] = sanitize_inf_logE_for_curve_device(correctedLogRaw[0], develop.densB);
+    correctedLogRaw[1] = sanitize_inf_logE_for_curve_device(correctedLogRaw[1], develop.densG);
+    correctedLogRaw[2] = sanitize_inf_logE_for_curve_device(correctedLogRaw[2], develop.densR);
 
-    const float densityY = sample_density_at_logE_device(preCorrectedB, correctedLogRaw[0], develop.gammaFactorB);
-    const float densityM = sample_density_at_logE_device(preCorrectedG, correctedLogRaw[1], develop.gammaFactorG);
-    const float densityC = sample_density_at_logE_device(preCorrectedR, correctedLogRaw[2], develop.gammaFactorR);
+    const float densityY = sample_density_at_logE_device(compensatedB, correctedLogRaw[0], develop.gammaFactorB);
+    const float densityM = sample_density_at_logE_device(compensatedG, correctedLogRaw[1], develop.gammaFactorG);
+    const float densityC = sample_density_at_logE_device(compensatedR, correctedLogRaw[2], develop.gammaFactorR);
 
     densityCmy[0] = densityC;
     densityCmy[1] = densityM;

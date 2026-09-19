@@ -265,8 +265,8 @@ struct DirCouplersRecipe {
     std::array<float, 3> donorKRgb{};
     std::array<float, 3> receiverCRefRgb{};
     std::array<float, 3> receiverKrRgb{};
-    std::vector<std::array<float, 3>> precorrectedDensityCurves;
-    std::uint64_t precorrectedDensityCurvesHash = 0;
+    std::array<std::vector<float>, 3> compensatedDensityCurveAxesRgb;
+    std::uint64_t compensatedDensityCurveAxesHash = 0;
     std::uint64_t hash = 0;
 };
 
@@ -276,7 +276,7 @@ namespace Spektrafilm {
         None,
         Identity,
         SpektrafilmSmallFirReflect,
-        SpektrafilmLargeYvvReplicate
+        SpektrafilmLargeYvvReflect
     };
 
     enum class DirScratchTier : std::uint8_t {
@@ -302,11 +302,23 @@ namespace Spektrafilm {
     };
 
     struct DirGaussianComponentPlan {
+        struct IirCoefficients {
+            double feedforward = 0.0;
+            std::array<double, 3> feedback{};
+            double normalizationDenominator = 0.0;
+            double feedforwardNumerator = 0.0;
+            std::array<double, 3> feedbackNumerators{};
+        };
+
         float sigmaPixels = 0.0f;
         float weight = 0.0f;
         int radius = 0;
         DirReferenceOperator referenceOperator = DirReferenceOperator::None;
         DirScratchTier targetScratchTier = DirScratchTier::Tier0;
+        IirCoefficients iir{};
+        double boundaryTruncationAccuracy = 1.0e-11;
+        double boundaryCertificationTolerance = 5.0e-7;
+        std::uint32_t boundaryDerivationVersion = 1u;
     };
 
     struct DirFilterPlan {
@@ -373,8 +385,8 @@ namespace Spektrafilm {
                 return "identity";
             case DirReferenceOperator::SpektrafilmSmallFirReflect:
                 return "spektrafilm_small_fir_reflect";
-            case DirReferenceOperator::SpektrafilmLargeYvvReplicate:
-                return "spektrafilm_large_yvv_replicate";
+            case DirReferenceOperator::SpektrafilmLargeYvvReflect:
+                return "spektrafilm_large_yvv_reflect";
             default:
                 return "unknown";
         }

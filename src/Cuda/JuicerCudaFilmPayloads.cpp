@@ -53,7 +53,7 @@ namespace JuicerCuda {
         const int densitySamples = static_cast<int>(filmDevelop.logExposure.size());
         if (dirCouplers.active) {
             if (dirCouplers.hash == 0 ||
-                dirCouplers.precorrectedDensityCurvesHash == 0 ||
+                dirCouplers.compensatedDensityCurveAxesHash == 0 ||
                 prepared.dirCouplersHash != dirCouplers.hash) {
                 diagnostic = "ResourceDescriptorMismatch phase=3D-3 field=dirCouplers";
                 return false;
