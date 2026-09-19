@@ -324,8 +324,10 @@ cmake --build --preset linux-release
 cmake --install out/build/linux-release
 ```
 
-The shared Linux presets use `/usr/bin/g++-13` and
-`/usr/local/cuda-13.2/bin/nvcc`. WSL and native Linux should use separate
+The shared Linux presets use `/usr/bin/g++-13` and leave the CUDA installation
+path machine-independent. When CUDA 13.2 is not the system default, select it
+with `CUDACXX` and `CUDAToolkit_ROOT` as documented in
+[tests/README.md](tests/README.md). WSL and native Linux should use separate
 checkouts or build caches. Build `bundle-archive` in a configured tree to
 produce a compressed platform bundle.
 

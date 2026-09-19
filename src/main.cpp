@@ -112,6 +112,10 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
     }
 
     // Parameters — mirror current define semantics (names, defaults, ranges)
+    OFX::GroupParamDescriptor* grpInput = desc.defineGroupParam("InputGroup");
+    if (grpInput)
+        grpInput->setLabel("Input");
+
     // Exposure Compensation (per agx-emulsion: camera.exposure_compensation_ev)
     {
         OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(kParamExposure);
@@ -122,6 +126,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setDefault(0.0);
         p->setRange(-8.0, 8.0);
         p->setDisplayRange(-4.0, 4.0);
+        if (grpInput)
+            p->setParent(*grpInput);
     }
     {
         OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(JuicerParams::kCameraMeteringMethod);
@@ -134,6 +140,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->appendOption("Multi-zone");
         p->appendOption("Highlight-weighted");
         p->setDefault(0);
+        if (grpInput)
+            p->setParent(*grpInput);
         p->setEvaluateOnChange(true);
     }
     {
@@ -141,6 +149,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setLabel("Camera auto exposure");
         p->setHint("Enable the camera auto meter (agx-emulsion camera.auto_exposure). Scanner auto exposure remains independent.");
         p->setDefault(true);
+        if (grpInput)
+            p->setParent(*grpInput);
         p->setEvaluateOnChange(true);
     }
     {
@@ -154,6 +164,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         }
         p->setDefault(0);
         p->setHint("Choose a film format preset; the selected long edge is written to the editable control below.");
+        if (grpInput)
+            p->setParent(*grpInput);
         p->setEvaluateOnChange(true);
     }
     {
@@ -164,6 +176,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setDisplayRange(8.0, 120.0);
         p->setIncrement(1.0);
         p->setHint("Longest capture dimension in millimeters; used for micrometer-to-pixel conversions.");
+        if (grpInput)
+            p->setParent(*grpInput);
         p->setEvaluateOnChange(true);
     }
 
@@ -181,6 +195,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->appendOption(film_profile_option_key(i), film_profile_option_label(i));
         }
         p->setDefault(Spektrafilm::kDefaultFilmProfileKey); // kodak_portra_400
+        if (grpInput)
+            p->setParent(*grpInput);
         p->setEvaluateOnChange(true);
     }
     // Spectral upsampling
@@ -195,6 +211,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
                    "Mallett uses the Mallett 2019 sRGB basis reconstruction; "
                    "Arctic uses the Arctic 2026 beta04 reflectance LUT.");
         p->setDefault(0);
+        if (grpInput)
+            p->setParent(*grpInput);
         p->setEvaluateOnChange(true);
     }
     // Input colour space and encoding
@@ -205,13 +223,25 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->appendOption(Spectral::kInputColorSpaceLabels[i]);
         }
         p->setDefault(Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut));
+        if (grpInput)
+            p->setParent(*grpInput);
         p->setEvaluateOnChange(true);
     }
     {
         OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kInputCctfDecoding);
         p->setLabel("Decode input CCTF");
         p->setDefault(false);
+        if (grpInput)
+            p->setParent(*grpInput);
         p->setEvaluateOnChange(true);
+    }
+    OFX::GroupParamDescriptor* grpInputAdvanced =
+        desc.defineGroupParam("InputAdvancedGroup");
+    if (grpInputAdvanced) {
+        grpInputAdvanced->setLabel("Advanced");
+        grpInputAdvanced->setOpen(false);
+        if (grpInput)
+            grpInputAdvanced->setParent(*grpInput);
     }
     {
         OFX::BooleanParamDescriptor* p =
@@ -219,6 +249,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setLabel("Input gamut compression");
         p->setHint("Compress out-of-domain input chromaticities before TC spectral reconstruction.");
         p->setDefault(true);
+        if (grpInputAdvanced)
+            p->setParent(*grpInputAdvanced);
         p->setEvaluateOnChange(true);
     }
     {
@@ -227,6 +259,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setLabel("hanatos2025 adaptation window");
         p->setHint("Apply the Hanatos 2025 bandpass adaptation window when reconstructing spectra.");
         p->setDefault(true);
+        if (grpInputAdvanced)
+            p->setParent(*grpInputAdvanced);
         p->setEvaluateOnChange(true);
     }
     {
@@ -235,7 +269,138 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setLabel("hanatos2025 adaptation surface");
         p->setHint("Apply the Hanatos 2025 surface adaptation polynomial when reconstructing spectra.");
         p->setDefault(false);
+        if (grpInputAdvanced)
+            p->setParent(*grpInputAdvanced);
         p->setEvaluateOnChange(true);
+    }
+
+    // Print group
+    {
+        OFX::GroupParamDescriptor* grpPrint = nullptr;
+        {
+            grpPrint = desc.defineGroupParam("PrintGroup");
+            grpPrint->setLabel("Print");
+        }
+        {
+            OFX::StrChoiceParamDescriptor* p = desc.defineStrChoiceParam(JuicerParams::kPrintProfileKey);
+            p->setLabel("Print paper");
+            const int paperCount = print_profile_option_count();
+            for (int i = 0; i < paperCount; ++i) {
+                p->appendOption(print_profile_option_key(i), print_profile_option_label(i));
+            }
+            p->setDefault(Spektrafilm::kDefaultPrintProfileKey); // kodak_portra_endura
+            if (grpPrint)
+                p->setParent(*grpPrint);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::StrChoiceParamDescriptor* p = desc.defineStrChoiceParam(JuicerParams::kParamScanRoute);
+            p->setLabel("Scan route");
+            for (int i = 0; i < Spektrafilm::scan_route_option_count(); ++i) {
+                p->appendOption(Spektrafilm::scan_route_option_key(i), Spektrafilm::scan_route_option_label(i));
+            }
+            p->setDefault(Spektrafilm::scan_route_key(Spektrafilm::kDefaultScanRoute));
+            if (grpPrint)
+                p->setParent(*grpPrint);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("PrintExposure");
+            p->setLabel("Print exposure");
+            p->setDefault(1.0);
+            p->setDisplayRange(0.1, 10.0);
+            if (grpPrint)
+                p->setParent(*grpPrint);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("PrintPreflash");
+            p->setLabel("Print preflash");
+            p->setDefault(0.0);
+            p->setDisplayRange(0.0, 1.0);
+            if (grpPrint)
+                p->setParent(*grpPrint);
+        }
+        {
+            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam("PrintExposureCompensation");
+            p->setLabel("Print exposure compensation");
+            p->setDefault(true);
+            if (grpPrint)
+                p->setParent(*grpPrint);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerY");
+            p->setLabel("Enlarger Y offset (Kodak CC)");
+            p->setDefault(0.0);
+            p->setDisplayRange(-200.0, 200.0);
+            p->setIncrement(1.0);
+            if (grpPrint)
+                p->setParent(*grpPrint);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerM");
+            p->setLabel("Enlarger M offset (Kodak CC)");
+            p->setDefault(0.0);
+            p->setDisplayRange(-200.0, 200.0);
+            p->setIncrement(1.0);
+            if (grpPrint)
+                p->setParent(*grpPrint);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerC");
+            p->setLabel("Enlarger C offset (Kodak CC)");
+            p->setHint("User cyan offset carried as FilmJuicerMainCFilterShift at the print recipe boundary.");
+            p->setDefault(0.0);
+            p->setDisplayRange(-200.0, 200.0);
+            p->setIncrement(1.0);
+            if (grpPrint)
+                p->setParent(*grpPrint);
+        }
+    }
+
+    // Tuning group
+    {
+        OFX::GroupParamDescriptor* grpTuning =
+            desc.defineGroupParam(JuicerParams::kTuningGroup);
+        if (grpTuning) {
+            grpTuning->setLabel("Tuning");
+            grpTuning->setOpen(false);
+        }
+
+        {
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kFilmGammaFactor);
+            p->setLabel("Film gamma factor");
+            p->setDefault(1.0);
+            p->setRange(
+                Spektrafilm::kFilmGammaFactorMinimum,
+                Spektrafilm::kFilmGammaFactorMaximum);
+            p->setDisplayRange(0.5, 2.0);
+            p->setIncrement(0.05);
+            p->setHint(
+                "Adjust film-development contrast. Below 1 reduces contrast; above 1 increases contrast.");
+            if (grpTuning)
+                p->setParent(*grpTuning);
+            p->setEvaluateOnChange(true);
+            p->setAnimates(false);
+        }
+        {
+            OFX::DoubleParamDescriptor* p =
+                desc.defineDoubleParam(JuicerParams::kPrintGammaFactor);
+            p->setLabel("Print gamma factor");
+            p->setDefault(1.0);
+            p->setRange(
+                Spektrafilm::kPrintGammaFactorMinimum,
+                Spektrafilm::kPrintGammaFactorMaximum);
+            p->setDisplayRange(0.5, 2.0);
+            p->setIncrement(0.05);
+            p->setHint(
+                "Adjust print-medium development contrast. Below 1 reduces contrast; above 1 increases contrast.");
+            if (grpTuning)
+                p->setParent(*grpTuning);
+            p->setEvaluateOnChange(true);
+            p->setAnimates(false);
+        }
     }
 
     // Recipe-owned spektrafilm DIR controls.
@@ -526,90 +691,6 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setEvaluateOnChange(true);
     }
 
-    // Print group
-    {
-        OFX::GroupParamDescriptor* grpPrint = nullptr;
-        {
-            grpPrint = desc.defineGroupParam("PrintGroup");
-            grpPrint->setLabel("Print");
-        }
-        {
-            OFX::StrChoiceParamDescriptor* p = desc.defineStrChoiceParam(JuicerParams::kPrintProfileKey);
-            p->setLabel("Print paper");
-            const int paperCount = print_profile_option_count();
-            for (int i = 0; i < paperCount; ++i) {
-                p->appendOption(print_profile_option_key(i), print_profile_option_label(i));
-            }
-            p->setDefault(Spektrafilm::kDefaultPrintProfileKey); // kodak_portra_endura
-            if (grpPrint)
-                p->setParent(*grpPrint);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::StrChoiceParamDescriptor* p = desc.defineStrChoiceParam(JuicerParams::kParamScanRoute);
-            p->setLabel("Scan route");
-            for (int i = 0; i < Spektrafilm::scan_route_option_count(); ++i) {
-                p->appendOption(Spektrafilm::scan_route_option_key(i), Spektrafilm::scan_route_option_label(i));
-            }
-            p->setDefault(Spektrafilm::scan_route_key(Spektrafilm::kDefaultScanRoute));
-            if (grpPrint)
-                p->setParent(*grpPrint);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("PrintExposure");
-            p->setLabel("Print exposure");
-            p->setDefault(1.0);
-            p->setDisplayRange(0.1, 10.0);
-            if (grpPrint)
-                p->setParent(*grpPrint);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("PrintPreflash");
-            p->setLabel("Print preflash");
-            p->setDefault(0.0);
-            p->setDisplayRange(0.0, 1.0);
-            if (grpPrint)
-                p->setParent(*grpPrint);
-        }
-        {
-            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam("PrintExposureCompensation");
-            p->setLabel("Print exposure compensation");
-            p->setDefault(true);
-            if (grpPrint)
-                p->setParent(*grpPrint);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerY");
-            p->setLabel("Enlarger Y offset (Kodak CC)");
-            p->setDefault(0.0);
-            p->setDisplayRange(-200.0, 200.0);
-            p->setIncrement(1.0);
-            if (grpPrint)
-                p->setParent(*grpPrint);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerM");
-            p->setLabel("Enlarger M offset (Kodak CC)");
-            p->setDefault(0.0);
-            p->setDisplayRange(-200.0, 200.0);
-            p->setIncrement(1.0);
-            if (grpPrint)
-                p->setParent(*grpPrint);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerC");
-            p->setLabel("Enlarger C offset (Kodak CC)");
-            p->setHint("User cyan offset carried as FilmJuicerMainCFilterShift at the print recipe boundary.");
-            p->setDefault(0.0);
-            p->setDisplayRange(-200.0, 200.0);
-            p->setIncrement(1.0);
-            if (grpPrint)
-                p->setParent(*grpPrint);
-        }
-    }
-
     // Halation group
     {
         OFX::GroupParamDescriptor* grpHalation = desc.defineGroupParam("HalationGroup");
@@ -621,7 +702,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::BooleanParamDescriptor* p =
                 desc.defineBooleanParam(JuicerParams::kHalationActive);
             p->setLabel("Add halation");
-            p->setDefault(false);
+            p->setDefault(true);
             p->setHint("Add profile-derived scatter and halation to the negative raw exposure.");
             if (grpHalation) {
                 p->setParent(*grpHalation);
@@ -1411,51 +1492,6 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->appendOption("Equal energy");
         p->setDefault(3);
         p->setEvaluateOnChange(true);
-    }
-
-    // Tuning group
-    {
-        OFX::GroupParamDescriptor* grpTuning =
-            desc.defineGroupParam(JuicerParams::kTuningGroup);
-        if (grpTuning) {
-            grpTuning->setLabel("Tuning");
-            grpTuning->setOpen(false);
-        }
-
-        {
-            OFX::DoubleParamDescriptor* p =
-                desc.defineDoubleParam(JuicerParams::kFilmGammaFactor);
-            p->setLabel("Film gamma factor");
-            p->setDefault(1.0);
-            p->setRange(
-                Spektrafilm::kFilmGammaFactorMinimum,
-                Spektrafilm::kFilmGammaFactorMaximum);
-            p->setDisplayRange(0.5, 2.0);
-            p->setIncrement(0.05);
-            p->setHint(
-                "Adjust film-development contrast. Below 1 reduces contrast; above 1 increases contrast.");
-            if (grpTuning)
-                p->setParent(*grpTuning);
-            p->setEvaluateOnChange(true);
-            p->setAnimates(false);
-        }
-        {
-            OFX::DoubleParamDescriptor* p =
-                desc.defineDoubleParam(JuicerParams::kPrintGammaFactor);
-            p->setLabel("Print gamma factor");
-            p->setDefault(1.0);
-            p->setRange(
-                Spektrafilm::kPrintGammaFactorMinimum,
-                Spektrafilm::kPrintGammaFactorMaximum);
-            p->setDisplayRange(0.5, 2.0);
-            p->setIncrement(0.05);
-            p->setHint(
-                "Adjust print-medium development contrast. Below 1 reduces contrast; above 1 increases contrast.");
-            if (grpTuning)
-                p->setParent(*grpTuning);
-            p->setEvaluateOnChange(true);
-            p->setAnimates(false);
-        }
     }
 
     // Output encoding group
