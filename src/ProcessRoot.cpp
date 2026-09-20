@@ -452,6 +452,16 @@ namespace JuicerProcess {
             }
         }
 
+        bool grain_reuses_spatial_dir_raw(
+            const Root::PreparedCudaFrame::WorkspaceRequest& workspace) noexcept {
+            // Negative final develop consumes filtered corrections, then grain runs on
+            // the same stream. Keep raw ownership with DIR through the frame lease.
+            return workspace.aliasScannerRgbFromSpatialDirFiltered &&
+                   workspace.needAux && workspace.needGrainFrameUniforms &&
+                   workspace.spatialDirPlaneRoles.rawCorrectionPlanes == 3 &&
+                   workspace.spatialDirTargetPlaneRoles.rawCorrectionPlanes == 3;
+        }
+
         JuicerCuda::ResourceManager::ScratchRequestDescriptor make_workspace_scratch_request_descriptor(
             const Root::PreparedCudaFrame::WorkspaceRequest& workspace) noexcept {
             JuicerCuda::ResourceManager::ScratchRequestBuildRequest request{};
@@ -467,12 +477,13 @@ namespace JuicerProcess {
             request.attachments.needBlurred = workspace.needBlurred;
             request.attachments.aliasScannerRgbFromSpatialDirFiltered =
                 workspace.aliasScannerRgbFromSpatialDirFiltered;
-            request.attachments.needAux = workspace.needAux;
+            const bool reuseDirRaw = grain_reuses_spatial_dir_raw(workspace);
+            request.attachments.needAux = workspace.needAux && !reuseDirRaw;
             request.attachments.needSharedTmp = workspace.needSharedTmp;
             request.attachments.needGrainFrameUniforms =
                 workspace.needGrainFrameUniforms;
-            request.attachments.needGrainLayerWork = workspace.needGrainLayerWork;
-            request.attachments.needGrainShared = workspace.needGrainShared;
+            request.attachments.needGrainLayerWork = workspace.needGrainLayerWork && !reuseDirRaw;
+            request.attachments.needGrainShared = workspace.needGrainShared && !reuseDirRaw;
             request.attachments.needGateTransmittance = workspace.needGateTransmittance;
             request.attachments.needFilmDustTransmittance = workspace.needFilmDustTransmittance;
             request.attachments.gateWidth = workspace.gateWidth;
@@ -3814,6 +3825,28 @@ namespace JuicerProcess {
             request.needGrainLayerWork ? scratch.grainTmp : nullptr;
         view.sharedDelta =
             request.needGrainShared ? scratch.grainTmpShared : nullptr;
+        if (grain_reuses_spatial_dir_raw(request)) {
+            const auto& dir = _state->resources->spatialDirScratch;
+            const std::size_t requiredElements =
+                static_cast<std::size_t>(request.requestedWidth) * request.requestedHeight;
+            if (dir.capacityElements < requiredElements) {
+                return VisualGrainWorkspaceView{};
+            }
+            const std::array<float*, 3> raw{
+                dir.rawCorrectionY, dir.rawCorrectionM, dir.rawCorrectionC};
+            const std::array<float*, 8> live{
+                view.filterTemp, view.scaleWork, dir.filteredCorrectionY, dir.filteredCorrectionM, dir.filteredCorrectionC, dir.logRawB, dir.logRawG, dir.logRawR};
+            for (auto current = raw.begin(); current != raw.end(); ++current) {
+                if (!*current ||
+                    std::find(raw.begin(), current, *current) != current ||
+                    std::find(live.begin(), live.end(), *current) != live.end()) {
+                    return VisualGrainWorkspaceView{};
+                }
+            }
+            view.deltaAccum = raw[0];
+            view.layerWork = request.needGrainLayerWork ? raw[1] : nullptr;
+            view.sharedDelta = request.needGrainShared ? raw[2] : nullptr;
+        }
         view.frameUniforms = request.needGrainFrameUniforms
                                  ? scratch.grainFrameUniforms
                                  : nullptr;

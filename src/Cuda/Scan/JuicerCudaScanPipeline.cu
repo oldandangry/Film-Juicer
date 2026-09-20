@@ -103,56 +103,56 @@ namespace {
         return true;
     }
 
-    __device__ __forceinline__ double encode_sRGBd_device(double v) {
-        if (v <= 0.0031308) {
-            return 12.92 * v;
+    __device__ __forceinline__ float encode_sRGB_device(float v) {
+        if (v <= 0.0031308f) {
+            return 12.92f * v;
         }
-        return 1.055 * pow(v, 1.0 / 2.4) - 0.055;
+        return 1.055f * powf(v, 1.0f / 2.4f) - 0.055f;
     }
 
-    __device__ __forceinline__ double encode_gammad_signed_device(double v, double exponent) {
-        const double mag = pow(fabs(v), exponent);
-        return copysign(mag, v);
+    __device__ __forceinline__ float encode_gamma_signed_device(float v, float exponent) {
+        const float mag = powf(fabsf(v), exponent);
+        return copysignf(mag, v);
     }
 
-    __device__ __forceinline__ double encode_BT2020d_device(double v, const JuicerCuda::CctfPayload& cctf) {
-        if (v < static_cast<double>(cctf.b)) {
-            return v * 4.5;
+    __device__ __forceinline__ float encode_BT2020_device(float v, const JuicerCuda::CctfPayload& cctf) {
+        if (v < cctf.b) {
+            return v * 4.5f;
         }
-        return static_cast<double>(cctf.a) * pow(v, 0.45) - (static_cast<double>(cctf.a) - 1.0);
+        return cctf.a * powf(v, 0.45f) - (cctf.a - 1.0f);
     }
 
-    __device__ __forceinline__ double encode_ProPhotod_device(double v, const JuicerCuda::CctfPayload& cctf) {
-        if (v < static_cast<double>(cctf.linearCutoff)) {
-            return v * 16.0;
+    __device__ __forceinline__ float encode_ProPhoto_device(float v, const JuicerCuda::CctfPayload& cctf) {
+        if (v < cctf.linearCutoff) {
+            return v * 16.0f;
         }
-        return pow(v, static_cast<double>(cctf.gamma));
+        return powf(v, cctf.gamma);
     }
 
-    __device__ __forceinline__ double encode_DaVinciIntermediated_device(double v, const JuicerCuda::CctfPayload& cctf) {
-        const double linear = fmax(0.0, v);
-        if (linear <= static_cast<double>(cctf.linearCutoff)) {
-            return linear * static_cast<double>(cctf.d);
+    __device__ __forceinline__ float encode_DaVinciIntermediate_device(float v, const JuicerCuda::CctfPayload& cctf) {
+        const float linear = fmaxf(0.0f, v);
+        if (linear <= cctf.linearCutoff) {
+            return linear * cctf.d;
         }
-        return (log2(linear + static_cast<double>(cctf.a)) + static_cast<double>(cctf.b)) * static_cast<double>(cctf.c);
+        return (log2f(linear + cctf.a) + cctf.b) * cctf.c;
     }
 
-    __device__ __forceinline__ double encode_channel_double_device(const JuicerCuda::CctfPayload& cctf, double v) {
+    __device__ __forceinline__ float encode_channel_device(const JuicerCuda::CctfPayload& cctf, float v) {
         switch (cctf.kind) {
             case 0:
                 return v;
             case 1:
-                return encode_gammad_signed_device(v, static_cast<double>(cctf.gamma));
+                return encode_gamma_signed_device(v, cctf.gamma);
             case 2:
-                return encode_sRGBd_device(v);
+                return encode_sRGB_device(v);
             case 3:
-                return encode_BT2020d_device(v, cctf);
+                return encode_BT2020_device(v, cctf);
             case 4:
-                return encode_ProPhotod_device(v, cctf);
+                return encode_ProPhoto_device(v, cctf);
             case 5:
-                return encode_DaVinciIntermediated_device(v, cctf);
+                return encode_DaVinciIntermediate_device(v, cctf);
             default:
-                return clamp01d_device(v);
+                return static_cast<float>(clamp01d_device(v));
         }
     }
 
@@ -182,9 +182,9 @@ namespace {
         }
 
         if (enc.applyCctfEncoding) {
-            rgb[0] = encode_channel_double_device(enc.cctf, linear[0]);
-            rgb[1] = encode_channel_double_device(enc.cctf, linear[1]);
-            rgb[2] = encode_channel_double_device(enc.cctf, linear[2]);
+            rgb[0] = encode_channel_device(enc.cctf, static_cast<float>(linear[0]));
+            rgb[1] = encode_channel_device(enc.cctf, static_cast<float>(linear[1]));
+            rgb[2] = encode_channel_device(enc.cctf, static_cast<float>(linear[2]));
         } else {
             rgb[0] = linear[0];
             rgb[1] = linear[1];
@@ -467,6 +467,8 @@ struct GrainBlurVerticalAccumulateInput {
     int radius = 0;
     float weight = 0.0f;
     int initialize = 0;
+    const float* densityToSubtract = nullptr;
+    float densityBias = 0.0f;
 };
 
 template <bool Weighted>
@@ -541,7 +543,20 @@ __device__ __forceinline__ void grain_blur_vertical_accumulate_device(
                 if constexpr (Weighted) {
                     value = previous + finiteWeight * blurred;
                 }
-                dst[index] = device_isfinite(value) ? value : 0.0f;
+                value = device_isfinite(value) ? value : 0.0f;
+                if constexpr (!Weighted) {
+                    if (input.densityToSubtract) {
+                        // Preserve the separate accumulation/bias/subtraction
+                        // sanitation boundaries when the last layer forms delta.
+                        if (input.densityBias != 0.0f) {
+                            const float biased = value + input.densityBias;
+                            value = device_isfinite(biased) ? biased : 0.0f;
+                        }
+                        const float delta = value - input.densityToSubtract[index];
+                        value = device_isfinite(delta) ? delta : 0.0f;
+                    }
+                }
+                dst[index] = value;
             }
 
             __syncthreads();
@@ -3227,6 +3242,8 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
         }
 
         cudaError_t error = cudaSuccess;
+        const float densityBias = -base.densityMin[channel];
+        bool deltaFormed = false;
         if (useSublayers) {
             const int dyeRadius0 = kernels->dyeRadius[0][channel];
             const int dyeRadius1 = kernels->dyeRadius[1][channel];
@@ -3279,6 +3296,8 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                     finishInput.kernel = dyeKernel0;
                     finishInput.radius = dyeRadius0;
                     finishInput.initialize = 1;
+                    finishInput.densityToSubtract = density;
+                    finishInput.densityBias = densityBias;
                     grain_blur_vertical_accumulate_kernel<<<
                         blocks2D,
                         threads2D,
@@ -3288,6 +3307,7 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                     if (error != cudaSuccess) {
                         return error;
                     }
+                    deltaFormed = true;
                 } else {
                     grain_accumulate_kernel<<<blocks1D, threads1D, 0, stream>>>(
                         scaleWork,
@@ -3337,6 +3357,10 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                         finishInput.kernel = dyeKernel;
                         finishInput.radius = dyeRadius;
                         finishInput.initialize = layer == 0 ? 1 : 0;
+                        if (layer == 2) {
+                            finishInput.densityToSubtract = density;
+                            finishInput.densityBias = densityBias;
+                        }
                         grain_blur_vertical_accumulate_kernel<<<
                             blocks2D,
                             threads2D,
@@ -3346,6 +3370,7 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
                         if (error != cudaSuccess) {
                             return error;
                         }
+                        deltaFormed = layer == 2;
                     } else {
                         grain_accumulate_kernel<<<blocks1D, threads1D, 0, stream>>>(
                             scaleWork,
@@ -3373,8 +3398,7 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
             }
         }
 
-        const float densityBias = -base.densityMin[channel];
-        if (densityBias != 0.0f) {
+        if (!deltaFormed && densityBias != 0.0f) {
             grain_form_delta_kernel<<<blocks1D, threads1D, 0, stream>>>(
                 scaleWork,
                 density,
@@ -3384,7 +3408,7 @@ extern "C" cudaError_t juicer_cuda_apply_visual_grain(
             if (error != cudaSuccess) {
                 return error;
             }
-        } else {
+        } else if (!deltaFormed) {
             grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(
                 scaleWork,
                 density,

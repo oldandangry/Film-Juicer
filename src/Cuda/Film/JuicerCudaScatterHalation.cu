@@ -12,6 +12,8 @@ namespace {
     constexpr int kBlockWidth = 16;
     constexpr int kBlockHeight = 16;
     constexpr int kLineThreads = 128;
+    constexpr int kYvvTileSize = 32;
+    constexpr int kYvvPrefetchRows = 8;
 
     enum class AccumulationMode : std::uint8_t {
         Initialize,
@@ -187,36 +189,79 @@ namespace {
         float B1,
         float B2,
         float B3) {
-        const int y = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-        if (y >= height) {
-            return;
-        }
-
-        const float* input = source + static_cast<std::size_t>(y) * sourceStride;
-        float* output = temporary + static_cast<std::size_t>(y) * width;
-        const float first = input[0];
+        __shared__ float tile[kYvvTileSize][kYvvTileSize + 1];
+        const int lane = static_cast<int>(threadIdx.x);
+        const int firstRow = static_cast<int>(blockIdx.x) * kYvvTileSize;
+        const int y = firstRow + lane;
+        const float first = y < height
+                                ? source[static_cast<std::size_t>(y) * sourceStride]
+                                : 0.0f;
         float w1 = first;
         float w2 = first;
         float w3 = first;
-        for (int x = 0; x < width; ++x) {
-            const float w = B * input[x] + B1 * w1 + B2 * w2 + B3 * w3;
-            output[x] = w;
-            w3 = w2;
-            w2 = w1;
-            w1 = w;
+        // One full warp cooperatively stages columns, then each lane recurs
+        // through one row. Out-of-frame lanes still reach every warp barrier.
+        for (int firstColumn = 0; firstColumn < width; firstColumn += kYvvTileSize) {
+            const int x = firstColumn + lane;
+            for (int row = 0; row < kYvvTileSize; ++row) {
+                const int sourceY = firstRow + row;
+                tile[row][lane] = sourceY < height && x < width
+                                      ? source[static_cast<std::size_t>(sourceY) * sourceStride + x]
+                                      : 0.0f;
+            }
+            __syncwarp();
+            const int columns = min(kYvvTileSize, width - firstColumn);
+            for (int column = 0; column < columns; ++column) {
+                const float w = B * tile[lane][column] + B1 * w1 + B2 * w2 + B3 * w3;
+                tile[lane][column] = w;
+                w3 = w2;
+                w2 = w1;
+                w1 = w;
+            }
+            __syncwarp();
+            for (int row = 0; row < kYvvTileSize; ++row) {
+                const int destinationY = firstRow + row;
+                if (destinationY < height && x < width) {
+                    temporary[static_cast<std::size_t>(destinationY) * width + x] = tile[row][lane];
+                }
+            }
+            __syncwarp();
         }
 
-        const float terminal = output[width - 1];
+        const float terminal = y < height
+                                   ? temporary[static_cast<std::size_t>(y) * width + width - 1]
+                                   : 0.0f;
         float y1 = terminal;
         float y2 = terminal;
         float y3 = terminal;
-        for (int x = width - 1; x >= 0; --x) {
-            const float value =
-                B * output[x] + B1 * y1 + B2 * y2 + B3 * y3;
-            output[x] = value;
-            y3 = y2;
-            y2 = y1;
-            y1 = value;
+        for (int firstColumn = ((width - 1) / kYvvTileSize) * kYvvTileSize;
+             firstColumn >= 0;
+             firstColumn -= kYvvTileSize) {
+            const int x = firstColumn + lane;
+            for (int row = 0; row < kYvvTileSize; ++row) {
+                const int sourceY = firstRow + row;
+                tile[row][lane] = sourceY < height && x < width
+                                      ? temporary[static_cast<std::size_t>(sourceY) * width + x]
+                                      : 0.0f;
+            }
+            __syncwarp();
+            const int columns = min(kYvvTileSize, width - firstColumn);
+            for (int column = columns - 1; column >= 0; --column) {
+                const float value =
+                    B * tile[lane][column] + B1 * y1 + B2 * y2 + B3 * y3;
+                tile[lane][column] = value;
+                y3 = y2;
+                y2 = y1;
+                y1 = value;
+            }
+            __syncwarp();
+            for (int row = 0; row < kYvvTileSize; ++row) {
+                const int destinationY = firstRow + row;
+                if (destinationY < height && x < width) {
+                    temporary[static_cast<std::size_t>(destinationY) * width + x] = tile[row][lane];
+                }
+            }
+            __syncwarp();
         }
     }
 
@@ -242,29 +287,53 @@ namespace {
         float w1 = first;
         float w2 = first;
         float w3 = first;
-        for (int y = height - 1; y >= 0; --y) {
-            const std::size_t index = static_cast<std::size_t>(y) * width + x;
-            const float w =
-                B * temporary[index] + B1 * w1 + B2 * w2 + B3 * w3;
-            temporary[index] = w;
-            w3 = w2;
-            w2 = w1;
-            w1 = w;
+        // Prefetch independent inputs while preserving the ordered recurrence.
+        for (int firstRow = height - 1; firstRow >= 0; firstRow -= kYvvPrefetchRows) {
+            float values[kYvvPrefetchRows];
+#pragma unroll
+            for (int row = 0; row < kYvvPrefetchRows; ++row) {
+                const int y = firstRow - row;
+                values[row] = y >= 0 ? temporary[static_cast<std::size_t>(y) * width + x] : 0.0f;
+            }
+#pragma unroll
+            for (int row = 0; row < kYvvPrefetchRows; ++row) {
+                const int y = firstRow - row;
+                if (y >= 0) {
+                    const std::size_t index = static_cast<std::size_t>(y) * width + x;
+                    const float w = B * values[row] + B1 * w1 + B2 * w2 + B3 * w3;
+                    temporary[index] = w;
+                    w3 = w2;
+                    w2 = w1;
+                    w1 = w;
+                }
+            }
         }
 
         const float terminal = temporary[x];
         float y1 = terminal;
         float y2 = terminal;
         float y3 = terminal;
-        for (int y = 0; y < height; ++y) {
-            const std::size_t index = static_cast<std::size_t>(y) * width + x;
-            const float value =
-                B * temporary[index] + B1 * y1 + B2 * y2 + B3 * y3;
-            accumulation[index] = accumulate_weighted(
-                accumulation[index], value, componentWeight, mode);
-            y3 = y2;
-            y2 = y1;
-            y1 = value;
+        for (int firstRow = 0; firstRow < height; firstRow += kYvvPrefetchRows) {
+            float values[kYvvPrefetchRows];
+#pragma unroll
+            for (int row = 0; row < kYvvPrefetchRows; ++row) {
+                const int y = firstRow + row;
+                values[row] = y < height ? temporary[static_cast<std::size_t>(y) * width + x] : 0.0f;
+            }
+#pragma unroll
+            for (int row = 0; row < kYvvPrefetchRows; ++row) {
+                const int y = firstRow + row;
+                if (y < height) {
+                    const std::size_t index = static_cast<std::size_t>(y) * width + x;
+                    const float value =
+                        B * values[row] + B1 * y1 + B2 * y2 + B3 * y3;
+                    accumulation[index] = accumulate_weighted(
+                        accumulation[index], value, componentWeight, mode);
+                    y3 = y2;
+                    y2 = y1;
+                    y1 = value;
+                }
+            }
         }
     }
 
@@ -292,37 +361,61 @@ namespace {
         float w1 = first;
         float w2 = first;
         float w3 = first;
-        for (int y = height - 1; y >= 0; --y) {
-            const std::size_t index = static_cast<std::size_t>(y) * width + x;
-            const float w =
-                B * temporary[index] + B1 * w1 + B2 * w2 + B3 * w3;
-            temporary[index] = w;
-            w3 = w2;
-            w2 = w1;
-            w1 = w;
+        // Prefetch independent inputs while preserving the ordered recurrence.
+        for (int firstRow = height - 1; firstRow >= 0; firstRow -= kYvvPrefetchRows) {
+            float values[kYvvPrefetchRows];
+#pragma unroll
+            for (int row = 0; row < kYvvPrefetchRows; ++row) {
+                const int y = firstRow - row;
+                values[row] = y >= 0 ? temporary[static_cast<std::size_t>(y) * width + x] : 0.0f;
+            }
+#pragma unroll
+            for (int row = 0; row < kYvvPrefetchRows; ++row) {
+                const int y = firstRow - row;
+                if (y >= 0) {
+                    const std::size_t index = static_cast<std::size_t>(y) * width + x;
+                    const float w = B * values[row] + B1 * w1 + B2 * w2 + B3 * w3;
+                    temporary[index] = w;
+                    w3 = w2;
+                    w2 = w1;
+                    w1 = w;
+                }
+            }
         }
 
         const float terminal = temporary[x];
         float y1 = terminal;
         float y2 = terminal;
         float y3 = terminal;
-        for (int y = 0; y < height; ++y) {
-            const std::size_t filterIndex =
-                static_cast<std::size_t>(y) * width + x;
-            const float core =
-                B * temporary[filterIndex] + B1 * y1 + B2 * y2 + B3 * y3;
-            const std::size_t sourceIndex =
-                static_cast<std::size_t>(y) * sourceStride + x;
-            const float source = sourceAndDestination[sourceIndex];
-            sourceAndDestination[sourceIndex] = finalize_scatter_value(
-                source,
-                core,
-                tail[filterIndex],
-                tailWeight,
-                scatterAmount);
-            y3 = y2;
-            y2 = y1;
-            y1 = core;
+        for (int firstRow = 0; firstRow < height; firstRow += kYvvPrefetchRows) {
+            float values[kYvvPrefetchRows];
+#pragma unroll
+            for (int row = 0; row < kYvvPrefetchRows; ++row) {
+                const int y = firstRow + row;
+                values[row] = y < height ? temporary[static_cast<std::size_t>(y) * width + x] : 0.0f;
+            }
+#pragma unroll
+            for (int row = 0; row < kYvvPrefetchRows; ++row) {
+                const int y = firstRow + row;
+                if (y < height) {
+                    const std::size_t filterIndex =
+                        static_cast<std::size_t>(y) * width + x;
+                    const float core =
+                        B * values[row] + B1 * y1 + B2 * y2 + B3 * y3;
+                    const std::size_t sourceIndex =
+                        static_cast<std::size_t>(y) * sourceStride + x;
+                    const float source = sourceAndDestination[sourceIndex];
+                    sourceAndDestination[sourceIndex] = finalize_scatter_value(
+                        source,
+                        core,
+                        tail[filterIndex],
+                        tailWeight,
+                        scatterAmount);
+                    y3 = y2;
+                    y2 = y1;
+                    y1 = core;
+                }
+            }
         }
     }
 
@@ -439,8 +532,8 @@ namespace {
                 return cudaGetLastError();
             }
             case ScatterHalationGaussianKind::YvvReplicate:
-                yvv_horizontal_kernel<<<(height + kLineThreads - 1) / kLineThreads,
-                                        kLineThreads,
+                yvv_horizontal_kernel<<<(height + kYvvTileSize - 1) / kYvvTileSize,
+                                        kYvvTileSize,
                                         0,
                                         stream>>>(
                     source,
@@ -528,8 +621,8 @@ namespace {
                 return cudaGetLastError();
             }
             case ScatterHalationGaussianKind::YvvReplicate:
-                yvv_horizontal_kernel<<<(height + kLineThreads - 1) / kLineThreads,
-                                        kLineThreads,
+                yvv_horizontal_kernel<<<(height + kYvvTileSize - 1) / kYvvTileSize,
+                                        kYvvTileSize,
                                         0,
                                         stream>>>(
                     sourceAndDestination,

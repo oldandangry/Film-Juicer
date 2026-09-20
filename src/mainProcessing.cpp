@@ -632,11 +632,12 @@ namespace {
         return false;
     }
 
-    bool fused_alias_uses_source_build_cached_log_raw(
-        bool fusedScannerPostSpatialDirHandoff,
+    bool spatial_dir_source_build_retains_cached_log_raw(
         const Spektrafilm::DirScratchPlaneRoles& roles,
         const Spektrafilm::DirScratchPlaneRoles& targetRoles) noexcept {
-        return fusedScannerPostSpatialDirHandoff &&
+        // The three-channel source pass already computes log exposure. Populate
+        // cache planes retained through final develop, including grain routes.
+        return roles.rawCorrectionPlanes == 3 &&
                roles.cachedLogRawPlanes > 0 &&
                roles.cachedLogRawPlanes == targetRoles.cachedLogRawPlanes;
     }
@@ -2330,8 +2331,7 @@ void JuicerProcessor::processImagesCUDA() {
             const Spektrafilm::DirScratchPlaneRoles& directDirAdmittedTargetRoles =
                 scratch.targetPlaneRoles;
             directDirUsesSourceBuildCachedLogRaw =
-                fused_alias_uses_source_build_cached_log_raw(
-                    directUseFusedScannerPostSpatialDirHandoff,
+                spatial_dir_source_build_retains_cached_log_raw(
                     directDirAdmittedRoles,
                     directDirAdmittedTargetRoles);
             if (directDirUsesSourceBuildCachedLogRaw &&
@@ -2397,7 +2397,8 @@ void JuicerProcessor::processImagesCUDA() {
                     "direct spatial DIR build failed",
                     dirError);
             }
-            if (!directUseFusedScannerPostSpatialDirHandoff) {
+            if (!directUseFusedScannerPostSpatialDirHandoff &&
+                !directDirUsesSourceBuildCachedLogRaw) {
                 std::string stageError;
                 if (!preparedFrame.stage_spatial_dir_cached_log_raw_for_final_develop(
                         focusedWorkspace,
@@ -3344,8 +3345,7 @@ void JuicerProcessor::processImagesCUDA() {
             const Spektrafilm::DirScratchPlaneRoles& printDirAdmittedTargetRoles =
                 scratch.targetPlaneRoles;
             printDirUsesSourceBuildCachedLogRaw =
-                fused_alias_uses_source_build_cached_log_raw(
-                    printUseFusedScannerPostSpatialDirHandoff,
+                spatial_dir_source_build_retains_cached_log_raw(
                     printDirAdmittedRoles,
                     printDirAdmittedTargetRoles);
             if (printDirUsesSourceBuildCachedLogRaw &&
@@ -3411,7 +3411,8 @@ void JuicerProcessor::processImagesCUDA() {
                     "print spatial DIR build failed",
                     dirError);
             }
-            if (!printUseFusedScannerPostSpatialDirHandoff) {
+            if (!printUseFusedScannerPostSpatialDirHandoff &&
+                !printDirUsesSourceBuildCachedLogRaw) {
                 std::string stageError;
                 if (!preparedFrame.stage_spatial_dir_cached_log_raw_for_final_develop(
                         focusedWorkspace,

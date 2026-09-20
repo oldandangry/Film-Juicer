@@ -165,3 +165,59 @@ set_property(TEST ScatterHalation.Gpu.CapturedCarrier
     PROPERTY LABELS "gpu;reference")
 juicer_add_scatter_gpu_test(ZeroWork zero-work 300)
 juicer_add_scatter_gpu_test(Lifecycle lifecycle 600)
+
+add_executable(JuicerGrainScratchTests grain/scratch_reuse_test.cpp)
+target_link_libraries(JuicerGrainScratchTests PRIVATE
+    juicer_core GTest::gtest CUDA::cuda_driver)
+set_target_properties(JuicerGrainScratchTests PROPERTIES
+    LINKER_LANGUAGE CXX
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+add_dependencies(JuicerGrainScratchTests juicer_test_resources)
+if(UNIX)
+    set_property(TARGET JuicerGrainScratchTests
+        PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Grain.Gpu.ScratchReuse COMMAND JuicerGrainScratchTests)
+set_tests_properties(Grain.Gpu.ScratchReuse PROPERTIES
+    LABELS "gpu" TIMEOUT 600 RESOURCE_LOCK juicer_gpu)
+
+add_executable(JuicerDirExposureCacheTests dir/exposure_cache_test.cpp)
+target_link_libraries(JuicerDirExposureCacheTests PRIVATE
+    juicer_core GTest::gtest CUDA::cuda_driver)
+set_target_properties(JuicerDirExposureCacheTests PROPERTIES
+    LINKER_LANGUAGE CXX
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+add_dependencies(JuicerDirExposureCacheTests juicer_test_resources)
+if(UNIX)
+    set_property(TARGET JuicerDirExposureCacheTests
+        PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Dir.Gpu.ExposureCache COMMAND JuicerDirExposureCacheTests)
+set_tests_properties(Dir.Gpu.ExposureCache PROPERTIES
+    LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
+
+add_executable(JuicerGrainDeltaTests grain/delta_fusion_test.cu)
+target_link_libraries(JuicerGrainDeltaTests PRIVATE juicer_core)
+set_target_properties(JuicerGrainDeltaTests PROPERTIES
+    LINKER_LANGUAGE CXX
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerGrainDeltaTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Grain.Gpu.DeltaFusion COMMAND JuicerGrainDeltaTests)
+set_tests_properties(Grain.Gpu.DeltaFusion PROPERTIES
+    LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+
+add_executable(JuicerScannerOutputTests scanner/output_encoding_test.cpp)
+target_link_libraries(JuicerScannerOutputTests PRIVATE
+    juicer_core GTest::gtest CUDA::cuda_driver)
+set_target_properties(JuicerScannerOutputTests PROPERTIES
+    LINKER_LANGUAGE CXX
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+add_dependencies(JuicerScannerOutputTests juicer_test_resources)
+if(UNIX)
+    set_property(TARGET JuicerScannerOutputTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Scanner.Gpu.OutputEncoding COMMAND JuicerScannerOutputTests)
+set_tests_properties(Scanner.Gpu.OutputEncoding PROPERTIES
+    LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)

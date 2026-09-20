@@ -6,6 +6,13 @@ behavior, and public-resource bootstrap without loading the CUDA driver. The
 integration executable links the production CUDA boundary and keeps preparation,
 operator, route, carrier, zero-work, lifecycle, and benchmark processes isolated.
 
+`ScatterHalation.Gpu.FocusedCudaReference` also checks the carrier-layout product
+contract at one-row, one-column, complete/partial row-batch and tile dimensions.
+Poisoned row padding must remain unchanged, padded and compact carriers must
+produce bit-identical finite output, and an unexposed channel must remain zero.
+These layout checks complement the external-reference cohort below; they do not
+define a second numerical reference.
+
 `fixtures/manifest.json` and `scatter_halation_reference.bin` are an external
 reference cohort generated from the unmodified spektrafilm halation operator at
 revision `48645a2b4bf58c20b6a3b75c8022d0f462db754a`. The manifest records the

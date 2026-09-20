@@ -453,25 +453,35 @@ namespace {
     CandidateOutput run_candidate(
         const ResolvedRow& row,
         const SemanticPlanes<float>& source,
-        bool downstream) {
+        bool downstream,
+        int rowPadding = 0) {
         const std::size_t planeElements =
             static_cast<std::size_t>(row.width) * row.height;
         const std::size_t planeBytes = planeElements * sizeof(float);
-        const std::size_t planeCount = downstream ? 8 : 5;
-        CudaAllocation allocation(planeCount * planeBytes);
+        const std::size_t carrierStride = static_cast<std::size_t>(row.width) + rowPadding;
+        const std::size_t carrierElements = carrierStride * row.height;
+        const std::size_t carrierBytes = carrierElements * sizeof(float);
+        constexpr std::uint32_t kPaddingBits = 0x7fc01234u;
+        CudaAllocation allocation(3 * carrierBytes + (downstream ? 5 : 2) * planeBytes);
         CudaStream stream;
         float* const block = allocation.floats();
-        std::array<float*, 3> devicePlanes{{block, block + planeElements, block + 2 * planeElements}};
-        float* const temporary = block + 3 * planeElements;
-        float* const accumulation = block + 4 * planeElements;
+        std::array<float*, 3> devicePlanes{{block, block + carrierElements, block + 2 * carrierElements}};
+        float* const temporary = block + 3 * carrierElements;
+        float* const accumulation = temporary + planeElements;
         for (std::size_t channel = 0; channel < source.size(); ++channel) {
             const std::vector<float> storage =
                 visual_to_storage(source[channel], row.width, row.height);
+            std::vector<float> carrier(carrierElements, std::bit_cast<float>(kPaddingBits));
+            for (int y = 0; y < row.height; ++y) {
+                std::copy_n(storage.data() + static_cast<std::size_t>(y) * row.width,
+                            row.width,
+                            carrier.data() + static_cast<std::size_t>(y) * carrierStride);
+            }
             require_cuda(
                 cudaMemcpy(
                     devicePlanes[channel],
-                    storage.data(),
-                    planeBytes,
+                    carrier.data(),
+                    carrierBytes,
                     cudaMemcpyHostToDevice),
                 "cudaMemcpy source");
         }
@@ -485,7 +495,7 @@ namespace {
         view.currentCarrier.redSensitive = devicePlanes[0];
         view.currentCarrier.greenSensitive = devicePlanes[1];
         view.currentCarrier.blueSensitive = devicePlanes[2];
-        view.currentCarrier.rowStrideFloats = static_cast<std::size_t>(row.width);
+        view.currentCarrier.rowStrideFloats = carrierStride;
         view.filterTemp = temporary;
         view.weightedAccumulation = accumulation;
         const JuicerCuda::ScatterHalationLaunchResult launch =
@@ -501,9 +511,9 @@ namespace {
 
         CandidateOutput output;
         if (downstream) {
-            float* const logB = block + 5 * planeElements;
-            float* const logG = block + 6 * planeElements;
-            float* const logR = block + 7 * planeElements;
+            float* const logB = accumulation + planeElements;
+            float* const logG = logB + planeElements;
+            float* const logR = logG + planeElements;
             JuicerCuda::DirectPipelineRunParams params;
             params.width = row.width;
             params.height = row.height;
@@ -538,14 +548,24 @@ namespace {
         }
 
         for (std::size_t channel = 0; channel < devicePlanes.size(); ++channel) {
+            std::vector<float> carrier(carrierElements);
             std::vector<float> storage(planeElements);
             require_cuda(
                 cudaMemcpy(
-                    storage.data(),
+                    carrier.data(),
                     devicePlanes[channel],
-                    planeBytes,
+                    carrierBytes,
                     cudaMemcpyDeviceToHost),
                 "cudaMemcpy final exposure");
+            for (int y = 0; y < row.height; ++y) {
+                const std::size_t offset = static_cast<std::size_t>(y) * carrierStride;
+                std::copy_n(carrier.data() + offset, row.width, storage.data() + static_cast<std::size_t>(y) * row.width);
+                for (std::size_t x = static_cast<std::size_t>(row.width); x < carrierStride; ++x) {
+                    if (std::bit_cast<std::uint32_t>(carrier[offset + x]) != kPaddingBits) {
+                        throw std::runtime_error("halation modified carrier padding");
+                    }
+                }
+            }
             output.finalExposure[channel] =
                 storage_to_visual(storage, row.width, row.height);
         }
@@ -763,6 +783,46 @@ namespace {
         return *descriptor;
     }
 
+    void run_carrier_stride_rows(Results& results) {
+        // Carrier layout must not alter the operator or leak poisoned padding
+        // into the image, including complete and partial row batches and tiles.
+        for (const auto extent : {std::array{1, 33}, std::array{33, 1}, std::array{19, 7}, std::array{19, 8}, std::array{19, 9}, std::array{19, 15}, std::array{19, 16}, std::array{19, 17}, std::array{31, 31}, std::array{32, 32}, std::array{33, 33}, std::array{63, 65}, std::array{65, 63}, std::array{129, 67}}) {
+            const std::string name = "operator/carrier-stride/" +
+                                     std::to_string(extent[0]) + "x" + std::to_string(extent[1]);
+            try {
+                ResolvedRow row;
+                row.width = extent[0];
+                row.height = extent[1];
+                row.descriptor = build_descriptor(2.0, 0.5f);
+                const std::size_t elements = static_cast<std::size_t>(row.width) * row.height;
+                SemanticPlanes<float> source;
+                for (std::size_t channel = 0; channel < source.size(); ++channel) {
+                    source[channel].resize(elements);
+                    for (std::size_t index = 0; index < elements; ++index) {
+                        source[channel][index] = channel == 2
+                                                     ? 0.0f
+                                                     : 0.05f + static_cast<float>((index * (37 + channel) + 11) % 1021) / 255.0f;
+                    }
+                }
+                const auto compact = run_candidate(row, source, false);
+                const auto padded = run_candidate(row, source, false, 3);
+                bool passed = true;
+                for (std::size_t channel = 0; channel < source.size(); ++channel) {
+                    for (std::size_t index = 0; index < elements; ++index) {
+                        const float actual = padded.finalExposure[channel][index];
+                        const float expected = compact.finalExposure[channel][index];
+                        passed = passed && std::isfinite(actual) &&
+                                 std::bit_cast<std::uint32_t>(actual) == std::bit_cast<std::uint32_t>(expected) &&
+                                 (channel != 2 || actual == 0.0f);
+                    }
+                }
+                results.record(name, passed, "bit-exact compact/padded carrier; padding intact; zero channel isolated");
+            } catch (const std::exception& error) {
+                results.record(name, false, error.what());
+            }
+        }
+    }
+
     void run_reference_descriptor_rows(
         const nlohmann::json& manifest,
         Results& results) {
@@ -969,6 +1029,7 @@ namespace ScatterHalationValidation {
                     manifest.at("binary").at("sha256").get<std::string>());
 
             run_reference_descriptor_rows(manifest, results);
+            run_carrier_stride_rows(results);
 
             std::size_t descriptorInputCount = 0;
             for (const auto& fixture : manifest.at("rows")) {

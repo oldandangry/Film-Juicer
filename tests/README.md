@@ -137,6 +137,9 @@ cmake --build --preset linux-debug
 | `scatter_halation/recipe_descriptor_test.cpp` | Product contracts for control validation, recipe identity, descriptor dispatch, public-resource bootstrap and profile loading | `host` |
 | `scatter_halation/integration_test*` | Production-linked preparation, CUDA operator fixtures, route/carrier behavior, zero-work and lifecycle contracts | `gpu`; selected fixtures are also `reference` |
 | `diffusion/host_reference_test.cpp` | Production host diffusion behavior against the pinned spektrafilm cohort | `host`, `reference` |
+| `grain/scratch_reuse_test.cpp` | Prepared-frame DIR/grain scratch ownership, bitwise equivalence to dedicated grain intermediates, and lifecycle contracts | `gpu` |
+| `grain/delta_fusion_test.cu` | Grain output against a separate FP32 blur/accumulation/delta oracle, including finite sanitation and final-layer dispatch | `gpu` |
+| `dir/exposure_cache_test.cpp` | Source-pass versus separate-pass log-exposure caches and final capture density through production CUDA operators | `gpu` |
 | `gamma/test_compare.py` | Comparator bounds, applicability, non-finite rejection and CLI failure propagation | `host` |
 | `ofx/probe.py` | Linux synthetic OFX load/describe/unload and declared CUDA support | `host`, Linux only |
 
@@ -201,3 +204,79 @@ See [MIGRATION.md](MIGRATION.md) for the bounded family inventory and exact
 retained/deferred/archive decisions, [benchmarks/README.md](benchmarks/README.md)
 for measurement commands, and [manual/resolve.md](manual/resolve.md) for
 owner-run host acceptance.
+
+### Grain scratch maintenance benchmark
+
+The ordinary `Grain.Gpu.ScratchReuse` CTest runs the bounded correctness and
+lifecycle cases. Its procedural density inputs characterize Film-Juicer grain;
+the oracle runs the same production grain kernel with independent intermediates,
+requiring finite, bit-for-bit matching output. It covers all four scan routes,
+sublayer/shared-chroma shapes, integer/fractional time, and debug views 0–6.
+It does not establish whole-Resolve render or visual acceptance.
+
+The explicit 6048×4032 maintenance case reports deduplicated CUDA allocation
+capacities and 30 CUDA-event samples after 10 warmups. Events synchronize for
+measurement; it is excluded from ordinary CTest runs. From a CUDA-enabled
+Windows developer shell:
+
+```powershell
+out/build/windows-clang-release/tests/bin/JuicerGrainScratchTests.exe `
+  --gtest_also_run_disabled_tests `
+  --gtest_filter=GrainScratch.DISABLED_SixKMemoryAndTiming
+```
+
+### DIR exposure-cache maintenance benchmark
+
+`Dir.Gpu.ExposureCache` compares source-pass cache output against a separate
+cache-building pass, then requires finite, bit-for-bit matching developed film
+density. Its 96 procedural cases cover four routes, all three reconstruction
+methods, RGB and camera-film-linear inputs, FIR/YVV filtering, and two/three
+cached channels. These are equivalence checks of production CUDA launchers;
+they do not invoke the OFX host dispatcher or establish Resolve acceptance.
+
+The optional 6048×4032 case times DIR source/filter, cache construction, and
+final capture-film development. It alternates the two paths, records 30 samples
+after 10 warmups per path, and synchronizes CUDA events for measurement. It
+excludes grain and scanner execution, uploads, frame preparation, and Resolve:
+
+```powershell
+out/build/windows-clang-release/tests/bin/JuicerDirExposureCacheTests.exe `
+  --gtest_also_run_disabled_tests `
+  --gtest_filter=ExposureCache.DISABLED_SixKTiming
+```
+
+### Grain delta equivalence
+
+`Grain.Gpu.DeltaFusion` checks 154 procedural cases through the production grain
+launcher. It generates particles with the unchanged CUDA particle kernels, then
+uses an independent scalar FP32 FIR and separate accumulation, bias, subtraction,
+and reconstruction steps as the oracle. Outputs must be finite and bit-for-bit
+equal. These are Film-Juicer numerical product contracts, not spektrafilm or
+whole-Resolve reference fixtures.
+
+The cases cover batched and separate layers, an unblurred final layer, all-zero
+dye radii, simple grain, single-pixel and partial-block extents, integer/fractional
+time, zero and signed-zero bias, non-finite density, and extreme blur weights.
+The oracle's particle generation intentionally shares production code; this test
+isolates the subsequent blur/delta schedule and does not validate the sampler.
+
+### Scanner output encoding
+
+`Scanner.Gpu.OutputEncoding` calls the production CUDA scanner launchers and
+checks all nine output spaces, CCTF on/off, optional output matrix, transfer
+breakpoint neighbors, negative/HDR/subnormal/nonfinite values, RGB/RGBA, odd
+image extents, and padded rows. The numerical oracle is Film-Juicer's independent
+host double-precision `OutputEncoding::applyEncoding`; this is a product
+numerical contract, not an external-reference fixture. Clipped RGB must stay
+within `1e-6` maximum and `1e-7` mean absolute error per case, with unchanged
+nonfinite classification and bit-exact alpha/padding. Identity-matrix CCTF-off
+output is bit-exact against the oracle.
+
+The suite also observes a bounded linear pattern after production scanner blur,
+unsharp, weave, and gate attenuation, then checks that encoding follows those
+stages. Real prepared film/print resources exercise fused and separate output on
+negative/positive direct/print routes, in sRGB and DaVinci Intermediate, with
+output gamut compression on/off. Spatial DIR, visual grain, halation, and
+camera/enlarger diffusion are disabled in these focused route checks; their
+owning suites cover those contracts. No frozen fixtures or private workbench
+files are required.
