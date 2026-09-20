@@ -983,14 +983,6 @@ namespace {
         return static_cast<std::int64_t>(std::floor(finite_or(time, 0.0)));
     }
 
-    std::uint64_t session_seed_or_default(std::uint64_t sessionSeed) {
-        return (sessionSeed != 0) ? sessionSeed : 1;
-    }
-
-    std::uint64_t instance_token_or_session_seed(std::uint64_t instanceToken, std::uint64_t sessionSeed) {
-        return (instanceToken != 0) ? instanceToken : session_seed_or_default(sessionSeed);
-    }
-
     // NOLINTBEGIN(bugprone-easily-swappable-parameters) Both route call sites share this fixed descriptor context order.
     bool build_visual_grain_descriptor_for_frame(
         const Spektrafilm::VisualGrainRecipe& recipe,
@@ -1222,9 +1214,8 @@ void JuicerProcessor::setDirectFrameRequest(const DirectFrameRequest& request) {
     _nComponents = request.components;
     _directStateHold = request.state;
     _printStateHold.reset();
-    _sessionSeed = session_seed_or_default(request.sessionSeed);
-    _instanceToken =
-        instance_token_or_session_seed(request.instanceToken, _sessionSeed);
+    _sessionSeed = request.sessionSeed;
+    _instanceToken = request.instanceToken;
     _clipToken = request.clipToken;
     _timeFrames = finite_or(request.frameTime, 0.0);
     _frameIndex = frame_index_from_time(_timeFrames);
@@ -1244,9 +1235,8 @@ void JuicerProcessor::setPrintFrameRequest(const PrintFrameRequest& request) {
     _nComponents = request.components;
     _printStateHold = request.state;
     _directStateHold.reset();
-    _sessionSeed = session_seed_or_default(request.sessionSeed);
-    _instanceToken =
-        instance_token_or_session_seed(request.instanceToken, _sessionSeed);
+    _sessionSeed = request.sessionSeed;
+    _instanceToken = request.instanceToken;
     _clipToken = request.clipToken;
     _timeFrames = finite_or(request.frameTime, 0.0);
     _frameIndex = frame_index_from_time(_timeFrames);
@@ -1669,7 +1659,7 @@ void JuicerProcessor::processImagesCUDA() {
 
     JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
     {
-        snapshot.instanceToken.value = instance_token_or_session_seed(_instanceToken, _sessionSeed);
+        snapshot.instanceToken.value = _instanceToken;
         snapshot.frameToken.value = static_cast<std::uint64_t>(_frameIndex);
         snapshot.deviceContextKey = deviceContextKey;
         const std::uint64_t uploadCoreHash =

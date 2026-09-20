@@ -281,7 +281,7 @@ namespace Spektrafilm {
         out.frameAlpha = static_cast<float>(
             std::clamp(input.frameTime - frameFloor, 0.0, 1.0));
         const std::int64_t frame1 = out.frame0 + 1;
-        out.sessionSeed = input.sessionSeed != 0 ? input.sessionSeed : 1;
+        out.sessionSeed = input.sessionSeed;
         out.clipToken = input.clipToken;
         out.seedBase = make_seed_base(out.clipToken, out.frame0, out.sessionSeed);
         out.seedBaseNext =
@@ -1360,7 +1360,7 @@ namespace Spektrafilm {
         }
         out.renderExtent = input.renderExtent;
         out.fullFrameExtent = g.pixelDefinition;
-        out.sessionSeed = input.sessionSeed ? input.sessionSeed : 1;
+        out.sessionSeed = input.sessionSeed;
         out.clipToken = input.clipToken;
         out.filmDust = input.recipe->filmDust;
         out.filmScratch = input.recipe->filmScratch;
