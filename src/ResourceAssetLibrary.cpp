@@ -21,7 +21,6 @@ namespace JuicerAssets {
         std::string stbnPath;
         std::string wangTilesPath;
         std::string wangMetadataPath;
-        std::uint64_t version = 0;
     };
 
     struct Library::IlluminantFilterAssetSet {
@@ -32,7 +31,6 @@ namespace JuicerAssets {
         std::string kinoton75PPath;
         std::string kg3Path;
         std::string lensTransmissionPath;
-        std::uint64_t version = 0;
     };
 
     namespace {
@@ -124,7 +122,6 @@ namespace JuicerAssets {
             asset.stbnPath = noise_asset_path(dataDir, {"Noise", "stbn_scalar_512x512x256_u8.bin"});
             asset.wangTilesPath = noise_asset_path(dataDir, {"Noise", "Wang", "wang_tiles_256x256x16_u8.bin"});
             asset.wangMetadataPath = noise_asset_path(dataDir, {"Noise", "Wang", "tiles.json"});
-            asset.version = Library::kProcessAssetVersion;
             return asset;
         }
 
@@ -133,7 +130,6 @@ namespace JuicerAssets {
             payload.width = 512;
             payload.height = 512;
             payload.frames = 256;
-            payload.version = assets.version;
 
             if (assets.stbnPath.empty()) {
                 payload.error = "STBN load failed: data directory missing";
@@ -192,7 +188,6 @@ namespace JuicerAssets {
 
         WangNoisePayload load_wang_noise_payload(const Library::StaticNoiseAssetSet& assets) {
             WangNoisePayload payload;
-            payload.version = assets.version;
 
             if (assets.wangTilesPath.empty() || assets.wangMetadataPath.empty()) {
                 payload.error = "Wang tiles load failed: data directory missing";
@@ -309,7 +304,6 @@ namespace JuicerAssets {
             StaticNoisePayloadSet payloads;
             payloads.stbn = load_stbn_noise_payload(assets);
             payloads.wang = load_wang_noise_payload(assets);
-            payloads.version = assets.version;
             return payloads;
         }
 
@@ -324,7 +318,6 @@ namespace JuicerAssets {
             asset.lensTransmissionPath = data_path_string(
                 dataDir,
                 {"filters", "lens_transmission", "canon", "canon_24_f28_is.csv"});
-            asset.version = Library::kProcessAssetVersion;
             return asset;
         }
 
@@ -339,7 +332,6 @@ namespace JuicerAssets {
             curves.tungstenKg3Lens = Spectral::build_curve_TH_KG3_L_pinned(
                 asset.kg3Path,
                 asset.lensTransmissionPath);
-            curves.version = asset.version;
             return curves;
         }
 

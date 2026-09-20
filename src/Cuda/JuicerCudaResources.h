@@ -102,7 +102,6 @@ namespace JuicerCuda {
     struct FilteredPrintIlluminantDescriptor {
         static constexpr std::uint32_t kSchemaVersion = 1u;
 
-        std::uint64_t sourceIlluminantAssetVersionToken = 0;
         std::uint64_t printIlluminantHash = 0;
         std::uint64_t dichroicResourceHash = 0;
         CmyCcTriplet cmyCc{};
@@ -123,7 +122,6 @@ namespace JuicerCuda {
         static constexpr std::uint32_t kSchemaVersion = 3u;
 
         std::uint64_t filmProfileAssetVersionToken = 0;
-        std::uint64_t filmReferenceIlluminantAssetVersionToken = 0;
         std::uint64_t filmRawRecipeHash = 0;
         std::uint64_t filmDevelopRecipeHash = 0;
         std::uint64_t printProfileAssetVersionToken = 0;
@@ -413,7 +411,6 @@ namespace JuicerCuda {
         std::uint8_t* stbnData = nullptr;
         std::uint8_t* wangTilesData = nullptr;
         std::uint8_t* wangLutData = nullptr;
-        std::uint64_t grainStaticAssetVersion = 0;
 
         float* printIllumFiltered = nullptr;
         float* printPreflashIllumFiltered = nullptr;
@@ -552,7 +549,6 @@ namespace JuicerCuda {
     bool ensure_grain_static_assets_uploaded(
         Resources& resources,
         const JuicerAssets::StaticNoisePayloadSet& payloads,
-        std::uint64_t expectedAssetVersion,
         void* cudaStreamOpaque,
         std::string& outError);
 

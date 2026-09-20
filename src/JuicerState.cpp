@@ -758,64 +758,26 @@ namespace {
         const JuicerAssets::IlluminantFilterCurveSet& curveAssets =
             JuicerProcess::root().assets().illuminant_filter_curves();
 
-        auto build_or_log = [&](auto builder, const char* label) -> Spectral::Curve {
-            try {
-                return builder();
-            } catch (const std::exception& e) {
-                std::ostringstream oss;
-                oss << "failed to load illuminant '" << source << "' (" << label
-                    << "): " << e.what();
-                JTRACE("ILLUM", oss.str());
-            } catch (...) {
-                std::ostringstream oss;
-                oss << "failed to load illuminant '" << source << "' (" << label
-                    << "): unknown error";
-                JTRACE("ILLUM", oss.str());
-            }
-            return Spectral::Curve{};
-        };
-
         if (IlluminantKeys::matches_any(normalized, {"D65"})) {
-            return build_or_log([&]() {
-                return curveAssets.d65;
-            },
-                                "D65");
+            return curveAssets.d65;
         }
         if (IlluminantKeys::matches_any(normalized, {"D55"})) {
-            return build_or_log([&]() {
-                return curveAssets.d55;
-            },
-                                "D55");
+            return curveAssets.d55;
         }
         if (IlluminantKeys::matches_any(normalized, {"D50"})) {
-            return build_or_log([&]() {
-                return curveAssets.d50;
-            },
-                                "D50");
+            return curveAssets.d50;
         }
         if (IlluminantKeys::matches_any(normalized, {"TH-KG3-L", "THKG3L", "TH-KG3L"})) {
-            return build_or_log([&]() {
-                return curveAssets.tungstenKg3Lens;
-            },
-                                "TH-KG3-L");
+            return curveAssets.tungstenKg3Lens;
         }
         if (IlluminantKeys::matches_any(normalized, {"TH-KG3", "THKG3"})) {
-            return build_or_log([&]() {
-                return curveAssets.tungstenKg3;
-            },
-                                "TH-KG3");
+            return curveAssets.tungstenKg3;
         }
         if (IlluminantKeys::matches_any(normalized, {"T", "INCANDESCENT"})) {
-            return build_or_log([&]() {
-                return curveAssets.tungsten;
-            },
-                                "T");
+            return curveAssets.tungsten;
         }
         if (IlluminantKeys::matches_any(normalized, {"K75P", "KINOTON75P"})) {
-            return build_or_log([&]() {
-                return curveAssets.kinoton75P;
-            },
-                                "K75P");
+            return curveAssets.kinoton75P;
         }
         if (IlluminantKeys::matches_any(normalized, {"EQUAL", "EQUALENERGY", "EQUAL-ENERGY"})) {
             return Spectral::build_curve_equal_energy_pinned();

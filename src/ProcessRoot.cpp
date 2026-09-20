@@ -907,7 +907,6 @@ namespace JuicerProcess {
             frame.capturePolarity != recipe->profileRoute.capturePolarity ||
             frame.densityCurvesLayersHash !=
                 visualGrain.densityCurvesLayersHash ||
-            frame.staticNoiseVersion == 0 ||
             frame.scratchShape ==
                 Spektrafilm::VisualGrainScratchShape::None) {
             outError =
@@ -3446,25 +3445,9 @@ namespace JuicerProcess {
         std::shared_ptr<const JuicerAssets::StaticNoisePayloadSet> payloads;
         if (active) {
             payloads = root.assets().static_noise_payloads();
-            if (!payloads || !payloads->stbn.valid || !payloads->wang.valid) {
-                outError = payloads
-                               ? (!payloads->stbn.valid
-                                      ? payloads->stbn.error
-                                      : payloads->wang.error)
-                               : "MissingRequiredResource phase=grain_static field=payloads";
-                return false;
-            }
-            const Spektrafilm::VisualGrainFrameDescriptor& descriptor =
-                *_state->visualGrainDescriptor;
-            if (payloads->version != descriptor.staticNoiseVersion ||
-                payloads->stbn.version != descriptor.staticNoiseVersion ||
-                payloads->wang.version != descriptor.staticNoiseVersion ||
-                payloads->stbn.width <= 0 || payloads->stbn.height <= 0 ||
-                payloads->stbn.frames <= 0 || payloads->wang.width <= 0 ||
-                payloads->wang.height <= 0 || payloads->wang.count <= 0 ||
-                payloads->wang.colors <= 0) {
+            if (!payloads) {
                 outError =
-                    "ResourceDescriptorMismatch phase=grain_static field=asset_identity";
+                    "MissingRequiredResource phase=grain_static field=payloads";
                 return false;
             }
         }
@@ -3507,7 +3490,6 @@ namespace JuicerProcess {
         if (!JuicerCuda::ensure_grain_static_assets_uploaded(
                 *_state->grainStaticResources,
                 *payloads,
-                descriptor.staticNoiseVersion,
                 cudaStreamOpaque,
                 outError)) {
             return fail_preparation(
@@ -3519,15 +3501,13 @@ namespace JuicerProcess {
             *_state->grainStaticResources;
         if (!staticResources.stbnData || !staticResources.wangTilesData ||
             !staticResources.wangLutData ||
-            staticResources.grainStaticAssetVersion !=
-                descriptor.staticNoiseVersion ||
-            staticResources.stbnWidth != payloads->stbn.width ||
-            staticResources.stbnHeight != payloads->stbn.height ||
-            staticResources.stbnFrames != payloads->stbn.frames ||
-            staticResources.wangWidth != payloads->wang.width ||
-            staticResources.wangHeight != payloads->wang.height ||
-            staticResources.wangCount != payloads->wang.count ||
-            staticResources.wangColors != payloads->wang.colors) {
+            staticResources.stbnWidth <= 0 ||
+            staticResources.stbnHeight <= 0 ||
+            staticResources.stbnFrames <= 0 ||
+            staticResources.wangWidth <= 0 ||
+            staticResources.wangHeight <= 0 ||
+            staticResources.wangCount <= 0 ||
+            staticResources.wangColors <= 0) {
             outError =
                 "ResourceDescriptorMismatch phase=grain_static field=prepared_identity";
             return fail_preparation(
@@ -3704,8 +3684,6 @@ namespace JuicerProcess {
         view.staticNoise.wangHeight = staticResources.wangHeight;
         view.staticNoise.wangCount = staticResources.wangCount;
         view.staticNoise.wangColors = staticResources.wangColors;
-        view.staticNoise.version =
-            staticResources.grainStaticAssetVersion;
         view.correlation = _state->preparedGrainCorrelation;
         for (int layer = 0; layer < 3; ++layer) {
             for (int channel = 0; channel < 3; ++channel) {
@@ -3727,8 +3705,7 @@ namespace JuicerProcess {
             view.staticNoise.wangWidth > 0 &&
             view.staticNoise.wangHeight > 0 &&
             view.staticNoise.wangCount > 0 &&
-            view.staticNoise.wangColors > 0 &&
-            view.staticNoise.version == descriptor.staticNoiseVersion;
+            view.staticNoise.wangColors > 0;
         auto gaussian_ready =
             [](const Spektrafilm::VisualGrainGaussian& gaussian,
                const JuicerCuda::VisualGrainPreparedGaussianView& prepared) {

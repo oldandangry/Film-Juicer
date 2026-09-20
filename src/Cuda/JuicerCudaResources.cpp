@@ -2919,7 +2919,6 @@ namespace JuicerCuda {
         resources.stbnWidth = 0;
         resources.stbnHeight = 0;
         resources.stbnFrames = 0;
-        resources.grainStaticAssetVersion = 0;
     }
 
     static void free_wang(Resources& resources) noexcept {
@@ -2935,7 +2934,6 @@ namespace JuicerCuda {
         resources.wangHeight = 0;
         resources.wangCount = 0;
         resources.wangColors = 0;
-        resources.grainStaticAssetVersion = 0;
     }
 
     static void release_scan_error_readback_entry(
@@ -3066,15 +3064,9 @@ namespace JuicerCuda {
     bool ensure_grain_static_assets_uploaded(
         Resources& resources,
         const JuicerAssets::StaticNoisePayloadSet& payloads,
-        std::uint64_t expectedAssetVersion,
         void* cudaStreamOpaque,
         std::string& outError) {
         outError.clear();
-        if (expectedAssetVersion == 0) {
-            outError = "grain static asset version is invalid";
-            return false;
-        }
-
         const JuicerAssets::StbnNoisePayload& stbn = payloads.stbn;
         const JuicerAssets::WangNoisePayload& wang = payloads.wang;
         if (!stbn.valid) {
@@ -3087,12 +3079,6 @@ namespace JuicerCuda {
             outError = wang.error.empty()
                            ? "grain static Wang payload is invalid"
                            : wang.error;
-            return false;
-        }
-        if (payloads.version != expectedAssetVersion ||
-            stbn.version != expectedAssetVersion ||
-            wang.version != expectedAssetVersion) {
-            outError = "grain static host asset identity mismatch";
             return false;
         }
         if (stbn.data.empty() || stbn.width <= 0 || stbn.height <= 0 ||
@@ -3114,14 +3100,10 @@ namespace JuicerCuda {
         const bool needWangUpload =
             !resources.wangTilesData || !resources.wangLutData;
         if (!needStbnUpload && !needWangUpload) {
-            if (resources.grainStaticAssetVersion != expectedAssetVersion ||
-                resources.stbnWidth != stbn.width ||
-                resources.stbnHeight != stbn.height ||
-                resources.stbnFrames != stbn.frames ||
-                resources.wangWidth != wang.width ||
-                resources.wangHeight != wang.height ||
-                resources.wangCount != wang.count ||
-                resources.wangColors != wang.colors) {
+            if (resources.stbnWidth <= 0 || resources.stbnHeight <= 0 ||
+                resources.stbnFrames <= 0 || resources.wangWidth <= 0 ||
+                resources.wangHeight <= 0 || resources.wangCount <= 0 ||
+                resources.wangColors <= 0) {
                 outError = "grain static resource identity mismatch";
                 return false;
             }
@@ -3205,15 +3187,11 @@ namespace JuicerCuda {
         }
 
         const bool ready =
-            resources.stbnData &&
-            resources.stbnWidth == stbn.width &&
-            resources.stbnHeight == stbn.height &&
-            resources.stbnFrames == stbn.frames &&
+            resources.stbnData && resources.stbnWidth > 0 &&
+            resources.stbnHeight > 0 && resources.stbnFrames > 0 &&
             resources.wangTilesData && resources.wangLutData &&
-            resources.wangWidth == wang.width &&
-            resources.wangHeight == wang.height &&
-            resources.wangCount == wang.count &&
-            resources.wangColors == wang.colors;
+            resources.wangWidth > 0 && resources.wangHeight > 0 &&
+            resources.wangCount > 0 && resources.wangColors > 0;
         if (!ready) {
             outError = !stbnError.empty()
                            ? stbnError
@@ -3222,7 +3200,6 @@ namespace JuicerCuda {
                                   : "grain static resource upload incomplete");
             return false;
         }
-        resources.grainStaticAssetVersion = expectedAssetVersion;
         return true;
     }
 
@@ -3900,25 +3877,14 @@ namespace JuicerCuda {
         bool copy_source_illuminant(
             JuicerAssets::Library& assets,
             const std::string& key,
-            std::uint64_t expectedAssetVersion,
             std::array<float, Spectral::kNumSamples>& out,
             std::string& diagnostic) {
-            if (expectedAssetVersion != JuicerAssets::Library::kProcessAssetVersion) {
-                diagnostic =
-                    "ResourceDescriptorMismatch phase=4B field=source_illuminant_asset_version";
-                return false;
-            }
             if (key == "EQUAL") {
                 out.fill(1.0f);
                 return true;
             }
             const JuicerAssets::IlluminantFilterCurveSet& curves =
                 assets.illuminant_filter_curves();
-            if (curves.version != expectedAssetVersion) {
-                diagnostic =
-                    "ResourceDescriptorMismatch phase=4B field=source_illuminant_asset_version";
-                return false;
-            }
             const Spectral::Curve* selected = select_print_illuminant(curves, key);
             if (!selected ||
                 selected->linear.size() != out.size() ||
@@ -4028,8 +3994,6 @@ namespace JuicerCuda {
         auto build_illuminant = [&](FilteredPrintIlluminantDescriptor& descriptor,
                                     const CmyCcTriplet& cc,
                                     bool preflash) {
-            descriptor.sourceIlluminantAssetVersionToken =
-                JuicerAssets::Library::kProcessAssetVersion;
             descriptor.printIlluminantHash = recipe.print.illuminant.hash;
             descriptor.dichroicResourceHash = recipe.print.filters.dichroic.hash;
             descriptor.cmyCc = cc;
@@ -4038,9 +4002,6 @@ namespace JuicerCuda {
             hash_print_descriptor_value(
                 descriptor.hash,
                 FilteredPrintIlluminantDescriptor::kSchemaVersion);
-            hash_print_descriptor_value(
-                descriptor.hash,
-                descriptor.sourceIlluminantAssetVersionToken);
             hash_print_descriptor_value(descriptor.hash, descriptor.printIlluminantHash);
             hash_print_descriptor_value(descriptor.hash, descriptor.dichroicResourceHash);
             hash_print_descriptor_cmy(descriptor.hash, descriptor.cmyCc);
@@ -4066,8 +4027,6 @@ namespace JuicerCuda {
         }
 
         out.balance.filmProfileAssetVersionToken = recipe.profileRoute.filmProfileAssetVersionToken;
-        out.balance.filmReferenceIlluminantAssetVersionToken =
-            JuicerAssets::Library::kProcessAssetVersion;
         out.balance.filmRawRecipeHash = recipe.filmRaw.hash;
         out.balance.filmDevelopRecipeHash = recipe.filmDevelop.hash;
         out.balance.printProfileAssetVersionToken =
@@ -4082,9 +4041,6 @@ namespace JuicerCuda {
         out.balance.hash = Hash::kFnvOffset;
         hash_print_descriptor_value(out.balance.hash, PrintBalanceDescriptor::kSchemaVersion);
         hash_print_descriptor_value(out.balance.hash, out.balance.filmProfileAssetVersionToken);
-        hash_print_descriptor_value(
-            out.balance.hash,
-            out.balance.filmReferenceIlluminantAssetVersionToken);
         hash_print_descriptor_value(out.balance.hash, out.balance.filmRawRecipeHash);
         hash_print_descriptor_value(out.balance.hash, out.balance.filmDevelopRecipeHash);
         hash_print_descriptor_value(
@@ -4110,9 +4066,7 @@ namespace JuicerCuda {
             filmDensity.densityTablesHash == 0 ||
             filmDensity.spectralSampleCount != Spectral::kNumSamples ||
             filmDensity.hash == 0 ||
-            out.mainIlluminant.sourceIlluminantAssetVersionToken == 0 ||
             out.mainIlluminant.hash == 0 ||
-            out.balance.filmReferenceIlluminantAssetVersionToken == 0 ||
             out.balance.hash == 0 ||
             out.balance.filmRawRecipeHash == 0 ||
             out.balance.filmDevelopRecipeHash == 0 ||
@@ -4228,9 +4182,6 @@ namespace JuicerCuda {
             msg += std::to_string(descriptors.mainIlluminant.cmyCc.m);
             msg += "/";
             msg += std::to_string(descriptors.mainIlluminant.cmyCc.y);
-            msg += " sourceIlluminantAssetVersionToken=";
-            msg += std::to_string(
-                descriptors.mainIlluminant.sourceIlluminantAssetVersionToken);
             msg += " sourceIlluminantDescriptorHash=";
             msg += std::to_string(descriptors.mainIlluminant.printIlluminantHash);
             msg += " dichroicResourceHash=";
@@ -4272,7 +4223,6 @@ namespace JuicerCuda {
             if (!copy_source_illuminant(
                     *request.assets,
                     request.recipe->print.illuminant.key,
-                    descriptors.preflashIlluminant.sourceIlluminantAssetVersionToken,
                     sourceIlluminant,
                     outError) ||
                 !Spektrafilm::build_filtered_print_illuminant(

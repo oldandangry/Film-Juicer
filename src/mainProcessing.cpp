@@ -1013,8 +1013,6 @@ namespace {
         input.frameRate = frameRate;
         input.sessionSeed = sessionSeed;
         input.clipToken = clipToken;
-        input.staticNoiseVersion =
-            JuicerAssets::Library::kProcessAssetVersion;
         Spektrafilm::VisualGrainFrameDescriptor descriptor{};
         if (!Spektrafilm::build_visual_grain_frame_descriptor(
                 input,

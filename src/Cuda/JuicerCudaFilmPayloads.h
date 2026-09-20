@@ -64,7 +64,6 @@ namespace JuicerCuda {
         int wangHeight = 0;
         int wangCount = 0;
         int wangColors = 0;
-        std::uint64_t version = 0;
     };
 
     struct VisualGrainPreparedGaussianView {

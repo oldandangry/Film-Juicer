@@ -218,7 +218,6 @@ namespace {
         hash_value(hash, descriptor.requiresFullFrame);
         hash_value(hash, descriptor.recipeHash);
         hash_value(hash, descriptor.densityCurvesLayersHash);
-        hash_value(hash, descriptor.staticNoiseVersion);
         return hash;
     }
 
@@ -248,8 +247,7 @@ namespace Spektrafilm {
             !extent_contains(input.fullFrameExtent, input.renderExtent) ||
             !std::isfinite(input.pixelSizeUm) || !(input.pixelSizeUm > 0.0f) ||
             !std::isfinite(input.frameTime) ||
-            !std::isfinite(input.frameRate) || !(input.frameRate > 0.0) ||
-            input.staticNoiseVersion == 0) {
+            !std::isfinite(input.frameRate) || !(input.frameRate > 0.0)) {
             diagnostic = "ResourceDescriptorMismatch phase=grain_descriptor field=frame_input";
             return false;
         }
@@ -310,7 +308,6 @@ namespace Spektrafilm {
         out.recipeHash = recipe.hash;
         out.densityCurvesLayersHash =
             recipe.sublayersActive ? film.densityCurvesLayersHash : 0;
-        out.staticNoiseVersion = input.staticNoiseVersion;
 
         const float pixelAreaUm2 = input.pixelSizeUm * input.pixelSizeUm;
         if (!std::isfinite(pixelAreaUm2) || !(pixelAreaUm2 > 0.0f)) {

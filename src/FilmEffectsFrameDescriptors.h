@@ -68,7 +68,6 @@ namespace Spektrafilm {
         bool requiresFullFrame = false;
         std::uint64_t recipeHash = 0;
         std::uint64_t densityCurvesLayersHash = 0;
-        std::uint64_t staticNoiseVersion = 0;
         std::uint64_t hash = 0;
     };
 
@@ -83,7 +82,6 @@ namespace Spektrafilm {
         double frameRate = 0.0;
         std::uint64_t sessionSeed = 0;
         std::uint64_t clipToken = 0;
-        std::uint64_t staticNoiseVersion = 0;
     };
 
     bool build_visual_grain_frame_descriptor(

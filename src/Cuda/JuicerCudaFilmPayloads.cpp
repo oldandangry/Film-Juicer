@@ -299,7 +299,6 @@ namespace JuicerCuda {
                  Spektrafilm::ProfilePolarity::Negative &&
              descriptor.capturePolarity !=
                  Spektrafilm::ProfilePolarity::Positive) ||
-            descriptor.staticNoiseVersion == 0 ||
             descriptor.renderExtent.width <= 0 ||
             descriptor.renderExtent.height <= 0 ||
             !(descriptor.pixelSizeUm > 0.0f) || descriptor.pitchPx <= 0) {
@@ -317,8 +316,7 @@ namespace JuicerCuda {
         }
         if (!noise.wangTiles || !noise.wangLut || noise.wangWidth <= 0 ||
             noise.wangHeight <= 0 || noise.wangCount <= 0 ||
-            noise.wangColors <= 0 ||
-            noise.version != descriptor.staticNoiseVersion) {
+            noise.wangColors <= 0) {
             diagnostic =
                 "ResourceDescriptorMismatch phase=grain_payload field=wang_identity";
             return false;

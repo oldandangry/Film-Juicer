@@ -22,7 +22,6 @@ namespace JuicerAssets {
         int frames = 256;
         bool valid = false;
         std::string error;
-        std::uint64_t version = 0;
     };
 
     struct WangNoisePayload {
@@ -34,13 +33,11 @@ namespace JuicerAssets {
         int colors = 0;
         bool valid = false;
         std::string error;
-        std::uint64_t version = 0;
     };
 
     struct StaticNoisePayloadSet {
         StbnNoisePayload stbn;
         WangNoisePayload wang;
-        std::uint64_t version = 0;
     };
 
     struct IlluminantFilterCurveSet {
@@ -51,7 +48,6 @@ namespace JuicerAssets {
         Spectral::Curve kinoton75P;
         Spectral::Curve tungstenKg3;
         Spectral::Curve tungstenKg3Lens;
-        std::uint64_t version = 0;
     };
 
     enum class NeutralPrintCalibrationStatus : unsigned char {
@@ -75,8 +71,6 @@ namespace JuicerAssets {
     public:
         struct StaticNoiseAssetSet;
         struct IlluminantFilterAssetSet;
-
-        static constexpr std::uint64_t kProcessAssetVersion = 2ull;
 
         explicit Library(std::string dataDir);
         ~Library();

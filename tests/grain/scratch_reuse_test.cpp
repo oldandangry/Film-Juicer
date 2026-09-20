@@ -17,7 +17,6 @@
 #include "SpectralProcessing.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "ResourceAssetLibrary.h"
 
 extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     const JuicerCuda::GrainPayload*, const JuicerCuda::GrainKernelPayload*, int, int, float*, float*, float*, float*, float*, float*, float*, float*, void*);
@@ -105,7 +104,6 @@ namespace {
             input.frameRate = 24.0;
             input.sessionSeed = 17;
             input.clipToken = 23;
-            input.staticNoiseVersion = JuicerAssets::Library::kProcessAssetVersion;
             require(Spektrafilm::build_visual_grain_frame_descriptor(input, grain, error), error);
         }
 
