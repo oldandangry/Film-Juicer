@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 #include <string_view>
 
 #include "GamutCompression.h"
@@ -146,7 +147,7 @@ namespace {
             case 6:
                 return Spektrafilm::AutoExposureMethod::HighlightWeighted;
             default:
-                return Spektrafilm::AutoExposureMethod::CenterWeighted;
+                throw std::logic_error("invalid accepted auto-exposure method index");
         }
     }
 

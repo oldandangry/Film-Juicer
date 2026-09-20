@@ -3357,10 +3357,6 @@ namespace JuicerCuda {
         const Spektrafilm::ScanRoute route = recipe.profileRoute.scanRoute;
         const Spektrafilm::ScanRouteMetadata& routeMetadata =
             Spektrafilm::scan_route_metadata(route);
-        if (routeMetadata.route != route) {
-            outError = "focused route resource preparation route is invalid";
-            return false;
-        }
         const bool printRoute = routeMetadata.printRoute;
         const FilmRawRecipe& filmRaw = recipe.filmRaw;
         const bool tcMethod =

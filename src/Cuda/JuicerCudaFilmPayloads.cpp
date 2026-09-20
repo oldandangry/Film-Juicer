@@ -118,13 +118,6 @@ namespace JuicerCuda {
                 "ResourceDescriptorMismatch phase=3B field=mallett_midgray_scale";
             return false;
         }
-        for (float gamma : filmDevelop.densityCurveGamma) {
-            if (!std::isfinite(gamma) || !(gamma > 0.0f)) {
-                diagnostic =
-                    "ResourceDescriptorMismatch phase=3B field=density_curve_gamma";
-                return false;
-            }
-        }
         out.filmRaw.inputColorSpaceIndex = filmRaw.inputColorSpace;
         out.filmRaw.applyCctfDecoding = filmRaw.inputCctfDecoding ? 1 : 0;
         out.filmRaw.applyInputChromaticAdapt = prepared.applyInputChromaticAdapt;

@@ -1608,7 +1608,7 @@ namespace JuicerProcess {
         if (!resources || !resources->deviceLedger ||
             transaction.snapshot.contextEpoch == 0 ||
             transaction.resolvedMemoryBudget.allocationCapBytes == 0 ||
-            routeMetadata.route != route || frameSet->hash == 0 ||
+            frameSet->hash == 0 ||
             frameSet->route != route ||
             frameSet->fullFrame.width != requestedWidth ||
             frameSet->fullFrame.height != requestedHeight ||
@@ -5165,11 +5165,6 @@ namespace JuicerProcess {
             request.recipe->profileRoute.scanRoute;
         const Spektrafilm::ScanRouteMetadata& routeMetadata =
             Spektrafilm::scan_route_metadata(route);
-        if (routeMetadata.route != route) {
-            outError =
-                "ResourceDescriptorMismatch component=cuda_frame_preparation field=scan_route";
-            return frame;
-        }
         const bool printRoute = routeMetadata.printRoute;
         const auto appendRoute = [&] {
             if (!outError.empty()) {

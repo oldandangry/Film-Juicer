@@ -38,11 +38,7 @@ struct ScanRouteMetadata {
     }
 
     inline const ScanRouteMetadata& scan_route_metadata(ScanRoute route) {
-        const std::uint8_t index = static_cast<std::uint8_t>(route);
-        if (index < kScanRouteMatrix.size()) {
-            return kScanRouteMatrix[index];
-        }
-        return kScanRouteMatrix[static_cast<std::uint8_t>(kDefaultScanRoute)];
+        return kScanRouteMatrix.at(static_cast<std::size_t>(route));
     }
 
     inline const char* scan_route_key(ScanRoute route) {

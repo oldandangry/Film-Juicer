@@ -291,6 +291,108 @@ namespace {
             "controls/distinct-float32-distinct-identity",
             !controls_equal(first, distinct) && firstRecipe.hash != distinctRecipe.hash,
             "distinct retained Float32 controls must change recipe identity");
+
+        const auto check_gamma_success = [&results](
+                                             std::string name,
+                                             Spektrafilm::ScanRoute route,
+                                             double filmGamma,
+                                             double printGamma) {
+            ParamSnapshot snapshot;
+            snapshot.scanRoute = route;
+            std::string diagnostic;
+            const bool success = set_gamma_snapshot_values(
+                filmGamma,
+                printGamma,
+                snapshot,
+                diagnostic);
+            const bool printRetained = std::isnan(printGamma)
+                                           ? std::isnan(snapshot.printGammaFactor)
+                                           : snapshot.printGammaFactor == printGamma;
+            results.record(
+                std::move(name),
+                success &&
+                    snapshot.filmGammaFactor == static_cast<float>(filmGamma) &&
+                    printRetained,
+                diagnostic);
+        };
+        const auto check_gamma_failure = [&results](
+                                             std::string name,
+                                             Spektrafilm::ScanRoute route,
+                                             double filmGamma,
+                                             double printGamma) {
+            ParamSnapshot snapshot;
+            snapshot.scanRoute = route;
+            std::string diagnostic;
+            const bool success = set_gamma_snapshot_values(
+                filmGamma,
+                printGamma,
+                snapshot,
+                diagnostic);
+            results.record(
+                std::move(name),
+                !success && !diagnostic.empty(),
+                diagnostic);
+        };
+        check_gamma_success(
+            "controls/film-gamma-minimum",
+            Spektrafilm::ScanRoute::NegativeDirectScan,
+            Spektrafilm::kFilmGammaFactorMinimum,
+            std::numeric_limits<double>::quiet_NaN());
+        check_gamma_success(
+            "controls/film-gamma-maximum",
+            Spektrafilm::ScanRoute::PositiveDirectScan,
+            Spektrafilm::kFilmGammaFactorMaximum,
+            std::numeric_limits<double>::infinity());
+        check_gamma_success(
+            "controls/print-gamma-minimum",
+            Spektrafilm::ScanRoute::NegativePrintScan,
+            1.0,
+            Spektrafilm::kPrintGammaFactorMinimum);
+        check_gamma_success(
+            "controls/print-gamma-maximum",
+            Spektrafilm::ScanRoute::PositivePrintScan,
+            1.0,
+            Spektrafilm::kPrintGammaFactorMaximum);
+        check_gamma_failure(
+            "controls/film-gamma-immediately-below-minimum",
+            Spektrafilm::ScanRoute::NegativeDirectScan,
+            std::nextafter(Spektrafilm::kFilmGammaFactorMinimum, 0.0),
+            1.0);
+        check_gamma_failure(
+            "controls/film-gamma-immediately-above-maximum",
+            Spektrafilm::ScanRoute::NegativeDirectScan,
+            std::nextafter(Spektrafilm::kFilmGammaFactorMaximum, 5.0),
+            1.0);
+        check_gamma_failure(
+            "controls/film-gamma-nan",
+            Spektrafilm::ScanRoute::NegativeDirectScan,
+            std::numeric_limits<double>::quiet_NaN(),
+            1.0);
+        check_gamma_failure(
+            "controls/film-gamma-infinity",
+            Spektrafilm::ScanRoute::NegativeDirectScan,
+            std::numeric_limits<double>::infinity(),
+            1.0);
+        check_gamma_failure(
+            "controls/print-gamma-immediately-below-minimum",
+            Spektrafilm::ScanRoute::NegativePrintScan,
+            1.0,
+            std::nextafter(Spektrafilm::kPrintGammaFactorMinimum, 0.0));
+        check_gamma_failure(
+            "controls/print-gamma-immediately-above-maximum",
+            Spektrafilm::ScanRoute::NegativePrintScan,
+            1.0,
+            std::nextafter(Spektrafilm::kPrintGammaFactorMaximum, 3.0));
+        check_gamma_failure(
+            "controls/print-gamma-nan",
+            Spektrafilm::ScanRoute::NegativePrintScan,
+            1.0,
+            std::numeric_limits<double>::quiet_NaN());
+        check_gamma_failure(
+            "controls/print-gamma-infinity",
+            Spektrafilm::ScanRoute::NegativePrintScan,
+            1.0,
+            std::numeric_limits<double>::infinity());
     }
 
     void run_recipe_rows(Results& results) {

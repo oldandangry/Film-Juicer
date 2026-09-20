@@ -130,19 +130,6 @@ namespace {
         hash_u64_le(hash, layout.transformBytes);
     }
 
-    bool valid_route(Spektrafilm::ScanRoute route) noexcept {
-        using Spektrafilm::ScanRoute;
-        switch (route) {
-            case ScanRoute::NegativeDirectScan:
-            case ScanRoute::NegativePrintScan:
-            case ScanRoute::PositiveDirectScan:
-            case ScanRoute::PositivePrintScan:
-                return true;
-            default:
-                return false;
-        }
-    }
-
     bool validate_stage(
         const Spektrafilm::DiffusionStageFrameDescriptor& stage,
         Spektrafilm::DiffusionLinearStage expectedStage,
@@ -177,10 +164,6 @@ namespace {
         ValidatedFrameSet& out,
         std::string& diagnostic) {
         out = {};
-        if (!valid_route(frameSet.route)) {
-            fail(diagnostic, "frame_route");
-            return false;
-        }
         if (frameSet.fullFrame.width < 2 || frameSet.fullFrame.height < 2) {
             fail(diagnostic, "frame_domain");
             return false;

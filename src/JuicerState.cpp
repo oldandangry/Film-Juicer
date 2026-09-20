@@ -1463,12 +1463,6 @@ bool set_gamma_snapshot_values(
 
     const float retainedFilmGammaFactor =
         static_cast<float>(authoredFilmGammaFactor);
-    if (!std::isfinite(retainedFilmGammaFactor) ||
-        retainedFilmGammaFactor <= 0.0f) {
-        outDiagnostic =
-            "InvalidAuthoredControl component=film_development field=film_gamma_factor";
-        return false;
-    }
     if (Spektrafilm::scan_route_is_print(snapshot.scanRoute) &&
         (!std::isfinite(authoredPrintGammaFactor) ||
          authoredPrintGammaFactor < Spektrafilm::kPrintGammaFactorMinimum ||
