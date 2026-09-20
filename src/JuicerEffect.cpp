@@ -2194,16 +2194,6 @@ bool JuicerEffect::snapshotParams(
         _pEnlargerM,
         _pEnlargerC,
         P);
-    const JuicerAssets::SelectedProfileResult selectedProfiles =
-        JuicerProcess::root().assets().selected_profiles_for_route(
-            JuicerAssets::SelectedProfileRequest{
-                P.filmProfileKey,
-                P.printProfileKey,
-                P.scanRoute});
-    P.filmProfileAssetVersionToken =
-        selectedProfiles.filmProfile ? selectedProfiles.filmProfile->assetVersionToken : 0;
-    P.printProfileAssetVersionToken =
-        selectedProfiles.printProfile ? selectedProfiles.printProfile->assetVersionToken : 0;
 
     GlareCompensationParams compensationParams{};
     compensationParams.factor = _pGlareCompRemovalFactor;
@@ -2263,9 +2253,7 @@ bool JuicerEffect::snapshotParams(
             _pCouplersGammaInterlayerRToGb,
             _pCouplersGammaInterlayerGToRb,
             _pCouplersGammaInterlayerBToRg,
-            selectedProfiles.filmProfile
-                ? selectedProfiles.filmProfile->info.type
-                : Spektrafilm::ProfilePolarity::Unsupported,
+            Spektrafilm::scan_route_metadata(P.scanRoute).capturePolarity,
             P,
             outDiagnostic)) {
         return false;

@@ -509,14 +509,10 @@ namespace {
 
     template <typename MixFn>
     inline void mix_profile_selection_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
-        // Phase 3A hash builders consume pre-resolved selected asset tokens. Selected loader/cache
-        // access happens before hashing, so direct-route hashes perform no catalog/file/assets lookup.
         mix_hash_string(h, p.filmProfileKey, mix);
-        mix_hash_field(h, p.filmProfileAssetVersionToken, mix);
         mix_scan_route_hash_field(h, p, mix);
         if (Spektrafilm::scan_route_is_print(p.scanRoute)) {
             mix_hash_string(h, p.printProfileKey, mix);
-            mix_hash_field(h, p.printProfileAssetVersionToken, mix);
             mix_hash_field(h, p.enlIll, mix);
             mix_hash_field_scaled_rounded_if_finite(h, p.printExposure, 10000.0, mix);
             mix_hash_field_scaled_rounded_if_finite(h, p.printPreflashExposure, 10000.0, mix);

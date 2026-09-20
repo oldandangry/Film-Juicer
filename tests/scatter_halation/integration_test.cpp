@@ -894,6 +894,41 @@ namespace {
                 admitted.directState->recipe.spatialOptics.scatterHalation.hash ==
                     requestedProduct.recipe.spatialOptics.scatterHalation.hash,
             admitted.diagnostic);
+
+        ParamSnapshot equalDirect = direct;
+        ParamSnapshot differentFilm = direct;
+        differentFilm.filmProfileKey = "kodak_portra_160";
+        ParamSnapshot inactivePrintSelection = direct;
+        inactivePrintSelection.printProfileKey = "kodak_supra_endura";
+        ParamSnapshot alternatePrint = print;
+        alternatePrint.printProfileKey = "kodak_supra_endura";
+        results.record(
+            "profile-selection/meaningful-hash-identity",
+            hash_params(direct) == hash_params(equalDirect) &&
+                hash_params(direct) != hash_params(differentFilm) &&
+                hash_params(direct) == hash_params(inactivePrintSelection) &&
+                hash_params(print) != hash_params(alternatePrint),
+            "film keys and active print keys must distinguish identity; inactive print selection must not");
+
+        ParamSnapshot missingProfile = direct;
+        missingProfile.filmProfileKey = "missing_s07_profile";
+        FocusedRenderStateBuildProduct missingProduct;
+        std::string missingDiagnostic;
+        const bool missingBuilt = build_direct_render_state_product(
+            missingProfile,
+            missingProduct,
+            missingDiagnostic);
+        InstanceState missingState;
+        seed_valid_pending(missingState, missingProfile);
+        const PendingRenderAdmissionResult missingAdmission =
+            admit_pending_render_state(missingState);
+        results.record(
+            "profile-selection/missing-selected-asset-fails-construction",
+            !missingBuilt && !missingDiagnostic.empty() &&
+                missingAdmission.status == PendingRenderAdmissionStatus::RebuildFailed &&
+                !missingAdmission.diagnostic.empty() &&
+                !missingAdmission.directState && !missingAdmission.printState,
+            missingDiagnostic.empty() ? missingAdmission.diagnostic : missingDiagnostic);
     }
 
     void run_pending_admission_rows(Results& results) {

@@ -84,9 +84,6 @@ struct PrintRenderState {
 };
 
 struct ParamSnapshot {
-    std::uint64_t filmProfileAssetVersionToken = 0;
-    std::uint64_t printProfileAssetVersionToken = 0;
-
     double printExposure = 1.0;
     double printPreflashExposure = 0.0;
     double printGammaFactor = 1.0;

@@ -584,7 +584,6 @@ namespace Scanner {
         if (!Spektrafilm::scan_route_is_print(route.scanRoute) || !route.printProfile ||
             route.printProfileKey.empty() ||
             route.printProfileAssetVersionToken == 0 ||
-            route.printProfileAssetVersionToken != route.printProfile->assetVersionToken ||
             bounds.hash == 0 || bounds.medium != Spektrafilm::DensityMedium::Print ||
             bounds.source != Spektrafilm::DensityBoundsSource::PrintMediaAuthoredCurves ||
             output.medium != Spektrafilm::DensityMedium::Print ||
