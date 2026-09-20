@@ -1550,204 +1550,175 @@ void JuicerEffect::applyDirGammaProfileDefaults() {
 
 JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     : OFX::ImageEffect(handle) {
-    // Cache clips (wrappers) for Step 2; safe even if render still uses the existing path.
-    try {
-        _src = fetchClip(kOfxImageEffectSimpleSourceClipName); // "Source"
-        _dst = fetchClip(kOfxImageEffectOutputClipName);       // "Output"
-    } catch (...) {
-        _src = nullptr;
-        _dst = nullptr;
-    }
-
-    const auto fetchOptionalBooleanParam = [this](const char* name) {
-        try {
-            return fetchBooleanParam(name);
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-            return static_cast<OFX::BooleanParam*>(nullptr);
-        }
-    };
-    const auto fetchOptionalDoubleParam = [this](const char* name) {
-        try {
-            return fetchDoubleParam(name);
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-            return static_cast<OFX::DoubleParam*>(nullptr);
-        }
-    };
+    _src = fetchClip(kOfxImageEffectSimpleSourceClipName);
+    _dst = fetchClip(kOfxImageEffectOutputClipName);
 
     // Cache parameter handles (wrappers)
-    try {
-        _pExposure = fetchDoubleParam(kParamExposure);
-        _pCameraAutoExposure = fetchBooleanParam(kParamCameraAutoExposure);
-        _pCameraFilmFormatPreset =
-            fetchChoiceParam(JuicerParams::kCameraFilmFormatPreset);
-        _pCameraFilmFormat = fetchDoubleParam(JuicerParams::kCameraFilmFormatMm);
-        _pCameraMeteringMethod = fetchChoiceParam(JuicerParams::kCameraMeteringMethod);
-        _pFilmProfileKey = fetchStrChoiceParam(JuicerParams::kFilmProfileKey);
-        _pSpectralMode = fetchChoiceParam(kParamSpectralMode);
-        _pPrintProfileKey = fetchStrChoiceParam(JuicerParams::kPrintProfileKey);
-        _pRefIll = fetchChoiceParam("ReferenceIlluminant");
-        _pEnlIll = fetchChoiceParam("EnlargerIlluminant");
-        _pInputColorSpace = fetchChoiceParam(JuicerParams::kInputColorSpace);
-        _pInputCctfDecoding = fetchBooleanParam(JuicerParams::kInputCctfDecoding);
-        _pInputCompression = fetchBooleanParam(JuicerParams::kInputCompression);
-        _pHanatos2025AdaptationWindow =
-            fetchBooleanParam(JuicerParams::kHanatos2025AdaptationWindow);
-        _pHanatos2025AdaptationSurface =
-            fetchBooleanParam(JuicerParams::kHanatos2025AdaptationSurface);
-        _pScanRoute = fetchStrChoiceParam(JuicerParams::kParamScanRoute);
-        _pFilmGammaFactor = fetchDoubleParam(JuicerParams::kFilmGammaFactor);
-        _pPrintGammaFactor = fetchDoubleParam(JuicerParams::kPrintGammaFactor);
-        _pOutputColorSpace = fetchChoiceParam(kParamOutputColorSpace);
-        _pOutputCctfEncoding = fetchBooleanParam(kParamOutputCctfEncoding);
-        _pOutputGamutCompression =
-            fetchBooleanParam(JuicerParams::kOutputGamutCompression);
+    _pExposure = fetchDoubleParam(kParamExposure);
+    _pCameraAutoExposure = fetchBooleanParam(kParamCameraAutoExposure);
+    _pCameraFilmFormatPreset =
+        fetchChoiceParam(JuicerParams::kCameraFilmFormatPreset);
+    _pCameraFilmFormat = fetchDoubleParam(JuicerParams::kCameraFilmFormatMm);
+    _pCameraMeteringMethod = fetchChoiceParam(JuicerParams::kCameraMeteringMethod);
+    _pFilmProfileKey = fetchStrChoiceParam(JuicerParams::kFilmProfileKey);
+    _pSpectralMode = fetchChoiceParam(kParamSpectralMode);
+    _pPrintProfileKey = fetchStrChoiceParam(JuicerParams::kPrintProfileKey);
+    _pRefIll = fetchChoiceParam("ReferenceIlluminant");
+    _pEnlIll = fetchChoiceParam("EnlargerIlluminant");
+    _pInputColorSpace = fetchChoiceParam(JuicerParams::kInputColorSpace);
+    _pInputCctfDecoding = fetchBooleanParam(JuicerParams::kInputCctfDecoding);
+    _pInputCompression = fetchBooleanParam(JuicerParams::kInputCompression);
+    _pHanatos2025AdaptationWindow =
+        fetchBooleanParam(JuicerParams::kHanatos2025AdaptationWindow);
+    _pHanatos2025AdaptationSurface =
+        fetchBooleanParam(JuicerParams::kHanatos2025AdaptationSurface);
+    _pScanRoute = fetchStrChoiceParam(JuicerParams::kParamScanRoute);
+    _pFilmGammaFactor = fetchDoubleParam(JuicerParams::kFilmGammaFactor);
+    _pPrintGammaFactor = fetchDoubleParam(JuicerParams::kPrintGammaFactor);
+    _pOutputColorSpace = fetchChoiceParam(kParamOutputColorSpace);
+    _pOutputCctfEncoding = fetchBooleanParam(kParamOutputCctfEncoding);
+    _pOutputGamutCompression =
+        fetchBooleanParam(JuicerParams::kOutputGamutCompression);
 
+    _pCouplersActive = fetchBooleanParam(JuicerParams::kDirCouplersActive);
+    _pCouplersAmount = fetchDoubleParam(JuicerParams::kDirCouplersAmount);
+    _pCouplersInhibitionSameLayer =
+        fetchDoubleParam(JuicerParams::kDirCouplersInhibitionSameLayer);
+    _pCouplersInhibitionInterlayer =
+        fetchDoubleParam(JuicerParams::kDirCouplersInhibitionInterlayer);
+    _pCouplersDiffusionSizeUm =
+        fetchDoubleParam(JuicerParams::kDirCouplersDiffusionSizeUm);
+    _pCouplersLangmuirDonorKRgb =
+        fetchDouble3DParam(JuicerParams::kDirCouplersLangmuirDonorKRgb);
+    _pCouplersLangmuirReceiverKRgb =
+        fetchDouble3DParam(JuicerParams::kDirCouplersLangmuirReceiverKRgb);
+    _pCouplersDiffusionTailUm =
+        fetchDoubleParam(JuicerParams::kDirCouplersDiffusionTailUm);
+    _pCouplersDiffusionTailWeight =
+        fetchDoubleParam(JuicerParams::kDirCouplersDiffusionTailWeight);
+    _pCouplersGammaUseStock =
+        fetchBooleanParam(JuicerParams::kDirCouplersGammaUseStock);
+    _pCouplersGammaSameLayerRgb =
+        fetchDouble3DParam(JuicerParams::kDirCouplersGammaSameLayerRgb);
+    _pCouplersGammaInterlayerRToGb =
+        fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerRToGb);
+    _pCouplersGammaInterlayerGToRb =
+        fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerGToRb);
+    _pCouplersGammaInterlayerBToRg =
+        fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerBToRg);
 
-        _pCouplersActive = fetchBooleanParam(JuicerParams::kDirCouplersActive);
-        _pCouplersAmount = fetchDoubleParam(JuicerParams::kDirCouplersAmount);
-        _pCouplersInhibitionSameLayer =
-            fetchDoubleParam(JuicerParams::kDirCouplersInhibitionSameLayer);
-        _pCouplersInhibitionInterlayer =
-            fetchDoubleParam(JuicerParams::kDirCouplersInhibitionInterlayer);
-        _pCouplersDiffusionSizeUm =
-            fetchDoubleParam(JuicerParams::kDirCouplersDiffusionSizeUm);
-        _pCouplersLangmuirDonorKRgb =
-            fetchDouble3DParam(JuicerParams::kDirCouplersLangmuirDonorKRgb);
-        _pCouplersLangmuirReceiverKRgb =
-            fetchDouble3DParam(JuicerParams::kDirCouplersLangmuirReceiverKRgb);
-        _pCouplersDiffusionTailUm =
-            fetchDoubleParam(JuicerParams::kDirCouplersDiffusionTailUm);
-        _pCouplersDiffusionTailWeight =
-            fetchDoubleParam(JuicerParams::kDirCouplersDiffusionTailWeight);
-        _pCouplersGammaUseStock =
-            fetchBooleanParam(JuicerParams::kDirCouplersGammaUseStock);
-        _pCouplersGammaSameLayerRgb =
-            fetchDouble3DParam(JuicerParams::kDirCouplersGammaSameLayerRgb);
-        _pCouplersGammaInterlayerRToGb =
-            fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerRToGb);
-        _pCouplersGammaInterlayerGToRb =
-            fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerGToRb);
-        _pCouplersGammaInterlayerBToRg =
-            fetchDouble2DParam(JuicerParams::kDirCouplersGammaInterlayerBToRg);
+    _pScannerLensBlur = fetchDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
+    _pScannerUnsharp = fetchDouble2DParam(JuicerParams::kScannerUnsharpMask);
+    _pScannerBlackCorrection =
+        fetchBooleanParam(JuicerParams::kScannerBlackCorrection);
+    _pScannerWhiteCorrection =
+        fetchBooleanParam(JuicerParams::kScannerWhiteCorrection);
+    _pScannerBlackLevel = fetchDoubleParam(JuicerParams::kScannerBlackLevel);
+    _pScannerWhiteLevel = fetchDoubleParam(JuicerParams::kScannerWhiteLevel);
+    _pScannerUseLut = fetchBooleanParam(JuicerParams::kScannerUseLut);
+    _pScannerLutResolution = fetchIntParam(JuicerParams::kScannerLutResolution);
 
-        _pScannerLensBlur = fetchDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
-        _pScannerUnsharp = fetchDouble2DParam(JuicerParams::kScannerUnsharpMask);
-        _pScannerBlackCorrection =
-            fetchBooleanParam(JuicerParams::kScannerBlackCorrection);
-        _pScannerWhiteCorrection =
-            fetchBooleanParam(JuicerParams::kScannerWhiteCorrection);
-        _pScannerBlackLevel = fetchDoubleParam(JuicerParams::kScannerBlackLevel);
-        _pScannerWhiteLevel = fetchDoubleParam(JuicerParams::kScannerWhiteLevel);
-        _pScannerUseLut = fetchBooleanParam(JuicerParams::kScannerUseLut);
-        _pScannerLutResolution = fetchIntParam(JuicerParams::kScannerLutResolution);
+    _pPrintExposure = fetchDoubleParam("PrintExposure");
+    _pPrintPreflash = fetchDoubleParam("PrintPreflash");
+    _pPrintExposureComp = fetchBooleanParam("PrintExposureCompensation");
+    _pEnlargerY = fetchDoubleParam("EnlargerY");
+    _pEnlargerM = fetchDoubleParam("EnlargerM");
+    _pEnlargerC = fetchDoubleParam("EnlargerC");
 
-        _pPrintExposure = fetchDoubleParam("PrintExposure");
-        _pPrintPreflash = fetchDoubleParam("PrintPreflash");
-        _pPrintExposureComp = fetchBooleanParam("PrintExposureCompensation");
-        _pEnlargerY = fetchDoubleParam("EnlargerY");
-        _pEnlargerM = fetchDoubleParam("EnlargerM");
-        _pEnlargerC = fetchDoubleParam("EnlargerC");
+    _pHalationActive = fetchBooleanParam(JuicerParams::kHalationActive);
+    _pHalationScatterAmount =
+        fetchDoubleParam(JuicerParams::kHalationScatterAmount);
+    _pHalationScatterSpatialScale =
+        fetchDoubleParam(JuicerParams::kHalationScatterSpatialScale);
+    _pHalationAmount = fetchDoubleParam(JuicerParams::kHalationAmount);
+    _pHalationSpatialScale =
+        fetchDoubleParam(JuicerParams::kHalationSpatialScale);
 
-        _pHalationActive = fetchOptionalBooleanParam(JuicerParams::kHalationActive);
-        _pHalationScatterAmount =
-            fetchOptionalDoubleParam(JuicerParams::kHalationScatterAmount);
-        _pHalationScatterSpatialScale =
-            fetchOptionalDoubleParam(JuicerParams::kHalationScatterSpatialScale);
-        _pHalationAmount = fetchOptionalDoubleParam(JuicerParams::kHalationAmount);
-        _pHalationSpatialScale =
-            fetchOptionalDoubleParam(JuicerParams::kHalationSpatialScale);
+    _pGrainActive = fetchBooleanParam(JuicerParams::kGrainActive);
+    _pGrainSublayersActive = fetchBooleanParam(JuicerParams::kGrainSublayersActive);
+    _pGrainPreset = fetchChoiceParam(JuicerParams::kGrainPreset);
+    _pGrainParticleAreaUm2 = fetchDoubleParam(JuicerParams::kGrainParticleAreaUm2);
+    _pGrainAmplitude = fetchDoubleParam(JuicerParams::kGrainAmplitude);
+    _pGrainSharpness = fetchDoubleParam(JuicerParams::kGrainSharpness);
+    _pGrainChroma = fetchDoubleParam(JuicerParams::kGrainChroma);
+    _pGrainTexture = fetchDoubleParam(JuicerParams::kGrainTexture);
+    _pGrainParticleScaleMaster = fetchDoubleParam(JuicerParams::kGrainParticleScaleMaster);
+    _pGrainParticleScaleLayersMaster = fetchDoubleParam(JuicerParams::kGrainParticleScaleLayersMaster);
+    _pGrainDensityMinMaster = fetchDoubleParam(JuicerParams::kGrainDensityMinMaster);
+    _pGrainUniformityMaster = fetchDoubleParam(JuicerParams::kGrainUniformityMaster);
+    _pGrainParticleScale = fetchDouble3DParam(JuicerParams::kGrainParticleScale);
+    _pGrainParticleScaleLayers = fetchDouble3DParam(JuicerParams::kGrainParticleScaleLayers);
+    _pGrainDensityMin = fetchDouble3DParam(JuicerParams::kGrainDensityMin);
+    _pGrainUniformity = fetchDouble3DParam(JuicerParams::kGrainUniformity);
+    _pGrainBlur = fetchDoubleParam(JuicerParams::kGrainBlur);
+    _pGrainBlurDyeCloudsUm = fetchDoubleParam(JuicerParams::kGrainBlurDyeCloudsUm);
+    _pGrainSizeMixWeight = fetchDoubleParam(JuicerParams::kGrainSizeMixWeight);
+    _pGrainSizeMixWeightMid = fetchDoubleParam(JuicerParams::kGrainSizeMixWeightMid);
+    _pGrainSizeMixScale = fetchDoubleParam(JuicerParams::kGrainSizeMixScale);
+    _pGrainClumpTemporalMix = fetchDoubleParam(JuicerParams::kGrainClumpTemporalMix);
+    _pGrainClumpMorphPeriodSec = fetchDoubleParam(JuicerParams::kGrainClumpMorphPeriodSec);
+    _pGrainDebugView = fetchChoiceParam(JuicerParams::kGrainDebugView);
+    _pGrainMicroStructure = fetchDouble2DParam(JuicerParams::kGrainMicroStructure);
+    _pGrainResetAdvanced = fetchPushButtonParam(JuicerParams::kGrainResetAdvanced);
+    _pGateWeaveAmount = fetchDoubleParam(JuicerParams::kGateWeaveAmount);
+    _pFilmDustAmount = fetchDoubleParam(JuicerParams::kFilmDustAmount);
+    _pGateDustAmount = fetchDoubleParam(JuicerParams::kGateDustAmount);
+    _pFilmScratchAmount = fetchDoubleParam(JuicerParams::kFilmScratchAmount);
+    _pGateScratchAmount = fetchDoubleParam(JuicerParams::kGateScratchAmount);
 
-        _pGrainActive = fetchBooleanParam(JuicerParams::kGrainActive);
-        _pGrainSublayersActive = fetchBooleanParam(JuicerParams::kGrainSublayersActive);
-        _pGrainPreset = fetchChoiceParam(JuicerParams::kGrainPreset);
-        _pGrainParticleAreaUm2 = fetchDoubleParam(JuicerParams::kGrainParticleAreaUm2);
-        _pGrainAmplitude = fetchDoubleParam(JuicerParams::kGrainAmplitude);
-        _pGrainSharpness = fetchDoubleParam(JuicerParams::kGrainSharpness);
-        _pGrainChroma = fetchDoubleParam(JuicerParams::kGrainChroma);
-        _pGrainTexture = fetchDoubleParam(JuicerParams::kGrainTexture);
-        _pGrainParticleScaleMaster = fetchDoubleParam(JuicerParams::kGrainParticleScaleMaster);
-        _pGrainParticleScaleLayersMaster = fetchDoubleParam(JuicerParams::kGrainParticleScaleLayersMaster);
-        _pGrainDensityMinMaster = fetchDoubleParam(JuicerParams::kGrainDensityMinMaster);
-        _pGrainUniformityMaster = fetchDoubleParam(JuicerParams::kGrainUniformityMaster);
-        _pGrainParticleScale = fetchDouble3DParam(JuicerParams::kGrainParticleScale);
-        _pGrainParticleScaleLayers = fetchDouble3DParam(JuicerParams::kGrainParticleScaleLayers);
-        _pGrainDensityMin = fetchDouble3DParam(JuicerParams::kGrainDensityMin);
-        _pGrainUniformity = fetchDouble3DParam(JuicerParams::kGrainUniformity);
-        _pGrainBlur = fetchDoubleParam(JuicerParams::kGrainBlur);
-        _pGrainBlurDyeCloudsUm = fetchDoubleParam(JuicerParams::kGrainBlurDyeCloudsUm);
-        _pGrainSizeMixWeight = fetchDoubleParam(JuicerParams::kGrainSizeMixWeight);
-        _pGrainSizeMixWeightMid = fetchDoubleParam(JuicerParams::kGrainSizeMixWeightMid);
-        _pGrainSizeMixScale = fetchDoubleParam(JuicerParams::kGrainSizeMixScale);
-        _pGrainClumpTemporalMix = fetchDoubleParam(JuicerParams::kGrainClumpTemporalMix);
-        _pGrainClumpMorphPeriodSec = fetchDoubleParam(JuicerParams::kGrainClumpMorphPeriodSec);
-        _pGrainDebugView = fetchChoiceParam(JuicerParams::kGrainDebugView);
-        _pGrainMicroStructure = fetchDouble2DParam(JuicerParams::kGrainMicroStructure);
-        _pGrainResetAdvanced = fetchPushButtonParam(JuicerParams::kGrainResetAdvanced);
-        _pGateWeaveAmount = fetchDoubleParam(JuicerParams::kGateWeaveAmount);
-        _pFilmDustAmount = fetchDoubleParam(JuicerParams::kFilmDustAmount);
-        _pGateDustAmount = fetchDoubleParam(JuicerParams::kGateDustAmount);
-        _pFilmScratchAmount = fetchDoubleParam(JuicerParams::kFilmScratchAmount);
-        _pGateScratchAmount = fetchDoubleParam(JuicerParams::kGateScratchAmount);
+    _cameraDiffusionUi.enabled =
+        fetchBooleanParam(JuicerParams::kCameraDiffusionEnabled);
+    _cameraDiffusionUi.family =
+        fetchChoiceParam(JuicerParams::kCameraDiffusionFamily);
+    _cameraDiffusionUi.strength =
+        fetchDoubleParam(JuicerParams::kCameraDiffusionStrength);
+    _cameraDiffusionUi.spatialScale =
+        fetchDoubleParam(JuicerParams::kCameraDiffusionSpatialScale);
+    _cameraDiffusionUi.haloWarmth =
+        fetchDoubleParam(JuicerParams::kCameraDiffusionHaloWarmth);
+    _cameraDiffusionUi.coreIntensity =
+        fetchDoubleParam(JuicerParams::kCameraDiffusionCoreIntensity);
+    _cameraDiffusionUi.coreSize =
+        fetchDoubleParam(JuicerParams::kCameraDiffusionCoreSize);
+    _cameraDiffusionUi.haloIntensity =
+        fetchDoubleParam(JuicerParams::kCameraDiffusionHaloIntensity);
+    _cameraDiffusionUi.haloSize =
+        fetchDoubleParam(JuicerParams::kCameraDiffusionHaloSize);
+    _cameraDiffusionUi.bloomIntensity =
+        fetchDoubleParam(JuicerParams::kCameraDiffusionBloomIntensity);
+    _cameraDiffusionUi.bloomSize =
+        fetchDoubleParam(JuicerParams::kCameraDiffusionBloomSize);
 
-        _cameraDiffusionUi.enabled =
-            fetchBooleanParam(JuicerParams::kCameraDiffusionEnabled);
-        _cameraDiffusionUi.family =
-            fetchChoiceParam(JuicerParams::kCameraDiffusionFamily);
-        _cameraDiffusionUi.strength =
-            fetchDoubleParam(JuicerParams::kCameraDiffusionStrength);
-        _cameraDiffusionUi.spatialScale =
-            fetchDoubleParam(JuicerParams::kCameraDiffusionSpatialScale);
-        _cameraDiffusionUi.haloWarmth =
-            fetchDoubleParam(JuicerParams::kCameraDiffusionHaloWarmth);
-        _cameraDiffusionUi.coreIntensity =
-            fetchDoubleParam(JuicerParams::kCameraDiffusionCoreIntensity);
-        _cameraDiffusionUi.coreSize =
-            fetchDoubleParam(JuicerParams::kCameraDiffusionCoreSize);
-        _cameraDiffusionUi.haloIntensity =
-            fetchDoubleParam(JuicerParams::kCameraDiffusionHaloIntensity);
-        _cameraDiffusionUi.haloSize =
-            fetchDoubleParam(JuicerParams::kCameraDiffusionHaloSize);
-        _cameraDiffusionUi.bloomIntensity =
-            fetchDoubleParam(JuicerParams::kCameraDiffusionBloomIntensity);
-        _cameraDiffusionUi.bloomSize =
-            fetchDoubleParam(JuicerParams::kCameraDiffusionBloomSize);
+    _printDiffusionUi.enabled =
+        fetchBooleanParam(JuicerParams::kPrintDiffusionEnabled);
+    _printDiffusionUi.family =
+        fetchChoiceParam(JuicerParams::kPrintDiffusionFamily);
+    _printDiffusionUi.strength =
+        fetchDoubleParam(JuicerParams::kPrintDiffusionStrength);
+    _printDiffusionUi.spatialScale =
+        fetchDoubleParam(JuicerParams::kPrintDiffusionSpatialScale);
+    _printDiffusionUi.haloWarmth =
+        fetchDoubleParam(JuicerParams::kPrintDiffusionHaloWarmth);
+    _printDiffusionUi.coreIntensity =
+        fetchDoubleParam(JuicerParams::kPrintDiffusionCoreIntensity);
+    _printDiffusionUi.coreSize =
+        fetchDoubleParam(JuicerParams::kPrintDiffusionCoreSize);
+    _printDiffusionUi.haloIntensity =
+        fetchDoubleParam(JuicerParams::kPrintDiffusionHaloIntensity);
+    _printDiffusionUi.haloSize =
+        fetchDoubleParam(JuicerParams::kPrintDiffusionHaloSize);
+    _printDiffusionUi.bloomIntensity =
+        fetchDoubleParam(JuicerParams::kPrintDiffusionBloomIntensity);
+    _printDiffusionUi.bloomSize =
+        fetchDoubleParam(JuicerParams::kPrintDiffusionBloomSize);
 
-        _printDiffusionUi.enabled =
-            fetchBooleanParam(JuicerParams::kPrintDiffusionEnabled);
-        _printDiffusionUi.family =
-            fetchChoiceParam(JuicerParams::kPrintDiffusionFamily);
-        _printDiffusionUi.strength =
-            fetchDoubleParam(JuicerParams::kPrintDiffusionStrength);
-        _printDiffusionUi.spatialScale =
-            fetchDoubleParam(JuicerParams::kPrintDiffusionSpatialScale);
-        _printDiffusionUi.haloWarmth =
-            fetchDoubleParam(JuicerParams::kPrintDiffusionHaloWarmth);
-        _printDiffusionUi.coreIntensity =
-            fetchDoubleParam(JuicerParams::kPrintDiffusionCoreIntensity);
-        _printDiffusionUi.coreSize =
-            fetchDoubleParam(JuicerParams::kPrintDiffusionCoreSize);
-        _printDiffusionUi.haloIntensity =
-            fetchDoubleParam(JuicerParams::kPrintDiffusionHaloIntensity);
-        _printDiffusionUi.haloSize =
-            fetchDoubleParam(JuicerParams::kPrintDiffusionHaloSize);
-        _printDiffusionUi.bloomIntensity =
-            fetchDoubleParam(JuicerParams::kPrintDiffusionBloomIntensity);
-        _printDiffusionUi.bloomSize =
-            fetchDoubleParam(JuicerParams::kPrintDiffusionBloomSize);
-
-        _pGlareActive = fetchBooleanParam(JuicerParams::kGlareActive);
-        _pGlarePercent = fetchDoubleParam(JuicerParams::kGlarePercent);
-        _pGlareRoughness = fetchDoubleParam(JuicerParams::kGlareRoughness);
-        _pGlareBlurSigmaPx = fetchDoubleParam(JuicerParams::kGlareBlurSigmaPx);
-        _pGlareCompRemovalFactor = fetchDoubleParam(JuicerParams::kPrintShadowCompensationFactor);
-        _pGlareCompRemovalDensity = fetchDoubleParam(JuicerParams::kPrintShadowCompensationDensity);
-        _pGlareCompRemovalTransition = fetchDoubleParam(JuicerParams::kPrintShadowCompensationTransition);
-    } catch (...) {
-        // Safe: any missing param will remain nullptr and defaults are used in snapshot/usage paths.
-        JTRACE("PARAM", "parameter cache bootstrap incomplete; defaults will be used for missing handles");
-    }
+    _pGlareActive = fetchBooleanParam(JuicerParams::kGlareActive);
+    _pGlarePercent = fetchDoubleParam(JuicerParams::kGlarePercent);
+    _pGlareRoughness = fetchDoubleParam(JuicerParams::kGlareRoughness);
+    _pGlareBlurSigmaPx = fetchDoubleParam(JuicerParams::kGlareBlurSigmaPx);
+    _pGlareCompRemovalFactor = fetchDoubleParam(JuicerParams::kPrintShadowCompensationFactor);
+    _pGlareCompRemovalDensity = fetchDoubleParam(JuicerParams::kPrintShadowCompensationDensity);
+    _pGlareCompRemovalTransition = fetchDoubleParam(JuicerParams::kPrintShadowCompensationTransition);
 
     if (_pGrainPreset) {
         std::string label;
