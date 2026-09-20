@@ -344,31 +344,43 @@ namespace Spectral {
         return gShape.K == gHanSpectra.numSamples;
     }
 
-    inline void disable_hanatos_if_reference_mismatch() {
-        if (hanatos_available() && !hanatos_matches_reference_shape()) {
-            JTRACE("HANATOS", "Disabling spectral LUT: reference axis mismatch");
-            set_hanatos_available(false);
-        }
-    }
-
     inline void load_hanatos_spectra_lut(const std::string& path) {
         NpySpectraLUT spectra;
         const bool success = load_npy_spectra_lut(path, spectra);
-        if (success && spectra.size > 0 && spectra.numSamples > 0) {
-            gHanSpectra = std::move(spectra);
-            context().hanatosAssetHash = Hash::hash_float_span(
-                gHanSpectra.data.data(),
-                gHanSpectra.data.size());
-        } else {
+        const std::size_t expectedDataCount =
+            static_cast<std::size_t>(FilmTcLut::kSize) *
+            static_cast<std::size_t>(FilmTcLut::kSize) *
+            static_cast<std::size_t>(kNumSamples);
+        const bool accepted =
+            success && spectra.size == FilmTcLut::kSize &&
+            spectra.numSamples == kNumSamples &&
+            spectra.data.size() == expectedDataCount &&
+            spectral_shape_matches_reference(gShape) &&
+            gShape.K == spectra.numSamples &&
+            std::all_of(
+                spectra.data.begin(),
+                spectra.data.end(),
+                [](float value) {
+                    return std::isfinite(value);
+                });
+        if (!accepted) {
             gHanSpectra = NpySpectraLUT{};
             context().hanatosAssetHash = 0;
+            set_hanatos_available(false);
+            return;
         }
-        set_hanatos_available(success && gHanSpectra.size > 0 &&
-                              gHanSpectra.numSamples > 0 &&
-                              context().hanatosAssetHash != 0);
-        if (hanatos_available() && !hanatos_matches_reference_shape()) {
-            disable_hanatos_if_reference_mismatch();
+
+        gHanSpectra = std::move(spectra);
+        context().hanatosAssetHash = Hash::hash_float_span(
+            gHanSpectra.data.data(),
+            gHanSpectra.data.size());
+        if (context().hanatosAssetHash == 0) {
+            gHanSpectra = NpySpectraLUT{};
+            context().hanatosAssetHash = 0;
+            set_hanatos_available(false);
+            return;
         }
+        set_hanatos_available(true);
     }
 
     inline bool arctic_available() {

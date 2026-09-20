@@ -48,21 +48,6 @@ namespace Spectral {
             return index;
         }
 
-        bool spectra_shape_valid(const NpySpectraLUT& spectra) {
-            return spectra.size == FilmTcLut::kSize &&
-                   spectra.numSamples == kNumSamples &&
-                   spectra.data.size() ==
-                       static_cast<std::size_t>(FilmTcLut::kSize) *
-                           static_cast<std::size_t>(FilmTcLut::kSize) *
-                           static_cast<std::size_t>(kNumSamples) &&
-                   std::all_of(
-                       spectra.data.begin(),
-                       spectra.data.end(),
-                       [](float value) {
-                           return std::isfinite(value);
-                       });
-        }
-
         bool build_gaussian_kernel(
             float sigma,
             std::vector<float>& kernel) {
@@ -94,9 +79,9 @@ namespace Spectral {
             float sigma,
             std::vector<float>& out,
             std::string& diagnostic) {
-            if (!spectra_shape_valid(source) || !std::isfinite(sigma) || sigma < 0.0f) {
+            if (!std::isfinite(sigma) || sigma < 0.0f) {
                 diagnostic =
-                    "MalformedRequiredResource component=film_tc_lut method=hanatos2025 requirement=finite_192x192x81_spectra_and_blur";
+                    "MalformedRequiredResource component=film_tc_lut method=hanatos2025 requirement=finite_blur";
                 return false;
             }
             if (!(sigma > 0.0f)) {
@@ -296,11 +281,10 @@ namespace Spectral {
         std::string& diagnostic) {
         diagnostic.clear();
         out = {};
-        if (!spectra_shape_valid(spectra) ||
-            !std::isfinite(spectralGaussianBlur) ||
+        if (!std::isfinite(spectralGaussianBlur) ||
             spectralGaussianBlur < 0.0f) {
             diagnostic =
-                "MalformedRequiredResource component=hanatos_window requirement=finite_192x192x81_spectra_and_blur";
+                "MalformedRequiredResource component=hanatos_window requirement=finite_blur";
             return false;
         }
         float tcC = 0.0f;
@@ -362,7 +346,7 @@ namespace Spectral {
         std::string& diagnostic) {
         diagnostic.clear();
         out = FilmTcLut{};
-        if (!spectra_shape_valid(spectra) || recipe.tcLutHash == 0 ||
+        if (recipe.tcLutHash == 0 ||
             (recipe.rgbToRawMethod != Spektrafilm::RgbToRawMethod::Hanatos2025 &&
              recipe.rgbToRawMethod != Spektrafilm::RgbToRawMethod::Arctic2026beta04)) {
             diagnostic =

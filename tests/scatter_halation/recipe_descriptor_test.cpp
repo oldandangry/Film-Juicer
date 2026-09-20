@@ -1,19 +1,64 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <string>
 
 #include "gtest/gtest.h"
 
+#include "SpectralProcessing.h"
+#include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "ProfileCatalog.h"
 #include "ScatterHalation.h"
 #include "SpectralData.h"
 
 namespace {
+
+    std::filesystem::path gTestExecutablePath;
+
+    bool replace_first_npy_half_with_nan(
+        const std::filesystem::path& path) {
+        std::fstream stream(
+            path,
+            std::ios::binary | std::ios::in | std::ios::out);
+        std::array<unsigned char, 8> preamble{};
+        stream.read(
+            reinterpret_cast<char*>(preamble.data()),
+            static_cast<std::streamsize>(preamble.size()));
+        if (!stream || preamble[0] != 0x93u || preamble[1] != 'N' ||
+            preamble[2] != 'U' || preamble[3] != 'M' ||
+            preamble[4] != 'P' || preamble[5] != 'Y') {
+            return false;
+        }
+
+        const std::size_t lengthBytes = preamble[6] == 1u ? 2u : 4u;
+        std::array<unsigned char, 4> encodedLength{};
+        stream.read(
+            reinterpret_cast<char*>(encodedLength.data()),
+            static_cast<std::streamsize>(lengthBytes));
+        if (!stream) {
+            return false;
+        }
+        std::uint32_t headerLength = 0;
+        for (std::size_t index = 0; index < lengthBytes; ++index) {
+            headerLength |= static_cast<std::uint32_t>(encodedLength[index])
+                            << (8u * index);
+        }
+        stream.seekp(
+            static_cast<std::streamoff>(headerLength),
+            std::ios::cur);
+        constexpr std::array<unsigned char, 2> kQuietNanHalf{{0x00u, 0x7eu}};
+        stream.write(
+            reinterpret_cast<const char*>(kQuietNanHalf.data()),
+            static_cast<std::streamsize>(kQuietNanHalf.size()));
+        return static_cast<bool>(stream);
+    }
 
     std::uint32_t float_bits(float value) {
         return std::bit_cast<std::uint32_t>(value);
@@ -242,9 +287,54 @@ namespace {
         EXPECT_TRUE(Spectral::mallett_available());
     }
 
+    TEST(SpectralAssetAcceptance, RejectsNonfiniteHanatos) {
+        JuicerProcess::root().ensure_bootstrap();
+        ASSERT_TRUE(Spectral::hanatos_available());
+        ASSERT_NE(Spectral::context().hanatosAssetHash, 0u);
+
+        const char* artifactDirectory =
+            std::getenv("JUICER_TEST_ARTIFACT_DIR");
+        ASSERT_NE(artifactDirectory, nullptr);
+        const std::filesystem::path artifactPath =
+            std::filesystem::path(artifactDirectory) /
+            "nonfinite-hanatos.npy";
+        ASSERT_TRUE(std::filesystem::create_directories(
+                        artifactPath.parent_path()) ||
+                    std::filesystem::is_directory(
+                        artifactPath.parent_path()));
+
+        const std::filesystem::path stagedResource =
+            gTestExecutablePath.parent_path().parent_path() /
+            "Resources" / "luts" / "spectral_upsampling" /
+            "irradiance_xy_tc.npy";
+        ASSERT_TRUE(std::filesystem::copy_file(
+            stagedResource,
+            artifactPath,
+            std::filesystem::copy_options::overwrite_existing));
+        ASSERT_TRUE(replace_first_npy_half_with_nan(artifactPath));
+
+        Spectral::load_hanatos_spectra_lut(artifactPath.string());
+        EXPECT_FALSE(Spectral::hanatos_available());
+        EXPECT_TRUE(Spectral::gHanSpectra.data.empty());
+        EXPECT_EQ(Spectral::gHanSpectra.size, 0);
+        EXPECT_EQ(Spectral::gHanSpectra.numSamples, 0);
+        EXPECT_EQ(Spectral::context().hanatosAssetHash, 0u);
+
+        ParamSnapshot snapshot;
+        snapshot.spectralUpsamplingMode = 0;
+        FocusedRenderStateBuildProduct product;
+        std::string diagnostic;
+        EXPECT_FALSE(build_direct_render_state_product(
+            snapshot,
+            product,
+            diagnostic));
+        EXPECT_FALSE(diagnostic.empty());
+    }
+
 } // namespace
 
 int main(int argc, char** argv) {
+    gTestExecutablePath = std::filesystem::absolute(argv[0]);
     testing::InitGoogleTest(&argc, argv);
     const int result = RUN_ALL_TESTS();
     JuicerProcess::shutdown_if_initialized();
