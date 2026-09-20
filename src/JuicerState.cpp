@@ -219,7 +219,6 @@ namespace {
         const RenderRecipe& recipe,
         FocusedRenderPayload& payload) {
         if (Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ||
-            !recipe.directStructuralReady ||
             !recipe.profileRoute.filmProfile) {
             return false;
         }
@@ -295,7 +294,6 @@ namespace {
         const RenderRecipe& recipe,
         FocusedRenderPayload& payload) {
         if (!Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ||
-            !recipe.printStructuralReady ||
             !recipe.profileRoute.printProfile) {
             return false;
         }
@@ -1531,7 +1529,7 @@ namespace {
         if (S.lastHash.load(std::memory_order_acquire) == fullHash) {
             const std::shared_ptr<const DirectRenderState> active =
                 JuicerAtomic::load_shared_ptr(&S.activeDirectState);
-            if (active && active->buildCounter != 0 && active->recipe.directStructuralReady) {
+            if (active) {
                 return true;
             }
         }
@@ -1586,7 +1584,7 @@ namespace {
         if (S.lastHash.load(std::memory_order_acquire) == fullHash) {
             const std::shared_ptr<const PrintRenderState> active =
                 JuicerAtomic::load_shared_ptr(&S.activePrintState);
-            if (active && active->buildCounter != 0 && active->recipe.printStructuralReady) {
+            if (active) {
                 return true;
             }
         }
@@ -1688,8 +1686,7 @@ PendingRenderAdmissionResult admit_pending_render_state(InstanceState& state) {
 
         if (Spektrafilm::scan_route_is_print(snapshot.scanRoute)) {
             result.printState = JuicerAtomic::load_shared_ptr(&state.activePrintState);
-            if (!result.printState || result.printState->buildCounter == 0 ||
-                !result.printState->recipe.printStructuralReady) {
+            if (!result.printState) {
                 result.status = PendingRenderAdmissionStatus::RebuildFailed;
                 result.diagnostic =
                     "ResourceDescriptorMismatch focused print render state not ready";
@@ -1701,8 +1698,7 @@ PendingRenderAdmissionResult admit_pending_render_state(InstanceState& state) {
         }
 
         result.directState = JuicerAtomic::load_shared_ptr(&state.activeDirectState);
-        if (!result.directState || result.directState->buildCounter == 0 ||
-            !result.directState->recipe.directStructuralReady) {
+        if (!result.directState) {
             result.status = PendingRenderAdmissionStatus::RebuildFailed;
             result.diagnostic =
                 "ResourceDescriptorMismatch focused direct render state not ready";

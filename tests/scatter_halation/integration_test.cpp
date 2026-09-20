@@ -804,8 +804,10 @@ namespace {
             directDiagnostic);
         results.record(
             "build-product/direct-complete",
-            directBuilt && directProduct.recipe.directStructuralReady &&
-                !directProduct.recipe.printStructuralReady &&
+            directBuilt &&
+                !Spektrafilm::scan_route_is_print(
+                    directProduct.recipe.profileRoute.scanRoute) &&
+                directProduct.recipe.hash != 0 &&
                 directProduct.payload.uploadCoreHash != 0 &&
                 directProduct.payload.scannerHash != 0,
             directDiagnostic);
@@ -819,8 +821,10 @@ namespace {
             printDiagnostic);
         results.record(
             "build-product/print-complete",
-            printBuilt && printProduct.recipe.printStructuralReady &&
-                !printProduct.recipe.directStructuralReady &&
+            printBuilt &&
+                Spektrafilm::scan_route_is_print(
+                    printProduct.recipe.profileRoute.scanRoute) &&
+                printProduct.recipe.hash != 0 &&
                 printProduct.payload.uploadCoreHash != 0 &&
                 printProduct.payload.scannerHash != 0,
             printDiagnostic);
@@ -872,7 +876,7 @@ namespace {
             requestedDiagnostic);
         results.record(
             "build-product/requested-halation-complete-unpublished",
-            requestedBuilt && requestedProduct.recipe.directStructuralReady &&
+            requestedBuilt && requestedProduct.recipe.hash != 0 &&
                 requestedProduct.recipe.spatialOptics.scatterHalation.hash != 0,
             requestedDiagnostic);
 

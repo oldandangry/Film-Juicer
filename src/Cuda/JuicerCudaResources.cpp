@@ -3371,13 +3371,7 @@ namespace JuicerCuda {
             recipe.visualGrain.active && recipe.visualGrain.sublayersActive;
         const Scanner::ScannerSpectralLutDescriptor& scannerDescriptor =
             *request.scannerLutDescriptor;
-        if ((printRoute ? !recipe.printStructuralReady : !recipe.directStructuralReady) ||
-            recipe.hash == 0 ||
-            filmRaw.finalSensitivityHash == 0 ||
-            filmDevelop.normalizedDensityCurvesHash == 0 ||
-            densityBounds.hash == 0 ||
-            scannerDescriptor.hash == 0 ||
-            scannerDescriptor.densityBoundsHash != densityBounds.hash) {
+        if (scannerDescriptor.densityBoundsHash != densityBounds.hash) {
             outError = "focused route resource descriptor mismatch";
             return false;
         }
@@ -3950,15 +3944,9 @@ namespace JuicerCuda {
         std::string& diagnostic) {
         diagnostic.clear();
         out = PrintResourceDescriptors{};
-        if (!recipe.printStructuralReady ||
-            !Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ||
+        if (!Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ||
             !recipe.profileRoute.filmProfile ||
             !recipe.profileRoute.printProfile ||
-            recipe.print.hash == 0 ||
-            recipe.print.filters.hash == 0 ||
-            recipe.print.exposure.hash == 0 ||
-            recipe.print.illuminant.hash == 0 ||
-            recipe.print.develop.densityCurvesHash == 0 ||
             recipe.print.develop.densityCurves.empty()) {
             diagnostic = "ResourceDescriptorMismatch phase=4B field=print_recipe";
             return false;
@@ -4091,7 +4079,6 @@ namespace JuicerCuda {
             return false;
         }
         if (!request.mainIlluminant ||
-            request.recipe->print.balance.hash == 0 ||
             request.recipe->print.balance.filteredMainIlluminantHash !=
                 Hash::hash_float_span(*request.mainIlluminant)) {
             outError =

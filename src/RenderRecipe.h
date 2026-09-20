@@ -727,8 +727,6 @@ struct RenderRecipe {
     DensityBoundsRecipe densityBounds;
     ScannerOutputRecipe scannerOutput;
     PrintRecipe print;
-    bool directStructuralReady = false;
-    bool printStructuralReady = false;
     std::uint64_t hash = 0;
 };
 

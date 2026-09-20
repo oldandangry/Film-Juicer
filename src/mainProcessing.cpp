@@ -1725,9 +1725,6 @@ void JuicerProcessor::processImagesCUDA() {
         auto throw_direct_restriction = [&](const char* diagnostic) {
             trace_and_throw_cuda_policy_fatal("CUDA direct route blocked", diagnostic);
         };
-        if (!directRecipe->directStructuralReady) {
-            throw_direct_restriction("DirectStructuralRecipeNotReadyForPhase3C");
-        }
         if (cameraMeteringMethod == Spektrafilm::AutoExposureMethod::Median) {
             throw_direct_restriction(Spektrafilm::kQuantizedMedianNotAcceptedForPhase3);
         }
@@ -2685,9 +2682,6 @@ void JuicerProcessor::processImagesCUDA() {
         auto throw_print_restriction = [&](const char* diagnostic) {
             trace_and_throw_cuda_policy_fatal("CUDA print route blocked", diagnostic);
         };
-        if (!printRecipe->printStructuralReady) {
-            throw_print_restriction("PrintStructuralRecipeNotReadyForPhase4C");
-        }
         if (!(_nComponents == 3 || _nComponents == 4)) {
             throw_print_restriction("UnsupportedPrintComponentCountForPhase4C");
         }

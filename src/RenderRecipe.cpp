@@ -2288,7 +2288,6 @@ namespace Spektrafilm {
         scanner.unsharpAmount = input.scannerUnsharpAmount;
         scanner.hash = hash_scanner_output_recipe(scanner);
 
-        recipe.directStructuralReady = true;
         recipe.hash = hash_final_render_recipe(recipe);
         result.valid = recipe.hash != 0;
         if (!result.valid) {
@@ -2451,7 +2450,6 @@ namespace Spektrafilm {
         hash_string(print.illuminant.hash, print.illuminant.key);
 
         print.hash = hash_print_recipe(print);
-        recipe.printStructuralReady = true;
         recipe.hash = hash_final_render_recipe(recipe);
         result.valid = route.hash != 0 &&
                        print.filters.hash != 0 &&
