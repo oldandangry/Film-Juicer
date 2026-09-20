@@ -80,6 +80,9 @@ namespace Profiles {
         std::array<std::array<double, 3>, 3> sigmas{};
     };
 
+    bool density_curve_model_coefficients_supported(
+        const DensityCurveModel& model);
+
     struct DensityCurveSample {
         std::array<float, 3> total{};
         std::array<std::array<float, 3>, 3> layers{}; // [layer][channel]

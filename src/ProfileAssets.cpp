@@ -25,14 +25,31 @@
 #include "nlohmann/json.hpp"
 
 namespace Profiles {
+    bool density_curve_model_coefficients_supported(
+        const DensityCurveModel& model) {
+        for (std::size_t channel = 0; channel < 3u; ++channel) {
+            for (std::size_t layer = 0; layer < 3u; ++layer) {
+                const float center =
+                    static_cast<float>(model.centers[channel][layer]);
+                const float amplitude =
+                    static_cast<float>(model.amplitudes[channel][layer]);
+                const float sigma =
+                    static_cast<float>(model.sigmas[channel][layer]);
+                if (!std::isfinite(center) || !std::isfinite(amplitude) ||
+                    !std::isfinite(sigma) || sigma <= 0.0f) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     DensityCurveSample evaluate_density_curve_sample(
         const DensityCurveModel& model,
         Spektrafilm::ProfilePolarity polarity,
         double sourceLogExposure) {
         DensityCurveSample result{};
-        if ((polarity != Spektrafilm::ProfilePolarity::Negative &&
-             polarity != Spektrafilm::ProfilePolarity::Positive) ||
-            !std::isfinite(sourceLogExposure)) {
+        if (!std::isfinite(sourceLogExposure)) {
             return result;
         }
         const float exposure = static_cast<float>(sourceLogExposure);
@@ -51,10 +68,6 @@ namespace Profiles {
                     static_cast<float>(model.amplitudes[channel][layer]);
                 const float sigma =
                     static_cast<float>(model.sigmas[channel][layer]);
-                if (!std::isfinite(center) || !std::isfinite(amplitude) ||
-                    !std::isfinite(sigma) || sigma <= 0.0f) {
-                    return DensityCurveSample{};
-                }
                 const float z = sign * (exposure - center) / sigma;
                 const float cdf =
                     0.5f * std::erfc(-z * kInverseSqrtTwo);
@@ -243,6 +256,15 @@ namespace Profiles {
             }
             if (node.empty()) {
                 return set_error(error, ctx, field, "non-empty array[N]", "empty");
+            }
+            if (node.size() >
+                static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+                return set_error(
+                    error,
+                    ctx,
+                    field,
+                    "array count representable by int",
+                    std::to_string(node.size()));
             }
             out.assign(node.size(), 0.0);
             for (std::size_t index = 0; index < node.size(); ++index) {
@@ -827,6 +849,14 @@ namespace Profiles {
                     "three 3x3 numeric coefficient arrays",
                     "invalid-coefficient");
             }
+            if (!density_curve_model_coefficients_supported(densityModel)) {
+                return set_error(
+                    error,
+                    ctx,
+                    "data.density_curves_model",
+                    "Float32-representable centers/amplitudes and positive sigmas",
+                    "unsupported-coefficient");
+            }
             return true;
         }
 
@@ -1115,7 +1145,7 @@ namespace Profiles {
             if (outDiagnostic) {
                 outDiagnostic->clear();
             }
-            return outProfile.assetVersionToken != 0;
+            return true;
         }
 
         bool load_validated_film_profile_json(

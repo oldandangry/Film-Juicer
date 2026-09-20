@@ -612,6 +612,79 @@ namespace {
         };
         check_unsupported("use", "unsupported");
         check_unsupported("antihalation", "unsupported");
+
+        const auto check_rejected_model_coefficient = [&](const char* name,
+                                                          const char* arrayName,
+                                                          double value) {
+            const std::string key = std::string("recipe_profile_") + name;
+            nlohmann::json profile = completeProfile;
+            profile["info"]["stock"] = key;
+            profile["info"]["name"] = key;
+            profile["data"]["density_curves_model"][arrayName][0][0] = value;
+            const std::filesystem::path path = profileRoot / (key + ".json");
+            write_json(path, profile);
+            std::string failure;
+            const auto loaded = load_scratch_profile(path, key, failure);
+            results.record(
+                "profile/" + std::string(name) + "-rejected",
+                !loaded && !failure.empty(),
+                failure);
+        };
+        check_rejected_model_coefficient("zero-sigma", "sigmas", 0.0);
+        check_rejected_model_coefficient("negative-sigma", "sigmas", -0.01);
+        check_rejected_model_coefficient(
+            "unrepresentable-center",
+            "centers",
+            std::numeric_limits<double>::max());
+        check_rejected_model_coefficient(
+            "unrepresentable-amplitude",
+            "amplitudes",
+            std::numeric_limits<double>::max());
+        check_rejected_model_coefficient(
+            "unrepresentable-sigma",
+            "sigmas",
+            std::numeric_limits<double>::max());
+
+        const std::string variableAxisKey = "recipe_profile_variable_axis";
+        nlohmann::json variableAxis = completeProfile;
+        variableAxis["info"]["stock"] = variableAxisKey;
+        variableAxis["info"]["name"] = variableAxisKey;
+        std::vector<double> logExposure;
+        logExposure.reserve(17u);
+        for (int sample = 0; sample < 17; ++sample) {
+            logExposure.push_back(-4.0 + static_cast<double>(sample) * 0.5);
+        }
+        logExposure[8] = logExposure[7];
+        variableAxis["data"]["log_exposure"] = logExposure;
+        const std::filesystem::path variableAxisPath =
+            profileRoot / (variableAxisKey + ".json");
+        write_json(variableAxisPath, variableAxis);
+        std::string variableAxisDiagnostic;
+        const auto variableAxisProfile = load_scratch_profile(
+            variableAxisPath,
+            variableAxisKey,
+            variableAxisDiagnostic);
+        bool variableAxisAccepted = variableAxisProfile &&
+                                    variableAxisProfile->sourceLogExposure.size() == 17u &&
+                                    variableAxisProfile->data.logExposure.size() == 17u &&
+                                    variableAxisProfile->data.densityCurves.size() == 17u &&
+                                    variableAxisProfile->sourceLogExposure[7] ==
+                                        variableAxisProfile->sourceLogExposure[8] &&
+                                    variableAxisProfile->data.logExposure[7] ==
+                                        variableAxisProfile->data.logExposure[8] &&
+                                    std::isnan(variableAxisProfile->data.channelDensity[0][0]) &&
+                                    std::isnan(variableAxisProfile->data.baseDensity[0]);
+        if (variableAxisProfile) {
+            for (const auto& layer : variableAxisProfile->data.densityCurvesLayers) {
+                for (const auto& channel : layer) {
+                    variableAxisAccepted = variableAxisAccepted && channel.size() == 17u;
+                }
+            }
+        }
+        results.record(
+            "profile/variable-axis-duplicate-and-nullable-spectral-accepted",
+            variableAxisAccepted,
+            variableAxisDiagnostic);
     }
 
     void run_descriptor_rows(Results& results) {
@@ -751,6 +824,42 @@ namespace {
                 printProduct.payload.uploadCoreHash != 0 &&
                 printProduct.payload.scannerHash != 0,
             printDiagnostic);
+
+        struct GammaBuildCase {
+            const char* name;
+            Spektrafilm::ScanRoute route;
+            float filmGamma;
+            double printGamma;
+        };
+        constexpr std::array<GammaBuildCase, 4> gammaBuildCases{{{"build-product/gamma-negative-direct-film-minimum", Spektrafilm::ScanRoute::NegativeDirectScan, static_cast<float>(Spektrafilm::kFilmGammaFactorMinimum), 1.0},
+                                                                 {"build-product/gamma-positive-direct-film-maximum", Spektrafilm::ScanRoute::PositiveDirectScan, static_cast<float>(Spektrafilm::kFilmGammaFactorMaximum), 1.0},
+                                                                 {"build-product/gamma-negative-print-minimum", Spektrafilm::ScanRoute::NegativePrintScan, 1.0f, Spektrafilm::kPrintGammaFactorMinimum},
+                                                                 {"build-product/gamma-positive-print-maximum", Spektrafilm::ScanRoute::PositivePrintScan, 1.0f, Spektrafilm::kPrintGammaFactorMaximum}}};
+        for (const GammaBuildCase& testCase : gammaBuildCases) {
+            ParamSnapshot gammaSnapshot;
+            gammaSnapshot.scanRoute = testCase.route;
+            gammaSnapshot.filmGammaFactor = testCase.filmGamma;
+            gammaSnapshot.printGammaFactor = testCase.printGamma;
+            if (Spektrafilm::scan_route_metadata(testCase.route).capturePolarity ==
+                Spektrafilm::ProfilePolarity::Positive) {
+                gammaSnapshot.filmProfileKey = "fujifilm_provia_100f";
+            }
+            FocusedRenderStateBuildProduct gammaProduct;
+            std::string gammaDiagnostic;
+            const bool gammaBuilt = Spektrafilm::scan_route_is_print(testCase.route)
+                                        ? build_print_render_state_product(
+                                              gammaSnapshot,
+                                              gammaProduct,
+                                              gammaDiagnostic)
+                                        : build_direct_render_state_product(
+                                              gammaSnapshot,
+                                              gammaProduct,
+                                              gammaDiagnostic);
+            results.record(
+                testCase.name,
+                gammaBuilt,
+                gammaDiagnostic);
+        }
 
         ParamSnapshot requested = direct;
         requested.scatterHalationControls = convert_or_throw(

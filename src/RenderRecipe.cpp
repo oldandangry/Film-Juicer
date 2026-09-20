@@ -32,18 +32,17 @@ namespace {
             return false;
         }
         adjusted = baseline;
-        if (gammaFactor == 1.0) {
-            return true;
-        }
-        for (std::size_t channel = 0; channel < 3u; ++channel) {
-            for (std::size_t layer = 0; layer < 3u; ++layer) {
-                adjusted.centers[channel][layer] /= gammaFactor;
-                adjusted.sigmas[channel][layer] = std::max(
-                    adjusted.sigmas[channel][layer] / gammaFactor,
-                    0.05);
+        if (gammaFactor != 1.0) {
+            for (std::size_t channel = 0; channel < 3u; ++channel) {
+                for (std::size_t layer = 0; layer < 3u; ++layer) {
+                    adjusted.centers[channel][layer] /= gammaFactor;
+                    adjusted.sigmas[channel][layer] = std::max(
+                        adjusted.sigmas[channel][layer] / gammaFactor,
+                        0.05);
+                }
             }
         }
-        return true;
+        return Profiles::density_curve_model_coefficients_supported(adjusted);
     }
 
     std::uint64_t hash_nan_preserving_floats(const float* values, std::size_t count) {
@@ -51,44 +50,33 @@ namespace {
         return Hash::hash_uint64_values({hashes.valueHash, hashes.nanMaskHash});
     }
 
-    bool compute_authored_extrema(
+    void compute_authored_extrema(
         const std::vector<std::array<float, 3>>& curves,
         std::array<float, 3>& outMin,
         std::array<float, 3>& outMax) {
-        outMin.fill(std::numeric_limits<float>::infinity());
-        outMax.fill(-std::numeric_limits<float>::infinity());
-        std::array<bool, 3> found{{false, false, false}};
+        outMin = curves.front();
+        outMax = curves.front();
         for (const std::array<float, 3>& row : curves) {
             for (std::size_t channel = 0; channel < row.size(); ++channel) {
                 const float value = row[channel];
-                if (!std::isfinite(value)) {
-                    continue;
-                }
                 outMin[channel] = std::min(outMin[channel], value);
                 outMax[channel] = std::max(outMax[channel], value);
-                found[channel] = true;
             }
         }
-        return found[0] && found[1] && found[2];
     }
 
-    bool normalize_density_curves(
+    void normalize_density_curves(
         const std::vector<std::array<float, 3>>& authored,
         std::vector<std::array<float, 3>>& normalized,
         std::array<float, 3>& outMin,
         std::array<float, 3>& outMax) {
-        if (!compute_authored_extrema(authored, outMin, outMax)) {
-            return false;
-        }
+        compute_authored_extrema(authored, outMin, outMax);
         normalized = authored;
         for (std::array<float, 3>& row : normalized) {
             for (std::size_t channel = 0; channel < row.size(); ++channel) {
-                if (std::isfinite(row[channel])) {
-                    row[channel] -= outMin[channel];
-                }
+                row[channel] -= outMin[channel];
             }
         }
-        return true;
     }
 
     void derive_grain_layer_axis_search_metadata(
@@ -1592,13 +1580,11 @@ namespace {
         out.polarity = capturePolarity;
         out.source = Spektrafilm::DensityBoundsSource::PrintMediaAuthoredCurves;
         std::vector<std::array<float, 3>> normalized;
-        if (!normalize_density_curves(
-                profile.data.densityCurves,
-                normalized,
-                out.authoredMinCmy,
-                out.authoredMaxCmy)) {
-            return false;
-        }
+        normalize_density_curves(
+            profile.data.densityCurves,
+            normalized,
+            out.authoredMinCmy,
+            out.authoredMaxCmy);
         for (std::size_t channel = 0; channel < out.dataMinCmy.size(); ++channel) {
             out.dataMinCmy[channel] = out.authoredMinCmy[channel];
             out.dataMaxCmy[channel] = out.authoredMaxCmy[channel];
@@ -1873,14 +1859,6 @@ namespace Spektrafilm {
             PrintDevelopRecipe& out) {
             out = PrintDevelopRecipe{};
             const std::size_t sampleCount = profile.sourceLogExposure.size();
-            if (sampleCount == 0u ||
-                sampleCount != profile.data.logExposure.size() ||
-                sampleCount > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
-                (profile.info.type != ProfilePolarity::Negative &&
-                 profile.info.type != ProfilePolarity::Positive)) {
-                return false;
-            }
-
             out.gammaFactor = gammaFactor;
             out.densityCurves.resize(sampleCount);
             Profiles::DensityCurveModel adjustedModel{};
@@ -1892,15 +1870,6 @@ namespace Spektrafilm {
             }
             for (std::size_t sample = 0; sample < sampleCount; ++sample) {
                 const double sourceExposure = profile.sourceLogExposure[sample];
-                const float uploadExposure = profile.data.logExposure[sample];
-                if (!std::isfinite(sourceExposure) ||
-                    !std::isfinite(uploadExposure) ||
-                    static_cast<float>(sourceExposure) != uploadExposure ||
-                    (sample > 0u &&
-                     (sourceExposure < profile.sourceLogExposure[sample - 1u] ||
-                      uploadExposure < profile.data.logExposure[sample - 1u]))) {
-                    return false;
-                }
                 const Profiles::DensityCurveSample derived =
                     Profiles::evaluate_density_curve_sample(
                         adjustedModel,
@@ -1909,13 +1878,7 @@ namespace Spektrafilm {
                 if (!derived.valid) {
                     return false;
                 }
-                for (std::size_t channel = 0; channel < derived.total.size(); ++channel) {
-                    if (!std::isfinite(derived.total[channel])) {
-                        return false;
-                    }
-                    out.densityCurves[sample][channel] =
-                        derived.total[channel];
-                }
+                out.densityCurves[sample] = derived.total;
             }
 
             out.densityCurvesHash = Hash::kFnvOffset;
@@ -2143,17 +2106,11 @@ namespace Spektrafilm {
             filmDevelop.densityCurveGamma.fill(input.filmGammaFactor);
             filmDevelop.logExposure = profile.data.logExposure;
             filmDevelop.authoredDensityCurves = profile.data.densityCurves;
-            if (!normalize_density_curves(
-                    filmDevelop.authoredDensityCurves,
-                    filmDevelop.normalizedDensityCurves,
-                    filmDevelop.authoredMinCmy,
-                    filmDevelop.authoredMaxCmy)) {
-                return fail("MalformedRequiredProfileData phase=3A field=data.density_curves");
-            }
-            if (filmDevelop.authoredDensityCurves.empty() ||
-                filmDevelop.normalizedDensityCurves.empty()) {
-                return fail("MalformedRequiredProfileData phase=3A field=data.density_curves empty");
-            }
+            normalize_density_curves(
+                filmDevelop.authoredDensityCurves,
+                filmDevelop.normalizedDensityCurves,
+                filmDevelop.authoredMinCmy,
+                filmDevelop.authoredMaxCmy);
             filmDevelop.normalizedDensityCurvesHash = hash_nan_preserving_floats(
                 &filmDevelop.normalizedDensityCurves[0][0],
                 filmDevelop.normalizedDensityCurves.size() * 3u);
