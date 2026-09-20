@@ -252,8 +252,6 @@ namespace JuicerCuda {
     };
 
     struct Resources {
-        static constexpr std::uint32_t kAllocationOwnershipSchemaVersion = 1u;
-
         struct PendingFrameUseEvent {
             void* eventOpaque = nullptr;
         };
@@ -541,7 +539,6 @@ namespace JuicerCuda {
     Resources* create(
         const ResourceManager::DeviceContextKey& contextKey,
         std::uint64_t contextEpoch,
-        std::uint32_t allocationOwnershipSchemaVersion,
         std::shared_ptr<DeviceAllocationLedger> deviceLedger,
         std::string& outError) noexcept;
     void destroy(Resources* resources) noexcept;

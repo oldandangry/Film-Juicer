@@ -4803,7 +4803,6 @@ namespace JuicerProcess {
                     JuicerCuda::create(
                         deviceContextKey,
                         contextEpoch,
-                        JuicerCuda::Resources::kAllocationOwnershipSchemaVersion,
                         deviceLedger,
                         outError),
                     CudaResourcesDeleter{});
@@ -5008,7 +5007,6 @@ namespace JuicerProcess {
                         JuicerCuda::create(
                             deviceContextKey,
                             contextEpoch,
-                            JuicerCuda::Resources::kAllocationOwnershipSchemaVersion,
                             deviceLedger,
                             outError),
                         CudaResourcesDeleter{});

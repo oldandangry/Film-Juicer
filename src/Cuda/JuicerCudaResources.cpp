@@ -1823,16 +1823,12 @@ namespace JuicerCuda {
     Resources* create(
         const ResourceManager::DeviceContextKey& contextKey,
         std::uint64_t contextEpoch,
-        std::uint32_t allocationOwnershipSchemaVersion,
         std::shared_ptr<DeviceAllocationLedger> deviceLedger,
         std::string& outError) noexcept {
         try {
             outError.clear();
             if (contextKey.deviceId < 0 || contextKey.contextOpaque == nullptr ||
-                contextEpoch == 0 ||
-                allocationOwnershipSchemaVersion !=
-                    Resources::kAllocationOwnershipSchemaVersion ||
-                deviceLedger == nullptr) {
+                contextEpoch == 0 || deviceLedger == nullptr) {
                 outError =
                     "ResourceDescriptorMismatch component=cuda_resources field=allocation_identity";
                 return nullptr;
