@@ -1862,21 +1862,6 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     }
 
     const OfxRectI fullBounds = srcImg->getBounds();
-    if (_state) {
-        std::lock_guard<std::mutex> lock(_state->m);
-        const OfxRectI prev = _state->cachedFrameBounds;
-        const bool changed = prev.x1 != fullBounds.x1 || prev.y1 != fullBounds.y1 ||
-                             prev.x2 != fullBounds.x2 || prev.y2 != fullBounds.y2;
-        if (changed) {
-            _state->cachedFrameBounds = fullBounds;
-            std::uint32_t next = _state->frameBoundsVersion.load(std::memory_order_relaxed);
-            next = (next == std::numeric_limits<std::uint32_t>::max()) ? next : (next + 1U);
-            if (next == 0) {
-                next = 1;
-            }
-            _state->frameBoundsVersion.store(next, std::memory_order_release);
-        }
-    }
 
     // ROI: args.renderWindow if provided; otherwise use image bounds
     OfxRectI roi = args.renderWindow;

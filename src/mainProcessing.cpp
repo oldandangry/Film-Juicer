@@ -1657,30 +1657,8 @@ void JuicerProcessor::processImagesCUDA() {
         focusedFilmRaw->autoExposureEnabled;
     const Spektrafilm::AutoExposureMethod cameraMeteringMethod =
         focusedFilmRaw->autoExposureMethod;
-    OfxRectI meterBounds = srcBounds;
-    auto clamp_rect = [](OfxRectI r, const OfxRectI& bounds) {
-        r.x1 = std::clamp(r.x1, bounds.x1, bounds.x2);
-        r.x2 = std::clamp(r.x2, bounds.x1, bounds.x2);
-        r.y1 = std::clamp(r.y1, bounds.y1, bounds.y2);
-        r.y2 = std::clamp(r.y2, bounds.y1, bounds.y2);
-        if (r.x2 < r.x1) {
-            const int tmp = r.x1;
-            r.x1 = r.x2;
-            r.x2 = tmp;
-        }
-        if (r.y2 < r.y1) {
-            const int tmp = r.y1;
-            r.y1 = r.y2;
-            r.y2 = tmp;
-        }
-        return r;
-    };
-    meterBounds = clamp_rect(meterBounds, srcBounds);
-    if ((meterBounds.x2 - meterBounds.x1) <= 0 || (meterBounds.y2 - meterBounds.y1) <= 0) {
-        meterBounds = srcBounds;
-    }
     const JuicerCuda::AutoExposurePreviewDescriptor autoExposureDescriptor =
-        make_auto_exposure_preview_descriptor(srcBounds, meterBounds, cameraMeteringMethod);
+        make_auto_exposure_preview_descriptor(srcBounds, srcBounds, cameraMeteringMethod);
     JuicerProcess::Root::AutoExposureBufferRequest autoExposureBufferRequest{};
     autoExposureBufferRequest.enabled =
         cameraAutoEnabled &&

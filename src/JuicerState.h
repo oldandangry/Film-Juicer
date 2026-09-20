@@ -184,8 +184,6 @@ struct InstanceState {
     std::shared_ptr<const DirectRenderState> activeDirectState;
     std::shared_ptr<const PrintRenderState> activePrintState;
     std::atomic<std::uint64_t> buildCounterNext{0};
-    std::atomic<std::uint32_t> frameBoundsVersion{0};
-    OfxRectI cachedFrameBounds{0, 0, 0, 0};
 
     std::atomic<std::uint64_t> lastHash{0};
 
