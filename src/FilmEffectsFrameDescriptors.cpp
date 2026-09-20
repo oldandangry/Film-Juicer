@@ -909,17 +909,6 @@ namespace Spektrafilm {
 
         template <typename Policy>
         bool valid_defect_grid(const Policy& p, const DefectCellOrigin& o, const FilmJuicerEffectsFrameDescriptor& d) {
-            if (p.slotProbability == 0.0f) {
-                return true;
-            }
-            if (!(p.slotProbability > 0.0f && p.slotProbability < 0.25f) ||
-                !(p.cellWidthMm > 0.0f && p.cellHeightMm > 0.0f) ||
-                !(p.softnessMinMm >= 0.0f && p.softnessMaxMm >= p.softnessMinMm &&
-                  p.softnessSizeCapFraction > 0.0f && p.supportXMm > 0.0f && p.supportYMm > 0.0f) ||
-                !(o.localXMm >= 0.0f && o.localXMm < p.cellWidthMm &&
-                  o.localYMm >= 0.0f && o.localYMm < p.cellHeightMm)) {
-                return false;
-            }
             const double nx = std::ceil((static_cast<double>(d.fullFrameExtent.width) * d.sampleStepXMm +
                                          2.0 * (p.supportXMm + p.softnessMaxMm + d.sampleStepXMm)) /
                                         p.cellWidthMm) +
@@ -934,396 +923,7 @@ namespace Spektrafilm {
                    std::abs(static_cast<double>(o.cellX)) + nx < kCellLimit &&
                    std::abs(static_cast<double>(o.cellY)) + ny < kCellLimit;
         }
-
-        bool valid_opacity_boundaries(float minimum, float faintEnd, float intermediateEnd, float maximum) {
-            return minimum >= 0.0f && minimum < faintEnd && faintEnd < intermediateEnd &&
-                   intermediateEnd < maximum && maximum < 1.0f;
-        }
-
-        bool valid_dust_policy(const DefectDustRecipe& p) {
-            const float values[] = {
-                p.cellWidthMm,
-                p.cellHeightMm,
-                p.slotProbability,
-                p.softnessMinMm,
-                p.softnessMaxMm,
-                p.softnessSizeCapFraction,
-                p.supportXMm,
-                p.supportYMm,
-                p.fiberFraction,
-                p.fiberDriftFraction,
-                p.fiberFirstKnotMin,
-                p.fiberFirstKnotMax,
-                p.fiberSecondKnotMin,
-                p.fiberSecondKnotMax,
-                p.fiberInteriorWidthMinFraction,
-                p.fiberInteriorWidthMaxFraction,
-                p.diameterMinMm,
-                p.diameterBulkMaxMm,
-                p.diameterMaxMm,
-                p.diameterTailFraction,
-                p.fiberLengthMinMm,
-                p.fiberLengthMaxMm,
-                p.fiberWidthMinMm,
-                p.fiberWidthMaxMm,
-                p.opacityFaintCumulative,
-                p.opacityIntermediateCumulative,
-                p.compactOpacityMin,
-                p.compactOpacityFaintEnd,
-                p.compactOpacityIntermediateEnd,
-                p.compactOpacityMax,
-                p.fiberOpacityMin,
-                p.fiberOpacityFaintEnd,
-                p.fiberOpacityIntermediateEnd,
-                p.fiberOpacityMax,
-                p.compactDominantAspectMin,
-                p.compactDominantAspectMax,
-                p.compactSubsidiaryScaleMin,
-                p.compactSubsidiaryScaleMax,
-                p.compactSubsidiaryAspectMin,
-                p.compactSubsidiaryAspectMax,
-                p.compactSubsidiaryOffsetMax,
-                p.compactSubsidiaryAngleMaxRadians};
-            if (!std::all_of(std::begin(values), std::end(values), [](float value) {
-                    return std::isfinite(value);
-                })) {
-                return false;
-            }
-            const float fiberSupport =
-                std::fma(p.fiberLengthMaxMm, 0.5f + p.fiberDriftFraction, p.fiberWidthMaxMm);
-            const float geometrySupport = std::max(p.diameterMaxMm * 0.5f, fiberSupport);
-            return p.cellWidthMm > 0.0f && p.cellHeightMm > 0.0f &&
-                   p.slotProbability > 0.0f && p.slotProbability < 0.25f &&
-                   p.softnessMinMm >= 0.0f && p.softnessMaxMm >= p.softnessMinMm &&
-                   p.softnessSizeCapFraction > 0.0f && p.softnessSizeCapFraction <= 0.5f &&
-                   p.supportXMm >= geometrySupport && p.supportYMm >= geometrySupport &&
-                   p.fiberFraction >= 0.0f && p.fiberFraction <= 1.0f &&
-                   p.fiberDriftFraction >= 0.0f && p.fiberDriftFraction <= 0.1f &&
-                   p.fiberFirstKnotMin > 0.0f && p.fiberFirstKnotMin <= p.fiberFirstKnotMax &&
-                   p.fiberFirstKnotMax < p.fiberSecondKnotMin &&
-                   p.fiberSecondKnotMin <= p.fiberSecondKnotMax && p.fiberSecondKnotMax < 1.0f &&
-                   p.fiberInteriorWidthMinFraction > 0.0f &&
-                   p.fiberInteriorWidthMinFraction <= p.fiberInteriorWidthMaxFraction &&
-                   p.fiberInteriorWidthMaxFraction <= 1.0f &&
-                   p.diameterMinMm > 0.0f && p.diameterBulkMaxMm >= p.diameterMinMm &&
-                   p.diameterMaxMm >= p.diameterBulkMaxMm &&
-                   p.diameterTailFraction >= 0.0f && p.diameterTailFraction <= 1.0f &&
-                   p.fiberLengthMinMm > 0.0f && p.fiberLengthMaxMm >= p.fiberLengthMinMm &&
-                   p.fiberWidthMinMm > 0.0f && p.fiberWidthMaxMm >= p.fiberWidthMinMm &&
-                   p.opacityFaintCumulative > 0.0f &&
-                   p.opacityFaintCumulative < p.opacityIntermediateCumulative &&
-                   p.opacityIntermediateCumulative < 1.0f &&
-                   valid_opacity_boundaries(p.compactOpacityMin,
-                                            p.compactOpacityFaintEnd,
-                                            p.compactOpacityIntermediateEnd,
-                                            p.compactOpacityMax) &&
-                   valid_opacity_boundaries(p.fiberOpacityMin,
-                                            p.fiberOpacityFaintEnd,
-                                            p.fiberOpacityIntermediateEnd,
-                                            p.fiberOpacityMax) &&
-                   p.compactDominantAspectMin > 0.0f &&
-                   p.compactDominantAspectMin <= p.compactDominantAspectMax &&
-                   p.compactDominantAspectMax <= 1.0f &&
-                   p.compactSubsidiaryScaleMin > 0.0f &&
-                   p.compactSubsidiaryScaleMin <= p.compactSubsidiaryScaleMax &&
-                   p.compactSubsidiaryScaleMax <= 1.0f &&
-                   p.compactSubsidiaryAspectMin > 0.0f &&
-                   p.compactSubsidiaryAspectMin <= p.compactSubsidiaryAspectMax &&
-                   p.compactSubsidiaryAspectMax <= 1.0f &&
-                   p.compactSubsidiaryOffsetMax >= 0.0f && p.compactSubsidiaryOffsetMax < 1.0f &&
-                   p.compactSubsidiaryAngleMaxRadians > 0.0f &&
-                   p.compactSubsidiaryAngleMaxRadians <= 3.14159265359f;
-        }
-
-        bool valid_scratch_policy(const DefectScratchRecipe& p) {
-            const float values[] = {
-                p.cellWidthMm,
-                p.cellHeightMm,
-                p.slotProbability,
-                p.softnessMinMm,
-                p.softnessMaxMm,
-                p.softnessSizeCapFraction,
-                p.supportXMm,
-                p.supportYMm,
-                p.lengthMinMm,
-                p.lengthBulkMaxMm,
-                p.lengthMaxMm,
-                p.lengthTailFraction,
-                p.widthMinMm,
-                p.widthBulkMaxMm,
-                p.widthMaxMm,
-                p.widthTailFraction,
-                p.driftFraction,
-                p.firstKnotMin,
-                p.firstKnotMax,
-                p.secondKnotMin,
-                p.secondKnotMax,
-                p.interiorWidthMinFraction,
-                p.interiorWidthMaxFraction,
-                p.interiorDepthMinFraction,
-                p.interiorDepthMaxFraction,
-                p.endpointAbruptProbability,
-                p.interruptionProbability,
-                p.gapCenterMin,
-                p.gapCenterMax,
-                p.gapSpanMin,
-                p.gapSpanMax,
-                p.scuffProbability,
-                p.scuffLengthMaxMm,
-                p.scuffAngleMaxRadians,
-                p.strengthMin,
-                p.strengthMax};
-            if (!std::all_of(std::begin(values), std::end(values), [](float value) {
-                    return std::isfinite(value);
-                })) {
-                return false;
-            }
-            const float transportSupportX = p.lengthMaxMm * p.driftFraction + p.widthMaxMm;
-            const float scuffSupportX = 0.5f * p.scuffLengthMaxMm * std::sin(p.scuffAngleMaxRadians) +
-                                        p.scuffLengthMaxMm * p.driftFraction + p.widthMaxMm;
-            const float transportSupportY = p.lengthMaxMm * 0.5f + p.widthMaxMm;
-            const float scuffSupportY = 0.5f * p.scuffLengthMaxMm * std::cos(p.scuffAngleMaxRadians) +
-                                        p.scuffLengthMaxMm * p.driftFraction + p.widthMaxMm;
-            return p.cellWidthMm > 0.0f && p.cellHeightMm > 0.0f &&
-                   p.slotProbability > 0.0f && p.slotProbability < 0.25f &&
-                   p.softnessMinMm >= 0.0f && p.softnessMaxMm >= p.softnessMinMm &&
-                   p.softnessSizeCapFraction > 0.0f && p.softnessSizeCapFraction <= 0.5f &&
-                   p.supportXMm >= std::max(transportSupportX, scuffSupportX) &&
-                   p.supportYMm >= std::max(transportSupportY, scuffSupportY) &&
-                   p.lengthMinMm > 0.0f && p.lengthBulkMaxMm >= p.lengthMinMm &&
-                   p.lengthMaxMm >= p.lengthBulkMaxMm &&
-                   p.lengthTailFraction >= 0.0f && p.lengthTailFraction <= 1.0f &&
-                   p.widthMinMm > 0.0f && p.widthBulkMaxMm >= p.widthMinMm &&
-                   p.widthMaxMm >= p.widthBulkMaxMm &&
-                   p.widthTailFraction >= 0.0f && p.widthTailFraction <= 1.0f &&
-                   p.driftFraction >= 0.0f &&
-                   p.firstKnotMin > 0.0f && p.firstKnotMin <= p.firstKnotMax &&
-                   p.firstKnotMax < p.secondKnotMin &&
-                   p.secondKnotMin <= p.secondKnotMax && p.secondKnotMax < 1.0f &&
-                   p.interiorWidthMinFraction > 0.0f &&
-                   p.interiorWidthMinFraction <= p.interiorWidthMaxFraction &&
-                   p.interiorWidthMaxFraction <= 1.0f &&
-                   p.interiorDepthMinFraction > 0.0f &&
-                   p.interiorDepthMinFraction <= p.interiorDepthMaxFraction &&
-                   p.interiorDepthMaxFraction <= 1.0f &&
-                   p.endpointAbruptProbability >= 0.0f && p.endpointAbruptProbability <= 1.0f &&
-                   p.interruptionProbability >= 0.0f && p.interruptionProbability <= 1.0f &&
-                   p.gapCenterMin > 0.0f && p.gapCenterMin <= p.gapCenterMax &&
-                   p.gapCenterMax < 1.0f && p.gapSpanMin > 0.0f &&
-                   p.gapSpanMin <= p.gapSpanMax &&
-                   p.gapCenterMin - 0.5f * p.gapSpanMax > 0.0f &&
-                   p.gapCenterMax + 0.5f * p.gapSpanMax < 1.0f &&
-                   p.scuffProbability >= 0.0f && p.scuffProbability <= 1.0f &&
-                   p.scuffLengthMaxMm >= p.lengthMinMm && p.scuffLengthMaxMm <= p.lengthMaxMm &&
-                   p.scuffAngleMaxRadians > 0.0f && p.scuffAngleMaxRadians <= 1.57079632679f &&
-                   p.strengthMin >= 0.0f && p.strengthMax >= p.strengthMin && p.strengthMax <= 1.0f;
-        }
     } // namespace
-
-    bool validate_film_juicer_effects_frame_descriptor(const FilmJuicerEffectsFrameDescriptor& d) {
-        if (d.filmDust.slotProbability == 0.0f) {
-            if (d.filmDust.cellWidthMm != 0.0f ||
-                d.filmDust.cellHeightMm != 0.0f ||
-                d.filmDust.slotProbability != 0.0f ||
-                d.filmDust.softnessMinMm != 0.0f || d.filmDust.softnessMaxMm != 0.0f ||
-                d.filmDust.softnessSizeCapFraction != 0.0f ||
-                d.filmDust.supportXMm != 0.0f ||
-                d.filmDust.supportYMm != 0.0f ||
-                d.filmDust.fiberFraction != 0.0f ||
-                d.filmDust.fiberDriftFraction != 0.0f ||
-                d.filmDust.fiberFirstKnotMin != 0.0f || d.filmDust.fiberFirstKnotMax != 0.0f ||
-                d.filmDust.fiberSecondKnotMin != 0.0f || d.filmDust.fiberSecondKnotMax != 0.0f ||
-                d.filmDust.fiberInteriorWidthMinFraction != 0.0f || d.filmDust.fiberInteriorWidthMaxFraction != 0.0f ||
-                d.filmDust.diameterMinMm != 0.0f ||
-                d.filmDust.diameterBulkMaxMm != 0.0f ||
-                d.filmDust.diameterMaxMm != 0.0f ||
-                d.filmDust.diameterTailFraction != 0.0f ||
-                d.filmDust.fiberLengthMinMm != 0.0f ||
-                d.filmDust.fiberLengthMaxMm != 0.0f ||
-                d.filmDust.fiberWidthMinMm != 0.0f ||
-                d.filmDust.fiberWidthMaxMm != 0.0f ||
-                d.filmDust.opacityFaintCumulative != 0.0f || d.filmDust.opacityIntermediateCumulative != 0.0f ||
-                d.filmDust.compactOpacityMin != 0.0f || d.filmDust.compactOpacityFaintEnd != 0.0f ||
-                d.filmDust.compactOpacityIntermediateEnd != 0.0f || d.filmDust.compactOpacityMax != 0.0f ||
-                d.filmDust.fiberOpacityMin != 0.0f || d.filmDust.fiberOpacityFaintEnd != 0.0f ||
-                d.filmDust.fiberOpacityIntermediateEnd != 0.0f || d.filmDust.fiberOpacityMax != 0.0f ||
-                d.filmDust.compactDominantAspectMin != 0.0f || d.filmDust.compactDominantAspectMax != 0.0f ||
-                d.filmDust.compactSubsidiaryScaleMin != 0.0f || d.filmDust.compactSubsidiaryScaleMax != 0.0f ||
-                d.filmDust.compactSubsidiaryAspectMin != 0.0f || d.filmDust.compactSubsidiaryAspectMax != 0.0f ||
-                d.filmDust.compactSubsidiaryOffsetMax != 0.0f || d.filmDust.compactSubsidiaryAngleMaxRadians != 0.0f ||
-                d.origins[0].cellX != 0 || d.origins[0].cellY != 0 ||
-                d.origins[0].localXMm != 0 || d.origins[0].localYMm != 0) {
-                return false;
-            }
-        }
-        if (d.filmScratch.slotProbability == 0.0f) {
-            if (d.filmScratch.cellWidthMm != 0.0f ||
-                d.filmScratch.cellHeightMm != 0.0f ||
-                d.filmScratch.slotProbability != 0.0f ||
-                d.filmScratch.softnessMinMm != 0.0f || d.filmScratch.softnessMaxMm != 0.0f ||
-                d.filmScratch.softnessSizeCapFraction != 0.0f ||
-                d.filmScratch.supportXMm != 0.0f ||
-                d.filmScratch.supportYMm != 0.0f ||
-                d.filmScratch.lengthMinMm != 0.0f ||
-                d.filmScratch.lengthBulkMaxMm != 0.0f ||
-                d.filmScratch.lengthMaxMm != 0.0f ||
-                d.filmScratch.lengthTailFraction != 0.0f ||
-                d.filmScratch.widthMinMm != 0.0f ||
-                d.filmScratch.widthBulkMaxMm != 0.0f ||
-                d.filmScratch.widthMaxMm != 0.0f ||
-                d.filmScratch.widthTailFraction != 0.0f ||
-                d.filmScratch.driftFraction != 0.0f ||
-                d.filmScratch.firstKnotMin != 0.0f || d.filmScratch.firstKnotMax != 0.0f ||
-                d.filmScratch.secondKnotMin != 0.0f || d.filmScratch.secondKnotMax != 0.0f ||
-                d.filmScratch.interiorWidthMinFraction != 0.0f || d.filmScratch.interiorWidthMaxFraction != 0.0f ||
-                d.filmScratch.interiorDepthMinFraction != 0.0f || d.filmScratch.interiorDepthMaxFraction != 0.0f ||
-                d.filmScratch.endpointAbruptProbability != 0.0f || d.filmScratch.interruptionProbability != 0.0f ||
-                d.filmScratch.gapCenterMin != 0.0f || d.filmScratch.gapCenterMax != 0.0f ||
-                d.filmScratch.gapSpanMin != 0.0f || d.filmScratch.gapSpanMax != 0.0f ||
-                d.filmScratch.scuffProbability != 0.0f || d.filmScratch.scuffLengthMaxMm != 0.0f ||
-                d.filmScratch.scuffAngleMaxRadians != 0.0f ||
-                d.filmScratch.strengthMin != 0.0f ||
-                d.filmScratch.strengthMax != 0.0f ||
-                d.origins[1].cellX != 0 || d.origins[1].cellY != 0 ||
-                d.origins[1].localXMm != 0 || d.origins[1].localYMm != 0) {
-                return false;
-            }
-        }
-        if (d.gateDust.slotProbability == 0.0f) {
-            if (d.gateDust.cellWidthMm != 0.0f ||
-                d.gateDust.cellHeightMm != 0.0f ||
-                d.gateDust.slotProbability != 0.0f ||
-                d.gateDust.softnessMinMm != 0.0f || d.gateDust.softnessMaxMm != 0.0f ||
-                d.gateDust.softnessSizeCapFraction != 0.0f ||
-                d.gateDust.supportXMm != 0.0f ||
-                d.gateDust.supportYMm != 0.0f ||
-                d.gateDust.fiberFraction != 0.0f ||
-                d.gateDust.fiberDriftFraction != 0.0f ||
-                d.gateDust.fiberFirstKnotMin != 0.0f || d.gateDust.fiberFirstKnotMax != 0.0f ||
-                d.gateDust.fiberSecondKnotMin != 0.0f || d.gateDust.fiberSecondKnotMax != 0.0f ||
-                d.gateDust.fiberInteriorWidthMinFraction != 0.0f || d.gateDust.fiberInteriorWidthMaxFraction != 0.0f ||
-                d.gateDust.diameterMinMm != 0.0f ||
-                d.gateDust.diameterBulkMaxMm != 0.0f ||
-                d.gateDust.diameterMaxMm != 0.0f ||
-                d.gateDust.diameterTailFraction != 0.0f ||
-                d.gateDust.fiberLengthMinMm != 0.0f ||
-                d.gateDust.fiberLengthMaxMm != 0.0f ||
-                d.gateDust.fiberWidthMinMm != 0.0f ||
-                d.gateDust.fiberWidthMaxMm != 0.0f ||
-                d.gateDust.opacityFaintCumulative != 0.0f || d.gateDust.opacityIntermediateCumulative != 0.0f ||
-                d.gateDust.compactOpacityMin != 0.0f || d.gateDust.compactOpacityFaintEnd != 0.0f ||
-                d.gateDust.compactOpacityIntermediateEnd != 0.0f || d.gateDust.compactOpacityMax != 0.0f ||
-                d.gateDust.fiberOpacityMin != 0.0f || d.gateDust.fiberOpacityFaintEnd != 0.0f ||
-                d.gateDust.fiberOpacityIntermediateEnd != 0.0f || d.gateDust.fiberOpacityMax != 0.0f ||
-                d.gateDust.compactDominantAspectMin != 0.0f || d.gateDust.compactDominantAspectMax != 0.0f ||
-                d.gateDust.compactSubsidiaryScaleMin != 0.0f || d.gateDust.compactSubsidiaryScaleMax != 0.0f ||
-                d.gateDust.compactSubsidiaryAspectMin != 0.0f || d.gateDust.compactSubsidiaryAspectMax != 0.0f ||
-                d.gateDust.compactSubsidiaryOffsetMax != 0.0f || d.gateDust.compactSubsidiaryAngleMaxRadians != 0.0f ||
-                d.origins[2].cellX != 0 || d.origins[2].cellY != 0 ||
-                d.origins[2].localXMm != 0 || d.origins[2].localYMm != 0) {
-                return false;
-            }
-        }
-        if (d.gateScratch.slotProbability == 0.0f) {
-            if (d.gateScratch.cellWidthMm != 0.0f ||
-                d.gateScratch.cellHeightMm != 0.0f ||
-                d.gateScratch.slotProbability != 0.0f ||
-                d.gateScratch.softnessMinMm != 0.0f || d.gateScratch.softnessMaxMm != 0.0f ||
-                d.gateScratch.softnessSizeCapFraction != 0.0f ||
-                d.gateScratch.supportXMm != 0.0f ||
-                d.gateScratch.supportYMm != 0.0f ||
-                d.gateScratch.lengthMinMm != 0.0f ||
-                d.gateScratch.lengthBulkMaxMm != 0.0f ||
-                d.gateScratch.lengthMaxMm != 0.0f ||
-                d.gateScratch.lengthTailFraction != 0.0f ||
-                d.gateScratch.widthMinMm != 0.0f ||
-                d.gateScratch.widthBulkMaxMm != 0.0f ||
-                d.gateScratch.widthMaxMm != 0.0f ||
-                d.gateScratch.widthTailFraction != 0.0f ||
-                d.gateScratch.driftFraction != 0.0f ||
-                d.gateScratch.firstKnotMin != 0.0f || d.gateScratch.firstKnotMax != 0.0f ||
-                d.gateScratch.secondKnotMin != 0.0f || d.gateScratch.secondKnotMax != 0.0f ||
-                d.gateScratch.interiorWidthMinFraction != 0.0f || d.gateScratch.interiorWidthMaxFraction != 0.0f ||
-                d.gateScratch.interiorDepthMinFraction != 0.0f || d.gateScratch.interiorDepthMaxFraction != 0.0f ||
-                d.gateScratch.endpointAbruptProbability != 0.0f || d.gateScratch.interruptionProbability != 0.0f ||
-                d.gateScratch.gapCenterMin != 0.0f || d.gateScratch.gapCenterMax != 0.0f ||
-                d.gateScratch.gapSpanMin != 0.0f || d.gateScratch.gapSpanMax != 0.0f ||
-                d.gateScratch.scuffProbability != 0.0f || d.gateScratch.scuffLengthMaxMm != 0.0f ||
-                d.gateScratch.scuffAngleMaxRadians != 0.0f ||
-                d.gateScratch.strengthMin != 0.0f ||
-                d.gateScratch.strengthMax != 0.0f ||
-                d.origins[3].cellX != 0 || d.origins[3].cellY != 0 ||
-                d.origins[3].localXMm != 0 || d.origins[3].localYMm != 0) {
-                return false;
-            }
-        }
-        if (!d.filmActive && !d.gateOutputActive) {
-            if (d.renderExtent.x != 0 || d.renderExtent.y != 0 || d.renderExtent.width != 0 || d.renderExtent.height != 0 ||
-                d.fullFrameExtent.x != 0 || d.fullFrameExtent.y != 0 || d.fullFrameExtent.width != 0 || d.fullFrameExtent.height != 0 ||
-                d.sampleStepXMm != 0 || d.sampleStepYMm != 0 || d.roiOffsetX != 0 || d.roiOffsetY != 0 ||
-                d.gateWidth != 0 || d.gateHeight != 0 || d.sessionSeed != 0 || d.clipToken != 0 ||
-                d.weaveDxPx != 0 || d.weaveDyPx != 0 || d.weaveCosRot != 1 || d.weaveSinRot != 0 || d.requiresFullFrame) {
-                return false;
-            }
-            return d.hash == 0 && d.recipeHash == 0 && !d.weaveActive && !d.gateTransmittanceActive &&
-                   d.filmDust.slotProbability == 0.0f && d.filmScratch.slotProbability == 0.0f &&
-                   d.gateDust.slotProbability == 0.0f && d.gateScratch.slotProbability == 0.0f;
-        }
-        if (d.fullFrameExtent.width > std::numeric_limits<int>::max() - 64 ||
-            d.fullFrameExtent.height > std::numeric_limits<int>::max() - 64) {
-            return false;
-        }
-        if (!valid_extent(d.renderExtent) || !valid_extent(d.fullFrameExtent) ||
-            !extent_contains(d.fullFrameExtent, d.renderExtent) ||
-            d.sessionSeed == 0 || d.recipeHash == 0 || d.hash == 0 ||
-            d.hash != hash_film_juicer_effects_descriptor(d) ||
-            d.filmActive != (d.filmDust.slotProbability > 0 || d.filmScratch.slotProbability > 0) ||
-            d.gateTransmittanceActive != (d.gateDust.slotProbability > 0 || d.gateScratch.slotProbability > 0) ||
-            d.gateOutputActive != (d.weaveActive || d.gateTransmittanceActive) ||
-            d.requiresFullFrame != d.weaveActive ||
-            (d.requiresFullFrame && !same_extent(d.renderExtent, d.fullFrameExtent)) ||
-            d.roiOffsetX != static_cast<std::int64_t>(d.renderExtent.x) - d.fullFrameExtent.x ||
-            d.roiOffsetY != static_cast<std::int64_t>(d.renderExtent.y) - d.fullFrameExtent.y ||
-            !std::isfinite(d.weaveDxPx) || !std::isfinite(d.weaveDyPx) ||
-            !std::isfinite(d.weaveCosRot) || !std::isfinite(d.weaveSinRot)) {
-            return false;
-        }
-        if (d.filmActive || d.gateTransmittanceActive) {
-            if (!(d.sampleStepXMm > 0.0f && d.sampleStepYMm > 0.0f) ||
-                !std::isfinite(d.sampleStepXMm) || !std::isfinite(d.sampleStepYMm)) {
-                return false;
-            }
-        }
-        if (d.gateTransmittanceActive && (d.gateWidth != d.fullFrameExtent.width / 2 + d.fullFrameExtent.width % 2 ||
-                                          d.gateHeight != d.fullFrameExtent.height / 2 + d.fullFrameExtent.height % 2)) {
-            return false;
-        }
-        if (d.filmDust.slotProbability != 0.0f) {
-            const auto& p = d.filmDust;
-            if (!valid_dust_policy(p) || !valid_defect_grid(p, d.origins[0], d)) {
-                return false;
-            }
-        }
-        if (d.filmScratch.slotProbability != 0.0f) {
-            const auto& p = d.filmScratch;
-            if (!valid_scratch_policy(p) || !valid_defect_grid(p, d.origins[1], d)) {
-                return false;
-            }
-        }
-        if (d.gateDust.slotProbability != 0.0f) {
-            const auto& p = d.gateDust;
-            if (!valid_dust_policy(p) || !valid_defect_grid(p, d.origins[2], d)) {
-                return false;
-            }
-        }
-        if (d.gateScratch.slotProbability != 0.0f) {
-            const auto& p = d.gateScratch;
-            if (!valid_scratch_policy(p) || !valid_defect_grid(p, d.origins[3], d)) {
-                return false;
-            }
-        }
-        return true;
-    }
 
     bool build_film_juicer_effects_frame_descriptor(
         const FilmJuicerEffectsFrameDescriptorInput& input,
@@ -1348,6 +948,8 @@ namespace Spektrafilm {
         const double h0 = g.canonicalHeight;
         if (!valid_extent(g.pixelDefinition) || !valid_extent(input.renderExtent) ||
             !extent_contains(g.pixelDefinition, input.renderExtent) ||
+            g.pixelDefinition.width > std::numeric_limits<int>::max() - 64 ||
+            g.pixelDefinition.height > std::numeric_limits<int>::max() - 64 ||
             !std::isfinite(x0) || !std::isfinite(g.canonicalY) ||
             !std::isfinite(w0) || !(w0 > 0) || !std::isfinite(h0) || !(h0 > 0) ||
             !std::isfinite(g.pixelAspectRatio) || !(g.pixelAspectRatio > 0) ||
@@ -1368,14 +970,34 @@ namespace Spektrafilm {
         out.weaveActive = input.recipe->gateWeaveAmount > 0;
         out.gateOutputActive = out.weaveActive || out.gateTransmittanceActive;
         out.requiresFullFrame = out.weaveActive;
-        out.roiOffsetX = static_cast<int>(static_cast<std::int64_t>(out.renderExtent.x) - out.fullFrameExtent.x);
-        out.roiOffsetY = static_cast<int>(static_cast<std::int64_t>(out.renderExtent.y) - out.fullFrameExtent.y);
+        if (out.weaveActive && !same_extent(out.renderExtent, out.fullFrameExtent)) {
+            return fail();
+        }
+        const std::int64_t roiOffsetX =
+            static_cast<std::int64_t>(out.renderExtent.x) - out.fullFrameExtent.x;
+        const std::int64_t roiOffsetY =
+            static_cast<std::int64_t>(out.renderExtent.y) - out.fullFrameExtent.y;
+        if (roiOffsetX < std::numeric_limits<int>::min() ||
+            roiOffsetX > std::numeric_limits<int>::max() ||
+            roiOffsetY < std::numeric_limits<int>::min() ||
+            roiOffsetY > std::numeric_limits<int>::max()) {
+            return fail();
+        }
+        out.roiOffsetX = static_cast<int>(roiOffsetX);
+        out.roiOffsetY = static_cast<int>(roiOffsetY);
         const double mm = static_cast<double>(input.filmFormatLongEdgeMm) / std::max(w0, h0);
+        if (!std::isfinite(mm) || !(mm > 0.0)) {
+            return fail();
+        }
         const double phaseX = (static_cast<double>(g.pixelDefinition.x) / g.scaleX - x0) * mm;
         const double phaseY = (static_cast<double>(g.pixelDefinition.y) / g.scaleY - g.canonicalY) * mm;
         if (out.filmActive || out.gateTransmittanceActive) {
             out.sampleStepXMm = static_cast<float>(mm / g.scaleX);
             out.sampleStepYMm = static_cast<float>(mm / g.scaleY);
+            if (!std::isfinite(out.sampleStepXMm) || !(out.sampleStepXMm > 0.0f) ||
+                !std::isfinite(out.sampleStepYMm) || !(out.sampleStepYMm > 0.0f)) {
+                return fail();
+            }
         }
         if (out.gateTransmittanceActive) {
             out.gateWidth = out.fullFrameExtent.width / 2 + out.fullFrameExtent.width % 2;
@@ -1427,6 +1049,16 @@ namespace Spektrafilm {
             }
             o = {x.cell, y.cell, x.localMm, y.localMm};
         }
+        if ((out.filmDust.slotProbability > 0 &&
+             !valid_defect_grid(out.filmDust, out.origins[0], out)) ||
+            (out.filmScratch.slotProbability > 0 &&
+             !valid_defect_grid(out.filmScratch, out.origins[1], out)) ||
+            (out.gateDust.slotProbability > 0 &&
+             !valid_defect_grid(out.gateDust, out.origins[2], out)) ||
+            (out.gateScratch.slotProbability > 0 &&
+             !valid_defect_grid(out.gateScratch, out.origins[3], out))) {
+            return fail();
+        }
         if (out.weaveActive) {
             if (!std::isfinite(input.frameTime) || !std::isfinite(input.frameRate) || !(input.frameRate > 0) ||
                 !std::isfinite(input.pixelSizeUm) || !(input.pixelSizeUm > 0)) {
@@ -1437,9 +1069,13 @@ namespace Spektrafilm {
             out.weaveDyPx = weave.dyPx;
             out.weaveCosRot = weave.cosRot;
             out.weaveSinRot = weave.sinRot;
+            if (!std::isfinite(out.weaveDxPx) || !std::isfinite(out.weaveDyPx) ||
+                !std::isfinite(out.weaveCosRot) || !std::isfinite(out.weaveSinRot)) {
+                return fail();
+            }
         }
         out.recipeHash = input.recipe->hash;
         out.hash = hash_film_juicer_effects_descriptor(out);
-        return validate_film_juicer_effects_frame_descriptor(out) || fail();
+        return true;
     }
 } // namespace Spektrafilm

@@ -509,10 +509,6 @@ namespace JuicerCuda {
         outDefects = {};
         outWeave = {};
         diagnostic.clear();
-        if (!Spektrafilm::validate_film_juicer_effects_frame_descriptor(descriptor)) {
-            diagnostic = "ResourceDescriptorMismatch phase=effects_payload field=descriptor";
-            return false;
-        }
         if (!descriptor.filmActive && !descriptor.gateOutputActive) {
             return true;
         }

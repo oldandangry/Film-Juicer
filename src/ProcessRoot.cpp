@@ -942,12 +942,7 @@ namespace JuicerProcess {
         }
         const Spektrafilm::FilmJuicerEffectsFrameDescriptor& frame =
             *descriptor;
-        if (frame.hash == 0 || frame.recipeHash != effects.hash ||
-            (!frame.filmActive && !frame.gateOutputActive) ||
-            frame.gateOutputActive !=
-                (frame.weaveActive || frame.gateTransmittanceActive) ||
-            frame.requiresFullFrame != frame.weaveActive ||
-            !Spektrafilm::validate_film_juicer_effects_frame_descriptor(frame)) {
+        if (frame.hash == 0 || frame.recipeHash != effects.hash) {
             outError =
                 "ResourceDescriptorMismatch phase=effects_descriptor field=identity";
             return false;

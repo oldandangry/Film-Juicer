@@ -11,6 +11,7 @@
 
 #include "gtest/gtest.h"
 
+#include "FilmEffectsFrameDescriptors.h"
 #include "SpectralProcessing.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
@@ -97,6 +98,143 @@ namespace {
             diagnostic))
             << diagnostic;
         return recipe;
+    }
+
+    Spektrafilm::FilmJuicerEffectsRecipe effects_recipe_for_test(
+        int activationMask) {
+        Spektrafilm::FilmJuicerEffectsRecipe recipe{};
+        recipe.active = true;
+        recipe.hash = 0x1234u;
+        if ((activationMask & 1) != 0) {
+            recipe.filmDust.cellWidthMm = 0.5f;
+            recipe.filmDust.cellHeightMm = 0.5f;
+            recipe.filmDust.slotProbability = 0.01f;
+            recipe.filmDust.softnessMaxMm = 0.003f;
+            recipe.filmDust.supportXMm = 0.5f;
+            recipe.filmDust.supportYMm = 0.5f;
+        }
+        if ((activationMask & 2) != 0) {
+            recipe.filmScratch.cellWidthMm = 1.0f;
+            recipe.filmScratch.cellHeightMm = 8.0f;
+            recipe.filmScratch.slotProbability = 0.01f;
+            recipe.filmScratch.softnessMaxMm = 0.001f;
+            recipe.filmScratch.supportXMm = 1.0f;
+            recipe.filmScratch.supportYMm = 12.0f;
+        }
+        if ((activationMask & 4) != 0) {
+            recipe.gateDust.cellWidthMm = 0.5f;
+            recipe.gateDust.cellHeightMm = 0.5f;
+            recipe.gateDust.slotProbability = 0.01f;
+            recipe.gateDust.softnessMaxMm = 0.005f;
+            recipe.gateDust.supportXMm = 0.5f;
+            recipe.gateDust.supportYMm = 0.5f;
+        }
+        if ((activationMask & 8) != 0) {
+            recipe.gateScratch.cellWidthMm = 1.0f;
+            recipe.gateScratch.cellHeightMm = 8.0f;
+            recipe.gateScratch.slotProbability = 0.01f;
+            recipe.gateScratch.softnessMaxMm = 0.003f;
+            recipe.gateScratch.supportXMm = 1.0f;
+            recipe.gateScratch.supportYMm = 12.0f;
+        }
+        if ((activationMask & 16) != 0) {
+            recipe.gateWeaveAmount = 1.0;
+        }
+        return recipe;
+    }
+
+    Spektrafilm::FilmJuicerEffectsFrameDescriptorInput effects_input_for_test(
+        const Spektrafilm::FilmJuicerEffectsRecipe& recipe,
+        Spektrafilm::FilmJuicerEffectsFrameExtent renderExtent = {0, 0, 640, 480},
+        Spektrafilm::FilmJuicerEffectsFrameExtent fullFrameExtent = {0, 0, 640, 480}) {
+        Spektrafilm::FilmJuicerEffectsGeometry geometry;
+        geometry.pixelDefinition = fullFrameExtent;
+        geometry.canonicalWidth = 35.0;
+        geometry.canonicalHeight = 20.0;
+        geometry.scaleX = 1.0;
+        geometry.scaleY = 1.0;
+        geometry.pixelAspectRatio = 1.0;
+        return {&recipe,
+                renderExtent,
+                fullFrameExtent,
+                10.0f,
+                0.0,
+                24.0,
+                1u,
+                2u,
+                geometry,
+                35.0f};
+    }
+
+    bool build_effects_descriptor_for_test(
+        const Spektrafilm::FilmJuicerEffectsFrameDescriptorInput& input,
+        Spektrafilm::FilmJuicerEffectsFrameDescriptor& descriptor) {
+        std::string diagnostic;
+        return Spektrafilm::build_film_juicer_effects_frame_descriptor(
+            input,
+            descriptor,
+            diagnostic);
+    }
+
+    TEST(FilmEffectsDescriptor, ConstructsEachActivationAndAllOffIdentity) {
+        Spektrafilm::FilmJuicerEffectsRecipe identity{};
+        auto input = effects_input_for_test(identity);
+        Spektrafilm::FilmJuicerEffectsFrameDescriptor descriptor;
+        ASSERT_TRUE(build_effects_descriptor_for_test(input, descriptor));
+        EXPECT_EQ(descriptor.hash, 0u);
+        EXPECT_EQ(descriptor.recipeHash, 0u);
+        EXPECT_FALSE(descriptor.filmActive);
+        EXPECT_FALSE(descriptor.gateOutputActive);
+
+        for (const int activationMask : {1, 2, 4, 8, 16}) {
+            SCOPED_TRACE(activationMask);
+            const auto recipe = effects_recipe_for_test(activationMask);
+            input = effects_input_for_test(recipe);
+            ASSERT_TRUE(build_effects_descriptor_for_test(input, descriptor));
+            EXPECT_NE(descriptor.hash, 0u);
+            EXPECT_EQ(descriptor.recipeHash, recipe.hash);
+            EXPECT_EQ(descriptor.filmActive, (activationMask & 3) != 0);
+            EXPECT_EQ(descriptor.gateTransmittanceActive, (activationMask & 12) != 0);
+            EXPECT_EQ(descriptor.weaveActive, (activationMask & 16) != 0);
+            EXPECT_EQ(
+                descriptor.gateOutputActive,
+                (activationMask & 28) != 0);
+            EXPECT_EQ(descriptor.requiresFullFrame, (activationMask & 16) != 0);
+        }
+    }
+
+    TEST(FilmEffectsDescriptor, KeepsGeometryAndPhysicalStepRejectionAtConstruction) {
+        const auto recipe = effects_recipe_for_test(1);
+        Spektrafilm::FilmJuicerEffectsFrameDescriptor descriptor;
+
+        auto contained = effects_input_for_test(recipe, {32, 24, 320, 240});
+        ASSERT_TRUE(build_effects_descriptor_for_test(contained, descriptor));
+        EXPECT_EQ(descriptor.roiOffsetX, 32);
+        EXPECT_EQ(descriptor.roiOffsetY, 24);
+
+        const auto outside = effects_input_for_test(recipe, {-1, 0, 320, 240});
+        EXPECT_FALSE(build_effects_descriptor_for_test(outside, descriptor));
+
+        const auto weaveRecipe = effects_recipe_for_test(16);
+        const auto partialWeave = effects_input_for_test(weaveRecipe, {32, 24, 320, 240});
+        EXPECT_FALSE(build_effects_descriptor_for_test(partialWeave, descriptor));
+
+        auto extremeExtent = effects_input_for_test(
+            recipe,
+            {0, 0, std::numeric_limits<int>::max(), 64},
+            {0, 0, std::numeric_limits<int>::max(), 64});
+        EXPECT_FALSE(build_effects_descriptor_for_test(extremeExtent, descriptor));
+
+        auto extremeCoordinate = effects_input_for_test(
+            recipe,
+            {std::numeric_limits<int>::max(), 0, 64, 64},
+            {std::numeric_limits<int>::max(), 0, 64, 64});
+        extremeCoordinate.geometry.scaleX = 1.0e-12;
+        EXPECT_FALSE(build_effects_descriptor_for_test(extremeCoordinate, descriptor));
+
+        auto nonfiniteStep = effects_input_for_test(recipe);
+        nonfiniteStep.geometry.scaleX = std::numeric_limits<double>::denorm_min();
+        EXPECT_FALSE(build_effects_descriptor_for_test(nonfiniteStep, descriptor));
     }
 
     TEST(ScatterHalationControls, RetainsFloat32BoundsAndIdentity) {

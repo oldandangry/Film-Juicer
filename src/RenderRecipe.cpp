@@ -774,7 +774,8 @@ namespace {
             p.compactSubsidiaryAspectMax = 1.0f;
             p.compactSubsidiaryOffsetMax = 0.68f;
             p.compactSubsidiaryAngleMaxRadians = 3.14159265359f;
-            // Descriptor validation recomputes this bound, so keep its rounding explicit.
+            // Keep the support bound in the immutable recipe so descriptor construction
+            // can size the deterministic defect grid without re-deriving policy.
             p.supportXMm =
                 std::fma(p.fiberLengthMaxMm, 0.5f + p.fiberDriftFraction, p.fiberWidthMaxMm);
             p.supportYMm = p.supportXMm;
