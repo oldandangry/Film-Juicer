@@ -731,10 +731,7 @@ __global__ void grain_mix_shared_kernel(GrainMixSharedInput input) {
     }
     const float sharedWeight = fminf(fmaxf(input.sharedWeight, 0.0f), 1.0f);
     const float independentWeight = fminf(fmaxf(input.independentWeight, 0.0f), 1.0f);
-    float amplitude = device_isfinite(input.amplitude) ? input.amplitude : 1.0f;
-    if (amplitude < 0.0f) {
-        amplitude = 0.0f;
-    }
+    const float amplitude = input.amplitude;
     const float shared =
         (input.sharedDelta && sharedWeight > 0.0f) ? input.sharedDelta[index] : 0.0f;
     const float independent =

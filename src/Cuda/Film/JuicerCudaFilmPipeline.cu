@@ -2042,16 +2042,6 @@ namespace {
         if (!device_isfinite(density) || density < 0.0f) {
             density = 0.0f;
         }
-        if (!device_isfinite(densityMax) || !(densityMax > 0.0f)) {
-            return 0.0f;
-        }
-        if (!device_isfinite(nParticles) || !(nParticles > 0.0f)) {
-            return 0.0f;
-        }
-        if (!device_isfinite(odParticle) || !(odParticle > 0.0f)) {
-            return 0.0f;
-        }
-
         float probability = density / densityMax;
         probability = fminf(fmaxf(probability, 1e-6f), 1.0f - 1e-6f);
 
@@ -2623,12 +2613,6 @@ __global__ void grain_apply_simple_kernel(
     const bool useRetime = (timeAlpha > 1e-6f && timeAlpha < 0.999999f);
     const bool wantNext = useRetime;
 
-    if (!device_isfinite(densityMax) || !(densityMax > 0.0f) ||
-        !device_isfinite(nParticles) || !(nParticles > 0.0f) ||
-        !device_isfinite(odParticle) || !(odParticle > 0.0f)) {
-        return;
-    }
-
     const std::int64_t absXSigned = static_cast<std::int64_t>(grain.originX) + static_cast<std::int64_t>(x);
     const std::int64_t absYSigned = static_cast<std::int64_t>(grain.originY) + static_cast<std::int64_t>(y);
     const std::uint64_t absX = static_cast<std::uint64_t>(absXSigned);
@@ -2762,13 +2746,6 @@ __global__ void __maxnreg__(79) grain_layer_kernel(
     const float timeAlpha = grain.timeAlpha;
     const bool useRetime = (timeAlpha > 1e-6f && timeAlpha < 0.999999f);
     const bool wantNext = useRetime;
-
-    if (!device_isfinite(densityMax) || !(densityMax > 0.0f) ||
-        !device_isfinite(nParticles) || !(nParticles > 0.0f) ||
-        !device_isfinite(odParticle) || !(odParticle > 0.0f)) {
-        outGrain[idx] = 0.0f;
-        return;
-    }
 
     const std::int64_t absXSigned = static_cast<std::int64_t>(grain.originX) + static_cast<std::int64_t>(x);
     const std::int64_t absYSigned = static_cast<std::int64_t>(grain.originY) + static_cast<std::int64_t>(y);
