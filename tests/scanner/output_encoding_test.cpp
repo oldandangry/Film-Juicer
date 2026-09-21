@@ -321,7 +321,6 @@ namespace {
             r.scannerTables = &product.payload.scannerTables;
             r.scannerColor = &product.payload.scannerColor;
             r.scannerLutDescriptor = &scanner;
-            r.outputGamutTransform = product.payload.outputBoundaryTable ? &product.payload.outputGamutTransform : nullptr;
             r.outputBoundaryTable = product.payload.outputBoundaryTable.get();
             r.requestedWidth = image.width;
             r.requestedHeight = image.height;
@@ -441,8 +440,8 @@ namespace {
 
     TEST_F(ScannerRoutes, FusedAndSeparateOutputMatchOnAllFourRoutes) {
         for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
-            for (int space : {0, 7}) {
-                for (bool gamut : {false, true}) {
+            for (bool gamut : {false, true}) {
+                for (int space : {0, 7}) {
                     SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " space=" << space << " gamut=" << gamut);
                     RouteInputs inputs(route, space, gamut);
                     if (Spektrafilm::scan_route_is_print(route)) {

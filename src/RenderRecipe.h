@@ -9,13 +9,10 @@
 #include <vector>
 
 #include "DiffusionHostBehavior.h"
+#include "GamutCompression.h"
 #include "ProfileAssets.h"
 #include "ScanRoute.h"
 #include "ScatterHalation.h"
-
-namespace Gamut {
-    struct InputCompressionHull;
-} // namespace Gamut
 
 namespace Spectral {
     struct FilmTcLut;
@@ -626,6 +623,7 @@ struct OutputGamutRecipe {
     float chromaKneeLimit = 1.0f;
     float chromaKneePower = 1.6f;
     int outputColorSpace = 0;
+    Gamut::OutputGamutTransform transform;
     std::uint64_t transformTableVersionHash = 0;
     std::uint64_t hash = 0;
 };

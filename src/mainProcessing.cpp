@@ -1560,13 +1560,7 @@ void JuicerProcessor::processImagesCUDA() {
             return;
         }
         if (!prepared.outputGamutTransform ||
-            !prepared.outputGamutTransform->valid ||
-            !prepared.outputGamutCmax ||
-            prepared.outputGamutTableHash == 0 ||
-            prepared.outputGamutRecipeHash != recipe.hash ||
-            prepared.outputGamutTransform->outputColorSpace !=
-                OutputEncoding::colorSpaceFromIndex(
-                    recipe.outputColorSpace)) {
+            !prepared.outputGamutCmax) {
             throw_submission_fatal(
                 "pack_output_gamut_payload",
                 "CUDA output gamut payload binding failed",
@@ -1833,10 +1827,6 @@ void JuicerProcessor::processImagesCUDA() {
         directPreparation.scannerTables = &directPayload->scannerTables;
         directPreparation.scannerColor = &directPayload->scannerColor;
         directPreparation.scannerLutDescriptor = &scannerDescriptor;
-        directPreparation.outputGamutTransform =
-            directPayload->outputBoundaryTable
-                ? &directPayload->outputGamutTransform
-                : nullptr;
         directPreparation.outputBoundaryTable =
             directPayload->outputBoundaryTable.get();
         directPreparation.scannerPostEffects = &scannerPostEffects;
@@ -2770,10 +2760,6 @@ void JuicerProcessor::processImagesCUDA() {
         preparation.scannerTables = &printPayload->scannerTables;
         preparation.scannerColor = &printPayload->scannerColor;
         preparation.scannerLutDescriptor = &scannerDescriptor;
-        preparation.outputGamutTransform =
-            printPayload->outputBoundaryTable
-                ? &printPayload->outputGamutTransform
-                : nullptr;
         preparation.outputBoundaryTable =
             printPayload->outputBoundaryTable.get();
         preparation.scannerPostEffects = &scannerPostEffects;

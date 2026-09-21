@@ -1254,7 +1254,6 @@ namespace JuicerCuda {
     static bool prepare_output_gamut_table_locked(
         Resources& resources,
         const OutputGamutRecipe& recipe,
-        const Gamut::OutputGamutTransform* transform,
         const Gamut::OutputBoundaryTable* table,
         void* cudaStreamOpaque,
         std::unique_lock<std::mutex>& resourcesLock,
@@ -1279,15 +1278,9 @@ namespace JuicerCuda {
             resources.outputGamutRecipeHash = 0;
             return true;
         }
-        if (!transform || !transform->valid || !table || !table->valid ||
-            transform->hash == 0 || table->hash == 0 ||
-            table->transformHash != transform->hash ||
-            table->contractHash != recipe.transformTableVersionHash ||
-            recipe.hash == 0 ||
-            recipe.outputColorSpace !=
-                OutputEncoding::toIndex(transform->outputColorSpace)) {
+        if (!table) {
             outError =
-                "ResourceDescriptorMismatch component=output_gamut_cmax field=selected_identity";
+                "MissingRequiredResource component=output_gamut_cmax field=boundary_table";
             return false;
         }
         if (resources.outputGamutCmax &&
@@ -3340,14 +3333,8 @@ namespace JuicerCuda {
         const DensityBoundsRecipe& densityBounds = recipe.densityBounds;
         const OutputGamutRecipe& outputGamut =
             recipe.scannerOutput.outputGamut;
-        if ((outputGamut.enabled &&
-             (!request.outputGamutTransform ||
-              !request.outputBoundaryTable ||
-              request.scannerColor->outputGamutRecipeHash !=
-                  outputGamut.hash)) ||
-            (!outputGamut.enabled &&
-             (request.outputGamutTransform || request.outputBoundaryTable ||
-              request.scannerColor->outputGamutRecipeHash != 0))) {
+        if ((outputGamut.enabled && !request.outputBoundaryTable) ||
+            (!outputGamut.enabled && request.outputBoundaryTable)) {
             outError =
                 "ResourceDescriptorMismatch component=focused_route field=output_gamut_binding";
             return false;
@@ -3410,7 +3397,6 @@ namespace JuicerCuda {
             return prepare_output_gamut_table_locked(
                 resources,
                 outputGamut,
-                request.outputGamutTransform,
                 request.outputBoundaryTable,
                 cudaStreamOpaque,
                 lock,
@@ -3783,7 +3769,6 @@ namespace JuicerCuda {
         return prepare_output_gamut_table_locked(
             resources,
             outputGamut,
-            request.outputGamutTransform,
             request.outputBoundaryTable,
             cudaStreamOpaque,
             lock,

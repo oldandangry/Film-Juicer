@@ -560,7 +560,6 @@ namespace JuicerCuda {
         const Spectral::SpectralTables* scannerTables = nullptr;
         const Scanner::ColorRuntime* scannerColor = nullptr;
         const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
-        const Gamut::OutputGamutTransform* outputGamutTransform = nullptr;
         const Gamut::OutputBoundaryTable* outputBoundaryTable = nullptr;
     };
 

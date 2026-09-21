@@ -3967,8 +3967,6 @@ namespace JuicerProcess {
         view.scannerColor = _state->focusedScannerColor;
         view.outputGamutTransform = _state->focusedOutputGamutTransform;
         view.outputGamutCmax = resources.outputGamutCmax;
-        view.outputGamutTableHash = resources.outputGamutTableHash;
-        view.outputGamutRecipeHash = resources.outputGamutRecipeHash;
         view.densityBoundsHash = resources.routeDensityBoundsHash;
         view.scannerDescriptorHash = resources.routeScannerDescriptorHash;
         view.selectedMethod = resources.filmRgbToRawMethod;
@@ -3976,15 +3974,12 @@ namespace JuicerProcess {
             view.scannerColor->outputGamutRecipeHash != 0;
         const bool outputGamutReady = outputGamutExpected
                                           ? view.outputGamutTransform &&
-                                                view.outputGamutTransform->valid &&
                                                 view.outputGamutCmax &&
-                                                view.outputGamutTableHash != 0 &&
-                                                view.outputGamutRecipeHash ==
+                                                resources.outputGamutRecipeHash ==
                                                     view.scannerColor->outputGamutRecipeHash
                                           : !view.outputGamutTransform &&
                                                 !view.outputGamutCmax &&
-                                                view.outputGamutTableHash == 0 &&
-                                                view.outputGamutRecipeHash == 0;
+                                                resources.outputGamutRecipeHash == 0;
         view.active = view.scanMedium && view.scanLut->canonical_ready() &&
                       view.densityBoundsHash != 0 &&
                       view.scannerDescriptorHash != 0 && outputGamutReady;
@@ -5145,17 +5140,8 @@ namespace JuicerProcess {
         }
         const OutputGamutRecipe& outputGamut =
             request.recipe->scannerOutput.outputGamut;
-        if ((outputGamut.enabled &&
-             (!request.outputGamutTransform ||
-              !request.outputBoundaryTable ||
-              !request.outputGamutTransform->valid ||
-              !request.outputBoundaryTable->valid ||
-              request.outputBoundaryTable->transformHash !=
-                  request.outputGamutTransform->hash ||
-              request.outputBoundaryTable->contractHash !=
-                  outputGamut.transformTableVersionHash)) ||
-            (!outputGamut.enabled &&
-             (request.outputGamutTransform || request.outputBoundaryTable))) {
+        if ((outputGamut.enabled && !request.outputBoundaryTable) ||
+            (!outputGamut.enabled && request.outputBoundaryTable)) {
             outError =
                 "ResourceDescriptorMismatch component=cuda_frame_preparation field=output_gamut_binding";
             recordFailure(
@@ -5277,7 +5263,6 @@ namespace JuicerProcess {
         focusedPreparation.scannerTables = request.scannerTables;
         focusedPreparation.scannerColor = request.scannerColor;
         focusedPreparation.scannerLutDescriptor = request.scannerLutDescriptor;
-        focusedPreparation.outputGamutTransform = request.outputGamutTransform;
         focusedPreparation.outputBoundaryTable = request.outputBoundaryTable;
         if (!JuicerCuda::prepare_focused_route_resources(
                 *frame._state->resources,
@@ -5325,7 +5310,8 @@ namespace JuicerProcess {
             request.recipe->profileRoute.scanRoute;
         frame._state->focusedFilmRawConfig = request.filmRawConfig;
         frame._state->focusedScannerColor = request.scannerColor;
-        frame._state->focusedOutputGamutTransform = request.outputGamutTransform;
+        frame._state->focusedOutputGamutTransform =
+            outputGamut.enabled ? &outputGamut.transform : nullptr;
         if (request.scannerPostEffects) {
             if (!frame.prepare_scanner_post_effects(
                     *request.scannerPostEffects,

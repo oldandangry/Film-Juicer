@@ -97,7 +97,6 @@ namespace {
             r.scannerTables = &product.payload.scannerTables;
             r.scannerColor = &product.payload.scannerColor;
             r.scannerLutDescriptor = &scanner;
-            r.outputGamutTransform = product.payload.outputBoundaryTable ? &product.payload.outputGamutTransform : nullptr;
             r.outputBoundaryTable = product.payload.outputBoundaryTable.get();
             r.spatialDirDescriptor = &dir;
             r.requestedWidth = width;

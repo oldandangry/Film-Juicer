@@ -176,7 +176,6 @@ namespace JuicerProcess {
             const Spectral::SpectralTables* scannerTables = nullptr;
             const Scanner::ColorRuntime* scannerColor = nullptr;
             const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
-            const Gamut::OutputGamutTransform* outputGamutTransform = nullptr;
             const Gamut::OutputBoundaryTable* outputBoundaryTable = nullptr;
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
@@ -290,8 +289,6 @@ namespace JuicerProcess {
                 const Scanner::ColorRuntime* scannerColor = nullptr;
                 const Gamut::OutputGamutTransform* outputGamutTransform = nullptr;
                 const float* outputGamutCmax = nullptr;
-                std::uint64_t outputGamutTableHash = 0;
-                std::uint64_t outputGamutRecipeHash = 0;
                 std::uint64_t densityBoundsHash = 0;
                 std::uint64_t scannerDescriptorHash = 0;
                 Spektrafilm::RgbToRawMethod selectedMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;

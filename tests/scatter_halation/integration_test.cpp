@@ -1162,9 +1162,6 @@ namespace {
             value.scannerTables = &product.payload.scannerTables;
             value.scannerColor = &product.payload.scannerColor;
             value.scannerLutDescriptor = &scannerDescriptor;
-            value.outputGamutTransform = product.payload.outputBoundaryTable
-                                             ? &product.payload.outputGamutTransform
-                                             : nullptr;
             value.outputBoundaryTable = product.payload.outputBoundaryTable.get();
             value.diffusionFrameSetDescriptor =
                 diffusionFrameSet ? &*diffusionFrameSet : nullptr;
@@ -2135,9 +2132,6 @@ namespace ScatterHalationValidation {
         value.scannerTables = &_impl->product.payload.scannerTables;
         value.scannerColor = &_impl->product.payload.scannerColor;
         value.scannerLutDescriptor = &_impl->scannerDescriptor;
-        value.outputGamutTransform = _impl->product.payload.outputBoundaryTable
-                                         ? &_impl->product.payload.outputGamutTransform
-                                         : nullptr;
         value.outputBoundaryTable =
             _impl->product.payload.outputBoundaryTable.get();
         value.diffusionFrameSetDescriptor =

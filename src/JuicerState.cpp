@@ -370,36 +370,16 @@ namespace {
         JuicerAssets::Library& assets,
         FocusedRenderPayload& payload,
         std::string& diagnostic) {
-        payload.outputGamutTransform = Gamut::OutputGamutTransform{};
         payload.outputBoundaryTable.reset();
         const OutputGamutRecipe& outputGamut =
             recipe.scannerOutput.outputGamut;
         if (!outputGamut.enabled) {
             return true;
         }
-        if (!Gamut::build_output_gamut_transform(
-                OutputEncoding::colorSpaceFromIndex(
-                    outputGamut.outputColorSpace),
-                payload.outputGamutTransform,
-                diagnostic) ||
-            Gamut::output_boundary_contract_hash(
-                payload.outputGamutTransform) !=
-                outputGamut.transformTableVersionHash) {
-            if (diagnostic.empty()) {
-                diagnostic =
-                    "ResourceDescriptorMismatch component=output_gamut_payload field=transform_identity";
-            }
-            return false;
-        }
         payload.outputBoundaryTable = assets.output_boundary_table(
-            payload.outputGamutTransform,
+            outputGamut.transform,
             diagnostic);
-        if (!payload.outputBoundaryTable ||
-            payload.outputBoundaryTable->transformHash !=
-                payload.outputGamutTransform.hash ||
-            payload.outputBoundaryTable->contractHash !=
-                outputGamut.transformTableVersionHash ||
-            payload.outputBoundaryTable->hash == 0) {
+        if (!payload.outputBoundaryTable) {
             if (diagnostic.empty()) {
                 diagnostic =
                     "MissingRequiredResource component=output_gamut_payload field=boundary_table";
