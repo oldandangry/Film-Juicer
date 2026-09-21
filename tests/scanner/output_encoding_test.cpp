@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <cuda.h>
@@ -293,9 +294,15 @@ namespace {
     struct RouteInputs {
         FocusedRenderStateBuildProduct product;
         Scanner::ScannerSpectralLutDescriptor scanner;
-        RouteInputs(Spektrafilm::ScanRoute route, int space, bool gamut) {
+        static ParamSnapshot controls_for_route(Spektrafilm::ScanRoute route) {
             ParamSnapshot controls;
             controls.scanRoute = route;
+            return controls;
+        }
+        RouteInputs(Spektrafilm::ScanRoute route, int space, bool gamut)
+            : RouteInputs(controls_for_route(route), space, gamut) {}
+        RouteInputs(ParamSnapshot controls, int space, bool gamut) {
+            const Spektrafilm::ScanRoute route = controls.scanRoute;
             controls.grainControls.active = false;
             controls.dirCouplers.active = false;
             controls.cameraAutoExposureEnabled = 0;
@@ -452,6 +459,55 @@ namespace {
                 }
             }
         }
+    }
+
+    TEST_F(ScannerRoutes, PrintResourceCacheAcceptsPublishedValuesAcrossDescriptorChanges) {
+        ParamSnapshot defaultControls =
+            RouteInputs::controls_for_route(Spektrafilm::ScanRoute::NegativePrintScan);
+        ParamSnapshot gammaControls = defaultControls;
+        gammaControls.printGammaFactor = 1.1;
+        RouteInputs retainedDefault(defaultControls, 0, false);
+        RouteInputs retainedGamma(gammaControls, 0, false);
+
+        auto check_print = [&](const char* scenario, ParamSnapshot controls) {
+            SCOPED_TRACE(scenario);
+            RouteInputs inputs(std::move(controls), 0, false);
+            check_route<JuicerCuda::PrintPipelineRunParams>(inputs);
+        };
+
+        {
+            SCOPED_TRACE("retained default publication");
+            check_route<JuicerCuda::PrintPipelineRunParams>(retainedDefault);
+            check_route<JuicerCuda::PrintPipelineRunParams>(retainedDefault);
+        }
+        {
+            SCOPED_TRACE("retained gamma publication");
+            check_route<JuicerCuda::PrintPipelineRunParams>(retainedGamma);
+        }
+
+        ParamSnapshot illuminantControls = defaultControls;
+        illuminantControls.enlIll = 0;
+        check_print("illuminant change", illuminantControls);
+
+        ParamSnapshot filterControls = defaultControls;
+        filterControls.printUiYmcCc = {4.0, -3.0, 2.0};
+        check_print("main filter change", filterControls);
+
+        ParamSnapshot preflashControls = defaultControls;
+        preflashControls.printPreflashExposure = 0.1;
+        preflashControls.preflashMFilterCc = 3.0;
+        preflashControls.preflashYFilterCc = -2.0;
+        check_print("preflash enabled", preflashControls);
+        check_print("preflash disabled", defaultControls);
+
+        ParamSnapshot unnormalizedControls = defaultControls;
+        unnormalizedControls.normalizePrintExposure = 0;
+        check_print("normalization disabled", unnormalizedControls);
+        check_print("normalization enabled", defaultControls);
+
+        ParamSnapshot profileControls = defaultControls;
+        profileControls.printProfileKey = "kodak_supra_endura";
+        check_print("print profile change", profileControls);
     }
 } // namespace
 

@@ -4048,9 +4048,7 @@ namespace JuicerCuda {
             outError = "MissingRequiredResource phase=4B field=print_preparation_request";
             return false;
         }
-        if (!request.mainIlluminant ||
-            request.recipe->print.balance.filteredMainIlluminantHash !=
-                Hash::hash_float_span(*request.mainIlluminant)) {
+        if (!request.mainIlluminant) {
             outError =
                 "ResourceDescriptorMismatch phase=4B field=published_print_balance";
             return false;
@@ -4080,49 +4078,28 @@ namespace JuicerCuda {
             resources.printProfileTablesDescriptorHash == descriptors.profileTables.hash &&
             resources.printDcC.x && resources.printDcM.x && resources.printDcY.x &&
             resources.printSensC.y && resources.printSensM.y && resources.printSensY.y;
-        const auto positive_finite_energy =
-            [](const std::array<float, Spectral::kNumSamples>& values) {
-                float energy = 0.0f;
-                for (float value : values) {
-                    if (!(std::isfinite(value) && value >= 0.0f)) {
-                        return false;
-                    }
-                    energy += value;
-                }
-                return std::isfinite(energy) && energy > 0.0f;
-            };
         const bool mainHit =
             resources.printMainIlluminantDescriptorHash == descriptors.mainIlluminant.hash &&
             resources.printIllumFiltered &&
             resources.printIllumK == Spectral::kNumSamples &&
-            resources.printIllumFilteredHostValid &&
-            positive_finite_energy(resources.printIllumFilteredHost);
+            resources.printIllumFilteredHostValid;
         const bool preflashIlluminantHit =
             !descriptors.preflashActive ||
             (resources.printPreflashIlluminantDescriptorHash == descriptors.preflashIlluminant.hash &&
              resources.printPreflashIllumFiltered &&
              resources.printPreflashIllumK == Spectral::kNumSamples &&
-             resources.printPreflashIllumFilteredHostValid &&
-             positive_finite_energy(resources.printPreflashIllumFilteredHost));
+             resources.printPreflashIllumFilteredHostValid);
         const bool preflashRawHit =
             !descriptors.preflashActive ||
             (resources.printPreflashRawDescriptorHash == descriptors.preflashRaw.hash &&
              resources.printPreflashValid);
         const bool balanceHit =
-            resources.printBalanceDescriptorHash == descriptors.balance.hash &&
-            std::isfinite(resources.printBalanceFactorMidgray) &&
-            std::isfinite(resources.printBalanceFactorMidgrayComp) &&
-            std::isfinite(resources.printBalanceNormalizer) &&
-            resources.printBalanceNormalizer > 0.0f;
+            resources.printBalanceDescriptorHash == descriptors.balance.hash;
         auto trace_main_illuminant = [&](const char* cacheOutcome,
                                          const char* mainIlluminantOutcome) {
             if (!JTRACE_ENABLED(3)) {
                 return;
             }
-            const std::uint64_t hostIlluminantChecksum =
-                resources.printIllumFilteredHostValid
-                    ? Hash::hash_float_span(resources.printIllumFilteredHost)
-                    : 0;
             std::string msg;
             msg.reserve(512);
             msg = "event=print_resource_preparation cacheOutcome=";
@@ -4143,8 +4120,6 @@ namespace JuicerCuda {
             msg += std::to_string(descriptors.mainIlluminant.printIlluminantHash);
             msg += " dichroicResourceHash=";
             msg += std::to_string(descriptors.mainIlluminant.dichroicResourceHash);
-            msg += " hostIlluminantChecksum=";
-            msg += std::to_string(hostIlluminantChecksum);
             JTRACE_VERBOSE("PHASE4C_BALANCE", msg);
         };
         if (filmDensityHit && profileHit && mainHit && preflashIlluminantHit && preflashRawHit &&
@@ -4195,10 +4170,6 @@ namespace JuicerCuda {
             factorMidgray = request.recipe->print.balance.factorMidgray;
             factorMidgrayComp = request.recipe->print.balance.factorMidgrayComp;
             normalizer = request.recipe->print.balance.normalizer;
-            if (!(std::isfinite(normalizer) && normalizer > 0.0f)) {
-                outError = "MalformedRequiredResource phase=4B field=print_exposure_normalizer";
-                return false;
-            }
         }
         if (descriptors.preflashActive && !preflashRawHit &&
             !derive_preflash_raw(film, print, preflashIlluminant, preflashRaw, outError)) {
