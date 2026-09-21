@@ -1743,14 +1743,6 @@ namespace {
         std::string& diagnostic) {
         const bool cameraStage =
             stage == Spektrafilm::DiffusionLinearStage::CameraFilmLinear;
-        const char* inactiveField = cameraStage
-                                        ? "camera_recipe_component_hash"
-                                        : "enlarger_recipe_component_hash";
-        const char* resolvedField =
-            cameraStage ? "camera_resolved_hash" : "enlarger_resolved_hash";
-        const char* scatterField = cameraStage
-                                       ? "camera_scatter_fraction"
-                                       : "enlarger_scatter_fraction";
         const char* domainField =
             cameraStage ? "camera_linear_domain" : "enlarger_linear_domain";
         const char* sampleField =
@@ -1758,20 +1750,6 @@ namespace {
         const char* stageHashField =
             cameraStage ? "camera_hash" : "enlarger_hash";
 
-        if (component.hash == 0) {
-            fail_diffusion_frame_descriptor(diagnostic, inactiveField);
-            return false;
-        }
-        if (!component.resolved.active || component.resolved.hash == 0) {
-            fail_diffusion_frame_descriptor(diagnostic, resolvedField);
-            return false;
-        }
-        if (!std::isfinite(component.resolved.scatterFraction) ||
-            component.resolved.scatterFraction <= 0.0 ||
-            component.resolved.scatterFraction > 1.0) {
-            fail_diffusion_frame_descriptor(diagnostic, scatterField);
-            return false;
-        }
         const Spektrafilm::SpatialOpticsDomain expectedDomain =
             cameraStage
                 ? Spektrafilm::SpatialOpticsDomain::FilmLinearExposure
@@ -1789,8 +1767,7 @@ namespace {
                 fullFrame.width,
                 fullFrame.height,
                 sample,
-                sampleDiagnostic) ||
-            sample.hash == 0 || sample.radiusPixels <= 0) {
+                sampleDiagnostic)) {
             fail_diffusion_frame_descriptor(diagnostic, sampleField);
             return false;
         }

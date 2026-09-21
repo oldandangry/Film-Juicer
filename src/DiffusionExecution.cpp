@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -27,12 +26,6 @@ namespace {
         std::array<Spektrafilm::DiffusionStageTileGeometry, 2> stages{};
         std::array<const Spektrafilm::DiffusionStageFrameDescriptor*, 2>
             sourceStages{};
-        std::size_t stageCount = 0;
-        std::uint64_t stagePlaneBytes = 0;
-    };
-
-    struct ValidatedFrameSet {
-        std::array<const Spektrafilm::DiffusionStageFrameDescriptor*, 2> stages{};
         std::size_t stageCount = 0;
         std::uint64_t stagePlaneBytes = 0;
     };
@@ -128,91 +121,6 @@ namespace {
         hash_u32_le(hash, static_cast<std::uint32_t>(layout.realDistance));
         hash_u32_le(hash, static_cast<std::uint32_t>(layout.complexDistance));
         hash_u64_le(hash, layout.transformBytes);
-    }
-
-    bool validate_stage(
-        const Spektrafilm::DiffusionStageFrameDescriptor& stage,
-        Spektrafilm::DiffusionLinearStage expectedStage,
-        std::string& diagnostic) {
-        if (stage.stage != expectedStage) {
-            fail(diagnostic, "stage_order");
-            return false;
-        }
-        if (stage.hash == 0) {
-            fail(diagnostic, "stage_hash");
-            return false;
-        }
-        if (!std::isfinite(stage.scatterFraction) ||
-            stage.scatterFraction <= 0.0 || stage.scatterFraction > 1.0) {
-            fail(diagnostic, "stage_scatter_fraction");
-            return false;
-        }
-        if (!std::isfinite(stage.sample.pixelSizeUm) ||
-            stage.sample.pixelSizeUm <= 0.0) {
-            fail(diagnostic, "stage_pixel_size_um");
-            return false;
-        }
-        if (stage.sample.radiusPixels <= 0 || stage.sample.hash == 0) {
-            fail(diagnostic, "stage_sample");
-            return false;
-        }
-        return true;
-    }
-
-    bool validate_frame_set(
-        const Spektrafilm::DiffusionFrameSetDescriptor& frameSet,
-        ValidatedFrameSet& out,
-        std::string& diagnostic) {
-        out = {};
-        if (frameSet.fullFrame.width < 2 || frameSet.fullFrame.height < 2) {
-            fail(diagnostic, "frame_domain");
-            return false;
-        }
-        if (frameSet.hash == 0) {
-            fail(diagnostic, "frame_set_hash");
-            return false;
-        }
-        if (!frameSet.camera && !frameSet.enlarger) {
-            fail(diagnostic, "active_stage_count");
-            return false;
-        }
-        if (frameSet.enlarger && !Spektrafilm::scan_route_is_print(frameSet.route)) {
-            fail(diagnostic, "enlarger_route");
-            return false;
-        }
-
-        if (frameSet.camera) {
-            if (!validate_stage(
-                    *frameSet.camera,
-                    Spektrafilm::DiffusionLinearStage::CameraFilmLinear,
-                    diagnostic)) {
-                return false;
-            }
-            out.stages[out.stageCount++] = &*frameSet.camera;
-        }
-        if (frameSet.enlarger) {
-            if (!validate_stage(
-                    *frameSet.enlarger,
-                    Spektrafilm::DiffusionLinearStage::EnlargerPrintLinear,
-                    diagnostic)) {
-                return false;
-            }
-            out.stages[out.stageCount++] = &*frameSet.enlarger;
-        }
-
-        if (!checked_multiply(
-                static_cast<std::uint64_t>(frameSet.fullFrame.width),
-                static_cast<std::uint64_t>(frameSet.fullFrame.height),
-                out.stagePlaneBytes) ||
-            !checked_multiply(out.stagePlaneBytes, 4, out.stagePlaneBytes) ||
-            !checked_multiply(
-                out.stagePlaneBytes,
-                sizeof(float),
-                out.stagePlaneBytes)) {
-            fail(diagnostic, "stage_plane_bytes");
-            return false;
-        }
-        return true;
     }
 
     bool validate_candidate(
@@ -526,8 +434,22 @@ namespace Spektrafilm {
         out = {};
         diagnostic.clear();
 
-        ValidatedFrameSet validated{};
-        if (!validate_frame_set(frameSet, validated, diagnostic)) {
+        std::array<const DiffusionStageFrameDescriptor*, 2> stages{};
+        std::size_t stageCount = 0;
+        if (frameSet.camera) {
+            stages[stageCount++] = &*frameSet.camera;
+        }
+        if (frameSet.enlarger) {
+            stages[stageCount++] = &*frameSet.enlarger;
+        }
+        std::uint64_t stagePlaneBytes = 0;
+        if (!checked_multiply(
+                static_cast<std::uint64_t>(frameSet.fullFrame.width),
+                static_cast<std::uint64_t>(frameSet.fullFrame.height),
+                stagePlaneBytes) ||
+            !checked_multiply(stagePlaneBytes, 4, stagePlaneBytes) ||
+            !checked_multiply(stagePlaneBytes, sizeof(float), stagePlaneBytes)) {
+            fail(diagnostic, "stage_plane_bytes");
             return false;
         }
 
@@ -543,8 +465,8 @@ namespace Spektrafilm {
                     candidate,
                     index,
                     frameSet,
-                    validated.stages,
-                    validated.stageCount,
+                    stages,
+                    stageCount,
                     value,
                     diagnostic)) {
                 return false;
@@ -639,9 +561,9 @@ namespace Spektrafilm {
 
         out.candidateIndex = selected->candidateIndex;
         out.stages = selected->stages;
-        out.sourceStages = validated.stages;
+        out.sourceStages = stages;
         out.stageCount = selected->stageCount;
-        out.stagePlaneBytes = validated.stagePlaneBytes;
+        out.stagePlaneBytes = stagePlaneBytes;
         return true;
     }
 

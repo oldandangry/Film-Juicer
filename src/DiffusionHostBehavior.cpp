@@ -195,56 +195,6 @@ namespace {
         return true;
     }
 
-    bool validate_resolved(
-        const Spektrafilm::DiffusionFilterResolvedParameters& resolved,
-        std::string& diagnostic) {
-        if (!resolved.active || resolved.hash == 0) {
-            fail(diagnostic, "resolved_inactive");
-            return false;
-        }
-        if (!family_config(resolved.family)) {
-            fail(diagnostic, "family");
-            return false;
-        }
-        if (!std::isfinite(resolved.scatterFraction) || resolved.scatterFraction <= 0.0 ||
-            resolved.scatterFraction > kMaximumScatterFraction) {
-            fail(diagnostic, "scatter_fraction");
-            return false;
-        }
-        double weightTotal = 0.0;
-        for (const double weight : resolved.groupWeightsCoreHaloBloom) {
-            if (!std::isfinite(weight) || weight < 0.0) {
-                fail(diagnostic, "group_weights");
-                return false;
-            }
-            weightTotal += weight;
-        }
-        if (!(std::isfinite(weightTotal) && weightTotal > 0.0)) {
-            fail(diagnostic, "group_weights");
-            return false;
-        }
-        for (const double center : resolved.groupCenterLambdaUm) {
-            if (!(std::isfinite(center) && center > 0.0)) {
-                fail(diagnostic, "group_centers_um");
-                return false;
-            }
-        }
-        if (!std::isfinite(resolved.effectiveWarmth) || resolved.effectiveWarmth < -1.5 ||
-            resolved.effectiveWarmth > 1.5) {
-            fail(diagnostic, "effective_warmth");
-            return false;
-        }
-        if (!(std::isfinite(resolved.spatialScale) && resolved.spatialScale > 0.0)) {
-            fail(diagnostic, "spatial_scale");
-            return false;
-        }
-        if (resolved_hash(resolved) != resolved.hash) {
-            fail(diagnostic, "resolved_hash");
-            return false;
-        }
-        return true;
-    }
-
     bool validate_sample_descriptor(
         const Spektrafilm::DiffusionPsfSampleDescriptor& descriptor,
         std::string& diagnostic) {
@@ -560,9 +510,6 @@ namespace Spektrafilm {
         std::string& diagnostic) {
         out = DiffusionPsfSampleDescriptor{};
         diagnostic.clear();
-        if (!validate_resolved(resolved, diagnostic)) {
-            return false;
-        }
         if (!(std::isfinite(pixelSizeUm) && pixelSizeUm > 0.0)) {
             fail(diagnostic, "pixel_size_um");
             return false;
