@@ -63,14 +63,11 @@ namespace {
         const float rgb[3],
         float& outMean) {
         float raw[3] = {};
-        if (!reconstruct_film_raw_device(
-                input.filmRaw,
-                input.reconstruction,
-                rgb,
-                raw)) {
-            outMean = 0.0f;
-            return false;
-        }
+        reconstruct_film_raw_device(
+            input.filmRaw,
+            input.reconstruction,
+            rgb,
+            raw);
         outMean = (raw[0] + raw[1] + raw[2]) * (1.0f / 3.0f);
         return isfinite(outMean);
     }

@@ -1328,30 +1328,16 @@ namespace JuicerCuda {
         return true;
     }
 
-    static bool alloc_and_upload_curve(Resources& resources, DeviceCurve& dst, const Spectral::Curve& src, void* cudaStreamOpaque, std::string& outError) {
-        if (src.lambda_nm.empty() || src.linear.empty() || src.lambda_nm.size() != src.linear.size()) {
-            outError = "curve has no samples or mismatched arrays";
-            return false;
-        }
-
-        const int n = static_cast<int>(src.lambda_nm.size());
-        if (n <= 0) {
-            outError = "curve sample count invalid";
-            return false;
-        }
-
-        int domainBegin = 0;
-        while (domainBegin < n && !std::isfinite(src.lambda_nm[static_cast<size_t>(domainBegin)])) {
-            ++domainBegin;
-        }
-        int domainEnd = n - 1;
-        while (domainEnd > domainBegin && !std::isfinite(src.lambda_nm[static_cast<size_t>(domainEnd)])) {
-            --domainEnd;
-        }
-        dst.domainBegin = domainBegin;
-        dst.domainEnd = domainEnd;
-
-        const size_t bytes = static_cast<size_t>(n) * sizeof(float);
+    static bool alloc_and_upload_curve(
+        Resources& resources,
+        DeviceCurve& dst,
+        const Spectral::Curve& src,
+        int n,
+        size_t bytes,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        dst.domainBegin = 0;
+        dst.domainEnd = n - 1;
         if (!allocate_owned_device(
                 resources,
                 reinterpret_cast<void**>(&dst.x),
@@ -1408,31 +1394,23 @@ namespace JuicerCuda {
         std::unique_lock<std::mutex>* resourcesLock,
         const char* label,
         std::string& outError) {
-        if (src.lambda_nm.empty() || src.linear.empty() || src.lambda_nm.size() != src.linear.size()) {
+        const size_t sampleCount = src.lambda_nm.size();
+        if (sampleCount == 0 || src.linear.size() != sampleCount) {
             outError = std::string(label) + ": curve has no samples or mismatched arrays";
             return false;
         }
-        const int n = static_cast<int>(src.lambda_nm.size());
-        if (n <= 0) {
+        if (sampleCount > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+            sampleCount > std::numeric_limits<size_t>::max() / sizeof(float)) {
             outError = std::string(label) + ": curve sample count invalid";
             return false;
         }
-
-        const size_t bytes = static_cast<size_t>(n) * sizeof(float);
+        const int n = static_cast<int>(sampleCount);
+        const size_t bytes = sampleCount * sizeof(float);
 
         // If the allocation matches, update in place to avoid alloc/free churn (common during slider scrubs).
         if (dst.x && dst.y && dst.n == n) {
             const char* baseLabel = label ? label : "curve";
             const std::string labelX = std::string(baseLabel) + ".x";
-            int domainBegin = 0;
-            while (domainBegin < n && !std::isfinite(src.lambda_nm[static_cast<size_t>(domainBegin)])) {
-                ++domainBegin;
-            }
-            int domainEnd = n - 1;
-            while (domainEnd > domainBegin && !std::isfinite(src.lambda_nm[static_cast<size_t>(domainEnd)])) {
-                --domainEnd;
-            }
-
             const bool waitOk = wait_for_frame_use_events_locked(
                 resources,
                 cudaStreamOpaque,
@@ -1464,8 +1442,8 @@ namespace JuicerCuda {
                 return false;
             }
 
-            dst.domainBegin = domainBegin;
-            dst.domainEnd = domainEnd;
+            dst.domainBegin = 0;
+            dst.domainEnd = n - 1;
             dst.n = n;
             return true;
         }
@@ -1475,7 +1453,14 @@ namespace JuicerCuda {
             resourcesLock->unlock();
         }
         const bool allocOk =
-            alloc_and_upload_curve(resources, tmp, src, cudaStreamOpaque, outError);
+            alloc_and_upload_curve(
+                resources,
+                tmp,
+                src,
+                n,
+                bytes,
+                cudaStreamOpaque,
+                outError);
         if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
             free_curve(resources, tmp);
             return false;

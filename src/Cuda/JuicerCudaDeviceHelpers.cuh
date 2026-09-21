@@ -35,31 +35,17 @@ static __device__ __forceinline__ float sample_density_at_logE_device(
     const JuicerCuda::DeviceCurveView& curve,
     float logE,
     float gammaFactor) {
-    if (!curve.x || !curve.y || curve.n <= 0) {
-        return 0.0f;
-    }
-
     if (!device_isfinite(logE)) {
         return nanf("");
     }
 
     const float xq = logE * gammaFactor;
-
-    int domainBegin = curve.domainBegin;
-    int domainEnd = curve.domainEnd;
-    if (domainBegin < 0) {
-        domainBegin = 0;
-    }
-    if (domainEnd >= curve.n) {
-        domainEnd = curve.n - 1;
-    }
-    if (domainBegin >= curve.n || domainEnd < domainBegin) {
-        return 0.0f;
-    }
+    const int domainBegin = curve.domainBegin;
+    const int domainEnd = curve.domainEnd;
 
     const float xmin = ldg_f(curve.x + domainBegin);
     const float xmax = ldg_f(curve.x + domainEnd);
-    if (!device_isfinite(xmin) || !device_isfinite(xmax) || !(xmax >= xmin)) {
+    if (!(xmax >= xmin)) {
         return ldg_f(curve.y + domainBegin);
     }
 
@@ -106,52 +92,15 @@ static __device__ __forceinline__ float sanitize_inf_logE_for_curve_device(float
     if (device_isfinite(logE) || isnan(logE)) {
         return logE;
     }
-    if (!curve.x || curve.n <= 0) {
-        return logE;
-    }
-
-    int begin = curve.domainBegin;
-    int end = curve.domainEnd;
-    if (begin < 0) {
-        begin = 0;
-    }
-    if (end >= curve.n) {
-        end = curve.n - 1;
-    }
-    if (begin >= curve.n || end < begin) {
-        return logE;
-    }
+    const int begin = curve.domainBegin;
+    const int end = curve.domainEnd;
 
     const float xmin = ldg_f(curve.x + begin);
     const float xmax = ldg_f(curve.x + end);
-    if (!device_isfinite(xmin) || !device_isfinite(xmax) || !(xmax >= xmin)) {
+    if (!(xmax >= xmin)) {
         return logE;
     }
     return (logE > 0.0f) ? xmax : xmin;
-}
-
-static __device__ __forceinline__ float sanitize_inf_logE_for_curve_device(float logE, const float* JUICER_RESTRICT x, int n) {
-    if (device_isfinite(logE) || isnan(logE)) {
-        return logE;
-    }
-    if (!x || n <= 0) {
-        return logE;
-    }
-
-    int begin = 0;
-    while (begin < n && !device_isfinite(ldg_f(x + begin))) {
-        ++begin;
-    }
-    if (begin >= n) {
-        return logE;
-    }
-    int end = n - 1;
-    while (end > begin && !device_isfinite(ldg_f(x + end))) {
-        --end;
-    }
-
-    const JuicerCuda::DeviceCurveView curve = {x, nullptr, n, begin, end};
-    return sanitize_inf_logE_for_curve_device(logE, curve);
 }
 
 struct Mat3 {
@@ -719,19 +668,14 @@ static __device__ void mallett_layer_exposures_device(
     E_out[2] = device_isfinite(Er) ? fmaxf(0.0f, Er) : 0.0f;
 }
 
-static __device__ __forceinline__ bool reconstruct_film_raw_device(
+static __device__ __forceinline__ void reconstruct_film_raw_device(
     const JuicerCuda::FilmRawPayload& config,
     const JuicerCuda::FilmReconstructionPayload& reconstruction,
     const float rgbIn[3],
     float filmRaw[3]) {
-    filmRaw[0] = filmRaw[1] = filmRaw[2] = 0.0f;
     switch (config.rgbToRawMethod) {
         case JuicerCuda::kFilmRawMethodHanatos2025:
         case JuicerCuda::kFilmRawMethodArctic2026beta04: {
-            if (!reconstruction.filmTcLut ||
-                reconstruction.filmTcLutExtent != JuicerCuda::kFilmTcLutExtent) {
-                return false;
-            }
             float workingXYZ[3] = {};
             convert_input_to_working_xyz_device(config, rgbIn, workingXYZ);
             film_tc_layer_exposures_device(
@@ -739,18 +683,9 @@ static __device__ __forceinline__ bool reconstruct_film_raw_device(
                 reconstruction.filmTcLut,
                 reconstruction.filmTcLutExtent,
                 filmRaw);
-            return true;
+            return;
         }
         case JuicerCuda::kFilmRawMethodMallett2019: {
-            const bool ready =
-                reconstruction.tablesIllum && reconstruction.tablesK == 81 &&
-                reconstruction.mallettBasis && reconstruction.mallettBasisK == 81 &&
-                reconstruction.sensB.y && reconstruction.sensB.n >= 81 &&
-                reconstruction.sensG.y && reconstruction.sensG.n >= 81 &&
-                reconstruction.sensR.y && reconstruction.sensR.n >= 81;
-            if (!ready) {
-                return false;
-            }
             float rgbSRGB[3] = {};
             convert_input_to_sRGB_device(config, rgbIn, rgbSRGB);
             mallett_layer_exposures_device(
@@ -767,10 +702,8 @@ static __device__ __forceinline__ bool reconstruct_film_raw_device(
                     0.0f,
                     filmRaw[channel] * config.mallettGreenMidgrayScale);
             }
-            return true;
+            return;
         }
-        default:
-            return false;
     }
 }
 
