@@ -1602,7 +1602,6 @@ namespace JuicerProcess {
         if (!resources || !resources->deviceLedger ||
             transaction.snapshot.contextEpoch == 0 ||
             transaction.resolvedMemoryBudget.allocationCapBytes == 0 ||
-            frameSet->hash == 0 ||
             frameSet->route != route ||
             frameSet->fullFrame.width != requestedWidth ||
             frameSet->fullFrame.height != requestedHeight ||
@@ -1659,21 +1658,6 @@ namespace JuicerProcess {
                                 diffusionExecutionDescriptor.spectrumKeys[index].hash));
             }
         };
-        if (frameSet->camera &&
-            frameSet->camera->stage !=
-                Spektrafilm::DiffusionLinearStage::CameraFilmLinear) {
-            outError =
-                "ResourceDescriptorMismatch component=diffusion field=camera_stage_order";
-            return false;
-        }
-        if (frameSet->enlarger &&
-            frameSet->enlarger->stage !=
-                Spektrafilm::DiffusionLinearStage::EnlargerPrintLinear) {
-            outError =
-                "ResourceDescriptorMismatch component=diffusion field=enlarger_stage_order";
-            return false;
-        }
-
         if (!Spektrafilm::build_diffusion_execution_descriptor(
                 *frameSet,
                 transaction.snapshot.contextEpoch,

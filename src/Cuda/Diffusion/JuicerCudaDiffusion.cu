@@ -210,16 +210,6 @@ namespace JuicerCuda::Diffusion::Detail {
         return success();
     }
 
-    bool valid_stage(Spektrafilm::DiffusionLinearStage stage) noexcept {
-        switch (stage) {
-            case Spektrafilm::DiffusionLinearStage::CameraFilmLinear:
-            case Spektrafilm::DiffusionLinearStage::EnlargerPrintLinear:
-                return true;
-            default:
-                return false;
-        }
-    }
-
     bool distinct_stage_planes(
         const JuicerCuda::Diffusion::StagePlaneSet& planes) noexcept {
         float* const values[]{
@@ -242,46 +232,9 @@ namespace JuicerCuda::Diffusion::Detail {
 
     JuicerCuda::Diffusion::LaunchResult validate_stage_request(
         const JuicerCuda::Diffusion::StageLaunchRequest& request) noexcept {
-        Spektrafilm::PlanLayout expected{};
-        if (!Spektrafilm::make_plan_layout(
-                request.layout.width,
-                request.layout.height,
-                expected) ||
-            expected != request.layout) {
-            return validation_failure("validate_stage_layout", 14);
-        }
         if (request.layout.transformBytes >
             static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
             return validation_failure("validate_stage_transform_bytes", 15);
-        }
-        if (!valid_stage(request.geometry.stage) ||
-            request.geometry.stageDescriptorHash == 0 ||
-            !std::isfinite(request.geometry.scatterFraction) ||
-            request.geometry.scatterFraction <= 0.0 ||
-            request.geometry.scatterFraction > 1.0) {
-            return validation_failure("validate_stage_identity", 16);
-        }
-        if (request.fullFrame.width < 2 || request.fullFrame.height < 2) {
-            return validation_failure("validate_stage_frame", 17);
-        }
-        const int radius = request.geometry.radiusPixels;
-        if (radius <= 0 || radius > (request.layout.width - 1) / 2 ||
-            radius > (request.layout.height - 1) / 2) {
-            return validation_failure("validate_stage_radius", 18);
-        }
-        const int validWidth = request.layout.width - 2 * radius;
-        const int validHeight = request.layout.height - 2 * radius;
-        const int tileCountX =
-            request.fullFrame.width / validWidth +
-            (request.fullFrame.width % validWidth != 0 ? 1 : 0);
-        const int tileCountY =
-            request.fullFrame.height / validHeight +
-            (request.fullFrame.height % validHeight != 0 ? 1 : 0);
-        if (request.geometry.validTileWidth != validWidth ||
-            request.geometry.validTileHeight != validHeight ||
-            request.geometry.tileCountX != tileCountX ||
-            request.geometry.tileCountY != tileCountY) {
-            return validation_failure("validate_stage_tile_geometry", 19);
         }
         if (request.execution.transformBuffer == nullptr ||
             request.execution.r2cPlan == 0 || request.execution.c2rPlan == 0 ||

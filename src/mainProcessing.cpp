@@ -331,7 +331,6 @@ namespace {
 
     bool bind_diffusion_stage(
         const Spektrafilm::DiffusionFrameSetDescriptor& frameSet,
-        const Spektrafilm::DiffusionStageFrameDescriptor& stageDescriptor,
         Spektrafilm::DiffusionLinearStage expectedStage,
         const JuicerCuda::Diffusion::DiffusionPreparedView& prepared,
         DiffusionStageBinding& out,
@@ -343,56 +342,27 @@ namespace {
                     Spektrafilm::DiffusionLinearStage::CameraFilmLinear
                 ? "camera"
                 : "enlarger";
-        if (stageDescriptor.stage != expectedStage || !prepared.active ||
-            prepared.executionDescriptor.hash == 0 ||
-            prepared.executionDescriptor.frameSetHash != frameSet.hash ||
-            prepared.executionDescriptor.stageCount == 0 ||
-            prepared.executionDescriptor.stageCount >
-                prepared.executionDescriptor.stages.size() ||
-            prepared.executionDescriptor.uniqueSpectrumCount == 0 ||
-            prepared.executionDescriptor.uniqueSpectrumCount >
-                prepared.executionDescriptor.spectrumKeys.size() ||
-            prepared.spectrumCount !=
-                prepared.executionDescriptor.uniqueSpectrumCount) {
-            diagnostic = "MissingRequiredResource component=diffusion stage=";
-            diagnostic += stageLabel;
-            diagnostic += " field=execution_descriptor";
-            return false;
-        }
-
-        const Spektrafilm::DiffusionStageTileGeometry* stageGeometry =
-            nullptr;
-        for (std::size_t stageIndex = 0;
-             stageIndex < prepared.executionDescriptor.stageCount;
-             ++stageIndex) {
-            const auto& candidate =
-                prepared.executionDescriptor.stages[stageIndex];
-            if (candidate.stage != expectedStage) {
-                continue;
-            }
-            if (stageGeometry) {
-                diagnostic =
-                    "ResourceDescriptorMismatch component=diffusion stage=";
-                diagnostic += stageLabel;
-                diagnostic += " field=duplicate_stage";
-                return false;
-            }
-            stageGeometry = &candidate;
-        }
-        if (!stageGeometry ||
-            stageGeometry->stageDescriptorHash != stageDescriptor.hash ||
-            stageGeometry->spectrumKeyIndex >=
-                prepared.executionDescriptor.uniqueSpectrumCount ||
-            stageGeometry->spectrumKeyIndex >= prepared.spectrumCount) {
+        const std::size_t stageIndex =
+            expectedStage ==
+                        Spektrafilm::DiffusionLinearStage::CameraFilmLinear ||
+                    !frameSet.camera
+                ? 0
+                : 1;
+        const auto& stageGeometry =
+            prepared.executionDescriptor.stages[stageIndex];
+        const std::size_t spectrumIndex =
+            stageGeometry.spectrumKeyIndex;
+        if (spectrumIndex >= prepared.spectrumCount ||
+            spectrumIndex >= prepared.spectra.size() ||
+            spectrumIndex >=
+                prepared.executionDescriptor.spectrumKeys.size()) {
             diagnostic =
                 "ResourceDescriptorMismatch component=diffusion stage=";
             diagnostic += stageLabel;
-            diagnostic += " field=stage_geometry";
+            diagnostic += " field=spectrum_index";
             return false;
         }
 
-        const std::size_t spectrumIndex =
-            stageGeometry->spectrumKeyIndex;
         if (!same_diffusion_spectrum_key(
                 prepared.executionDescriptor.spectrumKeys[spectrumIndex],
                 prepared.spectra[spectrumIndex].key) ||
@@ -429,7 +399,7 @@ namespace {
         }
 
         out.layout = prepared.executionDescriptor.layout;
-        out.geometry = *stageGeometry;
+        out.geometry = stageGeometry;
         out.fullFrame = frameSet.fullFrame;
         out.spectra = spectra;
         out.execution = execution;
@@ -1942,7 +1912,6 @@ void JuicerProcessor::processImagesCUDA() {
         DiffusionStageBinding directCameraDiffusion{};
         if (_diffusionFrameSetDescriptor) {
             if (!diffusionPrepared.active ||
-                diffusionPrepared.executionDescriptor.hash == 0 ||
                 diffusionPrepared.executionDescriptor.frameSetHash !=
                     _diffusionFrameSetDescriptor->hash ||
                 diffusionPrepared.executionDescriptor.contextEpoch !=
@@ -1953,26 +1922,9 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_direct_restriction(
                     "MissingRequiredResource component=diffusion field=prepared_view");
             }
-            if (!_diffusionFrameSetDescriptor->camera ||
-                _diffusionFrameSetDescriptor->enlarger) {
-                const char* seam = _diffusionFrameSetDescriptor->camera
-                                       ? "unexpected_enlarger_print_linear_exposure"
-                                       : "missing_camera_film_linear_exposure";
-                std::string diagnostic =
-                    "ExactDiffusionStageBoundaryUnavailable route=";
-                diagnostic += Spektrafilm::scan_route_label(
-                    _diffusionFrameSetDescriptor->route);
-                diagnostic += " stage=camera seam=";
-                diagnostic += seam;
-                diagnostic += " frame_set_hash=";
-                diagnostic +=
-                    std::to_string(_diffusionFrameSetDescriptor->hash);
-                throw_direct_restriction(diagnostic.c_str());
-            }
             std::string cameraBindingDiagnostic;
             if (!bind_diffusion_stage(
                     *_diffusionFrameSetDescriptor,
-                    *_diffusionFrameSetDescriptor->camera,
                     Spektrafilm::DiffusionLinearStage::CameraFilmLinear,
                     diffusionPrepared,
                     directCameraDiffusion,
@@ -2899,7 +2851,6 @@ void JuicerProcessor::processImagesCUDA() {
         DiffusionStageBinding printEnlargerDiffusion{};
         if (_diffusionFrameSetDescriptor) {
             if (!diffusionPrepared.active ||
-                diffusionPrepared.executionDescriptor.hash == 0 ||
                 diffusionPrepared.executionDescriptor.frameSetHash !=
                     _diffusionFrameSetDescriptor->hash ||
                 diffusionPrepared.executionDescriptor.contextEpoch !=
@@ -2914,7 +2865,6 @@ void JuicerProcessor::processImagesCUDA() {
                 std::string cameraBindingDiagnostic;
                 if (!bind_diffusion_stage(
                         *_diffusionFrameSetDescriptor,
-                        *_diffusionFrameSetDescriptor->camera,
                         Spektrafilm::DiffusionLinearStage::CameraFilmLinear,
                         diffusionPrepared,
                         printCameraDiffusion,
@@ -2927,7 +2877,6 @@ void JuicerProcessor::processImagesCUDA() {
                 std::string enlargerBindingDiagnostic;
                 if (!bind_diffusion_stage(
                         *_diffusionFrameSetDescriptor,
-                        *_diffusionFrameSetDescriptor->enlarger,
                         Spektrafilm::DiffusionLinearStage::EnlargerPrintLinear,
                         diffusionPrepared,
                         printEnlargerDiffusion,

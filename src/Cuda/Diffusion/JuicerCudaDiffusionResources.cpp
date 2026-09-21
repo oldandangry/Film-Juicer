@@ -648,41 +648,6 @@ namespace JuicerCuda::Diffusion {
             return nullptr;
         }
 
-        bool validate_prepare_request(
-            const Spektrafilm::DiffusionFrameSetDescriptor& frameSet,
-            const Spektrafilm::DiffusionExecutionDescriptor& descriptor,
-            std::uint64_t contextEpoch,
-            std::string& outError) {
-            if (descriptor.hash == 0 || descriptor.frameSetHash != frameSet.hash ||
-                descriptor.contextEpoch != contextEpoch ||
-                descriptor.stageCount == 0 || descriptor.stageCount > 2 ||
-                descriptor.uniqueSpectrumCount == 0 ||
-                descriptor.uniqueSpectrumCount > 2 ||
-                descriptor.planKey.hash == 0 ||
-                descriptor.layout.transformBytes == 0 ||
-                descriptor.stagePlaneBytes == 0 ||
-                descriptor.stagePlaneBytes % 4u != 0) {
-                outError =
-                    "ResourceDescriptorMismatch component=diffusion field=execution_descriptor";
-                return false;
-            }
-            for (std::size_t keyIndex = 0;
-                 keyIndex < descriptor.uniqueSpectrumCount;
-                 ++keyIndex) {
-                const auto* stage = stage_for_key(
-                    frameSet,
-                    descriptor,
-                    keyIndex);
-                if (!stage || stage->sample.hash != descriptor.spectrumKeys[keyIndex].sampleHash ||
-                    stage->sample.radiusPixels <= 0) {
-                    outError =
-                        "ResourceDescriptorMismatch component=diffusion field=spectrum_key";
-                    return false;
-                }
-            }
-            return true;
-        }
-
         bool make_plan_pair(
             DiffusionWorkspaceSlot& slot,
             const Spektrafilm::DiffusionExecutionDescriptor& descriptor,
@@ -844,11 +809,6 @@ namespace JuicerCuda::Diffusion {
             slot.transformBuffer = static_cast<float*>(transform);
             slot.transformCapacityBytes = descriptor.layout.transformBytes;
 
-            if (descriptor.stagePlaneBytes % 4u != 0) {
-                outError =
-                    "ResourceDescriptorMismatch component=diffusion field=stage_plane_bytes";
-                return false;
-            }
             const std::uint64_t onePlaneBytes = descriptor.stagePlaneBytes / 4u;
             for (std::size_t index = 0; index < 4; ++index) {
                 void* plane = nullptr;
@@ -1051,12 +1011,13 @@ namespace JuicerCuda::Diffusion {
                 "ResourceDescriptorMismatch component=diffusion field=prepare_identity";
             return false;
         }
-        if (!current_owner_matches(contextKey, outError) ||
-            !validate_prepare_request(
-                frameSet,
-                descriptor,
-                contextEpoch,
-                outError)) {
+        if (!current_owner_matches(contextKey, outError)) {
+            return false;
+        }
+        if (descriptor.contextEpoch != contextEpoch ||
+            descriptor.frameSetHash != frameSet.hash) {
+            outError =
+                "ResourceDescriptorMismatch component=diffusion field=prepare_association";
             return false;
         }
         std::array<Spektrafilm::DiffusionPsfComponents, 2> components{};
@@ -1064,18 +1025,19 @@ namespace JuicerCuda::Diffusion {
         for (std::size_t keyIndex = 0;
              keyIndex < descriptor.uniqueSpectrumCount;
              ++keyIndex) {
-            const auto* stage = stage_for_key(frameSet, descriptor, keyIndex);
-            if (!stage || !Spektrafilm::expand_diffusion_psf_components(
-                              stage->sample,
-                              components[keyIndex],
-                              outError)) {
+            const auto& stage =
+                *stage_for_key(frameSet, descriptor, keyIndex);
+            if (!Spektrafilm::expand_diffusion_psf_components(
+                    stage.sample,
+                    components[keyIndex],
+                    outError)) {
                 if (outError.empty()) {
                     outError =
                         "ResourceDescriptorMismatch component=diffusion field=psf_components";
                 }
                 return false;
             }
-            radii[keyIndex] = stage->sample.radiusPixels;
+            radii[keyIndex] = stage.sample.radiusPixels;
         }
 
         if (!acquire_host_lease(resources, outError)) {
