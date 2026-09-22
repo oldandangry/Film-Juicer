@@ -756,18 +756,10 @@ namespace JuicerProcess {
         };
 
         Root* root = nullptr;
-        Root::CudaResourceOwner resourceOwner;
-        Root::CudaResourceOwner grainStaticOwner;
         JuicerCuda::Resources* resources = nullptr;
         JuicerCuda::Resources* grainStaticResources = nullptr;
-        Spektrafilm::DiffusionExecutionDescriptor diffusionExecutionDescriptor{};
-        JuicerCuda::Diffusion::PreparedDiffusionLease diffusionLease;
-        std::optional<ScatterHalationFrameDescriptor> scatterHalationDescriptor;
         void* scatterHalationFilterBlock = nullptr;
         void* scatterHalationCarrierBlock = nullptr;
-        JuicerCuda::ScatterHalationCarrierSource scatterHalationCarrierSource =
-            JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes;
-        JuicerCuda::CameraFilmLinearExposurePlanes scatterHalationCarrier{};
         float* scatterHalationFilterTemp = nullptr;
         float* scatterHalationWeightedAccumulation = nullptr;
         const Spectral::FilmRawConfig* focusedFilmRawConfig = nullptr;
@@ -776,34 +768,42 @@ namespace JuicerProcess {
         const JuicerCuda::Resources::DeviceScanMedium* focusedScanMedium = nullptr;
         const JuicerCuda::Resources::DeviceSpectralLut* focusedScanLut = nullptr;
         const PrintRecipe* printRecipe = nullptr;
-        JuicerCuda::PrintResourceDescriptors printDescriptors{};
-        JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
-        ScanErrorFrameStage scanErrorStage{};
-        AutoExposureFrameWorkspace autoExposureWorkspace{};
-        FrameScratchWorkspace scratchWorkspace{};
-        std::map<void*, JuicerCuda::DeviceByteReservation>
-            deviceAllocationRecords;
-        WorkspaceRequest workspaceRequest{};
-        Spektrafilm::SpatialDirDescriptor spatialDirDescriptor{};
-        Scanner::ScannerPostEffectsDescriptor scannerPostEffectsDescriptor{};
-        Spektrafilm::ProfilePolarity capturePolarity =
-            Spektrafilm::ProfilePolarity::Unsupported;
-        std::string filmProfileKey;
-        Spektrafilm::ScanRoute scanRoute =
-            Spektrafilm::kDefaultScanRoute;
-        std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
-        std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor;
-        std::array<JuicerCuda::VisualGrainPreparedGaussianView, 3>
-            preparedGrainCorrelation{};
-        JuicerCuda::VisualGrainPreparedGaussianView
-            preparedGrainDyeCloud[3][3] = {};
-        JuicerCuda::VisualGrainPreparedDensityLayersView
-            preparedGrainDensityLayers{};
-        bool visualGrainPrepared = false;
         void* lastCudaStreamOpaque = nullptr;
-        bool frameUseEventSubmitted = false;
         const char* failureStageTag = "prepare_frame";
         const char* failurePrefix = "CUDA prepared frame failed";
+        Root::CudaResourceOwner resourceOwner;
+        Root::CudaResourceOwner grainStaticOwner;
+        std::map<void*, JuicerCuda::DeviceByteReservation>
+            deviceAllocationRecords;
+        JuicerCuda::CameraFilmLinearExposurePlanes scatterHalationCarrier{};
+        std::string filmProfileKey;
+        Scanner::ScannerPostEffectsDescriptor scannerPostEffectsDescriptor{};
+        WorkspaceRequest workspaceRequest{};
+        ScanErrorFrameStage scanErrorStage{};
+        std::array<JuicerCuda::VisualGrainPreparedGaussianView, 3>
+            preparedGrainCorrelation{};
+        AutoExposureFrameWorkspace autoExposureWorkspace{};
+        JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
+        FrameScratchWorkspace scratchWorkspace{};
+        JuicerCuda::VisualGrainPreparedDensityLayersView
+            preparedGrainDensityLayers{};
+        JuicerCuda::PrintResourceDescriptors printDescriptors{};
+        Spektrafilm::DiffusionExecutionDescriptor diffusionExecutionDescriptor{};
+        JuicerCuda::VisualGrainPreparedGaussianView
+            preparedGrainDyeCloud[3][3] = {};
+        std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
+        Spektrafilm::SpatialDirDescriptor spatialDirDescriptor{};
+        JuicerCuda::Diffusion::PreparedDiffusionLease diffusionLease;
+        std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor;
+        std::optional<ScatterHalationFrameDescriptor> scatterHalationDescriptor;
+        JuicerCuda::ScatterHalationCarrierSource scatterHalationCarrierSource =
+            JuicerCuda::ScatterHalationCarrierSource::DedicatedPreparedPlanes;
+        Spektrafilm::ProfilePolarity capturePolarity =
+            Spektrafilm::ProfilePolarity::Unsupported;
+        Spektrafilm::ScanRoute scanRoute =
+            Spektrafilm::kDefaultScanRoute;
+        bool visualGrainPrepared = false;
+        bool frameUseEventSubmitted = false;
 
         void set_failure(
             PreparedCudaFailureStage stage,

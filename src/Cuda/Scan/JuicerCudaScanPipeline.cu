@@ -1535,19 +1535,19 @@ namespace {
 
         const int ix = static_cast<int>(floorf(x));
         const int iy = static_cast<int>(floorf(y));
-        const double tx = static_cast<double>(x - static_cast<float>(ix));
-        const double ty = static_cast<double>(y - static_cast<float>(iy));
+        const float tx = x - static_cast<float>(ix);
+        const float ty = y - static_cast<float>(iy);
 
-        double wx[4];
-        double wy[4];
-        wx[0] = mitchell_weight_device(tx + 1.0);
+        float wx[4];
+        float wy[4];
+        wx[0] = mitchell_weight_device(tx + 1.0f);
         wx[1] = mitchell_weight_device(tx);
-        wx[2] = mitchell_weight_device(tx - 1.0);
-        wx[3] = mitchell_weight_device(tx - 2.0);
-        wy[0] = mitchell_weight_device(ty + 1.0);
+        wx[2] = mitchell_weight_device(tx - 1.0f);
+        wx[3] = mitchell_weight_device(tx - 2.0f);
+        wy[0] = mitchell_weight_device(ty + 1.0f);
         wy[1] = mitchell_weight_device(ty);
-        wy[2] = mitchell_weight_device(ty - 1.0);
-        wy[3] = mitchell_weight_device(ty - 2.0);
+        wy[2] = mitchell_weight_device(ty - 1.0f);
+        wy[3] = mitchell_weight_device(ty - 2.0f);
 
         const int maxXi = width - 1;
         const int maxYi = height - 1;

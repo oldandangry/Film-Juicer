@@ -50,33 +50,29 @@ namespace {
         return Hash::hash_uint64_values({hashes.valueHash, hashes.nanMaskHash});
     }
 
-    void compute_authored_extrema(
-        const std::vector<std::array<float, 3>>& curves,
-        std::array<float, 3>& outMin,
-        std::array<float, 3>& outMax) {
-        outMin = curves.front();
-        outMax = curves.front();
-        for (const std::array<float, 3>& row : curves) {
+    struct DensityCurveExtrema {
+        std::array<float, 3> minimum{};
+        std::array<float, 3> maximum{};
+    };
+
+    DensityCurveExtrema normalize_density_curves(
+        const std::vector<std::array<float, 3>>& authored,
+        std::vector<std::array<float, 3>>& normalized) {
+        DensityCurveExtrema extrema{authored.front(), authored.front()};
+        for (const std::array<float, 3>& row : authored) {
             for (std::size_t channel = 0; channel < row.size(); ++channel) {
                 const float value = row[channel];
-                outMin[channel] = std::min(outMin[channel], value);
-                outMax[channel] = std::max(outMax[channel], value);
+                extrema.minimum[channel] = std::min(extrema.minimum[channel], value);
+                extrema.maximum[channel] = std::max(extrema.maximum[channel], value);
             }
         }
-    }
-
-    void normalize_density_curves(
-        const std::vector<std::array<float, 3>>& authored,
-        std::vector<std::array<float, 3>>& normalized,
-        std::array<float, 3>& outMin,
-        std::array<float, 3>& outMax) {
-        compute_authored_extrema(authored, outMin, outMax);
         normalized = authored;
         for (std::array<float, 3>& row : normalized) {
             for (std::size_t channel = 0; channel < row.size(); ++channel) {
-                row[channel] -= outMin[channel];
+                row[channel] -= extrema.minimum[channel];
             }
         }
+        return extrema;
     }
 
     void derive_grain_layer_axis_search_metadata(
@@ -1580,11 +1576,11 @@ namespace {
         out.polarity = capturePolarity;
         out.source = Spektrafilm::DensityBoundsSource::PrintMediaAuthoredCurves;
         std::vector<std::array<float, 3>> normalized;
-        normalize_density_curves(
+        const DensityCurveExtrema extrema = normalize_density_curves(
             profile.data.densityCurves,
-            normalized,
-            out.authoredMinCmy,
-            out.authoredMaxCmy);
+            normalized);
+        out.authoredMinCmy = extrema.minimum;
+        out.authoredMaxCmy = extrema.maximum;
         for (std::size_t channel = 0; channel < out.dataMinCmy.size(); ++channel) {
             out.dataMinCmy[channel] = out.authoredMinCmy[channel];
             out.dataMaxCmy[channel] = out.authoredMaxCmy[channel];
@@ -2083,11 +2079,11 @@ namespace Spektrafilm {
             filmDevelop.densityCurveGamma.fill(input.filmGammaFactor);
             filmDevelop.logExposure = profile.data.logExposure;
             filmDevelop.authoredDensityCurves = profile.data.densityCurves;
-            normalize_density_curves(
+            const DensityCurveExtrema extrema = normalize_density_curves(
                 filmDevelop.authoredDensityCurves,
-                filmDevelop.normalizedDensityCurves,
-                filmDevelop.authoredMinCmy,
-                filmDevelop.authoredMaxCmy);
+                filmDevelop.normalizedDensityCurves);
+            filmDevelop.authoredMinCmy = extrema.minimum;
+            filmDevelop.authoredMaxCmy = extrema.maximum;
             filmDevelop.normalizedDensityCurvesHash = hash_nan_preserving_floats(
                 &filmDevelop.normalizedDensityCurves[0][0],
                 filmDevelop.normalizedDensityCurves.size() * 3u);

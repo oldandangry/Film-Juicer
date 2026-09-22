@@ -1325,10 +1325,10 @@ namespace JuicerCuda {
         Resources& resources,
         DeviceCurve& dst,
         const Spectral::Curve& src,
-        int n,
-        size_t bytes,
         void* cudaStreamOpaque,
         std::string& outError) {
+        const int n = static_cast<int>(src.lambda_nm.size());
+        const size_t bytes = src.lambda_nm.size() * sizeof(float);
         dst.domainBegin = 0;
         dst.domainEnd = n - 1;
         if (!allocate_owned_device(
@@ -1450,8 +1450,6 @@ namespace JuicerCuda {
                 resources,
                 tmp,
                 src,
-                n,
-                bytes,
                 cudaStreamOpaque,
                 outError);
         if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
@@ -6620,7 +6618,7 @@ namespace JuicerCuda {
         std::uint64_t spatial_dir_boundary_identity(
             const Spektrafilm::DirGaussianComponentPlan& component,
             int width,
-            int height) noexcept {
+            int height) {
             std::uint64_t hash = Hash::kFnvOffset;
             const auto hashBytes = [&hash](const auto& value) {
                 Hash::hash_bytes_update(hash, &value, sizeof(value));
