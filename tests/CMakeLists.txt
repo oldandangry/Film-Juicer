@@ -31,6 +31,36 @@ endif()
 set(JUICER_TEST_ARTIFACT_ROOT
     "${PROJECT_SOURCE_DIR}/out/validation/${JUICER_TEST_PRESET_NAME}")
 
+set(JUICER_RUST_TEST_COMMAND
+    "${JUICER_CARGO_EXECUTABLE}" test
+    --locked
+    --package film-juicer-core
+    --target "${JUICER_RUST_TARGET}"
+    --target-dir "${JUICER_RUST_TARGET_DIR}")
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    list(APPEND JUICER_RUST_TEST_COMMAND --release)
+endif()
+add_test(NAME Rust.Core
+    COMMAND "${CMAKE_COMMAND}" -E env
+        "RUSTFLAGS="
+        "CARGO_BUILD_RUSTFLAGS="
+        "CARGO_ENCODED_RUSTFLAGS="
+        ${JUICER_RUST_TEST_COMMAND})
+set_tests_properties(Rust.Core PROPERTIES
+    LABELS "host"
+    TIMEOUT 120
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+
+add_test(NAME Quality.Dispatcher
+    COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_CURRENT_SOURCE_DIR}/quality"
+        -p test_check_quality.py
+        -v)
+set_tests_properties(Quality.Dispatcher PROPERTIES
+    LABELS "host"
+    TIMEOUT 60
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
 file(GLOB_RECURSE JUICER_TEST_RESOURCE_FILES CONFIGURE_DEPENDS
     LIST_DIRECTORIES FALSE "${PROJECT_SOURCE_DIR}/Resources/*")
 set(JUICER_TEST_RESOURCE_STAMP "${CMAKE_CURRENT_BINARY_DIR}/resources.stamp")
