@@ -44,7 +44,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 22 all
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22
+          sudo apt-get install -y clang-format-22 clang-tidy-22
           clang-format-22 --version
           clang-tidy-22 --version
 
