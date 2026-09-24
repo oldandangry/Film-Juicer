@@ -1,11 +1,14 @@
 #include "integration_test.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -24,6 +27,7 @@
 #include <cuda_runtime.h>
 
 #include "SpectralProcessing.h"
+#include "Hash.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "ProfileAssets.h"
@@ -31,6 +35,117 @@
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "nlohmann/json.hpp"
+
+namespace JuicerProcess::TestSupport {
+
+    class RootLifetimeObserver final {
+    public:
+        struct Snapshot {
+            bool contextEntryPresent = false;
+            bool frameOwnerPresent = false;
+            long frameOwnerUseCount = 0;
+            std::uint64_t contextEpoch = 0;
+            std::uint64_t filmDensityCurvesHash = 0;
+            std::size_t nativeAllocationCount = 0;
+            std::size_t pendingFrameUseEventCount = 0;
+            std::size_t pendingScanErrorReadbackCount = 0;
+            bool pendingScanErrorReadbackOwned = false;
+            std::string pendingScanErrorProfileKey;
+            std::uint64_t pendingScanErrorContextEpoch = 0;
+            cudaError_t pendingScanErrorEventQuery =
+                cudaErrorInvalidResourceHandle;
+            bool pendingScanErrorValueReady = false;
+            int pendingScanErrorValue = 0;
+            std::size_t retireQueueCount = 0;
+            std::size_t retireBytes = 0;
+            bool expectedRetireAddressPresent = false;
+            JuicerCuda::DeviceLedgerSnapshot ledger{};
+            std::uint64_t contextLedgerRecordCount = 0;
+        };
+
+        static Snapshot snapshot(
+            Root& root,
+            const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
+            std::uintptr_t expectedRetireAddress = 0) {
+            Snapshot result{};
+            std::lock_guard<std::mutex> rootLock(root._cudaResourcesMutex);
+            const auto ledgerIt = root._cudaDeviceLedgers.find(contextKey.deviceId);
+            if (ledgerIt != root._cudaDeviceLedgers.end() && ledgerIt->second) {
+                result.ledger = ledgerIt->second->snapshot();
+            }
+            for (const auto& [key, entry] : root._cudaContextResources) {
+                if (key.deviceContextKey != contextKey) {
+                    continue;
+                }
+                result.contextEntryPresent = true;
+                result.contextEpoch = key.contextEpoch;
+                result.frameOwnerPresent = static_cast<bool>(entry.frameOwner);
+                result.frameOwnerUseCount = entry.frameOwner.use_count();
+                if (entry.frameOwner) {
+                    {
+                        std::lock_guard<std::mutex> resourceLock(entry.frameOwner->m);
+                        result.pendingFrameUseEventCount =
+                            entry.frameOwner->pendingFrameUseEvents.size();
+                        result.pendingScanErrorReadbackCount =
+                            entry.frameOwner->pendingScanErrorReadbacks.size();
+                        if (!entry.frameOwner->pendingScanErrorReadbacks.empty()) {
+                            const auto& readback =
+                                entry.frameOwner->pendingScanErrorReadbacks.front();
+                            result.pendingScanErrorReadbackOwned =
+                                readback.host && readback.eventOpaque;
+                            result.pendingScanErrorProfileKey =
+                                readback.identity.profileKey;
+                            result.pendingScanErrorContextEpoch =
+                                readback.identity.contextEpoch;
+                            if (readback.eventOpaque) {
+                                result.pendingScanErrorEventQuery =
+                                    cudaEventQuery(reinterpret_cast<cudaEvent_t>(
+                                        readback.eventOpaque));
+                            }
+                            if (readback.host &&
+                                result.pendingScanErrorEventQuery ==
+                                    cudaSuccess) {
+                                result.pendingScanErrorValueReady = true;
+                                result.pendingScanErrorValue = *readback.host;
+                            }
+                        }
+                        result.filmDensityCurvesHash =
+                            entry.frameOwner->filmDensityCurvesHash;
+                        result.retireQueueCount =
+                            entry.frameOwner->retireQueue.size();
+                        result.retireBytes = entry.frameOwner->retireBytes;
+                        result.expectedRetireAddressPresent =
+                            expectedRetireAddress != 0 &&
+                            std::any_of(
+                                entry.frameOwner->retireQueue.begin(),
+                                entry.frameOwner->retireQueue.end(),
+                                [&](const JuicerCuda::Resources::RetireEntry&
+                                        retired) {
+                                    return reinterpret_cast<std::uintptr_t>(
+                                               retired.ptr) ==
+                                           expectedRetireAddress;
+                                });
+                    }
+                    {
+                        std::lock_guard<std::mutex> allocationLock(
+                            entry.frameOwner->deviceAllocationRecordsMutex);
+                        result.nativeAllocationCount =
+                            entry.frameOwner->deviceAllocationRecords.size();
+                    }
+                }
+                if (ledgerIt != root._cudaDeviceLedgers.end() && ledgerIt->second) {
+                    result.contextLedgerRecordCount =
+                        ledgerIt->second->record_count_for_context(
+                            contextKey,
+                            key.contextEpoch);
+                }
+                break;
+            }
+            return result;
+        }
+    };
+
+} // namespace JuicerProcess::TestSupport
 
 namespace {
 
@@ -1050,35 +1165,371 @@ namespace {
                 equalValid.directState->buildCounter == retainedCounter,
             equalValid.diagnostic);
 
+        InstanceState failedAfterState;
+        seed_valid_pending(failedAfterState, direct);
+        const PendingRenderAdmissionResult validBeforeFailure =
+            admit_pending_render_state(failedAfterState);
+        ParamSnapshot missingAfterValid = direct;
+        missingAfterValid.filmProfileKey = "missing_after_valid_profile";
+        seed_valid_pending(failedAfterState, missingAfterValid);
+        const PendingRenderAdmissionResult failedCurrent =
+            admit_pending_render_state(failedAfterState);
+        results.record(
+            "pending/rebuild-failure-does-not-admit-previous-state",
+            validBeforeFailure.status == PendingRenderAdmissionStatus::AdmittedDirect &&
+                validBeforeFailure.directState &&
+                validBeforeFailure.directState->recipe.hash != 0 &&
+                failedCurrent.status == PendingRenderAdmissionStatus::RebuildFailed &&
+                !failedCurrent.directState && !failedCurrent.printState,
+            failedCurrent.diagnostic);
+
         InstanceState retryState;
         ParamSnapshot edited = direct;
         edited.cameraFilmFormatLongEdgeMm = 36.0f;
         seed_valid_pending(retryState, direct);
         PendingRenderAdmissionResult retryResult;
-        std::atomic<bool> admissionStarted{false};
+        struct CaptureGate {
+            InstanceState* selected = nullptr;
+            std::mutex mutex;
+            std::condition_variable condition;
+            bool captured = false;
+            bool released = false;
+        } gate;
+        gate.selected = &retryState;
+        set_pending_capture_test_hook(
+            [](InstanceState& capturedState, void* context) {
+                auto& captureGate = *static_cast<CaptureGate*>(context);
+                if (&capturedState != captureGate.selected) {
+                    return;
+                }
+                std::unique_lock<std::mutex> lock(captureGate.mutex);
+                captureGate.captured = true;
+                captureGate.condition.notify_one();
+                captureGate.condition.wait(lock, [&] {
+                    return captureGate.released;
+                });
+            },
+            &gate);
+        bool capturedBeforeEdit = false;
         {
             std::unique_lock<std::mutex> holdRebuild(retryState.rebuildMutex);
             std::thread admission([&] {
-                admissionStarted.store(true, std::memory_order_release);
                 retryResult = admit_pending_render_state(retryState);
             });
-            while (!admissionStarted.load(std::memory_order_acquire)) {
-                std::this_thread::yield();
+            {
+                std::unique_lock<std::mutex> lock(gate.mutex);
+                capturedBeforeEdit = gate.condition.wait_for(
+                    lock,
+                    std::chrono::seconds(10),
+                    [&] {
+                        return gate.captured;
+                    });
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            seed_valid_pending(retryState, edited);
+            if (capturedBeforeEdit) {
+                seed_valid_pending(retryState, edited);
+            }
+            {
+                std::lock_guard<std::mutex> lock(gate.mutex);
+                gate.released = true;
+            }
+            gate.condition.notify_one();
             holdRebuild.unlock();
             admission.join();
         }
+        set_pending_capture_test_hook(nullptr, nullptr);
         results.record(
             "pending/edit-during-rebuild-retries-current",
-            retryResult.status == PendingRenderAdmissionStatus::AdmittedDirect &&
+            capturedBeforeEdit &&
+                retryResult.status == PendingRenderAdmissionStatus::AdmittedDirect &&
                 retryResult.directState &&
                 retryResult.snapshot.cameraFilmFormatLongEdgeMm == 36.0f &&
                 retryState.lastHash.load(std::memory_order_acquire) ==
                     hash_params(edited) &&
                 retryState.buildCounterNext.load(std::memory_order_relaxed) >= 2,
             retryResult.diagnostic);
+    }
+
+    struct FreshIdentity {
+        std::uint64_t recipe;
+        std::uint64_t filmRaw;
+        std::uint64_t printSeedInput;
+        std::uint64_t fixedGlareSeed;
+    };
+
+    void run_parameter_identity_pair(
+        Results& results,
+        std::string_view name,
+        const ParamSnapshot& a,
+        const ParamSnapshot& b,
+        bool signedZero,
+        std::optional<std::array<FreshIdentity, 2>> original) {
+        const bool printRoute = Spektrafilm::scan_route_is_print(a.scanRoute);
+        FocusedRenderStateBuildProduct freshA;
+        FocusedRenderStateBuildProduct freshB;
+        std::string diagnosticA;
+        std::string diagnosticB;
+        const bool builtA = printRoute
+                                ? build_print_render_state_product(a, freshA, diagnosticA)
+                                : build_direct_render_state_product(a, freshA, diagnosticA);
+        const bool builtB = printRoute
+                                ? build_print_render_state_product(b, freshB, diagnosticB)
+                                : build_direct_render_state_product(b, freshB, diagnosticB);
+        if (!builtA || !builtB) {
+            results.record(std::string(name) + "/fresh-build", false, diagnosticA + " " + diagnosticB);
+            return;
+        }
+        std::ostringstream identity;
+        identity << std::hex << "A recipe=" << freshA.recipe.hash
+                 << " filmRaw=" << freshA.recipe.filmRaw.hash
+                 << " printSeedInput=" << freshA.recipe.print.hash
+                 << " B recipe=" << freshB.recipe.hash
+                 << " filmRaw=" << freshB.recipe.filmRaw.hash
+                 << " printSeedInput=" << freshB.recipe.print.hash;
+        const bool freshDiffer = freshA.recipe.hash != freshB.recipe.hash;
+        results.record(std::string(name) + "/fresh-distinct",
+                       freshDiffer,
+                       identity.str());
+        const auto agrees_with_original = [&](const RenderRecipe& recipe,
+                                              const FreshIdentity& expected) {
+            const std::uint64_t fixedSeed = printRoute
+                                                ? Hash::hash_uint64_values({recipe.print.hash, 37, 5, 9})
+                                                : 0;
+            return recipe.hash == expected.recipe &&
+                   recipe.filmRaw.hash == expected.filmRaw &&
+                   recipe.print.hash == expected.printSeedInput &&
+                   fixedSeed == expected.fixedGlareSeed;
+        };
+        if (original) {
+            results.record(std::string(name) + "/original-fresh-identities",
+                           agrees_with_original(freshA.recipe, (*original)[0]) &&
+                               agrees_with_original(freshB.recipe, (*original)[1]),
+                           identity.str());
+        }
+        for (bool reverse : {false, true}) {
+            InstanceState state;
+            seed_valid_pending(state, reverse ? b : a);
+            const PendingRenderAdmissionResult first = admit_pending_render_state(state);
+            seed_valid_pending(state, reverse ? a : b);
+            const PendingRenderAdmissionResult destination =
+                admit_pending_render_state(state);
+            const RenderRecipe* actual = printRoute
+                                             ? (destination.printState
+                                                    ? &destination.printState->recipe
+                                                    : nullptr)
+                                             : (destination.directState
+                                                    ? &destination.directState->recipe
+                                                    : nullptr);
+            const RenderRecipe& expected = reverse ? freshA.recipe : freshB.recipe;
+            const std::uint64_t firstBuild = printRoute
+                                                 ? (first.printState ? first.printState->buildCounter : 0)
+                                                 : (first.directState ? first.directState->buildCounter : 0);
+            const std::uint64_t destinationBuild = printRoute
+                                                       ? (destination.printState
+                                                              ? destination.printState->buildCounter
+                                                              : 0)
+                                                       : (destination.directState
+                                                              ? destination.directState->buildCounter
+                                                              : 0);
+            results.record(
+                std::string(name) + (reverse ? "/B-to-A" : "/A-to-B"),
+                freshDiffer && firstBuild != 0 && destinationBuild > firstBuild &&
+                    actual && actual->hash == expected.hash &&
+                    actual->filmRaw.hash == expected.filmRaw.hash &&
+                    actual->print.hash == expected.print.hash &&
+                    (!signedZero ||
+                     float_bits(actual->filmRaw.manualExposureCompensationEv) ==
+                         float_bits(expected.filmRaw.manualExposureCompensationEv)),
+                destination.diagnostic);
+        }
+    }
+
+    void run_parameter_identity_rows(Results& results) {
+#if defined(_WIN32)
+        constexpr std::array<FreshIdentity, 2> kDirectSmall{{{0xdfcabb6e6759a780ULL, 0x490500e8b8b605afULL, 0, 0},
+                                                             {0xf9696f2fa63dacecULL, 0x64123468ae706b13ULL, 0, 0}}};
+        constexpr std::array<FreshIdentity, 2> kDirectZero{{{0xc6e074fb35227a43ULL, 0xf97a0a9d566ca20aULL, 0, 0},
+                                                            {0x8eda58c315f7260dULL, 0x3ae737796e1dca8aULL, 0, 0}}};
+        constexpr std::array<FreshIdentity, 2> kPrintSmall{{{0x5a1b3da9ec40632eULL, 0x490500e8b8b605afULL, 0x9df7d770d575371bULL, 0xe16a200be10e91b5ULL},
+                                                            {0x3e76bfb906ecbda6ULL, 0x64123468ae706b13ULL, 0x16cb45119ad471c9ULL, 0xcb9e1d42321c5b47ULL}}};
+        constexpr std::array<FreshIdentity, 2> kPrintZero{{{0xb804fb11ade82dd9ULL, 0xf97a0a9d566ca20aULL, 0x9bef5a74ee002bf6ULL, 0x3c249a5b8360e4f1ULL},
+                                                           {0x4ecc7154f0985236ULL, 0x3ae737796e1dca8aULL, 0x7dca83ea271274c5ULL, 0x573f180892665854ULL}}};
+        constexpr std::array<FreshIdentity, 2> kPrintMediumSmall{{{0xb804fb11ade82dd9ULL, 0xf97a0a9d566ca20aULL, 0x9bef5a74ee002bf6ULL, 0x3c249a5b8360e4f1ULL},
+                                                                  {0xd019f32dd5a43605ULL, 0xf97a0a9d566ca20aULL, 0xa965462e4057d804ULL, 0x3c6e4abcde81e015ULL}}};
+#else
+        constexpr std::array<FreshIdentity, 2> kDirectSmall{{{0x338170d935d02a04ULL, 0x5cf0615ba88212a5ULL, 0, 0},
+                                                             {0x80046ccce934defcULL, 0x0445480c2ed12931ULL, 0, 0}}};
+        constexpr std::array<FreshIdentity, 2> kDirectZero{{{0x1cf69f5f80e30ca7ULL, 0xd99013f993d44c8cULL, 0, 0},
+                                                            {0x3c9e966627a3d263ULL, 0xa60caaf53143ad0cULL, 0, 0}}};
+        constexpr std::array<FreshIdentity, 2> kPrintSmall{{{0x9f199e0860dc6c8fULL, 0x5cf0615ba88212a5ULL, 0x2b30c3117010018dULL, 0xc0b706a628429f8bULL},
+                                                            {0xf2d421fdf52861b7ULL, 0x0445480c2ed12931ULL, 0x2a80092e5d768da0ULL, 0xbe3a24ef5d0467a1ULL}}};
+        constexpr std::array<FreshIdentity, 2> kPrintZero{{{0xd47539b394dd7974ULL, 0xd99013f993d44c8cULL, 0xad737c77fdce1f57ULL, 0x1bf0cce1723b593cULL},
+                                                           {0x28cd11ce8a544701ULL, 0xa60caaf53143ad0cULL, 0x6fe6d2f9916b573cULL, 0x704844fef09d3445ULL}}};
+        constexpr std::array<FreshIdentity, 2> kPrintMediumSmall{{{0xd47539b394dd7974ULL, 0xd99013f993d44c8cULL, 0xad737c77fdce1f57ULL, 0x1bf0cce1723b593cULL},
+                                                                  {0x3ce25ffd7c1e33d7ULL, 0xd99013f993d44c8cULL, 0xc1628d37147a0705ULL, 0xcde831039d9c6b57ULL}}};
+#endif
+        for (bool printRoute : {false, true}) {
+            ParamSnapshot a = direct_snapshot();
+            if (printRoute) {
+                a.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
+            }
+            a.cameraExposureCompensationEv = 1.0;
+            ParamSnapshot b = a;
+            b.cameraExposureCompensationEv = 1.00001;
+            run_parameter_identity_pair(
+                results, printRoute ? "identity/print-exposure-small" : "identity/direct-exposure-small", a, b, false, printRoute ? kPrintSmall : kDirectSmall);
+
+            a.cameraExposureCompensationEv = 0.0;
+            b = a;
+            b.cameraExposureCompensationEv = -0.0;
+            run_parameter_identity_pair(
+                results, printRoute ? "identity/print-exposure-zero" : "identity/direct-exposure-zero", a, b, true, printRoute ? kPrintZero : kDirectZero);
+        }
+
+        ParamSnapshot a = direct_snapshot();
+        a.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
+        a.printExposure = 1.0;
+        ParamSnapshot b = a;
+        b.printExposure = 1.00001;
+        run_parameter_identity_pair(
+            results, "identity/print-medium-exposure-small", a, b, false, kPrintMediumSmall);
+
+        InstanceState sameEffectiveState;
+        a = direct_snapshot();
+        a.cameraExposureCompensationEv = 1.0;
+        b = a;
+        b.cameraExposureCompensationEv = std::nextafter(1.0, 2.0);
+        seed_valid_pending(sameEffectiveState, a);
+        const PendingRenderAdmissionResult first =
+            admit_pending_render_state(sameEffectiveState);
+        seed_valid_pending(sameEffectiveState, b);
+        const PendingRenderAdmissionResult sameEffective =
+            admit_pending_render_state(sameEffectiveState);
+        results.record(
+            "identity/same-retained-float32-reuses",
+            a.cameraExposureCompensationEv != b.cameraExposureCompensationEv &&
+                float_bits(a.cameraExposureCompensationEv) ==
+                    float_bits(b.cameraExposureCompensationEv) &&
+                hash_params(a) == hash_params(b) &&
+                first.directState && sameEffective.directState &&
+                first.directState->buildCounter ==
+                    sameEffective.directState->buildCounter,
+            sameEffective.diagnostic);
+
+        ParamSnapshot inactive = a;
+        inactive.cameraFilterUV[0] = 0.0;
+        inactive.grainControls.particleAreaUm2 =
+            std::nextafter(inactive.grainControls.particleAreaUm2, 100.0f);
+        inactive.printProfileKey = "kodak_supra_endura";
+        results.record(
+            "identity/inactive-family-equivalence",
+            !a.cameraFilterOverride && !a.grainControls.active &&
+                hash_params(a) == hash_params(inactive),
+            "inactive camera filter, grain, and print selection remain outside the key");
+    }
+
+    void run_parameter_sign_rows(Results& results) {
+        enum class Setup {
+            Direct,
+            Print,
+            Grain,
+            Effects,
+            Filter
+        };
+        struct SignCase {
+            const char* name;
+            Setup setup;
+            void (*set)(ParamSnapshot&, double);
+        };
+        const std::array<SignCase, 17> cases{{{"print-preflash-exposure", Setup::Print, [](ParamSnapshot& p, double v) {
+                                                   p.printPreflashExposure = v;
+                                               }},
+                                              {"print-ui-y", Setup::Print, [](ParamSnapshot& p, double v) {
+                                                   p.printUiYmcCc[0] = v;
+                                               }},
+                                              {"preflash-m", Setup::Print, [](ParamSnapshot& p, double v) {
+                                                   p.preflashMFilterCc = v;
+                                               }},
+                                              {"preflash-y", Setup::Print, [](ParamSnapshot& p, double v) {
+                                                   p.preflashYFilterCc = v;
+                                               }},
+                                              {"glare-percent", Setup::Print, [](ParamSnapshot& p, double v) {
+                                                   p.glarePercent = v;
+                                               }},
+                                              {"glare-roughness", Setup::Print, [](ParamSnapshot& p, double v) {
+                                                   p.glareRoughness = v;
+                                               }},
+                                              {"glare-blur", Setup::Print, [](ParamSnapshot& p, double v) {
+                                                   p.glareBlurSigmaPx = v;
+                                               }},
+                                              {"scanner-lens-blur", Setup::Direct, [](ParamSnapshot& p, double v) {
+                                                   p.scannerLensBlurSigmaPx = v;
+                                               }},
+                                              {"scanner-unsharp-sigma", Setup::Direct, [](ParamSnapshot& p, double v) {
+                                                   p.scannerUnsharpMask[0] = v;
+                                               }},
+                                              {"scanner-unsharp-amount", Setup::Direct, [](ParamSnapshot& p, double v) {
+                                                   p.scannerUnsharpMask[1] = v;
+                                               }},
+                                              {"scanner-black-level", Setup::Direct, [](ParamSnapshot& p, double v) {
+                                                   p.scannerBlackLevel = v;
+                                               }},
+                                              {"scanner-white-level", Setup::Direct, [](ParamSnapshot& p, double v) {
+                                                   p.scannerWhiteLevel = v;
+                                               }},
+                                              {"gate-weave", Setup::Effects, [](ParamSnapshot& p, double v) {
+                                                   p.gateWeaveAmount = v;
+                                               }},
+                                              {"film-dust", Setup::Effects, [](ParamSnapshot& p, double v) {
+                                                   p.filmDustAmount = static_cast<float>(v);
+                                               }},
+                                              {"grain-amplitude", Setup::Grain, [](ParamSnapshot& p, double v) {
+                                                   p.grainControls.amplitude = static_cast<float>(v);
+                                               }},
+                                              {"camera-filter-uv", Setup::Filter, [](ParamSnapshot& p, double v) {
+                                                   p.cameraFilterUV[0] = v;
+                                               }},
+                                              {"camera-filter-ir", Setup::Filter, [](ParamSnapshot& p, double v) {
+                                                   p.cameraFilterIR[0] = v;
+                                               }}}};
+        for (const SignCase& signCase : cases) {
+            ParamSnapshot positive = direct_snapshot();
+            if (signCase.setup == Setup::Print) {
+                positive.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
+            } else if (signCase.setup == Setup::Grain) {
+                positive.grainControls.active = true;
+            } else if (signCase.setup == Setup::Effects) {
+                positive.filmDustAmount = 1.0f;
+                positive.gateWeaveAmount = 1.0;
+            } else if (signCase.setup == Setup::Filter) {
+                positive.cameraFilterOverride = true;
+            }
+            signCase.set(positive, 0.0);
+            ParamSnapshot negative = positive;
+            signCase.set(negative, -0.0);
+            FocusedRenderStateBuildProduct freshPositive;
+            FocusedRenderStateBuildProduct freshNegative;
+            std::string positiveDiagnostic;
+            std::string negativeDiagnostic;
+            const bool printRoute = signCase.setup == Setup::Print;
+            const bool positiveBuilt = printRoute
+                                           ? build_print_render_state_product(positive, freshPositive, positiveDiagnostic)
+                                           : build_direct_render_state_product(positive, freshPositive, positiveDiagnostic);
+            const bool negativeBuilt = printRoute
+                                           ? build_print_render_state_product(negative, freshNegative, negativeDiagnostic)
+                                           : build_direct_render_state_product(negative, freshNegative, negativeDiagnostic);
+            const std::string name = std::string("identity/sign/") + signCase.name;
+            if (!positiveBuilt || !negativeBuilt) {
+                results.record(name + "/fresh-build", false, positiveDiagnostic + " " + negativeDiagnostic);
+                continue;
+            }
+            const bool recipeDiffers = freshPositive.recipe.hash != freshNegative.recipe.hash;
+            const bool keyDiffers = hash_params(positive) != hash_params(negative);
+            results.record(name + "/key-follows-recipe", recipeDiffers == keyDiffers, std::string("recipeDiffers=") + (recipeDiffers ? "1" : "0") + " keyDiffers=" + (keyDiffers ? "1" : "0"));
+            if (recipeDiffers) {
+                run_parameter_identity_pair(
+                    results, name, positive, negative, true, std::nullopt);
+            }
+        }
     }
 
     void run_camera_hash_rows(Results& results) {
@@ -1138,6 +1589,25 @@ namespace {
                 distinctResult.printState &&
                 distinctResult.printState->buildCounter > firstCounter,
             distinctResult.diagnostic);
+    }
+
+    void run_capacity_recovery_classification_rows(Results& results) {
+        using JuicerCuda::ResourceManager::error_is_allocation_capacity_exhausted;
+        results.record(
+            "recovery/capacity-producer-markers",
+            error_is_allocation_capacity_exhausted(
+                std::string("cudaMalloc(test) failed: ") +
+                cudaGetErrorString(cudaErrorMemoryAllocation)) &&
+                error_is_allocation_capacity_exhausted("CUDA out of memory") &&
+                error_is_allocation_capacity_exhausted("device_cap_exceeded"),
+            "capacity text activates retired-allocation reap and bounded retry");
+        results.record(
+            "recovery/non-capacity-errors-do-not-retry",
+            !error_is_allocation_capacity_exhausted("") &&
+                !error_is_allocation_capacity_exhausted("invalid descriptor") &&
+                !error_is_allocation_capacity_exhausted("context is destroyed") &&
+                !error_is_allocation_capacity_exhausted("operation cancelled"),
+            "other producer errors propagate without capacity retry");
     }
 
     struct PreparedInputs {
@@ -1358,6 +1828,171 @@ namespace {
         cudaStream_t _stream = nullptr;
         std::uint64_t _instanceToken = 0;
         std::uint64_t _nextIdentity = 1;
+    };
+
+    bool wait_for_cuda_event(
+        cudaEvent_t event,
+        std::chrono::milliseconds timeout) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            const cudaError_t status = cudaEventQuery(event);
+            if (status == cudaSuccess) {
+                return true;
+            }
+            if (status != cudaErrorNotReady) {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return false;
+    }
+
+    class FinitePostPrepareUpload final {
+    public:
+        ~FinitePostPrepareUpload() {
+            release();
+            const bool completed =
+                _completionEvent &&
+                wait_for_cuda_event(
+                    _completionEvent,
+                    std::chrono::seconds(12));
+            if (completed && _staging) {
+                (void)cudaFreeHost(_staging);
+                _staging = nullptr;
+            }
+            if (_completionEvent) {
+                (void)cudaEventDestroy(_completionEvent);
+            }
+            if (_gateEvent) {
+                (void)wait_for_cuda_event(
+                    _gateEvent,
+                    std::chrono::seconds(12));
+                (void)cudaEventDestroy(_gateEvent);
+            }
+            if (_gateStream) {
+                (void)cudaStreamDestroy(_gateStream);
+            }
+        }
+
+        bool enqueue(
+            cudaStream_t targetStream,
+            float* destination,
+            const std::vector<float>& source,
+            std::string& diagnostic) {
+            diagnostic.clear();
+            if (!targetStream || !destination || source.empty() ||
+                _gateStream || _gateEvent || _completionEvent || _staging) {
+                diagnostic = "invalid post-prepare upload request";
+                return false;
+            }
+            const std::size_t bytes = source.size() * sizeof(float);
+            cudaError_t status = cudaHostAlloc(
+                &_staging,
+                bytes,
+                cudaHostAllocPortable);
+            if (status == cudaSuccess) {
+                std::memcpy(_staging, source.data(), bytes);
+                status = cudaStreamCreateWithFlags(
+                    &_gateStream,
+                    cudaStreamNonBlocking);
+            }
+            if (status == cudaSuccess) {
+                status = cudaEventCreateWithFlags(
+                    &_gateEvent,
+                    cudaEventDisableTiming);
+            }
+            if (status == cudaSuccess) {
+                status = cudaEventCreateWithFlags(
+                    &_completionEvent,
+                    cudaEventDisableTiming);
+            }
+            if (status == cudaSuccess) {
+                status = cudaLaunchHostFunc(
+                    _gateStream,
+                    &FinitePostPrepareUpload::host_gate,
+                    this);
+            }
+            if (status == cudaSuccess) {
+                status = cudaEventRecord(_gateEvent, _gateStream);
+            }
+            if (status == cudaSuccess) {
+                status = cudaStreamWaitEvent(targetStream, _gateEvent, 0);
+            }
+            if (status == cudaSuccess) {
+                status = cudaMemcpyAsync(
+                    destination,
+                    _staging,
+                    bytes,
+                    cudaMemcpyHostToDevice,
+                    targetStream);
+            }
+            if (status == cudaSuccess) {
+                status = cudaEventRecord(_completionEvent, targetStream);
+            }
+            if (status == cudaSuccess) {
+                return true;
+            }
+            diagnostic = std::string("post-prepare upload setup failed: ") +
+                         cudaGetErrorString(status);
+            release();
+            return false;
+        }
+
+        cudaError_t query() const noexcept {
+            return _completionEvent
+                       ? cudaEventQuery(_completionEvent)
+                       : cudaErrorInvalidResourceHandle;
+        }
+
+        bool wait(std::chrono::milliseconds timeout) const {
+            return _completionEvent &&
+                   wait_for_cuda_event(_completionEvent, timeout);
+        }
+
+        void release() noexcept {
+            try {
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    _released = true;
+                }
+                _condition.notify_all();
+            } catch (...) {
+                _releaseFailed.store(true, std::memory_order_release);
+            }
+        }
+
+        bool self_released() const noexcept {
+            return _selfReleased.load(std::memory_order_acquire);
+        }
+
+        bool release_failed() const noexcept {
+            return _releaseFailed.load(std::memory_order_acquire);
+        }
+
+    private:
+        static void CUDART_CB host_gate(void* opaque) {
+            auto& upload = *static_cast<FinitePostPrepareUpload*>(opaque);
+            std::unique_lock<std::mutex> lock(upload._mutex);
+            if (!upload._condition.wait_for(
+                    lock,
+                    std::chrono::seconds(10),
+                    [&] {
+                        return upload._released;
+                    })) {
+                upload._selfReleased.store(true, std::memory_order_release);
+                upload._released = true;
+            }
+        }
+
+        mutable std::mutex _mutex;
+        std::condition_variable _condition;
+        cudaStream_t _gateStream = nullptr;
+        cudaEvent_t _gateEvent = nullptr;
+        cudaEvent_t _completionEvent = nullptr;
+        void* _staging = nullptr;
+        bool _released = false;
+        std::atomic<bool> _selfReleased{false};
+        std::atomic<bool> _releaseFailed{false};
     };
 
     bool contains_text(const std::string& text, std::string_view expected) {
@@ -1739,6 +2374,60 @@ namespace {
             overlapFinished,
             terminalDiagnostic);
 
+        auto nullStreamFrame = root.prepare_cuda_frame(
+            fixture.context_key(),
+            fixture.snapshot(dedicatedInputs),
+            dedicatedRequest,
+            {},
+            nullptr,
+            diagnostic);
+        terminalDiagnostic.clear();
+        const bool nullStreamFinished =
+            nullStreamFrame.active() &&
+            nullStreamFrame.finish(nullptr, terminalDiagnostic) &&
+            cudaDeviceSynchronize() == cudaSuccess;
+        results.record(
+            "prepared/null-stream-finish",
+            nullStreamFinished,
+            terminalDiagnostic);
+
+        cudaStream_t secondStream = nullptr;
+        const cudaError_t secondStreamStatus =
+            cudaStreamCreateWithFlags(&secondStream, cudaStreamNonBlocking);
+        bool sequentialStreamsFinished = secondStreamStatus == cudaSuccess;
+        if (sequentialStreamsFinished) {
+            auto firstStreamFrame = root.prepare_cuda_frame(
+                fixture.context_key(),
+                fixture.snapshot(dedicatedInputs),
+                dedicatedRequest,
+                {},
+                fixture.stream_opaque(),
+                diagnostic);
+            sequentialStreamsFinished =
+                firstStreamFrame.active() &&
+                firstStreamFrame.finish(fixture.stream_opaque(), terminalDiagnostic);
+            if (sequentialStreamsFinished) {
+                auto secondStreamFrame = root.prepare_cuda_frame(
+                    fixture.context_key(),
+                    fixture.snapshot(dedicatedInputs),
+                    dedicatedRequest,
+                    {},
+                    secondStream,
+                    diagnostic);
+                sequentialStreamsFinished =
+                    secondStreamFrame.active() &&
+                    secondStreamFrame.finish(secondStream, terminalDiagnostic) &&
+                    fixture.synchronize(terminalDiagnostic) &&
+                    cudaStreamSynchronize(secondStream) == cudaSuccess;
+            }
+            (void)cudaStreamDestroy(secondStream);
+        }
+        results.record(
+            "prepared/sequential-streams-same-context",
+            sequentialStreamsFinished,
+            sequentialStreamsFinished ? "both streams finished in one exact context"
+                                      : terminalDiagnostic);
+
         auto abortFrame = root.prepare_cuda_frame(
             fixture.context_key(),
             fixture.snapshot(dedicatedInputs),
@@ -1774,10 +2463,232 @@ namespace {
                 dependentFrame.scatter_halation_resources().descriptor == nullptr,
             namedDependentFailure);
 
+        {
+            std::optional<PreparedInputs> pendingUploadInputs;
+            pendingUploadInputs.emplace();
+            if (!initialize_prepared_inputs(
+                    false,
+                    false,
+                    true,
+                    kWidth,
+                    kHeight,
+                    *pendingUploadInputs,
+                    diagnostic)) {
+                throw std::runtime_error(diagnostic);
+            }
+            auto pendingUploadRequest =
+                pendingUploadInputs->request(kWidth, kHeight);
+            const std::string expectedRetainedProfileKey =
+                pendingUploadInputs->product.recipe.profileRoute.filmProfileKey;
+            auto pendingUploadFrame = root.prepare_cuda_frame(
+                fixture.context_key(),
+                fixture.snapshot(*pendingUploadInputs),
+                pendingUploadRequest,
+                {},
+                fixture.stream_opaque(),
+                diagnostic);
+            auto finalCpuBorrow =
+                pendingUploadFrame.focused_resources();
+            const std::uint64_t borrowedScannerColorHash =
+                finalCpuBorrow.scannerColor
+                    ? finalCpuBorrow.scannerColor->hash
+                    : 0;
+            auto mutablePreparedView =
+                pendingUploadFrame.scatter_halation_resources();
+            const std::uintptr_t pendingCarrierAddress =
+                reinterpret_cast<std::uintptr_t>(
+                    mutablePreparedView.currentCarrier.redSensitive);
+            int* pendingScanErrorFlag = nullptr;
+            const bool scanErrorPrepared =
+                pendingUploadFrame.prepare_scan_error_stage(
+                    pendingScanErrorFlag,
+                    fixture.stream_opaque(),
+                    diagnostic);
+            std::vector<float> retainedCarrierUpload(
+                static_cast<std::size_t>(kWidth * kHeight),
+                0.0f);
+            FinitePostPrepareUpload outstandingUpload;
+            const bool uploadEnqueued =
+                scanErrorPrepared && finalCpuBorrow.active &&
+                mutablePreparedView.currentCarrier.redSensitive &&
+                outstandingUpload.enqueue(
+                    static_cast<cudaStream_t>(fixture.stream_opaque()),
+                    mutablePreparedView.currentCarrier.redSensitive,
+                    retainedCarrierUpload,
+                    diagnostic);
+            const bool scanErrorFinalized =
+                uploadEnqueued &&
+                pendingUploadFrame.finalize_scan_error_stage(
+                    pendingScanErrorFlag,
+                    fixture.stream_opaque(),
+                    diagnostic);
+            const cudaError_t initialUploadQuery =
+                scanErrorFinalized ? outstandingUpload.query()
+                                   : cudaErrorInvalidResourceHandle;
+            const auto beforePendingFinish =
+                JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(
+                    root,
+                    fixture.context_key());
+            results.record(
+                "prepared/pending-upload-queried",
+                pendingUploadFrame.active() && scanErrorFinalized &&
+                    initialUploadQuery == cudaErrorNotReady &&
+                    !outstandingUpload.self_released() &&
+                    !outstandingUpload.release_failed(),
+                "a pinned upload into Root-owned prepared carrier storage is incomplete at the queried event");
+            results.record(
+                "prepared/last-legal-cpu-borrow",
+                finalCpuBorrow.active && borrowedScannerColorHash != 0 &&
+                    borrowedScannerColorHash ==
+                        pendingUploadInputs->product.payload.scannerColor.hash,
+                "focused CPU route objects are borrowed before prepared-frame finish");
+            results.record(
+                "prepared/native-owner-ledger-before-finish",
+                beforePendingFinish.contextEntryPresent &&
+                    beforePendingFinish.frameOwnerPresent &&
+                    beforePendingFinish.frameOwnerUseCount >= 2 &&
+                    beforePendingFinish.nativeAllocationCount != 0 &&
+                    beforePendingFinish.ledger.chargedBytes != 0 &&
+                    beforePendingFinish.contextLedgerRecordCount != 0,
+                "prepared frame and Root share the native owner while upload is pending");
+
+            terminalDiagnostic.clear();
+            const bool pendingFinished = pendingUploadFrame.finish(
+                fixture.stream_opaque(),
+                terminalDiagnostic);
+            finalCpuBorrow = {};
+            mutablePreparedView = {};
+            pendingUploadRequest = {};
+            pendingUploadInputs.reset();
+            const cudaError_t postExpiryUploadQuery =
+                outstandingUpload.query();
+            const auto afterPendingFinish =
+                JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(
+                    root,
+                    fixture.context_key(),
+                    pendingCarrierAddress);
+            results.record(
+                "prepared/finish-retains-native-owner-until-event",
+                pendingFinished && !pendingUploadFrame.active() &&
+                    afterPendingFinish.contextEntryPresent &&
+                    afterPendingFinish.frameOwnerUseCount == 1 &&
+                    afterPendingFinish.nativeAllocationCount != 0 &&
+                    afterPendingFinish.pendingFrameUseEventCount != 0 &&
+                    afterPendingFinish.pendingScanErrorReadbackCount != 0 &&
+                    afterPendingFinish.pendingScanErrorReadbackOwned &&
+                    afterPendingFinish.pendingScanErrorProfileKey ==
+                        expectedRetainedProfileKey &&
+                    afterPendingFinish.pendingScanErrorContextEpoch ==
+                        afterPendingFinish.contextEpoch &&
+                    afterPendingFinish.pendingScanErrorEventQuery ==
+                        cudaErrorNotReady &&
+                    !afterPendingFinish.pendingScanErrorValueReady &&
+                    afterPendingFinish.retireQueueCount != 0 &&
+                    afterPendingFinish.retireBytes != 0 &&
+                    afterPendingFinish.expectedRetireAddressPresent &&
+                    afterPendingFinish.ledger.chargedBytes != 0 &&
+                    afterPendingFinish.contextLedgerRecordCount != 0 &&
+                    postExpiryUploadQuery == cudaErrorNotReady &&
+                    !outstandingUpload.self_released(),
+                terminalDiagnostic);
+            results.record(
+                "prepared/caller-storage-expired-with-owned-readback",
+                !pendingUploadInputs.has_value() &&
+                    postExpiryUploadQuery == cudaErrorNotReady &&
+                    afterPendingFinish.pendingScanErrorReadbackOwned &&
+                    afterPendingFinish.pendingScanErrorProfileKey ==
+                        expectedRetainedProfileKey &&
+                    afterPendingFinish.pendingScanErrorContextEpoch != 0 &&
+                    !outstandingUpload.self_released(),
+                "caller preparation storage expired while Root-owned readback identity and completion remained pending");
+
+            outstandingUpload.release();
+            const bool uploadCompleted =
+                outstandingUpload.wait(std::chrono::seconds(10));
+            auto completedReadback =
+                JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(
+                    root,
+                    fixture.context_key());
+            const auto readbackDeadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (completedReadback.pendingScanErrorEventQuery ==
+                       cudaErrorNotReady &&
+                   std::chrono::steady_clock::now() < readbackDeadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                completedReadback =
+                    JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(
+                        root,
+                        fixture.context_key());
+            }
+            results.record(
+                "prepared/pending-upload-eventual-completion",
+                uploadCompleted && !outstandingUpload.self_released() &&
+                    !outstandingUpload.release_failed(),
+                "queried upload completed within the finite timeout after release");
+            results.record(
+                "prepared/owned-readback-eventual-completion",
+                uploadCompleted &&
+                    completedReadback.pendingScanErrorReadbackOwned &&
+                    completedReadback.pendingScanErrorEventQuery == cudaSuccess &&
+                    completedReadback.pendingScanErrorValueReady &&
+                    completedReadback.pendingScanErrorValue == 0 &&
+                    completedReadback.pendingScanErrorProfileKey ==
+                        expectedRetainedProfileKey &&
+                    completedReadback.pendingScanErrorContextEpoch ==
+                        completedReadback.contextEpoch &&
+                    completedReadback.ledger.chargedBytes != 0 &&
+                    completedReadback.contextLedgerRecordCount != 0 &&
+                    !outstandingUpload.self_released(),
+                "production-owned scan-error staging completed with its retained value and identity within the finite timeout");
+        }
+
         terminalDiagnostic.clear();
-        const bool idleRetired = root.retire_idle_context(
-            fixture.context_key().deviceId,
-            fixture.context_key().contextOpaque,
+        const bool failureInjected =
+            JuicerProcess::TestSupport::arm_context_drain_failure_once(
+                fixture.context_key());
+        const bool controlledDrainFailed =
+            failureInjected &&
+            !root.retire_idle_context(
+                fixture.context_key().deviceId,
+                fixture.context_key().contextOpaque,
+                terminalDiagnostic);
+        const auto afterControlledFailure =
+            JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(
+                root,
+                fixture.context_key());
+        results.record(
+            "prepared/controlled-drain-failure-retains-ownership",
+            controlledDrainFailed &&
+                contains_text(
+                    terminalDiagnostic,
+                    "test-injected CUDA context owner drain failure") &&
+                afterControlledFailure.contextEntryPresent &&
+                afterControlledFailure.frameOwnerPresent &&
+                afterControlledFailure.nativeAllocationCount != 0 &&
+                afterControlledFailure.pendingScanErrorReadbackCount != 0 &&
+                afterControlledFailure.ledger.chargedBytes != 0 &&
+                afterControlledFailure.contextLedgerRecordCount != 0,
+            terminalDiagnostic);
+
+        JuicerProcess::TestSupport::clear_context_drain_failure();
+        terminalDiagnostic.clear();
+        const bool idleRetired =
+            controlledDrainFailed &&
+            root.retire_idle_context(
+                fixture.context_key().deviceId,
+                fixture.context_key().contextOpaque,
+                terminalDiagnostic);
+        const auto afterIdleRetire =
+            JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(
+                root,
+                fixture.context_key());
+        results.record(
+            "prepared/controlled-drain-failure-recovery",
+            idleRetired && !afterIdleRetire.contextEntryPresent &&
+                afterIdleRetire.ledger.chargedBytes == 0 &&
+                afterIdleRetire.ledger.recordCount == 0 &&
+                JuicerCuda::ResourceManager::global_state()
+                        .pinnedStagingBytes.load(std::memory_order_acquire) == 0,
             terminalDiagnostic);
         results.record(
             "prepared/idle-context-retire",
@@ -2049,6 +2960,37 @@ namespace {
                 !failedFrame.scatter_halation_resources().descriptor,
             "ordinary prepared view binding failure retires through abort");
 
+        auto enqueuedFrame = JuicerProcess::root().prepare_cuda_frame(
+            fixture.context_key(),
+            fixture.snapshot(inputs),
+            request,
+            {},
+            fixture.stream_opaque(),
+            diagnostic);
+        const auto enqueuedView = enqueuedFrame.scatter_halation_resources();
+        const std::size_t carrierBytes =
+            static_cast<std::size_t>(kWidth) * static_cast<std::size_t>(kHeight) * sizeof(float);
+        const cudaStream_t stream = static_cast<cudaStream_t>(fixture.stream_opaque());
+        bool enqueueSucceeded = enqueuedFrame.active();
+        for (float* plane : {enqueuedView.currentCarrier.redSensitive,
+                             enqueuedView.currentCarrier.greenSensitive,
+                             enqueuedView.currentCarrier.blueSensitive}) {
+            enqueueSucceeded = enqueueSucceeded && plane &&
+                               cudaMemsetAsync(plane, 0, carrierBytes, stream) == cudaSuccess;
+        }
+        if (enqueueSucceeded) {
+            enqueueSucceeded = JuicerCuda::launch_scatter_halation(enqueuedView, stream).status == cudaSuccess;
+        }
+        enqueuedFrame.abort();
+        const bool postEnqueueAbort =
+            enqueueSucceeded && !enqueuedFrame.active() &&
+            !enqueuedFrame.scatter_halation_resources().descriptor &&
+            fixture.synchronize(diagnostic);
+        results.record(
+            "lifecycle/after-enqueue-abort",
+            postEnqueueAbort,
+            diagnostic);
+
         auto transitionFrame = JuicerProcess::root().prepare_cuda_frame(
             fixture.context_key(),
             fixture.snapshot(inputs),
@@ -2317,6 +3259,9 @@ int main(int argc, char** argv) {
             run_descriptor_rows(results);
             run_pending_admission_rows(results);
             run_camera_hash_rows(results);
+            run_parameter_identity_rows(results);
+            run_parameter_sign_rows(results);
+            run_capacity_recovery_classification_rows(results);
         };
         if (arguments.caseGroup == "host-contracts") {
             run_host_contracts();

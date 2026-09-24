@@ -28,6 +28,10 @@ namespace OFX {
     struct RenderArguments;
 } // namespace OFX
 
+namespace JuicerTestSupport {
+    class EffectTraceObserver;
+}
+
 // Placeholder parameter names (Step 1)
 // Per agx-emulsion parity: this is "camera.exposure_compensation_ev" (not just "exposure")
 #define kParamExposure "Exposure" // UI: "Exposure Compensation Ev"
@@ -50,6 +54,8 @@ public:
     void changedParam(const OFX::InstanceChangedArgs& args, const std::string& paramName) override;
 
 private:
+    friend class JuicerTestSupport::EffectTraceObserver;
+
     struct ExposureParams {
         double sliderEV = 0.0;
         float sliderScale = 1.0f;

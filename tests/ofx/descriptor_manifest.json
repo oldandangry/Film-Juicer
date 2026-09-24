@@ -1,0 +1,49 @@
+{
+  "authority": "C++ characterization from original reference OfxActionDescribe only; no context or render actions",
+  "moduleSha256": "403b1fce976545a7164653d0db20ca2ba27b95e01970688867ee4c9980fc9888",
+  "properties": {
+    "OfxImageEffectPluginPropGrouping": [
+      "Negative-juice"
+    ],
+    "OfxImageEffectPluginPropHostFrameThreading": [
+      0
+    ],
+    "OfxImageEffectPluginPropSingleInstance": [
+      0
+    ],
+    "OfxImageEffectPluginRenderThreadSafety": [
+      "OfxImageEffectRenderUnsafe"
+    ],
+    "OfxImageEffectPropCudaRenderSupported": [
+      "true"
+    ],
+    "OfxImageEffectPropCudaStreamSupported": [
+      "true"
+    ],
+    "OfxImageEffectPropSupportedContexts": [
+      "OfxImageEffectContextFilter"
+    ],
+    "OfxImageEffectPropSupportedPixelDepths": [
+      "OfxBitDepthFloat"
+    ],
+    "OfxImageEffectPropSupportsMultiResolution": [
+      1
+    ],
+    "OfxImageEffectPropSupportsTiles": [
+      0
+    ],
+    "OfxPropLabel": [
+      "Juicer"
+    ],
+    "OfxPropLongLabel": [
+      "Juicer"
+    ],
+    "OfxPropShortLabel": [
+      "Juicer"
+    ],
+    "OfxPropType": [
+      "OfxTypeImageEffect"
+    ]
+  },
+  "sourceCommit": "86bf1af12eea620baefb56001919848b9eb06997"
+}

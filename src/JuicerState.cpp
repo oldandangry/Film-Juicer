@@ -438,17 +438,37 @@ namespace {
         h = mix(h, static_cast<uint64_t>(value * scale));
     }
 
-    template <typename MixFn>
-    inline void mix_hash_field_scaled_rounded_if_finite(
+    template <typename MixFn, typename TValue>
+    inline void mix_retained_float_bits_if_finite(
         uint64_t& h,
-        double value,
-        double scale,
+        TValue value,
         const MixFn& mix) {
         if (!is_finite(value)) {
             return;
         }
-        const int64_t scaled = static_cast<int64_t>(std::llround(value * scale));
-        h = mix(h, static_cast<uint64_t>(scaled));
+        mix_hash_field(h, std::bit_cast<std::uint32_t>(static_cast<float>(value)), mix);
+    }
+
+    template <typename MixFn, typename TValue>
+    inline void mix_canonical_retained_float_bits_if_finite(
+        uint64_t& h,
+        TValue value,
+        const MixFn& mix) {
+        if (!is_finite(value)) {
+            return;
+        }
+        mix_canonical_float_bits(h, static_cast<float>(value), mix);
+    }
+
+    template <typename MixFn>
+    inline void mix_retained_double_bits_if_finite(
+        uint64_t& h,
+        double value,
+        const MixFn& mix) {
+        if (!is_finite(value)) {
+            return;
+        }
+        mix_hash_field(h, exact_double_bits(value), mix);
     }
 
     template <typename MixFn>
@@ -457,9 +477,9 @@ namespace {
         mix_hash_field_scaled(h, p.printShadowCompensationDensity, 10000.0, mix);
         mix_hash_field_scaled(h, p.printShadowCompensationTransition, 10000.0, mix);
         mix_hash_field(h, p.glareActive ? 1 : 0, mix);
-        mix_hash_field_scaled(h, p.glarePercent, 10000.0, mix);
-        mix_hash_field_scaled(h, p.glareRoughness, 10000.0, mix);
-        mix_hash_field_scaled(h, p.glareBlurSigmaPx, 10000.0, mix);
+        mix_retained_float_bits_if_finite(h, p.glarePercent, mix);
+        mix_retained_float_bits_if_finite(h, p.glareRoughness, mix);
+        mix_retained_float_bits_if_finite(h, p.glareBlurSigmaPx, mix);
     }
 
     template <typename MixFn>
@@ -473,7 +493,7 @@ namespace {
             const double* values = triplet.data();
             const double* const valuesEnd = values + triplet.size();
             for (; values < valuesEnd; ++values) {
-                mix_hash_field_scaled_rounded_if_finite(h, *values, 10000.0, mix);
+                mix_retained_float_bits_if_finite(h, *values, mix);
             }
         };
         mix_triplet(p.cameraFilterUV);
@@ -492,16 +512,16 @@ namespace {
         if (Spektrafilm::scan_route_is_print(p.scanRoute)) {
             mix_hash_string(h, p.printProfileKey, mix);
             mix_hash_field(h, p.enlIll, mix);
-            mix_hash_field_scaled_rounded_if_finite(h, p.printExposure, 10000.0, mix);
-            mix_hash_field_scaled_rounded_if_finite(h, p.printPreflashExposure, 10000.0, mix);
+            mix_retained_float_bits_if_finite(h, p.printExposure, mix);
+            mix_retained_float_bits_if_finite(h, p.printPreflashExposure, mix);
             mix_hash_field(h, exact_double_bits(p.printGammaFactor), mix);
             mix_hash_field(h, p.normalizePrintExposure, mix);
             mix_hash_field(h, p.printExposureCompensation, mix);
             for (double value : p.printUiYmcCc) {
-                mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+                mix_canonical_retained_float_bits_if_finite(h, value, mix);
             }
-            mix_hash_field_scaled_rounded_if_finite(h, p.preflashMFilterCc, 10000.0, mix);
-            mix_hash_field_scaled_rounded_if_finite(h, p.preflashYFilterCc, 10000.0, mix);
+            mix_canonical_retained_float_bits_if_finite(h, p.preflashMFilterCc, mix);
+            mix_canonical_retained_float_bits_if_finite(h, p.preflashYFilterCc, mix);
         }
         mix_hash_field(h, p.spectralUpsamplingMode, mix);
         mix_hash_field(h, p.refIll, mix);
@@ -543,11 +563,7 @@ namespace {
         const MixFn& mix) {
         mix_hash_field(h, p.cameraAutoExposureEnabled, mix);
         mix_hash_field(h, p.cameraMeteringMethod, mix);
-        mix_hash_field_scaled_rounded_if_finite(
-            h,
-            p.cameraExposureCompensationEv,
-            10000.0,
-            mix);
+        mix_retained_float_bits_if_finite(h, p.cameraExposureCompensationEv, mix);
         mix_canonical_float_bits(h, p.cameraFilmFormatLongEdgeMm, mix);
         mix_canonical_float_bits(h, p.filmGammaFactor, mix);
         mix_hash_field(h, p.scatterHalationControls.active ? 1 : 0, mix);
@@ -557,13 +573,13 @@ namespace {
             mix_canonical_float_bits(h, p.scatterHalationControls.halationAmount, mix);
             mix_canonical_float_bits(h, p.scatterHalationControls.halationSpatialScale, mix);
         }
-        mix_hash_field_scaled_rounded_if_finite(h, p.scannerLensBlurSigmaPx, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, p.scannerUnsharpMask[0], 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, p.scannerUnsharpMask[1], 10000.0, mix);
+        mix_retained_float_bits_if_finite(h, p.scannerLensBlurSigmaPx, mix);
+        mix_retained_float_bits_if_finite(h, p.scannerUnsharpMask[0], mix);
+        mix_retained_float_bits_if_finite(h, p.scannerUnsharpMask[1], mix);
         mix_hash_field(h, p.scannerBlackCorrection, mix);
         mix_hash_field(h, p.scannerWhiteCorrection, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, p.scannerBlackLevel, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, p.scannerWhiteLevel, 10000.0, mix);
+        mix_retained_float_bits_if_finite(h, p.scannerBlackLevel, mix);
+        mix_retained_float_bits_if_finite(h, p.scannerWhiteLevel, mix);
     }
 
     template <typename MixFn>
@@ -597,33 +613,33 @@ namespace {
         }
         mix_hash_field(h, 1, mix);
         mix_hash_field(h, grain.sublayersActive ? 1 : 0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, grain.particleAreaUm2, 10000.0, mix);
+        mix_retained_float_bits_if_finite(h, grain.particleAreaUm2, mix);
         for (float value : grain.particleScaleCmy) {
-            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+            mix_retained_float_bits_if_finite(h, value, mix);
         }
         for (float value : grain.particleScaleLayers) {
-            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+            mix_retained_float_bits_if_finite(h, value, mix);
         }
         for (float value : grain.visualParticleDensityMinCmy) {
-            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+            mix_retained_float_bits_if_finite(h, value, mix);
         }
         for (float value : grain.uniformityCmy) {
-            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+            mix_retained_float_bits_if_finite(h, value, mix);
         }
-        mix_hash_field_scaled_rounded_if_finite(h, grain.correlationSigmaPx, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, grain.dyeCloudBlurUm, 10000.0, mix);
+        mix_retained_float_bits_if_finite(h, grain.correlationSigmaPx, mix);
+        mix_retained_float_bits_if_finite(h, grain.dyeCloudBlurUm, mix);
         for (float value : grain.microStructure) {
-            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+            mix_retained_float_bits_if_finite(h, value, mix);
         }
         mix_hash_field(h, grain.nSubLayers, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, grain.amplitude, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, grain.chromaSharedWeight, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, grain.chromaIndependentWeight, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, grain.coarseWeight, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, grain.midWeight, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, grain.sizeMixScale, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, grain.clumpTemporalMix, 10000.0, mix);
-        mix_hash_field_scaled_rounded_if_finite(h, grain.clumpMorphPeriodSec, 10000.0, mix);
+        mix_retained_float_bits_if_finite(h, grain.amplitude, mix);
+        mix_retained_float_bits_if_finite(h, grain.chromaSharedWeight, mix);
+        mix_retained_float_bits_if_finite(h, grain.chromaIndependentWeight, mix);
+        mix_retained_float_bits_if_finite(h, grain.coarseWeight, mix);
+        mix_retained_float_bits_if_finite(h, grain.midWeight, mix);
+        mix_retained_float_bits_if_finite(h, grain.sizeMixScale, mix);
+        mix_retained_float_bits_if_finite(h, grain.clumpTemporalMix, mix);
+        mix_retained_float_bits_if_finite(h, grain.clumpMorphPeriodSec, mix);
         mix_hash_field(h, grain.debugView, mix);
     }
 
@@ -643,31 +659,11 @@ namespace {
             return;
         }
         mix_hash_field(h, 1, mix);
-        mix_hash_field_scaled_rounded_if_finite(
-            h,
-            p.filmDustAmount,
-            10000.0,
-            mix);
-        mix_hash_field_scaled_rounded_if_finite(
-            h,
-            p.filmScratchAmount,
-            10000.0,
-            mix);
-        mix_hash_field_scaled_rounded_if_finite(
-            h,
-            p.gateDustAmount,
-            10000.0,
-            mix);
-        mix_hash_field_scaled_rounded_if_finite(
-            h,
-            p.gateScratchAmount,
-            10000.0,
-            mix);
-        mix_hash_field_scaled_rounded_if_finite(
-            h,
-            p.gateWeaveAmount,
-            10000.0,
-            mix);
+        mix_canonical_retained_float_bits_if_finite(h, p.filmDustAmount, mix);
+        mix_canonical_retained_float_bits_if_finite(h, p.filmScratchAmount, mix);
+        mix_canonical_retained_float_bits_if_finite(h, p.gateDustAmount, mix);
+        mix_canonical_retained_float_bits_if_finite(h, p.gateScratchAmount, mix);
+        mix_retained_double_bits_if_finite(h, p.gateWeaveAmount, mix);
     }
 
     template <typename MixFn>
@@ -1612,6 +1608,18 @@ bool rebuild_print_render_state(InstanceState& S, const ParamSnapshot& P) {
     return rebuild_print_render_state_for_hash(S, P, hash_params(P));
 }
 
+#if defined(JUICER_ADMISSION_TEST_HOOK)
+namespace {
+    PendingCaptureTestHook pendingCaptureTestHook = nullptr;
+    void* pendingCaptureTestContext = nullptr;
+} // namespace
+
+void set_pending_capture_test_hook(PendingCaptureTestHook hook, void* context) {
+    pendingCaptureTestHook = hook;
+    pendingCaptureTestContext = context;
+}
+#endif
+
 PendingRenderAdmissionResult admit_pending_render_state(InstanceState& state) {
     for (;;) {
         ParamSnapshot snapshot;
@@ -1634,6 +1642,11 @@ PendingRenderAdmissionResult admit_pending_render_state(InstanceState& state) {
             snapshot = valid.params;
             fullHash = valid.fullHash;
         }
+#if defined(JUICER_ADMISSION_TEST_HOOK)
+        if (pendingCaptureTestHook) {
+            pendingCaptureTestHook(state, pendingCaptureTestContext);
+        }
+#endif
 
         std::string rebuildDiagnostic;
         const bool rebuilt = Spektrafilm::scan_route_is_print(snapshot.scanRoute)

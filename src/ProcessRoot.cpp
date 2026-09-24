@@ -42,6 +42,31 @@ namespace JuicerProcess {
         // Publish only completed construction so teardown can remain non-creating.
         constinit std::atomic<Root*> gRootInstance{nullptr};
 
+#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
+        struct ContextDrainTestFailure final {
+            std::mutex mutex;
+            std::optional<JuicerCuda::ResourceManager::DeviceContextKey> key;
+        };
+
+        ContextDrainTestFailure& context_drain_test_failure() {
+            static ContextDrainTestFailure failure;
+            return failure;
+        }
+
+        bool consume_context_drain_test_failure(
+            const JuicerCuda::ResourceManager::DeviceContextKey& key,
+            std::string& outError) {
+            ContextDrainTestFailure& failure = context_drain_test_failure();
+            std::lock_guard<std::mutex> lock(failure.mutex);
+            if (!failure.key || *failure.key != key) {
+                return false;
+            }
+            failure.key.reset();
+            outError = "test-injected CUDA context owner drain failure";
+            return true;
+        }
+#endif
+
         bool query_cuda_device_total_bytes(
             int deviceId,
             std::uint64_t& outDeviceBudgetBytes,
@@ -684,6 +709,41 @@ namespace JuicerProcess {
 
 
     } // namespace
+
+#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
+    namespace TestSupport {
+
+        bool arm_context_drain_failure_once(
+            const JuicerCuda::ResourceManager::DeviceContextKey& key) noexcept {
+            try {
+                if (key.deviceId < 0 || !key.contextOpaque) {
+                    return false;
+                }
+                ContextDrainTestFailure& failure = context_drain_test_failure();
+                std::lock_guard<std::mutex> lock(failure.mutex);
+                if (failure.key) {
+                    return false;
+                }
+                failure.key = key;
+                return true;
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+                return false;
+            }
+        }
+
+        void clear_context_drain_failure() noexcept {
+            try {
+                ContextDrainTestFailure& failure = context_drain_test_failure();
+                std::lock_guard<std::mutex> lock(failure.mutex);
+                failure.key.reset();
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+        }
+
+    } // namespace TestSupport
+#endif
 
     Root::FramePreparationToken::FramePreparationToken(Root* root) noexcept
         : _root(root) {
@@ -4639,6 +4699,14 @@ namespace JuicerProcess {
             bool physicalDrainSucceeded = true;
             bool provenContextLoss = false;
             for (const CudaResourceOwner& owner : owners) {
+#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
+                if (consume_context_drain_test_failure(
+                        deviceContextKey,
+                        outError)) {
+                    physicalDrainSucceeded = false;
+                    break;
+                }
+#endif
                 if (!owner ||
                     !JuicerCuda::drain_for_context_retire(*owner, outError)) {
                     physicalDrainSucceeded = false;

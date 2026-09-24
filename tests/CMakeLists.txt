@@ -59,6 +59,20 @@ if(UNIX)
 endif()
 
 include(GoogleTest)
+add_executable(JuicerHashContractTests hash/hash_contract_test.cpp)
+target_link_libraries(JuicerHashContractTests PRIVATE juicer_core GTest::gtest_main)
+set_target_properties(JuicerHashContractTests PROPERTIES
+    LINKER_LANGUAGE CXX
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerHashContractTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+gtest_discover_tests(JuicerHashContractTests
+    TEST_PREFIX "Hash.Host."
+    DISCOVERY_MODE POST_BUILD
+    DISCOVERY_TIMEOUT 30
+    PROPERTIES LABELS "host" TIMEOUT 120)
+
 gtest_discover_tests(JuicerScatterHalationHostTests
     TEST_PREFIX "ScatterHalation.Host."
     DISCOVERY_MODE POST_BUILD
@@ -116,16 +130,72 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME Ofx.SyntheticHostLifecycle
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/ofx/probe.py"
-            "$<TARGET_FILE:juicer>")
+            "$<TARGET_FILE:juicer>"
+            --expected-descriptor
+            "${CMAKE_CURRENT_SOURCE_DIR}/ofx/descriptor_manifest.json")
     set_tests_properties(Ofx.SyntheticHostLifecycle PROPERTIES
         LABELS "host"
         TIMEOUT 120
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 endif()
 
+add_executable(JuicerProcessorReferenceProbe ofx/processor_reference_test.cpp)
+target_link_libraries(JuicerProcessorReferenceProbe PRIVATE
+    juicer_core juicer_ofxs CUDA::cuda_driver)
+if(WIN32)
+    set(JUICER_PROCESSOR_REFERENCE_FILE "processor_reference_pixels_windows.dat")
+else()
+    set(JUICER_PROCESSOR_REFERENCE_FILE "processor_reference_pixels_linux.dat")
+endif()
+target_compile_definitions(JuicerProcessorReferenceProbe PRIVATE
+    JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/${JUICER_PROCESSOR_REFERENCE_FILE}")
+set_target_properties(JuicerProcessorReferenceProbe PROPERTIES
+    LINKER_LANGUAGE CXX
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+add_dependencies(JuicerProcessorReferenceProbe juicer_test_resources)
+if(UNIX)
+    set_property(TARGET JuicerProcessorReferenceProbe
+        PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Ofx.Gpu.ProcessorReference COMMAND JuicerProcessorReferenceProbe)
+set_tests_properties(Ofx.Gpu.ProcessorReference PROPERTIES
+    LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+
+add_executable(JuicerAdapterTraceProbe ofx/adapter_trace_test.cpp)
+target_link_libraries(JuicerAdapterTraceProbe PRIVATE
+    juicer_core juicer_ofxs CUDA::cuda_driver)
+set_target_properties(JuicerAdapterTraceProbe PROPERTIES
+    LINKER_LANGUAGE CXX
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+add_dependencies(JuicerAdapterTraceProbe juicer_test_resources)
+if(UNIX)
+    set_property(TARGET JuicerAdapterTraceProbe
+        PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Ofx.Gpu.AdapterTrace
+    COMMAND JuicerAdapterTraceProbe
+        --trace-output
+        "${JUICER_TEST_ARTIFACT_ROOT}/ofx/adapter_trace.txt")
+set_tests_properties(Ofx.Gpu.AdapterTrace PROPERTIES
+    LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
+
 add_executable(JuicerScatterHalationGpuTests
     scatter_halation/integration_test.cpp
     scatter_halation/integration_test_cases.cpp)
+add_library(juicer_admission_test_state OBJECT ../src/JuicerState.cpp)
+target_link_libraries(juicer_admission_test_state PRIVATE juicer_settings)
+target_compile_definitions(juicer_admission_test_state PRIVATE JUICER_ADMISSION_TEST_HOOK=1)
+target_compile_definitions(JuicerScatterHalationGpuTests PRIVATE JUICER_ADMISSION_TEST_HOOK=1)
+target_sources(JuicerScatterHalationGpuTests PRIVATE
+    $<TARGET_OBJECTS:juicer_admission_test_state>)
+add_library(juicer_context_drain_test_root OBJECT ../src/ProcessRoot.cpp)
+target_link_libraries(juicer_context_drain_test_root PRIVATE juicer_settings)
+target_compile_definitions(juicer_context_drain_test_root PRIVATE
+    JUICER_CONTEXT_DRAIN_TEST_HOOK=1)
+target_compile_definitions(JuicerScatterHalationGpuTests PRIVATE
+    JUICER_CONTEXT_DRAIN_TEST_HOOK=1)
+target_sources(JuicerScatterHalationGpuTests PRIVATE
+    $<TARGET_OBJECTS:juicer_context_drain_test_root>)
 target_include_directories(JuicerScatterHalationGpuTests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/scatter_halation")
 target_link_libraries(JuicerScatterHalationGpuTests PRIVATE

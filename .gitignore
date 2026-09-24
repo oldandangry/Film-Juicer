@@ -6,9 +6,8 @@
 # Existing path-sensitive harnesses remain a single quarantined legacy bucket.
 /tools/
 
-# Local support material; these directories are intentionally absent from the
-# published source tree.
-/docs/
+# Local support material; public product documentation under /docs is tracked.
+# Private documentation belongs under the ignored /.juicer-local/ namespace.
 /installer/
 /validation/
 

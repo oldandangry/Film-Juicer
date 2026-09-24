@@ -22,6 +22,8 @@ def parse_args():
         type=Path,
         help="Load a host library globally before loading the OFX module",
     )
+    parser.add_argument("--descriptor-output", type=Path)
+    parser.add_argument("--expected-descriptor", type=Path)
     return parser.parse_args()
 
 
@@ -189,6 +191,7 @@ c.CFUNCTYPE(None, c.POINTER(Host))(plugin.setHost)(c.byref(host))
 identifier = plugin.identifier.decode()
 entry = c.CFUNCTYPE(int_type, string_type, pointer_type, pointer_type, pointer_type)(plugin.mainEntry)
 results = {}
+described_properties = None
 for action, handle in (
     (b"OfxActionLoad", None),
     (b"OfxActionDescribe", 2),
@@ -196,8 +199,25 @@ for action, handle in (
 ):
     print("Running " + action.decode(), flush=True)
     results[action.decode()] = entry(action, handle, None, None)
+    if action == b"OfxActionDescribe" and results[action.decode()] == 0:
+        described_properties = {
+            key.decode(): [value.decode() if isinstance(value, bytes) else value
+                           for value in values]
+            for key, values in sorted(props[2].items())
+        }
     if results[action.decode()] != 0:
         break
+
+if args.descriptor_output:
+    args.descriptor_output.parent.mkdir(parents=True, exist_ok=True)
+    args.descriptor_output.write_text(
+        json.dumps(described_properties, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+if args.expected_descriptor:
+    expected = json.loads(args.expected_descriptor.read_text(encoding="utf-8"))
+    if described_properties != expected.get("properties", expected):
+        raise SystemExit("OFX descriptor properties differ from captured reference")
 
 print(
     json.dumps(
@@ -208,6 +228,7 @@ print(
             "identifier": identifier,
             "actions": results,
             "suite_requests": suite_requests,
+            "descriptor_properties": described_properties,
             "scope": "Synthetic host lifecycle with optional host libraries; no rendering",
         },
         indent=2,

@@ -136,17 +136,84 @@ cmake --build --preset linux-debug
 | --- | --- | --- |
 | `scatter_halation/recipe_descriptor_test.cpp` | Product contracts for control validation, recipe identity, descriptor dispatch, public-resource bootstrap and profile loading | `host` |
 | `scatter_halation/integration_test*` | Production-linked preparation, CUDA operator fixtures, route/carrier behavior, zero-work and lifecycle contracts | `gpu`; selected fixtures are also `reference` |
+| `hash/hash_contract_test.cpp` | Exact byte/word, signed-zero and NaN-mask identity vectors used by the migration reference | `host` |
 | `diffusion/host_reference_test.cpp` | Production host diffusion behavior against the pinned spektrafilm cohort | `host`, `reference` |
 | `grain/scratch_reuse_test.cpp` | Prepared-frame DIR/grain scratch ownership, bitwise equivalence to dedicated grain intermediates, and lifecycle contracts | `gpu` |
 | `grain/delta_fusion_test.cu` | Grain output against a separate FP32 blur/accumulation/delta oracle, including finite sanitation and final-layer dispatch | `gpu` |
 | `dir/exposure_cache_test.cpp` | Source-pass versus separate-pass log-exposure caches and final capture density through production CUDA operators | `gpu` |
 | `gamma/test_compare.py` | Comparator bounds, applicability, non-finite rejection and CLI failure propagation | `host` |
-| `ofx/probe.py` | Linux synthetic OFX load/describe/unload and declared CUDA support | `host`, Linux only |
+| `ofx/probe.py` | Linux synthetic OFX load/describe/unload and captured describe properties; no parameter varargs or render | `host`, Linux only |
+| `ofx/processor_reference_test.cpp` | Native OFX image/property seam driving the current CUDA processor for four routes, a combined optics/grain/print case, and signed-zero print transitions | `gpu` |
+| `ofx/adapter_trace_test.cpp` | Genuine native OFX parameter/image fixture driving the actual `JuicerEffect` event and render callbacks through time, seek, preset/reset, undo/redo-like, and invalid/recovery sequences | `gpu` |
 
 The diffusion fixture is an external reference. The scatter binary fixture is
 also an external reference with revision, shape, channel order and numerical
 limits recorded in its manifest. Gamma comparator rows are product/tooling
 contracts; they do not make the stale historical gamma captures current.
+`ofx/descriptor_manifest.json` is a C++ characterization of only the describe
+properties observable in the synthetic property suite at the pinned source
+commit and binary digest recorded in that fixture. The admission rows in the
+scatter integration group include exact fresh recipe/seed expectations and a
+test-only post-snapshot handshake; the installed plug-in links the ordinary
+uninstrumented admission object. The fresh identities are pinned separately
+for Linux and Windows from the unchanged C++ reference because their captured
+values differ across those supported platforms.
+`ofx/processor_reference_pixels_{linux,windows}.dat` are Film-Juicer C++
+characterizations, captured from unchanged production source at
+`86bf1af12eea620baefb56001919848b9eb06997`. The isolated Linux Debug
+capture binary SHA-256 is
+`794260d6a1313fa89f05dcb33583ff6ce9db08d7a7ec4ee54021397e6008b47d`;
+the Windows Debug binary SHA-256 is
+`3bc6c45c6b0d25e9f5b2436ce2fd0cce3e4137ef6b98a35469ae31cc6115c8ad`.
+Both capture worktrees added only the test target; production source and the
+44 bundled resources remained at that commit. Each row stores interleaved
+float RGB or RGBA pixels, row major, for a 7×5 image. The input has five
+padding floats per row and fixed session, instance, clip and frame facts.
+The test requires exact alpha and untouched destination padding; color
+comparison uses `2e-4 + 3e-4 * abs(reference)` per channel. The two print
+glare signed-zero rows are independent fresh builds; transition output must
+agree with the appropriate fresh row. Every processor case audits the source
+and destination image handles independently and rejects duplicate, unknown,
+or missing releases. Fixture emission is an explicit
+`--emit-reference` maintenance operation and is never part of CTest.
+
+`Ofx.Gpu.AdapterTrace` implements the C variadic parameter calls used by the
+plug-in rather than returning fabricated success. It records current-value and
+time-specific getter calls, authored and nested edit events, admitted exposure,
+recipe/build/latch identities, output signatures, messages, and image releases.
+Preset and advanced-reset operations must apply their expected parameter
+values and produce respectively 22 and 16 synchronously suppressed nested
+callbacks without changing state inside any nested callback. Every admitted
+latch identity is valid and nonzero; the sequence checks replacement and reuse
+at each time, edit, rejection, and recovery boundary. Every render, including
+the expected invalid-control rejection, must release each of its two distinct
+fetched image handles exactly once; duplicate, unknown, and missing releases
+fail the case. The trace is written to
+`out/validation/<preset>/ofx/adapter_trace.txt`; it is a generated diagnostic,
+not a checked-in expectation. A test-only observer reads existing private
+adapter/state facts; the installed plug-in gains no callback instrumentation.
+
+The `ScatterHalation.Gpu.PreparedFrame` lifetime rows call the actual
+`Root::prepare_cuda_frame` path, complete the production scan-error staging
+sequence, and then queue a pinned host-to-device upload into Root-owned
+prepared carrier storage behind a finite test gate. A queried CUDA event must
+report pending work before the frame's last legal CPU borrow. After `finish`,
+the final borrowed view, request, and complete caller-owned preparation object
+are destroyed while that event remains pending. The exact-context owner,
+frame-use fence, production-owned scan-error host/event and copied identity,
+native allocation records, and device ledger charges must remain; the uploaded
+carrier's exact base address must be
+present in the nonempty retire queue with nonzero retire bytes. The gate is then
+released and completion must be observed within the timeout. The gate has a
+hard self-release only to prevent a test deadlock, and a passing row requires
+that fallback not to fire. A separately compiled prepared-frame test object has
+one narrow, one-shot seam that returns a defined drain error before calling the
+physical CUDA drain. It requires ownership and ledger retention, then retries
+the ordinary drain successfully. The seam is absent from the plug-in build and
+is removed when the native Root ownership boundary moves in migration stage
+S2.B.
+This is controlled failure-branch evidence; it is not a real CUDA context-loss
+or driver-reset test and never resets a live host-owned context.
 
 Generated binaries live under `out/build/<preset>/tests/bin/`. CMake stages one
 read-only runtime tree at `out/build/<preset>/tests/Resources/`. Test scratch
@@ -169,6 +236,15 @@ ctest --preset linux-debug -L host \
 ```
 
 ## Adding a regression case
+
+Tests verify the approved behavioral contract against its applicable authority:
+spektrafilm for ported photographic behavior and approved Film-Juicer designs for
+its extensions. Before restructuring, identify evidence independent of the changed
+mechanism and reuse existing coverage when adequate. Check observable contracts,
+numerical results, identities, lifecycle behavior, and failure semantics; do not
+derive expected results solely from the implementation under test. Structural
+checks may enforce explicit architectural requirements, but cannot substitute for
+numerical or lifecycle evidence when those contracts are affected.
 
 For a small host C++ regression, add a normal `TEST(Suite, Name)` block to the
 domain's existing GoogleTest source and rebuild. CMake discovers the case; no

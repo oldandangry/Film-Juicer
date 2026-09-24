@@ -234,3 +234,7 @@ bool build_print_render_state_product(
     FocusedRenderStateBuildProduct& out,
     std::string& outError);
 PendingRenderAdmissionResult admit_pending_render_state(InstanceState& state);
+#if defined(JUICER_ADMISSION_TEST_HOOK)
+using PendingCaptureTestHook = void (*)(InstanceState&, void*);
+void set_pending_capture_test_hook(PendingCaptureTestHook hook, void* context);
+#endif
