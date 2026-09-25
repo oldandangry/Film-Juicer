@@ -825,7 +825,7 @@ namespace JuicerProcess {
         const Spectral::FilmRawConfig* focusedFilmRawConfig = nullptr;
         const Scanner::ColorRuntime* focusedScannerColor = nullptr;
         const Gamut::OutputGamutTransform* focusedOutputGamutTransform = nullptr;
-        const JuicerCuda::Resources::DeviceScanMedium* focusedScanMedium = nullptr;
+        const JuicerCuda::Resources::DeviceScanRange* focusedScanRange = nullptr;
         const JuicerCuda::Resources::DeviceSpectralLut* focusedScanLut = nullptr;
         const PrintRecipe* printRecipe = nullptr;
         void* lastCudaStreamOpaque = nullptr;
@@ -3990,7 +3990,7 @@ namespace JuicerProcess {
         FocusedPreparedView view{};
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed ||
             !_state->focusedFilmRawConfig || !_state->focusedScannerColor ||
-            !_state->focusedScanMedium || !_state->focusedScanLut) {
+            !_state->focusedScanRange || !_state->focusedScanLut) {
             return view;
         }
 
@@ -4022,7 +4022,7 @@ namespace JuicerProcess {
         view.film.finalSensitivityHash = resources.filmFinalSensitivityHash;
         view.film.normalizedDensityCurvesHash = resources.filmDensityCurvesHash;
         view.film.dirCouplersHash = resources.filmDirHash;
-        view.scanMedium = _state->focusedScanMedium;
+        view.scanRange = _state->focusedScanRange;
         view.scanLut = _state->focusedScanLut;
         view.scannerColor = _state->focusedScannerColor;
         view.outputGamutTransform = _state->focusedOutputGamutTransform;
@@ -4040,7 +4040,7 @@ namespace JuicerProcess {
                                           : !view.outputGamutTransform &&
                                                 !view.outputGamutCmax &&
                                                 resources.outputGamutRecipeHash == 0;
-        view.active = view.scanMedium && view.scanLut->canonical_ready() &&
+        view.active = view.scanRange && view.scanLut->canonical_ready() &&
                       view.densityBoundsHash != 0 &&
                       view.scannerDescriptorHash != 0 && outputGamutReady;
         return view;
@@ -5360,13 +5360,13 @@ namespace JuicerProcess {
                 return frame;
             }
             frame._state->printRecipe = &request.recipe->print;
-            frame._state->focusedScanMedium =
-                &frame._state->resources->scanPrint;
+            frame._state->focusedScanRange =
+                &frame._state->resources->scanPrintRange;
             frame._state->focusedScanLut =
                 &frame._state->resources->scanPrintLut;
         } else {
-            frame._state->focusedScanMedium =
-                &frame._state->resources->scanNegative;
+            frame._state->focusedScanRange =
+                &frame._state->resources->scanNegativeRange;
             frame._state->focusedScanLut =
                 &frame._state->resources->scanNegativeLut;
         }

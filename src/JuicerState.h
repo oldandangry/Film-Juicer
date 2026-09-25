@@ -129,7 +129,6 @@ struct ParamSnapshot {
     ScatterHalationControls scatterHalationControls;
     int scannerBlackCorrection = 0;
     int scannerWhiteCorrection = 0;
-    int scannerUseLut = 1;
     int scannerLutResolution = 17;
     int outputColorSpace = OutputEncoding::toIndex(OutputEncoding::ColorSpace::sRGB);
     int outputCctfEncoding = 1;

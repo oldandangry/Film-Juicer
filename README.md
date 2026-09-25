@@ -252,7 +252,7 @@ The panels describe the same properties as the Portra figure, but for the receiv
 
 ### Scanning and finishing
 
-The scanner calculates the colour of the developed film or print under its viewing illuminant, converts it through CIE XYZ, and returns RGB in the selected output space. The current CUDA renderer uses a spectral scanner LUT for this conversion. **Scanner LUT resolution** controls its sampling density, with a cost in memory and preparation time.
+The scanner calculates the colour of the developed film or print under its viewing illuminant, converts it through CIE XYZ, and returns RGB in the selected output space. The CUDA renderer always uses its prepared spectral scanner LUT for this conversion. **Scanner LUT resolution** is the only scanner-evaluation control and sets its sampling density, with a cost in memory and preparation time.
 
 **Scanner black correction** and **Scanner white correction** set the route's black/white normalisation. Print routes can also add **Glare**, which introduces veiling light at the scan stage. **Scanner lens blur** and **Scanner unsharp mask** provide final softness and sharpening before output encoding.
 

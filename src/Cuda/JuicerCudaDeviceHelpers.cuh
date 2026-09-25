@@ -408,8 +408,7 @@ static __device__ __forceinline__ bool sample_pchip_float_log2_scan_lut_device(
     const JuicerCuda::ScanStagePayload& scanStage,
     const double normalizedCmy[3],
     float out[3]) {
-    if (!scanStage.scannerUseLut ||
-        !scanStage.scanLutLog2PchipXYZ ||
+    if (!scanStage.scanLutLog2PchipXYZ ||
         !scanStage.scanLutPchipSlopeC ||
         !scanStage.scanLutPchipSlopeM ||
         !scanStage.scanLutPchipSlopeY ||

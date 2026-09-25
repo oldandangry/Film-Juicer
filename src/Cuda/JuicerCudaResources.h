@@ -288,8 +288,7 @@ namespace JuicerCuda {
             float invYn = 1.0f;
         };
 
-        struct DeviceScanMedium {
-            DeviceSpectralTables tables;
+        struct DeviceScanRange {
             int mediumIsNegative = 1;
             float min_cmy[3] = {0.0f, 0.0f, 0.0f};
             float inv_max_cmy[3] = {1.0f, 1.0f, 1.0f};
@@ -482,8 +481,8 @@ namespace JuicerCuda {
         // Leaf lock for per-device CUDA resource state. Do not wait on external work while held.
         std::mutex m;
 
-        DeviceScanMedium scanNegative;
-        DeviceScanMedium scanPrint;
+        DeviceScanRange scanNegativeRange;
+        DeviceScanRange scanPrintRange;
         DeviceOpticsScratch scannerScratch;
         DeviceSpatialDirScratch spatialDirScratch;
         std::array<DeviceGaussianKernel, 4> spatialDirKernels{};

@@ -1150,7 +1150,6 @@ namespace {
             add_boolean(JuicerParams::kScannerWhiteCorrection, false);
             add_double(JuicerParams::kScannerBlackLevel, 0.01);
             add_double(JuicerParams::kScannerWhiteLevel, 0.98);
-            add_boolean(JuicerParams::kScannerUseLut, true);
             add_int(JuicerParams::kScannerLutResolution, 17);
 
             add_double("PrintExposure", 1.0);

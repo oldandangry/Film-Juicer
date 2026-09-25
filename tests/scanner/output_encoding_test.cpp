@@ -21,6 +21,8 @@
 
 extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(const JuicerCuda::DirectPipelineRunParams*, void*);
 extern "C" cudaError_t juicer_cuda_print_focused_pipeline(const JuicerCuda::PrintPipelineRunParams*, void*);
+extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_density_rgb(const JuicerCuda::DirectPipelineRunParams*, const float*, const float*, const float*, float*, float*, float*, const float*, void*);
+extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_density_rgb(const JuicerCuda::PrintPipelineRunParams*, const float*, const float*, const float*, float*, float*, float*, float*, float*, int, int, std::uint64_t, float, float, const float*, int, void*);
 extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(const JuicerCuda::DirectPipelineRunParams*, float*, float*, float*, float*, const float*, int, const float*, int, float, const JuicerCuda::FilmDefectsPayload*, const JuicerCuda::GateWeavePayload*, const float*, int, int, void*);
 extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(const JuicerCuda::PrintPipelineRunParams*, float*, float*, float*, float*, const float*, int, const float*, int, float, const JuicerCuda::FilmDefectsPayload*, const JuicerCuda::GateWeavePayload*, const float*, int, int, void*);
 
@@ -85,6 +87,70 @@ namespace {
         } else {
             check_cuda(juicer_cuda_print_focused_pipeline(&params, nullptr));
         }
+    }
+
+    template <typename Params>
+    void launch_density_scan(
+        const Params& params,
+        const float* densityC,
+        const float* densityM,
+        const float* densityY,
+        float* rgbR,
+        float* rgbG,
+        float* rgbB) {
+        if constexpr (std::is_same_v<Params, JuicerCuda::DirectPipelineRunParams>) {
+            check_cuda(juicer_cuda_direct_focused_scan_linear_density_rgb(
+                &params,
+                densityC,
+                densityM,
+                densityY,
+                rgbR,
+                rgbG,
+                rgbB,
+                nullptr,
+                nullptr));
+        } else {
+            check_cuda(juicer_cuda_print_focused_scan_linear_density_rgb(
+                &params,
+                densityC,
+                densityM,
+                densityY,
+                rgbR,
+                rgbG,
+                rgbB,
+                nullptr,
+                nullptr,
+                0,
+                0,
+                0,
+                0.0f,
+                0.0f,
+                nullptr,
+                0,
+                nullptr));
+        }
+    }
+
+    int read_device_flag(const int* flag) {
+        int result = 0;
+        check_cuda(cudaMemcpy(&result, flag, sizeof(result), cudaMemcpyDeviceToHost));
+        return result;
+    }
+
+    void clear_device_flag(int* flag) {
+        check_cuda(cudaMemset(flag, 0, sizeof(*flag)));
+    }
+
+    std::vector<std::uint32_t> bit_patterns(const std::vector<float>& values) {
+        std::vector<std::uint32_t> result(values.size());
+        std::transform(
+            values.begin(),
+            values.end(),
+            result.begin(),
+            [](float value) {
+                return std::bit_cast<std::uint32_t>(value);
+            });
+        return result;
     }
 
     struct PostEffects {
@@ -336,11 +402,10 @@ namespace {
     };
 
     void bind_scanner(JuicerCuda::ScanStagePayload& scan, const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView& prepared, const OutputGamutRecipe& gamut) {
-        const auto& medium = *prepared.scanMedium;
-        scan.scanTables.mediumIsNegative = medium.mediumIsNegative;
-        std::copy_n(medium.min_cmy, 3, scan.scanTables.min_cmy);
-        std::copy_n(medium.inv_max_cmy, 3, scan.scanTables.inv_max_cmy);
-        scan.scannerUseLut = 1;
+        const auto& range = *prepared.scanRange;
+        scan.densityRange.mediumIsNegative = range.mediumIsNegative;
+        std::copy_n(range.min_cmy, 3, scan.densityRange.min_cmy);
+        std::copy_n(range.inv_max_cmy, 3, scan.densityRange.inv_max_cmy);
         const auto& lut = *prepared.scanLut;
         scan.scanLutLog2PchipXYZ = lut.log2PchipXYZ;
         scan.scanLutPchipSlopeC = lut.slopeC;
@@ -373,6 +438,101 @@ namespace {
         }
     }
 
+    template <typename Params>
+    Params make_bound_params(
+        const RouteInputs& inputs,
+        JuicerProcess::Root::PreparedCudaFrame& frame,
+        const Image& image) {
+        const auto prepared = frame.focused_resources();
+        require(prepared.active, "Focused scanner resources are not active");
+        const auto& recipe = inputs.product.recipe;
+        std::string error;
+        JuicerCuda::FilmPayloadPack film;
+        require(
+            JuicerCuda::pack_film_payloads(
+                recipe.filmRaw,
+                recipe.filmDevelop,
+                recipe.dirCouplers,
+                recipe.densityBounds,
+                prepared.film,
+                nullptr,
+                1.0f,
+                film,
+                error),
+            error);
+        Params params = image.params<Params>();
+        params.filmRaw = film.filmRaw;
+        params.filmExpose = film.filmExposure;
+        params.filmDevelop = film.filmDevelop;
+        if constexpr (std::is_same_v<Params, JuicerCuda::PrintPipelineRunParams>) {
+            JuicerCuda::PrintCudaPayloadPack print;
+            require(
+                JuicerCuda::pack_print_cuda_payloads(
+                    recipe.print,
+                    frame.print_resources(),
+                    1.0f,
+                    print,
+                    error),
+                error);
+            params.printExpose = print.expose;
+            params.printDevelop = print.develop;
+        }
+        bind_scanner(
+            params.scanStage,
+            prepared,
+            recipe.scannerOutput.outputGamut);
+        return params;
+    }
+
+    struct LutCapture {
+        std::uint32_t resolution = 0;
+        std::uint64_t hash = 0;
+        std::array<std::uintptr_t, 6> addresses{};
+        std::vector<std::uint32_t> content;
+        std::size_t bytes = 0;
+    };
+
+    LutCapture capture_lut(const JuicerCuda::Resources::DeviceSpectralLut& lut) {
+        require(lut.canonical_ready(), "Scanner LUT is not ready");
+        LutCapture result;
+        result.resolution = lut.res;
+        result.hash = lut.hash;
+        result.addresses = {
+            reinterpret_cast<std::uintptr_t>(lut.log2PchipXYZ),
+            reinterpret_cast<std::uintptr_t>(lut.slopeC),
+            reinterpret_cast<std::uintptr_t>(lut.slopeM),
+            reinterpret_cast<std::uintptr_t>(lut.slopeY),
+            reinterpret_cast<std::uintptr_t>(lut.cellMin),
+            reinterpret_cast<std::uintptr_t>(lut.cellMax)};
+        const std::size_t voxelValues =
+            static_cast<std::size_t>(lut.res) * lut.res * lut.res * 3u;
+        const std::size_t cellResolution = static_cast<std::size_t>(lut.res - 1u);
+        const std::size_t cellValues =
+            cellResolution * cellResolution * cellResolution * 3u;
+        result.bytes = (4u * voxelValues + 2u * cellValues) * sizeof(float);
+        result.content.reserve(4u * voxelValues + 2u * cellValues);
+        auto append = [&](const float* source, std::size_t count) {
+            std::vector<float> values(count);
+            check_cuda(cudaMemcpy(
+                values.data(),
+                source,
+                count * sizeof(float),
+                cudaMemcpyDeviceToHost));
+            const std::vector<std::uint32_t> patterns = bit_patterns(values);
+            result.content.insert(
+                result.content.end(),
+                patterns.begin(),
+                patterns.end());
+        };
+        append(lut.log2PchipXYZ, voxelValues);
+        append(lut.slopeC, voxelValues);
+        append(lut.slopeM, voxelValues);
+        append(lut.slopeY, voxelValues);
+        append(lut.cellMin, cellValues);
+        append(lut.cellMax, cellValues);
+        return result;
+    }
+
     class ScannerRoutes : public testing::Test {
     protected:
         void SetUp() override {
@@ -387,33 +547,37 @@ namespace {
             std::string error;
             require(JuicerProcess::root().retire_idle_context(0, key.contextOpaque, error), error);
         }
-        template <typename Params>
-        void check_route(const RouteInputs& inputs) {
-            Image image({65, 33}, 4);
+        JuicerProcess::Root::PreparedCudaFrame prepare_route(
+            const RouteInputs& inputs,
+            const Image& image) {
             JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
             snapshot.instanceToken.value = 0x5343414e4e4552ull;
             snapshot.frameToken.value = nextIdentity;
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
             snapshot.contextEpoch = 1;
-            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
+            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+                inputs.product.payload.uploadCoreHash,
+                inputs.product.recipe.dirCouplers.hash,
+                inputs.product.payload.scannerHash,
+                0);
             std::string error;
-            auto frame = JuicerProcess::root().prepare_cuda_frame(key, snapshot, inputs.request(image), {}, nullptr, error);
+            auto frame = JuicerProcess::root().prepare_cuda_frame(
+                key,
+                snapshot,
+                inputs.request(image),
+                {},
+                nullptr,
+                error);
             require(frame.active(), error);
-            const auto& recipe = inputs.product.recipe;
-            JuicerCuda::FilmPayloadPack film;
-            require(JuicerCuda::pack_film_payloads(recipe.filmRaw, recipe.filmDevelop, recipe.dirCouplers, recipe.densityBounds, frame.focused_resources().film, nullptr, 1.0f, film, error), error);
-            auto p = image.params<Params>();
-            p.filmRaw = film.filmRaw;
-            p.filmExpose = film.filmExposure;
-            p.filmDevelop = film.filmDevelop;
-            if constexpr (std::is_same_v<Params, JuicerCuda::PrintPipelineRunParams>) {
-                JuicerCuda::PrintCudaPayloadPack print;
-                require(JuicerCuda::pack_print_cuda_payloads(recipe.print, frame.print_resources(), 1.0f, print, error), error);
-                p.printExpose = print.expose;
-                p.printDevelop = print.develop;
-            }
-            bind_scanner(p.scanStage, frame.focused_resources(), recipe.scannerOutput.outputGamut);
+            return frame;
+        }
+        template <typename Params>
+        void check_route(const RouteInputs& inputs) {
+            Image image({65, 33}, 4);
+            std::string error;
+            auto frame = prepare_route(inputs, image);
+            auto p = make_bound_params<Params>(inputs, frame, image);
             require(frame.prepare_scan_error_stage(p.scanStage.scanErrorFlag, nullptr, error), error);
             auto staged = p;
             staged.scanStage.linearRgbR = image.planes.get();
@@ -438,8 +602,145 @@ namespace {
                 image.compare(fused, reference, false);
                 image.compare(fused, separate, cctf);
             }
+            EXPECT_EQ(read_device_flag(p.scanStage.scanErrorFlag), 0);
             require(frame.finalize_scan_error_stage(p.scanStage.scanErrorFlag, nullptr, error), error);
             require(frame.finish(nullptr, error), error);
+        }
+        void expect_fused_failure_output(const Image& image) {
+            const std::vector<float> actual = image.output.download();
+            for (int y = 0; y < image.height; ++y) {
+                for (std::size_t x = 0; x < image.stride; ++x) {
+                    const std::size_t index =
+                        static_cast<std::size_t>(y) * image.stride + x;
+                    const bool rgb =
+                        x < static_cast<std::size_t>(image.width) *
+                                image.components &&
+                        x % static_cast<std::size_t>(image.components) < 3u;
+                    if (rgb) {
+                        EXPECT_EQ(std::bit_cast<std::uint32_t>(actual[index]), 0u)
+                            << index;
+                    } else {
+                        EXPECT_EQ(
+                            std::bit_cast<std::uint32_t>(actual[index]),
+                            std::bit_cast<std::uint32_t>(image.source[index]))
+                            << index;
+                    }
+                }
+            }
+        }
+        template <typename Params>
+        void check_required_lut_failures(const RouteInputs& inputs) {
+            Image image({17, 9}, 4);
+            auto frame = prepare_route(inputs, image);
+            auto params = make_bound_params<Params>(inputs, frame, image);
+            std::string error;
+            require(
+                frame.prepare_scan_error_stage(
+                    params.scanStage.scanErrorFlag,
+                    nullptr,
+                    error),
+                error);
+
+            Buffer densities(3u * image.count);
+            Buffer scanOutput(3u * image.count);
+            densities.upload(std::vector<float>(3u * image.count, 0.25f));
+            const std::array<const char*, 7> cases = {
+                "log2_xyz",
+                "slope_c",
+                "slope_m",
+                "slope_y",
+                "cell_min",
+                "cell_max",
+                "resolution"};
+            for (std::size_t failure = 0; failure < cases.size(); ++failure) {
+                SCOPED_TRACE(cases[failure]);
+                auto broken = params;
+                switch (failure) {
+                    case 0:
+                        broken.scanStage.scanLutLog2PchipXYZ = nullptr;
+                        break;
+                    case 1:
+                        broken.scanStage.scanLutPchipSlopeC = nullptr;
+                        break;
+                    case 2:
+                        broken.scanStage.scanLutPchipSlopeM = nullptr;
+                        break;
+                    case 3:
+                        broken.scanStage.scanLutPchipSlopeY = nullptr;
+                        break;
+                    case 4:
+                        broken.scanStage.scanLutPchipCellMin = nullptr;
+                        break;
+                    case 5:
+                        broken.scanStage.scanLutPchipCellMax = nullptr;
+                        break;
+                    case 6:
+                        broken.scanStage.scanLutRes = 1;
+                        break;
+                    default:
+                        throw std::logic_error("Unhandled LUT failure case");
+                }
+
+                clear_device_flag(broken.scanStage.scanErrorFlag);
+                image.clear_output();
+                launch_pipeline(broken);
+                EXPECT_EQ(read_device_flag(broken.scanStage.scanErrorFlag), 1);
+                expect_fused_failure_output(image);
+
+                clear_device_flag(broken.scanStage.scanErrorFlag);
+                scanOutput.upload(std::vector<float>(3u * image.count, 1.0f));
+                launch_density_scan(
+                    broken,
+                    densities.get(),
+                    densities.get() + image.count,
+                    densities.get() + 2u * image.count,
+                    scanOutput.get(),
+                    scanOutput.get() + image.count,
+                    scanOutput.get() + 2u * image.count);
+                EXPECT_EQ(read_device_flag(broken.scanStage.scanErrorFlag), 1);
+                for (float value : scanOutput.download()) {
+                    EXPECT_EQ(std::bit_cast<std::uint32_t>(value), 0u);
+                }
+            }
+
+            clear_device_flag(params.scanStage.scanErrorFlag);
+            require(
+                frame.finalize_scan_error_stage(
+                    params.scanStage.scanErrorFlag,
+                    nullptr,
+                    error),
+                error);
+            require(frame.finish(nullptr, error), error);
+        }
+        struct RouteCapture {
+            LutCapture lut;
+            std::vector<std::uint32_t> output;
+        };
+        template <typename Params>
+        RouteCapture capture_route(const RouteInputs& inputs) {
+            Image image({31, 19}, 4);
+            auto frame = prepare_route(inputs, image);
+            auto params = make_bound_params<Params>(inputs, frame, image);
+            std::string error;
+            require(
+                frame.prepare_scan_error_stage(
+                    params.scanStage.scanErrorFlag,
+                    nullptr,
+                    error),
+                error);
+            launch_pipeline(params);
+            RouteCapture result;
+            result.output = bit_patterns(image.output.download());
+            EXPECT_EQ(read_device_flag(params.scanStage.scanErrorFlag), 0);
+            result.lut = capture_lut(*frame.focused_resources().scanLut);
+            require(
+                frame.finalize_scan_error_stage(
+                    params.scanStage.scanErrorFlag,
+                    nullptr,
+                    error),
+                error);
+            require(frame.finish(nullptr, error), error);
+            return result;
         }
         JuicerCuda::ResourceManager::DeviceContextKey key;
         inline static std::uint64_t nextIdentity = 1;
@@ -459,6 +760,59 @@ namespace {
                 }
             }
         }
+    }
+
+    TEST_F(ScannerRoutes, RequiredLutFailuresAreReportedByBothScannerCallers) {
+        RouteInputs direct(
+            Spektrafilm::ScanRoute::NegativeDirectScan,
+            0,
+            false);
+        check_required_lut_failures<JuicerCuda::DirectPipelineRunParams>(direct);
+
+        RouteInputs print(
+            Spektrafilm::ScanRoute::PositivePrintScan,
+            0,
+            false);
+        check_required_lut_failures<JuicerCuda::PrintPipelineRunParams>(print);
+    }
+
+    TEST_F(ScannerRoutes, ResolutionTransitionRestoresLutContentAndOutput) {
+        ParamSnapshot controls17 = RouteInputs::controls_for_route(
+            Spektrafilm::ScanRoute::NegativeDirectScan);
+        controls17.scannerLutResolution = 17;
+        ParamSnapshot controls33 = controls17;
+        controls33.scannerLutResolution = 33;
+        RouteInputs inputs17(controls17, 0, false);
+        RouteInputs inputs33(controls33, 0, false);
+
+        ASSERT_EQ(inputs17.scanner.lutResolution, 17u);
+        ASSERT_EQ(inputs33.scanner.lutResolution, 33u);
+        ASSERT_NE(inputs17.scanner.hash, 0u);
+        ASSERT_NE(inputs33.scanner.hash, 0u);
+        EXPECT_NE(inputs17.scanner.hash, inputs33.scanner.hash);
+
+        const RouteCapture initial =
+            capture_route<JuicerCuda::DirectPipelineRunParams>(inputs17);
+        const RouteCapture retained =
+            capture_route<JuicerCuda::DirectPipelineRunParams>(inputs17);
+        const RouteCapture changed =
+            capture_route<JuicerCuda::DirectPipelineRunParams>(inputs33);
+        const RouteCapture restored =
+            capture_route<JuicerCuda::DirectPipelineRunParams>(inputs17);
+
+        EXPECT_EQ(initial.lut.resolution, 17u);
+        EXPECT_EQ(changed.lut.resolution, 33u);
+        EXPECT_EQ(restored.lut.resolution, 17u);
+        EXPECT_EQ(initial.lut.hash, inputs17.scanner.hash);
+        EXPECT_EQ(changed.lut.hash, inputs33.scanner.hash);
+        EXPECT_EQ(restored.lut.hash, inputs17.scanner.hash);
+        EXPECT_EQ(initial.lut.addresses, retained.lut.addresses);
+        EXPECT_EQ(initial.lut.content, retained.lut.content);
+        EXPECT_GT(changed.lut.bytes, initial.lut.bytes);
+        EXPECT_EQ(initial.lut.bytes, restored.lut.bytes);
+        EXPECT_EQ(initial.lut.content, restored.lut.content);
+        EXPECT_EQ(initial.output, retained.output);
+        EXPECT_EQ(initial.output, restored.output);
     }
 
     TEST_F(ScannerRoutes, PrintResourceCacheAcceptsPublishedValuesAcrossDescriptorChanges) {

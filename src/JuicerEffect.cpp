@@ -656,7 +656,6 @@ namespace {
         OFX::BooleanParam* scannerWhiteCorrectionParam,
         OFX::DoubleParam* scannerBlackLevelParam,
         OFX::DoubleParam* scannerWhiteLevelParam,
-        OFX::BooleanParam* scannerUseLutParam,
         OFX::IntParam* scannerLutResolutionParam,
         ParamSnapshot& snapshot) {
         snapshot.scannerLensBlurSigmaPx = read_double_param(scannerLensBlurParam);
@@ -669,7 +668,6 @@ namespace {
             read_sanitized_unit_double(scannerBlackLevelParam, snapshot.scannerBlackLevel);
         snapshot.scannerWhiteLevel =
             read_sanitized_unit_double(scannerWhiteLevelParam, snapshot.scannerWhiteLevel);
-        snapshot.scannerUseLut = read_bool_param_as_i32(scannerUseLutParam);
         snapshot.scannerLutResolution = read_int_param(scannerLutResolutionParam);
     }
 
@@ -1473,7 +1471,6 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         fetchBooleanParam(JuicerParams::kScannerWhiteCorrection);
     _pScannerBlackLevel = fetchDoubleParam(JuicerParams::kScannerBlackLevel);
     _pScannerWhiteLevel = fetchDoubleParam(JuicerParams::kScannerWhiteLevel);
-    _pScannerUseLut = fetchBooleanParam(JuicerParams::kScannerUseLut);
     _pScannerLutResolution = fetchIntParam(JuicerParams::kScannerLutResolution);
 
     _pPrintExposure = fetchDoubleParam("PrintExposure");
@@ -2265,7 +2262,6 @@ bool JuicerEffect::snapshotParams(
         _pScannerWhiteCorrection,
         _pScannerBlackLevel,
         _pScannerWhiteLevel,
-        _pScannerUseLut,
         _pScannerLutResolution,
         P);
     read_output_snapshot_values(

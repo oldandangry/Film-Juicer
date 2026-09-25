@@ -50,13 +50,6 @@ namespace {
         return out;
     }
 
-    __device__ __forceinline__ bool scan_log2_xyz_device(
-        const JuicerCuda::ScanStagePayload& scanStage,
-        const double D_norm[3],
-        float log2XYZ[3]) {
-        return sample_pchip_float_log2_scan_lut_device(scanStage, D_norm, log2XYZ);
-    }
-
     __device__ __forceinline__ double clamp01d_device(double v) {
         if (v <= 0.0)
             return 0.0;
@@ -1727,18 +1720,39 @@ namespace {
 
         // Scan: normalize density -> logXYZ
         double D_norm[3];
-        if (scan.scanTables.mediumIsNegative) {
-            D_norm[0] = (static_cast<double>(D_cmy[0]) + static_cast<double>(scan.scanTables.min_cmy[0])) * static_cast<double>(scan.scanTables.inv_max_cmy[0]);
-            D_norm[1] = (static_cast<double>(D_cmy[1]) + static_cast<double>(scan.scanTables.min_cmy[1])) * static_cast<double>(scan.scanTables.inv_max_cmy[1]);
-            D_norm[2] = (static_cast<double>(D_cmy[2]) + static_cast<double>(scan.scanTables.min_cmy[2])) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
+        if (scan.densityRange.mediumIsNegative) {
+            D_norm[0] = (static_cast<double>(D_cmy[0]) + static_cast<double>(scan.densityRange.min_cmy[0])) * static_cast<double>(scan.densityRange.inv_max_cmy[0]);
+            D_norm[1] = (static_cast<double>(D_cmy[1]) + static_cast<double>(scan.densityRange.min_cmy[1])) * static_cast<double>(scan.densityRange.inv_max_cmy[1]);
+            D_norm[2] = (static_cast<double>(D_cmy[2]) + static_cast<double>(scan.densityRange.min_cmy[2])) * static_cast<double>(scan.densityRange.inv_max_cmy[2]);
         } else {
-            D_norm[0] = (static_cast<double>(D_cmy[0]) - static_cast<double>(scan.scanTables.min_cmy[0])) * static_cast<double>(scan.scanTables.inv_max_cmy[0]);
-            D_norm[1] = (static_cast<double>(D_cmy[1]) - static_cast<double>(scan.scanTables.min_cmy[1])) * static_cast<double>(scan.scanTables.inv_max_cmy[1]);
-            D_norm[2] = (static_cast<double>(D_cmy[2]) - static_cast<double>(scan.scanTables.min_cmy[2])) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
+            D_norm[0] = (static_cast<double>(D_cmy[0]) - static_cast<double>(scan.densityRange.min_cmy[0])) * static_cast<double>(scan.densityRange.inv_max_cmy[0]);
+            D_norm[1] = (static_cast<double>(D_cmy[1]) - static_cast<double>(scan.densityRange.min_cmy[1])) * static_cast<double>(scan.densityRange.inv_max_cmy[1]);
+            D_norm[2] = (static_cast<double>(D_cmy[2]) - static_cast<double>(scan.densityRange.min_cmy[2])) * static_cast<double>(scan.densityRange.inv_max_cmy[2]);
         }
 
         float log2XYZ[3] = {nanf(""), nanf(""), nanf("")};
-        (void)scan_log2_xyz_device(scan, D_norm, log2XYZ);
+        if (!sample_pchip_float_log2_scan_lut_device(scan, D_norm, log2XYZ)) {
+            signal_scan_error_device(scan.scanErrorFlag);
+            const std::size_t idx =
+                yIndex * static_cast<std::size_t>(params.width) + xIndex;
+            if (scan.linearRgbR && scan.linearRgbG && scan.linearRgbB) {
+                scan.linearRgbR[idx] = 0.0f;
+                scan.linearRgbG[idx] = 0.0f;
+                scan.linearRgbB[idx] = 0.0f;
+                return;
+            }
+            char* dstRow = reinterpret_cast<char*>(params.dst) +
+                           static_cast<std::size_t>(y) * params.dstRowBytes;
+            float* dstPix = reinterpret_cast<float*>(
+                dstRow + static_cast<std::size_t>(x) * pixelBytes);
+            dstPix[0] = 0.0f;
+            dstPix[1] = 0.0f;
+            dstPix[2] = 0.0f;
+            if (nC == 4) {
+                dstPix[3] = srcPix[3];
+            }
+            return;
+        }
         double xyz[3] = {
             static_cast<double>(exp2f(log2XYZ[0])),
             static_cast<double>(exp2f(log2XYZ[1])),
@@ -1894,30 +1908,39 @@ namespace {
                 const float D_cmy[3] = {inC[idx], inM[idx], inY[idx]};
 
                 double D_norm[3];
-                if (scan.scanTables.mediumIsNegative) {
+                if (scan.densityRange.mediumIsNegative) {
                     D_norm[0] = (static_cast<double>(D_cmy[0]) +
-                                 static_cast<double>(scan.scanTables.min_cmy[0])) *
-                                static_cast<double>(scan.scanTables.inv_max_cmy[0]);
+                                 static_cast<double>(scan.densityRange.min_cmy[0])) *
+                                static_cast<double>(scan.densityRange.inv_max_cmy[0]);
                     D_norm[1] = (static_cast<double>(D_cmy[1]) +
-                                 static_cast<double>(scan.scanTables.min_cmy[1])) *
-                                static_cast<double>(scan.scanTables.inv_max_cmy[1]);
+                                 static_cast<double>(scan.densityRange.min_cmy[1])) *
+                                static_cast<double>(scan.densityRange.inv_max_cmy[1]);
                     D_norm[2] = (static_cast<double>(D_cmy[2]) +
-                                 static_cast<double>(scan.scanTables.min_cmy[2])) *
-                                static_cast<double>(scan.scanTables.inv_max_cmy[2]);
+                                 static_cast<double>(scan.densityRange.min_cmy[2])) *
+                                static_cast<double>(scan.densityRange.inv_max_cmy[2]);
                 } else {
                     D_norm[0] = (static_cast<double>(D_cmy[0]) -
-                                 static_cast<double>(scan.scanTables.min_cmy[0])) *
-                                static_cast<double>(scan.scanTables.inv_max_cmy[0]);
+                                 static_cast<double>(scan.densityRange.min_cmy[0])) *
+                                static_cast<double>(scan.densityRange.inv_max_cmy[0]);
                     D_norm[1] = (static_cast<double>(D_cmy[1]) -
-                                 static_cast<double>(scan.scanTables.min_cmy[1])) *
-                                static_cast<double>(scan.scanTables.inv_max_cmy[1]);
+                                 static_cast<double>(scan.densityRange.min_cmy[1])) *
+                                static_cast<double>(scan.densityRange.inv_max_cmy[1]);
                     D_norm[2] = (static_cast<double>(D_cmy[2]) -
-                                 static_cast<double>(scan.scanTables.min_cmy[2])) *
-                                static_cast<double>(scan.scanTables.inv_max_cmy[2]);
+                                 static_cast<double>(scan.densityRange.min_cmy[2])) *
+                                static_cast<double>(scan.densityRange.inv_max_cmy[2]);
                 }
 
                 float log2XYZ[3] = {nanf(""), nanf(""), nanf("")};
-                (void)scan_log2_xyz_device(scan, D_norm, log2XYZ);
+                if (!sample_pchip_float_log2_scan_lut_device(
+                        scan,
+                        D_norm,
+                        log2XYZ)) {
+                    signal_scan_error_device(scan.scanErrorFlag);
+                    outR[idx] = 0.0f;
+                    outG[idx] = 0.0f;
+                    outB[idx] = 0.0f;
+                    continue;
+                }
                 double xyz[3] = {
                     static_cast<double>(exp2f(log2XYZ[0])),
                     static_cast<double>(exp2f(log2XYZ[1])),
@@ -2288,7 +2311,8 @@ cudaError_t launch_focused_scan_linear_rgb(
         if (options.glareRadius > 0 && options.glareKernel && !dScratchBlurred) {
             return cudaErrorInvalidValue;
         }
-        const std::uint64_t mediumId = params.scanStage.scanTables.mediumIsNegative ? 0ULL : 1ULL;
+        const std::uint64_t mediumId =
+            params.scanStage.densityRange.mediumIsNegative ? 0ULL : 1ULL;
         GlareGenerationInput glareInput{};
         glareInput.output = dTmp;
         glareInput.width = params.width;
@@ -2554,7 +2578,8 @@ cudaError_t launch_focused_scan_linear_density_rgb(
         if (options.glareRadius > 0 && options.glareKernel && !dScratchBlurred) {
             return cudaErrorInvalidValue;
         }
-        const std::uint64_t mediumId = params.scanStage.scanTables.mediumIsNegative ? 0ULL : 1ULL;
+        const std::uint64_t mediumId =
+            params.scanStage.densityRange.mediumIsNegative ? 0ULL : 1ULL;
         GlareGenerationInput glareInput{};
         glareInput.output = dTmp;
         glareInput.width = params.width;

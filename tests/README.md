@@ -346,7 +346,13 @@ host double-precision `OutputEncoding::applyEncoding`; this is a product
 numerical contract, not an external-reference fixture. Clipped RGB must stay
 within `1e-6` maximum and `1e-7` mean absolute error per case, with unchanged
 nonfinite classification and bit-exact alpha/padding. Identity-matrix CCTF-off
-output is bit-exact against the oracle.
+output is bit-exact against the oracle. The same executable covers LUT-only
+scanning on all four route/polarity combinations, explicit required-LUT failure
+reporting in both scanner callers, and retained-resource transitions from LUT
+resolution 17 to 33 and back to 17. The transition check compares descriptor
+identity, allocation extent, LUT content, and restored fixed-input output; it
+does not require the two resolutions to produce a visually observable
+difference.
 
 The suite also observes a bounded linear pattern after production scanner blur,
 unsharp, weave, and gate attenuation, then checks that encoding follows those

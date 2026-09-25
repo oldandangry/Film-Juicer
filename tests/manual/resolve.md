@@ -63,3 +63,21 @@ explain a failure; a mandatory evidence form is intentionally not used.
 This consolidation changed no production rendering or resource ownership, so
 Debug repetition, forced context reset, profiling, benchmarks, and reference
 regeneration are not acceptance gates.
+
+## LUT-only scanner cleanup
+
+After installing a bundle containing the LUT-only scanner cleanup, repeat the
+four route checks above on one deterministic frame and additionally confirm:
+
+- **Scanner use LUT** is absent, while **Scanner LUT resolution** remains and
+  defaults to 17.
+- Resolution 17 renders finite output on negative/positive direct/print routes.
+- Changing one instance from 17 to 33 and back to 17 completes successfully and
+  restores the original resolution-17 output.
+- A project previously saved with `ScannerUseLUT=false` opens and renders with
+  the LUT-only scanner without a missing-parameter or resource error.
+- No selectable scanner mode produces the retired exact-path performance cost.
+
+Record the installed bundle hash and any unavailable saved-project or platform
+check. Repository tests cover CUDA output and resource transitions but cannot
+establish Resolve's handling of a removed OFX parameter.

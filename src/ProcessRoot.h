@@ -295,7 +295,7 @@ namespace JuicerProcess {
 
             struct FocusedPreparedView {
                 JuicerCuda::FilmPreparedView film{};
-                const JuicerCuda::Resources::DeviceScanMedium* scanMedium = nullptr;
+                const JuicerCuda::Resources::DeviceScanRange* scanRange = nullptr;
                 const JuicerCuda::Resources::DeviceSpectralLut* scanLut = nullptr;
                 const Scanner::ColorRuntime* scannerColor = nullptr;
                 const Gamut::OutputGamutTransform* outputGamutTransform = nullptr;

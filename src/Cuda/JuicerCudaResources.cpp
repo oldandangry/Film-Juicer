@@ -279,7 +279,6 @@ namespace JuicerCuda {
     static void free_wang(Resources& resources) noexcept;
     static void free_scan_error_readbacks(Resources& resources) noexcept;
     static void free_tables(Resources& resources) noexcept;
-    static void free_scan_medium(Resources& resources, Resources::DeviceScanMedium& m) noexcept;
     static void free_scan_lut(Resources& resources, Resources::DeviceSpectralLut& lut) noexcept;
     static void clear_gaussian_kernel_views(Resources& resources) noexcept;
     static void free_gaussian_cache(Resources& resources) noexcept;
@@ -1618,8 +1617,6 @@ namespace JuicerCuda {
         free_curve(resources, resources.sensG);
         free_curve(resources, resources.sensR);
         free_tables(resources);
-        free_scan_medium(resources, resources.scanNegative);
-        free_scan_medium(resources, resources.scanPrint);
         free_scan_lut(resources, resources.scanNegativeLut);
         free_scan_lut(resources, resources.scanPrintLut);
         clear_gaussian_kernel_views(resources);
@@ -3381,7 +3378,6 @@ namespace JuicerCuda {
             (!dirCouplers.active ||
              (resources.dirDensB.x && resources.dirDensG.x && resources.dirDensR.x)) &&
             (tcMethod || resources.tablesIllum) &&
-            (printRoute ? resources.scanPrint.tables.epsC : resources.scanNegative.tables.epsC) &&
             (printRoute ? resources.scanPrintLut.canonical_ready() : resources.scanNegativeLut.canonical_ready()) &&
             (printRoute ? resources.scanPrintLut.hash : resources.scanNegativeLut.hash) == scannerDescriptor.hash &&
             ((tcMethod &&
@@ -3611,49 +3607,29 @@ namespace JuicerCuda {
             return false;
         }
 
-        const Spectral::SpectralTables& mediumTables = *request.scannerTables;
-        Resources::DeviceScanMedium& scan = printRoute ? resources.scanPrint : resources.scanNegative;
-        const int scanK = mediumTables.K;
+        Resources::DeviceScanRange& scanRange =
+            printRoute ? resources.scanPrintRange : resources.scanNegativeRange;
         resources.routeDensityBoundsHash = 0;
         resources.routeScannerDescriptorHash = 0;
-        if (!upload_array_locked(resources, scan.tables.epsC, scan.tables.K, mediumTables.epsC.data(), scanK, cudaStreamOpaque, &lock, "focused medium epsC", outError) ||
-            !upload_array_locked(resources, scan.tables.epsM, scan.tables.K, mediumTables.epsM.data(), scanK, cudaStreamOpaque, &lock, "focused medium epsM", outError) ||
-            !upload_array_locked(resources, scan.tables.epsY, scan.tables.K, mediumTables.epsY.data(), scanK, cudaStreamOpaque, &lock, "focused medium epsY", outError) ||
-            !upload_array_locked(resources, scan.tables.Ax, scan.tables.K, mediumTables.Ax.data(), scanK, cudaStreamOpaque, &lock, "focused medium Ax", outError) ||
-            !upload_array_locked(resources, scan.tables.Ay, scan.tables.K, mediumTables.Ay.data(), scanK, cudaStreamOpaque, &lock, "focused medium Ay", outError) ||
-            !upload_array_locked(resources, scan.tables.Az, scan.tables.K, mediumTables.Az.data(), scanK, cudaStreamOpaque, &lock, "focused medium Az", outError)) {
-            return false;
-        }
-        if (mediumTables.hasBaseline) {
-            if (!upload_array_locked(resources, scan.tables.baseDensityMin, scan.tables.K, mediumTables.baseDensityMin.data(), scanK, cudaStreamOpaque, &lock, "focused medium baseDensityMin", outError)) {
-                return false;
-            }
-        } else if (scan.tables.baseDensityMin) {
-            const std::size_t bytes = static_cast<std::size_t>(scan.tables.K) * sizeof(float);
-            if (!retire_ptr_locked(resources, scan.tables.baseDensityMin, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "focused medium baseDensityMin", outError)) {
-                return false;
-            }
-            scan.tables.baseDensityMin = nullptr;
-        }
-        scan.tables.K = scanK;
-        scan.tables.hasBaseline = mediumTables.hasBaseline ? 1 : 0;
-        scan.tables.invYn = mediumTables.invYn;
-        scan.mediumIsNegative = printRoute ? 0 : 1;
+        scanRange.mediumIsNegative = printRoute ? 0 : 1;
         for (int channel = 0; channel < 3; ++channel) {
-            scan.min_cmy[channel] = printRoute
-                                        ? densityBounds.dataMinCmy[static_cast<std::size_t>(channel)]
-                                        : -densityBounds.dataMinCmy[static_cast<std::size_t>(channel)];
-            scan.inv_max_cmy[channel] = densityBounds.invSpanCmy[static_cast<std::size_t>(channel)];
+            scanRange.min_cmy[channel] =
+                printRoute
+                    ? densityBounds.dataMinCmy[static_cast<std::size_t>(channel)]
+                    : -densityBounds.dataMinCmy[static_cast<std::size_t>(channel)];
+            scanRange.inv_max_cmy[channel] =
+                densityBounds.invSpanCmy[static_cast<std::size_t>(channel)];
         }
 
         Scanner::ScannerMediumRuntime medium{};
         medium.medium = printRoute ? Scanner::ScannerMedium::Print : Scanner::ScannerMedium::Negative;
         medium.tables = request.scannerTables;
         for (int channel = 0; channel < 3; ++channel) {
-            medium.range.min_cmy[channel] = scan.min_cmy[channel];
-            medium.range.inv_max_cmy[channel] = scan.inv_max_cmy[channel];
-            medium.range.max_cmy[channel] =
-                scan.inv_max_cmy[channel] > 0.0f ? 1.0f / scan.inv_max_cmy[channel] : 0.0f;
+            medium.range.min_cmy[channel] = scanRange.min_cmy[channel];
+            medium.range.inv_max_cmy[channel] = scanRange.inv_max_cmy[channel];
+            medium.range.max_cmy[channel] = scanRange.inv_max_cmy[channel] > 0.0f
+                                                ? 1.0f / scanRange.inv_max_cmy[channel]
+                                                : 0.0f;
         }
 
         if (!routeLutAlreadyPrepared) {
@@ -4540,15 +4516,6 @@ namespace JuicerCuda {
         t.K = 0;
         t.hasBaseline = 0;
         t.invYn = 1.0f;
-    }
-
-    static void free_scan_medium(
-        Resources& resources,
-        Resources::DeviceScanMedium& m) noexcept {
-        free_spectral_tables(resources, m.tables);
-        m.mediumIsNegative = 1;
-        m.min_cmy[0] = m.min_cmy[1] = m.min_cmy[2] = 0.0f;
-        m.inv_max_cmy[0] = m.inv_max_cmy[1] = m.inv_max_cmy[2] = 1.0f;
     }
 
     static void free_scan_lut(

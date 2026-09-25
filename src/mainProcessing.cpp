@@ -1530,24 +1530,12 @@ void JuicerProcessor::processImagesCUDA() {
         }
     };
 
-    auto copy_scan_tables_payload = [&](auto& dstTables,
-                                        auto& dstMediumIsNegative,
-                                        float* dstMinCmy,
-                                        float* dstInvMaxCmy,
-                                        const JuicerCuda::Resources::DeviceScanMedium& scanMedium) {
-        dstTables.epsC = scanMedium.tables.epsC;
-        dstTables.epsM = scanMedium.tables.epsM;
-        dstTables.epsY = scanMedium.tables.epsY;
-        dstTables.Ax = scanMedium.tables.Ax;
-        dstTables.Ay = scanMedium.tables.Ay;
-        dstTables.Az = scanMedium.tables.Az;
-        dstTables.baseDensityMin = scanMedium.tables.baseDensityMin;
-        dstTables.K = scanMedium.tables.K;
-        dstTables.hasBaseline = scanMedium.tables.hasBaseline;
-        dstTables.invYn = scanMedium.tables.invYn;
-        dstMediumIsNegative = scanMedium.mediumIsNegative;
-        copy_float3(dstMinCmy, scanMedium.min_cmy);
-        copy_float3(dstInvMaxCmy, scanMedium.inv_max_cmy);
+    auto copy_scan_density_range_payload = [&](
+                                               JuicerCuda::ScannerDensityRangePayload& destination,
+                                               const JuicerCuda::Resources::DeviceScanRange& source) {
+        destination.mediumIsNegative = source.mediumIsNegative;
+        copy_float3(destination.min_cmy, source.min_cmy);
+        copy_float3(destination.inv_max_cmy, source.inv_max_cmy);
     };
 
     auto pack_output_gamut_payload = [&throw_submission_fatal](
@@ -2357,14 +2345,9 @@ void JuicerProcessor::processImagesCUDA() {
             bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
         }
 
-        const JuicerCuda::Resources::DeviceScanMedium& scanMedium = *prepared.scanMedium;
-        copy_scan_tables_payload(
-            run.scanStage.scanTables,
-            run.scanStage.scanTables.mediumIsNegative,
-            run.scanStage.scanTables.min_cmy,
-            run.scanStage.scanTables.inv_max_cmy,
-            scanMedium);
-        run.scanStage.scannerUseLut = 1;
+        copy_scan_density_range_payload(
+            run.scanStage.densityRange,
+            *prepared.scanRange);
         run.scanStage.scanLutLog2PchipXYZ = prepared.scanLut->log2PchipXYZ;
         run.scanStage.scanLutPchipSlopeC = prepared.scanLut->slopeC;
         run.scanStage.scanLutPchipSlopeM = prepared.scanLut->slopeM;
@@ -3361,14 +3344,9 @@ void JuicerProcessor::processImagesCUDA() {
             bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
         }
 
-        const JuicerCuda::Resources::DeviceScanMedium& scanMedium = *prepared.scanMedium;
-        copy_scan_tables_payload(
-            run.scanStage.scanTables,
-            run.scanStage.scanTables.mediumIsNegative,
-            run.scanStage.scanTables.min_cmy,
-            run.scanStage.scanTables.inv_max_cmy,
-            scanMedium);
-        run.scanStage.scannerUseLut = 1;
+        copy_scan_density_range_payload(
+            run.scanStage.densityRange,
+            *prepared.scanRange);
         run.scanStage.scanLutLog2PchipXYZ = prepared.scanLut->log2PchipXYZ;
         run.scanStage.scanLutPchipSlopeC = prepared.scanLut->slopeC;
         run.scanStage.scanLutPchipSlopeM = prepared.scanLut->slopeM;
