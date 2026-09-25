@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
@@ -114,11 +114,11 @@ jobs:
           ctest --preset linux-debug -N
           ctest --preset linux-debug -L host \
             --output-on-failure \
-            --output-junit out/validation/linux-debug/host-junit.xml
+            --output-junit "$GITHUB_WORKSPACE/out/validation/linux-debug/host-junit.xml"
 
       - name: Upload host test report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: linux-debug-host-junit
           path: out/validation/linux-debug/host-junit.xml
