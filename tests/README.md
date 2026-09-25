@@ -266,8 +266,10 @@ first to `out/validation/`.
 
 - The build still requires CUDA 13.2 even for `-L host`; a toolkit-free C++
   mode is outside this consolidation.
-- Standard public CI runs Linux host/reference-host and Python checks. CUDA,
-  Windows, installed-Resolve-library and Resolve-render evidence are reported
+- Standard public CI runs Linux and Windows Debug host selections plus the
+  tracked native/Rust quality and Python checks. Both lanes compile against
+  CUDA 13.2 but expose no NVIDIA device and run no `gpu` tests. GPU,
+  installed-Resolve-library, and Resolve-render evidence are reported
   separately.
 - The historical gamma capture baseline remains deferred because its resource
   inventory and `Release`/`Release-Clang` identities do not establish current
