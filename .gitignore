@@ -21,6 +21,7 @@
 
 # Build output
 /out/
+/target/
 /CMakeUserPresets.json
 # Product CMake inputs remain visible even with a local *.txt exclusion.
 !CMakeLists.txt

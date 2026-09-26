@@ -13,7 +13,7 @@ Checks:
   - clang-format dry-run using the repo .clang-format
   - trailing whitespace
   - merge conflict markers
-  - banned JUICER_TESTS references
+  - banned JUICER_TESTS and JUICER_BUILD_VALIDATION references
 
 Notes:
   - Pass explicit file paths when possible.
@@ -52,8 +52,8 @@ if rg -n -H "^(<<<<<<<|=======|>>>>>>>)" -- "${FILES[@]}"; then
     FAIL=1
 fi
 
-if rg -n -H "JUICER_TESTS" -- "${FILES[@]}"; then
-    echo "ERROR: JUICER_TESTS is deprecated and must not be introduced." >&2
+if rg -n -H '\b(JUICER_TESTS|JUICER_BUILD_VALIDATION)\b' -- "${FILES[@]}"; then
+    echo "ERROR: JUICER_TESTS and JUICER_BUILD_VALIDATION are retired; use BUILD_TESTING." >&2
     FAIL=1
 fi
 

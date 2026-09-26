@@ -20,15 +20,17 @@ Underneath, the model works with light sampled at 81 wavelengths, from 380 to 78
 This is quite a lot of machinery to put between two RGB images. The attraction is being able to work with the photographic process itself, and follow an adjustment through to its consequences.
 
 > [!NOTE]
-> **Film-Juicer 1.0.1** is available for Windows and Linux from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases/tag/v1.0.1). This version adds a Linux bundle and film and print gamma controls.
+> **Film-Juicer 1.1.1** is available for Windows and Linux from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases/tag/v1.1.1). This maintenance release focuses on scanner cleanup, state correctness, and expanded regression coverage.
 
-### Experimental spectral update compatibility
+### Compatibility notes for the v1.1 series
 
-The next release refreshes the existing 20 capture and 8 print profiles from the pinned spektrafilm experimental colour cohort and derives both capture and print density curves from their fitted Gaussian models. It also adds Arctic 2026 beta04 reconstruction and input/output gamut compression; both compression controls default on where applicable. Hanatos remains the reconstruction default, and Mallett remains available as a basis method without TC input compression.
+The v1.1 series refreshes the existing 20 capture and 8 print profiles from the pinned spektrafilm experimental colour cohort and derives both capture and print density curves from their fitted Gaussian models. It also adds Arctic 2026 beta04 reconstruction and input/output gamut compression; both compression controls default on where applicable. Hanatos remains the reconstruction default, and Mallett remains available as a basis method without TC input compression.
 
-This is an intentional rendering-behaviour replacement. Existing parameter IDs, stock IDs, saved selections, and their meanings are retained, but existing projects can produce different pixels. Changes include the profile and filtration refit, corrected sRGB/Rec.709 input coefficients shared by Mallett input conversion, corrected Hanatos input projection and window white, film-raw auto-exposure metering with exposure applied after reconstruction, model-derived density curves, and native-white/first-boundary output compression. There is no hidden legacy mode, old-profile substitution, or preset conversion layer.
+Compared with v1.0.1, this is an intentional rendering-behaviour replacement. Existing parameter IDs, stock IDs, saved selections, and their meanings are retained, but existing projects can produce different pixels. Changes include the profile and filtration refit, corrected sRGB/Rec.709 input coefficients shared by Mallett input conversion, corrected Hanatos input projection and window white, film-raw auto-exposure metering with exposure applied after reconstruction, model-derived density curves, and native-white/first-boundary output compression. **Add halation** is also enabled by default for new instances. There is no hidden legacy mode, old-profile substitution, or preset conversion layer.
 
-The testing integration now also adopts spektrafilm experimental's supported-colour DIR presets and nonlinear chemistry: negative film uses a saturating donor response, while positive film applies the receiver response after the complete spatial mixture. The spatial tail defaults to 200 micrometres at weight `0.03`, and the advanced controls expose donor/receiver K and tail scale/weight without adding a legacy render mode. Scanner unsharp must still be set explicitly to `0, 0` for an unsharpened reference comparison because the plug-in default remains `0.7, 0.7`. See [Experimental spectral update testing](docs/experimental-spectral-update-testing.md) for the historical comparison, numerical validation boundary, and remaining host acceptance.
+The v1.1 series also adopts spektrafilm experimental's supported-colour DIR presets and nonlinear chemistry: negative film uses a saturating donor response, while positive film applies the receiver response after the complete spatial mixture. The spatial tail defaults to 200 micrometres at weight `0.03`, and the advanced controls expose donor/receiver K and tail scale/weight without adding a legacy render mode. Scanner unsharp must still be set explicitly to `0, 0` for an unsharpened reference comparison because the plug-in default remains `0.7, 0.7`. See [Experimental spectral update testing](docs/experimental-spectral-update-testing.md) for the historical comparison and numerical validation boundary.
+
+Version 1.1.1 is a maintenance release relative to v1.1.0. It removes the obsolete **Scanner use LUT** control and makes the existing LUT-only production scanner explicit; **Scanner LUT resolution** remains available. There are no intentional broad rendering changes from v1.1.0.
 
 ## Support Film-Juicer
 
@@ -59,15 +61,15 @@ Rendering requires CUDA; there is no CPU, OpenCL, or Metal render path. The rele
 
 ### Windows
 
-1. Download **Juicer-Setup-1.0.1.exe** from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases/tag/v1.0.1).
+1. Download [**Juicer-Setup-1.1.1.exe**](https://github.com/oldandangry/Film-Juicer/releases/download/v1.1.1/Juicer-Setup-1.1.1.exe).
 2. Close Resolve and run the installer.
 3. Restart Resolve and find **Juicer** under **OpenFX → Negative-juice**.
 
 ### Linux
 
-Download **juicer-Linux.1.0.1-x86-64.tar.gz** from [GitHub Releases](https://github.com/oldandangry/Film-Juicer/releases/tag/v1.0.1). Choose the bundle under **Assets**, rather than GitHub's source-code archives.
+Download [**juicer-Linux-v1.1.1-x86-64.tar.gz**](https://github.com/oldandangry/Film-Juicer/releases/download/v1.1.1/juicer-Linux-v1.1.1-x86-64.tar.gz). Choose the bundle under **Assets**, rather than GitHub's source-code archives.
 
-The published v1.0.1 bundle requires **glibc 2.38 or newer**, including the system C math library and x86-64 dynamic loader, plus the NVIDIA driver's **libcuda.so.1**. CUDA, cuFFT, and the GNU C++ support runtime are statically linked into the plug-in; no separate CUDA or C++ runtime package is needed for Film-Juicer. Resolve still needs its own normal system dependencies.
+The published v1.1.1 bundle requires **glibc 2.38 or newer**, including the system C math library and x86-64 dynamic loader, plus the NVIDIA driver's **libcuda.so.1**. CUDA, cuFFT, and the GNU C++ support runtime are statically linked into the plug-in; no separate CUDA or C++ runtime package is needed for Film-Juicer. Resolve still needs its own normal system dependencies.
 
 Use a current NVIDIA driver compatible with CUDA 13.2. NVIDIA lists **595.45.04** as the corresponding Linux driver baseline; this is a driver recommendation, not a minimum version independently tested for Film-Juicer. See [NVIDIA's CUDA 13.2 release notes](https://docs.nvidia.com/cuda/archive/13.2.0/cuda-toolkit-release-notes/index.html). Linux Resolve use has been reported working on Arch/CachyOS; compatibility with other distributions has not yet been broadly validated. Meeting the glibc requirement alone does not establish Resolve compatibility.
 
@@ -76,7 +78,7 @@ Close Resolve. If updating an existing installation, move the old `juicer.ofx.bu
 In a terminal opened in the directory containing the download, run:
 
 ```sh
-tar -xzf juicer-Linux.1.0.1-x86-64.tar.gz
+tar -xzf juicer-Linux-v1.1.1-x86-64.tar.gz
 sudo mkdir -p /usr/OFX/Plugins/
 sudo cp -a juicer.ofx.bundle /usr/OFX/Plugins/
 ```
@@ -141,6 +143,8 @@ These conversions establish the signal format. They do not decide where the film
 
 Output choices are sRGB, DCI-P3, Display P3, Adobe RGB (1998), BT.2020, ProPhoto RGB, ACES2065-1, DaVinci Wide Gamut Intermediate, and Rec.709. **Apply output CCTF** enables the selected space's encoding; with it off, Film-Juicer returns linear RGB in those primaries. ACES2065-1 is linear in either case.
 
+The default-on **Output gamut compression** control uses white-aware OkLch compression to bring out-of-gamut colours toward the selected output space before final clipping.
+
 Rec.709 output uses gamma 2.4, even though the input's combined sRGB / Rec.709 entry decodes sRGB. Keep that difference in mind if you are sending an encoded image through the plug-in.
 
 > [!IMPORTANT]
@@ -175,9 +179,9 @@ The order matters. Camera diffusion spreads exposure before film development; sc
 
 RGB gives us three values. Photographic layers respond to a range of wavelengths, so the model needs a spectral representation of the incoming light before it can expose them.
 
-**Hanatos 2025**, the default, uses a precomputed spectral reconstruction LUT. **Mallett 2019** uses a compact set of spectral basis functions defined for linear sRGB. That sRGB basis makes Mallett a more constrained model for wide-gamut colours; Hanatos is the default starting point for those workflows.
+**Hanatos 2025**, the default, uses a precomputed spectral reconstruction LUT. **Arctic 2026 beta04** uses a reflectance reconstruction LUT. The default-on **Input gamut compression** control applies to these TC reconstruction methods. **Mallett 2019** instead uses a compact set of spectral basis functions defined for linear sRGB and does not use TC input compression. That sRGB basis makes Mallett a more constrained model for wide-gamut colours; Hanatos is the default starting point for those workflows.
 
-Neither method can recover the original scene spectrum from RGB. Many different spectra can produce the same three values. Reconstruction supplies a plausible spectrum that the film model can work with, and its assumptions are part of the result.
+No reconstruction method can recover the original scene spectrum from RGB. Many different spectra can produce the same three values. Reconstruction supplies a plausible spectrum that the film model can work with, and its assumptions are part of the result.
 
 The selected stock's spectral sensitivities determine the exposure of the red-, green-, and blue-sensitive layers. Camera UV/IR filtration modifies that sensitivity, while the exposure controls set how much light reaches the model.
 
@@ -220,7 +224,7 @@ This release also corrects the default print-development model and replaces the 
 
 Emulsion scatter spreads light within the film. Halation models light returning through the emulsion after reflection, contributing to the coloured spread around bright features. Both act on film-layer exposure before development.
 
-**Add halation** enables the scatter/halation stage and is off by default. Separate amount and spatial-scale controls adjust scatter and halation, with the film profile supplying the halation response. The scale controls change the spread; the amount controls change its contribution.
+**Add halation** enables the scatter/halation stage and is on by default. Separate amount and spatial-scale controls adjust scatter and halation, with the film profile supplying the halation response. The scale controls change the spread; the amount controls change its contribution.
 
 Camera and print diffusion are separate stages, with Glimmerglass, Black Pro-Mist, Pro-Mist, and CineBloom families. Camera diffusion acts before film development. Print diffusion acts on the enlarger exposure before print development. Core, halo, bloom, warmth, and scale controls let you adjust the selected family's response.
 
@@ -279,6 +283,8 @@ The profiles inherit spektrafilm's measurements, fitted models, and reference co
 ## Performance
 
 Spectral calculations, spatial DIR, grain, diffusion, halation, and scanner finishing all contribute to render time. Resolution and the spatial extent of an effect matter too, so there is no single useful frame-rate claim for every combination.
+
+The v1.1 series reduces grain memory use and accelerates the scanner and halation CUDA paths. Actual gains still depend on the selected route, resolution, and enabled spatial effects.
 
 For interactive work, establish the stock, route, exposure, and print balance first, then add the spatial effects you need. Keep scanner LUT resolution at its default while establishing the look. Judge grain and other small-scale detail at the intended output resolution; a reduced preview cannot show exactly how those features will resolve in the final image.
 

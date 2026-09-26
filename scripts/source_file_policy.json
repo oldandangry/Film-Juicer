@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "sourceRoot": "src",
+  "supportedExtensions": [
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".inl",
+    ".ixx",
+    ".cu",
+    ".cuh",
+    ".inc"
+  ],
+  "headerLikeExtensions": [
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".inl",
+    ".ixx",
+    ".cuh",
+    ".inc"
+  ],
+  "translationUnitExtensions": [
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".cu"
+  ],
+  "ignoredPrefixes": [
+    "external/",
+    "installer/",
+    "juicer/",
+    "x64/",
+    "Resources/",
+    "docs/"
+  ],
+  "generatedPaths": [
+    "src/GeneratedColorSpaces.cpp",
+    "src/GeneratedColorSpaces.h"
+  ],
+  "qualityOwnedPrefixes": [
+    "cmake/",
+    "native/",
+    "rust/",
+    "scripts/",
+    "src/",
+    "tests/"
+  ],
+  "qualityExcludedPrefixes": [
+    ".juicer-local/",
+    "ArchiveOldTestingFiles/",
+    "Resources/",
+    "external/",
+    "out/",
+    "third_party/",
+    "tools/"
+  ]
+}

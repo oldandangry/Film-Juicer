@@ -13,6 +13,9 @@ maintenance operations, never hidden parts of a correctness run.
 - Linux: GCC/G++ 13 at `/usr/bin/g++-13`.
 - Windows: Visual Studio 18, ClangCL from its LLVM tools, and NVCC with the VS
   18 MSVC host compiler.
+- Rust and Cargo 1.98.1 for the current platform, selected by
+  `rust-toolchain.toml`. The tracked quality gate also requires the matching
+  rustfmt and Clippy components.
 - Python 3.13. Ordinary Python execution is intentionally tested on 3.13.
 - A compatible NVIDIA driver and SM 7.5-or-newer GPU only for the `gpu` label.
 
@@ -28,6 +31,21 @@ export CUDACXX="$CUDAToolkit_ROOT/bin/nvcc"
 The configure step rejects a compiler or toolkit outside the CUDA 13.2 series.
 These variables only select the installation; NVCC continues to use the GCC 13
 host compiler fixed by the Linux preset.
+
+Install the pinned Rust toolchain in the same operating-system environment that
+runs CMake. With that environment's own rustup installation:
+
+```sh
+rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+rustc --version --verbose
+cargo --version
+```
+
+Run this separately in a Linux or WSL shell for
+`x86_64-unknown-linux-gnu` and in Windows for
+`x86_64-pc-windows-msvc`. Do not invoke Windows Cargo from WSL or treat a
+Windows installation as Linux qualification. CMake verifies the exact version
+and native target during configuration.
 
 Create an isolated ordinary-test environment on Linux:
 
@@ -142,9 +160,24 @@ cmake --build --preset linux-debug
 | `grain/delta_fusion_test.cu` | Grain output against a separate FP32 blur/accumulation/delta oracle, including finite sanitation and final-layer dispatch | `gpu` |
 | `dir/exposure_cache_test.cpp` | Source-pass versus separate-pass log-exposure caches and final capture density through production CUDA operators | `gpu` |
 | `gamma/test_compare.py` | Comparator bounds, applicability, non-finite rejection and CLI failure propagation | `host` |
+| `quality/test_check_quality.py` | Quality dispatcher selection, source hygiene, and failure propagation | `host` |
+| `quality/test_rust_naming.py` | Product naming-policy contract: current Rust code, accepted names, individually rejected names, test targets, and reasoned foreign-name exceptions under the actual workspace lints | `host`; pinned Cargo and Clippy required |
 | `ofx/probe.py` | Linux synthetic OFX load/describe/unload and captured describe properties; no parameter varargs or render | `host`, Linux only |
 | `ofx/processor_reference_test.cpp` | Native OFX image/property seam driving the current CUDA processor for four routes, a combined optics/grain/print case, and signed-zero print transitions | `gpu` |
 | `ofx/adapter_trace_test.cpp` | Genuine native OFX parameter/image fixture driving the actual `JuicerEffect` event and render callbacks through time, seek, preset/reset, undo/redo-like, and invalid/recovery sequences | `gpu` |
+
+`Quality.RustNaming` uses the current workspace manifests and Clippy configuration
+in temporary copies under `out/validation/<preset>/quality/rust-naming/`.
+The checked-in `quality/fixtures/rust_naming/*.rs` files are product naming-policy
+contracts, not external references. Both crates are checked in development and
+release, including test targets. Expected failures must produce the specific
+error code and primary source span for every rejected identifier; a compiler
+setup failure is not a passing negative test. Valid names and a reasoned raw
+binding exception must compile successfully. Cargo runs offline and locked;
+the normal configured build supplies cached dependencies. Logs remain in the
+artifact directory after temporary workspace cleanup. Run it with
+`ctest --preset <preset> -R '^Quality.RustNaming$' --output-on-failure`, or use
+the quality dispatcher, which supplies the same tool and artifact environment.
 
 The diffusion fixture is an external reference. The scatter binary fixture is
 also an external reference with revision, shape, channel order and numerical
@@ -266,8 +299,10 @@ first to `out/validation/`.
 
 - The build still requires CUDA 13.2 even for `-L host`; a toolkit-free C++
   mode is outside this consolidation.
-- Standard public CI runs Linux host/reference-host and Python checks. CUDA,
-  Windows, installed-Resolve-library and Resolve-render evidence are reported
+- Standard public CI runs Linux and Windows Debug host selections plus the
+  tracked native/Rust quality and Python checks. Both lanes compile against
+  CUDA 13.2 but expose no NVIDIA device and run no `gpu` tests. GPU,
+  installed-Resolve-library, and Resolve-render evidence are reported
   separately.
 - The historical gamma capture baseline remains deferred because its resource
   inventory and `Release`/`Release-Clang` identities do not establish current

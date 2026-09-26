@@ -1,6 +1,7 @@
 name: Linux host tests
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
@@ -8,6 +9,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux-debug-host:
@@ -20,10 +25,12 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
           cache: pip
@@ -37,6 +44,28 @@ jobs:
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
           sudo apt-get update
           sudo apt-get install -y gcc-13 g++-13 ninja-build cuda-toolkit-13-2
+
+      - name: Install LLVM 22 quality tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22
+          sudo apt-get install -y clang-format-22 clang-tidy-22
+          clang-format-22 --version
+          clang-tidy-22 --version
+
+      - name: Install pinned Rust quality tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup set profile minimal
+          rustup toolchain install 1.98.1 --component clippy --component rustfmt
+          rustc --version --verbose
+          cargo --version
+          rustfmt --version
+          cargo clippy --version
 
       - name: Install CMake 4.3 and ordinary Python requirements
         shell: bash
@@ -62,6 +91,21 @@ jobs:
           cmake --preset linux-debug -DBUILD_TESTING=ON
           cmake --build --preset linux-debug
 
+      - name: Run tracked quality checks
+        shell: bash
+        env:
+          JUICER_CLANG_FORMAT: clang-format-22
+          JUICER_CLANG_TIDY: clang-tidy-22
+          QUALITY_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$QUALITY_BASE" || "$QUALITY_BASE" =~ ^0+$ ]]; then
+            QUALITY_BASE="$(git rev-parse HEAD^)"
+          fi
+          python scripts/check-quality.py \
+            --base "$QUALITY_BASE" \
+            --preset linux-debug
+
       - name: List tests and run host selection
         shell: bash
         run: |
@@ -69,11 +113,12 @@ jobs:
           cmake -E make_directory out/validation/linux-debug
           ctest --preset linux-debug -N
           ctest --preset linux-debug -L host \
-            --output-junit out/validation/linux-debug/host-junit.xml
+            --output-on-failure \
+            --output-junit "$GITHUB_WORKSPACE/out/validation/linux-debug/host-junit.xml"
 
       - name: Upload host test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: linux-debug-host-junit
           path: out/validation/linux-debug/host-junit.xml

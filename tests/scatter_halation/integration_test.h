@@ -11,6 +11,11 @@
 
 namespace ScatterHalationValidation {
 
+    struct ImageExtent {
+        int width = 0;
+        int height = 0;
+    };
+
     class PreparedRouteInputs final {
     public:
         struct Impl;
@@ -23,8 +28,7 @@ namespace ScatterHalationValidation {
         PreparedRouteInputs& operator=(const PreparedRouteInputs&) = delete;
 
         [[nodiscard]] JuicerProcess::Root::CudaFramePreparationRequest request(
-            int width,
-            int height) const;
+            ImageExtent extent) const;
         [[nodiscard]] JuicerCuda::ResourceManager::SubmissionSnapshot
         submission_snapshot(
             const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
@@ -44,16 +48,14 @@ namespace ScatterHalationValidation {
         const ScatterHalationControls& controls,
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
         float pixelSizeUm,
-        int width,
-        int height);
+        ImageExtent extent);
     PreparedRouteInputs build_prepared_route_inputs(
         Spektrafilm::ScanRoute route,
         const ScatterHalationControls& controls,
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
         const Spektrafilm::DirCouplersControls& dirCouplers,
         float pixelSizeUm,
-        int width,
-        int height,
+        ImageExtent extent,
         float filmGammaFactor = 1.0f,
         const std::string& filmProfileKey = {});
 

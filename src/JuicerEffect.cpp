@@ -475,9 +475,11 @@ namespace {
         return Spektrafilm::ProfilePolarity::Negative;
     }
 
-    inline Spektrafilm::ScanRoute read_resolved_scan_route(
+    inline bool read_resolved_scan_route(
         OFX::StrChoiceParam* scanRouteParam,
-        const std::string& filmProfileKey) {
+        const std::string& filmProfileKey,
+        Spektrafilm::ScanRoute& outRoute,
+        std::string& outDiagnostic) {
         const Spektrafilm::ProfilePolarity capturePolarity =
             capture_profile_polarity_for_key(filmProfileKey);
         const Spektrafilm::ScanRoute defaultRoute =
@@ -486,7 +488,8 @@ namespace {
             read_str_choice_param_or_empty(scanRouteParam, Spektrafilm::scan_route_key(defaultRoute));
         const Spektrafilm::ScanRoute userRouteSelection =
             Spektrafilm::scan_route_from_key_or(routeKey, defaultRoute);
-        return Spektrafilm::resolve_scan_route(capturePolarity, userRouteSelection);
+        return Spektrafilm::resolve_scan_route(
+            capturePolarity, userRouteSelection, outRoute, outDiagnostic);
     }
 
     inline int read_choice_param_clamped(
@@ -691,15 +694,23 @@ namespace {
         OFX::ChoiceParam* enlargerIlluminant = nullptr;
     };
 
-    inline void read_profile_snapshot_choices(
+    inline bool read_profile_snapshot_choices(
         const ProfileSnapshotChoiceParams& params,
-        ParamSnapshot& snapshot) {
+        ParamSnapshot& snapshot,
+        std::string& outDiagnostic) {
         snapshot.filmProfileKey = read_str_choice_param_or_empty(params.filmProfileKey, snapshot.filmProfileKey);
         snapshot.printProfileKey = read_str_choice_param_or_empty(params.printProfileKey, snapshot.printProfileKey);
-        snapshot.scanRoute = read_resolved_scan_route(params.scanRoute, snapshot.filmProfileKey);
+        if (!read_resolved_scan_route(
+                params.scanRoute,
+                snapshot.filmProfileKey,
+                snapshot.scanRoute,
+                outDiagnostic)) {
+            return false;
+        }
         snapshot.spectralUpsamplingMode = read_choice_param(params.spectralMode);
         snapshot.refIll = read_choice_param(params.referenceIlluminant);
         snapshot.enlIll = read_choice_param(params.enlargerIlluminant);
+        return true;
     }
 
     inline void read_print_recipe_snapshot_values(
@@ -1305,12 +1316,16 @@ Spektrafilm::DiffusionFilterAuthoredControls JuicerEffect::gatherDiffusionUi(
     return controls;
 }
 
-void JuicerEffect::updateDiffusionControlState() {
-    const bool cameraEnabled = read_bool_param(_cameraDiffusionUi.enabled);
+bool JuicerEffect::resolveDiffusionControlRoute(
+    Spektrafilm::ScanRoute& outRoute,
+    std::string& outDiagnostic) {
     const std::string filmProfileKey =
         read_str_choice_param_or_empty(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
-    const Spektrafilm::ScanRoute selectedRoute =
-        read_resolved_scan_route(_pScanRoute, filmProfileKey);
+    return read_resolved_scan_route(_pScanRoute, filmProfileKey, outRoute, outDiagnostic);
+}
+
+void JuicerEffect::updateDiffusionControlState(Spektrafilm::ScanRoute selectedRoute) {
+    const bool cameraEnabled = read_bool_param(_cameraDiffusionUi.enabled);
     const bool printRoute = Spektrafilm::scan_route_is_print(selectedRoute);
     const bool printEnabled = read_bool_param(_printDiffusionUi.enabled);
 
@@ -1338,13 +1353,20 @@ void JuicerEffect::updateDiffusionControlState() {
     setStageControlState(_printDiffusionUi, printRoute, printEnabled);
 }
 
-void JuicerEffect::updateGammaControlState() {
-    const std::string filmProfileKey =
+bool JuicerEffect::resolveGammaControlRoute(
+    Spektrafilm::ScanRoute& outRoute,
+    std::string& outFilmProfileKey,
+    std::string& outDiagnostic) {
+    outFilmProfileKey =
         read_str_choice_param_or_empty(
             _pFilmProfileKey,
             Spektrafilm::kDefaultFilmProfileKey);
-    const Spektrafilm::ScanRoute selectedRoute =
-        read_resolved_scan_route(_pScanRoute, filmProfileKey);
+    return read_resolved_scan_route(_pScanRoute, outFilmProfileKey, outRoute, outDiagnostic);
+}
+
+void JuicerEffect::updateGammaControlState(
+    Spektrafilm::ScanRoute selectedRoute,
+    const std::string& filmProfileKey) {
     _pPrintGammaFactor->setEnabled(
         Spektrafilm::scan_route_is_print(selectedRoute));
     const bool dirActive = read_bool_param(_pCouplersActive);
@@ -1612,8 +1634,23 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _state->instanceToken = seed;
     }
 
-    updateDiffusionControlState();
-    updateGammaControlState();
+    std::string routeDiagnostic;
+    std::string gammaFilmProfileKey;
+    Spektrafilm::ScanRoute diffusionRoute{};
+    Spektrafilm::ScanRoute gammaRoute{};
+    // Both route reads must succeed before either helper changes route-dependent UI.
+    if (!resolveDiffusionControlRoute(diffusionRoute, routeDiagnostic) ||
+        !resolveGammaControlRoute(gammaRoute, gammaFilmProfileKey, routeDiagnostic)) {
+        JTRACE("BUILD", routeDiagnostic);
+        try {
+            sendMessage(OFX::Message::eMessageError, "FilmJuicerRouteResolution", routeDiagnostic);
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    updateDiffusionControlState(diffusionRoute);
+    updateGammaControlState(gammaRoute, gammaFilmProfileKey);
     updateSpectralControlState();
 
     // Defer heavy bootstrap until first param change
@@ -2127,8 +2164,17 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
             ratioBinding.hi);
     }
     apply_grain_linked_updates();
-    updateDiffusionControlState();
-    updateGammaControlState();
+    std::string routeDiagnostic;
+    std::string gammaFilmProfileKey;
+    Spektrafilm::ScanRoute diffusionRoute{};
+    Spektrafilm::ScanRoute gammaRoute{};
+    if (!resolveDiffusionControlRoute(diffusionRoute, routeDiagnostic) ||
+        !resolveGammaControlRoute(gammaRoute, gammaFilmProfileKey, routeDiagnostic)) {
+        store_pending_invalid_snapshot(*_state, std::move(routeDiagnostic));
+        return;
+    }
+    updateDiffusionControlState(diffusionRoute);
+    updateGammaControlState(gammaRoute, gammaFilmProfileKey);
     updateSpectralControlState();
     onParamsPossiblyChanged(paramName.c_str());
 }
@@ -2169,7 +2215,9 @@ bool JuicerEffect::snapshotParams(
     profileChoiceParams.spectralMode = _pSpectralMode;
     profileChoiceParams.referenceIlluminant = _pRefIll;
     profileChoiceParams.enlargerIlluminant = _pEnlIll;
-    read_profile_snapshot_choices(profileChoiceParams, P);
+    if (!read_profile_snapshot_choices(profileChoiceParams, P, outDiagnostic)) {
+        return false;
+    }
     double authoredFilmGammaFactor = 1.0;
     double authoredPrintGammaFactor = 1.0;
     _pFilmGammaFactor->getValue(authoredFilmGammaFactor);

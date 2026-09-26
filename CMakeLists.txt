@@ -48,6 +48,7 @@ endif()
 
 include(cmake/JuicerDependencies.cmake)
 include(cmake/JuicerSources.cmake)
+include(cmake/JuicerRust.cmake)
 
 add_library(juicer_settings INTERFACE)
 target_include_directories(juicer_settings INTERFACE "${PROJECT_SOURCE_DIR}/src")
@@ -84,6 +85,8 @@ endif()
 
 add_library(juicer_core STATIC ${JUICER_SOURCES})
 target_link_libraries(juicer_core PUBLIC juicer_settings)
+target_include_directories(juicer_core PRIVATE "${PROJECT_SOURCE_DIR}/native")
+target_link_libraries(juicer_core PUBLIC film_juicer_rust)
 set_target_properties(juicer_core PROPERTIES LINKER_LANGUAGE CXX)
 
 add_library(juicer MODULE src/main.cpp)

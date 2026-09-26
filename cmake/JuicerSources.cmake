@@ -20,6 +20,7 @@ set(JUICER_SOURCES
     src/FilmEffectsFrameDescriptors.cpp
     src/ResourceAssetLibrary.cpp
     src/ScatterHalation.cpp
+    src/ScanRoute.cpp
     src/Scanner.cpp
     src/SpectralProcessing.cpp
     src/Cuda/Diffusion/JuicerCudaDiffusion.cu

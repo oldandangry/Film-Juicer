@@ -1,0 +1,208 @@
+name: Windows host tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-debug-host:
+    name: Windows Debug host and Python checks
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 75
+    env:
+      CUDA_PATH: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2
+      CUDA_PATH_V13_2: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: tests/requirements.txt
+
+      - name: Enter VS 18 x64 developer environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -version "[18.0,19.0)" `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (!$vsPath) {
+            throw "Visual Studio 18 with the x64 C++ tools was not found"
+          }
+
+          $devCmd = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
+          $developerEnvironment = & $env:ComSpec /d /s /c `
+            "`"$devCmd`" -no_logo -arch=x64 -host_arch=x64 && set"
+          if ($LASTEXITCODE -ne 0) {
+            throw "VS 18 x64 developer environment setup failed"
+          }
+          foreach ($line in $developerEnvironment) {
+            if ($line -match "^([^=][^=]*)=(.*)$") {
+              "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV
+            }
+          }
+
+          $llvmBin = Join-Path $vsPath "VC\Tools\Llvm\x64\bin"
+          $clangFormat = Join-Path $llvmBin "clang-format.exe"
+          $clangTidy = Join-Path $llvmBin "clang-tidy.exe"
+          if (!(Test-Path $clangFormat) -or !(Test-Path $clangTidy)) {
+            throw "VS 18 LLVM quality tools were not found"
+          }
+          $llvmBin >> $env:GITHUB_PATH
+          "JUICER_CLANG_FORMAT=$clangFormat" >> $env:GITHUB_ENV
+          "JUICER_CLANG_TIDY=$clangTidy" >> $env:GITHUB_ENV
+
+      - name: Install CUDA Toolkit 13.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Join-Path $env:RUNNER_TEMP "cuda_13.2.0_windows_network.exe"
+          $uri = "https://developer.download.nvidia.com/compute/cuda/13.2.0/network_installers/cuda_13.2.0_windows_network.exe"
+          Invoke-WebRequest -Uri $uri -OutFile $installer
+          $actualHash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          $expectedHash = "e30673c80fd9736b74370d6cc0efcccd42d74e8071cf43c785aeeeb96139975c"
+          if ($actualHash -ne $expectedHash) {
+            throw "CUDA installer SHA-256 mismatch: $actualHash"
+          }
+
+          $components = @(
+            "-s",
+            "crt_13.2",
+            "cudart_13.2",
+            "cufft_13.2",
+            "cufft_dev_13.2",
+            "nvcc_13.2",
+            "nvdisasm_13.2",
+            "nvfatbin_13.2",
+            "nvjitlink_13.2",
+            "nvprune_13.2",
+            "nvptxcompiler_13.2",
+            "nvvm_13.2"
+          )
+          $install = Start-Process -FilePath $installer -ArgumentList $components `
+            -NoNewWindow -PassThru -Wait
+          Remove-Item $installer -Force
+          if ($install.ExitCode -ne 0) {
+            throw "CUDA Toolkit 13.2 installation failed with exit code $($install.ExitCode)"
+          }
+
+          $requiredFiles = @(
+            "$env:CUDA_PATH_V13_2\bin\nvcc.exe",
+            "$env:CUDA_PATH_V13_2\include\cuda_runtime.h",
+            "$env:CUDA_PATH_V13_2\lib\x64\cuda.lib",
+            "$env:CUDA_PATH_V13_2\lib\x64\cudart.lib",
+            "$env:CUDA_PATH_V13_2\lib\x64\cufft.lib"
+          )
+          foreach ($path in $requiredFiles) {
+            if (!(Test-Path $path)) {
+              throw "CUDA Toolkit 13.2 component is missing: $path"
+            }
+          }
+          "$env:CUDA_PATH_V13_2\bin" >> $env:GITHUB_PATH
+          "$env:CUDA_PATH_V13_2\bin\x64" >> $env:GITHUB_PATH
+
+      - name: Verify pinned tools and install Python requirements
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          rustup set profile minimal
+          rustup toolchain install 1.98.1 --component clippy --component rustfmt
+          python -m pip install --upgrade pip
+          python -m pip install cmake==4.3.1
+          python -m pip install -r tests/requirements.txt
+
+          rustc --version --verbose
+          cargo --version
+          rustfmt --version
+          cargo clippy --version
+          clang-cl --version
+          & $env:JUICER_CLANG_FORMAT --version
+          & $env:JUICER_CLANG_TIDY --version
+          cmake --version
+          python --version
+          & "$env:CUDA_PATH_V13_2\bin\nvcc.exe" --version
+
+      - name: Verify host lane has no NVIDIA device
+        shell: pwsh
+        run: |
+          $nvidiaAdapters = Get-CimInstance Win32_VideoController |
+            Where-Object { $_.Name -match "NVIDIA" }
+          if ($nvidiaAdapters) {
+            throw "The standard Windows host lane unexpectedly exposes an NVIDIA device"
+          }
+
+      - name: Configure and build public tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake --preset windows-clang-debug -DBUILD_TESTING=ON
+          cmake --build --preset windows-clang-debug
+
+      - name: Run tracked quality checks
+        shell: pwsh
+        env:
+          QUALITY_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $qualityBase = $env:QUALITY_BASE
+          if ([string]::IsNullOrWhiteSpace($qualityBase) -or $qualityBase -match "^0+$") {
+            $qualityBase = git rev-parse HEAD^
+          }
+          python scripts/check-quality.py `
+            --base $qualityBase `
+            --preset windows-clang-debug
+
+      - name: List tests and run host selection
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake -E make_directory out/validation/windows-clang-debug
+          ctest --preset windows-clang-debug -N
+          ctest --preset windows-clang-debug -L host `
+            --output-on-failure `
+            --output-junit "$env:GITHUB_WORKSPACE\out\validation\windows-clang-debug\host-junit.xml"
+
+      - name: Check module loading and OFX discovery exports
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $module = (Resolve-Path "out/build/windows-clang-debug/juicer.ofx").Path
+          $handle = [System.Runtime.InteropServices.NativeLibrary]::Load($module)
+          try {
+            foreach ($name in @("OfxGetNumberOfPlugins", "OfxGetPlugin")) {
+              $address = [IntPtr]::Zero
+              if (![System.Runtime.InteropServices.NativeLibrary]::TryGetExport(
+                  $handle, $name, [ref]$address) -or $address -eq [IntPtr]::Zero) {
+                throw "Required OFX discovery export is missing: $name"
+              }
+            }
+          } finally {
+            [System.Runtime.InteropServices.NativeLibrary]::Free($handle)
+          }
+          Write-Host "Loaded $module and resolved both standard OFX discovery exports"
+
+      - name: Upload host test report
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: windows-debug-host-junit
+          path: out/validation/windows-clang-debug/host-junit.xml
+          if-no-files-found: warn

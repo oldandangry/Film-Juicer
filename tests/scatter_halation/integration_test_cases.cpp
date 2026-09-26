@@ -376,15 +376,16 @@ namespace {
     template <typename T>
     std::vector<T> visual_to_storage(
         const std::vector<T>& visual,
-        int width,
-        int height) {
+        ScatterHalationValidation::ImageExtent extent) {
         std::vector<T> storage(visual.size());
-        for (int visualY = 0; visualY < height; ++visualY) {
-            const int storageY = height - 1 - visualY;
+        for (int visualY = 0; visualY < extent.height; ++visualY) {
+            const int storageY = extent.height - 1 - visualY;
             std::copy_n(
-                visual.begin() + static_cast<std::size_t>(visualY) * width,
-                width,
-                storage.begin() + static_cast<std::size_t>(storageY) * width);
+                visual.begin() +
+                    static_cast<std::size_t>(visualY) * extent.width,
+                extent.width,
+                storage.begin() +
+                    static_cast<std::size_t>(storageY) * extent.width);
         }
         return storage;
     }
@@ -392,9 +393,8 @@ namespace {
     template <typename T>
     std::vector<T> storage_to_visual(
         const std::vector<T>& storage,
-        int width,
-        int height) {
-        return visual_to_storage(storage, width, height);
+        ScatterHalationValidation::ImageExtent extent) {
+        return visual_to_storage(storage, extent);
     }
 
     void require_cuda(cudaError_t status, std::string_view operation) {
@@ -470,7 +470,7 @@ namespace {
         float* const accumulation = temporary + planeElements;
         for (std::size_t channel = 0; channel < source.size(); ++channel) {
             const std::vector<float> storage =
-                visual_to_storage(source[channel], row.width, row.height);
+                visual_to_storage(source[channel], {row.width, row.height});
             std::vector<float> carrier(carrierElements, std::bit_cast<float>(kPaddingBits));
             for (int y = 0; y < row.height; ++y) {
                 std::copy_n(storage.data() + static_cast<std::size_t>(y) * row.width,
@@ -541,7 +541,7 @@ namespace {
                         cudaMemcpyDeviceToHost),
                     "cudaMemcpy downstream");
                 (*output.downstreamLog)[channel] =
-                    storage_to_visual(storage, row.width, row.height);
+                    storage_to_visual(storage, {row.width, row.height});
             }
         } else {
             require_cuda(cudaStreamSynchronize(stream.get()), "halation synchronize");
@@ -567,7 +567,7 @@ namespace {
                 }
             }
             output.finalExposure[channel] =
-                storage_to_visual(storage, row.width, row.height);
+                storage_to_visual(storage, {row.width, row.height});
         }
         return output;
     }
@@ -751,13 +751,16 @@ namespace {
         return passed;
     }
 
-    ScatterHalationFrameDescriptor build_descriptor(
-        double spatialScale,
-        float pixelSizeUm) {
+    struct DescriptorScale {
+        double spatialScale;
+        float pixelSizeUm;
+    };
+
+    ScatterHalationFrameDescriptor build_descriptor(DescriptorScale scale) {
         ScatterHalationRawControls raw;
         raw.active = true;
         raw.scatterAmount = 1.0;
-        raw.scatterSpatialScale = spatialScale;
+        raw.scatterSpatialScale = scale.spatialScale;
         raw.halationAmount = 0.0;
         raw.halationSpatialScale = 1.0;
         ScatterHalationControls controls;
@@ -776,7 +779,7 @@ namespace {
         }
         std::optional<ScatterHalationFrameDescriptor> descriptor;
         if (!Spektrafilm::build_scatter_halation_frame_descriptor(
-                recipe, pixelSizeUm, descriptor, diagnostic) ||
+                recipe, scale.pixelSizeUm, descriptor, diagnostic) ||
             !descriptor) {
             throw std::runtime_error(diagnostic);
         }
@@ -793,7 +796,7 @@ namespace {
                 ResolvedRow row;
                 row.width = extent[0];
                 row.height = extent[1];
-                row.descriptor = build_descriptor(2.0, 0.5f);
+                row.descriptor = build_descriptor({2.0, 0.5f});
                 const std::size_t elements = static_cast<std::size_t>(row.width) * row.height;
                 SemanticPlanes<float> source;
                 for (std::size_t channel = 0; channel < source.size(); ++channel) {
@@ -828,8 +831,8 @@ namespace {
         Results& results) {
         const float below = std::nextafter(1.5f, 0.0f);
         const auto belowDescriptor = build_descriptor(
-            static_cast<double>(below), 1.0f);
-        const auto exactDescriptor = build_descriptor(1.5, 1.0f);
+            {static_cast<double>(below), 1.0f});
+        const auto exactDescriptor = build_descriptor({1.5, 1.0f});
         results.record(
             "reference/descriptor/green-core-dispatch-seam",
             belowDescriptor.channels[1].core.kind ==
@@ -848,7 +851,7 @@ namespace {
             nativePassed = nativePassed && end && *end == '\0' &&
                            std::bit_cast<std::uint32_t>(retained) ==
                                parse_bits(row.at("retainedFloat32Bits"));
-            const auto descriptor = build_descriptor(raw, 1.0f);
+            const auto descriptor = build_descriptor({raw, 1.0f});
             const bool onto =
                 row.at("id").get<std::string>().find("onto") != std::string::npos;
             nativePassed = nativePassed &&
@@ -868,7 +871,7 @@ namespace {
         for (int longEdgePixels : {1920, 3840, 7680}) {
             const float pixelSize =
                 static_cast<float>(35000.0 / static_cast<double>(longEdgePixels));
-            const auto descriptor = build_descriptor(1.0, pixelSize);
+            const auto descriptor = build_descriptor({1.0, pixelSize});
             formatRowsPassed = formatRowsPassed && descriptor.recipeHash != 0;
             formatDetail << longEdgePixels << ':' << pixelSize << ' ';
         }
@@ -878,7 +881,7 @@ namespace {
             formatDetail.str());
 
         const auto extreme = build_descriptor(
-            2.0, std::numeric_limits<float>::denorm_min());
+            {2.0, std::numeric_limits<float>::denorm_min()});
         bool extremePassed = extreme.recipeHash != 0;
         for (const auto& channel : extreme.channels) {
             extremePassed = extremePassed &&
@@ -900,13 +903,13 @@ namespace ScatterHalationValidation {
         constexpr int kHeight = 4;
         constexpr int kRadius = 2;
         constexpr float kAmount = 0.7f;
-        constexpr std::array<float, kWidth * kHeight> kSource{{0.03f, 0.11f, 0.29f, 0.47f, 0.83f, 0.07f, 0.19f, 0.31f, 0.61f, 0.97f, 0.13f, 0.23f, 0.41f, 0.73f, 1.09f, 0.17f, 0.37f, 0.59f, 0.89f, 1.31f}};
+        constexpr std::array<float, static_cast<std::size_t>(kWidth) * kHeight> kSource{{0.03f, 0.11f, 0.29f, 0.47f, 0.83f, 0.07f, 0.19f, 0.31f, 0.61f, 0.97f, 0.13f, 0.23f, 0.41f, 0.73f, 1.09f, 0.17f, 0.37f, 0.59f, 0.89f, 1.31f}};
         constexpr std::array<float, 2 * kRadius + 1> kKernel{{0.00962005683f,
                                                               0.205423697f,
                                                               0.569912492f,
                                                               0.205423697f,
                                                               0.00962005683f}};
-        constexpr std::array<float, kWidth * kHeight> kExpected{{0.008215948f, 0.08396746f, 0.27832553f, 0.4252918f, 0.86518514f, 0.048741654f, 0.18746452f, 0.27515787f, 0.6005329f, 1.0301093f, 0.11236872f, 0.2057411f, 0.37625948f, 0.71667653f, 1.1366233f, 0.14732751f, 0.38531336f, 0.6033108f, 0.90200037f, 1.4113867f}};
+        constexpr std::array<float, static_cast<std::size_t>(kWidth) * kHeight> kExpected{{0.008215948f, 0.08396746f, 0.27832553f, 0.4252918f, 0.86518514f, 0.048741654f, 0.18746452f, 0.27515787f, 0.6005329f, 1.0301093f, 0.11236872f, 0.2057411f, 0.37625948f, 0.71667653f, 1.1366233f, 0.14732751f, 0.38531336f, 0.6033108f, 0.90200037f, 1.4113867f}};
 
         try {
             constexpr std::size_t kElements = kSource.size();
@@ -939,9 +942,11 @@ namespace ScatterHalationValidation {
 
             JuicerCuda::DirectPipelineRunParams params;
             params.src = pixels.floats();
-            params.srcRowBytes = kWidth * 3 * sizeof(float);
+            params.srcRowBytes =
+                static_cast<std::size_t>(kWidth) * 3u * sizeof(float);
             params.dst = pixels.floats() + kElements * 3;
-            params.dstRowBytes = kWidth * 3 * sizeof(float);
+            params.dstRowBytes =
+                static_cast<std::size_t>(kWidth) * 3u * sizeof(float);
             params.width = kWidth;
             params.height = kHeight;
             params.nComponents = 3;
@@ -1211,7 +1216,7 @@ namespace {
         const std::size_t bytes = elements * sizeof(float);
         for (std::size_t channel = 0; channel < 3; ++channel) {
             const std::vector<float> storage = visual_to_storage(
-                source[channel], width, height);
+                source[channel], {width, height});
             float* destination =
                 channel == 0   ? planes.redSensitive
                 : channel == 1 ? planes.greenSensitive
@@ -1276,7 +1281,7 @@ namespace {
         SemanticPlanes<float> visual;
         for (std::size_t channel = 0; channel < 3; ++channel) {
             visual[channel] = storage_to_visual(
-                storage[channel], width, height);
+                storage[channel], {width, height});
         }
         return visual;
     }
@@ -1299,8 +1304,7 @@ namespace {
             row.controls,
             cameraDiffusion,
             row.pixelSizeUm,
-            row.width,
-            row.height);
+            {row.width, row.height});
         const std::uint64_t expectedHash = parse_hash(
             fixture.at("descriptorInput").at("expectedRecipeHash"));
         if (!inputs.scatter_descriptor() ||
@@ -1309,7 +1313,7 @@ namespace {
         }
         CudaStream stream;
         const auto contextKey = current_context_key(0);
-        auto request = inputs.request(row.width, row.height);
+        auto request = inputs.request({row.width, row.height});
         std::string diagnostic;
         auto frame = JuicerProcess::root().prepare_cuda_frame(
             contextKey,
@@ -1511,13 +1515,11 @@ namespace ScatterHalationValidation {
                 controls,
                 {},
                 pixelSizeUm,
-                arguments.performanceWidth,
-                arguments.performanceHeight);
+                {arguments.performanceWidth, arguments.performanceHeight});
             CudaStream stream;
             const auto contextKey = current_context_key(arguments.deviceIndex);
             auto request = inputs.request(
-                arguments.performanceWidth,
-                arguments.performanceHeight);
+                {arguments.performanceWidth, arguments.performanceHeight});
             std::string diagnostic;
             auto frame = JuicerProcess::root().prepare_cuda_frame(
                 contextKey,
@@ -1627,7 +1629,9 @@ namespace ScatterHalationValidation {
                 const std::size_t index = std::min(
                     sorted.size() - 1,
                     static_cast<std::size_t>(
-                        std::ceil(fraction * sorted.size()) - 1.0));
+                        std::ceil(
+                            fraction * static_cast<double>(sorted.size())) -
+                        1.0));
                 return sorted[index];
             };
             int driverVersion = 0;
