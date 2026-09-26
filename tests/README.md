@@ -210,6 +210,17 @@ and destination image handles independently and rejects duplicate, unknown,
 or missing releases. Fixture emission is an explicit
 `--emit-reference` maintenance operation and is never part of CTest.
 
+`Ofx.Gpu.ExecutorFailureOrder` uses isolated test objects for the native executor,
+processor adapter and prepared-frame abort observer. It drives both route failure
+sites through the same native OFX fixture, checking synchronous DIR message
+attempt, failure classification/trace boundary, prepared-frame abort, adapter
+context recovery and fatal OFX result order. It also covers non-DIR filtering,
+percent escaping, failed/throwing host delivery and a failure that requires no
+context retirement. The injected context-loss diagnostic exercises the existing
+retirement/latch policy on the fixture's CUDA context; it does not simulate real
+driver loss or establish Resolve recovery acceptance. The hook definitions are
+absent from the product and ordinary processor-reference objects.
+
 `Ofx.Gpu.AdapterTrace` implements the C variadic parameter calls used by the
 plug-in rather than returning fabricated success. It records current-value and
 time-specific getter calls, authored and nested edit events, admitted exposure,

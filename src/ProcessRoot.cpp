@@ -32,6 +32,9 @@
 
 #include <cuda_runtime.h>
 #include "Cuda/JuicerCudaResources.h"
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+#include "Cuda/JuicerCudaExecutor.h"
+#endif
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
 namespace JuicerProcess {
@@ -2632,6 +2635,9 @@ namespace JuicerProcess {
     }
 
     void Root::PreparedCudaFrame::abort() noexcept {
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        const bool abortedSubmission = _state && _state->transaction.active && !_state->transaction.committed;
+#endif
         if (_state) {
             try {
                 std::string releaseError;
@@ -2757,6 +2763,11 @@ namespace JuicerProcess {
             _state->resourceOwner.reset();
             _state->grainStaticOwner.reset();
         }
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        if (abortedSubmission) {
+            JuicerCuda::ExecutorTest::observe_frame_abort();
+        }
+#endif
     }
 
     bool Root::PreparedCudaFrame::stage_optical_workspace(

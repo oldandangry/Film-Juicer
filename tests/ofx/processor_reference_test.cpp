@@ -24,6 +24,84 @@
 #include "mainProcessing.h"
 #include "ofxsSupportPrivate.h"
 
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+#include <cstdarg>
+#include <cstring>
+#include "Cuda/JuicerCudaExecutor.h"
+
+namespace JuicerCuda::ExecutorTest {
+    enum class Event : std::uint8_t {
+        Injected,
+        Message,
+        Classified,
+        FrameAborted,
+        RecoveryStarted,
+        RecoveryEnded,
+        FatalMapped
+    };
+    enum class Delivery : std::uint8_t {
+        Success,
+        Failure,
+        Throw
+    };
+    struct FailureObservation {
+        std::array<Event, 8> events{};
+        std::size_t count = 0;
+        const char* diagnostic = nullptr;
+        const char* stage = nullptr;
+        Delivery delivery = Delivery::Success;
+        bool overflow = false;
+        bool failureStageMatches = false;
+        bool nativeRecoveryPending = false;
+        bool adapterRecoveryPending = false;
+        bool messageMatches = false;
+        bool armed = true;
+
+        void record(Event event) noexcept {
+            if (count < events.size()) {
+                events[count++] = event;
+            } else {
+                overflow = true;
+            }
+        }
+    };
+    thread_local FailureObservation* observation = nullptr;
+
+    bool inject_scan_error(std::string& diagnostic) {
+        if (!observation || !observation->armed) {
+            return false;
+        }
+        observation->armed = false;
+        diagnostic = observation->diagnostic;
+        observation->record(Event::Injected);
+        return true;
+    }
+    void observe_classification(const char* stage, bool recoveryPending) noexcept {
+        if (observation) {
+            observation->failureStageMatches = std::strcmp(stage, observation->stage) == 0;
+            observation->nativeRecoveryPending = recoveryPending;
+            observation->record(Event::Classified);
+        }
+    }
+    void observe_frame_abort() noexcept {
+        if (observation) {
+            observation->record(Event::FrameAborted);
+        }
+    }
+    void observe_recovery_start(bool pending) noexcept {
+        if (observation) {
+            observation->adapterRecoveryPending = pending;
+            observation->record(Event::RecoveryStarted);
+        }
+    }
+    void observe_recovery_end() noexcept {
+        if (observation) {
+            observation->record(Event::RecoveryEnded);
+        }
+    }
+} // namespace JuicerCuda::ExecutorTest
+#endif
+
 void OFX::Plugin::getPluginIDs(OFX::PluginFactoryArray&) {}
 
 namespace {
@@ -221,6 +299,30 @@ namespace {
         return 0;
     }
 
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) Required OFX message-suite callback signature.
+    OfxStatus failure_message(void*, const char* type, const char* id, const char* format, ...) {
+        auto& observation = *JuicerCuda::ExecutorTest::observation;
+        observation.record(JuicerCuda::ExecutorTest::Event::Message);
+        std::array<char, 512> text{};
+        va_list args;
+        va_start(args, format);
+        const int length = std::vsnprintf(text.data(), text.size(), format, args);
+        va_end(args);
+        observation.messageMatches = length >= 0 &&
+                                     static_cast<std::size_t>(length) < text.size() &&
+                                     std::strcmp(type, kOfxMessageError) == 0 &&
+                                     std::strcmp(id, "FilmJuicerDeferredCudaFailure") == 0 &&
+                                     std::strcmp(text.data(), observation.diagnostic) == 0;
+        if (observation.delivery == JuicerCuda::ExecutorTest::Delivery::Throw) {
+            throw std::runtime_error("injected host message exception");
+        }
+        return observation.delivery == JuicerCuda::ExecutorTest::Delivery::Failure
+                   ? kOfxStatFailed
+                   : kOfxStatOK;
+    }
+#endif
+
     class NarrowHost final {
     public:
         NarrowHost() {
@@ -237,18 +339,28 @@ namespace {
             OFX::Private::gPropSuite = &_properties;
             OFX::Private::gEffectSuite = &_effect;
             OFX::Private::gParamSuite = &_parameters;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+            _messages.message = failure_message;
+            OFX::Private::gMessageSuite = &_messages;
+#endif
         }
 
         ~NarrowHost() {
             OFX::Private::gPropSuite = nullptr;
             OFX::Private::gEffectSuite = nullptr;
             OFX::Private::gParamSuite = nullptr;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+            OFX::Private::gMessageSuite = nullptr;
+#endif
         }
 
     private:
         OfxPropertySuiteV1 _properties{};
         OfxImageEffectSuiteV1 _effect{};
         OfxParameterSuiteV1 _parameters{};
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        OfxMessageSuiteV1 _messages{};
+#endif
     };
 
     class NarrowEffect final : public OFX::ImageEffect {
@@ -531,12 +643,82 @@ namespace {
     }
 } // namespace
 
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+namespace {
+    void check_failure_order(const Case& test,
+                             JuicerCuda::ExecutorTest::Delivery delivery,
+                             bool dirDiagnostic,
+                             bool contextLoss) {
+        using JuicerCuda::ExecutorTest::Event;
+        JuicerCuda::ExecutorTest::FailureObservation observation;
+        observation.delivery = delivery;
+        observation.diagnostic = dirDiagnostic
+                                     ? (contextLoss ? "test component=dir 100% device lost" : "test component=dir 100% invalid arithmetic")
+                                     : "test component=scanner 100% device lost";
+        observation.stage = Spektrafilm::scan_route_is_print(test.route)
+                                ? "print_scan_error_stage"
+                                : "direct_scan_error_stage";
+        JuicerCuda::ExecutorTest::observation = &observation;
+        InstanceState state;
+        bool fatal = false;
+        try {
+            (void)render_case(test, parameters_for(test), state);
+        } catch (const OFX::Exception::Suite& error) {
+            fatal = error.status() == kOfxStatErrFatal;
+            observation.record(Event::FatalMapped);
+        } catch (...) {
+            JuicerCuda::ExecutorTest::observation = nullptr;
+            throw;
+        }
+        JuicerCuda::ExecutorTest::observation = nullptr;
+        std::vector<Event> expected{Event::Injected};
+        if (dirDiagnostic) {
+            expected.push_back(Event::Message);
+        }
+        expected.insert(expected.end(), {Event::Classified, Event::FrameAborted, Event::RecoveryStarted, Event::RecoveryEnded, Event::FatalMapped});
+        if (!fatal || observation.overflow || observation.count != expected.size() ||
+            !std::equal(expected.begin(), expected.end(), observation.events.begin()) ||
+            !observation.failureStageMatches ||
+            observation.nativeRecoveryPending != contextLoss ||
+            observation.adapterRecoveryPending != contextLoss ||
+            (dirDiagnostic && !observation.messageMatches) ||
+            state.submissionSnapshotLatchValid == contextLoss) {
+            throw std::runtime_error(std::string(test.name) + ": executor failure order or host mapping changed");
+        }
+        std::cout << test.name << " dir=" << dirDiagnostic << " context_loss=" << contextLoss
+                  << " delivery=" << static_cast<int>(delivery)
+                  << " message/classify/abort/recovery/fatal order passed\n";
+    }
+
+    void run_failure_order_cases() {
+        const std::array<Case, 2> cases{{{"failure-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
+                                         {"failure-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}}};
+        for (const Case& test : cases) {
+            for (const auto delivery : {JuicerCuda::ExecutorTest::Delivery::Success,
+                                        JuicerCuda::ExecutorTest::Delivery::Failure,
+                                        JuicerCuda::ExecutorTest::Delivery::Throw}) {
+                check_failure_order(test, delivery, true, true);
+            }
+            check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, false, true);
+            check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, true, false);
+        }
+    }
+} // namespace
+#endif
+
 int main(int argc, char** argv) {
     try {
         NarrowHost host;
         require_cuda(cudaSetDevice(0), "select device");
         require_cuda(cudaFree(nullptr), "initialize CUDA");
         JuicerProcess::root().ensure_bootstrap();
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        if (argc == 2 && std::string(argv[1]) == "--failure-order") {
+            run_failure_order_cases();
+            JuicerProcess::root().shutdown();
+            return 0;
+        }
+#endif
         const bool emit = argc == 2 && std::string(argv[1]) == "--emit-reference";
         if (argc != 1 && !emit) {
             throw std::runtime_error("usage: JuicerProcessorReferenceProbe [--emit-reference]");

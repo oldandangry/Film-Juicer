@@ -229,6 +229,34 @@ add_test(NAME Ofx.Gpu.ProcessorReference COMMAND JuicerProcessorReferenceProbe)
 set_tests_properties(Ofx.Gpu.ProcessorReference PROPERTIES
     LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
 
+# Isolated copies keep failure injection and observations out of juicer_core.
+add_library(juicer_executor_failure_test_objects OBJECT
+    ../src/mainProcessing.cpp
+    ../src/Cuda/JuicerCudaExecutor.cpp
+    ../src/ProcessRoot.cpp)
+target_link_libraries(juicer_executor_failure_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_executor_failure_test_objects PRIVATE
+    JUICER_EXECUTOR_FAILURE_TEST_HOOK=1)
+add_executable(JuicerExecutorFailureOrderProbe ofx/processor_reference_test.cpp
+    $<TARGET_OBJECTS:juicer_executor_failure_test_objects>)
+target_link_libraries(JuicerExecutorFailureOrderProbe PRIVATE
+    juicer_core juicer_ofxs CUDA::cuda_driver)
+target_compile_definitions(JuicerExecutorFailureOrderProbe PRIVATE
+    JUICER_EXECUTOR_FAILURE_TEST_HOOK=1
+    JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/${JUICER_PROCESSOR_REFERENCE_FILE}")
+set_target_properties(JuicerExecutorFailureOrderProbe PROPERTIES
+    LINKER_LANGUAGE CXX
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+add_dependencies(JuicerExecutorFailureOrderProbe juicer_test_resources)
+if(UNIX)
+    set_property(TARGET JuicerExecutorFailureOrderProbe
+        PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Ofx.Gpu.ExecutorFailureOrder
+    COMMAND JuicerExecutorFailureOrderProbe --failure-order)
+set_tests_properties(Ofx.Gpu.ExecutorFailureOrder PROPERTIES
+    LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+
 add_executable(JuicerAdapterTraceProbe
     ofx/adapter_trace_test.cpp route/route_failure_adapter.cpp)
 target_include_directories(JuicerAdapterTraceProbe PRIVATE "${PROJECT_SOURCE_DIR}/native")
