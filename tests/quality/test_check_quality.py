@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts/check-quality.py"
@@ -33,7 +34,7 @@ class CheckQualityTests(unittest.TestCase):
         self.assertEqual(selected, [])
         self.assertEqual(excluded, ["deleted: src/gone.cpp"])
 
-    def test_policy_excludes_private_and_generated_paths(self) -> None:
+    def test_policy_selects_generated_rust_and_excludes_private_and_generated_native(self) -> None:
         root = SCRIPT_PATH.parent.parent
         policy = check_quality.load_policy(root)
         self.assertEqual(
@@ -45,6 +46,73 @@ class CheckQualityTests(unittest.TestCase):
             "generated source",
         )
         self.assertIsNone(check_quality.exclusion_reason("native/a file.cpp", policy))
+        generated_rust = "rust/film-juicer-plugin/src/cuda/sys.rs"
+        self.assertIn(generated_rust, policy.generated_paths)
+        self.assertIsNone(check_quality.exclusion_reason(generated_rust, policy))
+
+    def test_generated_rust_dispatches_required_check_families(self) -> None:
+        generated_rust = "rust/film-juicer-plugin/src/cuda/sys.rs"
+        header = "native/juicer_cuda_api.h"
+        selections = (
+            [generated_rust],
+            [generated_rust, "tests/ffi/README.md"],
+            [header, generated_rust],
+        )
+        for files in selections:
+            with (
+                self.subTest(files=files),
+                patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", *files]),
+                patch.object(check_quality, "Runner"),
+                patch.object(check_quality, "check_source_hygiene"),
+                patch.object(check_quality, "check_rust") as rust,
+                patch.object(check_quality, "check_native") as native,
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                self.assertEqual(check_quality.main(), 0)
+                rust.assert_called_once()
+                self.assertEqual(rust.call_args.args[3], "x86_64-unknown-linux-gnu")
+                if header in files:
+                    native.assert_called_once()
+                    self.assertEqual(native.call_args.args[3], [header])
+                else:
+                    native.assert_not_called()
+                report = output.getvalue()
+                self.assertIn(f"{generated_rust} (generated Rust; checked with workspace)", report)
+                self.assertIn("Excluded categories:\n  none", report)
+                self.assertNotIn("Documentation/configuration-only selection", report)
+
+    def test_generated_rust_check_failure_stops_dispatch(self) -> None:
+        generated_rust = "rust/film-juicer-plugin/src/cuda/sys.rs"
+        for files in (
+            [generated_rust],
+            [generated_rust, "tests/ffi/README.md"],
+            ["native/juicer_cuda_api.h", generated_rust],
+        ):
+            with (
+                self.subTest(files=files),
+                patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", *files]),
+                patch.object(check_quality, "Runner"),
+                patch.object(check_quality, "check_source_hygiene"),
+                patch.object(check_quality, "check_rust", side_effect=check_quality.QualityError("Rust check failed")),
+                patch.object(check_quality, "check_native") as native,
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                with self.assertRaisesRegex(check_quality.QualityError, "Rust check failed"):
+                    check_quality.main()
+                native.assert_not_called()
+                self.assertNotIn("Quality checks passed", output.getvalue())
+
+    def test_cuda_header_selects_real_c_and_cpp_consumers(self) -> None:
+        root = SCRIPT_PATH.parent.parent
+        policy = check_quality.load_policy(root)
+        entries = [
+            check_quality.CompilationEntry("tests/ffi/cuda_abi_c.c", "cc -std=c11"),
+            check_quality.CompilationEntry("tests/ffi/cuda_abi_test.cpp", "c++ -std=c++20"),
+        ]
+        self.assertEqual(
+            check_quality.tidy_translation_units(root, ["native/juicer_cuda_api.h"], entries, policy),
+            [entry.path for entry in entries],
+        )
 
     def test_missing_tool_is_a_failure(self) -> None:
         with self.assertRaises(check_quality.QualityError):

@@ -66,10 +66,19 @@ set(JUICER_RUST_TARGET_DIR "${CMAKE_BINARY_DIR}/cargo")
 set(JUICER_RUST_ARCHIVE
     "${JUICER_RUST_TARGET_DIR}/${JUICER_RUST_TARGET}/${JUICER_RUST_CARGO_PROFILE}/${JUICER_RUST_ARCHIVE_NAME}")
 
+set(JUICER_RUST_FEATURE_ARGUMENT)
+if(BUILD_TESTING)
+    set(JUICER_RUST_FEATURE_ARGUMENT --features test-support)
+endif()
+# Changing BUILD_TESTING must rebuild even when Rust source timestamps did not change.
+file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/cargo-features.txt"
+    CONTENT "test-support=@BUILD_TESTING@\n" @ONLY)
+
 file(GLOB_RECURSE JUICER_RUST_SOURCES CONFIGURE_DEPENDS
     LIST_DIRECTORIES FALSE
     "${PROJECT_SOURCE_DIR}/rust/*.rs")
 set(JUICER_RUST_BUILD_INPUTS
+    "${CMAKE_BINARY_DIR}/cargo-features.txt"
     "${PROJECT_SOURCE_DIR}/Cargo.toml"
     "${PROJECT_SOURCE_DIR}/Cargo.lock"
     "${PROJECT_SOURCE_DIR}/clippy.toml"
@@ -88,6 +97,8 @@ add_custom_command(
         "${JUICER_CARGO_EXECUTABLE}" build
             --locked
             --package film-juicer-plugin
+            --no-default-features
+            ${JUICER_RUST_FEATURE_ARGUMENT}
             --target "${JUICER_RUST_TARGET}"
             --target-dir "${JUICER_RUST_TARGET_DIR}"
             ${JUICER_RUST_PROFILE_ARGUMENT}

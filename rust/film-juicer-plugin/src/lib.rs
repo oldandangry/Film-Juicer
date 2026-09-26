@@ -7,3 +7,5 @@
     reason = "the temporary C ABI validates its foreign input at this boundary"
 )]
 mod legacy_bridge;
+
+mod cuda;

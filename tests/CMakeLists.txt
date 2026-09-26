@@ -1,5 +1,7 @@
 include(FetchContent)
 
+enable_language(C)
+
 find_package(Python3 3.13 EXACT REQUIRED COMPONENTS Interpreter)
 
 set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
@@ -58,11 +60,25 @@ add_test(NAME Rust.Bridge
         "CARGO_ENCODED_RUSTFLAGS="
         "${JUICER_CARGO_EXECUTABLE}" test
             --locked --package film-juicer-plugin
+            --no-default-features ${JUICER_RUST_FEATURE_ARGUMENT}
             --target "${JUICER_RUST_TARGET}"
             --target-dir "${JUICER_RUST_TARGET_DIR}"
             ${JUICER_RUST_PROFILE_ARGUMENT})
 set_tests_properties(Rust.Bridge PROPERTIES
     LABELS "host" TIMEOUT 120 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+
+add_executable(JuicerCudaAbiTests ffi/cuda_abi_c.c ffi/cuda_abi_test.cpp)
+set_target_properties(JuicerCudaAbiTests PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(JuicerCudaAbiTests PRIVATE "${PROJECT_SOURCE_DIR}/native")
+target_link_libraries(JuicerCudaAbiTests PRIVATE film_juicer_rust)
+if(WIN32)
+    target_compile_options(JuicerCudaAbiTests PRIVATE /W3 /WX)
+else()
+    target_compile_options(JuicerCudaAbiTests PRIVATE -Wall -Wextra -Werror -pedantic-errors)
+endif()
+add_test(NAME Ffi.Host.CudaAbi COMMAND JuicerCudaAbiTests)
+set_tests_properties(Ffi.Host.CudaAbi PROPERTIES LABELS "host" TIMEOUT 30)
 
 add_executable(JuicerRouteBridgeTests
     route/route_bridge_test.cpp ../src/ScanRoute.cpp)

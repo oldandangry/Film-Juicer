@@ -408,3 +408,9 @@ output gamut compression on/off. Spatial DIR, visual grain, halation, and
 camera/enlarger diffusion are disabled in these focused route checks; their
 owning suites cover those contracts. No frozen fixtures or private workbench
 files are required.
+
+### CUDA ABI declarations
+
+`Ffi.Host.CudaAbi` compares C11, C++20 and generated Rust layouts and type-checks
+the CUDA C boundary signatures. `Rust.Bridge` includes internal ABI checks. See
+[the FFI guide](ffi/README.md) for bounded commands and pinned binding maintenance.
