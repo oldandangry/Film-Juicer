@@ -91,6 +91,7 @@ add_custom_command(
             --target "${JUICER_RUST_TARGET}"
             --target-dir "${JUICER_RUST_TARGET_DIR}"
             ${JUICER_RUST_PROFILE_ARGUMENT}
+    COMMAND "${CMAKE_COMMAND}" -E touch "${JUICER_RUST_ARCHIVE}"
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     DEPENDS ${JUICER_RUST_BUILD_INPUTS}
     COMMENT
@@ -104,8 +105,11 @@ set_target_properties(film_juicer_rust PROPERTIES
     IMPORTED_LOCATION "${JUICER_RUST_ARCHIVE}")
 add_dependencies(film_juicer_rust juicer_rust_build)
 
+set(JUICER_RUST_PROBE_SOURCE "${CMAKE_BINARY_DIR}/cargo-native-link-probe.rs")
+set(JUICER_RUST_PROBE_TEXT "pub extern \"C\" fn cargo_native_link_probe() {}\n")
+file(WRITE "${JUICER_RUST_PROBE_SOURCE}" "${JUICER_RUST_PROBE_TEXT}")
 string(SHA256 JUICER_RUST_NATIVE_CURRENT_KEY
-    "${JUICER_RUSTC_EXECUTABLE}|${JUICER_RUSTC_VERSION_OUTPUT}|${JUICER_RUST_TARGET}")
+    "${JUICER_RUSTC_EXECUTABLE}|${JUICER_RUSTC_VERSION_OUTPUT}|${JUICER_RUST_TARGET}|${JUICER_RUST_PROBE_TEXT}")
 if(JUICER_RUST_NATIVE_CACHE_KEY STREQUAL JUICER_RUST_NATIVE_CURRENT_KEY AND
    NOT "${JUICER_RUST_NATIVE_CACHE_LINE}" STREQUAL "")
     set(JUICER_RUST_NATIVE_LINE "${JUICER_RUST_NATIVE_CACHE_LINE}")
@@ -126,7 +130,7 @@ else()
             --target "${JUICER_RUST_TARGET}"
             --crate-type staticlib
             --print native-static-libs
-            "${PROJECT_SOURCE_DIR}/rust/film-juicer-plugin/src/lib.rs"
+            "${JUICER_RUST_PROBE_SOURCE}"
             -o "${JUICER_RUST_NATIVE_PROBE}"
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
         RESULT_VARIABLE JUICER_RUST_NATIVE_RESULT
@@ -142,9 +146,9 @@ else()
     endif()
     set(JUICER_RUST_NATIVE_LINE "${CMAKE_MATCH_1}")
     set(JUICER_RUST_NATIVE_CACHE_KEY "${JUICER_RUST_NATIVE_CURRENT_KEY}"
-        CACHE INTERNAL "Qualified rustc native-link requirement key" FORCE)
+        CACHE INTERNAL "Qualified toolchain-only rustc native-link requirement key" FORCE)
     set(JUICER_RUST_NATIVE_CACHE_LINE "${JUICER_RUST_NATIVE_LINE}"
-        CACHE INTERNAL "Qualified rustc native static-library requirements" FORCE)
+        CACHE INTERNAL "Qualified toolchain-only rustc native static-library requirements" FORCE)
 endif()
 separate_arguments(JUICER_RUST_NATIVE_TOKENS NATIVE_COMMAND "${JUICER_RUST_NATIVE_LINE}")
 set(JUICER_RUST_NATIVE_LIBRARIES)
@@ -171,4 +175,4 @@ endif()
 message(STATUS
     "Rust ${JUICER_RUST_VERSION}: target=${JUICER_RUST_TARGET}, "
     "profile=${JUICER_RUST_CARGO_PROFILE}, archive=${JUICER_RUST_ARCHIVE}")
-message(STATUS "Rust native static libraries: ${JUICER_RUST_NATIVE_LINE}")
+message(STATUS "Rust toolchain-only native static libraries: ${JUICER_RUST_NATIVE_LINE}")

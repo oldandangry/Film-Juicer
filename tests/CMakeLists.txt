@@ -51,6 +51,32 @@ set_tests_properties(Rust.Core PROPERTIES
     TIMEOUT 120
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 
+add_test(NAME Rust.Bridge
+    COMMAND "${CMAKE_COMMAND}" -E env
+        "RUSTFLAGS="
+        "CARGO_BUILD_RUSTFLAGS="
+        "CARGO_ENCODED_RUSTFLAGS="
+        "${JUICER_CARGO_EXECUTABLE}" test
+            --locked --package film-juicer-plugin
+            --target "${JUICER_RUST_TARGET}"
+            --target-dir "${JUICER_RUST_TARGET_DIR}"
+            ${JUICER_RUST_PROFILE_ARGUMENT})
+set_tests_properties(Rust.Bridge PROPERTIES
+    LABELS "host" TIMEOUT 120 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+
+add_executable(JuicerRouteBridgeTests
+    route/route_bridge_test.cpp ../src/ScanRoute.cpp)
+target_include_directories(JuicerRouteBridgeTests PRIVATE
+    "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/native")
+target_link_libraries(JuicerRouteBridgeTests PRIVATE film_juicer_rust)
+if(WIN32)
+    target_compile_options(JuicerRouteBridgeTests PRIVATE /W3 /WX)
+else()
+    target_compile_options(JuicerRouteBridgeTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME Route.Host.Bridge COMMAND JuicerRouteBridgeTests)
+set_tests_properties(Route.Host.Bridge PROPERTIES LABELS "host" TIMEOUT 30)
+
 add_test(NAME Quality.Dispatcher
     COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s "${CMAKE_CURRENT_SOURCE_DIR}/quality"
@@ -191,7 +217,9 @@ add_test(NAME Ofx.Gpu.ProcessorReference COMMAND JuicerProcessorReferenceProbe)
 set_tests_properties(Ofx.Gpu.ProcessorReference PROPERTIES
     LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
 
-add_executable(JuicerAdapterTraceProbe ofx/adapter_trace_test.cpp)
+add_executable(JuicerAdapterTraceProbe
+    ofx/adapter_trace_test.cpp route/route_failure_adapter.cpp)
+target_include_directories(JuicerAdapterTraceProbe PRIVATE "${PROJECT_SOURCE_DIR}/native")
 target_link_libraries(JuicerAdapterTraceProbe PRIVATE
     juicer_core juicer_ofxs CUDA::cuda_driver)
 set_target_properties(JuicerAdapterTraceProbe PROPERTIES

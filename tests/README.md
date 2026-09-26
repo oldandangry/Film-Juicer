@@ -13,6 +13,9 @@ maintenance operations, never hidden parts of a correctness run.
 - Linux: GCC/G++ 13 at `/usr/bin/g++-13`.
 - Windows: Visual Studio 18, ClangCL from its LLVM tools, and NVCC with the VS
   18 MSVC host compiler.
+- Rust and Cargo 1.98.1 for the current platform, selected by
+  `rust-toolchain.toml`. The tracked quality gate also requires the matching
+  rustfmt and Clippy components.
 - Python 3.13. Ordinary Python execution is intentionally tested on 3.13.
 - A compatible NVIDIA driver and SM 7.5-or-newer GPU only for the `gpu` label.
 
@@ -28,6 +31,21 @@ export CUDACXX="$CUDAToolkit_ROOT/bin/nvcc"
 The configure step rejects a compiler or toolkit outside the CUDA 13.2 series.
 These variables only select the installation; NVCC continues to use the GCC 13
 host compiler fixed by the Linux preset.
+
+Install the pinned Rust toolchain in the same operating-system environment that
+runs CMake. With that environment's own rustup installation:
+
+```sh
+rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+rustc --version --verbose
+cargo --version
+```
+
+Run this separately in a Linux or WSL shell for
+`x86_64-unknown-linux-gnu` and in Windows for
+`x86_64-pc-windows-msvc`. Do not invoke Windows Cargo from WSL or treat a
+Windows installation as Linux qualification. CMake verifies the exact version
+and native target during configuration.
 
 Create an isolated ordinary-test environment on Linux:
 

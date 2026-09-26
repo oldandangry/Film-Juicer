@@ -1903,7 +1903,11 @@ namespace Spektrafilm {
             }
 
             const Profiles::ValidatedFilmProfile& profile = *input.filmProfile;
-            const ScanRoute resolvedRoute = resolve_scan_route(profile.info.type, input.scanRoute);
+            ScanRoute resolvedRoute{};
+            if (!resolve_scan_route(
+                    profile.info.type, input.scanRoute, resolvedRoute, diagnostic)) {
+                return false;
+            }
             if (resolvedRoute != input.scanRoute ||
                 profile.info.support != ProfileSupport::Film ||
                 profile.info.stage != ProfileStage::Filming) {

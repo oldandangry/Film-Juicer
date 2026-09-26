@@ -5,6 +5,7 @@
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -14,12 +15,25 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #include <cuda_runtime.h>
 
@@ -28,7 +42,13 @@
 #include "ParamNames.h"
 #include "ProcessRoot.h"
 #include "SpectralProcessing.h"
+#include "ofxMemory.h"
+#include "ofxMultiThread.h"
 #include "ofxsSupportPrivate.h"
+
+namespace RouteFaultTest {
+    void fail_on_call(int call);
+}
 
 void OFX::Plugin::getPluginIDs(OFX::PluginFactoryArray&) {}
 
@@ -39,7 +59,9 @@ namespace JuicerTestSupport {
         struct Snapshot {
             bool pendingValid = false;
             bool pendingInvalid = false;
+            std::string pendingDiagnostic;
             bool pendingPrintRoute = false;
+            Spektrafilm::ScanRoute pendingRoute = Spektrafilm::kDefaultScanRoute;
             double pendingExposureEv = 0.0;
             std::uint64_t pendingFullHash = 0;
             std::uint64_t buildCounter = 0;
@@ -65,10 +87,15 @@ namespace JuicerTestSupport {
                     result.pendingPrintRoute =
                         Spektrafilm::scan_route_is_print(
                             valid->params.scanRoute);
+                    result.pendingRoute = valid->params.scanRoute;
                 } else if (std::holds_alternative<
                                PendingParamsState::InvalidSnapshotControls>(
                                state.pending.value)) {
                     result.pendingInvalid = true;
+                    result.pendingDiagnostic = std::get<
+                                                   PendingParamsState::InvalidSnapshotControls>(
+                                                   state.pending.value)
+                                                   .diagnostic;
                 }
             }
             const auto direct =
@@ -97,6 +124,10 @@ namespace JuicerTestSupport {
             }
             return result;
         }
+
+        static PendingRenderAdmissionResult admit(JuicerEffect& effect) {
+            return admit_pending_render_state(*effect._state);
+        }
     };
 
 } // namespace JuicerTestSupport
@@ -104,10 +135,16 @@ namespace JuicerTestSupport {
 namespace {
 
     struct PropertyBag {
+        using IntWriteObserver =
+            void (*)(void*, const char*, const char*, int);
+
         std::map<std::string, std::vector<std::string>> strings;
         std::map<std::string, std::vector<int>> ints;
         std::map<std::string, std::vector<double>> doubles;
         std::map<std::string, std::vector<void*>> pointers;
+        std::string owningParamName;
+        void* intWriteContext = nullptr;
+        IntWriteObserver intWriteObserver = nullptr;
     };
 
     template <typename T>
@@ -192,13 +229,25 @@ namespace {
         const char* name,
         int index,
         int value) {
-        return handle
-                   ? set_property(
-                         reinterpret_cast<PropertyBag*>(handle)->ints,
-                         name,
-                         index,
-                         value)
-                   : kOfxStatErrBadHandle;
+        if (!handle) {
+            return kOfxStatErrBadHandle;
+        }
+        auto& properties = *reinterpret_cast<PropertyBag*>(handle);
+        const OfxStatus status = set_property(
+            properties.ints,
+            name,
+            index,
+            value);
+        if (status == kOfxStatOK && properties.intWriteObserver &&
+            (std::string_view(name) == kOfxParamPropEnabled ||
+             std::string_view(name) == kOfxParamPropSecret)) {
+            properties.intWriteObserver(
+                properties.intWriteContext,
+                properties.owningParamName.c_str(),
+                name,
+                value);
+        }
+        return status;
     }
 
     template <typename T, typename Setter>
@@ -424,6 +473,10 @@ namespace {
             return kOfxStatErrBadHandle;
         }
         const auto& bag = *reinterpret_cast<PropertyBag*>(handle);
+        const bool exists = bag.strings.contains(name) ||
+                            bag.ints.contains(name) ||
+                            bag.doubles.contains(name) ||
+                            bag.pointers.contains(name);
         auto dimension = [&](const auto& properties) -> std::size_t {
             const auto found = properties.find(name);
             return found == properties.end() ? 0u : found->second.size();
@@ -433,7 +486,7 @@ namespace {
              dimension(bag.ints),
              dimension(bag.doubles),
              dimension(bag.pointers)}));
-        return *count == 0 ? kOfxStatErrUnknown : kOfxStatOK;
+        return exists ? kOfxStatOK : kOfxStatErrUnknown;
     }
 
     enum class ParamKind : std::uint8_t {
@@ -643,7 +696,9 @@ namespace {
             }
             s_active = this;
             configure_suites();
+            configure_host();
             configure_effect();
+            configure_descriptor();
             configure_clips();
             configure_params();
             OFX::Private::gPropSuite = &_propertySuite;
@@ -662,6 +717,26 @@ namespace {
 
         OfxImageEffectHandle effect_handle() noexcept {
             return reinterpret_cast<OfxImageEffectHandle>(&_effectHandle);
+        }
+
+        OfxImageEffectHandle descriptor_handle() noexcept {
+            return reinterpret_cast<OfxImageEffectHandle>(
+                &_descriptorEffectHandle);
+        }
+
+        OfxPropertySetHandle describe_context_handle() noexcept {
+            return reinterpret_cast<OfxPropertySetHandle>(
+                &_describeContextArguments);
+        }
+
+        void set_descriptor_module_path(
+            const std::filesystem::path& modulePath) {
+            _descriptorEffectHandle.properties.strings
+                [kOfxPluginPropFilePath] = {modulePath.string()};
+        }
+
+        OfxHost* ofx_host() noexcept {
+            return &_ofxHost;
         }
 
         void bind_effect(JuicerEffect& effect) noexcept {
@@ -692,9 +767,44 @@ namespace {
             append_trace("AUTHOR", name, _time, value);
         }
 
+        void set_str_choice_value(const char* name, std::string value) {
+            NativeParam& param = require_param(name, ParamKind::StrChoice);
+            param.value.string = std::move(value);
+        }
+
         double double_value(const char* name) {
             const NativeParam& param = require_param(name, ParamKind::Double);
             return param.value_at(_time).numbers[0];
+        }
+
+        int param_property_int(const char* name, const char* property) const {
+            const NativeParam& param = find_param(name);
+            int value = 0;
+            if (get_property(param.properties.ints, property, 0, &value) !=
+                kOfxStatOK) {
+                throw std::runtime_error(
+                    "native host parameter property missing: " +
+                    std::string(name) + "/" + property);
+            }
+            return value;
+        }
+
+        void arm_property_reentry(
+            const char* owningParam,
+            const char* property,
+            const char* callbackParam) {
+            _propertyReentryOwningParam = owningParam;
+            _propertyReentryProperty = property;
+            _propertyReentryCallbackParam = callbackParam;
+            _propertyReentryArmed = true;
+        }
+
+        std::uint64_t property_reentry_count() const noexcept {
+            return _propertyReentryCount;
+        }
+
+        bool property_reentry_failed() const noexcept {
+            return _propertyReentryFailed;
         }
 
         void dispatch_event(
@@ -846,6 +956,10 @@ namespace {
             int releases = 0;
         };
 
+        struct NativeMutex {
+            std::recursive_mutex value;
+        };
+
         void set_image_audit_error(std::string message) {
             if (_imageAuditError.empty()) {
                 _imageAuditError = std::move(message);
@@ -980,6 +1094,9 @@ namespace {
             param->properties.strings[kOfxParamPropHint] = {""};
             param->properties.ints[kOfxParamPropEnabled] = {1};
             param->properties.ints[kOfxParamPropSecret] = {0};
+            param->properties.owningParamName = name;
+            param->properties.intWriteContext = this;
+            param->properties.intWriteObserver = observe_property_int_write;
             auto [position, inserted] = _params.emplace(name, std::move(param));
             if (!inserted) {
                 throw std::runtime_error("duplicate native parameter " + std::string(name));
@@ -1027,6 +1144,60 @@ namespace {
             (void)add_param(name, ParamKind::PushButton, kOfxParamTypePushButton);
         }
 
+        void configure_host() {
+            _hostProperties.strings[kOfxPropType] = {
+                kOfxTypeImageEffectHost};
+            _hostProperties.strings[kOfxPropName] = {
+                "FilmJuicerNativeFixture"};
+            _hostProperties.strings[kOfxPropLabel] = {
+                "Film-Juicer native fixture"};
+            _hostProperties.ints[kOfxPropAPIVersion] = {1, 4};
+            _hostProperties.ints[kOfxPropVersion] = {1, 0, 0};
+            _hostProperties.strings[kOfxPropVersionLabel] = {"1.0"};
+            _hostProperties.strings[kOfxImageEffectPropSupportedComponents] = {
+                kOfxImageComponentRGBA};
+            _hostProperties.strings[kOfxImageEffectPropSupportedContexts] = {
+                kOfxImageEffectContextFilter};
+            _hostProperties.strings[kOfxImageEffectPropSupportedPixelDepths] = {
+                kOfxBitDepthFloat};
+            _hostProperties.strings[kOfxImageEffectPropCudaRenderSupported] = {
+                "true"};
+            _hostProperties.strings[kOfxImageEffectPropCudaStreamSupported] = {
+                "true"};
+            _hostProperties.strings[kOfxImageEffectPropOpenCLRenderSupported] = {
+                "false"};
+            _hostProperties.strings[kOfxImageEffectPropMetalRenderSupported] = {
+                "false"};
+            _hostProperties.strings[kOfxImageEffectHostPropNativeOrigin] = {
+                kOfxHostNativeOriginBottomLeft};
+            _hostProperties.ints[kOfxImageEffectHostPropIsBackground] = {0};
+            _hostProperties.ints[kOfxImageEffectPropSupportsOverlays] = {0};
+            _hostProperties.ints[kOfxImageEffectPropSupportsMultiResolution] = {1};
+            _hostProperties.ints[kOfxImageEffectPropSupportsTiles] = {0};
+            _hostProperties.ints[kOfxImageEffectPropTemporalClipAccess] = {0};
+            _hostProperties.ints[kOfxImageEffectPropSupportsMultipleClipDepths] = {0};
+            _hostProperties.ints[kOfxImageEffectPropSupportsMultipleClipPARs] = {0};
+            _hostProperties.ints[kOfxImageEffectPropSetableFrameRate] = {0};
+            _hostProperties.ints[kOfxImageEffectPropSetableFielding] = {0};
+            _hostProperties.ints[kOfxImageEffectInstancePropSequentialRender] = {0};
+            _hostProperties.ints[kOfxParamHostPropSupportsStringAnimation] = {1};
+            _hostProperties.ints[kOfxParamHostPropSupportsCustomInteract] = {
+                0};
+            _hostProperties.ints[kOfxParamHostPropSupportsChoiceAnimation] = {1};
+            _hostProperties.ints[kOfxParamHostPropSupportsStrChoiceAnimation] = {1};
+            _hostProperties.ints[kOfxParamHostPropSupportsBooleanAnimation] = {1};
+            _hostProperties.ints[kOfxParamHostPropSupportsCustomAnimation] = {
+                0};
+            _hostProperties.ints[kOfxParamHostPropMaxParameters] = {1024};
+            _hostProperties.ints[kOfxParamHostPropMaxPages] = {0};
+            _hostProperties.ints[kOfxParamHostPropPageRowColumnCount] = {
+                0,
+                0};
+            _ofxHost.host = reinterpret_cast<OfxPropertySetHandle>(
+                &_hostProperties);
+            _ofxHost.fetchSuite = fetch_suite;
+        }
+
         void configure_effect() {
             _effectHandle.host = this;
             _effectHandle.properties.strings[kOfxPropType] = {
@@ -1041,6 +1212,40 @@ namespace {
                 24.0};
         }
 
+        void configure_descriptor() {
+            _descriptorEffectHandle.host = this;
+            PropertyBag& properties = _descriptorEffectHandle.properties;
+            properties.strings[kOfxPropType] = {kOfxTypeImageEffect};
+            properties.strings[kOfxPropLabel] = {""};
+            properties.strings[kOfxPropShortLabel] = {""};
+            properties.strings[kOfxPropLongLabel] = {""};
+            properties.strings[kOfxImageEffectPluginPropGrouping] = {""};
+            properties.strings[kOfxPluginPropFilePath] = {
+                "FilmJuicerNativeFixture"};
+            properties.strings[kOfxImageEffectPluginRenderThreadSafety] = {
+                kOfxImageEffectRenderFullySafe};
+            properties.strings[kOfxImageEffectPropSupportedContexts] = {};
+            properties.strings[kOfxImageEffectPropSupportedPixelDepths] = {};
+            properties.strings[kOfxImageEffectPropClipPreferencesSlaveParam] = {};
+            properties.ints[kOfxImageEffectPluginPropSingleInstance] = {0};
+            properties.ints[kOfxImageEffectPluginPropHostFrameThreading] = {0};
+            properties.ints[kOfxImageEffectPropSupportsMultiResolution] = {1};
+            properties.ints[kOfxImageEffectPropSupportsTiles] = {1};
+            properties.ints[kOfxImageEffectPropTemporalClipAccess] = {0};
+            properties.ints
+                [kOfxImageEffectPluginPropFieldRenderTwiceAlways] = {1};
+            properties.ints[kOfxImageEffectPropSupportsMultipleClipDepths] = {
+                0};
+            properties.ints[kOfxImageEffectPropSupportsMultipleClipPARs] = {
+                0};
+            properties.pointers[kOfxImageEffectPluginPropOverlayInteractV1] = {
+                nullptr};
+            properties.pointers[kOfxImageEffectPluginPropOverlayInteractV2] = {
+                nullptr};
+            _describeContextArguments.strings[kOfxImageEffectPropContext] = {
+                kOfxImageEffectContextFilter};
+        }
+
         void configure_clips() {
             configure_clip(_source, kOfxImageEffectSimpleSourceClipName);
             configure_clip(_output, kOfxImageEffectOutputClipName);
@@ -1051,6 +1256,12 @@ namespace {
             clip.properties.strings[kOfxPropType] = {kOfxTypeClip};
             clip.properties.strings[kOfxPropName] = {name};
             clip.properties.strings[kOfxPropLabel] = {name};
+            clip.properties.strings[kOfxPropShortLabel] = {name};
+            clip.properties.strings[kOfxPropLongLabel] = {name};
+            clip.properties.strings[kOfxImageClipPropFieldExtraction] = {
+                kOfxImageFieldDoubled};
+            clip.properties.strings[kOfxImageEffectPropSupportedComponents] =
+                {};
             clip.properties.strings[kOfxImageEffectPropPixelDepth] = {
                 kOfxBitDepthFloat};
             clip.properties.strings[kOfxImageEffectPropComponents] = {
@@ -1063,6 +1274,11 @@ namespace {
                 kOfxImageOpaque};
             clip.properties.ints[kOfxImageClipPropConnected] = {1};
             clip.properties.ints[kOfxImageClipPropContinuousSamples] = {0};
+            clip.properties.ints[kOfxImageEffectPropTemporalClipAccess] = {
+                0};
+            clip.properties.ints[kOfxImageClipPropOptional] = {0};
+            clip.properties.ints[kOfxImageClipPropIsMask] = {0};
+            clip.properties.ints[kOfxImageEffectPropSupportsTiles] = {1};
             clip.properties.doubles[kOfxImagePropPixelAspectRatio] = {1.0};
             clip.properties.doubles[kOfxImageEffectPropFrameRate] = {24.0};
             clip.properties.doubles[kOfxImageEffectPropFrameRange] = {0.0, 100.0};
@@ -1261,6 +1477,16 @@ namespace {
             return *found->second;
         }
 
+        const NativeParam& find_param(const char* name) const {
+            const auto found = _params.find(name ? name : "");
+            if (found == _params.end()) {
+                throw std::runtime_error(
+                    "native host parameter missing: " +
+                    std::string(name ? name : "<null>"));
+            }
+            return *found->second;
+        }
+
         NativeParam& require_param(const char* name, ParamKind kind) {
             NativeParam& param = find_param(name);
             if (param.kind != kind) {
@@ -1274,6 +1500,166 @@ namespace {
                 throw std::runtime_error("native adapter host is not active");
             }
             return *s_active;
+        }
+
+        static const void* fetch_suite(
+            OfxPropertySetHandle,
+            const char* name,
+            int version) {
+            NativeHost& host = active();
+            if (!name || version != 1) {
+                return nullptr;
+            }
+            const std::string_view suiteName(name);
+            if (suiteName == kOfxPropertySuite) {
+                return &host._propertySuite;
+            }
+            if (suiteName == kOfxImageEffectSuite) {
+                return &host._effectSuite;
+            }
+            if (suiteName == kOfxParameterSuite) {
+                return &host._parameterSuite;
+            }
+            if (suiteName == kOfxMemorySuite) {
+                return &host._memorySuite;
+            }
+            if (suiteName == kOfxMultiThreadSuite) {
+                return &host._multiThreadSuite;
+            }
+            if (suiteName == kOfxMessageSuite) {
+                return &host._messageSuite;
+            }
+            return nullptr;
+        }
+
+        static OfxStatus memory_allocate(
+            void*,
+            std::size_t bytes,
+            void** output) {
+            if (!output) {
+                return kOfxStatErrBadHandle;
+            }
+            *output = std::malloc(bytes == 0 ? 1u : bytes);
+            return *output ? kOfxStatOK : kOfxStatErrMemory;
+        }
+
+        static OfxStatus memory_free(void* allocation) {
+            std::free(allocation);
+            return kOfxStatOK;
+        }
+
+        static OfxStatus run_threads(
+            OfxThreadFunctionV1 function,
+            unsigned int threadCount,
+            void* context) {
+            if (!function) {
+                return kOfxStatErrBadHandle;
+            }
+            const unsigned int actualCount = threadCount == 0 ? 1u : threadCount;
+            for (unsigned int index = 0; index < actualCount; ++index) {
+                function(index, actualCount, context);
+            }
+            return kOfxStatOK;
+        }
+
+        static OfxStatus thread_cpu_count(unsigned int* count) {
+            if (!count) {
+                return kOfxStatErrBadHandle;
+            }
+            *count = 1;
+            return kOfxStatOK;
+        }
+
+        static OfxStatus thread_index(unsigned int* index) {
+            if (!index) {
+                return kOfxStatErrBadHandle;
+            }
+            *index = 0;
+            return kOfxStatOK;
+        }
+
+        static int is_spawned_thread() {
+            return 0;
+        }
+
+        static OfxStatus mutex_create(OfxMutexHandle* output, int lockCount) {
+            if (!output || lockCount < 0) {
+                return kOfxStatErrBadHandle;
+            }
+            auto mutex = std::make_unique<NativeMutex>();
+            for (int index = 0; index < lockCount; ++index) {
+                mutex->value.lock();
+            }
+            *output = reinterpret_cast<OfxMutexHandle>(mutex.release());
+            return kOfxStatOK;
+        }
+
+        static OfxStatus mutex_destroy(const OfxMutexHandle handle) {
+            delete reinterpret_cast<NativeMutex*>(handle);
+            return kOfxStatOK;
+        }
+
+        static OfxStatus mutex_lock(const OfxMutexHandle handle) {
+            if (!handle) {
+                return kOfxStatErrBadHandle;
+            }
+            reinterpret_cast<NativeMutex*>(handle)->value.lock();
+            return kOfxStatOK;
+        }
+
+        static OfxStatus mutex_unlock(const OfxMutexHandle handle) {
+            if (!handle) {
+                return kOfxStatErrBadHandle;
+            }
+            reinterpret_cast<NativeMutex*>(handle)->value.unlock();
+            return kOfxStatOK;
+        }
+
+        static OfxStatus mutex_try_lock(const OfxMutexHandle handle) {
+            if (!handle) {
+                return kOfxStatErrBadHandle;
+            }
+            return reinterpret_cast<NativeMutex*>(handle)->value.try_lock()
+                       ? kOfxStatOK
+                       : kOfxStatFailed;
+        }
+
+        static void observe_property_int_write(
+            void* context,
+            const char* owningParam,
+            const char* property,
+            int value) {
+            auto& host = *static_cast<NativeHost*>(context);
+            host._trace.push_back(
+                "PROPERTY_SET_INT param=" + std::string(owningParam) +
+                " property=" + property + " value=" +
+                std::to_string(value));
+            if (!host._propertyReentryArmed ||
+                host._propertyReentryOwningParam != owningParam ||
+                host._propertyReentryProperty != property) {
+                return;
+            }
+
+            host._propertyReentryArmed = false;
+            ++host._propertyReentryCount;
+            host._trace.push_back(
+                "EVENT_REENTRANT boundary=PROPERTY_SET_INT callback=" +
+                host._propertyReentryCallbackParam);
+            try {
+                if (!host._effect) {
+                    throw std::runtime_error(
+                        "property reentry has no bound effect");
+                }
+                OFX::InstanceChangedArgs arguments{};
+                arguments.reason = OFX::eChangePluginEdit;
+                arguments.time = host._time;
+                arguments.renderScale = {1.0, 1.0};
+                host._effect->changedParam(
+                    arguments,
+                    host._propertyReentryCallbackParam);
+            } catch (...) {
+                host._propertyReentryFailed = true;
+            }
         }
 
         static OfxStatus effect_properties(
@@ -1295,6 +1681,32 @@ namespace {
             }
             *output = reinterpret_cast<OfxParamSetHandle>(
                 reinterpret_cast<NativeEffectHandle*>(handle)->host);
+            return kOfxStatOK;
+        }
+
+        static OfxStatus clip_define(
+            OfxImageEffectHandle,
+            const char* name,
+            OfxPropertySetHandle* properties) {
+            if (!name || !properties) {
+                return kOfxStatErrBadHandle;
+            }
+            NativeHost& host = active();
+            NativeClip* selected = nullptr;
+            if (std::string_view(name) == kOfxImageEffectSimpleSourceClipName) {
+                selected = &host._source;
+            } else if (std::string_view(name) == kOfxImageEffectOutputClipName) {
+                selected = &host._output;
+            }
+            if (!selected) {
+                host._trace.push_back(
+                    "DESCRIBE_CLIP_REJECT name=" + std::string(name));
+                return kOfxStatErrUnknown;
+            }
+            host._trace.push_back(
+                "DESCRIBE_CLIP name=" + std::string(name));
+            *properties = reinterpret_cast<OfxPropertySetHandle>(
+                &selected->properties);
             return kOfxStatOK;
         }
 
@@ -1388,6 +1800,39 @@ namespace {
             }
             *output = reinterpret_cast<OfxPropertySetHandle>(
                 &active()._paramSetProperties);
+            return kOfxStatOK;
+        }
+
+        static OfxStatus parameter_define(
+            OfxParamSetHandle,
+            const char* type,
+            const char* name,
+            OfxPropertySetHandle* properties) {
+            if (!type || !name || !properties) {
+                return kOfxStatErrBadHandle;
+            }
+            auto [position, inserted] =
+                active()._descriptorParams.try_emplace(name);
+            if (!inserted) {
+                active()._trace.push_back(
+                    "DESCRIBE_PARAM_DUPLICATE name=" + std::string(name) +
+                    " type=" + type);
+                return kOfxStatErrExists;
+            }
+            active()._trace.push_back(
+                "DESCRIBE_PARAM name=" + std::string(name) +
+                " type=" + type);
+            PropertyBag& descriptor = position->second;
+            descriptor.strings[kOfxParamPropType] = {type};
+            descriptor.strings[kOfxPropName] = {name};
+            descriptor.strings[kOfxPropLabel] = {name};
+            descriptor.strings[kOfxParamPropHint] = {""};
+            descriptor.strings[kOfxParamPropChoiceOption] = {};
+            descriptor.strings[kOfxParamPropChoiceEnum] = {};
+            descriptor.ints[kOfxParamPropEnabled] = {1};
+            descriptor.ints[kOfxParamPropSecret] = {0};
+            *properties = reinterpret_cast<OfxPropertySetHandle>(
+                &descriptor);
             return kOfxStatOK;
         }
 
@@ -1661,6 +2106,7 @@ namespace {
 
             _effectSuite.getPropertySet = effect_properties;
             _effectSuite.getParamSet = effect_parameters;
+            _effectSuite.clipDefine = clip_define;
             _effectSuite.clipGetHandle = clip_get_handle;
             _effectSuite.clipGetPropertySet = clip_properties;
             _effectSuite.clipGetImage = clip_get_image;
@@ -1669,12 +2115,24 @@ namespace {
             _effectSuite.abort = effect_abort;
 
             _parameterSuite.paramSetGetPropertySet = parameter_set_properties;
+            _parameterSuite.paramDefine = parameter_define;
             _parameterSuite.paramGetHandle = parameter_get_handle;
             _parameterSuite.paramGetPropertySet = parameter_properties;
             _parameterSuite.paramGetValue = parameter_get_value;
             _parameterSuite.paramGetValueAtTime = parameter_get_value_at_time;
             _parameterSuite.paramSetValue = parameter_set_value;
             _parameterSuite.paramSetValueAtTime = parameter_set_value_at_time;
+            _memorySuite.memoryAlloc = memory_allocate;
+            _memorySuite.memoryFree = memory_free;
+            _multiThreadSuite.multiThread = run_threads;
+            _multiThreadSuite.multiThreadNumCPUs = thread_cpu_count;
+            _multiThreadSuite.multiThreadIndex = thread_index;
+            _multiThreadSuite.multiThreadIsSpawnedThread = is_spawned_thread;
+            _multiThreadSuite.mutexCreate = mutex_create;
+            _multiThreadSuite.mutexDestroy = mutex_destroy;
+            _multiThreadSuite.mutexLock = mutex_lock;
+            _multiThreadSuite.mutexUnLock = mutex_unlock;
+            _multiThreadSuite.mutexTryLock = mutex_try_lock;
             _messageSuite.message = message;
         }
 
@@ -1682,12 +2140,19 @@ namespace {
         OfxPropertySuiteV1 _propertySuite{};
         OfxImageEffectSuiteV1 _effectSuite{};
         OfxParameterSuiteV1 _parameterSuite{};
+        OfxMemorySuiteV1 _memorySuite{};
+        OfxMultiThreadSuiteV1 _multiThreadSuite{};
         OfxMessageSuiteV1 _messageSuite{};
+        PropertyBag _hostProperties;
+        OfxHost _ofxHost{};
         NativeEffectHandle _effectHandle{};
+        NativeEffectHandle _descriptorEffectHandle{};
+        PropertyBag _describeContextArguments;
         PropertyBag _paramSetProperties;
         NativeClip _source;
         NativeClip _output;
         std::map<std::string, std::unique_ptr<NativeParam>> _params;
+        std::map<std::string, PropertyBag> _descriptorParams;
         JuicerEffect* _effect = nullptr;
         double _time = 0.0;
         std::map<OfxPropertySetHandle, ImageLeaseRecord> _imageLeases;
@@ -1701,6 +2166,12 @@ namespace {
         bool _nestedEventFailed = false;
         bool _nestedContractFailed = false;
         std::string _nestedContractDiagnostic;
+        std::string _propertyReentryOwningParam;
+        std::string _propertyReentryProperty;
+        std::string _propertyReentryCallbackParam;
+        std::uint64_t _propertyReentryCount = 0;
+        bool _propertyReentryArmed = false;
+        bool _propertyReentryFailed = false;
     };
 
     void require(bool condition, const std::string& message) {
@@ -1728,13 +2199,340 @@ namespace {
                std::bit_cast<std::uint64_t>(expected);
     }
 
+    struct UiControlObservation {
+        std::string_view param;
+        bool expectsSecret;
+    };
+
+    // Only the controls written by updateDiffusionControlState/updateGammaControlState.
+    constexpr std::array<UiControlObservation, 27> kRouteUiControls{{{JuicerParams::kCameraDiffusionEnabled, true},
+                                                                     {JuicerParams::kCameraDiffusionFamily, true},
+                                                                     {JuicerParams::kCameraDiffusionStrength, true},
+                                                                     {JuicerParams::kCameraDiffusionSpatialScale, true},
+                                                                     {JuicerParams::kCameraDiffusionHaloWarmth, true},
+                                                                     {JuicerParams::kCameraDiffusionCoreIntensity, true},
+                                                                     {JuicerParams::kCameraDiffusionCoreSize, true},
+                                                                     {JuicerParams::kCameraDiffusionHaloIntensity, true},
+                                                                     {JuicerParams::kCameraDiffusionHaloSize, true},
+                                                                     {JuicerParams::kCameraDiffusionBloomIntensity, true},
+                                                                     {JuicerParams::kCameraDiffusionBloomSize, true},
+                                                                     {JuicerParams::kPrintDiffusionEnabled, true},
+                                                                     {JuicerParams::kPrintDiffusionFamily, true},
+                                                                     {JuicerParams::kPrintDiffusionStrength, true},
+                                                                     {JuicerParams::kPrintDiffusionSpatialScale, true},
+                                                                     {JuicerParams::kPrintDiffusionHaloWarmth, true},
+                                                                     {JuicerParams::kPrintDiffusionCoreIntensity, true},
+                                                                     {JuicerParams::kPrintDiffusionCoreSize, true},
+                                                                     {JuicerParams::kPrintDiffusionHaloIntensity, true},
+                                                                     {JuicerParams::kPrintDiffusionHaloSize, true},
+                                                                     {JuicerParams::kPrintDiffusionBloomIntensity, true},
+                                                                     {JuicerParams::kPrintDiffusionBloomSize, true},
+                                                                     {JuicerParams::kPrintGammaFactor, false},
+                                                                     {JuicerParams::kDirCouplersLangmuirDonorKRgb, false},
+                                                                     {JuicerParams::kDirCouplersLangmuirReceiverKRgb, false},
+                                                                     {JuicerParams::kDirCouplersDiffusionTailWeight, false},
+                                                                     {JuicerParams::kDirCouplersDiffusionTailUm, false}}};
+
+    struct UiTraceSummary {
+        struct RouteGetter {
+            std::size_t index;
+            bool filmProfile;
+        };
+        struct ControlWrites {
+            bool enabled = false;
+            bool secret = false;
+        };
+        std::vector<RouteGetter> routeGetters;
+        std::vector<std::size_t> routeDependentWrites;
+        std::array<ControlWrites, kRouteUiControls.size()> controls{};
+    };
+
+    UiTraceSummary summarize_ui_trace(
+        const std::vector<std::string>& trace,
+        std::size_t start) {
+        UiTraceSummary summary;
+        const std::string filmGetter =
+            "GET_CURRENT name=" + std::string(JuicerParams::kFilmProfileKey) + " ";
+        const std::string routeGetter =
+            "GET_CURRENT name=" + std::string(JuicerParams::kParamScanRoute) + " ";
+        for (std::size_t index = start; index < trace.size(); ++index) {
+            const std::string& line = trace[index];
+            if (line.starts_with(filmGetter) || line.starts_with(routeGetter)) {
+                summary.routeGetters.push_back({index, line.starts_with(filmGetter)});
+            }
+            for (std::size_t control = 0; control < kRouteUiControls.size(); ++control) {
+                const std::string prefix =
+                    "PROPERTY_SET_INT param=" +
+                    std::string(kRouteUiControls[control].param) + " property=";
+                const bool enabled = line.starts_with(prefix + kOfxParamPropEnabled + " ");
+                const bool secret = line.starts_with(prefix + kOfxParamPropSecret + " ");
+                if (enabled || secret) {
+                    summary.routeDependentWrites.push_back(index);
+                    summary.controls[control].enabled |= enabled;
+                    summary.controls[control].secret |= secret;
+                    break;
+                }
+            }
+        }
+        return summary;
+    }
+
+    bool has_route_getter_pairs(const UiTraceSummary& summary, std::size_t count) {
+        if (summary.routeGetters.size() != count * 2u) {
+            return false;
+        }
+        for (std::size_t pair = 0; pair < count; ++pair) {
+            if (!summary.routeGetters[pair * 2u].filmProfile ||
+                summary.routeGetters[pair * 2u + 1u].filmProfile) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool ui_writes_precede_snapshot(const UiTraceSummary& summary) {
+        if (!has_route_getter_pairs(summary, 3u) ||
+            summary.routeDependentWrites.empty() ||
+            summary.routeGetters[3].index >= summary.routeDependentWrites.front() ||
+            summary.routeDependentWrites.back() >= summary.routeGetters[4].index) {
+            return false;
+        }
+        for (std::size_t control = 0; control < kRouteUiControls.size(); ++control) {
+            if (!summary.controls[control].enabled ||
+                (kRouteUiControls[control].expectsSecret &&
+                 !summary.controls[control].secret)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool failure_ui_trace_matches(const UiTraceSummary& summary, int failedCall) {
+        return failedCall < 3
+                   ? has_route_getter_pairs(summary, static_cast<std::size_t>(failedCall)) &&
+                         summary.routeDependentWrites.empty()
+                   : ui_writes_precede_snapshot(summary);
+    }
+
+    void check_ui_trace_rejections(const std::vector<std::string>& eventTrace) {
+        const UiTraceSummary baseline = summarize_ui_trace(eventTrace, 0);
+        require(ui_writes_precede_snapshot(baseline),
+                "UI trace negative cases need a complete valid event");
+        const std::string gammaPrefix =
+            "PROPERTY_SET_INT param=" + std::string(JuicerParams::kPrintGammaFactor) +
+            " property=" + kOfxParamPropEnabled + " ";
+        const auto gamma = std::find_if(eventTrace.begin(), eventTrace.end(), [&](const std::string& line) {
+            return line.starts_with(gammaPrefix);
+        });
+        require(gamma != eventTrace.end(), "UI trace is missing the print gamma write");
+        const std::string& gammaWrite = *gamma;
+        auto earlyGamma = eventTrace;
+        earlyGamma.insert(earlyGamma.begin(), gammaWrite);
+        require(!ui_writes_precede_snapshot(summarize_ui_trace(earlyGamma, 0)),
+                "UI trace accepted a gamma write before route preflight");
+
+        for (int failedCall : {1, 2}) {
+            std::vector<std::string> failedTrace(
+                eventTrace.begin(),
+                eventTrace.begin() + static_cast<std::ptrdiff_t>(
+                                         baseline.routeGetters[static_cast<std::size_t>(failedCall) * 2u - 1u].index + 1u));
+            require(failure_ui_trace_matches(summarize_ui_trace(failedTrace, 0), failedCall),
+                    "UI trace rejected a write-free failed preflight");
+            failedTrace.push_back(gammaWrite);
+            require(!failure_ui_trace_matches(summarize_ui_trace(failedTrace, 0), failedCall),
+                    "UI trace accepted a gamma write during a failed preflight");
+        }
+
+        auto lateGamma = eventTrace;
+        lateGamma.erase(lateGamma.begin() + std::distance(eventTrace.begin(), gamma));
+        lateGamma.push_back(gammaWrite);
+        require(!failure_ui_trace_matches(summarize_ui_trace(lateGamma, 0), 3),
+                "UI trace accepted a gamma write after snapshot acquisition");
+
+        for (const std::size_t write : baseline.routeDependentWrites) {
+            auto missingWrite = eventTrace;
+            missingWrite.erase(missingWrite.begin() + static_cast<std::ptrdiff_t>(write));
+            require(!ui_writes_precede_snapshot(summarize_ui_trace(missingWrite, 0)),
+                    "UI trace accepted a missing expected property write: " + eventTrace[write]);
+        }
+        for (std::size_t pair = 0; pair < 3u; ++pair) {
+            auto wrongGetter = eventTrace;
+            wrongGetter[baseline.routeGetters[pair * 2u].index] =
+                eventTrace[baseline.routeGetters[pair * 2u + 1u].index];
+            require(!ui_writes_precede_snapshot(summarize_ui_trace(wrongGetter, 0)),
+                    "UI trace accepted route getters without the matching film getter");
+        }
+        std::cout << "UI trace negative cases passed: early gamma, failures 1/2, late gamma, "
+                  << baseline.routeDependentWrites.size()
+                  << " missing writes, and three malformed getter pairs\n";
+    }
+
+    class LoadedOfxModule final {
+    public:
+        explicit LoadedOfxModule(const std::filesystem::path& path) {
+#if defined(_WIN32)
+            _handle = LoadLibraryW(path.c_str());
+            if (!_handle) {
+                throw std::runtime_error(
+                    "could not load OFX module: Windows error " +
+                    std::to_string(GetLastError()));
+            }
+#else
+            _handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+            if (!_handle) {
+                const char* const error = dlerror();
+                throw std::runtime_error(
+                    "could not load OFX module: " +
+                    std::string(error ? error : "unknown error"));
+            }
+#endif
+        }
+
+        ~LoadedOfxModule() {
+            if (_handle) {
+#if defined(_WIN32)
+                (void)FreeLibrary(_handle);
+#else
+                (void)dlclose(_handle);
+#endif
+            }
+        }
+
+        LoadedOfxModule(const LoadedOfxModule&) = delete;
+        LoadedOfxModule& operator=(const LoadedOfxModule&) = delete;
+
+        template <typename Function>
+        Function symbol(const char* name) const {
+#if defined(_WIN32)
+            const FARPROC address = GetProcAddress(_handle, name);
+            if (!address) {
+                throw std::runtime_error(
+                    "missing OFX module symbol " + std::string(name) +
+                    ": Windows error " + std::to_string(GetLastError()));
+            }
+#else
+            dlerror();
+            void* const address = dlsym(_handle, name);
+            const char* const error = dlerror();
+            if (error || !address) {
+                throw std::runtime_error(
+                    "missing OFX module symbol " + std::string(name) +
+                    ": " + (error ? error : "null address"));
+            }
+#endif
+            return reinterpret_cast<Function>(address);
+        }
+
+    private:
+#if defined(_WIN32)
+        HMODULE _handle = nullptr;
+#else
+        void* _handle = nullptr;
+#endif
+    };
+
+    void run_loaded_module_callback(
+        NativeHost& host,
+        const std::filesystem::path& modulePath,
+        const std::filesystem::path& tracePath) {
+        using GetPluginCount = int (*)();
+        using GetPlugin = OfxPlugin* (*)(int);
+
+        LoadedOfxModule module(modulePath);
+        const GetPluginCount getPluginCount =
+            module.symbol<GetPluginCount>("OfxGetNumberOfPlugins");
+        const GetPlugin getPlugin = module.symbol<GetPlugin>("OfxGetPlugin");
+        require(getPluginCount() == 1, "loaded OFX module did not report one plugin");
+        OfxPlugin* const plugin = getPlugin(0);
+        require(plugin && plugin->setHost && plugin->mainEntry,
+                "loaded OFX plugin descriptor is incomplete");
+        host.set_descriptor_module_path(modulePath);
+        plugin->setHost(host.ofx_host());
+
+        bool loaded = false;
+        bool instanceCreated = false;
+        try {
+            require(
+                plugin->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr) ==
+                    kOfxStatOK,
+                "loaded OFX module rejected the load action");
+            loaded = true;
+            require(
+                plugin->mainEntry(
+                    kOfxActionDescribe,
+                    host.descriptor_handle(),
+                    nullptr,
+                    nullptr) == kOfxStatOK,
+                "loaded OFX module rejected the describe action");
+            require(
+                plugin->mainEntry(
+                    kOfxImageEffectActionDescribeInContext,
+                    host.descriptor_handle(),
+                    host.describe_context_handle(),
+                    nullptr) == kOfxStatOK,
+                "loaded OFX module rejected the describe-in-context action");
+            require(
+                plugin->mainEntry(
+                    kOfxActionCreateInstance,
+                    host.effect_handle(),
+                    nullptr,
+                    nullptr) == kOfxStatOK,
+                "loaded OFX module rejected the create-instance action");
+            instanceCreated = true;
+            const OfxStatus destroyStatus = plugin->mainEntry(
+                kOfxActionDestroyInstance,
+                host.effect_handle(),
+                nullptr,
+                nullptr);
+            instanceCreated = false;
+            require(
+                destroyStatus == kOfxStatOK,
+                "loaded OFX module rejected the destroy-instance action");
+            const OfxStatus unloadStatus =
+                plugin->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+            loaded = false;
+            require(
+                unloadStatus == kOfxStatOK,
+                "loaded OFX module rejected the unload action");
+        } catch (...) {
+            if (instanceCreated) {
+                (void)plugin->mainEntry(
+                    kOfxActionDestroyInstance,
+                    host.effect_handle(),
+                    nullptr,
+                    nullptr);
+            }
+            if (loaded) {
+                (void)plugin->mainEntry(
+                    kOfxActionUnload,
+                    nullptr,
+                    nullptr,
+                    nullptr);
+            }
+            host.write_trace(tracePath);
+            throw;
+        }
+
+        host.write_trace(tracePath);
+        std::cout << "PASS adapter/loaded-module-create-callback\n"
+                  << "MODULE " << modulePath.string() << '\n'
+                  << "TRACE " << tracePath.string() << " entries="
+                  << host.trace_size() << '\n';
+    }
 } // namespace
 
 int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-level catches map all fixture failures.
     try {
+        if (argc == 5 && std::string_view(argv[1]) == "--loaded-module" &&
+            std::string_view(argv[3]) == "--trace-output") {
+            NativeHost host;
+            run_loaded_module_callback(host, argv[2], argv[4]);
+            return 0;
+        }
         if (argc != 3 || std::string_view(argv[1]) != "--trace-output") {
             throw std::runtime_error(
-                "usage: JuicerAdapterTraceProbe --trace-output PATH");
+                "usage: JuicerAdapterTraceProbe --trace-output PATH or "
+                "--loaded-module MODULE --trace-output PATH");
         }
         const std::filesystem::path tracePath = argv[2];
         NativeHost host;
@@ -1742,16 +2540,323 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
             throw std::runtime_error("CUDA initialization failed");
         }
         JuicerProcess::root().ensure_bootstrap();
+        ParamSnapshot routeSnapshot;
+        routeSnapshot.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
+        FocusedRenderStateBuildProduct routeProduct;
+        std::string routeDiagnostic;
+        require(
+            build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic),
+            "matching negative profile route did not build: " + routeDiagnostic);
+        routeSnapshot.scanRoute = Spektrafilm::ScanRoute::PositiveDirectScan;
+        routeDiagnostic.clear();
+        require(
+            !build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic) &&
+                routeDiagnostic.find("route mismatch") != std::string::npos,
+            "mismatched negative profile route was not rejected");
+        routeSnapshot.filmProfileKey = "fujifilm_provia_100f";
+        routeDiagnostic.clear();
+        require(
+            build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic),
+            "matching positive profile route did not build: " + routeDiagnostic);
+        routeSnapshot.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
+        routeDiagnostic.clear();
+        require(
+            !build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic) &&
+                routeDiagnostic.find("route mismatch") != std::string::npos,
+            "mismatched positive profile route was not rejected");
+        RouteFaultTest::fail_on_call(1);
+        routeDiagnostic.clear();
+        require(
+            !build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic) &&
+                routeDiagnostic.find("RouteResolutionFailure") != std::string::npos,
+            "recipe route bridge failure was not propagated");
         DeviceFrame frame;
+        for (int failedCall : {1, 2}) {
+            const std::size_t traceStart = host.trace_size();
+            RouteFaultTest::fail_on_call(failedCall);
+            bool creationFailed = false;
+            try {
+                JuicerEffect failedEffect(host.effect_handle());
+            } catch (const OFX::Exception::Suite&) {
+                creationFailed = true;
+            }
+            require(creationFailed, "route bridge failure did not fail instance creation");
+            const auto& trace = host.trace();
+            require(
+                std::any_of(
+                    trace.begin() + static_cast<std::ptrdiff_t>(traceStart),
+                    trace.end(),
+                    [](const std::string& line) {
+                        return line.find("id=FilmJuicerRouteResolution") != std::string::npos &&
+                               line.find("RouteResolutionFailure") != std::string::npos;
+                    }),
+                "constructor route bridge failure omitted its host diagnostic");
+        }
         {
             JuicerEffect effect(host.effect_handle());
             host.bind_effect(effect);
 
             host.set_time(0.0);
+            RouteFaultTest::fail_on_call(1);
+            const auto initialRejected =
+                host.render(effect, frame, "initial-route-failure", true);
+            require(initialRejected.rejected && initialRejected.state.pendingInvalid &&
+                        initialRejected.state.pendingDiagnostic.find("RouteResolutionFailure") !=
+                            std::string::npos,
+                    "initial bridge failure did not block admission");
+            host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
             const auto first = host.render(effect, frame, "first-render");
             require(first.succeeded && exposure_matches(first, 0.0) &&
                         has_valid_latch(first),
                     "first render did not acquire the current zero-EV value");
+
+            constexpr std::array<double, 3> recoveryExposureEv{{0.125,
+                                                                -0.25,
+                                                                0.375}};
+            for (std::size_t failureIndex = 0;
+                 failureIndex < recoveryExposureEv.size();
+                 ++failureIndex) {
+                const int failedCall = static_cast<int>(failureIndex) + 1;
+                const PendingRenderAdmissionResult retained =
+                    JuicerTestSupport::EffectTraceObserver::admit(effect);
+                const bool retainedPrint =
+                    retained.status == PendingRenderAdmissionStatus::AdmittedPrint;
+                require(
+                    (retainedPrint && retained.printState &&
+                     !retained.directState) ||
+                        (retained.status ==
+                             PendingRenderAdmissionStatus::AdmittedDirect &&
+                         retained.directState && !retained.printState),
+                    "could not retain an admitted route state before failure");
+                const void* const retainedStateIdentity = retainedPrint
+                                                              ? static_cast<const void*>(
+                                                                    retained.printState.get())
+                                                              : static_cast<const void*>(
+                                                                    retained.directState.get());
+                const std::uint64_t retainedBuildCounter =
+                    retainedPrint ? retained.printState->buildCounter
+                                  : retained.directState->buildCounter;
+                const std::uint64_t retainedRecipeHash =
+                    retainedPrint ? retained.printState->recipe.hash
+                                  : retained.directState->recipe.hash;
+                const Spektrafilm::ScanRoute retainedRoute =
+                    retained.snapshot.scanRoute;
+                const double retainedExposureEv =
+                    retained.snapshot.cameraExposureCompensationEv;
+
+                const auto retained_state_unchanged = [&]() {
+                    if (retained.snapshot.scanRoute != retainedRoute ||
+                        !double_matches(retained.snapshot.cameraExposureCompensationEv,
+                                        retainedExposureEv)) {
+                        return false;
+                    }
+                    return retainedPrint
+                               ? retained.status == PendingRenderAdmissionStatus::AdmittedPrint &&
+                                     !retained.directState && retained.printState &&
+                                     retained.printState.get() ==
+                                         retainedStateIdentity &&
+                                     retained.printState->buildCounter ==
+                                         retainedBuildCounter &&
+                                     retained.printState->recipe.hash ==
+                                         retainedRecipeHash
+                               : retained.status == PendingRenderAdmissionStatus::AdmittedDirect &&
+                                     !retained.printState && retained.directState &&
+                                     retained.directState.get() ==
+                                         retainedStateIdentity &&
+                                     retained.directState->buildCounter ==
+                                         retainedBuildCounter &&
+                                     retained.directState->recipe.hash ==
+                                         retainedRecipeHash;
+                };
+
+                host.set_double_value(
+                    kParamExposure,
+                    recoveryExposureEv[failureIndex]);
+                const std::size_t traceStart = host.trace_size();
+                RouteFaultTest::fail_on_call(failedCall);
+                host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+                const auto invalid =
+                    JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+                const PendingRenderAdmissionResult blocked =
+                    JuicerTestSupport::EffectTraceObserver::admit(effect);
+                const auto rejected = host.render(
+                    effect, frame, "route-bridge-failure", true);
+                const UiTraceSummary failureTrace =
+                    summarize_ui_trace(host.trace(), traceStart);
+                require(invalid.pendingInvalid &&
+                            invalid.pendingDiagnostic.find("RouteResolutionFailure") !=
+                                std::string::npos &&
+                            blocked.status ==
+                                PendingRenderAdmissionStatus::InvalidSnapshotControls &&
+                            !blocked.directState && !blocked.printState &&
+                            rejected.rejected && rejected.state.pendingInvalid &&
+                            failure_ui_trace_matches(failureTrace, failedCall) &&
+                            retained_state_unchanged(),
+                        "route bridge failure did not block new admission while retaining the admitted state");
+                host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+                const PendingRenderAdmissionResult recoveredAdmission =
+                    JuicerTestSupport::EffectTraceObserver::admit(effect);
+                const auto recoveredRoute =
+                    host.render(effect, frame, "route-bridge-recovery");
+                require(
+                    retainedPrint
+                        ? recoveredAdmission.status ==
+                                  PendingRenderAdmissionStatus::AdmittedPrint &&
+                              recoveredAdmission.printState &&
+                              !recoveredAdmission.directState
+                        : recoveredAdmission.status ==
+                                  PendingRenderAdmissionStatus::AdmittedDirect &&
+                              recoveredAdmission.directState &&
+                              !recoveredAdmission.printState,
+                    "valid route recovery did not return the expected admission type");
+                const void* const recoveredStateIdentity = retainedPrint
+                                                               ? static_cast<const void*>(
+                                                                     recoveredAdmission.printState.get())
+                                                               : static_cast<const void*>(
+                                                                     recoveredAdmission.directState.get());
+                const std::uint64_t recoveredBuildCounter = retainedPrint
+                                                                ? recoveredAdmission.printState->buildCounter
+                                                                : recoveredAdmission.directState->buildCounter;
+                const std::uint64_t recoveredRecipeHash = retainedPrint
+                                                              ? recoveredAdmission.printState->recipe.hash
+                                                              : recoveredAdmission.directState->recipe.hash;
+                require(recoveredRoute.succeeded &&
+                            !recoveredRoute.state.pendingInvalid &&
+                            exposure_matches(
+                                recoveredRoute,
+                                recoveryExposureEv[failureIndex]) &&
+                            recoveredAdmission.snapshot.scanRoute == retainedRoute &&
+                            double_matches(
+                                recoveredAdmission.snapshot
+                                    .cameraExposureCompensationEv,
+                                recoveryExposureEv[failureIndex]) &&
+                            recoveredStateIdentity != retainedStateIdentity &&
+                            recoveredBuildCounter > retainedBuildCounter &&
+                            recoveredRecipeHash != retainedRecipeHash &&
+                            recoveredRoute.state.recipeHash ==
+                                recoveredRecipeHash &&
+                            retained_state_unchanged(),
+                        "route bridge failure did not replace publication while preserving the retained admission");
+            }
+
+            host.set_str_choice_value(
+                JuicerParams::kParamScanRoute,
+                Spektrafilm::scan_route_key(
+                    Spektrafilm::ScanRoute::NegativeDirectScan));
+            std::size_t uiTraceStart = host.trace_size();
+            host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+            const UiTraceSummary directUiTrace =
+                summarize_ui_trace(host.trace(), uiTraceStart);
+            require(
+                ui_writes_precede_snapshot(directUiTrace) &&
+                    host.param_property_int(
+                        JuicerParams::kCameraDiffusionEnabled,
+                        kOfxParamPropSecret) == 0 &&
+                    host.param_property_int(
+                        JuicerParams::kCameraDiffusionEnabled,
+                        kOfxParamPropEnabled) == 1 &&
+                    host.param_property_int(
+                        JuicerParams::kPrintDiffusionEnabled,
+                        kOfxParamPropSecret) == 1 &&
+                    host.param_property_int(
+                        JuicerParams::kPrintDiffusionEnabled,
+                        kOfxParamPropEnabled) == 0 &&
+                    host.param_property_int(
+                        JuicerParams::kPrintGammaFactor,
+                        kOfxParamPropEnabled) == 0,
+                "direct UI event did not preflight both routes before applying visibility/enabled state");
+
+            check_ui_trace_rejections(std::vector<std::string>(
+                host.trace().begin() + static_cast<std::ptrdiff_t>(uiTraceStart),
+                host.trace().end()));
+
+            host.set_str_choice_value(
+                JuicerParams::kParamScanRoute,
+                Spektrafilm::scan_route_key(
+                    Spektrafilm::ScanRoute::NegativePrintScan));
+            uiTraceStart = host.trace_size();
+            host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+            const UiTraceSummary printUiTrace =
+                summarize_ui_trace(host.trace(), uiTraceStart);
+            require(
+                ui_writes_precede_snapshot(printUiTrace) &&
+                    host.param_property_int(
+                        JuicerParams::kPrintDiffusionEnabled,
+                        kOfxParamPropSecret) == 0 &&
+                    host.param_property_int(
+                        JuicerParams::kPrintDiffusionEnabled,
+                        kOfxParamPropEnabled) == 1 &&
+                    host.param_property_int(
+                        JuicerParams::kPrintDiffusionFamily,
+                        kOfxParamPropSecret) == 0 &&
+                    host.param_property_int(
+                        JuicerParams::kPrintDiffusionFamily,
+                        kOfxParamPropEnabled) == 0 &&
+                    host.param_property_int(
+                        JuicerParams::kPrintGammaFactor,
+                        kOfxParamPropEnabled) == 1,
+                "print UI event did not preflight both routes before applying visibility/enabled state");
+
+            host.set_str_choice_value(
+                JuicerParams::kParamScanRoute,
+                Spektrafilm::scan_route_key(
+                    Spektrafilm::ScanRoute::NegativeDirectScan));
+            host.set_double_value(kParamExposure, 0.625);
+            host.arm_property_reentry(
+                JuicerParams::kCameraDiffusionEnabled,
+                kOfxParamPropSecret,
+                kParamExposure);
+            const std::uint64_t reentryCountBefore =
+                host.property_reentry_count();
+            host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+            const auto reentryState =
+                JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+            const auto reentryRender =
+                host.render(effect, frame, "ui-property-reentry");
+            require(
+                host.property_reentry_count() == reentryCountBefore + 1 &&
+                    !host.property_reentry_failed() &&
+                    reentryState.pendingValid && !reentryState.pendingInvalid &&
+                    !reentryState.paramEventsSuppressed &&
+                    reentryState.pendingRoute ==
+                        Spektrafilm::ScanRoute::NegativeDirectScan &&
+                    double_matches(reentryState.pendingExposureEv, 0.625) &&
+                    reentryRender.succeeded &&
+                    exposure_matches(reentryRender, 0.625),
+                "one-shot property-write reentry did not complete with stable route, exposure, and suppression state");
+
+            host.set_double_value(kParamExposure, 0.0);
+            host.set_str_choice_value(
+                JuicerParams::kParamScanRoute,
+                Spektrafilm::scan_route_key(Spektrafilm::kDefaultScanRoute));
+            host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+
+            host.set_str_choice_value(JuicerParams::kFilmProfileKey, "missing-profile");
+            host.set_str_choice_value(JuicerParams::kParamScanRoute, "missing-route");
+            host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+            require(
+                JuicerTestSupport::EffectTraceObserver::snapshot(effect).pendingRoute ==
+                    Spektrafilm::ScanRoute::NegativePrintScan,
+                "unknown profile and route keys did not use the negative print default");
+
+            host.set_str_choice_value(JuicerParams::kFilmProfileKey, "fujifilm_provia_100f");
+            host.set_str_choice_value(JuicerParams::kParamScanRoute, "");
+            host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+            require(
+                JuicerTestSupport::EffectTraceObserver::snapshot(effect).pendingRoute ==
+                    Spektrafilm::ScanRoute::PositiveDirectScan,
+                "empty route key did not use the positive direct default");
+
+            host.set_str_choice_value(
+                JuicerParams::kFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
+            host.set_str_choice_value(
+                JuicerParams::kParamScanRoute,
+                Spektrafilm::scan_route_key(Spektrafilm::kDefaultScanRoute));
+            host.dispatch_event(effect, kParamExposure, OFX::eChangeUserEdit);
+            const auto restoredRoute = host.render(effect, frame, "route-fallback-restored");
+            require(restoredRoute.succeeded &&
+                        restoredRoute.state.recipeHash == first.state.recipeHash,
+                    "route fallback test did not restore the original route");
 
             host.set_time(10.0);
             host.set_double_key(kParamExposure, 10.0, 0.25);

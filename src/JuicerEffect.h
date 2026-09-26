@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <cstdint>
 
 #include "ofxsImageEffect.h"
 
@@ -10,6 +11,7 @@ struct ParamSnapshot;
 struct VisualGrainControls;
 
 namespace Spektrafilm {
+    enum class ScanRoute : std::uint8_t;
     struct DiffusionFilterAuthoredControls;
     using ::VisualGrainControls;
 } // namespace Spektrafilm
@@ -86,8 +88,15 @@ private:
     void resetGrainAdvancedControls();
     void updateGrainPresetLabel(bool custom);
     void updateGrainChromaEnabled();
-    void updateDiffusionControlState();
-    void updateGammaControlState();
+    bool resolveDiffusionControlRoute(Spektrafilm::ScanRoute& outRoute, std::string& outDiagnostic);
+    bool resolveGammaControlRoute(
+        Spektrafilm::ScanRoute& outRoute,
+        std::string& outFilmProfileKey,
+        std::string& outDiagnostic);
+    void updateDiffusionControlState(Spektrafilm::ScanRoute selectedRoute);
+    void updateGammaControlState(
+        Spektrafilm::ScanRoute selectedRoute,
+        const std::string& filmProfileKey);
     void updateSpectralControlState();
     [[noreturn]] void throw_spektrafilm_phase1a_render_cutoff(const OFX::RenderArguments& args) const;
     bool snapshotParams(ParamSnapshot& out, std::string& outDiagnostic) const;

@@ -80,12 +80,10 @@ struct ScanRouteMetadata {
                    : ScanRoute::NegativePrintScan;
     }
 
-    inline ScanRoute resolve_scan_route(ProfilePolarity capturePolarity, ScanRoute userRouteSelection) {
-        const bool printRoute = scan_route_is_print(userRouteSelection);
-        if (capturePolarity == ProfilePolarity::Positive) {
-            return printRoute ? ScanRoute::PositivePrintScan : ScanRoute::PositiveDirectScan;
-        }
-        return printRoute ? ScanRoute::NegativePrintScan : ScanRoute::NegativeDirectScan;
-    }
+    bool resolve_scan_route(
+        ProfilePolarity capturePolarity,
+        ScanRoute userRouteSelection,
+        ScanRoute& outRoute,
+        std::string& outDiagnostic);
 
 } // namespace Spektrafilm

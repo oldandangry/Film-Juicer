@@ -85,10 +85,12 @@ endif()
 
 add_library(juicer_core STATIC ${JUICER_SOURCES})
 target_link_libraries(juicer_core PUBLIC juicer_settings)
+target_include_directories(juicer_core PRIVATE "${PROJECT_SOURCE_DIR}/native")
+target_link_libraries(juicer_core PUBLIC film_juicer_rust)
 set_target_properties(juicer_core PROPERTIES LINKER_LANGUAGE CXX)
 
 add_library(juicer MODULE src/main.cpp)
-target_link_libraries(juicer PRIVATE juicer_core juicer_ofxs film_juicer_rust)
+target_link_libraries(juicer PRIVATE juicer_core juicer_ofxs)
 set_target_properties(juicer PROPERTIES PREFIX "" SUFFIX ".ofx" LINKER_LANGUAGE CXX)
 if(UNIX)
     # Static cuFFT contains relocatable device code even though our kernels do

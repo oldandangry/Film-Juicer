@@ -1,8 +1,10 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -471,10 +473,23 @@ namespace {
 
 } // namespace
 
-int main(int argc, char** argv) {
-    gTestExecutablePath = std::filesystem::absolute(argv[0]);
-    testing::InitGoogleTest(&argc, argv);
-    const int result = RUN_ALL_TESTS();
+int main(int argc, char** argv) noexcept {
+    try {
+        gTestExecutablePath = std::filesystem::absolute(argv[0]);
+        testing::InitGoogleTest(&argc, argv);
+        const int result = RUN_ALL_TESTS();
+        JuicerProcess::shutdown_if_initialized();
+        return result;
+    } catch (const std::exception& error) {
+        std::fprintf(
+            stderr,
+            "FATAL scatter/halation recipe test: %s\n",
+            error.what());
+    } catch (...) {
+        std::fputs(
+            "FATAL scatter/halation recipe test: unknown exception\n",
+            stderr);
+    }
     JuicerProcess::shutdown_if_initialized();
-    return result;
+    return 2;
 }

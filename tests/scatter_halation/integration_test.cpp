@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -728,37 +729,32 @@ namespace {
         check_unsupported("use", "unsupported");
         check_unsupported("antihalation", "unsupported");
 
-        const auto check_rejected_model_coefficient = [&](const char* name,
-                                                          const char* arrayName,
-                                                          double value) {
-            const std::string key = std::string("recipe_profile_") + name;
+        struct RejectedCoefficientCase {
+            const char* name;
+            const char* arrayName;
+            double value;
+        };
+        const std::array<RejectedCoefficientCase, 5> rejectedCoefficientCases{{{"zero-sigma", "sigmas", 0.0},
+                                                                               {"negative-sigma", "sigmas", -0.01},
+                                                                               {"unrepresentable-center", "centers", std::numeric_limits<double>::max()},
+                                                                               {"unrepresentable-amplitude", "amplitudes", std::numeric_limits<double>::max()},
+                                                                               {"unrepresentable-sigma", "sigmas", std::numeric_limits<double>::max()}}};
+        for (const RejectedCoefficientCase& testCase : rejectedCoefficientCases) {
+            const std::string key = std::string("recipe_profile_") + testCase.name;
             nlohmann::json profile = completeProfile;
             profile["info"]["stock"] = key;
             profile["info"]["name"] = key;
-            profile["data"]["density_curves_model"][arrayName][0][0] = value;
+            profile["data"]["density_curves_model"][testCase.arrayName][0][0] =
+                testCase.value;
             const std::filesystem::path path = profileRoot / (key + ".json");
             write_json(path, profile);
             std::string failure;
             const auto loaded = load_scratch_profile(path, key, failure);
             results.record(
-                "profile/" + std::string(name) + "-rejected",
+                "profile/" + std::string(testCase.name) + "-rejected",
                 !loaded && !failure.empty(),
                 failure);
-        };
-        check_rejected_model_coefficient("zero-sigma", "sigmas", 0.0);
-        check_rejected_model_coefficient("negative-sigma", "sigmas", -0.01);
-        check_rejected_model_coefficient(
-            "unrepresentable-center",
-            "centers",
-            std::numeric_limits<double>::max());
-        check_rejected_model_coefficient(
-            "unrepresentable-amplitude",
-            "amplitudes",
-            std::numeric_limits<double>::max());
-        check_rejected_model_coefficient(
-            "unrepresentable-sigma",
-            "sigmas",
-            std::numeric_limits<double>::max());
+        }
 
         const std::string variableAxisKey = "recipe_profile_variable_axis";
         nlohmann::json variableAxis = completeProfile;
@@ -1014,6 +1010,8 @@ namespace {
                     requestedProduct.recipe.spatialOptics.scatterHalation.hash,
             admitted.diagnostic);
 
+        // Keep an independent equal-valued object so this remains an identity oracle.
+        // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
         ParamSnapshot equalDirect = direct;
         ParamSnapshot differentFilm = direct;
         differentFilm.filmProfileKey = "kodak_portra_160";
@@ -1428,7 +1426,7 @@ namespace {
     }
 
     void run_parameter_sign_rows(Results& results) {
-        enum class Setup {
+        enum class Setup : std::uint8_t {
             Direct,
             Print,
             Grain,
@@ -1519,7 +1517,8 @@ namespace {
                                            : build_direct_render_state_product(negative, freshNegative, negativeDiagnostic);
             const std::string name = std::string("identity/sign/") + signCase.name;
             if (!positiveBuilt || !negativeBuilt) {
-                results.record(name + "/fresh-build", false, positiveDiagnostic + " " + negativeDiagnostic);
+                positiveDiagnostic.append(" ").append(negativeDiagnostic);
+                results.record(name + "/fresh-build", false, positiveDiagnostic);
                 continue;
             }
             const bool recipeDiffers = freshPositive.recipe.hash != freshNegative.recipe.hash;
@@ -1617,8 +1616,7 @@ namespace {
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
 
         JuicerProcess::Root::CudaFramePreparationRequest request(
-            int width,
-            int height) const {
+            ScatterHalationValidation::ImageExtent extent) const {
             JuicerProcess::Root::CudaFramePreparationRequest value{};
             value.recipe = &product.recipe;
             value.exposureTables = &product.payload.exposureTables;
@@ -1637,8 +1635,8 @@ namespace {
                 diffusionFrameSet ? &*diffusionFrameSet : nullptr;
             value.scatterHalationDescriptor =
                 scatterDescriptor ? &*scatterDescriptor : nullptr;
-            value.requestedWidth = width;
-            value.requestedHeight = height;
+            value.requestedWidth = extent.width;
+            value.requestedHeight = extent.height;
             return value;
         }
     };
@@ -2041,7 +2039,7 @@ namespace {
                 diagnostic)) {
             throw std::runtime_error(diagnostic);
         }
-        auto zeroRequest = zeroInputs.request(kWidth, kHeight);
+        auto zeroRequest = zeroInputs.request({kWidth, kHeight});
         auto zeroFrame = root.prepare_cuda_frame(
             fixture.context_key(),
             fixture.snapshot(zeroInputs),
@@ -2075,7 +2073,7 @@ namespace {
                 diagnostic)) {
             throw std::runtime_error(diagnostic);
         }
-        auto dedicatedRequest = dedicatedInputs.request(kWidth, kHeight);
+        auto dedicatedRequest = dedicatedInputs.request({kWidth, kHeight});
         auto dedicatedFrame = root.prepare_cuda_frame(
             fixture.context_key(),
             fixture.snapshot(dedicatedInputs),
@@ -2139,7 +2137,7 @@ namespace {
                 diagnostic)) {
             throw std::runtime_error(diagnostic);
         }
-        auto cameraRequest = cameraInputs.request(kWidth, kHeight);
+        auto cameraRequest = cameraInputs.request({kWidth, kHeight});
         auto cameraFrame = root.prepare_cuda_frame(
             fixture.context_key(),
             fixture.snapshot(cameraInputs),
@@ -2215,7 +2213,7 @@ namespace {
             cameraOverlapFinished,
             terminalDiagnostic);
 
-        auto absentRequest = dedicatedInputs.request(kWidth, kHeight);
+        auto absentRequest = dedicatedInputs.request({kWidth, kHeight});
         absentRequest.scatterHalationDescriptor = nullptr;
         auto absentFrame = root.prepare_cuda_frame(
             fixture.context_key(),
@@ -2232,7 +2230,7 @@ namespace {
                 absentFrame.scatter_halation_resources().descriptor == nullptr,
             diagnostic);
 
-        auto presentForZeroRequest = zeroInputs.request(kWidth, kHeight);
+        auto presentForZeroRequest = zeroInputs.request({kWidth, kHeight});
         presentForZeroRequest.scatterHalationDescriptor =
             &*dedicatedInputs.scatterDescriptor;
         auto presentForZeroFrame = root.prepare_cuda_frame(
@@ -2253,7 +2251,7 @@ namespace {
 
         auto mismatched = *dedicatedInputs.scatterDescriptor;
         ++mismatched.recipeHash;
-        auto mismatchRequest = dedicatedInputs.request(kWidth, kHeight);
+        auto mismatchRequest = dedicatedInputs.request({kWidth, kHeight});
         mismatchRequest.scatterHalationDescriptor = &mismatched;
         auto mismatchFrame = root.prepare_cuda_frame(
             fixture.context_key(),
@@ -2269,7 +2267,7 @@ namespace {
                 mismatchFrame.scatter_halation_resources().descriptor == nullptr,
             diagnostic);
 
-        auto zeroExtentRequest = dedicatedInputs.request(0, kHeight);
+        auto zeroExtentRequest = dedicatedInputs.request({0, kHeight});
         auto zeroExtentFrame = root.prepare_cuda_frame(
             fixture.context_key(),
             fixture.snapshot(dedicatedInputs),
@@ -2281,7 +2279,7 @@ namespace {
             "prepared/zero-extent",
             !zeroExtentFrame.active() && contains_text(diagnostic, "field=extent"),
             diagnostic);
-        auto negativeExtentRequest = dedicatedInputs.request(-1, kHeight);
+        auto negativeExtentRequest = dedicatedInputs.request({-1, kHeight});
         auto negativeExtentFrame = root.prepare_cuda_frame(
             fixture.context_key(),
             fixture.snapshot(dedicatedInputs),
@@ -2295,8 +2293,8 @@ namespace {
             diagnostic);
 
         auto overflowRequest = dedicatedInputs.request(
-            std::numeric_limits<int>::max(),
-            std::numeric_limits<int>::max());
+            {std::numeric_limits<int>::max(),
+             std::numeric_limits<int>::max()});
         auto overflowFrame = root.prepare_cuda_frame(
             fixture.context_key(),
             fixture.snapshot(dedicatedInputs),
@@ -2316,7 +2314,7 @@ namespace {
         auto incompatibleFrameSet = *cameraInputs.diffusionFrameSet;
         incompatibleFrameSet.camera->stage =
             Spektrafilm::DiffusionLinearStage::EnlargerPrintLinear;
-        auto incompatibleRequest = cameraInputs.request(kWidth, kHeight);
+        auto incompatibleRequest = cameraInputs.request({kWidth, kHeight});
         incompatibleRequest.diffusionFrameSetDescriptor = &incompatibleFrameSet;
         auto incompatibleFrame = root.prepare_cuda_frame(
             fixture.context_key(),
@@ -2445,7 +2443,7 @@ namespace {
                 fixture.synchronize(terminalDiagnostic),
             terminalDiagnostic);
 
-        auto dependentRequest = dedicatedInputs.request(kWidth, kHeight);
+        auto dependentRequest = dedicatedInputs.request({kWidth, kHeight});
         auto dependentFrame = root.prepare_cuda_frame(
             fixture.context_key(),
             fixture.snapshot(dedicatedInputs),
@@ -2477,7 +2475,7 @@ namespace {
                 throw std::runtime_error(diagnostic);
             }
             auto pendingUploadRequest =
-                pendingUploadInputs->request(kWidth, kHeight);
+                pendingUploadInputs->request({kWidth, kHeight});
             const std::string expectedRetainedProfileKey =
                 pendingUploadInputs->product.recipe.profileRoute.filmProfileKey;
             auto pendingUploadFrame = root.prepare_cuda_frame(
@@ -2822,7 +2820,7 @@ namespace {
                           inputs.product.recipe.profileRoute.scanRoute ==
                               metadata.route;
             if (passed) {
-                auto request = inputs.request(kWidth, kHeight);
+                auto request = inputs.request({kWidth, kHeight});
                 auto frame = JuicerProcess::root().prepare_cuda_frame(
                     fixture.context_key(),
                     fixture.snapshot(inputs),
@@ -2887,7 +2885,7 @@ namespace {
                     diagnostic);
                 continue;
             }
-            auto request = inputs.request(kWidth, kHeight);
+            auto request = inputs.request({kWidth, kHeight});
             auto frame = JuicerProcess::root().prepare_cuda_frame(
                 fixture.context_key(),
                 fixture.snapshot(inputs),
@@ -2937,7 +2935,7 @@ namespace {
                 diagnostic)) {
             throw std::runtime_error(diagnostic);
         }
-        auto request = inputs.request(kWidth, kHeight);
+        auto request = inputs.request({kWidth, kHeight});
         auto failedFrame = JuicerProcess::root().prepare_cuda_frame(
             fixture.context_key(),
             fixture.snapshot(inputs),
@@ -2999,7 +2997,7 @@ namespace {
             fixture.stream_opaque(),
             diagnostic);
         const auto transitionView = transitionFrame.scatter_halation_resources();
-        const auto carrierR = transitionView.currentCarrier.redSensitive;
+        auto* const carrierR = transitionView.currentCarrier.redSensitive;
         bool transitioned =
             transitionFrame.active() &&
             upload_and_launch_dedicated(
@@ -3039,6 +3037,15 @@ namespace {
                   << " failures=" << results.failure_count() << '\n';
     }
 
+    void report_fatal_and_shutdown(const char* detail) noexcept {
+        std::fprintf(stderr, "fatal: %s\n", detail);
+        try {
+            JuicerProcess::root().shutdown();
+        } catch (...) {
+            std::fputs("fatal: shutdown failed during error handling\n", stderr);
+        }
+    }
+
 } // namespace
 
 namespace ScatterHalationValidation {
@@ -3060,7 +3067,7 @@ namespace ScatterHalationValidation {
         PreparedRouteInputs&&) noexcept = default;
 
     JuicerProcess::Root::CudaFramePreparationRequest
-    PreparedRouteInputs::request(int width, int height) const {
+    PreparedRouteInputs::request(ImageExtent extent) const {
         JuicerProcess::Root::CudaFramePreparationRequest value{};
         value.recipe = &_impl->product.recipe;
         value.exposureTables = &_impl->product.payload.exposureTables;
@@ -3080,8 +3087,8 @@ namespace ScatterHalationValidation {
             _impl->diffusionFrameSet ? &*_impl->diffusionFrameSet : nullptr;
         value.scatterHalationDescriptor =
             _impl->scatterDescriptor ? &*_impl->scatterDescriptor : nullptr;
-        value.requestedWidth = width;
-        value.requestedHeight = height;
+        value.requestedWidth = extent.width;
+        value.requestedHeight = extent.height;
         return value;
     }
 
@@ -3122,16 +3129,14 @@ namespace ScatterHalationValidation {
         const ScatterHalationControls& controls,
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
         float pixelSizeUm,
-        int width,
-        int height) {
+        ImageExtent extent) {
         return build_prepared_route_inputs(
             route,
             controls,
             cameraDiffusion,
             Spektrafilm::DirCouplersControls{},
             pixelSizeUm,
-            width,
-            height);
+            extent);
     }
 
     PreparedRouteInputs build_prepared_route_inputs(
@@ -3140,8 +3145,7 @@ namespace ScatterHalationValidation {
         const Spektrafilm::DiffusionFilterAuthoredControls& cameraDiffusion,
         const Spektrafilm::DirCouplersControls& dirCouplers,
         float pixelSizeUm,
-        int width,
-        int height,
+        ImageExtent extent,
         float filmGammaFactor,
         const std::string& filmProfileKey) {
         ParamSnapshot snapshot;
@@ -3195,7 +3199,11 @@ namespace ScatterHalationValidation {
                  impl->product.recipe.spatialOptics,
                  route,
                  static_cast<double>(pixelSizeUm),
-                 Spektrafilm::DiffusionFrameDomain{0, 0, width, height},
+                 Spektrafilm::DiffusionFrameDomain{
+                     0,
+                     0,
+                     extent.width,
+                     extent.height},
                  impl->diffusionFrameSet,
                  diagnostic) ||
              !impl->diffusionFrameSet || !impl->diffusionFrameSet->camera)) {
@@ -3244,7 +3252,7 @@ namespace ScatterHalationValidation {
 
 } // namespace ScatterHalationValidation
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) noexcept {
     try {
         const Arguments arguments = parse_arguments(argc, argv);
         std::filesystem::create_directories(arguments.scratchRoot);
@@ -3313,8 +3321,10 @@ int main(int argc, char** argv) {
         }
         return results.failure_count() == 0 ? 0 : 1;
     } catch (const std::exception& error) {
-        std::cerr << "fatal: " << error.what() << '\n';
-        JuicerProcess::root().shutdown();
+        report_fatal_and_shutdown(error.what());
+        return 2;
+    } catch (...) {
+        report_fatal_and_shutdown("unknown exception");
         return 2;
     }
 }
