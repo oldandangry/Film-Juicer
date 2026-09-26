@@ -3852,7 +3852,9 @@ namespace JuicerProcess {
                 dir.rawCorrectionY, dir.rawCorrectionM, dir.rawCorrectionC};
             const std::array<float*, 8> live{
                 view.filterTemp, view.scaleWork, dir.filteredCorrectionY, dir.filteredCorrectionM, dir.filteredCorrectionC, dir.logRawB, dir.logRawG, dir.logRawR};
-            for (auto current = raw.begin(); current != raw.end(); ++current) {
+            for (std::array<float*, 3>::const_iterator current = raw.begin();
+                 current != raw.end();
+                 ++current) {
                 if (!*current ||
                     std::find(raw.begin(), current, *current) != current ||
                     std::find(live.begin(), live.end(), *current) != live.end()) {
