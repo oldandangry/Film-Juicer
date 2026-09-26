@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Film-Juicer's tracked formatting and lint checks."""
+"""Run Film-Juicer's tracked source hygiene, formatting, and lint checks."""
 
 from __future__ import annotations
 
@@ -249,6 +249,55 @@ def is_rust(path: str) -> bool:
     return path.endswith(".rs") or path in RUST_POLICY_FILES or path.endswith("/Cargo.toml")
 
 
+def check_source_hygiene(
+    root: Path, selected: Sequence[str], policy: SourcePolicy, log_path: Path
+) -> None:
+    # Preserve the existing source-text gates, including matches in comments.
+    rules = (
+        (re.compile(r"[ \t]+$"), "trailing whitespace"),
+        (re.compile(r"^(<<<<<<<|=======|>>>>>>>|\|\|\|\|\|\|\|)"), "merge conflict marker"),
+        (re.compile(r"\bJUICER_TESTS\b"), "retired JUICER_TESTS flag; use BUILD_TESTING"),
+        (
+            re.compile(r"\bJUICER_BUILD_VALIDATION\b"),
+            "retired JUICER_BUILD_VALIDATION flag; use BUILD_TESTING",
+        ),
+        (re.compile(r"\bstd::endl\b"), r"std::endl is prohibited; use '\n'"),
+    )
+    header_rule = (
+        re.compile(r"^\s*using\s+namespace\b"),
+        "using namespace directives are prohibited in headers",
+    )
+    diagnostics: list[str] = []
+    checked = 0
+    for path in selected:
+        if exclusion_reason(path, policy) is not None or not is_native(path, policy):
+            continue
+        checked += 1
+        try:
+            source = (root / path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            diagnostics.append(f"{path}: cannot read source for hygiene checks: {exc}")
+            continue
+        path_rules = rules
+        if PurePosixPath(path).suffix.lower() in policy.header_extensions:
+            path_rules = (*rules, header_rule)
+        for line_number, line in enumerate(source.splitlines(), start=1):
+            for pattern, message in path_rules:
+                match = pattern.search(line)
+                if match is not None:
+                    diagnostics.append(
+                        f"{path}:{line_number}:{match.start() + 1}: {message}"
+                    )
+
+    report = "\n".join(diagnostics) if diagnostics else (
+        f"Source hygiene checks passed for {checked} native source file(s)."
+    )
+    log_path.write_text(report + "\n", encoding="utf-8")
+    print(report)
+    if diagnostics:
+        raise QualityError(f"source hygiene checks failed; see {log_path}")
+
+
 def select_paths(
     root: Path, arguments: argparse.Namespace, policy: SourcePolicy
 ) -> tuple[list[str], list[str]]:
@@ -347,6 +396,7 @@ def check_rust(
     rustc_candidates = (str(Path(cargo_dir) / ("rustc.exe" if os.name == "nt" else "rustc")), "rustc")
     rustc = resolve_tool(arguments.rustc, "JUICER_RUSTC", rustc_candidates)
     environment = cargo_environment()
+    environment["CLIPPY_CONF_DIR"] = str(root)
 
     cargo_version = runner.run([cargo, "--version"], env=environment, label="cargo-version")
     rustc_version = runner.run(
@@ -379,20 +429,30 @@ def check_rust(
         str(target_dir),
     ]
     runner.run([cargo, "fmt", "--all", "--", "--check"], env=environment, label="rustfmt")
-    for package, targets in (
-        ("film-juicer-core", ["--all-targets"]),
-        ("film-juicer-plugin", ["--lib"]),
-    ):
+    for package in ("film-juicer-core", "film-juicer-plugin"):
         runner.run(
-            [*common, "-p", package, *targets, "--", "-D", "warnings"],
+            [*common, "-p", package, "--all-targets", "--", "-D", "warnings"],
             env=environment,
             label=f"clippy-{package}-dev",
         )
         runner.run(
-            [*common, "-p", package, *targets, "--release", "--", "-D", "warnings"],
+            [*common, "-p", package, "--all-targets", "--release", "--", "-D", "warnings"],
             env=environment,
             label=f"clippy-{package}-release",
         )
+
+    runner.run(
+        [sys.executable, "-m", "unittest", "discover", "-s", "tests/quality",
+         "-p", "test_rust_naming.py", "-v"],
+        env={
+            **environment,
+            "JUICER_CARGO": cargo,
+            "JUICER_RUST_TARGET": target,
+            "JUICER_TEST_ARTIFACT_DIR": str(runner.log_dir / "rust-naming"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        label="rust-naming-enforcement",
+    )
 
 
 def compilation_entries(root: Path, preset: str) -> list[CompilationEntry]:
@@ -570,6 +630,8 @@ def main() -> int:
         print("  none")
     print(f"Python: {sys.version.split()[0]}")
     print(f"Rust target: {target}")
+
+    check_source_hygiene(root, selected, policy, log_dir / "source-hygiene.log")
 
     if arguments.base:
         diff_command = ["git", "diff", "--check", arguments.base, "--"]

@@ -14,7 +14,7 @@ Hard gates:
   - clang-format on whole files for untracked source files
   - no trailing whitespace
   - no merge conflict markers
-  - no JUICER_TESTS references
+  - no JUICER_TESTS or JUICER_BUILD_VALIDATION references
   - no std::endl in touched source files
   - no using namespace directives in touched headers
 
@@ -95,8 +95,8 @@ if rg -n -H "^(<<<<<<<|=======|>>>>>>>)" -- "${FILES[@]}"; then
     FAIL=1
 fi
 
-if rg -n -H "JUICER_TESTS" -- "${FILES[@]}"; then
-    echo "ERROR: JUICER_TESTS is deprecated and must not be introduced." >&2
+if rg -n -H '\b(JUICER_TESTS|JUICER_BUILD_VALIDATION)\b' -- "${FILES[@]}"; then
+    echo "ERROR: JUICER_TESTS and JUICER_BUILD_VALIDATION are retired; use BUILD_TESTING." >&2
     FAIL=1
 fi
 

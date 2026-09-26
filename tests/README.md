@@ -160,9 +160,24 @@ cmake --build --preset linux-debug
 | `grain/delta_fusion_test.cu` | Grain output against a separate FP32 blur/accumulation/delta oracle, including finite sanitation and final-layer dispatch | `gpu` |
 | `dir/exposure_cache_test.cpp` | Source-pass versus separate-pass log-exposure caches and final capture density through production CUDA operators | `gpu` |
 | `gamma/test_compare.py` | Comparator bounds, applicability, non-finite rejection and CLI failure propagation | `host` |
+| `quality/test_check_quality.py` | Quality dispatcher selection, source hygiene, and failure propagation | `host` |
+| `quality/test_rust_naming.py` | Product naming-policy contract: current Rust code, accepted names, individually rejected names, test targets, and reasoned foreign-name exceptions under the actual workspace lints | `host`; pinned Cargo and Clippy required |
 | `ofx/probe.py` | Linux synthetic OFX load/describe/unload and captured describe properties; no parameter varargs or render | `host`, Linux only |
 | `ofx/processor_reference_test.cpp` | Native OFX image/property seam driving the current CUDA processor for four routes, a combined optics/grain/print case, and signed-zero print transitions | `gpu` |
 | `ofx/adapter_trace_test.cpp` | Genuine native OFX parameter/image fixture driving the actual `JuicerEffect` event and render callbacks through time, seek, preset/reset, undo/redo-like, and invalid/recovery sequences | `gpu` |
+
+`Quality.RustNaming` uses the current workspace manifests and Clippy configuration
+in temporary copies under `out/validation/<preset>/quality/rust-naming/`.
+The checked-in `quality/fixtures/rust_naming/*.rs` files are product naming-policy
+contracts, not external references. Both crates are checked in development and
+release, including test targets. Expected failures must produce the specific
+error code and primary source span for every rejected identifier; a compiler
+setup failure is not a passing negative test. Valid names and a reasoned raw
+binding exception must compile successfully. Cargo runs offline and locked;
+the normal configured build supplies cached dependencies. Logs remain in the
+artifact directory after temporary workspace cleanup. Run it with
+`ctest --preset <preset> -R '^Quality.RustNaming$' --output-on-failure`, or use
+the quality dispatcher, which supplies the same tool and artifact environment.
 
 The diffusion fixture is an external reference. The scatter binary fixture is
 also an external reference with revision, shape, channel order and numerical
