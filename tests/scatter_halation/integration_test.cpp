@@ -2106,6 +2106,7 @@ namespace {
         results.record(
             "prepared/dedicated-carrier",
             dedicatedFrame.active() &&
+                dedicatedView.descriptor &&
                 dedicatedView.descriptor->recipeHash ==
                     dedicatedInputs.product.recipe.spatialOptics.scatterHalation.hash &&
                 dedicatedView.carrierSource ==
