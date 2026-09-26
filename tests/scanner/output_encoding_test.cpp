@@ -18,6 +18,7 @@
 #include "SpectralProcessing.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "juicer_cuda_owner.h"
 
 extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(const JuicerCuda::DirectPipelineRunParams*, void*);
 extern "C" cudaError_t juicer_cuda_print_focused_pipeline(const JuicerCuda::PrintPipelineRunParams*, void*);
@@ -866,6 +867,8 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) {
+    JuicerCuda::Owner cudaOwner;
+    cudaOwner.create(JuicerProcess::data_directory());
     testing::InitGoogleTest(&argc, argv);
     JuicerProcess::root().ensure_bootstrap();
     const int result = RUN_ALL_TESTS();

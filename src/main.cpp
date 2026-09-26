@@ -39,6 +39,7 @@
 #include "ColorTransforms.h"
 #include "ParamNames.h"
 #include "ProcessRoot.h"
+#include "juicer_cuda_owner.h"
 
 // === Resolve support library factory (Step 1) ===
 // The factory owns the plugin identity and wires descriptor/instance creation.
@@ -59,13 +60,24 @@ public:
 
     void describe(OFX::ImageEffectDescriptor& desc) override;
     void describeInContext(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context) override;
+    void load() override;
     void unload() override;
     OFX::ImageEffect* createInstance(OfxImageEffectHandle handle, OFX::ContextEnum context) override;
+
+private:
+    JuicerCuda::Owner _cuda;
 };
 
 
+void JuicerPluginFactory::load() {
+    _cuda.create(JuicerProcess::data_directory());
+}
+
 void JuicerPluginFactory::unload() {
-    JuicerProcess::shutdown_if_initialized();
+    if (!_cuda.close()) {
+        // Retaining the native graph does not make module unload safe.
+        OFX::throwSuiteStatusException(kOfxStatErrFatal);
+    }
 }
 
 void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc) {

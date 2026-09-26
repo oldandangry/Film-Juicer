@@ -80,6 +80,24 @@ endif()
 add_test(NAME Ffi.Host.CudaAbi COMMAND JuicerCudaAbiTests)
 set_tests_properties(Ffi.Host.CudaAbi PROPERTIES LABELS "host" TIMEOUT 30)
 
+add_executable(JuicerCudaOwnerTests ffi/cuda_owner_test.cpp)
+target_link_libraries(JuicerCudaOwnerTests PRIVATE juicer_core)
+set_target_properties(JuicerCudaOwnerTests PROPERTIES LINKER_LANGUAGE CXX)
+if(UNIX)
+    set_property(TARGET JuicerCudaOwnerTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Ffi.Host.CudaOwner COMMAND JuicerCudaOwnerTests)
+set_tests_properties(Ffi.Host.CudaOwner PROPERTIES LABELS "host" TIMEOUT 30)
+
+add_executable(JuicerCudaOwnerUnloadTests ofx/cuda_owner_unload_test.cpp ../src/main.cpp)
+target_link_libraries(JuicerCudaOwnerUnloadTests PRIVATE juicer_core juicer_ofxs)
+set_target_properties(JuicerCudaOwnerUnloadTests PROPERTIES LINKER_LANGUAGE CXX)
+if(UNIX)
+    set_property(TARGET JuicerCudaOwnerUnloadTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Ofx.Host.CudaOwnerUnload COMMAND JuicerCudaOwnerUnloadTests)
+set_tests_properties(Ofx.Host.CudaOwnerUnload PROPERTIES LABELS "host" TIMEOUT 30)
+
 add_executable(JuicerRouteBridgeTests
     route/route_bridge_test.cpp ../src/ScanRoute.cpp)
 target_include_directories(JuicerRouteBridgeTests PRIVATE
@@ -250,7 +268,7 @@ add_library(juicer_executor_failure_test_objects OBJECT
     ../src/mainProcessing.cpp
     ../src/Cuda/JuicerCudaExecutor.cpp
     ../src/ProcessRoot.cpp)
-target_link_libraries(juicer_executor_failure_test_objects PRIVATE juicer_settings)
+target_link_libraries(juicer_executor_failure_test_objects PRIVATE juicer_settings juicer_ofx_headers)
 target_compile_definitions(juicer_executor_failure_test_objects PRIVATE
     JUICER_EXECUTOR_FAILURE_TEST_HOOK=1)
 add_executable(JuicerExecutorFailureOrderProbe ofx/processor_reference_test.cpp
@@ -297,7 +315,7 @@ add_executable(JuicerScatterHalationGpuTests
     scatter_halation/integration_test.cpp
     scatter_halation/integration_test_cases.cpp)
 add_library(juicer_admission_test_state OBJECT ../src/JuicerState.cpp)
-target_link_libraries(juicer_admission_test_state PRIVATE juicer_settings)
+target_link_libraries(juicer_admission_test_state PRIVATE juicer_settings juicer_ofx_headers)
 target_compile_definitions(juicer_admission_test_state PRIVATE JUICER_ADMISSION_TEST_HOOK=1)
 target_compile_definitions(JuicerScatterHalationGpuTests PRIVATE JUICER_ADMISSION_TEST_HOOK=1)
 target_sources(JuicerScatterHalationGpuTests PRIVATE

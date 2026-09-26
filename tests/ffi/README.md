@@ -24,6 +24,40 @@ cmake --build --preset linux-debug --target juicer JuicerCudaAbiTests
 ctest --preset linux-debug -R '^(Ffi\.Host\.CudaAbi|Rust\.Bridge)$'
 ```
 
+## Native owner lifecycle
+
+`Ffi.Host.CudaOwner` exercises the actual native owner with no GPU discovery:
+invalid creation does not publish, duplicate creation cannot replace the
+registered root, uninitialized teardown does not create a root, and scoped
+close/reload constructs a fresh metadata owner. It also checks diagnostic
+truncation and that callers cannot directly construct or destroy `Root`.
+
+Its final case keeps a metadata-only registry submission active to make close
+fail before any CUDA access. After ending the submission, repeated close and
+destruction must leave the same blocked graph registered, without retrying
+retirement or permitting a replacement owner. That failure-only graph is
+intentionally retained until the test process exits.
+
+`Ofx.Host.CudaOwnerUnload` links the real factory and OFX support entry point.
+It checks successful factory close/reload and maps the same controlled native
+shutdown failure to `kOfxStatErrFatal`, preserving consume-once retention. It
+loads the factory directly without host suites; staged-module lifecycle probes
+separately cover the complete host callback sequence. Neither test establishes
+GPU completion or safe forced module unloading after a terminal failure.
+
+Direct native fixtures use `JuicerCuda::Owner` for their process scope, just as
+the OFX factory owns one handle across load/unload. Resource lookup remains a
+borrow of that registered owner. The temporary C++ release bridge consumes its
+handle once and deletes only after completed Root shutdown; failed shutdown
+retains the graph and blocks a replacement owner. Final typed C shutdown/destroy
+and failed-terminal-retention qualification remain a later migration boundary.
+This test does not establish those terminal or GPU lifetime contracts.
+
+The native execution object target has no OFX include or link dependency. Its
+objects, current C++ host preparation, and OFX adapter objects enter one
+`juicer_core` archive used by existing product and test links. Isolated test-hook
+objects replace selected archive members without rebuilding CUDA in Cargo.
+
 ## Binding maintenance
 
 The only regeneration entry point is `scripts/regenerate-rust-bindings.py`.

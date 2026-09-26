@@ -31,6 +31,7 @@
 #include "Hash.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "juicer_cuda_owner.h"
 #include "ProfileAssets.h"
 #include "ScatterHalation.h"
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
@@ -3041,7 +3042,7 @@ namespace {
     void report_fatal_and_shutdown(const char* detail) noexcept {
         std::fprintf(stderr, "fatal: %s\n", detail);
         try {
-            JuicerProcess::root().shutdown();
+            JuicerProcess::shutdown_if_initialized();
         } catch (...) {
             std::fputs("fatal: shutdown failed during error handling\n", stderr);
         }
@@ -3254,7 +3255,9 @@ namespace ScatterHalationValidation {
 } // namespace ScatterHalationValidation
 
 int main(int argc, char** argv) noexcept {
+    JuicerCuda::Owner cudaOwner;
     try {
+        cudaOwner.create(JuicerProcess::data_directory());
         const Arguments arguments = parse_arguments(argc, argv);
         std::filesystem::create_directories(arguments.scratchRoot);
         JuicerProcess::root().ensure_bootstrap();

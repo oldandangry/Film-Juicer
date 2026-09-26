@@ -414,3 +414,12 @@ files are required.
 `Ffi.Host.CudaAbi` compares C11, C++20 and generated Rust layouts and type-checks
 the CUDA C boundary signatures. `Rust.Bridge` includes internal ABI checks. See
 [the FFI guide](ffi/README.md) for bounded commands and pinned binding maintenance.
+
+`Ffi.Host.CudaOwner` covers native owner creation, non-publication on failure,
+duplicate rejection, noncreating teardown, scoped close/reload and consume-once
+retention after a controlled metadata-only shutdown failure without a GPU.
+`Ofx.Host.CudaOwnerUnload` verifies that the real factory's failed close returns
+a fatal status through the OFX entry point and blocks replacement ownership.
+Direct native fixtures explicitly own their runtime; `Root` access only borrows
+it. The FFI guide records the temporary release bridge and remaining terminal
+lifetime qualification.

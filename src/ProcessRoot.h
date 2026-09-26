@@ -17,7 +17,7 @@
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
 
-struct InstanceState;
+struct FjCuda;
 namespace Scanner {
     struct ScannerPostEffectsDescriptor;
 } // namespace Scanner
@@ -160,15 +160,13 @@ namespace JuicerProcess {
             Root* _root = nullptr;
         };
 
-        static Root& instance() noexcept;
-
-        ~Root();
+        static Root& instance();
 
         Root(const Root&) = delete;
         Root& operator=(const Root&) = delete;
 
         void ensure_bootstrap();
-        void shutdown() noexcept;
+        bool shutdown() noexcept;
         void retire_grain_static_instance(std::uint64_t instanceToken) noexcept;
         FramePreparationToken begin_frame_preparation() noexcept;
         bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
@@ -495,6 +493,7 @@ namespace JuicerProcess {
 
     private:
         friend class TestSupport::RootLifetimeObserver;
+        friend struct ::FjCuda;
 
         class ShutdownToken final {
         public:
@@ -516,16 +515,17 @@ namespace JuicerProcess {
             Root* _root = nullptr;
         };
 
-        Root();
+        explicit Root(std::string dataDirectory);
+        ~Root();
 
         ShutdownToken begin_shutdown() noexcept;
         bool retire_known_contexts(std::string& outError) noexcept;
-        void release_cuda_context_resource_owners() noexcept;
+        bool release_cuda_context_resource_owners() noexcept;
         void release_process_host_services() noexcept;
         void finish_shutdown() noexcept;
         void finish_frame_preparation() noexcept;
         void resume_frame_preparation() noexcept;
-        void wait_for_frame_preparation() noexcept;
+        bool wait_for_frame_preparation() noexcept;
         void set_shutdown_retire_blocked(bool blocked) noexcept;
 
         std::once_flag _bootstrapOnce;
@@ -623,7 +623,8 @@ namespace JuicerProcess {
         CudaContextResourceMap _cudaContextResources;
     };
 
-    Root& root() noexcept;
+    Root& root();
+    std::string data_directory();
     void shutdown_if_initialized() noexcept;
 
 } // namespace JuicerProcess

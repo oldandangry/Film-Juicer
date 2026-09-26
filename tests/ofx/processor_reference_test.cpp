@@ -20,6 +20,7 @@
 #include "Hash.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "juicer_cuda_owner.h"
 #include "SpectralProcessing.h"
 #include "mainProcessing.h"
 #include "ofxsSupportPrivate.h"
@@ -707,7 +708,9 @@ namespace {
 #endif
 
 int main(int argc, char** argv) {
+    JuicerCuda::Owner cudaOwner;
     try {
+        cudaOwner.create(JuicerProcess::data_directory());
         NarrowHost host;
         require_cuda(cudaSetDevice(0), "select device");
         require_cuda(cudaFree(nullptr), "initialize CUDA");
@@ -785,7 +788,7 @@ int main(int argc, char** argv) {
     } catch (const std::exception& error) {
         (void)std::fprintf(stderr, "%s\n", error.what());
         try {
-            JuicerProcess::root().shutdown();
+            JuicerProcess::shutdown_if_initialized();
         } catch (...) {
             (void)std::fputs("shutdown failed after processor test error\n", stderr);
         }

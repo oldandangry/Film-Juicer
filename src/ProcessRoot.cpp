@@ -25,8 +25,8 @@
 #endif
 
 #include "Illuminants.h"
-#include "JuicerState.h"
 #include "Logging.h"
+#include "Scanner.h"
 #include "SpectralData.h"
 #include "SpectralProcessing.h"
 
@@ -40,10 +40,6 @@
 namespace JuicerProcess {
 
     namespace {
-
-        // OFX unload may follow load without description or instance creation.
-        // Publish only completed construction so teardown can remain non-creating.
-        constinit std::atomic<Root*> gRootInstance{nullptr};
 
 #if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
         struct ContextDrainTestFailure final {
@@ -314,101 +310,6 @@ namespace JuicerProcess {
             return "unknown";
         }
 
-
-        std::string compute_process_data_dir() {
-            namespace fs = std::filesystem;
-
-#if defined(_WIN32)
-            HMODULE module = nullptr;
-            if (!GetModuleHandleExW(
-                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                    reinterpret_cast<LPCWSTR>(&compute_process_data_dir),
-                    &module)) {
-                return std::string();
-            }
-
-            std::wstring buffer(MAX_PATH, L'\0');
-            DWORD length = 0;
-            for (;;) {
-                SetLastError(ERROR_SUCCESS);
-                length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
-                if (length == 0) {
-                    return std::string();
-                }
-                if (length < buffer.size()) {
-                    buffer.resize(length);
-                    break;
-                }
-                if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
-                    buffer.resize(length);
-                    break;
-                }
-                buffer.resize(buffer.size() * 2);
-            }
-
-            fs::path modulePath(buffer);
-            fs::path moduleDir = modulePath.parent_path();
-            if (moduleDir.empty()) {
-                return std::string();
-            }
-            fs::path contentsDir = moduleDir.parent_path();
-            if (contentsDir.empty()) {
-                return std::string();
-            }
-
-            fs::path resourcesDir = (contentsDir / "Resources").lexically_normal();
-            resourcesDir.make_preferred();
-            std::wstring native = resourcesDir.native();
-            if (!native.empty() && native.back() != L'\\') {
-                native.push_back(L'\\');
-            }
-
-            if (native.empty()) {
-                return std::string();
-            }
-
-            int required = WideCharToMultiByte(
-                CP_UTF8,
-                0,
-                native.c_str(),
-                static_cast<int>(native.size()),
-                nullptr,
-                0,
-                nullptr,
-                nullptr);
-            if (required <= 0) {
-                return std::string();
-            }
-
-            std::string path(static_cast<size_t>(required), '\0');
-            WideCharToMultiByte(CP_UTF8, 0, native.c_str(), static_cast<int>(native.size()), path.data(), required, nullptr, nullptr);
-            return path;
-#else
-            Dl_info info{};
-            if (dladdr(reinterpret_cast<const void*>(&compute_process_data_dir), &info) == 0 || info.dli_fname == nullptr) {
-                return std::string();
-            }
-
-            fs::path modulePath(info.dli_fname);
-            fs::path moduleDir = modulePath.parent_path();
-            if (moduleDir.empty()) {
-                return std::string();
-            }
-            fs::path contentsDir = moduleDir.parent_path();
-            if (contentsDir.empty()) {
-                return std::string();
-            }
-
-            fs::path resourcesDir = (contentsDir / "Resources").lexically_normal();
-            resourcesDir.make_preferred();
-            const std::u8string utf8Path = resourcesDir.u8string();
-            std::string path(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
-            if (!path.empty() && path.back() != '/') {
-                path.push_back('/');
-            }
-            return path;
-#endif
-        }
 
         template <typename... Parts>
         std::string data_file_string(const std::string& dataDir, Parts&&... parts) {
@@ -4540,30 +4441,106 @@ namespace JuicerProcess {
         }
     }
 
-    Root& Root::instance() noexcept {
-        static Root root;
-        gRootInstance.store(&root, std::memory_order_release);
-        return root;
-    }
+    std::string data_directory() {
+        namespace fs = std::filesystem;
 
-    Root& root() noexcept {
-        return Root::instance();
-    }
-
-    void shutdown_if_initialized() noexcept {
-        Root* root = gRootInstance.load(std::memory_order_acquire);
-        if (root) {
-            root->shutdown();
+#if defined(_WIN32)
+        HMODULE module = nullptr;
+        if (!GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(&data_directory),
+                &module)) {
+            return std::string();
         }
+
+        std::wstring buffer(MAX_PATH, L'\0');
+        DWORD length = 0;
+        for (;;) {
+            SetLastError(ERROR_SUCCESS);
+            length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+            if (length == 0) {
+                return std::string();
+            }
+            if (length < buffer.size()) {
+                buffer.resize(length);
+                break;
+            }
+            if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+                buffer.resize(length);
+                break;
+            }
+            buffer.resize(buffer.size() * 2);
+        }
+
+        fs::path modulePath(buffer);
+        fs::path moduleDir = modulePath.parent_path();
+        if (moduleDir.empty()) {
+            return std::string();
+        }
+        fs::path contentsDir = moduleDir.parent_path();
+        if (contentsDir.empty()) {
+            return std::string();
+        }
+
+        fs::path resourcesDir = (contentsDir / "Resources").lexically_normal();
+        resourcesDir.make_preferred();
+        std::wstring native = resourcesDir.native();
+        if (!native.empty() && native.back() != L'\\') {
+            native.push_back(L'\\');
+        }
+
+        if (native.empty()) {
+            return std::string();
+        }
+
+        int required = WideCharToMultiByte(
+            CP_UTF8,
+            0,
+            native.c_str(),
+            static_cast<int>(native.size()),
+            nullptr,
+            0,
+            nullptr,
+            nullptr);
+        if (required <= 0) {
+            return std::string();
+        }
+
+        std::string path(static_cast<size_t>(required), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, native.c_str(), static_cast<int>(native.size()), path.data(), required, nullptr, nullptr);
+        return path;
+#else
+        Dl_info info{};
+        if (dladdr(reinterpret_cast<const void*>(&data_directory), &info) == 0 || info.dli_fname == nullptr) {
+            return std::string();
+        }
+
+        fs::path modulePath(info.dli_fname);
+        fs::path moduleDir = modulePath.parent_path();
+        if (moduleDir.empty()) {
+            return std::string();
+        }
+        fs::path contentsDir = moduleDir.parent_path();
+        if (contentsDir.empty()) {
+            return std::string();
+        }
+
+        fs::path resourcesDir = (contentsDir / "Resources").lexically_normal();
+        resourcesDir.make_preferred();
+        const std::u8string utf8Path = resourcesDir.u8string();
+        std::string path(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
+        if (!path.empty() && path.back() != '/') {
+            path.push_back('/');
+        }
+        return path;
+#endif
     }
 
-    Root::Root()
-        : _dataDir(compute_process_data_dir()), _assets(_dataDir) {
+    Root::Root(std::string dataDirectory)
+        : _dataDir(std::move(dataDirectory)), _assets(_dataDir) {
     }
 
-    Root::~Root() {
-        gRootInstance.store(nullptr, std::memory_order_release);
-    }
+    Root::~Root() = default;
 
     void Root::ensure_bootstrap() {
         resume_frame_preparation();
@@ -4572,11 +4549,13 @@ namespace JuicerProcess {
         });
     }
 
-    void Root::shutdown() noexcept {
+    bool Root::shutdown() noexcept {
         try {
             ShutdownToken shutdown = begin_shutdown();
-            (void)shutdown;
-            wait_for_frame_preparation();
+            if (!shutdown._root || !wait_for_frame_preparation()) {
+                set_shutdown_retire_blocked(true);
+                return false;
+            }
             std::string retireError;
             if (!retire_known_contexts(retireError)) {
                 set_shutdown_retire_blocked(true);
@@ -4590,13 +4569,19 @@ namespace JuicerProcess {
                     }
                     JTRACE("MSLCY", msg);
                 }
-                return;
+                return false;
             }
             set_shutdown_retire_blocked(false);
-            release_cuda_context_resource_owners();
+            if (!release_cuda_context_resource_owners()) {
+                set_shutdown_retire_blocked(true);
+                return false;
+            }
             release_process_host_services();
+            return true;
         } catch (...) {
             JuicerLogging::discard_current_exception();
+            set_shutdown_retire_blocked(true);
+            return false;
         }
     }
 
@@ -5512,14 +5497,16 @@ namespace JuicerProcess {
         }
     }
 
-    void Root::release_cuda_context_resource_owners() noexcept {
+    bool Root::release_cuda_context_resource_owners() noexcept {
         try {
             CudaContextResourceMap contextResources;
             std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
             contextResources.swap(_cudaContextResources);
             _cudaDeviceLedgers.clear();
+            return true;
         } catch (...) {
             JuicerLogging::discard_current_exception();
+            return false;
         }
     }
 
@@ -5578,14 +5565,16 @@ namespace JuicerProcess {
         }
     }
 
-    void Root::wait_for_frame_preparation() noexcept {
+    bool Root::wait_for_frame_preparation() noexcept {
         try {
             std::unique_lock<std::mutex> lock(_framePreparationMutex);
             _framePreparationCv.wait(lock, [this]() {
                 return _activeFramePreparations == 0;
             });
+            return true;
         } catch (...) {
             JuicerLogging::discard_current_exception();
+            return false;
         }
     }
 
