@@ -2865,6 +2865,13 @@ namespace Spektrafilm {
         return true;
     }
 
+    void resolve_spatial_dir_scratch(SpatialDirDescriptor& descriptor) noexcept {
+        configure_cached_log_raw_descriptor(descriptor);
+        descriptor.targetPlaneRoles = dir_target_plane_roles_for_descriptor(descriptor);
+        descriptor.scratchTier = dir_build_scratch_tier_for_descriptor(descriptor);
+        descriptor.planeRoles = dir_build_plane_roles_for_descriptor(descriptor);
+    }
+
     bool build_spatial_dir_descriptor(
         const DirCouplersRecipe& recipe,
         float pixelSizeUm,
@@ -2946,10 +2953,7 @@ namespace Spektrafilm {
             out.support = Spektrafilm::DirDescriptorSupport::UnsupportedScratchTier;
             return false;
         }
-        configure_cached_log_raw_descriptor(out);
-        out.targetPlaneRoles = dir_target_plane_roles_for_descriptor(out);
-        out.scratchTier = dir_build_scratch_tier_for_descriptor(out);
-        out.planeRoles = dir_build_plane_roles_for_descriptor(out);
+        resolve_spatial_dir_scratch(out);
 
         std::uint64_t hash = Hash::kFnvOffset;
         hash_value(hash, out.dirRecipeHash);

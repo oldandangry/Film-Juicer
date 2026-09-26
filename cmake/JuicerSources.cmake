@@ -1,6 +1,9 @@
 # One native object set, shared by the OFX module and public test archive.
 set(JUICER_NATIVE_SOURCES
+    src/Cuda/ResourceManager/JuicerCudaResourceCore.cpp
     native/juicer_cuda_api.cpp
+    native/juicer_cuda_descriptors.cpp
+    native/juicer_cuda_prepared.cpp
     src/Cuda/JuicerCudaDeviceLedger.cpp
     src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp
     src/Cuda/JuicerCudaExecutor.cpp

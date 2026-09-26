@@ -225,6 +225,17 @@ namespace {
 
 namespace Spektrafilm {
 
+    VisualGrainScratchShape visual_grain_scratch_shape(const VisualGrainRecipe& recipe) noexcept {
+        if (!recipe.active) {
+            return VisualGrainScratchShape::None;
+        }
+        const bool sharedChroma =
+            (recipe.debugView == 0 || recipe.debugView == 1) &&
+            recipe.chromaMix < 0.999f &&
+            recipe.chromaSharedWeight > 0.0f;
+        return select_scratch_shape(recipe.sublayersActive, sharedChroma);
+    }
+
     bool build_visual_grain_frame_descriptor(
         const VisualGrainFrameDescriptorInput& input,
         VisualGrainFrameDescriptor& out,
@@ -477,12 +488,7 @@ namespace Spektrafilm {
             }
         }
 
-        const bool sharedChroma =
-            (recipe.debugView == 0 || recipe.debugView == 1) &&
-            recipe.chromaMix < 0.999f &&
-            recipe.chromaSharedWeight > 0.0f;
-        out.scratchShape =
-            select_scratch_shape(recipe.sublayersActive, sharedChroma);
+        out.scratchShape = visual_grain_scratch_shape(recipe);
         out.requiresFullFrame = std::any_of(
             out.correlation.begin(),
             out.correlation.end(),

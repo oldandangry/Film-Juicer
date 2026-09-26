@@ -169,6 +169,28 @@ set_target_properties(JuicerHashContractTests PROPERTIES
 if(UNIX)
     set_property(TARGET JuicerHashContractTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
+add_executable(JuicerScratchRequestTests resource/scratch_request_test.cpp)
+target_link_libraries(JuicerScratchRequestTests PRIVATE juicer_core GTest::gtest_main)
+set_target_properties(JuicerScratchRequestTests PROPERTIES
+    LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerScratchRequestTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Resource.Host.ScratchRequest COMMAND JuicerScratchRequestTests)
+set_tests_properties(Resource.Host.ScratchRequest PROPERTIES LABELS "host" TIMEOUT 30)
+
+add_executable(JuicerPreparedProjectionTests
+    ffi/prepared_projection_test.cpp ffi/prepared_span_test.cpp
+    ffi/prepared_descriptors.cpp)
+target_link_libraries(JuicerPreparedProjectionTests PRIVATE juicer_core GTest::gtest_main)
+set_target_properties(JuicerPreparedProjectionTests PROPERTIES
+    LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerPreparedProjectionTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Ffi.Host.PreparedProjection COMMAND JuicerPreparedProjectionTests)
+set_tests_properties(Ffi.Host.PreparedProjection PROPERTIES LABELS "host" TIMEOUT 30)
+
 gtest_discover_tests(JuicerHashContractTests
     TEST_PREFIX "Hash.Host."
     DISCOVERY_MODE POST_BUILD
@@ -262,6 +284,36 @@ endif()
 add_test(NAME Ofx.Gpu.ProcessorReference COMMAND JuicerProcessorReferenceProbe)
 set_tests_properties(Ofx.Gpu.ProcessorReference PROPERTIES
     LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+
+add_executable(JuicerPreparedBoundaryProbe
+    ofx/processor_reference_test.cpp
+    ffi/prepared_boundary.cpp
+    ffi/prepared_boundary.c
+    ffi/prepared_descriptors.cpp)
+target_link_libraries(JuicerPreparedBoundaryProbe PRIVATE juicer_core juicer_ofxs CUDA::cuda_driver)
+if(MSVC)
+    target_compile_options(JuicerPreparedBoundaryProbe PRIVATE $<$<COMPILE_LANGUAGE:C>:/W3;/WX>)
+else()
+    target_compile_options(JuicerPreparedBoundaryProbe PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:-Wall;-Wextra;-Werror;-pedantic-errors>)
+endif()
+target_compile_definitions(JuicerPreparedBoundaryProbe PRIVATE
+    JUICER_PREPARED_BOUNDARY_TEST=1
+    JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/${JUICER_PROCESSOR_REFERENCE_FILE}")
+set_target_properties(JuicerPreparedBoundaryProbe PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+add_dependencies(JuicerPreparedBoundaryProbe juicer_test_resources)
+if(UNIX)
+    set_property(TARGET JuicerPreparedBoundaryProbe PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+foreach(prepared_case IN ITEMS negative-direct negative-print positive-direct positive-print
+        combined-print glare-plus-zero glare-minus-zero)
+    add_test(NAME "Ffi.Gpu.PreparedBoundary.${prepared_case}"
+        COMMAND JuicerPreparedBoundaryProbe --prepared-case "${prepared_case}")
+    set_tests_properties("Ffi.Gpu.PreparedBoundary.${prepared_case}" PROPERTIES
+        LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
+endforeach()
 
 # Isolated copies keep failure injection and observations out of juicer_core.
 add_library(juicer_executor_failure_test_objects OBJECT

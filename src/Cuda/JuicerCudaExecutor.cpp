@@ -10,6 +10,7 @@
 #include <string>
 #include <limits>
 #include <optional>
+#include <variant>
 
 #include "FilmEffectsFrameDescriptors.h"
 #include "GaussianSciPy.h"
@@ -451,7 +452,7 @@ namespace {
         JuicerCuda::CameraFilmLinearExposurePlanes cameraDiffusionCarrier,
         bool cameraDiffusionLeaseActive,
         const char* route,
-        const std::string& filmProfileKey,
+        std::string_view filmProfileKey,
         std::uint64_t filmProfileAssetVersionToken,
         const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
         std::uint64_t contextEpoch,
@@ -1153,7 +1154,29 @@ namespace {
         std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effects;
     };
 
-    // These views share the prepared optical workspace; they do not own its planes.
+    struct PrintCorrectionSource {
+        const RenderRecipe& recipe;
+        const FocusedRenderPayload& payload;
+    };
+
+    struct ScheduleInput {
+        const JuicerCuda::ExecutionFrame& frame;
+        JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot;
+        JuicerProcess::Root::PreparationIdentity identity;
+        const RouteDescriptors& descriptors;
+        JuicerCuda::FilmPayloadInput film;
+        float filmRouteCorrectionScale;
+        const VisualGrainRecipe& grain;
+        const OutputGamutRecipe& outputGamut;
+        std::uint64_t scannerBoundsHash;
+        std::uint64_t recipeHash;
+        bool cameraAutoEnabled;
+        Spektrafilm::AutoExposureMethod meteringMethod;
+        std::variant<const JuicerProcess::Root::CudaFramePreparationRequest*, const JuicerProcess::Root::PreparedFrameInput*> preparation;
+        std::variant<Scanner::ScannerColorCorrectionDescriptor, PrintCorrectionSource> correction;
+        PrintExposureRecipe printExposure{};
+    };
+
     struct OpticalWorkspace {
         JuicerProcess::Root::PreparedCudaFrame::CaptureFilmDensityWorkspaceView density{};
         JuicerProcess::Root::PreparedCudaFrame::FocusedRgbWorkspaceView rgb{};
@@ -1404,7 +1427,7 @@ namespace {
     }
 
     std::string halation_completion_diagnostic(
-        const RenderRecipe& recipe,
+        const JuicerProcess::Root::PreparationIdentity& identity,
         const JuicerCuda::ScatterHalationPreparedView& halation,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         const char* boundary,
@@ -1414,13 +1437,13 @@ namespace {
         std::string diagnostic =
             "ScatterHalationCompletionObservation route=";
         diagnostic += Spektrafilm::scan_route_label(
-            recipe.profileRoute.scanRoute);
+            identity.scanRoute);
         diagnostic +=
             " domain=FilmLinearExposure component=pipeline film_profile_key=";
-        diagnostic += recipe.profileRoute.filmProfileKey;
+        diagnostic += identity.filmProfileKey;
         diagnostic += " film_profile_asset_version_token=";
         diagnostic += std::to_string(
-            recipe.profileRoute.filmProfileAssetVersionToken);
+            identity.filmProfileAssetVersionToken);
         diagnostic +=
             " backend=Exact in_flight_descriptor_recipe_hash=";
         diagnostic += std::to_string(
@@ -1480,14 +1503,13 @@ namespace {
     JuicerCuda::CameraFilmLinearExposurePlanes expose_direct_camera(
         JuicerCuda::DirectPipelineRunParams& run,
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
-        const RenderRecipe& recipe,
+        const JuicerProcess::Root::PreparationIdentity& identity,
         const JuicerCuda::ExecutionFrame& frame,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         bool cameraDiffusionActive,
         DiffusionStageBinding& directCameraDiffusion,
         JuicerCuda::ScatterHalationPreparedView& directHalation,
         const ExecutionErrors& errors) {
-        const auto* directRecipe = &recipe;
         const auto& deviceContextKey = snapshot.deviceContextKey;
         const bool halationExecutable = directHalation.descriptor != nullptr;
         JuicerCuda::CameraFilmLinearExposurePlanes directCameraFilmLinear{};
@@ -1560,9 +1582,9 @@ namespace {
                         : JuicerCuda::CameraFilmLinearExposurePlanes{},
                     cameraDiffusionActive && directCameraDiffusion.active,
                     Spektrafilm::scan_route_label(
-                        directRecipe->profileRoute.scanRoute),
-                    directRecipe->profileRoute.filmProfileKey,
-                    directRecipe->profileRoute.filmProfileAssetVersionToken,
+                        identity.scanRoute),
+                    identity.filmProfileKey,
+                    identity.filmProfileAssetVersionToken,
                     deviceContextKey,
                     snapshot.contextEpoch,
                     reinterpret_cast<cudaStream_t>(frame.stream),
@@ -2299,14 +2321,13 @@ namespace {
     JuicerCuda::CameraFilmLinearExposurePlanes expose_print_camera(
         JuicerCuda::PrintPipelineRunParams& run,
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
-        const RenderRecipe& recipe,
+        const JuicerProcess::Root::PreparationIdentity& identity,
         const JuicerCuda::ExecutionFrame& frame,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         bool cameraDiffusionActive,
         DiffusionStageBinding& printCameraDiffusion,
         JuicerCuda::ScatterHalationPreparedView& printHalation,
         const ExecutionErrors& errors) {
-        const auto* printRecipe = &recipe;
         const auto& deviceContextKey = snapshot.deviceContextKey;
         const bool halationExecutable = printHalation.descriptor != nullptr;
         JuicerCuda::CameraFilmLinearExposurePlanes printCameraFilmLinear{};
@@ -2379,9 +2400,9 @@ namespace {
                         : JuicerCuda::CameraFilmLinearExposurePlanes{},
                     cameraDiffusionActive && printCameraDiffusion.active,
                     Spektrafilm::scan_route_label(
-                        printRecipe->profileRoute.scanRoute),
-                    printRecipe->profileRoute.filmProfileKey,
-                    printRecipe->profileRoute.filmProfileAssetVersionToken,
+                        identity.scanRoute),
+                    identity.filmProfileKey,
+                    identity.filmProfileAssetVersionToken,
                     deviceContextKey,
                     snapshot.contextEpoch,
                     reinterpret_cast<cudaStream_t>(frame.stream),
@@ -2789,11 +2810,10 @@ namespace {
         bool printDirUsesSourceBuildCachedLogRaw,
         bool gateOutputActive,
         const JuicerCuda::ExecutionFrame& frame,
-        const RenderRecipe& recipe,
+        std::uint64_t recipeHash,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         const ExecutionErrors& errors) {
         cudaError_t launchError = cudaSuccess;
-        const auto* printRecipe = &recipe;
         const auto& srcBounds = frame.sourceBounds;
         if (printUseFocusedSplit) {
             JuicerProcess::Root::PreparedCudaFrame::ScannerPostEffectsPreparedView
@@ -2811,7 +2831,7 @@ namespace {
                 }
             }
             const std::uint64_t glareSeed = Hash::hash_uint64_values(
-                {printRecipe->hash,
+                {recipeHash,
                  snapshot.frameToken.value,
                  static_cast<std::uint64_t>(srcBounds.x1),
                  static_cast<std::uint64_t>(srcBounds.y1)});
@@ -2939,9 +2959,7 @@ namespace {
 
 namespace JuicerCuda {
 
-    void execute_direct(const DirectExecutionInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
-        const RenderRecipe* directRecipe = &input.recipe;
-        const FocusedRenderPayload* directPayload = &input.payload;
+    static void execute_direct_schedule(const ScheduleInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
         const auto& frame = input.frame;
         auto& snapshot = input.snapshot;
         const auto& deviceContextKey = snapshot.deviceContextKey;
@@ -2949,8 +2967,9 @@ namespace JuicerCuda {
         const int width = win.x2 - win.x1;
         const int height = win.y2 - win.y1;
         const auto& autoExposureDescriptor = frame.autoExposureDescriptor;
-        const bool cameraAutoEnabled = input.recipe.filmRaw.autoExposureEnabled;
-        const auto cameraMeteringMethod = input.recipe.filmRaw.autoExposureMethod;
+        const bool cameraAutoEnabled = input.cameraAutoEnabled;
+        const auto cameraMeteringMethod = input.meteringMethod;
+        const auto& descriptors = input.descriptors;
         const ExecutionErrors errors{recovery, frame.traceInfo, "CUDA direct route blocked"};
         JuicerProcess::Root::AutoExposureBufferRequest autoExposureBufferRequest{};
         autoExposureBufferRequest.enabled =
@@ -2959,18 +2978,10 @@ namespace JuicerCuda {
             autoExposureDescriptor.previewWidth > 0 &&
             autoExposureDescriptor.previewHeight > 0;
         autoExposureBufferRequest.descriptor = autoExposureDescriptor;
-        if (cameraMeteringMethod == Spektrafilm::AutoExposureMethod::Median) {
-            errors.fail_route(Spektrafilm::kQuantizedMedianNotAcceptedForPhase3);
-        }
-        if (!(frame.components == 3 || frame.components == 4)) {
-            errors.fail_route("UnsupportedDirectComponentCountForPhase3C");
-        }
-        Scanner::ScannerColorCorrectionDescriptor scannerCorrection{};
-        const RouteDescriptors descriptors = build_direct_descriptors(*directRecipe, *directPayload, frame, scannerCorrection, errors);
         const bool grainStageActive =
             descriptors.grain.has_value();
         const bool grainDebugActive =
-            grainStageActive && directRecipe->visualGrain.debugView != 0;
+            grainStageActive && input.grain.debugView != 0;
         const bool filmEffectsActive =
             descriptors.effects.has_value() &&
             descriptors.effects->filmActive;
@@ -2982,42 +2993,13 @@ namespace JuicerCuda {
             frame.diffusionFrameSet->camera.has_value();
         const bool captureDensityConsumerActive =
             grainStageActive || filmEffectsActive;
-        const ScatterHalationFrameDescriptor* halationRequestDescriptor =
-            frame.scatterHalation ? &*frame.scatterHalation : nullptr;
-
-        JuicerProcess::Root::CudaFramePreparationRequest directPreparation{};
-        directPreparation.recipe = directRecipe;
-        directPreparation.exposureTables = &directPayload->exposureTables;
-        directPreparation.filmRawConfig = &directPayload->filmRawConfig;
-        directPreparation.filmTcLut = directPayload->filmTcLut
-                                          ? &*directPayload->filmTcLut
-                                          : nullptr;
-        directPreparation.scannerTables = &directPayload->scannerTables;
-        directPreparation.scannerColor = &directPayload->scannerColor;
-        directPreparation.scannerLutDescriptor = &descriptors.scanner;
-        directPreparation.outputBoundaryTable =
-            directPayload->outputBoundaryTable.get();
-        directPreparation.scannerPostEffects = &descriptors.post;
-        directPreparation.spatialDirDescriptor = &descriptors.dir;
-        directPreparation.diffusionFrameSetDescriptor =
-            frame.diffusionFrameSet
-                ? &*frame.diffusionFrameSet
-                : nullptr;
-        directPreparation.scatterHalationDescriptor = halationRequestDescriptor;
-        directPreparation.visualGrainDescriptor =
-            descriptors.grain;
-        directPreparation.effectsDescriptor = descriptors.effects;
-        directPreparation.requestedWidth = width;
-        directPreparation.requestedHeight = height;
+        const auto scannerCorrection = std::get<Scanner::ScannerColorCorrectionDescriptor>(input.correction);
         std::string directPrepareError;
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
-            JuicerProcess::root().prepare_cuda_frame(
-                deviceContextKey,
-                snapshot,
-                directPreparation,
-                autoExposureBufferRequest,
-                frame.stream,
-                directPrepareError);
+            std::visit([&](const auto* preparation) {
+                return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, snapshot, *preparation, autoExposureBufferRequest, frame.stream, directPrepareError);
+            },
+                       input.preparation);
         if (!preparedFrame.active()) {
             errors.fail_submission(
                 preparedFrame.failure_stage_tag(),
@@ -3038,9 +3020,9 @@ namespace JuicerCuda {
         const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView prepared =
             preparedFrame.focused_resources();
         if (!prepared.active ||
-            prepared.densityBoundsHash != directRecipe->densityBounds.hash ||
+            prepared.densityBoundsHash != input.scannerBoundsHash ||
             prepared.scannerDescriptorHash != descriptors.scanner.hash ||
-            prepared.selectedMethod != directRecipe->filmRaw.rgbToRawMethod) {
+            prepared.selectedMethod != input.film.method) {
             errors.fail_route("ResourceDescriptorMismatch phase=3C field=direct_prepared_view");
         }
 
@@ -3056,13 +3038,10 @@ namespace JuicerCuda {
         JuicerCuda::FilmPayloadPack directFilmPayloads{};
         std::string packDiagnostic;
         if (!JuicerCuda::pack_film_payloads(
-                directRecipe->filmRaw,
-                directRecipe->filmDevelop,
-                directRecipe->dirCouplers,
-                directRecipe->densityBounds,
+                input.film,
                 prepared.film,
                 nullptr,
-                scannerCorrection.exposureScale,
+                input.filmRouteCorrectionScale,
                 directFilmPayloads,
                 packDiagnostic)) {
             errors.fail_route(packDiagnostic.c_str());
@@ -3084,7 +3063,7 @@ namespace JuicerCuda {
         auto directCameraFilmLinear = expose_direct_camera(
             run,
             preparedFrame,
-            *directRecipe,
+            input.identity,
             frame,
             snapshot,
             cameraDiffusionActive,
@@ -3132,7 +3111,7 @@ namespace JuicerCuda {
         }
         GrainBinding grain;
         if (grainStageActive) {
-            bind_grain(preparedFrame, focusedWorkspace, directRecipe->visualGrain, grain, errors);
+            bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
         }
         if (descriptors.dir.hash != 0) {
             directDirUsesSourceBuildCachedLogRaw = build_direct_dir(
@@ -3146,7 +3125,7 @@ namespace JuicerCuda {
                 directUseFusedScannerPostSpatialDirHandoff,
                 errors);
         }
-        pack_scan_stage(run.scanStage, prepared, directRecipe->scannerOutput.outputGamut, scannerCorrection, errors);
+        pack_scan_stage(run.scanStage, prepared, input.outputGamut, scannerCorrection, errors);
         std::string scanError;
         if (
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
@@ -3206,7 +3185,7 @@ namespace JuicerCuda {
             errors);
         if (!preparedFrame.finalize_scan_error_stage(run.scanStage.scanErrorFlag, frame.stream, scanError)) {
             const std::string diagnostic = halationExecutable
-                                               ? halation_completion_diagnostic(*directRecipe, directHalation, snapshot, "scan_error_finalize", scanError)
+                                               ? halation_completion_diagnostic(input.identity, directHalation, snapshot, "scan_error_finalize", scanError)
                                                : scanError;
             errors.fail_submission("direct_scan_error_finalize", "direct scan error finalize failed", diagnostic);
         }
@@ -3217,26 +3196,24 @@ namespace JuicerCuda {
         std::string finishError;
         if (!preparedFrame.finish(frame.stream, finishError)) {
             const std::string diagnostic = halationExecutable
-                                               ? halation_completion_diagnostic(*directRecipe, directHalation, snapshot, "prepared_frame_finish", finishError)
+                                               ? halation_completion_diagnostic(input.identity, directHalation, snapshot, "prepared_frame_finish", finishError)
                                                : finishError;
             errors.fail_submission("direct_prepared_frame_finish", "direct prepared frame finish failed", diagnostic);
         }
         return;
     }
 
-    void execute_print(const PrintExecutionInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
-        const RenderRecipe* printRecipe = &input.recipe;
-        const FocusedRenderPayload* printPayload = &input.payload;
+    static void execute_print_schedule(const ScheduleInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
         const auto& frame = input.frame;
         auto& snapshot = input.snapshot;
         const auto& deviceContextKey = snapshot.deviceContextKey;
         const auto& win = frame.renderWindow;
         const int width = win.x2 - win.x1;
         const int height = win.y2 - win.y1;
-        const bool traceVerbose = frame.traceVerbose;
         const auto& autoExposureDescriptor = frame.autoExposureDescriptor;
-        const bool cameraAutoEnabled = input.recipe.filmRaw.autoExposureEnabled;
-        const auto cameraMeteringMethod = input.recipe.filmRaw.autoExposureMethod;
+        const bool cameraAutoEnabled = input.cameraAutoEnabled;
+        const auto cameraMeteringMethod = input.meteringMethod;
+        const auto& descriptors = input.descriptors;
         const ExecutionErrors errors{recovery, frame.traceInfo, "CUDA print route blocked"};
         JuicerProcess::Root::AutoExposureBufferRequest autoExposureBufferRequest{};
         autoExposureBufferRequest.enabled =
@@ -3245,15 +3222,10 @@ namespace JuicerCuda {
             autoExposureDescriptor.previewWidth > 0 &&
             autoExposureDescriptor.previewHeight > 0;
         autoExposureBufferRequest.descriptor = autoExposureDescriptor;
-        if (!(frame.components == 3 || frame.components == 4)) {
-            errors.fail_route("UnsupportedPrintComponentCountForPhase4C");
-        }
-
-        const RouteDescriptors descriptors = build_print_descriptors(*printRecipe, frame, errors);
         const bool grainStageActive =
             descriptors.grain.has_value();
         const bool grainDebugActive =
-            grainStageActive && printRecipe->visualGrain.debugView != 0;
+            grainStageActive && input.grain.debugView != 0;
         const bool filmEffectsActive =
             descriptors.effects.has_value() &&
             descriptors.effects->filmActive;
@@ -3270,45 +3242,12 @@ namespace JuicerCuda {
             cameraDiffusionActive || enlargerDiffusionActive;
         const bool captureDensityConsumerActive =
             grainStageActive || filmEffectsActive;
-        const ScatterHalationFrameDescriptor* halationRequestDescriptor =
-            frame.scatterHalation ? &*frame.scatterHalation : nullptr;
-
-        JuicerProcess::Root::CudaFramePreparationRequest preparation{};
-        preparation.recipe = printRecipe;
-        preparation.exposureTables = &printPayload->exposureTables;
-        preparation.filmRawConfig = &printPayload->filmRawConfig;
-        preparation.filmTcLut = printPayload->filmTcLut
-                                    ? &*printPayload->filmTcLut
-                                    : nullptr;
-        preparation.printMainIlluminant = printPayload->printMainIlluminant
-                                              ? &*printPayload->printMainIlluminant
-                                              : nullptr;
-        preparation.scannerTables = &printPayload->scannerTables;
-        preparation.scannerColor = &printPayload->scannerColor;
-        preparation.scannerLutDescriptor = &descriptors.scanner;
-        preparation.outputBoundaryTable =
-            printPayload->outputBoundaryTable.get();
-        preparation.scannerPostEffects = &descriptors.post;
-        preparation.spatialDirDescriptor = &descriptors.dir;
-        preparation.diffusionFrameSetDescriptor =
-            frame.diffusionFrameSet
-                ? &*frame.diffusionFrameSet
-                : nullptr;
-        preparation.scatterHalationDescriptor = halationRequestDescriptor;
-        preparation.visualGrainDescriptor =
-            descriptors.grain;
-        preparation.effectsDescriptor = descriptors.effects;
-        preparation.requestedWidth = width;
-        preparation.requestedHeight = height;
         std::string prepareError;
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
-            JuicerProcess::root().prepare_cuda_frame(
-                deviceContextKey,
-                snapshot,
-                preparation,
-                autoExposureBufferRequest,
-                frame.stream,
-                prepareError);
+            std::visit([&](const auto* preparation) {
+                return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, snapshot, *preparation, autoExposureBufferRequest, frame.stream, prepareError);
+            },
+                       input.preparation);
         if (!preparedFrame.active()) {
             errors.fail_submission(
                 preparedFrame.failure_stage_tag(),
@@ -3333,13 +3272,21 @@ namespace JuicerCuda {
         const JuicerProcess::Root::PreparedCudaFrame::PrintPreparedView preparedPrint =
             preparedFrame.print_resources();
         if (!prepared.active || !preparedPrint.active ||
-            prepared.densityBoundsHash != printRecipe->densityBounds.hash ||
+            prepared.densityBoundsHash != input.scannerBoundsHash ||
             prepared.scannerDescriptorHash != descriptors.scanner.hash ||
-            prepared.selectedMethod != printRecipe->filmRaw.rgbToRawMethod) {
+            prepared.selectedMethod != input.film.method) {
             errors.fail_route(
                 "ResourceDescriptorMismatch phase=4C field=print_prepared_view");
         }
-        const auto scannerCorrection = build_print_correction(*printRecipe, *printPayload, preparedPrint, traceVerbose, errors);
+        const auto scannerCorrection = std::visit([&](const auto& source) -> Scanner::ScannerColorCorrectionDescriptor {
+            using Source = std::decay_t<decltype(source)>;
+            if constexpr (std::is_same_v<Source, PrintCorrectionSource>) {
+                return build_print_correction(source.recipe, source.payload, preparedPrint, frame.traceVerbose, errors);
+            } else {
+                return source;
+            }
+        },
+                                                  input.correction);
         JuicerCuda::PrintPipelineRunParams run{};
         run.src = frame.source;
         run.srcRowBytes = static_cast<std::size_t>(frame.sourceRowBytes);
@@ -3352,13 +3299,10 @@ namespace JuicerCuda {
         JuicerCuda::FilmPayloadPack filmPayloads{};
         std::string payloadDiagnostic;
         if (!JuicerCuda::pack_film_payloads(
-                printRecipe->filmRaw,
-                printRecipe->filmDevelop,
-                printRecipe->dirCouplers,
-                printRecipe->enlargerFilmBounds,
+                input.film,
                 prepared.film,
                 nullptr,
-                1.0f,
+                input.filmRouteCorrectionScale,
                 filmPayloads,
                 payloadDiagnostic)) {
             errors.fail_route(payloadDiagnostic.c_str());
@@ -3376,7 +3320,7 @@ namespace JuicerCuda {
 
         JuicerCuda::PrintCudaPayloadPack printPayloads{};
         if (!JuicerCuda::pack_print_cuda_payloads(
-                printRecipe->print,
+                input.printExposure,
                 preparedPrint,
                 scannerCorrection.exposureScale,
                 printPayloads,
@@ -3391,7 +3335,7 @@ namespace JuicerCuda {
         auto printCameraFilmLinear = expose_print_camera(
             run,
             preparedFrame,
-            *printRecipe,
+            input.identity,
             frame,
             snapshot,
             cameraDiffusionActive,
@@ -3440,7 +3384,7 @@ namespace JuicerCuda {
         }
         GrainBinding grain;
         if (grainStageActive) {
-            bind_grain(preparedFrame, focusedWorkspace, printRecipe->visualGrain, grain, errors);
+            bind_grain(preparedFrame, focusedWorkspace, input.grain, grain, errors);
         }
         if (descriptors.dir.hash != 0) {
             printDirUsesSourceBuildCachedLogRaw = build_print_dir(
@@ -3454,7 +3398,7 @@ namespace JuicerCuda {
                 printUseFusedScannerPostSpatialDirHandoff,
                 errors);
         }
-        pack_scan_stage(run.scanStage, prepared, printRecipe->scannerOutput.outputGamut, scannerCorrection, errors);
+        pack_scan_stage(run.scanStage, prepared, input.outputGamut, scannerCorrection, errors);
         std::string scanError;
         if (
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
@@ -3521,7 +3465,7 @@ namespace JuicerCuda {
             printDirUsesSourceBuildCachedLogRaw,
             gateOutputActive,
             frame,
-            *printRecipe,
+            input.recipeHash,
             snapshot,
             errors);
         if (!preparedFrame.finalize_scan_error_stage(
@@ -3529,7 +3473,7 @@ namespace JuicerCuda {
                 frame.stream,
                 scanError)) {
             const std::string diagnostic = halationExecutable
-                                               ? halation_completion_diagnostic(*printRecipe, printHalation, snapshot, "scan_error_finalize", scanError)
+                                               ? halation_completion_diagnostic(input.identity, printHalation, snapshot, "scan_error_finalize", scanError)
                                                : scanError;
             errors.fail_submission(
                 "print_scan_error_finalize",
@@ -3543,7 +3487,7 @@ namespace JuicerCuda {
         std::string finishError;
         if (!preparedFrame.finish(frame.stream, finishError)) {
             const std::string diagnostic = halationExecutable
-                                               ? halation_completion_diagnostic(*printRecipe, printHalation, snapshot, "prepared_frame_finish", finishError)
+                                               ? halation_completion_diagnostic(input.identity, printHalation, snapshot, "prepared_frame_finish", finishError)
                                                : finishError;
             errors.fail_submission(
                 "print_prepared_frame_finish",
@@ -3551,6 +3495,140 @@ namespace JuicerCuda {
                 diagnostic);
         }
         return;
+    }
+    void execute_direct(const DirectExecutionInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
+        const RenderRecipe* directRecipe = &input.recipe;
+        const FocusedRenderPayload* directPayload = &input.payload;
+        const auto& frame = input.frame;
+        const auto& win = frame.renderWindow;
+        const int width = win.x2 - win.x1;
+        const int height = win.y2 - win.y1;
+        const auto cameraMeteringMethod = input.recipe.filmRaw.autoExposureMethod;
+        const ExecutionErrors errors{recovery, frame.traceInfo, "CUDA direct route blocked"};
+        if (cameraMeteringMethod == Spektrafilm::AutoExposureMethod::Median) {
+            errors.fail_route(Spektrafilm::kQuantizedMedianNotAcceptedForPhase3);
+        }
+        if (!(frame.components == 3 || frame.components == 4)) {
+            errors.fail_route("UnsupportedDirectComponentCountForPhase3C");
+        }
+        Scanner::ScannerColorCorrectionDescriptor scannerCorrection{};
+        const RouteDescriptors descriptors = build_direct_descriptors(*directRecipe, *directPayload, frame, scannerCorrection, errors);
+        const ScatterHalationFrameDescriptor* halationRequestDescriptor =
+            frame.scatterHalation ? &*frame.scatterHalation : nullptr;
+
+        JuicerProcess::Root::CudaFramePreparationRequest directPreparation{};
+        directPreparation.recipe = directRecipe;
+        directPreparation.exposureTables = &directPayload->exposureTables;
+        directPreparation.filmRawConfig = &directPayload->filmRawConfig;
+        directPreparation.filmTcLut = directPayload->filmTcLut
+                                          ? &*directPayload->filmTcLut
+                                          : nullptr;
+        directPreparation.scannerTables = &directPayload->scannerTables;
+        directPreparation.scannerColor = &directPayload->scannerColor;
+        directPreparation.scannerLutDescriptor = &descriptors.scanner;
+        directPreparation.outputBoundaryTable =
+            directPayload->outputBoundaryTable.get();
+        directPreparation.scannerPostEffects = &descriptors.post;
+        directPreparation.spatialDirDescriptor = &descriptors.dir;
+        directPreparation.diffusionFrameSetDescriptor =
+            frame.diffusionFrameSet
+                ? &*frame.diffusionFrameSet
+                : nullptr;
+        directPreparation.scatterHalationDescriptor = halationRequestDescriptor;
+        directPreparation.visualGrainDescriptor =
+            descriptors.grain;
+        directPreparation.effectsDescriptor = descriptors.effects;
+        directPreparation.requestedWidth = width;
+        directPreparation.requestedHeight = height;
+        const ScheduleInput schedule{frame, input.snapshot, JuicerProcess::Root::preparation_identity(*directRecipe), descriptors, film_payload_input(directRecipe->filmRaw, directRecipe->filmDevelop, directRecipe->dirCouplers, directRecipe->densityBounds), scannerCorrection.exposureScale, directRecipe->visualGrain, directRecipe->scannerOutput.outputGamut, directRecipe->densityBounds.hash, directRecipe->hash, directRecipe->filmRaw.autoExposureEnabled, directRecipe->filmRaw.autoExposureMethod, &directPreparation, scannerCorrection, {}};
+        execute_direct_schedule(schedule, recovery, dirFailureMessage);
+    }
+
+    void execute_print(const PrintExecutionInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
+        const RenderRecipe* printRecipe = &input.recipe;
+        const FocusedRenderPayload* printPayload = &input.payload;
+        const auto& frame = input.frame;
+        const auto& win = frame.renderWindow;
+        const int width = win.x2 - win.x1;
+        const int height = win.y2 - win.y1;
+        const ExecutionErrors errors{recovery, frame.traceInfo, "CUDA print route blocked"};
+        if (!(frame.components == 3 || frame.components == 4)) {
+            errors.fail_route("UnsupportedPrintComponentCountForPhase4C");
+        }
+
+        const RouteDescriptors descriptors = build_print_descriptors(*printRecipe, frame, errors);
+        const ScatterHalationFrameDescriptor* halationRequestDescriptor =
+            frame.scatterHalation ? &*frame.scatterHalation : nullptr;
+
+        JuicerProcess::Root::CudaFramePreparationRequest preparation{};
+        preparation.recipe = printRecipe;
+        preparation.exposureTables = &printPayload->exposureTables;
+        preparation.filmRawConfig = &printPayload->filmRawConfig;
+        preparation.filmTcLut = printPayload->filmTcLut
+                                    ? &*printPayload->filmTcLut
+                                    : nullptr;
+        preparation.printMainIlluminant = printPayload->printMainIlluminant
+                                              ? &*printPayload->printMainIlluminant
+                                              : nullptr;
+        preparation.scannerTables = &printPayload->scannerTables;
+        preparation.scannerColor = &printPayload->scannerColor;
+        preparation.scannerLutDescriptor = &descriptors.scanner;
+        preparation.outputBoundaryTable =
+            printPayload->outputBoundaryTable.get();
+        preparation.scannerPostEffects = &descriptors.post;
+        preparation.spatialDirDescriptor = &descriptors.dir;
+        preparation.diffusionFrameSetDescriptor =
+            frame.diffusionFrameSet
+                ? &*frame.diffusionFrameSet
+                : nullptr;
+        preparation.scatterHalationDescriptor = halationRequestDescriptor;
+        preparation.visualGrainDescriptor =
+            descriptors.grain;
+        preparation.effectsDescriptor = descriptors.effects;
+        preparation.requestedWidth = width;
+        preparation.requestedHeight = height;
+        const ScheduleInput schedule{frame, input.snapshot, JuicerProcess::Root::preparation_identity(*printRecipe), descriptors, film_payload_input(printRecipe->filmRaw, printRecipe->filmDevelop, printRecipe->dirCouplers, printRecipe->enlargerFilmBounds), 1.0f, printRecipe->visualGrain, printRecipe->scannerOutput.outputGamut, printRecipe->densityBounds.hash, printRecipe->hash, printRecipe->filmRaw.autoExposureEnabled, printRecipe->filmRaw.autoExposureMethod, &preparation, PrintCorrectionSource{*printRecipe, *printPayload}, printRecipe->print.exposure};
+        execute_print_schedule(schedule, recovery, dirFailureMessage);
+    }
+
+    PreparedDescriptors describe_execution(const RenderRecipe& recipe, const FocusedRenderPayload& payload, const ExecutionFrame& frame) {
+        PendingContextLossRecovery recovery;
+        const ExecutionErrors errors{recovery, frame.traceInfo, "CUDA prepared descriptor construction failed"};
+        PreparedDescriptors result;
+        const auto descriptors = Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute)
+                                     ? build_print_descriptors(recipe, frame, errors)
+                                     : build_direct_descriptors(recipe, payload, frame, result.correction, errors);
+        result.route = recipe.profileRoute.scanRoute;
+        result.capturePolarity = recipe.profileRoute.capturePolarity;
+        result.scanner = descriptors.scanner;
+        result.post = descriptors.post;
+        result.spatialDir = descriptors.dir;
+        result.grain = descriptors.grain;
+        result.effects = descriptors.effects;
+        result.grainRecipe = recipe.visualGrain;
+        result.color = payload.scannerColor;
+        result.outputGamut = recipe.scannerOutput.outputGamut;
+        result.diffusion = frame.diffusionFrameSet;
+        result.halation = frame.scatterHalation;
+        return result;
+    }
+
+    void execute_prepared(const PreparedExecutionInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
+        const bool print = Spektrafilm::scan_route_is_print(input.descriptors.route);
+        const ExecutionErrors errors{recovery, input.frame.traceInfo, print ? "CUDA print route blocked" : "CUDA direct route blocked"};
+        if (!print && input.frame.autoExposureDescriptor.method == Spektrafilm::AutoExposureMethod::Median) {
+            errors.fail_route(Spektrafilm::kQuantizedMedianNotAcceptedForPhase3);
+        }
+        if (!(input.frame.components == 3 || input.frame.components == 4)) {
+            errors.fail_route(print ? "UnsupportedPrintComponentCountForPhase4C" : "UnsupportedDirectComponentCountForPhase3C");
+        }
+        const RouteDescriptors descriptors{input.descriptors.scanner, input.descriptors.post, input.descriptors.spatialDir, input.descriptors.grain, input.descriptors.effects};
+        const ScheduleInput schedule{input.frame, input.snapshot, input.preparation.identity, descriptors, input.film, input.filmRouteCorrectionScale, input.descriptors.grainRecipe, input.descriptors.outputGamut, input.preparation.focused.densityBounds.hash, input.recipeHash, input.cameraAutoEnabled, input.frame.autoExposureDescriptor.method, &input.preparation, input.descriptors.correction, input.printExposure};
+        if (Spektrafilm::scan_route_is_print(input.descriptors.route)) {
+            execute_print_schedule(schedule, recovery, dirFailureMessage);
+        } else {
+            execute_direct_schedule(schedule, recovery, dirFailureMessage);
+        }
     }
 
 } // namespace JuicerCuda

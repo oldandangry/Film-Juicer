@@ -9,6 +9,8 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "RenderRecipe.h"
 #include "FilmEffectsFrameDescriptors.h"
+#include "ProcessRoot.h"
+#include "juicer_cuda_descriptors.h"
 
 struct FocusedRenderPayload;
 
@@ -60,6 +62,18 @@ namespace JuicerCuda {
         ResourceManager::SubmissionSnapshot& snapshot;
     };
 
+    struct PreparedExecutionInput {
+        const JuicerProcess::Root::PreparedFrameInput& preparation;
+        const PreparedDescriptors& descriptors;
+        FilmPayloadInput film;
+        float filmRouteCorrectionScale = 1.0f;
+        PrintExposureRecipe printExposure;
+        std::uint64_t recipeHash = 0;
+        bool cameraAutoEnabled = false;
+        const ExecutionFrame& frame;
+        ResourceManager::SubmissionSnapshot& snapshot;
+    };
+
     // FJ_TEMP_BRIDGE: diagnostic failure/message handoff; remove S2.D.
     // Borrowed only during the route call.
     // The adapter catches delivery exceptions. Neither member may be retained.
@@ -97,6 +111,16 @@ namespace JuicerCuda {
         const DirFailureMessage& dirFailureMessage);
     void execute_print(
         const PrintExecutionInput& input,
+        PendingContextLossRecovery& recovery,
+        const DirFailureMessage& dirFailureMessage);
+
+    PreparedDescriptors describe_execution(
+        const RenderRecipe& recipe,
+        const FocusedRenderPayload& payload,
+        const ExecutionFrame& frame);
+
+    void execute_prepared(
+        const PreparedExecutionInput& input,
         PendingContextLossRecovery& recovery,
         const DirFailureMessage& dirFailureMessage);
 

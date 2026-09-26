@@ -25,6 +25,11 @@
 #include "mainProcessing.h"
 #include "ofxsSupportPrivate.h"
 
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+#include "Cuda/JuicerCudaExecutor.h"
+#include "../ffi/prepared_boundary.h"
+#endif
+
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
 #include <cstdarg>
 #include <cstring>
@@ -468,7 +473,13 @@ namespace {
         return parameters;
     }
 
-    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false) {
+    enum class ExecutionPath : std::uint8_t {
+        Processor,
+        Direct,
+        Boundary
+    };
+
+    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor) {
         const int pitch = kWidth * test.components + 5;
         const std::size_t bytes = static_cast<std::size_t>(pitch * kHeight) * sizeof(float);
         std::vector<float> input(static_cast<std::size_t>(pitch * kHeight), -7.0f);
@@ -585,7 +596,43 @@ namespace {
             if (!preparation.active()) {
                 throw std::runtime_error("frame preparation guard unavailable");
             }
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+            if (path != ExecutionPath::Processor) {
+                const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
+                const auto& payload = print ? admitted.printState->payload : admitted.directState->payload;
+                const JuicerCuda::FrameRect nativeBounds{bounds.x1, bounds.y1, bounds.x2, bounds.y2};
+                const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(nativeBounds, nativeBounds, recipe.filmRaw.autoExposureMethod);
+                const Spektrafilm::FilmJuicerEffectsGeometry geometry{};
+                const JuicerCuda::ExecutionFrame frame{nativeBounds, nativeBounds, nativeBounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), imageInput.rowBytes, imageInput.rowBytes, test.components, device.stream, diffusion, halation, geometry, pixelSizeUm, 37.0, 24.0, 0x20260923, 0x5312, meter, false, false};
+                JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+                snapshot.instanceToken.value = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
+                snapshot.frameToken.value = 37;
+                snapshot.snapshotId = 1;
+                snapshot.deviceContextKey = JuicerCuda::inspect_frame(frame.sourceBase, frame.destination, false);
+                snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+                    payload.uploadCoreHash, recipe.dirCouplers.hash, payload.scannerHash, meter.hash);
+                if (path == ExecutionPath::Boundary) {
+                    const auto descriptors = JuicerCuda::describe_execution(recipe, payload, frame);
+                    std::string diagnostic;
+                    if (!JuicerCudaTest::execute_boundary(recipe, payload, frame, snapshot, descriptors, diagnostic)) {
+                        throw std::runtime_error(std::string(test.name) + ": C boundary: " + diagnostic);
+                    }
+                } else {
+                    JuicerCuda::PendingContextLossRecovery recovery;
+                    const JuicerCuda::DirFailureMessage message{[](void*, const std::string&) noexcept {}, nullptr};
+                    if (print) {
+                        JuicerCuda::execute_print({recipe, payload, frame, snapshot}, recovery, message);
+                    } else {
+                        JuicerCuda::execute_direct({recipe, payload, frame, snapshot}, recovery, message);
+                    }
+                }
+            } else {
+                processor.process();
+            }
+#else
+            (void)path;
             processor.process();
+#endif
         }
         imageLeaseAudit.require_complete(test.name);
         require_cuda(cudaMemcpyAsync(output.data(), device.destination, bytes, cudaMemcpyDeviceToHost, device.stream),
@@ -722,10 +769,19 @@ int main(int argc, char** argv) {
             return 0;
         }
 #endif
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+        if (argc != 3 || std::string(argv[1]) != "--prepared-case") {
+            throw std::runtime_error("usage: JuicerPreparedBoundaryProbe --prepared-case <name>");
+        }
+        const std::string preparedCase = argv[2];
+        bool preparedCaseFound = false;
+        constexpr bool emit = false;
+#else
         const bool emit = argc == 2 && std::string(argv[1]) == "--emit-reference";
         if (argc != 1 && !emit) {
             throw std::runtime_error("usage: JuicerProcessorReferenceProbe [--emit-reference]");
         }
+#endif
         const std::array<Case, 7> cases{{{"negative-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
                                          {"negative-print", Spektrafilm::ScanRoute::NegativePrintScan, 1, 4, 0, 0},
                                          {"positive-direct", Spektrafilm::ScanRoute::PositiveDirectScan, 2, 3, 11, -3},
@@ -743,9 +799,28 @@ int main(int argc, char** argv) {
         std::vector<float> freshPlus;
         std::vector<float> freshMinus;
         for (const Case& test : cases) {
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+            if (preparedCase != test.name) {
+                fixture.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+                continue;
+            }
+            preparedCaseFound = true;
+            // Each CTest case starts a fresh process and owner. C crosses the
+            // boundary first, so no other caller can hide its table uploads.
+            std::cerr << "cold C case: " << test.name << '\n';
+            InstanceState boundaryState;
+            const auto boundary = render_case(test, parameters_for(test), boundaryState, false, ExecutionPath::Boundary);
+            const auto warmBoundary = render_case(test, parameters_for(test), boundaryState, false, ExecutionPath::Boundary);
+            const auto direct = [&] {
+                InstanceState directState;
+                return render_case(test, parameters_for(test), directState, false, ExecutionPath::Direct);
+            }();
+#endif
             std::cerr << "processor case: " << test.name << '\n';
-            InstanceState state;
-            const std::vector<float> pixels = render_case(test, parameters_for(test), state);
+            const std::vector<float> pixels = [&] {
+                InstanceState state;
+                return render_case(test, parameters_for(test), state);
+            }();
             if (test.signedZeroGlare) {
                 (test.negativeZero ? freshMinus : freshPlus) = pixels;
             }
@@ -770,8 +845,27 @@ int main(int argc, char** argv) {
                     throw std::runtime_error(std::string(test.name) + ": incomplete fixture row");
                 }
                 compare_pixels(test.name, pixels, expected);
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+                compare_pixels(std::string(test.name) + ": direct executor", direct, expected);
+                compare_pixels(std::string(test.name) + ": C boundary", boundary, expected);
+                compare_pixels(std::string(test.name) + ": warm C boundary", warmBoundary, expected);
+                const auto bitEqual = [](const std::vector<float>& left, const std::vector<float>& right) {
+                    return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(), [](float a, float b) {
+                               return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+                           });
+                };
+                if (!bitEqual(direct, boundary) || !bitEqual(boundary, warmBoundary)) {
+                    throw std::runtime_error(std::string(test.name) + ": C boundary differs from direct executor");
+                }
+                std::cerr << test.name << ": processor/direct/cold C/warm C match immutable fixture; direct/C bit-exact\n";
+#endif
             }
         }
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+        if (!preparedCaseFound) {
+            throw std::runtime_error("unknown prepared-boundary case: " + preparedCase);
+        }
+#else
         if (!emit) {
             if (std::equal(freshPlus.begin(), freshPlus.end(), freshMinus.begin())) {
                 throw std::runtime_error("signed-zero fresh print renders did not differ");
@@ -783,6 +877,7 @@ int main(int argc, char** argv) {
         }
         InstanceState emptyWindowState;
         (void)render_case(cases[0], parameters_for(cases[0]), emptyWindowState, true);
+#endif
         JuicerProcess::root().shutdown();
         return 0;
     } catch (const std::exception& error) {

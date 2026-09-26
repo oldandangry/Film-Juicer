@@ -423,3 +423,17 @@ a fatal status through the OFX entry point and blocks replacement ownership.
 Direct native fixtures explicitly own their runtime; `Root` access only borrows
 it. The FFI guide records the temporary release bridge and remaining terminal
 lifetime qualification.
+
+`Ffi.Host.PreparedProjection` checks fixed C/native descriptor mappings and
+malformed records. `Resource.Host.ScratchRequest` checks closed DIR construction,
+extent and attachment constraints, and accepted direct/print scratch generations.
+These are product contracts and need no device at runtime.
+
+`Ffi.Gpu.PreparedBoundary.*` links a fixture-only C caller into the native executor.
+It compares all seven processor characterization rows against their immutable
+platform fixtures and requires bit-exact direct/C results. Each case starts a fresh
+process and native owner, calls the C boundary before any other render to exercise
+cold uploads, then repeats with warm resources and calls the direct executor. It
+never resets the CUDA context. The production entry remains the
+direct C++ executor; this fixture does not qualify final frame admission,
+terminal ownership, or expiry of asynchronous host-upload pointers.
