@@ -226,13 +226,14 @@ def is_owned(path: str, policy: SourcePolicy) -> bool:
 
 
 def exclusion_reason(path: str, policy: SourcePolicy) -> str | None:
-    if path in policy.generated_paths:
-        return "generated source"
     for prefix in policy.excluded_prefixes:
         if path.startswith(prefix):
             return f"excluded prefix {prefix}"
     if not is_owned(path, policy):
         return "outside owned quality scope"
+    # Generated Rust still needs workspace formatting and lint checks.
+    if path in policy.generated_paths and not path.endswith(".rs"):
+        return "generated source"
     return None
 
 
@@ -430,6 +431,7 @@ def check_rust(
     ]
     runner.run([cargo, "fmt", "--all", "--", "--check"], env=environment, label="rustfmt")
     for package in ("film-juicer-core", "film-juicer-plugin"):
+        features = ["--features", "test-support"] if package == "film-juicer-plugin" else []
         runner.run(
             [*common, "-p", package, "--all-targets", "--", "-D", "warnings"],
             env=environment,
@@ -440,6 +442,14 @@ def check_rust(
             env=environment,
             label=f"clippy-{package}-release",
         )
+        if features:
+            for profile in ([], ["--release"]):
+                runner.run(
+                    [*common, "-p", package, "--all-targets", *features, *profile,
+                     "--", "-D", "warnings"],
+                    env=environment,
+                    label=f"clippy-{package}-test-support-{'release' if profile else 'dev'}",
+                )
 
     runner.run(
         [sys.executable, "-m", "unittest", "discover", "-s", "tests/quality",
@@ -621,7 +631,8 @@ def main() -> int:
 
     print("Selected files:")
     for path in selected:
-        print(f"  {path}")
+        detail = " (generated Rust; checked with workspace)" if path in policy.generated_paths else ""
+        print(f"  {path}{detail}")
     print("Excluded categories:")
     if excluded:
         for reason in excluded:

@@ -6,7 +6,8 @@
 #include <cstdint>
 #include <cstddef>
 #include <functional>
-#include <limits>
+#include <optional>
+#include <variant>
 
 #include "../../RenderRecipe.h"
 
@@ -46,17 +47,13 @@ namespace JuicerCuda {
             std::uint64_t autoExposureHash = 0;
         };
 
-        struct ScratchRequestFamilies {
-            bool needOptics = false;
-            bool needSpatialDir = false;
-        };
-
         struct ScratchRequestExtent {
             int requestedWidth = 0;
             int requestedHeight = 0;
         };
 
         struct ScratchRequestAttachments {
+            bool needOptics = false;
             bool needBlurred = false;
             bool aliasScannerRgbFromSpatialDirFiltered = false;
             bool needAux = false;
@@ -68,17 +65,6 @@ namespace JuicerCuda {
             bool needFilmDustTransmittance = false;
             int gateWidth = 0;
             int gateHeight = 0;
-        };
-
-        struct ScratchRequestBuildRequest {
-            ScratchRequestFamilies families{};
-            ScratchRequestExtent extent{};
-            ScratchRequestAttachments attachments{};
-            std::uint64_t spatialDirDescriptorHash = 0;
-            Spektrafilm::DirScratchTier spatialDirScratchTier = Spektrafilm::DirScratchTier::Tier0;
-            Spektrafilm::DirScratchPlaneRoles spatialDirPlaneRoles{};
-            Spektrafilm::DirScratchTier spatialDirTargetScratchTier = Spektrafilm::DirScratchTier::Tier0;
-            Spektrafilm::DirScratchPlaneRoles spatialDirTargetPlaneRoles{};
         };
 
         struct ScratchRequestDescriptor {
@@ -109,142 +95,41 @@ namespace JuicerCuda {
             }
         };
 
-        inline bool scratch_request_descriptor_is_valid(const ScratchRequestDescriptor& descriptor) noexcept {
-            if (descriptor.needGateTransmittance && (descriptor.gateWidth <= 0 || descriptor.gateHeight <= 0 ||
-                                                     static_cast<std::uint64_t>(descriptor.gateWidth) * descriptor.gateHeight >
-                                                         std::numeric_limits<std::size_t>::max() / sizeof(float))) {
-                return false;
-            }
-            if (!descriptor.has_any_family()) {
-                return false;
-            }
-            if (descriptor.requestedWidth <= 0 || descriptor.requestedHeight <= 0) {
-                return false;
-            }
-            if (!descriptor.needSpatialDir) {
-                if (descriptor.spatialDirDescriptorHash != 0 ||
-                    descriptor.spatialDirScratchTier != Spektrafilm::DirScratchTier::Tier0 ||
-                    descriptor.spatialDirPlaneRoles.total_float_planes() != 0 ||
-                    descriptor.spatialDirTargetScratchTier != Spektrafilm::DirScratchTier::Tier0 ||
-                    descriptor.spatialDirTargetPlaneRoles.total_float_planes() != 0) {
-                    return false;
-                }
-            } else {
-                if (descriptor.spatialDirDescriptorHash == 0 ||
-                    descriptor.spatialDirScratchTier == Spektrafilm::DirScratchTier::Tier0 ||
-                    !spatial_dir_roles_match_tier(
-                        descriptor.spatialDirScratchTier,
-                        descriptor.spatialDirPlaneRoles) ||
-                    !spatial_dir_roles_match_tier(
-                        descriptor.spatialDirTargetScratchTier,
-                        descriptor.spatialDirTargetPlaneRoles)) {
-                    return false;
-                }
-            }
-            if (!descriptor.needOptics &&
-                (descriptor.needBlurred ||
-                 descriptor.aliasScannerRgbFromSpatialDirFiltered ||
-                 descriptor.needAux ||
-                 descriptor.needGrainFrameUniforms ||
-                 descriptor.needGrainLayerWork ||
-                 descriptor.needGrainShared ||
-                 descriptor.needGateTransmittance || descriptor.needFilmDustTransmittance)) {
-                return false;
-            }
-            const bool spatialDirNeedsSharedTmp =
-                descriptor.needSpatialDir &&
-                descriptor.spatialDirPlaneRoles.filterTempPlanes > 0;
-            if ((spatialDirNeedsSharedTmp && !descriptor.needSharedTmp) ||
-                (descriptor.needSharedTmp &&
-                 !descriptor.needOptics &&
-                 !spatialDirNeedsSharedTmp)) {
-                return false;
-            }
-            if (descriptor.aliasScannerRgbFromSpatialDirFiltered &&
-                (!descriptor.needOptics ||
-                 !descriptor.needSpatialDir ||
-                 descriptor.spatialDirPlaneRoles.filteredCorrectionPlanes != 3 ||
-                 (descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 0 &&
-                  descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 2 &&
-                  descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3))) {
-                return false;
-            }
-            return true;
-        }
-
-        inline std::uint64_t hash_scratch_request_descriptor(const ScratchRequestDescriptor& descriptor) noexcept {
-            constexpr std::uint64_t kFnvOffset = 1469598103934665603ull;
-            constexpr std::uint64_t kFnvPrime = 1099511628211ull;
-            std::uint64_t hash = kFnvOffset;
-            auto mix = [&](std::uint64_t value) {
-                hash ^= value;
-                hash *= kFnvPrime;
+        class ActiveDirScratch {
+        public:
+            struct Layout {
+                Spektrafilm::DirScratchTier tier = Spektrafilm::DirScratchTier::Tier0;
+                Spektrafilm::DirScratchPlaneRoles roles{};
             };
-            mix(descriptor.needOptics ? 1ull : 0ull);
-            mix(descriptor.needSpatialDir ? 1ull : 0ull);
-            mix(descriptor.spatialDirDescriptorHash);
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirScratchTier));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetScratchTier));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.rawCorrectionPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.filteredCorrectionPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.filterTempPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.cachedLogRawPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.rawCorrectionPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.filteredCorrectionPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.filterTempPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes));
-            mix(static_cast<std::uint64_t>(descriptor.requestedWidth));
-            mix(static_cast<std::uint64_t>(descriptor.requestedHeight));
-            mix(descriptor.needBlurred ? 1ull : 0ull);
-            mix(descriptor.aliasScannerRgbFromSpatialDirFiltered ? 1ull : 0ull);
-            mix(descriptor.needAux ? 1ull : 0ull);
-            mix(descriptor.needSharedTmp ? 1ull : 0ull);
-            mix(descriptor.needGrainFrameUniforms ? 1ull : 0ull);
-            mix(descriptor.needGrainLayerWork ? 1ull : 0ull);
-            mix(descriptor.needGrainShared ? 1ull : 0ull);
-            mix(descriptor.needGateTransmittance ? 1ull : 0ull);
-            mix(descriptor.needFilmDustTransmittance ? 1ull : 0ull);
-            mix(static_cast<std::uint64_t>(descriptor.gateWidth));
-            mix(static_cast<std::uint64_t>(descriptor.gateHeight));
-            return hash;
-        }
 
-        inline ScratchRequestDescriptor make_scratch_request_descriptor(
-            const ScratchRequestBuildRequest& request) noexcept {
-            ScratchRequestDescriptor descriptor{};
-            descriptor.needOptics = request.families.needOptics;
-            descriptor.needSpatialDir = request.families.needSpatialDir;
-            descriptor.spatialDirDescriptorHash =
-                request.families.needSpatialDir ? request.spatialDirDescriptorHash : 0;
-            descriptor.spatialDirScratchTier =
-                request.families.needSpatialDir ? request.spatialDirScratchTier : Spektrafilm::DirScratchTier::Tier0;
-            descriptor.spatialDirPlaneRoles =
-                request.families.needSpatialDir ? request.spatialDirPlaneRoles : Spektrafilm::DirScratchPlaneRoles{};
-            descriptor.spatialDirTargetScratchTier =
-                request.families.needSpatialDir ? request.spatialDirTargetScratchTier : Spektrafilm::DirScratchTier::Tier0;
-            descriptor.spatialDirTargetPlaneRoles =
-                request.families.needSpatialDir ? request.spatialDirTargetPlaneRoles : Spektrafilm::DirScratchPlaneRoles{};
-            descriptor.requestedWidth = request.extent.requestedWidth;
-            descriptor.requestedHeight = request.extent.requestedHeight;
-            descriptor.needBlurred = request.families.needOptics && request.attachments.needBlurred;
-            descriptor.aliasScannerRgbFromSpatialDirFiltered =
-                request.families.needOptics &&
-                request.families.needSpatialDir &&
-                request.attachments.aliasScannerRgbFromSpatialDirFiltered;
-            descriptor.needAux = request.families.needOptics && request.attachments.needAux;
-            descriptor.needSharedTmp = request.attachments.needSharedTmp;
-            descriptor.needGrainFrameUniforms =
-                request.families.needOptics &&
-                request.attachments.needGrainFrameUniforms;
-            descriptor.needGrainLayerWork = request.families.needOptics && request.attachments.needGrainLayerWork;
-            descriptor.needGrainShared = request.families.needOptics && request.attachments.needGrainShared;
-            descriptor.needGateTransmittance = request.families.needOptics && request.attachments.needGateTransmittance;
-            descriptor.needFilmDustTransmittance = request.families.needOptics && request.attachments.needFilmDustTransmittance;
-            descriptor.gateWidth = descriptor.needGateTransmittance ? request.attachments.gateWidth : 0;
-            descriptor.gateHeight = descriptor.needGateTransmittance ? request.attachments.gateHeight : 0;
-            descriptor.generation = hash_scratch_request_descriptor(descriptor);
-            return descriptor;
-        }
+            static std::optional<ActiveDirScratch> create(
+                std::uint64_t descriptorHash,
+                const Layout& source,
+                const Layout& target) noexcept;
+
+        private:
+            ActiveDirScratch() = default;
+
+            std::uint64_t _descriptorHash = 0;
+            Layout _source;
+            Layout _target;
+
+            friend std::optional<ScratchRequestDescriptor> make_scratch_request_descriptor(
+                const ScratchRequestExtent& extent,
+                const std::variant<std::monostate, ActiveDirScratch>& spatialDir,
+                const ScratchRequestAttachments& attachments) noexcept;
+        };
+
+        // Inactive DIR has no hash, tier or roles to contradict the selected state.
+        using DirScratchRequest = std::variant<std::monostate, ActiveDirScratch>;
+
+        std::optional<ScratchRequestDescriptor> make_scratch_request_descriptor(
+            const ScratchRequestExtent& extent,
+            const DirScratchRequest& spatialDir,
+            const ScratchRequestAttachments& attachments) noexcept;
+
+        bool scratch_request_descriptor_is_valid(const ScratchRequestDescriptor& descriptor) noexcept;
+        std::uint64_t hash_scratch_request_descriptor(const ScratchRequestDescriptor& descriptor) noexcept;
 
         struct ResolvedMemoryBudget {
             std::uint64_t deviceBudgetBytes = 0;

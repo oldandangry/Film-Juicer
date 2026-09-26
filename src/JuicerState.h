@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "ColorTransforms.h"
+#include "FocusedRenderPayload.h"
 #include "GamutCompression.h"
 #include "ProfileCatalog.h"
 #include "RenderRecipe.h"
@@ -51,19 +52,6 @@ namespace JuicerAtomic {
 } // namespace JuicerAtomic
 
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
-
-struct FocusedRenderPayload {
-    Spectral::SpectralTables exposureTables;
-    std::array<float, 9> spdSInv{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
-    Spectral::FilmRawConfig filmRawConfig;
-    std::optional<Spectral::FilmTcLut> filmTcLut;
-    std::optional<std::array<float, Spectral::kNumSamples>> printMainIlluminant;
-    Spectral::SpectralTables scannerTables;
-    Scanner::ColorRuntime scannerColor;
-    std::shared_ptr<const Gamut::OutputBoundaryTable> outputBoundaryTable;
-    std::uint64_t uploadCoreHash = 0;
-    std::uint64_t scannerHash = 0;
-};
 
 struct FocusedRenderStateBuildProduct {
     Spektrafilm::RenderRecipe recipe;

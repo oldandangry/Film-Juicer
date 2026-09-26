@@ -34,27 +34,70 @@ namespace JuicerCuda {
         float routeCorrectionScale,
         FilmPayloadPack& out,
         std::string& diagnostic) {
+        return pack_film_payloads(film_payload_input(filmRaw, filmDevelop, dirCouplers, densityBounds),
+                                  prepared,
+                                  autoExposureScaleDevice,
+                                  routeCorrectionScale,
+                                  out,
+                                  diagnostic);
+    }
+
+    FilmPayloadInput film_payload_input(
+        const FilmRawRecipe& filmRaw,
+        const FilmDevelopRecipe& filmDevelop,
+        const DirCouplersRecipe& dirCouplers,
+        const DensityBoundsRecipe& densityBounds) {
+        FilmPayloadInput input;
+        input.inputColorSpace = filmRaw.inputColorSpace;
+        input.inputCctfDecoding = filmRaw.inputCctfDecoding;
+        input.method = filmRaw.rgbToRawMethod;
+        input.manualExposureEv = filmRaw.manualExposureCompensationEv;
+        input.mallettGreenMidgrayScale = filmRaw.mallettGreenMidgrayScale;
+        input.sensitivityHash = filmRaw.finalSensitivityHash;
+        input.densityCurvesHash = filmDevelop.normalizedDensityCurvesHash;
+        input.densitySampleCount = filmDevelop.logExposure.size();
+        input.gammaRgb = filmDevelop.densityCurveGamma;
+        input.dirMode = dirCouplers.active ? dirCouplers.nonlinearMode : DirNonlinearMode::Inactive;
+        input.dirMatrixRgb = dirCouplers.matrixRgb;
+        input.densityMaxRgb = dirCouplers.densityMaxRgb;
+        input.densityRefRgb = dirCouplers.densityRefRgb;
+        input.donorKRgb = dirCouplers.donorKRgb;
+        input.receiverCRefRgb = dirCouplers.receiverCRefRgb;
+        input.receiverKrRgb = dirCouplers.receiverKrRgb;
+        input.dirAxesHash = dirCouplers.compensatedDensityCurveAxesHash;
+        input.dirHash = dirCouplers.hash;
+        input.densityBoundsHash = densityBounds.hash;
+        return input;
+    }
+
+    bool pack_film_payloads(
+        const FilmPayloadInput& input,
+        const FilmPreparedView& prepared,
+        const float* autoExposureScaleDevice,
+        float routeCorrectionScale,
+        FilmPayloadPack& out,
+        std::string& diagnostic) {
         diagnostic.clear();
         out = FilmPayloadPack{};
-        if (filmRaw.finalSensitivityHash == 0 ||
-            prepared.finalSensitivityHash != filmRaw.finalSensitivityHash) {
+        if (input.sensitivityHash == 0 ||
+            prepared.finalSensitivityHash != input.sensitivityHash) {
             diagnostic = "ResourceDescriptorMismatch phase=3B field=final_sensitivity";
             return false;
         }
-        if (filmDevelop.normalizedDensityCurvesHash == 0 ||
-            prepared.normalizedDensityCurvesHash != filmDevelop.normalizedDensityCurvesHash) {
+        if (input.densityCurvesHash == 0 ||
+            prepared.normalizedDensityCurvesHash != input.densityCurvesHash) {
             diagnostic = "ResourceDescriptorMismatch phase=3B field=normalized_density_curves";
             return false;
         }
-        if (densityBounds.hash == 0) {
+        if (input.densityBoundsHash == 0) {
             diagnostic = "ResourceDescriptorMismatch phase=3B field=density_bounds";
             return false;
         }
-        const int densitySamples = static_cast<int>(filmDevelop.logExposure.size());
-        if (dirCouplers.active) {
-            if (dirCouplers.hash == 0 ||
-                dirCouplers.compensatedDensityCurveAxesHash == 0 ||
-                prepared.dirCouplersHash != dirCouplers.hash) {
+        const int densitySamples = static_cast<int>(input.densitySampleCount);
+        if ((input.dirMode != DirNonlinearMode::Inactive)) {
+            if (input.dirHash == 0 ||
+                input.dirAxesHash == 0 ||
+                prepared.dirCouplersHash != input.dirHash) {
                 diagnostic = "ResourceDescriptorMismatch phase=3D-3 field=dirCouplers";
                 return false;
             }
@@ -82,15 +125,15 @@ namespace JuicerCuda {
             return false;
         }
         const bool tcMethod =
-            filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025 ||
-            filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Arctic2026beta04;
+            input.method == Spektrafilm::RgbToRawMethod::Hanatos2025 ||
+            input.method == Spektrafilm::RgbToRawMethod::Arctic2026beta04;
         if (tcMethod) {
             if (!prepared.filmTcLut ||
                 prepared.filmTcLutExtent != kFilmTcLutExtent) {
                 diagnostic = "MissingRequiredResource phase=3B field=film_tc_lut";
                 return false;
             }
-        } else if (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019) {
+        } else if (input.method == Spektrafilm::RgbToRawMethod::Mallett2019) {
             if (!prepared.tablesIllum || prepared.tablesK != 81 ||
                 !prepared.mallettBasis || prepared.mallettBasisK != 81) {
                 diagnostic = "MissingRequiredResource phase=3B field=mallett_reconstruction";
@@ -101,8 +144,8 @@ namespace JuicerCuda {
             return false;
         }
 
-        const float manualScale = std::exp2(filmRaw.manualExposureCompensationEv);
-        if (!std::isfinite(filmRaw.manualExposureCompensationEv) ||
+        const float manualScale = std::exp2(input.manualExposureEv);
+        if (!std::isfinite(input.manualExposureEv) ||
             !std::isfinite(manualScale) ||
             !(manualScale > 0.0f) ||
             !std::isfinite(routeCorrectionScale) ||
@@ -111,15 +154,15 @@ namespace JuicerCuda {
                 "ResourceDescriptorMismatch phase=3B field=film_exposure_scale";
             return false;
         }
-        if (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019 &&
-            (!std::isfinite(filmRaw.mallettGreenMidgrayScale) ||
-             !(filmRaw.mallettGreenMidgrayScale > 0.0f))) {
+        if (input.method == Spektrafilm::RgbToRawMethod::Mallett2019 &&
+            (!std::isfinite(input.mallettGreenMidgrayScale) ||
+             !(input.mallettGreenMidgrayScale > 0.0f))) {
             diagnostic =
                 "ResourceDescriptorMismatch phase=3B field=mallett_midgray_scale";
             return false;
         }
-        out.filmRaw.inputColorSpaceIndex = filmRaw.inputColorSpace;
-        out.filmRaw.applyCctfDecoding = filmRaw.inputCctfDecoding ? 1 : 0;
+        out.filmRaw.inputColorSpaceIndex = input.inputColorSpace;
+        out.filmRaw.applyCctfDecoding = input.inputCctfDecoding ? 1 : 0;
         out.filmRaw.applyInputChromaticAdapt = prepared.applyInputChromaticAdapt;
         static_assert(
             static_cast<int>(Spektrafilm::RgbToRawMethod::Hanatos2025) ==
@@ -130,8 +173,8 @@ namespace JuicerCuda {
         static_assert(
             static_cast<int>(Spektrafilm::RgbToRawMethod::Arctic2026beta04) ==
             kFilmRawMethodArctic2026beta04);
-        out.filmRaw.rgbToRawMethod = static_cast<int>(filmRaw.rgbToRawMethod);
-        out.filmRaw.mallettGreenMidgrayScale = filmRaw.mallettGreenMidgrayScale;
+        out.filmRaw.rgbToRawMethod = static_cast<int>(input.method);
+        out.filmRaw.mallettGreenMidgrayScale = input.mallettGreenMidgrayScale;
         copy_film_floats(out.filmRaw.inputRGBToXYZ, prepared.inputRGBToXYZ, 9);
         copy_film_floats(out.filmRaw.inputXYZAdapt, prepared.inputXYZAdapt, 9);
         copy_film_floats(
@@ -156,13 +199,13 @@ namespace JuicerCuda {
             out.filmExposure.reconstruction.mallettBasisK = prepared.mallettBasisK;
         }
 
-        out.filmDevelop.gammaFactorB = filmDevelop.densityCurveGamma[2];
-        out.filmDevelop.gammaFactorG = filmDevelop.densityCurveGamma[1];
-        out.filmDevelop.gammaFactorR = filmDevelop.densityCurveGamma[0];
+        out.filmDevelop.gammaFactorB = input.gammaRgb[2];
+        out.filmDevelop.gammaFactorG = input.gammaRgb[1];
+        out.filmDevelop.gammaFactorR = input.gammaRgb[0];
         out.filmDevelop.densB = prepared.normalizedDensB;
         out.filmDevelop.densG = prepared.normalizedDensG;
         out.filmDevelop.densR = prepared.normalizedDensR;
-        if (dirCouplers.active) {
+        if ((input.dirMode != DirNonlinearMode::Inactive)) {
             static_assert(
                 static_cast<int>(DirNonlinearMode::Inactive) ==
                 static_cast<int>(DirMode::Inactive));
@@ -173,28 +216,28 @@ namespace JuicerCuda {
                 static_cast<int>(DirNonlinearMode::PositiveReceiverLangmuir) ==
                 static_cast<int>(DirMode::PositiveReceiverLangmuir));
             out.filmDevelop.dir.mode =
-                static_cast<DirMode>(dirCouplers.nonlinearMode);
+                static_cast<DirMode>(input.dirMode);
             for (int donorBgr = 0; donorBgr < 3; ++donorBgr) {
                 for (int receiverBgr = 0; receiverBgr < 3; ++receiverBgr) {
                     out.filmDevelop.dir.M[donorBgr * 3 + receiverBgr] =
-                        dirCouplers.matrixRgb[2 - donorBgr][2 - receiverBgr];
+                        input.dirMatrixRgb[2 - donorBgr][2 - receiverBgr];
                 }
                 out.filmDevelop.dir.dMax[donorBgr] =
-                    dirCouplers.densityMaxRgb[2 - donorBgr];
+                    input.densityMaxRgb[2 - donorBgr];
                 out.filmDevelop.dir.dRef[donorBgr] =
-                    dirCouplers.densityRefRgb[2 - donorBgr];
+                    input.densityRefRgb[2 - donorBgr];
                 out.filmDevelop.dir.donorK[donorBgr] =
-                    dirCouplers.donorKRgb[2 - donorBgr];
+                    input.donorKRgb[2 - donorBgr];
                 out.filmDevelop.dir.receiverCRef[donorBgr] =
-                    dirCouplers.receiverCRefRgb[2 - donorBgr];
+                    input.receiverCRefRgb[2 - donorBgr];
                 out.filmDevelop.dir.receiverKr[donorBgr] =
-                    dirCouplers.receiverKrRgb[2 - donorBgr];
+                    input.receiverKrRgb[2 - donorBgr];
             }
             out.filmDevelop.dirDensB = prepared.dirDensB;
             out.filmDevelop.dirDensG = prepared.dirDensG;
             out.filmDevelop.dirDensR = prepared.dirDensR;
         }
-        out.densityBoundsHash = densityBounds.hash;
+        out.densityBoundsHash = input.densityBoundsHash;
         return true;
     }
 

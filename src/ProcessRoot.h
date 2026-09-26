@@ -7,6 +7,8 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <variant>
 #include <unordered_map>
 
 #include "RenderRecipe.h"
@@ -15,9 +17,10 @@
 
 #include "Cuda/JuicerCudaFilmPayloads.h"
 #include "Cuda/JuicerCudaResources.h"
+#include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
 
-struct InstanceState;
+struct FjCuda;
 namespace Scanner {
     struct ScannerPostEffectsDescriptor;
 } // namespace Scanner
@@ -160,15 +163,13 @@ namespace JuicerProcess {
             Root* _root = nullptr;
         };
 
-        static Root& instance() noexcept;
-
-        ~Root();
+        static Root& instance();
 
         Root(const Root&) = delete;
         Root& operator=(const Root&) = delete;
 
         void ensure_bootstrap();
-        void shutdown() noexcept;
+        bool shutdown() noexcept;
         void retire_grain_static_instance(std::uint64_t instanceToken) noexcept;
         FramePreparationToken begin_frame_preparation() noexcept;
         bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
@@ -192,11 +193,47 @@ namespace JuicerProcess {
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
             const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSetDescriptor = nullptr;
             const ScatterHalationFrameDescriptor* scatterHalationDescriptor = nullptr;
-            std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor;
-            std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor;
+            std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor = std::nullopt;
+            std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor = std::nullopt;
             int requestedWidth = 0;
             int requestedHeight = 0;
         };
+
+        struct PreparationIdentity {
+            Spektrafilm::ScanRoute scanRoute = Spektrafilm::kDefaultScanRoute;
+            Spektrafilm::ProfilePolarity capturePolarity = Spektrafilm::ProfilePolarity::Unsupported;
+            std::string_view filmProfileKey;
+            std::uint64_t filmProfileAssetVersionToken = 0;
+            std::uint64_t scatterHalationHash = 0;
+            std::uint64_t grainHash = 0;
+            std::uint64_t grainDensityLayersHash = 0;
+            bool grainActive = false;
+            std::uint64_t effectsHash = 0;
+            bool effectsActive = false;
+        };
+
+        // Resolved invocation-local inputs. The legacy print alternative preserves
+        // descriptor-hit laziness until host preparation moves at S4.
+        struct PreparedFrameInput {
+            PreparationIdentity identity;
+            const JuicerCuda::FocusedRouteResourceInput& focused;
+            const Spectral::FilmRawConfig& filmRawConfig;
+            const Scanner::ColorRuntime& scannerColor;
+            const OutputGamutRecipe& outputGamut;
+            std::variant<std::monostate, JuicerCuda::PrintResourcePreparation, JuicerCuda::PrintResourceInput> print;
+            const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
+            const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
+            const Spektrafilm::DiffusionFrameSetDescriptor* diffusionFrameSetDescriptor = nullptr;
+            const ScatterHalationFrameDescriptor* scatterHalationDescriptor = nullptr;
+            std::optional<Spektrafilm::VisualGrainFrameDescriptor> visualGrainDescriptor = std::nullopt;
+            std::optional<Spektrafilm::FilmJuicerEffectsFrameDescriptor> effectsDescriptor = std::nullopt;
+            // A supplied view forbids asset lookup; absent is the current C++ producer.
+            const JuicerCuda::StaticNoiseInput* noise = nullptr;
+            int requestedWidth = 0;
+            int requestedHeight = 0;
+        };
+
+        static PreparationIdentity preparation_identity(const RenderRecipe& recipe);
 
         class PreparedCudaFrame final {
         public:
@@ -476,6 +513,7 @@ namespace JuicerProcess {
                 std::string& outError);
             bool prepare_visual_grain_resources(
                 Root& root,
+                const JuicerCuda::StaticNoiseInput* noise,
                 const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
                 void* cudaStreamOpaque,
                 std::string& outError);
@@ -491,10 +529,18 @@ namespace JuicerProcess {
             const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
             std::string& outError);
+        PreparedCudaFrame prepare_cuda_frame(
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+            const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+            const PreparedFrameInput& request,
+            const AutoExposureBufferRequest& autoExposureBufferRequest,
+            void* cudaStreamOpaque,
+            std::string& outError);
         JuicerAssets::Library& assets() noexcept;
 
     private:
         friend class TestSupport::RootLifetimeObserver;
+        friend struct ::FjCuda;
 
         class ShutdownToken final {
         public:
@@ -516,16 +562,27 @@ namespace JuicerProcess {
             Root* _root = nullptr;
         };
 
-        Root();
+        PreparedCudaFrame create_prepared_frame(void* cudaStreamOpaque, std::string& outError);
+        PreparedCudaFrame prepare_cuda_frame(
+            PreparedCudaFrame frame,
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+            const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+            const PreparedFrameInput& request,
+            const AutoExposureBufferRequest& autoExposureBufferRequest,
+            void* cudaStreamOpaque,
+            std::string& outError);
+
+        explicit Root(std::string dataDirectory);
+        ~Root();
 
         ShutdownToken begin_shutdown() noexcept;
         bool retire_known_contexts(std::string& outError) noexcept;
-        void release_cuda_context_resource_owners() noexcept;
+        bool release_cuda_context_resource_owners() noexcept;
         void release_process_host_services() noexcept;
         void finish_shutdown() noexcept;
         void finish_frame_preparation() noexcept;
         void resume_frame_preparation() noexcept;
-        void wait_for_frame_preparation() noexcept;
+        bool wait_for_frame_preparation() noexcept;
         void set_shutdown_retire_blocked(bool blocked) noexcept;
 
         std::once_flag _bootstrapOnce;
@@ -623,7 +680,8 @@ namespace JuicerProcess {
         CudaContextResourceMap _cudaContextResources;
     };
 
-    Root& root() noexcept;
+    Root& root();
+    std::string data_directory();
     void shutdown_if_initialized() noexcept;
 
 } // namespace JuicerProcess

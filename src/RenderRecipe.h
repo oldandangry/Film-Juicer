@@ -901,6 +901,9 @@ namespace Spektrafilm {
         DiffusionFrameDomain fullFrame,
         std::optional<DiffusionFrameSetDescriptor>& out,
         std::string& diagnostic);
+    // Native workspace policy for an already resolved nonempty DIR operator plan.
+    void resolve_spatial_dir_scratch(SpatialDirDescriptor& descriptor) noexcept;
+
     bool build_spatial_dir_descriptor(
         const DirCouplersRecipe& recipe,
         float pixelSizeUm,

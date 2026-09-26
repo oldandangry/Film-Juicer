@@ -64,6 +64,10 @@ struct JuicerCudaAutoExposureDeviceState {
 
 namespace JuicerCuda {
 
+    struct FocusedRouteResourceInput;
+    struct PrintResourceInput;
+    struct StaticNoiseInput;
+
     // Phase 4B focused print-preparation contract:
     // - producer: build_print_resource_descriptors() from RenderRecipe::print and selected
     //   validated profiles; consumer: prepare_print_resources() and pack_print_cuda_payloads().
@@ -551,6 +555,12 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         std::string& outError);
 
+    bool ensure_grain_static_assets_uploaded(
+        Resources& resources,
+        const StaticNoiseInput& input,
+        void* cudaStreamOpaque,
+        std::string& outError);
+
     struct FocusedRouteResourcePreparation {
         const RenderRecipe* recipe = nullptr;
         const Spectral::SpectralTables* exposureTables = nullptr;
@@ -570,6 +580,12 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         std::string& outError);
 
+    bool prepare_focused_route_resources(
+        Resources& resources,
+        const FocusedRouteResourceInput& input,
+        void* cudaStreamOpaque,
+        std::string& outError);
+
     bool build_print_resource_descriptors(
         const RenderRecipe& recipe,
         PrintResourceDescriptors& out,
@@ -581,8 +597,21 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         std::string& outError);
 
+    bool prepare_print_resources(
+        Resources& resources,
+        const PrintResourceInput& input,
+        void* cudaStreamOpaque,
+        std::string& outError);
+
     bool pack_print_cuda_payloads(
         const PrintRecipe& recipe,
+        const PrintPreparedView& prepared,
+        float routeCorrectionScale,
+        PrintCudaPayloadPack& out,
+        std::string& diagnostic);
+
+    bool pack_print_cuda_payloads(
+        const PrintExposureRecipe& exposure,
         const PrintPreparedView& prepared,
         float routeCorrectionScale,
         PrintCudaPayloadPack& out,

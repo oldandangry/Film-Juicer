@@ -17,6 +17,7 @@
 #include "SpectralProcessing.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "juicer_cuda_owner.h"
 #include "ProfileCatalog.h"
 #include "ScatterHalation.h"
 #include "SpectralData.h"
@@ -474,7 +475,9 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) noexcept {
+    JuicerCuda::Owner cudaOwner;
     try {
+        cudaOwner.create(JuicerProcess::data_directory());
         gTestExecutablePath = std::filesystem::absolute(argv[0]);
         testing::InitGoogleTest(&argc, argv);
         const int result = RUN_ALL_TESTS();

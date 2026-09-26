@@ -84,6 +84,8 @@ namespace Spektrafilm {
         std::uint64_t clipToken = 0;
     };
 
+    VisualGrainScratchShape visual_grain_scratch_shape(const VisualGrainRecipe& recipe) noexcept;
+
     bool build_visual_grain_frame_descriptor(
         const VisualGrainFrameDescriptorInput& input,
         VisualGrainFrameDescriptor& out,

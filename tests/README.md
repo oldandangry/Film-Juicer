@@ -210,6 +210,17 @@ and destination image handles independently and rejects duplicate, unknown,
 or missing releases. Fixture emission is an explicit
 `--emit-reference` maintenance operation and is never part of CTest.
 
+`Ofx.Gpu.ExecutorFailureOrder` uses isolated test objects for the native executor,
+processor adapter and prepared-frame abort observer. It drives both route failure
+sites through the same native OFX fixture, checking synchronous DIR message
+attempt, failure classification/trace boundary, prepared-frame abort, adapter
+context recovery and fatal OFX result order. It also covers non-DIR filtering,
+percent escaping, failed/throwing host delivery and a failure that requires no
+context retirement. The injected context-loss diagnostic exercises the existing
+retirement/latch policy on the fixture's CUDA context; it does not simulate real
+driver loss or establish Resolve recovery acceptance. The hook definitions are
+absent from the product and ordinary processor-reference objects.
+
 `Ofx.Gpu.AdapterTrace` implements the C variadic parameter calls used by the
 plug-in rather than returning fabricated success. It records current-value and
 time-specific getter calls, authored and nested edit events, admitted exposure,
@@ -397,3 +408,32 @@ output gamut compression on/off. Spatial DIR, visual grain, halation, and
 camera/enlarger diffusion are disabled in these focused route checks; their
 owning suites cover those contracts. No frozen fixtures or private workbench
 files are required.
+
+### CUDA ABI declarations
+
+`Ffi.Host.CudaAbi` compares C11, C++20 and generated Rust layouts and type-checks
+the CUDA C boundary signatures. `Rust.Bridge` includes internal ABI checks. See
+[the FFI guide](ffi/README.md) for bounded commands and pinned binding maintenance.
+
+`Ffi.Host.CudaOwner` covers native owner creation, non-publication on failure,
+duplicate rejection, noncreating teardown, scoped close/reload and consume-once
+retention after a controlled metadata-only shutdown failure without a GPU.
+`Ofx.Host.CudaOwnerUnload` verifies that the real factory's failed close returns
+a fatal status through the OFX entry point and blocks replacement ownership.
+Direct native fixtures explicitly own their runtime; `Root` access only borrows
+it. The FFI guide records the temporary release bridge and remaining terminal
+lifetime qualification.
+
+`Ffi.Host.PreparedProjection` checks fixed C/native descriptor mappings and
+malformed records. `Resource.Host.ScratchRequest` checks closed DIR construction,
+extent and attachment constraints, and accepted direct/print scratch generations.
+These are product contracts and need no device at runtime.
+
+`Ffi.Gpu.PreparedBoundary.*` links a fixture-only C caller into the native executor.
+It compares all seven processor characterization rows against their immutable
+platform fixtures and requires bit-exact direct/C results. Each case starts a fresh
+process and native owner, calls the C boundary before any other render to exercise
+cold uploads, then repeats with warm resources and calls the direct executor. It
+never resets the CUDA context. The production entry remains the
+direct C++ executor; this fixture does not qualify final frame admission,
+terminal ownership, or expiry of asynchronous host-upload pointers.

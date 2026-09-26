@@ -3,6 +3,7 @@
 // Descriptor-driven CUDA uploads and primitive validation hooks.
 //
 #include "Cuda/JuicerCudaResources.h"
+#include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/JuicerCudaDriver.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
@@ -33,10 +34,57 @@
 #include <numeric>
 #include <atomic>
 #include <sstream>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
 namespace JuicerCuda {
+
+    ThreeChannelSamplesView::ThreeChannelSamplesView(std::span<const std::array<float, 3>> rows)
+        : _samples(rows) {
+    }
+
+    ThreeChannelSamplesView::ThreeChannelSamplesView(std::span<const float> scalars)
+        : _samples(std::as_bytes(scalars)) {
+    }
+
+    ThreeChannelSamplesView::ThreeChannelSamplesView(std::span<const std::byte> scalarBytes)
+        : _samples(scalarBytes) {
+    }
+
+    std::span<const std::byte> ThreeChannelSamplesView::object_bytes() const noexcept {
+        static_assert(sizeof(std::array<float, 3>) == 3u * sizeof(float));
+        static_assert(std::is_trivially_copyable_v<std::array<float, 3>>);
+        if (const auto* rows = std::get_if<std::span<const std::array<float, 3>>>(&_samples)) {
+            return std::as_bytes(*rows);
+        }
+        return *std::get_if<std::span<const std::byte>>(&_samples);
+    }
+
+    std::size_t ThreeChannelSamplesView::sample_count() const noexcept {
+        if (const auto* rows = std::get_if<std::span<const std::array<float, 3>>>(&_samples)) {
+            return rows->size();
+        }
+        return std::get_if<std::span<const std::byte>>(&_samples)->size() / sizeof(std::array<float, 3>);
+    }
+
+    std::size_t ThreeChannelSamplesView::scalar_count() const noexcept {
+        if (const auto* rows = std::get_if<std::span<const std::array<float, 3>>>(&_samples)) {
+            return rows->size() * 3u;
+        }
+        return std::get_if<std::span<const std::byte>>(&_samples)->size() / sizeof(float);
+    }
+
+    std::array<float, 3> ThreeChannelSamplesView::sample(std::size_t index) const {
+        if (const auto* rows = std::get_if<std::span<const std::array<float, 3>>>(&_samples)) {
+            return (*rows)[index];
+        }
+        const auto bytes = *std::get_if<std::span<const std::byte>>(&_samples);
+        std::array<float, 3> result{};
+        std::memcpy(result.data(), bytes.data() + index * sizeof(result), sizeof(result));
+        return result;
+    }
+
     namespace Precompute {
 
         struct CanonicalScanLutCpu {
@@ -105,7 +153,7 @@ namespace JuicerCuda {
         } // namespace
 
         bool build_canonical_scan_lut_cpu(
-            const Scanner::ScannerMediumRuntime& medium,
+            const Scanner::MediumView& medium,
             std::uint32_t res,
             CanonicalScanLutCpu& out,
             std::string& outError) {
@@ -1252,14 +1300,13 @@ namespace JuicerCuda {
 
     static bool prepare_output_gamut_table_locked(
         Resources& resources,
-        const OutputGamutRecipe& recipe,
-        const Gamut::OutputBoundaryTable* table,
+        const OutputGamutResourceInput& input,
         void* cudaStreamOpaque,
         std::unique_lock<std::mutex>& resourcesLock,
         std::string& outError) {
         constexpr std::size_t kTableBytes =
             Gamut::kOutputBoundaryValueCount * sizeof(float);
-        if (!recipe.enabled) {
+        if (!input.enabled) {
             if (resources.outputGamutCmax) {
                 if (!retire_ptr_locked(
                         resources,
@@ -1277,14 +1324,14 @@ namespace JuicerCuda {
             resources.outputGamutRecipeHash = 0;
             return true;
         }
-        if (!table) {
+        if (input.cmax.empty()) {
             outError =
                 "MissingRequiredResource component=output_gamut_cmax field=boundary_table";
             return false;
         }
         if (resources.outputGamutCmax &&
-            resources.outputGamutTableHash == table->hash &&
-            resources.outputGamutRecipeHash == recipe.hash) {
+            resources.outputGamutTableHash == input.tableHash &&
+            resources.outputGamutRecipeHash == input.recipeHash) {
             return true;
         }
 
@@ -1292,7 +1339,7 @@ namespace JuicerCuda {
         if (!alloc_and_upload_bytes_locked(
                 resources,
                 candidateRaw,
-                table->cmax.data(),
+                input.cmax.data(),
                 kTableBytes,
                 cudaStreamOpaque,
                 &resourcesLock,
@@ -1315,8 +1362,8 @@ namespace JuicerCuda {
             }
         }
         resources.outputGamutCmax = candidate;
-        resources.outputGamutTableHash = table->hash;
-        resources.outputGamutRecipeHash = recipe.hash;
+        resources.outputGamutTableHash = input.tableHash;
+        resources.outputGamutRecipeHash = input.recipeHash;
         return true;
     }
 
@@ -3034,10 +3081,9 @@ namespace JuicerCuda {
     }
 
 
-    bool ensure_grain_static_assets_uploaded(
-        Resources& resources,
+    bool build_static_noise_input(
         const JuicerAssets::StaticNoisePayloadSet& payloads,
-        void* cudaStreamOpaque,
+        StaticNoiseInput& input,
         std::string& outError) {
         outError.clear();
         const JuicerAssets::StbnNoisePayload& stbn = payloads.stbn;
@@ -3054,10 +3100,31 @@ namespace JuicerCuda {
                            : wang.error;
             return false;
         }
-        if (stbn.data.empty() || stbn.width <= 0 || stbn.height <= 0 ||
-            stbn.frames <= 0 || wang.tiles.empty() || wang.lut.empty() ||
-            wang.width <= 0 || wang.height <= 0 || wang.count <= 0 ||
-            wang.colors <= 0) {
+        input = StaticNoiseInput{
+            stbn.data, wang.tiles, wang.lut, stbn.width, stbn.height, stbn.frames, wang.width, wang.height, wang.count, wang.colors};
+        return true;
+    }
+
+    bool ensure_grain_static_assets_uploaded(
+        Resources& resources,
+        const JuicerAssets::StaticNoisePayloadSet& payloads,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        StaticNoiseInput input;
+        return build_static_noise_input(payloads, input, outError) &&
+               ensure_grain_static_assets_uploaded(resources, input, cudaStreamOpaque, outError);
+    }
+
+    bool ensure_grain_static_assets_uploaded(
+        Resources& resources,
+        const StaticNoiseInput& input,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (input.stbn.empty() || input.stbnWidth <= 0 || input.stbnHeight <= 0 ||
+            input.stbnFrames <= 0 || input.wangTiles.empty() || input.wangLut.empty() ||
+            input.wangWidth <= 0 || input.wangHeight <= 0 || input.wangCount <= 0 ||
+            input.wangColors <= 0) {
             outError = "grain static host asset payload is incomplete";
             return false;
         }
@@ -3089,8 +3156,8 @@ namespace JuicerCuda {
             if (!alloc_and_upload_bytes_locked(
                     resources,
                     stbnData,
-                    stbn.data.data(),
-                    stbn.data.size(),
+                    input.stbn.data(),
+                    input.stbn.size(),
                     cudaStreamOpaque,
                     &lock,
                     "STBN",
@@ -3099,9 +3166,9 @@ namespace JuicerCuda {
             } else if (!resources.stbnData) {
                 resources.stbnData =
                     reinterpret_cast<std::uint8_t*>(stbnData);
-                resources.stbnWidth = stbn.width;
-                resources.stbnHeight = stbn.height;
-                resources.stbnFrames = stbn.frames;
+                resources.stbnWidth = input.stbnWidth;
+                resources.stbnHeight = input.stbnHeight;
+                resources.stbnFrames = input.stbnFrames;
             } else if (stbnData) {
                 free_owned_device_noexcept(resources, stbnData);
             }
@@ -3117,8 +3184,8 @@ namespace JuicerCuda {
             const bool tilesOk = alloc_and_upload_bytes_locked(
                 resources,
                 wangTilesData,
-                wang.tiles.data(),
-                wang.tiles.size(),
+                input.wangTiles.data(),
+                input.wangTiles.size(),
                 cudaStreamOpaque,
                 &lock,
                 "Wang.tiles",
@@ -3126,8 +3193,8 @@ namespace JuicerCuda {
             const bool lutOk = tilesOk && alloc_and_upload_bytes_locked(
                                               resources,
                                               wangLutData,
-                                              wang.lut.data(),
-                                              wang.lut.size(),
+                                              input.wangLut.data(),
+                                              input.wangLut.size(),
                                               cudaStreamOpaque,
                                               &lock,
                                               "Wang.lut",
@@ -3145,10 +3212,10 @@ namespace JuicerCuda {
                     reinterpret_cast<std::uint8_t*>(wangTilesData);
                 resources.wangLutData =
                     reinterpret_cast<std::uint8_t*>(wangLutData);
-                resources.wangWidth = wang.width;
-                resources.wangHeight = wang.height;
-                resources.wangCount = wang.count;
-                resources.wangColors = wang.colors;
+                resources.wangWidth = input.wangWidth;
+                resources.wangHeight = input.wangHeight;
+                resources.wangCount = input.wangCount;
+                resources.wangColors = input.wangColors;
             } else {
                 if (wangTilesData) {
                     free_owned_device_noexcept(resources, wangTilesData);
@@ -3286,10 +3353,9 @@ namespace JuicerCuda {
             JuicerLogging::discard_current_exception();
         }
     }
-    bool prepare_focused_route_resources(
-        Resources& resources,
+    bool build_focused_route_resource_input(
         const FocusedRouteResourcePreparation& request,
-        void* cudaStreamOpaque,
+        FocusedRouteResourceInput& input,
         std::string& outError) {
         outError.clear();
         if (!request.recipe || !request.exposureTables ||
@@ -3300,11 +3366,79 @@ namespace JuicerCuda {
         }
 
         const RenderRecipe& recipe = *request.recipe;
-        const Spektrafilm::ScanRoute route = recipe.profileRoute.scanRoute;
+        const bool tcMethod = recipe.filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025 ||
+                              recipe.filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Arctic2026beta04;
+        if (!tcMethod && request.filmTcLut) {
+            outError = "ResourceDescriptorMismatch component=focused_route field=film_tc_lut";
+            return false;
+        }
+        input = FocusedRouteResourceInput{};
+        input.route = recipe.profileRoute.scanRoute;
+        input.filmRaw = {
+            recipe.filmRaw.rgbToRawMethod,
+            ThreeChannelSamplesView(recipe.filmRaw.finalSensitivity),
+            recipe.filmRaw.finalSensitivityHash,
+            recipe.filmRaw.tcLutHash};
+        input.filmDevelop.logExposure = recipe.filmDevelop.logExposure;
+        input.filmDevelop.normalizedDensityCurvesRgb = ThreeChannelSamplesView(recipe.filmDevelop.normalizedDensityCurves);
+        input.filmDevelop.normalizedDensityCurvesHash = recipe.filmDevelop.normalizedDensityCurvesHash;
+        input.filmDevelop.densityCurvesLayersHash = recipe.filmDevelop.densityCurvesLayersHash;
+        input.filmDevelop.densityCurvesLayersRequired = recipe.filmDevelop.densityCurvesLayersRequired;
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            input.dirCouplers.compensatedDensityCurveAxesRgb[channel] =
+                recipe.dirCouplers.compensatedDensityCurveAxesRgb[channel];
+            for (std::size_t layer = 0; layer < 3; ++layer) {
+                input.filmDevelop.densityCurvesLayers[layer][channel] =
+                    recipe.filmDevelop.densityCurvesLayers[layer][channel];
+            }
+        }
+        input.dirCouplers.compensatedDensityCurveAxesHash = recipe.dirCouplers.compensatedDensityCurveAxesHash;
+        input.dirCouplers.hash = recipe.dirCouplers.hash;
+        input.dirCouplers.active = recipe.dirCouplers.active;
+        input.densityBounds = recipe.densityBounds;
+        input.scannerLutDescriptor = *request.scannerLutDescriptor;
+        input.scannerTables = Scanner::spectral_tables_view(*request.scannerTables);
+        input.exposureIlluminant = request.exposureTables->illum;
+        input.exposureSampleCount = request.exposureTables->K;
+        if (request.filmTcLut) {
+            input.filmTcLut = request.filmTcLut->rgba;
+        }
+        const Spectral::SpectralContext& context = Spectral::context();
+        input.mallettBasis = context.mallettBasis.data;
+        input.mallettRows = context.mallettBasis.rows;
+        input.mallettColumns = context.mallettBasis.cols;
+        input.mallettAvailable = context.mallettAvailable.load(std::memory_order_acquire);
+        input.wantDensityLayers = recipe.visualGrain.active && recipe.visualGrain.sublayersActive;
+        input.outputGamut.enabled = recipe.scannerOutput.outputGamut.enabled;
+        input.outputGamut.recipeHash = recipe.scannerOutput.outputGamut.hash;
+        if (request.outputBoundaryTable) {
+            input.outputGamut.cmax = request.outputBoundaryTable->cmax;
+            input.outputGamut.tableHash = request.outputBoundaryTable->hash;
+        }
+        return true;
+    }
+
+    bool prepare_focused_route_resources(
+        Resources& resources,
+        const FocusedRouteResourcePreparation& request,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        FocusedRouteResourceInput input;
+        return build_focused_route_resource_input(request, input, outError) &&
+               prepare_focused_route_resources(resources, input, cudaStreamOpaque, outError);
+    }
+
+    bool prepare_focused_route_resources(
+        Resources& resources,
+        const FocusedRouteResourceInput& input,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        const Spektrafilm::ScanRoute route = input.route;
         const Spektrafilm::ScanRouteMetadata& routeMetadata =
             Spektrafilm::scan_route_metadata(route);
         const bool printRoute = routeMetadata.printRoute;
-        const FilmRawRecipe& filmRaw = recipe.filmRaw;
+        const FilmExposureResourceInput& filmRaw = input.filmRaw;
         const bool tcMethod =
             filmRaw.rgbToRawMethod ==
                 Spektrafilm::RgbToRawMethod::Hanatos2025 ||
@@ -3315,37 +3449,35 @@ namespace JuicerCuda {
             static_cast<std::size_t>(Spectral::FilmTcLut::kSize) *
             Spectral::FilmTcLut::kChannels;
         if ((tcMethod &&
-             (!request.filmTcLut ||
-              request.filmTcLut->rgba.size() != kFilmTcValueCount ||
+             (input.filmTcLut.size() != kFilmTcValueCount ||
               filmRaw.tcLutHash == 0)) ||
-            (!tcMethod && request.filmTcLut)) {
+            (!tcMethod && !input.filmTcLut.empty())) {
             outError =
                 "ResourceDescriptorMismatch component=focused_route field=film_tc_lut";
             return false;
         }
-        const FilmDevelopRecipe& filmDevelop = recipe.filmDevelop;
-        const DirCouplersRecipe& dirCouplers = recipe.dirCouplers;
-        const DensityBoundsRecipe& densityBounds = recipe.densityBounds;
-        const OutputGamutRecipe& outputGamut =
-            recipe.scannerOutput.outputGamut;
-        if ((outputGamut.enabled && !request.outputBoundaryTable) ||
-            (!outputGamut.enabled && request.outputBoundaryTable)) {
+        const FilmDevelopmentResourceInput& filmDevelop = input.filmDevelop;
+        const DirResourceInput& dirCouplers = input.dirCouplers;
+        const DensityBoundsRecipe& densityBounds = input.densityBounds;
+        const OutputGamutResourceInput& outputGamut = input.outputGamut;
+        if ((outputGamut.enabled && outputGamut.cmax.size() != Gamut::kOutputBoundaryValueCount) ||
+            (!outputGamut.enabled && !outputGamut.cmax.empty())) {
             outError =
                 "ResourceDescriptorMismatch component=focused_route field=output_gamut_binding";
             return false;
         }
         const bool wantDensityLayers =
-            recipe.visualGrain.active && recipe.visualGrain.sublayersActive;
+            input.wantDensityLayers;
         const Scanner::ScannerSpectralLutDescriptor& scannerDescriptor =
-            *request.scannerLutDescriptor;
+            input.scannerLutDescriptor;
         if (scannerDescriptor.densityBoundsHash != densityBounds.hash) {
             outError = "focused route resource descriptor mismatch";
             return false;
         }
-        if (request.exposureTables->K != Spectral::kNumSamples ||
-            request.scannerTables->K != Spectral::kNumSamples ||
+        if (input.exposureSampleCount != Spectral::kNumSamples ||
+            input.scannerTables.K != Spectral::kNumSamples ||
             filmDevelop.logExposure.empty() ||
-            filmDevelop.logExposure.size() != filmDevelop.normalizedDensityCurves.size()) {
+            filmDevelop.logExposure.size() * 3u != filmDevelop.normalizedDensityCurvesRgb.scalar_count()) {
             outError = "focused route resource host derivation shape mismatch";
             return false;
         }
@@ -3391,7 +3523,6 @@ namespace JuicerCuda {
             return prepare_output_gamut_table_locked(
                 resources,
                 outputGamut,
-                request.outputBoundaryTable,
                 cudaStreamOpaque,
                 lock,
                 outError);
@@ -3412,7 +3543,7 @@ namespace JuicerCuda {
         sensG.linear.resize(Spectral::kNumSamples);
         sensR.linear.resize(Spectral::kNumSamples);
         for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
-            const auto& rgb = filmRaw.finalSensitivity[static_cast<std::size_t>(sample)];
+            const auto rgb = filmRaw.finalSensitivityRgb.sample(static_cast<std::size_t>(sample));
             sensB.linear[static_cast<std::size_t>(sample)] = rgb[2];
             sensG.linear[static_cast<std::size_t>(sample)] = rgb[1];
             sensR.linear[static_cast<std::size_t>(sample)] = rgb[0];
@@ -3421,14 +3552,14 @@ namespace JuicerCuda {
         Spectral::Curve densB;
         Spectral::Curve densG;
         Spectral::Curve densR;
-        densB.lambda_nm = filmDevelop.logExposure;
-        densG.lambda_nm = filmDevelop.logExposure;
-        densR.lambda_nm = filmDevelop.logExposure;
-        densB.linear.resize(filmDevelop.normalizedDensityCurves.size());
-        densG.linear.resize(filmDevelop.normalizedDensityCurves.size());
-        densR.linear.resize(filmDevelop.normalizedDensityCurves.size());
-        for (std::size_t sample = 0; sample < filmDevelop.normalizedDensityCurves.size(); ++sample) {
-            const auto& rgb = filmDevelop.normalizedDensityCurves[sample];
+        densB.lambda_nm.assign(filmDevelop.logExposure.begin(), filmDevelop.logExposure.end());
+        densG.lambda_nm.assign(filmDevelop.logExposure.begin(), filmDevelop.logExposure.end());
+        densR.lambda_nm.assign(filmDevelop.logExposure.begin(), filmDevelop.logExposure.end());
+        densB.linear.resize(filmDevelop.normalizedDensityCurvesRgb.sample_count());
+        densG.linear.resize(filmDevelop.normalizedDensityCurvesRgb.sample_count());
+        densR.linear.resize(filmDevelop.normalizedDensityCurvesRgb.sample_count());
+        for (std::size_t sample = 0; sample < filmDevelop.normalizedDensityCurvesRgb.sample_count(); ++sample) {
+            const auto rgb = filmDevelop.normalizedDensityCurvesRgb.sample(sample);
             densB.linear[sample] = rgb[2];
             densG.linear[sample] = rgb[1];
             densR.linear[sample] = rgb[0];
@@ -3530,9 +3661,9 @@ namespace JuicerCuda {
             Spectral::Curve dirB = densB;
             Spectral::Curve dirG = densG;
             Spectral::Curve dirR = densR;
-            dirB.lambda_nm = dirCouplers.compensatedDensityCurveAxesRgb[2];
-            dirG.lambda_nm = dirCouplers.compensatedDensityCurveAxesRgb[1];
-            dirR.lambda_nm = dirCouplers.compensatedDensityCurveAxesRgb[0];
+            dirB.lambda_nm.assign(dirCouplers.compensatedDensityCurveAxesRgb[2].begin(), dirCouplers.compensatedDensityCurveAxesRgb[2].end());
+            dirG.lambda_nm.assign(dirCouplers.compensatedDensityCurveAxesRgb[1].begin(), dirCouplers.compensatedDensityCurveAxesRgb[1].end());
+            dirR.lambda_nm.assign(dirCouplers.compensatedDensityCurveAxesRgb[0].begin(), dirCouplers.compensatedDensityCurveAxesRgb[0].end());
             if (!upload_curve_locked(resources, resources.dirDensB, dirB, cudaStreamOpaque, &lock, "focused film DIR densB", outError) ||
                 !upload_curve_locked(resources, resources.dirDensG, dirG, cudaStreamOpaque, &lock, "focused film DIR densG", outError) ||
                 !upload_curve_locked(resources, resources.dirDensR, dirR, cudaStreamOpaque, &lock, "focused film DIR densR", outError)) {
@@ -3546,9 +3677,7 @@ namespace JuicerCuda {
             }
         }
 
-        const Spectral::SpectralTables& exposureTables = *request.exposureTables;
-        const int exposureK = exposureTables.K;
-        Spectral::SpectralContext& context = Spectral::context();
+        const int exposureK = input.exposureSampleCount;
         if (tcMethod) {
             if (resources.tablesIllum) {
                 const std::size_t bytes =
@@ -3562,7 +3691,7 @@ namespace JuicerCuda {
             constexpr int extent = Spectral::FilmTcLut::kSize;
             constexpr int integratedCount =
                 extent * extent * Spectral::FilmTcLut::kChannels;
-            if (!upload_array_locked(resources, resources.filmTcLut, resources.filmTcLutExtent * resources.filmTcLutExtent * Spectral::FilmTcLut::kChannels, request.filmTcLut->rgba.data(), integratedCount, cudaStreamOpaque, &lock, "film TC LUT", outError)) {
+            if (!upload_array_locked(resources, resources.filmTcLut, resources.filmTcLutExtent * resources.filmTcLutExtent * Spectral::FilmTcLut::kChannels, input.filmTcLut.data(), integratedCount, cudaStreamOpaque, &lock, "film TC LUT", outError)) {
                 return false;
             }
             resources.filmTcLutExtent = extent;
@@ -3576,19 +3705,19 @@ namespace JuicerCuda {
                 resources.mallettBasisK = 0;
             }
         } else if (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019) {
-            if (!upload_array_locked(resources, resources.tablesIllum, resources.tablesK, exposureTables.illum.data(), exposureK, cudaStreamOpaque, &lock, "focused film tablesIllum", outError)) {
+            if (!upload_array_locked(resources, resources.tablesIllum, resources.tablesK, input.exposureIlluminant.data(), exposureK, cudaStreamOpaque, &lock, "focused film tablesIllum", outError)) {
                 return false;
             }
             resources.tablesK = exposureK;
-            const int k = context.mallettBasis.rows;
-            if (!context.mallettAvailable.load(std::memory_order_acquire) ||
-                k != Spectral::kNumSamples || context.mallettBasis.cols != 3 ||
-                context.mallettBasis.data.empty()) {
+            const int k = input.mallettRows;
+            if (!input.mallettAvailable ||
+                k != Spectral::kNumSamples || input.mallettColumns != 3 ||
+                input.mallettBasis.empty()) {
                 outError = "selected Mallett resource family is unavailable";
                 return false;
             }
             const int count = k * 3;
-            if (!upload_array_locked(resources, resources.mallettBasis, resources.mallettBasisK * 3, context.mallettBasis.data.data(), count, cudaStreamOpaque, &lock, "film Mallett basis", outError)) {
+            if (!upload_array_locked(resources, resources.mallettBasis, resources.mallettBasisK * 3, input.mallettBasis.data(), count, cudaStreamOpaque, &lock, "film Mallett basis", outError)) {
                 return false;
             }
             resources.mallettBasisK = k;
@@ -3621,9 +3750,9 @@ namespace JuicerCuda {
                 densityBounds.invSpanCmy[static_cast<std::size_t>(channel)];
         }
 
-        Scanner::ScannerMediumRuntime medium{};
+        Scanner::MediumView medium{};
         medium.medium = printRoute ? Scanner::ScannerMedium::Print : Scanner::ScannerMedium::Negative;
-        medium.tables = request.scannerTables;
+        medium.tables = input.scannerTables;
         for (int channel = 0; channel < 3; ++channel) {
             medium.range.min_cmy[channel] = scanRange.min_cmy[channel];
             medium.range.inv_max_cmy[channel] = scanRange.inv_max_cmy[channel];
@@ -3743,7 +3872,6 @@ namespace JuicerCuda {
         return prepare_output_gamut_table_locked(
             resources,
             outputGamut,
-            request.outputBoundaryTable,
             cudaStreamOpaque,
             lock,
             outError);
@@ -4012,6 +4140,330 @@ namespace JuicerCuda {
         return true;
     }
 
+    namespace {
+
+        template <typename DeriveInput>
+        bool prepare_print_resources_impl(
+            Resources& resources,
+            const PrintResourceDescriptors& descriptors,
+            DeriveInput&& deriveInput,
+            void* cudaStreamOpaque,
+            std::string& outError) {
+            std::lock_guard<std::mutex> servingUpdateLock(resources.servingUpdateMutex);
+            std::unique_lock<std::mutex> lock(resources.m);
+            reap_retire_queue_locked(resources);
+            if (!validate_resource_owner_locked(resources, outError, true)) {
+                return false;
+            }
+            const bool filmDensityHit =
+                resources.printFilmDensityTablesDescriptorHash == descriptors.filmDensityTables.hash &&
+                resources.printFilmDensityTables.K == Spectral::kNumSamples &&
+                resources.printFilmDensityTables.epsC &&
+                resources.printFilmDensityTables.epsM &&
+                resources.printFilmDensityTables.epsY &&
+                resources.printFilmDensityTables.hasBaseline &&
+                resources.printFilmDensityTables.baseDensityMin;
+            const bool profileHit =
+                resources.printProfileTablesDescriptorHash == descriptors.profileTables.hash &&
+                resources.printDcC.x && resources.printDcM.x && resources.printDcY.x &&
+                resources.printSensC.y && resources.printSensM.y && resources.printSensY.y;
+            const bool mainHit =
+                resources.printMainIlluminantDescriptorHash == descriptors.mainIlluminant.hash &&
+                resources.printIllumFiltered &&
+                resources.printIllumK == Spectral::kNumSamples &&
+                resources.printIllumFilteredHostValid;
+            const bool preflashIlluminantHit =
+                !descriptors.preflashActive ||
+                (resources.printPreflashIlluminantDescriptorHash == descriptors.preflashIlluminant.hash &&
+                 resources.printPreflashIllumFiltered &&
+                 resources.printPreflashIllumK == Spectral::kNumSamples &&
+                 resources.printPreflashIllumFilteredHostValid);
+            const bool preflashRawHit =
+                !descriptors.preflashActive ||
+                (resources.printPreflashRawDescriptorHash == descriptors.preflashRaw.hash &&
+                 resources.printPreflashValid);
+            const bool balanceHit =
+                resources.printBalanceDescriptorHash == descriptors.balance.hash;
+            auto trace_main_illuminant = [&](const char* cacheOutcome,
+                                             const char* mainIlluminantOutcome) {
+                if (!JTRACE_ENABLED(3)) {
+                    return;
+                }
+                std::string msg;
+                msg.reserve(512);
+                msg = "event=print_resource_preparation cacheOutcome=";
+                msg += cacheOutcome;
+                msg += " mainIlluminantOutcome=";
+                msg += mainIlluminantOutcome;
+                msg += " filteredMainIlluminantDescriptorHash=";
+                msg += std::to_string(descriptors.mainIlluminant.hash);
+                msg += " preparedMainIlluminantDescriptorHash=";
+                msg += std::to_string(resources.printMainIlluminantDescriptorHash);
+                msg += " descriptorCmyCc(C/M/Y)=";
+                msg += std::to_string(descriptors.mainIlluminant.cmyCc.c);
+                msg += "/";
+                msg += std::to_string(descriptors.mainIlluminant.cmyCc.m);
+                msg += "/";
+                msg += std::to_string(descriptors.mainIlluminant.cmyCc.y);
+                msg += " sourceIlluminantDescriptorHash=";
+                msg += std::to_string(descriptors.mainIlluminant.printIlluminantHash);
+                msg += " dichroicResourceHash=";
+                msg += std::to_string(descriptors.mainIlluminant.dichroicResourceHash);
+                JTRACE_VERBOSE("PHASE4C_BALANCE", msg);
+            };
+            if (filmDensityHit && profileHit && mainHit && preflashIlluminantHit && preflashRawHit &&
+                balanceHit &&
+                resources.printPreparationDescriptorHash == descriptors.hash) {
+                trace_main_illuminant("hit", "hit");
+            }
+            if (filmDensityHit && profileHit && mainHit && preflashIlluminantHit && preflashRawHit &&
+                balanceHit &&
+                resources.printPreparationDescriptorHash == descriptors.hash) {
+                return true;
+            }
+
+            std::array<float, Spectral::kNumSamples> mainIlluminant{};
+            std::array<float, Spectral::kNumSamples> preflashIlluminant{};
+            std::array<float, 3> preflashRaw{};
+            if (mainHit && !balanceHit) {
+                mainIlluminant = resources.printIllumFilteredHost;
+            }
+            if (descriptors.preflashActive && preflashIlluminantHit && !preflashRawHit) {
+                preflashIlluminant = resources.printPreflashIllumFilteredHost;
+            }
+            float factorMidgray = resources.printBalanceFactorMidgray;
+            float factorMidgrayComp = resources.printBalanceFactorMidgrayComp;
+            float normalizer = resources.printBalanceNormalizer;
+
+            lock.unlock();
+            PrintResourceInput input;
+            if (!deriveInput(input, preflashIlluminantHit, preflashRawHit, preflashIlluminant, outError)) {
+                return false;
+            }
+            if (!mainHit) {
+                std::copy(input.mainIlluminant.begin(), input.mainIlluminant.end(), mainIlluminant.begin());
+            }
+            if (descriptors.preflashActive && !preflashIlluminantHit &&
+                input.preflashIlluminant.data() != preflashIlluminant.data()) {
+                std::copy(input.preflashIlluminant.begin(), input.preflashIlluminant.end(), preflashIlluminant.begin());
+            }
+            if (!balanceHit) {
+                factorMidgray = input.factorMidgray;
+                factorMidgrayComp = input.factorMidgrayComp;
+                normalizer = input.normalizer;
+            }
+            if (descriptors.preflashActive && !preflashRawHit) {
+                preflashRaw = input.preflashRawCmy;
+            }
+            lock.lock();
+            if (!validate_resource_owner_locked(resources, outError, false)) {
+                return false;
+            }
+
+            if (!filmDensityHit) {
+                std::array<float, Spectral::kNumSamples> epsC{};
+                std::array<float, Spectral::kNumSamples> epsM{};
+                std::array<float, Spectral::kNumSamples> epsY{};
+                for (std::size_t sample = 0; sample < input.filmChannelDensityCmy.sample_count(); ++sample) {
+                    const auto cmy = input.filmChannelDensityCmy.sample(sample);
+                    epsC[sample] = cmy[0];
+                    epsM[sample] = cmy[1];
+                    epsY[sample] = cmy[2];
+                }
+                Resources::DeviceSpectralTables& tables = resources.printFilmDensityTables;
+                const int currentK = tables.K;
+                if (!upload_array_locked(resources, tables.epsC, currentK, epsC.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsC", outError) ||
+                    !upload_array_locked(resources, tables.epsM, currentK, epsM.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsM", outError) ||
+                    !upload_array_locked(resources, tables.epsY, currentK, epsY.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsY", outError) ||
+                    !upload_array_locked(resources, tables.baseDensityMin, currentK, input.filmBaseDensity.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density base", outError)) {
+                    return false;
+                }
+                tables.K = Spectral::kNumSamples;
+                tables.hasBaseline = 1;
+                tables.invYn = 1.0f;
+                resources.printFilmDensityTablesDescriptorHash = descriptors.filmDensityTables.hash;
+            }
+            if (!profileHit) {
+                Spectral::Curve dcC;
+                Spectral::Curve dcM;
+                Spectral::Curve dcY;
+                dcC.lambda_nm.assign(input.printLogExposure.begin(), input.printLogExposure.end());
+                dcM.lambda_nm.assign(input.printLogExposure.begin(), input.printLogExposure.end());
+                dcY.lambda_nm.assign(input.printLogExposure.begin(), input.printLogExposure.end());
+                dcC.linear.resize(input.printDensityCurvesCmy.sample_count());
+                dcM.linear.resize(input.printDensityCurvesCmy.sample_count());
+                dcY.linear.resize(input.printDensityCurvesCmy.sample_count());
+                std::vector<float> sensC(Spectral::kNumSamples);
+                std::vector<float> sensM(Spectral::kNumSamples);
+                std::vector<float> sensY(Spectral::kNumSamples);
+                for (std::size_t sample = 0;
+                     sample < input.printDensityCurvesCmy.sample_count();
+                     ++sample) {
+                    const auto cmy = input.printDensityCurvesCmy.sample(sample);
+                    dcC.linear[sample] = cmy[0];
+                    dcM.linear[sample] = cmy[1];
+                    dcY.linear[sample] = cmy[2];
+                }
+                for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
+                    const auto cmy = input.printSensitivityCmy.sample(static_cast<std::size_t>(sample));
+                    sensC[static_cast<std::size_t>(sample)] = cmy[0];
+                    sensM[static_cast<std::size_t>(sample)] = cmy[1];
+                    sensY[static_cast<std::size_t>(sample)] = cmy[2];
+                }
+                if (!upload_curve_locked(resources, resources.printDcC, dcC, cudaStreamOpaque, &lock, "phase4B print dcC", outError) ||
+                    !upload_curve_locked(resources, resources.printDcM, dcM, cudaStreamOpaque, &lock, "phase4B print dcM", outError) ||
+                    !upload_curve_locked(resources, resources.printDcY, dcY, cudaStreamOpaque, &lock, "phase4B print dcY", outError) ||
+                    !upload_spectral_samples_locked(resources, resources.printSensC, sensC, cudaStreamOpaque, &lock, "phase4B print sensC", outError) ||
+                    !upload_spectral_samples_locked(resources, resources.printSensM, sensM, cudaStreamOpaque, &lock, "phase4B print sensM", outError) ||
+                    !upload_spectral_samples_locked(resources, resources.printSensY, sensY, cudaStreamOpaque, &lock, "phase4B print sensY", outError)) {
+                    return false;
+                }
+                resources.printProfileTablesDescriptorHash = descriptors.profileTables.hash;
+            }
+            if (!mainHit) {
+                if (!upload_array_locked(
+                        resources,
+                        resources.printIllumFiltered,
+                        resources.printIllumK,
+                        mainIlluminant.data(),
+                        Spectral::kNumSamples,
+                        cudaStreamOpaque,
+                        &lock,
+                        "phase4B filtered main print illuminant",
+                        outError)) {
+                    return false;
+                }
+                resources.printIllumK = Spectral::kNumSamples;
+                resources.printIllumFilteredHost = mainIlluminant;
+                resources.printIllumFilteredHostValid = true;
+                resources.printMainIlluminantDescriptorHash = descriptors.mainIlluminant.hash;
+            }
+            if (descriptors.preflashActive) {
+                if (!preflashIlluminantHit) {
+                    if (!upload_array_locked(
+                            resources,
+                            resources.printPreflashIllumFiltered,
+                            resources.printPreflashIllumK,
+                            preflashIlluminant.data(),
+                            Spectral::kNumSamples,
+                            cudaStreamOpaque,
+                            &lock,
+                            "phase4B filtered preflash print illuminant",
+                            outError)) {
+                        return false;
+                    }
+                    resources.printPreflashIllumK = Spectral::kNumSamples;
+                    resources.printPreflashIllumFilteredHost = preflashIlluminant;
+                    resources.printPreflashIllumFilteredHostValid = true;
+                    resources.printPreflashIlluminantDescriptorHash =
+                        descriptors.preflashIlluminant.hash;
+                }
+                if (!preflashRawHit) {
+                    std::copy(preflashRaw.begin(), preflashRaw.end(), resources.printPreflashRaw);
+                    resources.printPreflashValid = true;
+                    resources.printPreflashRawDescriptorHash = descriptors.preflashRaw.hash;
+                }
+            } else {
+                if (resources.printPreflashIllumFiltered) {
+                    const std::size_t bytes =
+                        static_cast<std::size_t>(std::max(0, resources.printPreflashIllumK)) * sizeof(float);
+                    if (!retire_ptr_locked(
+                            resources,
+                            resources.printPreflashIllumFiltered,
+                            bytes,
+                            Resources::RetireKind::DeviceFree,
+                            cudaStreamOpaque,
+                            "disabled phase4B preflash illuminant",
+                            outError)) {
+                        return false;
+                    }
+                    resources.printPreflashIllumFiltered = nullptr;
+                }
+                resources.printPreflashIllumK = 0;
+                resources.printPreflashIllumFilteredHost.fill(0.0f);
+                resources.printPreflashIllumFilteredHostValid = false;
+                resources.printPreflashIlluminantDescriptorHash = 0;
+                resources.printPreflashRaw[0] = 0.0f;
+                resources.printPreflashRaw[1] = 0.0f;
+                resources.printPreflashRaw[2] = 0.0f;
+                resources.printPreflashValid = false;
+                resources.printPreflashRawDescriptorHash = 0;
+            }
+            if (!balanceHit) {
+                resources.printBalanceFactorMidgray = factorMidgray;
+                resources.printBalanceFactorMidgrayComp = factorMidgrayComp;
+                resources.printBalanceNormalizer = normalizer;
+                resources.printBalanceDescriptorHash = descriptors.balance.hash;
+            }
+            resources.printPreparationDescriptorHash = descriptors.hash;
+            trace_main_illuminant("rebuilt", mainHit ? "retained" : "rebuilt");
+            return true;
+        }
+
+        bool derive_print_resource_input(
+            const PrintResourcePreparation& request,
+            const PrintResourceDescriptors& descriptors,
+            bool preflashIlluminantHit,
+            bool preflashRawHit,
+            std::array<float, Spectral::kNumSamples>& preflashIlluminant,
+            PrintResourceInput& input,
+            std::string& error) {
+            const Profiles::ValidatedFilmProfile& film = *request.recipe->profileRoute.filmProfile;
+            const Profiles::ValidatedPrintProfile& print = *request.recipe->profileRoute.printProfile;
+            input.descriptors = descriptors;
+            input.filmChannelDensityCmy = ThreeChannelSamplesView(film.data.channelDensity);
+            input.filmBaseDensity = film.data.baseDensity;
+            input.printLogExposure = print.data.logExposure;
+            input.printDensityCurvesCmy = ThreeChannelSamplesView(request.recipe->print.develop.densityCurves);
+            input.printSensitivityCmy = ThreeChannelSamplesView(print.data.linearSensitivity);
+            input.mainIlluminant = *request.mainIlluminant;
+            input.factorMidgray = request.recipe->print.balance.factorMidgray;
+            input.factorMidgrayComp = request.recipe->print.balance.factorMidgrayComp;
+            input.normalizer = request.recipe->print.balance.normalizer;
+            if (descriptors.preflashActive && !preflashIlluminantHit) {
+                std::array<float, Spectral::kNumSamples> sourceIlluminant{};
+                if (!copy_source_illuminant(
+                        *request.assets,
+                        request.recipe->print.illuminant.key,
+                        sourceIlluminant,
+                        error) ||
+                    !Spektrafilm::build_filtered_print_illuminant(
+                        request.recipe->print,
+                        sourceIlluminant,
+                        request.recipe->print.filters.preflashCmyCc,
+                        preflashIlluminant,
+                        error)) {
+                    return false;
+                }
+            }
+            input.preflashIlluminant = preflashIlluminant;
+            return !descriptors.preflashActive || preflashRawHit ||
+                   derive_preflash_raw(film, print, preflashIlluminant, input.preflashRawCmy, error);
+        }
+
+    } // namespace
+
+    bool build_print_resource_input(
+        const PrintResourcePreparation& request,
+        PrintResourceInput& input,
+        std::array<float, 81>& preflashIlluminant,
+        std::string& outError) {
+        outError.clear();
+        if (!request.recipe || !request.assets) {
+            outError = "MissingRequiredResource phase=4B field=print_preparation_request";
+            return false;
+        }
+        if (!request.mainIlluminant) {
+            outError = "ResourceDescriptorMismatch phase=4B field=published_print_balance";
+            return false;
+        }
+        input = PrintResourceInput{};
+        if (!build_print_resource_descriptors(*request.recipe, input.descriptors, outError)) {
+            return false;
+        }
+        return derive_print_resource_input(request, input.descriptors, false, false, preflashIlluminant, input, outError);
+    }
+
     bool prepare_print_resources(
         Resources& resources,
         const PrintResourcePreparation& request,
@@ -4023,277 +4475,51 @@ namespace JuicerCuda {
             return false;
         }
         if (!request.mainIlluminant) {
-            outError =
-                "ResourceDescriptorMismatch phase=4B field=published_print_balance";
+            outError = "ResourceDescriptorMismatch phase=4B field=published_print_balance";
             return false;
         }
         PrintResourceDescriptors descriptors{};
         if (!build_print_resource_descriptors(*request.recipe, descriptors, outError)) {
             return false;
         }
-        const Profiles::ValidatedFilmProfile& film = *request.recipe->profileRoute.filmProfile;
-        const Profiles::ValidatedPrintProfile& print = *request.recipe->profileRoute.printProfile;
-
-        std::lock_guard<std::mutex> servingUpdateLock(resources.servingUpdateMutex);
-        std::unique_lock<std::mutex> lock(resources.m);
-        reap_retire_queue_locked(resources);
-        if (!validate_resource_owner_locked(resources, outError, true)) {
-            return false;
-        }
-        const bool filmDensityHit =
-            resources.printFilmDensityTablesDescriptorHash == descriptors.filmDensityTables.hash &&
-            resources.printFilmDensityTables.K == Spectral::kNumSamples &&
-            resources.printFilmDensityTables.epsC &&
-            resources.printFilmDensityTables.epsM &&
-            resources.printFilmDensityTables.epsY &&
-            resources.printFilmDensityTables.hasBaseline &&
-            resources.printFilmDensityTables.baseDensityMin;
-        const bool profileHit =
-            resources.printProfileTablesDescriptorHash == descriptors.profileTables.hash &&
-            resources.printDcC.x && resources.printDcM.x && resources.printDcY.x &&
-            resources.printSensC.y && resources.printSensM.y && resources.printSensY.y;
-        const bool mainHit =
-            resources.printMainIlluminantDescriptorHash == descriptors.mainIlluminant.hash &&
-            resources.printIllumFiltered &&
-            resources.printIllumK == Spectral::kNumSamples &&
-            resources.printIllumFilteredHostValid;
-        const bool preflashIlluminantHit =
-            !descriptors.preflashActive ||
-            (resources.printPreflashIlluminantDescriptorHash == descriptors.preflashIlluminant.hash &&
-             resources.printPreflashIllumFiltered &&
-             resources.printPreflashIllumK == Spectral::kNumSamples &&
-             resources.printPreflashIllumFilteredHostValid);
-        const bool preflashRawHit =
-            !descriptors.preflashActive ||
-            (resources.printPreflashRawDescriptorHash == descriptors.preflashRaw.hash &&
-             resources.printPreflashValid);
-        const bool balanceHit =
-            resources.printBalanceDescriptorHash == descriptors.balance.hash;
-        auto trace_main_illuminant = [&](const char* cacheOutcome,
-                                         const char* mainIlluminantOutcome) {
-            if (!JTRACE_ENABLED(3)) {
-                return;
-            }
-            std::string msg;
-            msg.reserve(512);
-            msg = "event=print_resource_preparation cacheOutcome=";
-            msg += cacheOutcome;
-            msg += " mainIlluminantOutcome=";
-            msg += mainIlluminantOutcome;
-            msg += " filteredMainIlluminantDescriptorHash=";
-            msg += std::to_string(descriptors.mainIlluminant.hash);
-            msg += " preparedMainIlluminantDescriptorHash=";
-            msg += std::to_string(resources.printMainIlluminantDescriptorHash);
-            msg += " descriptorCmyCc(C/M/Y)=";
-            msg += std::to_string(descriptors.mainIlluminant.cmyCc.c);
-            msg += "/";
-            msg += std::to_string(descriptors.mainIlluminant.cmyCc.m);
-            msg += "/";
-            msg += std::to_string(descriptors.mainIlluminant.cmyCc.y);
-            msg += " sourceIlluminantDescriptorHash=";
-            msg += std::to_string(descriptors.mainIlluminant.printIlluminantHash);
-            msg += " dichroicResourceHash=";
-            msg += std::to_string(descriptors.mainIlluminant.dichroicResourceHash);
-            JTRACE_VERBOSE("PHASE4C_BALANCE", msg);
+        auto deriveInput = [&](PrintResourceInput& input,
+                               bool preflashIlluminantHit,
+                               bool preflashRawHit,
+                               std::array<float, Spectral::kNumSamples>& preflashIlluminant,
+                               std::string& error) {
+            return derive_print_resource_input(request, descriptors, preflashIlluminantHit, preflashRawHit, preflashIlluminant, input, error);
         };
-        if (filmDensityHit && profileHit && mainHit && preflashIlluminantHit && preflashRawHit &&
-            balanceHit &&
-            resources.printPreparationDescriptorHash == descriptors.hash) {
-            trace_main_illuminant("hit", "hit");
-        }
-        if (filmDensityHit && profileHit && mainHit && preflashIlluminantHit && preflashRawHit &&
-            balanceHit &&
-            resources.printPreparationDescriptorHash == descriptors.hash) {
+        return prepare_print_resources_impl(resources, descriptors, deriveInput, cudaStreamOpaque, outError);
+    }
+
+    bool prepare_print_resources(
+        Resources& resources,
+        const PrintResourceInput& input,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        auto bindInput = [&](PrintResourceInput& bound,
+                             bool,
+                             bool,
+                             std::array<float, Spectral::kNumSamples>&,
+                             std::string&) {
+            bound = input;
             return true;
-        }
-
-        std::array<float, Spectral::kNumSamples> mainIlluminant{};
-        std::array<float, Spectral::kNumSamples> preflashIlluminant{};
-        std::array<float, 3> preflashRaw{};
-        if (mainHit && !balanceHit) {
-            mainIlluminant = resources.printIllumFilteredHost;
-        }
-        if (descriptors.preflashActive && preflashIlluminantHit && !preflashRawHit) {
-            preflashIlluminant = resources.printPreflashIllumFilteredHost;
-        }
-        float factorMidgray = resources.printBalanceFactorMidgray;
-        float factorMidgrayComp = resources.printBalanceFactorMidgrayComp;
-        float normalizer = resources.printBalanceNormalizer;
-
-        lock.unlock();
-        if (!mainHit) {
-            mainIlluminant = *request.mainIlluminant;
-        }
-        if (descriptors.preflashActive && !preflashIlluminantHit) {
-            std::array<float, Spectral::kNumSamples> sourceIlluminant{};
-            if (!copy_source_illuminant(
-                    *request.assets,
-                    request.recipe->print.illuminant.key,
-                    sourceIlluminant,
-                    outError) ||
-                !Spektrafilm::build_filtered_print_illuminant(
-                    request.recipe->print,
-                    sourceIlluminant,
-                    request.recipe->print.filters.preflashCmyCc,
-                    preflashIlluminant,
-                    outError)) {
-                return false;
-            }
-        }
-        if (!balanceHit) {
-            factorMidgray = request.recipe->print.balance.factorMidgray;
-            factorMidgrayComp = request.recipe->print.balance.factorMidgrayComp;
-            normalizer = request.recipe->print.balance.normalizer;
-        }
-        if (descriptors.preflashActive && !preflashRawHit &&
-            !derive_preflash_raw(film, print, preflashIlluminant, preflashRaw, outError)) {
-            return false;
-        }
-        lock.lock();
-        if (!validate_resource_owner_locked(resources, outError, false)) {
-            return false;
-        }
-
-        if (!filmDensityHit) {
-            std::array<float, Spectral::kNumSamples> epsC{};
-            std::array<float, Spectral::kNumSamples> epsM{};
-            std::array<float, Spectral::kNumSamples> epsY{};
-            for (std::size_t sample = 0; sample < film.data.channelDensity.size(); ++sample) {
-                epsC[sample] = film.data.channelDensity[sample][0];
-                epsM[sample] = film.data.channelDensity[sample][1];
-                epsY[sample] = film.data.channelDensity[sample][2];
-            }
-            Resources::DeviceSpectralTables& tables = resources.printFilmDensityTables;
-            const int currentK = tables.K;
-            if (!upload_array_locked(resources, tables.epsC, currentK, epsC.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsC", outError) ||
-                !upload_array_locked(resources, tables.epsM, currentK, epsM.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsM", outError) ||
-                !upload_array_locked(resources, tables.epsY, currentK, epsY.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsY", outError) ||
-                !upload_array_locked(resources, tables.baseDensityMin, currentK, film.data.baseDensity.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density base", outError)) {
-                return false;
-            }
-            tables.K = Spectral::kNumSamples;
-            tables.hasBaseline = 1;
-            tables.invYn = 1.0f;
-            resources.printFilmDensityTablesDescriptorHash = descriptors.filmDensityTables.hash;
-        }
-        if (!profileHit) {
-            Spectral::Curve dcC;
-            Spectral::Curve dcM;
-            Spectral::Curve dcY;
-            dcC.lambda_nm = print.data.logExposure;
-            dcM.lambda_nm = print.data.logExposure;
-            dcY.lambda_nm = print.data.logExposure;
-            dcC.linear.resize(request.recipe->print.develop.densityCurves.size());
-            dcM.linear.resize(request.recipe->print.develop.densityCurves.size());
-            dcY.linear.resize(request.recipe->print.develop.densityCurves.size());
-            std::vector<float> sensC(Spectral::kNumSamples);
-            std::vector<float> sensM(Spectral::kNumSamples);
-            std::vector<float> sensY(Spectral::kNumSamples);
-            for (std::size_t sample = 0;
-                 sample < request.recipe->print.develop.densityCurves.size();
-                 ++sample) {
-                dcC.linear[sample] = request.recipe->print.develop.densityCurves[sample][0];
-                dcM.linear[sample] = request.recipe->print.develop.densityCurves[sample][1];
-                dcY.linear[sample] = request.recipe->print.develop.densityCurves[sample][2];
-            }
-            for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
-                const auto& cmy = print.data.linearSensitivity[static_cast<std::size_t>(sample)];
-                sensC[static_cast<std::size_t>(sample)] = cmy[0];
-                sensM[static_cast<std::size_t>(sample)] = cmy[1];
-                sensY[static_cast<std::size_t>(sample)] = cmy[2];
-            }
-            if (!upload_curve_locked(resources, resources.printDcC, dcC, cudaStreamOpaque, &lock, "phase4B print dcC", outError) ||
-                !upload_curve_locked(resources, resources.printDcM, dcM, cudaStreamOpaque, &lock, "phase4B print dcM", outError) ||
-                !upload_curve_locked(resources, resources.printDcY, dcY, cudaStreamOpaque, &lock, "phase4B print dcY", outError) ||
-                !upload_spectral_samples_locked(resources, resources.printSensC, sensC, cudaStreamOpaque, &lock, "phase4B print sensC", outError) ||
-                !upload_spectral_samples_locked(resources, resources.printSensM, sensM, cudaStreamOpaque, &lock, "phase4B print sensM", outError) ||
-                !upload_spectral_samples_locked(resources, resources.printSensY, sensY, cudaStreamOpaque, &lock, "phase4B print sensY", outError)) {
-                return false;
-            }
-            resources.printProfileTablesDescriptorHash = descriptors.profileTables.hash;
-        }
-        if (!mainHit) {
-            if (!upload_array_locked(
-                    resources,
-                    resources.printIllumFiltered,
-                    resources.printIllumK,
-                    mainIlluminant.data(),
-                    Spectral::kNumSamples,
-                    cudaStreamOpaque,
-                    &lock,
-                    "phase4B filtered main print illuminant",
-                    outError)) {
-                return false;
-            }
-            resources.printIllumK = Spectral::kNumSamples;
-            resources.printIllumFilteredHost = mainIlluminant;
-            resources.printIllumFilteredHostValid = true;
-            resources.printMainIlluminantDescriptorHash = descriptors.mainIlluminant.hash;
-        }
-        if (descriptors.preflashActive) {
-            if (!preflashIlluminantHit) {
-                if (!upload_array_locked(
-                        resources,
-                        resources.printPreflashIllumFiltered,
-                        resources.printPreflashIllumK,
-                        preflashIlluminant.data(),
-                        Spectral::kNumSamples,
-                        cudaStreamOpaque,
-                        &lock,
-                        "phase4B filtered preflash print illuminant",
-                        outError)) {
-                    return false;
-                }
-                resources.printPreflashIllumK = Spectral::kNumSamples;
-                resources.printPreflashIllumFilteredHost = preflashIlluminant;
-                resources.printPreflashIllumFilteredHostValid = true;
-                resources.printPreflashIlluminantDescriptorHash =
-                    descriptors.preflashIlluminant.hash;
-            }
-            if (!preflashRawHit) {
-                std::copy(preflashRaw.begin(), preflashRaw.end(), resources.printPreflashRaw);
-                resources.printPreflashValid = true;
-                resources.printPreflashRawDescriptorHash = descriptors.preflashRaw.hash;
-            }
-        } else {
-            if (resources.printPreflashIllumFiltered) {
-                const std::size_t bytes =
-                    static_cast<std::size_t>(std::max(0, resources.printPreflashIllumK)) * sizeof(float);
-                if (!retire_ptr_locked(
-                        resources,
-                        resources.printPreflashIllumFiltered,
-                        bytes,
-                        Resources::RetireKind::DeviceFree,
-                        cudaStreamOpaque,
-                        "disabled phase4B preflash illuminant",
-                        outError)) {
-                    return false;
-                }
-                resources.printPreflashIllumFiltered = nullptr;
-            }
-            resources.printPreflashIllumK = 0;
-            resources.printPreflashIllumFilteredHost.fill(0.0f);
-            resources.printPreflashIllumFilteredHostValid = false;
-            resources.printPreflashIlluminantDescriptorHash = 0;
-            resources.printPreflashRaw[0] = 0.0f;
-            resources.printPreflashRaw[1] = 0.0f;
-            resources.printPreflashRaw[2] = 0.0f;
-            resources.printPreflashValid = false;
-            resources.printPreflashRawDescriptorHash = 0;
-        }
-        if (!balanceHit) {
-            resources.printBalanceFactorMidgray = factorMidgray;
-            resources.printBalanceFactorMidgrayComp = factorMidgrayComp;
-            resources.printBalanceNormalizer = normalizer;
-            resources.printBalanceDescriptorHash = descriptors.balance.hash;
-        }
-        resources.printPreparationDescriptorHash = descriptors.hash;
-        trace_main_illuminant("rebuilt", mainHit ? "retained" : "rebuilt");
-        return true;
+        };
+        return prepare_print_resources_impl(resources, input.descriptors, bindInput, cudaStreamOpaque, outError);
     }
 
     bool pack_print_cuda_payloads(
         const PrintRecipe& recipe,
+        const PrintPreparedView& prepared,
+        float routeCorrectionScale,
+        PrintCudaPayloadPack& out,
+        std::string& diagnostic) {
+        return pack_print_cuda_payloads(recipe.exposure, prepared, routeCorrectionScale, out, diagnostic);
+    }
+
+    bool pack_print_cuda_payloads(
+        const PrintExposureRecipe& exposure,
         const PrintPreparedView& prepared,
         float routeCorrectionScale,
         PrintCudaPayloadPack& out,
@@ -4330,8 +4556,8 @@ namespace JuicerCuda {
             diagnostic = "MissingRequiredResource phase=4B field=preflash_prepared_view";
             return false;
         }
-        if (!std::isfinite(recipe.exposure.printExposure) ||
-            recipe.exposure.printExposure < 0.0f ||
+        if (!std::isfinite(exposure.printExposure) ||
+            exposure.printExposure < 0.0f ||
             !std::isfinite(prepared.normalizer) ||
             !(prepared.normalizer > 0.0f) ||
             !std::isfinite(routeCorrectionScale) ||
@@ -4341,8 +4567,8 @@ namespace JuicerCuda {
             return false;
         }
         if (prepared.preflashActive) {
-            if (!std::isfinite(recipe.exposure.preflashExposure) ||
-                recipe.exposure.preflashExposure < 0.0f) {
+            if (!std::isfinite(exposure.preflashExposure) ||
+                exposure.preflashExposure < 0.0f) {
                 diagnostic =
                     "ResourceDescriptorMismatch phase=4B field=preflash_exposure";
                 return false;
@@ -4363,10 +4589,10 @@ namespace JuicerCuda {
         out.expose.printSensC = prepared.printSensC;
         out.expose.printSensM = prepared.printSensM;
         out.expose.printSensY = prepared.printSensY;
-        out.expose.printExposure = recipe.exposure.printExposure;
+        out.expose.printExposure = exposure.printExposure;
         out.expose.routeCorrectionScale = routeCorrectionScale;
         out.expose.printPreflashExposure =
-            prepared.preflashActive ? recipe.exposure.preflashExposure : 0.0f;
+            prepared.preflashActive ? exposure.preflashExposure : 0.0f;
         out.expose.printMidgrayFactor = prepared.normalizer;
         if (prepared.preflashActive) {
             std::copy_n(prepared.preflashRawCmy, 3, out.expose.printPreflashRaw);
@@ -4374,7 +4600,7 @@ namespace JuicerCuda {
         out.develop.printDcC = prepared.printDcC;
         out.develop.printDcM = prepared.printDcM;
         out.develop.printDcY = prepared.printDcY;
-        out.printRawScale = recipe.exposure.printExposure * prepared.normalizer;
+        out.printRawScale = exposure.printExposure * prepared.normalizer;
         if (!(std::isfinite(out.printRawScale) && out.printRawScale >= 0.0f)) {
             diagnostic = "MalformedRequiredResource phase=4B field=print_raw_scale";
             return false;

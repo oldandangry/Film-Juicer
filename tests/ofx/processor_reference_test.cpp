@@ -20,9 +20,93 @@
 #include "Hash.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "juicer_cuda_owner.h"
 #include "SpectralProcessing.h"
 #include "mainProcessing.h"
 #include "ofxsSupportPrivate.h"
+
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+#include "Cuda/JuicerCudaExecutor.h"
+#include "../ffi/prepared_boundary.h"
+#endif
+
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+#include <cstdarg>
+#include <cstring>
+#include "Cuda/JuicerCudaExecutor.h"
+
+namespace JuicerCuda::ExecutorTest {
+    enum class Event : std::uint8_t {
+        Injected,
+        Message,
+        Classified,
+        FrameAborted,
+        RecoveryStarted,
+        RecoveryEnded,
+        FatalMapped
+    };
+    enum class Delivery : std::uint8_t {
+        Success,
+        Failure,
+        Throw
+    };
+    struct FailureObservation {
+        std::array<Event, 8> events{};
+        std::size_t count = 0;
+        const char* diagnostic = nullptr;
+        const char* stage = nullptr;
+        Delivery delivery = Delivery::Success;
+        bool overflow = false;
+        bool failureStageMatches = false;
+        bool nativeRecoveryPending = false;
+        bool adapterRecoveryPending = false;
+        bool messageMatches = false;
+        bool armed = true;
+
+        void record(Event event) noexcept {
+            if (count < events.size()) {
+                events[count++] = event;
+            } else {
+                overflow = true;
+            }
+        }
+    };
+    thread_local FailureObservation* observation = nullptr;
+
+    bool inject_scan_error(std::string& diagnostic) {
+        if (!observation || !observation->armed) {
+            return false;
+        }
+        observation->armed = false;
+        diagnostic = observation->diagnostic;
+        observation->record(Event::Injected);
+        return true;
+    }
+    void observe_classification(const char* stage, bool recoveryPending) noexcept {
+        if (observation) {
+            observation->failureStageMatches = std::strcmp(stage, observation->stage) == 0;
+            observation->nativeRecoveryPending = recoveryPending;
+            observation->record(Event::Classified);
+        }
+    }
+    void observe_frame_abort() noexcept {
+        if (observation) {
+            observation->record(Event::FrameAborted);
+        }
+    }
+    void observe_recovery_start(bool pending) noexcept {
+        if (observation) {
+            observation->adapterRecoveryPending = pending;
+            observation->record(Event::RecoveryStarted);
+        }
+    }
+    void observe_recovery_end() noexcept {
+        if (observation) {
+            observation->record(Event::RecoveryEnded);
+        }
+    }
+} // namespace JuicerCuda::ExecutorTest
+#endif
 
 void OFX::Plugin::getPluginIDs(OFX::PluginFactoryArray&) {}
 
@@ -221,6 +305,30 @@ namespace {
         return 0;
     }
 
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) Required OFX message-suite callback signature.
+    OfxStatus failure_message(void*, const char* type, const char* id, const char* format, ...) {
+        auto& observation = *JuicerCuda::ExecutorTest::observation;
+        observation.record(JuicerCuda::ExecutorTest::Event::Message);
+        std::array<char, 512> text{};
+        va_list args;
+        va_start(args, format);
+        const int length = std::vsnprintf(text.data(), text.size(), format, args);
+        va_end(args);
+        observation.messageMatches = length >= 0 &&
+                                     static_cast<std::size_t>(length) < text.size() &&
+                                     std::strcmp(type, kOfxMessageError) == 0 &&
+                                     std::strcmp(id, "FilmJuicerDeferredCudaFailure") == 0 &&
+                                     std::strcmp(text.data(), observation.diagnostic) == 0;
+        if (observation.delivery == JuicerCuda::ExecutorTest::Delivery::Throw) {
+            throw std::runtime_error("injected host message exception");
+        }
+        return observation.delivery == JuicerCuda::ExecutorTest::Delivery::Failure
+                   ? kOfxStatFailed
+                   : kOfxStatOK;
+    }
+#endif
+
     class NarrowHost final {
     public:
         NarrowHost() {
@@ -237,18 +345,28 @@ namespace {
             OFX::Private::gPropSuite = &_properties;
             OFX::Private::gEffectSuite = &_effect;
             OFX::Private::gParamSuite = &_parameters;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+            _messages.message = failure_message;
+            OFX::Private::gMessageSuite = &_messages;
+#endif
         }
 
         ~NarrowHost() {
             OFX::Private::gPropSuite = nullptr;
             OFX::Private::gEffectSuite = nullptr;
             OFX::Private::gParamSuite = nullptr;
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+            OFX::Private::gMessageSuite = nullptr;
+#endif
         }
 
     private:
         OfxPropertySuiteV1 _properties{};
         OfxImageEffectSuiteV1 _effect{};
         OfxParameterSuiteV1 _parameters{};
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        OfxMessageSuiteV1 _messages{};
+#endif
     };
 
     class NarrowEffect final : public OFX::ImageEffect {
@@ -355,7 +473,13 @@ namespace {
         return parameters;
     }
 
-    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false) {
+    enum class ExecutionPath : std::uint8_t {
+        Processor,
+        Direct,
+        Boundary
+    };
+
+    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor) {
         const int pitch = kWidth * test.components + 5;
         const std::size_t bytes = static_cast<std::size_t>(pitch * kHeight) * sizeof(float);
         std::vector<float> input(static_cast<std::size_t>(pitch * kHeight), -7.0f);
@@ -472,7 +596,43 @@ namespace {
             if (!preparation.active()) {
                 throw std::runtime_error("frame preparation guard unavailable");
             }
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+            if (path != ExecutionPath::Processor) {
+                const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
+                const auto& payload = print ? admitted.printState->payload : admitted.directState->payload;
+                const JuicerCuda::FrameRect nativeBounds{bounds.x1, bounds.y1, bounds.x2, bounds.y2};
+                const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(nativeBounds, nativeBounds, recipe.filmRaw.autoExposureMethod);
+                const Spektrafilm::FilmJuicerEffectsGeometry geometry{};
+                const JuicerCuda::ExecutionFrame frame{nativeBounds, nativeBounds, nativeBounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), imageInput.rowBytes, imageInput.rowBytes, test.components, device.stream, diffusion, halation, geometry, pixelSizeUm, 37.0, 24.0, 0x20260923, 0x5312, meter, false, false};
+                JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+                snapshot.instanceToken.value = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
+                snapshot.frameToken.value = 37;
+                snapshot.snapshotId = 1;
+                snapshot.deviceContextKey = JuicerCuda::inspect_frame(frame.sourceBase, frame.destination, false);
+                snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
+                    payload.uploadCoreHash, recipe.dirCouplers.hash, payload.scannerHash, meter.hash);
+                if (path == ExecutionPath::Boundary) {
+                    const auto descriptors = JuicerCuda::describe_execution(recipe, payload, frame);
+                    std::string diagnostic;
+                    if (!JuicerCudaTest::execute_boundary(recipe, payload, frame, snapshot, descriptors, diagnostic)) {
+                        throw std::runtime_error(std::string(test.name) + ": C boundary: " + diagnostic);
+                    }
+                } else {
+                    JuicerCuda::PendingContextLossRecovery recovery;
+                    const JuicerCuda::DirFailureMessage message{[](void*, const std::string&) noexcept {}, nullptr};
+                    if (print) {
+                        JuicerCuda::execute_print({recipe, payload, frame, snapshot}, recovery, message);
+                    } else {
+                        JuicerCuda::execute_direct({recipe, payload, frame, snapshot}, recovery, message);
+                    }
+                }
+            } else {
+                processor.process();
+            }
+#else
+            (void)path;
             processor.process();
+#endif
         }
         imageLeaseAudit.require_complete(test.name);
         require_cuda(cudaMemcpyAsync(output.data(), device.destination, bytes, cudaMemcpyDeviceToHost, device.stream),
@@ -531,16 +691,97 @@ namespace {
     }
 } // namespace
 
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+namespace {
+    void check_failure_order(const Case& test,
+                             JuicerCuda::ExecutorTest::Delivery delivery,
+                             bool dirDiagnostic,
+                             bool contextLoss) {
+        using JuicerCuda::ExecutorTest::Event;
+        JuicerCuda::ExecutorTest::FailureObservation observation;
+        observation.delivery = delivery;
+        observation.diagnostic = dirDiagnostic
+                                     ? (contextLoss ? "test component=dir 100% device lost" : "test component=dir 100% invalid arithmetic")
+                                     : "test component=scanner 100% device lost";
+        observation.stage = Spektrafilm::scan_route_is_print(test.route)
+                                ? "print_scan_error_stage"
+                                : "direct_scan_error_stage";
+        JuicerCuda::ExecutorTest::observation = &observation;
+        InstanceState state;
+        bool fatal = false;
+        try {
+            (void)render_case(test, parameters_for(test), state);
+        } catch (const OFX::Exception::Suite& error) {
+            fatal = error.status() == kOfxStatErrFatal;
+            observation.record(Event::FatalMapped);
+        } catch (...) {
+            JuicerCuda::ExecutorTest::observation = nullptr;
+            throw;
+        }
+        JuicerCuda::ExecutorTest::observation = nullptr;
+        std::vector<Event> expected{Event::Injected};
+        if (dirDiagnostic) {
+            expected.push_back(Event::Message);
+        }
+        expected.insert(expected.end(), {Event::Classified, Event::FrameAborted, Event::RecoveryStarted, Event::RecoveryEnded, Event::FatalMapped});
+        if (!fatal || observation.overflow || observation.count != expected.size() ||
+            !std::equal(expected.begin(), expected.end(), observation.events.begin()) ||
+            !observation.failureStageMatches ||
+            observation.nativeRecoveryPending != contextLoss ||
+            observation.adapterRecoveryPending != contextLoss ||
+            (dirDiagnostic && !observation.messageMatches) ||
+            state.submissionSnapshotLatchValid == contextLoss) {
+            throw std::runtime_error(std::string(test.name) + ": executor failure order or host mapping changed");
+        }
+        std::cout << test.name << " dir=" << dirDiagnostic << " context_loss=" << contextLoss
+                  << " delivery=" << static_cast<int>(delivery)
+                  << " message/classify/abort/recovery/fatal order passed\n";
+    }
+
+    void run_failure_order_cases() {
+        const std::array<Case, 2> cases{{{"failure-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
+                                         {"failure-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}}};
+        for (const Case& test : cases) {
+            for (const auto delivery : {JuicerCuda::ExecutorTest::Delivery::Success,
+                                        JuicerCuda::ExecutorTest::Delivery::Failure,
+                                        JuicerCuda::ExecutorTest::Delivery::Throw}) {
+                check_failure_order(test, delivery, true, true);
+            }
+            check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, false, true);
+            check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, true, false);
+        }
+    }
+} // namespace
+#endif
+
 int main(int argc, char** argv) {
+    JuicerCuda::Owner cudaOwner;
     try {
+        cudaOwner.create(JuicerProcess::data_directory());
         NarrowHost host;
         require_cuda(cudaSetDevice(0), "select device");
         require_cuda(cudaFree(nullptr), "initialize CUDA");
         JuicerProcess::root().ensure_bootstrap();
+#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        if (argc == 2 && std::string(argv[1]) == "--failure-order") {
+            run_failure_order_cases();
+            JuicerProcess::root().shutdown();
+            return 0;
+        }
+#endif
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+        if (argc != 3 || std::string(argv[1]) != "--prepared-case") {
+            throw std::runtime_error("usage: JuicerPreparedBoundaryProbe --prepared-case <name>");
+        }
+        const std::string preparedCase = argv[2];
+        bool preparedCaseFound = false;
+        constexpr bool emit = false;
+#else
         const bool emit = argc == 2 && std::string(argv[1]) == "--emit-reference";
         if (argc != 1 && !emit) {
             throw std::runtime_error("usage: JuicerProcessorReferenceProbe [--emit-reference]");
         }
+#endif
         const std::array<Case, 7> cases{{{"negative-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
                                          {"negative-print", Spektrafilm::ScanRoute::NegativePrintScan, 1, 4, 0, 0},
                                          {"positive-direct", Spektrafilm::ScanRoute::PositiveDirectScan, 2, 3, 11, -3},
@@ -558,9 +799,28 @@ int main(int argc, char** argv) {
         std::vector<float> freshPlus;
         std::vector<float> freshMinus;
         for (const Case& test : cases) {
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+            if (preparedCase != test.name) {
+                fixture.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+                continue;
+            }
+            preparedCaseFound = true;
+            // Each CTest case starts a fresh process and owner. C crosses the
+            // boundary first, so no other caller can hide its table uploads.
+            std::cerr << "cold C case: " << test.name << '\n';
+            InstanceState boundaryState;
+            const auto boundary = render_case(test, parameters_for(test), boundaryState, false, ExecutionPath::Boundary);
+            const auto warmBoundary = render_case(test, parameters_for(test), boundaryState, false, ExecutionPath::Boundary);
+            const auto direct = [&] {
+                InstanceState directState;
+                return render_case(test, parameters_for(test), directState, false, ExecutionPath::Direct);
+            }();
+#endif
             std::cerr << "processor case: " << test.name << '\n';
-            InstanceState state;
-            const std::vector<float> pixels = render_case(test, parameters_for(test), state);
+            const std::vector<float> pixels = [&] {
+                InstanceState state;
+                return render_case(test, parameters_for(test), state);
+            }();
             if (test.signedZeroGlare) {
                 (test.negativeZero ? freshMinus : freshPlus) = pixels;
             }
@@ -585,8 +845,27 @@ int main(int argc, char** argv) {
                     throw std::runtime_error(std::string(test.name) + ": incomplete fixture row");
                 }
                 compare_pixels(test.name, pixels, expected);
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+                compare_pixels(std::string(test.name) + ": direct executor", direct, expected);
+                compare_pixels(std::string(test.name) + ": C boundary", boundary, expected);
+                compare_pixels(std::string(test.name) + ": warm C boundary", warmBoundary, expected);
+                const auto bitEqual = [](const std::vector<float>& left, const std::vector<float>& right) {
+                    return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(), [](float a, float b) {
+                               return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+                           });
+                };
+                if (!bitEqual(direct, boundary) || !bitEqual(boundary, warmBoundary)) {
+                    throw std::runtime_error(std::string(test.name) + ": C boundary differs from direct executor");
+                }
+                std::cerr << test.name << ": processor/direct/cold C/warm C match immutable fixture; direct/C bit-exact\n";
+#endif
             }
         }
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+        if (!preparedCaseFound) {
+            throw std::runtime_error("unknown prepared-boundary case: " + preparedCase);
+        }
+#else
         if (!emit) {
             if (std::equal(freshPlus.begin(), freshPlus.end(), freshMinus.begin())) {
                 throw std::runtime_error("signed-zero fresh print renders did not differ");
@@ -598,12 +877,13 @@ int main(int argc, char** argv) {
         }
         InstanceState emptyWindowState;
         (void)render_case(cases[0], parameters_for(cases[0]), emptyWindowState, true);
+#endif
         JuicerProcess::root().shutdown();
         return 0;
     } catch (const std::exception& error) {
         (void)std::fprintf(stderr, "%s\n", error.what());
         try {
-            JuicerProcess::root().shutdown();
+            JuicerProcess::shutdown_if_initialized();
         } catch (...) {
             (void)std::fputs("shutdown failed after processor test error\n", stderr);
         }

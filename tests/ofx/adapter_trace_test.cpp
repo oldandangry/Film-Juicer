@@ -41,6 +41,7 @@
 #include "JuicerState.h"
 #include "ParamNames.h"
 #include "ProcessRoot.h"
+#include "juicer_cuda_owner.h"
 #include "SpectralProcessing.h"
 #include "ofxMemory.h"
 #include "ofxMultiThread.h"
@@ -2522,6 +2523,7 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-level catches map all fixture failures.
+    JuicerCuda::Owner cudaOwner;
     try {
         if (argc == 5 && std::string_view(argv[1]) == "--loaded-module" &&
             std::string_view(argv[3]) == "--trace-output") {
@@ -2535,6 +2537,7 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                 "--loaded-module MODULE --trace-output PATH");
         }
         const std::filesystem::path tracePath = argv[2];
+        cudaOwner.create(JuicerProcess::data_directory());
         NativeHost host;
         if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess) {
             throw std::runtime_error("CUDA initialization failed");
@@ -3069,11 +3072,11 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL adapter trace: " << error.what() << '\n';
-        JuicerProcess::root().shutdown();
+        JuicerProcess::shutdown_if_initialized();
         return 1;
     } catch (...) {
         std::cerr << "FAIL adapter trace: unknown exception\n";
-        JuicerProcess::root().shutdown();
+        JuicerProcess::shutdown_if_initialized();
         return 1;
     }
 }
