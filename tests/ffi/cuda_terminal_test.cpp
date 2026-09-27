@@ -73,7 +73,7 @@ namespace {
         FjPreparedHostData prepared{};
         require(fj_cuda_inspect(cuda, &frame, &context, nullptr).category == FJ_STATUS_PREPARATION_FAILURE,
                 "closed owner admitted inspection");
-        require(fj_cuda_render(cuda, &context, &frame, &submission, &prepared, {}, nullptr).category == FJ_STATUS_PREPARATION_FAILURE,
+        require(fj_cuda_render(cuda, &context, &frame, &submission, &prepared, {}, nullptr).status.category == FJ_STATUS_PREPARATION_FAILURE,
                 "closed owner admitted render");
         require(fj_cuda_retire_instance(cuda, 1, nullptr).category == FJ_STATUS_PREPARATION_FAILURE,
                 "closed owner admitted retirement");

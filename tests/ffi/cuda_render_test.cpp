@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -26,6 +27,19 @@
 namespace JuicerProcess::TestSupport {
     class RootLifetimeObserver final {
     public:
+        static std::shared_ptr<JuicerCuda::Resources> resources(Root& root, const JuicerCuda::ResourceManager::DeviceContextKey& key) {
+            std::lock_guard<std::mutex> lock(root._cudaResourcesMutex);
+            std::shared_ptr<JuicerCuda::Resources> owner;
+            std::uint64_t epoch = 0;
+            for (const auto& [identity, entry] : root._cudaContextResources) {
+                if (identity.deviceContextKey == key && identity.contextEpoch > epoch) {
+                    owner = entry.frameOwner;
+                    epoch = identity.contextEpoch;
+                }
+            }
+            return owner;
+        }
+
         static std::size_t fences(Root& root) {
             std::shared_ptr<JuicerCuda::Resources> owner;
             {
@@ -43,6 +57,13 @@ namespace JuicerProcess::TestSupport {
     };
 } // namespace JuicerProcess::TestSupport
 
+namespace JuicerCuda::PinnedUploadTest {
+    std::int32_t injected_error(Operation) noexcept {
+        return 0;
+    }
+    void before_diagnostic() {}
+} // namespace JuicerCuda::PinnedUploadTest
+
 namespace JuicerCuda::RenderTest {
     enum class Injection : std::uint8_t {
         None,
@@ -53,6 +74,7 @@ namespace JuicerCuda::RenderTest {
     };
     thread_local Injection injection = Injection::None;
     thread_local FjStatus injectedStatus{};
+    thread_local bool injectedDeferredScanError = false;
 
     struct PendingWork {
         cudaStream_t stream = nullptr;
@@ -86,9 +108,44 @@ namespace JuicerCuda::RenderTest {
     };
     thread_local PendingWork* pendingWork = nullptr;
 
+    // Finite device copies keep the upload event outstanding without a host
+    // gate or GPU wait. Enqueue only after the renderer's synchronous paths.
+    struct ExpiringUpload {
+        static constexpr std::size_t kBytes = 64u * 1024u * 1024u;
+        std::shared_ptr<Resources> resources;
+        void* first = nullptr;
+        void* second = nullptr;
+        cudaStream_t stream = nullptr;
+        FjFloatSpan source{};
+        PinnedUploadTest::Snapshot staging;
+
+        ~ExpiringUpload() {
+            (void)cudaStreamSynchronize(stream);
+            (void)cudaFree(first);
+            (void)cudaFree(second);
+        }
+        void enqueue() {
+            for (unsigned i = 0; i < 128; ++i) {
+                if (cudaMemcpyAsync(second, first, kBytes, cudaMemcpyDeviceToDevice, stream) != cudaSuccess ||
+                    cudaMemcpyAsync(first, second, kBytes, cudaMemcpyDeviceToDevice, stream) != cudaSuccess) {
+                    throw std::runtime_error("queue finite expiry work");
+                }
+            }
+            Failure failure;
+            if (!PinnedUploadTest::upload(*resources, second, source.data, source.count * sizeof(float), stream, failure)) {
+                throw std::runtime_error(failure.diagnostic);
+            }
+            staging = PinnedUploadTest::snapshot(resources->ownerContextKey);
+        }
+    };
+    thread_local ExpiringUpload* expiringUpload = nullptr;
+
     thread_local PendingWork* completionWork = nullptr;
 
     void after_execute() {
+        if (expiringUpload) {
+            expiringUpload->enqueue();
+        }
         if (completionWork) {
             if (cudaLaunchHostFunc(completionWork->stream, PendingWork::wait, completionWork) != cudaSuccess ||
                 cudaEventRecord(completionWork->event, completionWork->stream) != cudaSuccess) {
@@ -119,7 +176,7 @@ namespace JuicerCuda::RenderTest {
             case Injection::Unknown:
                 throw 17;
             case Injection::Typed:
-                throw ExecutionFailure{{injectedStatus, "render injection 100% diagnostic"}};
+                throw ExecutionFailure{{injectedStatus, "render injection 100% diagnostic"}, injectedDeferredScanError};
         }
     }
 } // namespace JuicerCuda::RenderTest
@@ -136,6 +193,11 @@ namespace {
             throw std::runtime_error(std::string(detail) + ": category=" + std::to_string(actual.category) +
                                      " api=" + std::to_string(actual.api) + " code=" + std::to_string(actual.native_code));
         }
+    }
+
+    void require_status(FjRenderOutcome actual, FjStatus expected, const char* detail) {
+        require_status(actual.status, expected, detail);
+        require(actual.flags == 0, "ordinary render returned a deferred-scan flag");
     }
 
     struct AbortQuery {
@@ -455,6 +517,32 @@ namespace JuicerCudaTest {
                 require(capacity == 0 || (message[length] == '\0' && full.compare(0, length, message.data()) == 0), "diagnostic contents");
             }
         }
+        for (const bool deferred : {false, true}) {
+            for (const std::size_t capacity : {std::size_t{0}, std::size_t{1}, std::size_t{8}, std::size_t{64}}) {
+                std::array<char, 64> text{};
+                FjErrorBuffer output{text.data(), capacity, 0};
+                JuicerCuda::RenderTest::injection = Injection::Typed;
+                JuicerCuda::RenderTest::injectedStatus = preparationFailure;
+                JuicerCuda::RenderTest::injectedDeferredScanError = deferred;
+                const auto outcome = fj_cuda_render(cuda, &context, &frame, &submission, &prepared, {}, &output);
+                JuicerCuda::RenderTest::injection = Injection::None;
+                JuicerCuda::RenderTest::injectedDeferredScanError = false;
+                require_status(outcome.status, preparationFailure, "typed deferred scan status");
+                require(outcome.flags == (deferred ? FJ_RENDER_DEFERRED_SCAN_ERROR : 0U), "deferred provenance independent of diagnostic capacity and text");
+            }
+        }
+        // The production adapter uses this same admitted body after inspection
+        // and its short latch; an exported call under the admission must still fail.
+        {
+            JuicerCuda::NativeCall admitted(cuda);
+            FjCudaContext inspected{};
+            require_status(admitted.inspect(&frame, &inspected, error), success, "admitted inspection");
+            require_status(render(), unsupported, "export cannot bypass an existing admission");
+            JuicerCuda::PendingContextLossRecovery recovery;
+            std::string diagnostic;
+            require_status(admitted.render(&inspected, &frame, &submission, &prepared, {}, recovery, diagnostic), success, "one inspection and render admission");
+            require(!recovery.pending, "ordinary render schedules no host recovery");
+        }
         for (unsigned checkpoint = 1; checkpoint <= 3; ++checkpoint) {
             AbortQuery callback;
             callback.cancelAt = checkpoint;
@@ -528,6 +616,56 @@ namespace JuicerCudaTest {
             if (!supplied)
                 require(cudaStreamQuery(nullptr) == cudaSuccess, "absent stream abort completion");
         }
+        {
+            const JuicerCuda::ResourceManager::DeviceContextKey uploadKey{context.device_id, reinterpret_cast<void*>(context.context)};
+            JuicerCuda::RenderTest::ExpiringUpload upload;
+            upload.resources = JuicerProcess::TestSupport::RootLifetimeObserver::resources(JuicerProcess::root(), uploadKey);
+            require(upload.resources != nullptr, "expiry has a real native resource owner");
+            upload.stream = reinterpret_cast<cudaStream_t>(frame.stream);
+            require(cudaMalloc(&upload.first, upload.kBytes) == cudaSuccess &&
+                        cudaMalloc(&upload.second, upload.kBytes) == cudaSuccess,
+                    "allocate expiry copy workspace");
+            require(cudaMemsetAsync(upload.first, 0x26, upload.kBytes, upload.stream) == cudaSuccess, "initialize finite expiry work");
+            const auto original = prepared.film_development.density_rgb;
+            // The original span can be native triplet rows. Copy its object
+            // representation into actual contiguous C scalars without indexing it.
+            std::vector<float> borrowed(original.count);
+            std::memcpy(borrowed.data(), original.data, original.count * sizeof(float));
+            const auto expected = borrowed;
+            upload.source = {borrowed.data(), borrowed.size()};
+            JuicerCuda::Failure warmFailure;
+            require(JuicerCuda::PinnedUploadTest::upload(*upload.resources, upload.second, borrowed.data(), borrowed.size() * sizeof(float), upload.stream, warmFailure), "warm native expiry staging");
+            require(cudaStreamSynchronize(upload.stream) == cudaSuccess, "complete expiry warmup before measured call");
+            JuicerCuda::PinnedUploadTest::poll(uploadKey);
+            auto expired = prepared;
+            expired.film_development.density_rgb = upload.source;
+            JuicerCuda::RenderTest::expiringUpload = &upload;
+            const auto outcome = fj_cuda_render(cuda, &context, &frame, &submission, &expired, {}, error);
+            JuicerCuda::RenderTest::expiringUpload = nullptr;
+            require_status(outcome, success, "render with expiring borrowed storage");
+            require(upload.staging.inFlight != 0, "native upload remains outstanding at C return");
+            cudaEvent_t event = nullptr;
+            for (const auto& block : upload.staging.blocks) {
+                if (block.capacity >= expected.size() * sizeof(float) &&
+                    cudaEventQuery(static_cast<cudaEvent_t>(block.event)) == cudaErrorNotReady &&
+                    std::memcmp(block.pointer, expected.data(), expected.size() * sizeof(float)) == 0) {
+                    require(block.pointer != borrowed.data(), "native staging does not borrow the caller allocation");
+                    event = static_cast<cudaEvent_t>(block.event);
+                    break;
+                }
+            }
+            require(event != nullptr, "actual native staging event is pending");
+            std::fill(borrowed.begin(), borrowed.end(), -8192.0f);
+            std::vector<float>().swap(borrowed);
+            expired = {};
+            upload.source = {};
+            require(cudaEventQuery(event) == cudaErrorNotReady, "caller storage expires before upload completion");
+            require(cudaEventSynchronize(event) == cudaSuccess, "complete native expiry upload after caller release");
+            std::vector<float> actual(expected.size());
+            require(cudaMemcpy(actual.data(), upload.second, actual.size() * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess, "read native staged values");
+            require(std::memcmp(actual.data(), expected.data(), expected.size() * sizeof(float)) == 0, "native staging retained exact borrowed values");
+            std::cout << "caller prepared storage expired after C return with native upload event outstanding\n";
+        }
         const JuicerCuda::ResourceManager::DeviceContextKey key{context.device_id, reinterpret_cast<void*>(context.context)};
         JuicerCuda::ResourceManager::RegistryContextSnapshot oldEpoch;
         require(JuicerCuda::ResourceManager::registry_begin_submission(key, oldEpoch), "admit epoch observation");
@@ -570,13 +708,13 @@ namespace JuicerCudaTest {
         std::thread worker([&] {
             if (cuCtxSetCurrent(original) != CUDA_SUCCESS)
                 return;
-            threaded = render();
+            threaded = render().status;
             (void)cuCtxSetCurrent(nullptr);
         });
         worker.join();
         require_status(threaded, success, "sequential callback thread");
         require(cuCtxSetCurrent(original) == CUDA_SUCCESS, "main callback context remains current");
         std::cout << "render contract route=" << prepared.route << " passed\n";
-        return render();
+        return render().status;
     }
 } // namespace JuicerCudaTest

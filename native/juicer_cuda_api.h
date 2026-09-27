@@ -36,6 +36,14 @@ typedef struct FjStatus {
     int32_t native_code;
 } FjStatus;
 
+/* Render-only provenance, independent of diagnostic wording or truncation.
+ * All unassigned bits are reserved and returned as zero. */
+#define FJ_RENDER_DEFERRED_SCAN_ERROR 1U
+typedef struct FjRenderOutcome {
+    FjStatus status;
+    uint32_t flags; /* FJ_RENDER_*; deferred scan failure permits host filtering. */
+} FjRenderOutcome;
+
 typedef struct FjErrorBuffer {
     /* char[capacity], diagnostic bytes produced by the native entry for its caller.
      * No units/channel order. Writable until native-call return; never retained.
@@ -740,7 +748,7 @@ FjStatus fj_cuda_inspect(FjCuda* cuda, const FjFrame* frame, FjCudaContext* out_
  * Rendering re-inspects the current context under the same native admission as
  * execution. Abort queries run at bounded checkpoints; only CONTINUE/REQUESTED
  * are valid. A null query continues regardless of its unused user value. */
-FjStatus fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, FjAbortCallback abort_callback, FjErrorBuffer* error);
+FjRenderOutcome fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, FjAbortCallback abort_callback, FjErrorBuffer* error);
 
 /* Retires only this instance's static-grain membership; borrows the owner. */
 FjStatus fj_cuda_retire_instance(FjCuda* cuda, uint64_t instance_token, FjErrorBuffer* error);

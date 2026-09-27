@@ -1,11 +1,14 @@
 #pragma once
 
 #include <mutex>
+#include <string>
 #include <string_view>
 
 #include "juicer_cuda_api.h"
 
 namespace JuicerCuda {
+
+    struct PendingContextLossRecovery;
 
     // Callback-local borrow of the registered owner; never constructs one.
     FjCuda* borrowed_owner() noexcept;
@@ -21,8 +24,14 @@ namespace JuicerCuda {
 
         FjStatus inspect(const FjFrame* frame, FjCudaContext* outContext, FjErrorBuffer* error);
 
+        // Same admitted body as fj_cuda_render. Inputs expire at return; the
+        // adapter retains full diagnostic/recovery detail until host delivery.
+        FjRenderOutcome render(
+            const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, FjAbortCallback abortCallback, PendingContextLossRecovery& recovery, std::string& diagnostic);
+
     private:
         std::unique_lock<std::mutex> _lock;
+        FjCuda* _cuda;
     };
 
 #if defined(JUICER_CUDA_RENDER_TEST_HOOK)

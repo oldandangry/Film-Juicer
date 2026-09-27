@@ -1,7 +1,7 @@
 # CUDA C ABI evidence
 
 `Ffi.Host.CudaAbi` links the CMake-built Rust static library to real C11 and
-C++20 consumers. It compares 570 size, alignment, offset, tag and flag facts,
+C++20 consumers. It compares 575 size, alignment, offset, tag and flag facts,
 including the opaque owner's pointer and the nullable abort callback. Both
 native languages check the reviewed values in `cuda_abi_facts.inc`. Bindgen's
 constant layout assertions also compile in Rust. All six operation signatures
@@ -91,8 +91,8 @@ the same typed terminal operations for final cleanup.
 
 Direct native fixtures use `JuicerCuda::Owner` for their process scope, just as
 the OFX factory owns one handle across load/unload. Root lookup only borrows that
-registered owner. Production rendering continues through direct C++ execution;
-this lifecycle work does not perform the S2.E render cutover.
+registered owner. Both production routes now use callback-local C-record
+projection and the admitted body shared with `fj_cuda_render`.
 
 The native execution object target has no OFX include or link dependency. Its
 objects, current C++ host preparation, and OFX adapter objects enter one
@@ -244,3 +244,44 @@ owner with malformed output: a saved/native terminal failure has precedence;
 a successful close/delete reports unsupported output afterward. Neither malformed
 output nor a later empty wrapper destructor retries consumption. Valid zero,
 one-byte and truncated diagnostics preserve status and the saved diagnostic.
+
+## Production projection and render outcome
+
+The temporary OFX adapter holds one `NativeCall` across inspection, the short
+instance submission latch, and `project_and_render`. The latter borrows the
+immutable recipe/payload and current descriptors, builds `FjPreparedHostData`
+locally, and immediately invokes `NativeCall::render`. No complete prepared
+record escapes. The exported C entry acquires its own admission and invokes the
+same render body, validation, decoder and executor. Reentry remains rejected;
+there is no runtime selector or adapter-to-executor alternative.
+
+`FjRenderOutcome` contains the existing 12-byte `FjStatus` followed by a 32-bit
+flags field (size 16, alignment 4). Only `FJ_RENDER_DEFERRED_SCAN_ERROR` is
+assigned. Native failure provenance supplies that flag, including when the C
+error buffer has zero capacity; all other bits remain zero. The adapter delivers
+the existing filtered, percent-safe DIR message only after releasing admission.
+It retains the full native diagnostic string. The C export alone applies the
+caller buffer's truncation contract. Pending context-loss detail retains the
+first native failure and stage; Root recovery happens after admission release.
+Native code alone owns absent-stream completion and prepared finish/abort.
+
+`Ofx.Gpu.CutoverContract` exercises actual processor callbacks with changed
+geometry/time/scale, sequential streams, another host thread, a fixture-owned
+second context on the same device, same-allocation disjoint image regions, and
+abort before/after preparation, including a throwing abort suite. Its constant
+input geometry check disables glare and supplements the unchanged independent
+processor pixel fixtures. `Ofx.Gpu.ExecutorFailureOrder` includes diagnostics
+longer than 8 KiB; nondeferred grain failures containing `component=dir` must not
+trigger a host message.
+
+The render-contract fixture checks the new flag independently of status and
+text capacity and checks shared admission with real reentry rejection. Its
+expiry case borrows copied film-density storage through C, then mutates and
+releases it after return while a native staging event is still pending. The
+isolated post-executor seam submits that same span through the real pinned
+uploader behind finite device copies. The fixture then verifies its exact bytes.
+It inserts no blocking GPU gate into rendering; staging warmup completes before
+the measured call. This isolates the C return/staging lifetime from legitimate
+synchronous renderer paths. Existing pinned-upload tests independently cover
+reservation, exceptional completion and quarantine. The uploader hook object
+remains confined to the test executable.

@@ -64,7 +64,7 @@ namespace {
         const FjSubmission submission{1, 0, 1, 1, 1, 1, 1};
         const FjPreparedHostData prepared{};
         const auto category = [&](FjCuda* inputOwner, const FjCudaContext* inputContext, const FjFrame* inputFrame, const FjSubmission* inputSubmission, const FjPreparedHostData* inputPrepared, FjErrorBuffer* error) {
-            return fj_cuda_render(inputOwner, inputContext, inputFrame, inputSubmission, inputPrepared, {}, error).category;
+            return fj_cuda_render(inputOwner, inputContext, inputFrame, inputSubmission, inputPrepared, {}, error).status.category;
         };
         EXPECT_EQ(category(nullptr, &context, &frame, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(category(cuda, nullptr, &frame, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);

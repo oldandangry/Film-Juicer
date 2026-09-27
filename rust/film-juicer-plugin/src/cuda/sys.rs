@@ -13,6 +13,7 @@ pub const FJ_API_NONE: u32 = 0;
 pub const FJ_API_CUDA_RUNTIME: u32 = 1;
 pub const FJ_API_CUDA_DRIVER: u32 = 2;
 pub const FJ_API_CUFFT: u32 = 3;
+pub const FJ_RENDER_DEFERRED_SCAN_ERROR: u32 = 1;
 pub const FJ_COMPONENTS_UNKNOWN: u32 = 0;
 pub const FJ_COMPONENTS_RGB: u32 = 3;
 pub const FJ_COMPONENTS_RGBA: u32 = 4;
@@ -117,6 +118,21 @@ const _: () = {
     ["Offset of field: FjStatus::api"][::core::mem::offset_of!(FjStatus, api) - 4usize];
     ["Offset of field: FjStatus::native_code"]
         [::core::mem::offset_of!(FjStatus, native_code) - 8usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FjRenderOutcome {
+    pub status: FjStatus,
+    pub flags: u32,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjRenderOutcome"][::core::mem::size_of::<FjRenderOutcome>() - 16usize];
+    ["Alignment of FjRenderOutcome"][::core::mem::align_of::<FjRenderOutcome>() - 4usize];
+    ["Offset of field: FjRenderOutcome::status"]
+        [::core::mem::offset_of!(FjRenderOutcome, status) - 0usize];
+    ["Offset of field: FjRenderOutcome::flags"]
+        [::core::mem::offset_of!(FjRenderOutcome, flags) - 12usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1616,7 +1632,7 @@ unsafe extern "C" {
         prepared: *const FjPreparedHostData,
         abort_callback: FjAbortCallback,
         error: *mut FjErrorBuffer,
-    ) -> FjStatus;
+    ) -> FjRenderOutcome;
 }
 unsafe extern "C" {
     pub fn fj_cuda_retire_instance(

@@ -9,7 +9,7 @@
 
 #include <cuda_runtime.h>
 
-#include "Cuda/JuicerCudaExecutor.h"
+#include "CudaRenderProjection.h"
 #include "JuicerState.h"
 #include "Logging.h"
 #include "ProcessRoot.h"
@@ -241,7 +241,7 @@ void JuicerProcessor::processImagesCUDA() {
     }
     const bool traceInfo = JTRACE_ENABLED(1);
     const bool traceVerbose = JTRACE_ENABLED(3);
-    const auto should_abort_effect = [this]() -> bool {
+    auto should_abort_effect = [this]() -> bool {
         return _effect.abort();
     };
 
@@ -504,46 +504,33 @@ void JuicerProcessor::processImagesCUDA() {
         autoExposureDescriptor,
         traceInfo,
         traceVerbose};
-    const auto complete_unsupplied_stream = [&]() {
-        if (!_cudaStreamPropertyPresent) {
-            const auto completion = cudaStreamSynchronize(static_cast<cudaStream_t>(_pCudaStream));
-            if (completion != cudaSuccess) {
-                const JuicerCuda::Failure failure{JuicerCuda::runtime_failure_status(completion), cudaGetErrorString(completion)};
-                if (!pendingContextLossRecovery.pending && JuicerCuda::context_loss(failure)) {
-                    pendingContextLossRecovery.pending = true;
-                    pendingContextLossRecovery.failure = failure;
-                    pendingContextLossRecovery.stage = "absent_stream_completion";
-                }
-                JTRACE("CUDA", cudaGetErrorString(completion));
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
+    std::string diagnostic;
+    struct AbortAccess {
+        decltype(should_abort_effect)& query;
+        bool failed = false;
+    } abortAccess{should_abort_effect};
+    const FjAbortCallback abortCallback{
+        [](void* user) -> std::uint32_t {
+            auto& access = *static_cast<AbortAccess*>(user);
+            try {
+                return access.query() ? FJ_ABORT_REQUESTED : FJ_ABORT_CONTINUE;
+            } catch (...) {
+                access.failed = true;
+                return FJ_ABORT_REQUESTED;
             }
-        }
-    };
-    try {
-        if (directRecipe) {
-            JuicerCuda::execute_direct(
-                {*directRecipe, *directPayload, frame, snapshot},
-                pendingContextLossRecovery);
-        } else {
-            JuicerCuda::execute_print(
-                {*printRecipe, *printPayload, frame, snapshot},
-                pendingContextLossRecovery);
-        }
-    } catch (JuicerCuda::ExecutionFailure& nativeFailure) {
-        JuicerCuda::Failure failure = std::move(nativeFailure.failure);
-        complete_unsupplied_stream();
-        nativeCall.reset();
-        if (nativeFailure.deferredScanError) {
-            deliver_dir_failure(failure);
-        }
-        if (failure.status.category == FJ_STATUS_CANCELLED) {
-            return;
-        }
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    } catch (...) {
-        complete_unsupplied_stream();
-        throw;
-    }
-    complete_unsupplied_stream();
+        },
+        &abortAccess};
+    const auto outcome = JuicerCuda::project_and_render(
+        *nativeCall, *focusedRecipe, directPayload ? *directPayload : *printPayload, frame, rawFrame, snapshot, pendingContextLossRecovery, abortCallback, diagnostic);
     nativeCall.reset();
+    if (!pendingContextLossRecovery.pending && outcome.status.category == FJ_STATUS_CONTEXT_LOSS) {
+        pendingContextLossRecovery = {true, {outcome.status, diagnostic}, "native_render"};
+    }
+    if ((outcome.flags & FJ_RENDER_DEFERRED_SCAN_ERROR) != 0) {
+        deliver_dir_failure({outcome.status, diagnostic});
+    }
+    if (abortAccess.failed || (outcome.status.category != FJ_STATUS_SUCCESS && outcome.status.category != FJ_STATUS_CANCELLED)) {
+        JTRACE("CUDA", diagnostic);
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
 }

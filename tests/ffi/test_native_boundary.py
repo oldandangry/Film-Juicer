@@ -1,4 +1,4 @@
-"""Enforce the current native/host and S2.D operation boundaries."""
+"""Enforce the current native/host and production operation boundaries."""
 
 from pathlib import Path
 import re
@@ -20,17 +20,25 @@ class NativeBoundary(unittest.TestCase):
                 source = (ROOT / relative).read_text(encoding="utf-8")
                 self.assertNotRegex(source, r"\b(?:DirFailureMessage|sendMessage)\b|OFX::")
 
-    def test_production_still_uses_direct_cpp_execution(self):
+    def test_production_uses_one_admitted_c_record_render_body(self):
         source = (ROOT / "src/mainProcessing.cpp").read_text(encoding="utf-8")
-        self.assertNotRegex(source, r"\bfj_cuda_render\s*\(")
-        self.assertRegex(source, r"JuicerCuda::execute_direct\s*\(")
-        self.assertRegex(source, r"JuicerCuda::execute_print\s*\(")
+        self.assertNotRegex(source, r"JuicerCuda::execute_(?:direct|print)\s*\(")
+        self.assertNotIn("cudaStreamSynchronize", source)
+        self.assertEqual(source.count("JuicerCuda::project_and_render("), 1)
+        self.assertIn("FJ_RENDER_DEFERRED_SCAN_ERROR", source)
         self.assertIn('"FilmJuicerDeferredCudaFailure"', source)
+        projection = (ROOT / "src/CudaRenderProjection.cpp").read_text(encoding="utf-8")
+        self.assertEqual(projection.count("call.render("), 1)
+        self.assertNotRegex(projection, r'#include\s+".*(?:tests/|prepared_boundary|prepared_descriptors\.h)')
+        boundary = (ROOT / "native/juicer_cuda_api.cpp").read_text(encoding="utf-8")
+        self.assertEqual(boundary.count("JuicerCuda::execute_prepared_host_data("), 1)
+        self.assertEqual(boundary.count("FjRenderOutcome JuicerCuda::NativeCall::render("), 1)
+        self.assertIn("call.render(context, frame, submission, prepared", boundary)
 
     def test_only_accepted_operations_are_defined(self):
         definitions = []
         for path in (ROOT / "native").glob("*.cpp"):
-            definitions.extend(re.findall(r"^FjStatus (fj_cuda_\w+)\([^;]*?\)\s*\{", path.read_text(encoding="utf-8"), re.MULTILINE))
+            definitions.extend(re.findall(r"^(?:FjStatus|FjRenderOutcome) (fj_cuda_\w+)\([^;]*?\)\s*\{", path.read_text(encoding="utf-8"), re.MULTILINE))
         self.assertCountEqual(definitions, ["fj_cuda_create", "fj_cuda_inspect", "fj_cuda_render", "fj_cuda_retire_instance", "fj_cuda_shutdown", "fj_cuda_destroy"])
 
     def test_resource_destruction_does_not_reenter_root(self):

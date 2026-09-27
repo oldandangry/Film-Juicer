@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <cuda.h>
@@ -370,8 +371,26 @@ namespace {
         return kOfxStatOK;
     }
 
+    struct AbortObservation {
+        std::thread::id thread = std::this_thread::get_id();
+        unsigned calls = 0;
+        unsigned cancelAt = 0;
+        unsigned throwAt = 0;
+        bool sameThread = true;
+    };
+    thread_local AbortObservation* s_abortObservation = nullptr;
+
     int effect_abort(OfxImageEffectHandle) {
-        return 0;
+        if (!s_abortObservation) {
+            return 0;
+        }
+        auto& observation = *s_abortObservation;
+        ++observation.calls;
+        observation.sameThread = observation.sameThread && observation.thread == std::this_thread::get_id();
+        if (observation.calls == observation.throwAt) {
+            throw std::runtime_error("abort suite exception");
+        }
+        return observation.calls == observation.cancelAt ? 1 : 0;
     }
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
@@ -381,7 +400,7 @@ namespace {
         // Acquiring the real non-reentrant gate proves the adapter released it.
         JuicerCuda::NativeCall call(JuicerCuda::borrowed_owner());
         observation.record(JuicerCuda::ExecutorTest::Event::Message);
-        std::array<char, 512> text{};
+        std::vector<char> text(std::strlen(observation.diagnostic) + 1);
         va_list args;
         va_start(args, format);
         const int length = std::vsnprintf(text.data(), text.size(), format, args);
@@ -475,6 +494,10 @@ namespace {
         }
     }
 
+    constexpr int kWidth = 7;
+    constexpr int kHeight = 5;
+    constexpr float kCanary = -8.0f;
+
     struct Case {
         const char* name = nullptr;
         Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
@@ -486,18 +509,24 @@ namespace {
         bool signedZeroGlare = false;
         bool negativeZero = false;
         bool uniform = false;
+        int width = kWidth;
+        int height = kHeight;
+        double time = 37.0;
+        double scaleX = 1.0;
+        double scaleY = 1.0;
     };
 
     struct DeviceFrame {
         float* source = nullptr;
         float* destination = nullptr;
         cudaStream_t stream = nullptr;
+        bool destinationInSource = false;
 
         ~DeviceFrame() {
             if (stream) {
                 (void)cudaStreamSynchronize(stream);
             }
-            if (destination) {
+            if (destination && !destinationInSource) {
                 (void)cudaFree(destination);
             }
             if (source) {
@@ -508,10 +537,6 @@ namespace {
             }
         }
     };
-
-    constexpr int kWidth = 7;
-    constexpr int kHeight = 5;
-    constexpr float kCanary = -8.0f;
 
     ParamSnapshot parameters_for(const Case& test) {
         ParamSnapshot parameters;
@@ -555,22 +580,25 @@ namespace {
     enum class DestinationLayout : std::uint8_t {
         Matching,
         Offset,
-        Uncovered
+        Uncovered,
+        DisjointRows
     };
 
     std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching, [[maybe_unused]] std::uint64_t snapshotId = 1) {
-        const int pitch = kWidth * test.components + 5;
-        const std::size_t bytes = static_cast<std::size_t>(pitch * kHeight) * sizeof(float);
-        std::vector<float> input(static_cast<std::size_t>(pitch * kHeight), -7.0f);
+        const int width = test.width;
+        const int height = test.height;
+        const int pitch = width * test.components + 5;
+        const std::size_t bytes = static_cast<std::size_t>(pitch * height) * sizeof(float);
+        std::vector<float> input(static_cast<std::size_t>(pitch * height), -7.0f);
         const int border = destinationLayout == DestinationLayout::Offset ? 1 : 0;
         const int destinationPitch = pitch + 2 * border * test.components;
-        const int destinationHeight = kHeight + 2 * border;
+        const int destinationHeight = height + 2 * border;
         const std::size_t destinationBytes = static_cast<std::size_t>(destinationPitch * destinationHeight) * sizeof(float);
         std::vector<float> output(static_cast<std::size_t>(destinationPitch * destinationHeight), kCanary);
         std::vector<float> initialDestination(output);
-        for (int y = 0; y < kHeight; ++y) {
+        for (int y = 0; y < height; ++y) {
             const std::size_t rowOffset = static_cast<std::size_t>(y) * static_cast<std::size_t>(pitch);
-            for (int x = 0; x < kWidth; ++x) {
+            for (int x = 0; x < width; ++x) {
                 const std::size_t pixelOffset = rowOffset +
                                                 static_cast<std::size_t>(x) * static_cast<std::size_t>(test.components);
                 for (int c = 0; c < test.components; ++c) {
@@ -582,8 +610,13 @@ namespace {
         }
         DeviceFrame device;
         require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create stream");
-        require_cuda(cudaMalloc(&device.source, bytes), "allocate source");
-        require_cuda(cudaMalloc(&device.destination, destinationBytes), "allocate destination");
+        device.destinationInSource = destinationLayout == DestinationLayout::DisjointRows;
+        require_cuda(cudaMalloc(&device.source, bytes + (device.destinationInSource ? destinationBytes : 0)), "allocate source");
+        if (device.destinationInSource) {
+            device.destination = device.source + bytes / sizeof(float);
+        } else {
+            require_cuda(cudaMalloc(&device.destination, destinationBytes), "allocate destination");
+        }
         require_cuda(cudaMemcpy(device.source, input.data(), bytes, cudaMemcpyHostToDevice), "copy source");
         require_cuda(cudaMemcpy(device.destination, initialDestination.data(), destinationBytes, cudaMemcpyHostToDevice), "copy destination");
 
@@ -591,11 +624,13 @@ namespace {
         effectProperties.strings[kOfxImageEffectPropContext] = {kOfxImageEffectContextFilter};
         Properties sourceProperties;
         Properties destinationProperties;
-        const OfxRectI bounds{test.originX, test.originY, test.originX + kWidth, test.originY + kHeight};
+        const OfxRectI bounds{test.originX, test.originY, test.originX + width, test.originY + height};
         const ImagePropertiesInput imageInput{bounds, test.components, pitch * static_cast<int>(sizeof(float))};
         fill_image_properties(sourceProperties, device.source, imageInput);
         const OfxRectI destinationBounds{bounds.x1 - border, bounds.y1 - border, bounds.x2 + border - (destinationLayout == DestinationLayout::Uncovered ? 1 : 0), bounds.y2 + border};
         fill_image_properties(destinationProperties, device.destination, {destinationBounds, test.components, destinationPitch * static_cast<int>(sizeof(float))});
+        sourceProperties.doubles[kOfxImageEffectPropRenderScale] = {test.scaleX, test.scaleY};
+        destinationProperties.doubles[kOfxImageEffectPropRenderScale] = {test.scaleX, test.scaleY};
         const OfxPropertySetHandle sourceHandle =
             reinterpret_cast<OfxPropertySetHandle>(&sourceProperties);
         const OfxPropertySetHandle destinationHandle =
@@ -628,15 +663,15 @@ namespace {
             const OfxRectI renderWindow = emptyWindow
                                               ? OfxRectI{test.originX, test.originY, test.originX, test.originY}
                                               : bounds;
-            const float pixelSizeUm = 35'000.0f / kWidth;
+            const float pixelSizeUm = 35'000.0f / width;
             const Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{
-                {test.originX, test.originY, kWidth, kHeight},
+                {test.originX, test.originY, width, height},
                 static_cast<double>(test.originX),
                 static_cast<double>(test.originY),
-                kWidth,
-                kHeight,
-                1.0,
-                1.0,
+                static_cast<double>(width),
+                static_cast<double>(height),
+                test.scaleX,
+                test.scaleY,
                 1.0};
             std::optional<ScatterHalationFrameDescriptor> halation;
             std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
@@ -649,7 +684,7 @@ namespace {
             }
             if (parameters.cameraDiffusion.active || parameters.enlargerDiffusion.active) {
                 if (!Spektrafilm::build_diffusion_frame_set_descriptor(
-                        recipe.spatialOptics, test.route, pixelSizeUm, Spektrafilm::DiffusionFrameDomain{test.originX, test.originY, kWidth, kHeight}, diffusion, descriptorDiagnostic) ||
+                        recipe.spatialOptics, test.route, pixelSizeUm, Spektrafilm::DiffusionFrameDomain{test.originX, test.originY, width, height}, diffusion, descriptorDiagnostic) ||
                     !diffusion) {
                     throw std::runtime_error("diffusion descriptor: " + descriptorDiagnostic);
                 }
@@ -664,7 +699,7 @@ namespace {
                 request.sessionSeed = 0x20260923;
                 request.instanceToken = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
                 request.clipToken = 0x5312;
-                request.frameTime = 37.0;
+                request.frameTime = test.time;
                 request.frameRate = 24.0;
                 request.pixelSizeUm = pixelSizeUm;
                 request.effectsGeometry = effectsGeometry;
@@ -679,7 +714,7 @@ namespace {
                 request.sessionSeed = 0x20260923;
                 request.instanceToken = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
                 request.clipToken = 0x5312;
-                request.frameTime = 37.0;
+                request.frameTime = test.time;
                 request.frameRate = 24.0;
                 request.pixelSizeUm = pixelSizeUm;
                 request.effectsGeometry = effectsGeometry;
@@ -696,10 +731,10 @@ namespace {
                 const JuicerCuda::FrameRect nativeBounds{bounds.x1, bounds.y1, bounds.x2, bounds.y2};
                 const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(nativeBounds, nativeBounds, recipe.filmRaw.autoExposureMethod);
                 const Spektrafilm::FilmJuicerEffectsGeometry geometry{};
-                const JuicerCuda::ExecutionFrame frame{nativeBounds, nativeBounds, nativeBounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), imageInput.rowBytes, imageInput.rowBytes, test.components, device.stream, diffusion, halation, geometry, pixelSizeUm, 37.0, 24.0, 0x20260923, 0x5312, meter, false, false};
+                const JuicerCuda::ExecutionFrame frame{nativeBounds, nativeBounds, nativeBounds, reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<const unsigned char*>(device.source), reinterpret_cast<unsigned char*>(device.destination), imageInput.rowBytes, imageInput.rowBytes, test.components, device.stream, diffusion, halation, geometry, pixelSizeUm, test.time, 24.0, 0x20260923, 0x5312, meter, false, false};
                 JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
                 snapshot.instanceToken.value = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
-                snapshot.frameToken.value = 37;
+                snapshot.frameToken.value = static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(test.time)));
                 snapshot.snapshotId = snapshotId;
                 const FjImage rawSource{reinterpret_cast<std::uintptr_t>(device.source), {bounds.x1, bounds.y1, bounds.x2, bounds.y2}, imageInput.rowBytes, static_cast<std::uint32_t>(test.components), FJ_DEPTH_FLOAT32};
                 FjFrame raw{};
@@ -740,6 +775,10 @@ namespace {
 #endif
         }
         imageLeaseAudit.require_complete(test.name);
+        if (s_abortObservation && s_abortObservation->cancelAt != 0 &&
+            s_abortObservation->calls >= s_abortObservation->cancelAt) {
+            return {};
+        }
         require_cuda(cudaMemcpyAsync(output.data(), device.destination, destinationBytes, cudaMemcpyDeviceToHost, device.stream),
                      "copy destination");
         require_cuda(cudaStreamSynchronize(device.stream), "synchronize");
@@ -752,11 +791,11 @@ namespace {
             return {};
         }
         std::vector<float> pixels;
-        pixels.reserve(static_cast<std::size_t>(kWidth) * static_cast<std::size_t>(kHeight) *
+        pixels.reserve(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) *
                        static_cast<std::size_t>(test.components));
-        for (int y = 0; y < kHeight; ++y) {
+        for (int y = 0; y < height; ++y) {
             const std::size_t rowOffset = static_cast<std::size_t>(y + border) * static_cast<std::size_t>(destinationPitch);
-            for (int x = 0; x < kWidth; ++x) {
+            for (int x = 0; x < width; ++x) {
                 const std::size_t pixelOffset = rowOffset +
                                                 static_cast<std::size_t>(x + border) * static_cast<std::size_t>(test.components);
                 for (int c = 0; c < test.components; ++c) {
@@ -775,8 +814,8 @@ namespace {
         }
         for (int y = 0; y < destinationHeight; ++y) {
             for (int x = 0; x < destinationPitch; ++x) {
-                const bool rendered = y >= border && y < border + kHeight &&
-                                      x >= border * test.components && x < (border + kWidth) * test.components;
+                const bool rendered = y >= border && y < border + height &&
+                                      x >= border * test.components && x < (border + width) * test.components;
                 if (!rendered && std::bit_cast<std::uint32_t>(output[static_cast<std::size_t>(y) * static_cast<std::size_t>(destinationPitch) + static_cast<std::size_t>(x)]) != std::bit_cast<std::uint32_t>(kCanary)) {
                     throw std::runtime_error(std::string(test.name) + ": destination outside render window changed");
                 }
@@ -796,6 +835,132 @@ namespace {
                                          std::to_string(actual[i]) + " versus " + std::to_string(expected[i]));
             }
         }
+    }
+} // namespace
+
+namespace {
+    [[maybe_unused]] void check_cutover_callbacks(const Case& test, const std::vector<float>& expected) {
+        InstanceState state;
+        compare_pixels("same allocation disjoint rows", render_case(test, parameters_for(test), state, false, ExecutionPath::Processor, DestinationLayout::DisjointRows), expected);
+        Case uniform = test;
+        uniform.uniform = true;
+        auto uniformParameters = parameters_for(uniform);
+        uniformParameters.glareActive = false;
+        const auto initialUniform = render_case(uniform, uniformParameters, state);
+        // This is a constant-input invariance test, complementary to the
+        // independent accepted pixel fixtures above. Glare would add noise.
+        const auto uniform_expected = [&](const Case& frame) {
+            std::vector<float> pixels(static_cast<std::size_t>(frame.width * frame.height * frame.components));
+            for (std::size_t i = 0; i < pixels.size(); ++i) {
+                const auto channel = i % static_cast<std::size_t>(frame.components);
+                // Alpha is positional even for uniform RGB in this fixture.
+                const auto pixel = i / static_cast<std::size_t>(frame.components);
+                const auto x = pixel % static_cast<std::size_t>(frame.width);
+                const auto y = pixel / static_cast<std::size_t>(frame.width);
+                pixels[i] = channel == 3 ? 0.125f + static_cast<float>((x + y) % 4) * 0.25f : initialUniform[channel];
+            }
+            return pixels;
+        };
+        compare_pixels("initial uniform callback", initialUniform, uniform_expected(uniform));
+        const auto firstId = state.submissionSnapshotLatch.snapshotId;
+        uniform.width += 2;
+        uniform.height -= 2;
+        uniform.originX = -11;
+        uniform.originY = 7;
+        uniform.time = -17.25;
+        uniform.scaleX = 0.5;
+        uniform.scaleY = 1.5;
+        const auto changedExpected = uniform_expected(uniform);
+        compare_pixels("changed geometry time and scale", render_case(uniform, uniformParameters, state), changedExpected);
+        const auto changedId = state.submissionSnapshotLatch.snapshotId;
+        if (changedId == firstId || state.submissionSnapshotLatch.frameToken.value != static_cast<std::uint64_t>(std::int64_t{-18})) {
+            throw std::runtime_error("changed callback facts reused the previous latch");
+        }
+        // Each render_case allocates a new supplied stream; the same facts reuse the latch.
+        compare_pixels("sequential supplied stream", render_case(uniform, uniformParameters, state), changedExpected);
+        if (state.submissionSnapshotLatch.snapshotId != changedId) {
+            throw std::runtime_error("unchanged callback facts failed to reuse the latch");
+        }
+        CUcontext current = nullptr;
+        if (cuCtxGetCurrent(&current) != CUDA_SUCCESS) {
+            throw std::runtime_error("get callback context");
+        }
+        std::exception_ptr workerFailure;
+        std::thread worker([&] {
+            try {
+                if (cuCtxSetCurrent(current) != CUDA_SUCCESS) {
+                    throw std::runtime_error("set worker callback context");
+                }
+                compare_pixels("callback on another host thread", render_case(uniform, uniformParameters, state), changedExpected);
+            } catch (...) {
+                workerFailure = std::current_exception();
+            }
+            (void)cuCtxSetCurrent(nullptr);
+        });
+        worker.join();
+        if (workerFailure) {
+            std::rethrow_exception(workerFailure);
+        }
+        CUcontext other = nullptr;
+        if (cuCtxCreate(&other, nullptr, 0, 0) != CUDA_SUCCESS) {
+            throw std::runtime_error("create fixture context");
+        }
+        try {
+            compare_pixels("second context on same device", render_case(uniform, uniformParameters, state), changedExpected);
+            if (state.submissionSnapshotLatch.deviceContextKey.contextOpaque != other) {
+                throw std::runtime_error("callback retained prior context identity");
+            }
+            std::string diagnostic;
+            JuicerCuda::NativeCall admission(JuicerCuda::borrowed_owner());
+            if (!JuicerProcess::root().retire_idle_context(0, other, diagnostic)) {
+                throw std::runtime_error(diagnostic);
+            }
+        } catch (...) {
+            (void)cuCtxDestroy(other);
+            (void)cuCtxSetCurrent(current);
+            throw;
+        }
+        if (cuCtxDestroy(other) != CUDA_SUCCESS || cuCtxSetCurrent(current) != CUDA_SUCCESS) {
+            throw std::runtime_error("release fixture context");
+        }
+        for (const unsigned checkpoint : {1U, 3U, 4U, 5U}) {
+            AbortObservation observation;
+            observation.cancelAt = checkpoint;
+            s_abortObservation = &observation;
+            try {
+                (void)render_case(test, parameters_for(test), state);
+            } catch (...) {
+                s_abortObservation = nullptr;
+                throw;
+            }
+            s_abortObservation = nullptr;
+            if (observation.calls != checkpoint || !observation.sameThread) {
+                throw std::runtime_error("production abort delivery or callback lifetime changed");
+            }
+        }
+        AbortObservation throwing;
+        throwing.throwAt = 4;
+        s_abortObservation = &throwing;
+        bool fatal = false;
+        try {
+            (void)render_case(test, parameters_for(test), state);
+        } catch (const OFX::Exception::Suite& error) {
+            fatal = error.status() == kOfxStatErrFatal;
+        } catch (...) {
+            s_abortObservation = nullptr;
+            throw;
+        }
+        s_abortObservation = nullptr;
+        if (!fatal || throwing.calls != 4 || !throwing.sameThread) {
+            throw std::runtime_error("abort suite exception escaped or became successful cancellation");
+        }
+        compare_pixels("render after cancellation", render_case(test, parameters_for(test), state), expected);
+        // This fixture's next case reuses its deterministic instance token with
+        // a fresh counter. Match real instance teardown before that reuse.
+        if (fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), state.submissionSnapshotLatch.instanceToken.value, nullptr).category != FJ_STATUS_SUCCESS) {
+            throw std::runtime_error("retire cutover fixture instance");
+        }
+        std::cout << test.name << ": production geometry/time/scale, streams, threads, contexts, disjoint alias and abort contracts passed\n";
     }
 } // namespace
 
@@ -863,6 +1028,8 @@ namespace {
                 check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, true, status, "test component=dir 100% device lost out of memory");
             }
             check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, false, JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED), "test component=scanner 100% renamed diagnostic");
+            const std::string longDiagnostic = std::string(8192, 'x') + " component=dir 100% complete diagnostic";
+            check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, true, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, longDiagnostic.c_str());
         }
     }
 
@@ -949,7 +1116,7 @@ namespace {
         const std::array<Case, 2> cases{{{"grain-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
                                          {"grain-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}}};
         for (const Case& test : cases) {
-            for (const char* wording : {"renamed upload diagnostic", "device lost out of memory 100%"}) {
+            for (const char* wording : {"renamed upload component=dir diagnostic", "device lost out of memory 100%"}) {
                 const JuicerCuda::Failure capacity{{FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, wording};
                 const JuicerCuda::Failure contextLoss{JuicerCuda::runtime_failure_status(cudaErrorContextIsDestroyed), wording};
                 const JuicerCuda::Failure driverLoss{JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED), wording};
@@ -1041,9 +1208,10 @@ int main(int argc, char** argv) {
         bool preparedCaseFound = false;
         constexpr bool emit = false;
 #else
+        const bool cutoverContract = argc == 2 && std::string(argv[1]) == "--cutover-contract";
         const bool sequentialOwners = argc == 2 && std::string(argv[1]) == "--sequential-owners";
         const bool emit = argc == 2 && std::string(argv[1]) == "--emit-reference";
-        if (argc != 1 && !emit && !sequentialOwners) {
+        if (argc != 1 && !emit && !sequentialOwners && !cutoverContract) {
             throw std::runtime_error("usage: JuicerProcessorReferenceProbe [--emit-reference]");
         }
 #endif
@@ -1139,6 +1307,9 @@ int main(int argc, char** argv) {
                 }
                 compare_pixels(test.name, pixels, expected);
 #if !defined(JUICER_PREPARED_BOUNDARY_TEST)
+                if (cutoverContract && (std::string_view(test.name) == "negative-direct" || std::string_view(test.name) == "negative-print")) {
+                    check_cutover_callbacks(test, expected);
+                }
                 if (sequentialOwners && std::string_view(test.name) == "negative-direct") {
                     Case uniform = test;
                     uniform.uniform = true;

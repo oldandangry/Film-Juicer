@@ -14,6 +14,11 @@ static FACTS: &[usize] = &[
     offset_of!(FjStatus, category),
     offset_of!(FjStatus, api),
     offset_of!(FjStatus, native_code),
+    size_of::<FjRenderOutcome>(),
+    align_of::<FjRenderOutcome>(),
+    offset_of!(FjRenderOutcome, status),
+    offset_of!(FjRenderOutcome, flags),
+    FJ_RENDER_DEFERRED_SCAN_ERROR as usize,
     size_of::<FjErrorBuffer>(),
     align_of::<FjErrorBuffer>(),
     offset_of!(FjErrorBuffer, data),
@@ -590,7 +595,7 @@ pub unsafe extern "C" fn fj_test_cuda_abi_facts(out_count: *mut usize) -> *const
     FACTS.as_ptr()
 }
 
-// Unused const items check signatures without referencing unimplemented symbols
+// Unused const items check signatures without requiring native symbols
 // in a linked binary. The C and C++ fixture checks the same types independently.
 const _: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> u32> =
     None::<FjAbortQuery>.flatten();
@@ -610,7 +615,7 @@ const _: unsafe extern "C" fn(
     *const FjPreparedHostData,
     FjAbortCallback,
     *mut FjErrorBuffer,
-) -> FjStatus = fj_cuda_render;
+) -> FjRenderOutcome = fj_cuda_render;
 const _: unsafe extern "C" fn(*mut FjCuda, u64, *mut FjErrorBuffer) -> FjStatus =
     fj_cuda_retire_instance;
 const _: unsafe extern "C" fn(*mut FjCuda, *mut FjErrorBuffer) -> FjStatus = fj_cuda_shutdown;
@@ -623,7 +628,7 @@ mod tests {
     #[test]
     fn facts_cover_generated_records_and_values() {
         // Cardinality changes require reviewing both native and Rust fact lists.
-        assert_eq!(FACTS.len(), 570);
+        assert_eq!(FACTS.len(), 575);
     }
 
     #[test]

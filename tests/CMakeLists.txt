@@ -380,6 +380,9 @@ set_tests_properties(Ofx.Gpu.ProcessorReference PROPERTIES
 add_test(NAME Ofx.Gpu.SequentialOwners COMMAND JuicerProcessorReferenceProbe --sequential-owners)
 set_tests_properties(Ofx.Gpu.SequentialOwners PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
 
+add_test(NAME Ofx.Gpu.CutoverContract COMMAND JuicerProcessorReferenceProbe --cutover-contract)
+set_tests_properties(Ofx.Gpu.CutoverContract PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+
 add_library(juicer_render_test_objects OBJECT
     ../native/juicer_cuda_api.cpp ../src/Cuda/JuicerCudaExecutor.cpp)
 target_link_libraries(juicer_render_test_objects PRIVATE juicer_settings)
@@ -389,6 +392,7 @@ add_executable(JuicerPreparedBoundaryProbe
     ffi/prepared_boundary.cpp
     ffi/cuda_render_test.cpp
     $<TARGET_OBJECTS:juicer_render_test_objects>
+    $<TARGET_OBJECTS:juicer_pinned_upload_test_objects>
     ffi/prepared_boundary.c
     ffi/prepared_descriptors.cpp)
 target_link_libraries(JuicerPreparedBoundaryProbe PRIVATE juicer_core juicer_ofxs CUDA::cuda_driver)
@@ -399,6 +403,7 @@ else()
         $<$<COMPILE_LANGUAGE:C>:-Wall;-Wextra;-Werror;-pedantic-errors>)
 endif()
 target_compile_definitions(JuicerPreparedBoundaryProbe PRIVATE
+    JUICER_PINNED_UPLOAD_TEST_HOOK=1
     JUICER_CUDA_RENDER_TEST_HOOK=1
     JUICER_PREPARED_BOUNDARY_TEST=1
     JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/${JUICER_PROCESSOR_REFERENCE_FILE}")
