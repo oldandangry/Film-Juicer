@@ -378,6 +378,8 @@ namespace {
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) Required OFX message-suite callback signature.
     OfxStatus failure_message(void*, const char* type, const char* id, const char* format, ...) {
         auto& observation = *JuicerCuda::ExecutorTest::observation;
+        // Acquiring the real non-reentrant gate proves the adapter released it.
+        JuicerCuda::NativeCall call(JuicerCuda::borrowed_owner());
         observation.record(JuicerCuda::ExecutorTest::Event::Message);
         std::array<char, 512> text{};
         va_list args;
@@ -546,7 +548,8 @@ namespace {
     enum class ExecutionPath : std::uint8_t {
         Processor,
         Direct,
-        Boundary
+        Boundary,
+        Contract
     };
 
     enum class DestinationLayout : std::uint8_t {
@@ -555,7 +558,7 @@ namespace {
         Uncovered
     };
 
-    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching) {
+    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching, [[maybe_unused]] std::uint64_t snapshotId = 1) {
         const int pitch = kWidth * test.components + 5;
         const std::size_t bytes = static_cast<std::size_t>(pitch * kHeight) * sizeof(float);
         std::vector<float> input(static_cast<std::size_t>(pitch * kHeight), -7.0f);
@@ -697,7 +700,7 @@ namespace {
                 JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
                 snapshot.instanceToken.value = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
                 snapshot.frameToken.value = 37;
-                snapshot.snapshotId = 1;
+                snapshot.snapshotId = snapshotId;
                 const FjImage rawSource{reinterpret_cast<std::uintptr_t>(device.source), {bounds.x1, bounds.y1, bounds.x2, bounds.y2}, imageInput.rowBytes, static_cast<std::uint32_t>(test.components), FJ_DEPTH_FLOAT32};
                 FjFrame raw{};
                 raw.source = rawSource;
@@ -714,19 +717,18 @@ namespace {
                 snapshot.deviceContextKey = {context.device_id, reinterpret_cast<void*>(context.context)};
                 snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
                     payload.uploadCoreHash, recipe.dirCouplers.hash, payload.scannerHash, meter.hash);
-                if (path == ExecutionPath::Boundary) {
+                if (path == ExecutionPath::Boundary || path == ExecutionPath::Contract) {
                     const auto descriptors = JuicerCuda::describe_execution(recipe, payload, frame);
                     std::string diagnostic;
-                    if (!JuicerCudaTest::execute_boundary(recipe, payload, frame, snapshot, descriptors, diagnostic)) {
+                    if (!JuicerCudaTest::execute_boundary(recipe, payload, frame, snapshot, descriptors, diagnostic, path == ExecutionPath::Contract)) {
                         throw std::runtime_error(std::string(test.name) + ": C boundary: " + diagnostic);
                     }
                 } else {
                     JuicerCuda::PendingContextLossRecovery recovery;
-                    const JuicerCuda::DirFailureMessage message{[](void*, const std::string&) noexcept {}, nullptr};
                     if (print) {
-                        JuicerCuda::execute_print({recipe, payload, frame, snapshot}, recovery, message);
+                        JuicerCuda::execute_print({recipe, payload, frame, snapshot}, recovery);
                     } else {
-                        JuicerCuda::execute_direct({recipe, payload, frame, snapshot}, recovery, message);
+                        JuicerCuda::execute_direct({recipe, payload, frame, snapshot}, recovery);
                     }
                 }
             } else {
@@ -826,11 +828,11 @@ namespace {
             throw;
         }
         JuicerCuda::ExecutorTest::observation = nullptr;
-        std::vector<Event> expected{Event::Injected};
+        std::vector<Event> expected{Event::Injected, Event::Classified, Event::FrameAborted};
         if (dirDiagnostic) {
             expected.push_back(Event::Message);
         }
-        expected.insert(expected.end(), {Event::Classified, Event::FrameAborted, Event::RecoveryStarted, Event::RecoveryEnded, Event::FatalMapped});
+        expected.insert(expected.end(), {Event::RecoveryStarted, Event::RecoveryEnded, Event::FatalMapped});
         if (!fatal || observation.overflow || observation.count != expected.size() ||
             !std::equal(expected.begin(), expected.end(), observation.events.begin()) ||
             !observation.failureStageMatches || !observation.failureStatusMatches ||
@@ -842,7 +844,7 @@ namespace {
         }
         std::cout << test.name << " dir=" << dirDiagnostic << " context_loss=" << contextLoss
                   << " delivery=" << static_cast<int>(delivery)
-                  << " message/classify/abort/recovery/fatal order passed\n";
+                  << " classify/abort/message/recovery/fatal order passed\n";
     }
 
     void run_failure_order_cases() {
@@ -1025,7 +1027,8 @@ int main(int argc, char** argv) {
         }
 #endif
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
-        if (argc != 3 || std::string(argv[1]) != "--prepared-case") {
+        const bool renderContract = argc == 3 && std::string(argv[1]) == "--render-contract";
+        if (argc != 3 || (!renderContract && std::string(argv[1]) != "--prepared-case")) {
             throw std::runtime_error("usage: JuicerPreparedBoundaryProbe --prepared-case <name>");
         }
         const std::string preparedCase = argv[2];
@@ -1076,7 +1079,7 @@ int main(int argc, char** argv) {
             // boundary first, so no other caller can hide its table uploads.
             std::cerr << "cold C case: " << test.name << '\n';
             InstanceState boundaryState;
-            const auto boundary = render_case(test, parameters_for(test), boundaryState, false, ExecutionPath::Boundary);
+            const auto boundary = render_case(test, parameters_for(test), boundaryState, false, renderContract ? ExecutionPath::Contract : ExecutionPath::Boundary);
             const auto warmBoundary = render_case(test, parameters_for(test), boundaryState, false, ExecutionPath::Boundary);
             const auto direct = [&] {
                 InstanceState directState;
@@ -1195,6 +1198,12 @@ int main(int argc, char** argv) {
                     throw std::runtime_error(std::string(test.name) + ": C boundary differs from direct executor");
                 }
                 std::cerr << test.name << ": processor/direct/cold C/warm C match immutable fixture; direct/C bit-exact\n";
+                if (renderContract) {
+                    auto grainParameters = parameters_for(test);
+                    grainParameters.grainControls.active = true;
+                    InstanceState grainState;
+                    (void)render_case(test, grainParameters, grainState, false, ExecutionPath::Boundary, DestinationLayout::Matching, 2);
+                }
 #endif
             }
 #if !defined(JUICER_PREPARED_BOUNDARY_TEST)

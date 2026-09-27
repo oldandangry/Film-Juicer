@@ -720,8 +720,7 @@ typedef struct FjPreparedHostData {
     FjStaticNoise noise;
 } FjPreparedHostData;
 
-/* Declarations only until their implementation packages are accepted.
- * Calls serialize on one owner gate. inspect through render stays on the same
+/* Calls serialize on one owner gate. inspect through render stays on the same
  * callback thread with its host context current and images/stream still leased.
  * No function resets a live host-owned CUDA context; no exception may escape.
  * Non-null record pointers denote one live initialized record for this call. */
@@ -738,8 +737,9 @@ FjStatus fj_cuda_inspect(FjCuda* cuda, const FjFrame* frame, FjCudaContext* out_
 
 /* All prepared spans and abort access expire at return, even on failure.
  * Enqueue/finish/abort and outstanding native-owned staging remain native.
- * This declaration does not establish that the old direct-upload fallback
- * already satisfies foreign-span expiry; that must be closed before cutover. */
+ * Rendering re-inspects the current context under the same native admission as
+ * execution. Abort queries run at bounded checkpoints; only CONTINUE/REQUESTED
+ * are valid. A null query continues regardless of its unused user value. */
 FjStatus fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, FjAbortCallback abort_callback, FjErrorBuffer* error);
 
 /* Retires only this instance's static-grain membership; borrows the owner. */

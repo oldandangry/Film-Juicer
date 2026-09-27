@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstdint>
 #include <mutex>
+#include <optional>
+#include <utility>
 #include <string>
 
 #include <cuda_runtime.h>
@@ -281,7 +283,9 @@ void JuicerProcessor::processImagesCUDA() {
     FjCudaContext inspected{};
     std::array<char, 512> inspectionMessage{};
     FjErrorBuffer inspectionError{inspectionMessage.data(), inspectionMessage.size(), 0};
-    const auto inspection = fj_cuda_inspect(JuicerCuda::borrowed_owner(), &rawFrame, &inspected, &inspectionError);
+    std::optional<JuicerCuda::NativeCall> nativeCall;
+    nativeCall.emplace(JuicerCuda::borrowed_owner());
+    const auto inspection = nativeCall->inspect(&rawFrame, &inspected, &inspectionError);
     if (inspection.category != FJ_STATUS_SUCCESS) {
         JTRACE("CUDA", inspectionMessage.data());
         throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -355,6 +359,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (!pendingContextLossRecovery.pending) {
             return;
         }
+        JuicerCuda::NativeCall recoveryCall(JuicerCuda::borrowed_owner());
         recover_context_loss_state(
             _instanceState,
             deviceContextKey,
@@ -364,6 +369,7 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto run_pending_context_loss_recovery_noexcept = [&]() noexcept {
+        nativeCall.reset();
         try {
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
             JuicerCuda::ExecutorTest::observe_recovery_start(pendingContextLossRecovery.pending);
@@ -386,28 +392,27 @@ void JuicerProcessor::processImagesCUDA() {
         }
     } contextLossRecoveryScope{&run_pending_context_loss_recovery_noexcept};
 
-    const JuicerCuda::DirFailureMessage dirFailureMessage{
-        [](void* user, const std::string& diagnostic) noexcept {
-            if (diagnostic.find("component=dir") == std::string::npos) {
-                return;
+    const auto deliver_dir_failure = [&](const JuicerCuda::Failure& failure) noexcept {
+        const auto& diagnostic = failure.diagnostic;
+        if (diagnostic.find("component=dir") == std::string::npos) {
+            return;
+        }
+        try {
+            std::string deliveryText = diagnostic;
+            for (std::size_t position = 0;
+                 (position = deliveryText.find('%', position)) !=
+                 std::string::npos;
+                 position += 2u) {
+                deliveryText.insert(position, 1u, '%');
             }
-            try {
-                std::string deliveryText = diagnostic;
-                for (std::size_t position = 0;
-                     (position = deliveryText.find('%', position)) !=
-                     std::string::npos;
-                     position += 2u) {
-                    deliveryText.insert(position, 1u, '%');
-                }
-                static_cast<JuicerProcessor*>(user)->_effect.sendMessage(
-                    OFX::Message::eMessageError,
-                    "FilmJuicerDeferredCudaFailure",
-                    deliveryText);
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-            }
-        },
-        this};
+            _effect.sendMessage(
+                OFX::Message::eMessageError,
+                "FilmJuicerDeferredCudaFailure",
+                deliveryText);
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+    };
 
     if (should_abort_effect()) {
         return;
@@ -518,20 +523,27 @@ void JuicerProcessor::processImagesCUDA() {
         if (directRecipe) {
             JuicerCuda::execute_direct(
                 {*directRecipe, *directPayload, frame, snapshot},
-                pendingContextLossRecovery,
-                dirFailureMessage);
+                pendingContextLossRecovery);
         } else {
             JuicerCuda::execute_print(
                 {*printRecipe, *printPayload, frame, snapshot},
-                pendingContextLossRecovery,
-                dirFailureMessage);
+                pendingContextLossRecovery);
         }
-    } catch (const JuicerCuda::ExecutionFailure&) {
+    } catch (JuicerCuda::ExecutionFailure& nativeFailure) {
+        JuicerCuda::Failure failure = std::move(nativeFailure.failure);
         complete_unsupplied_stream();
+        nativeCall.reset();
+        if (nativeFailure.deferredScanError) {
+            deliver_dir_failure(failure);
+        }
+        if (failure.status.category == FJ_STATUS_CANCELLED) {
+            return;
+        }
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     } catch (...) {
         complete_unsupplied_stream();
         throw;
     }
     complete_unsupplied_stream();
+    nativeCall.reset();
 }

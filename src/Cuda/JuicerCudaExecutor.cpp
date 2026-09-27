@@ -1030,7 +1030,7 @@ namespace {
             fail_policy(nonempty_cstr_or(failurePrefix, "CUDA stage failed"), std::move(failure));
         }
 
-        [[noreturn]] void fail_submission(const char* stageTag, const char* failurePrefix, const JuicerCuda::Failure& failure) const {
+        [[noreturn]] void fail_submission(const char* stageTag, const char* failurePrefix, const JuicerCuda::Failure& failure, bool deferredScanError = false) const {
             mark_context_loss_recovery(nonempty_cstr_or(stageTag, "submission_stage"), failure);
             trace_cuda_fatal_prefixed_if(
                 traceInfo,
@@ -1040,7 +1040,7 @@ namespace {
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
             JuicerCuda::ExecutorTest::observe_classification(stageTag, failure, pendingContextLossRecovery.pending);
 #endif
-            throw JuicerCuda::ExecutionFailure{failure};
+            throw JuicerCuda::ExecutionFailure{failure, deferredScanError};
         }
 
         [[noreturn]] void fail_route(const char* diagnostic) const {
@@ -2860,7 +2860,24 @@ namespace {
 
 namespace JuicerCuda {
 
-    static void execute_direct_schedule(const ScheduleInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
+    static void check_abort(FjAbortCallback callback) {
+        if (!callback.query) {
+            return;
+        }
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+        RenderTest::before_abort_query();
+#endif
+        switch (callback.query(callback.user)) {
+            case FJ_ABORT_CONTINUE:
+                return;
+            case FJ_ABORT_REQUESTED:
+                throw ExecutionFailure{{{FJ_STATUS_CANCELLED, FJ_API_NONE, 0}, "CUDA render cancelled"}};
+            default:
+                throw ExecutionFailure{{{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "invalid CUDA abort query result"}};
+        }
+    }
+
+    static void execute_direct_schedule(const ScheduleInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
         const auto& frame = input.frame;
         const auto& requestedSnapshot = input.snapshot;
         const auto& deviceContextKey = requestedSnapshot.deviceContextKey;
@@ -2896,6 +2913,7 @@ namespace JuicerCuda {
             grainStageActive || filmEffectsActive;
         const auto scannerCorrection = std::get<Scanner::ScannerColorCorrectionDescriptor>(input.correction);
         JuicerCuda::Failure directPrepareError;
+        check_abort(abortCallback);
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
             std::visit([&](const auto* preparation) {
                 return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, *preparation, autoExposureBufferRequest, frame.stream, directPrepareError);
@@ -2907,6 +2925,8 @@ namespace JuicerCuda {
                 preparedFrame.failure_prefix(),
                 directPrepareError);
         }
+
+        check_abort(abortCallback);
 
         const auto& snapshot = preparedFrame.admitted_snapshot();
 
@@ -3035,8 +3055,7 @@ namespace JuicerCuda {
             JuicerCuda::ExecutorTest::inject_scan_error(scanError) ||
 #endif
             !preparedFrame.prepare_scan_error_stage(run.scanStage.scanErrorFlag, frame.stream, scanError)) {
-            dirFailureMessage.deliver(dirFailureMessage.user, scanError.diagnostic);
-            errors.fail_submission("direct_scan_error_stage", "direct scan error stage failed", scanError);
+            errors.fail_submission("direct_scan_error_stage", "direct scan error stage failed", scanError, true);
         }
         if (directUseFocusedSplit && !directUseFusedScannerPostSpatialDirHandoff) {
             develop_direct_capture(
@@ -3092,6 +3111,7 @@ namespace JuicerCuda {
                                                : scanError.diagnostic;
             errors.fail_submission("direct_scan_error_finalize", "direct scan error finalize failed", {scanError.status, diagnostic});
         }
+        check_abort(abortCallback);
         JuicerCuda::Failure useError;
         if (!preparedFrame.record_use(frame.stream, useError)) {
             errors.fail_submission("prepared_frame_use_fence", "CUDA prepared-frame use fencing failed", useError);
@@ -3106,7 +3126,7 @@ namespace JuicerCuda {
         return;
     }
 
-    static void execute_print_schedule(const ScheduleInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
+    static void execute_print_schedule(const ScheduleInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
         const auto& frame = input.frame;
         const auto& requestedSnapshot = input.snapshot;
         const auto& deviceContextKey = requestedSnapshot.deviceContextKey;
@@ -3146,6 +3166,7 @@ namespace JuicerCuda {
         const bool captureDensityConsumerActive =
             grainStageActive || filmEffectsActive;
         JuicerCuda::Failure prepareError;
+        check_abort(abortCallback);
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
             std::visit([&](const auto* preparation) {
                 return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, *preparation, autoExposureBufferRequest, frame.stream, prepareError);
@@ -3157,6 +3178,8 @@ namespace JuicerCuda {
                 preparedFrame.failure_prefix(),
                 prepareError);
         }
+
+        check_abort(abortCallback);
 
         const auto& snapshot = preparedFrame.admitted_snapshot();
 
@@ -3313,11 +3336,11 @@ namespace JuicerCuda {
                 run.scanStage.scanErrorFlag,
                 frame.stream,
                 scanError)) {
-            dirFailureMessage.deliver(dirFailureMessage.user, scanError.diagnostic);
             errors.fail_submission(
                 "print_scan_error_stage",
                 "print scan error stage failed",
-                scanError);
+                scanError,
+                true);
         }
         if (printUseFocusedSplit && !printUseFusedScannerPostSpatialDirHandoff) {
             develop_print_capture(
@@ -3385,6 +3408,7 @@ namespace JuicerCuda {
                 "print scan error finalize failed",
                 {scanError.status, diagnostic});
         }
+        check_abort(abortCallback);
         JuicerCuda::Failure useError;
         if (!preparedFrame.record_use(frame.stream, useError)) {
             errors.fail_submission("prepared_frame_use_fence", "CUDA prepared-frame use fencing failed", useError);
@@ -3401,7 +3425,7 @@ namespace JuicerCuda {
         }
         return;
     }
-    void execute_direct(const DirectExecutionInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
+    void execute_direct(const DirectExecutionInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
         const RenderRecipe* directRecipe = &input.recipe;
         const FocusedRenderPayload* directPayload = &input.payload;
         const auto& frame = input.frame;
@@ -3446,10 +3470,10 @@ namespace JuicerCuda {
         directPreparation.requestedWidth = width;
         directPreparation.requestedHeight = height;
         const ScheduleInput schedule{frame, input.snapshot, JuicerProcess::Root::preparation_identity(*directRecipe), descriptors, film_payload_input(directRecipe->filmRaw, directRecipe->filmDevelop, directRecipe->dirCouplers, directRecipe->densityBounds), scannerCorrection.exposureScale, directRecipe->visualGrain, directRecipe->scannerOutput.outputGamut, directRecipe->densityBounds.hash, directRecipe->hash, directRecipe->filmRaw.autoExposureEnabled, directRecipe->filmRaw.autoExposureMethod, &directPreparation, scannerCorrection, {}};
-        execute_direct_schedule(schedule, recovery, dirFailureMessage);
+        execute_direct_schedule(schedule, recovery, abortCallback);
     }
 
-    void execute_print(const PrintExecutionInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
+    void execute_print(const PrintExecutionInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
         const RenderRecipe* printRecipe = &input.recipe;
         const FocusedRenderPayload* printPayload = &input.payload;
         const auto& frame = input.frame;
@@ -3493,7 +3517,7 @@ namespace JuicerCuda {
         preparation.requestedWidth = width;
         preparation.requestedHeight = height;
         const ScheduleInput schedule{frame, input.snapshot, JuicerProcess::Root::preparation_identity(*printRecipe), descriptors, film_payload_input(printRecipe->filmRaw, printRecipe->filmDevelop, printRecipe->dirCouplers, printRecipe->enlargerFilmBounds), 1.0f, printRecipe->visualGrain, printRecipe->scannerOutput.outputGamut, printRecipe->densityBounds.hash, printRecipe->hash, printRecipe->filmRaw.autoExposureEnabled, printRecipe->filmRaw.autoExposureMethod, &preparation, PrintCorrectionSource{*printRecipe, *printPayload}, printRecipe->print.exposure};
-        execute_print_schedule(schedule, recovery, dirFailureMessage);
+        execute_print_schedule(schedule, recovery, abortCallback);
     }
 
     PreparedDescriptors describe_execution(const RenderRecipe& recipe, const FocusedRenderPayload& payload, const ExecutionFrame& frame) {
@@ -3518,7 +3542,7 @@ namespace JuicerCuda {
         return result;
     }
 
-    void execute_prepared(const PreparedExecutionInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
+    void execute_prepared(const PreparedExecutionInput& input, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback) {
         const bool print = Spektrafilm::scan_route_is_print(input.descriptors.route);
         const ExecutionErrors errors{recovery, input.frame.traceInfo, print ? "CUDA print route blocked" : "CUDA direct route blocked"};
         if (!print && input.frame.autoExposureDescriptor.method == Spektrafilm::AutoExposureMethod::Median) {
@@ -3527,12 +3551,16 @@ namespace JuicerCuda {
         if (!(input.frame.components == 3 || input.frame.components == 4)) {
             errors.fail_route(print ? "UnsupportedPrintComponentCountForPhase4C" : "UnsupportedDirectComponentCountForPhase3C");
         }
+        if (!visual_grain_full_frame_preflight(input.descriptors.grain, input.frame.renderWindow, input.frame.sourceBounds, input.frame.fullFrameExtent) ||
+            !film_juicer_effects_full_frame_preflight(input.descriptors.effects, input.frame.renderWindow, input.frame.sourceBounds, input.frame.fullFrameExtent)) {
+            errors.fail_route("ResourceDescriptorMismatch component=prepared_frame field=full_frame_domain");
+        }
         const RouteDescriptors descriptors{input.descriptors.scanner, input.descriptors.post, input.descriptors.spatialDir, input.descriptors.grain, input.descriptors.effects};
         const ScheduleInput schedule{input.frame, input.snapshot, input.preparation.identity, descriptors, input.film, input.filmRouteCorrectionScale, input.descriptors.grainRecipe, input.descriptors.outputGamut, input.preparation.focused.densityBounds.hash, input.recipeHash, input.cameraAutoEnabled, input.frame.autoExposureDescriptor.method, &input.preparation, input.descriptors.correction, input.printExposure};
         if (Spektrafilm::scan_route_is_print(input.descriptors.route)) {
-            execute_print_schedule(schedule, recovery, dirFailureMessage);
+            execute_print_schedule(schedule, recovery, abortCallback);
         } else {
-            execute_direct_schedule(schedule, recovery, dirFailureMessage);
+            execute_direct_schedule(schedule, recovery, abortCallback);
         }
     }
 

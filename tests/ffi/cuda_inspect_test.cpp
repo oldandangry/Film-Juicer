@@ -56,6 +56,28 @@ namespace {
         EXPECT_EQ(context.context, 91U);
     }
 
+    TEST_F(InspectHost, RenderRejectsInvalidArgumentsBeforeCudaDiscovery) {
+        auto* const cuda = JuicerCuda::borrowed_owner();
+        auto frame = frame_at();
+        frame.source.address = 0;
+        const FjCudaContext context{0, 1};
+        const FjSubmission submission{1, 0, 1, 1, 1, 1, 1};
+        const FjPreparedHostData prepared{};
+        const auto category = [&](FjCuda* inputOwner, const FjCudaContext* inputContext, const FjFrame* inputFrame, const FjSubmission* inputSubmission, const FjPreparedHostData* inputPrepared, FjErrorBuffer* error) {
+            return fj_cuda_render(inputOwner, inputContext, inputFrame, inputSubmission, inputPrepared, {}, error).category;
+        };
+        EXPECT_EQ(category(nullptr, &context, &frame, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(category(cuda, nullptr, &frame, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(category(cuda, &context, nullptr, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(category(cuda, &context, &frame, nullptr, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(category(cuda, &context, &frame, &submission, nullptr, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(category(reinterpret_cast<FjCuda*>(std::uintptr_t{1}), &context, &frame, &submission, &prepared, nullptr), FJ_STATUS_PREPARATION_FAILURE);
+        EXPECT_EQ(category(cuda, &context, &frame, &submission, &prepared, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
+        FjErrorBuffer malformed{nullptr, 1, 99};
+        EXPECT_EQ(category(cuda, &context, &frame, &submission, &prepared, &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
+        EXPECT_EQ(malformed.length, 0U);
+    }
+
     TEST_F(InspectHost, FlagsWindowsAndComponents) {
         auto frame = frame_at();
         frame.flags = 8;

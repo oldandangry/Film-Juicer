@@ -74,17 +74,10 @@ namespace JuicerCuda {
         ResourceManager::SubmissionSnapshot& snapshot;
     };
 
-    // FJ_TEMP_BRIDGE: diagnostic failure/message handoff; remove S2.D.
-    // Borrowed only during the route call.
-    // The adapter catches delivery exceptions. Neither member may be retained.
-    struct DirFailureMessage {
-        void (*deliver)(void* user, const std::string& diagnostic) noexcept;
-        void* user;
-    };
-
     // Internal exception mapped by the caller after prepared-frame unwinding.
     struct ExecutionFailure {
         Failure failure;
+        bool deferredScanError = false;
     };
 
     struct PendingContextLossRecovery {
@@ -102,11 +95,11 @@ namespace JuicerCuda {
     void execute_direct(
         const DirectExecutionInput& input,
         PendingContextLossRecovery& recovery,
-        const DirFailureMessage& dirFailureMessage);
+        FjAbortCallback abortCallback = {});
     void execute_print(
         const PrintExecutionInput& input,
         PendingContextLossRecovery& recovery,
-        const DirFailureMessage& dirFailureMessage);
+        FjAbortCallback abortCallback = {});
 
     PreparedDescriptors describe_execution(
         const RenderRecipe& recipe,
@@ -116,7 +109,13 @@ namespace JuicerCuda {
     void execute_prepared(
         const PreparedExecutionInput& input,
         PendingContextLossRecovery& recovery,
-        const DirFailureMessage& dirFailureMessage);
+        FjAbortCallback abortCallback = {});
+
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+    namespace RenderTest {
+        void before_abort_query();
+    }
+#endif
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
     namespace ExecutorTest {

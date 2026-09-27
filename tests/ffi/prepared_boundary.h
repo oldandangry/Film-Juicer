@@ -7,10 +7,8 @@
 extern "C" {
 #endif
 
-/* Fixture-only bridge for already-inspected disjoint float RGB/RGBA images
- * with positive pitches. It is not the final frame-admission or status API. */
-int fj_test_execute_prepared_cpp(const FjPreparedHostData* prepared, const FjFrame* frame, const FjCudaContext* context, const FjSubmission* submission, FjErrorBuffer* error);
-int fj_test_execute_prepared_c(const FjPreparedHostData* prepared, const FjFrame* frame, const FjCudaContext* context, const FjSubmission* submission, FjErrorBuffer* error);
+/* A C translation unit exercises the production render signature. */
+int fj_test_execute_prepared_c(FjCuda* cuda, const FjPreparedHostData* prepared, const FjFrame* frame, const FjCudaContext* context, const FjSubmission* submission, FjErrorBuffer* error);
 
 #ifdef __cplusplus
 }
@@ -21,13 +19,19 @@ int fj_test_execute_prepared_c(const FjPreparedHostData* prepared, const FjFrame
 
 namespace JuicerCudaTest {
 
+    void check_frame_bindings(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, const RenderRecipe& recipe);
+
+    FjStatus check_render_contract(FjCuda* cuda, const FjCudaContext& context, const FjFrame& frame, const FjSubmission& submission, const FjPreparedHostData& prepared, FjErrorBuffer* error);
+
+
     bool execute_boundary(
         const RenderRecipe& recipe,
         const FocusedRenderPayload& payload,
         const JuicerCuda::ExecutionFrame& frame,
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         const JuicerCuda::PreparedDescriptors& descriptors,
-        std::string& diagnostic);
+        std::string& diagnostic,
+        bool checkContract = false);
 
 } // namespace JuicerCudaTest
 #endif

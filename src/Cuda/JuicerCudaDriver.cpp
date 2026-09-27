@@ -12,11 +12,13 @@ namespace JuicerCuda {
 
     namespace {
 
+        using CuStreamGetCtxFn = CUresult(CUDAAPI*)(CUstream, CUcontext*);
         using CuCtxGetCurrentFn = CUresult(CUDAAPI*)(CUcontext*);
         using CuPointerGetAttributeFn = CUresult(CUDAAPI*)(void*, CUpointer_attribute, CUdeviceptr);
         using CuMemGetAddressRangeFn = CUresult(CUDAAPI*)(CUdeviceptr*, std::size_t*, CUdeviceptr);
 
         struct CudaDriverDispatch {
+            CuStreamGetCtxFn cuStreamGetCtx = nullptr;
             CuCtxGetCurrentFn cuCtxGetCurrent = nullptr;
             CuPointerGetAttributeFn cuPointerGetAttribute = nullptr;
             CuMemGetAddressRangeFn cuMemGetAddressRange = nullptr;
@@ -36,6 +38,7 @@ namespace JuicerCuda {
                 }
                 result.cuCtxGetCurrent =
                     reinterpret_cast<CuCtxGetCurrentFn>(GetProcAddress(module, "cuCtxGetCurrent"));
+                result.cuStreamGetCtx = reinterpret_cast<CuStreamGetCtxFn>(GetProcAddress(module, "cuStreamGetCtx"));
                 result.cuPointerGetAttribute = reinterpret_cast<CuPointerGetAttributeFn>(GetProcAddress(module, "cuPointerGetAttribute"));
                 result.cuMemGetAddressRange = reinterpret_cast<CuMemGetAddressRangeFn>(GetProcAddress(module, "cuMemGetAddressRange_v2"));
 #elif defined(__linux__)
@@ -46,6 +49,7 @@ namespace JuicerCuda {
                 }
                 result.cuCtxGetCurrent =
                     reinterpret_cast<CuCtxGetCurrentFn>(dlsym(module, "cuCtxGetCurrent"));
+                result.cuStreamGetCtx = reinterpret_cast<CuStreamGetCtxFn>(dlsym(module, "cuStreamGetCtx"));
                 result.cuPointerGetAttribute = reinterpret_cast<CuPointerGetAttributeFn>(dlsym(module, "cuPointerGetAttribute"));
                 result.cuMemGetAddressRange = reinterpret_cast<CuMemGetAddressRangeFn>(dlsym(module, "cuMemGetAddressRange_v2"));
 #else
@@ -107,6 +111,26 @@ namespace JuicerCuda {
         if (result != CUDA_SUCCESS) {
             nativeCode = static_cast<int>(result);
             outError = "cuPointerGetAttribute(CONTEXT) failed";
+            return false;
+        }
+        outContext = reinterpret_cast<void*>(context);
+        return true;
+    }
+
+    bool query_cuda_stream_context(std::uintptr_t stream, void*& outContext, int& nativeCode, std::string& outError) {
+        outContext = nullptr;
+        nativeCode = 0;
+        outError.clear();
+        const auto& dispatch = cuda_driver_dispatch();
+        if (!dispatch.cuStreamGetCtx) {
+            outError = "cuStreamGetCtx unavailable";
+            return false;
+        }
+        CUcontext context = nullptr;
+        const CUresult result = dispatch.cuStreamGetCtx(reinterpret_cast<CUstream>(stream), &context);
+        if (result != CUDA_SUCCESS) {
+            nativeCode = static_cast<int>(result);
+            outError = "cuStreamGetCtx failed";
             return false;
         }
         outContext = reinterpret_cast<void*>(context);

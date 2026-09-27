@@ -12,7 +12,7 @@ namespace JuicerCuda {
         const ExecutionFrame& frame,
         ResourceManager::SubmissionSnapshot& snapshot,
         PendingContextLossRecovery& recovery,
-        const DirFailureMessage& dirFailureMessage,
+        FjAbortCallback abortCallback,
         std::string& diagnostic);
 
 } // namespace JuicerCuda

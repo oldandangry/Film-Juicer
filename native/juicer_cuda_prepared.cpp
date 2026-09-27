@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <limits>
 #include <span>
 #include <string_view>
@@ -158,6 +159,70 @@ namespace {
                exact_span(noise.wang_lut, lutCount, "noise.wang_lut", diagnostic);
     }
 
+    bool validate_frame_binding(const FjPreparedHostData& source, const JuicerCuda::ExecutionFrame& frame, const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot, std::string& diagnostic) {
+        const auto expected = JuicerCuda::ResourceManager::make_key_digests(
+            source.recipe_hash, source.dir_couplers.hash, snapshot.keyDigests.scannerHash, source.auto_exposure.hash);
+        const double frameFloor = std::floor(frame.timeFrames);
+        if (source.recipe_hash == 0 || snapshot.instanceToken.value == 0 || snapshot.snapshotId == 0 ||
+            snapshot.keyDigests.uploadCoreHash != expected.uploadCoreHash ||
+            snapshot.keyDigests.dirHash != expected.dirHash ||
+            snapshot.keyDigests.scannerHash == 0 ||
+            snapshot.keyDigests.autoExposureHash != expected.autoExposureHash ||
+            !std::isfinite(frame.timeFrames) || frame.timeFrames < -0x1p63 || frame.timeFrames >= 0x1p63 ||
+            snapshot.frameToken.value != static_cast<std::uint64_t>(static_cast<std::int64_t>(frameFloor))) {
+            return malformed(diagnostic, "submission_identity");
+        }
+        const auto sameRect = [](const FjRect& rect, const JuicerCuda::FrameRect& expectedRect) {
+            return rect.x1 == expectedRect.x1 && rect.y1 == expectedRect.y1 &&
+                   rect.x2 == expectedRect.x2 && rect.y2 == expectedRect.y2;
+        };
+        const auto sameExtent = [](const FjExtent& extent, const JuicerCuda::FrameRect& rect) {
+            return extent.x == rect.x1 && extent.y == rect.y1 &&
+                   extent.width == rect.x2 - rect.x1 && extent.height == rect.y2 - rect.y1;
+        };
+        const auto& meter = source.auto_exposure;
+        const auto metering = JuicerCuda::make_auto_exposure_preview_descriptor(
+            frame.sourceBounds, frame.sourceBounds, static_cast<Spektrafilm::AutoExposureMethod>(meter.method));
+        if (!sameRect(meter.source_bounds, frame.sourceBounds) || !sameRect(meter.meter_bounds, frame.sourceBounds) ||
+            meter.preview_width != metering.previewWidth || meter.preview_height != metering.previewHeight || meter.hash != metering.hash) {
+            return malformed(diagnostic, "auto_exposure.frame");
+        }
+        if (source.scanner_bounds.hash == 0 || source.scanner_lut.hash == 0 ||
+            source.scanner_lut.density_bounds_hash != source.scanner_bounds.hash) {
+            return malformed(diagnostic, "scanner_bounds.identity");
+        }
+        if (source.spatial_dir.hash != 0 &&
+            (source.spatial_dir.recipe_hash != source.dir_couplers.hash ||
+             !sameExtent(source.spatial_dir.render_extent, frame.renderWindow) ||
+             !sameExtent(source.spatial_dir.render_extent, frame.fullFrameExtent) ||
+             !sameExtent(source.spatial_dir.filter_domain_extent, frame.fullFrameExtent) ||
+             !sameExtent(source.spatial_dir.full_frame_extent, frame.fullFrameExtent))) {
+            return malformed(diagnostic, "spatial_dir.frame");
+        }
+        if (source.grain.hash != 0 &&
+            (!sameExtent(source.grain.render_extent, frame.renderWindow) ||
+             !sameExtent(source.grain.full_frame_extent, frame.fullFrameExtent) ||
+             source.grain.session_seed != frame.sessionSeed || source.grain.clip_token != frame.clipToken ||
+             source.grain.pixel_size_um != frame.pixelSizeUm ||
+             source.grain.frame0 != static_cast<std::int64_t>(frameFloor) ||
+             source.grain.frame_alpha != static_cast<float>(std::clamp(frame.timeFrames - frameFloor, 0.0, 1.0)))) {
+            return malformed(diagnostic, "grain.frame");
+        }
+        if (source.effects.hash != 0 &&
+            (!sameExtent(source.effects.render_extent, frame.renderWindow) ||
+             !sameExtent(source.effects.full_frame_extent, frame.fullFrameExtent) ||
+             source.effects.session_seed != frame.sessionSeed || source.effects.clip_token != frame.clipToken)) {
+            return malformed(diagnostic, "effects.frame");
+        }
+        if (source.optics.diffusion_hash != 0 &&
+            (!sameExtent(source.optics.full_frame, frame.sourceBounds) ||
+             !sameExtent(source.optics.full_frame, frame.renderWindow) ||
+             !sameExtent(source.optics.full_frame, frame.fullFrameExtent))) {
+            return malformed(diagnostic, "optics.frame");
+        }
+        return true;
+    }
+
     JuicerCuda::PrintResourceInput decode_print(const FjPreparedHostData& source) {
         const FjPrint& print = source.print;
         JuicerCuda::PrintResourceInput out;
@@ -206,11 +271,12 @@ namespace JuicerCuda {
         const ExecutionFrame& frame,
         ResourceManager::SubmissionSnapshot& snapshot,
         PendingContextLossRecovery& recovery,
-        const DirFailureMessage& dirFailureMessage,
+        FjAbortCallback abortCallback,
         std::string& diagnostic) {
         diagnostic.clear();
         PreparedDescriptors descriptors;
-        if (!decode_prepared_descriptors(source, descriptors, diagnostic) || !validate_spans(source, diagnostic)) {
+        if (!decode_prepared_descriptors(source, descriptors, diagnostic) || !validate_spans(source, diagnostic) ||
+            !validate_frame_binding(source, frame, snapshot, diagnostic)) {
             return false;
         }
         const ExecutionFrame boundFrame{
@@ -305,7 +371,7 @@ namespace JuicerCuda {
             printExposure.printExposure = source.print.exposure;
             printExposure.preflashExposure = source.print.preflash_exposure;
         }
-        execute_prepared({preparation, descriptors, film, exposure.route_correction_scale, printExposure, source.recipe_hash, (exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0, boundFrame, snapshot}, recovery, dirFailureMessage);
+        execute_prepared({preparation, descriptors, film, exposure.route_correction_scale, printExposure, source.recipe_hash, (exposure.flags & FJ_FILM_AUTO_EXPOSURE) != 0, boundFrame, snapshot}, recovery, abortCallback);
         return true;
     }
 

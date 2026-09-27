@@ -153,3 +153,38 @@ asynchronous submission; absence waits on the relevant default stream on normal
 return and exception cleanup before image leases expire. Supplied streams receive
 no new final wait or device-wide synchronization. The small local OFXS presence
 patch is removed with the support library's compiled consumer at S6.
+
+## Native render entry
+
+`Ffi.Host.NativeBoundary` checks the native message/OFX exclusion, direct C++
+production routing, the implemented operation set, and absence of live-context
+reset calls. These structural checks supplement the runtime evidence below.
+
+`Ffi.Gpu.PreparedBoundary.*` now calls the real `fj_cuda_render` from C11,
+compares it with the direct C++ executor and processor adapter, and retains the
+independent immutable platform captures as behavioral authority. Production
+continues through the temporary direct C++ adapter during S2.D.
+
+`Ffi.Gpu.CudaRender.negative-direct` and `.negative-print` additionally exercise
+raw argument and prepared/submission binding failures, current-context and stream
+ownership, zero/one/truncated error buffers, typed API/code preservation, and
+exception containment. Isolated API/executor objects inject native exceptions;
+no hook enters product objects. Abort queries run synchronously at three bounded
+checkpoints and expire at return. Tests cover null queries, undefined return tags,
+same-thread invocation, rejected reentry, cancellation followed by success, and
+native epoch advancement after idle resource retirement without resetting the
+host context. A finite piece of queued GPU work proves cancellation after enqueue:
+the accepted abort path must either complete that work or retain its use fence.
+The abort callback itself enqueues no work and changes no ownership. Existing
+prepared-frame and pinned-upload tests independently cover uncertain retention
+and host-span expiry. No injected error establishes actual driver-loss acceptance.
+
+The private `NativeCall` borrow owns the one registered runtime's call gate from
+inspection through execution. `fj_cuda_render` re-inspects under this admission;
+a previously returned context record is not a retained capability. Supplied
+non-null and explicitly null streams keep the existing asynchronous contract;
+absence completes the relevant stream before native return, including unwind.
+`Ofx.Gpu.ExecutorFailureOrder` checks native classification and abort before
+adapter message delivery, actual gate reacquisition by the message fixture,
+percent escaping, the existing message identifier, and recovery/latch/fatal order
+independent of message-delivery failure. Native execution has no message callback.

@@ -1,10 +1,12 @@
 #include "juicer_cuda_api.h"
 #include "juicer_cuda_owner.h"
+#include "juicer_cuda_prepared.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -40,6 +42,7 @@ struct FjCuda final {
         }
     }
 
+    std::mutex callMutex;
     JuicerProcess::Root root;
 };
 
@@ -47,6 +50,18 @@ namespace {
 
     std::mutex gOwnerMutex;
     constinit std::atomic<FjCuda*> gOwner{nullptr};
+    thread_local bool gNativeCallActive = false;
+
+    std::mutex& native_call_mutex(FjCuda* cuda) {
+        if (!cuda || gNativeCallActive) {
+            throw JuicerCuda::ExecutionFailure{{{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "invalid or reentrant CUDA call"}};
+        }
+        if (cuda != gOwner.load(std::memory_order_acquire)) {
+            throw JuicerCuda::ExecutionFailure{{{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "CUDA call requires the registered owner"}};
+        }
+        return cuda->callMutex;
+    }
+
 
     FjStatus status(uint32_t category, FjErrorBuffer* error, const char* message) noexcept {
         return JuicerCuda::write_status({category, FJ_API_NONE, 0}, message, error);
@@ -124,6 +139,9 @@ namespace {
         if (!cuda) {
             return true;
         }
+        if (gNativeCallActive) {
+            return false;
+        }
         try {
             std::lock_guard<std::mutex> lock(gOwnerMutex);
             if (gOwner.load(std::memory_order_acquire) != cuda || !cuda->close()) {
@@ -146,7 +164,7 @@ FjStatus fj_cuda_create(FjStringView data_directory, FjCuda** out_cuda, FjErrorB
         *out_cuda = nullptr;
     }
     try {
-        if (!out_cuda || !data_directory.data || data_directory.count == 0 ||
+        if (gNativeCallActive || !out_cuda || !data_directory.data || data_directory.count == 0 ||
             (error && error->capacity != 0 && !error->data) ||
             std::memchr(data_directory.data, '\0', data_directory.count)) {
             return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid CUDA owner creation input");
@@ -173,8 +191,23 @@ FjStatus fj_cuda_inspect(FjCuda* cuda, const FjFrame* frame, FjCudaContext* out_
         if (!cuda || !frame || !out_context || (error && error->capacity && !error->data)) {
             return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid CUDA inspection arguments");
         }
-        if (cuda != gOwner.load(std::memory_order_acquire)) {
-            return status(FJ_STATUS_PREPARATION_FAILURE, error, "CUDA inspection requires the registered owner");
+        JuicerCuda::NativeCall call(cuda);
+        return call.inspect(frame, out_context, error);
+    } catch (const JuicerCuda::ExecutionFailure& failure) {
+        return JuicerCuda::write_status(failure.failure.status, failure.failure.diagnostic, error);
+    } catch (const std::bad_alloc&) {
+        return status(FJ_STATUS_ALLOCATION_FAILURE, error, "CUDA inspection allocation failed");
+    } catch (const std::exception& detail) {
+        return status(FJ_STATUS_INTERNAL_FAILURE, error, detail.what());
+    } catch (...) {
+        return status(FJ_STATUS_INTERNAL_FAILURE, error, "CUDA inspection failed");
+    }
+}
+
+FjStatus JuicerCuda::NativeCall::inspect(const FjFrame* frame, FjCudaContext* outContext, FjErrorBuffer* error) {
+    try {
+        if (!frame || !outContext || (error && error->capacity && !error->data)) {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid CUDA inspection arguments");
         }
         constexpr std::uint32_t knownFlags = FJ_FRAME_STREAM_PRESENT | FJ_FRAME_TRACE_INFO | FJ_FRAME_TRACE_VERBOSE;
         if ((frame->flags & ~knownFlags) != 0 ||
@@ -240,7 +273,7 @@ FjStatus fj_cuda_inspect(FjCuda* cuda, const FjFrame* frame, FjCudaContext* out_
                 return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "CUDA allocation does not cover image bounds");
             }
         }
-        *out_context = FjCudaContext{device, reinterpret_cast<std::uintptr_t>(context)};
+        *outContext = FjCudaContext{device, reinterpret_cast<std::uintptr_t>(context)};
         return status(FJ_STATUS_SUCCESS, error, "");
     } catch (const std::bad_alloc&) {
         return status(FJ_STATUS_ALLOCATION_FAILURE, error, "CUDA inspection allocation failed");
@@ -248,6 +281,116 @@ FjStatus fj_cuda_inspect(FjCuda* cuda, const FjFrame* frame, FjCudaContext* out_
         return status(FJ_STATUS_INTERNAL_FAILURE, error, detail.what());
     } catch (...) {
         return status(FJ_STATUS_INTERNAL_FAILURE, error, "CUDA inspection failed");
+    }
+}
+
+FjStatus fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const FjFrame* frame, const FjSubmission* submission, const FjPreparedHostData* prepared, FjAbortCallback abort_callback, FjErrorBuffer* error) {
+    try {
+        if (!cuda || !context || !frame || !submission || !prepared ||
+            (error && error->capacity && !error->data) ||
+            context->device_id < 0 || context->context == 0 ||
+            submission->instance_token == 0 || submission->submission_id == 0 ||
+            !std::isfinite(frame->time_frames) || frame->time_frames < -0x1p63 || frame->time_frames >= 0x1p63 ||
+            !std::isfinite(frame->frame_rate) || frame->frame_rate < 0 ||
+            !std::isfinite(frame->pixel_size_um) || frame->pixel_size_um < 0) {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid CUDA render arguments");
+        }
+        JuicerCuda::NativeCall call(cuda);
+        auto admission = cuda->root.begin_frame_preparation();
+        if (!admission.active()) {
+            return status(FJ_STATUS_PREPARATION_FAILURE, error, "CUDA frame preparation admission blocked");
+        }
+        FjCudaContext inspected{};
+        const auto inspection = call.inspect(frame, &inspected, error);
+        if (inspection.category != FJ_STATUS_SUCCESS) {
+            return inspection;
+        }
+        if (context->device_id != inspected.device_id || context->context != inspected.context) {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "CUDA render context differs from inspected current context");
+        }
+        const auto sameRect = [](const FjRect& a, const FjRect& b) {
+            return a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
+        };
+        if (prepared->optics.flags != 0 &&
+            (!sameRect(frame->source.bounds, frame->full_frame_extent) ||
+             !sameRect(frame->destination.bounds, frame->full_frame_extent) ||
+             !sameRect(frame->render_window, frame->full_frame_extent))) {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "CUDA optics require the complete frame domain");
+        }
+        std::string diagnostic;
+        if (frame->stream != 0) {
+            void* streamContext = nullptr;
+            int driverCode = 0;
+            if (!JuicerCuda::query_cuda_stream_context(frame->stream, streamContext, driverCode, diagnostic)) {
+                return driver_failure(error, diagnostic, driverCode);
+            }
+            if (reinterpret_cast<std::uintptr_t>(streamContext) != inspected.context) {
+                return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "CUDA stream does not belong to the current context");
+            }
+        }
+        const auto rect = [](const FjRect& value) -> JuicerCuda::FrameRect {
+            return {value.x1, value.y1, value.x2, value.y2};
+        };
+        const auto address = [&](const FjImage& image) {
+            const auto x = static_cast<std::ptrdiff_t>(frame->render_window.x1) - image.bounds.x1;
+            const auto y = static_cast<std::ptrdiff_t>(frame->render_window.y1) - image.bounds.y1;
+            return image.address + static_cast<std::uintptr_t>(y * image.row_bytes + x * image.components * sizeof(float));
+        };
+        const auto& geometry = frame->effects_geometry;
+        const Spektrafilm::FilmJuicerEffectsGeometry effects{
+            {geometry.pixel_definition.x, geometry.pixel_definition.y, geometry.pixel_definition.width, geometry.pixel_definition.height},
+            geometry.canonical_x,
+            geometry.canonical_y,
+            geometry.canonical_width,
+            geometry.canonical_height,
+            geometry.scale_x,
+            geometry.scale_y,
+            geometry.pixel_aspect_ratio};
+        const auto& meter = prepared->auto_exposure;
+        const JuicerCuda::AutoExposurePreviewDescriptor metering{
+            meter.source_bounds.x1, meter.source_bounds.y1, meter.source_bounds.x2, meter.source_bounds.y2, meter.meter_bounds.x1, meter.meter_bounds.y1, meter.meter_bounds.x2, meter.meter_bounds.y2, meter.preview_width, meter.preview_height, static_cast<Spektrafilm::AutoExposureMethod>(meter.method), meter.hash};
+        const std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
+        const std::optional<ScatterHalationFrameDescriptor> halation;
+        const JuicerCuda::ExecutionFrame execution{
+            rect(frame->source.bounds), rect(frame->render_window), rect(frame->full_frame_extent), reinterpret_cast<const unsigned char*>(frame->source.address), reinterpret_cast<const unsigned char*>(address(frame->source)), reinterpret_cast<unsigned char*>(address(frame->destination)), frame->source.row_bytes, frame->destination.row_bytes, static_cast<int>(frame->source.components), reinterpret_cast<void*>(frame->stream), diffusion, halation, effects, frame->pixel_size_um, frame->time_frames, frame->frame_rate, frame->session_seed, static_cast<std::uintptr_t>(frame->clip_token), metering, (frame->flags & FJ_FRAME_TRACE_INFO) != 0, (frame->flags & FJ_FRAME_TRACE_VERBOSE) != 0};
+        JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{
+            {submission->instance_token}, {submission->frame_token}, submission->submission_id, {context->device_id, reinterpret_cast<void*>(context->context)}, {submission->upload_core_hash, submission->dir_hash, submission->scanner_hash, submission->auto_exposure_hash}};
+        JuicerCuda::PendingContextLossRecovery recovery;
+        const auto complete = [&]() {
+            return (frame->flags & FJ_FRAME_STREAM_PRESENT) != 0
+                       ? cudaSuccess
+                       : cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(frame->stream));
+        };
+        try {
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+            JuicerCuda::RenderTest::before_execute();
+#endif
+            if (!JuicerCuda::execute_prepared_host_data(*prepared, execution, snapshot, recovery, abort_callback, diagnostic)) {
+                return status(FJ_STATUS_UNSUPPORTED_INPUT, error, diagnostic.c_str());
+            }
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+            JuicerCuda::RenderTest::after_execute();
+#endif
+        } catch (...) {
+            const auto completion = complete();
+            if (completion != cudaSuccess) {
+                return JuicerCuda::write_status(JuicerCuda::runtime_failure_status(completion), cudaGetErrorString(completion), error);
+            }
+            throw;
+        }
+        const auto completion = complete();
+        if (completion != cudaSuccess) {
+            return JuicerCuda::write_status(JuicerCuda::runtime_failure_status(completion), cudaGetErrorString(completion), error);
+        }
+        return status(FJ_STATUS_SUCCESS, error, "");
+    } catch (const JuicerCuda::ExecutionFailure& failure) {
+        return JuicerCuda::write_status(failure.failure.status, failure.failure.diagnostic, error);
+    } catch (const std::bad_alloc&) {
+        return status(FJ_STATUS_ALLOCATION_FAILURE, error, "CUDA render allocation failed");
+    } catch (const std::exception& detail) {
+        return status(FJ_STATUS_INTERNAL_FAILURE, error, detail.what());
+    } catch (...) {
+        return status(FJ_STATUS_INTERNAL_FAILURE, error, "CUDA render failed with unknown exception");
     }
 }
 
@@ -275,6 +418,15 @@ namespace JuicerProcess {
 } // namespace JuicerProcess
 
 namespace JuicerCuda {
+
+    NativeCall::NativeCall(FjCuda* cuda)
+        : _lock(native_call_mutex(cuda)) {
+        gNativeCallActive = true;
+    }
+
+    NativeCall::~NativeCall() {
+        gNativeCallActive = false;
+    }
 
     FjCuda* borrowed_owner() noexcept {
         return gOwner.load(std::memory_order_acquire);

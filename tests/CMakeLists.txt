@@ -67,6 +67,11 @@ add_test(NAME Rust.Bridge
 set_tests_properties(Rust.Bridge PROPERTIES
     LABELS "host" TIMEOUT 120 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 
+add_test(NAME Ffi.Host.NativeBoundary
+    COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p "test_native_boundary.py" -v)
+set_tests_properties(Ffi.Host.NativeBoundary PROPERTIES LABELS "host" TIMEOUT 30)
+
 add_executable(JuicerCudaAbiTests ffi/cuda_abi_c.c ffi/cuda_abi_test.cpp)
 set_target_properties(JuicerCudaAbiTests PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
@@ -339,9 +344,15 @@ set_tests_properties(Ofx.Gpu.ProcessorReference PROPERTIES
 add_test(NAME Ofx.Gpu.SequentialOwners COMMAND JuicerProcessorReferenceProbe --sequential-owners)
 set_tests_properties(Ofx.Gpu.SequentialOwners PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
 
+add_library(juicer_render_test_objects OBJECT
+    ../native/juicer_cuda_api.cpp ../src/Cuda/JuicerCudaExecutor.cpp)
+target_link_libraries(juicer_render_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_render_test_objects PRIVATE JUICER_CUDA_RENDER_TEST_HOOK=1)
 add_executable(JuicerPreparedBoundaryProbe
     ofx/processor_reference_test.cpp
     ffi/prepared_boundary.cpp
+    ffi/cuda_render_test.cpp
+    $<TARGET_OBJECTS:juicer_render_test_objects>
     ffi/prepared_boundary.c
     ffi/prepared_descriptors.cpp)
 target_link_libraries(JuicerPreparedBoundaryProbe PRIVATE juicer_core juicer_ofxs CUDA::cuda_driver)
@@ -352,6 +363,7 @@ else()
         $<$<COMPILE_LANGUAGE:C>:-Wall;-Wextra;-Werror;-pedantic-errors>)
 endif()
 target_compile_definitions(JuicerPreparedBoundaryProbe PRIVATE
+    JUICER_CUDA_RENDER_TEST_HOOK=1
     JUICER_PREPARED_BOUNDARY_TEST=1
     JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/${JUICER_PROCESSOR_REFERENCE_FILE}")
 set_target_properties(JuicerPreparedBoundaryProbe PROPERTIES
@@ -366,6 +378,13 @@ foreach(prepared_case IN ITEMS negative-direct negative-print positive-direct po
     add_test(NAME "Ffi.Gpu.PreparedBoundary.${prepared_case}"
         COMMAND JuicerPreparedBoundaryProbe --prepared-case "${prepared_case}")
     set_tests_properties("Ffi.Gpu.PreparedBoundary.${prepared_case}" PROPERTIES
+        LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
+endforeach()
+
+foreach(render_case IN ITEMS negative-direct negative-print)
+    add_test(NAME "Ffi.Gpu.CudaRender.${render_case}"
+        COMMAND JuicerPreparedBoundaryProbe --render-contract "${render_case}")
+    set_tests_properties("Ffi.Gpu.CudaRender.${render_case}" PROPERTIES
         LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 endforeach()
 

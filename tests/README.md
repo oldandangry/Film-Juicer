@@ -210,11 +210,17 @@ and destination image handles independently and rejects duplicate, unknown,
 or missing releases. Fixture emission is an explicit
 `--emit-reference` maintenance operation and is never part of CTest.
 
+`Ffi.Gpu.CudaRender.negative-direct` and `.negative-print` cover the real C render
+entry, bounded cancellation, native status/exception containment, callback scope,
+context/stream ownership, and successful reuse after abort. Prepared-boundary cases
+compare the C entry with direct execution and immutable captures; see
+[the FFI guide](ffi/README.md#native-render-entry) for the exact evidence boundary.
+
 `Ofx.Gpu.ExecutorFailureOrder` uses isolated test objects for the native executor,
 processor adapter and prepared-frame abort observer. It drives both route failure
-sites through the same native OFX fixture, checking synchronous DIR message
-attempt, failure classification/trace boundary, prepared-frame abort, adapter
-context recovery and fatal OFX result order. It also covers non-DIR filtering,
+sites through the same native OFX fixture, checking failure classification,
+prepared-frame abort, gate release, deferred DIR message attempt, adapter context
+recovery and fatal OFX result order. It also covers non-DIR filtering,
 percent escaping, failed/throwing host delivery and a failure that requires no
 context retirement. The injected context-loss status exercises the existing
 retirement/latch policy on the fixture's CUDA context; it does not simulate real

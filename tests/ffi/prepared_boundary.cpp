@@ -11,7 +11,7 @@
 #include <string_view>
 
 #include "prepared_descriptors.h"
-#include "juicer_cuda_prepared.h"
+#include "juicer_cuda_owner.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "FocusedRenderPayload.h"
 #include "ResourceAssetLibrary.h"
@@ -39,10 +39,6 @@ namespace {
     }
 
     FjRect project(const JuicerCuda::FrameRect& source) {
-        return {source.x1, source.y1, source.x2, source.y2};
-    }
-
-    JuicerCuda::FrameRect decode(const FjRect& source) {
         return {source.x1, source.y1, source.x2, source.y2};
     }
 
@@ -139,75 +135,7 @@ namespace {
         out.hash = descriptors.hash;
     }
 
-    void write_error(FjErrorBuffer* error, std::string_view message) noexcept {
-        if (!error) {
-            return;
-        }
-        error->length = 0;
-        if (error->capacity == 0 || !error->data) {
-            return;
-        }
-        const std::size_t count = std::min(message.size(), error->capacity - 1u);
-        std::copy_n(message.data(), count, error->data);
-        error->data[count] = '\0';
-        error->length = count;
-    }
-
 } // namespace
-
-extern "C" int fj_test_execute_prepared_cpp(const FjPreparedHostData* prepared, const FjFrame* frame, const FjCudaContext* context, const FjSubmission* submission, FjErrorBuffer* error) {
-    JuicerCuda::PendingContextLossRecovery recovery;
-    try {
-        if (!prepared || !frame || !context || !submission || context->device_id < 0 || context->context == 0 ||
-            frame->source.address == 0 || frame->destination.address == 0 || frame->source.address == frame->destination.address ||
-            frame->source.row_bytes <= 0 || frame->destination.row_bytes <= 0 ||
-            (frame->source.components != FJ_COMPONENTS_RGB && frame->source.components != FJ_COMPONENTS_RGBA) ||
-            frame->source.components != frame->destination.components ||
-            frame->source.depth != FJ_DEPTH_FLOAT32 || frame->destination.depth != FJ_DEPTH_FLOAT32 ||
-            (frame->flags & ~(FJ_FRAME_STREAM_PRESENT | FJ_FRAME_TRACE_INFO | FJ_FRAME_TRACE_VERBOSE)) != 0) {
-            write_error(error, "unsupported prepared-boundary fixture input");
-            return 0;
-        }
-        const auto& geometry = frame->effects_geometry;
-        const Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{
-            {geometry.pixel_definition.x, geometry.pixel_definition.y, geometry.pixel_definition.width, geometry.pixel_definition.height},
-            geometry.canonical_x,
-            geometry.canonical_y,
-            geometry.canonical_width,
-            geometry.canonical_height,
-            geometry.scale_x,
-            geometry.scale_y,
-            geometry.pixel_aspect_ratio};
-        const auto& meter = prepared->auto_exposure;
-        const JuicerCuda::AutoExposurePreviewDescriptor metering{
-            meter.source_bounds.x1, meter.source_bounds.y1, meter.source_bounds.x2, meter.source_bounds.y2, meter.meter_bounds.x1, meter.meter_bounds.y1, meter.meter_bounds.x2, meter.meter_bounds.y2, meter.preview_width, meter.preview_height, static_cast<Spektrafilm::AutoExposureMethod>(meter.method), meter.hash};
-        const std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
-        const std::optional<ScatterHalationFrameDescriptor> halation;
-        const auto* sourceBase = reinterpret_cast<const unsigned char*>(frame->source.address);
-        const std::ptrdiff_t sourceOffset =
-            static_cast<std::ptrdiff_t>(frame->render_window.y1 - frame->source.bounds.y1) * frame->source.row_bytes +
-            static_cast<std::ptrdiff_t>(frame->render_window.x1 - frame->source.bounds.x1) *
-                static_cast<std::ptrdiff_t>(frame->source.components * sizeof(float));
-        const JuicerCuda::ExecutionFrame execution{
-            decode(frame->source.bounds), decode(frame->render_window), decode(frame->full_frame_extent), sourceBase, sourceBase + sourceOffset, reinterpret_cast<unsigned char*>(frame->destination.address), frame->source.row_bytes, frame->destination.row_bytes, static_cast<int>(frame->source.components), reinterpret_cast<void*>(frame->stream), diffusion, halation, effectsGeometry, frame->pixel_size_um, frame->time_frames, frame->frame_rate, frame->session_seed, static_cast<std::uintptr_t>(frame->clip_token), metering, (frame->flags & FJ_FRAME_TRACE_INFO) != 0, (frame->flags & FJ_FRAME_TRACE_VERBOSE) != 0};
-        JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{
-            {submission->instance_token}, {submission->frame_token}, submission->submission_id, {context->device_id, reinterpret_cast<void*>(context->context)}, {submission->upload_core_hash, submission->dir_hash, submission->scanner_hash, submission->auto_exposure_hash}};
-        std::string diagnostic;
-        if (!JuicerCuda::execute_prepared_host_data(*prepared, execution, snapshot, recovery, {}, diagnostic)) {
-            write_error(error, diagnostic);
-            return 0;
-        }
-        write_error(error, {});
-        return 1;
-    } catch (const JuicerCuda::ExecutionFailure&) {
-        write_error(error, recovery.failure.diagnostic.empty() ? "prepared executor failed" : recovery.failure.diagnostic);
-    } catch (const std::exception& exception) {
-        write_error(error, exception.what());
-    } catch (...) {
-        write_error(error, "prepared boundary exception");
-    }
-    return 0;
-}
 
 namespace JuicerCudaTest {
 
@@ -217,7 +145,8 @@ namespace JuicerCudaTest {
         const JuicerCuda::ExecutionFrame& frame,
         JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         const JuicerCuda::PreparedDescriptors& descriptors,
-        std::string& diagnostic) {
+        std::string& diagnostic,
+        bool checkContract) {
         diagnostic.clear();
         JuicerCuda::PreparedDescriptors preparedDescriptors = descriptors;
         JuicerCuda::FocusedRouteResourceInput focused;
@@ -305,7 +234,10 @@ namespace JuicerCudaTest {
         const FjSubmission submission{snapshot.instanceToken.value, snapshot.frameToken.value, snapshot.snapshotId, snapshot.keyDigests.uploadCoreHash, snapshot.keyDigests.dirHash, snapshot.keyDigests.scannerHash, snapshot.keyDigests.autoExposureHash};
         std::array<char, 2048> message{};
         FjErrorBuffer error{message.data(), message.size(), 0};
-        const int result = fj_test_execute_prepared_c(&prepared, &projectedFrame, &context, &submission, &error);
+        check_frame_bindings(JuicerCuda::borrowed_owner(), context, projectedFrame, submission, prepared, recipe);
+        const int result = checkContract
+                               ? check_render_contract(JuicerCuda::borrowed_owner(), context, projectedFrame, submission, prepared, &error).category == FJ_STATUS_SUCCESS
+                               : fj_test_execute_prepared_c(JuicerCuda::borrowed_owner(), &prepared, &projectedFrame, &context, &submission, &error);
         if (result == 0) {
             diagnostic.assign(message.data(), error.length);
         }

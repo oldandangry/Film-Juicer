@@ -15,6 +15,7 @@ namespace JuicerCuda {
     };
 
     bool query_cuda_pointer_context(std::uintptr_t address, void*& outContext, int& nativeCode, std::string& outError);
+    bool query_cuda_stream_context(std::uintptr_t stream, void*& outContext, int& nativeCode, std::string& outError);
     bool query_cuda_allocation(std::uintptr_t address, CudaAllocation& allocation, int& nativeCode, std::string& outError);
 
 } // namespace JuicerCuda
