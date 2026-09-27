@@ -47,6 +47,15 @@ namespace JuicerCuda {
         return failure.status.category == FJ_STATUS_CONTEXT_LOSS;
     }
 
+    void set_failure(Failure& failure, FjStatus status, std::string_view diagnostic) noexcept {
+        failure.status = status;
+        try {
+            failure.diagnostic.assign(diagnostic);
+        } catch (...) {
+            failure.diagnostic.clear();
+        }
+    }
+
     FjStatus write_status(FjStatus status, std::string_view diagnostic, FjErrorBuffer* error) noexcept {
         if (error) {
             error->length = 0;

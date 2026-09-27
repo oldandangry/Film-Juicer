@@ -19,7 +19,6 @@
 
 #include "Cuda/JuicerCudaDriver.h"
 #include "Cuda/JuicerCudaFailure.h"
-#include "Logging.h"
 #include "ProcessRoot.h"
 
 struct FjCuda final {
@@ -27,20 +26,99 @@ struct FjCuda final {
         : root(std::move(dataDirectory)) {
     }
 
-    bool close() noexcept {
-        try {
-            {
-                std::lock_guard<std::mutex> lock(root._framePreparationMutex);
-                if (root._shutdownRetireBlocked) {
-                    return false;
-                }
+    enum class Lifecycle : std::uint8_t {
+        Accepting,
+        Closing,
+        Closed,
+        Blocked,
+        Retained
+    };
+
+    ~FjCuda() {
+#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
+        JuicerCuda::TerminalTest::owner_destroyed();
+#endif
+    }
+
+    FjStatus save_failure(FjStatus result, std::string_view diagnostic) noexcept {
+        terminalStatus = result;
+        FjErrorBuffer error{terminalDiagnostic.data(), terminalDiagnostic.size(), 0};
+        JuicerCuda::write_status(result, diagnostic.empty() ? "CUDA terminal operation failed; native graph retained" : diagnostic, &error);
+        terminalDiagnosticLength = error.length;
+        lifecycle.store(Lifecycle::Blocked, std::memory_order_release);
+        lifecycle.notify_all();
+        return result;
+    }
+
+    FjStatus block(FjStatus result, std::string_view diagnostic) noexcept {
+        auto state = lifecycle.load(std::memory_order_acquire);
+        for (;;) {
+            if (state == Lifecycle::Blocked || state == Lifecycle::Retained) {
+                return terminalStatus;
             }
-            return root.shutdown();
+            if (state == Lifecycle::Closing) {
+                lifecycle.wait(state, std::memory_order_acquire);
+            } else if (lifecycle.compare_exchange_weak(state, Lifecycle::Closing, std::memory_order_acq_rel)) {
+                break;
+            }
+            state = lifecycle.load(std::memory_order_acquire);
+        }
+        (void)root.stop_frame_preparation();
+        return save_failure(result, diagnostic);
+    }
+
+    FjStatus shutdown() noexcept {
+        auto state = lifecycle.load(std::memory_order_acquire);
+        for (;;) {
+            if (state == Lifecycle::Closed) {
+                return {FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+            }
+            if (state == Lifecycle::Blocked || state == Lifecycle::Retained) {
+                return terminalStatus;
+            }
+            if (state == Lifecycle::Closing) {
+                lifecycle.wait(state, std::memory_order_acquire);
+            } else if (lifecycle.compare_exchange_weak(state, Lifecycle::Closing, std::memory_order_acq_rel)) {
+                break;
+            }
+            state = lifecycle.load(std::memory_order_acquire);
+        }
+        // Closing rejects admission but does not publish a diagnostic. Only a
+        // completed failure publishes immutable storage to acquire-readers,
+        // including terminal callers whose owner-mutex acquisition failed.
+        JuicerCuda::Failure failure;
+        try {
+            if (!root.stop_frame_preparation()) {
+                return save_failure({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA shutdown could not close frame admission");
+            }
+#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
+            JuicerCuda::TerminalTest::before_shutdown();
+#endif
+            if (root.shutdown(callMutex, failure)) {
+                lifecycle.store(Lifecycle::Closed, std::memory_order_release);
+                lifecycle.notify_all();
+                return {FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+            }
+            return save_failure(failure.status, failure.diagnostic.empty() ? "CUDA shutdown failed; native graph retained" : std::string_view(failure.diagnostic));
+        } catch (const JuicerCuda::ExecutionFailure& detail) {
+            return save_failure(detail.failure.status, detail.failure.diagnostic);
+        } catch (const std::bad_alloc&) {
+            return save_failure({FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "CUDA shutdown allocation failed");
+        } catch (const std::exception& detail) {
+            return save_failure({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what());
         } catch (...) {
-            JuicerLogging::discard_current_exception();
-            return false;
+            return save_failure({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA shutdown failed with unknown exception");
         }
     }
+
+    void retire_instance(std::uint64_t instanceToken) {
+        root.retire_grain_static_instance(instanceToken);
+    }
+
+    std::atomic<Lifecycle> lifecycle{Lifecycle::Accepting};
+    FjStatus terminalStatus{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
+    std::array<char, 1024> terminalDiagnostic{};
+    std::size_t terminalDiagnosticLength = 0;
 
     std::mutex callMutex;
     JuicerProcess::Root root;
@@ -52,12 +130,18 @@ namespace {
     constinit std::atomic<FjCuda*> gOwner{nullptr};
     thread_local bool gNativeCallActive = false;
 
+    [[noreturn]] void reject_native_call(std::uint32_t category, std::string_view diagnostic) {
+        JuicerCuda::Failure failure;
+        JuicerCuda::set_failure(failure, {category, FJ_API_NONE, 0}, diagnostic);
+        throw JuicerCuda::ExecutionFailure{std::move(failure)};
+    }
+
     std::mutex& native_call_mutex(FjCuda* cuda) {
         if (!cuda || gNativeCallActive) {
-            throw JuicerCuda::ExecutionFailure{{{FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "invalid or reentrant CUDA call"}};
+            reject_native_call(FJ_STATUS_UNSUPPORTED_INPUT, "invalid or reentrant CUDA call");
         }
         if (cuda != gOwner.load(std::memory_order_acquire)) {
-            throw JuicerCuda::ExecutionFailure{{{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "CUDA call requires the registered owner"}};
+            reject_native_call(FJ_STATUS_PREPARATION_FAILURE, "CUDA call requires the registered owner");
         }
         return cuda->callMutex;
     }
@@ -65,6 +149,21 @@ namespace {
 
     FjStatus status(uint32_t category, FjErrorBuffer* error, const char* message) noexcept {
         return JuicerCuda::write_status({category, FJ_API_NONE, 0}, message, error);
+    }
+
+    FjStatus terminal_admission_failure(FjCuda* cuda, FjStatus result, std::string_view diagnostic, bool consuming, FjErrorBuffer* error) noexcept {
+        // The host excludes destruction while a handle is borrowed. Registration
+        // establishes validity here even if acquiring gOwnerMutex failed.
+        if (cuda != gOwner.load(std::memory_order_acquire)) {
+            return JuicerCuda::write_status(result, diagnostic, error);
+        }
+        result = cuda->block(result, diagnostic);
+        if (consuming) {
+            cuda->lifecycle.store(FjCuda::Lifecycle::Retained, std::memory_order_release);
+        }
+        return JuicerCuda::write_status(result,
+                                        {cuda->terminalDiagnostic.data(), cuda->terminalDiagnosticLength},
+                                        error);
     }
 
     struct ImageBytes {
@@ -132,30 +231,6 @@ namespace {
         return JuicerCuda::write_status(JuicerCuda::driver_failure_status(code), message, error);
     }
 
-    // Removal: S2.D supplies typed shutdown/destroy and terminal retention.
-    // Keep a failed graph registered and alive; a new runtime cannot coexist
-    // with its registry. This bridge is not a successful C shutdown result.
-    bool SF_TEMP_BRIDGE_release_cuda_owner(FjCuda* cuda) noexcept {
-        if (!cuda) {
-            return true;
-        }
-        if (gNativeCallActive) {
-            return false;
-        }
-        try {
-            std::lock_guard<std::mutex> lock(gOwnerMutex);
-            if (gOwner.load(std::memory_order_acquire) != cuda || !cuda->close()) {
-                JTRACE("MSLCY", "SF_TEMP_BRIDGE_release_cuda_owner retained; S2.D terminal qualification pending");
-                return false;
-            }
-            gOwner.store(nullptr, std::memory_order_release);
-            delete cuda;
-            return true;
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-            return false;
-        }
-    }
 
 } // namespace
 
@@ -394,6 +469,95 @@ FjStatus fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const FjFram
     }
 }
 
+FjStatus fj_cuda_retire_instance(FjCuda* cuda, uint64_t instance_token, FjErrorBuffer* error) {
+    try {
+        if (!cuda || instance_token == 0 || (error && error->capacity && !error->data)) {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid CUDA instance retirement arguments");
+        }
+        JuicerCuda::NativeCall call(cuda);
+#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
+        JuicerCuda::TerminalTest::before_retire_instance();
+#endif
+        cuda->retire_instance(instance_token);
+        return status(FJ_STATUS_SUCCESS, error, "");
+    } catch (const JuicerCuda::ExecutionFailure& detail) {
+        return JuicerCuda::write_status(detail.failure.status, detail.failure.diagnostic.empty() ? "CUDA instance retirement failed" : std::string_view(detail.failure.diagnostic), error);
+    } catch (const std::bad_alloc&) {
+        return status(FJ_STATUS_ALLOCATION_FAILURE, error, "CUDA instance retirement allocation failed");
+    } catch (const std::exception& detail) {
+        return status(FJ_STATUS_INTERNAL_FAILURE, error, detail.what());
+    } catch (...) {
+        return status(FJ_STATUS_INTERNAL_FAILURE, error, "CUDA instance retirement failed with unknown exception");
+    }
+}
+
+FjStatus fj_cuda_shutdown(FjCuda* cuda, FjErrorBuffer* error) {
+    if (!cuda || gNativeCallActive || (error && error->capacity && !error->data)) {
+        return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid or reentrant CUDA shutdown");
+    }
+    try {
+#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
+        JuicerCuda::TerminalTest::before_owner_lock();
+#endif
+        std::lock_guard<std::mutex> lock(gOwnerMutex);
+        if (cuda != gOwner.load(std::memory_order_acquire)) {
+            return status(FJ_STATUS_PREPARATION_FAILURE, error, "CUDA shutdown requires the registered owner");
+        }
+        const auto result = cuda->shutdown();
+        return JuicerCuda::write_status(result,
+                                        result.category == FJ_STATUS_SUCCESS ? std::string_view{} : std::string_view{cuda->terminalDiagnostic.data(), cuda->terminalDiagnosticLength},
+                                        error);
+    } catch (const std::bad_alloc&) {
+        return terminal_admission_failure(cuda, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "CUDA shutdown admission allocation failed", false, error);
+    } catch (const std::exception& detail) {
+        return terminal_admission_failure(cuda, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what(), false, error);
+    } catch (...) {
+        return terminal_admission_failure(cuda, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA shutdown admission failed", false, error);
+    }
+}
+
+FjStatus fj_cuda_destroy(FjCuda* cuda, FjErrorBuffer* error) {
+    // The foreign caller has already taken its pointer. Malformed diagnostic
+    // output cannot abandon ownership; a selected terminal failure takes priority.
+    if (!cuda) {
+        return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "CUDA destroy requires an owning handle");
+    }
+    try {
+        if (gNativeCallActive) {
+            if (cuda != gOwner.load(std::memory_order_acquire)) {
+                return status(FJ_STATUS_PREPARATION_FAILURE, error, "CUDA destroy requires the registered owner");
+            }
+            return terminal_admission_failure(cuda, {FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "reentrant CUDA destroy retained the owner", true, error);
+        }
+#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
+        JuicerCuda::TerminalTest::before_owner_lock();
+#endif
+        std::lock_guard<std::mutex> lock(gOwnerMutex);
+        if (cuda != gOwner.load(std::memory_order_acquire)) {
+            return status(FJ_STATUS_PREPARATION_FAILURE, error, "CUDA destroy requires the registered owner");
+        }
+        const auto result = cuda->shutdown();
+        if (result.category != FJ_STATUS_SUCCESS) {
+            cuda->lifecycle.store(FjCuda::Lifecycle::Retained, std::memory_order_release);
+            return JuicerCuda::write_status(result,
+                                            {cuda->terminalDiagnostic.data(), cuda->terminalDiagnosticLength},
+                                            error);
+        }
+        gOwner.store(nullptr, std::memory_order_release);
+        delete cuda;
+        if (error && error->capacity && !error->data) {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "invalid CUDA destroy error buffer; owner consumed");
+        }
+        return status(FJ_STATUS_SUCCESS, error, "");
+    } catch (const std::bad_alloc&) {
+        return terminal_admission_failure(cuda, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "CUDA destroy admission allocation failed", true, error);
+    } catch (const std::exception& detail) {
+        return terminal_admission_failure(cuda, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what(), true, error);
+    } catch (...) {
+        return terminal_admission_failure(cuda, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA destroy admission failed", true, error);
+    }
+}
+
 namespace JuicerProcess {
 
     Root& Root::instance() {
@@ -408,12 +572,6 @@ namespace JuicerProcess {
         return Root::instance();
     }
 
-    void shutdown_if_initialized() noexcept {
-        FjCuda* cuda = gOwner.load(std::memory_order_acquire);
-        if (cuda) {
-            cuda->root.shutdown();
-        }
-    }
 
 } // namespace JuicerProcess
 
@@ -421,6 +579,9 @@ namespace JuicerCuda {
 
     NativeCall::NativeCall(FjCuda* cuda)
         : _lock(native_call_mutex(cuda)) {
+        if (cuda->lifecycle.load(std::memory_order_acquire) != FjCuda::Lifecycle::Accepting) {
+            reject_native_call(FJ_STATUS_PREPARATION_FAILURE, "CUDA owner admission is closed");
+        }
         gNativeCallActive = true;
     }
 
@@ -452,8 +613,10 @@ namespace JuicerCuda {
         }
     }
 
-    bool Owner::close() noexcept {
-        return SF_TEMP_BRIDGE_release_cuda_owner(std::exchange(_cuda, nullptr));
+    FjStatus Owner::close(FjErrorBuffer* error) noexcept {
+        FjCuda* cuda = std::exchange(_cuda, nullptr);
+        return cuda ? fj_cuda_destroy(cuda, error)
+                    : write_status({FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, {}, error);
     }
 
 } // namespace JuicerCuda

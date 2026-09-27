@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <limits>
 #include <map>
@@ -4460,34 +4461,6 @@ namespace JuicerProcess {
     }
 
 
-    Root::ShutdownToken::ShutdownToken(Root* root) noexcept
-        : _root(root) {
-    }
-
-    Root::ShutdownToken::~ShutdownToken() {
-        reset();
-    }
-
-    Root::ShutdownToken::ShutdownToken(ShutdownToken&& other) noexcept
-        : _root(std::exchange(other._root, nullptr)) {
-    }
-
-    Root::ShutdownToken& Root::ShutdownToken::operator=(ShutdownToken&& other) noexcept {
-        if (this != &other) {
-            reset();
-            _root = std::exchange(other._root, nullptr);
-        }
-        return *this;
-    }
-
-    void Root::ShutdownToken::reset() noexcept {
-        Root* root = _root;
-        _root = nullptr;
-        if (root) {
-            root->finish_shutdown();
-        }
-    }
-
     std::string data_directory() {
         namespace fs = std::filesystem;
 
@@ -4590,69 +4563,49 @@ namespace JuicerProcess {
     Root::~Root() = default;
 
     void Root::ensure_bootstrap() {
-        resume_frame_preparation();
         std::call_once(_bootstrapOnce, [this]() {
             load_process_spectral_assets(_dataDir);
         });
     }
 
-    bool Root::shutdown() noexcept {
-        try {
-            ShutdownToken shutdown = begin_shutdown();
-            if (!shutdown._root || !wait_for_frame_preparation()) {
-                set_shutdown_retire_blocked(true);
-                return false;
-            }
-            std::string retireError;
-            if (!retire_known_contexts(retireError)) {
-                set_shutdown_retire_blocked(true);
-                if (JTRACE_ENABLED(1)) {
-                    std::string msg;
-                    msg.reserve(160);
-                    msg = "process_shutdown_retire_failed release_host_services=0";
-                    if (!retireError.empty()) {
-                        msg += " error=";
-                        msg += retireError;
-                    }
-                    JTRACE("MSLCY", msg);
-                }
-                return false;
-            }
-            set_shutdown_retire_blocked(false);
-            if (!release_cuda_context_resource_owners()) {
-                set_shutdown_retire_blocked(true);
-                return false;
-            }
-            release_process_host_services();
-            return true;
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-            set_shutdown_retire_blocked(true);
+    bool Root::shutdown(std::mutex& nativeCallMutex, JuicerCuda::Failure& outError) {
+        if (!wait_for_frame_preparation()) {
+            JuicerCuda::set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA shutdown frame admission drain failed");
             return false;
         }
+        // Outer preparation guards may still need the native gate to finish.
+        // Admission is closed and those guards are drained before taking it.
+        std::lock_guard<std::mutex> nativeCallLock(nativeCallMutex);
+        if (!retire_known_contexts(outError)) {
+            return false;
+        }
+        if (!release_cuda_context_resource_owners()) {
+            JuicerCuda::set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA shutdown could not release context owners");
+            return false;
+        }
+        release_process_host_services();
+        return true;
     }
 
-    void Root::retire_grain_static_instance(
-        std::uint64_t instanceToken) noexcept {
-        if (instanceToken == 0) {
-            return;
-        }
-        try {
-            std::vector<CudaResourceOwner> retiredOwners;
+    void Root::retire_grain_static_instance(std::uint64_t instanceToken) {
+        for (;;) {
+            CudaResourceOwner retiredOwner;
             {
                 std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-                for (auto& item : _cudaContextResources) {
-                    CudaContextResourceEntry& entry = item.second;
-                    entry.grainInstances.erase(instanceToken);
-                    if (!detail::grain_static_has_active_instance(
-                            entry.grainInstances) &&
-                        entry.grainOwner) {
-                        retiredOwners.emplace_back(std::move(entry.grainOwner));
-                    }
+                const auto member = std::find_if(_cudaContextResources.begin(), _cudaContextResources.end(), [instanceToken](const auto& item) {
+                    return item.second.grainInstances.contains(instanceToken);
+                });
+                if (member == _cudaContextResources.end()) {
+                    return;
+                }
+                auto& entry = member->second;
+                entry.grainInstances.erase(instanceToken);
+                if (!detail::grain_static_has_active_instance(entry.grainInstances)) {
+                    retiredOwner = std::move(entry.grainOwner);
                 }
             }
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
+            // Release outside the map lock. Re-find the next membership after
+            // relocking; no iterator or CUDA destruction crosses that lock.
         }
     }
 
@@ -4677,159 +4630,170 @@ namespace JuicerProcess {
         JuicerCuda::ResourceManager::DeviceContextKey key{};
         key.deviceId = deviceId;
         key.contextOpaque = contextOpaque;
-        return retire_cuda_context(key, false, outError);
+        try {
+            JuicerCuda::Failure failure;
+            const bool retired = retire_cuda_context(key, false, failure);
+            outError = std::move(failure.diagnostic);
+            return retired;
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+            return false;
+        }
     }
 
     bool Root::retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept {
         JuicerCuda::ResourceManager::DeviceContextKey key{};
         key.deviceId = deviceId;
         key.contextOpaque = contextOpaque;
-        return retire_cuda_context(key, true, outError);
+        try {
+            JuicerCuda::Failure failure;
+            const bool retired = retire_cuda_context(key, true, failure);
+            outError = std::move(failure.diagnostic);
+            return retired;
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
+            return false;
+        }
     }
 
     bool Root::retire_cuda_context(
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         bool contextReset,
-        std::string& outError) noexcept {
-        try {
-            outError.clear();
-            if (deviceContextKey.deviceId < 0 ||
-                !deviceContextKey.contextOpaque) {
-                outError = "invalid CUDA context retirement key";
-                return false;
-            }
-            JuicerCuda::ResourceManager::RegistryContextSnapshot contextSnapshot{};
-            if (!JuicerCuda::ResourceManager::registry_begin_owner_retire(
-                    deviceContextKey,
-                    contextSnapshot)) {
-                outError = "context owner-retire rejected";
-                return false;
-            }
-            if (contextSnapshot.contextEpoch == 0) {
-                outError = "context owner-retire epoch invalid";
-                return false;
-            }
-
-            std::vector<CudaResourceOwner> owners;
-            std::vector<std::uint64_t> epochs;
-            std::shared_ptr<JuicerCuda::DeviceAllocationLedger> deviceLedger;
-            {
-                std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-                const auto ledger =
-                    _cudaDeviceLedgers.find(deviceContextKey.deviceId);
-                if (ledger != _cudaDeviceLedgers.end()) {
-                    deviceLedger = ledger->second;
-                }
-                auto collect_epoch = [&](std::uint64_t epoch) {
-                    if (epoch != 0 &&
-                        std::find(epochs.begin(), epochs.end(), epoch) ==
-                            epochs.end()) {
-                        epochs.push_back(epoch);
-                    }
-                };
-                collect_epoch(contextSnapshot.contextEpoch);
-                for (const auto& [key, entry] : _cudaContextResources) {
-                    if (key.deviceContextKey == deviceContextKey) {
-                        collect_epoch(key.contextEpoch);
-                        if (entry.frameOwner) {
-                            owners.push_back(entry.frameOwner);
-                        }
-                        if (entry.grainOwner) {
-                            owners.push_back(entry.grainOwner);
-                        }
-                    }
-                }
-            }
-
-            bool physicalDrainSucceeded = true;
-            bool provenContextLoss = false;
-            for (const CudaResourceOwner& owner : owners) {
-#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
-                if (consume_context_drain_test_failure(
-                        deviceContextKey,
-                        outError)) {
-                    physicalDrainSucceeded = false;
-                    break;
-                }
-#endif
-                if (!owner ||
-                    !JuicerCuda::drain_for_context_retire(*owner, outError)) {
-                    physicalDrainSucceeded = false;
-                    break;
-                }
-            }
-            if (!physicalDrainSucceeded) {
-                if (!contextReset || !deviceLedger) {
-                    if (outError.empty()) {
-                        outError = "CUDA context owner drain failed";
-                    }
-                    return false;
-                }
-                provenContextLoss = true;
-                for (std::uint64_t epoch : epochs) {
-                    std::uint64_t releasedBytes = 0;
-                    if (!deviceLedger->release_context_after_proven_loss(
-                            deviceContextKey,
-                            epoch,
-                            releasedBytes,
-                            outError)) {
-                        return false;
-                    }
-                }
-                for (const CudaResourceOwner& owner : owners) {
-                    if (owner) {
-                        JuicerCuda::invalidate_resources_after_proven_context_loss(
-                            *owner);
-                    }
-                }
-                outError.clear();
-            }
-            for (std::uint64_t epoch : epochs) {
-                if (deviceLedger &&
-                    deviceLedger->record_count_for_context(
-                        deviceContextKey,
-                        epoch) != 0) {
-                    outError =
-                        "CUDA context retirement retained ledger records epoch=" +
-                        std::to_string(epoch);
-                    return false;
-                }
-            }
-
-            {
-                std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-                for (auto it = _cudaContextResources.begin();
-                     it != _cudaContextResources.end();) {
-                    if (it->first.deviceContextKey == deviceContextKey) {
-                        it = _cudaContextResources.erase(it);
-                    } else {
-                        ++it;
-                    }
-                }
-            }
-
-            if (!JuicerCuda::ResourceManager::registry_retire(
-                    deviceContextKey)) {
-                outError = "context registry retire rejected";
-                return false;
-            }
-            JuicerCuda::purge_pinned_upload_staging_for_context(
-                deviceContextKey.deviceId,
-                deviceContextKey.contextOpaque,
-                provenContextLoss
-                    ? JuicerCuda::PinnedUploadPurgeDisposition::ProvenContextLoss
-                    : JuicerCuda::PinnedUploadPurgeDisposition::NormalRetire);
-            owners.clear();
-            return true;
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-            try {
-                outError = "CUDA context retirement failed";
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-            }
+        JuicerCuda::Failure& outError) {
+        outError = {};
+        if (deviceContextKey.deviceId < 0 ||
+            !deviceContextKey.contextOpaque) {
+            JuicerCuda::set_failure(outError, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "invalid CUDA context retirement key");
             return false;
         }
+        JuicerCuda::ResourceManager::RegistryContextSnapshot contextSnapshot{};
+        if (!JuicerCuda::ResourceManager::registry_begin_owner_retire(
+                deviceContextKey,
+                contextSnapshot)) {
+            JuicerCuda::set_failure(outError, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "context owner-retire rejected");
+            return false;
+        }
+        if (contextSnapshot.contextEpoch == 0) {
+            JuicerCuda::set_failure(outError, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "context owner-retire epoch invalid");
+            return false;
+        }
+
+        std::vector<CudaResourceOwner> owners;
+        std::vector<std::uint64_t> epochs;
+        std::shared_ptr<JuicerCuda::DeviceAllocationLedger> deviceLedger;
+        {
+            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+            const auto ledger =
+                _cudaDeviceLedgers.find(deviceContextKey.deviceId);
+            if (ledger != _cudaDeviceLedgers.end()) {
+                deviceLedger = ledger->second;
+            }
+            auto collect_epoch = [&](std::uint64_t epoch) {
+                if (epoch != 0 &&
+                    std::find(epochs.begin(), epochs.end(), epoch) ==
+                        epochs.end()) {
+                    epochs.push_back(epoch);
+                }
+            };
+            collect_epoch(contextSnapshot.contextEpoch);
+            for (const auto& [key, entry] : _cudaContextResources) {
+                if (key.deviceContextKey == deviceContextKey) {
+                    collect_epoch(key.contextEpoch);
+                    if (entry.frameOwner) {
+                        owners.push_back(entry.frameOwner);
+                    }
+                    if (entry.grainOwner) {
+                        owners.push_back(entry.grainOwner);
+                    }
+                }
+            }
+        }
+
+        bool physicalDrainSucceeded = true;
+        bool provenContextLoss = false;
+        for (const CudaResourceOwner& owner : owners) {
+#if defined(JUICER_CONTEXT_DRAIN_TEST_HOOK)
+            if (consume_context_drain_test_failure(
+                    deviceContextKey,
+                    outError.diagnostic)) {
+                physicalDrainSucceeded = false;
+                break;
+            }
+#endif
+            if (!owner ||
+                !JuicerCuda::drain_for_context_retire(*owner, outError)) {
+                physicalDrainSucceeded = false;
+                break;
+            }
+        }
+        if (!physicalDrainSucceeded) {
+            if (!contextReset || !deviceLedger) {
+                if (outError.diagnostic.empty()) {
+                    JuicerCuda::set_failure(outError, outError.status, "CUDA context owner drain failed");
+                }
+                return false;
+            }
+            provenContextLoss = true;
+            for (std::uint64_t epoch : epochs) {
+                std::uint64_t releasedBytes = 0;
+                if (!deviceLedger->release_context_after_proven_loss(
+                        deviceContextKey,
+                        epoch,
+                        releasedBytes,
+                        outError.diagnostic)) {
+                    return false;
+                }
+            }
+            for (const CudaResourceOwner& owner : owners) {
+                if (owner) {
+                    JuicerCuda::invalidate_resources_after_proven_context_loss(
+                        *owner);
+                }
+            }
+            JuicerCuda::invalidate_deferred_resources_after_proven_context_loss(deviceContextKey);
+            outError = {};
+        }
+        if (!provenContextLoss && deviceLedger &&
+            !JuicerCuda::drain_deferred_resources(deviceContextKey, outError)) {
+            return false;
+        }
+        for (std::uint64_t epoch : epochs) {
+            if (deviceLedger &&
+                deviceLedger->record_count_for_context(
+                    deviceContextKey,
+                    epoch) != 0) {
+                std::array<char, 160> diagnostic{};
+                std::snprintf(diagnostic.data(), diagnostic.size(), "CUDA context retirement retained ledger records epoch=%llu", static_cast<unsigned long long>(epoch));
+                JuicerCuda::set_failure(outError, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, diagnostic.data());
+                return false;
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+            for (auto it = _cudaContextResources.begin();
+                 it != _cudaContextResources.end();) {
+                if (it->first.deviceContextKey == deviceContextKey) {
+                    it = _cudaContextResources.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        if (!JuicerCuda::ResourceManager::registry_retire(
+                deviceContextKey)) {
+            JuicerCuda::set_failure(outError, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "context registry retire rejected");
+            return false;
+        }
+        JuicerCuda::purge_pinned_upload_staging_for_context(
+            deviceContextKey.deviceId,
+            deviceContextKey.contextOpaque,
+            provenContextLoss
+                ? JuicerCuda::PinnedUploadPurgeDisposition::ProvenContextLoss
+                : JuicerCuda::PinnedUploadPurgeDisposition::NormalRetire);
+        owners.clear();
+        return true;
     }
 
     void Root::CudaResourcesDeleter::operator()(JuicerCuda::Resources* resources) const noexcept {
@@ -5570,64 +5534,51 @@ namespace JuicerProcess {
     }
 
 
-    bool Root::retire_known_contexts(std::string& outError) noexcept {
-        outError.clear();
-        try {
-            std::vector<JuicerCuda::ResourceManager::DeviceContextKey> keys;
-            JuicerCuda::ResourceManager::registry_snapshot_context_keys(keys);
-            {
-                std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-                for (const auto& [resourceKey, entry] : _cudaContextResources) {
-                    (void)entry;
-                    if (std::find(
-                            keys.begin(),
-                            keys.end(),
-                            resourceKey.deviceContextKey) == keys.end()) {
-                        keys.push_back(resourceKey.deviceContextKey);
-                    }
+    bool Root::retire_known_contexts(JuicerCuda::Failure& outError) {
+        outError = {};
+        std::vector<JuicerCuda::ResourceManager::DeviceContextKey> keys;
+        JuicerCuda::ResourceManager::registry_snapshot_context_keys(keys);
+        {
+            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+            for (const auto& [resourceKey, entry] : _cudaContextResources) {
+                (void)entry;
+                if (std::find(
+                        keys.begin(),
+                        keys.end(),
+                        resourceKey.deviceContextKey) == keys.end()) {
+                    keys.push_back(resourceKey.deviceContextKey);
                 }
             }
-            for (const auto& key : keys) {
-                if (!retire_cuda_context(key, false, outError)) {
-                    return false;
-                }
-            }
-            keys.clear();
-            JuicerCuda::ResourceManager::registry_snapshot_context_keys(keys);
-            if (!keys.empty()) {
-                outError = "context retire incomplete; live_contexts=" +
-                           std::to_string(keys.size());
+        }
+        for (const auto& key : keys) {
+            if (!retire_cuda_context(key, false, outError)) {
                 return false;
             }
-            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-            for (const auto& [deviceId, ledger] : _cudaDeviceLedgers) {
-                if (!ledger) {
-                    continue;
-                }
-                const JuicerCuda::DeviceLedgerSnapshot ledgerSnapshot =
-                    ledger->snapshot();
-                if (ledgerSnapshot.chargedBytes != 0 ||
-                    ledgerSnapshot.recordCount != 0) {
-                    outError =
-                        "shutdown retained CUDA ledger records device=" +
-                        std::to_string(deviceId) +
-                        " charged=" +
-                        std::to_string(ledgerSnapshot.chargedBytes) +
-                        " records=" +
-                        std::to_string(ledgerSnapshot.recordCount);
-                    return false;
-                }
-            }
-            return true;
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-            try {
-                outError = "registry-wide context retire threw";
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-            }
+        }
+        keys.clear();
+        JuicerCuda::ResourceManager::registry_snapshot_context_keys(keys);
+        if (!keys.empty()) {
+            std::array<char, 128> diagnostic{};
+            std::snprintf(diagnostic.data(), diagnostic.size(), "context retire incomplete; live_contexts=%zu", keys.size());
+            JuicerCuda::set_failure(outError, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, diagnostic.data());
             return false;
         }
+        std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+        for (const auto& [deviceId, ledger] : _cudaDeviceLedgers) {
+            if (!ledger) {
+                continue;
+            }
+            const JuicerCuda::DeviceLedgerSnapshot ledgerSnapshot =
+                ledger->snapshot();
+            if (ledgerSnapshot.chargedBytes != 0 ||
+                ledgerSnapshot.recordCount != 0) {
+                std::array<char, 192> diagnostic{};
+                std::snprintf(diagnostic.data(), diagnostic.size(), "shutdown retained CUDA ledger records device=%d charged=%llu records=%llu", deviceId, static_cast<unsigned long long>(ledgerSnapshot.chargedBytes), static_cast<unsigned long long>(ledgerSnapshot.recordCount));
+                JuicerCuda::set_failure(outError, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, diagnostic.data());
+                return false;
+            }
+        }
+        return true;
     }
 
     bool Root::release_cuda_context_resource_owners() noexcept {
@@ -5647,29 +5598,13 @@ namespace JuicerProcess {
         _assets.release_cached_payloads();
     }
 
-    Root::ShutdownToken Root::begin_shutdown() noexcept {
+    bool Root::stop_frame_preparation() noexcept {
         try {
             std::lock_guard<std::mutex> lock(_framePreparationMutex);
             _acceptFramePreparation = false;
-            ++_activeShutdowns;
-            if (_activeFramePreparations == 0) {
-                _framePreparationCv.notify_all();
-            }
-            return ShutdownToken(this);
+            return true;
         } catch (...) {
-            return ShutdownToken{};
-        }
-    }
-
-    void Root::finish_shutdown() noexcept {
-        try {
-            std::lock_guard<std::mutex> lock(_framePreparationMutex);
-            if (_activeShutdowns > 0) {
-                --_activeShutdowns;
-            }
-            _framePreparationCv.notify_all();
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
+            return false;
         }
     }
 
@@ -5681,17 +5616,6 @@ namespace JuicerProcess {
             }
             if (_activeFramePreparations == 0) {
                 _framePreparationCv.notify_all();
-            }
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-        }
-    }
-
-    void Root::resume_frame_preparation() noexcept {
-        try {
-            std::lock_guard<std::mutex> lock(_framePreparationMutex);
-            if (_activeShutdowns == 0 && !_shutdownRetireBlocked) {
-                _acceptFramePreparation = true;
             }
         } catch (...) {
             JuicerLogging::discard_current_exception();
@@ -5711,16 +5635,5 @@ namespace JuicerProcess {
         }
     }
 
-    void Root::set_shutdown_retire_blocked(bool blocked) noexcept {
-        try {
-            std::lock_guard<std::mutex> lock(_framePreparationMutex);
-            _shutdownRetireBlocked = blocked;
-            if (blocked) {
-                _acceptFramePreparation = false;
-            }
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-        }
-    }
 
 } // namespace JuicerProcess

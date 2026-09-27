@@ -168,7 +168,7 @@ namespace JuicerCuda::Diffusion {
 
     bool drain_diffusion_resources(
         DiffusionContextResources& resources,
-        std::string& outError) noexcept;
+        Failure& outError) noexcept;
 
     void invalidate_diffusion_resources_after_proven_context_loss(
         DiffusionContextResources& resources) noexcept;

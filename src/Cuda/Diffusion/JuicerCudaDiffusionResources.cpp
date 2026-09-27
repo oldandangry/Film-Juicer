@@ -254,9 +254,7 @@ namespace JuicerCuda::Diffusion {
                     reservation,
                     false,
                     ignored);
-                outError.status = runtime_failure_status(freeResult);
-                outError.diagnostic = std::string("cudaFree(diffusion) failed: ") +
-                                      cuda_message(freeResult);
+                set_failure(outError, runtime_failure_status(freeResult), "cudaFree(diffusion) failed");
                 return false;
             }
             if (!release_reservation_after_free(reservation, true, outError)) {
@@ -277,9 +275,7 @@ namespace JuicerCuda::Diffusion {
                     slot.r2cPlan = 0;
                 } else {
                     destroyed = false;
-                    outError.status = cufft_failure_status(result);
-                    outError.diagnostic = "cufftDestroy(diffusion R2C) failed code=" +
-                                          std::to_string(static_cast<int>(result));
+                    set_failure(outError, cufft_failure_status(result), "cufftDestroy(diffusion R2C) failed");
                 }
             }
             if (slot.c2rPlan != 0) {
@@ -292,9 +288,7 @@ namespace JuicerCuda::Diffusion {
                     }
                     destroyed = false;
                     if (outError.diagnostic.empty()) {
-                        outError.diagnostic =
-                            "cufftDestroy(diffusion C2R) failed code=" +
-                            std::to_string(static_cast<int>(result));
+                        set_failure(outError, outError.status, "cufftDestroy(diffusion C2R) failed");
                     }
                 }
             }
@@ -350,7 +344,7 @@ namespace JuicerCuda::Diffusion {
                     }
                     released = false;
                     if (outError.diagnostic.empty()) {
-                        outError.diagnostic = localError.diagnostic;
+                        set_failure(outError, outError.status, localError.diagnostic);
                     }
                 } else {
                     assign_stage_plane_pointer(slot, index, nullptr);
@@ -367,7 +361,7 @@ namespace JuicerCuda::Diffusion {
                 }
                 released = false;
                 if (outError.diagnostic.empty()) {
-                    outError.diagnostic = localError.diagnostic;
+                    set_failure(outError, outError.status, localError.diagnostic);
                 }
             } else {
                 slot.transformBuffer = nullptr;
@@ -382,7 +376,7 @@ namespace JuicerCuda::Diffusion {
                 }
                 released = false;
                 if (outError.diagnostic.empty()) {
-                    outError.diagnostic = localError.diagnostic;
+                    set_failure(outError, outError.status, localError.diagnostic);
                 }
             } else {
                 slot.workArea = nullptr;
@@ -393,7 +387,7 @@ namespace JuicerCuda::Diffusion {
                 }
                 released = false;
                 if (outError.diagnostic.empty()) {
-                    outError.diagnostic = localError.diagnostic;
+                    set_failure(outError, outError.status, localError.diagnostic);
                 }
             }
             if (released) {
@@ -444,7 +438,7 @@ namespace JuicerCuda::Diffusion {
                     }
                     released = false;
                     if (outError.diagnostic.empty()) {
-                        outError.diagnostic = localError.diagnostic;
+                        set_failure(outError, outError.status, localError.diagnostic);
                     }
                 } else {
                     assign_spectrum_pointer(entry, index, nullptr);
@@ -461,9 +455,7 @@ namespace JuicerCuda::Diffusion {
                     }
                     released = false;
                     if (outError.diagnostic.empty()) {
-                        outError.diagnostic =
-                            std::string("cudaEventDestroy(diffusion spectrum) failed: ") +
-                            cuda_message(eventResult);
+                        set_failure(outError, outError.status, "cudaEventDestroy(diffusion spectrum) failed");
                     }
                 }
             }
@@ -1717,28 +1709,28 @@ namespace JuicerCuda::Diffusion {
 
     bool drain_diffusion_resources(
         DiffusionContextResources& resources,
-        std::string& outError) noexcept {
+        Failure& outError) noexcept {
         bool hostLeaseClaimed = false;
+        bool drained = false;
         try {
-            outError.clear();
+            outError = {};
+            outError.status = {FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
             {
                 std::lock_guard<std::mutex> lock(resources.metadataMutex);
                 resources.acceptingPreparations = false;
                 if (resources.hostLeaseActive) {
-                    outError =
-                        "ResourceDescriptorMismatch component=diffusion field=drain_with_active_host_lease";
+                    set_failure(outError, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "ResourceDescriptorMismatch component=diffusion field=drain_with_active_host_lease");
                     return false;
                 }
                 resources.hostLeaseActive = true;
                 hostLeaseClaimed = true;
             }
-            bool drained = true;
+            drained = true;
             for (DiffusionWorkspaceSlot& workspace : resources.workspaces) {
                 if (workspace.completionUnknown) {
                     drained = false;
-                    if (outError.empty()) {
-                        outError =
-                            "diffusion workspace completion unknown; proven context loss required";
+                    if (outError.status.category == FJ_STATUS_SUCCESS) {
+                        set_failure(outError, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "diffusion workspace completion unknown; proven context loss required");
                     }
                     continue;
                 }
@@ -1748,10 +1740,8 @@ namespace JuicerCuda::Diffusion {
                             workspace.completionEventOpaque));
                     if (syncResult != cudaSuccess) {
                         drained = false;
-                        if (outError.empty()) {
-                            outError =
-                                std::string("cudaEventSynchronize(diffusion workspace) failed: ") +
-                                cuda_message(syncResult);
+                        if (outError.status.category == FJ_STATUS_SUCCESS) {
+                            set_failure(outError, runtime_failure_status(syncResult), "cudaEventSynchronize(diffusion workspace) failed");
                         }
                         continue;
                     }
@@ -1760,8 +1750,8 @@ namespace JuicerCuda::Diffusion {
                 if (!destroy_workspace_contents(workspace, localError)) {
                     drained = false;
                     workspace.state = WorkspaceSlotState::FailedQuarantined;
-                    if (outError.empty()) {
-                        outError = localError.diagnostic;
+                    if (outError.status.category == FJ_STATUS_SUCCESS) {
+                        outError = std::move(localError);
                     }
                     continue;
                 }
@@ -1771,10 +1761,8 @@ namespace JuicerCuda::Diffusion {
                             workspace.completionEventOpaque));
                     if (destroyResult != cudaSuccess) {
                         drained = false;
-                        if (outError.empty()) {
-                            outError =
-                                std::string("cudaEventDestroy(diffusion workspace) failed: ") +
-                                cuda_message(destroyResult);
+                        if (outError.status.category == FJ_STATUS_SUCCESS) {
+                            set_failure(outError, runtime_failure_status(destroyResult), "cudaEventDestroy(diffusion workspace) failed");
                         }
                         continue;
                     }
@@ -1789,10 +1777,8 @@ namespace JuicerCuda::Diffusion {
                         reinterpret_cast<cudaEvent_t>(entry.buildEventOpaque));
                     if (syncResult != cudaSuccess) {
                         drained = false;
-                        if (outError.empty()) {
-                            outError =
-                                std::string("cudaEventSynchronize(diffusion spectrum) failed: ") +
-                                cuda_message(syncResult);
+                        if (outError.status.category == FJ_STATUS_SUCCESS) {
+                            set_failure(outError, runtime_failure_status(syncResult), "cudaEventSynchronize(diffusion spectrum) failed");
                         }
                         continue;
                     }
@@ -1801,25 +1787,26 @@ namespace JuicerCuda::Diffusion {
                 if (!destroy_spectrum_contents(entry, localError)) {
                     drained = false;
                     entry.state = SpectrumEntryState::FailedQuarantined;
-                    if (outError.empty()) {
-                        outError = localError.diagnostic;
+                    if (outError.status.category == FJ_STATUS_SUCCESS) {
+                        outError = std::move(localError);
                     }
                 }
             }
-            release_host_lease(resources);
-            return drained;
+        } catch (const std::bad_alloc&) {
+            drained = false;
+            if (outError.status.category == FJ_STATUS_SUCCESS) {
+                set_failure(outError, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "diffusion resource drain allocation failed");
+            }
         } catch (...) {
-            JuicerLogging::discard_current_exception();
-            if (hostLeaseClaimed) {
-                release_host_lease(resources);
+            drained = false;
+            if (outError.status.category == FJ_STATUS_SUCCESS) {
+                set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "diffusion resource drain bookkeeping failed");
             }
-            try {
-                outError = "diffusion resource drain bookkeeping failed";
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-            }
-            return false;
         }
+        if (hostLeaseClaimed) {
+            release_host_lease(resources);
+        }
+        return drained;
     }
 
     void invalidate_diffusion_resources_after_proven_context_loss(

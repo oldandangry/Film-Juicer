@@ -16,6 +16,7 @@
 
 #include "Cuda/JuicerCudaFailure.h"
 #include "Cuda/JuicerCudaHostViews.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
 #include "SpectralProcessing.h"
 #include "JuicerState.h"
@@ -24,6 +25,49 @@
 
 extern "C" cudaError_t juicer_cuda_apply_visual_grain(
     const JuicerCuda::GrainPayload*, const JuicerCuda::GrainKernelPayload*, int, int, float*, float*, float*, float*, float*, float*, float*, float*, void*);
+
+namespace JuicerProcess::TestSupport {
+    class RootLifetimeObserver final {
+    public:
+        struct GrainSnapshot {
+            std::weak_ptr<JuicerCuda::Resources> frame;
+            std::weak_ptr<JuicerCuda::Resources> grain;
+            std::size_t members = 0;
+            bool first = false;
+            bool second = false;
+            std::uint64_t epoch = 0;
+            std::uint64_t grainRecords = 0;
+            JuicerCuda::DeviceLedgerSnapshot ledger;
+        };
+
+        static GrainSnapshot grain_snapshot(Root& root,
+                                            const JuicerCuda::ResourceManager::DeviceContextKey& context,
+                                            std::uint64_t first,
+                                            std::uint64_t second) {
+            GrainSnapshot result{};
+            std::lock_guard<std::mutex> lock(root._cudaResourcesMutex);
+            for (const auto& [key, entry] : root._cudaContextResources) {
+                if (key.deviceContextKey == context) {
+                    result.frame = entry.frameOwner;
+                    result.grain = entry.grainOwner;
+                    result.members = entry.grainInstances.size();
+                    result.first = entry.grainInstances.contains(first);
+                    result.second = entry.grainInstances.contains(second);
+                    result.epoch = key.contextEpoch;
+                    if (entry.grainOwner) {
+                        std::lock_guard<std::mutex> allocations(entry.grainOwner->deviceAllocationRecordsMutex);
+                        result.grainRecords = entry.grainOwner->deviceAllocationRecords.size();
+                    }
+                }
+            }
+            const auto ledger = root._cudaDeviceLedgers.find(context.deviceId);
+            if (ledger != root._cudaDeviceLedgers.end()) {
+                result.ledger = ledger->second->snapshot();
+            }
+            return result;
+        }
+    };
+} // namespace JuicerProcess::TestSupport
 
 namespace {
     using Frame = JuicerProcess::Root::PreparedCudaFrame;
@@ -153,9 +197,9 @@ namespace {
             require_cuda(destroyStatus);
         }
 
-        Frame prepare(const Inputs& inputs, bool withDir = true) {
+        Frame prepare(const Inputs& inputs, bool withDir = true, std::uint64_t instanceToken = 0x475241494eull) {
             JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
-            snapshot.instanceToken.value = 0x475241494eull;
+            snapshot.instanceToken.value = instanceToken;
             snapshot.frameToken.value = nextIdentity;
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
@@ -471,6 +515,132 @@ namespace {
         finish(frame);
     }
 
+    TEST_F(GrainScratch, RetiresOnlyEligibleInstanceMembershipAcrossExactContexts) {
+        constexpr std::uint64_t firstToken = 0x475241494eull;
+        constexpr std::uint64_t secondToken = firstToken + 1;
+        using Observer = JuicerProcess::TestSupport::RootLifetimeObserver;
+        auto& root = JuicerProcess::root();
+        Inputs inputs(64, 48, Spektrafilm::ScanRoute::NegativeDirectScan);
+        const auto originalKey = key;
+        auto* const originalStream = stream;
+        {
+            auto first = prepare(inputs, true, firstToken);
+            finish(first);
+        }
+        {
+            auto second = prepare(inputs, true, secondToken);
+            finish(second);
+        }
+        require_cuda(cudaStreamSynchronize(stream));
+        const auto before = Observer::grain_snapshot(root, key, firstToken, secondToken);
+        ASSERT_EQ(before.members, 2u);
+        ASSERT_GT(before.grainRecords, 0u);
+        ASSERT_FALSE(before.frame.expired());
+
+        CUcontext other = nullptr;
+        require(cuCtxCreate(&other, nullptr, 0, 0) == CUDA_SUCCESS, "create fixture context");
+        key = {0, other};
+        require_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+        {
+            auto foreign = prepare(inputs, true, firstToken);
+            finish(foreign);
+        }
+        require_cuda(cudaStreamSynchronize(stream));
+        const auto otherBefore = Observer::grain_snapshot(root, key, firstToken, secondToken);
+        require(otherBefore.members == 1 && otherBefore.grainRecords != 0, "other context lacks grain ownership");
+
+        EXPECT_EQ(fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), firstToken, nullptr).category, FJ_STATUS_SUCCESS);
+        const auto remaining = Observer::grain_snapshot(root, originalKey, firstToken, secondToken);
+        const auto otherAfter = Observer::grain_snapshot(root, key, firstToken, secondToken);
+        EXPECT_FALSE(remaining.first);
+        EXPECT_TRUE(remaining.second);
+        EXPECT_EQ(remaining.members, 1u);
+        EXPECT_EQ(remaining.epoch, before.epoch);
+        EXPECT_EQ(remaining.grain.lock().get(), before.grain.lock().get());
+        EXPECT_EQ(remaining.frame.lock().get(), before.frame.lock().get());
+        EXPECT_EQ(remaining.grainRecords, before.grainRecords);
+        EXPECT_EQ(otherAfter.members, 0u);
+        EXPECT_TRUE(otherAfter.grain.expired());
+        EXPECT_EQ(otherAfter.frame.lock().get(), otherBefore.frame.lock().get());
+        EXPECT_EQ(otherAfter.epoch, otherBefore.epoch);
+
+        // Last primary-context member is retired while the other exact context
+        // is current. Its physical ownership must enter deferred destruction,
+        // without reentering Root or retiring either context implicitly.
+        const auto chargedBefore = otherAfter.ledger.chargedBytes;
+        EXPECT_EQ(fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), secondToken, nullptr).category, FJ_STATUS_SUCCESS);
+        const auto deferred = Observer::grain_snapshot(root, originalKey, firstToken, secondToken);
+        EXPECT_EQ(deferred.members, 0u);
+        EXPECT_TRUE(deferred.grain.expired());
+        EXPECT_EQ(deferred.frame.lock().get(), before.frame.lock().get());
+        EXPECT_EQ(deferred.epoch, before.epoch);
+        EXPECT_EQ(deferred.ledger.chargedBytes, chargedBefore);
+        std::vector<JuicerCuda::ResourceManager::DeviceContextKey> live;
+        JuicerCuda::ResourceManager::registry_snapshot_context_keys(live);
+        EXPECT_NE(std::find(live.begin(), live.end(), originalKey), live.end());
+        EXPECT_NE(std::find(live.begin(), live.end(), key), live.end());
+
+        std::string diagnostic;
+        require(root.retire_idle_context(0, other, diagnostic), diagnostic);
+        require_cuda(cudaStreamDestroy(stream));
+        require(cuCtxDestroy(other) == CUDA_SUCCESS, "destroy fixture context");
+        require(cuCtxSetCurrent(static_cast<CUcontext>(originalKey.contextOpaque)) == CUDA_SUCCESS, "restore fixture context");
+        key = originalKey;
+        stream = originalStream;
+        require(root.retire_idle_context(0, key.contextOpaque, diagnostic), diagnostic);
+        contextRetired = true;
+        const auto retired = Observer::grain_snapshot(root, key, firstToken, secondToken);
+        EXPECT_EQ(retired.ledger.chargedBytes, 0u);
+        EXPECT_EQ(retired.ledger.recordCount, 0u);
+        EXPECT_TRUE(before.frame.expired());
+    }
+
+    TEST_F(GrainScratch, ResetRetiresDeferredOwnershipAfterFixtureContextDestruction) {
+        constexpr std::uint64_t primaryToken = 0x475241494eull;
+        constexpr std::uint64_t foreignToken = primaryToken + 1;
+        using Observer = JuicerProcess::TestSupport::RootLifetimeObserver;
+        auto& root = JuicerProcess::root();
+        Inputs inputs(32, 24, Spektrafilm::ScanRoute::NegativeDirectScan);
+        const auto primaryKey = key;
+        auto* const primaryStream = stream;
+        {
+            auto frame = prepare(inputs, true, primaryToken);
+            finish(frame);
+        }
+        require_cuda(cudaStreamSynchronize(stream));
+        const auto primary = Observer::grain_snapshot(root, key, primaryToken, foreignToken);
+        CUcontext other = nullptr;
+        require(cuCtxCreate(&other, nullptr, 0, 0) == CUDA_SUCCESS, "create reset fixture context");
+        key = {0, other};
+        require_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+        {
+            auto frame = prepare(inputs, true, foreignToken);
+            finish(frame);
+        }
+        require_cuda(cudaStreamSynchronize(stream));
+        require_cuda(cudaStreamDestroy(stream));
+        const auto foreignKey = key;
+        require(cuCtxSetCurrent(static_cast<CUcontext>(primaryKey.contextOpaque)) == CUDA_SUCCESS, "restore primary fixture context");
+        key = primaryKey;
+        stream = primaryStream;
+        EXPECT_EQ(fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), foreignToken, nullptr).category, FJ_STATUS_SUCCESS);
+        const auto deferred = Observer::grain_snapshot(root, foreignKey, primaryToken, foreignToken);
+        EXPECT_TRUE(deferred.grain.expired());
+        EXPECT_GT(deferred.ledger.chargedBytes, primary.ledger.chargedBytes);
+        // Only this fixture owns 'other'. Its actual destruction establishes the
+        // reset fact; no live host context is reset and no driver fault is claimed.
+        require(cuCtxDestroy(other) == CUDA_SUCCESS, "destroy owned reset fixture context");
+        std::string diagnostic;
+        require(root.retire_reset_context(0, other, diagnostic), diagnostic);
+        const auto after = Observer::grain_snapshot(root, key, primaryToken, foreignToken);
+        EXPECT_EQ(after.ledger.chargedBytes, primary.ledger.chargedBytes);
+        EXPECT_EQ(after.ledger.recordCount, primary.ledger.recordCount);
+        EXPECT_EQ(after.epoch, primary.epoch);
+        EXPECT_TRUE(after.first);
+        EXPECT_EQ(after.frame.lock().get(), primary.frame.lock().get());
+        EXPECT_EQ(after.grain.lock().get(), primary.grain.lock().get());
+    }
+
     TEST_F(GrainScratch, ResetRetiresReusedWorkspace) {
         Inputs inputs(64, 48, Spektrafilm::ScanRoute::NegativePrintScan);
         auto frame = prepare(inputs);
@@ -555,6 +725,6 @@ int main(int argc, char** argv) {
     testing::InitGoogleTest(&argc, argv);
     JuicerProcess::root().ensure_bootstrap();
     const int result = RUN_ALL_TESTS();
-    JuicerProcess::shutdown_if_initialized();
-    return result;
+    const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+    return closed.category == FJ_STATUS_SUCCESS ? result : 1;
 }

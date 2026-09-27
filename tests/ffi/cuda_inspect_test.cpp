@@ -26,7 +26,7 @@ namespace {
             owner.create("inspection-does-not-load-assets");
         }
         void TearDown() override {
-            EXPECT_TRUE(owner.close());
+            EXPECT_EQ(owner.close().category, FJ_STATUS_SUCCESS);
         }
         void reject(const FjFrame& frame) {
             FjCudaContext context{73, 91};

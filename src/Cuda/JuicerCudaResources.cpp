@@ -12,7 +12,6 @@
 #include "ColorTransforms.h"
 #include "GamutCompression.h"
 #include "SpectralProcessing.h"
-#include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
 #include "Scanner.h"
 
@@ -281,8 +280,7 @@ namespace JuicerCuda {
         int cur = -1;
         const cudaError_t devErr = cudaGetDevice(&cur);
         if (devErr != cudaSuccess || cur < 0) {
-            outError.status = runtime_failure_status(devErr);
-            outError.diagnostic = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+            set_failure(outError, runtime_failure_status(devErr), "cudaGetDevice failed for cached resources");
             return false;
         }
         if (resources.ownerContextKey.deviceId != cur ||
@@ -294,12 +292,16 @@ namespace JuicerCuda {
         void* currentContextOpaque = nullptr;
         std::string contextError;
         int contextCode = 0;
-        if (!query_current_cuda_context(currentContextOpaque, contextError, &contextCode) ||
-            currentContextOpaque != resources.ownerContextKey.contextOpaque) {
-            outError.status = driver_failure_status(contextCode);
-            outError.diagnostic = contextError.empty()
-                                      ? "CUDA context mismatch for cached resources"
-                                      : contextError;
+        bool queried = false;
+        try {
+            queried = query_current_cuda_context(currentContextOpaque, contextError, &contextCode);
+        } catch (...) {
+            if (contextCode == 0) {
+                throw;
+            }
+        }
+        if (!queried || currentContextOpaque != resources.ownerContextKey.contextOpaque) {
+            set_failure(outError, driver_failure_status(contextCode), contextError.empty() ? "CUDA context query or identity mismatch for cached resources" : std::string_view(contextError));
             return false;
         }
         return true;
@@ -346,20 +348,86 @@ namespace JuicerCuda {
 } // namespace JuicerCuda
 
 namespace JuicerCuda {
-    struct DeferredDestroyEntry {
-        Resources* resources = nullptr;
-        int ownerDeviceId = -1;
-        void* ownerContextOpaque = nullptr;
+    struct DeferredDestroyQueue {
+        Resources* head = nullptr;
+
+        void push(Resources* resources) noexcept {
+            resources->deferredDestroyNext = head;
+            head = resources;
+        }
+
+        Resources* pop() noexcept {
+            auto* resources = head;
+            head = resources->deferredDestroyNext;
+            resources->deferredDestroyNext = nullptr;
+            return resources;
+        }
+
+        std::size_t size() const noexcept {
+            std::size_t count = 0;
+            for (auto* entry = head; entry; entry = entry->deferredDestroyNext) {
+                ++count;
+            }
+            return count;
+        }
+
+        void extract(const ResourceManager::DeviceContextKey& key, DeferredDestroyQueue& ready) noexcept {
+            auto** link = &head;
+            while (*link) {
+                auto* entry = *link;
+                if (entry->ownerContextKey == key) {
+                    *link = entry->deferredDestroyNext;
+                    ready.push(entry);
+                } else {
+                    link = &entry->deferredDestroyNext;
+                }
+            }
+        }
     };
 
-    static std::mutex& deferred_destroy_mutex() {
-        static std::mutex mutex;
-        return mutex;
+    static DeferredDestroyQueue& deferred_destroy_queue() noexcept {
+        static DeferredDestroyQueue queue;
+        return queue;
     }
 
-    static std::vector<DeferredDestroyEntry>& deferred_destroy_queue() {
-        static std::vector<DeferredDestroyEntry> queue;
-        return queue;
+    // Only queue links are protected. Nonthrowing acquisition allows an extracted
+    // batch to restore ownership even during allocation or mutex-exception unwind.
+    class DeferredDestroyLock final {
+    public:
+        DeferredDestroyLock() noexcept {
+            while (_held.test_and_set(std::memory_order_acquire)) {
+                _held.wait(true, std::memory_order_relaxed);
+            }
+        }
+        ~DeferredDestroyLock() {
+            _held.clear(std::memory_order_release);
+            _held.notify_one();
+        }
+        DeferredDestroyLock(const DeferredDestroyLock&) = delete;
+        DeferredDestroyLock& operator=(const DeferredDestroyLock&) = delete;
+
+    private:
+        static inline std::atomic_flag _held = ATOMIC_FLAG_INIT;
+    };
+
+    struct DeferredDestroyBatch {
+        DeferredDestroyBatch() = default;
+        DeferredDestroyBatch(const DeferredDestroyBatch&) = delete;
+        DeferredDestroyBatch& operator=(const DeferredDestroyBatch&) = delete;
+
+        DeferredDestroyQueue entries;
+
+        ~DeferredDestroyBatch() {
+            const DeferredDestroyLock lock;
+            while (entries.head) {
+                deferred_destroy_queue().push(entries.pop());
+            }
+        }
+    };
+
+    static void defer_destroy(Resources* resources) noexcept {
+        const DeferredDestroyLock lock;
+        deferred_destroy_queue().push(resources);
     }
 
     static bool query_current_cuda_device(int& outDeviceId, std::string& outError) {
@@ -436,91 +504,76 @@ namespace JuicerCuda {
         }
     }
 
-    static void reap_deferred_destroy_queue(const char* stage) {
-        std::vector<DeferredDestroyEntry> readyEntries;
+    static bool reap_deferred_destroy_queue(
+        const char* stage,
+        Failure* outError = nullptr,
+        const ResourceManager::DeviceContextKey* requiredContext = nullptr) {
+        DeferredDestroyBatch ready;
         std::size_t remainingDepth = 0;
         int currentDeviceId = -1;
-        std::string deviceError;
-        const bool currentDeviceValid = query_current_cuda_device(currentDeviceId, deviceError);
+        const cudaError_t deviceCode = cudaGetDevice(&currentDeviceId);
+        const bool currentDeviceValid = deviceCode == cudaSuccess && currentDeviceId >= 0;
+        if (!currentDeviceValid) {
+            if (outError) {
+                set_failure(*outError, runtime_failure_status(deviceCode), "deferred destruction could not query the current CUDA device");
+            }
+            return false;
+        }
         void* currentContextOpaque = nullptr;
         std::string contextError;
-        const bool currentContextValid = query_current_cuda_context(currentContextOpaque, contextError);
-
-        {
-            std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
-            auto& queue = deferred_destroy_queue();
-            if (queue.empty()) {
-                return;
+        int contextCode = 0;
+        bool currentContextValid = false;
+        try {
+            currentContextValid = query_current_cuda_context(currentContextOpaque, contextError, &contextCode);
+        } catch (...) {
+            if (contextCode == 0) {
+                throw;
             }
-            for (std::size_t i = 0; i < queue.size();) {
-                bool deviceMatch = false;
-                bool contextMatch = false;
-                if (owner_matches_current(
-                        queue[i].ownerDeviceId,
-                        queue[i].ownerContextOpaque,
-                        currentDeviceId,
-                        currentDeviceValid,
-                        currentContextOpaque,
-                        currentContextValid,
-                        deviceMatch,
-                        contextMatch)) {
-                    readyEntries.push_back(queue[i]);
-                    queue[i] = queue.back();
-                    queue.pop_back();
-                    continue;
-                }
-                ++i;
+        }
+        if (!currentContextValid ||
+            (requiredContext && (requiredContext->deviceId != currentDeviceId || requiredContext->contextOpaque != currentContextOpaque))) {
+            if (outError) {
+                set_failure(*outError, driver_failure_status(contextCode), contextError.empty() ? "deferred destruction requires the exact current owner context" : std::string_view(contextError));
             }
-            remainingDepth = queue.size();
+            return false;
         }
 
-        for (const DeferredDestroyEntry& entry : readyEntries) {
-            bool deviceMatch = false;
-            bool contextMatch = false;
-            (void)owner_matches_current(
-                entry.ownerDeviceId,
-                entry.ownerContextOpaque,
-                currentDeviceId,
-                currentDeviceValid,
-                currentContextOpaque,
-                currentContextValid,
-                deviceMatch,
-                contextMatch);
-            std::string detail;
-            if (!deviceError.empty()) {
-                detail = deviceError;
-            }
-            if (!contextError.empty()) {
-                if (!detail.empty()) {
-                    detail += "; ";
+        {
+            const DeferredDestroyLock lock;
+            deferred_destroy_queue().extract({currentDeviceId, currentContextOpaque}, ready.entries);
+            remainingDepth = deferred_destroy_queue().size();
+        }
+
+        while (auto* resources = ready.entries.head) {
+            trace_teardown_event(stage, "deferred_reap", resources->ownerContextKey.deviceId, resources->ownerContextKey.contextOpaque, currentDeviceId, currentContextOpaque, true, true, false, false, false, false, remainingDepth, contextError);
+            Failure drainError;
+            if (!drain_for_context_retire(*resources, drainError)) {
+                if (outError) {
+                    *outError = std::move(drainError);
                 }
-                detail += contextError;
+                // Restore the failed and all unprocessed entries exactly once.
+                return false;
             }
-            trace_teardown_event(
-                stage,
-                "deferred_reap",
-                entry.ownerDeviceId,
-                entry.ownerContextOpaque,
-                currentDeviceId,
-                currentContextOpaque,
-                deviceMatch,
-                contextMatch,
-                false,
-                false,
-                false,
-                false,
-                remainingDepth,
-                detail);
-            std::string drainError;
-            if (drain_for_context_retire(*entry.resources, drainError)) {
-                delete entry.resources;
-            } else {
-                std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
-                deferred_destroy_queue().push_back(entry);
-            }
+            delete ready.entries.pop();
+        }
+        return true;
+    }
+
+    void invalidate_deferred_resources_after_proven_context_loss(const ResourceManager::DeviceContextKey& key) {
+        DeferredDestroyBatch ready;
+        {
+            const DeferredDestroyLock lock;
+            deferred_destroy_queue().extract(key, ready.entries);
+        }
+        while (auto* retained = ready.entries.head) {
+            invalidate_resources_after_proven_context_loss(*retained);
+            delete ready.entries.pop();
         }
     }
 
+    bool drain_deferred_resources(const ResourceManager::DeviceContextKey& key, Failure& outError) {
+        return reap_deferred_destroy_queue("context_retire", &outError, &key);
+    }
 
     static bool allocate_owned_device(
         Resources& resources,
@@ -715,15 +768,21 @@ namespace JuicerCuda {
         }
     }
 
-    static bool drain_retire_queue_blocking(Resources& resources) noexcept {
+    static bool drain_retire_queue_blocking(Resources& resources, Failure& outError) noexcept {
         bool allReleased = true;
         for (std::size_t i = 0; i < resources.retireQueue.size();) {
             Resources::RetireEntry& e = resources.retireQueue[i];
             cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(e.doneEventOpaque);
-            if (ev && cudaEventSynchronize(ev) != cudaSuccess) {
-                allReleased = false;
-                ++i;
-                continue;
+            if (ev) {
+                const auto result = cudaEventSynchronize(ev);
+                if (result != cudaSuccess) {
+                    if (allReleased) {
+                        set_failure(outError, runtime_failure_status(result), "retired allocation completion wait failed");
+                    }
+                    allReleased = false;
+                    ++i;
+                    continue;
+                }
             }
             bool released = true;
             if (e.kind == Resources::RetireKind::DeviceFree && e.ptr) {
@@ -737,14 +796,23 @@ namespace JuicerCuda {
                         e.ptr = nullptr;
                     }
                 } else {
+                    if (allReleased) {
+                        set_failure(outError, runtime_failure_status(freeError), "retired CUDA allocation free failed");
+                    }
                     released = false;
                 }
             } else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
-                released = cudaFreeHost(e.ptr) == cudaSuccess;
+                const auto result = cudaFreeHost(e.ptr);
+                released = result == cudaSuccess;
+                if (!released && allReleased) {
+                    set_failure(outError, runtime_failure_status(result), "retired pinned allocation free failed");
+                }
             } else if (e.kind == Resources::RetireKind::EventDestroy && e.ptr) {
-                released =
-                    cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr)) ==
-                    cudaSuccess;
+                const auto result = cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr));
+                released = result == cudaSuccess;
+                if (!released && allReleased) {
+                    set_failure(outError, runtime_failure_status(result), "retired event destruction failed");
+                }
             } else if (e.kind == Resources::RetireKind::DeviceFree &&
                        e.deviceReservation.active()) {
                 std::string releaseError;
@@ -1672,7 +1740,7 @@ namespace JuicerCuda {
     }
 
 
-    static bool drain_all_resource_allocations(Resources& resources) noexcept {
+    static bool drain_all_resource_allocations(Resources& resources, Failure& outError) noexcept {
         bool eventsReady = true;
         for (Resources::PendingFrameUseEvent& entry :
              resources.pendingFrameUseEvents) {
@@ -1680,16 +1748,25 @@ namespace JuicerCuda {
                                           ? reinterpret_cast<cudaEvent_t>(
                                                 entry.eventOpaque)
                                           : nullptr;
-            if (event && cudaEventSynchronize(event) != cudaSuccess) {
-                eventsReady = false;
+            if (event) {
+                const auto result = cudaEventSynchronize(event);
+                if (result != cudaSuccess) {
+                    if (eventsReady) {
+                        set_failure(outError, runtime_failure_status(result), "frame-use completion wait failed");
+                    }
+                    eventsReady = false;
+                }
             }
         }
-        const bool retiredReady = drain_retire_queue_blocking(resources);
-        bool diffusionReady = true;
-        std::string diffusionDrainError;
-        diffusionReady = Diffusion::drain_diffusion_resources(
-            resources.diffusion,
-            diffusionDrainError);
+        Failure retireError;
+        const bool retiredReady = drain_retire_queue_blocking(resources, retireError);
+        Failure diffusionDrainError;
+        const bool diffusionReady = Diffusion::drain_diffusion_resources(resources.diffusion, diffusionDrainError);
+        if (eventsReady && !retiredReady) {
+            outError = std::move(retireError);
+        } else if (eventsReady && retiredReady && !diffusionReady) {
+            outError = std::move(diffusionDrainError);
+        }
         if (!eventsReady || !retiredReady || !diffusionReady) {
             return false;
         }
@@ -1744,6 +1821,7 @@ namespace JuicerCuda {
             }
             Failure freeError;
             if (!free_owned_device(resources, orphanedPtr, freeError)) {
+                outError = std::move(freeError);
                 break;
             }
         }
@@ -1760,89 +1838,83 @@ namespace JuicerCuda {
             if (contextInvalidatedByProvenLoss) {
                 return;
             }
-            (void)drain_all_resource_allocations(*this);
+            Failure ignored;
+            (void)drain_all_resource_allocations(*this, ignored);
         } catch (...) {
             JuicerLogging::discard_current_exception();
         }
     }
 
-    bool drain_for_context_retire(
-        Resources& resources,
-        std::string& outError) noexcept {
-        outError.clear();
-        Failure failure;
-        try {
-            std::lock_guard<std::mutex> servingLock(resources.servingUpdateMutex);
-            // Root has closed registry admission and rejected active submissions.
-            // Drain the defect attachments before entering the existing state-locked
-            // teardown of unrelated resource families.
-            if (!validate_resource_context_locked(resources, failure)) {
-                outError = failure.diagnostic;
-                return false;
-            }
-            void* unfencedStreamOpaque = nullptr;
-            bool frameUseFenceQuarantined = false;
-            {
-                std::lock_guard<std::mutex> resourceLock(resources.m);
-                frameUseFenceQuarantined =
-                    resources.frameUseFenceQuarantined;
-                if (frameUseFenceQuarantined) {
-                    unfencedStreamOpaque = resources.unfencedFrameUseStreamOpaque;
-                }
-            }
+    bool drain_for_context_retire(Resources& resources, Failure& outError) noexcept try {
+        outError = {};
+#if defined(JUICER_DEFERRED_DESTROY_TEST_HOOK)
+        DeferredDestroyTest::before_drain(resources);
+#endif
+        std::lock_guard<std::mutex> servingLock(resources.servingUpdateMutex);
+        // The explicit lifecycle owner has excluded new use. Destruction never
+        // reenters Root policy; uncertainty stays in native retirement ownership.
+        if (!validate_resource_context_locked(resources, outError)) {
+            return false;
+        }
+        void* unfencedStreamOpaque = nullptr;
+        bool frameUseFenceQuarantined = false;
+        {
+            std::lock_guard<std::mutex> resourceLock(resources.m);
+            frameUseFenceQuarantined = resources.frameUseFenceQuarantined;
             if (frameUseFenceQuarantined) {
-                const cudaError_t syncError = cudaStreamSynchronize(
-                    unfencedStreamOpaque
-                        ? reinterpret_cast<cudaStream_t>(unfencedStreamOpaque)
-                        : nullptr);
-                if (syncError != cudaSuccess) {
-                    outError = std::string(
-                                   "quarantined frame-use stream synchronization failed: ") +
-                               (cudaGetErrorString(syncError)
-                                    ? cudaGetErrorString(syncError)
-                                    : "(unknown)");
-                    return false;
-                }
-                std::lock_guard<std::mutex> resourceLock(resources.m);
-                resources.frameUseFenceQuarantined = false;
-                resources.unfencedFrameUseStreamOpaque = nullptr;
+                unfencedStreamOpaque = resources.unfencedFrameUseStreamOpaque;
             }
-            if (resources.scannerScratch.filmDustTransmittance || resources.scannerScratch.gateTransmittance) {
-                for (const auto& entry : resources.pendingFrameUseEvents) {
-                    if (entry.eventOpaque && cudaEventSynchronize(reinterpret_cast<cudaEvent_t>(entry.eventOpaque)) != cudaSuccess) {
-                        outError = "context defect attachment completion wait failed";
-                        return false;
-                    }
-                }
-                for (float** plane : {&resources.scannerScratch.filmDustTransmittance, &resources.scannerScratch.gateTransmittance}) {
-                    if (!free_owned_device(resources, *plane, failure)) {
-                        outError = failure.diagnostic;
-                        return false;
-                    }
-                    std::lock_guard<std::mutex> lock(resources.m);
-                    *plane = nullptr;
-                }
+        }
+        if (frameUseFenceQuarantined) {
+            const cudaError_t syncError = cudaStreamSynchronize(
+                reinterpret_cast<cudaStream_t>(unfencedStreamOpaque));
+            if (syncError != cudaSuccess) {
+                set_failure(outError, runtime_failure_status(syncError), "quarantined frame-use stream synchronization failed");
+                return false;
             }
             std::lock_guard<std::mutex> resourceLock(resources.m);
-            if (!validate_resource_owner_locked(resources, failure, false)) {
-                outError = failure.diagnostic;
-                return false;
+            resources.frameUseFenceQuarantined = false;
+            resources.unfencedFrameUseStreamOpaque = nullptr;
+        }
+        if (resources.scannerScratch.filmDustTransmittance || resources.scannerScratch.gateTransmittance) {
+            for (const auto& entry : resources.pendingFrameUseEvents) {
+                if (entry.eventOpaque) {
+                    const auto result = cudaEventSynchronize(reinterpret_cast<cudaEvent_t>(entry.eventOpaque));
+                    if (result != cudaSuccess) {
+                        set_failure(outError, runtime_failure_status(result), "context defect attachment completion wait failed");
+                        return false;
+                    }
+                }
             }
-            if (!drain_all_resource_allocations(resources)) {
-                outError =
-                    "CUDA context resource drain retained failed physical frees";
-                return false;
+            for (float** plane : {&resources.scannerScratch.filmDustTransmittance, &resources.scannerScratch.gateTransmittance}) {
+                if (!free_owned_device(resources, *plane, outError)) {
+                    return false;
+                }
+                std::lock_guard<std::mutex> lock(resources.m);
+                *plane = nullptr;
             }
-            return true;
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-            try {
-                outError = "CUDA context resource drain failed";
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
+        }
+        std::lock_guard<std::mutex> resourceLock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, false)) {
+            return false;
+        }
+        if (!drain_all_resource_allocations(resources, outError)) {
+            if (outError.diagnostic.empty()) {
+                set_failure(outError, outError.status, "CUDA context resource drain retained failed physical frees");
             }
             return false;
         }
+        return true;
+
+    } catch (const std::bad_alloc&) {
+        set_failure(outError, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "CUDA resource drain allocation failed");
+        return false;
+    } catch (const std::exception& detail) {
+        set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what());
+        return false;
+    } catch (...) {
+        set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA resource drain failed with unknown exception");
+        return false;
     }
 
     void invalidate_resources_after_proven_context_loss(
@@ -1914,8 +1986,14 @@ namespace JuicerCuda {
     }
 
     void destroy(Resources* resources) noexcept {
+        std::unique_ptr<Resources, decltype(&defer_destroy)> retained(resources, &defer_destroy);
         try {
             if (!resources) {
+                return;
+            }
+
+            if (resources->contextInvalidatedByProvenLoss) {
+                delete retained.release();
                 return;
             }
 
@@ -1994,7 +2072,7 @@ namespace JuicerCuda {
             if (ownerMatch) {
                 std::size_t deferredQueueDepth = 0;
                 {
-                    std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
+                    const DeferredDestroyLock lock;
                     deferredQueueDepth = deferred_destroy_queue().size();
                 }
                 std::string detail;
@@ -2022,21 +2100,15 @@ namespace JuicerCuda {
                     false,
                     deferredQueueDepth,
                     detail);
-                std::string drainError;
+                Failure drainError;
                 if (!drain_for_context_retire(*resources, drainError)) {
-                    std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
-                    deferred_destroy_queue().push_back(
-                        DeferredDestroyEntry{
-                            resources,
-                            ownerDeviceId,
-                            ownerContextOpaque});
                     if (restoreDevice && restoreDeviceId >= 0 &&
                         restoreDeviceId != ownerDeviceId) {
                         (void)cudaSetDevice(restoreDeviceId);
                     }
                     return;
                 }
-                delete resources;
+                delete retained.release();
 
                 if (restoreDevice && restoreDeviceId >= 0 && restoreDeviceId != ownerDeviceId) {
                     (void)cudaSetDevice(restoreDeviceId);
@@ -2049,25 +2121,11 @@ namespace JuicerCuda {
                 (void)cudaSetDevice(restoreDeviceId);
             }
 
-            bool managerRetireAttempted = false;
-            bool managerRetireAccepted = false;
-            std::string managerRetireError;
-            if (ownerDeviceId >= 0 && ownerContextOpaque) {
-                managerRetireAttempted = true;
-                managerRetireAccepted =
-                    JuicerProcess::root().retire_idle_context(ownerDeviceId, ownerContextOpaque, managerRetireError);
-            }
-
             std::size_t deferredQueueDepth = 0;
             {
-                std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
-                auto& queue = deferred_destroy_queue();
-                DeferredDestroyEntry entry{};
-                entry.resources = resources;
-                entry.ownerDeviceId = ownerDeviceId;
-                entry.ownerContextOpaque = ownerContextOpaque;
-                queue.push_back(entry);
-                deferredQueueDepth = queue.size();
+                const DeferredDestroyLock lock;
+                deferred_destroy_queue().push(retained.release());
+                deferredQueueDepth = deferred_destroy_queue().size();
             }
 
             std::string detail;
@@ -2080,12 +2138,6 @@ namespace JuicerCuda {
                 }
                 detail += currentContextError;
             }
-            if (!managerRetireError.empty()) {
-                if (!detail.empty()) {
-                    detail += "; ";
-                }
-                detail += managerRetireError;
-            }
             trace_teardown_event(
                 "destroy",
                 "deferred_enqueue",
@@ -2097,8 +2149,8 @@ namespace JuicerCuda {
                 contextMatch,
                 switchAttempted,
                 switchSucceeded,
-                managerRetireAttempted,
-                managerRetireAccepted,
+                false,
+                false,
                 deferredQueueDepth,
                 detail);
         } catch (...) {

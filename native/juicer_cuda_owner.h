@@ -32,6 +32,15 @@ namespace JuicerCuda {
     } // namespace RenderTest
 #endif
 
+#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
+    namespace TerminalTest {
+        void before_owner_lock();
+        void before_shutdown();
+        void before_retire_instance();
+        void owner_destroyed() noexcept;
+    } // namespace TerminalTest
+#endif
+
     // Temporary C++ runtime holder; replaced by the Rust owner at its cutover.
     // Host load/unload serializes lifetime against all borrowed render calls.
     class Owner final {
@@ -43,9 +52,8 @@ namespace JuicerCuda {
         Owner& operator=(const Owner&) = delete;
 
         void create(std::string_view dataDirectory);
-        // S2.D replaces the bool bridge with the typed C terminal operations.
         // Consumes the handle even on failure; destruction never retries it.
-        bool close() noexcept;
+        FjStatus close(FjErrorBuffer* error = nullptr) noexcept;
 
     private:
         FjCuda* _cuda = nullptr;

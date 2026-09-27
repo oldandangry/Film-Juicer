@@ -51,14 +51,19 @@ namespace {
             JuicerCuda::ResourceManager::RegistryContextSnapshot snapshot{};
             require(JuicerCuda::ResourceManager::registry_begin_submission(key, snapshot),
                     "could not establish registry submission");
-            require(!owner.close(), "close reported success with an active submission");
+            const auto failed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+            require(failed.category == FJ_STATUS_PREPARATION_FAILURE && failed.api == FJ_API_NONE && failed.native_code == 0,
+                    "borrowed shutdown lost code-less registry failure");
             require(&JuicerProcess::root() == retained,
                     "failed close deleted or unregistered the owner");
             require(!retained->begin_frame_preparation().active(),
                     "failed close reopened frame admission");
             require(JuicerCuda::ResourceManager::registry_note_submission_end(key),
                     "could not end registry submission");
-            require(owner.close(), "repeated consumed close failed");
+            const auto consumed = owner.close();
+            require(consumed.category == failed.category && consumed.api == failed.api && consumed.native_code == failed.native_code,
+                    "blocked destroy retried shutdown or lost its failure");
+            require(owner.close().category == FJ_STATUS_SUCCESS, "repeated consumed close failed");
         }
         require(&JuicerProcess::root() == retained &&
                     !retained->begin_frame_preparation().active(),
@@ -81,10 +86,10 @@ static_assert(!std::is_copy_constructible_v<JuicerCuda::Owner>);
 int main() {
     try {
         require_no_owner();
-        JuicerProcess::shutdown_if_initialized();
+        fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
         {
             JuicerCuda::Owner empty;
-            require(empty.close(), "empty close failed");
+            require(empty.close().category == FJ_STATUS_SUCCESS, "empty close failed");
         }
         require_no_owner();
 
@@ -116,9 +121,9 @@ int main() {
             require(result.category == FJ_STATUS_PREPARATION_FAILURE && !rejected,
                     "duplicate runtime was accepted");
             require(&root == &JuicerProcess::root(), "duplicate creation replaced the owner");
-            require(owner.close(), "metadata-only owner failed to close");
+            require(owner.close().category == FJ_STATUS_SUCCESS, "metadata-only owner failed to close");
             require_no_owner();
-            require(owner.close(), "consumed owner close was not harmless");
+            require(owner.close().category == FJ_STATUS_SUCCESS, "consumed owner close was not harmless");
         }
         {
             JuicerCuda::Owner owner;

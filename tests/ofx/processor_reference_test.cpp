@@ -1017,12 +1017,18 @@ int main(int argc, char** argv) {
             } else {
                 throw std::runtime_error("unknown resource failure case: " + resourceFailure);
             }
-            JuicerProcess::root().shutdown();
+            const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+            if (closed.category != FJ_STATUS_SUCCESS || cudaOwner.close().category != FJ_STATUS_SUCCESS) {
+                throw std::runtime_error("terminal cleanup after native failure failed");
+            }
             return 0;
         }
         if (argc == 2 && std::string(argv[1]) == "--failure-order") {
             run_failure_order_cases();
-            JuicerProcess::root().shutdown();
+            const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+            if (closed.category != FJ_STATUS_SUCCESS || cudaOwner.close().category != FJ_STATUS_SUCCESS) {
+                throw std::runtime_error("terminal cleanup after native failure failed");
+            }
             return 0;
         }
 #endif
@@ -1147,7 +1153,7 @@ int main(int argc, char** argv) {
                         InstanceState control;
                         compare_pixels("uniform direct control", render_case(uniform, parameters_for(uniform), control), uniformExpected);
                     }
-                    if (!cudaOwner.close()) {
+                    if (cudaOwner.close().category != FJ_STATUS_SUCCESS) {
                         throw std::runtime_error("direct diffusion predecessor close failed");
                     }
                     cudaOwner.create(JuicerProcess::data_directory());
@@ -1208,7 +1214,7 @@ int main(int argc, char** argv) {
             }
 #if !defined(JUICER_PREPARED_BOUNDARY_TEST)
             if (sequentialOwners) {
-                if (!cudaOwner.close()) {
+                if (cudaOwner.close().category != FJ_STATUS_SUCCESS) {
                     throw std::runtime_error("sequential native owner failed to close");
                 }
                 cudaOwner.create(JuicerProcess::data_directory());
@@ -1237,14 +1243,14 @@ int main(int argc, char** argv) {
         InstanceState emptyWindowState;
         (void)render_case(cases[0], parameters_for(cases[0]), emptyWindowState, true);
 #endif
-        if (!cudaOwner.close()) {
+        if (cudaOwner.close().category != FJ_STATUS_SUCCESS) {
             throw std::runtime_error("final native owner close failed");
         }
         return 0;
     } catch (const std::exception& error) {
         (void)std::fprintf(stderr, "%s\n", error.what());
         try {
-            JuicerProcess::shutdown_if_initialized();
+            fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
         } catch (...) {
             (void)std::fputs("shutdown failed after processor test error\n", stderr);
         }

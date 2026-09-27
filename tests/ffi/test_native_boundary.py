@@ -31,7 +31,15 @@ class NativeBoundary(unittest.TestCase):
         definitions = []
         for path in (ROOT / "native").glob("*.cpp"):
             definitions.extend(re.findall(r"^FjStatus (fj_cuda_\w+)\([^;]*?\)\s*\{", path.read_text(encoding="utf-8"), re.MULTILINE))
-        self.assertCountEqual(definitions, ["fj_cuda_create", "fj_cuda_inspect", "fj_cuda_render"])
+        self.assertCountEqual(definitions, ["fj_cuda_create", "fj_cuda_inspect", "fj_cuda_render", "fj_cuda_retire_instance", "fj_cuda_shutdown", "fj_cuda_destroy"])
+
+    def test_resource_destruction_does_not_reenter_root(self):
+        source = (ROOT / "src/Cuda/JuicerCudaResources.cpp").read_text(encoding="utf-8")
+        self.assertNotIn("ProcessRoot.h", source)
+        self.assertNotRegex(source, r"JuicerProcess::|retire_idle_context")
+        source = (ROOT / "native/juicer_cuda_api.cpp").read_text(encoding="utf-8")
+        self.assertNotIn("SF_TEMP_BRIDGE_release_cuda_owner", source)
+        self.assertNotIn("shutdown_if_initialized", source)
 
     def test_native_code_does_not_reset_host_contexts(self):
         paths = list((ROOT / "native").glob("*.cpp"))

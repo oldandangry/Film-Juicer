@@ -536,6 +536,12 @@ namespace JuicerCuda {
         Resources& operator=(const Resources&) = delete;
 
         ~Resources() noexcept;
+
+    private:
+        friend struct DeferredDestroyQueue;
+        // The existing deferred owner links already allocated Resources; queue
+        // transfer and exceptional restoration must not allocate storage.
+        Resources* deferredDestroyNext = nullptr;
     };
 
     Resources* create(
@@ -544,9 +550,20 @@ namespace JuicerCuda {
         std::shared_ptr<DeviceAllocationLedger> deviceLedger,
         Failure& outError) noexcept;
     void destroy(Resources* resources) noexcept;
+    void invalidate_deferred_resources_after_proven_context_loss(
+        const ResourceManager::DeviceContextKey& key);
+    bool drain_deferred_resources(
+        const ResourceManager::DeviceContextKey& key,
+        Failure& outError);
+#if defined(JUICER_DEFERRED_DESTROY_TEST_HOOK)
+    namespace DeferredDestroyTest {
+        void before_drain(Resources& resources);
+    } // namespace DeferredDestroyTest
+#endif
+
     bool drain_for_context_retire(
         Resources& resources,
-        std::string& outError) noexcept;
+        Failure& outError) noexcept;
     void invalidate_resources_after_proven_context_loss(
         Resources& resources) noexcept;
 

@@ -94,6 +94,25 @@ endif()
 add_test(NAME Ffi.Host.CudaOwner COMMAND JuicerCudaOwnerTests)
 set_tests_properties(Ffi.Host.CudaOwner PROPERTIES LABELS "host" TIMEOUT 30)
 
+# Terminal failure hooks exist only in this replacement API object.
+add_library(juicer_terminal_test_objects OBJECT ../native/juicer_cuda_api.cpp)
+target_link_libraries(juicer_terminal_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_terminal_test_objects PRIVATE JUICER_CUDA_TERMINAL_TEST_HOOK=1)
+add_executable(JuicerCudaTerminalTests ffi/cuda_terminal_test.cpp $<TARGET_OBJECTS:juicer_terminal_test_objects>)
+target_link_libraries(JuicerCudaTerminalTests PRIVATE juicer_core)
+target_compile_definitions(JuicerCudaTerminalTests PRIVATE JUICER_CUDA_TERMINAL_TEST_HOOK=1)
+set_target_properties(JuicerCudaTerminalTests PROPERTIES LINKER_LANGUAGE CXX)
+if(UNIX)
+    set_property(TARGET JuicerCudaTerminalTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+foreach(terminal_case IN ITEMS success serialization allocation standard unknown typed wording runtime context-loss diagnostic-allocation accepting-failure
+        unregistered unregistered-reentry unregistered-shutdown-lock unregistered-destroy-lock
+        saved-shutdown-lock saved-destroy-lock accepting-shutdown-lock accepting-destroy-lock
+        buffers malformed-destroy malformed-blocked-destroy shutdown-progress)
+    add_test(NAME Ffi.Host.CudaTerminal.${terminal_case} COMMAND JuicerCudaTerminalTests ${terminal_case})
+    set_tests_properties(Ffi.Host.CudaTerminal.${terminal_case} PROPERTIES LABELS "host" TIMEOUT 30)
+endforeach()
+
 # Compile the allocation algorithm with a bounded test entry; production has no hook.
 add_library(juicer_allocation_retry_test_objects OBJECT
     ../src/Cuda/ResourceManager/JuicerCudaResourceManager.cpp)
@@ -125,6 +144,23 @@ if(UNIX)
 endif()
 add_test(NAME Resource.Gpu.PinnedUpload COMMAND JuicerPinnedUploadTests)
 set_tests_properties(Resource.Gpu.PinnedUpload PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+
+# Deferred retirement executes the real drain with a bounded post-extraction seam.
+add_library(juicer_deferred_destroy_test_objects OBJECT ../src/Cuda/JuicerCudaResources.cpp)
+target_link_libraries(juicer_deferred_destroy_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_deferred_destroy_test_objects PRIVATE JUICER_DEFERRED_DESTROY_TEST_HOOK=1)
+add_executable(JuicerDeferredDestroyTests resource/deferred_destroy_test.cpp
+    $<TARGET_OBJECTS:juicer_deferred_destroy_test_objects>)
+target_link_libraries(JuicerDeferredDestroyTests PRIVATE juicer_core CUDA::cuda_driver)
+target_compile_definitions(JuicerDeferredDestroyTests PRIVATE JUICER_DEFERRED_DESTROY_TEST_HOOK=1)
+set_target_properties(JuicerDeferredDestroyTests PROPERTIES LINKER_LANGUAGE CXX)
+if(UNIX)
+    set_property(TARGET JuicerDeferredDestroyTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+foreach(deferred_case IN ITEMS lock allocation storage ordinary control)
+    add_test(NAME Resource.Gpu.DeferredDestroy.${deferred_case} COMMAND JuicerDeferredDestroyTests ${deferred_case})
+    set_tests_properties(Resource.Gpu.DeferredDestroy.${deferred_case} PROPERTIES LABELS "gpu" TIMEOUT 60 RESOURCE_LOCK juicer_gpu)
+endforeach()
 
 add_executable(JuicerCudaInspectTests ffi/cuda_inspect_test.cpp)
 target_link_libraries(JuicerCudaInspectTests PRIVATE juicer_core GTest::gtest_main)
@@ -500,6 +536,7 @@ endfunction()
 
 juicer_add_scatter_gpu_test(HostContracts host-contracts 240)
 juicer_add_scatter_gpu_test(PreparedFrame prepared-frame 240)
+juicer_add_scatter_gpu_test(TerminalRetention terminal-retention 120)
 juicer_add_scatter_gpu_test(FocusedCudaReference focused-cuda-reference 600)
 set_property(TEST ScatterHalation.Gpu.FocusedCudaReference
     PROPERTY LABELS "gpu;reference")

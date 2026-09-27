@@ -171,8 +171,6 @@ namespace JuicerProcess {
         Root& operator=(const Root&) = delete;
 
         void ensure_bootstrap();
-        bool shutdown() noexcept;
-        void retire_grain_static_instance(std::uint64_t instanceToken) noexcept;
         FramePreparationToken begin_frame_preparation() noexcept;
         bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
         bool retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
@@ -547,26 +545,6 @@ namespace JuicerProcess {
         friend class TestSupport::RootLifetimeObserver;
         friend struct ::FjCuda;
 
-        class ShutdownToken final {
-        public:
-            ShutdownToken() noexcept = default;
-            ~ShutdownToken();
-
-            ShutdownToken(const ShutdownToken&) = delete;
-            ShutdownToken& operator=(const ShutdownToken&) = delete;
-
-            ShutdownToken(ShutdownToken&& other) noexcept;
-            ShutdownToken& operator=(ShutdownToken&& other) noexcept;
-
-        private:
-            friend class Root;
-
-            explicit ShutdownToken(Root* root) noexcept;
-            void reset() noexcept;
-
-            Root* _root = nullptr;
-        };
-
         PreparedCudaFrame create_prepared_frame(void* cudaStreamOpaque, JuicerCuda::Failure& outError);
         PreparedCudaFrame prepare_cuda_frame(
             PreparedCudaFrame frame,
@@ -580,15 +558,14 @@ namespace JuicerProcess {
         explicit Root(std::string dataDirectory);
         ~Root();
 
-        ShutdownToken begin_shutdown() noexcept;
-        bool retire_known_contexts(std::string& outError) noexcept;
+        void retire_grain_static_instance(std::uint64_t instanceToken);
+        bool stop_frame_preparation() noexcept;
+        bool shutdown(std::mutex& nativeCallMutex, JuicerCuda::Failure& outError);
+        bool retire_known_contexts(JuicerCuda::Failure& outError);
         bool release_cuda_context_resource_owners() noexcept;
         void release_process_host_services() noexcept;
-        void finish_shutdown() noexcept;
         void finish_frame_preparation() noexcept;
-        void resume_frame_preparation() noexcept;
         bool wait_for_frame_preparation() noexcept;
-        void set_shutdown_retire_blocked(bool blocked) noexcept;
 
         std::once_flag _bootstrapOnce;
         std::string _dataDir;
@@ -596,7 +573,6 @@ namespace JuicerProcess {
         std::mutex _framePreparationMutex;
         std::condition_variable _framePreparationCv;
         std::uint32_t _activeFramePreparations = 0;
-        std::uint32_t _activeShutdowns = 0;
         using CudaResourceOwner = std::shared_ptr<JuicerCuda::Resources>;
 
         struct CudaResourcesDeleter final {
@@ -675,10 +651,9 @@ namespace JuicerProcess {
         bool retire_cuda_context(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             bool contextReset,
-            std::string& outError) noexcept;
+            JuicerCuda::Failure& outError);
 
         bool _acceptFramePreparation = true;
-        bool _shutdownRetireBlocked = false;
         std::mutex _cudaResourcesMutex;
         std::unordered_map<int, std::shared_ptr<JuicerCuda::DeviceAllocationLedger>>
             _cudaDeviceLedgers;
@@ -687,6 +662,5 @@ namespace JuicerProcess {
 
     Root& root();
     std::string data_directory();
-    void shutdown_if_initialized() noexcept;
 
 } // namespace JuicerProcess

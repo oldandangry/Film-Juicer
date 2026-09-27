@@ -450,8 +450,11 @@ retention after a controlled metadata-only shutdown failure without a GPU.
 `Ofx.Host.CudaOwnerUnload` verifies that the real factory's failed close returns
 a fatal status through the OFX entry point and blocks replacement ownership.
 Direct native fixtures explicitly own their runtime; `Root` access only borrows
-it. The FFI guide records the temporary release bridge and remaining terminal
-lifetime qualification.
+it. `Ffi.Host.CudaTerminal.*` covers typed shutdown/destroy, no-retry retention,
+exception containment and admission ordering. `ScatterHalation.Gpu.TerminalRetention`
+checks retained GPU allocations/ledger charges; `Grain.Gpu.ScratchReuse` checks
+instance retirement across exact contexts. See the FFI guide for the ownership
+contract and the remaining host/hardware qualification limits.
 
 `Ffi.Host.PreparedProjection` checks fixed C/native descriptor mappings and
 malformed records. `Resource.Host.ScratchRequest` checks closed DIR construction,
@@ -466,3 +469,12 @@ cold uploads, then repeats with warm resources and calls the direct executor. It
 never resets the CUDA context. The production entry remains the
 direct C++ executor; this fixture does not qualify final frame admission,
 terminal ownership, or expiry of asynchronous host-upload pointers.
+
+`Resource.Gpu.DeferredDestroy.{lock,allocation,storage,ordinary,control}` exercises
+exact-context deferred ownership with three fixture-owned CUDA contexts, three
+real 4 KiB allocations and their ledger charges. The isolated resource object
+injects at the drain/serving-mutex boundary after extraction. A failed batch keeps
+the failed and unprocessed entries charged and discoverable; explicit subsequent
+drains reach zero without disturbing the unrelated context. The storage case
+rejects C++ allocation during extraction and restoration, and ordinary failure
+uses a real context mismatch. Only fixture-created contexts are destroyed.

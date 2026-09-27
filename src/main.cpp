@@ -74,7 +74,7 @@ void JuicerPluginFactory::load() {
 }
 
 void JuicerPluginFactory::unload() {
-    if (!_cuda.close()) {
+    if (_cuda.close().category != FJ_STATUS_SUCCESS) {
         // Retaining the native graph does not make module unload safe.
         OFX::throwSuiteStatusException(kOfxStatErrFatal);
     }

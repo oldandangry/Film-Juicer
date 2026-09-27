@@ -195,6 +195,7 @@ namespace {
         const bool knownGroup =
             arguments.caseGroup == "host-contracts" ||
             arguments.caseGroup == "prepared-frame" ||
+            arguments.caseGroup == "terminal-retention" ||
             arguments.caseGroup == "focused-cuda-reference" ||
             arguments.caseGroup == "route-boundaries" ||
             arguments.caseGroup == "captured-carrier" ||
@@ -2713,14 +2714,49 @@ namespace {
             "prepared/reset-context-retire",
             resetRetired,
             terminalDiagnostic.diagnostic);
+    }
 
-        root.shutdown();
-        std::vector<JuicerCuda::ResourceManager::DeviceContextKey> liveContexts;
-        JuicerCuda::ResourceManager::registry_snapshot_context_keys(liveContexts);
-        results.record(
-            "prepared/root-shutdown-last",
-            liveContexts.empty(),
-            "ordered Root shutdown leaves no registered CUDA context");
+    void run_terminal_retention_rows(Results& results, JuicerCuda::Owner& owner) {
+        CudaPreparedFixture fixture;
+        JuicerCuda::Failure diagnostic;
+        PreparedInputs inputs;
+        if (!fixture.initialize(diagnostic.diagnostic) ||
+            !initialize_prepared_inputs(false, false, true, 32, 24, inputs, diagnostic.diagnostic)) {
+            throw std::runtime_error(diagnostic.diagnostic);
+        }
+        auto& root = JuicerProcess::root();
+        {
+            auto frame = root.prepare_cuda_frame(fixture.context_key(), fixture.snapshot(inputs), inputs.request({32, 24}), {}, fixture.stream_opaque(), diagnostic);
+            if (!frame.active() || !frame.record_use(fixture.stream_opaque(), diagnostic) ||
+                !frame.finish(fixture.stream_opaque(), diagnostic) || !fixture.synchronize(diagnostic.diagnostic)) {
+                throw std::runtime_error(diagnostic.diagnostic);
+            }
+        }
+        const auto before = JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(root, fixture.context_key());
+        const bool injected = JuicerProcess::TestSupport::arm_context_drain_failure_once(fixture.context_key());
+        FjCuda* borrow = JuicerCuda::borrowed_owner();
+        std::array<char, 512> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        const auto blocked = fj_cuda_shutdown(borrow, &error);
+        const auto after = JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(root, fixture.context_key());
+        results.record("terminal/gpu-failed-shutdown-retains-graph",
+                       injected && blocked.category == FJ_STATUS_PREPARATION_FAILURE && blocked.api == FJ_API_NONE &&
+                           blocked.native_code == 0 && JuicerCuda::borrowed_owner() == borrow &&
+                           !root.begin_frame_preparation().active() && before.nativeAllocationCount != 0 &&
+                           after.nativeAllocationCount == before.nativeAllocationCount &&
+                           after.ledger.chargedBytes == before.ledger.chargedBytes &&
+                           after.contextLedgerRecordCount == before.contextLedgerRecordCount,
+                       message.data());
+        JuicerProcess::TestSupport::clear_context_drain_failure();
+        const auto consumed = owner.close(&error);
+        const auto retained = JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(root, fixture.context_key());
+        results.record("terminal/gpu-blocked-destroy-does-not-retry",
+                       consumed.category == blocked.category && consumed.api == blocked.api && consumed.native_code == blocked.native_code &&
+                           JuicerCuda::borrowed_owner() == borrow && retained.nativeAllocationCount == before.nativeAllocationCount &&
+                           retained.contextLedgerRecordCount == before.contextLedgerRecordCount &&
+                           retained.ledger.chargedBytes == before.ledger.chargedBytes,
+                       message.data());
+        results.record("terminal/gpu-consumed-wrapper-empty", owner.close().category == FJ_STATUS_SUCCESS, "consumed wrapper and its destructor cannot retry the retained graph");
     }
 
     bool upload_and_launch_dedicated(
@@ -3038,7 +3074,7 @@ namespace {
     void report_fatal_and_shutdown(const char* detail) noexcept {
         std::fprintf(stderr, "fatal: %s\n", detail);
         try {
-            JuicerProcess::shutdown_if_initialized();
+            fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
         } catch (...) {
             std::fputs("fatal: shutdown failed during error handling\n", stderr);
         }
@@ -3274,6 +3310,8 @@ int main(int argc, char** argv) noexcept {
             run_host_contracts();
         } else if (arguments.caseGroup == "prepared-frame") {
             run_prepared_frame_rows(results);
+        } else if (arguments.caseGroup == "terminal-retention") {
+            run_terminal_retention_rows(results, cudaOwner);
         } else if (arguments.caseGroup == "focused-cuda-reference") {
             ScatterHalationValidation::run_focused_cuda_reference_rows(
                 arguments,
@@ -3314,10 +3352,13 @@ int main(int argc, char** argv) noexcept {
                 false,
                 "selected case group produced no test rows");
         }
-        print_results(results);
-        if (arguments.caseGroup != "prepared-frame") {
-            JuicerProcess::root().shutdown();
+        if (arguments.caseGroup != "terminal-retention") {
+            const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+            std::vector<JuicerCuda::ResourceManager::DeviceContextKey> live;
+            JuicerCuda::ResourceManager::registry_snapshot_context_keys(live);
+            results.record("terminal/native-shutdown-last", closed.category == FJ_STATUS_SUCCESS && live.empty(), "typed shutdown closes the owner after all fixture work");
         }
+        print_results(results);
         return results.failure_count() == 0 ? 0 : 1;
     } catch (const std::exception& error) {
         report_fatal_and_shutdown(error.what());

@@ -3126,7 +3126,8 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                         host.at_time_get_count() == 0,
                     "adapter getter selection was not current-value-only");
         }
-        JuicerProcess::root().shutdown();
+        require(fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr).category == FJ_STATUS_SUCCESS,
+                "adapter terminal shutdown failed");
         host.write_trace(tracePath);
         std::cout << "PASS adapter/first-render-current-value\n"
                   << "PASS adapter/two-authored-times\n"
@@ -3143,11 +3144,11 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL adapter trace: " << error.what() << '\n';
-        JuicerProcess::shutdown_if_initialized();
+        fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
         return 1;
     } catch (...) {
         std::cerr << "FAIL adapter trace: unknown exception\n";
-        JuicerProcess::shutdown_if_initialized();
+        fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
         return 1;
     }
 }

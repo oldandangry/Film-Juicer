@@ -873,6 +873,6 @@ int main(int argc, char** argv) {
     testing::InitGoogleTest(&argc, argv);
     JuicerProcess::root().ensure_bootstrap();
     const int result = RUN_ALL_TESTS();
-    JuicerProcess::shutdown_if_initialized();
-    return result;
+    const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+    return closed.category == FJ_STATUS_SUCCESS ? result : 1;
 }

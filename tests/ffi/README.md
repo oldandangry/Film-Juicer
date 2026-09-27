@@ -32,26 +32,67 @@ registered root, uninitialized teardown does not create a root, and scoped
 close/reload constructs a fresh metadata owner. It also checks diagnostic
 truncation and that callers cannot directly construct or destroy `Root`.
 
-Its final case keeps a metadata-only registry submission active to make close
-fail before any CUDA access. After ending the submission, repeated close and
-destruction must leave the same blocked graph registered, without retrying
-retirement or permitting a replacement owner. That failure-only graph is
-intentionally retained until the test process exits.
+Its final case keeps a metadata-only registry submission active to make borrowed
+shutdown fail before CUDA access. After ending that submission, consuming close
+and the wrapper destructor must leave the same blocked graph registered, without
+retrying retirement or permitting a replacement owner.
+
+`Ffi.Host.CudaTerminal.*` tests the three terminal C entries through isolated API
+objects. It covers closed/repeated shutdown, accepting destroy, exception
+containment, error capacities zero/one/truncated, saved typed status independent
+of diagnostic wording, and allocation-free blocked destroy. A scoped diagnostic allocation failure preserves
+the selected cuFFT status and uses the owner's fixed diagnostic fallback. Executable-local
+allocation counting and destruction/attempt counters prove consume-once without
+calling a stale address after successful deletion. The serialization case holds
+an outer preparation guard while shutdown closes admission; the callback can
+still enter the gate to reject and release its guard before teardown proceeds.
+No terminal injector enters production objects.
+
+The C boundary has these ownership transitions:
+
+| Operation | Ownership after return |
+| --- | --- |
+| `fj_cuda_shutdown` succeeds | Caller owns a closed handle; repeated shutdown succeeds without another drain. |
+| `fj_cuda_shutdown` fails | Caller owns a blocked handle and the retained native graph; repeated shutdown returns the saved failure. |
+| `fj_cuda_destroy` receives accepting ownership | Caller has taken/cleared its pointer; exactly one shutdown attempt leads to deletion or failed native retention. |
+| `fj_cuda_destroy` receives closed ownership | The closed graph is deleted once and a later create can establish a new owner. |
+| `fj_cuda_destroy` receives blocked ownership | Caller ownership is consumed, the graph remains registered and retained, and no retry/destructor traversal occurs. |
+
+`JuicerCuda::Owner::close()` takes its pointer before invoking consuming destroy.
+Its destructor uses that same path only if explicit close has not consumed it.
+Closed or blocked owners reject inspect, render and instance retirement.
+Shutdown stops Root admission and drains outer preparation guards before taking
+the native-call gate; it never waits on those guards while holding that gate.
+`Root` no longer has a separate public shutdown or bootstrap-reopen path.
 
 `Ofx.Host.CudaOwnerUnload` links the real factory and OFX support entry point.
-It checks successful factory close/reload and maps the same controlled native
-shutdown failure to `kOfxStatErrFatal`, preserving consume-once retention. It
-loads the factory directly without host suites; staged-module lifecycle probes
-separately cover the complete host callback sequence. Neither test establishes
-GPU completion or safe forced module unloading after a terminal failure.
+It checks empty unload, successful close/reload, and fatal OFX mapping for failed
+native shutdown while preserving consume-once retention. Failed native graphs
+remain intentionally allocated until process exit. Retention does not keep host
+images, streams, contexts, suites or module code alive and does not make forced
+unload safe.
+
+`fj_cuda_retire_instance` rejects zero and otherwise removes only that token's
+static-grain membership across exact-context owners. `Grain.Gpu.ScratchReuse`
+checks two instances and two contexts, preserving the other instance, frame
+owner, epoch and ledger. Final foreign-context grain release enters the existing
+deferred queue; explicit Root retirement drains that queue when the exact owner
+context is current. Low-level resource destruction never calls Root retirement.
+The reset cases also destroy a context owned exclusively by the fixture, then
+retire its Root and deferred ownership while preserving the primary context's
+resources and charges. They never reset a live host CUDA context.
+
+`ScatterHalation.Gpu.TerminalRetention` creates actual prepared GPU resources,
+injects the existing context-drain failure, and checks that borrowed shutdown and
+consuming destroy retain the same allocations and ledger charges. This is a
+controlled failure fixture, not real driver-loss or forced-unload qualification.
+Ordinary prepared-frame/lifecycle and native failure/cancellation fixtures use
+the same typed terminal operations for final cleanup.
 
 Direct native fixtures use `JuicerCuda::Owner` for their process scope, just as
-the OFX factory owns one handle across load/unload. Resource lookup remains a
-borrow of that registered owner. The temporary C++ release bridge consumes its
-handle once and deletes only after completed Root shutdown; failed shutdown
-retains the graph and blocks a replacement owner. Final typed C shutdown/destroy
-and failed-terminal-retention qualification remain a later migration boundary.
-This test does not establish those terminal or GPU lifetime contracts.
+the OFX factory owns one handle across load/unload. Root lookup only borrows that
+registered owner. Production rendering continues through direct C++ execution;
+this lifecycle work does not perform the S2.E render cutover.
 
 The native execution object target has no OFX include or link dependency. Its
 objects, current C++ host preparation, and OFX adapter objects enter one
@@ -188,3 +229,18 @@ absence completes the relevant stream before native return, including unwind.
 adapter message delivery, actual gate reacquisition by the message fixture,
 percent escaping, the existing message identifier, and recovery/latch/fatal order
 independent of message-delivery failure. Native execution has no message callback.
+
+Terminal regressions also cover unregistered handles during ordinary/reentrant
+calls and owner-mutex admission exceptions, selected driver failures surviving
+later shutdown/destroy admission exceptions, and a concurrent borrowed shutdown
+whose result is still being selected. The isolated API object injects immediately
+before acquiring the owner mutex; it exercises the real validation/catch order.
+The host must still exclude consuming destruction while a handle is borrowed;
+these tests never reuse a successfully deleted handle.
+
+A malformed borrowed shutdown error buffer (nonzero capacity, null data) is
+rejected before admission changes. Consuming destroy still consumes a valid
+owner with malformed output: a saved/native terminal failure has precedence;
+a successful close/delete reports unsupported output afterward. Neither malformed
+output nor a later empty wrapper destructor retries consumption. Valid zero,
+one-byte and truncated diagnostics preserve status and the saved diagnostic.

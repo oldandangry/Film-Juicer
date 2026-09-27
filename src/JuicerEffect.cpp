@@ -20,6 +20,7 @@
 #include "Illuminants.h"
 #include "ParamNames.h"
 #include "ProcessRoot.h"
+#include "juicer_cuda_owner.h"
 #include "ScatterHalation.h"
 #include "SpectralData.h"
 #include "SpectralProcessing.h"
@@ -1658,8 +1659,12 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
 
 JuicerEffect::~JuicerEffect() {
     try {
-        JuicerProcess::root().retire_grain_static_instance(
-            _state->instanceToken);
+        std::array<char, 512> diagnostic{};
+        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+        const auto result = fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), _state->instanceToken, &error);
+        if (result.category != FJ_STATUS_SUCCESS) {
+            JTRACE("MSLCY", diagnostic.data());
+        }
         _state.reset();
     } catch (...) {
         JuicerLogging::discard_current_exception();
