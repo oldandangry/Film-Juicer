@@ -366,7 +366,7 @@ namespace JuicerCuda {
                 outError = "registry submission admission failed";
                 return false;
             }
-            outTransaction.snapshot.contextEpoch = contextSnapshot.contextEpoch;
+            outTransaction.contextEpoch = contextSnapshot.contextEpoch;
 
             std::uint64_t leaseGeneration = state.nextLeaseGeneration.fetch_add(1, std::memory_order_relaxed);
             if (leaseGeneration == 0) {

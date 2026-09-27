@@ -1812,7 +1812,6 @@ namespace {
             value.frameToken.value = _nextIdentity;
             value.snapshotId = _nextIdentity++;
             value.deviceContextKey = _contextKey;
-            value.contextEpoch = 1;
             value.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
                 inputs.product.payload.uploadCoreHash,
                 inputs.product.recipe.dirCouplers.hash,
@@ -3103,7 +3102,6 @@ namespace ScatterHalationValidation {
         snapshot.frameToken.value = identity;
         snapshot.snapshotId = identity;
         snapshot.deviceContextKey = contextKey;
-        snapshot.contextEpoch = 1;
         snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
             _impl->product.payload.uploadCoreHash,
             _impl->product.recipe.dirCouplers.hash,

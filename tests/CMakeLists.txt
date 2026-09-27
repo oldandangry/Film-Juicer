@@ -89,6 +89,25 @@ endif()
 add_test(NAME Ffi.Host.CudaOwner COMMAND JuicerCudaOwnerTests)
 set_tests_properties(Ffi.Host.CudaOwner PROPERTIES LABELS "host" TIMEOUT 30)
 
+add_executable(JuicerCudaInspectTests ffi/cuda_inspect_test.cpp)
+target_link_libraries(JuicerCudaInspectTests PRIVATE juicer_core GTest::gtest_main)
+set_target_properties(JuicerCudaInspectTests PROPERTIES LINKER_LANGUAGE CXX)
+if(UNIX)
+    set_property(TARGET JuicerCudaInspectTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Ffi.Host.CudaInspect COMMAND JuicerCudaInspectTests --gtest_filter=InspectHost.*)
+set_tests_properties(Ffi.Host.CudaInspect PROPERTIES LABELS "host" TIMEOUT 30)
+# Keep the host binary independent of the NVIDIA driver at load time.
+add_executable(JuicerCudaInspectGpuTests ffi/cuda_inspect_test.cpp)
+target_compile_definitions(JuicerCudaInspectGpuTests PRIVATE JUICER_CUDA_INSPECT_GPU_TEST=1)
+target_link_libraries(JuicerCudaInspectGpuTests PRIVATE juicer_core GTest::gtest_main CUDA::cuda_driver)
+set_target_properties(JuicerCudaInspectGpuTests PROPERTIES LINKER_LANGUAGE CXX)
+if(UNIX)
+    set_property(TARGET JuicerCudaInspectGpuTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Ffi.Gpu.CudaInspect COMMAND JuicerCudaInspectGpuTests --gtest_filter=InspectGpu.*)
+set_tests_properties(Ffi.Gpu.CudaInspect PROPERTIES LABELS "gpu" TIMEOUT 60 RESOURCE_LOCK juicer_gpu)
+
 add_executable(JuicerCudaOwnerUnloadTests ofx/cuda_owner_unload_test.cpp ../src/main.cpp)
 target_link_libraries(JuicerCudaOwnerUnloadTests PRIVATE juicer_core juicer_ofxs)
 set_target_properties(JuicerCudaOwnerUnloadTests PROPERTIES LINKER_LANGUAGE CXX)
@@ -285,6 +304,9 @@ add_test(NAME Ofx.Gpu.ProcessorReference COMMAND JuicerProcessorReferenceProbe)
 set_tests_properties(Ofx.Gpu.ProcessorReference PROPERTIES
     LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
 
+add_test(NAME Ofx.Gpu.SequentialOwners COMMAND JuicerProcessorReferenceProbe --sequential-owners)
+set_tests_properties(Ofx.Gpu.SequentialOwners PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+
 add_executable(JuicerPreparedBoundaryProbe
     ofx/processor_reference_test.cpp
     ffi/prepared_boundary.cpp
@@ -343,6 +365,11 @@ add_test(NAME Ofx.Gpu.ExecutorFailureOrder
 set_tests_properties(Ofx.Gpu.ExecutorFailureOrder PROPERTIES
     LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
 
+add_custom_target(juicer_test_module
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${JUICER_TEST_BINARY_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:juicer>" "${JUICER_TEST_BINARY_DIR}/$<TARGET_FILE_NAME:juicer>"
+    DEPENDS juicer juicer_test_resources)
+
 add_executable(JuicerAdapterTraceProbe
     ofx/adapter_trace_test.cpp route/route_failure_adapter.cpp)
 target_include_directories(JuicerAdapterTraceProbe PRIVATE "${PROJECT_SOURCE_DIR}/native")
@@ -351,7 +378,7 @@ target_link_libraries(JuicerAdapterTraceProbe PRIVATE
 set_target_properties(JuicerAdapterTraceProbe PROPERTIES
     LINKER_LANGUAGE CXX
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
-add_dependencies(JuicerAdapterTraceProbe juicer_test_resources)
+add_dependencies(JuicerAdapterTraceProbe juicer_test_resources juicer_test_module)
 if(UNIX)
     set_property(TARGET JuicerAdapterTraceProbe
         PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
@@ -366,6 +393,11 @@ set_tests_properties(Ofx.Gpu.AdapterTrace PROPERTIES
 add_executable(JuicerScatterHalationGpuTests
     scatter_halation/integration_test.cpp
     scatter_halation/integration_test_cases.cpp)
+add_test(NAME Ofx.Gpu.StreamContract
+    COMMAND JuicerAdapterTraceProbe --stream-contract "${JUICER_TEST_BINARY_DIR}/$<TARGET_FILE_NAME:juicer>"
+        --trace-output "${JUICER_TEST_ARTIFACT_ROOT}/ofx/stream-contract.log")
+set_tests_properties(Ofx.Gpu.StreamContract PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+
 add_library(juicer_admission_test_state OBJECT ../src/JuicerState.cpp)
 target_link_libraries(juicer_admission_test_state PRIVATE juicer_settings juicer_ofx_headers)
 target_compile_definitions(juicer_admission_test_state PRIVATE JUICER_ADMISSION_TEST_HOOK=1)

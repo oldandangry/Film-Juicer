@@ -556,7 +556,6 @@ namespace {
             snapshot.frameToken.value = nextIdentity;
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
-            snapshot.contextEpoch = 1;
             snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
                 inputs.product.payload.uploadCoreHash,
                 inputs.product.recipe.dirCouplers.hash,

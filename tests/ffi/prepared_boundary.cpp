@@ -191,7 +191,7 @@ extern "C" int fj_test_execute_prepared_cpp(const FjPreparedHostData* prepared, 
         const JuicerCuda::ExecutionFrame execution{
             decode(frame->source.bounds), decode(frame->render_window), decode(frame->full_frame_extent), sourceBase, sourceBase + sourceOffset, reinterpret_cast<unsigned char*>(frame->destination.address), frame->source.row_bytes, frame->destination.row_bytes, static_cast<int>(frame->source.components), reinterpret_cast<void*>(frame->stream), diffusion, halation, effectsGeometry, frame->pixel_size_um, frame->time_frames, frame->frame_rate, frame->session_seed, static_cast<std::uintptr_t>(frame->clip_token), metering, (frame->flags & FJ_FRAME_TRACE_INFO) != 0, (frame->flags & FJ_FRAME_TRACE_VERBOSE) != 0};
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{
-            {submission->instance_token}, {submission->frame_token}, submission->submission_id, {context->device_id, reinterpret_cast<void*>(context->context)}, 1, {submission->upload_core_hash, submission->dir_hash, submission->scanner_hash, submission->auto_exposure_hash}};
+            {submission->instance_token}, {submission->frame_token}, submission->submission_id, {context->device_id, reinterpret_cast<void*>(context->context)}, {submission->upload_core_hash, submission->dir_hash, submission->scanner_hash, submission->auto_exposure_hash}};
         std::string diagnostic;
         if (!JuicerCuda::execute_prepared_host_data(*prepared, execution, snapshot, recovery, {}, diagnostic)) {
             write_error(error, diagnostic);

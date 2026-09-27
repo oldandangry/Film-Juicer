@@ -156,7 +156,6 @@ namespace {
             snapshot.frameToken.value = nextIdentity;
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
-            snapshot.contextEpoch = 1;
             snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
                 inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
             std::string error;
@@ -389,7 +388,6 @@ namespace {
         snapshot.frameToken.value = nextIdentity;
         snapshot.snapshotId = nextIdentity++;
         snapshot.deviceContextKey = key;
-        snapshot.contextEpoch = 1;
         snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
             inputs.product.payload.uploadCoreHash, recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
         std::string error;

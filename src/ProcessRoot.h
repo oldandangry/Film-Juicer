@@ -416,6 +416,9 @@ namespace JuicerProcess {
             PreparedCudaFrame& operator=(PreparedCudaFrame&& other) noexcept;
 
             bool active() const noexcept;
+            // Requires successful preparation; identity remains available through finish.
+            const JuicerCuda::ResourceManager::SubmissionSnapshot& admitted_snapshot() const noexcept;
+            std::uint64_t admitted_context_epoch() const noexcept;
             WorkspaceLeaseMarker workspace_lease() const noexcept;
             CaptureFilmDensityWorkspaceView capture_film_density_workspace(
                 const WorkspaceLeaseMarker& workspace) const noexcept;

@@ -13,11 +13,14 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include <cuda.h>
 #include <cuda_runtime.h>
 
 #include "Hash.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
@@ -414,6 +417,7 @@ namespace {
         bool combined = false;
         bool signedZeroGlare = false;
         bool negativeZero = false;
+        bool uniform = false;
     };
 
     struct DeviceFrame {
@@ -479,11 +483,21 @@ namespace {
         Boundary
     };
 
-    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor) {
+    enum class DestinationLayout : std::uint8_t {
+        Matching,
+        Offset,
+        Uncovered
+    };
+
+    std::vector<float> render_case(const Case& test, const ParamSnapshot& parameters, InstanceState& state, bool emptyWindow = false, ExecutionPath path = ExecutionPath::Processor, DestinationLayout destinationLayout = DestinationLayout::Matching) {
         const int pitch = kWidth * test.components + 5;
         const std::size_t bytes = static_cast<std::size_t>(pitch * kHeight) * sizeof(float);
         std::vector<float> input(static_cast<std::size_t>(pitch * kHeight), -7.0f);
-        std::vector<float> output(static_cast<std::size_t>(pitch * kHeight), kCanary);
+        const int border = destinationLayout == DestinationLayout::Offset ? 1 : 0;
+        const int destinationPitch = pitch + 2 * border * test.components;
+        const int destinationHeight = kHeight + 2 * border;
+        const std::size_t destinationBytes = static_cast<std::size_t>(destinationPitch * destinationHeight) * sizeof(float);
+        std::vector<float> output(static_cast<std::size_t>(destinationPitch * destinationHeight), kCanary);
         std::vector<float> initialDestination(output);
         for (int y = 0; y < kHeight; ++y) {
             const std::size_t rowOffset = static_cast<std::size_t>(y) * static_cast<std::size_t>(pitch);
@@ -493,16 +507,16 @@ namespace {
                 for (int c = 0; c < test.components; ++c) {
                     input[pixelOffset + static_cast<std::size_t>(c)] =
                         c == 3 ? 0.125f + static_cast<float>((x + y) % 4) * 0.25f
-                               : static_cast<float>((x + 3 * y + 7 * c) % 19) / 19.0f;
+                               : static_cast<float>(((test.uniform ? 0 : x + 3 * y) + 7 * c) % 19) / 19.0f;
                 }
             }
         }
         DeviceFrame device;
         require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create stream");
         require_cuda(cudaMalloc(&device.source, bytes), "allocate source");
-        require_cuda(cudaMalloc(&device.destination, bytes), "allocate destination");
+        require_cuda(cudaMalloc(&device.destination, destinationBytes), "allocate destination");
         require_cuda(cudaMemcpy(device.source, input.data(), bytes, cudaMemcpyHostToDevice), "copy source");
-        require_cuda(cudaMemcpy(device.destination, initialDestination.data(), bytes, cudaMemcpyHostToDevice), "copy destination");
+        require_cuda(cudaMemcpy(device.destination, initialDestination.data(), destinationBytes, cudaMemcpyHostToDevice), "copy destination");
 
         Properties effectProperties;
         effectProperties.strings[kOfxImageEffectPropContext] = {kOfxImageEffectContextFilter};
@@ -511,7 +525,8 @@ namespace {
         const OfxRectI bounds{test.originX, test.originY, test.originX + kWidth, test.originY + kHeight};
         const ImagePropertiesInput imageInput{bounds, test.components, pitch * static_cast<int>(sizeof(float))};
         fill_image_properties(sourceProperties, device.source, imageInput);
-        fill_image_properties(destinationProperties, device.destination, imageInput);
+        const OfxRectI destinationBounds{bounds.x1 - border, bounds.y1 - border, bounds.x2 + border - (destinationLayout == DestinationLayout::Uncovered ? 1 : 0), bounds.y2 + border};
+        fill_image_properties(destinationProperties, device.destination, {destinationBounds, test.components, destinationPitch * static_cast<int>(sizeof(float))});
         const OfxPropertySetHandle sourceHandle =
             reinterpret_cast<OfxPropertySetHandle>(&sourceProperties);
         const OfxPropertySetHandle destinationHandle =
@@ -538,6 +553,7 @@ namespace {
             OFX::RenderArguments args{};
             args.isEnabledCudaRender = true;
             args.pCudaStream = device.stream;
+            args.cudaStreamPropertyPresent = true;
             processor.setGPURenderArgs(args);
             processor.setSrcDst({&sourceImage, &destinationImage});
             const OfxRectI renderWindow = emptyWindow
@@ -546,18 +562,18 @@ namespace {
             const float pixelSizeUm = 35'000.0f / kWidth;
             std::optional<ScatterHalationFrameDescriptor> halation;
             std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
-            if (test.combined) {
-                const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
-                std::string diagnostic;
-                if (!Spektrafilm::build_scatter_halation_frame_descriptor(
-                        recipe.spatialOptics.scatterHalation, pixelSizeUm, halation, diagnostic) ||
-                    !halation) {
-                    throw std::runtime_error("halation descriptor: " + diagnostic);
-                }
+            const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
+            std::string descriptorDiagnostic;
+            if (test.combined && (!Spektrafilm::build_scatter_halation_frame_descriptor(
+                                      recipe.spatialOptics.scatterHalation, pixelSizeUm, halation, descriptorDiagnostic) ||
+                                  !halation)) {
+                throw std::runtime_error("halation descriptor: " + descriptorDiagnostic);
+            }
+            if (parameters.cameraDiffusion.active || parameters.enlargerDiffusion.active) {
                 if (!Spektrafilm::build_diffusion_frame_set_descriptor(
-                        recipe.spatialOptics, test.route, pixelSizeUm, Spektrafilm::DiffusionFrameDomain{test.originX, test.originY, test.originX + kWidth, test.originY + kHeight}, diffusion, diagnostic) ||
+                        recipe.spatialOptics, test.route, pixelSizeUm, Spektrafilm::DiffusionFrameDomain{test.originX, test.originY, kWidth, kHeight}, diffusion, descriptorDiagnostic) ||
                     !diffusion) {
-                    throw std::runtime_error("diffusion descriptor: " + diagnostic);
+                    throw std::runtime_error("diffusion descriptor: " + descriptorDiagnostic);
                 }
             }
             if (print) {
@@ -565,7 +581,6 @@ namespace {
                 request.state = admitted.printState;
                 request.diffusionFrameSet = diffusion;
                 request.scatterHalation = halation;
-                request.components = test.components;
                 request.renderWindow = renderWindow;
                 request.fullFrameExtent = bounds;
                 request.sessionSeed = 0x20260923;
@@ -580,7 +595,6 @@ namespace {
                 request.state = admitted.directState;
                 request.diffusionFrameSet = diffusion;
                 request.scatterHalation = halation;
-                request.components = test.components;
                 request.renderWindow = renderWindow;
                 request.fullFrameExtent = bounds;
                 request.sessionSeed = 0x20260923;
@@ -598,7 +612,6 @@ namespace {
             }
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
             if (path != ExecutionPath::Processor) {
-                const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
                 const auto& payload = print ? admitted.printState->payload : admitted.directState->payload;
                 const JuicerCuda::FrameRect nativeBounds{bounds.x1, bounds.y1, bounds.x2, bounds.y2};
                 const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(nativeBounds, nativeBounds, recipe.filmRaw.autoExposureMethod);
@@ -608,7 +621,20 @@ namespace {
                 snapshot.instanceToken.value = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
                 snapshot.frameToken.value = 37;
                 snapshot.snapshotId = 1;
-                snapshot.deviceContextKey = JuicerCuda::inspect_frame(frame.sourceBase, frame.destination, false);
+                const FjImage rawSource{reinterpret_cast<std::uintptr_t>(device.source), {bounds.x1, bounds.y1, bounds.x2, bounds.y2}, imageInput.rowBytes, static_cast<std::uint32_t>(test.components), FJ_DEPTH_FLOAT32};
+                FjFrame raw{};
+                raw.source = rawSource;
+                raw.destination = rawSource;
+                raw.destination.address = reinterpret_cast<std::uintptr_t>(device.destination);
+                raw.render_window = rawSource.bounds;
+                raw.full_frame_extent = rawSource.bounds;
+                raw.stream = reinterpret_cast<std::uintptr_t>(device.stream);
+                raw.flags = FJ_FRAME_STREAM_PRESENT;
+                FjCudaContext context{};
+                if (fj_cuda_inspect(JuicerCuda::borrowed_owner(), &raw, &context, nullptr).category != FJ_STATUS_SUCCESS) {
+                    throw std::runtime_error("reference frame inspection failed");
+                }
+                snapshot.deviceContextKey = {context.device_id, reinterpret_cast<void*>(context.context)};
                 snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
                     payload.uploadCoreHash, recipe.dirCouplers.hash, payload.scannerHash, meter.hash);
                 if (path == ExecutionPath::Boundary) {
@@ -635,7 +661,7 @@ namespace {
 #endif
         }
         imageLeaseAudit.require_complete(test.name);
-        require_cuda(cudaMemcpyAsync(output.data(), device.destination, bytes, cudaMemcpyDeviceToHost, device.stream),
+        require_cuda(cudaMemcpyAsync(output.data(), device.destination, destinationBytes, cudaMemcpyDeviceToHost, device.stream),
                      "copy destination");
         require_cuda(cudaStreamSynchronize(device.stream), "synchronize");
         if (emptyWindow) {
@@ -650,10 +676,10 @@ namespace {
         pixels.reserve(static_cast<std::size_t>(kWidth) * static_cast<std::size_t>(kHeight) *
                        static_cast<std::size_t>(test.components));
         for (int y = 0; y < kHeight; ++y) {
-            const std::size_t rowOffset = static_cast<std::size_t>(y) * static_cast<std::size_t>(pitch);
+            const std::size_t rowOffset = static_cast<std::size_t>(y + border) * static_cast<std::size_t>(destinationPitch);
             for (int x = 0; x < kWidth; ++x) {
                 const std::size_t pixelOffset = rowOffset +
-                                                static_cast<std::size_t>(x) * static_cast<std::size_t>(test.components);
+                                                static_cast<std::size_t>(x + border) * static_cast<std::size_t>(test.components);
                 for (int c = 0; c < test.components; ++c) {
                     const std::size_t index = pixelOffset + static_cast<std::size_t>(c);
                     const float value = output[index];
@@ -661,16 +687,19 @@ namespace {
                         throw std::runtime_error(std::string(test.name) + ": nonfinite output");
                     }
                     if (c == 3 && std::bit_cast<std::uint32_t>(value) !=
-                                      std::bit_cast<std::uint32_t>(input[index])) {
+                                      std::bit_cast<std::uint32_t>(input[static_cast<std::size_t>(y) * static_cast<std::size_t>(pitch) + static_cast<std::size_t>(x) * static_cast<std::size_t>(test.components) + static_cast<std::size_t>(c)])) {
                         throw std::runtime_error(std::string(test.name) + ": alpha changed");
                     }
                     pixels.push_back(value);
                 }
             }
-            for (int p = kWidth * test.components; p < pitch; ++p) {
-                if (std::bit_cast<std::uint32_t>(output[rowOffset + static_cast<std::size_t>(p)]) !=
-                    std::bit_cast<std::uint32_t>(kCanary)) {
-                    throw std::runtime_error(std::string(test.name) + ": destination padding changed");
+        }
+        for (int y = 0; y < destinationHeight; ++y) {
+            for (int x = 0; x < destinationPitch; ++x) {
+                const bool rendered = y >= border && y < border + kHeight &&
+                                      x >= border * test.components && x < (border + kWidth) * test.components;
+                if (!rendered && std::bit_cast<std::uint32_t>(output[static_cast<std::size_t>(y) * static_cast<std::size_t>(destinationPitch) + static_cast<std::size_t>(x)]) != std::bit_cast<std::uint32_t>(kCanary)) {
+                    throw std::runtime_error(std::string(test.name) + ": destination outside render window changed");
                 }
             }
         }
@@ -777,8 +806,9 @@ int main(int argc, char** argv) {
         bool preparedCaseFound = false;
         constexpr bool emit = false;
 #else
+        const bool sequentialOwners = argc == 2 && std::string(argv[1]) == "--sequential-owners";
         const bool emit = argc == 2 && std::string(argv[1]) == "--emit-reference";
-        if (argc != 1 && !emit) {
+        if (argc != 1 && !emit && !sequentialOwners) {
             throw std::runtime_error("usage: JuicerProcessorReferenceProbe [--emit-reference]");
         }
 #endif
@@ -796,6 +826,17 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("processor reference fixture unavailable");
             }
         }
+#if !defined(JUICER_PREPARED_BOUNDARY_TEST)
+        void* initialContext = nullptr;
+        std::uint64_t previousEpoch = 0;
+        if (sequentialOwners) {
+            CUcontext current = nullptr;
+            if (cuCtxGetCurrent(&current) != CUDA_SUCCESS) {
+                throw std::runtime_error("missing sequential-owner CUDA context");
+            }
+            initialContext = current;
+        }
+#endif
         std::vector<float> freshPlus;
         std::vector<float> freshMinus;
         for (const Case& test : cases) {
@@ -819,7 +860,24 @@ int main(int argc, char** argv) {
             std::cerr << "processor case: " << test.name << '\n';
             const std::vector<float> pixels = [&] {
                 InstanceState state;
-                return render_case(test, parameters_for(test), state);
+                auto rendered = render_case(test, parameters_for(test), state);
+#if !defined(JUICER_PREPARED_BOUNDARY_TEST)
+                if (sequentialOwners) {
+                    const auto& snapshot = state.submissionSnapshotLatch;
+                    JuicerCuda::ResourceManager::RegistryContextSnapshot admitted;
+                    if (snapshot.deviceContextKey.contextOpaque != initialContext ||
+                        !JuicerCuda::ResourceManager::registry_begin_submission(snapshot.deviceContextKey, admitted)) {
+                        throw std::runtime_error("sequential owner changed or failed to admit the live context");
+                    }
+                    const bool ended = JuicerCuda::ResourceManager::registry_note_submission_end(snapshot.deviceContextKey);
+                    if (!ended || admitted.contextEpoch <= previousEpoch) {
+                        throw std::runtime_error("owner recreation did not advance the native epoch");
+                    }
+                    std::cerr << "owner transition case=" << test.name << " previous_epoch=" << previousEpoch << " admitted_epoch=" << admitted.contextEpoch << '\n';
+                    previousEpoch = admitted.contextEpoch;
+                }
+#endif
+                return rendered;
             }();
             if (test.signedZeroGlare) {
                 (test.negativeZero ? freshMinus : freshPlus) = pixels;
@@ -845,6 +903,59 @@ int main(int argc, char** argv) {
                     throw std::runtime_error(std::string(test.name) + ": incomplete fixture row");
                 }
                 compare_pixels(test.name, pixels, expected);
+#if !defined(JUICER_PREPARED_BOUNDARY_TEST)
+                if (sequentialOwners && std::string_view(test.name) == "negative-direct") {
+                    Case uniform = test;
+                    uniform.uniform = true;
+                    std::vector<float> uniformExpected(expected.size());
+                    for (std::size_t sample = 0; sample < uniformExpected.size(); ++sample) {
+                        uniformExpected[sample] = expected[sample % 3];
+                    }
+                    // At this fixture's physical scale the DIR FIR has no nonzero
+                    // off-center float samples. Normalized diffusion preserves a
+                    // constant exposure. Both controls use the immutable first pixel.
+                    {
+                        InstanceState control;
+                        compare_pixels("uniform direct control", render_case(uniform, parameters_for(uniform), control), uniformExpected);
+                    }
+                    if (!cudaOwner.close()) {
+                        throw std::runtime_error("direct diffusion predecessor close failed");
+                    }
+                    cudaOwner.create(JuicerProcess::data_directory());
+                    JuicerProcess::root().ensure_bootstrap();
+                    {
+                        auto parameters = parameters_for(uniform);
+                        parameters.cameraDiffusion.active = true;
+                        InstanceState diffusionState;
+                        compare_pixels("uniform direct diffusion", render_case(uniform, parameters, diffusionState), uniformExpected);
+                        JuicerCuda::ResourceManager::RegistryContextSnapshot admitted;
+                        const auto& key = diffusionState.submissionSnapshotLatch.deviceContextKey;
+                        if (key.contextOpaque != initialContext || !JuicerCuda::ResourceManager::registry_begin_submission(key, admitted)) {
+                            throw std::runtime_error("direct diffusion context admission failed");
+                        }
+                        const bool ended = JuicerCuda::ResourceManager::registry_note_submission_end(key);
+                        if (!ended || admitted.contextEpoch <= previousEpoch) {
+                            throw std::runtime_error("direct diffusion did not use a later admitted epoch");
+                        }
+                        previousEpoch = admitted.contextEpoch;
+                        std::cerr << "uniform direct diffusion matches immutable constant sample at epoch=" << previousEpoch << '\n';
+                    }
+                }
+                if (sequentialOwners && !test.combined) {
+                    InstanceState originState;
+                    compare_pixels(std::string(test.name) + ": independent destination origin", render_case(test, parameters_for(test), originState, false, ExecutionPath::Processor, DestinationLayout::Offset), expected);
+                    InstanceState rejectedState;
+                    bool fatal = false;
+                    try {
+                        (void)render_case(test, parameters_for(test), rejectedState, false, ExecutionPath::Processor, DestinationLayout::Uncovered);
+                    } catch (const OFX::Exception::Suite& error) {
+                        fatal = error.status() == kOfxStatErrFatal;
+                    }
+                    if (!fatal || rejectedState.submissionSnapshotLatchValid) {
+                        throw std::runtime_error("uncovered destination was not rejected before submission latch publication");
+                    }
+                }
+#endif
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
                 compare_pixels(std::string(test.name) + ": direct executor", direct, expected);
                 compare_pixels(std::string(test.name) + ": C boundary", boundary, expected);
@@ -860,6 +971,19 @@ int main(int argc, char** argv) {
                 std::cerr << test.name << ": processor/direct/cold C/warm C match immutable fixture; direct/C bit-exact\n";
 #endif
             }
+#if !defined(JUICER_PREPARED_BOUNDARY_TEST)
+            if (sequentialOwners) {
+                if (!cudaOwner.close()) {
+                    throw std::runtime_error("sequential native owner failed to close");
+                }
+                cudaOwner.create(JuicerProcess::data_directory());
+                JuicerProcess::root().ensure_bootstrap();
+                CUcontext current = nullptr;
+                if (cuCtxGetCurrent(&current) != CUDA_SUCCESS || current != initialContext) {
+                    throw std::runtime_error("owner close/recreate replaced the live CUDA context");
+                }
+            }
+#endif
         }
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
         if (!preparedCaseFound) {
@@ -878,7 +1002,9 @@ int main(int argc, char** argv) {
         InstanceState emptyWindowState;
         (void)render_case(cases[0], parameters_for(cases[0]), emptyWindowState, true);
 #endif
-        JuicerProcess::root().shutdown();
+        if (!cudaOwner.close()) {
+            throw std::runtime_error("final native owner close failed");
+        }
         return 0;
     } catch (const std::exception& error) {
         (void)std::fprintf(stderr, "%s\n", error.what());

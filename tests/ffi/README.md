@@ -113,3 +113,43 @@ regeneration qualify this output; these checks do not prove render lifetime.
 
 References: [bindgen release](https://github.com/rust-lang/rust-bindgen/releases/tag/v0.72.1),
 [libclang requirements](https://rust-lang.github.io/rust-bindgen/requirements.html).
+
+## Raw CUDA frame inspection
+
+`fj_cuda_inspect` borrows the one registered owner and callback-local image
+records. It never creates or switches a CUDA context. Success returns only the
+physical device and exact current context; failure leaves that output unchanged.
+The C header and Rust layouts are unchanged. Exceptions are contained at this
+entry, and failed CUDA queries retain their API and numeric code.
+
+Each float RGB/RGBA image has its own bounds origin and positive, float-aligned
+row stride. Inspection checks the complete declared image extent against its
+actual device allocation, using checked signed-size and address arithmetic.
+Both images must cover the render window and belong to the current context.
+Host and managed memory are unsupported. The source may be read across its full
+bounds for metering. Destination writes cover the render window. Overlap between
+those pixel ranges is rejected; padding is excluded, so disjoint images within
+one allocation remain supported. No overlapping input/output algorithm has been
+qualified: the output stages can read source pixels while writing destination
+pixels, and distinct OFX image handles do not imply disjoint storage.
+
+`Ffi.Host.CudaInspect` rejects malformed records without GPU discovery.
+`Ffi.Gpu.CudaInspect` checks actual allocations, independent origins, exact
+context identity, host-memory rejection, foreign contexts and row overlap.
+`Ofx.Gpu.SequentialOwners` closes and recreates owners in the same live context,
+checks increasing registry epochs, and compares all seven processor cases to
+the unchanged platform captures, including the combined print/diffusion case. It also checks direct camera diffusion
+on a constant exposure against the capture's immutable first-pixel sample (with a
+no-diffusion control), checks distinct destination origins/pitches, and rejects
+an uncovered destination before latch publication.
+The instance latch has no epoch field. Native admission assigns it to the
+transaction; execution reads the admitted snapshot and epoch from its prepared
+frame. The existing diffusion mismatch rejection remains in force.
+
+`Ofx.Gpu.StreamContract` dispatches actual render actions through the built
+module and OFXS argument extraction. CUDA stream property presence is carried
+separately from its value: supplied non-null and supplied null streams preserve
+asynchronous submission; absence waits on the relevant default stream on normal
+return and exception cleanup before image leases expire. Supplied streams receive
+no new final wait or device-wide synchronization. The small local OFXS presence
+patch is removed with the support library's compiled consumer at S6.

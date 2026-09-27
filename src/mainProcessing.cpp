@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <mutex>
@@ -13,6 +14,7 @@
 #include "SpectralData.h"
 #include "SpectralProcessing.h"
 #include "mainProcessing.h"
+#include "juicer_cuda_owner.h"
 
 namespace {
     inline bool is_finite(float value);
@@ -177,7 +179,6 @@ void JuicerProcessor::setDirectFrameRequest(const DirectFrameRequest& request) {
     _fullFrameExtent = request.fullFrameExtent;
     _diffusionFrameSetDescriptor = request.diffusionFrameSet;
     _scatterHalationDescriptor = request.scatterHalation;
-    _nComponents = request.components;
     _directStateHold = request.state;
     _printStateHold.reset();
     _sessionSeed = request.sessionSeed;
@@ -198,7 +199,6 @@ void JuicerProcessor::setPrintFrameRequest(const PrintFrameRequest& request) {
     _fullFrameExtent = request.fullFrameExtent;
     _diffusionFrameSetDescriptor = request.diffusionFrameSet;
     _scatterHalationDescriptor = request.scatterHalation;
-    _nComponents = request.components;
     _printStateHold = request.state;
     _directStateHold.reset();
     _sessionSeed = request.sessionSeed;
@@ -219,7 +219,7 @@ void JuicerProcessor::setInstanceState(InstanceState* s) {
 
 void JuicerProcessor::process() {
     if (_isEnabledCudaRender) {
-        OFX::ImageProcessor::process();
+        processImagesCUDA();
         return;
     }
     JTRACE("SPEKTRAFILM", "FATAL: SpektrafilmCpuPixelPipelineNotImplementedForPhase3C at JuicerProcessor::process");
@@ -232,19 +232,10 @@ void JuicerProcessor::processImagesCUDA() {
         return;
     }
 
-    if (!(_nComponents == 1 || _nComponents == 3 || _nComponents == 4)) {
-        std::string msg = "FATAL: CUDA render requested with unsupported component count=";
-        msg += std::to_string(_nComponents);
-        JTRACE("CUDA", msg);
-        OFX::throwSuiteStatusException(kOfxStatErrFatal);
-    }
-
     const OfxRectI srcBounds = _srcImg->getBounds();
     const OfxRectI dstBounds = _dstImg->getBounds();
     const OfxRectI win = _renderWindow;
-    const int width = win.x2 - win.x1;
-    const int height = win.y2 - win.y1;
-    if (width <= 0 || height <= 0) {
+    if (win.x2 <= win.x1 || win.y2 <= win.y1) {
         return;
     }
     const bool traceInfo = JTRACE_ENABLED(1);
@@ -253,45 +244,9 @@ void JuicerProcessor::processImagesCUDA() {
         return _effect.abort();
     };
 
-    const int bytesPerPixel = _nComponents * static_cast<int>(sizeof(float));
     const std::ptrdiff_t srcRowBytes = _srcImg->getRowBytes();
     const std::ptrdiff_t dstRowBytes = _dstImg->getRowBytes();
-    if (srcRowBytes <= 0 || dstRowBytes <= 0) {
-        JTRACE("CUDA", "FATAL: invalid row bytes for CUDA copy");
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-
-    const std::ptrdiff_t xSrc = static_cast<std::ptrdiff_t>(win.x1 - srcBounds.x1);
-    const std::ptrdiff_t ySrc = static_cast<std::ptrdiff_t>(win.y1 - srcBounds.y1);
-    const std::ptrdiff_t xDst = static_cast<std::ptrdiff_t>(win.x1 - dstBounds.x1);
-    const std::ptrdiff_t yDst = static_cast<std::ptrdiff_t>(win.y1 - dstBounds.y1);
-
-    const std::ptrdiff_t widthBytes = static_cast<std::ptrdiff_t>(width) * static_cast<std::ptrdiff_t>(bytesPerPixel);
-    if (xSrc < 0 || ySrc < 0 || xDst < 0 || yDst < 0 || widthBytes <= 0) {
-        JTRACE("CUDA", "FATAL: CUDA render window out of bounds");
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-
-    const unsigned char* srcBase = static_cast<const unsigned char*>(_srcImg->getPixelData());
-    unsigned char* dstBase = static_cast<unsigned char*>(_dstImg->getPixelData());
-    if (!srcBase || !dstBase) {
-        JTRACE("CUDA", "FATAL: missing device pointers for CUDA render");
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-
-    JuicerCuda::ResourceManager::DeviceContextKey deviceContextKey{};
-    try {
-        deviceContextKey = JuicerCuda::inspect_frame(srcBase, dstBase, traceInfo);
-    } catch (const JuicerCuda::ExecutionFailure&) {
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-
-    if (should_abort_effect()) {
-        return;
-    }
-
-    const unsigned char* srcPtr = srcBase + ySrc * srcRowBytes + xSrc * bytesPerPixel;
-    unsigned char* dstPtr = dstBase + yDst * dstRowBytes + xDst * bytesPerPixel;
+    const auto* srcBase = static_cast<const unsigned char*>(_srcImg->getPixelData());
 
     JTRACE_VERBOSE("CUDA", "processImagesCUDA");
 
@@ -310,6 +265,32 @@ void JuicerProcessor::processImagesCUDA() {
     const FocusedRenderPayload* printPayload =
         printRecipe ? &_printStateHold->payload : nullptr;
     const RenderRecipe* focusedRecipe = directRecipe ? directRecipe : printRecipe;
+    const JuicerCuda::AutoExposurePreviewDescriptor autoExposureDescriptor = focusedRecipe
+                                                                                 ? JuicerCuda::make_auto_exposure_preview_descriptor(native_rect(srcBounds), native_rect(srcBounds), focusedRecipe->filmRaw.autoExposureMethod)
+                                                                                 : JuicerCuda::AutoExposurePreviewDescriptor{};
+    const auto abi_rect = [](const OfxRectI& rect) -> FjRect {
+        return {rect.x1, rect.y1, rect.x2, rect.y2};
+    };
+    const auto image_record = [&](const OFX::Image& image) -> FjImage {
+        return {reinterpret_cast<std::uintptr_t>(image.getPixelData()), abi_rect(image.getBounds()), image.getRowBytes(), image.getPixelComponents() == OFX::ePixelComponentRGB ? FJ_COMPONENTS_RGB : image.getPixelComponents() == OFX::ePixelComponentRGBA ? FJ_COMPONENTS_RGBA
+                                                                                                                                                                                                                                                             : FJ_COMPONENTS_UNKNOWN,
+                image.getPixelDepth() == OFX::eBitDepthFloat ? FJ_DEPTH_FLOAT32 : FJ_DEPTH_UNKNOWN};
+    };
+    const auto& geometry = _effectsGeometry;
+    const FjFrame rawFrame{
+        image_record(*_srcImg), image_record(*_dstImg), abi_rect(win), abi_rect(_fullFrameExtent), reinterpret_cast<std::uintptr_t>(_pCudaStream), (_cudaStreamPropertyPresent ? FJ_FRAME_STREAM_PRESENT : 0U) | (traceInfo ? FJ_FRAME_TRACE_INFO : 0U) | (traceVerbose ? FJ_FRAME_TRACE_VERBOSE : 0U), _pixelSizeUm, _timeFrames, _frameRate, _sessionSeed, _clipToken, {{geometry.pixelDefinition.x, geometry.pixelDefinition.y, geometry.pixelDefinition.width, geometry.pixelDefinition.height}, geometry.canonicalX, geometry.canonicalY, geometry.canonicalWidth, geometry.canonicalHeight, geometry.scaleX, geometry.scaleY, geometry.pixelAspectRatio}};
+    FjCudaContext inspected{};
+    std::array<char, 512> inspectionMessage{};
+    FjErrorBuffer inspectionError{inspectionMessage.data(), inspectionMessage.size(), 0};
+    const auto inspection = fj_cuda_inspect(JuicerCuda::borrowed_owner(), &rawFrame, &inspected, &inspectionError);
+    if (inspection.category != FJ_STATUS_SUCCESS) {
+        JTRACE("CUDA", inspectionMessage.data());
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    const JuicerCuda::ResourceManager::DeviceContextKey deviceContextKey{inspected.device_id, reinterpret_cast<void*>(inspected.context)};
+    if (should_abort_effect()) {
+        return;
+    }
     if (!focusedRecipe) {
         JTRACE("CUDA", "FATAL: render state unavailable; cannot serve CUDA render");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -318,6 +299,15 @@ void JuicerProcessor::processImagesCUDA() {
         JTRACE("CUDA", "FATAL: instance state missing; cannot serve CUDA render");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
+
+    // The raw boundary proved independent image coverage and all offset sums.
+    const auto window_address = [&](const FjImage& image) {
+        const auto x = static_cast<std::ptrdiff_t>(win.x1) - image.bounds.x1;
+        const auto y = static_cast<std::ptrdiff_t>(win.y1) - image.bounds.y1;
+        return image.address + static_cast<std::uintptr_t>(y * image.row_bytes + x * image.components * sizeof(float));
+    };
+    const auto* srcPtr = reinterpret_cast<const unsigned char*>(window_address(rawFrame.source));
+    auto* dstPtr = reinterpret_cast<unsigned char*>(window_address(rawFrame.destination));
 
     const auto frame_domain = [](const OfxRectI& bounds) {
         return Spektrafilm::DiffusionFrameDomain{
@@ -425,12 +415,6 @@ void JuicerProcessor::processImagesCUDA() {
         return;
     }
 
-    const FilmRawRecipe* focusedFilmRaw = &focusedRecipe->filmRaw;
-    const Spektrafilm::AutoExposureMethod cameraMeteringMethod =
-        focusedFilmRaw->autoExposureMethod;
-    const JuicerCuda::AutoExposurePreviewDescriptor autoExposureDescriptor =
-        JuicerCuda::make_auto_exposure_preview_descriptor(
-            native_rect(srcBounds), native_rect(srcBounds), cameraMeteringMethod);
     JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
     {
         snapshot.instanceToken.value = _instanceToken;
@@ -504,7 +488,7 @@ void JuicerProcessor::processImagesCUDA() {
         dstPtr,
         srcRowBytes,
         dstRowBytes,
-        _nComponents,
+        static_cast<int>(rawFrame.source.components),
         _pCudaStream,
         _diffusionFrameSetDescriptor,
         _scatterHalationDescriptor,
@@ -517,6 +501,21 @@ void JuicerProcessor::processImagesCUDA() {
         autoExposureDescriptor,
         traceInfo,
         traceVerbose};
+    const auto complete_unsupplied_stream = [&]() {
+        if (!_cudaStreamPropertyPresent) {
+            const auto completion = cudaStreamSynchronize(static_cast<cudaStream_t>(_pCudaStream));
+            if (completion != cudaSuccess) {
+                if (!pendingContextLossRecovery.pending && JuicerCuda::is_cuda_context_loss_signal(completion, {})) {
+                    pendingContextLossRecovery.pending = true;
+                    pendingContextLossRecovery.error = completion;
+                    pendingContextLossRecovery.stage = "absent_stream_completion";
+                    pendingContextLossRecovery.detail = cudaGetErrorString(completion);
+                }
+                JTRACE("CUDA", cudaGetErrorString(completion));
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+        }
+    };
     try {
         if (directRecipe) {
             JuicerCuda::execute_direct(
@@ -530,6 +529,11 @@ void JuicerProcessor::processImagesCUDA() {
                 dirFailureMessage);
         }
     } catch (const JuicerCuda::ExecutionFailure&) {
+        complete_unsupplied_stream();
         throw OFX::Exception::Suite(kOfxStatErrFatal);
+    } catch (...) {
+        complete_unsupplied_stream();
+        throw;
     }
+    complete_unsupplied_stream();
 }

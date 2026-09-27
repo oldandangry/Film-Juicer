@@ -6,6 +6,9 @@
 
 namespace JuicerCuda {
 
+    // Callback-local borrow of the registered owner; never constructs one.
+    FjCuda* borrowed_owner() noexcept;
+
     // Temporary C++ runtime holder; replaced by the Rust owner at its cutover.
     // Host load/unload serializes lifetime against all borrowed render calls.
     class Owner final {

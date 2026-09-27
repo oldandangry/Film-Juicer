@@ -28,7 +28,6 @@ public:
         std::shared_ptr<const DirectRenderState> state;
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
         std::optional<ScatterHalationFrameDescriptor> scatterHalation;
-        int components = 0;
         OfxRectI renderWindow{0, 0, 0, 0};
         Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{};
         OfxRectI fullFrameExtent{0, 0, 0, 0};
@@ -44,7 +43,6 @@ public:
         std::shared_ptr<const PrintRenderState> state;
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusionFrameSet;
         std::optional<ScatterHalationFrameDescriptor> scatterHalation;
-        int components = 0;
         OfxRectI renderWindow{0, 0, 0, 0};
         Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{};
         OfxRectI fullFrameExtent{0, 0, 0, 0};
@@ -66,7 +64,6 @@ public:
 
 private:
     OFX::Image* _srcImg = nullptr;
-    int _nComponents = 0;
     std::shared_ptr<const DirectRenderState> _directStateHold;
     std::shared_ptr<const PrintRenderState> _printStateHold;
     InstanceState* _instanceState = nullptr;

@@ -93,11 +93,6 @@ namespace JuicerCuda {
         std::string detail;
     };
 
-    ResourceManager::DeviceContextKey inspect_frame(
-        const unsigned char* srcBase,
-        unsigned char* dstBase,
-        bool traceInfo);
-
     bool is_cuda_context_loss_signal(cudaError_t error, const std::string& detail);
 
     AutoExposurePreviewDescriptor make_auto_exposure_preview_descriptor(

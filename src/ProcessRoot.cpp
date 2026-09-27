@@ -1558,7 +1558,7 @@ namespace JuicerProcess {
             Spektrafilm::scan_route_metadata(route);
         const bool printRoute = routeMetadata.printRoute;
         if (!resources || !resources->deviceLedger ||
-            transaction.snapshot.contextEpoch == 0 ||
+            transaction.contextEpoch == 0 ||
             transaction.resolvedMemoryBudget.allocationCapBytes == 0 ||
             frameSet->route != route ||
             frameSet->fullFrame.width != requestedWidth ||
@@ -1580,7 +1580,7 @@ namespace JuicerProcess {
                                                   contextKey.contextOpaque)));
             outError += " epoch=" + std::to_string(
                                         static_cast<unsigned long long>(
-                                            transaction.snapshot.contextEpoch));
+                                            transaction.contextEpoch));
             outError += " device_budget_bytes=" + std::to_string(
                                                       static_cast<unsigned long long>(
                                                           transaction.resolvedMemoryBudget.deviceBudgetBytes));
@@ -1618,7 +1618,7 @@ namespace JuicerProcess {
         };
         if (!Spektrafilm::build_diffusion_execution_descriptor(
                 *frameSet,
-                transaction.snapshot.contextEpoch,
+                transaction.contextEpoch,
                 transaction.resolvedMemoryBudget.allocationCapBytes,
                 diffusionExecutionDescriptor,
                 outError)) {
@@ -1628,7 +1628,7 @@ namespace JuicerProcess {
         if (!JuicerCuda::Diffusion::prepare_diffusion_resources(
                 resources->diffusion,
                 contextKey,
-                transaction.snapshot.contextEpoch,
+                transaction.contextEpoch,
                 resources->deviceLedger,
                 *frameSet,
                 diffusionExecutionDescriptor,
@@ -1686,7 +1686,7 @@ namespace JuicerProcess {
                 shape,
                 0,
                 contextKey,
-                transaction.snapshot.contextEpoch,
+                transaction.contextEpoch,
                 failedFact,
                 {},
                 outError);
@@ -1698,11 +1698,11 @@ namespace JuicerProcess {
                 diffusionLease.view();
             if (!diffusionLease.active() || !diffusionView.active ||
                 diffusionView.executionDescriptor.contextEpoch !=
-                    transaction.snapshot.contextEpoch ||
+                    transaction.contextEpoch ||
                 diffusionView.executionDescriptor.frameSetHash !=
                     frameSet->hash ||
                 resources->ownerContextKey != contextKey ||
-                resources->contextEpoch != transaction.snapshot.contextEpoch) {
+                resources->contextEpoch != transaction.contextEpoch) {
                 set_scatter_halation_exact_admission_failure(
                     identity,
                     *descriptor,
@@ -1712,7 +1712,7 @@ namespace JuicerProcess {
                     shape,
                     0,
                     contextKey,
-                    transaction.snapshot.contextEpoch,
+                    transaction.contextEpoch,
                     "camera_diffusion_exact_context_lease",
                     {},
                     outError);
@@ -1736,7 +1736,7 @@ namespace JuicerProcess {
                 shape,
                 0,
                 contextKey,
-                transaction.snapshot.contextEpoch,
+                transaction.contextEpoch,
                 "filter_allocation_block",
                 allocationError,
                 outError);
@@ -1761,7 +1761,7 @@ namespace JuicerProcess {
                 shape,
                 shape.filterBytes,
                 contextKey,
-                transaction.snapshot.contextEpoch,
+                transaction.contextEpoch,
                 "carrier_allocation_block",
                 allocationError,
                 outError);
@@ -2366,6 +2366,14 @@ namespace JuicerProcess {
 
     bool Root::PreparedCudaFrame::WorkspaceLeaseMarker::active() const noexcept {
         return _active;
+    }
+
+    const JuicerCuda::ResourceManager::SubmissionSnapshot& Root::PreparedCudaFrame::admitted_snapshot() const noexcept {
+        return _state->transaction.snapshot;
+    }
+
+    std::uint64_t Root::PreparedCudaFrame::admitted_context_epoch() const noexcept {
+        return _state->transaction.contextEpoch;
     }
 
     bool Root::PreparedCudaFrame::active() const noexcept {
@@ -3419,7 +3427,7 @@ namespace JuicerProcess {
         detail::GrainStaticMembershipChange membershipChange;
         if (!root.apply_grain_static_membership_and_copy_owner(
                 deviceContextKey,
-                snapshot.contextEpoch,
+                _state->transaction.contextEpoch,
                 _state->resources->deviceLedger,
                 snapshot.instanceToken.value,
                 snapshot.snapshotId,
@@ -3436,7 +3444,7 @@ namespace JuicerProcess {
 
         const ContextCudaResourceKey contextKey{
             deviceContextKey,
-            snapshot.contextEpoch};
+            _state->transaction.contextEpoch};
         auto fail_preparation = [&](const char* stageTag,
                                     const char* failurePrefix) {
             root.rollback_grain_static_membership(
@@ -5370,7 +5378,7 @@ namespace JuicerProcess {
                 request.requestedWidth,
                 request.requestedHeight,
                 deviceContextKey,
-                frame._state->transaction.snapshot.contextEpoch,
+                frame._state->transaction.contextEpoch,
                 frame._state->workspaceRequest,
                 outError)) {
             recordFailure(
@@ -5381,7 +5389,7 @@ namespace JuicerProcess {
         }
         if (!resolve_cuda_frame_resources(
                 deviceContextKey,
-                frame._state->transaction.snapshot.contextEpoch,
+                frame._state->transaction.contextEpoch,
                 frame._state->transaction.resolvedMemoryBudget,
                 deviceLedger,
                 frame._state->resourceOwner,

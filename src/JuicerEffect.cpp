@@ -1721,12 +1721,20 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     if (roi.x1 == roi.x2 && roi.y1 == roi.y2) {
         roi = fullBounds;
     }
-    const int width = roi.x2 - roi.x1;
-    const int height = roi.y2 - roi.y1;
-    if (width <= 0 || height <= 0)
+    if (roi.x2 <= roi.x1 || roi.y2 <= roi.y1)
         return;
-    const int fullWidth = fullBounds.x2 - fullBounds.x1;
-    const int fullHeight = fullBounds.y2 - fullBounds.y1;
+    const auto frame_domain = [](const OfxRectI& bounds) {
+        const auto width = static_cast<std::int64_t>(bounds.x2) - bounds.x1;
+        const auto height = static_cast<std::int64_t>(bounds.y2) - bounds.y1;
+        // Descriptors use signed int dimensions before the raw CUDA inspection.
+        if (width > std::numeric_limits<int>::max() || width < std::numeric_limits<int>::min() ||
+            height > std::numeric_limits<int>::max() || height < std::numeric_limits<int>::min()) {
+            JTRACE("CUDA", "FATAL: frame descriptor dimensions exceed signed integer range");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        return Spektrafilm::DiffusionFrameDomain{bounds.x1, bounds.y1, static_cast<int>(width), static_cast<int>(height)};
+    };
+    const auto fullDomain = frame_domain(fullBounds);
     const bool fullFrame = (roi.x1 == fullBounds.x1 && roi.y1 == fullBounds.y1 &&
                             roi.x2 == fullBounds.x2 && roi.y2 == fullBounds.y2);
 
@@ -1778,7 +1786,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
-    const double longEdgePx = static_cast<double>(std::max(fullWidth, fullHeight));
+    const double longEdgePx = static_cast<double>(std::max(fullDomain.width, fullDomain.height));
     const std::shared_ptr<const DirectRenderState> directState = admission.directState;
     const std::shared_ptr<const PrintRenderState> printState = admission.printState;
     const RenderRecipe& focusedRecipe = printRoute ? printState->recipe : directState->recipe;
@@ -1801,11 +1809,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
             focusedRecipe.spatialOptics,
             focusedRecipe.profileRoute.scanRoute,
             static_cast<double>(pixelSizeUm),
-            Spektrafilm::DiffusionFrameDomain{
-                fullBounds.x1,
-                fullBounds.y1,
-                fullWidth,
-                fullHeight},
+            fullDomain,
             diffusionFrameSet,
             diffusionDiagnostic)) {
         JTRACE("SPEKTRAFILM", diffusionDiagnostic);
@@ -1828,7 +1832,8 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         const auto definition = srcImg->getRegionOfDefinition();
         const auto canonical = _src->getRegionOfDefinition(args.time);
         const auto scale = srcImg->getRenderScale();
-        effectsGeometry.pixelDefinition = {definition.x1, definition.y1, definition.x2 - definition.x1, definition.y2 - definition.y1};
+        const auto definitionDomain = frame_domain(definition);
+        effectsGeometry.pixelDefinition = {definitionDomain.originX, definitionDomain.originY, definitionDomain.width, definitionDomain.height};
         effectsGeometry.canonicalX = canonical.x1;
         effectsGeometry.canonicalY = canonical.y1;
         effectsGeometry.canonicalWidth = canonical.x2 - canonical.x1;
@@ -1838,7 +1843,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         effectsGeometry.pixelAspectRatio = srcImg->getPixelAspectRatio();
     }
 
-    // Tile-based multithreaded processing via OFX::ImageProcessor
+    // The callback retains image leases through inspection and CUDA submission.
     JuicerProcessor proc(*this);
     JuicerProcessor::SourceDestinationImages images{};
     images.src = srcImg.get();
@@ -1852,7 +1857,6 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         frameRequest.state = printState;
         frameRequest.diffusionFrameSet = diffusionFrameSet;
         frameRequest.scatterHalation = scatterHalationDescriptor;
-        frameRequest.components = nComponents;
         frameRequest.renderWindow = roi;
         frameRequest.effectsGeometry = effectsGeometry;
         frameRequest.fullFrameExtent = fullBounds;
@@ -1868,7 +1872,6 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         frameRequest.state = directState;
         frameRequest.diffusionFrameSet = diffusionFrameSet;
         frameRequest.scatterHalation = scatterHalationDescriptor;
-        frameRequest.components = nComponents;
         frameRequest.renderWindow = roi;
         frameRequest.effectsGeometry = effectsGeometry;
         frameRequest.fullFrameExtent = fullBounds;

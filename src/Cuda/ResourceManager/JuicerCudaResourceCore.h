@@ -142,7 +142,6 @@ namespace JuicerCuda {
             FrameToken frameToken{};
             std::uint64_t snapshotId = 0;
             DeviceContextKey deviceContextKey{};
-            std::uint64_t contextEpoch = 1;
             KeyDigests keyDigests{};
         };
 
@@ -150,6 +149,7 @@ namespace JuicerCuda {
             std::uint64_t transactionId = 0;
             std::uint64_t leaseGeneration = 0;
             SubmissionSnapshot snapshot{};
+            std::uint64_t contextEpoch = 0;
             ResolvedMemoryBudget resolvedMemoryBudget{};
             bool active = false;
             bool committed = false;

@@ -992,24 +992,27 @@ namespace JuicerCuda {
         descriptor.meterY2 = meterBounds.y2;
         descriptor.method = method;
 
-        const int width = std::max(0, meterBounds.x2 - meterBounds.x1);
-        const int height = std::max(0, meterBounds.y2 - meterBounds.y1);
-        const int longEdge = std::max(width, height);
-        descriptor.previewWidth = width;
-        descriptor.previewHeight = height;
+        const auto width = std::max<std::int64_t>(0, static_cast<std::int64_t>(meterBounds.x2) - meterBounds.x1);
+        const auto height = std::max<std::int64_t>(0, static_cast<std::int64_t>(meterBounds.y2) - meterBounds.y1);
+        const auto longEdge = std::max(width, height);
+        if (longEdge > std::numeric_limits<int>::max()) {
+            return descriptor;
+        }
+        descriptor.previewWidth = static_cast<int>(width);
+        descriptor.previewHeight = static_cast<int>(height);
         if (longEdge > JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge) {
             if (width >= height) {
                 descriptor.previewWidth = JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge;
-                descriptor.previewHeight = std::max(
+                descriptor.previewHeight = static_cast<int>(std::max<std::int64_t>(
                     1,
                     (height * JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge + width / 2) /
-                        width);
+                        width));
             } else {
                 descriptor.previewHeight = JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge;
-                descriptor.previewWidth = std::max(
+                descriptor.previewWidth = static_cast<int>(std::max<std::int64_t>(
                     1,
                     (width * JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge + height / 2) /
-                        height);
+                        height));
             }
         }
         descriptor.hash = Hash::kFnvOffset;
@@ -1030,64 +1033,6 @@ namespace JuicerCuda {
         return descriptor;
     }
 
-    ResourceManager::DeviceContextKey inspect_frame(
-        const unsigned char* srcBase,
-        unsigned char* dstBase,
-        bool traceInfo) {
-        int deviceId = -1;
-        void* contextOpaque = nullptr;
-        {
-            cudaPointerAttributes srcAttr{};
-            cudaError_t attrErr = cudaPointerGetAttributes(&srcAttr, srcBase);
-#if CUDART_VERSION >= 10000
-            if (attrErr == cudaSuccess) {
-                deviceId = srcAttr.device;
-            }
-#else
-            if (attrErr == cudaSuccess) {
-                deviceId = srcAttr.device;
-            }
-#endif
-
-            cudaPointerAttributes dstAttr{};
-            cudaError_t dstAttrErr = cudaPointerGetAttributes(&dstAttr, dstBase);
-            if (dstAttrErr == cudaSuccess && deviceId >= 0 && dstAttr.device != deviceId) {
-                JTRACE("CUDA", "FATAL: source/destination device mismatch");
-                throw JuicerCuda::ExecutionFailure{};
-            }
-
-            if (deviceId < 0) {
-                int cur = -1;
-                cudaError_t devErr = cudaGetDevice(&cur);
-                if (devErr != cudaSuccess || cur < 0) {
-                    JTRACE("CUDA", "FATAL: failed to determine CUDA device for OFX pointers");
-                    throw JuicerCuda::ExecutionFailure{};
-                }
-                deviceId = cur;
-            }
-
-            cudaError_t setErr = cudaSetDevice(deviceId);
-            if (setErr != cudaSuccess) {
-                const char* msg = detail_or_unknown(cudaGetErrorString(setErr));
-                trace_cuda_fatal_prefixed_if(
-                    traceInfo,
-                    CudaFailureTrace{"cudaSetDevice failed", msg});
-                throw JuicerCuda::ExecutionFailure{};
-            }
-
-            std::string contextError;
-            if (!JuicerCuda::query_current_cuda_context(contextOpaque, contextError)) {
-                trace_cuda_fatal_prefixed_if(
-                    traceInfo,
-                    CudaFailureTrace{
-                        "failed to capture CUDA context identity",
-                        cstr_or_null_if_empty(contextError)});
-                throw JuicerCuda::ExecutionFailure{};
-            }
-        }
-
-        return {deviceId, contextOpaque};
-    }
 
 } // namespace JuicerCuda
 
@@ -1430,6 +1375,7 @@ namespace {
         const JuicerProcess::Root::PreparationIdentity& identity,
         const JuicerCuda::ScatterHalationPreparedView& halation,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+        std::uint64_t contextEpoch,
         const char* boundary,
         const std::string& cudaStatus) {
         const auto& deviceContextKey = snapshot.deviceContextKey;
@@ -1457,7 +1403,7 @@ namespace {
                           reinterpret_cast<std::uintptr_t>(
                               deviceContextKey.contextOpaque)));
         diagnostic += " context_epoch=" +
-                      std::to_string(snapshot.contextEpoch);
+                      std::to_string(contextEpoch);
         diagnostic += " observing_completion_boundary=";
         diagnostic += boundary;
         diagnostic += " cuda_status=";
@@ -1468,7 +1414,6 @@ namespace {
     void bind_direct_diffusion(
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
         const JuicerCuda::ExecutionFrame& frame,
-        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         DiffusionStageBinding& directCameraDiffusion,
         const ExecutionErrors& errors) {
         const auto diffusionPrepared = preparedFrame.diffusion_resources();
@@ -1478,7 +1423,7 @@ namespace {
                 diffusionPrepared.executionDescriptor.frameSetHash !=
                     frame.diffusionFrameSet->hash ||
                 diffusionPrepared.executionDescriptor.contextEpoch !=
-                    snapshot.contextEpoch ||
+                    preparedFrame.admitted_context_epoch() ||
                 diffusionPrepared.spectrumCount == 0 ||
                 diffusionPrepared.spectrumCount !=
                     diffusionPrepared.executionDescriptor.uniqueSpectrumCount) {
@@ -1586,7 +1531,7 @@ namespace {
                     identity.filmProfileKey,
                     identity.filmProfileAssetVersionToken,
                     deviceContextKey,
-                    snapshot.contextEpoch,
+                    preparedFrame.admitted_context_epoch(),
                     reinterpret_cast<cudaStream_t>(frame.stream),
                     halationDiagnostic)) {
                 errors.fail_submission(
@@ -2215,7 +2160,6 @@ namespace {
     void bind_print_diffusion(
         JuicerProcess::Root::PreparedCudaFrame& preparedFrame,
         const JuicerCuda::ExecutionFrame& frame,
-        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         DiffusionStageBinding& printCameraDiffusion,
         DiffusionStageBinding& printEnlargerDiffusion,
         const ExecutionErrors& errors) {
@@ -2226,7 +2170,7 @@ namespace {
                 diffusionPrepared.executionDescriptor.frameSetHash !=
                     frame.diffusionFrameSet->hash ||
                 diffusionPrepared.executionDescriptor.contextEpoch !=
-                    snapshot.contextEpoch ||
+                    preparedFrame.admitted_context_epoch() ||
                 diffusionPrepared.spectrumCount == 0 ||
                 diffusionPrepared.spectrumCount !=
                     diffusionPrepared.executionDescriptor.uniqueSpectrumCount) {
@@ -2404,7 +2348,7 @@ namespace {
                     identity.filmProfileKey,
                     identity.filmProfileAssetVersionToken,
                     deviceContextKey,
-                    snapshot.contextEpoch,
+                    preparedFrame.admitted_context_epoch(),
                     reinterpret_cast<cudaStream_t>(frame.stream),
                     halationDiagnostic)) {
                 errors.fail_submission(
@@ -2961,8 +2905,8 @@ namespace JuicerCuda {
 
     static void execute_direct_schedule(const ScheduleInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
         const auto& frame = input.frame;
-        auto& snapshot = input.snapshot;
-        const auto& deviceContextKey = snapshot.deviceContextKey;
+        const auto& requestedSnapshot = input.snapshot;
+        const auto& deviceContextKey = requestedSnapshot.deviceContextKey;
         const auto& win = frame.renderWindow;
         const int width = win.x2 - win.x1;
         const int height = win.y2 - win.y1;
@@ -2997,7 +2941,7 @@ namespace JuicerCuda {
         std::string directPrepareError;
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
             std::visit([&](const auto* preparation) {
-                return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, snapshot, *preparation, autoExposureBufferRequest, frame.stream, directPrepareError);
+                return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, *preparation, autoExposureBufferRequest, frame.stream, directPrepareError);
             },
                        input.preparation);
         if (!preparedFrame.active()) {
@@ -3006,6 +2950,8 @@ namespace JuicerCuda {
                 preparedFrame.failure_prefix(),
                 directPrepareError);
         }
+
+        const auto& snapshot = preparedFrame.admitted_snapshot();
 
         JuicerCuda::ScatterHalationPreparedView directHalation =
             preparedFrame.scatter_halation_resources();
@@ -3016,7 +2962,7 @@ namespace JuicerCuda {
             cameraFilmLinearActive || descriptors.post.active() ||
             grainStageActive || filmEffectsActive || gateOutputActive;
         DiffusionStageBinding directCameraDiffusion{};
-        bind_direct_diffusion(preparedFrame, frame, snapshot, directCameraDiffusion, errors);
+        bind_direct_diffusion(preparedFrame, frame, directCameraDiffusion, errors);
         const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView prepared =
             preparedFrame.focused_resources();
         if (!prepared.active ||
@@ -3185,7 +3131,7 @@ namespace JuicerCuda {
             errors);
         if (!preparedFrame.finalize_scan_error_stage(run.scanStage.scanErrorFlag, frame.stream, scanError)) {
             const std::string diagnostic = halationExecutable
-                                               ? halation_completion_diagnostic(input.identity, directHalation, snapshot, "scan_error_finalize", scanError)
+                                               ? halation_completion_diagnostic(input.identity, directHalation, snapshot, preparedFrame.admitted_context_epoch(), "scan_error_finalize", scanError)
                                                : scanError;
             errors.fail_submission("direct_scan_error_finalize", "direct scan error finalize failed", diagnostic);
         }
@@ -3196,7 +3142,7 @@ namespace JuicerCuda {
         std::string finishError;
         if (!preparedFrame.finish(frame.stream, finishError)) {
             const std::string diagnostic = halationExecutable
-                                               ? halation_completion_diagnostic(input.identity, directHalation, snapshot, "prepared_frame_finish", finishError)
+                                               ? halation_completion_diagnostic(input.identity, directHalation, snapshot, preparedFrame.admitted_context_epoch(), "prepared_frame_finish", finishError)
                                                : finishError;
             errors.fail_submission("direct_prepared_frame_finish", "direct prepared frame finish failed", diagnostic);
         }
@@ -3205,8 +3151,8 @@ namespace JuicerCuda {
 
     static void execute_print_schedule(const ScheduleInput& input, PendingContextLossRecovery& recovery, const DirFailureMessage& dirFailureMessage) {
         const auto& frame = input.frame;
-        auto& snapshot = input.snapshot;
-        const auto& deviceContextKey = snapshot.deviceContextKey;
+        const auto& requestedSnapshot = input.snapshot;
+        const auto& deviceContextKey = requestedSnapshot.deviceContextKey;
         const auto& win = frame.renderWindow;
         const int width = win.x2 - win.x1;
         const int height = win.y2 - win.y1;
@@ -3245,7 +3191,7 @@ namespace JuicerCuda {
         std::string prepareError;
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
             std::visit([&](const auto* preparation) {
-                return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, snapshot, *preparation, autoExposureBufferRequest, frame.stream, prepareError);
+                return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, *preparation, autoExposureBufferRequest, frame.stream, prepareError);
             },
                        input.preparation);
         if (!preparedFrame.active()) {
@@ -3254,6 +3200,8 @@ namespace JuicerCuda {
                 preparedFrame.failure_prefix(),
                 prepareError);
         }
+
+        const auto& snapshot = preparedFrame.admitted_snapshot();
 
         JuicerCuda::ScatterHalationPreparedView printHalation =
             preparedFrame.scatter_halation_resources();
@@ -3266,7 +3214,7 @@ namespace JuicerCuda {
             filmEffectsActive || gateOutputActive;
         DiffusionStageBinding printCameraDiffusion{};
         DiffusionStageBinding printEnlargerDiffusion{};
-        bind_print_diffusion(preparedFrame, frame, snapshot, printCameraDiffusion, printEnlargerDiffusion, errors);
+        bind_print_diffusion(preparedFrame, frame, printCameraDiffusion, printEnlargerDiffusion, errors);
         const JuicerProcess::Root::PreparedCudaFrame::FocusedPreparedView prepared =
             preparedFrame.focused_resources();
         const JuicerProcess::Root::PreparedCudaFrame::PrintPreparedView preparedPrint =
@@ -3473,7 +3421,7 @@ namespace JuicerCuda {
                 frame.stream,
                 scanError)) {
             const std::string diagnostic = halationExecutable
-                                               ? halation_completion_diagnostic(input.identity, printHalation, snapshot, "scan_error_finalize", scanError)
+                                               ? halation_completion_diagnostic(input.identity, printHalation, snapshot, preparedFrame.admitted_context_epoch(), "scan_error_finalize", scanError)
                                                : scanError;
             errors.fail_submission(
                 "print_scan_error_finalize",
@@ -3487,7 +3435,7 @@ namespace JuicerCuda {
         std::string finishError;
         if (!preparedFrame.finish(frame.stream, finishError)) {
             const std::string diagnostic = halationExecutable
-                                               ? halation_completion_diagnostic(input.identity, printHalation, snapshot, "prepared_frame_finish", finishError)
+                                               ? halation_completion_diagnostic(input.identity, printHalation, snapshot, preparedFrame.admitted_context_epoch(), "prepared_frame_finish", finishError)
                                                : finishError;
             errors.fail_submission(
                 "print_prepared_frame_finish",
