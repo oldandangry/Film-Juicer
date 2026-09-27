@@ -330,7 +330,7 @@ namespace JuicerCuda {
         const void* src,
         std::size_t bytes,
         void* cudaStreamOpaque,
-        Failure& outError);
+        Failure& outError) noexcept;
 
     static void free_stbn(Resources& resources) noexcept;
     static void free_wang(Resources& resources) noexcept;
@@ -1442,8 +1442,8 @@ namespace JuicerCuda {
                 bytes,
                 cudaStreamOpaque,
                 outError)) {
-            outError.diagnostic = std::string("curve.x upload failed: ") + outError.diagnostic;
             free_curve(resources, dst);
+            outError.diagnostic = std::string("curve.x upload failed: ") + outError.diagnostic;
             return false;
         }
         if (!enqueue_host_to_device_copy(
@@ -1454,8 +1454,8 @@ namespace JuicerCuda {
                 bytes,
                 cudaStreamOpaque,
                 outError)) {
-            outError.diagnostic = std::string("curve.y upload failed: ") + outError.diagnostic;
             free_curve(resources, dst);
+            outError.diagnostic = std::string("curve.y upload failed: ") + outError.diagnostic;
             return false;
         }
 
@@ -2575,7 +2575,6 @@ namespace JuicerCuda {
         std::uint64_t blockId = 0;
         void* stagingPtr = nullptr;
         void* doneEventOpaque = nullptr;
-        const char* fallbackReason = nullptr;
     };
 
     static bool reserve_reusable_pinned_upload_block_locked(
@@ -2619,7 +2618,8 @@ namespace JuicerCuda {
     static PinnedUploadReservation reserve_pinned_upload_block(
         Resources& resources,
         std::size_t bytes,
-        const char* stage) {
+        const char* stage,
+        Failure& outError) {
         PinnedUploadReservation result{};
         if (bytes == 0) {
             return result;
@@ -2629,11 +2629,11 @@ namespace JuicerCuda {
         result.key.contextOpaque = resources.ownerContextKey.contextOpaque;
         if (result.key.deviceId < 0 || !result.key.contextOpaque ||
             resources.deviceId != result.key.deviceId) {
-            result.fallbackReason = "invalid_resource_owner";
+            outError.diagnostic = "pinned staging invalid_resource_owner";
             return result;
         }
         if (bytes > kPinnedUploadStagingMaxBytes) {
-            result.fallbackReason = "cap_exceeded";
+            outError.diagnostic = "pinned staging cap_exceeded";
             return result;
         }
 
@@ -2728,25 +2728,51 @@ namespace JuicerCuda {
                 bytes,
                 totalBytesAfterTrim);
             if (totalBytesAfterTrim > kPinnedUploadStagingMaxBytes - bytes) {
-                result.fallbackReason = "cap_exceeded";
+                outError.diagnostic = "pinned staging cap_exceeded";
                 return result;
             }
         }
 
         void* pinnedPtr = nullptr;
-        const cudaError_t allocErr = cudaMallocHost(&pinnedPtr, bytes);
+        cudaError_t allocErr = cudaSuccess;
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        allocErr = static_cast<cudaError_t>(PinnedUploadTest::injected_error(PinnedUploadTest::Operation::Allocate));
+#endif
+        if (allocErr == cudaSuccess) {
+            allocErr = cudaMallocHost(&pinnedPtr, bytes);
+        }
         if (allocErr != cudaSuccess || !pinnedPtr) {
             destroy_unpublished_pinned_upload_block(pinnedPtr, nullptr);
-            result.fallbackReason = "host_alloc_failed";
+            outError.status = runtime_failure_status(allocErr);
+            // Host staging exhaustion is not device capacity and must not select device reclaim.
+            if (allocErr == cudaErrorMemoryAllocation) {
+                outError.status.category = FJ_STATUS_CUDA_FAILURE;
+            }
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+            PinnedUploadTest::before_diagnostic();
+#endif
+            outError.diagnostic = std::string("cudaMallocHost(pinned staging) failed: ") + cudaGetErrorString(allocErr);
             return result;
         }
 
         cudaEvent_t doneEvent = nullptr;
-        const cudaError_t eventErr =
-            cudaEventCreateWithFlags(&doneEvent, cudaEventDisableTiming);
+        cudaError_t eventErr = cudaSuccess;
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        eventErr = static_cast<cudaError_t>(PinnedUploadTest::injected_error(PinnedUploadTest::Operation::CreateEvent));
+#endif
+        if (eventErr == cudaSuccess) {
+            eventErr = cudaEventCreateWithFlags(&doneEvent, cudaEventDisableTiming);
+        }
         if (eventErr != cudaSuccess || !doneEvent) {
             destroy_unpublished_pinned_upload_block(pinnedPtr, doneEvent);
-            result.fallbackReason = "event_create_failed";
+            outError.status = runtime_failure_status(eventErr);
+            if (eventErr == cudaErrorMemoryAllocation) {
+                outError.status.category = FJ_STATUS_CUDA_FAILURE;
+            }
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+            PinnedUploadTest::before_diagnostic();
+#endif
+            outError.diagnostic = std::string("cudaEventCreateWithFlags(pinned staging) failed: ") + cudaGetErrorString(eventErr);
             return result;
         }
 
@@ -2780,7 +2806,7 @@ namespace JuicerCuda {
 
         if (!inserted) {
             destroy_unpublished_pinned_upload_block(pinnedPtr, doneEvent);
-            result.fallbackReason = "pool_insert_failed";
+            outError.diagnostic = "pinned staging pool_insert_failed";
             return result;
         }
 
@@ -2837,9 +2863,14 @@ namespace JuicerCuda {
         const char* stage,
         Failure& outError) {
         outError = {};
-        const cudaError_t recordErr = cudaEventRecord(
-            reinterpret_cast<cudaEvent_t>(reservation.doneEventOpaque),
-            stream);
+        cudaError_t recordErr = cudaSuccess;
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        recordErr = static_cast<cudaError_t>(PinnedUploadTest::injected_error(PinnedUploadTest::Operation::RecordEvent));
+#endif
+        if (recordErr == cudaSuccess) {
+            recordErr = cudaEventRecord(
+                reinterpret_cast<cudaEvent_t>(reservation.doneEventOpaque), stream);
+        }
         if (recordErr == cudaSuccess) {
             if (transition_pinned_upload_reservation(
                     reservation,
@@ -2850,11 +2881,14 @@ namespace JuicerCuda {
             return PinnedUploadCompletionResult::Quarantined;
         }
 
-        const char* recordReason = cudaGetErrorString(recordErr);
-        const std::string recordError =
-            std::string("cudaEventRecord(pinned staging) failed: ") +
-            (recordReason ? recordReason : "(unknown)");
-        const cudaError_t syncErr = cudaStreamSynchronize(stream);
+        // Resolve completion and reservation ownership before allocating diagnostics.
+        cudaError_t syncErr = cudaSuccess;
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        syncErr = static_cast<cudaError_t>(PinnedUploadTest::injected_error(PinnedUploadTest::Operation::Synchronize));
+#endif
+        if (syncErr == cudaSuccess) {
+            syncErr = cudaStreamSynchronize(stream);
+        }
         if (syncErr == cudaSuccess) {
             if (!transition_pinned_upload_reservation(
                     reservation,
@@ -2869,7 +2903,6 @@ namespace JuicerCuda {
                 reservation.key,
                 0,
                 published_pinned_upload_staging_bytes());
-            outError.diagnostic = recordError;
             return PinnedUploadCompletionResult::CompletedAfterExceptionalSync;
         }
 
@@ -2879,6 +2912,13 @@ namespace JuicerCuda {
         const char* syncReason = cudaGetErrorString(syncErr);
         const auto recordStatus = runtime_failure_status(recordErr);
         outError.status = recordStatus.category == FJ_STATUS_CONTEXT_LOSS ? recordStatus : runtime_failure_status(syncErr);
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        PinnedUploadTest::before_diagnostic();
+#endif
+        const char* recordReason = cudaGetErrorString(recordErr);
+        const std::string recordError =
+            std::string("cudaEventRecord(pinned staging) failed: ") +
+            (recordReason ? recordReason : "(unknown)");
         outError.diagnostic = recordError + " | cudaStreamSynchronize(pinned staging) failed: " +
                               (syncReason ? syncReason : "(unknown)");
         if (!quarantined) {
@@ -2901,7 +2941,7 @@ namespace JuicerCuda {
         const void* src,
         std::size_t bytes,
         void* cudaStreamOpaque,
-        Failure& outError) {
+        Failure& outError) noexcept try {
         outError = {};
         if (bytes == 0) {
             return true;
@@ -2911,75 +2951,95 @@ namespace JuicerCuda {
             return false;
         }
 
-        const cudaStream_t stream = cudaStreamOpaque
-                                        ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-                                        : nullptr;
-
-        PinnedUploadReservation reservation =
-            reserve_pinned_upload_block(resources, bytes, request.stage);
-        if (reservation.staged && reservation.stagingPtr) {
-            std::memcpy(reservation.stagingPtr, src, bytes);
-            const cudaError_t stagedErr = cudaMemcpyAsync(
-                dst,
-                reservation.stagingPtr,
-                bytes,
-                cudaMemcpyHostToDevice,
-                stream);
-            if (stagedErr == cudaSuccess) {
-                const PinnedUploadCompletionResult completion =
-                    complete_enqueued_pinned_upload(
-                        reservation,
-                        stream,
-                        request.stage,
-                        outError);
-                if (completion == PinnedUploadCompletionResult::InFlight) {
-                    return true;
-                }
-                if (completion ==
-                    PinnedUploadCompletionResult::CompletedAfterExceptionalSync) {
-                    trace_pinned_staging_event(
-                        request.stage,
-                        "fallback",
-                        "event_record_failed_stream_synchronized",
-                        reservation.key,
-                        bytes,
-                        published_pinned_upload_staging_bytes());
-                    outError = {};
-                    return true;
-                }
-                return false;
-            }
-
-            if (!return_pinned_upload_reservation(reservation)) {
-                outError.diagnostic = "failed to return pinned staging reservation";
-                return false;
-            }
-            reservation.fallbackReason = "staged_copy_failed";
-        }
-
-        const cudaError_t err = cudaMemcpyAsync(
-            dst,
-            src,
-            bytes,
-            cudaMemcpyHostToDevice,
-            stream);
-        if (err != cudaSuccess) {
-            outError.status = runtime_failure_status(err);
-            outError.diagnostic = std::string("cudaMemcpyAsync(") + (request.label ? request.label : "upload") + ") failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+        const cudaStream_t stream = reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
+        const PinnedUploadReservation reservation =
+            reserve_pinned_upload_block(resources, bytes, request.stage, outError);
+        if (!reservation.staged) {
+            outError.diagnostic = std::string(request.label ? request.label : "upload") + ": " + outError.diagnostic;
             return false;
         }
 
-        if (reservation.fallbackReason) {
-            trace_pinned_staging_event(
-                request.stage,
-                "fallback",
-                reservation.fallbackReason,
-                reservation.key,
-                bytes,
-                published_pinned_upload_staging_bytes());
+        // The caller's storage expires at return, including local split/generated tables.
+        std::memcpy(reservation.stagingPtr, src, bytes);
+        cudaError_t copyErr = cudaSuccess;
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+        copyErr = static_cast<cudaError_t>(PinnedUploadTest::injected_error(PinnedUploadTest::Operation::Copy));
+#endif
+        if (copyErr == cudaSuccess) {
+            copyErr = cudaMemcpyAsync(dst, reservation.stagingPtr, bytes, cudaMemcpyHostToDevice, stream);
+        }
+        if (copyErr != cudaSuccess) {
+            const bool returned = return_pinned_upload_reservation(reservation);
+            outError.status = runtime_failure_status(copyErr);
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+            PinnedUploadTest::before_diagnostic();
+#endif
+            outError.diagnostic = std::string("cudaMemcpyAsync(") + (request.label ? request.label : "upload") + " pinned staging) failed: " + cudaGetErrorString(copyErr);
+            if (!returned) {
+                outError.diagnostic += " | failed to return pinned staging reservation";
+            }
+            return false;
+        }
+
+        const PinnedUploadCompletionResult completion =
+            complete_enqueued_pinned_upload(reservation, stream, request.stage, outError);
+        if (completion == PinnedUploadCompletionResult::Quarantined) {
+            return false;
+        }
+        if (completion == PinnedUploadCompletionResult::CompletedAfterExceptionalSync) {
+            outError = {};
         }
         return true;
+    } catch (...) {
+        // Pool/diagnostic allocation failure must still reach the caller's device rollback.
+        // Any enqueued copy has reached its terminal reservation state before formatting.
+        JuicerLogging::discard_current_exception();
+        outError.diagnostic.clear();
+        return false;
     }
+
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+    namespace PinnedUploadTest {
+        bool upload(Resources& resources, void* destination, const void* source, std::size_t bytes, void* stream, Failure& failure) {
+            return enqueue_host_to_device_copy(resources, {"pinned_upload_test", "prepared span"}, destination, source, bytes, stream, failure);
+        }
+
+        Snapshot snapshot(const ResourceManager::DeviceContextKey& key) {
+            auto& state = pinned_upload_staging_policy_state();
+            std::lock_guard<std::mutex> lock(state.mutex);
+            Snapshot result;
+            result.totalBytes = state.totalBytesAllContexts;
+            const auto found = state.pools.find({key.deviceId, key.contextOpaque});
+            if (found != state.pools.end()) {
+                for (const auto& block : found->second.blocks) {
+                    switch (block.state) {
+                        case PinnedUploadBlockState::Available:
+                            ++result.available;
+                            break;
+                        case PinnedUploadBlockState::Reserved:
+                            ++result.reserved;
+                            break;
+                        case PinnedUploadBlockState::InFlight:
+                            ++result.inFlight;
+                            break;
+                        case PinnedUploadBlockState::Quarantined:
+                            ++result.quarantined;
+                            break;
+                    }
+                    result.blocks.push_back({block.ptr, block.doneEventOpaque, block.capacity, block.id});
+                }
+            }
+            return result;
+        }
+
+        void poll(const ResourceManager::DeviceContextKey& key) {
+            auto& state = pinned_upload_staging_policy_state();
+            std::lock_guard<std::mutex> lock(state.reservationMutex);
+            const PinnedUploadContextKey filter{key.deviceId, key.contextOpaque};
+            refresh_pinned_block_completions(state, &filter);
+        }
+    } // namespace PinnedUploadTest
+#endif
 
 
     static void free_stbn(Resources& resources) noexcept {
@@ -3379,7 +3439,9 @@ namespace JuicerCuda {
             for (const PinnedUploadBlock& block : blocksToFree) {
                 bool completionProven =
                     block.state == PinnedUploadBlockState::Available;
-                if (block.state != PinnedUploadBlockState::Available &&
+                // Only InFlight has a fence recorded after its latest upload. A failed
+                // record can leave a Reserved/Quarantined block with an older event.
+                if (block.state == PinnedUploadBlockState::InFlight &&
                     block.doneEventOpaque && ownerDeviceSelected) {
                     cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
                     const cudaError_t syncErr = cudaEventSynchronize(doneEvent);

@@ -247,6 +247,19 @@ fail the case. The trace is written to
 not a checked-in expectation. A test-only observer reads existing private
 adapter/state facts; the installed plug-in gains no callback instrumentation.
 
+`Resource.Gpu.PinnedUpload` exercises the production bounded staging pool in an
+isolated resource-owner build. It proves that a native upload remains outstanding
+while caller storage is overwritten and destroyed, then checks the completed
+device bytes. Only a warmed, explicitly supplied nonblocking stream enters its
+finite gate; no render or absent-stream path is blocked. Other cases cover staging
+capacity, allocation/event/copy failures, typed status, device-allocation rollback,
+reuse, pressure trim, exceptional completion, and normal/proven-loss purge. A
+quarantined upload cannot use a previous completed event as proof of its latest
+copy's completion. The test hooks are absent from production objects. Injected
+errors and a purge-disposition test do not simulate actual driver/context loss.
+Diagnostic-allocation failures also check terminal reservation transitions,
+native-status preservation, and device-ledger rollback before owner teardown.
+
 The `ScatterHalation.Gpu.PreparedFrame` lifetime rows call the actual
 `Root::prepare_cuda_frame` path, complete the production scan-error staging
 sequence, and then queue a pinned host-to-device upload into Root-owned

@@ -759,4 +759,36 @@ namespace JuicerCuda {
         void* contextOpaque,
         PinnedUploadPurgeDisposition disposition) noexcept;
 
+#if defined(JUICER_PINNED_UPLOAD_TEST_HOOK)
+    namespace PinnedUploadTest {
+        enum class Operation : std::uint8_t {
+            Allocate,
+            CreateEvent,
+            Copy,
+            RecordEvent,
+            Synchronize
+        };
+        std::int32_t injected_error(Operation operation) noexcept;
+        void before_diagnostic();
+
+        struct Block {
+            void* pointer = nullptr;
+            void* event = nullptr;
+            std::size_t capacity = 0;
+            std::uint64_t id = 0;
+        };
+        struct Snapshot {
+            std::size_t available = 0;
+            std::size_t reserved = 0;
+            std::size_t inFlight = 0;
+            std::size_t quarantined = 0;
+            std::size_t totalBytes = 0;
+            std::vector<Block> blocks;
+        };
+        bool upload(Resources& resources, void* destination, const void* source, std::size_t bytes, void* stream, Failure& failure);
+        Snapshot snapshot(const ResourceManager::DeviceContextKey& key);
+        void poll(const ResourceManager::DeviceContextKey& key);
+    } // namespace PinnedUploadTest
+#endif
+
 } // namespace JuicerCuda

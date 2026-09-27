@@ -106,6 +106,21 @@ endif()
 add_test(NAME Ffi.Host.CudaFailure COMMAND JuicerCudaFailureTests)
 set_tests_properties(Ffi.Host.CudaFailure PROPERTIES LABELS "host" TIMEOUT 30)
 
+# The staging probe runs the production upload algorithm with isolated operation seams.
+add_library(juicer_pinned_upload_test_objects OBJECT ../src/Cuda/JuicerCudaResources.cpp)
+target_link_libraries(juicer_pinned_upload_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_pinned_upload_test_objects PRIVATE JUICER_PINNED_UPLOAD_TEST_HOOK=1)
+add_executable(JuicerPinnedUploadTests resource/pinned_upload_test.cpp
+    $<TARGET_OBJECTS:juicer_pinned_upload_test_objects>)
+target_link_libraries(JuicerPinnedUploadTests PRIVATE juicer_core GTest::gtest_main CUDA::cuda_driver)
+target_compile_definitions(JuicerPinnedUploadTests PRIVATE JUICER_PINNED_UPLOAD_TEST_HOOK=1)
+set_target_properties(JuicerPinnedUploadTests PROPERTIES LINKER_LANGUAGE CXX)
+if(UNIX)
+    set_property(TARGET JuicerPinnedUploadTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Resource.Gpu.PinnedUpload COMMAND JuicerPinnedUploadTests)
+set_tests_properties(Resource.Gpu.PinnedUpload PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+
 add_executable(JuicerCudaInspectTests ffi/cuda_inspect_test.cpp)
 target_link_libraries(JuicerCudaInspectTests PRIVATE juicer_core GTest::gtest_main)
 set_target_properties(JuicerCudaInspectTests PROPERTIES LINKER_LANGUAGE CXX)
