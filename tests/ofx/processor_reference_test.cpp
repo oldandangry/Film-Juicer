@@ -663,7 +663,7 @@ namespace {
             const OfxRectI renderWindow = emptyWindow
                                               ? OfxRectI{test.originX, test.originY, test.originX, test.originY}
                                               : bounds;
-            const float pixelSizeUm = 35'000.0f / width;
+            const float pixelSizeUm = 35'000.0f / static_cast<float>(width);
             const Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{
                 {test.originX, test.originY, width, height},
                 static_cast<double>(test.originX),

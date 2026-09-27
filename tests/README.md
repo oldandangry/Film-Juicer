@@ -466,9 +466,11 @@ It compares all seven processor characterization rows against their immutable
 platform fixtures and requires bit-exact direct/C results. Each case starts a fresh
 process and native owner, calls the C boundary before any other render to exercise
 cold uploads, then repeats with warm resources and calls the direct executor. It
-never resets the CUDA context. The production entry remains the
-direct C++ executor; this fixture does not qualify final frame admission,
-terminal ownership, or expiry of asynchronous host-upload pointers.
+never resets the CUDA context. Production callbacks now project their immutable
+state into the same admitted native C-boundary render body. The prepared-boundary
+comparisons cover numerical parity; the separate render-contract, owner/terminal,
+and processor-cutover cases cover admission, borrowed-storage expiry, and callback
+lifecycle behavior. See the FFI guide for their scope and remaining host evidence.
 
 `Resource.Gpu.DeferredDestroy.{lock,allocation,storage,ordinary,control}` exercises
 exact-context deferred ownership with three fixture-owned CUDA contexts, three

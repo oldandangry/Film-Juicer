@@ -111,7 +111,7 @@ namespace JuicerCuda::RenderTest {
     // Finite device copies keep the upload event outstanding without a host
     // gate or GPU wait. Enqueue only after the renderer's synchronous paths.
     struct ExpiringUpload {
-        static constexpr std::size_t kBytes = 64u * 1024u * 1024u;
+        static constexpr std::size_t kBytes = std::size_t{64} * 1024u * 1024u;
         std::shared_ptr<Resources> resources;
         void* first = nullptr;
         void* second = nullptr;
