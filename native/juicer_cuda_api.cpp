@@ -16,6 +16,7 @@
 #include <cuda_runtime.h>
 
 #include "Cuda/JuicerCudaDriver.h"
+#include "Cuda/JuicerCudaFailure.h"
 #include "Logging.h"
 #include "ProcessRoot.h"
 
@@ -48,15 +49,7 @@ namespace {
     constinit std::atomic<FjCuda*> gOwner{nullptr};
 
     FjStatus status(uint32_t category, FjErrorBuffer* error, const char* message) noexcept {
-        if (error) {
-            error->length = 0;
-            if (error->capacity != 0 && error->data) {
-                error->length = std::min(std::strlen(message), error->capacity - 1);
-                std::memcpy(error->data, message, error->length);
-                error->data[error->length] = '\0';
-            }
-        }
-        return FjStatus{category, FJ_API_NONE, 0};
+        return JuicerCuda::write_status({category, FJ_API_NONE, 0}, message, error);
     }
 
     struct ImageBytes {
@@ -121,12 +114,7 @@ namespace {
     }
 
     FjStatus driver_failure(FjErrorBuffer* error, const std::string& message, int code) noexcept {
-        auto result = status(code ? FJ_STATUS_CUDA_FAILURE : FJ_STATUS_PREPARATION_FAILURE, error, message.c_str());
-        if (code) {
-            result.api = FJ_API_CUDA_DRIVER;
-            result.native_code = code;
-        }
-        return result;
+        return JuicerCuda::write_status(JuicerCuda::driver_failure_status(code), message, error);
     }
 
     // Removal: S2.D supplies typed shutdown/destroy and terminal retention.
@@ -227,10 +215,7 @@ FjStatus fj_cuda_inspect(FjCuda* cuda, const FjFrame* frame, FjCudaContext* out_
             cudaPointerAttributes attributes{};
             const auto runtimeCode = cudaPointerGetAttributes(&attributes, reinterpret_cast<const void*>(image.first));
             if (runtimeCode != cudaSuccess) {
-                auto result = status(FJ_STATUS_CUDA_FAILURE, error, "cudaPointerGetAttributes failed");
-                result.api = FJ_API_CUDA_RUNTIME;
-                result.native_code = static_cast<std::int32_t>(runtimeCode);
-                return result;
+                return JuicerCuda::write_status(JuicerCuda::runtime_failure_status(runtimeCode), "cudaPointerGetAttributes failed", error);
             }
             if (attributes.type != cudaMemoryTypeDevice || attributes.device < 0) {
                 return status(FJ_STATUS_UNSUPPORTED_INPUT, error, "CUDA image requires device memory");

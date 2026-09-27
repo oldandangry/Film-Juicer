@@ -7,6 +7,7 @@ set(JUICER_NATIVE_SOURCES
     src/Cuda/JuicerCudaDeviceLedger.cpp
     src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp
     src/Cuda/JuicerCudaExecutor.cpp
+    src/Cuda/JuicerCudaFailure.cpp
     src/Cuda/JuicerCudaDriver.cpp
     src/Cuda/JuicerCudaResources.cpp
     src/Cuda/ResourceManager/JuicerCudaManagerRegistry.cpp

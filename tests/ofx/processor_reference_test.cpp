@@ -11,6 +11,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -57,14 +58,18 @@ namespace JuicerCuda::ExecutorTest {
         std::array<Event, 8> events{};
         std::size_t count = 0;
         const char* diagnostic = nullptr;
+        FjStatus status{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         const char* stage = nullptr;
         Delivery delivery = Delivery::Success;
         bool overflow = false;
         bool failureStageMatches = false;
+        bool failureStatusMatches = false;
         bool nativeRecoveryPending = false;
         bool adapterRecoveryPending = false;
         bool messageMatches = false;
         bool armed = true;
+        FjStatus classifiedStatus{};
+        bool failureDiagnosticMatches = false;
 
         void record(Event event) noexcept {
             if (count < events.size()) {
@@ -76,19 +81,80 @@ namespace JuicerCuda::ExecutorTest {
     };
     thread_local FailureObservation* observation = nullptr;
 
-    bool inject_scan_error(std::string& diagnostic) {
+    struct ResourceFailures {
+        std::optional<Failure> stbn;
+        std::optional<Failure> wang;
+        cudaError_t eventCreate = cudaSuccess;
+        cudaError_t eventRecord = cudaSuccess;
+        int stbnAttempts = 0;
+        int wangAttempts = 0;
+        int injections = 0;
+
+        void record_injection() noexcept {
+            if (injections++ == 0 && observation) {
+                observation->record(Event::Injected);
+            }
+        }
+    };
+    thread_local ResourceFailures* resourceFailures = nullptr;
+
+    bool inject_grain_upload_failure(const char* label, Failure& failure) {
+        if (!resourceFailures) {
+            return false;
+        }
+        const std::optional<Failure>* injected = nullptr;
+        if (std::strcmp(label, "STBN") == 0) {
+            ++resourceFailures->stbnAttempts;
+            injected = &resourceFailures->stbn;
+        } else if (std::strcmp(label, "Wang.tiles") == 0) {
+            ++resourceFailures->wangAttempts;
+            injected = &resourceFailures->wang;
+        }
+        if (!injected || !injected->has_value()) {
+            return false;
+        }
+        failure = **injected;
+        resourceFailures->record_injection();
+        return true;
+    }
+
+    bool inject_defect_event_create(cudaError_t& error) noexcept {
+        if (!resourceFailures || resourceFailures->eventCreate == cudaSuccess) {
+            return false;
+        }
+        error = resourceFailures->eventCreate;
+        resourceFailures->eventCreate = cudaSuccess;
+        resourceFailures->record_injection();
+        return true;
+    }
+
+    bool inject_defect_event_record(cudaError_t& error) noexcept {
+        if (!resourceFailures || resourceFailures->eventRecord == cudaSuccess) {
+            return false;
+        }
+        error = resourceFailures->eventRecord;
+        resourceFailures->eventRecord = cudaSuccess;
+        resourceFailures->record_injection();
+        return true;
+    }
+
+    bool inject_scan_error(Failure& failure) {
         if (!observation || !observation->armed) {
             return false;
         }
         observation->armed = false;
-        diagnostic = observation->diagnostic;
+        failure.diagnostic = observation->diagnostic;
+        failure.status = observation->status;
         observation->record(Event::Injected);
         return true;
     }
-    void observe_classification(const char* stage, bool recoveryPending) noexcept {
+    void observe_classification(const char* stage, const Failure& failure, bool recoveryPending) noexcept {
         if (observation) {
             observation->failureStageMatches = std::strcmp(stage, observation->stage) == 0;
+            observation->failureStatusMatches = failure.status.category == observation->status.category && failure.status.api == observation->status.api && failure.status.native_code == observation->status.native_code;
             observation->nativeRecoveryPending = recoveryPending;
+            observation->classifiedStatus = failure.status;
+            observation->failureDiagnosticMatches = failure.diagnostic == observation->diagnostic;
             observation->record(Event::Classified);
         }
     }
@@ -560,6 +626,15 @@ namespace {
                                               ? OfxRectI{test.originX, test.originY, test.originX, test.originY}
                                               : bounds;
             const float pixelSizeUm = 35'000.0f / kWidth;
+            const Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{
+                {test.originX, test.originY, kWidth, kHeight},
+                static_cast<double>(test.originX),
+                static_cast<double>(test.originY),
+                kWidth,
+                kHeight,
+                1.0,
+                1.0,
+                1.0};
             std::optional<ScatterHalationFrameDescriptor> halation;
             std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
             const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
@@ -589,6 +664,7 @@ namespace {
                 request.frameTime = 37.0;
                 request.frameRate = 24.0;
                 request.pixelSizeUm = pixelSizeUm;
+                request.effectsGeometry = effectsGeometry;
                 processor.setPrintFrameRequest(request);
             } else {
                 JuicerProcessor::DirectFrameRequest request;
@@ -603,6 +679,7 @@ namespace {
                 request.frameTime = 37.0;
                 request.frameRate = 24.0;
                 request.pixelSizeUm = pixelSizeUm;
+                request.effectsGeometry = effectsGeometry;
                 processor.setDirectFrameRequest(request);
             }
             processor.setInstanceState(&state);
@@ -725,13 +802,14 @@ namespace {
     void check_failure_order(const Case& test,
                              JuicerCuda::ExecutorTest::Delivery delivery,
                              bool dirDiagnostic,
-                             bool contextLoss) {
+                             FjStatus failureStatus,
+                             const char* wording) {
+        const bool contextLoss = failureStatus.category == FJ_STATUS_CONTEXT_LOSS;
         using JuicerCuda::ExecutorTest::Event;
         JuicerCuda::ExecutorTest::FailureObservation observation;
         observation.delivery = delivery;
-        observation.diagnostic = dirDiagnostic
-                                     ? (contextLoss ? "test component=dir 100% device lost" : "test component=dir 100% invalid arithmetic")
-                                     : "test component=scanner 100% device lost";
+        observation.status = failureStatus;
+        observation.diagnostic = wording;
         observation.stage = Spektrafilm::scan_route_is_print(test.route)
                                 ? "print_scan_error_stage"
                                 : "direct_scan_error_stage";
@@ -755,7 +833,7 @@ namespace {
         expected.insert(expected.end(), {Event::Classified, Event::FrameAborted, Event::RecoveryStarted, Event::RecoveryEnded, Event::FatalMapped});
         if (!fatal || observation.overflow || observation.count != expected.size() ||
             !std::equal(expected.begin(), expected.end(), observation.events.begin()) ||
-            !observation.failureStageMatches ||
+            !observation.failureStageMatches || !observation.failureStatusMatches ||
             observation.nativeRecoveryPending != contextLoss ||
             observation.adapterRecoveryPending != contextLoss ||
             (dirDiagnostic && !observation.messageMatches) ||
@@ -774,10 +852,146 @@ namespace {
             for (const auto delivery : {JuicerCuda::ExecutorTest::Delivery::Success,
                                         JuicerCuda::ExecutorTest::Delivery::Failure,
                                         JuicerCuda::ExecutorTest::Delivery::Throw}) {
-                check_failure_order(test, delivery, true, true);
+                check_failure_order(test, delivery, true, JuicerCuda::runtime_failure_status(cudaErrorContextIsDestroyed), "test component=dir 100% renamed diagnostic");
             }
-            check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, false, true);
-            check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, true, false);
+            for (const auto status : {JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED),
+                                      JuicerCuda::runtime_failure_status(cudaErrorDeviceUninitialized),
+                                      JuicerCuda::runtime_failure_status(cudaErrorInvalidValue),
+                                      FjStatus{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}}) {
+                check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, true, status, "test component=dir 100% device lost out of memory");
+            }
+            check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, false, JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED), "test component=scanner 100% renamed diagnostic");
+        }
+    }
+
+    void check_resource_failure(const Case& test,
+                                const ParamSnapshot& parameters,
+                                InstanceState& state,
+                                JuicerCuda::ExecutorTest::ResourceFailures& failures,
+                                const JuicerCuda::Failure& expectedFailure,
+                                const char* stage,
+                                bool preparationFailure = false) {
+        using JuicerCuda::ExecutorTest::Event;
+        JuicerCuda::ExecutorTest::FailureObservation observation;
+        observation.armed = false;
+        observation.status = expectedFailure.status;
+        observation.diagnostic = expectedFailure.diagnostic.c_str();
+        observation.stage = stage;
+        JuicerCuda::ExecutorTest::observation = &observation;
+        JuicerCuda::ExecutorTest::resourceFailures = &failures;
+        bool fatal = false;
+        try {
+            (void)render_case(test, parameters, state);
+        } catch (const OFX::Exception::Suite& error) {
+            fatal = error.status() == kOfxStatErrFatal;
+            observation.record(Event::FatalMapped);
+        } catch (...) {
+            JuicerCuda::ExecutorTest::observation = nullptr;
+            JuicerCuda::ExecutorTest::resourceFailures = nullptr;
+            throw;
+        }
+        JuicerCuda::ExecutorTest::observation = nullptr;
+        JuicerCuda::ExecutorTest::resourceFailures = nullptr;
+        const bool contextLoss = expectedFailure.status.category == FJ_STATUS_CONTEXT_LOSS;
+        std::array expectedEvents{Event::Injected, Event::Classified, Event::FrameAborted, Event::RecoveryStarted, Event::RecoveryEnded, Event::FatalMapped};
+        if (preparationFailure) {
+            // Root aborts failed preparation before returning it to the executor.
+            std::swap(expectedEvents[1], expectedEvents[2]);
+        }
+        if (!fatal || observation.overflow || observation.count != expectedEvents.size() ||
+            !std::equal(expectedEvents.begin(), expectedEvents.end(), observation.events.begin()) ||
+            !observation.failureStageMatches || !observation.failureStatusMatches ||
+            !observation.failureDiagnosticMatches ||
+            observation.nativeRecoveryPending != contextLoss ||
+            observation.adapterRecoveryPending != contextLoss ||
+            state.submissionSnapshotLatchValid == contextLoss) {
+            throw std::runtime_error(std::string(test.name) + ": resource failure propagation changed; category=" +
+                                     std::to_string(observation.classifiedStatus.category) + " api=" +
+                                     std::to_string(observation.classifiedStatus.api) + " code=" +
+                                     std::to_string(observation.classifiedStatus.native_code) + " events=" +
+                                     std::to_string(observation.count) + " stage_match=" +
+                                     std::to_string(observation.failureStageMatches) + " diagnostic_match=" +
+                                     std::to_string(observation.failureDiagnosticMatches));
+        }
+        std::cout << test.name << " stage=" << stage << " category=" << expectedFailure.status.category
+                  << " api=" << expectedFailure.status.api << " code=" << expectedFailure.status.native_code
+                  << " injections=" << failures.injections
+                  << (preparationFailure ? " abort/classify" : " classify/abort")
+                  << "/recovery/fatal order passed\n";
+    }
+
+    void run_defect_fence_failure_cases() {
+        const std::array<Case, 2> cases{{{"defect-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
+                                         {"defect-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}}};
+        for (const Case& test : cases) {
+            InstanceState state;
+            for (const bool failCreate : {true, false}) {
+                for (const auto code : {cudaErrorContextIsDestroyed, cudaErrorInvalidResourceHandle, cudaErrorMemoryAllocation}) {
+                    auto parameters = parameters_for(test);
+                    parameters.filmDustAmount = 1.0f;
+                    (void)render_case(test, parameters, state);
+                    parameters.filmDustAmount = 0.0f;
+                    parameters.gateDustAmount = 1.0f;
+                    JuicerCuda::ExecutorTest::ResourceFailures failures;
+                    (failCreate ? failures.eventCreate : failures.eventRecord) = code;
+                    check_resource_failure(test, parameters, state, failures, {JuicerCuda::runtime_failure_status(code), "defect attachment retirement fence failed"}, Spektrafilm::scan_route_is_print(test.route) ? "print_focused_workspace_stage" : "direct_focused_workspace_stage");
+                    if (failures.injections != 1) {
+                        throw std::runtime_error("defect fence failure did not reach the resource owner");
+                    }
+                }
+            }
+        }
+    }
+
+    void run_grain_upload_failure_cases() {
+        const std::array<Case, 2> cases{{{"grain-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
+                                         {"grain-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}}};
+        for (const Case& test : cases) {
+            for (const char* wording : {"renamed upload diagnostic", "device lost out of memory 100%"}) {
+                const JuicerCuda::Failure capacity{{FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, wording};
+                const JuicerCuda::Failure contextLoss{JuicerCuda::runtime_failure_status(cudaErrorContextIsDestroyed), wording};
+                const JuicerCuda::Failure driverLoss{JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED), wording};
+                const JuicerCuda::Failure ordinary{JuicerCuda::runtime_failure_status(cudaErrorInvalidValue), wording};
+                struct UploadCase {
+                    std::optional<JuicerCuda::Failure> stbn;
+                    std::optional<JuicerCuda::Failure> wang;
+                    FjStatus expectedStatus{};
+                };
+                const std::array<UploadCase, 8> uploads{{{capacity, contextLoss, contextLoss.status},
+                                                         {contextLoss, ordinary, contextLoss.status},
+                                                         {capacity, std::nullopt, capacity.status},
+                                                         {contextLoss, std::nullopt, contextLoss.status},
+                                                         {std::nullopt, driverLoss, driverLoss.status},
+                                                         {capacity, ordinary, capacity.status},
+                                                         {ordinary, capacity, ordinary.status},
+                                                         {contextLoss, driverLoss, contextLoss.status}}};
+                for (const auto& upload : uploads) {
+                    InstanceState state;
+                    auto parameters = parameters_for(test);
+                    parameters.grainControls.active = true;
+                    JuicerCuda::ExecutorTest::ResourceFailures failures;
+                    failures.stbn = upload.stbn;
+                    failures.wang = upload.wang;
+                    if (failures.stbn) {
+                        failures.stbn->diagnostic = std::string("STBN: ") + wording;
+                    }
+                    if (failures.wang) {
+                        failures.wang->diagnostic = std::string("Wang: ") + wording;
+                    }
+                    std::string diagnostic = std::string(upload.stbn ? "STBN: " : "Wang: ") + wording;
+                    if (upload.stbn && upload.wang) {
+                        diagnostic += " | Wang upload failed: Wang: ";
+                        diagnostic += wording;
+                    }
+                    diagnostic += " route=";
+                    diagnostic += Spektrafilm::scan_route_metadata(test.route).key;
+                    check_resource_failure(test, parameters, state, failures, {upload.expectedStatus, diagnostic}, "ensure_grain_static_assets_uploaded", true);
+                    if (failures.stbnAttempts != 1 || failures.wangAttempts != 1 ||
+                        failures.injections != static_cast<int>(upload.stbn.has_value()) + static_cast<int>(upload.wang.has_value())) {
+                        throw std::runtime_error("grain upload attempts or failure order changed");
+                    }
+                }
+            }
         }
     }
 } // namespace
@@ -792,6 +1006,18 @@ int main(int argc, char** argv) {
         require_cuda(cudaFree(nullptr), "initialize CUDA");
         JuicerProcess::root().ensure_bootstrap();
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
+        if (argc == 3 && std::string(argv[1]) == "--resource-failure") {
+            const std::string resourceFailure = argv[2];
+            if (resourceFailure == "DefectFence") {
+                run_defect_fence_failure_cases();
+            } else if (resourceFailure == "GrainUpload") {
+                run_grain_upload_failure_cases();
+            } else {
+                throw std::runtime_error("unknown resource failure case: " + resourceFailure);
+            }
+            JuicerProcess::root().shutdown();
+            return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--failure-order") {
             run_failure_order_cases();
             JuicerProcess::root().shutdown();

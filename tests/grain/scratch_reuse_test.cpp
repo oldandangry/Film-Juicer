@@ -12,7 +12,10 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include "gtest/gtest.h"
+#include <gtest/gtest.h>
+
+#include "Cuda/JuicerCudaFailure.h"
+#include "Cuda/JuicerCudaHostViews.h"
 
 #include "SpectralProcessing.h"
 #include "JuicerState.h"
@@ -158,21 +161,21 @@ namespace {
             snapshot.deviceContextKey = key;
             snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
                 inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
-            std::string error;
+            JuicerCuda::Failure error;
             auto frame = JuicerProcess::root().prepare_cuda_frame(
                 key, snapshot, inputs.request(withDir), {}, stream, error);
-            require(frame.active(), error);
+            require(frame.active(), error.diagnostic);
             const auto lease = frame.workspace_lease();
             if (withDir) {
-                require(frame.prepare_spatial_dir_resources(inputs.dir, lease, stream, error), error);
+                require(frame.prepare_spatial_dir_resources(inputs.dir, lease, stream, error), error.diagnostic);
             }
-            require(frame.stage_optical_workspace(lease, stream, error), error);
+            require(frame.stage_optical_workspace(lease, stream, error), error.diagnostic);
             return frame;
         }
 
         void finish(Frame& frame) {
-            std::string error;
-            require(frame.finish(stream, error), error);
+            JuicerCuda::Failure error;
+            require(frame.finish(stream, error), error.diagnostic);
         }
 
         void compare_grain(const Inputs& inputs, Frame& frame) {
@@ -241,6 +244,31 @@ namespace {
         cudaStream_t stream = nullptr;
         bool contextRetired = false;
     };
+
+    TEST(GrainUpload, RetainsCapacityFailureAfterRelock) {
+        require_cuda(cudaSetDevice(0));
+        require_cuda(cudaFree(nullptr));
+        CUcontext context = nullptr;
+        ASSERT_EQ(cuCtxGetCurrent(&context), CUDA_SUCCESS);
+        ASSERT_NE(context, nullptr);
+        const JuicerCuda::ResourceManager::DeviceContextKey key{0, context};
+        std::string diagnostic;
+        auto ledger = JuicerCuda::DeviceAllocationLedger::create({key.deviceId, 1024}, diagnostic);
+        ASSERT_NE(ledger, nullptr) << diagnostic;
+        ASSERT_TRUE(ledger->bind_or_validate_cap(4, diagnostic)) << diagnostic;
+        JuicerCuda::Resources resources(key, 1, ledger);
+        const std::array<std::uint8_t, 8> bytes{};
+        const JuicerCuda::StaticNoiseInput input{bytes, bytes, bytes, 1, 1, 1, 1, 1, 1, 1};
+        JuicerCuda::Failure failure;
+        ASSERT_FALSE(JuicerCuda::ensure_grain_static_assets_uploaded(resources, input, nullptr, failure));
+        EXPECT_EQ(failure.status.category, FJ_STATUS_ALLOCATION_FAILURE);
+        EXPECT_EQ(failure.status.api, FJ_API_NONE);
+        EXPECT_EQ(failure.status.native_code, 0);
+        EXPECT_EQ(failure.diagnostic, "device_cap_exceeded | Wang upload failed: device_cap_exceeded");
+        EXPECT_EQ(ledger->snapshot().chargedBytes, 0);
+        EXPECT_EQ(resources.stbnData, nullptr);
+        EXPECT_EQ(resources.wangTilesData, nullptr);
+    }
 
     TEST_F(GrainScratch, ReusesFinishedRawCorrectionPlanesWithoutDedicatedGrainAllocations) {
         for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan,
@@ -312,9 +340,9 @@ namespace {
                 const bool negative = inputs.product.recipe.profileRoute.capturePolarity == Spektrafilm::ProfilePolarity::Negative;
                 const auto optics = frame.scanner_workspace(lease);
                 EXPECT_EQ(before.deltaAccum, negative ? dir.rawCorrectionY : optics.aux);
-                std::string error;
+                JuicerCuda::Failure error;
                 if (dir.targetPlaneRoles.cachedLogRawPlanes == 3) {
-                    require(frame.stage_spatial_dir_cached_log_raw_for_final_develop(lease, stream, error), error);
+                    require(frame.stage_spatial_dir_cached_log_raw_for_final_develop(lease, stream, error), error.diagnostic);
                 }
                 const auto after = frame.visual_grain_workspace(lease);
                 ASSERT_TRUE(after.active);
@@ -390,9 +418,9 @@ namespace {
         snapshot.deviceContextKey = key;
         snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
             inputs.product.payload.uploadCoreHash, recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
-        std::string error;
+        JuicerCuda::Failure error;
         auto off = JuicerProcess::root().prepare_cuda_frame(key, snapshot, request, {}, stream, error);
-        require(off.active(), error);
+        require(off.active(), error.diagnostic);
         EXPECT_FALSE(off.visual_grain_workspace(off.workspace_lease()).active);
         finish(off);
         auto on = prepare(inputs);

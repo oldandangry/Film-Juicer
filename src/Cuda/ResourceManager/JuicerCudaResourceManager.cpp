@@ -19,13 +19,13 @@ namespace JuicerCuda {
         const ResourceManager::ScratchRequestDescriptor& request,
         std::uint64_t expectedLease,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
     bool ensure_spatial_dir_scratch(
         Resources& resources,
         const ResourceManager::ScratchRequestDescriptor& request,
         void* cudaStreamOpaque,
-        std::string& outError);
-    bool validate_resource_owner_locked(Resources& resources, std::string& outError, bool bindIfUnset);
+        Failure& outError);
+    bool validate_resource_owner_locked(Resources& resources, Failure& outError, bool bindIfUnset);
 
     namespace ResourceManager {
 
@@ -335,10 +335,10 @@ namespace JuicerCuda {
             SubmissionTransaction& outTransaction,
             const SubmissionSnapshot& snapshot,
             std::uint64_t deviceBudgetBytes,
-            std::string& outError) {
-            outError.clear();
+            Failure& outError) {
+            outError = {};
             if (outTransaction.active) {
-                outError = "submission transaction already active";
+                outError.diagnostic = "submission transaction already active";
                 return false;
             }
 
@@ -355,7 +355,7 @@ namespace JuicerCuda {
                     outTransaction.snapshot,
                     deviceBudgetBytes,
                     outTransaction.resolvedMemoryBudget,
-                    outError)) {
+                    outError.diagnostic)) {
                 return false;
             }
 
@@ -363,7 +363,7 @@ namespace JuicerCuda {
             if (!registry_begin_submission(
                     outTransaction.snapshot.deviceContextKey,
                     contextSnapshot)) {
-                outError = "registry submission admission failed";
+                outError.diagnostic = "registry submission admission failed";
                 return false;
             }
             outTransaction.contextEpoch = contextSnapshot.contextEpoch;
@@ -429,43 +429,6 @@ namespace JuicerCuda {
             return error.c_str();
         }
 
-        bool contains_ascii_case_insensitive(const std::string& haystack, const char* needle) noexcept {
-            if (!needle || !*needle) {
-                return true;
-            }
-            if (haystack.empty()) {
-                return false;
-            }
-            const std::size_t needleLen = std::char_traits<char>::length(needle);
-            if (needleLen == 0 || needleLen > haystack.size()) {
-                return false;
-            }
-            for (std::size_t i = 0; i + needleLen <= haystack.size(); ++i) {
-                bool match = true;
-                for (std::size_t j = 0; j < needleLen; ++j) {
-                    const unsigned char a = static_cast<unsigned char>(haystack[i + j]);
-                    const unsigned char b = static_cast<unsigned char>(needle[j]);
-                    if (std::tolower(a) != std::tolower(b)) {
-                        match = false;
-                        break;
-                    }
-                }
-                if (match) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        bool is_allocation_capacity_error(const std::string& error) noexcept {
-            if (error.empty()) {
-                return false;
-            }
-            return contains_ascii_case_insensitive(error, "out of memory") ||
-                   contains_ascii_case_insensitive(error, "memory allocation") ||
-                   contains_ascii_case_insensitive(error, "device_cap_exceeded");
-        }
-
         bool validate_scratch_request_descriptor_for_manager(
             const ScratchRequestDescriptor& descriptor,
             const char* commandName,
@@ -489,8 +452,8 @@ namespace JuicerCuda {
             const char* commandName,
             const ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
-            std::string& outError) {
-            outError.clear();
+            Failure& outError) {
+            outError = {};
 
             JuicerCuda::LargeScratchTransitionReclaimStats reclaimStats{};
             const bool ok = JuicerCuda::reclaim_large_scratch_transition(
@@ -505,7 +468,7 @@ namespace JuicerCuda {
                 scratchRequest,
                 reclaimStats,
                 ok,
-                outError);
+                outError.diagnostic);
             return ok;
         }
 
@@ -577,25 +540,26 @@ namespace JuicerCuda {
             return true;
         }
 
-        template <typename Action>
+        template <typename Action, typename Reclaim = decltype(&JuicerCuda::reap_retired_allocations)>
         bool execute_allocation_with_reclaim_retry(
             SubmissionTransaction& transaction,
             JuicerCuda::Resources& resources,
             const char* commandName,
             Action&& action,
-            std::string& outError) {
-            outError.clear();
+            Failure& outError,
+            Reclaim reclaim = JuicerCuda::reap_retired_allocations) {
+            outError = {};
             if (action(outError)) {
                 return true;
             }
-            if (!is_allocation_capacity_error(outError)) {
+            if (!allocation_capacity_exhausted(outError)) {
                 return false;
             }
 
-            const std::string firstAllocationError = outError;
+            const Failure firstAllocationError = outError;
             std::size_t reclaimedBytes = 0;
-            std::string reclaimError;
-            if (!JuicerCuda::reap_retired_allocations(
+            Failure reclaimError;
+            if (!reclaim(
                     resources,
                     reclaimedBytes,
                     reclaimError)) {
@@ -604,10 +568,11 @@ namespace JuicerCuda {
                     commandName,
                     reclaimedBytes,
                     false,
-                    commands_error_or_cstr(reclaimError, "reap_failed"));
+                    commands_error_or_cstr(reclaimError.diagnostic, "reap_failed"));
                 outError = firstAllocationError;
-                if (!reclaimError.empty()) {
-                    outError += " | reclaim_failed: " + reclaimError;
+                outError.status = reclaimError.status;
+                if (!reclaimError.diagnostic.empty()) {
+                    outError.diagnostic += " | reclaim_failed: " + reclaimError.diagnostic;
                 }
                 return false;
             }
@@ -623,26 +588,41 @@ namespace JuicerCuda {
                 return false;
             }
 
-            std::string retryError;
+            Failure retryError;
             const bool retrySucceeded = action(retryError);
             trace_allocation_retry(
                 transaction,
                 commandName,
                 reclaimedBytes,
                 retrySucceeded,
-                retryError);
+                retryError.diagnostic);
             if (retrySucceeded) {
-                outError.clear();
+                outError = {};
                 return true;
             }
 
             outError = firstAllocationError;
-            if (!retryError.empty()) {
-                outError += " | allocation_retry_failed: " + retryError;
+            outError.status = retryError.status;
+            if (!retryError.diagnostic.empty()) {
+                outError.diagnostic += " | allocation_retry_failed: " + retryError.diagnostic;
             }
             return false;
         }
 
+
+#if defined(JUICER_ALLOCATION_RETRY_TEST_HOOK)
+        bool test_allocation_retry(
+            bool (*action)(Failure&),
+            bool (*reclaim)(std::size_t&, Failure&),
+            Failure& failure) {
+            SubmissionTransaction transaction;
+            Resources resources({}, 0, {});
+            return execute_allocation_with_reclaim_retry(
+                transaction, resources, "test_allocation_retry", action, failure, [reclaim](Resources&, std::size_t& bytes, Failure& error) {
+                    return reclaim(bytes, error);
+                });
+        }
+#endif
 
         bool command_checkpoint_large_scratch_transition(
             SubmissionTransaction& transaction,
@@ -650,16 +630,17 @@ namespace JuicerCuda {
             const ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
             const char* commandName,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             const char* stageName =
                 trace_or_non_empty(commandName, "command_checkpoint_large_scratch_transition");
-            if (!ensure_active_for_command(transaction, outError, stageName)) {
+            if (!ensure_active_for_command(transaction, outError.diagnostic, stageName)) {
                 return false;
             }
             if (!validate_scratch_request_descriptor_for_manager(
                     scratchRequest,
                     stageName,
-                    outError)) {
+                    outError.diagnostic)) {
                 return false;
             }
 
@@ -679,24 +660,25 @@ namespace JuicerCuda {
             const ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
             JuicerCuda::SpatialDirCachedLogRawStageStats& outStats,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             const char* stageName = "command_ensure_spatial_dir_cached_log_raw_stage";
             outStats = JuicerCuda::SpatialDirCachedLogRawStageStats{};
-            if (!ensure_active_for_command(transaction, outError, stageName)) {
+            if (!ensure_active_for_command(transaction, outError.diagnostic, stageName)) {
                 return false;
             }
             if (!validate_spatial_dir_scratch_request(
                     scratchRequest,
                     stageName,
-                    outError)) {
+                    outError.diagnostic)) {
                 return false;
             }
             if (scratchRequest.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3) {
-                outError = "spatial DIR cached log raw stage requested without Tier2 target roles";
+                outError.diagnostic = "spatial DIR cached log raw stage requested without Tier2 target roles";
                 return false;
             }
 
-            auto action = [&](std::string& actionError) {
+            auto action = [&](Failure& actionError) {
                 return JuicerCuda::ensure_retained_spatial_dir_cached_log_raw_stage(
                     resources,
                     transaction.leaseGeneration,
@@ -724,9 +706,9 @@ namespace JuicerCuda {
                 msg += std::to_string(static_cast<unsigned long long>(outStats.pendingScratchBytesBefore));
                 msg += " cached_log_raw_allocated_bytes=";
                 msg += std::to_string(static_cast<unsigned long long>(outStats.cachedLogRawAllocatedBytes));
-                if (!outError.empty()) {
+                if (!outError.diagnostic.empty()) {
                     msg += " error=";
-                    msg += outError;
+                    msg += outError.diagnostic;
                 }
                 JTRACE("MSADM", msg);
             }
@@ -785,11 +767,11 @@ namespace JuicerCuda {
             const ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
             const char* commandName,
-            std::string& outError) {
+            Failure& outError) {
             const char* stageName =
                 trace_or_non_empty(commandName, "command_shed_post_frame_scratch");
-            outError.clear();
-            if (!ensure_active_for_command(transaction, outError, stageName)) {
+            outError = {};
+            if (!ensure_active_for_command(transaction, outError.diagnostic, stageName)) {
                 return false;
             }
             const ScratchRequestDescriptor* activeScratchRequest = nullptr;
@@ -797,7 +779,7 @@ namespace JuicerCuda {
                     scratchRequest,
                     stageName,
                     activeScratchRequest,
-                    outError)) {
+                    outError.diagnostic)) {
                 return false;
             }
             (void)activeScratchRequest;
@@ -823,7 +805,7 @@ namespace JuicerCuda {
                 scratchRequest,
                 stats,
                 ok,
-                outError);
+                outError.diagnostic);
             return ok;
         }
 
@@ -832,21 +814,22 @@ namespace JuicerCuda {
             JuicerCuda::Resources& resources,
             const ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
-            std::string& outError) {
-            if (!ensure_active_for_command(transaction, outError, "command_ensure_optics_scratch")) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
+            if (!ensure_active_for_command(transaction, outError.diagnostic, "command_ensure_optics_scratch")) {
                 return false;
             }
             if (!validate_optics_scratch_request(
                     scratchRequest,
                     "command_ensure_optics_scratch",
-                    outError)) {
+                    outError.diagnostic)) {
                 return false;
             }
             return execute_allocation_with_reclaim_retry(
                 transaction,
                 resources,
                 "command_ensure_optics_scratch",
-                [&](std::string& actionError) {
+                [&](Failure& actionError) {
                     return JuicerCuda::ensure_optics_scratch(
                         resources,
                         scratchRequest,
@@ -862,21 +845,22 @@ namespace JuicerCuda {
             JuicerCuda::Resources& resources,
             const ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
-            std::string& outError) {
-            if (!ensure_active_for_command(transaction, outError, "command_ensure_spatial_dir_scratch")) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
+            if (!ensure_active_for_command(transaction, outError.diagnostic, "command_ensure_spatial_dir_scratch")) {
                 return false;
             }
             if (!validate_spatial_dir_scratch_request(
                     scratchRequest,
                     "command_ensure_spatial_dir_scratch",
-                    outError)) {
+                    outError.diagnostic)) {
                 return false;
             }
             return execute_allocation_with_reclaim_retry(
                 transaction,
                 resources,
                 "command_ensure_spatial_dir_scratch",
-                [&](std::string& actionError) {
+                [&](Failure& actionError) {
                     return JuicerCuda::ensure_spatial_dir_scratch(
                         resources,
                         scratchRequest,
@@ -886,9 +870,6 @@ namespace JuicerCuda {
                 outError);
         }
 
-        bool error_is_allocation_capacity_exhausted(const std::string& error) noexcept {
-            return is_allocation_capacity_error(error);
-        }
 
     } // namespace ResourceManager
 } // namespace JuicerCuda

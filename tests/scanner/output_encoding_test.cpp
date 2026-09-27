@@ -13,6 +13,8 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+
+#include "Cuda/JuicerCudaFailure.h"
 #include "gtest/gtest.h"
 
 #include "SpectralProcessing.h"
@@ -561,7 +563,7 @@ namespace {
                 inputs.product.recipe.dirCouplers.hash,
                 inputs.product.payload.scannerHash,
                 0);
-            std::string error;
+            JuicerCuda::Failure error;
             auto frame = JuicerProcess::root().prepare_cuda_frame(
                 key,
                 snapshot,
@@ -569,16 +571,16 @@ namespace {
                 {},
                 nullptr,
                 error);
-            require(frame.active(), error);
+            require(frame.active(), error.diagnostic);
             return frame;
         }
         template <typename Params>
         void check_route(const RouteInputs& inputs) {
             Image image({65, 33}, 4);
-            std::string error;
+            JuicerCuda::Failure error;
             auto frame = prepare_route(inputs, image);
             auto p = make_bound_params<Params>(inputs, frame, image);
-            require(frame.prepare_scan_error_stage(p.scanStage.scanErrorFlag, nullptr, error), error);
+            require(frame.prepare_scan_error_stage(p.scanStage.scanErrorFlag, nullptr, error), error.diagnostic);
             auto staged = p;
             staged.scanStage.linearRgbR = image.planes.get();
             staged.scanStage.linearRgbG = image.planes.get() + image.count;
@@ -603,8 +605,8 @@ namespace {
                 image.compare(fused, separate, cctf);
             }
             EXPECT_EQ(read_device_flag(p.scanStage.scanErrorFlag), 0);
-            require(frame.finalize_scan_error_stage(p.scanStage.scanErrorFlag, nullptr, error), error);
-            require(frame.finish(nullptr, error), error);
+            require(frame.finalize_scan_error_stage(p.scanStage.scanErrorFlag, nullptr, error), error.diagnostic);
+            require(frame.finish(nullptr, error), error.diagnostic);
         }
         void expect_fused_failure_output(const Image& image) {
             const std::vector<float> actual = image.output.download();
@@ -633,13 +635,13 @@ namespace {
             Image image({17, 9}, 4);
             auto frame = prepare_route(inputs, image);
             auto params = make_bound_params<Params>(inputs, frame, image);
-            std::string error;
+            JuicerCuda::Failure error;
             require(
                 frame.prepare_scan_error_stage(
                     params.scanStage.scanErrorFlag,
                     nullptr,
                     error),
-                error);
+                error.diagnostic);
 
             Buffer densities(3u * image.count);
             Buffer scanOutput(3u * image.count);
@@ -709,8 +711,8 @@ namespace {
                     params.scanStage.scanErrorFlag,
                     nullptr,
                     error),
-                error);
-            require(frame.finish(nullptr, error), error);
+                error.diagnostic);
+            require(frame.finish(nullptr, error), error.diagnostic);
         }
         struct RouteCapture {
             LutCapture lut;
@@ -721,13 +723,13 @@ namespace {
             Image image({31, 19}, 4);
             auto frame = prepare_route(inputs, image);
             auto params = make_bound_params<Params>(inputs, frame, image);
-            std::string error;
+            JuicerCuda::Failure error;
             require(
                 frame.prepare_scan_error_stage(
                     params.scanStage.scanErrorFlag,
                     nullptr,
                     error),
-                error);
+                error.diagnostic);
             launch_pipeline(params);
             RouteCapture result;
             result.output = bit_patterns(image.output.download());
@@ -738,8 +740,8 @@ namespace {
                     params.scanStage.scanErrorFlag,
                     nullptr,
                     error),
-                error);
-            require(frame.finish(nullptr, error), error);
+                error.diagnostic);
+            require(frame.finish(nullptr, error), error.diagnostic);
             return result;
         }
         JuicerCuda::ResourceManager::DeviceContextKey key;

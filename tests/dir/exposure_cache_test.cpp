@@ -11,6 +11,8 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+
+#include "Cuda/JuicerCudaFailure.h"
 #include "gtest/gtest.h"
 
 #include "SpectralProcessing.h"
@@ -168,17 +170,17 @@ namespace {
             snapshot.deviceContextKey = key;
             snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
                 inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
-            std::string error;
+            JuicerCuda::Failure error;
             auto frame = JuicerProcess::root().prepare_cuda_frame(key, snapshot, inputs.request(), {}, stream, error);
-            require(frame.active(), error);
+            require(frame.active(), error.diagnostic);
             const auto lease = frame.workspace_lease();
-            require(frame.prepare_spatial_dir_resources(inputs.dir, lease, stream, error), error);
+            require(frame.prepare_spatial_dir_resources(inputs.dir, lease, stream, error), error.diagnostic);
             const auto scratch = frame.spatial_dir_scratch(lease);
             const auto resources = frame.spatial_dir_resources(lease, inputs.dir.hash);
             require(scratch.active && resources.active && scratch.rawCorrectionM && scratch.rawCorrectionC, "Missing three-channel DIR workspace");
             JuicerCuda::FilmPayloadPack payload;
             const auto& recipe = inputs.product.recipe;
-            require(JuicerCuda::pack_film_payloads(recipe.filmRaw, recipe.filmDevelop, recipe.dirCouplers, recipe.densityBounds, frame.focused_resources().film, nullptr, 1.25f, payload, error), error);
+            require(JuicerCuda::pack_film_payloads(recipe.filmRaw, recipe.filmDevelop, recipe.dirCouplers, recipe.densityBounds, frame.focused_resources().film, nullptr, 1.25f, payload, error.diagnostic), error.diagnostic);
             const std::size_t count = static_cast<std::size_t>(inputs.width) * inputs.height;
             const std::size_t bytes = count * sizeof(float);
             DeviceBuffer source(4 * bytes), camera(3 * bytes), fusedCache(3 * bytes), separateCache(3 * bytes), actualDensity(3 * bytes), expectedDensity(3 * bytes), failures(sizeof(int));
@@ -317,7 +319,7 @@ namespace {
                 require_cuda(cudaEventDestroy(start));
                 require_cuda(cudaEventDestroy(stop));
             }
-            require(frame.finish(stream, error), error);
+            require(frame.finish(stream, error), error.diagnostic);
         }
 
         JuicerCuda::ResourceManager::DeviceContextKey key;

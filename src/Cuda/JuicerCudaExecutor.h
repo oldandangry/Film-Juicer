@@ -83,17 +83,16 @@ namespace JuicerCuda {
     };
 
     // Internal exception mapped by the caller after prepared-frame unwinding.
-    struct ExecutionFailure {};
-
-    // Diagnostic-based recovery is retained only until the S2.D policy cutover.
-    struct PendingContextLossRecovery {
-        bool pending = false;
-        cudaError_t error = cudaSuccess;
-        const char* stage = nullptr;
-        std::string detail;
+    struct ExecutionFailure {
+        Failure failure;
     };
 
-    bool is_cuda_context_loss_signal(cudaError_t error, const std::string& detail);
+    struct PendingContextLossRecovery {
+        bool pending = false;
+        Failure failure;
+        const char* stage = nullptr;
+    };
+
 
     AutoExposurePreviewDescriptor make_auto_exposure_preview_descriptor(
         const FrameRect& sourceBounds,
@@ -121,8 +120,11 @@ namespace JuicerCuda {
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
     namespace ExecutorTest {
-        bool inject_scan_error(std::string& diagnostic);
-        void observe_classification(const char* stage, bool recoveryPending) noexcept;
+        bool inject_scan_error(Failure& failure);
+        bool inject_grain_upload_failure(const char* label, Failure& failure);
+        bool inject_defect_event_create(cudaError_t& error) noexcept;
+        bool inject_defect_event_record(cudaError_t& error) noexcept;
+        void observe_classification(const char* stage, const Failure& failure, bool recoveryPending) noexcept;
         void observe_frame_abort() noexcept;
         void observe_recovery_start(bool pending) noexcept;
         void observe_recovery_end() noexcept;

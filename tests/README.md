@@ -216,10 +216,20 @@ sites through the same native OFX fixture, checking synchronous DIR message
 attempt, failure classification/trace boundary, prepared-frame abort, adapter
 context recovery and fatal OFX result order. It also covers non-DIR filtering,
 percent escaping, failed/throwing host delivery and a failure that requires no
-context retirement. The injected context-loss diagnostic exercises the existing
+context retirement. The injected context-loss status exercises the existing
 retirement/latch policy on the fixture's CUDA context; it does not simulate real
 driver loss or establish Resolve recovery acceptance. The hook definitions are
 absent from the product and ordinary processor-reference objects.
+
+`Ofx.Gpu.ResourceFailure.DefectFence` and `Ofx.Gpu.ResourceFailure.GrainUpload`
+extend that isolated build to the CUDA resource owner. They check Runtime event
+creation/recording failures and ordered STBN/Wang upload outcomes through both
+render routes, including exact status/API/code, diagnostic retention, abort and
+recovery order, and latch invalidation. Grain cases cover ordinary failure
+followed by context loss, the reverse order, and failure followed by success,
+with diagnostic wording varied independently of status. These are bounded
+operation failures on a live GPU, not actual driver-loss tests; production
+objects contain none of their injection hooks.
 
 `Ofx.Gpu.AdapterTrace` implements the C variadic parameter calls used by the
 plug-in rather than returning fabricated success. It records current-value and

@@ -12,6 +12,20 @@
 #include "Logging.h"
 
 namespace JuicerCuda::Diffusion {
+
+    FjStatus launch_failure_status(const LaunchResult& result) noexcept {
+        switch (result.api) {
+            case FailureApi::Cuda:
+                return runtime_failure_status(result.code);
+            case FailureApi::Cufft:
+                return cufft_failure_status(result.code);
+            case FailureApi::None:
+            case FailureApi::Validation:
+                return {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
+        }
+        return {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0};
+    }
+
     namespace {
 
         constexpr std::size_t kInvalidIndex =
@@ -73,17 +87,20 @@ namespace JuicerCuda::Diffusion {
 
         bool current_owner_matches(
             const ResourceManager::DeviceContextKey& contextKey,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             int currentDevice = -1;
             const cudaError_t deviceResult = cudaGetDevice(&currentDevice);
             if (deviceResult != cudaSuccess) {
-                outError = std::string("cudaGetDevice(diffusion owner) failed: ") +
-                           cuda_message(deviceResult);
+                outError.status = runtime_failure_status(deviceResult);
+                outError.diagnostic = std::string("cudaGetDevice(diffusion owner) failed: ") +
+                                      cuda_message(deviceResult);
                 return false;
             }
             const CurrentContextDispatch& dispatch = current_context_dispatch();
             if (dispatch.lookupResult != cudaSuccess || !dispatch.function) {
-                outError =
+                outError.status = runtime_failure_status(dispatch.lookupResult);
+                outError.diagnostic =
                     "cudaGetDriverEntryPointByVersion(cuCtxGetCurrent) failed runtime_code=" +
                     std::to_string(static_cast<int>(dispatch.lookupResult)) +
                     " query_status=" +
@@ -93,14 +110,15 @@ namespace JuicerCuda::Diffusion {
             CUcontext currentContext = nullptr;
             const CUresult contextResult = dispatch.function(&currentContext);
             if (contextResult != CUDA_SUCCESS) {
-                outError = "cuCtxGetCurrent(diffusion owner) failed code=" +
-                           std::to_string(static_cast<int>(contextResult));
+                outError.status = driver_failure_status(contextResult);
+                outError.diagnostic = "cuCtxGetCurrent(diffusion owner) failed code=" +
+                                      std::to_string(static_cast<int>(contextResult));
                 return false;
             }
             if (currentDevice != contextKey.deviceId ||
                 reinterpret_cast<void*>(currentContext) !=
                     contextKey.contextOpaque) {
-                outError =
+                outError.diagnostic =
                     "ResourceDescriptorMismatch component=diffusion field=context_owner";
                 return false;
             }
@@ -117,15 +135,16 @@ namespace JuicerCuda::Diffusion {
 
         bool acquire_host_lease(
             DiffusionContextResources& resources,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             std::lock_guard<std::mutex> lock(resources.metadataMutex);
             if (!resources.acceptingPreparations) {
-                outError =
+                outError.diagnostic =
                     "ExactAdmissionFailure component=diffusion class=context_retiring requested_new_bytes=0";
                 return false;
             }
             if (resources.hostLeaseActive) {
-                outError =
+                outError.diagnostic =
                     "ResourceDescriptorMismatch component=diffusion field=serialized_host_lease";
                 return false;
             }
@@ -148,16 +167,17 @@ namespace JuicerCuda::Diffusion {
             std::uint64_t bytes,
             void*& outPointer,
             DeviceByteReservation& outReservation,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             outPointer = nullptr;
             if (bytes == 0 ||
                 bytes > static_cast<std::uint64_t>(
                             std::numeric_limits<std::size_t>::max())) {
-                outError = "ExactAdmissionFailure component=diffusion field=allocation_bytes";
+                outError.diagnostic = "ExactAdmissionFailure component=diffusion field=allocation_bytes";
                 return false;
             }
             DeviceByteReservation reservation;
-            if (!aggregate.split(bytes, reservation, outError)) {
+            if (!aggregate.split(bytes, reservation, outError.diagnostic)) {
                 return false;
             }
             void* pointer = nullptr;
@@ -165,11 +185,12 @@ namespace JuicerCuda::Diffusion {
                 &pointer,
                 static_cast<std::size_t>(bytes));
             if (allocationResult != cudaSuccess || !pointer) {
-                outError = std::string("cudaMalloc(diffusion) failed: ") +
-                           cuda_message(allocationResult);
+                outError.status = runtime_failure_status(allocationResult);
+                outError.diagnostic = std::string("cudaMalloc(diffusion) failed: ") +
+                                      cuda_message(allocationResult);
                 return false;
             }
-            if (!reservation.commit(bytes, outError)) {
+            if (!reservation.commit(bytes, outError.diagnostic)) {
                 (void)cudaFree(pointer);
                 return false;
             }
@@ -182,15 +203,16 @@ namespace JuicerCuda::Diffusion {
             DeviceByteReservation& aggregate,
             std::uint64_t bytes,
             DeviceByteReservation& outReservation,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             if (bytes == 0) {
-                outError =
+                outError.diagnostic =
                     "UnsupportedCudaExecutionProfile component=diffusion field=plan_allowance";
                 return false;
             }
             DeviceByteReservation reservation;
-            if (!aggregate.split(bytes, reservation, outError) ||
-                !reservation.commit(bytes, outError)) {
+            if (!aggregate.split(bytes, reservation, outError.diagnostic) ||
+                !reservation.commit(bytes, outError.diagnostic)) {
                 return false;
             }
             outReservation = std::move(reservation);
@@ -200,23 +222,25 @@ namespace JuicerCuda::Diffusion {
         bool release_reservation_after_free(
             DeviceByteReservation& reservation,
             bool physicalReleaseSucceeded,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             if (!reservation.active()) {
                 return physicalReleaseSucceeded;
             }
             if (reservation.state() == DeviceReservationState::Committed &&
-                !reservation.mark_retiring(outError)) {
+                !reservation.mark_retiring(outError.diagnostic)) {
                 return false;
             }
             return reservation.release_after_physical_free(
                 physicalReleaseSucceeded,
-                outError);
+                outError.diagnostic);
         }
 
         bool free_device_allocation(
             void*& pointer,
             DeviceByteReservation& reservation,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             if (!pointer) {
                 return release_reservation_after_free(
                     reservation,
@@ -225,13 +249,14 @@ namespace JuicerCuda::Diffusion {
             }
             const cudaError_t freeResult = cudaFree(pointer);
             if (freeResult != cudaSuccess) {
-                std::string ignored;
+                Failure ignored;
                 (void)release_reservation_after_free(
                     reservation,
                     false,
                     ignored);
-                outError = std::string("cudaFree(diffusion) failed: ") +
-                           cuda_message(freeResult);
+                outError.status = runtime_failure_status(freeResult);
+                outError.diagnostic = std::string("cudaFree(diffusion) failed: ") +
+                                      cuda_message(freeResult);
                 return false;
             }
             if (!release_reservation_after_free(reservation, true, outError)) {
@@ -243,7 +268,8 @@ namespace JuicerCuda::Diffusion {
 
         bool destroy_plan_pair(
             DiffusionWorkspaceSlot& slot,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             bool destroyed = true;
             if (slot.r2cPlan != 0) {
                 const cufftResult result = cufftDestroy(slot.r2cPlan);
@@ -251,8 +277,9 @@ namespace JuicerCuda::Diffusion {
                     slot.r2cPlan = 0;
                 } else {
                     destroyed = false;
-                    outError = "cufftDestroy(diffusion R2C) failed code=" +
-                               std::to_string(static_cast<int>(result));
+                    outError.status = cufft_failure_status(result);
+                    outError.diagnostic = "cufftDestroy(diffusion R2C) failed code=" +
+                                          std::to_string(static_cast<int>(result));
                 }
             }
             if (slot.c2rPlan != 0) {
@@ -260,9 +287,12 @@ namespace JuicerCuda::Diffusion {
                 if (result == CUFFT_SUCCESS) {
                     slot.c2rPlan = 0;
                 } else {
+                    if (destroyed) {
+                        outError.status = cufft_failure_status(result);
+                    }
                     destroyed = false;
-                    if (outError.empty()) {
-                        outError =
+                    if (outError.diagnostic.empty()) {
+                        outError.diagnostic =
                             "cufftDestroy(diffusion C2R) failed code=" +
                             std::to_string(static_cast<int>(result));
                     }
@@ -304,33 +334,40 @@ namespace JuicerCuda::Diffusion {
 
         bool destroy_workspace_contents(
             DiffusionWorkspaceSlot& slot,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             bool released = true;
             auto planePointers = stage_plane_pointers(slot);
             for (std::size_t index = 0; index < planePointers.size(); ++index) {
                 void* pointer = planePointers[index];
-                std::string localError;
+                Failure localError;
                 if (!free_device_allocation(
                         pointer,
                         slot.stagePlaneReservations[index],
                         localError)) {
+                    if (released || context_loss(localError)) {
+                        outError.status = localError.status;
+                    }
                     released = false;
-                    if (outError.empty()) {
-                        outError = localError;
+                    if (outError.diagnostic.empty()) {
+                        outError.diagnostic = localError.diagnostic;
                     }
                 } else {
                     assign_stage_plane_pointer(slot, index, nullptr);
                 }
             }
             void* transform = slot.transformBuffer;
-            std::string localError;
+            Failure localError;
             if (!free_device_allocation(
                     transform,
                     slot.transformReservation,
                     localError)) {
+                if (released || context_loss(localError)) {
+                    outError.status = localError.status;
+                }
                 released = false;
-                if (outError.empty()) {
-                    outError = localError;
+                if (outError.diagnostic.empty()) {
+                    outError.diagnostic = localError.diagnostic;
                 }
             } else {
                 slot.transformBuffer = nullptr;
@@ -340,17 +377,23 @@ namespace JuicerCuda::Diffusion {
                     work,
                     slot.workAreaReservation,
                     localError)) {
+                if (released || context_loss(localError)) {
+                    outError.status = localError.status;
+                }
                 released = false;
-                if (outError.empty()) {
-                    outError = localError;
+                if (outError.diagnostic.empty()) {
+                    outError.diagnostic = localError.diagnostic;
                 }
             } else {
                 slot.workArea = nullptr;
             }
             if (!destroy_plan_pair(slot, localError)) {
+                if (released || context_loss(localError)) {
+                    outError.status = localError.status;
+                }
                 released = false;
-                if (outError.empty()) {
-                    outError = localError;
+                if (outError.diagnostic.empty()) {
+                    outError.diagnostic = localError.diagnostic;
                 }
             }
             if (released) {
@@ -385,19 +428,23 @@ namespace JuicerCuda::Diffusion {
 
         bool destroy_spectrum_contents(
             DiffusionSpectrumEntry& entry,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             bool released = true;
             auto pointers = spectrum_pointers(entry);
             for (std::size_t index = 0; index < pointers.size(); ++index) {
                 void* pointer = pointers[index];
-                std::string localError;
+                Failure localError;
                 if (!free_device_allocation(
                         pointer,
                         entry.spectrumReservations[index],
                         localError)) {
+                    if (released || context_loss(localError)) {
+                        outError.status = localError.status;
+                    }
                     released = false;
-                    if (outError.empty()) {
-                        outError = localError;
+                    if (outError.diagnostic.empty()) {
+                        outError.diagnostic = localError.diagnostic;
                     }
                 } else {
                     assign_spectrum_pointer(entry, index, nullptr);
@@ -409,9 +456,12 @@ namespace JuicerCuda::Diffusion {
                 if (eventResult == cudaSuccess) {
                     entry.buildEventOpaque = nullptr;
                 } else {
+                    if (released || runtime_failure_status(eventResult).category == FJ_STATUS_CONTEXT_LOSS) {
+                        outError.status = runtime_failure_status(eventResult);
+                    }
                     released = false;
-                    if (outError.empty()) {
-                        outError =
+                    if (outError.diagnostic.empty()) {
+                        outError.diagnostic =
                             std::string("cudaEventDestroy(diffusion spectrum) failed: ") +
                             cuda_message(eventResult);
                     }
@@ -453,7 +503,7 @@ namespace JuicerCuda::Diffusion {
                 !retained_workspace_slot(workspaceIndex);
             clear_workspace_use_bit(resources, workspaceIndex);
             if (discard) {
-                std::string ignored;
+                Failure ignored;
                 if (destroy_workspace_contents(slot, ignored)) {
                     slot.state = WorkspaceSlotState::Vacant;
                 } else {
@@ -478,7 +528,7 @@ namespace JuicerCuda::Diffusion {
                     !event_complete(entry.buildEventOpaque, buildResult)) {
                     continue;
                 }
-                std::string ignored;
+                Failure ignored;
                 if (!destroy_spectrum_contents(entry, ignored)) {
                     entry.state = SpectrumEntryState::FailedQuarantined;
                 }
@@ -608,7 +658,7 @@ namespace JuicerCuda::Diffusion {
                 }
             }
             if (eviction != kInvalidIndex) {
-                std::string ignored;
+                Failure ignored;
                 if (destroy_spectrum_contents(
                         resources.spectra[eviction],
                         ignored)) {
@@ -653,7 +703,8 @@ namespace JuicerCuda::Diffusion {
             const Spektrafilm::DiffusionExecutionDescriptor& descriptor,
             DeviceByteReservation& aggregate,
             cudaStream_t stream,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             if (!commit_allowance_from_aggregate(
                     aggregate,
                     descriptor.planAllowanceBytes,
@@ -663,26 +714,30 @@ namespace JuicerCuda::Diffusion {
             }
             cufftResult result = cufftCreate(&slot.r2cPlan);
             if (result != CUFFT_SUCCESS) {
-                outError = "cufftCreate(diffusion R2C) failed code=" +
-                           std::to_string(static_cast<int>(result));
+                outError.status = cufft_failure_status(result);
+                outError.diagnostic = "cufftCreate(diffusion R2C) failed code=" +
+                                      std::to_string(static_cast<int>(result));
                 return false;
             }
             result = cufftSetAutoAllocation(slot.r2cPlan, 0);
             if (result != CUFFT_SUCCESS) {
-                outError = "cufftSetAutoAllocation(diffusion R2C) failed code=" +
-                           std::to_string(static_cast<int>(result));
+                outError.status = cufft_failure_status(result);
+                outError.diagnostic = "cufftSetAutoAllocation(diffusion R2C) failed code=" +
+                                      std::to_string(static_cast<int>(result));
                 return false;
             }
             result = cufftCreate(&slot.c2rPlan);
             if (result != CUFFT_SUCCESS) {
-                outError = "cufftCreate(diffusion C2R) failed code=" +
-                           std::to_string(static_cast<int>(result));
+                outError.status = cufft_failure_status(result);
+                outError.diagnostic = "cufftCreate(diffusion C2R) failed code=" +
+                                      std::to_string(static_cast<int>(result));
                 return false;
             }
             result = cufftSetAutoAllocation(slot.c2rPlan, 0);
             if (result != CUFFT_SUCCESS) {
-                outError = "cufftSetAutoAllocation(diffusion C2R) failed code=" +
-                           std::to_string(static_cast<int>(result));
+                outError.status = cufft_failure_status(result);
+                outError.diagnostic = "cufftSetAutoAllocation(diffusion C2R) failed code=" +
+                                      std::to_string(static_cast<int>(result));
                 return false;
             }
 
@@ -711,8 +766,9 @@ namespace JuicerCuda::Diffusion {
                 1,
                 &actualR2cWork);
             if (result != CUFFT_SUCCESS) {
-                outError = "cufftMakePlanMany(diffusion R2C) failed code=" +
-                           std::to_string(static_cast<int>(result));
+                outError.status = cufft_failure_status(result);
+                outError.diagnostic = "cufftMakePlanMany(diffusion R2C) failed code=" +
+                                      std::to_string(static_cast<int>(result));
                 return false;
             }
             result = cufftMakePlanMany(
@@ -729,15 +785,16 @@ namespace JuicerCuda::Diffusion {
                 1,
                 &actualC2rWork);
             if (result != CUFFT_SUCCESS) {
-                outError = "cufftMakePlanMany(diffusion C2R) failed code=" +
-                           std::to_string(static_cast<int>(result));
+                outError.status = cufft_failure_status(result);
+                outError.diagnostic = "cufftMakePlanMany(diffusion C2R) failed code=" +
+                                      std::to_string(static_cast<int>(result));
                 return false;
             }
             const std::uint64_t actualSharedWorkBytes = std::max<std::uint64_t>(
                 static_cast<std::uint64_t>(actualR2cWork),
                 static_cast<std::uint64_t>(actualC2rWork));
             if (actualSharedWorkBytes > descriptor.reservedSharedWorkBytes) {
-                outError =
+                outError.diagnostic =
                     "InvalidDiffusionExecutionDescriptor field=actual_shared_work_bytes";
                 return false;
             }
@@ -756,26 +813,30 @@ namespace JuicerCuda::Diffusion {
             }
             result = cufftSetWorkArea(slot.r2cPlan, slot.workArea);
             if (result != CUFFT_SUCCESS) {
-                outError = "cufftSetWorkArea(diffusion R2C) failed code=" +
-                           std::to_string(static_cast<int>(result));
+                outError.status = cufft_failure_status(result);
+                outError.diagnostic = "cufftSetWorkArea(diffusion R2C) failed code=" +
+                                      std::to_string(static_cast<int>(result));
                 return false;
             }
             result = cufftSetWorkArea(slot.c2rPlan, slot.workArea);
             if (result != CUFFT_SUCCESS) {
-                outError = "cufftSetWorkArea(diffusion C2R) failed code=" +
-                           std::to_string(static_cast<int>(result));
+                outError.status = cufft_failure_status(result);
+                outError.diagnostic = "cufftSetWorkArea(diffusion C2R) failed code=" +
+                                      std::to_string(static_cast<int>(result));
                 return false;
             }
             result = cufftSetStream(slot.r2cPlan, stream);
             if (result != CUFFT_SUCCESS) {
-                outError = "cufftSetStream(diffusion R2C) failed code=" +
-                           std::to_string(static_cast<int>(result));
+                outError.status = cufft_failure_status(result);
+                outError.diagnostic = "cufftSetStream(diffusion R2C) failed code=" +
+                                      std::to_string(static_cast<int>(result));
                 return false;
             }
             result = cufftSetStream(slot.c2rPlan, stream);
             if (result != CUFFT_SUCCESS) {
-                outError = "cufftSetStream(diffusion C2R) failed code=" +
-                           std::to_string(static_cast<int>(result));
+                outError.status = cufft_failure_status(result);
+                outError.diagnostic = "cufftSetStream(diffusion C2R) failed code=" +
+                                      std::to_string(static_cast<int>(result));
                 return false;
             }
             slot.planKey = descriptor.planKey;
@@ -788,7 +849,8 @@ namespace JuicerCuda::Diffusion {
             const Spektrafilm::DiffusionExecutionDescriptor& descriptor,
             DeviceByteReservation& aggregate,
             cudaStream_t stream,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             if (!make_plan_pair(
                     slot,
                     descriptor,
@@ -833,7 +895,8 @@ namespace JuicerCuda::Diffusion {
                     &event,
                     cudaEventDisableTiming);
                 if (eventResult != cudaSuccess || !event) {
-                    outError =
+                    outError.status = runtime_failure_status(eventResult);
+                    outError.diagnostic =
                         std::string("cudaEventCreate(diffusion workspace) failed: ") +
                         cuda_message(eventResult);
                     return false;
@@ -851,7 +914,8 @@ namespace JuicerCuda::Diffusion {
             int radiusPixels,
             DeviceByteReservation& aggregate,
             cudaStream_t stream,
-            std::string& outError) {
+            Failure& outError) {
+            outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
             for (std::size_t index = 0; index < 3; ++index) {
                 void* spectrum = nullptr;
                 if (!allocate_from_aggregate(
@@ -870,7 +934,8 @@ namespace JuicerCuda::Diffusion {
                 &buildEvent,
                 cudaEventDisableTiming);
             if (eventResult != cudaSuccess || !buildEvent) {
-                outError =
+                outError.status = runtime_failure_status(eventResult);
+                outError.diagnostic =
                     std::string("cudaEventCreate(diffusion spectrum) failed: ") +
                     cuda_message(eventResult);
                 return false;
@@ -891,14 +956,16 @@ namespace JuicerCuda::Diffusion {
             request.stream = stream;
             const LaunchResult result = build_spectrum_package(request);
             if (!result.ok()) {
-                outError = std::string("diffusion spectrum build failed stage=") +
-                           (result.stage ? result.stage : "unknown") +
-                           " code=" + std::to_string(result.code);
+                outError.status = launch_failure_status(result);
+                outError.diagnostic = std::string("diffusion spectrum build failed stage=") +
+                                      (result.stage ? result.stage : "unknown") +
+                                      " code=" + std::to_string(result.code);
                 return false;
             }
             const cudaError_t recordResult = cudaEventRecord(buildEvent, stream);
             if (recordResult != cudaSuccess) {
-                outError =
+                outError.status = runtime_failure_status(recordResult);
+                outError.diagnostic =
                     std::string("cudaEventRecord(diffusion spectrum) failed: ") +
                     cuda_message(recordResult);
                 return false;
@@ -910,7 +977,7 @@ namespace JuicerCuda::Diffusion {
 
     PreparedDiffusionLease::~PreparedDiffusionLease() noexcept {
         if (_active && _owner) {
-            std::string ignored;
+            Failure ignored;
             (void)release_diffusion_resources(
                 *_owner,
                 *this,
@@ -929,7 +996,7 @@ namespace JuicerCuda::Diffusion {
         PreparedDiffusionLease&& other) noexcept {
         if (this != &other) {
             if (_active && _owner) {
-                std::string ignored;
+                Failure ignored;
                 (void)release_diffusion_resources(
                     *_owner,
                     *this,
@@ -1002,12 +1069,12 @@ namespace JuicerCuda::Diffusion {
         const Spektrafilm::DiffusionExecutionDescriptor& descriptor,
         void* cudaStreamOpaque,
         PreparedDiffusionLease& outLease,
-        std::string& outError) {
-        outError.clear();
+        Failure& outError) {
+        outError = {};
         if (outLease.active() || contextKey.deviceId < 0 ||
             !contextKey.contextOpaque || contextEpoch == 0 || !ledger ||
             !cudaStreamOpaque) {
-            outError =
+            outError.diagnostic =
                 "ResourceDescriptorMismatch component=diffusion field=prepare_identity";
             return false;
         }
@@ -1016,7 +1083,7 @@ namespace JuicerCuda::Diffusion {
         }
         if (descriptor.contextEpoch != contextEpoch ||
             descriptor.frameSetHash != frameSet.hash) {
-            outError =
+            outError.diagnostic =
                 "ResourceDescriptorMismatch component=diffusion field=prepare_association";
             return false;
         }
@@ -1030,9 +1097,9 @@ namespace JuicerCuda::Diffusion {
             if (!Spektrafilm::expand_diffusion_psf_components(
                     stage.sample,
                     components[keyIndex],
-                    outError)) {
-                if (outError.empty()) {
-                    outError =
+                    outError.diagnostic)) {
+                if (outError.diagnostic.empty()) {
+                    outError.diagnostic =
                         "ResourceDescriptorMismatch component=diffusion field=psf_components";
                 }
                 return false;
@@ -1075,7 +1142,7 @@ namespace JuicerCuda::Diffusion {
             const std::size_t retiringIndex =
                 choose_retiring_workspace(resources);
             if (retiringIndex == kInvalidIndex) {
-                outError =
+                outError.diagnostic =
                     "ExactAdmissionFailure component=diffusion class=execution_slot_unrecoverable requested_new_bytes=0 slots=2";
                 return failClaimedPreparation();
             }
@@ -1087,7 +1154,8 @@ namespace JuicerCuda::Diffusion {
                     retiring.completionEventOpaque));
             if (waitResult != cudaSuccess) {
                 retiring.state = WorkspaceSlotState::FailedQuarantined;
-                outError =
+                outError.status = runtime_failure_status(waitResult);
+                outError.diagnostic =
                     std::string("cudaEventSynchronize(diffusion admission) failed: ") +
                     cuda_message(waitResult);
                 return failClaimedPreparation();
@@ -1125,7 +1193,7 @@ namespace JuicerCuda::Diffusion {
                         entry.key,
                         descriptor.spectrumKeys[keyIndex])) {
                     if (entry.leased) {
-                        outError =
+                        outError.diagnostic =
                             "ResourceDescriptorMismatch component=diffusion field=serialized_spectrum_lease";
                         for (std::size_t rollback = 0;
                              rollback < keyIndex;
@@ -1148,7 +1216,7 @@ namespace JuicerCuda::Diffusion {
             if (found == kInvalidIndex) {
                 found = choose_missing_spectrum_slot(resources);
                 if (found == kInvalidIndex) {
-                    outError =
+                    outError.diagnostic =
                         "ExactAdmissionFailure component=diffusion class=spectrum requested_new_bytes=0 slots=4";
                     for (std::size_t rollback = 0;
                          rollback < keyIndex;
@@ -1202,7 +1270,7 @@ namespace JuicerCuda::Diffusion {
                     prospectiveBytes,
                     packageBytes,
                     prospectiveBytes)) {
-                outError =
+                outError.diagnostic =
                     "ExactAdmissionFailure component=diffusion field=spectrum_upper_bound";
                 rollbackSpectrumLeases();
                 return failClaimedPreparation();
@@ -1225,13 +1293,13 @@ namespace JuicerCuda::Diffusion {
                  prospectiveBytes,
                  descriptor.stagePlaneBytes,
                  prospectiveBytes))) {
-            outError =
+            outError.diagnostic =
                 "ExactAdmissionFailure component=diffusion field=workspace_upper_bound";
             rollbackSpectrumLeases();
             return failClaimedPreparation();
         }
         if (prospectiveBytes > 0) {
-            std::string ledgerError;
+            Failure ledgerError;
             if (!ledger->reserve(
                     DeviceReservationRequest{
                         .contextKey = contextKey,
@@ -1239,9 +1307,10 @@ namespace JuicerCuda::Diffusion {
                         .bytes = prospectiveBytes},
                     aggregate,
                     ledgerError)) {
-                outError =
+                outError.status = ledgerError.status;
+                outError.diagnostic =
                     "ExactAdmissionFailure component=diffusion class=aggregate_reservation requested_new_bytes=" +
-                    std::to_string(prospectiveBytes) + " detail=" + ledgerError;
+                    std::to_string(prospectiveBytes) + " detail=" + ledgerError.diagnostic;
                 rollbackSpectrumLeases();
                 return failClaimedPreparation();
             }
@@ -1258,9 +1327,11 @@ namespace JuicerCuda::Diffusion {
         lease._active = true;
 
         const auto failPreparation = [&] {
-            const bool completionCertain =
-                !lease._workEnqueued ||
-                cudaStreamSynchronize(stream) == cudaSuccess;
+            const cudaError_t completionStatus = lease._workEnqueued ? cudaStreamSynchronize(stream) : cudaSuccess;
+            const bool completionCertain = completionStatus == cudaSuccess;
+            if (runtime_failure_status(completionStatus).category == FJ_STATUS_CONTEXT_LOSS) {
+                outError.status = runtime_failure_status(completionStatus);
+            }
             DiffusionWorkspaceSlot& failedWorkspace =
                 resources.workspaces[workspaceIndex];
             failedWorkspace.completionUnknown = !completionCertain;
@@ -1277,7 +1348,7 @@ namespace JuicerCuda::Diffusion {
                 }
             }
             if (completionCertain) {
-                std::string ignored;
+                Failure ignored;
                 if (destroy_workspace_contents(failedWorkspace, ignored)) {
                     failedWorkspace.state = WorkspaceSlotState::Vacant;
                 }
@@ -1309,7 +1380,7 @@ namespace JuicerCuda::Diffusion {
                 resources.spectra[spectrumIndices[keyIndex]];
             if (entry.state != SpectrumEntryState::Building ||
                 !entry.buildEventOpaque) {
-                outError =
+                outError.diagnostic =
                     "MissingRequiredResource component=diffusion field=same_key_build_event";
                 return failPreparation();
             }
@@ -1318,7 +1389,8 @@ namespace JuicerCuda::Diffusion {
                 reinterpret_cast<cudaEvent_t>(entry.buildEventOpaque),
                 0);
             if (waitResult != cudaSuccess) {
-                outError =
+                outError.status = runtime_failure_status(waitResult);
+                outError.diagnostic =
                     std::string("cudaStreamWaitEvent(diffusion same key) failed: ") +
                     cuda_message(waitResult);
                 return failPreparation();
@@ -1327,8 +1399,9 @@ namespace JuicerCuda::Diffusion {
         }
 
         if (rebuildWorkspace) {
-            std::string cleanupError;
-            if (!destroy_workspace_contents(workspace, cleanupError) ||
+            Failure cleanupError;
+            const bool workspaceCleared = destroy_workspace_contents(workspace, cleanupError);
+            if (!workspaceCleared ||
                 !build_workspace(
                     workspace,
                     frameSet,
@@ -1336,8 +1409,11 @@ namespace JuicerCuda::Diffusion {
                     aggregate,
                     stream,
                     outError)) {
-                if (outError.empty()) {
-                    outError = cleanupError;
+                if (!workspaceCleared) {
+                    outError.status = cleanupError.status;
+                }
+                if (outError.diagnostic.empty()) {
+                    outError.diagnostic = cleanupError.diagnostic;
                 }
                 return failPreparation();
             }
@@ -1347,7 +1423,8 @@ namespace JuicerCuda::Diffusion {
             const cufftResult c2rResult =
                 cufftSetStream(workspace.c2rPlan, stream);
             if (r2cResult != CUFFT_SUCCESS || c2rResult != CUFFT_SUCCESS) {
-                outError = "cufftSetStream(diffusion reuse) failed";
+                outError.status = cufft_failure_status(r2cResult != CUFFT_SUCCESS ? r2cResult : c2rResult);
+                outError.diagnostic = "cufftSetStream(diffusion reuse) failed";
                 return failPreparation();
             }
             workspace.stagePlanes.rowStrideFloats =
@@ -1393,11 +1470,11 @@ namespace JuicerCuda::Diffusion {
         PreparedDiffusionLease& lease,
         void* cudaStreamOpaque,
         bool dependentFailure,
-        std::string& outError) noexcept {
+        Failure& outError) noexcept {
         const bool ownsHostLease =
             lease._active && lease._owner == &resources;
         try {
-            outError.clear();
+            outError = {};
             if (!ownsHostLease) {
                 return true;
             }
@@ -1417,6 +1494,9 @@ namespace JuicerCuda::Diffusion {
                     const cudaError_t createResult = cudaEventCreateWithFlags(
                         &event,
                         cudaEventDisableTiming);
+                    if (createResult != cudaSuccess) {
+                        outError.status = runtime_failure_status(createResult);
+                    }
                     if (createResult == cudaSuccess && event) {
                         workspace.completionEventOpaque =
                             reinterpret_cast<void*>(event);
@@ -1429,12 +1509,13 @@ namespace JuicerCuda::Diffusion {
                         stream);
                     completionRecorded = recordResult == cudaSuccess;
                     if (!completionRecorded) {
-                        outError =
+                        outError.status = runtime_failure_status(recordResult);
+                        outError.diagnostic =
                             std::string("cudaEventRecord(diffusion release) failed: ") +
                             cuda_message(recordResult);
                     }
                 } else {
-                    outError =
+                    outError.diagnostic =
                         "cudaEventCreate(diffusion release) failed";
                 }
             }
@@ -1443,8 +1524,11 @@ namespace JuicerCuda::Diffusion {
             if (lease._workEnqueued && !completionRecorded) {
                 const cudaError_t syncResult = cudaStreamSynchronize(stream);
                 completionCertain = syncResult == cudaSuccess;
-                if (!completionCertain && outError.empty()) {
-                    outError =
+                if (!completionCertain && !context_loss(outError)) {
+                    outError.status = runtime_failure_status(syncResult);
+                }
+                if (!completionCertain && outError.diagnostic.empty()) {
+                    outError.diagnostic =
                         std::string("cudaStreamSynchronize(diffusion release) failed: ") +
                         cuda_message(syncResult);
                 }
@@ -1516,7 +1600,7 @@ namespace JuicerCuda::Diffusion {
             }
 
             if (cleanupWorkspace || cleanupSpectrum[0] || cleanupSpectrum[1]) {
-                std::string cleanupError;
+                Failure cleanupError;
                 if (cleanupWorkspace) {
                     if (destroy_workspace_contents(workspace, cleanupError)) {
                         workspace.state = WorkspaceSlotState::Vacant;
@@ -1535,8 +1619,8 @@ namespace JuicerCuda::Diffusion {
                         entry.state = SpectrumEntryState::FailedQuarantined;
                     }
                 }
-                if (!cleanupError.empty() && outError.empty()) {
-                    outError = cleanupError;
+                if (!cleanupError.diagnostic.empty() && outError.diagnostic.empty()) {
+                    outError.diagnostic = cleanupError.diagnostic;
                 }
             }
 
@@ -1551,7 +1635,7 @@ namespace JuicerCuda::Diffusion {
                 release_host_lease(resources);
             }
             try {
-                outError = "diffusion resource release bookkeeping failed";
+                outError.diagnostic = "diffusion resource release bookkeeping failed";
             } catch (...) {
                 JuicerLogging::discard_current_exception();
             }
@@ -1562,10 +1646,10 @@ namespace JuicerCuda::Diffusion {
     bool trim_inactive_diffusion_resources(
         DiffusionContextResources& resources,
         const ResourceManager::DeviceContextKey& contextKey,
-        std::string& outError) noexcept {
+        Failure& outError) noexcept {
         bool hostLeaseClaimed = false;
         try {
-            outError.clear();
+            outError = {};
             if (!acquire_host_lease(resources, outError)) {
                 return false;
             }
@@ -1585,13 +1669,16 @@ namespace JuicerCuda::Diffusion {
                 if (workspace.state != WorkspaceSlotState::Vacant) {
                     continue;
                 }
-                std::string localError;
+                Failure localError;
                 if (!destroy_workspace_contents(workspace, localError)) {
                     workspace.state =
                         WorkspaceSlotState::FailedQuarantined;
+                    if (trimmed || context_loss(localError)) {
+                        outError.status = localError.status;
+                    }
                     trimmed = false;
-                    if (outError.empty()) {
-                        outError = localError;
+                    if (outError.diagnostic.empty()) {
+                        outError.diagnostic = localError.diagnostic;
                     }
                 }
             }
@@ -1600,12 +1687,15 @@ namespace JuicerCuda::Diffusion {
                     entry.leased || entry.pendingWorkspaceMask != 0) {
                     continue;
                 }
-                std::string localError;
+                Failure localError;
                 if (!destroy_spectrum_contents(entry, localError)) {
                     entry.state = SpectrumEntryState::FailedQuarantined;
+                    if (trimmed || context_loss(localError)) {
+                        outError.status = localError.status;
+                    }
                     trimmed = false;
-                    if (outError.empty()) {
-                        outError = localError;
+                    if (outError.diagnostic.empty()) {
+                        outError.diagnostic = localError.diagnostic;
                     }
                 }
             }
@@ -1617,7 +1707,7 @@ namespace JuicerCuda::Diffusion {
                 release_host_lease(resources);
             }
             try {
-                outError = "inactive diffusion residency trim failed";
+                outError.diagnostic = "inactive diffusion residency trim failed";
             } catch (...) {
                 JuicerLogging::discard_current_exception();
             }
@@ -1666,12 +1756,12 @@ namespace JuicerCuda::Diffusion {
                         continue;
                     }
                 }
-                std::string localError;
+                Failure localError;
                 if (!destroy_workspace_contents(workspace, localError)) {
                     drained = false;
                     workspace.state = WorkspaceSlotState::FailedQuarantined;
                     if (outError.empty()) {
-                        outError = localError;
+                        outError = localError.diagnostic;
                     }
                     continue;
                 }
@@ -1707,12 +1797,12 @@ namespace JuicerCuda::Diffusion {
                         continue;
                     }
                 }
-                std::string localError;
+                Failure localError;
                 if (!destroy_spectrum_contents(entry, localError)) {
                     drained = false;
                     entry.state = SpectrumEntryState::FailedQuarantined;
                     if (outError.empty()) {
-                        outError = localError;
+                        outError = localError.diagnostic;
                     }
                 }
             }

@@ -1,5 +1,6 @@
 // Native CUDA execution; the temporary host adapter owns publication and host access.
 
+#include "Cuda/JuicerCudaFailure.h"
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -457,7 +458,8 @@ namespace {
         const JuicerCuda::ResourceManager::DeviceContextKey& contextKey,
         std::uint64_t contextEpoch,
         cudaStream_t stream,
-        std::string& outDiagnostic) {
+        JuicerCuda::Failure& failure) {
+        auto& outDiagnostic = failure.diagnostic;
         const auto stage_label = [](JuicerCuda::ScatterHalationLaunchStage stage) {
             switch (stage) {
                 case JuicerCuda::ScatterHalationLaunchStage::Binding:
@@ -575,6 +577,9 @@ namespace {
         if (result.status == cudaSuccess) {
             outDiagnostic.clear();
             return true;
+        }
+        if (result.stage != JuicerCuda::ScatterHalationLaunchStage::Binding) {
+            failure.status = JuicerCuda::runtime_failure_status(result.status);
         }
         append_identity(
             result.stage == JuicerCuda::ScatterHalationLaunchStage::Binding
@@ -811,29 +816,6 @@ namespace {
         std::memcpy(dst, src, 9u * sizeof(float));
     }
 
-    std::string ascii_lower_copy(const std::string& value) {
-        std::string out = value;
-        std::transform(out.begin(), out.end(), out.begin(), [](unsigned char ch) {
-            return static_cast<char>(std::tolower(ch));
-        });
-        return out;
-    }
-
-    bool text_has_context_loss_marker(const std::string& text) {
-        if (text.empty()) {
-            return false;
-        }
-        const std::string lower = ascii_lower_copy(text);
-        return lower.find("context is destroyed") != std::string::npos ||
-               lower.find("context destroyed") != std::string::npos ||
-               lower.find("cudaerrorcontextisdestroyed") != std::string::npos ||
-               lower.find("device lost") != std::string::npos ||
-               lower.find("driver shutting down") != std::string::npos ||
-               lower.find("context reset") != std::string::npos ||
-               lower.find("device unavailable") != std::string::npos ||
-               lower.find("cudaerrordeviceuninitialized") != std::string::npos;
-    }
-
     // NOLINTBEGIN(bugprone-easily-swappable-parameters) Both route call sites share this fixed descriptor context order.
     bool build_visual_grain_descriptor_for_frame(
         const Spektrafilm::VisualGrainRecipe& recipe,
@@ -959,24 +941,6 @@ namespace {
 } // namespace
 
 namespace JuicerCuda {
-    bool is_cuda_context_loss_signal(cudaError_t error, const std::string& detail) {
-        if (text_has_context_loss_marker(detail)) {
-            return true;
-        }
-        if (error == cudaSuccess || error == cudaErrorNotReady) {
-            return false;
-        }
-        const char* errorName = cudaGetErrorName(error);
-        if (errorName && text_has_context_loss_marker(errorName)) {
-            return true;
-        }
-        const char* errorText = cudaGetErrorString(error);
-        if (errorText && text_has_context_loss_marker(errorText)) {
-            return true;
-        }
-        return false;
-    }
-
     JuicerCuda::AutoExposurePreviewDescriptor make_auto_exposure_preview_descriptor(
         const JuicerCuda::FrameRect& sourceBounds,
         const JuicerCuda::FrameRect& meterBounds,
@@ -1041,53 +1005,46 @@ namespace {
         JuicerCuda::PendingContextLossRecovery& pendingContextLossRecovery;
         bool traceInfo = false;
         const char* restrictionPrefix = nullptr;
-        void mark_context_loss_recovery(const char* stage, cudaError_t error, const std::string& detail) const {
-            if (pendingContextLossRecovery.pending) {
-                return;
-            }
-            if (!JuicerCuda::is_cuda_context_loss_signal(error, detail)) {
+        void mark_context_loss_recovery(const char* stage, const JuicerCuda::Failure& failure) const {
+            if (pendingContextLossRecovery.pending || !JuicerCuda::context_loss(failure)) {
                 return;
             }
             pendingContextLossRecovery.pending = true;
-            pendingContextLossRecovery.error = error;
+            pendingContextLossRecovery.failure = failure;
             pendingContextLossRecovery.stage = stage;
-            pendingContextLossRecovery.detail = detail;
         }
 
-        [[noreturn]] void fail_policy(const char* failurePrefix, const char* detail) const {
+        [[noreturn]] void fail_policy(const char* failurePrefix, JuicerCuda::Failure failure) const {
             trace_cuda_fatal_prefixed_if(
                 traceInfo,
                 CudaFailureTrace{
                     nonempty_cstr_or(failurePrefix, "CUDA render cannot continue"),
-                    detail});
-            throw JuicerCuda::ExecutionFailure{};
+                    cstr_or_null_if_empty(failure.diagnostic)});
+            throw JuicerCuda::ExecutionFailure{std::move(failure)};
         }
 
         [[noreturn]] void fail_stage(const char* stageTag, const char* failurePrefix, cudaError_t errorCode) const {
-            const char* errorMsg = cudaGetErrorString(errorCode);
-            const char* detail = detail_or_unknown(errorMsg);
-            mark_context_loss_recovery(nonempty_cstr_or(stageTag, "cuda_stage"), errorCode, detail);
-            fail_policy(nonempty_cstr_or(failurePrefix, "CUDA stage failed"), detail);
+            const char* detail = detail_or_unknown(cudaGetErrorString(errorCode));
+            JuicerCuda::Failure failure{JuicerCuda::runtime_failure_status(errorCode), detail};
+            mark_context_loss_recovery(nonempty_cstr_or(stageTag, "cuda_stage"), failure);
+            fail_policy(nonempty_cstr_or(failurePrefix, "CUDA stage failed"), std::move(failure));
         }
 
-        [[noreturn]] void fail_submission(const char* stageTag, const char* failurePrefix, const std::string& error) const {
-            mark_context_loss_recovery(
-                nonempty_cstr_or(stageTag, "submission_stage"),
-                cudaErrorUnknown,
-                error);
+        [[noreturn]] void fail_submission(const char* stageTag, const char* failurePrefix, const JuicerCuda::Failure& failure) const {
+            mark_context_loss_recovery(nonempty_cstr_or(stageTag, "submission_stage"), failure);
             trace_cuda_fatal_prefixed_if(
                 traceInfo,
                 CudaFailureTrace{
                     nonempty_cstr_or(failurePrefix, "submission stage failed"),
-                    cstr_or_null_if_empty(error)});
+                    cstr_or_null_if_empty(failure.diagnostic)});
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            JuicerCuda::ExecutorTest::observe_classification(stageTag, pendingContextLossRecovery.pending);
+            JuicerCuda::ExecutorTest::observe_classification(stageTag, failure, pendingContextLossRecovery.pending);
 #endif
-            throw JuicerCuda::ExecutionFailure{};
+            throw JuicerCuda::ExecutionFailure{failure};
         }
 
         [[noreturn]] void fail_route(const char* diagnostic) const {
-            fail_policy(restrictionPrefix, diagnostic);
+            fail_policy(restrictionPrefix, {{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, detail_or_unknown(diagnostic)});
         }
     };
 
@@ -1160,7 +1117,7 @@ namespace {
             errors.fail_submission(
                 "pack_output_gamut_payload",
                 "CUDA output gamut payload binding failed",
-                "ResourceDescriptorMismatch component=scan_color_payload field=output_gamut_identity");
+                JuicerCuda::Failure{{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "ResourceDescriptorMismatch component=scan_color_payload field=output_gamut_identity"});
         }
         destination.outputGamutCmax = prepared.outputGamutCmax;
         copy_float9(
@@ -1498,7 +1455,7 @@ namespace {
                 }
                 const std::string diagnostic =
                     diffusion_launch_failure_diagnostic(diffusionResult);
-                errors.fail_route(diagnostic.c_str());
+                errors.fail_policy(errors.restrictionPrefix, {JuicerCuda::Diffusion::launch_failure_status(diffusionResult), diagnostic});
             }
             // launch_stage rotates semantic plane pointers after each channel.
             directCameraFilmLinear = camera_film_linear_planes(
@@ -1518,7 +1475,7 @@ namespace {
             }
         }
         if (halationExecutable) {
-            std::string halationDiagnostic;
+            JuicerCuda::Failure halationDiagnostic;
             // bind_camera_diffusion_carrier_immediately
             if (!launch_scatter_halation_for_route(
                     directHalation,
@@ -1582,7 +1539,7 @@ namespace {
         const ExecutionErrors& errors) {
         OpticalWorkspace optical;
 
-        std::string focusedWorkspaceError;
+        JuicerCuda::Failure focusedWorkspaceError;
         if (!preparedFrame.stage_optical_workspace(
                 focusedWorkspace,
                 stream,
@@ -1738,7 +1695,7 @@ namespace {
         }
         if (!directUseFusedScannerPostSpatialDirHandoff &&
             !directDirUsesSourceBuildCachedLogRaw) {
-            std::string stageError;
+            JuicerCuda::Failure stageError;
             if (!preparedFrame.stage_spatial_dir_cached_log_raw_for_final_develop(
                     focusedWorkspace,
                     stream,
@@ -2315,7 +2272,7 @@ namespace {
                 }
                 const std::string diagnostic =
                     diffusion_launch_failure_diagnostic(diffusionResult);
-                errors.fail_route(diagnostic.c_str());
+                errors.fail_policy(errors.restrictionPrefix, {JuicerCuda::Diffusion::launch_failure_status(diffusionResult), diagnostic});
             }
             // launch_stage rotates semantic plane pointers after each channel.
             printCameraFilmLinear = camera_film_linear_planes(
@@ -2335,7 +2292,7 @@ namespace {
             }
         }
         if (halationExecutable) {
-            std::string halationDiagnostic;
+            JuicerCuda::Failure halationDiagnostic;
             // bind_camera_diffusion_carrier_immediately
             if (!launch_scatter_halation_for_route(
                     printHalation,
@@ -2370,7 +2327,7 @@ namespace {
         const ExecutionErrors& errors) {
         OpticalWorkspace optical;
 
-        std::string focusedWorkspaceError;
+        JuicerCuda::Failure focusedWorkspaceError;
         if (!preparedFrame.stage_optical_workspace(
                 focusedWorkspace,
                 stream,
@@ -2499,7 +2456,7 @@ namespace {
         }
         if (!printUseFusedScannerPostSpatialDirHandoff &&
             !printDirUsesSourceBuildCachedLogRaw) {
-            std::string stageError;
+            JuicerCuda::Failure stageError;
             if (!preparedFrame.stage_spatial_dir_cached_log_raw_for_final_develop(
                     focusedWorkspace,
                     stream,
@@ -2703,7 +2660,7 @@ namespace {
                 const std::string diagnostic =
                     diffusion_launch_failure_diagnostic(
                         diffusionResult);
-                errors.fail_route(diagnostic.c_str());
+                errors.fail_policy(errors.restrictionPrefix, {JuicerCuda::Diffusion::launch_failure_status(diffusionResult), diagnostic});
             }
             // launch_stage rotates semantic plane pointers after each channel.
             printEnlargerLinear = enlarger_print_linear_planes(
@@ -2938,7 +2895,7 @@ namespace JuicerCuda {
         const bool captureDensityConsumerActive =
             grainStageActive || filmEffectsActive;
         const auto scannerCorrection = std::get<Scanner::ScannerColorCorrectionDescriptor>(input.correction);
-        std::string directPrepareError;
+        JuicerCuda::Failure directPrepareError;
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
             std::visit([&](const auto* preparation) {
                 return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, *preparation, autoExposureBufferRequest, frame.stream, directPrepareError);
@@ -3023,7 +2980,7 @@ namespace JuicerCuda {
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace =
             preparedFrame.workspace_lease();
         if (focusedWorkspace.active()) {
-            std::string transitionError;
+            JuicerCuda::Failure transitionError;
             if (!preparedFrame.checkpoint_large_scratch_transition(
                     focusedWorkspace,
                     frame.stream,
@@ -3038,7 +2995,7 @@ namespace JuicerCuda {
         bool directDirUsesSourceBuildCachedLogRaw = false;
         bool directCaptureDensityReady = false;
         if (descriptors.dir.hash != 0) {
-            std::string spatialError;
+            JuicerCuda::Failure spatialError;
             if (!preparedFrame.prepare_spatial_dir_resources(
                     descriptors.dir,
                     focusedWorkspace,
@@ -3072,13 +3029,13 @@ namespace JuicerCuda {
                 errors);
         }
         pack_scan_stage(run.scanStage, prepared, input.outputGamut, scannerCorrection, errors);
-        std::string scanError;
+        JuicerCuda::Failure scanError;
         if (
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
             JuicerCuda::ExecutorTest::inject_scan_error(scanError) ||
 #endif
             !preparedFrame.prepare_scan_error_stage(run.scanStage.scanErrorFlag, frame.stream, scanError)) {
-            dirFailureMessage.deliver(dirFailureMessage.user, scanError);
+            dirFailureMessage.deliver(dirFailureMessage.user, scanError.diagnostic);
             errors.fail_submission("direct_scan_error_stage", "direct scan error stage failed", scanError);
         }
         if (directUseFocusedSplit && !directUseFusedScannerPostSpatialDirHandoff) {
@@ -3098,7 +3055,7 @@ namespace JuicerCuda {
             directCaptureDensityReady = true;
         }
         if (cameraDiffusionActive) {
-            std::string diffusionReleaseError;
+            JuicerCuda::Failure diffusionReleaseError;
             if (!preparedFrame.release_diffusion_resources_after_use(
                     frame.stream,
                     diffusionReleaseError)) {
@@ -3131,20 +3088,20 @@ namespace JuicerCuda {
             errors);
         if (!preparedFrame.finalize_scan_error_stage(run.scanStage.scanErrorFlag, frame.stream, scanError)) {
             const std::string diagnostic = halationExecutable
-                                               ? halation_completion_diagnostic(input.identity, directHalation, snapshot, preparedFrame.admitted_context_epoch(), "scan_error_finalize", scanError)
-                                               : scanError;
-            errors.fail_submission("direct_scan_error_finalize", "direct scan error finalize failed", diagnostic);
+                                               ? halation_completion_diagnostic(input.identity, directHalation, snapshot, preparedFrame.admitted_context_epoch(), "scan_error_finalize", scanError.diagnostic)
+                                               : scanError.diagnostic;
+            errors.fail_submission("direct_scan_error_finalize", "direct scan error finalize failed", {scanError.status, diagnostic});
         }
-        std::string useError;
+        JuicerCuda::Failure useError;
         if (!preparedFrame.record_use(frame.stream, useError)) {
             errors.fail_submission("prepared_frame_use_fence", "CUDA prepared-frame use fencing failed", useError);
         }
-        std::string finishError;
+        JuicerCuda::Failure finishError;
         if (!preparedFrame.finish(frame.stream, finishError)) {
             const std::string diagnostic = halationExecutable
-                                               ? halation_completion_diagnostic(input.identity, directHalation, snapshot, preparedFrame.admitted_context_epoch(), "prepared_frame_finish", finishError)
-                                               : finishError;
-            errors.fail_submission("direct_prepared_frame_finish", "direct prepared frame finish failed", diagnostic);
+                                               ? halation_completion_diagnostic(input.identity, directHalation, snapshot, preparedFrame.admitted_context_epoch(), "prepared_frame_finish", finishError.diagnostic)
+                                               : finishError.diagnostic;
+            errors.fail_submission("direct_prepared_frame_finish", "direct prepared frame finish failed", {finishError.status, diagnostic});
         }
         return;
     }
@@ -3188,7 +3145,7 @@ namespace JuicerCuda {
             cameraDiffusionActive || enlargerDiffusionActive;
         const bool captureDensityConsumerActive =
             grainStageActive || filmEffectsActive;
-        std::string prepareError;
+        JuicerCuda::Failure prepareError;
         JuicerProcess::Root::PreparedCudaFrame preparedFrame =
             std::visit([&](const auto* preparation) {
                 return JuicerProcess::root().prepare_cuda_frame(deviceContextKey, requestedSnapshot, *preparation, autoExposureBufferRequest, frame.stream, prepareError);
@@ -3298,7 +3255,7 @@ namespace JuicerCuda {
         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace =
             preparedFrame.workspace_lease();
         if (focusedWorkspace.active()) {
-            std::string transitionError;
+            JuicerCuda::Failure transitionError;
             if (!preparedFrame.checkpoint_large_scratch_transition(
                     focusedWorkspace,
                     frame.stream,
@@ -3313,7 +3270,7 @@ namespace JuicerCuda {
         bool printDirUsesSourceBuildCachedLogRaw = false;
         bool printCaptureDensityReady = false;
         if (descriptors.dir.hash != 0) {
-            std::string spatialError;
+            JuicerCuda::Failure spatialError;
             if (!preparedFrame.prepare_spatial_dir_resources(
                     descriptors.dir,
                     focusedWorkspace,
@@ -3347,7 +3304,7 @@ namespace JuicerCuda {
                 errors);
         }
         pack_scan_stage(run.scanStage, prepared, input.outputGamut, scannerCorrection, errors);
-        std::string scanError;
+        JuicerCuda::Failure scanError;
         if (
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
             JuicerCuda::ExecutorTest::inject_scan_error(scanError) ||
@@ -3356,7 +3313,7 @@ namespace JuicerCuda {
                 run.scanStage.scanErrorFlag,
                 frame.stream,
                 scanError)) {
-            dirFailureMessage.deliver(dirFailureMessage.user, scanError);
+            dirFailureMessage.deliver(dirFailureMessage.user, scanError.diagnostic);
             errors.fail_submission(
                 "print_scan_error_stage",
                 "print scan error stage failed",
@@ -3382,7 +3339,7 @@ namespace JuicerCuda {
             }
         }
         if (routeDiffusionActive) {
-            std::string diffusionReleaseError;
+            JuicerCuda::Failure diffusionReleaseError;
             if (!preparedFrame.release_diffusion_resources_after_use(
                     frame.stream,
                     diffusionReleaseError)) {
@@ -3421,26 +3378,26 @@ namespace JuicerCuda {
                 frame.stream,
                 scanError)) {
             const std::string diagnostic = halationExecutable
-                                               ? halation_completion_diagnostic(input.identity, printHalation, snapshot, preparedFrame.admitted_context_epoch(), "scan_error_finalize", scanError)
-                                               : scanError;
+                                               ? halation_completion_diagnostic(input.identity, printHalation, snapshot, preparedFrame.admitted_context_epoch(), "scan_error_finalize", scanError.diagnostic)
+                                               : scanError.diagnostic;
             errors.fail_submission(
                 "print_scan_error_finalize",
                 "print scan error finalize failed",
-                diagnostic);
+                {scanError.status, diagnostic});
         }
-        std::string useError;
+        JuicerCuda::Failure useError;
         if (!preparedFrame.record_use(frame.stream, useError)) {
             errors.fail_submission("prepared_frame_use_fence", "CUDA prepared-frame use fencing failed", useError);
         }
-        std::string finishError;
+        JuicerCuda::Failure finishError;
         if (!preparedFrame.finish(frame.stream, finishError)) {
             const std::string diagnostic = halationExecutable
-                                               ? halation_completion_diagnostic(input.identity, printHalation, snapshot, preparedFrame.admitted_context_epoch(), "prepared_frame_finish", finishError)
-                                               : finishError;
+                                               ? halation_completion_diagnostic(input.identity, printHalation, snapshot, preparedFrame.admitted_context_epoch(), "prepared_frame_finish", finishError.diagnostic)
+                                               : finishError.diagnostic;
             errors.fail_submission(
                 "print_prepared_frame_finish",
                 "print prepared frame finish failed",
-                diagnostic);
+                {finishError.status, diagnostic});
         }
         return;
     }

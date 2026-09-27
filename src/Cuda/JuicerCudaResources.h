@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include "Cuda/JuicerCudaFailure.h"
+
 #include "Cuda/JuicerCudaDeviceLedger.h"
 #include "Cuda/Diffusion/JuicerCudaDiffusionResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
@@ -540,7 +542,7 @@ namespace JuicerCuda {
         const ResourceManager::DeviceContextKey& contextKey,
         std::uint64_t contextEpoch,
         std::shared_ptr<DeviceAllocationLedger> deviceLedger,
-        std::string& outError) noexcept;
+        Failure& outError) noexcept;
     void destroy(Resources* resources) noexcept;
     bool drain_for_context_retire(
         Resources& resources,
@@ -553,13 +555,13 @@ namespace JuicerCuda {
         Resources& resources,
         const JuicerAssets::StaticNoisePayloadSet& payloads,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
 
     bool ensure_grain_static_assets_uploaded(
         Resources& resources,
         const StaticNoiseInput& input,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
 
     struct FocusedRouteResourcePreparation {
         const RenderRecipe* recipe = nullptr;
@@ -578,13 +580,13 @@ namespace JuicerCuda {
         Resources& resources,
         const FocusedRouteResourcePreparation& request,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
 
     bool prepare_focused_route_resources(
         Resources& resources,
         const FocusedRouteResourceInput& input,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
 
     bool build_print_resource_descriptors(
         const RenderRecipe& recipe,
@@ -595,13 +597,13 @@ namespace JuicerCuda {
         Resources& resources,
         const PrintResourcePreparation& request,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
 
     bool prepare_print_resources(
         Resources& resources,
         const PrintResourceInput& input,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
 
     bool pack_print_cuda_payloads(
         const PrintRecipe& recipe,
@@ -625,11 +627,11 @@ namespace JuicerCuda {
         Resources::DeviceGaussianKernel& kernel,
         int radius,
         float sigma,
-        std::string& outError);
+        Failure& outError);
     bool clear_spatial_dir_kernel_binding(
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
-        std::string& outError);
+        Failure& outError);
     bool ensure_spatial_dir_boundary(
         Resources& resources,
         Resources::DeviceSpatialDirBoundary& boundary,
@@ -637,31 +639,31 @@ namespace JuicerCuda {
         int width,
         int height,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
     bool clear_spatial_dir_boundary_binding(
         Resources& resources,
         Resources::DeviceSpatialDirBoundary& boundary,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
     bool ensure_gaussian_kernel(
         Resources& resources,
         Resources::DeviceGaussianKernel& kernel,
         float sigma,
         int radius,
-        std::string& outError);
+        Failure& outError);
 
     // Reaps deferred retire entries that are ready and returns reclaimed bytes.
-    bool reap_retired_allocations(Resources& resources, std::size_t& reclaimedBytes, std::string& outError);
+    bool reap_retired_allocations(Resources& resources, std::size_t& reclaimedBytes, Failure& outError);
 
     bool acquire_retained_frame_scratch_lease(
         Resources& resources,
         std::uint64_t leaseGeneration,
         void* cudaStreamOpaque,
-        std::string& outError);
+        Failure& outError);
     bool release_retained_frame_scratch_lease(
         Resources& resources,
         std::uint64_t leaseGeneration,
-        std::string& outError);
+        Failure& outError);
 
     struct SpatialDirCachedLogRawStageStats {
         std::size_t pendingScratchBytesBefore = 0;
@@ -690,18 +692,18 @@ namespace JuicerCuda {
         const ResourceManager::ScratchRequestDescriptor& scratchRequest,
         void* cudaStreamOpaque,
         SpatialDirCachedLogRawStageStats& outStats,
-        std::string& outError);
+        Failure& outError);
     bool reclaim_large_scratch_transition(
         Resources& resources,
         const ResourceManager::ScratchRequestDescriptor& scratchRequest,
         void* cudaStreamOpaque,
         LargeScratchTransitionReclaimStats& outStats,
-        std::string& outError);
+        Failure& outError);
     bool shed_retained_scratch_after_frame(
         Resources& resources,
         void* cudaStreamOpaque,
         PostFrameScratchShedStats& outStats,
-        std::string& outError);
+        Failure& outError);
     bool retire_frame_scratch_allocation(
         Resources& resources,
         void* ptr,
@@ -709,12 +711,12 @@ namespace JuicerCuda {
         DeviceByteReservation&& reservation,
         void* cudaStreamOpaque,
         const char* label,
-        std::string& outError);
+        Failure& outError);
     bool adopt_failed_frame_allocation_record(
         Resources& resources,
         std::map<void*, DeviceByteReservation>::node_type& allocationRecord,
         bool completionCertain,
-        std::string& outError) noexcept;
+        Failure& outError) noexcept;
     struct ScanErrorReadbackResult {
         int status = 0;
         std::uint64_t dirRecipeHash = 0;
@@ -730,18 +732,18 @@ namespace JuicerCuda {
         int*& host,
         void*& eventOpaque,
         const ScanErrorReadbackIdentity& identity,
-        std::string& outError);
+        Failure& outError);
     bool poll_scan_error_readbacks(
         Resources& resources,
         void* cudaStreamOpaque,
         ScanErrorReadbackResult& outResult,
-        std::string& outError);
+        Failure& outError);
 
     bool record_frame_use_event(
         Resources& resources,
         void* cudaStreamOpaque,
         const char* label,
-        std::string& outError);
+        Failure& outError);
     void quarantine_unfenced_frame_use(
         Resources& resources,
         void* cudaStreamOpaque) noexcept;

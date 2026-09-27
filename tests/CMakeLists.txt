@@ -89,6 +89,23 @@ endif()
 add_test(NAME Ffi.Host.CudaOwner COMMAND JuicerCudaOwnerTests)
 set_tests_properties(Ffi.Host.CudaOwner PROPERTIES LABELS "host" TIMEOUT 30)
 
+# Compile the allocation algorithm with a bounded test entry; production has no hook.
+add_library(juicer_allocation_retry_test_objects OBJECT
+    ../src/Cuda/ResourceManager/JuicerCudaResourceManager.cpp)
+target_link_libraries(juicer_allocation_retry_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_allocation_retry_test_objects PRIVATE
+    JUICER_ALLOCATION_RETRY_TEST_HOOK=1)
+add_executable(JuicerCudaFailureTests ffi/cuda_failure_test.cpp
+    $<TARGET_OBJECTS:juicer_allocation_retry_test_objects>)
+target_link_libraries(JuicerCudaFailureTests PRIVATE juicer_core GTest::gtest_main)
+target_compile_definitions(JuicerCudaFailureTests PRIVATE JUICER_ALLOCATION_RETRY_TEST_HOOK=1)
+set_target_properties(JuicerCudaFailureTests PROPERTIES LINKER_LANGUAGE CXX)
+if(UNIX)
+    set_property(TARGET JuicerCudaFailureTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Ffi.Host.CudaFailure COMMAND JuicerCudaFailureTests)
+set_tests_properties(Ffi.Host.CudaFailure PROPERTIES LABELS "host" TIMEOUT 30)
+
 add_executable(JuicerCudaInspectTests ffi/cuda_inspect_test.cpp)
 target_link_libraries(JuicerCudaInspectTests PRIVATE juicer_core GTest::gtest_main)
 set_target_properties(JuicerCudaInspectTests PROPERTIES LINKER_LANGUAGE CXX)
@@ -341,6 +358,7 @@ endforeach()
 add_library(juicer_executor_failure_test_objects OBJECT
     ../src/mainProcessing.cpp
     ../src/Cuda/JuicerCudaExecutor.cpp
+    ../src/Cuda/JuicerCudaResources.cpp
     ../src/ProcessRoot.cpp)
 target_link_libraries(juicer_executor_failure_test_objects PRIVATE juicer_settings juicer_ofx_headers)
 target_compile_definitions(juicer_executor_failure_test_objects PRIVATE
@@ -364,6 +382,12 @@ add_test(NAME Ofx.Gpu.ExecutorFailureOrder
     COMMAND JuicerExecutorFailureOrderProbe --failure-order)
 set_tests_properties(Ofx.Gpu.ExecutorFailureOrder PROPERTIES
     LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+foreach(resource_failure IN ITEMS DefectFence GrainUpload)
+    add_test(NAME "Ofx.Gpu.ResourceFailure.${resource_failure}"
+        COMMAND JuicerExecutorFailureOrderProbe --resource-failure "${resource_failure}")
+    set_tests_properties("Ofx.Gpu.ResourceFailure.${resource_failure}" PROPERTIES
+        LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+endforeach()
 
 add_custom_target(juicer_test_module
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${JUICER_TEST_BINARY_DIR}"

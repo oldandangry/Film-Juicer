@@ -200,7 +200,7 @@ extern "C" int fj_test_execute_prepared_cpp(const FjPreparedHostData* prepared, 
         write_error(error, {});
         return 1;
     } catch (const JuicerCuda::ExecutionFailure&) {
-        write_error(error, recovery.detail.empty() ? "prepared executor failed" : recovery.detail);
+        write_error(error, recovery.failure.diagnostic.empty() ? "prepared executor failed" : recovery.failure.diagnostic);
     } catch (const std::exception& exception) {
         write_error(error, exception.what());
     } catch (...) {

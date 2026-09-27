@@ -56,12 +56,11 @@ namespace {
         InstanceState* instanceState,
         const JuicerCuda::ResourceManager::DeviceContextKey& key,
         const char* stage,
-        cudaError_t error,
-        const std::string& detail) {
+        const JuicerCuda::Failure& failure) {
         if (!instanceState) {
             return;
         }
-        if (!JuicerCuda::is_cuda_context_loss_signal(error, detail)) {
+        if (!JuicerCuda::context_loss(failure)) {
             return;
         }
 
@@ -108,7 +107,7 @@ namespace {
             msg += " context=";
             msg += std::to_string(contextBits);
             msg += " error_code=";
-            msg += std::to_string(static_cast<int>(error));
+            msg += std::to_string(failure.status.native_code);
             msg += " retire_accepted=";
             msg += std::to_string(bool_to_i32(retireAccepted));
             msg += " latch_cleared=";
@@ -360,8 +359,7 @@ void JuicerProcessor::processImagesCUDA() {
             _instanceState,
             deviceContextKey,
             pendingContextLossRecovery.stage,
-            pendingContextLossRecovery.error,
-            pendingContextLossRecovery.detail);
+            pendingContextLossRecovery.failure);
         pendingContextLossRecovery = JuicerCuda::PendingContextLossRecovery{};
     };
 
@@ -505,11 +503,11 @@ void JuicerProcessor::processImagesCUDA() {
         if (!_cudaStreamPropertyPresent) {
             const auto completion = cudaStreamSynchronize(static_cast<cudaStream_t>(_pCudaStream));
             if (completion != cudaSuccess) {
-                if (!pendingContextLossRecovery.pending && JuicerCuda::is_cuda_context_loss_signal(completion, {})) {
+                const JuicerCuda::Failure failure{JuicerCuda::runtime_failure_status(completion), cudaGetErrorString(completion)};
+                if (!pendingContextLossRecovery.pending && JuicerCuda::context_loss(failure)) {
                     pendingContextLossRecovery.pending = true;
-                    pendingContextLossRecovery.error = completion;
+                    pendingContextLossRecovery.failure = failure;
                     pendingContextLossRecovery.stage = "absent_stream_completion";
-                    pendingContextLossRecovery.detail = cudaGetErrorString(completion);
                 }
                 JTRACE("CUDA", cudaGetErrorString(completion));
                 throw OFX::Exception::Suite(kOfxStatErrFatal);

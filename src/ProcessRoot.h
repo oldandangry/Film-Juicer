@@ -11,6 +11,8 @@
 #include <variant>
 #include <unordered_map>
 
+#include "Cuda/JuicerCudaFailure.h"
+
 #include "RenderRecipe.h"
 #include "ResourceAssetLibrary.h"
 #include "FilmEffectsFrameDescriptors.h"
@@ -439,7 +441,7 @@ namespace JuicerProcess {
             void mark_diffusion_work_enqueued() noexcept;
             bool release_diffusion_resources_after_use(
                 void* cudaStreamOpaque,
-                std::string& outError);
+                JuicerCuda::Failure& outError);
             SpatialDirScratchView spatial_dir_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
             SpatialDirPreparedView spatial_dir_resources(
                 const WorkspaceLeaseMarker& workspace,
@@ -461,35 +463,35 @@ namespace JuicerProcess {
             void mark_auto_exposure_metered(const AutoExposureMeteredResult& result) noexcept;
             bool record_use(
                 void* cudaStreamOpaque,
-                std::string& outError);
-            bool finish(void* cudaStreamOpaque, std::string& outError);
+                JuicerCuda::Failure& outError);
+            bool finish(void* cudaStreamOpaque, JuicerCuda::Failure& outError);
             void abort() noexcept;
             bool stage_optical_workspace(
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
-                std::string& outError);
+                JuicerCuda::Failure& outError);
             bool prepare_spatial_dir_resources(
                 const Spektrafilm::SpatialDirDescriptor& descriptor,
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
-                std::string& outError);
+                JuicerCuda::Failure& outError);
             bool stage_spatial_dir_cached_log_raw_for_final_develop(
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
-                std::string& outError);
+                JuicerCuda::Failure& outError);
             bool prepare_scan_error_stage(
                 int*& outScanErrorFlag,
                 void* cudaStreamOpaque,
-                std::string& outError);
+                JuicerCuda::Failure& outError);
             bool finalize_scan_error_stage(
                 int* scanErrorFlag,
                 void* cudaStreamOpaque,
-                std::string& outError);
+                JuicerCuda::Failure& outError);
             bool checkpoint_large_scratch_transition(
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 const char* stageTag,
-                std::string& outError);
+                JuicerCuda::Failure& outError);
             const char* failure_stage_tag() const noexcept;
             const char* failure_prefix() const noexcept;
 
@@ -510,16 +512,16 @@ namespace JuicerProcess {
                 JuicerCuda::Resources::DeviceGaussianKernel& kernel,
                 float sigma,
                 int radius,
-                std::string& outError);
+                JuicerCuda::Failure& outError);
             bool prepare_scanner_post_effects(
                 const Scanner::ScannerPostEffectsDescriptor& descriptor,
-                std::string& outError);
+                JuicerCuda::Failure& outError);
             bool prepare_visual_grain_resources(
                 Root& root,
                 const JuicerCuda::StaticNoiseInput* noise,
                 const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
                 void* cudaStreamOpaque,
-                std::string& outError);
+                JuicerCuda::Failure& outError);
 
             std::unique_ptr<State> _state;
         };
@@ -531,14 +533,14 @@ namespace JuicerProcess {
             const CudaFramePreparationRequest& request,
             const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
-            std::string& outError);
+            JuicerCuda::Failure& outError);
         PreparedCudaFrame prepare_cuda_frame(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
             const PreparedFrameInput& request,
             const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
-            std::string& outError);
+            JuicerCuda::Failure& outError);
         JuicerAssets::Library& assets() noexcept;
 
     private:
@@ -565,7 +567,7 @@ namespace JuicerProcess {
             Root* _root = nullptr;
         };
 
-        PreparedCudaFrame create_prepared_frame(void* cudaStreamOpaque, std::string& outError);
+        PreparedCudaFrame create_prepared_frame(void* cudaStreamOpaque, JuicerCuda::Failure& outError);
         PreparedCudaFrame prepare_cuda_frame(
             PreparedCudaFrame frame,
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
@@ -573,7 +575,7 @@ namespace JuicerProcess {
             const PreparedFrameInput& request,
             const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
-            std::string& outError);
+            JuicerCuda::Failure& outError);
 
         explicit Root(std::string dataDirectory);
         ~Root();
@@ -635,7 +637,7 @@ namespace JuicerProcess {
             JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
             std::shared_ptr<JuicerCuda::DeviceAllocationLedger>& outDeviceLedger,
-            std::string& outError);
+            JuicerCuda::Failure& outError);
         bool apply_grain_static_membership_and_copy_owner(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             std::uint64_t contextEpoch,
@@ -646,7 +648,7 @@ namespace JuicerProcess {
             detail::GrainStaticMembershipChange& outChange,
             CudaResourceOwner& outOwner,
             JuicerCuda::Resources*& outResources,
-            std::string& outError);
+            JuicerCuda::Failure& outError);
         void rollback_grain_static_membership(
             const ContextCudaResourceKey& contextKey,
             const detail::GrainStaticMembershipChange& change) noexcept;
@@ -657,11 +659,11 @@ namespace JuicerProcess {
             const std::shared_ptr<JuicerCuda::DeviceAllocationLedger>& deviceLedger,
             CudaResourceOwner& outResourceOwner,
             JuicerCuda::Resources*& outResources,
-            std::string& outError);
+            JuicerCuda::Failure& outError);
         bool resolve_cuda_device_ledger(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             std::shared_ptr<JuicerCuda::DeviceAllocationLedger>& outDeviceLedger,
-            std::string& outError);
+            JuicerCuda::Failure& outError);
         bool resolve_cuda_frame_resources(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             std::uint64_t contextEpoch,
@@ -669,7 +671,7 @@ namespace JuicerProcess {
             const std::shared_ptr<JuicerCuda::DeviceAllocationLedger>& deviceLedger,
             CudaResourceOwner& outResourceOwner,
             JuicerCuda::Resources*& outResources,
-            std::string& outError);
+            JuicerCuda::Failure& outError);
         bool retire_cuda_context(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             bool contextReset,
