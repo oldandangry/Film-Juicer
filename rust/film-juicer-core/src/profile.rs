@@ -193,21 +193,21 @@ fn decode_json(bytes: &[u8], strict: bool) -> Result<Value, serde_json::Error> {
     Ok(root)
 }
 
-fn support(value: &str) -> Option<Support> {
+fn parse_support(value: &str) -> Option<Support> {
     match value {
         "film" => Some(Support::Film),
         "paper" => Some(Support::Paper),
         _ => None,
     }
 }
-fn stage(value: &str) -> Option<Stage> {
+fn parse_stage(value: &str) -> Option<Stage> {
     match value {
         "filming" => Some(Stage::Filming),
         "printing" => Some(Stage::Printing),
         _ => None,
     }
 }
-fn polarity(value: &str) -> Option<Polarity> {
+fn parse_polarity(value: &str) -> Option<Polarity> {
     match value {
         "negative" => Some(Polarity::Negative),
         "positive" => Some(Polarity::Positive),
@@ -215,7 +215,7 @@ fn polarity(value: &str) -> Option<Polarity> {
     }
 }
 
-fn catalog_entry(path: &Path) -> Result<Option<CatalogEntry>, CatalogEntryErrorKind> {
+fn load_catalog_entry(path: &Path) -> Result<Option<CatalogEntry>, CatalogEntryErrorKind> {
     let bytes = fs::read(path).map_err(CatalogEntryErrorKind::Read)?;
     // C++ catalog extraction reads one JSON value; selected loading is strict.
     let root = decode_json(&bytes, false).map_err(CatalogEntryErrorKind::Json)?;
@@ -248,13 +248,13 @@ fn catalog_entry(path: &Path) -> Result<Option<CatalogEntry>, CatalogEntryErrorK
         Some(value) => value.as_str(),
     };
     let support = member("support", "film")
-        .and_then(support)
+        .and_then(parse_support)
         .ok_or(CatalogEntryErrorKind::UnsupportedRole)?;
     let stage = member("stage", "filming")
-        .and_then(stage)
+        .and_then(parse_stage)
         .ok_or(CatalogEntryErrorKind::UnsupportedRole)?;
     let polarity = member("type", "negative")
-        .and_then(polarity)
+        .and_then(parse_polarity)
         .ok_or(CatalogEntryErrorKind::UnsupportedRole)?;
     if support == Support::Paper && stage == Stage::Filming {
         return Err(CatalogEntryErrorKind::UnsupportedRole);
@@ -294,7 +294,7 @@ pub fn load_catalog(resource_dir: &Path) -> Result<Catalog, CatalogError> {
         if !source_path.is_file() || source_path.extension().is_none_or(|ext| ext != "json") {
             continue;
         }
-        match catalog_entry(&source_path) {
+        match load_catalog_entry(&source_path) {
             Ok(Some(entry)) => {
                 let (role, keys, profiles) = match entry.stage {
                     Stage::Filming => (Role::Film, &mut film_keys, &mut catalog.films),
@@ -521,7 +521,7 @@ fn field_error(field: &str, requirement: Requirement) -> FieldError {
         requirement,
     }
 }
-fn string_member<'a>(
+fn read_string<'a>(
     info: &'a Value,
     key: &str,
     default: Option<&'a str>,
@@ -533,7 +533,7 @@ fn string_member<'a>(
     .ok_or_else(|| field_error(&format!("info.{key}"), Requirement::String))
 }
 
-fn normalized_illuminant(raw: &str) -> String {
+fn normalize_illuminant(raw: &str) -> String {
     let mut normalized = String::new();
     for byte in raw.bytes() {
         if byte.is_ascii_alphanumeric() {
@@ -562,7 +562,7 @@ fn blackbody_temperature(raw: &str) -> Option<f64> {
 }
 
 fn supported_illuminant(raw: &str) -> bool {
-    let normalized = normalized_illuminant(raw);
+    let normalized = normalize_illuminant(raw);
     if matches!(
         normalized.as_str(),
         "D50"
@@ -589,13 +589,13 @@ fn read_info(root: &Value, role: Role) -> Result<ProfileInfo, FieldError> {
     if !info.is_object() {
         return Err(field_error("info", Requirement::Object));
     }
-    let stock = string_member(info, "stock", None)?;
-    let name = string_member(info, "name", Some(stock))?;
-    let support = support(string_member(info, "support", Some("film"))?)
+    let stock = read_string(info, "stock", None)?;
+    let name = read_string(info, "name", Some(stock))?;
+    let support = parse_support(read_string(info, "support", Some("film"))?)
         .ok_or_else(|| field_error("info.support", Requirement::MetadataValue))?;
-    let stage = stage(string_member(info, "stage", Some("filming"))?)
+    let stage = parse_stage(read_string(info, "stage", Some("filming"))?)
         .ok_or_else(|| field_error("info.stage", Requirement::MetadataValue))?;
-    let polarity = polarity(string_member(info, "type", Some("negative"))?)
+    let polarity = parse_polarity(read_string(info, "type", Some("negative"))?)
         .ok_or_else(|| field_error("info.type", Requirement::MetadataValue))?;
     if role == Role::Film && (support != Support::Film || stage != Stage::Filming) {
         return Err(field_error("info", Requirement::SelectedRole));
@@ -603,18 +603,18 @@ fn read_info(root: &Value, role: Role) -> Result<ProfileInfo, FieldError> {
     if role == Role::Print && stage != Stage::Printing {
         return Err(field_error("info.stage", Requirement::SelectedRole));
     }
-    let usage = match string_member(info, "use", Some("still"))? {
+    let usage = match read_string(info, "use", Some("still"))? {
         "still" => ProfileUse::Still,
         "cine" => ProfileUse::Cine,
         _ => return Err(field_error("info.use", Requirement::MetadataValue)),
     };
-    let antihalation = match string_member(info, "antihalation", Some("weak"))? {
+    let antihalation = match read_string(info, "antihalation", Some("weak"))? {
         "strong" => Antihalation::Strong,
         "weak" => Antihalation::Weak,
         "no" => Antihalation::No,
         _ => return Err(field_error("info.antihalation", Requirement::MetadataValue)),
     };
-    let channel_model = match string_member(info, "channel_model", Some("color"))? {
+    let channel_model = match read_string(info, "channel_model", Some("color"))? {
         "color" => ChannelModel::Color,
         "bw" => ChannelModel::Bw,
         _ => {
@@ -624,14 +624,14 @@ fn read_info(root: &Value, role: Role) -> Result<ProfileInfo, FieldError> {
             ));
         }
     };
-    let reference_illuminant = string_member(info, "reference_illuminant", Some("D55"))?;
+    let reference_illuminant = read_string(info, "reference_illuminant", Some("D55"))?;
     if !supported_illuminant(reference_illuminant) {
         return Err(field_error(
             "info.reference_illuminant",
             Requirement::Illuminant,
         ));
     }
-    let viewing_illuminant = string_member(info, "viewing_illuminant", Some("D50"))?;
+    let viewing_illuminant = read_string(info, "viewing_illuminant", Some("D50"))?;
     if !supported_illuminant(viewing_illuminant) {
         return Err(field_error(
             "info.viewing_illuminant",
@@ -652,14 +652,14 @@ fn read_info(root: &Value, role: Role) -> Result<ProfileInfo, FieldError> {
     })
 }
 
-fn array<'a>(node: &'a Value, len: usize, field: &str) -> Result<&'a [Value], FieldError> {
+fn read_array<'a>(node: &'a Value, len: usize, field: &str) -> Result<&'a [Value], FieldError> {
     node.as_array()
         .filter(|array| array.len() == len)
         .map(Vec::as_slice)
         .ok_or_else(|| field_error(field, Requirement::ArrayLength(len)))
 }
 
-fn sample(node: &Value, nullable: bool, field: &str) -> Result<f32, FieldError> {
+fn read_sample(node: &Value, nullable: bool, field: &str) -> Result<f32, FieldError> {
     if nullable && node.is_null() {
         return Ok(f32::NAN);
     }
@@ -669,27 +669,27 @@ fn sample(node: &Value, nullable: bool, field: &str) -> Result<f32, FieldError> 
         .map(|raw| raw as f32)
         .ok_or_else(|| field_error(field, Requirement::FiniteNumber))
 }
-fn sample_array<const N: usize>(
+fn read_sample_array<const N: usize>(
     node: &Value,
     nullable: bool,
     field: &str,
 ) -> Result<[f32; N], FieldError> {
-    let rows = array(node, N, field)?;
+    let rows = read_array(node, N, field)?;
     let mut samples = [0.0; N];
     for (index, (sample_out, node)) in samples.iter_mut().zip(rows).enumerate() {
-        *sample_out = sample(node, nullable, &format!("{field}[{index}]"))?;
+        *sample_out = read_sample(node, nullable, &format!("{field}[{index}]"))?;
     }
     Ok(samples)
 }
-fn sample_matrix<const R: usize, const C: usize>(
+fn read_sample_matrix<const R: usize, const C: usize>(
     node: &Value,
     nullable: bool,
     field: &str,
 ) -> Result<[[f32; C]; R], FieldError> {
-    let rows = array(node, R, field)?;
+    let rows = read_array(node, R, field)?;
     let mut samples = [[0.0; C]; R];
     for (index, (samples_out, row)) in samples.iter_mut().zip(rows).enumerate() {
-        *samples_out = sample_array(row, nullable, &format!("{field}[{index}]"))?;
+        *samples_out = read_sample_array(row, nullable, &format!("{field}[{index}]"))?;
     }
     Ok(samples)
 }
@@ -760,7 +760,11 @@ fn read_log_exposure(data: &Value) -> Result<Vec<f64>, FieldError> {
     Ok(exposure)
 }
 
-fn adaptation<'a>(data: &'a Value, key: &str, role: Role) -> Result<Option<&'a Value>, FieldError> {
+fn read_adaptation<'a>(
+    data: &'a Value,
+    key: &str,
+    role: Role,
+) -> Result<Option<&'a Value>, FieldError> {
     match data.get(key) {
         None => Ok(None),
         Some(Value::Null) if role == Role::Print => Ok(None),
@@ -781,7 +785,7 @@ fn read_source(root: &Value, role: Role) -> Result<ProfileSource, FieldError> {
     }
     let log_exposure = read_log_exposure(data)?;
     let density_model = read_model(data)?;
-    let wavelengths = sample_array::<81>(&data["wavelengths"], false, "data.wavelengths")?;
+    let wavelengths = read_sample_array::<81>(&data["wavelengths"], false, "data.wavelengths")?;
     for (index, &wavelength) in wavelengths.iter().enumerate() {
         let expected = 380 + index as u16 * 5;
         if wavelength != f32::from(expected) {
@@ -791,9 +795,11 @@ fn read_source(root: &Value, role: Role) -> Result<ProfileSource, FieldError> {
             ));
         }
     }
-    let log_sensitivity = sample_matrix(&data["log_sensitivity"], true, "data.log_sensitivity")?;
-    let channel_density = sample_matrix(&data["channel_density"], true, "data.channel_density")?;
-    let base_density = sample_array(&data["base_density"], true, "data.base_density")?;
+    let log_sensitivity =
+        read_sample_matrix(&data["log_sensitivity"], true, "data.log_sensitivity")?;
+    let channel_density =
+        read_sample_matrix(&data["channel_density"], true, "data.channel_density")?;
+    let base_density = read_sample_array(&data["base_density"], true, "data.base_density")?;
     for (index, &raw) in log_exposure.iter().enumerate() {
         let narrowed = raw as f32;
         if !narrowed.is_finite() {
@@ -807,11 +813,11 @@ fn read_source(root: &Value, role: Role) -> Result<ProfileSource, FieldError> {
     }
     let window_key = "hanatos2025_adaptation_window_params";
     let surface_key = "hanatos2025_adaptation_surface_params";
-    let hanatos2025_adaptation_window_params = adaptation(data, window_key, role)?
-        .map(|node| sample_array(node, false, &format!("data.{window_key}")))
+    let hanatos2025_adaptation_window_params = read_adaptation(data, window_key, role)?
+        .map(|node| read_sample_array(node, false, &format!("data.{window_key}")))
         .transpose()?;
-    let hanatos2025_adaptation_surface_params = adaptation(data, surface_key, role)?
-        .map(|node| sample_matrix(node, false, &format!("data.{surface_key}")))
+    let hanatos2025_adaptation_surface_params = read_adaptation(data, surface_key, role)?
+        .map(|node| read_sample_matrix(node, false, &format!("data.{surface_key}")))
         .transpose()?;
     Ok(ProfileSource {
         info,
@@ -861,7 +867,7 @@ mod tests {
     use super::{blackbody_temperature, exposure_count_supported};
 
     #[test]
-    fn blackbody_decimal_punctuation_preserves_kelvin_values() {
+    fn preserves_blackbody_decimal_value() {
         for (authored, kelvin) in [
             ("BB3200.5", 3200.5_f64),
             (" bb+3200.5\t", 3200.5),
@@ -877,7 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn exposure_count_rejects_signed_index_overflow_without_allocating() {
+    fn enforces_exposure_count_bounds() {
         assert!(!exposure_count_supported(0));
         assert!(exposure_count_supported(1));
         assert!(exposure_count_supported(i32::MAX as usize));

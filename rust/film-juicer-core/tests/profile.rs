@@ -46,22 +46,22 @@ impl Directory {
         fs::write(&path, text).unwrap();
         path
     }
-    fn source(&self, document: &Value, role: Role) -> Result<ProfileSource, ProfileError> {
+    fn load_source(&self, document: &Value, role: Role) -> Result<ProfileSource, ProfileError> {
         let path = self.write("source.json", serde_json::to_vec(document).unwrap());
         match role {
             Role::Film => load_film_source(&path),
             Role::Print => load_print_source(&path),
         }
     }
-    fn entry(&self, filename: &str, info: Value) {
+    fn write_entry(&self, filename: &str, info: Value) {
         self.write(
             &format!("profiles/{filename}"),
             json!({"info":info,"data":{"density_curves":null}}).to_string(),
         );
     }
-    fn defaults(&self) {
-        self.entry("film.json", json!({"stock":"kodak_portra_400"}));
-        self.entry(
+    fn write_defaults(&self) {
+        self.write_entry("film.json", json!({"stock":"kodak_portra_400"}));
+        self.write_entry(
             "print.json",
             json!({"stock":"kodak_portra_endura","stage":"printing"}),
         );
@@ -73,7 +73,7 @@ impl Drop for Directory {
     }
 }
 
-fn authored(role: Role) -> Value {
+fn profile_document(role: Role) -> Value {
     let mut document = json!({
         "info": {"stock":"authored"},
         "data": {
@@ -96,7 +96,7 @@ fn authored(role: Role) -> Value {
     document
 }
 
-fn assert_field(error: ProfileError, field: &str, expected: Requirement) {
+fn assert_field_error(error: ProfileError, field: &str, expected: Requirement) {
     assert!(error.path.ends_with("source.json"));
     assert!(error.to_string().contains(field));
     match error.kind {
@@ -149,7 +149,7 @@ const PRINT_CATALOG: &[(&str, &str)] = &[
 ];
 
 #[test]
-fn bundled_catalog_order_labels_defaults_and_all_sources_match_cpp() {
+fn bundled_catalog_matches_reference() {
     let catalog = load_catalog(&repository().join("Resources")).unwrap();
     assert_eq!(catalog.films().len(), 20);
     assert_eq!(catalog.prints().len(), 8);
@@ -165,12 +165,25 @@ fn bundled_catalog_order_labels_defaults_and_all_sources_match_cpp() {
     assert_eq!(catalog.default_print().key(), "kodak_portra_endura");
     assert!(catalog.film("missing").is_none());
     assert!(catalog.print("missing").is_none());
-    for (role, entries, expected) in [
-        (Role::Film, catalog.films(), FILM_CATALOG),
-        (Role::Print, catalog.prints(), PRINT_CATALOG),
+    for (entries, expected) in [
+        (catalog.films(), FILM_CATALOG),
+        (catalog.prints(), PRINT_CATALOG),
     ] {
         for (entry, &(key, label)) in entries.iter().zip(expected) {
             assert_eq!((entry.key(), entry.label()), (key, label));
+        }
+    }
+}
+
+#[test]
+fn loads_bundled_profiles() {
+    let catalog = load_catalog(&repository().join("Resources")).unwrap();
+    for (role, entries) in [
+        (Role::Film, catalog.films()),
+        (Role::Print, catalog.prints()),
+    ] {
+        for entry in entries {
+            let (key, label) = (entry.key(), entry.label());
             let source = match role {
                 Role::Film => load_film_source(entry.source_path()),
                 Role::Print => load_print_source(entry.source_path()),
@@ -190,7 +203,7 @@ fn bundled_catalog_order_labels_defaults_and_all_sources_match_cpp() {
 }
 
 #[test]
-fn representative_metadata_and_source_bits_match_cpp() {
+fn profile_sources_match_reference() {
     {
         let source =
             load_film_source(&repository().join("Resources/profiles/kodak_portra_400.json"))
@@ -420,10 +433,10 @@ fn representative_metadata_and_source_bits_match_cpp() {
 }
 
 #[test]
-fn metadata_defaults_and_nullable_samples_are_complete() {
+fn loads_default_metadata() {
     let dir = Directory::new();
     for role in [Role::Film, Role::Print] {
-        let source = dir.source(&authored(role), role).unwrap();
+        let source = dir.load_source(&profile_document(role), role).unwrap();
         let info = source.info();
         assert_eq!((info.stock(), info.name()), ("authored", "authored"));
         assert_eq!(
@@ -451,6 +464,17 @@ fn metadata_defaults_and_nullable_samples_are_complete() {
             ("D55", "D50")
         );
         let samples = source.samples();
+        assert!(samples.hanatos2025_adaptation_window_params().is_none());
+        assert!(samples.hanatos2025_adaptation_surface_params().is_none());
+    }
+}
+
+#[test]
+fn preserves_sample_bits() {
+    let dir = Directory::new();
+    for role in [Role::Film, Role::Print] {
+        let source = dir.load_source(&profile_document(role), role).unwrap();
+        let samples = source.samples();
         assert_eq!(
             samples.log_sensitivity()[0].map(f32::to_bits),
             [0x7fc00000, 0x80000000, 0x3f800000]
@@ -474,13 +498,11 @@ fn metadata_defaults_and_nullable_samples_are_complete() {
                 0x3ff0000010000000
             ]
         );
-        assert!(samples.hanatos2025_adaptation_window_params().is_none());
-        assert!(samples.hanatos2025_adaptation_surface_params().is_none());
     }
 }
 
 #[test]
-fn source_metadata_rejects_null_types_unknown_values_and_role_mismatch() {
+fn rejects_invalid_metadata() {
     let dir = Directory::new();
     for key in [
         "stock",
@@ -495,10 +517,10 @@ fn source_metadata_rejects_null_types_unknown_values_and_role_mismatch() {
         "viewing_illuminant",
     ] {
         for value in [Value::Null, json!(1), json!(true), json!([]), json!({})] {
-            let mut input = authored(Role::Film);
+            let mut input = profile_document(Role::Film);
             input["info"][key] = value;
-            assert_field(
-                dir.source(&input, Role::Film).unwrap_err(),
+            assert_field_error(
+                dir.load_source(&input, Role::Film).unwrap_err(),
                 &format!("info.{key}"),
                 Requirement::String,
             );
@@ -512,54 +534,70 @@ fn source_metadata_rejects_null_types_unknown_values_and_role_mismatch() {
         "antihalation",
         "channel_model",
     ] {
-        let mut input = authored(Role::Film);
+        let mut input = profile_document(Role::Film);
         input["info"][key] = json!("unknown");
-        assert_field(
-            dir.source(&input, Role::Film).unwrap_err(),
+        assert_field_error(
+            dir.load_source(&input, Role::Film).unwrap_err(),
             &format!("info.{key}"),
             Requirement::MetadataValue,
         );
     }
-    let mut input = authored(Role::Film);
+    let mut input = profile_document(Role::Film);
     input["info"].as_object_mut().unwrap().remove("stock");
-    assert_field(
-        dir.source(&input, Role::Film).unwrap_err(),
+    assert_field_error(
+        dir.load_source(&input, Role::Film).unwrap_err(),
         "info.stock",
         Requirement::String,
     );
+}
+
+#[test]
+fn loads_empty_stock() {
+    let dir = Directory::new();
+    let mut input = profile_document(Role::Film);
     input["info"]["stock"] = json!("");
-    assert_eq!(dir.source(&input, Role::Film).unwrap().info().stock(), "");
+    assert_eq!(
+        dir.load_source(&input, Role::Film).unwrap().info().stock(),
+        ""
+    );
+}
+
+#[test]
+fn enforces_profile_role() {
+    let dir = Directory::new();
+    let mut input = profile_document(Role::Film);
+    input["info"]["stock"] = json!("");
     input["info"]["support"] = json!("paper");
-    assert_field(
-        dir.source(&input, Role::Film).unwrap_err(),
+    assert_field_error(
+        dir.load_source(&input, Role::Film).unwrap_err(),
         "info",
         Requirement::SelectedRole,
     );
     input["info"]["support"] = json!("film");
-    assert_field(
-        dir.source(&input, Role::Print).unwrap_err(),
+    assert_field_error(
+        dir.load_source(&input, Role::Print).unwrap_err(),
         "info.stage",
         Requirement::SelectedRole,
     );
     input["info"]["stage"] = json!("printing");
-    assert_field(
-        dir.source(&input, Role::Film).unwrap_err(),
+    assert_field_error(
+        dir.load_source(&input, Role::Film).unwrap_err(),
         "info",
         Requirement::SelectedRole,
     );
-    let source = dir.source(&input, Role::Print).unwrap();
+    let source = dir.load_source(&input, Role::Print).unwrap();
     assert_eq!(source.info().support(), Support::Film);
 }
 
 #[test]
-fn authored_metadata_variants_and_original_illuminant_spelling_are_retained() {
+fn loads_metadata_variants() {
     let dir = Directory::new();
-    let mut input = authored(Role::Film);
+    let mut input = profile_document(Role::Film);
     input["info"]["use"] = json!("cine");
     input["info"]["antihalation"] = json!("no");
     input["info"]["channel_model"] = json!("bw");
     input["info"]["type"] = json!("positive");
-    let source = dir.source(&input, Role::Film).unwrap();
+    let source = dir.load_source(&input, Role::Film).unwrap();
     assert_eq!(
         (
             source.info().usage(),
@@ -574,6 +612,12 @@ fn authored_metadata_variants_and_original_illuminant_spelling_are_retained() {
             Polarity::Positive
         )
     );
+}
+
+#[test]
+fn preserves_illuminant_spelling() {
+    let dir = Directory::new();
+    let mut input = profile_document(Role::Film);
     for key in ["reference_illuminant", "viewing_illuminant"] {
         for accepted in [
             " d55 ",
@@ -587,7 +631,7 @@ fn authored_metadata_variants_and_original_illuminant_spelling_are_retained() {
             " bb3200.5 ",
         ] {
             input["info"][key] = json!(accepted);
-            let source = dir.source(&input, Role::Film).unwrap();
+            let source = dir.load_source(&input, Role::Film).unwrap();
             let actual = if key == "reference_illuminant" {
                 source.info().reference_illuminant()
             } else {
@@ -595,10 +639,19 @@ fn authored_metadata_variants_and_original_illuminant_spelling_are_retained() {
             };
             assert_eq!(actual, accepted);
         }
+        input["info"][key] = json!("D55");
+    }
+}
+
+#[test]
+fn rejects_invalid_illuminants() {
+    let dir = Directory::new();
+    let mut input = profile_document(Role::Film);
+    for key in ["reference_illuminant", "viewing_illuminant"] {
         for rejected in ["D", "D-50", "BB0", "BB-3", "BB1e309", "BB1e-999", "unknown"] {
             input["info"][key] = json!(rejected);
-            assert_field(
-                dir.source(&input, Role::Film).unwrap_err(),
+            assert_field_error(
+                dir.load_source(&input, Role::Film).unwrap_err(),
                 &format!("info.{key}"),
                 Requirement::Illuminant,
             );
@@ -608,36 +661,49 @@ fn authored_metadata_variants_and_original_illuminant_spelling_are_retained() {
 }
 
 #[test]
-fn hanatos_absence_empty_null_and_shapes_follow_the_selected_role() {
+fn adaptation_nullability_follows_role() {
     let dir = Directory::new();
     for role in [Role::Film, Role::Print] {
         for key in [
             "hanatos2025_adaptation_window_params",
             "hanatos2025_adaptation_surface_params",
         ] {
-            let mut input = authored(role);
+            let mut input = profile_document(role);
             input["data"][key] = Value::Null;
             if role == Role::Print {
-                assert!(dir.source(&input, role).is_ok());
+                assert!(dir.load_source(&input, role).is_ok());
             } else {
-                assert_field(
-                    dir.source(&input, role).unwrap_err(),
+                assert_field_error(
+                    dir.load_source(&input, role).unwrap_err(),
                     &format!("data.{key}"),
                     Requirement::AdaptationArray,
                 );
             }
             input["data"][key] = json!([]);
-            assert!(dir.source(&input, role).is_ok());
+            assert!(dir.load_source(&input, role).is_ok());
+        }
+    }
+}
+
+#[test]
+fn validates_adaptation_samples() {
+    let dir = Directory::new();
+    for role in [Role::Film, Role::Print] {
+        for key in [
+            "hanatos2025_adaptation_window_params",
+            "hanatos2025_adaptation_surface_params",
+        ] {
+            let mut input = profile_document(role);
             input["data"][key] = json!(false);
-            assert_field(
-                dir.source(&input, role).unwrap_err(),
+            assert_field_error(
+                dir.load_source(&input, role).unwrap_err(),
                 &format!("data.{key}"),
                 Requirement::AdaptationArray,
             );
             let window = key.contains("window");
             input["data"][key] = json!([1, 2]);
-            assert_field(
-                dir.source(&input, role).unwrap_err(),
+            assert_field_error(
+                dir.load_source(&input, role).unwrap_err(),
                 &format!("data.{key}"),
                 Requirement::ArrayLength(if window { 4 } else { 3 }),
             );
@@ -646,7 +712,7 @@ fn hanatos_absence_empty_null_and_shapes_follow_the_selected_role() {
             } else {
                 json!(([[0.25; 15]; 3]))
             };
-            let source = dir.source(&input, role).unwrap();
+            let source = dir.load_source(&input, role).unwrap();
             if window {
                 assert_eq!(
                     source
@@ -674,8 +740,8 @@ fn hanatos_absence_empty_null_and_shapes_follow_the_selected_role() {
             } else {
                 format!("data.{key}[0][0]")
             };
-            assert_field(
-                dir.source(&input, role).unwrap_err(),
+            assert_field_error(
+                dir.load_source(&input, role).unwrap_err(),
                 &field,
                 Requirement::FiniteNumber,
             );
@@ -684,7 +750,7 @@ fn hanatos_absence_empty_null_and_shapes_follow_the_selected_role() {
             } else {
                 json!(([[1e40; 15]; 3]))
             };
-            let source = dir.source(&input, role).unwrap();
+            let source = dir.load_source(&input, role).unwrap();
             if window {
                 assert!(
                     source
@@ -707,7 +773,7 @@ fn hanatos_absence_empty_null_and_shapes_follow_the_selected_role() {
 }
 
 #[test]
-fn scientific_sample_shape_axis_and_token_checks_match_cpp() {
+fn validates_sample_dimensions() {
     let dir = Directory::new();
     for key in [
         "wavelengths",
@@ -715,38 +781,46 @@ fn scientific_sample_shape_axis_and_token_checks_match_cpp() {
         "channel_density",
         "base_density",
     ] {
-        let mut input = authored(Role::Film);
+        let mut input = profile_document(Role::Film);
         input["data"][key] = json!([1]);
-        assert_field(
-            dir.source(&input, Role::Film).unwrap_err(),
+        assert_field_error(
+            dir.load_source(&input, Role::Film).unwrap_err(),
             &format!("data.{key}"),
             Requirement::ArrayLength(81),
         );
     }
     for key in ["log_sensitivity", "channel_density"] {
-        let mut input = authored(Role::Film);
+        let mut input = profile_document(Role::Film);
         input["data"][key][0] = json!([1, 2]);
-        assert_field(
-            dir.source(&input, Role::Film).unwrap_err(),
+        assert_field_error(
+            dir.load_source(&input, Role::Film).unwrap_err(),
             &format!("data.{key}[0]"),
             Requirement::ArrayLength(3),
         );
+    }
+}
+
+#[test]
+fn preserves_sample_conversion() {
+    let dir = Directory::new();
+    for key in ["log_sensitivity", "channel_density"] {
+        let mut input = profile_document(Role::Film);
         input["data"][key][0] = json!(["1", 2, 3]);
-        assert_field(
-            dir.source(&input, Role::Film).unwrap_err(),
+        assert_field_error(
+            dir.load_source(&input, Role::Film).unwrap_err(),
             &format!("data.{key}[0][0]"),
             Requirement::FiniteNumber,
         );
         input["data"][key][0] = json!([1e40, null, -1e40]);
         assert_eq!(
             if key == "log_sensitivity" {
-                dir.source(&input, Role::Film)
+                dir.load_source(&input, Role::Film)
                     .unwrap()
                     .samples()
                     .log_sensitivity()[0]
                     .map(f32::to_bits)
             } else {
-                dir.source(&input, Role::Film)
+                dir.load_source(&input, Role::Film)
                     .unwrap()
                     .samples()
                     .channel_density()[0]
@@ -755,43 +829,48 @@ fn scientific_sample_shape_axis_and_token_checks_match_cpp() {
             [0x7f800000, 0x7fc00000, 0xff800000]
         );
     }
-    let mut input = authored(Role::Film);
-    input["data"]["wavelengths"][0] = json!(380.000001);
-    assert_eq!(
-        dir.source(&input, Role::Film)
-            .unwrap()
-            .samples()
-            .wavelengths()[0],
-        380.0
-    );
-    input["data"]["wavelengths"][0] = json!(381);
-    assert_field(
-        dir.source(&input, Role::Film).unwrap_err(),
-        "data.wavelengths[0]",
-        Requirement::CanonicalWavelength(380),
-    );
-    input["data"]["wavelengths"][0] = Value::Null;
-    assert_field(
-        dir.source(&input, Role::Film).unwrap_err(),
-        "data.wavelengths[0]",
-        Requirement::FiniteNumber,
-    );
-    input = authored(Role::Film);
+    let mut input = profile_document(Role::Film);
     input["data"]["base_density"][0] = json!(true);
-    assert_field(
-        dir.source(&input, Role::Film).unwrap_err(),
+    assert_field_error(
+        dir.load_source(&input, Role::Film).unwrap_err(),
         "data.base_density[0]",
         Requirement::FiniteNumber,
     );
 }
 
 #[test]
-fn exposure_checks_both_precisions_and_accepts_short_repeated_axes() {
+fn enforces_wavelength_axis() {
     let dir = Directory::new();
-    let mut input = authored(Role::Film);
+    let mut input = profile_document(Role::Film);
+    input["data"]["wavelengths"][0] = json!(380.000001);
+    assert_eq!(
+        dir.load_source(&input, Role::Film)
+            .unwrap()
+            .samples()
+            .wavelengths()[0],
+        380.0
+    );
+    input["data"]["wavelengths"][0] = json!(381);
+    assert_field_error(
+        dir.load_source(&input, Role::Film).unwrap_err(),
+        "data.wavelengths[0]",
+        Requirement::CanonicalWavelength(380),
+    );
+    input["data"]["wavelengths"][0] = Value::Null;
+    assert_field_error(
+        dir.load_source(&input, Role::Film).unwrap_err(),
+        "data.wavelengths[0]",
+        Requirement::FiniteNumber,
+    );
+}
+
+#[test]
+fn validates_log_exposure() {
+    let dir = Directory::new();
+    let mut input = profile_document(Role::Film);
     for accepted in [json!([1]), json!([0, 0]), json!([1.00000001, 1.00000002])] {
         input["data"]["log_exposure"] = accepted;
-        assert!(dir.source(&input, Role::Film).is_ok());
+        assert!(dir.load_source(&input, Role::Film).is_ok());
     }
     for (array, field, requirement) in [
         (json!([]), "data.log_exposure", Requirement::ExposureCount),
@@ -822,57 +901,62 @@ fn exposure_checks_both_precisions_and_accepts_short_repeated_axes() {
         ),
     ] {
         input["data"]["log_exposure"] = array;
-        let error = dir.source(&input, Role::Film).unwrap_err();
+        let error = dir.load_source(&input, Role::Film).unwrap_err();
         assert_eq!(error.role, Role::Film);
         assert_eq!(error.stock.as_deref(), Some("authored"));
-        assert_field(error, field, requirement);
+        assert_field_error(error, field, requirement);
     }
 }
 
 #[test]
-fn density_model_is_source_only_and_enforces_coefficient_shapes_and_sigma_range() {
+fn validates_model_coefficients() {
     let dir = Directory::new();
     for key in ["centers", "amplitudes", "sigmas"] {
-        let mut input = authored(Role::Film);
+        let mut input = profile_document(Role::Film);
         input["data"]["density_curves_model"][key] = json!([[1, 2, 3]]);
-        assert_field(
-            dir.source(&input, Role::Film).unwrap_err(),
+        assert_field_error(
+            dir.load_source(&input, Role::Film).unwrap_err(),
             "data.density_curves_model",
             Requirement::ModelCoefficients,
         );
         for invalid in [Value::Null, json!(true), json!("1")] {
-            input = authored(Role::Film);
+            input = profile_document(Role::Film);
             input["data"]["density_curves_model"][key][0][0] = invalid;
-            assert_field(
-                dir.source(&input, Role::Film).unwrap_err(),
+            assert_field_error(
+                dir.load_source(&input, Role::Film).unwrap_err(),
                 "data.density_curves_model",
                 Requirement::ModelCoefficients,
             );
         }
-        input = authored(Role::Film);
+        input = profile_document(Role::Film);
         input["data"]["density_curves_model"][key][0][0] = json!(1e40);
-        assert_field(
-            dir.source(&input, Role::Film).unwrap_err(),
+        assert_field_error(
+            dir.load_source(&input, Role::Film).unwrap_err(),
             &format!("data.density_curves_model.{key}[0][0]"),
             Requirement::FloatRange,
         );
     }
     for sigma in [0.0, -1.0, 1e-50] {
-        let mut input = authored(Role::Film);
+        let mut input = profile_document(Role::Film);
         input["data"]["density_curves_model"]["sigmas"][0][0] = json!(sigma);
-        assert_field(
-            dir.source(&input, Role::Film).unwrap_err(),
+        assert_field_error(
+            dir.load_source(&input, Role::Film).unwrap_err(),
             "data.density_curves_model.sigmas[0][0]",
             Requirement::PositiveSigma,
         );
     }
-    let mut input = authored(Role::Film);
+}
+
+#[test]
+fn ignores_sampled_density_curves() {
+    let dir = Directory::new();
+    let mut input = profile_document(Role::Film);
     input["data"]["density_curves"] = json!("unused authored curves");
     input["data"]["density_curves_layers"] = json!(false);
     input["data"]["density_curves_model"]["model_type"] = json!("unused");
     input["data"]["density_curves_model"]["amplitudes"][0][0] = json!(-1.0);
     assert_eq!(
-        dir.source(&input, Role::Film)
+        dir.load_source(&input, Role::Film)
             .unwrap()
             .density_model()
             .amplitudes()[0][0],
@@ -881,7 +965,7 @@ fn density_model_is_source_only_and_enforces_coefficient_shapes_and_sigma_range(
 }
 
 #[test]
-fn file_and_json_errors_do_not_publish_a_partial_source() {
+fn reports_source_errors() {
     let dir = Directory::new();
     let error = load_film_source(&dir.0.join("missing.json")).unwrap_err();
     assert!(matches!(error.kind, ProfileErrorKind::Read(_)));
@@ -894,35 +978,35 @@ fn file_and_json_errors_do_not_publish_a_partial_source() {
     }
     for text in ["[]", "null", "1"] {
         let path = dir.write("source.json", text);
-        assert_field(
+        assert_field_error(
             load_film_source(&path).unwrap_err(),
             "info",
             Requirement::Object,
         );
     }
-    let mut input = authored(Role::Film);
+    let mut input = profile_document(Role::Film);
     input.as_object_mut().unwrap().remove("data");
-    assert_field(
-        dir.source(&input, Role::Film).unwrap_err(),
+    assert_field_error(
+        dir.load_source(&input, Role::Film).unwrap_err(),
         "data",
         Requirement::Object,
     );
-    input = authored(Role::Film);
+    input = profile_document(Role::Film);
     input["data"]
         .as_object_mut()
         .unwrap()
         .remove("density_curves_model");
-    assert_field(
-        dir.source(&input, Role::Film).unwrap_err(),
+    assert_field_error(
+        dir.load_source(&input, Role::Film).unwrap_err(),
         "data.density_curves_model",
         Requirement::Object,
     );
 }
 
 #[test]
-fn decimal_tokens_use_double_rounding_and_preserve_negative_zero() {
+fn preserves_decimal_conversion_bits() {
     let dir = Directory::new();
-    let mut input = authored(Role::Film);
+    let mut input = profile_document(Role::Film);
     input["data"]["log_exposure"] = json!("TOKEN");
     let text = serde_json::to_string(&input).unwrap().replace(
         "\"TOKEN\"",
@@ -957,41 +1041,51 @@ fn decimal_tokens_use_double_rounding_and_preserve_negative_zero() {
 }
 
 #[test]
-fn bom_and_duplicate_members_follow_cpp_json_decoding() {
+fn accepts_json_bom() {
     let dir = Directory::new();
-    let text = serde_json::to_string(&authored(Role::Film))
-        .unwrap()
-        .replace(
-            "\"stock\":\"authored\"",
-            "\"stock\":1,\"stock\":\"authored\"",
-        );
+    let text = serde_json::to_string(&profile_document(Role::Film)).unwrap();
     let path = dir.write("source.json", format!("\u{feff}{text}"));
     assert_eq!(load_film_source(&path).unwrap().info().stock(), "authored");
 }
 
 #[test]
-fn catalog_is_shallow_and_classifies_defaults_ignored_and_unavailable_entries() {
+fn last_json_member_wins() {
     let dir = Directory::new();
-    dir.defaults();
+    let text = serde_json::to_string(&profile_document(Role::Film))
+        .unwrap()
+        .replace(
+            "\"stock\":\"authored\"",
+            "\"stock\":1,\"stock\":\"authored\"",
+        );
+    for text in [text.clone(), format!("\u{feff}{text}")] {
+        let path = dir.write("source.json", text);
+        assert_eq!(load_film_source(&path).unwrap().info().stock(), "authored");
+    }
+}
+
+#[test]
+fn classifies_catalog_entries() {
+    let dir = Directory::new();
+    dir.write_defaults();
     dir.write("profiles/ignored.json", "{}");
     dir.write("profiles/bad.json", "{");
     dir.write(
         "profiles/model-only.json",
         r#"{"data":{"density_curves_model":{}}}"#,
     );
-    dir.entry("no-stock.json", json!({}));
-    dir.entry("null-support.json", json!({"stock":"null","support":null}));
-    dir.entry(
+    dir.write_entry("no-stock.json", json!({}));
+    dir.write_entry("null-support.json", json!({"stock":"null","support":null}));
+    dir.write_entry(
         "paper-filming.json",
         json!({"stock":"paper","support":"paper"}),
     );
-    dir.entry("uppercase-only.JSON", json!({"stock":"wrong-extension"}));
-    dir.entry("nested/child.json", json!({"stock":"nested"}));
-    dir.entry("a.json", json!({"stock":"a","name":"Same"}));
-    dir.entry("b.json", json!({"stock":"b","name":"Same"}));
-    dir.entry("label-number.json", json!({"stock":"label","name":3}));
-    dir.entry("empty-label.json", json!({"stock":"empty","name":""}));
-    dir.entry(
+    dir.write_entry("uppercase-only.JSON", json!({"stock":"wrong-extension"}));
+    dir.write_entry("nested/child.json", json!({"stock":"nested"}));
+    dir.write_entry("a.json", json!({"stock":"a","name":"Same"}));
+    dir.write_entry("b.json", json!({"stock":"b","name":"Same"}));
+    dir.write_entry("label-number.json", json!({"stock":"label","name":3}));
+    dir.write_entry("empty-label.json", json!({"stock":"empty","name":""}));
+    dir.write_entry(
         "same-key-print.json",
         json!({"stock":"a","stage":"printing"}),
     );
@@ -1029,16 +1123,16 @@ fn catalog_is_shallow_and_classifies_defaults_ignored_and_unavailable_entries() 
 }
 
 #[test]
-fn catalog_duplicate_rejection_is_per_role() {
+fn rejects_catalog_duplicates_per_role() {
     for role in [Role::Film, Role::Print] {
         let dir = Directory::new();
-        dir.defaults();
+        dir.write_defaults();
         let (key, stage) = if role == Role::Film {
             ("kodak_portra_400", "filming")
         } else {
             ("kodak_portra_endura", "printing")
         };
-        dir.entry("duplicate.json", json!({"stock":key,"stage":stage}));
+        dir.write_entry("duplicate.json", json!({"stock":key,"stage":stage}));
         match load_catalog(&dir.0).unwrap_err() {
             CatalogError::DuplicateKey {
                 role: actual,
@@ -1052,8 +1146,8 @@ fn catalog_duplicate_rejection_is_per_role() {
         }
     }
     let dir = Directory::new();
-    dir.defaults();
-    dir.entry(
+    dir.write_defaults();
+    dir.write_entry(
         "invisible-duplicate.json",
         json!({"stock":"kodak_portra_400","support":"paper"}),
     );
@@ -1061,7 +1155,7 @@ fn catalog_duplicate_rejection_is_per_role() {
 }
 
 #[test]
-fn catalog_requires_both_roles_and_both_default_keys() {
+fn catalog_requires_roles_and_defaults() {
     let dir = Directory::new();
     assert!(matches!(
         load_catalog(&dir.0),
@@ -1075,7 +1169,7 @@ fn catalog_requires_both_roles_and_both_default_keys() {
             ..
         })
     ));
-    dir.entry("film.json", json!({"stock":"film"}));
+    dir.write_entry("film.json", json!({"stock":"film"}));
     assert!(matches!(
         load_catalog(&dir.0),
         Err(CatalogError::EmptyRole {
@@ -1083,7 +1177,7 @@ fn catalog_requires_both_roles_and_both_default_keys() {
             ..
         })
     ));
-    dir.entry("print.json", json!({"stock":"print","stage":"printing"}));
+    dir.write_entry("print.json", json!({"stock":"print","stage":"printing"}));
     assert!(matches!(
         load_catalog(&dir.0),
         Err(CatalogError::MissingDefault {
@@ -1091,7 +1185,7 @@ fn catalog_requires_both_roles_and_both_default_keys() {
             ..
         })
     ));
-    dir.entry("film.json", json!({"stock":"kodak_portra_400"}));
+    dir.write_entry("film.json", json!({"stock":"kodak_portra_400"}));
     assert!(matches!(
         load_catalog(&dir.0),
         Err(CatalogError::MissingDefault {
@@ -1099,7 +1193,7 @@ fn catalog_requires_both_roles_and_both_default_keys() {
             ..
         })
     ));
-    dir.entry(
+    dir.write_entry(
         "print.json",
         json!({"stock":"kodak_portra_endura","stage":"printing"}),
     );
@@ -1107,10 +1201,10 @@ fn catalog_requires_both_roles_and_both_default_keys() {
 }
 
 #[test]
-fn blackbody_temperatures_require_an_unmodified_positive_decimal_suffix() {
+fn blackbody_requires_positive_decimal() {
     let dir = Directory::new();
     for role in [Role::Film, Role::Print] {
-        let mut input = authored(role);
+        let mut input = profile_document(role);
         for key in ["reference_illuminant", "viewing_illuminant"] {
             // Product-contract expectations, including cases whose validity would
             // change if decimal points, exponent signs or punctuation were removed.
@@ -1147,11 +1241,11 @@ fn blackbody_temperatures_require_an_unmodified_positive_decimal_suffix() {
                 ("BB0x1fffffffffffff80p963", false),
             ] {
                 input["info"][key] = json!(illuminant);
-                let result = dir.source(&input, role);
+                let result = dir.load_source(&input, role);
                 assert_eq!(result.is_ok(), accepted, "{role:?} {key} {illuminant}");
                 if let Err(error) = result {
                     assert_eq!(error.role, role);
-                    assert_field(error, &format!("info.{key}"), Requirement::Illuminant);
+                    assert_field_error(error, &format!("info.{key}"), Requirement::Illuminant);
                 }
             }
             input["info"][key] = json!("D55");
@@ -1160,11 +1254,11 @@ fn blackbody_temperatures_require_an_unmodified_positive_decimal_suffix() {
 }
 
 #[test]
-fn json_zero_and_exponent_tokens_preserve_bits_and_strings_in_both_roles() {
+fn preserves_json_number_bits() {
     let dir = Directory::new();
-    dir.defaults();
+    dir.write_defaults();
     for role in [Role::Film, Role::Print] {
-        let mut input = authored(role);
+        let mut input = profile_document(role);
         input["info"]["stock"] = json!(r#"quoted " -0, slash \ 1e-0]"#);
         input["data"]["log_exposure"] = json!(["TOKEN"]);
         input["data"]["log_sensitivity"][0][0] = json!("TOKEN");
@@ -1229,11 +1323,11 @@ fn json_zero_and_exponent_tokens_preserve_bits_and_strings_in_both_roles() {
 }
 
 #[test]
-fn malformed_json_numbers_fail_source_loading_and_make_catalog_entries_unavailable() {
+fn rejects_malformed_json_numbers() {
     let dir = Directory::new();
-    dir.defaults();
+    dir.write_defaults();
     for role in [Role::Film, Role::Print] {
-        let mut input = authored(role);
+        let mut input = profile_document(role);
         input["data"]["log_exposure"] = json!(["TOKEN"]);
         for token in ["--0", "- 0", "01", "1e", "1e-", "NaN", "Infinity", "1e999"] {
             let text = serde_json::to_string(&input)
@@ -1260,7 +1354,7 @@ fn malformed_json_numbers_fail_source_loading_and_make_catalog_entries_unavailab
 }
 
 #[test]
-fn model_coefficients_keep_channel_then_layer_order() {
+fn preserves_model_channel_layer_order() {
     let source =
         load_film_source(&repository().join("Resources/profiles/kodak_portra_400.json")).unwrap();
     assert_eq!(
@@ -1299,9 +1393,9 @@ fn model_coefficients_keep_channel_then_layer_order() {
 }
 
 #[test]
-fn catalog_recognizes_each_authored_shape_field_without_loading_samples() {
+fn catalog_recognizes_profile_fields() {
     let dir = Directory::new();
-    dir.defaults();
+    dir.write_defaults();
     for key in [
         "wavelengths",
         "log_sensitivity",
@@ -1317,13 +1411,21 @@ fn catalog_recognizes_each_authored_shape_field_without_loading_samples() {
             json!({"info":{"stock":key},"data":data}).to_string(),
         );
     }
+    let catalog = load_catalog(&dir.0).unwrap();
+    assert_eq!(catalog.films().len(), 7);
+    assert!(catalog.unavailable().is_empty());
+}
+
+#[test]
+fn catalog_rejects_null_metadata() {
+    let dir = Directory::new();
+    dir.write_defaults();
     for key in ["support", "stage", "type"] {
         let mut info = json!({"stock":key});
         info[key] = Value::Null;
-        dir.entry(&format!("null-{key}.json"), info);
+        dir.write_entry(&format!("null-{key}.json"), info);
     }
     let catalog = load_catalog(&dir.0).unwrap();
-    assert_eq!(catalog.films().len(), 7);
     assert_eq!(catalog.unavailable().len(), 3);
     assert!(
         catalog
