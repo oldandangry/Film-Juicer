@@ -63,6 +63,7 @@ namespace OFX {
         bool             _isEnabledCudaRender;   /**< @brief is Cuda Render Enabled */
         bool             _isEnabledMetalRender;   /**< @brief is Metal Render Enabled */
         void*            _pOpenCLCmdQ;           /**< @brief OpenCL Command Queue Handle */
+        bool             _cudaStreamPropertyPresent;
         void*            _pCudaStream;           /**< @brief Cuda Stream Handle */
         void*            _pMetalCmdQ;           /**< @brief Metal Command Queue Handle */
 
@@ -75,6 +76,7 @@ namespace OFX {
           , _isEnabledCudaRender(false)
           , _isEnabledMetalRender(false)
           , _pOpenCLCmdQ(NULL)
+          , _cudaStreamPropertyPresent(false)
           , _pCudaStream(NULL)
           , _pMetalCmdQ(NULL)
         {
@@ -98,6 +100,7 @@ namespace OFX {
             if (_isEnabledCudaRender)
             {
                 _pCudaStream = args.pCudaStream;
+                _cudaStreamPropertyPresent = args.cudaStreamPropertyPresent;
             }
             if (_isEnabledMetalRender)
             {

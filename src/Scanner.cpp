@@ -351,6 +351,10 @@ namespace Scanner {
         }
     }
 
+    SpectralTablesView spectral_tables_view(const Spectral::SpectralTables& tables) {
+        return {tables.epsC, tables.epsM, tables.epsY, tables.Ax, tables.Ay, tables.Az, tables.baseDensityMin, tables.K, tables.invYn, tables.hasBaseline};
+    }
+
     void spectral_to_log_xyz(
         const ScannerMediumRuntime& medium,
         const double D_norm[3],
@@ -358,9 +362,23 @@ namespace Scanner {
         if (!D_norm || !logXYZ) {
             return;
         }
+        const MediumView view{
+            medium.medium,
+            medium.tables ? spectral_tables_view(*medium.tables) : SpectralTablesView{},
+            medium.range};
+        spectral_to_log_xyz(view, D_norm, logXYZ);
+    }
 
-        const Spectral::SpectralTables* tables = medium.tables;
-        if (!tables || tables->K <= 0) {
+    void spectral_to_log_xyz(
+        const MediumView& medium,
+        const double D_norm[3],
+        double logXYZ[3]) {
+        if (!D_norm || !logXYZ) {
+            return;
+        }
+
+        const SpectralTablesView* tables = &medium.tables;
+        if (tables->K <= 0) {
             logXYZ[0] = logXYZ[1] = logXYZ[2] = std::numeric_limits<double>::quiet_NaN();
             return;
         }

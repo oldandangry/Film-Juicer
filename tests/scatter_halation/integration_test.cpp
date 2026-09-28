@@ -27,10 +27,13 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include "Cuda/JuicerCudaFailure.h"
+
 #include "SpectralProcessing.h"
 #include "Hash.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "juicer_cuda_owner.h"
 #include "ProfileAssets.h"
 #include "ScatterHalation.h"
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
@@ -192,6 +195,7 @@ namespace {
         const bool knownGroup =
             arguments.caseGroup == "host-contracts" ||
             arguments.caseGroup == "prepared-frame" ||
+            arguments.caseGroup == "terminal-retention" ||
             arguments.caseGroup == "focused-cuda-reference" ||
             arguments.caseGroup == "route-boundaries" ||
             arguments.caseGroup == "captured-carrier" ||
@@ -1591,22 +1595,17 @@ namespace {
     }
 
     void run_capacity_recovery_classification_rows(Results& results) {
-        using JuicerCuda::ResourceManager::error_is_allocation_capacity_exhausted;
+        using JuicerCuda::allocation_capacity_exhausted;
+        const auto capacity = JuicerCuda::runtime_failure_status(cudaErrorMemoryAllocation);
         results.record(
-            "recovery/capacity-producer-markers",
-            error_is_allocation_capacity_exhausted(
-                std::string("cudaMalloc(test) failed: ") +
-                cudaGetErrorString(cudaErrorMemoryAllocation)) &&
-                error_is_allocation_capacity_exhausted("CUDA out of memory") &&
-                error_is_allocation_capacity_exhausted("device_cap_exceeded"),
-            "capacity text activates retired-allocation reap and bounded retry");
+            "recovery/capacity-producer-category",
+            allocation_capacity_exhausted({capacity, "renamed diagnostic"}) &&
+                allocation_capacity_exhausted({{FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "device_cap_exceeded"}),
+            "typed capacity activates retired-allocation reap and bounded retry");
         results.record(
             "recovery/non-capacity-errors-do-not-retry",
-            !error_is_allocation_capacity_exhausted("") &&
-                !error_is_allocation_capacity_exhausted("invalid descriptor") &&
-                !error_is_allocation_capacity_exhausted("context is destroyed") &&
-                !error_is_allocation_capacity_exhausted("operation cancelled"),
-            "other producer errors propagate without capacity retry");
+            !allocation_capacity_exhausted({{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "out of memory memory allocation device_cap_exceeded"}),
+            "diagnostic wording cannot select capacity retry");
     }
 
     struct PreparedInputs {
@@ -1811,7 +1810,6 @@ namespace {
             value.frameToken.value = _nextIdentity;
             value.snapshotId = _nextIdentity++;
             value.deviceContextKey = _contextKey;
-            value.contextEpoch = 1;
             value.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
                 inputs.product.payload.uploadCoreHash,
                 inputs.product.recipe.dirCouplers.hash,
@@ -2022,9 +2020,9 @@ namespace {
             static_cast<std::uintptr_t>(kWidth) * kHeight * sizeof(float);
 
         CudaPreparedFixture fixture;
-        std::string diagnostic;
-        if (!fixture.initialize(diagnostic)) {
-            throw std::runtime_error(diagnostic);
+        JuicerCuda::Failure diagnostic;
+        if (!fixture.initialize(diagnostic.diagnostic)) {
+            throw std::runtime_error(diagnostic.diagnostic);
         }
         JuicerProcess::Root& root = JuicerProcess::root();
 
@@ -2036,8 +2034,8 @@ namespace {
                 kWidth,
                 kHeight,
                 zeroInputs,
-                diagnostic)) {
-            throw std::runtime_error(diagnostic);
+                diagnostic.diagnostic)) {
+            throw std::runtime_error(diagnostic.diagnostic);
         }
         auto zeroRequest = zeroInputs.request({kWidth, kHeight});
         auto zeroFrame = root.prepare_cuda_frame(
@@ -2051,16 +2049,16 @@ namespace {
         results.record(
             "prepared/zero-no-descriptor",
             zeroFrame.active() && zeroView.descriptor == nullptr,
-            diagnostic);
-        std::string terminalDiagnostic;
+            diagnostic.diagnostic);
+        JuicerCuda::Failure terminalDiagnostic;
         const bool zeroFinished =
             zeroFrame.finish(fixture.stream_opaque(), terminalDiagnostic) &&
-            fixture.synchronize(terminalDiagnostic);
+            fixture.synchronize(terminalDiagnostic.diagnostic);
         results.record(
             "prepared/finish-cleanup-zero",
             zeroFinished &&
                 zeroFrame.scatter_halation_resources().descriptor == nullptr,
-            terminalDiagnostic);
+            terminalDiagnostic.diagnostic);
 
         PreparedInputs dedicatedInputs;
         if (!initialize_prepared_inputs(
@@ -2070,8 +2068,8 @@ namespace {
                 kWidth,
                 kHeight,
                 dedicatedInputs,
-                diagnostic)) {
-            throw std::runtime_error(diagnostic);
+                diagnostic.diagnostic)) {
+            throw std::runtime_error(diagnostic.diagnostic);
         }
         auto dedicatedRequest = dedicatedInputs.request({kWidth, kHeight});
         auto dedicatedFrame = root.prepare_cuda_frame(
@@ -2117,15 +2115,15 @@ namespace {
                 dedicatedView.filterTemp !=
                     dedicatedView.currentCarrier.redSensitive,
             prepared_shape_detail(kWidth, kHeight, true));
-        terminalDiagnostic.clear();
+        terminalDiagnostic = {};
         const bool dedicatedFinished =
             dedicatedFrame.finish(fixture.stream_opaque(), terminalDiagnostic) &&
-            fixture.synchronize(terminalDiagnostic);
+            fixture.synchronize(terminalDiagnostic.diagnostic);
         results.record(
             "prepared/finish-cleanup",
             dedicatedFinished &&
                 dedicatedFrame.scatter_halation_resources().descriptor == nullptr,
-            terminalDiagnostic);
+            terminalDiagnostic.diagnostic);
 
         PreparedInputs cameraInputs;
         if (!initialize_prepared_inputs(
@@ -2135,8 +2133,8 @@ namespace {
                 kWidth,
                 kHeight,
                 cameraInputs,
-                diagnostic)) {
-            throw std::runtime_error(diagnostic);
+                diagnostic.diagnostic)) {
+            throw std::runtime_error(diagnostic.diagnostic);
         }
         auto cameraRequest = cameraInputs.request({kWidth, kHeight});
         auto cameraFrame = root.prepare_cuda_frame(
@@ -2161,16 +2159,16 @@ namespace {
                 diffusionView.active &&
                 diffusionView.executionDescriptor.contextEpoch != 0,
             prepared_shape_detail(kWidth, kHeight, false));
-        terminalDiagnostic.clear();
+        terminalDiagnostic = {};
         const bool cameraFinished =
             cameraFrame.finish(fixture.stream_opaque(), terminalDiagnostic) &&
-            fixture.synchronize(terminalDiagnostic);
+            fixture.synchronize(terminalDiagnostic.diagnostic);
         results.record(
             "prepared/camera-finish-cleanup",
             cameraFinished &&
                 cameraFrame.scatter_halation_resources().descriptor == nullptr &&
                 !cameraFrame.diffusion_resources().active,
-            terminalDiagnostic);
+            terminalDiagnostic.diagnostic);
 
         auto cameraOverlapFirst = root.prepare_cuda_frame(
             fixture.context_key(),
@@ -2179,7 +2177,7 @@ namespace {
             {},
             fixture.stream_opaque(),
             diagnostic);
-        const std::string cameraOverlapFirstDiagnostic = diagnostic;
+        const std::string cameraOverlapFirstDiagnostic = diagnostic.diagnostic;
         auto cameraOverlapSecond = root.prepare_cuda_frame(
             fixture.context_key(),
             fixture.snapshot(cameraInputs),
@@ -2187,7 +2185,7 @@ namespace {
             {},
             fixture.stream_opaque(),
             diagnostic);
-        const std::string cameraOverlapSecondDiagnostic = diagnostic;
+        const std::string cameraOverlapSecondDiagnostic = diagnostic.diagnostic;
         const auto cameraOverlapFirstView =
             cameraOverlapFirst.scatter_halation_resources();
         const auto cameraDiffusionFirst = cameraOverlapFirst.diffusion_resources();
@@ -2203,16 +2201,16 @@ namespace {
             cameraLeaseAdmissionRejected,
             "first=" + cameraOverlapFirstDiagnostic +
                 " second=" + cameraOverlapSecondDiagnostic);
-        terminalDiagnostic.clear();
+        terminalDiagnostic = {};
         const bool cameraOverlapFinished =
             cameraOverlapFirst.finish(
                 fixture.stream_opaque(),
                 terminalDiagnostic) &&
-            fixture.synchronize(terminalDiagnostic);
+            fixture.synchronize(terminalDiagnostic.diagnostic);
         results.record(
             "prepared/camera-overlap-finish-cleanup",
             cameraOverlapFinished,
-            terminalDiagnostic);
+            terminalDiagnostic.diagnostic);
 
         auto absentRequest = dedicatedInputs.request({kWidth, kHeight});
         absentRequest.scatterHalationDescriptor = nullptr;
@@ -2226,10 +2224,10 @@ namespace {
         results.record(
             "prepared/nonzero-recipe-absent-descriptor",
             !absentFrame.active() &&
-                contains_text(diagnostic, "MissingRequiredResource") &&
-                contains_text(diagnostic, "field=descriptor") &&
+                contains_text(diagnostic.diagnostic, "MissingRequiredResource") &&
+                contains_text(diagnostic.diagnostic, "field=descriptor") &&
                 absentFrame.scatter_halation_resources().descriptor == nullptr,
-            diagnostic);
+            diagnostic.diagnostic);
 
         auto presentForZeroRequest = zeroInputs.request({kWidth, kHeight});
         presentForZeroRequest.scatterHalationDescriptor =
@@ -2244,11 +2242,11 @@ namespace {
         results.record(
             "prepared/zero-recipe-present-descriptor",
             !presentForZeroFrame.active() &&
-                contains_text(diagnostic, "field=recipe_hash") &&
-                contains_text(diagnostic, "expected=0") &&
+                contains_text(diagnostic.diagnostic, "field=recipe_hash") &&
+                contains_text(diagnostic.diagnostic, "expected=0") &&
                 presentForZeroFrame.scatter_halation_resources().descriptor ==
                     nullptr,
-            diagnostic);
+            diagnostic.diagnostic);
 
         auto mismatched = *dedicatedInputs.scatterDescriptor;
         ++mismatched.recipeHash;
@@ -2264,9 +2262,9 @@ namespace {
         results.record(
             "prepared/hash-mismatch",
             !mismatchFrame.active() &&
-                contains_text(diagnostic, "field=recipe_hash") &&
+                contains_text(diagnostic.diagnostic, "field=recipe_hash") &&
                 mismatchFrame.scatter_halation_resources().descriptor == nullptr,
-            diagnostic);
+            diagnostic.diagnostic);
 
         auto zeroExtentRequest = dedicatedInputs.request({0, kHeight});
         auto zeroExtentFrame = root.prepare_cuda_frame(
@@ -2278,8 +2276,8 @@ namespace {
             diagnostic);
         results.record(
             "prepared/zero-extent",
-            !zeroExtentFrame.active() && contains_text(diagnostic, "field=extent"),
-            diagnostic);
+            !zeroExtentFrame.active() && contains_text(diagnostic.diagnostic, "field=extent"),
+            diagnostic.diagnostic);
         auto negativeExtentRequest = dedicatedInputs.request({-1, kHeight});
         auto negativeExtentFrame = root.prepare_cuda_frame(
             fixture.context_key(),
@@ -2290,8 +2288,8 @@ namespace {
             diagnostic);
         results.record(
             "prepared/negative-extent",
-            !negativeExtentFrame.active() && contains_text(diagnostic, "field=extent"),
-            diagnostic);
+            !negativeExtentFrame.active() && contains_text(diagnostic.diagnostic, "field=extent"),
+            diagnostic.diagnostic);
 
         auto overflowRequest = dedicatedInputs.request(
             {std::numeric_limits<int>::max(),
@@ -2306,11 +2304,11 @@ namespace {
         results.record(
             "prepared/overflow",
             !overflowFrame.active() &&
-                contains_text(diagnostic, "ExactAdmissionFailure") &&
-                contains_text(diagnostic, "failed_fact=filter_bytes") &&
-                contains_text(diagnostic, "bytes_admitted_before_failure=0") &&
-                contains_text(diagnostic, "physical_allocation_count=2"),
-            diagnostic);
+                contains_text(diagnostic.diagnostic, "ExactAdmissionFailure") &&
+                contains_text(diagnostic.diagnostic, "failed_fact=filter_bytes") &&
+                contains_text(diagnostic.diagnostic, "bytes_admitted_before_failure=0") &&
+                contains_text(diagnostic.diagnostic, "physical_allocation_count=2"),
+            diagnostic.diagnostic);
 
         auto incompatibleFrameSet = *cameraInputs.diffusionFrameSet;
         incompatibleFrameSet.camera->stage =
@@ -2327,10 +2325,10 @@ namespace {
         results.record(
             "prepared/incompatible-carrier-admission",
             !incompatibleFrame.active() &&
-                contains_text(diagnostic, "ExactAdmissionFailure") &&
-                contains_text(diagnostic, "failed_fact=camera_carrier_stage") &&
-                contains_text(diagnostic, "bytes_admitted_before_failure=0"),
-            diagnostic);
+                contains_text(diagnostic.diagnostic, "ExactAdmissionFailure") &&
+                contains_text(diagnostic.diagnostic, "failed_fact=camera_carrier_stage") &&
+                contains_text(diagnostic.diagnostic, "bytes_admitted_before_failure=0"),
+            diagnostic.diagnostic);
 
         auto overlapFirst = root.prepare_cuda_frame(
             fixture.context_key(),
@@ -2363,15 +2361,15 @@ namespace {
             "prepared/overlap-nonalias",
             overlapNonalias,
             "two active frames retain distinct two-record mutable block sets");
-        terminalDiagnostic.clear();
+        terminalDiagnostic = {};
         const bool overlapFinished =
             overlapFirst.finish(fixture.stream_opaque(), terminalDiagnostic) &&
             overlapSecond.finish(fixture.stream_opaque(), terminalDiagnostic) &&
-            fixture.synchronize(terminalDiagnostic);
+            fixture.synchronize(terminalDiagnostic.diagnostic);
         results.record(
             "prepared/overlap-finish-cleanup",
             overlapFinished,
-            terminalDiagnostic);
+            terminalDiagnostic.diagnostic);
 
         auto nullStreamFrame = root.prepare_cuda_frame(
             fixture.context_key(),
@@ -2380,7 +2378,7 @@ namespace {
             {},
             nullptr,
             diagnostic);
-        terminalDiagnostic.clear();
+        terminalDiagnostic = {};
         const bool nullStreamFinished =
             nullStreamFrame.active() &&
             nullStreamFrame.finish(nullptr, terminalDiagnostic) &&
@@ -2388,7 +2386,7 @@ namespace {
         results.record(
             "prepared/null-stream-finish",
             nullStreamFinished,
-            terminalDiagnostic);
+            terminalDiagnostic.diagnostic);
 
         cudaStream_t secondStream = nullptr;
         const cudaError_t secondStreamStatus =
@@ -2416,7 +2414,7 @@ namespace {
                 sequentialStreamsFinished =
                     secondStreamFrame.active() &&
                     secondStreamFrame.finish(secondStream, terminalDiagnostic) &&
-                    fixture.synchronize(terminalDiagnostic) &&
+                    fixture.synchronize(terminalDiagnostic.diagnostic) &&
                     cudaStreamSynchronize(secondStream) == cudaSuccess;
             }
             (void)cudaStreamDestroy(secondStream);
@@ -2425,7 +2423,7 @@ namespace {
             "prepared/sequential-streams-same-context",
             sequentialStreamsFinished,
             sequentialStreamsFinished ? "both streams finished in one exact context"
-                                      : terminalDiagnostic);
+                                      : terminalDiagnostic.diagnostic);
 
         auto abortFrame = root.prepare_cuda_frame(
             fixture.context_key(),
@@ -2436,13 +2434,13 @@ namespace {
             diagnostic);
         const bool abortWasActive = abortFrame.active();
         abortFrame.abort();
-        terminalDiagnostic.clear();
+        terminalDiagnostic = {};
         results.record(
             "prepared/abort-cleanup",
             abortWasActive && !abortFrame.active() &&
                 abortFrame.scatter_halation_resources().descriptor == nullptr &&
-                fixture.synchronize(terminalDiagnostic),
-            terminalDiagnostic);
+                fixture.synchronize(terminalDiagnostic.diagnostic),
+            terminalDiagnostic.diagnostic);
 
         auto dependentRequest = dedicatedInputs.request({kWidth, kHeight});
         auto dependentFrame = root.prepare_cuda_frame(
@@ -2472,8 +2470,8 @@ namespace {
                     kWidth,
                     kHeight,
                     *pendingUploadInputs,
-                    diagnostic)) {
-                throw std::runtime_error(diagnostic);
+                    diagnostic.diagnostic)) {
+                throw std::runtime_error(diagnostic.diagnostic);
             }
             auto pendingUploadRequest =
                 pendingUploadInputs->request({kWidth, kHeight});
@@ -2514,7 +2512,7 @@ namespace {
                     static_cast<cudaStream_t>(fixture.stream_opaque()),
                     mutablePreparedView.currentCarrier.redSensitive,
                     retainedCarrierUpload,
-                    diagnostic);
+                    diagnostic.diagnostic);
             const bool scanErrorFinalized =
                 uploadEnqueued &&
                 pendingUploadFrame.finalize_scan_error_stage(
@@ -2551,7 +2549,7 @@ namespace {
                     beforePendingFinish.contextLedgerRecordCount != 0,
                 "prepared frame and Root share the native owner while upload is pending");
 
-            terminalDiagnostic.clear();
+            terminalDiagnostic = {};
             const bool pendingFinished = pendingUploadFrame.finish(
                 fixture.stream_opaque(),
                 terminalDiagnostic);
@@ -2589,7 +2587,7 @@ namespace {
                     afterPendingFinish.contextLedgerRecordCount != 0 &&
                     postExpiryUploadQuery == cudaErrorNotReady &&
                     !outstandingUpload.self_released(),
-                terminalDiagnostic);
+                terminalDiagnostic.diagnostic);
             results.record(
                 "prepared/caller-storage-expired-with-owned-readback",
                 !pendingUploadInputs.has_value() &&
@@ -2641,7 +2639,7 @@ namespace {
                 "production-owned scan-error staging completed with its retained value and identity within the finite timeout");
         }
 
-        terminalDiagnostic.clear();
+        terminalDiagnostic = {};
         const bool failureInjected =
             JuicerProcess::TestSupport::arm_context_drain_failure_once(
                 fixture.context_key());
@@ -2650,7 +2648,7 @@ namespace {
             !root.retire_idle_context(
                 fixture.context_key().deviceId,
                 fixture.context_key().contextOpaque,
-                terminalDiagnostic);
+                terminalDiagnostic.diagnostic);
         const auto afterControlledFailure =
             JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(
                 root,
@@ -2659,7 +2657,7 @@ namespace {
             "prepared/controlled-drain-failure-retains-ownership",
             controlledDrainFailed &&
                 contains_text(
-                    terminalDiagnostic,
+                    terminalDiagnostic.diagnostic,
                     "test-injected CUDA context owner drain failure") &&
                 afterControlledFailure.contextEntryPresent &&
                 afterControlledFailure.frameOwnerPresent &&
@@ -2667,16 +2665,16 @@ namespace {
                 afterControlledFailure.pendingScanErrorReadbackCount != 0 &&
                 afterControlledFailure.ledger.chargedBytes != 0 &&
                 afterControlledFailure.contextLedgerRecordCount != 0,
-            terminalDiagnostic);
+            terminalDiagnostic.diagnostic);
 
         JuicerProcess::TestSupport::clear_context_drain_failure();
-        terminalDiagnostic.clear();
+        terminalDiagnostic = {};
         const bool idleRetired =
             controlledDrainFailed &&
             root.retire_idle_context(
                 fixture.context_key().deviceId,
                 fixture.context_key().contextOpaque,
-                terminalDiagnostic);
+                terminalDiagnostic.diagnostic);
         const auto afterIdleRetire =
             JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(
                 root,
@@ -2688,11 +2686,11 @@ namespace {
                 afterIdleRetire.ledger.recordCount == 0 &&
                 JuicerCuda::ResourceManager::global_state()
                         .pinnedStagingBytes.load(std::memory_order_acquire) == 0,
-            terminalDiagnostic);
+            terminalDiagnostic.diagnostic);
         results.record(
             "prepared/idle-context-retire",
             idleRetired,
-            terminalDiagnostic);
+            terminalDiagnostic.diagnostic);
 
         auto resetFrame = root.prepare_cuda_frame(
             fixture.context_key(),
@@ -2701,29 +2699,64 @@ namespace {
             {},
             fixture.stream_opaque(),
             diagnostic);
-        terminalDiagnostic.clear();
+        terminalDiagnostic = {};
         const bool resetReady =
             resetFrame.active() &&
             resetFrame.finish(fixture.stream_opaque(), terminalDiagnostic) &&
-            fixture.synchronize(terminalDiagnostic);
+            fixture.synchronize(terminalDiagnostic.diagnostic);
         const bool resetRetired =
             resetReady &&
             root.retire_reset_context(
                 fixture.context_key().deviceId,
                 fixture.context_key().contextOpaque,
-                terminalDiagnostic);
+                terminalDiagnostic.diagnostic);
         results.record(
             "prepared/reset-context-retire",
             resetRetired,
-            terminalDiagnostic);
+            terminalDiagnostic.diagnostic);
+    }
 
-        root.shutdown();
-        std::vector<JuicerCuda::ResourceManager::DeviceContextKey> liveContexts;
-        JuicerCuda::ResourceManager::registry_snapshot_context_keys(liveContexts);
-        results.record(
-            "prepared/root-shutdown-last",
-            liveContexts.empty(),
-            "ordered Root shutdown leaves no registered CUDA context");
+    void run_terminal_retention_rows(Results& results, JuicerCuda::Owner& owner) {
+        CudaPreparedFixture fixture;
+        JuicerCuda::Failure diagnostic;
+        PreparedInputs inputs;
+        if (!fixture.initialize(diagnostic.diagnostic) ||
+            !initialize_prepared_inputs(false, false, true, 32, 24, inputs, diagnostic.diagnostic)) {
+            throw std::runtime_error(diagnostic.diagnostic);
+        }
+        auto& root = JuicerProcess::root();
+        {
+            auto frame = root.prepare_cuda_frame(fixture.context_key(), fixture.snapshot(inputs), inputs.request({32, 24}), {}, fixture.stream_opaque(), diagnostic);
+            if (!frame.active() || !frame.record_use(fixture.stream_opaque(), diagnostic) ||
+                !frame.finish(fixture.stream_opaque(), diagnostic) || !fixture.synchronize(diagnostic.diagnostic)) {
+                throw std::runtime_error(diagnostic.diagnostic);
+            }
+        }
+        const auto before = JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(root, fixture.context_key());
+        const bool injected = JuicerProcess::TestSupport::arm_context_drain_failure_once(fixture.context_key());
+        FjCuda* borrow = JuicerCuda::borrowed_owner();
+        std::array<char, 512> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        const auto blocked = fj_cuda_shutdown(borrow, &error);
+        const auto after = JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(root, fixture.context_key());
+        results.record("terminal/gpu-failed-shutdown-retains-graph",
+                       injected && blocked.category == FJ_STATUS_PREPARATION_FAILURE && blocked.api == FJ_API_NONE &&
+                           blocked.native_code == 0 && JuicerCuda::borrowed_owner() == borrow &&
+                           !root.begin_frame_preparation().active() && before.nativeAllocationCount != 0 &&
+                           after.nativeAllocationCount == before.nativeAllocationCount &&
+                           after.ledger.chargedBytes == before.ledger.chargedBytes &&
+                           after.contextLedgerRecordCount == before.contextLedgerRecordCount,
+                       message.data());
+        JuicerProcess::TestSupport::clear_context_drain_failure();
+        const auto consumed = owner.close(&error);
+        const auto retained = JuicerProcess::TestSupport::RootLifetimeObserver::snapshot(root, fixture.context_key());
+        results.record("terminal/gpu-blocked-destroy-does-not-retry",
+                       consumed.category == blocked.category && consumed.api == blocked.api && consumed.native_code == blocked.native_code &&
+                           JuicerCuda::borrowed_owner() == borrow && retained.nativeAllocationCount == before.nativeAllocationCount &&
+                           retained.contextLedgerRecordCount == before.contextLedgerRecordCount &&
+                           retained.ledger.chargedBytes == before.ledger.chargedBytes,
+                       message.data());
+        results.record("terminal/gpu-consumed-wrapper-empty", owner.close().category == FJ_STATUS_SUCCESS, "consumed wrapper and its destructor cannot retry the retained graph");
     }
 
     bool upload_and_launch_dedicated(
@@ -2797,9 +2830,9 @@ namespace {
         constexpr int kWidth = 16;
         constexpr int kHeight = 12;
         CudaPreparedFixture fixture;
-        std::string diagnostic;
-        if (!fixture.initialize(diagnostic)) {
-            throw std::runtime_error(diagnostic);
+        JuicerCuda::Failure diagnostic;
+        if (!fixture.initialize(diagnostic.diagnostic)) {
+            throw std::runtime_error(diagnostic.diagnostic);
         }
         const ScatterHalationControls controls = convert_or_throw(
             ScatterHalationRawControls{true, 1.0, 1.0, 1.0, 1.0});
@@ -2807,7 +2840,7 @@ namespace {
         for (const Spektrafilm::ScanRouteMetadata& metadata :
              Spektrafilm::kScanRouteMatrix) {
             PreparedInputs inputs;
-            diagnostic.clear();
+            diagnostic = {};
             const bool initialized = initialize_route_inputs(
                 metadata.route,
                 controls,
@@ -2816,7 +2849,7 @@ namespace {
                 kWidth,
                 kHeight,
                 inputs,
-                diagnostic);
+                diagnostic.diagnostic);
             bool passed = initialized && inputs.scatterDescriptor.has_value() &&
                           inputs.product.recipe.profileRoute.scanRoute ==
                               metadata.route;
@@ -2836,20 +2869,20 @@ namespace {
                          upload_and_launch_dedicated(
                              view,
                              static_cast<cudaStream_t>(fixture.stream_opaque()),
-                             diagnostic);
-                std::string finishDiagnostic;
+                             diagnostic.diagnostic);
+                JuicerCuda::Failure finishDiagnostic;
                 passed = frame.finish(
                              fixture.stream_opaque(),
                              finishDiagnostic) &&
                          passed;
-                if (!finishDiagnostic.empty()) {
+                if (!finishDiagnostic.diagnostic.empty()) {
                     diagnostic = finishDiagnostic;
                 }
             }
             results.record(
                 std::string("route-boundary/") + metadata.key,
                 passed,
-                diagnostic);
+                diagnostic.diagnostic);
         }
     }
 
@@ -2857,9 +2890,9 @@ namespace {
         constexpr int kWidth = 16;
         constexpr int kHeight = 12;
         CudaPreparedFixture fixture;
-        std::string diagnostic;
-        if (!fixture.initialize(diagnostic)) {
-            throw std::runtime_error(diagnostic);
+        JuicerCuda::Failure diagnostic;
+        if (!fixture.initialize(diagnostic.diagnostic)) {
+            throw std::runtime_error(diagnostic.diagnostic);
         }
         const ScatterHalationControls zeroControls = convert_or_throw(
             ScatterHalationRawControls{true, 0.0, 1.0, 0.0, 1.0});
@@ -2868,7 +2901,7 @@ namespace {
              {Spektrafilm::ScanRoute::NegativeDirectScan,
               Spektrafilm::ScanRoute::NegativePrintScan}) {
             PreparedInputs inputs;
-            diagnostic.clear();
+            diagnostic = {};
             const bool initialized = initialize_route_inputs(
                 route,
                 zeroControls,
@@ -2877,13 +2910,13 @@ namespace {
                 kWidth,
                 kHeight,
                 inputs,
-                diagnostic);
+                diagnostic.diagnostic);
             if (!initialized) {
                 results.record(
                     std::string("zero-work/") +
                         Spektrafilm::scan_route_key(route),
                     false,
-                    diagnostic);
+                    diagnostic.diagnostic);
                 continue;
             }
             auto request = inputs.request({kWidth, kHeight});
@@ -2904,7 +2937,7 @@ namespace {
                 !view.currentCarrier.redSensitive &&
                 !view.currentCarrier.greenSensitive &&
                 !view.currentCarrier.blueSensitive;
-            std::string finishDiagnostic;
+            JuicerCuda::Failure finishDiagnostic;
             passed = frame.finish(
                          fixture.stream_opaque(),
                          finishDiagnostic) &&
@@ -2913,7 +2946,7 @@ namespace {
                 std::string("zero-work/") +
                     Spektrafilm::scan_route_key(route),
                 passed,
-                finishDiagnostic.empty() ? diagnostic : finishDiagnostic);
+                finishDiagnostic.diagnostic.empty() ? diagnostic.diagnostic : finishDiagnostic.diagnostic);
         }
     }
 
@@ -2921,9 +2954,9 @@ namespace {
         constexpr int kWidth = 16;
         constexpr int kHeight = 12;
         CudaPreparedFixture fixture;
-        std::string diagnostic;
-        if (!fixture.initialize(diagnostic)) {
-            throw std::runtime_error(diagnostic);
+        JuicerCuda::Failure diagnostic;
+        if (!fixture.initialize(diagnostic.diagnostic)) {
+            throw std::runtime_error(diagnostic.diagnostic);
         }
         PreparedInputs inputs;
         if (!initialize_prepared_inputs(
@@ -2933,8 +2966,8 @@ namespace {
                 kWidth,
                 kHeight,
                 inputs,
-                diagnostic)) {
-            throw std::runtime_error(diagnostic);
+                diagnostic.diagnostic)) {
+            throw std::runtime_error(diagnostic.diagnostic);
         }
         auto request = inputs.request({kWidth, kHeight});
         auto failedFrame = JuicerProcess::root().prepare_cuda_frame(
@@ -2984,11 +3017,11 @@ namespace {
         const bool postEnqueueAbort =
             enqueueSucceeded && !enqueuedFrame.active() &&
             !enqueuedFrame.scatter_halation_resources().descriptor &&
-            fixture.synchronize(diagnostic);
+            fixture.synchronize(diagnostic.diagnostic);
         results.record(
             "lifecycle/after-enqueue-abort",
             postEnqueueAbort,
-            diagnostic);
+            diagnostic.diagnostic);
 
         auto transitionFrame = JuicerProcess::root().prepare_cuda_frame(
             fixture.context_key(),
@@ -3004,9 +3037,9 @@ namespace {
             upload_and_launch_dedicated(
                 transitionView,
                 static_cast<cudaStream_t>(fixture.stream_opaque()),
-                diagnostic);
+                diagnostic.diagnostic);
         const auto workspace = transitionFrame.workspace_lease();
-        std::string transitionDiagnostic;
+        JuicerCuda::Failure transitionDiagnostic;
         transitioned = transitioned && workspace.active() &&
                        transitionFrame.stage_optical_workspace(
                            workspace,
@@ -3014,7 +3047,7 @@ namespace {
                            transitionDiagnostic) &&
                        transitionFrame.scatter_halation_resources()
                                .currentCarrier.redSensitive == carrierR;
-        std::string finishDiagnostic;
+        JuicerCuda::Failure finishDiagnostic;
         transitioned = transitionFrame.finish(
                            fixture.stream_opaque(),
                            finishDiagnostic) &&
@@ -3022,8 +3055,8 @@ namespace {
         results.record(
             "lifecycle/downstream-scratch-transition",
             transitioned,
-            transitionDiagnostic.empty() ? finishDiagnostic
-                                         : transitionDiagnostic);
+            transitionDiagnostic.diagnostic.empty() ? finishDiagnostic.diagnostic
+                                                    : transitionDiagnostic.diagnostic);
     }
 
     void print_results(const Results& results) {
@@ -3041,7 +3074,7 @@ namespace {
     void report_fatal_and_shutdown(const char* detail) noexcept {
         std::fprintf(stderr, "fatal: %s\n", detail);
         try {
-            JuicerProcess::root().shutdown();
+            fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
         } catch (...) {
             std::fputs("fatal: shutdown failed during error handling\n", stderr);
         }
@@ -3102,7 +3135,6 @@ namespace ScatterHalationValidation {
         snapshot.frameToken.value = identity;
         snapshot.snapshotId = identity;
         snapshot.deviceContextKey = contextKey;
-        snapshot.contextEpoch = 1;
         snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
             _impl->product.payload.uploadCoreHash,
             _impl->product.recipe.dirCouplers.hash,
@@ -3254,7 +3286,9 @@ namespace ScatterHalationValidation {
 } // namespace ScatterHalationValidation
 
 int main(int argc, char** argv) noexcept {
+    JuicerCuda::Owner cudaOwner;
     try {
+        cudaOwner.create(JuicerProcess::data_directory());
         const Arguments arguments = parse_arguments(argc, argv);
         std::filesystem::create_directories(arguments.scratchRoot);
         JuicerProcess::root().ensure_bootstrap();
@@ -3276,6 +3310,8 @@ int main(int argc, char** argv) noexcept {
             run_host_contracts();
         } else if (arguments.caseGroup == "prepared-frame") {
             run_prepared_frame_rows(results);
+        } else if (arguments.caseGroup == "terminal-retention") {
+            run_terminal_retention_rows(results, cudaOwner);
         } else if (arguments.caseGroup == "focused-cuda-reference") {
             ScatterHalationValidation::run_focused_cuda_reference_rows(
                 arguments,
@@ -3316,10 +3352,13 @@ int main(int argc, char** argv) noexcept {
                 false,
                 "selected case group produced no test rows");
         }
-        print_results(results);
-        if (arguments.caseGroup != "prepared-frame") {
-            JuicerProcess::root().shutdown();
+        if (arguments.caseGroup != "terminal-retention") {
+            const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+            std::vector<JuicerCuda::ResourceManager::DeviceContextKey> live;
+            JuicerCuda::ResourceManager::registry_snapshot_context_keys(live);
+            results.record("terminal/native-shutdown-last", closed.category == FJ_STATUS_SUCCESS && live.empty(), "typed shutdown closes the owner after all fixture work");
         }
+        print_results(results);
         return results.failure_count() == 0 ? 0 : 1;
     } catch (const std::exception& error) {
         report_fatal_and_shutdown(error.what());

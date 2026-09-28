@@ -210,6 +210,33 @@ and destination image handles independently and rejects duplicate, unknown,
 or missing releases. Fixture emission is an explicit
 `--emit-reference` maintenance operation and is never part of CTest.
 
+`Ffi.Gpu.CudaRender.negative-direct` and `.negative-print` cover the real C render
+entry, bounded cancellation, native status/exception containment, callback scope,
+context/stream ownership, and successful reuse after abort. Prepared-boundary cases
+compare the C entry with direct execution and immutable captures; see
+[the FFI guide](ffi/README.md#native-render-entry) for the exact evidence boundary.
+
+`Ofx.Gpu.ExecutorFailureOrder` uses isolated test objects for the native executor,
+processor adapter and prepared-frame abort observer. It drives both route failure
+sites through the same native OFX fixture, checking failure classification,
+prepared-frame abort, gate release, deferred DIR message attempt, adapter context
+recovery and fatal OFX result order. It also covers non-DIR filtering,
+percent escaping, failed/throwing host delivery and a failure that requires no
+context retirement. The injected context-loss status exercises the existing
+retirement/latch policy on the fixture's CUDA context; it does not simulate real
+driver loss or establish Resolve recovery acceptance. The hook definitions are
+absent from the product and ordinary processor-reference objects.
+
+`Ofx.Gpu.ResourceFailure.DefectFence` and `Ofx.Gpu.ResourceFailure.GrainUpload`
+extend that isolated build to the CUDA resource owner. They check Runtime event
+creation/recording failures and ordered STBN/Wang upload outcomes through both
+render routes, including exact status/API/code, diagnostic retention, abort and
+recovery order, and latch invalidation. Grain cases cover ordinary failure
+followed by context loss, the reverse order, and failure followed by success,
+with diagnostic wording varied independently of status. These are bounded
+operation failures on a live GPU, not actual driver-loss tests; production
+objects contain none of their injection hooks.
+
 `Ofx.Gpu.AdapterTrace` implements the C variadic parameter calls used by the
 plug-in rather than returning fabricated success. It records current-value and
 time-specific getter calls, authored and nested edit events, admitted exposure,
@@ -225,6 +252,19 @@ fail the case. The trace is written to
 `out/validation/<preset>/ofx/adapter_trace.txt`; it is a generated diagnostic,
 not a checked-in expectation. A test-only observer reads existing private
 adapter/state facts; the installed plug-in gains no callback instrumentation.
+
+`Resource.Gpu.PinnedUpload` exercises the production bounded staging pool in an
+isolated resource-owner build. It proves that a native upload remains outstanding
+while caller storage is overwritten and destroyed, then checks the completed
+device bytes. Only a warmed, explicitly supplied nonblocking stream enters its
+finite gate; no render or absent-stream path is blocked. Other cases cover staging
+capacity, allocation/event/copy failures, typed status, device-allocation rollback,
+reuse, pressure trim, exceptional completion, and normal/proven-loss purge. A
+quarantined upload cannot use a previous completed event as proof of its latest
+copy's completion. The test hooks are absent from production objects. Injected
+errors and a purge-disposition test do not simulate actual driver/context loss.
+Diagnostic-allocation failures also check terminal reservation transitions,
+native-status preservation, and device-ledger rollback before owner teardown.
 
 The `ScatterHalation.Gpu.PreparedFrame` lifetime rows call the actual
 `Root::prepare_cuda_frame` path, complete the production scan-error staging
@@ -397,3 +437,46 @@ output gamut compression on/off. Spatial DIR, visual grain, halation, and
 camera/enlarger diffusion are disabled in these focused route checks; their
 owning suites cover those contracts. No frozen fixtures or private workbench
 files are required.
+
+### CUDA ABI declarations
+
+`Ffi.Host.CudaAbi` compares C11, C++20 and generated Rust layouts and type-checks
+the CUDA C boundary signatures. `Rust.Bridge` includes internal ABI checks. See
+[the FFI guide](ffi/README.md) for bounded commands and pinned binding maintenance.
+
+`Ffi.Host.CudaOwner` covers native owner creation, non-publication on failure,
+duplicate rejection, noncreating teardown, scoped close/reload and consume-once
+retention after a controlled metadata-only shutdown failure without a GPU.
+`Ofx.Host.CudaOwnerUnload` verifies that the real factory's failed close returns
+a fatal status through the OFX entry point and blocks replacement ownership.
+Direct native fixtures explicitly own their runtime; `Root` access only borrows
+it. `Ffi.Host.CudaTerminal.*` covers typed shutdown/destroy, no-retry retention,
+exception containment and admission ordering. `ScatterHalation.Gpu.TerminalRetention`
+checks retained GPU allocations/ledger charges; `Grain.Gpu.ScratchReuse` checks
+instance retirement across exact contexts. See the FFI guide for the ownership
+contract and the remaining host/hardware qualification limits.
+
+`Ffi.Host.PreparedProjection` checks fixed C/native descriptor mappings and
+malformed records. `Resource.Host.ScratchRequest` checks closed DIR construction,
+extent and attachment constraints, and accepted direct/print scratch generations.
+These are product contracts and need no device at runtime.
+
+`Ffi.Gpu.PreparedBoundary.*` links a fixture-only C caller into the native executor.
+It compares all seven processor characterization rows against their immutable
+platform fixtures and requires bit-exact direct/C results. Each case starts a fresh
+process and native owner, calls the C boundary before any other render to exercise
+cold uploads, then repeats with warm resources and calls the direct executor. It
+never resets the CUDA context. Production callbacks now project their immutable
+state into the same admitted native C-boundary render body. The prepared-boundary
+comparisons cover numerical parity; the separate render-contract, owner/terminal,
+and processor-cutover cases cover admission, borrowed-storage expiry, and callback
+lifecycle behavior. See the FFI guide for their scope and remaining host evidence.
+
+`Resource.Gpu.DeferredDestroy.{lock,allocation,storage,ordinary,control}` exercises
+exact-context deferred ownership with three fixture-owned CUDA contexts, three
+real 4 KiB allocations and their ledger charges. The isolated resource object
+injects at the drain/serving-mutex boundary after extraction. A failed batch keeps
+the failed and unprocessed entries charged and discoverable; explicit subsequent
+drains reach zero without disturbing the unrelated context. The storage case
+rejects C++ allocation during extraction and restoration, and ordinary failure
+uses a real context mismatch. Only fixture-created contexts are destroyed.

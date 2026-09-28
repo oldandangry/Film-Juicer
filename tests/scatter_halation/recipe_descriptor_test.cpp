@@ -17,6 +17,7 @@
 #include "SpectralProcessing.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "juicer_cuda_owner.h"
 #include "ProfileCatalog.h"
 #include "ScatterHalation.h"
 #include "SpectralData.h"
@@ -474,12 +475,14 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) noexcept {
+    JuicerCuda::Owner cudaOwner;
     try {
+        cudaOwner.create(JuicerProcess::data_directory());
         gTestExecutablePath = std::filesystem::absolute(argv[0]);
         testing::InitGoogleTest(&argc, argv);
         const int result = RUN_ALL_TESTS();
-        JuicerProcess::shutdown_if_initialized();
-        return result;
+        const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+        return closed.category == FJ_STATUS_SUCCESS ? result : 1;
     } catch (const std::exception& error) {
         std::fprintf(
             stderr,
@@ -490,6 +493,6 @@ int main(int argc, char** argv) noexcept {
             "FATAL scatter/halation recipe test: unknown exception\n",
             stderr);
     }
-    JuicerProcess::shutdown_if_initialized();
+    fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
     return 2;
 }

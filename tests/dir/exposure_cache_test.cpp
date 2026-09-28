@@ -11,11 +11,14 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+
+#include "Cuda/JuicerCudaFailure.h"
 #include "gtest/gtest.h"
 
 #include "SpectralProcessing.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
+#include "juicer_cuda_owner.h"
 
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(const JuicerCuda::DirectPipelineRunParams*, JuicerCuda::SpatialDirBuildRequest);
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(const JuicerCuda::DirectPipelineRunParams*, float*, float*, float*, void*);
@@ -165,20 +168,19 @@ namespace {
             snapshot.frameToken.value = nextIdentity;
             snapshot.snapshotId = nextIdentity++;
             snapshot.deviceContextKey = key;
-            snapshot.contextEpoch = 1;
             snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(
                 inputs.product.payload.uploadCoreHash, inputs.product.recipe.dirCouplers.hash, inputs.product.payload.scannerHash, 0);
-            std::string error;
+            JuicerCuda::Failure error;
             auto frame = JuicerProcess::root().prepare_cuda_frame(key, snapshot, inputs.request(), {}, stream, error);
-            require(frame.active(), error);
+            require(frame.active(), error.diagnostic);
             const auto lease = frame.workspace_lease();
-            require(frame.prepare_spatial_dir_resources(inputs.dir, lease, stream, error), error);
+            require(frame.prepare_spatial_dir_resources(inputs.dir, lease, stream, error), error.diagnostic);
             const auto scratch = frame.spatial_dir_scratch(lease);
             const auto resources = frame.spatial_dir_resources(lease, inputs.dir.hash);
             require(scratch.active && resources.active && scratch.rawCorrectionM && scratch.rawCorrectionC, "Missing three-channel DIR workspace");
             JuicerCuda::FilmPayloadPack payload;
             const auto& recipe = inputs.product.recipe;
-            require(JuicerCuda::pack_film_payloads(recipe.filmRaw, recipe.filmDevelop, recipe.dirCouplers, recipe.densityBounds, frame.focused_resources().film, nullptr, 1.25f, payload, error), error);
+            require(JuicerCuda::pack_film_payloads(recipe.filmRaw, recipe.filmDevelop, recipe.dirCouplers, recipe.densityBounds, frame.focused_resources().film, nullptr, 1.25f, payload, error.diagnostic), error.diagnostic);
             const std::size_t count = static_cast<std::size_t>(inputs.width) * inputs.height;
             const std::size_t bytes = count * sizeof(float);
             DeviceBuffer source(4 * bytes), camera(3 * bytes), fusedCache(3 * bytes), separateCache(3 * bytes), actualDensity(3 * bytes), expectedDensity(3 * bytes), failures(sizeof(int));
@@ -317,7 +319,7 @@ namespace {
                 require_cuda(cudaEventDestroy(start));
                 require_cuda(cudaEventDestroy(stop));
             }
-            require(frame.finish(stream, error), error);
+            require(frame.finish(stream, error), error.diagnostic);
         }
 
         JuicerCuda::ResourceManager::DeviceContextKey key;
@@ -353,9 +355,11 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) {
+    JuicerCuda::Owner cudaOwner;
+    cudaOwner.create(JuicerProcess::data_directory());
     testing::InitGoogleTest(&argc, argv);
     JuicerProcess::root().ensure_bootstrap();
     const int result = RUN_ALL_TESTS();
-    JuicerProcess::shutdown_if_initialized();
-    return result;
+    const auto closed = fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
+    return closed.category == FJ_STATUS_SUCCESS ? result : 1;
 }

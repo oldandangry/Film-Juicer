@@ -804,6 +804,7 @@ namespace OFX {
     bool      isEnabledMetalRender;
     void*     pOpenCLCmdQ;
     void*     pCudaStream;
+    bool      cudaStreamPropertyPresent; // Local carry-through; removed with the S6 support consumer.
     void*     pMetalCmdQ;
 #ifdef OFX_SUPPORTS_OPENGLRENDER
     bool      openGLEnabled;

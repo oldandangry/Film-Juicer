@@ -10,7 +10,9 @@ find_package(Threads REQUIRED)
 
 add_library(juicer_dependencies INTERFACE)
 target_include_directories(juicer_dependencies SYSTEM INTERFACE
-    "${PROJECT_SOURCE_DIR}/third_party"
+    "${PROJECT_SOURCE_DIR}/third_party")
+add_library(juicer_ofx_headers INTERFACE)
+target_include_directories(juicer_ofx_headers SYSTEM INTERFACE
     "${PROJECT_SOURCE_DIR}/third_party/ofxs/OpenFX-1.4/include"
     "${PROJECT_SOURCE_DIR}/third_party/ofxs/Support/include")
 target_link_libraries(juicer_dependencies INTERFACE Threads::Threads ${CMAKE_DL_LIBS})
@@ -31,7 +33,7 @@ add_library(juicer_ofxs OBJECT
     "${PROJECT_SOURCE_DIR}/third_party/ofxs/Support/Library/ofxsPropertyValidation.cpp")
 set_source_files_properties(third_party/ofxs/Support/Library/ofxsImageEffect.cpp
     PROPERTIES COMPILE_DEFINITIONS DEBUG_BUILD)
-target_link_libraries(juicer_ofxs PUBLIC juicer_dependencies)
+target_link_libraries(juicer_ofxs PUBLIC juicer_dependencies juicer_ofx_headers)
 if(WIN32)
     target_link_libraries(juicer_ofxs PRIVATE juicer_settings)
 else()

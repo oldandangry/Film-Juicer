@@ -24,6 +24,8 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include "Cuda/JuicerCudaFailure.h"
+
 #include "Cuda/Diffusion/JuicerCudaDiffusion.h"
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
 #include "Cuda/JuicerCudaPayloads.h"
@@ -1314,7 +1316,7 @@ namespace {
         CudaStream stream;
         const auto contextKey = current_context_key(0);
         auto request = inputs.request({row.width, row.height});
-        std::string diagnostic;
+        JuicerCuda::Failure diagnostic;
         auto frame = JuicerProcess::root().prepare_cuda_frame(
             contextKey,
             inputs.submission_snapshot(contextKey, identity),
@@ -1323,7 +1325,7 @@ namespace {
             stream.get(),
             diagnostic);
         if (!frame.active()) {
-            throw std::runtime_error(diagnostic);
+            throw std::runtime_error(diagnostic.diagnostic);
         }
         auto stagePlanes = run_camera_diffusion_from_source(
             frame,
@@ -1374,7 +1376,7 @@ namespace {
             expected,
             candidate,
             comparisonDetail);
-        std::string finishDiagnostic;
+        JuicerCuda::Failure finishDiagnostic;
         const bool finished = frame.finish(stream.get(), finishDiagnostic);
         results.record(
             std::string("captured-carrier/") +
@@ -1382,7 +1384,7 @@ namespace {
             comparisonPassed && finished,
             "captured_e0_reused_sample_identically=1 seed_to_e0_max_delta=" +
                 std::to_string(capturedSourceMaximumDelta) + " " +
-                comparisonDetail + " " + finishDiagnostic);
+                comparisonDetail + " " + finishDiagnostic.diagnostic);
         (void)binary;
     }
 
@@ -1520,7 +1522,7 @@ namespace ScatterHalationValidation {
             const auto contextKey = current_context_key(arguments.deviceIndex);
             auto request = inputs.request(
                 {arguments.performanceWidth, arguments.performanceHeight});
-            std::string diagnostic;
+            JuicerCuda::Failure diagnostic;
             auto frame = JuicerProcess::root().prepare_cuda_frame(
                 contextKey,
                 inputs.submission_snapshot(contextKey, 0x50455246),
@@ -1529,7 +1531,7 @@ namespace ScatterHalationValidation {
                 stream.get(),
                 diagnostic);
             if (!frame.active()) {
-                throw std::runtime_error(diagnostic);
+                throw std::runtime_error(diagnostic.diagnostic);
             }
             const std::size_t elements =
                 static_cast<std::size_t>(arguments.performanceWidth) *
@@ -1673,13 +1675,13 @@ namespace ScatterHalationValidation {
                 {"carrierBytes", active ? 3 * planeBytes : 0},
                 {"admittedBytes", active ? 5 * planeBytes : 0}};
             write_performance_report(arguments, report);
-            std::string finishDiagnostic;
+            JuicerCuda::Failure finishDiagnostic;
             const bool finished = frame.finish(stream.get(), finishDiagnostic);
             results.record(
                 "performance/" + arguments.performanceMode + "/" +
                     std::to_string(arguments.performanceWidth),
                 finished,
-                finishDiagnostic);
+                finishDiagnostic.diagnostic);
         } catch (const std::exception& error) {
             results.record("performance/fatal", false, error.what());
         }

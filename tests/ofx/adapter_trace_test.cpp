@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -41,6 +43,7 @@
 #include "JuicerState.h"
 #include "ParamNames.h"
 #include "ProcessRoot.h"
+#include "juicer_cuda_owner.h"
 #include "SpectralProcessing.h"
 #include "ofxMemory.h"
 #include "ofxMultiThread.h"
@@ -823,6 +826,59 @@ namespace {
             effect.changedParam(arguments, name);
         }
 
+        void render_stream_cases(OfxPlugin& plugin) {
+            if (cudaSetDevice(0) != cudaSuccess) {
+                throw std::runtime_error("stream test CUDA initialization failed");
+            }
+            DeviceFrame frame;
+            std::uint64_t signature = 0;
+            for (int streamCase = 0; streamCase < 3; ++streamCase) {
+                const bool present = streamCase != 2;
+                cudaStream_t stream = streamCase == 0 ? frame.stream() : nullptr;
+                for (bool delayed : {false, true}) {
+                    frame.reset();
+                    configure_image_properties(_source.imageProperties, frame.source(), "stream-source");
+                    configure_image_properties(_output.imageProperties, frame.destination(), "stream-output");
+                    PropertyBag args;
+                    args.doubles[kOfxPropTime] = {0.0};
+                    args.doubles[kOfxImageEffectPropRenderScale] = {1.0, 1.0};
+                    args.ints[kOfxImageEffectPropRenderWindow] = {0, 0, DeviceFrame::kWidth, DeviceFrame::kHeight};
+                    args.ints[kOfxImageEffectPropCudaEnabled] = {1};
+                    args.strings[kOfxImageEffectPropFieldToRender] = {kOfxImageFieldNone};
+                    if (present) {
+                        args.pointers[kOfxImageEffectPropCudaStream] = {stream};
+                    }
+                    begin_image_audit();
+                    _observeStreamRelease = delayed;
+                    _streamWasSupplied = present;
+                    _releaseStream = stream;
+                    _streamReleaseMatched = true;
+                    _pendingStreamReleases = 0;
+                    if (delayed && cudaLaunchHostFunc(stream, [](void*) {
+                                       std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                                   },
+                                                      nullptr) != cudaSuccess) {
+                        throw std::runtime_error("stream delay enqueue failed");
+                    }
+                    const OfxStatus result = plugin.mainEntry(kOfxImageEffectActionRender, effect_handle(), reinterpret_cast<OfxPropertySetHandle>(&args), nullptr);
+                    _observeStreamRelease = false;
+                    const int releases = finish_image_audit("stream-contract");
+                    if (cudaStreamSynchronize(stream) != cudaSuccess || result != kOfxStatOK || releases != 2) {
+                        throw std::runtime_error("stream action or lease completion failed: " + std::to_string(streamCase));
+                    }
+                    if (!_streamReleaseMatched) {
+                        throw std::runtime_error("stream release completion contract failed: " + std::to_string(streamCase));
+                    }
+                    const auto output = frame.collect_signature(true);
+                    if (signature && output != signature) {
+                        throw std::runtime_error("stream presence changed output");
+                    }
+                    signature = output;
+                    _trace.push_back("STREAM_CASE case=" + std::to_string(streamCase) + " delayed=" + std::to_string(delayed) + " pending_releases=" + std::to_string(_pendingStreamReleases) + " passed=1");
+                }
+            }
+        }
+
         struct RenderResult {
             bool succeeded = false;
             bool rejected = false;
@@ -861,6 +917,7 @@ namespace {
             arguments.renderScale = {1.0, 1.0};
             arguments.isEnabledCudaRender = true;
             arguments.pCudaStream = frame.stream();
+            arguments.cudaStreamPropertyPresent = true;
             try {
                 effect.render(arguments);
                 result.succeeded = true;
@@ -1769,6 +1826,12 @@ namespace {
 
         static OfxStatus clip_release_image(OfxPropertySetHandle image) {
             NativeHost& host = active();
+            if (host._observeStreamRelease) {
+                const auto completion = cudaStreamQuery(host._releaseStream);
+                // A supplied stream may already have completed; absence must complete before either lease is released.
+                host._streamReleaseMatched &= completion == cudaSuccess || (host._streamWasSupplied && completion == cudaErrorNotReady);
+                host._pendingStreamReleases += completion == cudaErrorNotReady ? 1 : 0;
+            }
             host.record_image_release(image);
             return kOfxStatOK;
         }
@@ -2158,6 +2221,11 @@ namespace {
         std::map<OfxPropertySetHandle, ImageLeaseRecord> _imageLeases;
         std::string _imageAuditError;
         bool _imageAuditActive = false;
+        bool _observeStreamRelease = false;
+        bool _streamWasSupplied = false;
+        bool _streamReleaseMatched = true;
+        int _pendingStreamReleases = 0;
+        cudaStream_t _releaseStream = nullptr;
         std::vector<std::string> _trace;
         std::uint64_t _currentGetCount = 0;
         std::uint64_t _atTimeGetCount = 0;
@@ -2434,7 +2502,8 @@ namespace {
     void run_loaded_module_callback(
         NativeHost& host,
         const std::filesystem::path& modulePath,
-        const std::filesystem::path& tracePath) {
+        const std::filesystem::path& tracePath,
+        bool streamContract = false) {
         using GetPluginCount = int (*)();
         using GetPlugin = OfxPlugin* (*)(int);
 
@@ -2479,6 +2548,9 @@ namespace {
                     nullptr) == kOfxStatOK,
                 "loaded OFX module rejected the create-instance action");
             instanceCreated = true;
+            if (streamContract) {
+                host.render_stream_cases(*plugin);
+            }
             const OfxStatus destroyStatus = plugin->mainEntry(
                 kOfxActionDestroyInstance,
                 host.effect_handle(),
@@ -2522,11 +2594,12 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-level catches map all fixture failures.
+    JuicerCuda::Owner cudaOwner;
     try {
-        if (argc == 5 && std::string_view(argv[1]) == "--loaded-module" &&
+        if (argc == 5 && (std::string_view(argv[1]) == "--loaded-module" || std::string_view(argv[1]) == "--stream-contract") &&
             std::string_view(argv[3]) == "--trace-output") {
             NativeHost host;
-            run_loaded_module_callback(host, argv[2], argv[4]);
+            run_loaded_module_callback(host, argv[2], argv[4], std::string_view(argv[1]) == "--stream-contract");
             return 0;
         }
         if (argc != 3 || std::string_view(argv[1]) != "--trace-output") {
@@ -2535,6 +2608,7 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                 "--loaded-module MODULE --trace-output PATH");
         }
         const std::filesystem::path tracePath = argv[2];
+        cudaOwner.create(JuicerProcess::data_directory());
         NativeHost host;
         if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess) {
             throw std::runtime_error("CUDA initialization failed");
@@ -3052,7 +3126,8 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                         host.at_time_get_count() == 0,
                     "adapter getter selection was not current-value-only");
         }
-        JuicerProcess::root().shutdown();
+        require(fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr).category == FJ_STATUS_SUCCESS,
+                "adapter terminal shutdown failed");
         host.write_trace(tracePath);
         std::cout << "PASS adapter/first-render-current-value\n"
                   << "PASS adapter/two-authored-times\n"
@@ -3069,11 +3144,11 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL adapter trace: " << error.what() << '\n';
-        JuicerProcess::root().shutdown();
+        fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
         return 1;
     } catch (...) {
         std::cerr << "FAIL adapter trace: unknown exception\n";
-        JuicerProcess::root().shutdown();
+        fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr);
         return 1;
     }
 }

@@ -2124,6 +2124,9 @@ namespace OFX {
       args.isEnabledCudaRender   = inArgs.propGetInt(kOfxImageEffectPropCudaEnabled, false) != 0;
       args.isEnabledMetalRender  = inArgs.propGetInt(kOfxImageEffectPropMetalEnabled, false) != 0;
       args.pOpenCLCmdQ           = inArgs.propGetPointer(kOfxImageEffectPropOpenCLCommandQueue, false);
+      int cudaStreamDimension = 0;
+      args.cudaStreamPropertyPresent =
+        Private::gPropSuite->propGetDimension(inArgs.propSetHandle(), kOfxImageEffectPropCudaStream, &cudaStreamDimension) == kOfxStatOK && cudaStreamDimension > 0;
       args.pCudaStream           = inArgs.propGetPointer(kOfxImageEffectPropCudaStream, false);
       args.pMetalCmdQ            = inArgs.propGetPointer(kOfxImageEffectPropMetalCommandQueue, false);
 

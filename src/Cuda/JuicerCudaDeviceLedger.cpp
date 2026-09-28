@@ -198,43 +198,44 @@ namespace JuicerCuda {
     bool DeviceAllocationLedger::reserve(
         const DeviceReservationRequest& request,
         DeviceByteReservation& outReservation,
-        std::string& outError) {
-        outError.clear();
+        Failure& outError) {
+        outError = {};
         if (outReservation.active()) {
-            return fail(outError, "output_reservation_not_empty");
+            return fail(outError.diagnostic, "output_reservation_not_empty");
         }
         if (request.bytes == 0) {
-            return fail(outError, "zero_byte_reservation");
+            return fail(outError.diagnostic, "zero_byte_reservation");
         }
         if (!context_identity_is_valid(
                 request.contextKey,
                 request.contextEpoch,
                 _deviceId)) {
-            return fail(outError, "invalid_allocation_identity");
+            return fail(outError.diagnostic, "invalid_allocation_identity");
         }
 
         std::shared_ptr<DeviceAllocationLedger> self;
         try {
             self = shared_from_this();
         } catch (const std::bad_weak_ptr&) {
-            return fail(outError, "ledger_not_shared_owned");
+            return fail(outError.diagnostic, "ledger_not_shared_owned");
         }
 
         std::scoped_lock lock(_mutex);
         if (_capBytes == 0 || _deviceBudgetBytes == 0) {
-            return fail(outError, "device_cap_not_bound");
+            return fail(outError.diagnostic, "device_cap_not_bound");
         }
         std::uint64_t charged = 0;
         if (!checked_add(_reservedBytes, _committedBytes, charged) ||
             !checked_add(charged, _retiringBytes, charged) ||
             !checked_add(charged, request.bytes, charged)) {
-            return fail(outError, "device_charge_overflow");
+            return fail(outError.diagnostic, "device_charge_overflow");
         }
         if (charged >= _capBytes) {
-            return fail(outError, "device_cap_exceeded");
+            outError.status = {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0};
+            return fail(outError.diagnostic, "device_cap_exceeded");
         }
         if (_nextRecordId == 0) {
-            return fail(outError, "record_id_exhausted");
+            return fail(outError.diagnostic, "record_id_exhausted");
         }
         const std::uint64_t recordId = _nextRecordId;
         Record record{};
@@ -244,10 +245,10 @@ namespace JuicerCuda {
             record.bytes = request.bytes;
             const auto inserted = _records.emplace(recordId, record);
             if (!inserted.second) {
-                return fail(outError, "record_id_collision");
+                return fail(outError.diagnostic, "record_id_collision");
             }
         } catch (const std::bad_alloc&) {
-            return fail(outError, "record_allocation_failed");
+            return fail(outError.diagnostic, "record_allocation_failed");
         }
         _nextRecordId += 1;
         _reservedBytes += request.bytes;

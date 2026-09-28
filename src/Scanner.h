@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -51,6 +52,27 @@ namespace Scanner {
         const Spectral::SpectralTables* tables = nullptr;
         ScannerDensityRange range;
     };
+
+    struct SpectralTablesView {
+        std::span<const float> epsC;
+        std::span<const float> epsM;
+        std::span<const float> epsY;
+        std::span<const float> Ax;
+        std::span<const float> Ay;
+        std::span<const float> Az;
+        std::span<const float> baseDensityMin;
+        int K = 0;
+        float invYn = 1.0f;
+        bool hasBaseline = false;
+    };
+
+    struct MediumView {
+        ScannerMedium medium = ScannerMedium::Negative;
+        SpectralTablesView tables;
+        ScannerDensityRange range;
+    };
+
+    SpectralTablesView spectral_tables_view(const Spectral::SpectralTables& tables);
 
     enum class ScannedMediumKind : std::uint8_t {
         Film,
@@ -173,6 +195,7 @@ namespace Scanner {
     // - Converts dyes -> XYZ under the medium's spectral tables
     // - Applies log10(max(xyz, 0) + 1e-10)
     void spectral_to_log_xyz(const ScannerMediumRuntime& medium, const double D_norm[3], double logXYZ[3]);
+    void spectral_to_log_xyz(const MediumView& medium, const double D_norm[3], double logXYZ[3]);
 
     // Canonical normalization for LUT coordinates (mirrors agx _normalize_* semantics).
     void normalize_density(const ScannerMediumRuntime& medium, const float D_cmy[3], double D_norm[3]);

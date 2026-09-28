@@ -42,6 +42,7 @@
     "docs/"
   ],
   "generatedPaths": [
+    "rust/film-juicer-plugin/src/cuda/sys.rs",
     "src/GeneratedColorSpaces.cpp",
     "src/GeneratedColorSpaces.h"
   ],

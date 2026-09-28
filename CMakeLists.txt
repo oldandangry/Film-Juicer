@@ -51,7 +51,8 @@ include(cmake/JuicerSources.cmake)
 include(cmake/JuicerRust.cmake)
 
 add_library(juicer_settings INTERFACE)
-target_include_directories(juicer_settings INTERFACE "${PROJECT_SOURCE_DIR}/src")
+target_include_directories(juicer_settings INTERFACE
+    "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/native")
 target_link_libraries(juicer_settings INTERFACE juicer_dependencies)
 target_compile_definitions(juicer_settings INTERFACE
     JUICER_DIAGNOSTICS_COMPILED=$<IF:$<CONFIG:Debug>,1,0>)
@@ -83,10 +84,20 @@ else()
         $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Release>>:-O3;-Xptxas=-O3>)
 endif()
 
-add_library(juicer_core STATIC ${JUICER_SOURCES})
-target_link_libraries(juicer_core PUBLIC juicer_settings)
-target_include_directories(juicer_core PRIVATE "${PROJECT_SOURCE_DIR}/native")
-target_link_libraries(juicer_core PUBLIC film_juicer_rust)
+add_library(juicer_native OBJECT ${JUICER_NATIVE_SOURCES})
+target_link_libraries(juicer_native PRIVATE juicer_settings)
+add_library(juicer_host OBJECT ${JUICER_HOST_SOURCES})
+target_link_libraries(juicer_host PRIVATE juicer_settings juicer_ofx_headers)
+add_library(juicer_adapter OBJECT ${JUICER_ADAPTER_SOURCES})
+target_link_libraries(juicer_adapter PRIVATE juicer_settings juicer_ofx_headers)
+
+# Preserve one aggregate archive for current product/test links and isolated
+# test-hook object replacement, without compiling a second CUDA implementation.
+add_library(juicer_core STATIC
+    $<TARGET_OBJECTS:juicer_native>
+    $<TARGET_OBJECTS:juicer_host>
+    $<TARGET_OBJECTS:juicer_adapter>)
+target_link_libraries(juicer_core PUBLIC juicer_settings juicer_ofx_headers film_juicer_rust)
 set_target_properties(juicer_core PROPERTIES LINKER_LANGUAGE CXX)
 
 add_library(juicer MODULE src/main.cpp)

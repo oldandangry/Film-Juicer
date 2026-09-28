@@ -52,6 +52,7 @@
         "rhs": "Linux"
       },
       "cacheVariables": {
+        "CMAKE_C_COMPILER": "/usr/bin/gcc-13",
         "CMAKE_CXX_COMPILER": "/usr/bin/g++-13",
         "CMAKE_CUDA_HOST_COMPILER": "/usr/bin/g++-13"
       }
