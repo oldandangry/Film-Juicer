@@ -5,5 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
+
 [lints]
 workspace = true
