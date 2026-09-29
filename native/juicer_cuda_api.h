@@ -36,12 +36,13 @@ typedef struct FjStatus {
     int32_t native_code;
 } FjStatus;
 
-/* Render-only provenance, independent of diagnostic wording or truncation.
+/* A previous submission reported DIR receiver arithmetic failure.
+ * Render-only provenance, independent of diagnostic wording or truncation.
  * All unassigned bits are reserved and returned as zero. */
-#define FJ_RENDER_DEFERRED_SCAN_ERROR 1U
+#define FJ_RENDER_DEFERRED_DIR_ERROR 1U
 typedef struct FjRenderOutcome {
     FjStatus status;
-    uint32_t flags; /* FJ_RENDER_*; deferred scan failure permits host filtering. */
+    uint32_t flags; /* FJ_RENDER_*; deferred DIR failure requests a host message. */
 } FjRenderOutcome;
 
 typedef struct FjErrorBuffer {

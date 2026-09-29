@@ -501,7 +501,7 @@ FjRenderOutcome JuicerCuda::NativeCall::render(
         return result({FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, "");
     } catch (JuicerCuda::ExecutionFailure& failure) {
         diagnostic = std::move(failure.failure.diagnostic);
-        return {failure.failure.status, failure.deferredScanError ? FJ_RENDER_DEFERRED_SCAN_ERROR : 0U};
+        return {failure.failure.status, failure.deferredDirError ? FJ_RENDER_DEFERRED_DIR_ERROR : 0U};
     } catch (const std::bad_alloc&) {
         return result({FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "CUDA render allocation failed");
     } catch (const std::exception& detail) {

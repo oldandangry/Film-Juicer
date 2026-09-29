@@ -62,6 +62,7 @@ namespace JuicerCuda::ExecutorTest {
         FjStatus status{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
         const char* stage = nullptr;
         Delivery delivery = Delivery::Success;
+        JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult scanResult = JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Failed;
         bool overflow = false;
         bool failureStageMatches = false;
         bool failureStatusMatches = false;
@@ -139,13 +140,14 @@ namespace JuicerCuda::ExecutorTest {
         return true;
     }
 
-    bool inject_scan_error(Failure& failure) {
+    bool inject_scan_error(Failure& failure, JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult& result) {
         if (!observation || !observation->armed) {
             return false;
         }
         observation->armed = false;
         failure.diagnostic = observation->diagnostic;
         failure.status = observation->status;
+        result = observation->scanResult;
         observation->record(Event::Injected);
         return true;
     }
@@ -968,7 +970,7 @@ namespace {
 namespace {
     void check_failure_order(const Case& test,
                              JuicerCuda::ExecutorTest::Delivery delivery,
-                             bool dirDiagnostic,
+                             bool deferredDirFailure,
                              FjStatus failureStatus,
                              const char* wording) {
         const bool contextLoss = failureStatus.category == FJ_STATUS_CONTEXT_LOSS;
@@ -977,6 +979,9 @@ namespace {
         observation.delivery = delivery;
         observation.status = failureStatus;
         observation.diagnostic = wording;
+        observation.scanResult = deferredDirFailure
+                                     ? JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::DeferredDirFailure
+                                     : JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Failed;
         observation.stage = Spektrafilm::scan_route_is_print(test.route)
                                 ? "print_scan_error_stage"
                                 : "direct_scan_error_stage";
@@ -994,7 +999,7 @@ namespace {
         }
         JuicerCuda::ExecutorTest::observation = nullptr;
         std::vector<Event> expected{Event::Injected, Event::Classified, Event::FrameAborted};
-        if (dirDiagnostic) {
+        if (deferredDirFailure) {
             expected.push_back(Event::Message);
         }
         expected.insert(expected.end(), {Event::RecoveryStarted, Event::RecoveryEnded, Event::FatalMapped});
@@ -1003,11 +1008,11 @@ namespace {
             !observation.failureStageMatches || !observation.failureStatusMatches ||
             observation.nativeRecoveryPending != contextLoss ||
             observation.adapterRecoveryPending != contextLoss ||
-            (dirDiagnostic && !observation.messageMatches) ||
+            (deferredDirFailure && !observation.messageMatches) ||
             state.submissionSnapshotLatchValid == contextLoss) {
             throw std::runtime_error(std::string(test.name) + ": executor failure order or host mapping changed");
         }
-        std::cout << test.name << " dir=" << dirDiagnostic << " context_loss=" << contextLoss
+        std::cout << test.name << " dir=" << deferredDirFailure << " context_loss=" << contextLoss
                   << " delivery=" << static_cast<int>(delivery)
                   << " classify/abort/message/recovery/fatal order passed\n";
     }
@@ -1019,16 +1024,19 @@ namespace {
             for (const auto delivery : {JuicerCuda::ExecutorTest::Delivery::Success,
                                         JuicerCuda::ExecutorTest::Delivery::Failure,
                                         JuicerCuda::ExecutorTest::Delivery::Throw}) {
-                check_failure_order(test, delivery, true, JuicerCuda::runtime_failure_status(cudaErrorContextIsDestroyed), "test component=dir 100% renamed diagnostic");
+                check_failure_order(test, delivery, true, JuicerCuda::runtime_failure_status(cudaErrorContextIsDestroyed), "renamed receiver arithmetic failure 100%");
             }
             for (const auto status : {JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED),
                                       JuicerCuda::runtime_failure_status(cudaErrorDeviceUninitialized),
                                       JuicerCuda::runtime_failure_status(cudaErrorInvalidValue),
                                       FjStatus{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}}) {
-                check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, true, status, "test component=dir 100% device lost out of memory");
+                for (const char* wording : {"test component=dir 100% device lost out of memory", "renamed arithmetic failure 100%", ""}) {
+                    check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, true, status, wording);
+                }
             }
             check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, false, JuicerCuda::driver_failure_status(CUDA_ERROR_CONTEXT_IS_DESTROYED), "test component=scanner 100% renamed diagnostic");
-            const std::string longDiagnostic = std::string(8192, 'x') + " component=dir 100% complete diagnostic";
+            check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, false, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "non-DIR failure mentioning component=dir 100%");
+            const std::string longDiagnostic = std::string(8192, 'x') + " 100% complete diagnostic";
             check_failure_order(test, JuicerCuda::ExecutorTest::Delivery::Success, true, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, longDiagnostic.c_str());
         }
     }

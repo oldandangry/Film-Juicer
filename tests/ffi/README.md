@@ -256,10 +256,12 @@ same render body, validation, decoder and executor. Reentry remains rejected;
 there is no runtime selector or adapter-to-executor alternative.
 
 `FjRenderOutcome` contains the existing 12-byte `FjStatus` followed by a 32-bit
-flags field (size 16, alignment 4). Only `FJ_RENDER_DEFERRED_SCAN_ERROR` is
-assigned. Native failure provenance supplies that flag, including when the C
-error buffer has zero capacity; all other bits remain zero. The adapter delivers
-the existing filtered, percent-safe DIR message only after releasing admission.
+flags field (size 16, alignment 4). Only `FJ_RENDER_DEFERRED_DIR_ERROR` is
+assigned. The native scan readback's DIR failure bit supplies that provenance;
+ordinary scanner RGB, polling and initialization failures do not set it. The
+flag survives a zero-capacity C error buffer; all other bits remain zero. The
+adapter selects its percent-safe DIR message solely from that flag, only after
+releasing admission. Diagnostic wording never selects message delivery.
 It retains the full native diagnostic string. The C export alone applies the
 caller buffer's truncation contract. Pending context-loss detail retains the
 first native failure and stage; Root recovery happens after admission release.
@@ -271,8 +273,10 @@ second context on the same device, same-allocation disjoint image regions, and
 abort before/after preparation, including a throwing abort suite. Its constant
 input geometry check disables glare and supplements the unchanged independent
 processor pixel fixtures. `Ofx.Gpu.ExecutorFailureOrder` includes diagnostics
-longer than 8 KiB; nondeferred grain failures containing `component=dir` must not
-trigger a host message.
+longer than 8 KiB, empty messages, and DIR messages without `component=dir`.
+Ordinary scan-stage and grain failures containing `component=dir` must not
+trigger a host message. `Scanner.Gpu.OutputEncoding` covers real readback bits
+for scanner-only, DIR-only and combined failures on all four routes.
 
 The render-contract fixture checks the new flag independently of status and
 text capacity and checks shared admission with real reentry rejection. Its

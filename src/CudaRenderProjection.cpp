@@ -576,7 +576,7 @@ FjRenderOutcome JuicerCuda::project_and_render(
         return call.render(&context, &rawFrame, &submission, &prepared, abortCallback, recovery, diagnostic);
     } catch (ExecutionFailure& failure) {
         diagnostic = std::move(failure.failure.diagnostic);
-        return {failure.failure.status, failure.deferredScanError ? FJ_RENDER_DEFERRED_SCAN_ERROR : 0U};
+        return {failure.failure.status, failure.deferredDirError ? FJ_RENDER_DEFERRED_DIR_ERROR : 0U};
     } catch (const std::bad_alloc&) {
         diagnostic = "CUDA render allocation failed";
         return {{FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, 0};
