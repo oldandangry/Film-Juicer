@@ -183,14 +183,9 @@ impl fmt::Display for CatalogError {
 }
 impl std::error::Error for CatalogError {}
 
-fn decode_json(bytes: &[u8], strict: bool) -> Result<Value, serde_json::Error> {
+fn decode_json(bytes: &[u8]) -> Result<Value, serde_json::Error> {
     let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
-    let mut decoder = serde_json::Deserializer::from_slice(bytes);
-    let root = Value::deserialize(&mut decoder)?;
-    if strict {
-        decoder.end()?;
-    }
-    Ok(root)
+    serde_json::from_slice(bytes)
 }
 
 fn parse_support(value: &str) -> Option<Support> {
@@ -217,8 +212,7 @@ fn parse_polarity(value: &str) -> Option<Polarity> {
 
 fn load_catalog_entry(path: &Path) -> Result<Option<CatalogEntry>, CatalogEntryErrorKind> {
     let bytes = fs::read(path).map_err(CatalogEntryErrorKind::Read)?;
-    // C++ catalog extraction reads one JSON value; selected loading is strict.
-    let root = decode_json(&bytes, false).map_err(CatalogEntryErrorKind::Json)?;
+    let root = decode_json(&bytes).map_err(CatalogEntryErrorKind::Json)?;
     let shaped = root
         .get("data")
         .and_then(Value::as_object)
@@ -842,8 +836,7 @@ fn load_source(path: &Path, role: Role) -> Result<ProfileSource, ProfileError> {
         kind,
     };
     let bytes = fs::read(path).map_err(|error| file_error(ProfileErrorKind::Read(error)))?;
-    let root =
-        decode_json(&bytes, true).map_err(|error| file_error(ProfileErrorKind::Json(error)))?;
+    let root = decode_json(&bytes).map_err(|error| file_error(ProfileErrorKind::Json(error)))?;
     read_source(&root, role).map_err(|error| ProfileError {
         path: path.to_owned(),
         role,

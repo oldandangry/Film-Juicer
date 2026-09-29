@@ -5,7 +5,7 @@
 //! Counts, representative bits and FNV-1a of every decoded LE f32 byte are
 //! independent C++ expectations. Tests read only tracked Resources and literals.
 //! Approved exceptions: shared decimal CSV conversion keeps underflow zeros and
-//! skips hex fields; NPY construction rejects malformed headers/versions/sizes.
+//! skips hex fields; NPY accepts only the three exact bundled layouts/contents.
 
 #![forbid(unsafe_code)]
 
@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use film_juicer_core::data_io::{
-    HeaderError, NpyArray, NpyByteOrder, NpyDtype, ReadError, ReadErrorKind, ReadPart,
-    load_csv_pairs, load_csv_triplets, load_mallett_basis, load_spectra_lut,
+    ReadError, ReadErrorKind, SpectraLutAsset, load_csv_pairs, load_csv_triplets,
+    load_mallett_basis, load_spectra_lut,
 };
 
 fn repository() -> PathBuf {
@@ -42,31 +42,11 @@ impl Directory {
         fs::write(&path, bytes).unwrap();
         path
     }
-    fn lut(&self, header: &str, payload: &[u8]) -> Result<NpyArray, ReadError> {
-        load_spectra_lut(self.write(npy([1, 0], header, payload)))
-    }
 }
 impl Drop for Directory {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.0).expect("remove data I/O test directory");
     }
-}
-
-fn npy(version: [u8; 2], header: &str, payload: &[u8]) -> Vec<u8> {
-    let mut bytes = b"\x93NUMPY".to_vec();
-    bytes.extend(version);
-    if version[0] == 1 {
-        bytes.extend(u16::try_from(header.len()).unwrap().to_le_bytes());
-    } else {
-        bytes.extend(u32::try_from(header.len()).unwrap().to_le_bytes());
-    }
-    bytes.extend(header.as_bytes());
-    bytes.extend(payload);
-    bytes
-}
-
-fn header(dtype: &str, shape: &str) -> String {
-    format!("{{'descr': '{dtype}', 'fortran_order': False, 'shape': {shape}, }}\n")
 }
 
 fn identity(values: impl IntoIterator<Item = f32>) -> u64 {
@@ -78,14 +58,12 @@ fn identity(values: impl IntoIterator<Item = f32>) -> u64 {
         })
 }
 
-fn bits(values: &[f32]) -> Vec<u32> {
-    values.iter().map(|v| v.to_bits()).collect()
-}
-fn assert_error(result: Result<NpyArray, ReadError>, expected: ReadErrorKind) {
-    let error = result.unwrap_err();
-    assert!(error.path.ends_with("input"));
-    assert_eq!(error.kind, expected);
-    assert!(error.to_string().contains("input"));
+fn assert_invalid(error: ReadError, path: &Path, asset: &str) {
+    assert_eq!(error.path, path);
+    assert!(matches!(error.kind, ReadErrorKind::InvalidNpy { expected, .. } if expected == asset));
+    let diagnostic = error.to_string();
+    assert!(diagnostic.contains(&path.display().to_string()));
+    assert!(diagnostic.contains(asset));
 }
 
 type BundleCase = (&'static str, usize, u64, &'static [(usize, u32)]);
@@ -238,41 +216,23 @@ fn bundled_npy_bits() {
     for &(resource, _, hash, samples) in &BUNDLE[8..] {
         let path = repository().join("Resources").join(resource);
         let basis = resource.ends_with("mallett2019_basis.npy");
-        let array = if basis {
-            load_mallett_basis(path)
+        let values = if basis {
+            load_mallett_basis(path).unwrap().as_flattened().to_vec()
         } else {
-            load_spectra_lut(path)
-        }
-        .unwrap();
-        assert_eq!(array.version(), [1, 0]);
-        assert_eq!(array.byte_order(), NpyByteOrder::Little);
-        assert_eq!(
-            array.dtype(),
-            if basis { NpyDtype::F32 } else { NpyDtype::F16 }
-        );
-        assert_eq!(
-            array.shape(),
-            if basis {
-                &[81, 3][..]
+            let asset = if resource.contains("arctic") {
+                SpectraLutAsset::Arctic
             } else {
-                &[192, 192, 81][..]
-            }
-        );
-        assert_eq!(array.source_shape(), array.shape());
-        assert_eq!(array.values().len(), if basis { 243 } else { 2_985_984 });
-        assert_eq!(identity(array.values().iter().copied()), hash, "{resource}");
+                SpectraLutAsset::Hanatos
+            };
+            load_spectra_lut(path, asset).unwrap()
+        };
+        assert_eq!(values.len(), if basis { 243 } else { 2_985_984 });
+        assert_eq!(identity(values.iter().copied()), hash, "{resource}");
         for &(index, expected) in samples {
-            assert_eq!(
-                array.values()[index].to_bits(),
-                expected,
-                "{resource}[{index}]"
-            );
+            assert_eq!(values[index].to_bits(), expected, "{resource}[{index}]");
         }
         if resource.contains("arctic") {
-            assert_eq!(
-                array.values().iter().copied().fold(0.0_f32, f32::max),
-                41.0625
-            );
+            assert_eq!(values.iter().copied().fold(0.0_f32, f32::max), 41.0625);
         }
     }
 }
@@ -420,7 +380,7 @@ fn missing_files() {
     for error in [
         load_csv_pairs(&path).unwrap_err(),
         load_csv_triplets(&path).unwrap_err(),
-        load_spectra_lut(&path).unwrap_err(),
+        load_spectra_lut(&path, SpectraLutAsset::Hanatos).unwrap_err(),
         load_mallett_basis(&path).unwrap_err(),
     ] {
         assert_eq!(error.path, path);
@@ -432,335 +392,76 @@ fn missing_files() {
 }
 
 #[test]
-fn half_conversion_bits() {
+fn rejects_changed_npy_prefixes() {
     let directory = Directory::new();
-    let source = [
-        0u16, 0x8000, 1, 0x8001, 0x3ff, 0x400, 0x3c00, 0x7bff, 0x7c00, 0xfc00, 0x7c01, 0x7e00,
-        0xffff,
-    ];
-    let payload: Vec<u8> = source.into_iter().flat_map(u16::to_le_bytes).collect();
-    let array = directory.lut(&header("<f2", "(1,1,13)"), &payload).unwrap();
-    assert_eq!(
-        bits(array.values()),
-        [
-            0,
-            0x8000_0000,
-            0x3380_0000,
-            0xb380_0000,
-            0x387f_c000,
-            0x3880_0000,
-            0x3f80_0000,
-            0x477f_e000,
-            0x7f80_0000,
-            0xff80_0000,
-            0x7f80_2000,
-            0x7fc0_0000,
-            0xffff_e000
-        ]
-    );
-    let payload: Vec<u8> = (0..=u16::MAX).flat_map(u16::to_le_bytes).collect();
-    let array = directory
-        .lut(&header("<f2", "(1,1,65536)"), &payload)
-        .unwrap();
-    assert_eq!(
-        identity(array.values().iter().copied()),
-        12_710_733_099_726_876_997
-    );
-}
-
-#[test]
-fn f32_preserves_payload_bits() {
-    let directory = Directory::new();
-    let expected = [
-        0u32,
-        0x8000_0000,
-        1,
-        0x7f80_0000,
-        0xff80_0000,
-        0x7f80_0001,
-        0x7fc1_2345,
-        0xffc1_2345,
-        0x3f80_0001,
-    ];
-    let payload: Vec<u8> = expected.into_iter().flat_map(u32::to_le_bytes).collect();
-    let array = directory.lut(&header("<f4", "(1,1,9)"), &payload).unwrap();
-    assert_eq!(bits(array.values()), expected);
-}
-
-#[test]
-fn f64_narrowing() {
-    let directory = Directory::new();
-    let source = [
-        0.0_f64,
-        -0.0,
-        1.0000000596046448,
-        1.000000059604645,
-        1e300,
-        -1e300,
-        1e-300,
-        -1e-300,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::NAN,
-    ];
-    let payload: Vec<u8> = source.into_iter().flat_map(f64::to_le_bytes).collect();
-    let array = directory.lut(&header("<f8", "(1,1,11)"), &payload).unwrap();
-    assert_eq!(
-        bits(array.values()),
-        [
-            0,
-            0x8000_0000,
-            0x3f80_0000,
-            0x3f80_0001,
-            0x7f80_0000,
-            0xff80_0000,
-            0,
-            0x8000_0000,
-            0x7f80_0000,
-            0xff80_0000,
-            0x7fc0_0000
-        ]
-    );
-}
-
-#[test]
-fn mallett_transpose() {
-    let directory = Directory::new();
-    let payload: Vec<u8> = (0..243).flat_map(|v| (v as f32).to_le_bytes()).collect();
-    for (shape, hash) in [
-        ("(81,3)", 7_430_929_967_373_113_414),
-        ("(3,81)", 16_790_069_341_578_716_178),
-    ] {
-        let array =
-            load_mallett_basis(directory.write(npy([1, 0], &header("<f4", shape), &payload)))
-                .unwrap();
-        assert_eq!(array.shape(), [81, 3]);
-        assert_eq!(
-            array.source_shape(),
-            if shape == "(81,3)" { [81, 3] } else { [3, 81] }
+    let lut = fs::read(repository().join("Resources").join(BUNDLE[8].0)).unwrap();
+    // Magic, version, header length, dtype, order, shape, padding and newline.
+    for offset in [0, 6, 8, 23, 44, 62, 126, 127] {
+        let mut bytes = lut.clone();
+        bytes[offset] ^= 1;
+        let path = directory.write(bytes);
+        assert_invalid(
+            load_spectra_lut(&path, SpectraLutAsset::Hanatos).unwrap_err(),
+            &path,
+            "irradiance_xy_tc.npy",
         );
-        assert_eq!(identity(array.values().iter().copied()), hash);
-        if shape == "(3,81)" {
-            assert_eq!(&array.values()[..6], &[0.0, 81.0, 162.0, 1.0, 82.0, 163.0]);
+    }
+    let mut basis = fs::read(repository().join("Resources").join(BUNDLE[10].0)).unwrap();
+    basis[..128].copy_from_slice(&lut[..128]);
+    let path = directory.write(basis);
+    assert_invalid(
+        load_mallett_basis(&path).unwrap_err(),
+        &path,
+        "mallett2019_basis.npy",
+    );
+}
+
+#[test]
+fn rejects_incomplete_extra_and_corrupt_npy_contents() {
+    let directory = Directory::new();
+    for &(resource, _, _, _) in &BUNDLE[8..] {
+        let bytes = fs::read(repository().join("Resources").join(resource)).unwrap();
+        let basis = resource.ends_with("mallett2019_basis.npy");
+        let asset = if resource.contains("arctic") {
+            SpectraLutAsset::Arctic
+        } else {
+            SpectraLutAsset::Hanatos
+        };
+        let expected = Path::new(resource).file_name().unwrap().to_str().unwrap();
+        let reject = |input: &[u8]| {
+            let path = directory.write(input);
+            let error = if basis {
+                load_mallett_basis(&path).unwrap_err()
+            } else {
+                load_spectra_lut(&path, asset).unwrap_err()
+            };
+            assert_invalid(error, &path, expected);
+        };
+        for length in [6, 100, bytes.len() - 1] {
+            reject(&bytes[..length]);
         }
-    }
-}
-
-#[test]
-fn supported_versions_and_headers() {
-    let directory = Directory::new();
-    for version in [[1, 0], [2, 0], [3, 0]] {
-        let text = "{\"shape\": (+1, 1, 1,), \"descr\": \"<f4\", \"fortran_order\": False}   ";
-        let array =
-            load_spectra_lut(directory.write(npy(version, text, &2.0_f32.to_le_bytes()))).unwrap();
-        assert_eq!(array.version(), version);
-        assert_eq!(array.values(), [2.0]);
-    }
-}
-
-#[test]
-fn accepted_byte_order_spellings() {
-    let directory = Directory::new();
-    for (dtype, bytes) in [
-        ("f2", 0x3c00_u16.to_le_bytes().to_vec()),
-        ("f4", 1.0_f32.to_le_bytes().to_vec()),
-        ("f8", 1.0_f64.to_le_bytes().to_vec()),
-    ] {
-        for (prefix, order) in [
-            ("<", NpyByteOrder::Little),
-            ("|", NpyByteOrder::NotApplicable),
-        ] {
-            let array = directory
-                .lut(&header(&format!("{prefix}{dtype}"), "(1,1,1)"), &bytes)
-                .unwrap();
-            assert_eq!(array.byte_order(), order);
-            assert_eq!(array.values(), [1.0]);
+        let mut extra = bytes.clone();
+        extra.push(0);
+        reject(&extra);
+        let mut nonfinite = bytes.clone();
+        if basis {
+            nonfinite[128..132].copy_from_slice(&f32::NAN.to_le_bytes());
+        } else {
+            nonfinite[128..130].copy_from_slice(&0x7c00u16.to_le_bytes());
         }
+        reject(&nonfinite);
+        let mut altered = bytes;
+        altered[128] ^= 1; // Finite sample change with the same header and size.
+        reject(&altered);
     }
 }
 
 #[test]
-fn rejects_magic_and_versions() {
-    let directory = Directory::new();
-    let mut bytes = npy([1, 0], &header("<f4", "(1,1,1)"), &[0; 4]);
-    bytes[0] = 0;
-    assert_error(
-        load_spectra_lut(directory.write(bytes)),
-        ReadErrorKind::Magic,
-    );
-    for version in [[0, 0], [1, 1], [2, 1], [3, 1], [4, 0], [255, 255]] {
-        assert_error(
-            load_spectra_lut(directory.write(npy(version, "", &[]))),
-            ReadErrorKind::Version(version),
-        );
-    }
-}
-
-#[test]
-fn rejects_header_substitutions() {
-    let directory = Directory::new();
-    for text in [
-        "{'descr':'<f4','shape':(1,1,1)}",
-        "{'foo':'<f4','fortran_order':False,'shape':(1,1,1)}",
-        "{'descr':'<f4','descr':'<f8','fortran_order':False,'shape':(1,1,1)}",
-        "{'descr':'<f4','fortran_order':False,'shape':(1,1,1),'note':'True'}",
-        "{'descr':'<f4','fortran_order':False}",
-        "{'descr':'<f4','fortran_order':False,'fortran_order':False,'shape':(1,1,1)}",
-        "{'descr':'<f4','fortran_order':False,'shape':(1,1,1),'shape':(1,1,1)}",
-    ] {
-        assert_error(
-            directory.lut(text, &[0; 8]),
-            ReadErrorKind::Header(HeaderError::Fields),
-        );
-    }
-    for text in [
-        "<f4 (1,1,1)",
-        "{'descr':'<f4', 'fortran_order':False, 'shape':(1,1,1)}junk",
-        "{'descr':'<f4' 'fortran_order':False,'shape':(1,1,1)}",
-        "{'descr':'<f4','fortran_order':false,'shape':(1,1,1)}",
-        "{'descr':'<f4\\n','fortran_order':False,'shape':(1,1,1)}",
-        "{'descr':'<f4','fortran_order':False,'shape':(1,1,1)",
-        "é",
-    ] {
-        assert_error(
-            directory.lut(text, &[0; 8]),
-            ReadErrorKind::Header(HeaderError::Syntax),
-        );
-    }
-}
-
-#[test]
-fn rejects_dtype_endian_and_layout() {
-    let directory = Directory::new();
-    for dtype in [">f4", "=f4", "f4", ""] {
-        assert_error(
-            directory.lut(&header(dtype, "(1,1,1)"), &[0; 8]),
-            ReadErrorKind::ByteOrder,
-        );
-    }
-    for dtype in ["<i4", "<f16", "<f4junk", "<", "|u2"] {
-        assert_error(
-            directory.lut(&header(dtype, "(1,1,1)"), &[0; 8]),
-            ReadErrorKind::Dtype,
-        );
-    }
-    assert_error(
-        directory.lut(&header("<f4", "(1,1,1)").replace("False", "True"), &[0; 4]),
-        ReadErrorKind::FortranOrder,
-    );
-    assert_error(
-        directory.lut(
-            "{'foo':'<f4','fortran_order':False,'shape':(1,1,1),'descr':'>i4'}",
-            &[0; 8],
-        ),
-        ReadErrorKind::Header(HeaderError::Fields),
-    );
-}
-
-#[test]
-fn rejects_shapes() {
-    let directory = Directory::new();
-    for shape in [
-        "(0,0,1)",
-        "(-1,1,1)",
-        "(1,2,1)",
-        "(1,1,0)",
-        "(1,1)",
-        "(1,1,1,1)",
-        "(1x,1,1)",
-        "(1,,1,1)",
-        "(1 1 1)",
-        "()",
-        "(2147483648,2147483648,1)",
-    ] {
-        assert_error(
-            directory.lut(&header("<f4", shape), &[0; 8]),
-            ReadErrorKind::Shape,
-        );
-    }
-    for shape in ["(80,3)", "(81,4)", "(1,243)", "(3,3,27)"] {
-        assert_error(
-            load_mallett_basis(directory.write(npy([1, 0], &header("<f4", shape), &[]))),
-            ReadErrorKind::Shape,
-        );
-    }
-}
-
-#[test]
-fn rejects_size_overflow() {
-    let directory = Directory::new();
-    for (dtype, shape) in [
-        ("<f4", "(4194304,4194304,4194304)"),
-        ("<f8", "(2147483647,2147483647,1)"),
-        ("<f4", "(18446744073709551616,1,1)"),
-    ] {
-        assert_error(
-            directory.lut(&header(dtype, shape), &[]),
-            ReadErrorKind::Size,
-        );
-    }
-    assert_error(
-        directory.lut(&header("<f2", "(2147483647,2147483647,1)"), &[]),
-        ReadErrorKind::Capacity,
-    );
-}
-
-#[test]
-fn rejects_header_lengths() {
-    let directory = Directory::new();
-    for count in [0u32, 65536, u32::MAX] {
-        let mut bytes = b"\x93NUMPY\x02\x00".to_vec();
-        bytes.extend(count.to_le_bytes());
-        assert_error(
-            load_spectra_lut(directory.write(bytes)),
-            ReadErrorKind::Header(HeaderError::Length),
-        );
-    }
-    let mut text = header("<f4", "(1,1,1)");
-    text.push_str(&" ".repeat(65_535 - text.len()));
-    assert_eq!(text.len(), 65_535);
-    assert_eq!(directory.lut(&text, &[0; 4]).unwrap().values(), [0.0]);
-}
-
-#[test]
-fn rejects_every_truncation() {
-    let directory = Directory::new();
-    for version in [[1, 0], [2, 0], [3, 0]] {
-        for (dtype, width) in [("<f2", 2), ("<f4", 4), ("<f8", 8)] {
-            let text = header(dtype, "(2,2,3)");
-            let bytes = npy(version, &text, &vec![0; 12 * width]);
-            let preamble = if version == [1, 0] { 10 } else { 12 };
-            for length in 0..bytes.len() {
-                let part = if length < preamble {
-                    ReadPart::Preamble
-                } else if length < preamble + text.len() {
-                    ReadPart::Header
-                } else {
-                    ReadPart::Payload
-                };
-                assert_error(
-                    load_spectra_lut(directory.write(&bytes[..length])),
-                    ReadErrorKind::ShortRead(part),
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn ignores_trailing_payload() {
-    let directory = Directory::new();
-    let mut payload = 2.0_f32.to_le_bytes().to_vec();
-    payload.extend(b"trailing");
-    let array = directory.lut(&header("<f4", "(1,1,1)"), &payload).unwrap();
-    assert_eq!(array.values(), [2.0]);
-    let payload: Vec<u8> = (0..324).flat_map(|v| (v as f32).to_le_bytes()).collect();
-    let array =
-        load_mallett_basis(directory.write(npy([1, 0], &header("<f4", "(81,3)"), &payload)))
-            .unwrap();
-    assert_eq!(array.values().len(), 243);
-    assert_eq!(
-        identity(array.values().iter().copied()),
-        7_430_929_967_373_113_414
+fn rejects_wrong_lut_identity() {
+    let path = repository().join("Resources").join(BUNDLE[8].0);
+    assert_invalid(
+        load_spectra_lut(&path, SpectraLutAsset::Arctic).unwrap_err(),
+        &path,
+        "arctic2026beta04_reflectance_xy_tc.npy",
     );
 }

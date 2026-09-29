@@ -6,28 +6,14 @@ use std::collections::TryReserveError;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-use serde_json::Value;
+use serde::de::{MapAccess, Visitor, value::MapAccessDeserializer};
+use serde::{Deserialize, Deserializer};
 
 const STBN_DIMENSIONS: [usize; 3] = [512, 512, 256];
 const WANG_DIMENSIONS: [usize; 3] = [256, 256, 16];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MetadataField {
-    Root,
-    Resolution,
-    Tiles,
-    Colors,
-    Mapping,
-    Index,
-    Labels,
-    Left,
-    Right,
-    Top,
-    Bottom,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -39,7 +25,7 @@ pub enum ErrorKind {
     Size,
     Capacity,
     Json,
-    Metadata(MetadataField),
+    Metadata,
     Dimensions,
 }
 
@@ -87,8 +73,7 @@ impl Stbn {
 #[derive(Debug)]
 pub struct Wang {
     tiles: Vec<u8>,
-    lut: Vec<u8>,
-    colors: usize,
+    lut: [u8; 16],
 }
 
 impl Wang {
@@ -106,7 +91,7 @@ impl Wang {
     }
 
     pub fn colors(&self) -> usize {
-        self.colors
+        2
     }
 }
 
@@ -142,12 +127,11 @@ pub fn load_wang(
         }
         let metadata =
             File::open(&metadata_path).map_err(|e| (Input::Metadata, ErrorKind::Open(e.kind())))?;
-        let root =
+        let metadata =
             read_metadata(BufReader::new(metadata)).map_err(|kind| (Input::Metadata, kind))?;
-        let (colors, lut) = build_lut(&root, &mut Vec::try_reserve_exact)
-            .map_err(|kind| (Input::Metadata, kind))?;
+        let lut = build_lut(metadata).map_err(|kind| (Input::Metadata, kind))?;
         let (mut file, length) = open_payload(&tiles_path).map_err(|kind| (Input::Tiles, kind))?;
-        read_wang(&mut file, length, colors, lut, Vec::try_reserve_exact)
+        read_wang(&mut file, length, lut, Vec::try_reserve_exact)
             .map_err(|kind| (Input::Tiles, kind))
     })();
     result.map_err(|(input, kind)| Error {
@@ -186,12 +170,11 @@ fn read_stbn(
 fn read_wang(
     reader: &mut impl Read,
     length: u64,
-    colors: usize,
-    lut: Vec<u8>,
+    lut: [u8; 16],
     reserve: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), TryReserveError>,
 ) -> Result<Wang, ErrorKind> {
     let tiles = read_bytes(reader, length, &WANG_DIMENSIONS, reserve)?;
-    Ok(Wang { tiles, lut, colors })
+    Ok(Wang { tiles, lut })
 }
 
 fn byte_count(dimensions: &[usize]) -> Result<usize, ErrorKind> {
@@ -232,7 +215,57 @@ fn read_bytes(
     Ok(bytes)
 }
 
-fn read_metadata(mut reader: impl Read) -> Result<Value, ErrorKind> {
+// Derived records also accept sequences; Wang records require named members.
+#[derive(Debug)]
+struct JsonObject<T>(T);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for JsonObject<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ObjectVisitor<T>(PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for ObjectVisitor<T> {
+            type Value = JsonObject<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                T::deserialize(MapAccessDeserializer::new(map)).map(JsonObject)
+            }
+        }
+
+        deserializer.deserialize_map(ObjectVisitor(PhantomData))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct Metadata {
+    resolution: usize,
+    tiles: usize,
+    colors: usize,
+    mapping: [JsonObject<Mapping>; 16],
+}
+
+#[derive(Debug, Deserialize)]
+struct Mapping {
+    index: u8,
+    labels: JsonObject<Labels>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Labels {
+    #[serde(rename = "L")]
+    left: u8,
+    #[serde(rename = "R")]
+    right: u8,
+    #[serde(rename = "T")]
+    top: u8,
+    #[serde(rename = "B")]
+    bottom: u8,
+}
+
+fn read_metadata(mut reader: impl Read) -> Result<Metadata, ErrorKind> {
     let mut prefix = [0; 3];
     let mut count = 0;
     while count < prefix.len() {
@@ -248,111 +281,43 @@ fn read_metadata(mut reader: impl Read) -> Result<Value, ErrorKind> {
     } else {
         &prefix[..count]
     };
-    // Native stream extraction consumes the first JSON value, including a BOM,
-    // and does not require EOF after that value.
-    let reader = prefix.chain(reader);
-    Value::deserialize(&mut serde_json::Deserializer::from_reader(reader)).map_err(|error| {
-        error
-            .io_error_kind()
-            .map_or(ErrorKind::Json, ErrorKind::Read)
-    })
+    serde_json::from_reader::<_, JsonObject<Metadata>>(prefix.chain(reader))
+        .map(|JsonObject(metadata)| metadata)
+        .map_err(|error| {
+            error
+                .io_error_kind()
+                .map_or(ErrorKind::Json, ErrorKind::Read)
+        })
 }
 
-// Keep native bool conversion, integer narrowing and representable fraction
-// truncation. None denotes the approved out-of-i32-range floating input rule.
-fn metadata_integer(value: &Value, field: MetadataField) -> Result<Option<i32>, ErrorKind> {
-    match value {
-        Value::Bool(value) => Ok(Some(i32::from(*value))),
-        Value::Number(number) => {
-            if let Some(value) = number.as_u64() {
-                Ok(Some(value as i32))
-            } else if let Some(value) = number.as_i64() {
-                Ok(Some(value as i32))
-            } else {
-                let value = number.as_f64().expect("JSON number is an f64").trunc();
-                if value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX) {
-                    Ok(Some(value as i32))
-                } else {
-                    Ok(None)
-                }
-            }
-        }
-        _ => Err(ErrorKind::Metadata(field)),
-    }
-}
-
-fn build_lut(
-    root: &Value,
-    reserve: &mut impl FnMut(&mut Vec<u8>, usize) -> Result<(), TryReserveError>,
-) -> Result<(usize, Vec<u8>), ErrorKind> {
-    let root = root
-        .as_object()
-        .ok_or(ErrorKind::Metadata(MetadataField::Root))?;
-    let mut sizes = [0; 3];
-    for (destination, (name, field)) in sizes.iter_mut().zip([
-        ("resolution", MetadataField::Resolution),
-        ("tiles", MetadataField::Tiles),
-        ("colors", MetadataField::Colors),
-    ]) {
-        let value = root.get(name).ok_or(ErrorKind::Metadata(field))?;
-        *destination = metadata_integer(value, field)?.ok_or(ErrorKind::Metadata(field))?;
-    }
-    let [resolution, count, colors] = sizes;
-    if resolution != WANG_DIMENSIONS[0] as i32 || count != WANG_DIMENSIONS[2] as i32 || colors <= 0
+fn build_lut(metadata: Metadata) -> Result<[u8; 16], ErrorKind> {
+    if metadata.resolution != WANG_DIMENSIONS[0]
+        || metadata.tiles != WANG_DIMENSIONS[2]
+        || metadata.colors != 2
     {
         return Err(ErrorKind::Dimensions);
     }
-    let colors = colors as usize;
-    let size = byte_count(&[colors; 4])?;
-    let mapping = root
-        .get("mapping")
-        .and_then(Value::as_array)
-        .ok_or(ErrorKind::Metadata(MetadataField::Mapping))?;
-    let mut lut = Vec::new();
-    reserve(&mut lut, size).map_err(|_| ErrorKind::Capacity)?;
-    lut.resize(size, 0);
-    for entry in mapping {
-        let (Some(index), Some(labels)) = (entry.get("index"), entry.get("labels")) else {
-            continue;
-        };
-        let Some(index) = metadata_integer(index, MetadataField::Index)? else {
-            continue;
-        };
-        let labels = labels
-            .as_object()
-            .ok_or(ErrorKind::Metadata(MetadataField::Labels))?;
-        let mut edges = [0i32; 4];
-        let mut representable = true;
-        for (edge, (name, field)) in edges.iter_mut().zip([
-            ("L", MetadataField::Left),
-            ("R", MetadataField::Right),
-            ("T", MetadataField::Top),
-            ("B", MetadataField::Bottom),
-        ]) {
-            if let Some(value) = labels.get(name) {
-                if let Some(value) = metadata_integer(value, field)? {
-                    *edge = value;
-                } else {
-                    representable = false;
-                    break;
-                }
-            }
+    let mut lut = [0; 16];
+    let mut seen = [false; 16];
+    // Exactly 16 distinct two-color combinations also establishes completeness.
+    for JsonObject(Mapping { index, labels }) in metadata.mapping {
+        let JsonObject(Labels {
+            left,
+            right,
+            top,
+            bottom,
+        }) = labels;
+        if index >= 16 || [left, right, top, bottom].iter().any(|&edge| edge > 1) {
+            return Err(ErrorKind::Metadata);
         }
-        if !representable
-            || edges
-                .iter()
-                .any(|&edge| edge < 0 || edge as usize >= colors)
-            || index < 0
-            || index >= count
-        {
-            continue;
+        let offset = usize::from(((left * 2 + right) * 2 + top) * 2 + bottom);
+        if seen[offset] {
+            return Err(ErrorKind::Metadata);
         }
-        // Checked colors^4 bounds every L/R/T/B multiply/add below.
-        let [left, right, top, bottom] = edges.map(|edge| edge as usize);
-        let offset = ((left * colors + right) * colors + top) * colors + bottom;
-        lut[offset] = index as u8;
+        seen[offset] = true;
+        lut[offset] = index;
     }
-    Ok((colors, lut))
+    Ok(lut)
 }
 
 #[cfg(test)]
@@ -372,14 +337,6 @@ mod tests {
         ] {
             let result = read_bytes(&mut io::empty(), 0, &dimensions, |_, _| {
                 panic!("invalid products must not reach reservation")
-            });
-            assert_eq!(result.unwrap_err(), expected);
-        }
-        for (colors, expected) in [(65_536, ErrorKind::Size), (60_000, ErrorKind::Capacity)] {
-            let root =
-                serde_json::json!({"resolution":256,"tiles":16,"colors":colors,"mapping":[]});
-            let result = build_lut(&root, &mut |_, _| {
-                panic!("invalid LUT product must not reserve")
             });
             assert_eq!(result.unwrap_err(), expected);
         }
@@ -413,15 +370,10 @@ mod tests {
         );
         assert_eq!(reader.position(), 0);
         assert_eq!(
-            read_wang(&mut reader, 1_048_576, 2, vec![0; 16], reservation_failure).unwrap_err(),
+            read_wang(&mut reader, 1_048_576, [0; 16], reservation_failure).unwrap_err(),
             ErrorKind::Capacity
         );
         assert_eq!(reader.position(), 0);
-        let root = serde_json::json!({"resolution":256,"tiles":16,"colors":2,"mapping":[]});
-        assert_eq!(
-            build_lut(&root, &mut reservation_failure).unwrap_err(),
-            ErrorKind::Capacity
-        );
     }
 
     struct ChunkReader {
@@ -479,14 +431,7 @@ mod tests {
                 expected
             );
             assert_eq!(
-                read_wang(
-                    &mut reader(),
-                    1_048_576,
-                    2,
-                    vec![0; 16],
-                    Vec::try_reserve_exact
-                )
-                .unwrap_err(),
+                read_wang(&mut reader(), 1_048_576, [0; 16], Vec::try_reserve_exact).unwrap_err(),
                 expected
             );
         }
@@ -494,15 +439,20 @@ mod tests {
 
     #[test]
     fn metadata_short_reads_and_errors() {
-        let bytes = b"\xef\xbb\xbf{\"mapping\":[]} trailing";
+        let bytes = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources/Noise/Wang/tiles.json"),
+        )
+        .unwrap();
+        let mut with_bom = b"\xef\xbb\xbf".to_vec();
+        with_bom.extend(bytes);
         let reader = || ChunkReader {
-            input: Cursor::new(bytes.to_vec()),
+            input: Cursor::new(with_bom.clone()),
             chunk_size: 1,
             fail_after: None,
         };
         assert_eq!(
-            read_metadata(reader()).unwrap(),
-            serde_json::json!({"mapping":[]})
+            build_lut(read_metadata(reader()).unwrap()).unwrap(),
+            [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15]
         );
         for position in [0, 2, 10] {
             let mut reader = reader();
@@ -510,24 +460,6 @@ mod tests {
             assert_eq!(
                 read_metadata(reader).unwrap_err(),
                 ErrorKind::Read(io::ErrorKind::PermissionDenied)
-            );
-        }
-    }
-
-    #[test]
-    fn float_integer_boundaries() {
-        for (number, expected) in [
-            (2147483647.9, Some(i32::MAX)),
-            (-2147483648.9, Some(i32::MIN)),
-            (2147483648.0, None),
-            (-2147483649.0, None),
-            (1e30, None),
-            (-1e30, None),
-            (-0.75, Some(0)),
-        ] {
-            assert_eq!(
-                metadata_integer(&serde_json::json!(number), MetadataField::Index).unwrap(),
-                expected
             );
         }
     }

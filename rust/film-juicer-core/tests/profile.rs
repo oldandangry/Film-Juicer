@@ -1096,17 +1096,19 @@ fn classifies_catalog_entries() {
     let catalog = load_catalog(&dir.0).unwrap();
     assert_eq!(
         catalog.films().iter().map(|e| e.key()).collect::<Vec<_>>(),
-        ["empty", "a", "b", "kodak_portra_400", "label", "trailing"]
+        ["empty", "a", "b", "kodak_portra_400", "label"]
     );
     assert_eq!(
         catalog.prints().iter().map(|e| e.key()).collect::<Vec<_>>(),
         ["a", "kodak_portra_endura"]
     );
     assert_eq!(catalog.ignored().len(), 4);
-    assert_eq!(catalog.unavailable().len(), 4);
+    assert_eq!(catalog.unavailable().len(), 5);
     for entry in catalog.unavailable() {
         match entry.path.file_name().unwrap().to_str().unwrap() {
-            "bad.json" => assert!(matches!(entry.kind, CatalogEntryErrorKind::Json(_))),
+            "bad.json" | "trailing.json" => {
+                assert!(matches!(entry.kind, CatalogEntryErrorKind::Json(_)))
+            }
             "no-stock.json" => assert!(matches!(entry.kind, CatalogEntryErrorKind::MissingStock)),
             _ => assert!(matches!(entry.kind, CatalogEntryErrorKind::UnsupportedRole)),
         }
@@ -1323,23 +1325,26 @@ fn preserves_json_number_bits() {
 }
 
 #[test]
-fn rejects_malformed_json_numbers() {
+fn requires_complete_json_documents() {
     let dir = Directory::new();
     dir.write_defaults();
     for role in [Role::Film, Role::Print] {
         let mut input = profile_document(role);
         input["data"]["log_exposure"] = json!(["TOKEN"]);
-        for token in ["--0", "- 0", "01", "1e", "1e-", "NaN", "Infinity", "1e999"] {
-            let text = serde_json::to_string(&input)
-                .unwrap()
-                .replace("\"TOKEN\"", token);
+        let text = serde_json::to_string(&input).unwrap();
+        let complete = text.replace("\"TOKEN\"", "0");
+        for text in [
+            text.replace("\"TOKEN\"", "1e"),
+            format!("{complete} trailing"),
+            format!("{complete} {{}}"),
+        ] {
             let path = dir.write("source.json", &text);
             let error = match role {
                 Role::Film => load_film_source(&path),
                 Role::Print => load_print_source(&path),
             }
             .unwrap_err();
-            assert!(matches!(error.kind, ProfileErrorKind::Json(_)), "{token}");
+            assert!(matches!(error.kind, ProfileErrorKind::Json(_)));
             dir.write("profiles/numbers.json", text);
             let catalog = load_catalog(&dir.0).unwrap();
             assert_eq!(catalog.films().len(), 1);
@@ -1350,6 +1355,17 @@ fn rejects_malformed_json_numbers() {
                 CatalogEntryErrorKind::Json(_)
             ));
         }
+        let text = format!("{complete} \t\r\n");
+        let path = dir.write("source.json", &text);
+        match role {
+            Role::Film => load_film_source(&path),
+            Role::Print => load_print_source(&path),
+        }
+        .unwrap();
+        dir.write("profiles/numbers.json", text);
+        let catalog = load_catalog(&dir.0).unwrap();
+        assert!(catalog.unavailable().is_empty());
+        assert_eq!(catalog.films().len() + catalog.prints().len(), 3);
     }
 }
 
