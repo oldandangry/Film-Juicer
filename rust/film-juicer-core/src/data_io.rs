@@ -1,8 +1,12 @@
-//! Raw CSV and reconstruction NPY input, before spectral preparation or asset policy.
+//! Bounded resource decoding, before spectral preparation or asset ownership.
+//! Static noise and lazy neutral calibration have focused child modules.
 //! Constructors return complete immutable values. NPY arrays are C-order f32;
 //! Mallett input is normalized to 81 wavelength rows and three basis columns.
-//! Explicit sample buffers reserve fallibly. Incidental path, header and parser
+//! Explicit sample and noise buffers reserve fallibly. Incidental path, header and parser
 //! allocations can still abort; this module does not provide general OOM recovery.
+
+pub mod noise;
+pub mod calibration;
 
 use std::collections::TryReserveError;
 use std::fmt;
