@@ -418,44 +418,14 @@ pub struct DensityCurveModel {
     sigmas: [[f64; 3]; 3],
 }
 impl DensityCurveModel {
-    /// Admit f64 coefficients in [channel][layer] order for FP32 evaluation.
+    /// Store authored f64 coefficients in [channel][layer] order.
     /// The authored bits are retained, including signed zero and sub-f32 precision.
-    pub fn new(
-        centers: [[f64; 3]; 3],
-        amplitudes: [[f64; 3]; 3],
-        sigmas: [[f64; 3]; 3],
-    ) -> Result<Self, DensityModelError> {
-        for (field, coefficients) in [
-            ("centers", &centers),
-            ("amplitudes", &amplitudes),
-            ("sigmas", &sigmas),
-        ] {
-            for (channel, row) in coefficients.iter().enumerate() {
-                for (layer, &raw) in row.iter().enumerate() {
-                    let narrowed = raw as f32;
-                    let requirement = if !narrowed.is_finite() {
-                        Some(Requirement::FloatRange)
-                    } else if field == "sigmas" && narrowed <= 0.0 {
-                        Some(Requirement::PositiveSigma)
-                    } else {
-                        None
-                    };
-                    if let Some(requirement) = requirement {
-                        return Err(DensityModelError {
-                            field,
-                            channel,
-                            layer,
-                            requirement,
-                        });
-                    }
-                }
-            }
-        }
-        Ok(Self {
+    pub fn new(centers: [[f64; 3]; 3], amplitudes: [[f64; 3]; 3], sigmas: [[f64; 3]; 3]) -> Self {
+        Self {
             centers,
             amplitudes,
             sigmas,
-        })
+        }
     }
 
     /// All coefficient matrices use [channel][layer] order.
@@ -475,13 +445,7 @@ impl DensityCurveModel {
         polarity: Polarity,
         log_exposure: f64,
     ) -> Result<DensityCurveSample, DensitySampleError> {
-        if !log_exposure.is_finite() {
-            return Err(DensitySampleError::NonfiniteExposure);
-        }
         let exposure = log_exposure as f32;
-        if !exposure.is_finite() {
-            return Err(DensitySampleError::ExposureRange);
-        }
         let sign = match polarity {
             Polarity::Negative => 1.0_f32,
             Polarity::Positive => -1.0_f32,
@@ -529,28 +493,7 @@ pub struct DensityCurveSample {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DensityModelError {
-    pub field: &'static str,
-    pub channel: usize,
-    pub layer: usize,
-    pub requirement: Requirement,
-}
-
-impl fmt::Display for DensityModelError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "density model {}[{}][{}] requires {:?}",
-            self.field, self.channel, self.layer, self.requirement
-        )
-    }
-}
-impl std::error::Error for DensityModelError {}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DensitySampleError {
-    NonfiniteExposure,
-    ExposureRange,
     NonfiniteLayer { channel: usize, layer: usize },
     NonfiniteTotal { channel: usize },
 }
@@ -594,7 +537,6 @@ pub enum Requirement {
     NondecreasingExposure,
     FloatRange,
     ModelCoefficients,
-    PositiveSigma,
     AdaptationArray,
 }
 
@@ -838,13 +780,7 @@ fn read_model(data: &Value) -> Result<DensityCurveModel, FieldError> {
         sigmas,
     } = DensityModelInput::deserialize(node)
         .map_err(|_| field_error(field, Requirement::ModelCoefficients))?;
-    DensityCurveModel::new(centers, amplitudes, sigmas).map_err(|error| FieldError {
-        field: format!(
-            "{field}.{}[{}][{}]",
-            error.field, error.channel, error.layer
-        ),
-        requirement: error.requirement,
-    })
+    Ok(DensityCurveModel::new(centers, amplitudes, sigmas))
 }
 
 fn exposure_count_supported(count: usize) -> bool {

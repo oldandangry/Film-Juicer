@@ -11,8 +11,8 @@ use serde::Deserialize;
 
 use film_juicer_core::hash;
 use film_juicer_core::profile::{
-    DensityCurveModel, DensityCurveSample, DensitySampleError, Polarity, Requirement,
-    load_film_source, load_print_source,
+    DensityCurveModel, DensityCurveSample, DensitySampleError, Polarity, load_film_source,
+    load_print_source,
 };
 
 #[derive(Deserialize)]
@@ -37,12 +37,21 @@ struct Case {
     gamma_bits: u64,
     axis: usize,
     model: ModelBits,
-    supported: bool,
+    #[serde(rename = "supported")]
+    historically_supported: bool,
     sample_start: Option<usize>,
     identities: Option<Identities>,
 }
 
 impl Case {
+    fn model(&self) -> DensityCurveModel {
+        DensityCurveModel::new(
+            coefficients(self.model.centers),
+            coefficients(self.model.amplitudes),
+            coefficients(self.model.sigmas),
+        )
+    }
+
     fn polarity(&self) -> Polarity {
         if self.positive {
             Polarity::Positive
@@ -109,57 +118,30 @@ fn combined_hash(samples: &[f32]) -> u64 {
 }
 
 #[test]
-fn samples_and_admission_match_the_frozen_cohort() {
+fn valid_samples_and_replay_identities_match_the_frozen_cohort() {
     let fixture = fixture();
     assert_eq!(fixture.cases.len(), 138);
     assert_eq!(fixture.samples.len(), 19_247 * 49);
     let mut valid_count = 0;
-    let mut invalid_count = 0;
-    let mut rejected_count = 0;
-    for case in &fixture.cases {
-        let model = DensityCurveModel::new(
-            coefficients(case.model.centers),
-            coefficients(case.model.amplitudes),
-            coefficients(case.model.sigmas),
-        );
-        assert_eq!(model.is_ok(), case.supported, "{} admission", case.id);
-        let Ok(model) = model else {
-            assert!(case.sample_start.is_none());
-            rejected_count += 1;
-            continue;
-        };
-        // Admission retains source f64 precision; no f32 coefficient cache.
-        assert_eq!(
-            model.centers().map(|r| r.map(f64::to_bits)),
-            case.model.centers
-        );
-        assert_eq!(
-            model.amplitudes().map(|r| r.map(f64::to_bits)),
-            case.model.amplitudes
-        );
-        assert_eq!(
-            model.sigmas().map(|r| r.map(f64::to_bits)),
-            case.model.sigmas
-        );
+    let mut historical_failure_count = 0;
+    let mut identity_count = 0;
+    for case in fixture.cases.iter().filter(|c| c.historically_supported) {
+        let model = case.model();
         let mut actual = Vec::new();
         for (i, &bits) in fixture.axes[case.axis].iter().enumerate() {
-            let sample = model.sample(case.polarity(), f64::from_bits(bits));
-            let expected = expected_sample(&fixture.samples, case.sample_start.unwrap() + i);
-            assert_eq!(
-                sample.as_ref().ok().map(sample_bits),
-                expected,
-                "{} sample {i}",
-                case.id
-            );
-            match sample {
-                Ok(sample) => {
-                    valid_count += 1;
-                    actual.push(sample);
-                }
-                Err(_) => invalid_count += 1,
-            }
+            let Some(expected) = expected_sample(&fixture.samples, case.sample_start.unwrap() + i)
+            else {
+                // Every historical failure is asserted separately at its C1 boundary.
+                historical_failure_count += 1;
+                continue;
+            };
+            let sample = model.sample(case.polarity(), f64::from_bits(bits)).unwrap();
+            assert_eq!(sample_bits(&sample), expected, "{} sample {i}", case.id);
+            valid_count += 1;
+            actual.push(sample);
         }
         if let Some(expected) = &case.identities {
+            identity_count += 1;
             // Test-only composition mirrors the consuming native order. It does
             // not introduce profile/recipe identity APIs ahead of their slices.
             assert_eq!(actual.len(), fixture.axes[case.axis].len());
@@ -203,9 +185,101 @@ fn samples_and_admission_match_the_frozen_cohort() {
         }
     }
     assert_eq!(
-        (valid_count, invalid_count, rejected_count),
-        (19_235, 12, 16)
+        (valid_count, historical_failure_count, identity_count),
+        (19_235, 12, 119)
     );
+}
+
+#[test]
+fn construction_retains_all_frozen_coefficient_bits() {
+    let fixture = fixture();
+    let mut historically_rejected_count = 0;
+    for case in &fixture.cases {
+        let model = case.model();
+        assert_eq!(
+            model.centers().map(|r| r.map(f64::to_bits)),
+            case.model.centers,
+            "{} centers",
+            case.id
+        );
+        assert_eq!(
+            model.amplitudes().map(|r| r.map(f64::to_bits)),
+            case.model.amplitudes,
+            "{} amplitudes",
+            case.id
+        );
+        assert_eq!(
+            model.sigmas().map(|r| r.map(f64::to_bits)),
+            case.model.sigmas,
+            "{} sigmas",
+            case.id
+        );
+        if !case.historically_supported {
+            assert!(case.sample_start.is_none());
+            assert!(case.identities.is_none());
+            // These records contain no approved sample expectations.
+            historically_rejected_count += 1;
+        }
+    }
+    assert_eq!(historically_rejected_count, 16);
+}
+
+#[test]
+fn historical_sample_failures_reach_their_current_numerical_boundary() {
+    let fixture = fixture();
+    let mut endpoint_count = 0;
+    let mut computed_failure_count = 0;
+    for case in fixture.cases.iter().filter(|c| c.historically_supported) {
+        let model = case.model();
+        for (i, &bits) in fixture.axes[case.axis].iter().enumerate() {
+            if expected_sample(&fixture.samples, case.sample_start.unwrap() + i).is_some() {
+                continue;
+            }
+            let sample = model.sample(case.polarity(), f64::from_bits(bits));
+            match (case.id.as_str(), i) {
+                ("exposure/narrowing-special", 0 | 1 | 12..=14) => {
+                    // Frozen unit amplitudes/sigmas and zero centers give exact
+                    // CDF endpoints. Invalid-record padding is not an oracle.
+                    assert_eq!(case.model.centers, [[0; 3]; 3]);
+                    assert_eq!(case.model.amplitudes, [[1.0_f64.to_bits(); 3]; 3]);
+                    assert_eq!(case.model.sigmas, [[1.0_f64.to_bits(); 3]; 3]);
+                    assert_eq!(case.polarity(), Polarity::Negative);
+                    let mut expected = [0; 12];
+                    if i >= 12 {
+                        expected[..3].fill(3.0_f32.to_bits());
+                        expected[3..].fill(1.0_f32.to_bits());
+                    }
+                    assert_eq!(
+                        sample_bits(&sample.unwrap()),
+                        expected,
+                        "{} row {i}",
+                        case.id
+                    );
+                    endpoint_count += 1;
+                }
+                ("exposure/narrowing-special", 15) => {
+                    assert_eq!(
+                        sample.unwrap_err(),
+                        DensitySampleError::NonfiniteLayer {
+                            channel: 0,
+                            layer: 0
+                        }
+                    );
+                    computed_failure_count += 1;
+                }
+                ("overflow/total-positive" | "overflow/total-negative", 0..=2) => {
+                    assert_eq!(
+                        sample.unwrap_err(),
+                        DensitySampleError::NonfiniteTotal { channel: 0 }
+                    );
+                    computed_failure_count += 1;
+                }
+                _ => panic!("unclassified historical failure: {} row {i}", case.id),
+            }
+        }
+    }
+    assert_eq!((endpoint_count, computed_failure_count), (5, 7));
+    assert_eq!(19_235 + endpoint_count + computed_failure_count, 19_247);
 }
 
 #[test]
@@ -279,38 +353,133 @@ fn native_characterization_is_distinct_from_approved_rust_expectations() {
 }
 
 #[test]
-fn failures_identify_the_construction_or_sample_boundary() {
-    let mut sigmas = [[1.0; 3]; 3];
-    sigmas[2][1] = f64::MIN_POSITIVE;
-    let error = DensityCurveModel::new([[0.0; 3]; 3], [[1.0; 3]; 3], sigmas).unwrap_err();
+fn unusual_coefficients_reach_density_arithmetic() {
+    // Infinite sigma uses finite exposures to produce z = signed zero.
+    for (sigma, exposure, low, high) in [
+        (-1.0, 1e300_f64, 1.0_f32, 0.0_f32),
+        (0.0, 1e300, 0.0, 1.0),
+        (-0.0, 1e300, 1.0, 0.0),
+        (1e-50, 1e300, 0.0, 1.0),
+        (-1e-50, 1e300, 1.0, 0.0),
+        (1e40, 1.0, 0.5, 0.5),
+        (-1e40, 1.0, 0.5, 0.5),
+    ] {
+        let model = DensityCurveModel::new([[0.0; 3]; 3], [[1.0; 3]; 3], [[sigma; 3]; 3]);
+        for (polarity, exposure, expected) in [
+            (Polarity::Negative, -exposure, low),
+            (Polarity::Negative, exposure, high),
+            (Polarity::Positive, -exposure, high),
+            (Polarity::Positive, exposure, low),
+        ] {
+            let sample = model.sample(polarity, exposure).unwrap();
+            assert_eq!(
+                sample.layers.map(|r| r.map(f32::to_bits)),
+                [[expected.to_bits(); 3]; 3]
+            );
+            assert_eq!(
+                sample.total.map(f32::to_bits),
+                [(expected * 3.0).to_bits(); 3]
+            );
+        }
+        if sigma == -1.0 {
+            let sample = model.sample(Polarity::Negative, 0.0).unwrap();
+            assert_eq!(
+                sample.layers.map(|r| r.map(f32::to_bits)),
+                [[0.5_f32.to_bits(); 3]; 3]
+            );
+            assert_eq!(sample.total.map(f32::to_bits), [1.5_f32.to_bits(); 3]);
+        } else if sigma.abs() < 1e-40 {
+            assert_eq!(
+                model.sample(Polarity::Negative, 0.0).unwrap_err(),
+                DensitySampleError::NonfiniteLayer {
+                    channel: 0,
+                    layer: 0
+                }
+            );
+        }
+    }
+    for (center, negative, positive) in [(1e40, 0.0_f32, 1.0_f32), (-1e40, 1.0, 0.0)] {
+        let model = DensityCurveModel::new([[center; 3]; 3], [[1.0; 3]; 3], [[1.0; 3]; 3]);
+        for (polarity, expected) in [
+            (Polarity::Negative, negative),
+            (Polarity::Positive, positive),
+        ] {
+            let sample = model.sample(polarity, 0.0).unwrap();
+            assert_eq!(
+                sample.layers.map(|r| r.map(f32::to_bits)),
+                [[expected.to_bits(); 3]; 3]
+            );
+            assert_eq!(
+                sample.total.map(f32::to_bits),
+                [(expected * 3.0).to_bits(); 3]
+            );
+        }
+    }
+}
+
+#[test]
+fn scalar_exposure_narrowing_produces_exact_endpoints() {
+    let model = DensityCurveModel::new([[0.0; 3]; 3], [[1.0; 3]; 3], [[1.0; 3]; 3]);
+    for (exposure, negative, positive) in [
+        (-1e40, 0.0_f32, 1.0_f32),
+        (1e40, 1.0, 0.0),
+        (f64::NEG_INFINITY, 0.0, 1.0),
+        (f64::INFINITY, 1.0, 0.0),
+    ] {
+        for (polarity, expected) in [
+            (Polarity::Negative, negative),
+            (Polarity::Positive, positive),
+        ] {
+            let sample = model.sample(polarity, exposure).unwrap();
+            assert_eq!(
+                sample.layers.map(|r| r.map(f32::to_bits)),
+                [[expected.to_bits(); 3]; 3]
+            );
+            assert_eq!(
+                sample.total.map(f32::to_bits),
+                [(expected * 3.0).to_bits(); 3]
+            );
+        }
+    }
     assert_eq!(
-        (error.field, error.channel, error.layer, error.requirement),
-        ("sigmas", 2, 1, Requirement::PositiveSigma)
+        model.sample(Polarity::Negative, f64::NAN).unwrap_err(),
+        DensitySampleError::NonfiniteLayer {
+            channel: 0,
+            layer: 0
+        }
+    );
+}
+
+#[test]
+fn computed_failures_identify_channel_and_layer() {
+    let mut sigmas = [[1.0; 3]; 3];
+    sigmas[2][1] = 0.0;
+    let model = DensityCurveModel::new([[0.0; 3]; 3], [[1.0; 3]; 3], sigmas);
+    assert_eq!(
+        model.sample(Polarity::Negative, 0.0).unwrap_err(),
+        DensitySampleError::NonfiniteLayer {
+            channel: 2,
+            layer: 1
+        }
     );
     let mut amplitudes = [[1.0; 3]; 3];
     amplitudes[1][2] = f64::MAX;
-    let error = DensityCurveModel::new([[0.0; 3]; 3], amplitudes, [[1.0; 3]; 3]).unwrap_err();
-    assert_eq!(
-        (error.field, error.channel, error.layer, error.requirement),
-        ("amplitudes", 1, 2, Requirement::FloatRange)
-    );
-    let model = DensityCurveModel::new([[0.0; 3]; 3], [[f64::from(f32::MAX); 3]; 3], [[1.0; 3]; 3])
-        .unwrap();
-    for exposure in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+    let model = DensityCurveModel::new([[0.0; 3]; 3], amplitudes, [[1.0; 3]; 3]);
+    for exposure in [0.0, f64::NEG_INFINITY] {
         assert_eq!(
             model.sample(Polarity::Negative, exposure).unwrap_err(),
-            DensitySampleError::NonfiniteExposure
+            DensitySampleError::NonfiniteLayer {
+                channel: 1,
+                layer: 2
+            }
         );
     }
-    for exposure in [f64::MAX, -f64::MAX] {
-        assert_eq!(
-            model.sample(Polarity::Negative, exposure).unwrap_err(),
-            DensitySampleError::ExposureRange
-        );
-    }
+    amplitudes = [[1.0; 3]; 3];
+    amplitudes[2] = [f64::from(f32::MAX); 3];
+    let model = DensityCurveModel::new([[0.0; 3]; 3], amplitudes, [[1.0; 3]; 3]);
     assert_eq!(
         model.sample(Polarity::Negative, 0.0).unwrap_err(),
-        DensitySampleError::NonfiniteTotal { channel: 0 }
+        DensitySampleError::NonfiniteTotal { channel: 2 }
     );
 }
 
@@ -319,8 +488,7 @@ fn integer_negative_zero_retains_owned_bits_and_raw_identity() {
     let negative: f64 = serde_json::from_str("-0").unwrap();
     let decimal: f64 = serde_json::from_str("-0.0").unwrap();
     let positive: f64 = serde_json::from_str("0").unwrap();
-    let model =
-        DensityCurveModel::new([[negative; 3]; 3], [[negative; 3]; 3], [[1.0; 3]; 3]).unwrap();
+    let model = DensityCurveModel::new([[negative; 3]; 3], [[negative; 3]; 3], [[1.0; 3]; 3]);
     assert_eq!(model.centers()[0][0].to_bits(), negative.to_bits());
     assert_eq!(model.amplitudes()[0][0].to_bits(), negative.to_bits());
     let sample = model.sample(Polarity::Negative, negative).unwrap();

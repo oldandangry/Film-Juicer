@@ -909,7 +909,7 @@ fn validates_log_exposure() {
 }
 
 #[test]
-fn validates_model_coefficients() {
+fn decodes_model_structure_and_numbers() {
     let dir = Directory::new();
     for key in ["centers", "amplitudes", "sigmas"] {
         let mut input = profile_document(Role::Film);
@@ -929,21 +929,48 @@ fn validates_model_coefficients() {
             );
         }
         input = profile_document(Role::Film);
-        input["data"]["density_curves_model"][key][0][0] = json!(1e40);
+        input["data"]["density_curves_model"][key][0] = json!([1, 2]);
         assert_field_error(
             dir.load_source(&input, Role::Film).unwrap_err(),
-            &format!("data.density_curves_model.{key}[0][0]"),
-            Requirement::FloatRange,
+            "data.density_curves_model",
+            Requirement::ModelCoefficients,
+        );
+        input = profile_document(Role::Film);
+        input["data"]["density_curves_model"]
+            .as_object_mut()
+            .unwrap()
+            .remove(key);
+        assert_field_error(
+            dir.load_source(&input, Role::Film).unwrap_err(),
+            "data.density_curves_model",
+            Requirement::ModelCoefficients,
         );
     }
-    for sigma in [0.0, -1.0, 1e-50] {
-        let mut input = profile_document(Role::Film);
-        input["data"]["density_curves_model"]["sigmas"][0][0] = json!(sigma);
-        assert_field_error(
-            dir.load_source(&input, Role::Film).unwrap_err(),
-            "data.density_curves_model.sigmas[0][0]",
-            Requirement::PositiveSigma,
-        );
+}
+
+#[test]
+fn preserves_unusual_authored_coefficient_bits() {
+    let dir = Directory::new();
+    for role in [Role::Film, Role::Print] {
+        for key in ["centers", "amplitudes", "sigmas"] {
+            for raw in [1e40_f64, -1e40, 1e-50, -1e-50, -1.0, 0.0, -0.0] {
+                let mut input = profile_document(role);
+                input["data"]["density_curves_model"][key][2][1] = json!(raw);
+                let source = dir.load_source(&input, role).unwrap();
+                let model = source.density_model();
+                let coefficients = match key {
+                    "centers" => model.centers(),
+                    "amplitudes" => model.amplitudes(),
+                    "sigmas" => model.sigmas(),
+                    _ => unreachable!(),
+                };
+                assert_eq!(
+                    coefficients[2][1].to_bits(),
+                    raw.to_bits(),
+                    "{role:?} {key} {raw}"
+                );
+            }
+        }
     }
 }
 

@@ -11,7 +11,7 @@ visual inspection found no perceptible image or scopes/histogram difference.
 This is a permanent, bounded exception to the migration's native bit-equality
 rule: the characterized density differences and resulting curve/profile/recipe
 hashes, glare seeds, grain/discrete decisions and rendered differences are
-accepted. Hash algorithms, actual owned bits, admission, validity, FP32 order,
+accepted. Hash algorithms, actual owned bits, computed-result validity, FP32 order,
 f64 model precision and determinism remain required. No universal tolerance is
 defined. The separately qualified standard f32 sensitivity math is unaffected.
 
@@ -27,7 +27,7 @@ Rust/Cargo 1.98.1 (LLVM 22.1.8), respectively GNU and MSVC x86_64 targets.
 The source paths in the manifest are archival provenance identifiers, not test
 inputs. Adoption copied their bits without running density, gamma or identity
 algorithms. All four approved Rust captures agreed exactly; all four original
-native captures agreed on model/admission/validity, and all four native replays
+native captures agreed on historical model/admission/validity, and all four native replays
 agreed on candidate-bit identities. Historical captures remain unchanged.
 
 ## Contents and encoding
@@ -41,12 +41,12 @@ agreed on candidate-bit identities. Historical captures remain unchanged.
   The first three values are channel totals; the next nine are layers in
   `[layer][channel]` order. Invalid records contain zero padding, not valid zero
   samples. Case `sample_start` indexes records, not bytes. All 19,235 valid
-  samples are exact approved-Rust expectations; 12 numerical failures publish
-  no sample.
-- Sixteen rejected coefficient cases have no sample records. The private raw
-  evaluator also sampled unadmitted models for diagnosis; some returned finite
-  values. Those diagnostic values do not authorize constructing a Rust model
-  with invalid coefficients. Overflowing raw layer inputs are rejected here.
+  samples are exact approved-Rust expectations; 12 historical failures have no
+  sample payload. Their current interpretation is specified below.
+- Sixteen historically rejected coefficient cases have no sample records.
+  Construction now retains all their authored f64 bits without coefficient
+  admission. The private raw evaluator also sampled these models for diagnosis;
+  those diagnostic values supply no approved sample expectations here.
 - Each complete case's `identities` copies total, layer and raw print-curve
   identities from **independent native replay over the approved Rust bits**.
   Tests compose only the new primitives, preserving total sample/channel order,
@@ -70,3 +70,27 @@ rounding/saturation tails, and a variable axis with duplicate entries. Five
 gamma-admission-only cases are listed as excluded in the manifest; they belong
 to the later gamma API. No expectations were produced by the implementation
 under test, and no old native identity is assigned to changed Rust samples.
+
+## Current trusted-resource acceptance
+
+The historical payloads and manifest remain unchanged. `supported` and validity
+bytes describe the original capture, not current scientific admission rules.
+All 19,235 frozen valid samples and all 119 replay identity compositions retain
+their exact expectations. All sixteen formerly rejected models are constructed
+and checked for exact retained coefficient bits, without inventing sample oracles.
+
+Scalar exposures now reach the unchanged f64-to-f32 cast and CDF arithmetic.
+For `exposure/narrowing-special`, zero-based rows 0 and 1 succeed with positive
+zero in every layer and total. Rows 12, 13 and 14 succeed with `1.0f32` in every
+layer and `3.0f32` in every channel total. These exact endpoint expectations
+follow from the frozen zero centers, unit amplitudes/sigmas and negative polarity;
+invalid-record zero padding is not an expected sample. Row 15 (NaN) fails with
+`NonfiniteLayer { channel: 0, layer: 0 }` during arithmetic. Rows 0–2 of both
+`overflow/total-positive` and `overflow/total-negative` retain
+`NonfiniteTotal { channel: 0 }`. The previously admitted 19,247-row cohort now
+has 19,240 successes and seven computed failures. Every historical failure row
+has an explicit current assertion.
+
+Focused tests separately cover unusual coefficients and scalar exposures using
+exact CDF endpoints, the zero-argument half response, and actual computed-error
+boundaries. They introduce no fixture regeneration, tolerance or gamma API.
