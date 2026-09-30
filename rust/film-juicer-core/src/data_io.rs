@@ -1,6 +1,6 @@
 //! Bounded resource decoding, before spectral preparation or asset ownership.
 //! Static noise and lazy neutral calibration have focused child modules.
-//! Constructors return complete values. Bundled spectral LUTs are C-order f32;
+//! Constructors return complete values. Spectral LUTs decode to C-order f32;
 //! the Mallett basis has 81 wavelength rows and three RGB columns.
 //! Explicit sample and noise buffers reserve fallibly. Incidental path and parser
 //! allocations can still abort; this module does not provide general OOM recovery.
@@ -205,92 +205,28 @@ fn csv_number(input: &mut &[u8]) -> Option<f32> {
     Some(value)
 }
 
-// These are the two exact installed NPY 1.0 prefixes, including padding.
-const LUT_PREFIX: &[u8; 128] = b"\x93NUMPY\x01\x00v\x00{'descr': '<f2', 'fortran_order': False, 'shape': (192, 192, 81), }                                                  \n";
-const MALLETT_PREFIX: &[u8; 128] = b"\x93NUMPY\x01\x00v\x00{'descr': '<f4', 'fortran_order': False, 'shape': (81, 3), }                                                         \n";
-const LUT_SAMPLES: usize = 192 * 192 * 81;
-const LUT_FILE_BYTES: u64 = (LUT_PREFIX.len() + LUT_SAMPLES * 2) as u64;
-const MALLETT_FILE_BYTES: u64 = (MALLETT_PREFIX.len() + 81 * 3 * 4) as u64;
-const MALLETT_ASSET: &str = "mallett2019_basis.npy";
-const FINGERPRINT_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const LUT_SHAPE: [usize; 3] = [192, 192, 81];
+const MALLETT_SHAPE: [usize; 2] = [81, 3];
+const LUT_LAYOUT: &str = "NPY 1.0, little-endian f16/f32/f64, C-order (192, 192, 81)";
+const MALLETT_LAYOUT: &str = "NPY 1.0, little-endian f16/f32/f64, C-order (81, 3) RGB";
+const NPY_CHUNK_BYTES: usize = 8192;
 
-/// The two bundled LUTs share a layout but have distinct decoded contents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpectraLutAsset {
-    Hanatos,
-    Arctic,
-}
-
-impl SpectraLutAsset {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Hanatos => "irradiance_xy_tc.npy",
-            Self::Arctic => "arctic2026beta04_reflectance_xy_tc.npy",
-        }
-    }
-
-    fn fingerprint(self) -> u64 {
-        match self {
-            Self::Hanatos => 0x81eb_efd4_e4cc_9926,
-            Self::Arctic => 0x9262_ffb7_65e3_289e,
-        }
-    }
-}
-
-/// Load the selected bundled 192x192x81 f16 LUT as C-order f32 samples.
-pub fn load_spectra_lut(
-    path: impl AsRef<Path>,
-    asset: SpectraLutAsset,
-) -> Result<Vec<f32>, ReadError> {
+/// Load a 192x192x81 C-order spectral LUT, converting supported floats to f32.
+pub fn load_spectra_lut(path: impl AsRef<Path>) -> Result<Vec<f32>, ReadError> {
     let path = path.as_ref().to_path_buf();
-    let result = (|| {
-        let (mut file, length) = open_npy(&path)?;
-        read_spectra_lut(&mut file, length, asset, Vec::try_reserve_exact)
-    })();
+    let result = File::open(&path)
+        .map_err(|error| ReadErrorKind::Open(error.kind()))
+        .and_then(|mut file| read_spectra_lut(&mut file, Vec::try_reserve_exact));
     result.map_err(|kind| ReadError { path, kind })
 }
 
-/// Load the bundled f32 basis in wavelength-major RGB order.
+/// Load an 81x3 C-order Mallett basis in wavelength-major RGB order.
 pub fn load_mallett_basis(path: impl AsRef<Path>) -> Result<[[f32; 3]; 81], ReadError> {
     let path = path.as_ref().to_path_buf();
-    let result = (|| {
-        let (mut file, length) = open_npy(&path)?;
-        read_npy_prefix(
-            &mut file,
-            length,
-            MALLETT_FILE_BYTES,
-            MALLETT_PREFIX,
-            MALLETT_ASSET,
-        )?;
-        let mut basis = [[0.0; 3]; 81];
-        let mut fingerprint = FINGERPRINT_OFFSET;
-        for row in &mut basis {
-            let mut bytes = [0; 12];
-            read_npy_bytes(&mut file, &mut bytes, ReadPart::Payload, MALLETT_ASSET)?;
-            for (sample, bytes) in row.iter_mut().zip(bytes.as_chunks::<4>().0) {
-                *sample = f32::from_le_bytes(*bytes);
-                if !sample.is_finite() {
-                    return Err(invalid_npy(MALLETT_ASSET, "nonfinite sample"));
-                }
-                fingerprint = fingerprint_sample(fingerprint, *sample);
-            }
-        }
-        if fingerprint != 0xb2ce_9984_05c5_5a48 {
-            return Err(invalid_npy(MALLETT_ASSET, "decoded fingerprint mismatch"));
-        }
-        require_npy_eof(&mut file, MALLETT_ASSET)?;
-        Ok(basis)
-    })();
+    let result = File::open(&path)
+        .map_err(|error| ReadErrorKind::Open(error.kind()))
+        .and_then(|mut file| read_mallett_basis(&mut file));
     result.map_err(|kind| ReadError { path, kind })
-}
-
-fn open_npy(path: &Path) -> Result<(File, u64), ReadErrorKind> {
-    let file = File::open(path).map_err(|error| ReadErrorKind::Open(error.kind()))?;
-    let length = file
-        .metadata()
-        .map_err(|error| read_error(ReadPart::Header, error))?
-        .len();
-    Ok((file, length))
 }
 
 fn invalid_npy(expected: &'static str, reason: &'static str) -> ReadErrorKind {
@@ -312,85 +248,266 @@ fn read_npy_bytes(
     reader: &mut impl Read,
     bytes: &mut [u8],
     part: ReadPart,
-    asset: &'static str,
 ) -> Result<(), ReadErrorKind> {
-    reader.read_exact(bytes).map_err(|error| {
-        if error.kind() == io::ErrorKind::UnexpectedEof {
-            invalid_npy(asset, "short read")
-        } else {
-            read_error(part, error)
+    reader
+        .read_exact(bytes)
+        .map_err(|error| read_error(part, error))
+}
+
+#[derive(Clone, Copy)]
+enum NpyDtype {
+    F16,
+    F32,
+    F64,
+}
+
+impl NpyDtype {
+    fn byte_width(self) -> usize {
+        match self {
+            Self::F16 => 2,
+            Self::F32 => 4,
+            Self::F64 => 8,
         }
-    })
+    }
+
+    // The payload reader supplies one exact-width chunk from this dtype.
+    fn decode(self, bytes: &[u8]) -> f32 {
+        match self {
+            Self::F16 => half_to_float(u16::from_le_bytes([bytes[0], bytes[1]])),
+            Self::F32 => f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            Self::F64 => f64::from_le_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ]) as f32,
+        }
+    }
 }
 
-fn read_npy_prefix(
+// Only the three supported header fields are parsed; no Python evaluation,
+// escaped strings, nested metadata, or arbitrary literal grammar is needed.
+struct NpyHeaderParser<'a> {
+    remaining: &'a [u8],
+    expected: &'static str,
+}
+
+impl<'a> NpyHeaderParser<'a> {
+    fn whitespace(&mut self) {
+        while self.remaining.first().is_some_and(u8::is_ascii_whitespace) {
+            self.remaining = &self.remaining[1..];
+        }
+    }
+
+    fn consume(&mut self, byte: u8) -> bool {
+        self.whitespace();
+        if self.remaining.first() != Some(&byte) {
+            return false;
+        }
+        self.remaining = &self.remaining[1..];
+        true
+    }
+
+    fn require(&mut self, byte: u8) -> Result<(), ReadErrorKind> {
+        if self.consume(byte) {
+            Ok(())
+        } else {
+            Err(invalid_npy(self.expected, "malformed header syntax"))
+        }
+    }
+
+    fn string(&mut self) -> Result<&'a [u8], ReadErrorKind> {
+        self.whitespace();
+        let Some(&quote @ (b'\'' | b'"')) = self.remaining.first() else {
+            return Err(invalid_npy(self.expected, "expected quoted header string"));
+        };
+        self.remaining = &self.remaining[1..];
+        let Some(end) = self.remaining.iter().position(|&byte| byte == quote) else {
+            return Err(invalid_npy(self.expected, "unterminated header string"));
+        };
+        let string = &self.remaining[..end];
+        if string
+            .iter()
+            .any(|&byte| byte == b'\\' || !byte.is_ascii() || byte.is_ascii_control())
+        {
+            return Err(invalid_npy(self.expected, "unsupported header string"));
+        }
+        self.remaining = &self.remaining[end + 1..];
+        Ok(string)
+    }
+
+    fn dimension(&mut self) -> Result<usize, ReadErrorKind> {
+        self.whitespace();
+        let end = self
+            .remaining
+            .iter()
+            .position(|byte| !byte.is_ascii_digit())
+            .unwrap_or(self.remaining.len());
+        if end == 0 || (end > 1 && self.remaining[0] == b'0') {
+            return Err(invalid_npy(
+                self.expected,
+                "expected decimal shape dimension",
+            ));
+        }
+        let mut dimension = 0usize;
+        for &digit in &self.remaining[..end] {
+            dimension = dimension
+                .checked_mul(10)
+                .and_then(|n| n.checked_add(usize::from(digit - b'0')))
+                .ok_or(ReadErrorKind::Size)?;
+        }
+        self.remaining = &self.remaining[end..];
+        Ok(dimension)
+    }
+
+    fn shape<const N: usize>(&mut self) -> Result<[usize; N], ReadErrorKind> {
+        self.require(b'(')?;
+        let mut shape = [0; N];
+        for (index, dimension) in shape.iter_mut().enumerate() {
+            if index != 0 {
+                self.require(b',')?;
+            }
+            *dimension = self.dimension()?;
+        }
+        self.consume(b',');
+        self.require(b')')?;
+        Ok(shape)
+    }
+}
+
+fn read_npy_header<const N: usize>(
     reader: &mut impl Read,
-    file_bytes: u64,
-    expected_bytes: u64,
-    expected_prefix: &[u8; 128],
-    asset: &'static str,
-) -> Result<(), ReadErrorKind> {
-    if file_bytes != expected_bytes {
-        return Err(invalid_npy(asset, "wrong file length"));
+    required_shape: [usize; N],
+    expected: &'static str,
+) -> Result<(NpyDtype, usize), ReadErrorKind> {
+    let mut prefix = [0; 10];
+    read_npy_bytes(reader, &mut prefix, ReadPart::Header)?;
+    if &prefix[..6] != b"\x93NUMPY" {
+        return Err(invalid_npy(expected, "wrong NPY magic"));
     }
-    let mut prefix = [0; 128];
-    read_npy_bytes(reader, &mut prefix, ReadPart::Header, asset)?;
-    if &prefix != expected_prefix {
-        return Err(invalid_npy(asset, "wrong bundled NPY prefix"));
+    if prefix[6..8] != [1, 0] {
+        return Err(invalid_npy(expected, "unsupported NPY version"));
     }
-    Ok(())
+    let header_bytes = usize::from(u16::from_le_bytes([prefix[8], prefix[9]]));
+    let mut header = vec![0; header_bytes];
+    for chunk in header.chunks_mut(NPY_CHUNK_BYTES) {
+        read_npy_bytes(reader, chunk, ReadPart::Header)?;
+    }
+    if header.last() != Some(&b'\n') {
+        return Err(invalid_npy(expected, "header must end with a newline"));
+    }
+    let mut parser = NpyHeaderParser {
+        remaining: &header,
+        expected,
+    };
+    let mut dtype = None;
+    let mut c_order = false;
+    let mut shape = None;
+    parser.require(b'{')?;
+    if !parser.consume(b'}') {
+        loop {
+            let key = parser.string()?;
+            parser.require(b':')?;
+            match key {
+                b"descr" if dtype.is_none() => {
+                    dtype = Some(match parser.string()? {
+                        b"<f2" => NpyDtype::F16,
+                        b"<f4" => NpyDtype::F32,
+                        b"<f8" => NpyDtype::F64,
+                        _ => return Err(invalid_npy(expected, "unsupported dtype or byte order")),
+                    });
+                }
+                b"fortran_order" if !c_order => {
+                    parser.whitespace();
+                    let Some(remaining) = parser.remaining.strip_prefix(b"False") else {
+                        return Err(invalid_npy(expected, "C-order False required"));
+                    };
+                    parser.remaining = remaining;
+                    c_order = true;
+                }
+                b"shape" if shape.is_none() => shape = Some(parser.shape::<N>()?),
+                b"descr" | b"fortran_order" | b"shape" => {
+                    return Err(invalid_npy(expected, "duplicate header field"));
+                }
+                _ => return Err(invalid_npy(expected, "unsupported header field")),
+            }
+            if parser.consume(b'}') {
+                break;
+            }
+            parser.require(b',')?;
+            if parser.consume(b'}') {
+                break;
+            }
+        }
+    }
+    parser.whitespace();
+    if !parser.remaining.is_empty() {
+        return Err(invalid_npy(expected, "extra header syntax"));
+    }
+    let (Some(dtype), true, Some(shape)) = (dtype, c_order, shape) else {
+        return Err(invalid_npy(expected, "missing required header field"));
+    };
+    let samples = shape.into_iter().try_fold(1usize, |count, dimension| {
+        count.checked_mul(dimension).ok_or(ReadErrorKind::Size)
+    })?;
+    samples
+        .checked_mul(dtype.byte_width())
+        .ok_or(ReadErrorKind::Size)?;
+    samples
+        .checked_mul(size_of::<f32>())
+        .ok_or(ReadErrorKind::Size)?;
+    if shape != required_shape {
+        return Err(invalid_npy(expected, "incompatible shape"));
+    }
+    Ok((dtype, samples))
 }
 
-fn require_npy_eof(reader: &mut impl Read, asset: &'static str) -> Result<(), ReadErrorKind> {
+fn require_npy_eof(reader: &mut impl Read, expected: &'static str) -> Result<(), ReadErrorKind> {
     let mut byte = [0];
     loop {
         match reader.read(&mut byte) {
             Ok(0) => return Ok(()),
-            Ok(_) => return Err(invalid_npy(asset, "extra payload")),
+            Ok(_) => return Err(invalid_npy(expected, "extra payload")),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(read_error(ReadPart::Payload, error)),
         }
     }
 }
 
-// FNV-1a over decoded little-endian f32 bits, matching the independent bundled
-// expectations. This detects installed-content corruption, not authenticity.
-fn fingerprint_sample(hash: u64, sample: f32) -> u64 {
-    sample.to_le_bytes().into_iter().fold(hash, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
-    })
+fn read_npy_samples(
+    reader: &mut impl Read,
+    dtype: NpyDtype,
+    samples: &mut [f32],
+) -> Result<(), ReadErrorKind> {
+    let mut buffer = [0; NPY_CHUNK_BYTES];
+    let width = dtype.byte_width();
+    for chunk in samples.chunks_mut(buffer.len() / width) {
+        let bytes = &mut buffer[..chunk.len() * width];
+        read_npy_bytes(reader, bytes, ReadPart::Payload)?;
+        for (sample, bytes) in chunk.iter_mut().zip(bytes.chunks_exact(width)) {
+            *sample = dtype.decode(bytes);
+        }
+    }
+    Ok(())
 }
 
 // The private reservation seam exercises the one large final allocation.
 fn read_spectra_lut(
     reader: &mut impl Read,
-    file_bytes: u64,
-    asset: SpectraLutAsset,
     reserve: impl FnOnce(&mut Vec<f32>, usize) -> Result<(), TryReserveError>,
 ) -> Result<Vec<f32>, ReadErrorKind> {
-    read_npy_prefix(reader, file_bytes, LUT_FILE_BYTES, LUT_PREFIX, asset.name())?;
+    let (dtype, count) = read_npy_header(reader, LUT_SHAPE, LUT_LAYOUT)?;
     let mut samples = Vec::new();
-    reserve(&mut samples, LUT_SAMPLES).map_err(|_| ReadErrorKind::Capacity)?;
-    let mut buffer = [0; 8192];
-    let mut fingerprint = FINGERPRINT_OFFSET;
-    while samples.len() < LUT_SAMPLES {
-        let count = (LUT_SAMPLES - samples.len()).min(buffer.len() / 2);
-        let bytes = &mut buffer[..count * 2];
-        read_npy_bytes(reader, bytes, ReadPart::Payload, asset.name())?;
-        for bytes in bytes.as_chunks::<2>().0 {
-            let sample = half_to_float(u16::from_le_bytes(*bytes));
-            if !sample.is_finite() {
-                return Err(invalid_npy(asset.name(), "nonfinite sample"));
-            }
-            fingerprint = fingerprint_sample(fingerprint, sample);
-            samples.push(sample);
-        }
-    }
-    if fingerprint != asset.fingerprint() {
-        return Err(invalid_npy(asset.name(), "decoded fingerprint mismatch"));
-    }
-    require_npy_eof(reader, asset.name())?;
+    reserve(&mut samples, count).map_err(|_| ReadErrorKind::Capacity)?;
+    samples.resize(count, 0.0);
+    read_npy_samples(reader, dtype, &mut samples)?;
+    require_npy_eof(reader, LUT_LAYOUT)?;
     Ok(samples)
+}
+
+fn read_mallett_basis(reader: &mut impl Read) -> Result<[[f32; 3]; 81], ReadErrorKind> {
+    let (dtype, _) = read_npy_header(reader, MALLETT_SHAPE, MALLETT_LAYOUT)?;
+    let mut basis = [[0.0; 3]; 81];
+    read_npy_samples(reader, dtype, basis.as_flattened_mut())?;
+    require_npy_eof(reader, MALLETT_LAYOUT)?;
+    Ok(basis)
 }
 
 fn half_to_float(bits: u16) -> f32 {
@@ -436,42 +553,57 @@ mod tests {
             (0x400, 0x3880_0000),
             (0x3c00, 0x3f80_0000),
             (0x7bff, 0x477f_e000),
+            (0xc000, 0xc000_0000),
+            (0x7c00, 0x7f80_0000),
+            (0xfc00, 0xff80_0000),
+            (0x7e23, 0x7fc4_6000),
+            (0xfe35, 0xffc6_a000),
         ] {
             assert_eq!(half_to_float(half).to_bits(), bits);
         }
     }
 
-    #[test]
-    fn reservation_failure() {
-        let mut reader = Cursor::new(LUT_PREFIX);
-        let error = read_spectra_lut(
-            &mut reader,
-            LUT_FILE_BYTES,
-            SpectraLutAsset::Hanatos,
-            |samples, count| {
-                assert!(samples.is_empty());
-                assert_eq!(count, LUT_SAMPLES);
-                samples.try_reserve_exact(usize::MAX)
-            },
-        )
-        .unwrap_err();
-        assert_eq!(error, ReadErrorKind::Capacity);
-        assert_eq!(reader.position(), 128);
+    fn npy_header(header: &[u8]) -> Vec<u8> {
+        let mut bytes = b"\x93NUMPY\x01\x00".to_vec();
+        bytes.extend(u16::try_from(header.len()).unwrap().to_le_bytes());
+        bytes.extend(header);
+        bytes
     }
 
     #[test]
-    fn file_length_precedes_reservation() {
-        let error = read_spectra_lut(
-            &mut io::empty(),
-            LUT_FILE_BYTES - 1,
-            SpectraLutAsset::Hanatos,
-            |_, _| panic!("wrong file length must not reserve"),
-        )
+    fn reservation_failure() {
+        let bytes =
+            npy_header(b"{'shape': (192,192,81), 'descr': '<f8', 'fortran_order': False}\n");
+        let mut reader = Cursor::new(&bytes);
+        let error = read_spectra_lut(&mut reader, |samples, count| {
+            assert!(samples.is_empty());
+            assert_eq!(count, 192 * 192 * 81);
+            samples.try_reserve_exact(usize::MAX)
+        })
         .unwrap_err();
-        assert_eq!(
-            error,
-            invalid_npy(SpectraLutAsset::Hanatos.name(), "wrong file length")
-        );
+        assert_eq!(error, ReadErrorKind::Capacity);
+        assert_eq!(reader.position(), bytes.len() as u64);
+    }
+
+    #[test]
+    fn representation_precedes_reservation() {
+        for header in [
+            "{'descr': '<f4', 'shape': (81,3), 'fortran_order': False}\n".to_owned(),
+            format!(
+                "{{'descr': '<f8', 'shape': ({},192,81), 'fortran_order': False}}\n",
+                usize::MAX
+            ),
+        ] {
+            let error =
+                read_spectra_lut(&mut Cursor::new(npy_header(header.as_bytes())), |_, _| {
+                    panic!("invalid representation must not reserve")
+                })
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                ReadErrorKind::InvalidNpy { .. } | ReadErrorKind::Size
+            ));
+        }
     }
 
     struct ChunkReader {
@@ -495,21 +627,41 @@ mod tests {
 
     #[test]
     fn bounded_partial_reads() {
+        let bytes = bundled_lut();
+        let length = bytes.len() as u64;
         let mut reader = ChunkReader {
-            input: Cursor::new(bundled_lut()),
+            input: Cursor::new(bytes),
             max_read: 0,
             fail_after: None,
         };
-        let samples = read_spectra_lut(
-            &mut reader,
-            LUT_FILE_BYTES,
-            SpectraLutAsset::Hanatos,
-            Vec::try_reserve_exact,
-        )
-        .unwrap();
-        assert_eq!(samples.len(), LUT_SAMPLES);
-        assert_eq!(reader.max_read, 8192);
-        assert_eq!(reader.input.position(), LUT_FILE_BYTES);
+        let samples = read_spectra_lut(&mut reader, Vec::try_reserve_exact).unwrap();
+        assert_eq!(samples.len(), 192 * 192 * 81);
+        assert_eq!(reader.max_read, NPY_CHUNK_BYTES);
+        assert_eq!(reader.input.position(), length);
+
+        for dtype in ["<f2", "<f4", "<f8"] {
+            let mut header =
+                format!("{{'descr': '{dtype}', 'shape': (81,3), 'fortran_order': False}}")
+                    .into_bytes();
+            header.resize(usize::from(u16::MAX) - 1, b' ');
+            header.push(b'\n');
+            let mut bytes = npy_header(&header);
+            let width = match dtype {
+                "<f2" => 2,
+                "<f4" => 4,
+                _ => 8,
+            };
+            bytes.resize(bytes.len() + 81 * 3 * width, 0);
+            let length = bytes.len() as u64;
+            let mut reader = ChunkReader {
+                input: Cursor::new(bytes),
+                max_read: 0,
+                fail_after: None,
+            };
+            assert_eq!(read_mallett_basis(&mut reader).unwrap(), [[0.0; 3]; 81]);
+            assert_eq!(reader.max_read, NPY_CHUNK_BYTES);
+            assert_eq!(reader.input.position(), length);
+        }
     }
 
     #[test]
@@ -524,43 +676,81 @@ mod tests {
                     kind: io::ErrorKind::PermissionDenied,
                 },
             ),
-            (
-                None,
-                invalid_npy(SpectraLutAsset::Hanatos.name(), "short read"),
-            ),
+            (None, ReadErrorKind::ShortRead(ReadPart::Payload)),
         ] {
             let mut reader = ChunkReader {
                 input: Cursor::new(bytes.clone()),
                 max_read: 0,
                 fail_after,
             };
-            let error = read_spectra_lut(
-                &mut reader,
-                LUT_FILE_BYTES,
-                SpectraLutAsset::Hanatos,
-                Vec::try_reserve_exact,
-            )
-            .unwrap_err();
+            let error = read_spectra_lut(&mut reader, Vec::try_reserve_exact).unwrap_err();
             assert_eq!(error, expected);
             assert_eq!(reader.input.position(), 9000);
         }
     }
 
     #[test]
-    fn growth_after_length_check() {
+    fn basis_read_failures() {
+        let prefix = npy_header(b"{'descr': '<f8', 'fortran_order': False, 'shape': (81,3)}\n");
+        let payload_end = prefix.len() + 81 * 3 * 8;
+        for (end, part) in [
+            (0, ReadPart::Header),
+            (15, ReadPart::Header),
+            (prefix.len() + 30, ReadPart::Payload),
+            (payload_end, ReadPart::Payload),
+        ] {
+            let mut bytes = prefix.clone();
+            bytes.resize(payload_end, 0);
+            bytes.truncate(end);
+            for fail_after in [None, Some(end as u64)] {
+                let mut reader = ChunkReader {
+                    input: Cursor::new(bytes.clone()),
+                    max_read: 0,
+                    fail_after,
+                };
+                let result = read_mallett_basis(&mut reader);
+                if fail_after.is_some() {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        ReadErrorKind::Io {
+                            part,
+                            kind: io::ErrorKind::PermissionDenied
+                        }
+                    );
+                } else if end < payload_end {
+                    assert_eq!(result.unwrap_err(), ReadErrorKind::ShortRead(part));
+                } else {
+                    assert_eq!(result.unwrap(), [[0.0; 3]; 81]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lut_eof_failure_does_not_return_samples() {
+        let bytes = bundled_lut();
+        let end = bytes.len() as u64;
+        let mut reader = ChunkReader {
+            input: Cursor::new(bytes),
+            max_read: 0,
+            fail_after: Some(end),
+        };
+        assert_eq!(
+            read_spectra_lut(&mut reader, Vec::try_reserve_exact).unwrap_err(),
+            ReadErrorKind::Io {
+                part: ReadPart::Payload,
+                kind: io::ErrorKind::PermissionDenied
+            }
+        );
+        assert_eq!(reader.input.position(), end);
+    }
+
+    #[test]
+    fn trailing_payload_does_not_return_samples() {
         let mut bytes = bundled_lut();
         bytes.push(0);
-        let error = read_spectra_lut(
-            &mut Cursor::new(bytes),
-            LUT_FILE_BYTES,
-            SpectraLutAsset::Hanatos,
-            Vec::try_reserve_exact,
-        )
-        .unwrap_err();
-        assert_eq!(
-            error,
-            invalid_npy(SpectraLutAsset::Hanatos.name(), "extra payload")
-        );
+        let error = read_spectra_lut(&mut Cursor::new(bytes), Vec::try_reserve_exact).unwrap_err();
+        assert_eq!(error, invalid_npy(LUT_LAYOUT, "extra payload"));
     }
 
     #[test]
