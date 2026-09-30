@@ -5,7 +5,8 @@
 //! Spektrafilm provenance: 3bb2c2d2801ff68b92019cf1dbcbb133d60832bc.
 //! Ordinary tests use only shipped resources and the independent constants here.
 //! Product-contract exceptions: JSON negative zero retains its sign; blackbody
-//! temperatures use the original finite positive decimal suffix, without hex.
+//! temperatures use the original finite decimal suffix, without hex or positivity
+//! admission. Source labels and f64 exposures retain authored order and conversions.
 
 #![forbid(unsafe_code)]
 
@@ -648,7 +649,7 @@ fn rejects_invalid_illuminants() {
     let dir = Directory::new();
     let mut input = profile_document(Role::Film);
     for key in ["reference_illuminant", "viewing_illuminant"] {
-        for rejected in ["D", "D-50", "BB0", "BB-3", "BB1e309", "BB1e-999", "unknown"] {
+        for rejected in ["D", "D-50", "BB1e309", "unknown"] {
             input["info"][key] = json!(rejected);
             assert_field_error(
                 dir.load_source(&input, Role::Film).unwrap_err(),
@@ -773,6 +774,27 @@ fn validates_adaptation_samples() {
 }
 
 #[test]
+fn requires_consumed_sample_fields() {
+    let dir = Directory::new();
+    for role in [Role::Film, Role::Print] {
+        for key in [
+            "wavelengths",
+            "log_sensitivity",
+            "channel_density",
+            "base_density",
+        ] {
+            let mut input = profile_document(role);
+            input["data"].as_object_mut().unwrap().remove(key);
+            assert_field_error(
+                dir.load_source(&input, role).unwrap_err(),
+                &format!("data.{key}"),
+                Requirement::ArrayLength(81),
+            );
+        }
+    }
+}
+
+#[test]
 fn validates_sample_dimensions() {
     let dir = Directory::new();
     for key in [
@@ -839,72 +861,152 @@ fn preserves_sample_conversion() {
 }
 
 #[test]
-fn enforces_wavelength_axis() {
+fn preserves_authored_wavelength_positions() {
     let dir = Directory::new();
-    let mut input = profile_document(Role::Film);
-    input["data"]["wavelengths"][0] = json!(380.000001);
-    assert_eq!(
-        dir.load_source(&input, Role::Film)
-            .unwrap()
-            .samples()
-            .wavelengths()[0],
-        380.0
-    );
-    input["data"]["wavelengths"][0] = json!(381);
-    assert_field_error(
-        dir.load_source(&input, Role::Film).unwrap_err(),
-        "data.wavelengths[0]",
-        Requirement::CanonicalWavelength(380),
-    );
-    input["data"]["wavelengths"][0] = Value::Null;
-    assert_field_error(
-        dir.load_source(&input, Role::Film).unwrap_err(),
-        "data.wavelengths[0]",
-        Requirement::FiniteNumber,
-    );
+    for role in [Role::Film, Role::Print] {
+        let mut input = profile_document(role);
+        let labels: [f32; 81] = std::array::from_fn(|index| 381.0 + index as f32 * 5.0);
+        input["data"]["wavelengths"] = json!(labels.as_slice());
+        for index in 0..81 {
+            input["data"]["log_sensitivity"][index] = json!([index, index + 81, index + 162]);
+            input["data"]["channel_density"][index] =
+                json!([index + 243, index + 324, index + 405]);
+            input["data"]["base_density"][index] = json!(index + 486);
+        }
+        let source = dir.load_source(&input, role).unwrap();
+        let samples = source.samples();
+        assert_eq!(
+            samples.wavelengths().map(f32::to_bits),
+            labels.map(f32::to_bits)
+        );
+        for index in 0..81 {
+            assert_eq!(
+                samples.log_sensitivity()[index],
+                [index as f32, (index + 81) as f32, (index + 162) as f32]
+            );
+            assert_eq!(
+                samples.channel_density()[index],
+                [
+                    (index + 243) as f32,
+                    (index + 324) as f32,
+                    (index + 405) as f32
+                ]
+            );
+            assert_eq!(samples.base_density()[index], (index + 486) as f32);
+        }
+        input["data"]["wavelengths"][0] = json!(380.000001);
+        input["data"]["wavelengths"][1] = json!(1e40);
+        input["data"]["wavelengths"][2] = json!(-0.0);
+        let source = dir.load_source(&input, role).unwrap();
+        assert_eq!(
+            source.samples().wavelengths()[..3]
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>(),
+            [0x43be0000, 0x7f800000, 0x80000000]
+        );
+        for invalid in [Value::Null, json!(true), json!("381")] {
+            input["data"]["wavelengths"][0] = invalid;
+            assert_field_error(
+                dir.load_source(&input, role).unwrap_err(),
+                "data.wavelengths[0]",
+                Requirement::FiniteNumber,
+            );
+        }
+    }
 }
 
 #[test]
-fn validates_log_exposure() {
+fn preserves_authored_exposure_sequence() {
     let dir = Directory::new();
-    let mut input = profile_document(Role::Film);
-    for accepted in [json!([1]), json!([0, 0]), json!([1.00000001, 1.00000002])] {
-        input["data"]["log_exposure"] = accepted;
-        assert!(dir.load_source(&input, Role::Film).is_ok());
+    // Inputs are the oracle: decoding must preserve every authored f64 bit and position.
+    let sequences: &[&[f64]] = &[
+        &[1.0],
+        &[0.0, 0.0],
+        &[2.0, 1.0, -1.0],
+        &[1.00000001, 1.00000002],
+        &[1.00000002, 1.00000001],
+        &[1.0, -0.0, 0.0, -1.0],
+        &[-1e40, -1.0, 0.0, 1.0, 1e40],
+        &[1e40, -1e40],
+    ];
+    for role in [Role::Film, Role::Print] {
+        let mut input = profile_document(role);
+        for &authored in sequences {
+            input["data"]["log_exposure"] = json!(authored);
+            let source = dir.load_source(&input, role).unwrap();
+            let exposure = source.samples().log_exposure();
+            assert_eq!(
+                exposure.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                authored.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "{role:?} {authored:?}"
+            );
+        }
+        input["data"]["log_exposure"] = json!([1.00000002, 1.00000001]);
+        let source = dir.load_source(&input, role).unwrap();
+        let exposure = source.samples().log_exposure();
+        assert!(exposure[0] > exposure[1]);
+        assert_eq!((exposure[0] as f32).to_bits(), 0x3f800000);
+        assert_eq!((exposure[1] as f32).to_bits(), 0x3f800000);
+        input["data"]["log_exposure"] = json!([-1e40, 1e40]);
+        let source = dir.load_source(&input, role).unwrap();
+        assert_eq!(
+            source
+                .samples()
+                .log_exposure()
+                .iter()
+                .map(|v| (*v as f32).to_bits())
+                .collect::<Vec<_>>(),
+            [0xff800000, 0x7f800000]
+        );
     }
-    for (array, field, requirement) in [
-        (json!([]), "data.log_exposure", Requirement::ExposureCount),
-        (
-            json!([null]),
-            "data.log_exposure[0]",
-            Requirement::FiniteNumber,
-        ),
-        (
-            json!([true]),
-            "data.log_exposure[0]",
-            Requirement::FiniteNumber,
-        ),
-        (
-            json!(["1"]),
-            "data.log_exposure[0]",
-            Requirement::FiniteNumber,
-        ),
-        (
-            json!([1.00000002, 1.00000001]),
-            "data.log_exposure[1]",
-            Requirement::NondecreasingExposure,
-        ),
-        (
-            json!([1e40]),
-            "data.log_exposure[0]",
-            Requirement::FloatRange,
-        ),
-    ] {
-        input["data"]["log_exposure"] = array;
-        let error = dir.load_source(&input, Role::Film).unwrap_err();
-        assert_eq!(error.role, Role::Film);
-        assert_eq!(error.stock.as_deref(), Some("authored"));
-        assert_field_error(error, field, requirement);
+}
+
+#[test]
+fn requires_exposure_array_and_numbers() {
+    let dir = Directory::new();
+    for role in [Role::Film, Role::Print] {
+        let mut input = profile_document(role);
+        for (array, field, requirement) in [
+            (Value::Null, "data.log_exposure", Requirement::ExposureCount),
+            (json!(1), "data.log_exposure", Requirement::ExposureCount),
+            (json!([]), "data.log_exposure", Requirement::ExposureCount),
+            (
+                json!([null]),
+                "data.log_exposure[0]",
+                Requirement::FiniteNumber,
+            ),
+            (
+                json!([true]),
+                "data.log_exposure[0]",
+                Requirement::FiniteNumber,
+            ),
+            (
+                json!(["1"]),
+                "data.log_exposure[0]",
+                Requirement::FiniteNumber,
+            ),
+            (
+                json!([[]]),
+                "data.log_exposure[0]",
+                Requirement::FiniteNumber,
+            ),
+        ] {
+            input["data"]["log_exposure"] = array;
+            let error = dir.load_source(&input, role).unwrap_err();
+            assert_eq!(error.role, role);
+            assert_eq!(error.stock.as_deref(), Some("authored"));
+            assert_field_error(error, field, requirement);
+        }
+        input["data"]
+            .as_object_mut()
+            .unwrap()
+            .remove("log_exposure");
+        assert_field_error(
+            dir.load_source(&input, role).unwrap_err(),
+            "data.log_exposure",
+            Requirement::ExposureCount,
+        );
     }
 }
 
@@ -1152,6 +1254,54 @@ fn classifies_catalog_entries() {
 }
 
 #[test]
+fn catalog_defers_sample_decoding_until_selection() {
+    let dir = Directory::new();
+    dir.write_defaults();
+    for role in [Role::Film, Role::Print] {
+        let mut input = profile_document(role);
+        let key = if role == Role::Film {
+            "trusted-film"
+        } else {
+            "trusted-print"
+        };
+        input["info"]["stock"] = json!(key);
+        input["info"]["reference_illuminant"] = json!("BB-0");
+        input["data"]["wavelengths"] = json!((381..=781).step_by(5).collect::<Vec<_>>());
+        input["data"]["log_exposure"] = json!([1e40, -1e40]);
+        dir.write(&format!("profiles/{key}.json"), input.to_string());
+        let malformed_key = format!("malformed-{key}");
+        input["info"]["stock"] = json!(malformed_key);
+        input["data"]["log_exposure"] = json!([]);
+        dir.write(&format!("profiles/{malformed_key}.json"), input.to_string());
+
+        let catalog = load_catalog(&dir.0).unwrap();
+        assert!(catalog.unavailable().is_empty());
+        let (entry, malformed) = match role {
+            Role::Film => (catalog.film(key), catalog.film(&malformed_key)),
+            Role::Print => (catalog.print(key), catalog.print(&malformed_key)),
+        };
+        let load = match role {
+            Role::Film => load_film_source,
+            Role::Print => load_print_source,
+        };
+        let source = load(entry.unwrap().source_path()).unwrap();
+        assert_eq!(source.info().stock(), key);
+        assert_eq!(source.samples().log_exposure(), &[1e40, -1e40]);
+        let error = load(malformed.unwrap().source_path()).unwrap_err();
+        assert_eq!(error.stock.as_deref(), Some(malformed_key.as_str()));
+        assert!(matches!(
+            error.kind,
+            ProfileErrorKind::Field {
+                requirement: Requirement::ExposureCount,
+                ..
+            }
+        ));
+        assert_eq!(catalog.default_film().key(), "kodak_portra_400");
+        assert_eq!(catalog.default_print().key(), "kodak_portra_endura");
+    }
+}
+
+#[test]
 fn rejects_catalog_duplicates_per_role() {
     for role in [Role::Film, Role::Print] {
         let dir = Directory::new();
@@ -1230,7 +1380,7 @@ fn catalog_requires_roles_and_defaults() {
 }
 
 #[test]
-fn blackbody_requires_positive_decimal() {
+fn blackbody_requires_finite_decimal() {
     let dir = Directory::new();
     for role in [Role::Film, Role::Print] {
         let mut input = profile_document(role);
@@ -1244,14 +1394,23 @@ fn blackbody_requires_positive_decimal() {
                 ("BB1e-0", true),
                 ("BB1.5e308", true),
                 ("BB5e-324", true),
-                ("BB0.1e-323", false),
+                ("BB0.1e-323", true),
                 ("BB1e309", false),
-                ("BB0", false),
-                ("BB-0", false),
-                ("BB-3200", false),
+                ("BB0", true),
+                ("BB-0", true),
+                ("BB-3200", true),
+                (" \tBb-3200.5\r\n", true),
+                ("BB-1.5e-3", true),
+                ("BB1e-999", true),
+                ("BB-1e-999", true),
+                ("BB-1e309", false),
                 ("BBNaN", false),
                 ("BBinf", false),
                 ("BBInfinity", false),
+                ("BB-inf", false),
+                ("BB+NaN", false),
+                ("BB+", false),
+                ("BB-", false),
                 ("BB", false),
                 ("BB1e-", false),
                 ("BB3.2.0", false),
@@ -1272,9 +1431,19 @@ fn blackbody_requires_positive_decimal() {
                 input["info"][key] = json!(illuminant);
                 let result = dir.load_source(&input, role);
                 assert_eq!(result.is_ok(), accepted, "{role:?} {key} {illuminant}");
-                if let Err(error) = result {
-                    assert_eq!(error.role, role);
-                    assert_field_error(error, &format!("info.{key}"), Requirement::Illuminant);
+                match result {
+                    Ok(source) => {
+                        let actual = if key == "reference_illuminant" {
+                            source.info().reference_illuminant()
+                        } else {
+                            source.info().viewing_illuminant()
+                        };
+                        assert_eq!(actual, illuminant);
+                    }
+                    Err(error) => {
+                        assert_eq!(error.role, role);
+                        assert_field_error(error, &format!("info.{key}"), Requirement::Illuminant);
+                    }
                 }
             }
             input["info"][key] = json!("D55");
@@ -1362,6 +1531,10 @@ fn requires_complete_json_documents() {
         let complete = text.replace("\"TOKEN\"", "0");
         for text in [
             text.replace("\"TOKEN\"", "1e"),
+            text.replace("\"TOKEN\"", "1e309"),
+            text.replace("\"TOKEN\"", "NaN"),
+            text.replace("\"TOKEN\"", "Infinity"),
+            complete[..complete.len() - 1].to_owned(),
             format!("{complete} trailing"),
             format!("{complete} {{}}"),
         ] {

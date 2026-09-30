@@ -399,7 +399,7 @@ impl ProfileSamples {
     pub fn base_density(&self) -> &[f32; 81] {
         &self.base_density
     }
-    /// Authored doubles; construction also checks their eventual f32 axis.
+    /// Authored doubles in source order, without interpolation-axis admission.
     pub fn log_exposure(&self) -> &[f64] {
         &self.log_exposure
     }
@@ -532,10 +532,7 @@ pub enum Requirement {
     Illuminant,
     ArrayLength(usize),
     FiniteNumber,
-    CanonicalWavelength(u16),
     ExposureCount,
-    NondecreasingExposure,
-    FloatRange,
     ModelCoefficients,
     AdaptationArray,
 }
@@ -626,7 +623,7 @@ fn blackbody_temperature(raw: &str) -> Option<f64> {
     raw[2..]
         .parse::<f64>()
         .ok()
-        .filter(|temperature| temperature.is_finite() && *temperature > 0.0)
+        .filter(|temperature| temperature.is_finite())
 }
 
 fn supported_illuminant(raw: &str) -> bool {
@@ -784,6 +781,7 @@ fn read_model(data: &Value) -> Result<DensityCurveModel, FieldError> {
 }
 
 fn exposure_count_supported(count: usize) -> bool {
+    // Native density payloads and indexed curve consumers use signed 32-bit counts.
     count > 0 && count <= i32::MAX as usize
 }
 fn read_log_exposure(data: &Value) -> Result<Vec<f64>, FieldError> {
@@ -798,9 +796,6 @@ fn read_log_exposure(data: &Value) -> Result<Vec<f64>, FieldError> {
         let raw = node
             .as_f64()
             .ok_or_else(|| field_error(&field, Requirement::FiniteNumber))?;
-        if exposure.last().is_some_and(|&previous| raw < previous) {
-            return Err(field_error(&field, Requirement::NondecreasingExposure));
-        }
         exposure.push(raw);
     }
     Ok(exposure)
@@ -832,31 +827,11 @@ fn read_source(root: &Value, role: Role) -> Result<ProfileSource, FieldError> {
     let log_exposure = read_log_exposure(data)?;
     let density_model = read_model(data)?;
     let wavelengths = read_sample_array::<81>(&data["wavelengths"], false, "data.wavelengths")?;
-    for (index, &wavelength) in wavelengths.iter().enumerate() {
-        let expected = 380 + index as u16 * 5;
-        if wavelength != f32::from(expected) {
-            return Err(field_error(
-                &format!("data.wavelengths[{index}]"),
-                Requirement::CanonicalWavelength(expected),
-            ));
-        }
-    }
     let log_sensitivity =
         read_sample_matrix(&data["log_sensitivity"], true, "data.log_sensitivity")?;
     let channel_density =
         read_sample_matrix(&data["channel_density"], true, "data.channel_density")?;
     let base_density = read_sample_array(&data["base_density"], true, "data.base_density")?;
-    for (index, &raw) in log_exposure.iter().enumerate() {
-        let narrowed = raw as f32;
-        if !narrowed.is_finite() {
-            return Err(field_error(
-                &format!("data.log_exposure[{index}]"),
-                Requirement::FloatRange,
-            ));
-        }
-        // Finite f64 -> f32 rounding is monotone; the source ordering check
-        // therefore also establishes the eventual sampled f32 axis ordering.
-    }
     let window_key = "hanatos2025_adaptation_window_params";
     let surface_key = "hanatos2025_adaptation_surface_params";
     let hanatos2025_adaptation_window_params = read_adaptation(data, window_key, role)?
@@ -919,6 +894,13 @@ mod tests {
             ("Bb3.2e+3", 3200.0),
             ("BB1.5e-3", 0.0015),
             ("BB1e-0", 1.0),
+            ("BB0", 0.0),
+            ("BB-0", -0.0),
+            (" \tbb-3200.5\r\n", -3200.5),
+            ("BB-1.5e-3", -0.0015),
+            ("BB1e-999", 0.0),
+            ("BB-1e-999", -0.0),
+            ("BB0.1e-323", 0.0),
         ] {
             assert_eq!(
                 blackbody_temperature(authored).unwrap().to_bits(),
