@@ -1,0 +1,27 @@
+{
+  "classification": "C6 resource identity product contract; independent pre-implementation Python integer byte encoding and standalone C++20 FNV replay",
+  "date": "2026-10-01",
+  "head": "8c5f368645f0523e272be5ac21e58a8c8107c98a",
+  "authority": "Trusted-resource C6: four LE bytes per decoded f32, zeros=0, NaNs=0x7fc00000, all other bits unchanged, no prefix/mask/tag. repeat expands sample order only.",
+  "capture": "Private capture-slice2-hashes.py; no candidate import or build. Python explicit integer encoding, native replay consumes canonical byte streams. Existing finite fixtures remain unchanged.",
+  "generator_sha256": "f44c6bd117e9cadc7eea7416ebe5e6146add7a1571226fd3d76b1bae3e94f3fa",
+  "native_source_sha256": "4f35c9dd3fc49af5295169d7af2d371a5add4f36647a0b24036d63aee17c4e70",
+  "native_command": [
+    "g++-13",
+    "-std=c++20",
+    "-O2",
+    "/mnt/c/Dev/Codex/out/validation/linux-debug/trusted-resource-decoding/C6/slice-2/independent-hashes/fnv.cpp",
+    "-o",
+    "/mnt/c/Dev/Codex/out/validation/linux-debug/trusted-resource-decoding/C6/slice-2/independent-hashes/fnv"
+  ],
+  "payloads": {
+    "resource-hash.json": {
+      "bytes": 2113,
+      "sha256": "4cebd6ab9ebefbf29476a7f8da32c76ffe4bad6c10ae29d36d8f789c763641c2"
+    }
+  },
+  "counts": {
+    "vectors": 13
+  },
+  "finite_baseline": "Existing hash.json finite vectors and data_io.rs bundled native captures at dece4c21bc9043eb64b009346294550bb721da84; no existing fixture edits."
+}
