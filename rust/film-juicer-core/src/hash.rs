@@ -51,6 +51,24 @@ pub fn finite_f32s(samples: &[f32]) -> Result<u64, NonfiniteSample> {
     Ok(hash)
 }
 
+/// Resource samples: either zero sign contributes zero; every NaN contributes
+/// 0x7fc00000. All other bits, including signed infinities, remain unchanged.
+/// This single stream has no prefix or mask and does not normalize a final zero.
+pub fn resource_f32s(samples: &[f32]) -> u64 {
+    let mut hash = FNV_OFFSET;
+    for &sample in samples {
+        let bits = if sample.is_nan() {
+            0x7fc00000
+        } else if sample == 0.0 {
+            0
+        } else {
+            sample.to_bits()
+        };
+        update_bytes(&mut hash, &bits.to_le_bytes());
+    }
+    hash
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FloatSpanHash {
     pub values: u64,
