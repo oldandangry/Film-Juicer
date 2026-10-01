@@ -18,7 +18,7 @@ static FACTS: &[usize] = &[
     align_of::<FjRenderOutcome>(),
     offset_of!(FjRenderOutcome, status),
     offset_of!(FjRenderOutcome, flags),
-    FJ_RENDER_DEFERRED_SCAN_ERROR as usize,
+    FJ_RENDER_DEFERRED_DIR_ERROR as usize,
     size_of::<FjErrorBuffer>(),
     align_of::<FjErrorBuffer>(),
     offset_of!(FjErrorBuffer, data),

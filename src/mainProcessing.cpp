@@ -392,11 +392,7 @@ void JuicerProcessor::processImagesCUDA() {
         }
     } contextLossRecoveryScope{&run_pending_context_loss_recovery_noexcept};
 
-    const auto deliver_dir_failure = [&](const JuicerCuda::Failure& failure) noexcept {
-        const auto& diagnostic = failure.diagnostic;
-        if (diagnostic.find("component=dir") == std::string::npos) {
-            return;
-        }
+    const auto deliver_dir_failure = [&](const std::string& diagnostic) noexcept {
         try {
             std::string deliveryText = diagnostic;
             for (std::size_t position = 0;
@@ -526,8 +522,8 @@ void JuicerProcessor::processImagesCUDA() {
     if (!pendingContextLossRecovery.pending && outcome.status.category == FJ_STATUS_CONTEXT_LOSS) {
         pendingContextLossRecovery = {true, {outcome.status, diagnostic}, "native_render"};
     }
-    if ((outcome.flags & FJ_RENDER_DEFERRED_SCAN_ERROR) != 0) {
-        deliver_dir_failure({outcome.status, diagnostic});
+    if ((outcome.flags & FJ_RENDER_DEFERRED_DIR_ERROR) != 0) {
+        deliver_dir_failure(diagnostic);
     }
     if (abortAccess.failed || (outcome.status.category != FJ_STATUS_SUCCESS && outcome.status.category != FJ_STATUS_CANCELLED)) {
         JTRACE("CUDA", diagnostic);

@@ -3226,7 +3226,7 @@ namespace JuicerProcess {
         return true;
     }
 
-    bool Root::PreparedCudaFrame::prepare_scan_error_stage(
+    Root::PreparedCudaFrame::ScanErrorStageResult Root::PreparedCudaFrame::prepare_scan_error_stage(
         int*& outScanErrorFlag,
         void* cudaStreamOpaque,
         JuicerCuda::Failure& outError) {
@@ -3234,7 +3234,7 @@ namespace JuicerProcess {
         outScanErrorFlag = nullptr;
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
             outError.diagnostic = "prepared frame is not active";
-            return false;
+            return ScanErrorStageResult::Failed;
         }
 
         JuicerCuda::ScanErrorReadbackResult previousError{};
@@ -3246,13 +3246,14 @@ namespace JuicerProcess {
             _state->set_failure(
                 PreparedCudaFailureStage{"scan_error_pending_readback"},
                 "CUDA scan error validation failed");
-            return false;
+            return ScanErrorStageResult::Failed;
         }
         if (previousError.status != 0) {
             _state->set_failure(
                 PreparedCudaFailureStage{"scan_error_previous_readback"},
                 "CUDA scan error validation failed");
-            if ((previousError.status & (1 << 8)) != 0) {
+            const bool deferredDirFailure = (previousError.status & (1 << 8)) != 0;
+            if (deferredDirFailure) {
                 const int channels = (previousError.status >> 9) & 0x7;
                 outError.diagnostic =
                     "earlier CUDA DIR submission failed component=dir route=" +
@@ -3272,7 +3273,7 @@ namespace JuicerProcess {
                 outError.diagnostic = "previous scan produced non-finite RGB";
             }
             JTRACE("CUDA", std::string("FATAL: ") + outError.diagnostic);
-            return false;
+            return deferredDirFailure ? ScanErrorStageResult::DeferredDirFailure : ScanErrorStageResult::Failed;
         }
 
         State::ScanErrorFrameStage& stage = _state->scanErrorStage;
@@ -3289,7 +3290,7 @@ namespace JuicerProcess {
                 PreparedCudaFailureStage{"scan_error_flag_missing"},
                 "CUDA scan error validation failed");
             outError.diagnostic = "scan error flag missing after allocation";
-            return false;
+            return ScanErrorStageResult::Failed;
         }
 
         cudaStream_t stream = reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
@@ -3300,9 +3301,9 @@ namespace JuicerProcess {
                 "CUDA scan error validation failed");
             outError.status = JuicerCuda::runtime_failure_status(flagErr);
             outError.diagnostic = "CUDA scan error flag memset failed";
-            return false;
+            return ScanErrorStageResult::Failed;
         }
-        return true;
+        return ScanErrorStageResult::Ready;
     }
 
     bool Root::PreparedCudaFrame::finalize_scan_error_stage(

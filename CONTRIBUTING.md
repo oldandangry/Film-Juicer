@@ -12,9 +12,12 @@ and asynchronous lifetime while changing implementation language or structure.
 - Add a type, field, cache, or helper only for a current consumer. Keep helpers
   in the owning module and avoid generic managers, service layers, or fallback
   paths without a present contract.
-- Validate external input at its construction or admission boundary. Complete
-  immutable profiles, recipes, and descriptors are trusted by downstream
-  consumers until a real external, numerical, or lifetime boundary intervenes.
+- Resource files are trusted inputs. Decode supported representations and enforce
+  the immediate consumer's necessary structure and memory/indexing safety;
+  do not validate authored scientific content. Preserve established conversions,
+  computations, and approved numerical exceptions. Complete immutable values
+  are trusted downstream until a real external, numerical, or lifetime boundary
+  intervenes. Unrelated user-control validation remains required.
 - Rust core code is safe and CUDA/OFX independent. Raw foreign operations stay
   at the named plug-in or native boundary; native CUDA resources remain owned
   by the exact context and epoch.

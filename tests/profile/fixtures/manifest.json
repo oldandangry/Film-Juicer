@@ -1,0 +1,224 @@
+{
+  "classification": "Owner-approved Rust density product contract; independent native characterization and native identity replay",
+  "approval_date": "2026-09-30",
+  "approval": "Direct safe-core libm =0.2.15 erfcf with default arch features; characterized density and downstream identity/seed/discrete/render differences accepted after owner visual and scopes/histogram inspection.",
+  "baseline": "c999eca89e90dde53ec81856b7bf50fa4687b5de",
+  "spektrafilm": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+  "bundle_digest": "deaddd9e79004008ff0bce40ba48de616d23456cf026c554bb9b111224744773",
+  "libm_checksum": "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de",
+  "capture_date": "2026-09-29",
+  "sources": {
+    "input-manifest.json": "82b2812bcf7e3130e66be731b8bc78905a7d9dbb5d1d72d8ce99fa09734abd79",
+    "reference/linux-debug.json": "0208992a2008f4a44c03b1dab824a0e7a1d3594b6e1bd55207c0737ac18b001b",
+    "candidate/linux-debug.json": "18e6e2e3c32fd9ac96e7e4c6083d12ece8b4f9473d0fa85d3e93dd1245e781cf",
+    "candidate/linux-debug-native-rehash.json": "a5c571b8770814466d60ab4b769a497e62111a94e8c194887f88ac65a1ec828d",
+    "reference/linux-release.json": "0208992a2008f4a44c03b1dab824a0e7a1d3594b6e1bd55207c0737ac18b001b",
+    "candidate/linux-release.json": "18e6e2e3c32fd9ac96e7e4c6083d12ece8b4f9473d0fa85d3e93dd1245e781cf",
+    "candidate/linux-release-native-rehash.json": "a5c571b8770814466d60ab4b769a497e62111a94e8c194887f88ac65a1ec828d",
+    "reference/windows-debug.json": "04cbd0c01dd0af54f135226f2abd822e624bdf5f59d1d21bf6e92e460222256f",
+    "candidate/windows-debug.json": "bc65bafd05dc6524816e35deef8dfcc6e70d45a4ed1d92de531ddc12079c97e9",
+    "candidate/windows-debug-native-rehash.json": "afaf2633d5804318622acc3d5dbf1e9bd347761142dcf409eb66094103de1e9f",
+    "reference/windows-release.json": "d68183e1e0dbd5addf6db7f69414bd5ab2eafde24326ff2f616699c7c695c25d",
+    "candidate/windows-release.json": "bc65bafd05dc6524816e35deef8dfcc6e70d45a4ed1d92de531ddc12079c97e9",
+    "candidate/windows-release-native-rehash.json": "08db8c27758a617961ed84eaaed2befd48e45d474d7c768918f6487d21d2d37e"
+  },
+  "profiles": [
+    {
+      "key": "fujifilm_c200",
+      "role": "film",
+      "path": "Resources/profiles/fujifilm_c200.json",
+      "sha256": "aa32ce52ea414fdd408c20f09cc3924a50801b58de5f0c7ec76a5ffcb06f28b3"
+    },
+    {
+      "key": "fujifilm_crystal_archive_typeii",
+      "role": "print",
+      "path": "Resources/profiles/fujifilm_crystal_archive_typeii.json",
+      "sha256": "983ab9015bc7b4726b64a5bb937596cc215d7e411bb78bc63b431548cb25b42b"
+    },
+    {
+      "key": "fujifilm_pro_400h",
+      "role": "film",
+      "path": "Resources/profiles/fujifilm_pro_400h.json",
+      "sha256": "d57fe6becc8e418385d92344de1588b3b70d7e145f320ab4f89a83265a5b8c19"
+    },
+    {
+      "key": "fujifilm_provia_100f",
+      "role": "film",
+      "path": "Resources/profiles/fujifilm_provia_100f.json",
+      "sha256": "fed3f45ae581996b2a5b826b8b5d19ccd1a6f7854fff475aa64d2755940b9c20"
+    },
+    {
+      "key": "fujifilm_velvia_100",
+      "role": "film",
+      "path": "Resources/profiles/fujifilm_velvia_100.json",
+      "sha256": "fd572ea29e139145c19e21c47abd7a264c5b858b993dc463799b299b69b3731f"
+    },
+    {
+      "key": "fujifilm_xtra_400",
+      "role": "film",
+      "path": "Resources/profiles/fujifilm_xtra_400.json",
+      "sha256": "7cf468b0d056262436f12ecdbdf03def3a14bbc76600551bda8f004d9b8700a1"
+    },
+    {
+      "key": "kodak_2383",
+      "role": "print",
+      "path": "Resources/profiles/kodak_2383.json",
+      "sha256": "f61d0dbf2eb2479102add4b16c838b003742be631a32cbbe2b28c0086d339607"
+    },
+    {
+      "key": "kodak_2393",
+      "role": "print",
+      "path": "Resources/profiles/kodak_2393.json",
+      "sha256": "c2f13feaaeca751a55dad689756e9110f42b306c3f741e37e1581d280ee00ebc"
+    },
+    {
+      "key": "kodak_ektachrome_100",
+      "role": "film",
+      "path": "Resources/profiles/kodak_ektachrome_100.json",
+      "sha256": "dc7c5589d109f7944c0615a366368951768fb5560327379cc9d78b587866c765"
+    },
+    {
+      "key": "kodak_ektacolor_edge",
+      "role": "print",
+      "path": "Resources/profiles/kodak_ektacolor_edge.json",
+      "sha256": "d6f9f8cdfef19e50139e90e5b800f38851de92c65e9cee1d681c6a7f1dc3918f"
+    },
+    {
+      "key": "kodak_ektar_100",
+      "role": "film",
+      "path": "Resources/profiles/kodak_ektar_100.json",
+      "sha256": "ec772dd4424c0b4e468697a8a64b37e73af765b1e6cbf050497155e80e72750f"
+    },
+    {
+      "key": "kodak_endura_premier",
+      "role": "print",
+      "path": "Resources/profiles/kodak_endura_premier.json",
+      "sha256": "bf5af37f1ee657f93e54367a212ae9f7dfa65dfea8b0bcfcc2b087b0cfb3a028"
+    },
+    {
+      "key": "kodak_gold_200",
+      "role": "film",
+      "path": "Resources/profiles/kodak_gold_200.json",
+      "sha256": "e1fb1fb3b728c67be42524cfca77e03ebded2d53d81ca89f5f8d58bf5ab3291e"
+    },
+    {
+      "key": "kodak_kodachrome_64",
+      "role": "film",
+      "path": "Resources/profiles/kodak_kodachrome_64.json",
+      "sha256": "eada9c17da095730b348970513d3333bc972494e92d9e16e671d252dab61ad48"
+    },
+    {
+      "key": "kodak_portra_160",
+      "role": "film",
+      "path": "Resources/profiles/kodak_portra_160.json",
+      "sha256": "a39036dabbda1227c9ffd1d0fb3cddc18aa7da29ae96b369301fe56516029f9f"
+    },
+    {
+      "key": "kodak_portra_400",
+      "role": "film",
+      "path": "Resources/profiles/kodak_portra_400.json",
+      "sha256": "eb8b733fd8f79223b93ee389f1f32774378ea1905364ed658e4ce1d46ec1c069"
+    },
+    {
+      "key": "kodak_portra_800",
+      "role": "film",
+      "path": "Resources/profiles/kodak_portra_800.json",
+      "sha256": "a9554e3f75f95dab547379401c37c6da37044f15c2f94ada49ac85f928f33a7b"
+    },
+    {
+      "key": "kodak_portra_800_push1",
+      "role": "film",
+      "path": "Resources/profiles/kodak_portra_800_push1.json",
+      "sha256": "43bfbe92d2a8f8ffea39c057768b2d694176b022b4e6ab143dc1b275f5dbdfab"
+    },
+    {
+      "key": "kodak_portra_800_push2",
+      "role": "film",
+      "path": "Resources/profiles/kodak_portra_800_push2.json",
+      "sha256": "633f7374b67fba21cc308dc70a25d64c7eb3efc8b9451433887ccc34a266e913"
+    },
+    {
+      "key": "kodak_portra_endura",
+      "role": "print",
+      "path": "Resources/profiles/kodak_portra_endura.json",
+      "sha256": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969"
+    },
+    {
+      "key": "kodak_supra_endura",
+      "role": "print",
+      "path": "Resources/profiles/kodak_supra_endura.json",
+      "sha256": "9f2c8ca36f53440a6e61b599b59682605e4234963e54cf130adb0321b728ae80"
+    },
+    {
+      "key": "kodak_ultra_endura",
+      "role": "print",
+      "path": "Resources/profiles/kodak_ultra_endura.json",
+      "sha256": "8b117834f50d0838684cc812d665ce0d1c9d32016b1b562d28a6e0defbdaf16f"
+    },
+    {
+      "key": "kodak_ultramax_400",
+      "role": "film",
+      "path": "Resources/profiles/kodak_ultramax_400.json",
+      "sha256": "eaa93c6bd212e1ff056b3f678879bab93f5219374210de83eaf5a6264d7c34ed"
+    },
+    {
+      "key": "kodak_verita_200d",
+      "role": "film",
+      "path": "Resources/profiles/kodak_verita_200d.json",
+      "sha256": "13b8e61365eeca07c3425676efa81533a11dd3fb0a71adbd1af4f3e01b2e5165"
+    },
+    {
+      "key": "kodak_vision3_200t",
+      "role": "film",
+      "path": "Resources/profiles/kodak_vision3_200t.json",
+      "sha256": "9d9718bb3900cafe4b84ba2963427a97dfe2cd9b6ffa5bdc5c708652f6e8a3e2"
+    },
+    {
+      "key": "kodak_vision3_250d",
+      "role": "film",
+      "path": "Resources/profiles/kodak_vision3_250d.json",
+      "sha256": "07d26ffc039be333a05f76ef76f9b97208c8493925d14d95ca8e54c3defb9346"
+    },
+    {
+      "key": "kodak_vision3_500t",
+      "role": "film",
+      "path": "Resources/profiles/kodak_vision3_500t.json",
+      "sha256": "dabadd09d329b3b10148028f8061537bf16c4932282cef5d5bc33452e8f64e47"
+    },
+    {
+      "key": "kodak_vision3_50d",
+      "role": "film",
+      "path": "Resources/profiles/kodak_vision3_50d.json",
+      "sha256": "a9534523800ae27e572b8f70c1cec9f790f8824c06a3317029e61123785b550f"
+    }
+  ],
+  "counts": {
+    "cases": 138,
+    "admitted_rows": 19247,
+    "valid_rows": 19235,
+    "native_witnesses": 84,
+    "primitive_cases": 16
+  },
+  "excluded_gamma_admission": [
+    "gamma/zero",
+    "gamma/negative",
+    "gamma/nan",
+    "gamma/inf",
+    "gamma/tiny"
+  ],
+  "payloads": {
+    "density.json": {
+      "bytes": 151978,
+      "sha256": "9a75f0c7cf31ac736b23ae1a968f6907c324bdb8b6064e2bf4ad3e9326a534fa"
+    },
+    "density-samples.bin": {
+      "bytes": 943103,
+      "sha256": "a53dd98f50acec56495f329d464c3d178d0a73a0822e354105a877367a9becc0"
+    },
+    "hash.json": {
+      "bytes": 11775,
+      "sha256": "292d45f38fab3c2b9780ac6b225ea196cee12371aff196b5d3ea3e7ad1f25274"
+    }
+  },
+  "extraction": "Copy gamma-adjusted model bits and axes from frozen captures; copy exact approved Rust sample bits; copy identity results from independent native replay over those bits. No density, gamma or hash expectations calculated by this extraction or the new implementation."
+}

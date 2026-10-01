@@ -74,7 +74,7 @@ namespace JuicerCuda::RenderTest {
     };
     thread_local Injection injection = Injection::None;
     thread_local FjStatus injectedStatus{};
-    thread_local bool injectedDeferredScanError = false;
+    thread_local bool injectedDeferredDirError = false;
 
     struct PendingWork {
         cudaStream_t stream = nullptr;
@@ -176,7 +176,7 @@ namespace JuicerCuda::RenderTest {
             case Injection::Unknown:
                 throw 17;
             case Injection::Typed:
-                throw ExecutionFailure{{injectedStatus, "render injection 100% diagnostic"}, injectedDeferredScanError};
+                throw ExecutionFailure{{injectedStatus, "render injection 100% diagnostic"}, injectedDeferredDirError};
         }
     }
 } // namespace JuicerCuda::RenderTest
@@ -197,7 +197,7 @@ namespace {
 
     void require_status(FjRenderOutcome actual, FjStatus expected, const char* detail) {
         require_status(actual.status, expected, detail);
-        require(actual.flags == 0, "ordinary render returned a deferred-scan flag");
+        require(actual.flags == 0, "ordinary render returned a deferred-DIR flag");
     }
 
     struct AbortQuery {
@@ -523,12 +523,12 @@ namespace JuicerCudaTest {
                 FjErrorBuffer output{text.data(), capacity, 0};
                 JuicerCuda::RenderTest::injection = Injection::Typed;
                 JuicerCuda::RenderTest::injectedStatus = preparationFailure;
-                JuicerCuda::RenderTest::injectedDeferredScanError = deferred;
+                JuicerCuda::RenderTest::injectedDeferredDirError = deferred;
                 const auto outcome = fj_cuda_render(cuda, &context, &frame, &submission, &prepared, {}, &output);
                 JuicerCuda::RenderTest::injection = Injection::None;
-                JuicerCuda::RenderTest::injectedDeferredScanError = false;
-                require_status(outcome.status, preparationFailure, "typed deferred scan status");
-                require(outcome.flags == (deferred ? FJ_RENDER_DEFERRED_SCAN_ERROR : 0U), "deferred provenance independent of diagnostic capacity and text");
+                JuicerCuda::RenderTest::injectedDeferredDirError = false;
+                require_status(outcome.status, preparationFailure, "typed deferred DIR status");
+                require(outcome.flags == (deferred ? FJ_RENDER_DEFERRED_DIR_ERROR : 0U), "deferred provenance independent of diagnostic capacity and text");
             }
         }
         // The production adapter uses this same admitted body after inspection

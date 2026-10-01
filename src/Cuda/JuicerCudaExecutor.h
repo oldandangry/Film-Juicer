@@ -77,7 +77,7 @@ namespace JuicerCuda {
     // Internal exception mapped by the caller after prepared-frame unwinding.
     struct ExecutionFailure {
         Failure failure;
-        bool deferredScanError = false;
+        bool deferredDirError = false;
     };
 
     struct PendingContextLossRecovery {
@@ -119,7 +119,7 @@ namespace JuicerCuda {
 
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
     namespace ExecutorTest {
-        bool inject_scan_error(Failure& failure);
+        bool inject_scan_error(Failure& failure, JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult& result);
         bool inject_grain_upload_failure(const char* label, Failure& failure);
         bool inject_defect_event_create(cudaError_t& error) noexcept;
         bool inject_defect_event_record(cudaError_t& error) noexcept;

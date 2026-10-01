@@ -477,7 +477,13 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 JuicerCuda::Failure& outError);
-            bool prepare_scan_error_stage(
+            enum class ScanErrorStageResult : std::uint8_t {
+                Ready,
+                Failed,
+                DeferredDirFailure
+            };
+
+            ScanErrorStageResult prepare_scan_error_stage(
                 int*& outScanErrorFlag,
                 void* cudaStreamOpaque,
                 JuicerCuda::Failure& outError);

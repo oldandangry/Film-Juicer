@@ -1030,7 +1030,7 @@ namespace {
             fail_policy(nonempty_cstr_or(failurePrefix, "CUDA stage failed"), std::move(failure));
         }
 
-        [[noreturn]] void fail_submission(const char* stageTag, const char* failurePrefix, const JuicerCuda::Failure& failure, bool deferredScanError = false) const {
+        [[noreturn]] void fail_submission(const char* stageTag, const char* failurePrefix, const JuicerCuda::Failure& failure, bool deferredDirError = false) const {
             mark_context_loss_recovery(nonempty_cstr_or(stageTag, "submission_stage"), failure);
             trace_cuda_fatal_prefixed_if(
                 traceInfo,
@@ -1040,7 +1040,7 @@ namespace {
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
             JuicerCuda::ExecutorTest::observe_classification(stageTag, failure, pendingContextLossRecovery.pending);
 #endif
-            throw JuicerCuda::ExecutionFailure{failure, deferredScanError};
+            throw JuicerCuda::ExecutionFailure{failure, deferredDirError};
         }
 
         [[noreturn]] void fail_route(const char* diagnostic) const {
@@ -3050,12 +3050,15 @@ namespace JuicerCuda {
         }
         pack_scan_stage(run.scanStage, prepared, input.outputGamut, scannerCorrection, errors);
         JuicerCuda::Failure scanError;
-        if (
+        auto scanResult = JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready;
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            JuicerCuda::ExecutorTest::inject_scan_error(scanError) ||
+        if (!JuicerCuda::ExecutorTest::inject_scan_error(scanError, scanResult))
 #endif
-            !preparedFrame.prepare_scan_error_stage(run.scanStage.scanErrorFlag, frame.stream, scanError)) {
-            errors.fail_submission("direct_scan_error_stage", "direct scan error stage failed", scanError, true);
+        {
+            scanResult = preparedFrame.prepare_scan_error_stage(run.scanStage.scanErrorFlag, frame.stream, scanError);
+        }
+        if (scanResult != JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready) {
+            errors.fail_submission("direct_scan_error_stage", "direct scan error stage failed", scanError, scanResult == JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::DeferredDirFailure);
         }
         if (directUseFocusedSplit && !directUseFusedScannerPostSpatialDirHandoff) {
             develop_direct_capture(
@@ -3328,19 +3331,22 @@ namespace JuicerCuda {
         }
         pack_scan_stage(run.scanStage, prepared, input.outputGamut, scannerCorrection, errors);
         JuicerCuda::Failure scanError;
-        if (
+        auto scanResult = JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready;
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
-            JuicerCuda::ExecutorTest::inject_scan_error(scanError) ||
+        if (!JuicerCuda::ExecutorTest::inject_scan_error(scanError, scanResult))
 #endif
-            !preparedFrame.prepare_scan_error_stage(
+        {
+            scanResult = preparedFrame.prepare_scan_error_stage(
                 run.scanStage.scanErrorFlag,
                 frame.stream,
-                scanError)) {
+                scanError);
+        }
+        if (scanResult != JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready) {
             errors.fail_submission(
                 "print_scan_error_stage",
                 "print scan error stage failed",
                 scanError,
-                true);
+                scanResult == JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::DeferredDirFailure);
         }
         if (printUseFocusedSplit && !printUseFusedScannerPostSpatialDirHandoff) {
             develop_print_capture(

@@ -580,7 +580,7 @@ namespace {
             JuicerCuda::Failure error;
             auto frame = prepare_route(inputs, image);
             auto p = make_bound_params<Params>(inputs, frame, image);
-            require(frame.prepare_scan_error_stage(p.scanStage.scanErrorFlag, nullptr, error), error.diagnostic);
+            require(frame.prepare_scan_error_stage(p.scanStage.scanErrorFlag, nullptr, error) == JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready, error.diagnostic);
             auto staged = p;
             staged.scanStage.linearRgbR = image.planes.get();
             staged.scanStage.linearRgbG = image.planes.get() + image.count;
@@ -640,7 +640,7 @@ namespace {
                 frame.prepare_scan_error_stage(
                     params.scanStage.scanErrorFlag,
                     nullptr,
-                    error),
+                    error) == JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready,
                 error.diagnostic);
 
             Buffer densities(3u * image.count);
@@ -728,7 +728,7 @@ namespace {
                 frame.prepare_scan_error_stage(
                     params.scanStage.scanErrorFlag,
                     nullptr,
-                    error),
+                    error) == JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready,
                 error.diagnostic);
             launch_pipeline(params);
             RouteCapture result;
@@ -776,6 +776,45 @@ namespace {
             0,
             false);
         check_required_lut_failures<JuicerCuda::PrintPipelineRunParams>(print);
+    }
+
+    TEST_F(ScannerRoutes, DeferredDirFailureComesFromReadbackBits) {
+        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+            RouteInputs inputs(route, 0, false);
+            Image image({17, 9}, 4);
+            // Product readback contract: bit 0 is scanner RGB; bit 8 is DIR,
+            // with the failed DIR channels in bits 9-11.
+            for (const int bits : {0, 1, (1 << 8) | (2 << 9), 1 | (1 << 8) | (7 << 9)}) {
+                SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " bits=" << bits);
+                JuicerCuda::Failure error;
+                auto submitted = prepare_route(inputs, image);
+                int* flag = nullptr;
+                ASSERT_EQ(submitted.prepare_scan_error_stage(flag, nullptr, error), JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready);
+                check_cuda(cudaMemcpy(flag, &bits, sizeof(bits), cudaMemcpyHostToDevice));
+                require(submitted.finalize_scan_error_stage(flag, nullptr, error), error.diagnostic);
+                require(submitted.finish(nullptr, error), error.diagnostic);
+                check_cuda(cudaDeviceSynchronize());
+
+                auto next = prepare_route(inputs, image);
+                const auto result = next.prepare_scan_error_stage(flag, nullptr, error);
+                if (bits == 0) {
+                    EXPECT_EQ(result, JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready);
+                    EXPECT_NE(flag, nullptr);
+                    require(next.finalize_scan_error_stage(flag, nullptr, error), error.diagnostic);
+                    require(next.finish(nullptr, error), error.diagnostic);
+                } else {
+                    EXPECT_EQ(result, bits == 1 ? JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Failed : JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::DeferredDirFailure);
+                    EXPECT_EQ(flag, nullptr);
+                    EXPECT_EQ(error.status.category, FJ_STATUS_PREPARATION_FAILURE);
+                    EXPECT_EQ(error.status.api, FJ_API_NONE);
+                    EXPECT_EQ(error.status.native_code, 0);
+                    next.abort();
+                }
+                // Inactive-frame failure cannot retain the prior DIR disposition.
+                EXPECT_EQ(next.prepare_scan_error_stage(flag, nullptr, error), JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Failed);
+                EXPECT_EQ(flag, nullptr);
+            }
+        }
     }
 
     TEST_F(ScannerRoutes, ResolutionTransitionRestoresLutContentAndOutput) {

@@ -2500,7 +2500,7 @@ namespace {
                 pendingUploadFrame.prepare_scan_error_stage(
                     pendingScanErrorFlag,
                     fixture.stream_opaque(),
-                    diagnostic);
+                    diagnostic) == JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready;
             std::vector<float> retainedCarrierUpload(
                 static_cast<std::size_t>(kWidth * kHeight),
                 0.0f);
