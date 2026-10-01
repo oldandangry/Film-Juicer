@@ -1,0 +1,27 @@
+{
+  "classification": "Approved Rust density product contract; independent pre-C5 native gamma/model and identity replay; analytical exact endpoint/half cases",
+  "base": "6d7f965435e1b74aaff1c2cb417aa8aee7378488",
+  "spektrafilm": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+  "approval_date": "2026-09-30",
+  "capture_before_C5_implementation": true,
+  "sources": {
+    "out/validation/s3b-density/input-manifest.json": "82b2812bcf7e3130e66be731b8bc78905a7d9dbb5d1d72d8ce99fa09734abd79",
+    "tests/profile/fixtures/density.json": "9a75f0c7cf31ac736b23ae1a968f6907c324bdb8b6064e2bf4ad3e9326a534fa",
+    "tests/profile/fixtures/density-samples.bin": "a53dd98f50acec56495f329d464c3d178d0a73a0822e354105a877367a9becc0",
+    "tests/profile/fixtures/manifest.json": "64a9644d0f7db99a48e768c9e047cf82ea5d63d4c8f617a87dfee171924d56cb",
+    "out/validation/s3b-density/candidate/linux-debug-native-rehash.json": "a5c571b8770814466d60ab4b769a497e62111a94e8c194887f88ac65a1ec828d",
+    "out/validation/s3b-density/candidate/linux-release-native-rehash.json": "a5c571b8770814466d60ab4b769a497e62111a94e8c194887f88ac65a1ec828d",
+    "out/validation/s3b-density/candidate/windows-debug-native-rehash.json": "afaf2633d5804318622acc3d5dbf1e9bd347761142dcf409eb66094103de1e9f",
+    "out/validation/s3b-density/candidate/windows-release-native-rehash.json": "08db8c27758a617961ed84eaaed2befd48e45d474d7c768918f6487d21d2d37e"
+  },
+  "extractor_sha256": "8c56f66ee45822cd342c33846eb0c043fad0465b4e7380a890c34ac4665eb27a",
+  "payload_sha256": "6bbe9f4d70037d8231531650c48d69ef2d37b18b1e44af71eaf20c9008548900",
+  "coverage": {
+    "bundled": 48,
+    "sigma_floor": 30,
+    "analytical": 17
+  },
+  "sample_authority": "Existing immutable density.json/density-samples.bin, no samples regenerated",
+  "analytical_authority": "Exact Gaussian CDF endpoints and half response, independently packed IEEE bytes/FNV; no core call",
+  "downstream_scope": "Native fixed-field recipe/glare identity replay only; no production recipe/cutover acceptance"
+}

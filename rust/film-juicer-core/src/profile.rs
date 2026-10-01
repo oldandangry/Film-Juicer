@@ -2,8 +2,8 @@
 
 mod sampled;
 pub use sampled::{
-    FilmDigest, FilmProfile, PrintProfile, ProfileCompletionError, ProfileCompletionErrorKind,
-    ProfileTables,
+    FilmDigest, FilmProfile, PrintDensityCurves, PrintDensityError, PrintProfile,
+    ProfileCompletionError, ProfileCompletionErrorKind, ProfileTables,
 };
 
 use std::collections::HashSet;

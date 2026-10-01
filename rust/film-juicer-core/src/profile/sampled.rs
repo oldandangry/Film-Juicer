@@ -151,6 +151,117 @@ impl PrintProfile {
     pub fn asset_token(&self) -> u64 {
         self.profile.asset_token
     }
+
+    /// Sample gamma-adjusted print totals on the original authored f64 axis.
+    /// Gamma must be finite and positive; the recipe owns the user-control range.
+    /// The immutable profile and its baseline samples remain unchanged.
+    pub fn sample_density_curves(
+        &self,
+        gamma: f64,
+    ) -> Result<PrintDensityCurves, PrintDensityError> {
+        sample_print_density(self, gamma, Vec::try_reserve_exact)
+    }
+}
+
+#[derive(Debug)]
+pub struct PrintDensityCurves {
+    totals: Vec<[f32; 3]>,
+    hash: u64,
+}
+
+impl PrintDensityCurves {
+    /// Exposure-major CMY totals, matching the source profile's interpolation axis.
+    pub fn totals(&self) -> &[[f32; 3]] {
+        &self.totals
+    }
+    /// Raw count/axis/total identity used by print development, without zero canonicalization.
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PrintDensityError {
+    InvalidGamma,
+    Size,
+    Capacity,
+    Density {
+        index: usize,
+        source: DensitySampleError,
+    },
+    ZeroHash,
+}
+
+impl fmt::Display for PrintDensityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "print density curves: {self:?}")
+    }
+}
+impl std::error::Error for PrintDensityError {}
+
+fn print_gamma_model(
+    baseline: &DensityCurveModel,
+    gamma: f64,
+) -> Result<DensityCurveModel, PrintDensityError> {
+    if !gamma.is_finite() || gamma <= 0.0 {
+        return Err(PrintDensityError::InvalidGamma);
+    }
+    let mut adjusted = DensityCurveModel::new(
+        *baseline.centers(),
+        *baseline.amplitudes(),
+        *baseline.sigmas(),
+    );
+    if gamma != 1.0 {
+        for channel in 0..3 {
+            for layer in 0..3 {
+                adjusted.centers[channel][layer] /= gamma;
+                let sigma = adjusted.sigmas[channel][layer] / gamma;
+                // std::max retains its first operand on unordered comparison.
+                // f64::max would instead replace NaN with the floor.
+                adjusted.sigmas[channel][layer] = if sigma < 0.05 { 0.05 } else { sigma };
+            }
+        }
+    }
+    Ok(adjusted)
+}
+
+fn check_print_density_size(count: usize) -> Result<(), PrintDensityError> {
+    count
+        .checked_mul(size_of::<[f32; 3]>())
+        .filter(|&bytes| bytes <= isize::MAX as usize)
+        .ok_or(PrintDensityError::Size)?;
+    Ok(())
+}
+
+fn sample_print_density(
+    profile: &PrintProfile,
+    gamma: f64,
+    reserve: impl FnOnce(&mut Vec<[f32; 3]>, usize) -> Result<(), TryReserveError>,
+) -> Result<PrintDensityCurves, PrintDensityError> {
+    let adjusted = print_gamma_model(profile.density_model(), gamma)?;
+    let tables = profile.tables();
+    let count = tables.source_log_exposure.len();
+    check_print_density_size(count)?;
+    let mut totals = Vec::new();
+    reserve(&mut totals, count).map_err(|_| PrintDensityError::Capacity)?;
+    for (index, &exposure) in tables.source_log_exposure.iter().enumerate() {
+        let sample = adjusted
+            .sample(profile.info().polarity, exposure)
+            .map_err(|source| PrintDensityError::Density { index, source })?;
+        totals.push(sample.total);
+    }
+    let mut hash = hash::FNV_OFFSET;
+    hash::update_bytes(&mut hash, &(count as u64).to_le_bytes());
+    for exposure in &tables.log_exposure {
+        hash::update_bytes(&mut hash, &exposure.to_le_bytes());
+    }
+    for total in totals.as_flattened() {
+        hash::update_bytes(&mut hash, &total.to_le_bytes());
+    }
+    if hash == 0 {
+        return Err(PrintDensityError::ZeroHash);
+    }
+    Ok(PrintDensityCurves { totals, hash })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -599,5 +710,125 @@ mod tests {
         assert_eq!(finish_asset_token(0), 1);
         assert_eq!(finish_asset_token(1), 1);
         assert_eq!(finish_asset_token(u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn adjusted_gamma_coefficients_match_independent_native_bits() {
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/profile/fixtures");
+        let gamma: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("print-gamma.json")).unwrap()).unwrap();
+        let density: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("density.json")).unwrap()).unwrap();
+        let matrix = |node: &serde_json::Value| {
+            serde_json::from_value::<[[u64; 3]; 3]>(node.clone())
+                .unwrap()
+                .map(|row| row.map(f64::from_bits))
+        };
+        for captured in gamma["captured"].as_array().unwrap() {
+            let case = density["cases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["id"] == captured["id"])
+                .unwrap();
+            let model = &captured["source_model"];
+            let baseline = DensityCurveModel::new(
+                matrix(&model["centers"]),
+                matrix(&model["amplitudes"]),
+                matrix(&model["sigmas"]),
+            );
+            let adjusted = print_gamma_model(
+                &baseline,
+                f64::from_bits(case["gamma_bits"].as_u64().unwrap()),
+            )
+            .unwrap();
+            for (name, actual) in [
+                ("centers", adjusted.centers()),
+                ("amplitudes", adjusted.amplitudes()),
+                ("sigmas", adjusted.sigmas()),
+            ] {
+                let expected: [[u64; 3]; 3] =
+                    serde_json::from_value(case["model"][name].clone()).unwrap();
+                assert_eq!(
+                    actual.map(|r| r.map(f64::to_bits)),
+                    expected,
+                    "{} {name}",
+                    case["id"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gamma_one_copies_unusual_bits_and_nonunit_floor_keeps_nan() {
+        let nan = f64::from_bits(0x7ff8_0000_0000_0123);
+        let model = DensityCurveModel::new(
+            [[-0.0, 1e40, f64::NEG_INFINITY]; 3],
+            [[-1.0, nan, 0.0]; 3],
+            [[-0.0, -1.0, nan]; 3],
+        );
+        let same = print_gamma_model(&model, 1.0).unwrap();
+        for (actual, expected) in [
+            (same.centers(), model.centers()),
+            (same.amplitudes(), model.amplitudes()),
+            (same.sigmas(), model.sigmas()),
+        ] {
+            assert_eq!(
+                actual.map(|r| r.map(f64::to_bits)),
+                expected.map(|r| r.map(f64::to_bits))
+            );
+        }
+        let adjusted = print_gamma_model(&model, 2.0).unwrap();
+        assert_eq!(adjusted.centers()[0][0].to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(adjusted.centers()[0][1].to_bits(), (5e39_f64).to_bits());
+        assert_eq!(adjusted.sigmas()[0][0].to_bits(), 0.05_f64.to_bits());
+        assert_eq!(adjusted.sigmas()[0][1].to_bits(), 0.05_f64.to_bits());
+        assert_eq!(adjusted.sigmas()[0][2].to_bits(), nan.to_bits());
+        assert_eq!(
+            adjusted.amplitudes().map(|r| r.map(f64::to_bits)),
+            model.amplitudes().map(|r| r.map(f64::to_bits))
+        );
+        // A NaN sigma reaches computation instead of becoming a floor value.
+        let model = DensityCurveModel::new([[0.0; 3]; 3], [[1.0; 3]; 3], [[nan; 3]; 3]);
+        assert_eq!(
+            print_gamma_model(&model, 2.0)
+                .unwrap()
+                .sample(Polarity::Negative, 0.0)
+                .unwrap_err(),
+            DensitySampleError::NonfiniteLayer {
+                channel: 0,
+                layer: 0
+            }
+        );
+    }
+
+    #[test]
+    fn print_gamma_size_and_capacity_failures_return_no_owner() {
+        assert!(check_print_density_size(1).is_ok());
+        for count in [usize::MAX, isize::MAX as usize / size_of::<[f32; 3]>() + 1] {
+            assert_eq!(
+                check_print_density_size(count),
+                Err(PrintDensityError::Size)
+            );
+        }
+        let profile = PrintProfile::new(source(Role::Print)).unwrap();
+        let before = profile.tables().density_curves.as_ptr();
+        let error = sample_print_density(&profile, 1.1, |buffer, count| {
+            assert!(buffer.is_empty());
+            assert_eq!(count, 3);
+            buffer.try_reserve_exact(usize::MAX)
+        })
+        .unwrap_err();
+        assert_eq!(error, PrintDensityError::Capacity);
+        assert_eq!(profile.tables().density_curves.as_ptr(), before);
+        assert!(profile.sample_density_curves(1.1).is_ok());
+        assert_eq!(
+            sample_print_density(&profile, 0.0, |_, _| panic!(
+                "invalid gamma must not reserve"
+            ))
+            .unwrap_err(),
+            PrintDensityError::InvalidGamma
+        );
     }
 }
