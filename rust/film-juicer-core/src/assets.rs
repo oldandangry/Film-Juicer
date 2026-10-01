@@ -5,7 +5,12 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::data_io::{ReadError, load_mallett_basis, load_spectra_lut};
+use crate::data_io::{
+    CsvPairs, CsvTriplets, ReadError, load_csv_pairs, load_csv_triplets, load_mallett_basis,
+    load_spectra_lut,
+};
+use crate::data_io::calibration::{self, NeutralCalibration, load_neutral_calibration};
+use crate::data_io::noise::{self, Stbn, Wang, load_stbn, load_wang};
 use crate::hash;
 use crate::profile::{
     Catalog, CatalogError, FilmProfile, PrintProfile, ProfileCompletionError, ProfileError, Role,
@@ -20,6 +25,13 @@ pub enum AssetError {
     ProfileCompletion(ProfileCompletionError),
     ProfileCachePoisoned { role: Role },
     Reconstruction(Arc<ReadError>),
+    Cmf(Arc<ReadError>),
+    CsvSource { source: CsvSource, error: ReadError },
+    CsvCachePoisoned { source: CsvSource },
+    Calibration(Arc<calibration::Error>),
+    CalibrationCachePoisoned,
+    Noise(Arc<noise::Error>),
+    NoiseCachePoisoned,
 }
 
 impl fmt::Display for AssetError {
@@ -31,6 +43,13 @@ impl fmt::Display for AssetError {
             Self::ProfileCompletion(source) => write!(f, "{source}"),
             Self::ProfileCachePoisoned { role } => write!(f, "{role:?} profile cache poisoned"),
             Self::Reconstruction(source) => write!(f, "{source}"),
+            Self::Cmf(source) => write!(f, "{source}"),
+            Self::CsvSource { source, error } => write!(f, "{source:?}: {error}"),
+            Self::CsvCachePoisoned { source } => write!(f, "{source:?} CSV source cache poisoned"),
+            Self::Calibration(source) => write!(f, "{source}"),
+            Self::CalibrationCachePoisoned => write!(f, "neutral calibration cache poisoned"),
+            Self::Noise(source) => write!(f, "{source}"),
+            Self::NoiseCachePoisoned => write!(f, "noise cache poisoned"),
         }
     }
 }
@@ -42,7 +61,15 @@ impl std::error::Error for AssetError {
             Self::ProfileDecode(source) => Some(source),
             Self::ProfileCompletion(source) => Some(source),
             Self::Reconstruction(source) => Some(source.as_ref()),
-            Self::MissingProfile { .. } | Self::ProfileCachePoisoned { .. } => None,
+            Self::Cmf(source) => Some(source.as_ref()),
+            Self::CsvSource { error, .. } => Some(error),
+            Self::Calibration(source) => Some(source.as_ref()),
+            Self::Noise(source) => Some(source.as_ref()),
+            Self::MissingProfile { .. }
+            | Self::ProfileCachePoisoned { .. }
+            | Self::CsvCachePoisoned { .. }
+            | Self::CalibrationCachePoisoned
+            | Self::NoiseCachePoisoned => None,
         }
     }
 }
@@ -73,6 +100,49 @@ impl SpectraLut {
     }
 }
 
+/// Fixed decoded wavelength/value sources, before normalization or resampling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsvSource {
+    D65,
+    D55,
+    D50,
+    T,
+    K75p,
+    Kg3,
+    Canon24F28Is,
+}
+
+impl CsvSource {
+    fn relative_path(self) -> &'static str {
+        match self {
+            Self::D65 => "illuminants/D65.csv",
+            Self::D55 => "illuminants/D55.csv",
+            Self::D50 => "illuminants/D50.csv",
+            Self::T => "illuminants/T.csv",
+            Self::K75p => "illuminants/K75P.csv",
+            Self::Kg3 => "filters/heat_absorbing/schott/KG3.csv",
+            Self::Canon24F28Is => "filters/lens_transmission/canon/canon_24_f28_is.csv",
+        }
+    }
+}
+
+/// Both noise families are complete before this immutable owner is published.
+#[derive(Debug)]
+pub struct NoiseBundle {
+    stbn: Stbn,
+    wang: Wang,
+}
+
+impl NoiseBundle {
+    pub fn stbn(&self) -> &Stbn {
+        &self.stbn
+    }
+
+    pub fn wang(&self) -> &Wang {
+        &self.wang
+    }
+}
+
 struct CatalogSnapshot {
     catalog: Arc<Catalog>,
     films: HashMap<String, Mutex<Option<Arc<FilmProfile>>>>,
@@ -81,6 +151,8 @@ struct CatalogSnapshot {
 
 // The accepted reader's wavelength-major RGB representation, without a wrapper.
 type MallettBasis = [[f32; 3]; 81];
+type CalibrationSnapshot = Result<Arc<NeutralCalibration>, Arc<calibration::Error>>;
+type NoiseSnapshot = Result<Arc<NoiseBundle>, Arc<noise::Error>>;
 
 pub struct Assets {
     resource_dir: PathBuf,
@@ -88,6 +160,10 @@ pub struct Assets {
     hanatos: OnceLock<Result<Arc<SpectraLut>, Arc<ReadError>>>,
     arctic: OnceLock<Result<Arc<SpectraLut>, Arc<ReadError>>>,
     mallett: OnceLock<Result<Arc<MallettBasis>, Arc<ReadError>>>,
+    cmf: OnceLock<Result<Arc<CsvTriplets>, Arc<ReadError>>>,
+    csv_sources: [Mutex<Option<Arc<CsvPairs>>>; 7],
+    calibration: Mutex<Option<CalibrationSnapshot>>,
+    noise: Mutex<Option<NoiseSnapshot>>,
 }
 
 impl Assets {
@@ -99,6 +175,10 @@ impl Assets {
             hanatos: OnceLock::new(),
             arctic: OnceLock::new(),
             mallett: OnceLock::new(),
+            cmf: OnceLock::new(),
+            csv_sources: std::array::from_fn(|_| Mutex::new(None)),
+            calibration: Mutex::new(None),
+            noise: Mutex::new(None),
         }
     }
 
@@ -154,6 +234,141 @@ impl Assets {
     /// Wavelength-major RGB basis; no standalone resource identity is needed.
     pub fn mallett(&self) -> Result<Arc<MallettBasis>, AssetError> {
         self.mallett_with(|path| load_mallett_basis(path).map(Arc::new))
+    }
+
+    /// Decoded CMF source rows; the first complete outcome lasts for this owner.
+    pub fn cmf(&self) -> Result<Arc<CsvTriplets>, AssetError> {
+        self.cmf_with(|path| load_csv_triplets(path).map(Arc::new))
+    }
+
+    /// Cache successful source rows only. A later explicit request may retry a failure.
+    pub fn csv_source(&self, source: CsvSource) -> Result<Arc<CsvPairs>, AssetError> {
+        self.csv_source_with(source, |path| load_csv_pairs(path).map(Arc::new))
+    }
+
+    /// Retain the load snapshot until release. Selected branches are checked by lookup.
+    pub fn neutral_calibration(&self) -> Result<Arc<NeutralCalibration>, AssetError> {
+        self.calibration_with(|path| load_neutral_calibration(path).map(Arc::new))
+    }
+
+    /// Acquire only for an enabled consumer. Capacity failures are not cached.
+    pub fn noise(&self) -> Result<Arc<NoiseBundle>, AssetError> {
+        self.noise_with(|root| {
+            load_noise_with(
+                root,
+                |path| load_stbn(path),
+                |tiles, metadata| load_wang(tiles, metadata),
+            )
+        })
+    }
+
+    fn cmf_with(
+        &self,
+        load: impl FnOnce(&Path) -> Result<Arc<CsvTriplets>, ReadError>,
+    ) -> Result<Arc<CsvTriplets>, AssetError> {
+        if self.cmf.get().is_none() {
+            let prepared = load(&self.resource_dir.join("cie1931_2deg.csv")).map_err(Arc::new);
+            drop(self.cmf.set(prepared));
+        }
+        self.cmf
+            .get()
+            .expect("a complete CMF source outcome has been published")
+            .as_ref()
+            .map(Arc::clone)
+            .map_err(|source| AssetError::Cmf(Arc::clone(source)))
+    }
+
+    fn csv_source_with(
+        &self,
+        source: CsvSource,
+        load: impl FnOnce(&Path) -> Result<Arc<CsvPairs>, ReadError>,
+    ) -> Result<Arc<CsvPairs>, AssetError> {
+        let slot = &self.csv_sources[source as usize];
+        let cached = slot
+            .lock()
+            .map_err(|_| AssetError::CsvCachePoisoned { source })?
+            .as_ref()
+            .map(Arc::clone);
+        if let Some(rows) = cached {
+            return Ok(rows);
+        }
+        let prepared = load(&self.resource_dir.join(source.relative_path()));
+        let published = {
+            let mut cached = slot
+                .lock()
+                .map_err(|_| AssetError::CsvCachePoisoned { source })?;
+            if cached.is_none()
+                && let Ok(rows) = &prepared
+            {
+                *cached = Some(Arc::clone(rows));
+            }
+            cached.as_ref().map(Arc::clone)
+        };
+        published
+            .map(Ok)
+            .unwrap_or_else(|| prepared.map_err(|error| AssetError::CsvSource { source, error }))
+    }
+
+    fn calibration_with(
+        &self,
+        load: impl FnOnce(&Path) -> Result<Arc<NeutralCalibration>, calibration::Error>,
+    ) -> Result<Arc<NeutralCalibration>, AssetError> {
+        let cached = self
+            .calibration
+            .lock()
+            .map_err(|_| AssetError::CalibrationCachePoisoned)?
+            .clone();
+        if let Some(snapshot) = cached {
+            return snapshot.map_err(AssetError::Calibration);
+        }
+        let prepared =
+            load(&self.resource_dir.join("filters/neutral_print_filters.json")).map_err(Arc::new);
+        let published = {
+            let mut cached = self
+                .calibration
+                .lock()
+                .map_err(|_| AssetError::CalibrationCachePoisoned)?;
+            if cached.is_none() {
+                *cached = Some(prepared.clone());
+            }
+            cached
+                .as_ref()
+                .expect("a complete calibration snapshot has been published")
+                .clone()
+        };
+        // Only Arc holds are cloned. Losing values are destroyed after unlocking.
+        published.map_err(AssetError::Calibration)
+    }
+
+    fn noise_with(
+        &self,
+        load: impl FnOnce(&Path) -> Result<Arc<NoiseBundle>, noise::Error>,
+    ) -> Result<Arc<NoiseBundle>, AssetError> {
+        let cached = self
+            .noise
+            .lock()
+            .map_err(|_| AssetError::NoiseCachePoisoned)?
+            .clone();
+        if let Some(snapshot) = cached {
+            return snapshot.map_err(AssetError::Noise);
+        }
+        // The complete local attempt has already reclaimed any partial buffers
+        // before this publication/recheck. Capacity is the sole nonsticky error.
+        let prepared = load(&self.resource_dir).map_err(Arc::new);
+        let capacity = prepared
+            .as_ref()
+            .is_err_and(|error| error.kind() == noise::ErrorKind::Capacity);
+        let published = {
+            let mut cached = self
+                .noise
+                .lock()
+                .map_err(|_| AssetError::NoiseCachePoisoned)?;
+            if cached.is_none() && !capacity {
+                *cached = Some(prepared.clone());
+            }
+            cached.clone()
+        };
+        published.unwrap_or(prepared).map_err(AssetError::Noise)
     }
 
     fn hanatos_with(
@@ -293,33 +508,70 @@ impl Assets {
         published.map(Ok).unwrap_or(prepared)
     }
 
-    /// Detach profile cache holds; catalog and reconstruction outcomes remain fixed. Retained
+    /// Detach profile, CSV, calibration and noise holds. Catalog, reconstruction and CMF
+    /// outcomes remain fixed. Retained
     /// handles stay valid. An overlapping cold load may publish after release;
     /// callers requiring a drained cache must first exclude new loads.
     pub fn release_cached_payloads(&self) -> Result<(), AssetError> {
         // Release on a new owner must not trigger catalog I/O.
-        let Some(snapshot) = self.catalog.get() else {
-            return Ok(());
-        };
-        let Ok(snapshot) = snapshot else {
-            return Ok(());
-        };
-        for slot in snapshot.films.values() {
-            let removed = slot
+        if let Some(Ok(snapshot)) = self.catalog.get() {
+            for slot in snapshot.films.values() {
+                let removed = slot
+                    .lock()
+                    .map_err(|_| AssetError::ProfileCachePoisoned { role: Role::Film })?
+                    .take();
+                drop(removed);
+            }
+            for slot in snapshot.prints.values() {
+                let removed = slot
+                    .lock()
+                    .map_err(|_| AssetError::ProfileCachePoisoned { role: Role::Print })?
+                    .take();
+                drop(removed);
+            }
+        }
+        for source in [
+            CsvSource::D65,
+            CsvSource::D55,
+            CsvSource::D50,
+            CsvSource::T,
+            CsvSource::K75p,
+            CsvSource::Kg3,
+            CsvSource::Canon24F28Is,
+        ] {
+            let removed = self.csv_sources[source as usize]
                 .lock()
-                .map_err(|_| AssetError::ProfileCachePoisoned { role: Role::Film })?
+                .map_err(|_| AssetError::CsvCachePoisoned { source })?
                 .take();
             drop(removed);
         }
-        for slot in snapshot.prints.values() {
-            let removed = slot
-                .lock()
-                .map_err(|_| AssetError::ProfileCachePoisoned { role: Role::Print })?
-                .take();
-            drop(removed);
-        }
+        let calibration = self
+            .calibration
+            .lock()
+            .map_err(|_| AssetError::CalibrationCachePoisoned)?
+            .take();
+        drop(calibration);
+        let noise = self
+            .noise
+            .lock()
+            .map_err(|_| AssetError::NoiseCachePoisoned)?
+            .take();
+        drop(noise);
         Ok(())
     }
+}
+
+fn load_noise_with(
+    root: &Path,
+    stbn: impl FnOnce(&Path) -> Result<Stbn, noise::Error>,
+    wang: impl FnOnce(&Path, &Path) -> Result<Wang, noise::Error>,
+) -> Result<Arc<NoiseBundle>, noise::Error> {
+    let stbn = stbn(&root.join("Noise/stbn_scalar_512x512x256_u8.bin"))?;
+    let wang = wang(
+        &root.join("Noise/Wang/wang_tiles_256x256x16_u8.bin"),
+        &root.join("Noise/Wang/tiles.json"),
+    )?;
+    Ok(Arc::new(NoiseBundle { stbn, wang }))
 }
 
 fn load_spectra(path: &Path) -> Result<Arc<SpectraLut>, ReadError> {
@@ -353,9 +605,16 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        AssetError, Assets, SpectraLut, load_film, load_print, load_spectra, nonzero_asset_hash,
+        AssetError, Assets, CsvSource, SpectraLut, load_film, load_noise_with, load_print,
+        load_spectra, nonzero_asset_hash,
     };
-    use crate::data_io::{ReadError, ReadErrorKind, load_mallett_basis, load_spectra_lut};
+    use crate::data_io::{
+        ReadError, ReadErrorKind, load_csv_pairs, load_csv_triplets, load_mallett_basis,
+        load_spectra_lut,
+    };
+    use crate::data_io::calibration::load_neutral_calibration;
+    use crate::data_io::noise::{self, load_stbn, load_wang};
+    use crate::data_io::noise::test_support::{capacity_error, track_stbn_drop};
     use crate::profile::{ProfileCompletionError, ProfileCompletionErrorKind, Role};
 
     const WAIT: Duration = Duration::from_secs(15);
@@ -364,6 +623,460 @@ mod tests {
 
     fn assets() -> Assets {
         Assets::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"))
+    }
+
+    #[test]
+    fn disabled_grain_and_profile_access_leave_source_families_unloaded() {
+        let assets = assets();
+        let grain_active = false;
+        let noise = grain_active.then(|| assets.noise());
+        assert!(noise.is_none());
+        assert!(assets.catalog().is_ok());
+        assert!(assets.film(FILM).is_ok());
+        assert!(assets.print(PRINT).is_ok());
+        assert!(assets.cmf.get().is_none());
+        assert!(assets.hanatos.get().is_none());
+        assert!(assets.arctic.get().is_none());
+        assert!(assets.mallett.get().is_none());
+        assert!(assets.noise.lock().unwrap().is_none());
+        assert!(assets.calibration.lock().unwrap().is_none());
+        assert!(
+            assets
+                .csv_sources
+                .iter()
+                .all(|slot| slot.lock().unwrap().is_none())
+        );
+    }
+
+    #[test]
+    fn cmf_cold_success_returns_winner_and_reclaims_loser() {
+        let assets = assets();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        thread::scope(|scope| {
+            let assets = &assets;
+            let attempt = scope.spawn(move || {
+                assets.cmf_with(|path| {
+                    let candidate = Arc::new(load_csv_triplets(path)?);
+                    ready_tx.send(Arc::downgrade(&candidate)).unwrap();
+                    resume_rx.recv_timeout(WAIT).unwrap();
+                    Ok(candidate)
+                })
+            });
+            let loser = ready_rx.recv_timeout(WAIT).unwrap();
+            let winner = assets.cmf().unwrap();
+            assets.release_cached_payloads().unwrap();
+            resume_tx.send(()).unwrap();
+            assert!(Arc::ptr_eq(&winner, &attempt.join().unwrap().unwrap()));
+            assert!(loser.upgrade().is_none());
+        });
+    }
+
+    #[test]
+    fn cmf_first_outcome_wins_including_capacity() {
+        for error_first in [false, true] {
+            let assets = assets();
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let (resume_tx, resume_rx) = mpsc::channel();
+            thread::scope(|scope| {
+                let assets = &assets;
+                let attempt = scope.spawn(move || {
+                    assets.cmf_with(|path| {
+                        ready_tx.send(()).unwrap();
+                        resume_rx.recv_timeout(WAIT).unwrap();
+                        if error_first {
+                            load_csv_triplets(path).map(Arc::new)
+                        } else {
+                            Err(ReadError {
+                                path: path.to_owned(),
+                                kind: ReadErrorKind::Capacity,
+                            })
+                        }
+                    })
+                });
+                ready_rx.recv_timeout(WAIT).unwrap();
+                if error_first {
+                    let Err(AssetError::Cmf(winner)) = assets.cmf_with(|path| {
+                        Err(ReadError {
+                            path: path.to_owned(),
+                            kind: ReadErrorKind::Capacity,
+                        })
+                    }) else {
+                        panic!("capacity outcome expected")
+                    };
+                    assets.release_cached_payloads().unwrap();
+                    resume_tx.send(()).unwrap();
+                    let Err(AssetError::Cmf(returned)) = attempt.join().unwrap() else {
+                        panic!("first CMF error must remain")
+                    };
+                    assert!(Arc::ptr_eq(&winner, &returned));
+                    assert!(matches!(assets.cmf(), Err(AssetError::Cmf(_))));
+                } else {
+                    let winner = assets.cmf().unwrap();
+                    resume_tx.send(()).unwrap();
+                    assert!(Arc::ptr_eq(&winner, &attempt.join().unwrap().unwrap()));
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn csv_cold_success_and_failure_return_same_source_winner() {
+        for fail in [false, true] {
+            let assets = assets();
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let (resume_tx, resume_rx) = mpsc::channel();
+            thread::scope(|scope| {
+                let assets = &assets;
+                let attempt = scope.spawn(move || {
+                    assets.csv_source_with(CsvSource::Kg3, |path| {
+                        let candidate = if fail {
+                            Err(ReadError {
+                                path: path.to_owned(),
+                                kind: ReadErrorKind::Capacity,
+                            })
+                        } else {
+                            load_csv_pairs(path).map(Arc::new)
+                        };
+                        ready_tx
+                            .send(candidate.as_ref().ok().map(Arc::downgrade))
+                            .unwrap();
+                        resume_rx.recv_timeout(WAIT).unwrap();
+                        candidate
+                    })
+                });
+                let loser = ready_rx.recv_timeout(WAIT).unwrap();
+                assert!(assets.csv_source(CsvSource::D65).is_ok());
+                let winner = assets.csv_source(CsvSource::Kg3).unwrap();
+                resume_tx.send(()).unwrap();
+                assert!(Arc::ptr_eq(&winner, &attempt.join().unwrap().unwrap()));
+                if let Some(loser) = loser {
+                    assert!(loser.upgrade().is_none());
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn csv_cold_load_can_publish_after_release() {
+        let assets = assets();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        thread::scope(|scope| {
+            let assets = &assets;
+            let attempt = scope.spawn(move || {
+                assets.csv_source_with(CsvSource::D50, |path| {
+                    let candidate = Arc::new(load_csv_pairs(path)?);
+                    ready_tx.send(()).unwrap();
+                    resume_rx.recv_timeout(WAIT).unwrap();
+                    Ok(candidate)
+                })
+            });
+            ready_rx.recv_timeout(WAIT).unwrap();
+            assets.release_cached_payloads().unwrap();
+            assert!(
+                assets.csv_sources[CsvSource::D50 as usize]
+                    .lock()
+                    .unwrap()
+                    .is_none()
+            );
+            resume_tx.send(()).unwrap();
+            let published = attempt.join().unwrap().unwrap();
+            assert!(Arc::ptr_eq(
+                &published,
+                &assets.csv_source(CsvSource::D50).unwrap()
+            ));
+        });
+    }
+
+    #[test]
+    fn calibration_success_and_error_races_use_first_snapshot() {
+        for error_first in [false, true] {
+            let assets = assets();
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let (resume_tx, resume_rx) = mpsc::channel();
+            thread::scope(|scope| {
+                let assets = &assets;
+                let attempt = scope.spawn(move || {
+                    assets.calibration_with(|path| {
+                        let candidate = if error_first {
+                            load_neutral_calibration(path).map(Arc::new)
+                        } else {
+                            load_neutral_calibration(path.with_file_name("__missing_calibration"))
+                                .map(Arc::new)
+                        };
+                        ready_tx
+                            .send(candidate.as_ref().ok().map(Arc::downgrade))
+                            .unwrap();
+                        resume_rx.recv_timeout(WAIT).unwrap();
+                        candidate
+                    })
+                });
+                let loser = ready_rx.recv_timeout(WAIT).unwrap();
+                if error_first {
+                    let Err(AssetError::Calibration(winner)) = assets.calibration_with(|path| {
+                        load_neutral_calibration(path.with_file_name("__missing_calibration"))
+                            .map(Arc::new)
+                    }) else {
+                        panic!("missing snapshot expected")
+                    };
+                    resume_tx.send(()).unwrap();
+                    let Err(AssetError::Calibration(returned)) = attempt.join().unwrap() else {
+                        panic!("first error must win")
+                    };
+                    assert!(Arc::ptr_eq(&winner, &returned));
+                    assert!(loser.unwrap().upgrade().is_none());
+                } else {
+                    let winner = assets.neutral_calibration().unwrap();
+                    resume_tx.send(()).unwrap();
+                    assert!(Arc::ptr_eq(&winner, &attempt.join().unwrap().unwrap()));
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn calibration_cold_load_can_publish_after_release() {
+        let assets = assets();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        thread::scope(|scope| {
+            let assets = &assets;
+            let attempt = scope.spawn(move || {
+                assets.calibration_with(|path| {
+                    let candidate = Arc::new(load_neutral_calibration(path)?);
+                    ready_tx.send(()).unwrap();
+                    resume_rx.recv_timeout(WAIT).unwrap();
+                    Ok(candidate)
+                })
+            });
+            ready_rx.recv_timeout(WAIT).unwrap();
+            assert!(assets.csv_source(CsvSource::T).is_ok());
+            assets.release_cached_payloads().unwrap();
+            assert!(assets.calibration.lock().unwrap().is_none());
+            resume_tx.send(()).unwrap();
+            let published = attempt.join().unwrap().unwrap();
+            assert!(Arc::ptr_eq(
+                &published,
+                &assets.neutral_calibration().unwrap()
+            ));
+        });
+    }
+
+    #[test]
+    fn noise_bundle_moves_both_decoded_buffers() {
+        let assets = assets();
+        let mut stbn_pointer = 0;
+        let mut wang_pointer = 0;
+        let bundle = load_noise_with(
+            &assets.resource_dir,
+            |path| {
+                let stbn = load_stbn(path)?;
+                stbn_pointer = stbn.bytes().as_ptr() as usize;
+                Ok(stbn)
+            },
+            |tiles, metadata| {
+                let wang = load_wang(tiles, metadata)?;
+                wang_pointer = wang.tiles().as_ptr() as usize;
+                Ok(wang)
+            },
+        )
+        .unwrap();
+        assert_eq!(bundle.stbn().bytes().as_ptr() as usize, stbn_pointer);
+        assert_eq!(bundle.wang().tiles().as_ptr() as usize, wang_pointer);
+        let retained = Arc::clone(&bundle);
+        assert_eq!(retained.stbn().bytes().as_ptr() as usize, stbn_pointer);
+        assert_eq!(retained.wang().tiles().as_ptr() as usize, wang_pointer);
+    }
+
+    #[test]
+    fn noise_capacity_failure_retries_without_release() {
+        let assets = assets();
+        let error = assets
+            .noise_with(|root| {
+                load_noise_with(
+                    root,
+                    |path| load_stbn(path),
+                    |tiles, _| Err(capacity_error(tiles)),
+                )
+            })
+            .unwrap_err();
+        let AssetError::Noise(error) = error else {
+            panic!("typed noise error expected")
+        };
+        assert_eq!(error.kind(), noise::ErrorKind::Capacity);
+        assert!(
+            error
+                .path()
+                .ends_with("Noise/Wang/wang_tiles_256x256x16_u8.bin")
+        );
+        assert!(assets.noise.lock().unwrap().is_none());
+        let bundle = assets.noise().unwrap();
+        assert!(Arc::ptr_eq(&bundle, &assets.noise().unwrap()));
+    }
+
+    #[test]
+    fn wang_failures_reclaim_completed_stbn_before_publication() {
+        for capacity in [false, true] {
+            let assets = assets();
+            let result = assets.noise_with(|root| {
+                let mut probe = None;
+                let result = load_noise_with(
+                    root,
+                    |path| {
+                        let (stbn, weak) = track_stbn_drop(load_stbn(path)?);
+                        assert!(weak.upgrade().is_some());
+                        probe = Some(weak);
+                        Ok(stbn)
+                    },
+                    |tiles, metadata| {
+                        if capacity {
+                            Err(capacity_error(tiles))
+                        } else {
+                            load_wang(tiles, metadata.with_file_name("__missing_wang"))
+                        }
+                    },
+                );
+                assert!(probe.unwrap().upgrade().is_none());
+                assert!(assets.noise.try_lock().unwrap().is_none());
+                result
+            });
+            assert!(matches!(result, Err(AssetError::Noise(_))));
+            assert_eq!(assets.noise.lock().unwrap().is_none(), capacity);
+        }
+    }
+
+    #[test]
+    fn noise_capacity_attempt_returns_concurrent_success_or_error() {
+        for ordinary_error in [false, true] {
+            let assets = assets();
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let (resume_tx, resume_rx) = mpsc::channel();
+            thread::scope(|scope| {
+                let assets = &assets;
+                let attempt = scope.spawn(move || {
+                    assets.noise_with(|root| {
+                        let result = load_noise_with(
+                            root,
+                            |path| load_stbn(path),
+                            |tiles, _| Err(capacity_error(tiles)),
+                        );
+                        ready_tx.send(()).unwrap();
+                        resume_rx.recv_timeout(WAIT).unwrap();
+                        result
+                    })
+                });
+                ready_rx.recv_timeout(WAIT).unwrap();
+                if ordinary_error {
+                    let Err(AssetError::Noise(winner)) = assets.noise_with(|root| {
+                        Err(load_stbn(root.join("__missing_stbn")).unwrap_err())
+                    }) else {
+                        panic!("ordinary snapshot expected")
+                    };
+                    resume_tx.send(()).unwrap();
+                    let Err(AssetError::Noise(returned)) = attempt.join().unwrap() else {
+                        panic!("first ordinary error must win")
+                    };
+                    assert!(Arc::ptr_eq(&winner, &returned));
+                    assert_eq!(returned.kind(), noise::ErrorKind::Missing);
+                } else {
+                    let winner = assets.noise().unwrap();
+                    resume_tx.send(()).unwrap();
+                    assert!(Arc::ptr_eq(&winner, &attempt.join().unwrap().unwrap()));
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn noise_cold_success_reclaims_loser_and_can_publish_after_release() {
+        let assets = assets();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        thread::scope(|scope| {
+            let assets = &assets;
+            let attempt = scope.spawn(move || {
+                assets.noise_with(|root| {
+                    let candidate = load_noise_with(
+                        root,
+                        |path| load_stbn(path),
+                        |tiles, metadata| load_wang(tiles, metadata),
+                    )?;
+                    ready_tx.send(Arc::downgrade(&candidate)).unwrap();
+                    resume_rx.recv_timeout(WAIT).unwrap();
+                    Ok(candidate)
+                })
+            });
+            let loser = ready_rx.recv_timeout(WAIT).unwrap();
+            assert!(assets.cmf().is_ok());
+            assets.release_cached_payloads().unwrap();
+            assert!(assets.noise.lock().unwrap().is_none());
+            let winner = assets.noise().unwrap();
+            resume_tx.send(()).unwrap();
+            assert!(Arc::ptr_eq(&winner, &attempt.join().unwrap().unwrap()));
+            assert!(loser.upgrade().is_none());
+            assert!(Arc::ptr_eq(&winner, &assets.noise().unwrap()));
+        });
+        // With no competing publication, a cold load may install after release.
+        assets.release_cached_payloads().unwrap();
+        let published = assets
+            .noise_with(|root| {
+                assets.release_cached_payloads().unwrap();
+                load_noise_with(
+                    root,
+                    |path| load_stbn(path),
+                    |tiles, metadata| load_wang(tiles, metadata),
+                )
+            })
+            .unwrap();
+        assert!(Arc::ptr_eq(&published, &assets.noise().unwrap()));
+    }
+
+    #[test]
+    fn new_family_poison_is_typed_and_not_repaired() {
+        let assets = assets();
+        let source = CsvSource::D65;
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = assets.csv_sources[source as usize].lock().unwrap();
+                panic!("poison CSV publication");
+            })
+            .is_err()
+        );
+        assert!(matches!(
+            assets.csv_source(source),
+            Err(AssetError::CsvCachePoisoned {
+                source: CsvSource::D65
+            })
+        ));
+        assert!(matches!(
+            assets.release_cached_payloads(),
+            Err(AssetError::CsvCachePoisoned { .. })
+        ));
+        assert!(assets.csv_source(CsvSource::D55).is_ok());
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = assets.calibration.lock().unwrap();
+                panic!("poison calibration publication");
+            })
+            .is_err()
+        );
+        assert!(matches!(
+            assets.neutral_calibration(),
+            Err(AssetError::CalibrationCachePoisoned)
+        ));
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = assets.noise.lock().unwrap();
+                panic!("poison noise publication");
+            })
+            .is_err()
+        );
+        assert!(matches!(
+            assets.noise(),
+            Err(AssetError::NoiseCachePoisoned)
+        ));
+        assert!(assets.cmf().is_ok());
     }
 
     #[test]

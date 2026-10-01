@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
 
-use film_juicer_core::assets::{AssetError, Assets};
+use film_juicer_core::assets::{AssetError, Assets, CsvSource};
+use film_juicer_core::data_io::calibration::{ErrorKind as CalibrationErrorKind, Field};
+use film_juicer_core::data_io::noise::ErrorKind as NoiseErrorKind;
 use film_juicer_core::profile::{CatalogError, ProfileCompletionErrorKind, ProfileErrorKind, Role};
 
 fn repository() -> PathBuf {
@@ -74,6 +76,453 @@ fn document(key: &str, role: Role) -> Value {
             },
         },
     })
+}
+
+const CSV_SOURCES: &[(CsvSource, &str, usize, u64)] = &[
+    (
+        CsvSource::D65,
+        "illuminants/D65.csv",
+        81,
+        0xadbdb3d2c250ef10,
+    ),
+    (
+        CsvSource::D55,
+        "illuminants/D55.csv",
+        81,
+        0xbc4634b46165cfff,
+    ),
+    (
+        CsvSource::D50,
+        "illuminants/D50.csv",
+        81,
+        0xf70ca3af96e9a5e8,
+    ),
+    (CsvSource::T, "illuminants/T.csv", 81, 0x2013ac33b7e2aaec),
+    (
+        CsvSource::K75p,
+        "illuminants/K75P.csv",
+        81,
+        0x1adba11b770daaa9,
+    ),
+    (
+        CsvSource::Kg3,
+        "filters/heat_absorbing/schott/KG3.csv",
+        146,
+        0xe040af29a7935a51,
+    ),
+    (
+        CsvSource::Canon24F28Is,
+        "filters/lens_transmission/canon/canon_24_f28_is.csv",
+        107,
+        0x74308f00cb53f384,
+    ),
+];
+
+fn write_resource(directory: &Directory, name: &str, bytes: impl AsRef<[u8]>) {
+    let path = directory.0.join(name);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, bytes).unwrap();
+}
+
+fn write_noise(directory: &Directory) {
+    // Fixed complete zero-filled inputs suffice for owner/release contracts.
+    // Independent bundled byte expectations remain in the reader and owner tests.
+    for (name, length) in [
+        ("Noise/stbn_scalar_512x512x256_u8.bin", 67_108_864),
+        ("Noise/Wang/wang_tiles_256x256x16_u8.bin", 1_048_576),
+    ] {
+        let path = directory.0.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::File::create(path).unwrap().set_len(length).unwrap();
+    }
+    write_resource(
+        directory,
+        "Noise/Wang/tiles.json",
+        fs::read(repository().join("Resources/Noise/Wang/tiles.json")).unwrap(),
+    );
+}
+
+fn byte_fingerprint(bytes: impl IntoIterator<Item = u8>) -> u64 {
+    bytes.into_iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
+    })
+}
+
+#[test]
+fn source_owners_preserve_independent_bundled_csv_bits() {
+    // Reuse the pre-translation C++ captures documented in tests/data_io.rs.
+    let assets = Assets::new(repository().join("Resources"));
+    let cmf = assets.cmf().unwrap();
+    assert_eq!(cmf.rows().len(), 81);
+    assert_eq!(
+        byte_fingerprint(cmf.rows().iter().flatten().flat_map(|v| v.to_le_bytes())),
+        0xc0ea4ea30d5fd861
+    );
+    assert!(Arc::ptr_eq(&cmf, &assets.cmf().unwrap()));
+    for &(source, path, count, hash) in CSV_SOURCES {
+        let rows = assets.csv_source(source).unwrap();
+        assert_eq!(rows.rows().len(), count, "{path}");
+        assert_eq!(
+            byte_fingerprint(rows.rows().iter().flatten().flat_map(|v| v.to_le_bytes())),
+            hash,
+            "{path}"
+        );
+        let reused = assets.csv_source(source).unwrap();
+        assert!(Arc::ptr_eq(&rows, &reused));
+        assert_eq!(rows.rows().as_ptr(), reused.rows().as_ptr());
+    }
+}
+
+#[test]
+fn closed_csv_sources_retry_failures_and_preserve_raw_rows() {
+    let directory = Directory::new();
+    let assets = Assets::new(directory.0.clone());
+    for &(source, path, _, _) in CSV_SOURCES {
+        let error = assets.csv_source(source).unwrap_err();
+        let AssetError::CsvSource {
+            source: selected,
+            error,
+        } = error
+        else {
+            panic!("CSV error expected")
+        };
+        assert_eq!(selected, source);
+        assert_eq!(error.path, directory.0.join(path));
+        write_resource(&directory, path, "2,-0\nbad\n1,1e-50\n1,-1e-50\n-4,3\n");
+        let decoded = assets.csv_source(source).unwrap();
+        assert_eq!(
+            decoded
+                .rows()
+                .iter()
+                .map(|row| row.map(f32::to_bits))
+                .collect::<Vec<_>>(),
+            [
+                [2.0f32.to_bits(), 0x8000_0000],
+                [1.0f32.to_bits(), 0],
+                [1.0f32.to_bits(), 0x8000_0000],
+                [(-4.0f32).to_bits(), 3.0f32.to_bits()]
+            ]
+        );
+        fs::remove_file(directory.0.join(path)).unwrap();
+        assert!(Arc::ptr_eq(&decoded, &assets.csv_source(source).unwrap()));
+        assets.release_cached_payloads().unwrap();
+        assert!(matches!(
+            assets.csv_source(source),
+            Err(AssetError::CsvSource { .. })
+        ));
+        assert_eq!(decoded.rows().len(), 4);
+    }
+}
+
+#[test]
+fn decoded_sources_do_not_acquire_axis_or_scientific_admission() {
+    let directory = Directory::new();
+    write_resource(
+        &directory,
+        "cie1931_2deg.csv",
+        "2,-0,3,4\n1,5,6,7\n1,8,9,10\n",
+    );
+    write_resource(&directory, "illuminants/D65.csv", "header only\n");
+    let assets = Assets::new(directory.0.clone());
+    let cmf = assets.cmf().unwrap();
+    assert_eq!(cmf.rows().len(), 3);
+    assert_eq!(
+        cmf.rows()[0].map(f32::to_bits),
+        [
+            2.0f32.to_bits(),
+            0x8000_0000,
+            3.0f32.to_bits(),
+            4.0f32.to_bits()
+        ]
+    );
+    assert_eq!(cmf.rows()[1], [1.0, 5.0, 6.0, 7.0]);
+    assert_eq!(cmf.rows()[2], [1.0, 8.0, 9.0, 10.0]);
+    assert!(assets.csv_source(CsvSource::D65).unwrap().rows().is_empty());
+    let empty = Directory::new();
+    write_resource(&empty, "cie1931_2deg.csv", "no decoded rows\n");
+    assert!(
+        Assets::new(empty.0.clone())
+            .cmf()
+            .unwrap()
+            .rows()
+            .is_empty()
+    );
+}
+
+#[test]
+fn cmf_success_and_error_are_retained_across_release_and_owner_drop() {
+    let directory = Directory::new();
+    let assets = Assets::new(directory.0.clone());
+    let Err(AssetError::Cmf(error)) = assets.cmf() else {
+        panic!("missing CMF expected")
+    };
+    write_resource(&directory, "cie1931_2deg.csv", "1,2,3,4\n");
+    assets.release_cached_payloads().unwrap();
+    let Err(AssetError::Cmf(reused)) = assets.cmf() else {
+        panic!("CMF outcome remains fixed")
+    };
+    assert!(Arc::ptr_eq(&error, &reused));
+    let success_owner = Assets::new(directory.0.clone());
+    let cmf = success_owner.cmf().unwrap();
+    fs::remove_file(directory.0.join("cie1931_2deg.csv")).unwrap();
+    success_owner.release_cached_payloads().unwrap();
+    assert!(Arc::ptr_eq(&cmf, &success_owner.cmf().unwrap()));
+    drop(assets);
+    drop(success_owner);
+    assert_eq!(cmf.rows(), &[[1.0, 2.0, 3.0, 4.0]]);
+    assert_eq!(error.path, directory.0.join("cie1931_2deg.csv"));
+}
+
+#[test]
+fn calibration_owner_preserves_selected_lookup_and_cmy_cc_order() {
+    let directory = Directory::new();
+    let path = "filters/neutral_print_filters.json";
+    write_resource(&directory, path, br#"{"paper":{"D65":{"film":[-0,2.25,1e40],"bad":[1,2]}},"bad_print":4,"bad_illuminant":{"D65":false}}"#);
+    let assets = Assets::new(directory.0.clone());
+    let calibration = assets.neutral_calibration().unwrap();
+    let cmy = calibration.lookup("paper", "D65", "film").unwrap().unwrap();
+    assert_eq!(
+        cmy.map(f32::to_bits),
+        [0x8000_0000, 2.25f32.to_bits(), f32::INFINITY.to_bits()]
+    );
+    for selection in [
+        ("absent", "D65", "film"),
+        ("paper", "absent", "film"),
+        ("paper", "D65", "absent"),
+    ] {
+        assert_eq!(
+            calibration
+                .lookup(selection.0, selection.1, selection.2)
+                .unwrap(),
+            None
+        );
+    }
+    for (selection, field) in [
+        (("bad_print", "D65", "film"), Field::PrintProfile),
+        (("bad_illuminant", "D65", "film"), Field::PrintIlluminant),
+        (("paper", "D65", "bad"), Field::CmyCc),
+    ] {
+        let error = calibration
+            .lookup(selection.0, selection.1, selection.2)
+            .unwrap_err();
+        assert_eq!(error.kind(), CalibrationErrorKind::Malformed(field));
+        assert_eq!(
+            error.selection(),
+            Some([selection.0, selection.1, selection.2])
+        );
+        assert_eq!(error.path(), directory.0.join(path));
+        assert!(calibration.lookup("paper", "D65", "film").is_ok());
+    }
+    fs::remove_file(directory.0.join(path)).unwrap();
+    assert!(Arc::ptr_eq(
+        &calibration,
+        &assets.neutral_calibration().unwrap()
+    ));
+}
+
+#[test]
+fn calibration_load_errors_remain_snapshots_until_release() {
+    for case in ["missing", "read", "root"] {
+        let directory = Directory::new();
+        let path = directory.0.join("filters/neutral_print_filters.json");
+        match case {
+            "read" => fs::create_dir_all(&path).unwrap(),
+            "root" => write_resource(&directory, "filters/neutral_print_filters.json", "[]"),
+            _ => (),
+        }
+        let assets = Assets::new(directory.0.clone());
+        let Err(AssetError::Calibration(error)) = assets.neutral_calibration() else {
+            panic!("load error expected")
+        };
+        match case {
+            "missing" => assert_eq!(error.kind(), CalibrationErrorKind::MissingFile),
+            "read" => assert!(matches!(error.kind(), CalibrationErrorKind::Read(_))),
+            _ => assert_eq!(error.kind(), CalibrationErrorKind::Malformed(Field::Root)),
+        }
+        assert_eq!(error.selection(), None);
+        assert_eq!(error.path(), path);
+        if path.is_dir() {
+            fs::remove_dir(&path).unwrap();
+        }
+        write_resource(
+            &directory,
+            "filters/neutral_print_filters.json",
+            r#"{"p":{"i":{"f":[1,2,3]}}}"#,
+        );
+        let Err(AssetError::Calibration(reused)) = assets.neutral_calibration() else {
+            panic!("error is sticky")
+        };
+        assert!(Arc::ptr_eq(&error, &reused));
+        assets.release_cached_payloads().unwrap();
+        let loaded = assets.neutral_calibration().unwrap();
+        drop(assets);
+        assert_eq!(loaded.lookup("p", "i", "f").unwrap(), Some([1.0, 2.0, 3.0]));
+        assert_eq!(error.path(), path);
+    }
+}
+
+#[test]
+fn complete_noise_owner_preserves_independent_bundled_bytes() {
+    let assets = Assets::new(repository().join("Resources"));
+    let bundle = assets.noise().unwrap();
+    assert_eq!(bundle.stbn().dimensions(), [512, 512, 256]);
+    assert_eq!(bundle.wang().dimensions(), [256, 256, 16]);
+    assert_eq!(bundle.wang().colors(), 2);
+    assert_eq!(
+        byte_fingerprint(bundle.stbn().bytes().iter().copied()),
+        16781862639737418621
+    );
+    assert_eq!(
+        byte_fingerprint(bundle.wang().tiles().iter().copied()),
+        10252691589253770981
+    );
+    assert_eq!(
+        bundle.wang().lut(),
+        [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15]
+    );
+    let reused = assets.noise().unwrap();
+    assert!(Arc::ptr_eq(&bundle, &reused));
+    assert_eq!(
+        bundle.stbn().bytes().as_ptr(),
+        reused.stbn().bytes().as_ptr()
+    );
+    assert_eq!(
+        bundle.wang().tiles().as_ptr(),
+        reused.wang().tiles().as_ptr()
+    );
+}
+
+#[test]
+fn ordinary_noise_errors_are_cached_until_release() {
+    for case in [
+        "missing_stbn",
+        "malformed_stbn",
+        "missing_wang",
+        "malformed_wang",
+        "malformed_json",
+        "malformed_metadata",
+    ] {
+        let directory = Directory::new();
+        write_noise(&directory);
+        let stbn = directory.0.join("Noise/stbn_scalar_512x512x256_u8.bin");
+        let wang = directory.0.join("Noise/Wang/wang_tiles_256x256x16_u8.bin");
+        let metadata = directory.0.join("Noise/Wang/tiles.json");
+        let path = match case {
+            "missing_stbn" => {
+                fs::remove_file(&stbn).unwrap();
+                &stbn
+            }
+            "malformed_stbn" => {
+                fs::write(&stbn, [0u8]).unwrap();
+                &stbn
+            }
+            "missing_wang" => {
+                fs::remove_file(&wang).unwrap();
+                &wang
+            }
+            "malformed_wang" => {
+                fs::write(&wang, [0u8]).unwrap();
+                &wang
+            }
+            "malformed_json" => {
+                fs::write(&metadata, "{").unwrap();
+                &metadata
+            }
+            _ => {
+                fs::write(&metadata, "{}").unwrap();
+                &metadata
+            }
+        };
+        let assets = Assets::new(directory.0.clone());
+        let Err(AssetError::Noise(error)) = assets.noise() else {
+            panic!("complete bundle cannot be published")
+        };
+        assert_eq!(error.path(), path);
+        match case {
+            "missing_stbn" | "missing_wang" => assert_eq!(error.kind(), NoiseErrorKind::Missing),
+            "malformed_stbn" | "malformed_wang" => {
+                assert!(matches!(error.kind(), NoiseErrorKind::Length { .. }))
+            }
+            _ => assert_eq!(error.kind(), NoiseErrorKind::Json),
+        }
+        write_noise(&directory);
+        let Err(AssetError::Noise(reused)) = assets.noise() else {
+            panic!("ordinary error is sticky")
+        };
+        assert!(Arc::ptr_eq(&error, &reused));
+        assets.release_cached_payloads().unwrap();
+        let bundle = assets.noise().unwrap();
+        drop(assets);
+        assert_eq!(bundle.stbn().bytes().len(), 67_108_864);
+        assert_eq!(bundle.wang().tiles().len(), 1_048_576);
+        assert_eq!(error.path(), path);
+    }
+}
+
+#[test]
+fn release_detaches_new_families_even_with_absent_or_failed_catalog() {
+    for failed_catalog in [false, true] {
+        let directory = Directory::new();
+        write_noise(&directory);
+        write_resource(
+            &directory,
+            "filters/neutral_print_filters.json",
+            r#"{"p":{"i":{"f":[1,2,3]}}}"#,
+        );
+        write_resource(&directory, "cie1931_2deg.csv", "1,2,3,4\n");
+        for &(_, path, _, _) in CSV_SOURCES {
+            write_resource(&directory, path, "1,2\n");
+        }
+        let assets = Assets::new(directory.0.clone());
+        if failed_catalog {
+            assert!(assets.catalog().is_err());
+        }
+        let cmf = assets.cmf().unwrap();
+        let noise = assets.noise().unwrap();
+        let calibration = assets.neutral_calibration().unwrap();
+        let sources = CSV_SOURCES
+            .iter()
+            .map(|(source, _, _, _)| assets.csv_source(*source).unwrap())
+            .collect::<Vec<_>>();
+        let reclaimed = Arc::downgrade(&assets.csv_source(CsvSource::D65).unwrap());
+        for &(_, path, _, _) in CSV_SOURCES {
+            write_resource(&directory, path, "3,4\n");
+        }
+        write_resource(&directory, "cie1931_2deg.csv", "9,8,7,6\n");
+        write_resource(
+            &directory,
+            "filters/neutral_print_filters.json",
+            r#"{"p":{"i":{"f":[4,5,6]}}}"#,
+        );
+        assets.release_cached_payloads().unwrap();
+        assert!(Arc::ptr_eq(&cmf, &assets.cmf().unwrap()));
+        let new_calibration = assets.neutral_calibration().unwrap();
+        let new_noise = assets.noise().unwrap();
+        assert!(!Arc::ptr_eq(&calibration, &new_calibration));
+        assert!(!Arc::ptr_eq(&noise, &new_noise));
+        for (&(source, _, _, _), old) in CSV_SOURCES.iter().zip(&sources) {
+            let new = assets.csv_source(source).unwrap();
+            assert!(!Arc::ptr_eq(old, &new));
+            assert_eq!(new.rows(), &[[3.0, 4.0]]);
+        }
+        drop(assets);
+        assert_eq!(cmf.rows(), &[[1.0, 2.0, 3.0, 4.0]]);
+        assert_eq!(
+            calibration.lookup("p", "i", "f").unwrap(),
+            Some([1.0, 2.0, 3.0])
+        );
+        assert_eq!(
+            new_calibration.lookup("p", "i", "f").unwrap(),
+            Some([4.0, 5.0, 6.0])
+        );
+        assert_eq!(noise.stbn().bytes()[0], 0);
+        assert_eq!(new_noise.wang().tiles()[0], 0);
+        for old in &sources {
+            assert_eq!(old.rows(), &[[1.0, 2.0]]);
+        }
+        drop(sources);
+        assert!(reclaimed.upgrade().is_none());
+    }
 }
 
 #[test]

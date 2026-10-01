@@ -58,6 +58,9 @@ impl std::error::Error for Error {}
 #[derive(Debug)]
 pub struct Stbn {
     bytes: Vec<u8>,
+    // Unit tests observe this hold only through Weak, after the bytes are dropped.
+    #[cfg(test)]
+    drop_hold: Option<std::sync::Arc<()>>,
 }
 
 impl Stbn {
@@ -164,7 +167,11 @@ fn read_stbn(
     reserve: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), TryReserveError>,
 ) -> Result<Stbn, ErrorKind> {
     let bytes = read_bytes(reader, length, &STBN_DIMENSIONS, reserve)?;
-    Ok(Stbn { bytes })
+    Ok(Stbn {
+        bytes,
+        #[cfg(test)]
+        drop_hold: None,
+    })
 }
 
 fn read_wang(
@@ -318,6 +325,31 @@ fn build_lut(metadata: Metadata) -> Result<[u8; 16], ErrorKind> {
         lut[offset] = index;
     }
     Ok(lut)
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use std::sync::{Arc, Weak};
+
+    pub(crate) fn track_stbn_drop(mut stbn: Stbn) -> (Stbn, Weak<()>) {
+        let hold = Arc::new(());
+        let probe = Arc::downgrade(&hold);
+        stbn.drop_hold = Some(hold);
+        (stbn, probe)
+    }
+
+    pub(crate) fn capacity_error(path: &Path) -> Error {
+        let kind = read_stbn(&mut io::empty(), 67_108_864, |bytes, _| {
+            bytes.try_reserve_exact(usize::MAX)
+        })
+        .unwrap_err();
+        assert_eq!(kind, ErrorKind::Capacity);
+        Error {
+            path: path.to_owned(),
+            kind,
+        }
+    }
 }
 
 #[cfg(test)]
