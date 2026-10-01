@@ -1,4 +1,10 @@
-//! Catalog discovery, authored profile sources and density-model sampling.
+//! Catalog discovery, authored profile sources and immutable sampled profiles.
+
+mod sampled;
+pub use sampled::{
+    FilmDigest, FilmProfile, PrintProfile, ProfileCompletionError, ProfileCompletionErrorKind,
+    ProfileTables,
+};
 
 use std::collections::HashSet;
 use std::fmt;
