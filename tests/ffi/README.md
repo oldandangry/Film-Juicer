@@ -313,3 +313,40 @@ cmake --preset linux-debug -DBUILD_TESTING=ON
 cmake --build --preset linux-debug --target JuicerAssetLookupTests
 ctest --preset linux-debug -R '^Assets\.Host\.LookupSafety$'
 ```
+
+`Ffi.Host.ProfileOwner` links the feature-only profile facade declared in
+`juicer_test_api.h` to C11/C++20 consumers. It checks 24 layout/tag facts and four
+signatures against Rust, exact exposure/CMY/layer transport using analytical
+center/endpoint expectations, metadata/default tags, nullable spectra, failure
+outputs, diagnostic bounds/uninitialized output, concurrent immutable reads,
+release pairing and independent-copy lifetime.
+`Rust.Bridge` compares projection pointers/bits and tokens directly with the
+complete core owner, tests retention after explicit cache release, and uses Weak
+for reclamation on release (including malformed diagnostics), unpublished
+input/capacity failure and contained panic. No test dereferences an expired pointer.
+
+Each acquisition uses the real Assets catalog and complete film producer; the
+opaque owner retains its Arc after the temporary Assets is destroyed. The view
+exposes only fields consumed by the current profile-row qualification and the
+actual asset token. Other optional/model/digest data stays in the full immutable
+owner. There is no profile-array conversion or duplicate decoder. The fixed view is 264 bytes on x64, including 24 copied halation-digest bytes.
+It duplicates zero spectral/exposure/layer table bytes. The local
+native lifetime test copies 80 payload bytes into its own vectors; those are test scratch,
+not a production cache. Future production bridges share `asset_profile` projection
+and obey the same lifetime; native invocation expiry still applies.
+
+The host fixture creates isolated resources beneath the preset's
+`out/validation/<preset>/ffi/profile-owner-resources`, including both required
+catalog roles/default keys. It never writes Resources or checked-in fixtures,
+links no CUDA runtime and performs no driver operation. Detailed pointer,
+concurrency, status, diagnostic and consume-on-every-outcome rules are beside
+its declarations in `juicer_test_api.h`. Incidental small Box/Arc/path/parser
+allocation aborts remain outside panic recovery. Normal `BUILD_TESTING=OFF`
+does not compile this facade or its owner/projection modules; only the existing
+non-default `test-support` feature enables them.
+
+After configuring/building with tests explicitly ON, run the new boundary and
+its Rust owner checks with `ctest --preset <preset> -R
+'^(Ffi.Host.ProfileOwner|Rust.Bridge)$' --output-on-failure`. Existing integration
+profile fixtures still use their native loader until their separately qualified
+migration; introducing this boundary does not change production ingestion.

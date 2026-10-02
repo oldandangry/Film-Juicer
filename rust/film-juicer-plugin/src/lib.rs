@@ -9,3 +9,13 @@
 mod legacy_bridge;
 
 mod cuda;
+
+#[cfg(feature = "test-support")]
+mod asset_profile;
+
+#[cfg(feature = "test-support")]
+#[allow(
+    unsafe_code,
+    reason = "the test facade checks foreign inputs and consumes retained profile owners at the C boundary"
+)]
+mod test_support;

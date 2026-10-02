@@ -85,6 +85,20 @@ endif()
 add_test(NAME Ffi.Host.CudaAbi COMMAND JuicerCudaAbiTests)
 set_tests_properties(Ffi.Host.CudaAbi PROPERTIES LABELS "host" TIMEOUT 30)
 
+add_executable(JuicerProfileOwnerTests ffi/profile_abi_c.c ffi/profile_owner_test.cpp)
+set_target_properties(JuicerProfileOwnerTests PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(JuicerProfileOwnerTests PRIVATE "${PROJECT_SOURCE_DIR}/native")
+target_link_libraries(JuicerProfileOwnerTests PRIVATE film_juicer_rust GTest::gtest)
+if(WIN32)
+    target_compile_options(JuicerProfileOwnerTests PRIVATE /W3 /WX)
+else()
+    target_compile_options(JuicerProfileOwnerTests PRIVATE -Wall -Wextra -Werror -pedantic-errors)
+endif()
+add_test(NAME Ffi.Host.ProfileOwner COMMAND JuicerProfileOwnerTests
+    "${JUICER_TEST_ARTIFACT_ROOT}/ffi/profile-owner-resources")
+set_tests_properties(Ffi.Host.ProfileOwner PROPERTIES LABELS "host" TIMEOUT 30)
+
 add_executable(JuicerCudaOwnerTests ffi/cuda_owner_test.cpp)
 target_link_libraries(JuicerCudaOwnerTests PRIVATE juicer_core)
 set_target_properties(JuicerCudaOwnerTests PROPERTIES LINKER_LANGUAGE CXX)
