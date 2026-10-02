@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -145,12 +146,12 @@ namespace {
         return average;
     }
 
-    float interp_clamped_monotonic(
+    std::optional<float> interp_clamped_monotonic(
         float query,
         const std::vector<float>& x,
         const std::vector<float>& y) {
-        if (x.empty() || x.size() != y.size()) {
-            return 0.0f;
+        if (std::isnan(query) || x.empty() || x.size() != y.size()) {
+            return std::nullopt;
         }
         const bool ascending = x.size() < 2 || x.back() >= x.front();
         const auto at = [&](std::size_t index) {
@@ -165,21 +166,22 @@ namespace {
         for (std::size_t i = 1; i < x.size(); ++i) {
             const std::size_t hi = at(i);
             const std::size_t lo = at(i - 1u);
-            if (query <= x[hi]) {
+            if (query >= x[lo] && query <= x[hi]) {
                 const float span = x[hi] - x[lo];
                 const float t = span > 0.0f ? (query - x[lo]) / span : 0.0f;
                 return y[lo] + t * (y[hi] - y[lo]);
             }
         }
-        return y[at(y.size() - 1u)];
+        return std::nullopt;
     }
 
-    float sample_density_curve(
+    std::optional<float> sample_density_curve(
         float logExposure,
         const Profiles::SpektrafilmProfileSamples& data,
         std::size_t channel) {
-        if (data.logExposure.empty() || data.logExposure.size() != data.densityCurves.size()) {
-            return 0.0f;
+        if (std::isnan(logExposure) || data.logExposure.empty() ||
+            data.logExposure.size() != data.densityCurves.size() || channel >= 3u) {
+            return std::nullopt;
         }
         std::vector<float> values;
         values.reserve(data.densityCurves.size());
@@ -317,6 +319,26 @@ namespace {
     }
 
 } // namespace
+
+#ifdef JUICER_ASSET_LOOKUP_TEST_HOOK
+namespace AssetLookupTest {
+
+    std::optional<float> interp_clamped_monotonic_for_test(
+        float query,
+        const std::vector<float>& axis,
+        const std::vector<float>& values) {
+        return interp_clamped_monotonic(query, axis, values);
+    }
+
+    std::optional<float> sample_density_curve_for_test(
+        float query,
+        const Profiles::SpektrafilmProfileSamples& data,
+        std::size_t channel) {
+        return sample_density_curve(query, data, channel);
+    }
+
+} // namespace AssetLookupTest
+#endif
 
 namespace Scanner {
 
@@ -723,14 +745,20 @@ namespace Scanner {
         for (float& value : negativeAverage) {
             value = -value;
         }
-        const float correctedLogExposure = -interp_clamped_monotonic(
+        const auto correctedSample = interp_clamped_monotonic(
             -(correctedDensityMidgray - baseAverage),
             negativeAverage,
             data.logExposure);
-        const float logExposure = -interp_clamped_monotonic(
+        const auto sample = interp_clamped_monotonic(
             -(densityMidgray - baseAverage),
             negativeAverage,
             data.logExposure);
+        if (!correctedSample || !sample) {
+            outDiagnostic = "ResourceDescriptorMismatch phase=8B direct density lookup";
+            return false;
+        }
+        const float correctedLogExposure = -*correctedSample;
+        const float logExposure = -*sample;
         const float exposureScale = std::pow(10.0f, logExposure - correctedLogExposure);
         return finish_correction_descriptor(
             output,
@@ -770,7 +798,8 @@ namespace Scanner {
             recipe.profileRoute.filmProfile->data;
         const Profiles::SpektrafilmProfileSamples& print =
             recipe.profileRoute.printProfile->data;
-        const auto film_to_print_density = [&](const std::array<float, 3>& filmDensity) {
+        const auto film_to_print_density = [&](const std::array<float, 3>& filmDensity)
+            -> std::optional<std::array<float, 3>> {
             std::array<float, 3> raw{};
             for (int sample = 0; sample < input.spectralSampleCount; ++sample) {
                 const std::size_t k = static_cast<std::size_t>(sample);
@@ -793,25 +822,33 @@ namespace Scanner {
                 raw[channel] =
                     raw[channel] * input.normalizer +
                     input.preflashRawCmy[channel] * recipe.print.exposure.preflashExposure;
-                density[channel] = sample_density_curve(
+                const auto sample = sample_density_curve(
                     std::log10(std::fmax(raw[channel], 0.0f) + 1e-10f),
                     print,
                     channel);
+                if (!sample) {
+                    return std::nullopt;
+                }
+                density[channel] = *sample;
             }
             return density;
         };
 
-        const std::array<float, 3> printBlack =
+        const auto printBlack =
             film_to_print_density(recipe.enlargerFilmBounds.dataMinCmy);
-        const std::array<float, 3> printWhite =
+        const auto printWhite =
             film_to_print_density(recipe.enlargerFilmBounds.dataMaxCmy);
+        if (!printBlack || !printWhite) {
+            outDiagnostic = "ResourceDescriptorMismatch phase=8B print reference density lookup";
+            return false;
+        }
         const ScannerMediumRuntime medium = make_scanner_medium(
             recipe.densityBounds,
             *input.scannerTables);
         float referenceBlackY = 0.0f;
         float referenceWhiteY = 0.0f;
-        if (!scan_reference_y(medium, printBlack, referenceBlackY) ||
-            !scan_reference_y(medium, printWhite, referenceWhiteY)) {
+        if (!scan_reference_y(medium, *printBlack, referenceBlackY) ||
+            !scan_reference_y(medium, *printWhite, referenceWhiteY)) {
             outDiagnostic = "MalformedRequiredProfileData phase=8B print reference scan";
             return false;
         }
@@ -848,15 +885,19 @@ namespace Scanner {
         const float correctedDensityMidgray = -std::log10(correctedMidgray);
         const std::vector<float> average = average_density_curves(print.densityCurves);
         const float baseAverage = finite_average(print.baseDensity.data(), print.baseDensity.size());
-        const float correctedLogExposure = interp_clamped_monotonic(
+        const auto correctedLogExposure = interp_clamped_monotonic(
             correctedDensityMidgray - baseAverage,
             average,
             print.logExposure);
-        const float logExposure = interp_clamped_monotonic(
+        const auto logExposure = interp_clamped_monotonic(
             densityMidgray - baseAverage,
             average,
             print.logExposure);
-        const float exposureScale = std::pow(10.0f, correctedLogExposure - logExposure);
+        if (!correctedLogExposure || !logExposure) {
+            outDiagnostic = "ResourceDescriptorMismatch phase=8B print density lookup";
+            return false;
+        }
+        const float exposureScale = std::pow(10.0f, *correctedLogExposure - *logExposure);
         return finish_correction_descriptor(
             output,
             referenceBlackY,

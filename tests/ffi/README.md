@@ -289,3 +289,27 @@ the measured call. This isolates the C return/staging lifetime from legitimate
 synchronous renderer paths. Existing pinned-upload tests independently cover
 reservation, exceptional completion and quarantine. The uploader hook object
 remains confined to the test executable.
+
+## Native asset lookup safety
+
+`Assets.Host.LookupSafety` runs the real private synthetic density, Scanner
+interpolation/density and Hanatos window helpers through dedicated test objects.
+`JUICER_ASSET_LOOKUP_TEST_HOOK` is defined only on those objects and their test
+executable. Product objects and normal Release modules contain no wrappers.
+The existing admission and context-drain seams are independent and unchanged.
+
+The group checks finite endpoints/interpolation, distinct duplicate selection,
+ascending/descending Scanner traversal, singleton axes, ordered infinities,
+NaN/shape/channel failures, and public direct/print/synthetic builder failure
+propagation before reference or descriptor publication. It performs no CUDA
+runtime or driver operation. CUDA linking/build prerequisites remain required.
+[Independent expectations and provenance](asset_lookup_expectations.md) explain
+why synthetic invalid brackets are unreachable for admitted axes and define the
+three Hanatos formula cases without changing production parameter admission.
+Relaxed profile-to-recipe acceptance belongs to the later admission removal.
+
+```sh
+cmake --preset linux-debug -DBUILD_TESTING=ON
+cmake --build --preset linux-debug --target JuicerAssetLookupTests
+ctest --preset linux-debug -R '^Assets\.Host\.LookupSafety$'
+```

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 
@@ -323,6 +324,32 @@ namespace {
         width = uv ? std::abs(width) : -std::abs(width);
         const float sigmoid = 0.5f * (std::erf((wavelength - filter[1]) / width) + 1.0f);
         return 1.0f - amplitude + amplitude * sigmoid;
+    }
+
+    std::optional<float> sample_synthetic_density(
+        float query,
+        const std::vector<float>& axis,
+        const std::vector<std::array<float, 3>>& curves,
+        std::size_t channel) {
+        if (std::isnan(query) || axis.empty() || axis.size() != curves.size() || channel >= 3u) {
+            return std::nullopt;
+        }
+        if (query <= axis.front()) {
+            return curves.front()[channel];
+        }
+        if (query >= axis.back()) {
+            return curves.back()[channel];
+        }
+        // Complete profiles supply a nondecreasing axis; do not rescan or repair it here.
+        const auto upper = std::upper_bound(axis.begin(), axis.end(), query);
+        if (upper == axis.begin() || upper == axis.end()) {
+            return std::nullopt;
+        }
+        const std::size_t hi = static_cast<std::size_t>(upper - axis.begin());
+        const std::size_t lo = hi - 1u;
+        const float span = axis[hi] - axis[lo];
+        const float t = span > 0.0f ? (query - axis[lo]) / span : 0.0f;
+        return curves[lo][channel] + t * (curves[hi][channel] - curves[lo][channel]);
     }
 
     float hanatos_window_sample(float wavelength, const std::array<float, 4>& params) {
@@ -1792,6 +1819,24 @@ namespace {
 
 } // namespace
 
+#ifdef JUICER_ASSET_LOOKUP_TEST_HOOK
+namespace AssetLookupTest {
+
+    std::optional<float> sample_synthetic_density_for_test(
+        float query,
+        const std::vector<float>& axis,
+        const std::vector<std::array<float, 3>>& curves,
+        std::size_t channel) {
+        return sample_synthetic_density(query, axis, curves, channel);
+    }
+
+    float hanatos_window_sample_for_test(float wavelength, const std::array<float, 4>& params) {
+        return hanatos_window_sample(wavelength, params);
+    }
+
+} // namespace AssetLookupTest
+#endif
+
 namespace Spektrafilm {
     std::array<double, 3> evaluate_print_density_sample(
         const Profiles::DensityCurveModel& model,
@@ -2538,23 +2583,6 @@ namespace Spektrafilm {
             return false;
         }
 
-        auto sample_density_curve = [&](float logExposure, std::size_t channel) {
-            const auto& axis = recipe.filmDevelop.logExposure;
-            const auto& curves = recipe.filmDevelop.authoredDensityCurves;
-            if (logExposure <= axis.front()) {
-                return curves.front()[channel];
-            }
-            if (logExposure >= axis.back()) {
-                return curves.back()[channel];
-            }
-            const auto upper = std::upper_bound(axis.begin(), axis.end(), logExposure);
-            const std::size_t hi = static_cast<std::size_t>(upper - axis.begin());
-            const std::size_t lo = hi - 1u;
-            const float span = axis[hi] - axis[lo];
-            const float t = span > 0.0f ? (logExposure - axis[lo]) / span : 0.0f;
-            return curves[lo][channel] + t * (curves[hi][channel] - curves[lo][channel]);
-        };
-
         auto reconstruct = [&](float exposureEv, std::array<float, 3>& out) {
             out = {};
             const float source = 0.184f * std::exp2(exposureEv);
@@ -2647,10 +2675,23 @@ namespace Spektrafilm {
             const float compensatedLog = std::log10(
                 reference.compensatedRawRgb[channel] * reference.baselineMeterScale +
                 1.0e-10f);
-            reference.baselineDensityCmy[channel] =
-                sample_density_curve(baselineLog * gamma, channel);
-            reference.compensatedDensityCmy[channel] =
-                sample_density_curve(compensatedLog * gamma, channel);
+            const auto baselineDensity = sample_synthetic_density(
+                baselineLog * gamma,
+                recipe.filmDevelop.logExposure,
+                recipe.filmDevelop.authoredDensityCurves,
+                channel);
+            const auto compensatedDensity = sample_synthetic_density(
+                compensatedLog * gamma,
+                recipe.filmDevelop.logExposure,
+                recipe.filmDevelop.authoredDensityCurves,
+                channel);
+            if (!baselineDensity || !compensatedDensity) {
+                diagnostic =
+                    "ResourceDescriptorMismatch phase=3B field=synthetic_reference_density_lookup";
+                return false;
+            }
+            reference.baselineDensityCmy[channel] = *baselineDensity;
+            reference.compensatedDensityCmy[channel] = *compensatedDensity;
         }
         reference.hash = Hash::kFnvOffset;
         Hash::hash_bytes_update(

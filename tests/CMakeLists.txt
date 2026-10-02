@@ -283,6 +283,22 @@ endif()
 add_test(NAME Ffi.Host.PreparedProjection COMMAND JuicerPreparedProjectionTests)
 set_tests_properties(Ffi.Host.PreparedProjection PROPERTIES LABELS "host" TIMEOUT 30)
 
+# These objects expose only the real private asset lookups and Hanatos formula.
+add_library(juicer_asset_lookup_test_objects OBJECT ../src/RenderRecipe.cpp ../src/Scanner.cpp)
+target_link_libraries(juicer_asset_lookup_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_asset_lookup_test_objects PRIVATE JUICER_ASSET_LOOKUP_TEST_HOOK=1)
+add_executable(JuicerAssetLookupTests
+    ffi/asset_lookup_test.cpp $<TARGET_OBJECTS:juicer_asset_lookup_test_objects>)
+target_link_libraries(JuicerAssetLookupTests PRIVATE juicer_core GTest::gtest_main)
+target_compile_definitions(JuicerAssetLookupTests PRIVATE JUICER_ASSET_LOOKUP_TEST_HOOK=1)
+set_target_properties(JuicerAssetLookupTests PROPERTIES
+    LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerAssetLookupTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Assets.Host.LookupSafety COMMAND JuicerAssetLookupTests)
+set_tests_properties(Assets.Host.LookupSafety PROPERTIES LABELS "host" TIMEOUT 30)
+
 gtest_discover_tests(JuicerHashContractTests
     TEST_PREFIX "Hash.Host."
     DISCOVERY_MODE POST_BUILD
