@@ -160,7 +160,7 @@ cmake --build --preset linux-debug
 | `grain/delta_fusion_test.cu` | Grain output against a separate FP32 blur/accumulation/delta oracle, including finite sanitation and final-layer dispatch | `gpu` |
 | `dir/exposure_cache_test.cpp` | Source-pass versus separate-pass log-exposure caches and final capture density through production CUDA operators | `gpu` |
 | `gamma/test_compare.py` | Comparator bounds, applicability, non-finite rejection and CLI failure propagation | `host` |
-| `quality/test_check_quality.py` | Quality dispatcher selection, source hygiene, and failure propagation | `host` |
+| `quality/test_check_quality.py` | Quality dispatcher selection, CUDA command translation and header owners, source hygiene, and failure propagation | `host` |
 | `quality/test_rust_naming.py` | Product naming-policy contract: current Rust code, accepted names, individually rejected names, test targets, and reasoned foreign-name exceptions under the actual workspace lints | `host`; pinned Cargo and Clippy required |
 | `ofx/probe.py` | Linux synthetic OFX load/describe/unload and captured describe properties; no parameter varargs or render | `host`, Linux only |
 | `ofx/processor_reference_test.cpp` | Native OFX image/property seam driving the current CUDA processor for four routes, a combined optics/grain/print case, and signed-zero print transitions | `gpu` |
@@ -340,8 +340,12 @@ first to `out/validation/`.
 - The build still requires CUDA 13.2 even for `-L host`; a toolkit-free C++
   mode is outside this consolidation.
 - Standard public CI runs Linux and Windows Debug host selections plus the
-  tracked native/Rust quality and Python checks. Both lanes compile against
-  CUDA 13.2 but expose no NVIDIA device and run no `gpu` tests. GPU,
+  tracked native/CUDA/Rust quality and Python checks. Both lanes install and
+  verify the cuRAND and CCCL headers required by Clang's CUDA frontend. The
+  `linux-debug-quality` and `windows-debug-quality` artifacts retain quality
+  logs, translated CUDA commands, and the compilation database even on failure.
+  Both lanes compile against CUDA 13.2 but expose no NVIDIA device and run no
+  `gpu` tests. GPU,
   installed-Resolve-library, and Resolve-render evidence are reported
   separately.
 - The historical gamma capture baseline remains deferred because its resource

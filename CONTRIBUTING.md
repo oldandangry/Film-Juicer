@@ -111,6 +111,30 @@ tools or compiler/lint failures as incomplete work. Formatting and lints do
 not replace review of ownership, names, numerical parity, GPU lifetime, or
 installed Resolve behavior.
 
+CUDA files use Clang's CUDA frontend with the preset's real NVCC compilation
+database entries. Both `.cu` sources and consuming translation units for `.cuh`
+or shared headers are checked; distinct CUDA build variants are retained. The
+supported presets require CUDA 13.2, C++20, `sm_75`/`compute_75`, GCC 13 on Linux,
+and the matching VS developer environment on Windows. Install the cuRAND
+development headers too (`libcurand-dev-13-2` on Linux, `curand_dev_13.2` in the
+Windows installer): Clang's runtime wrapper includes them even when a source
+does not use cuRAND. No GPU is needed for this analysis.
+
+The dispatcher preserves ordered definitions and include paths, host runtime
+and exception settings, and the compilation working directory. Unknown NVCC
+or host options fail with a diagnostic instead of being silently discarded.
+Each `cuda-command-*.json` log records the original and translated arguments.
+Clang 22 needs three narrow parsing adaptations: an empty removed CUDA texture
+header, an early `_NV_RSQRT_SPECIFIER` definition, and OpenRAND's existing
+host/device attributes enabled during both Clang passes. The OpenRAND analysis
+copy is generated from the vendored header with only that guard changed; its
+implementation and license are preserved. These files live under the quality
+log directory and are used only by analysis. The repository's normal tidy
+checks and warnings-as-errors remain enabled.
+
+Changes to the runner or its tests also run the dispatcher regression tests
+and representative host, CUDA, and Rust checks.
+
 Any selected Rust change runs rustfmt and Clippy over both complete crates, with
 all targets in development and release profiles, followed by the Rust naming
 enforcement tests. The runner selects the repository's Clippy configuration.

@@ -89,13 +89,16 @@ jobs:
             "cudart_13.2",
             "cufft_13.2",
             "cufft_dev_13.2",
+            "curand_13.2",
+            "curand_dev_13.2",
             "nvcc_13.2",
             "nvdisasm_13.2",
             "nvfatbin_13.2",
             "nvjitlink_13.2",
             "nvprune_13.2",
             "nvptxcompiler_13.2",
-            "nvvm_13.2"
+            "nvvm_13.2",
+            "thrust_13.2"
           )
           $install = Start-Process -FilePath $installer -ArgumentList $components `
             -NoNewWindow -PassThru -Wait
@@ -107,6 +110,8 @@ jobs:
           $requiredFiles = @(
             "$env:CUDA_PATH_V13_2\bin\nvcc.exe",
             "$env:CUDA_PATH_V13_2\include\cuda_runtime.h",
+            "$env:CUDA_PATH_V13_2\include\curand_mtgp32_kernel.h",
+            "$env:CUDA_PATH_V13_2\include\cccl\nv\target",
             "$env:CUDA_PATH_V13_2\lib\x64\cuda.lib",
             "$env:CUDA_PATH_V13_2\lib\x64\cudart.lib",
             "$env:CUDA_PATH_V13_2\lib\x64\cufft.lib"
@@ -156,7 +161,7 @@ jobs:
           cmake --preset windows-clang-debug -DBUILD_TESTING=ON
           cmake --build --preset windows-clang-debug
 
-      - name: Run tracked quality checks
+      - name: Run tracked native, CUDA, and Rust quality checks
         shell: pwsh
         env:
           QUALITY_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
@@ -166,7 +171,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($qualityBase) -or $qualityBase -match "^0+$") {
             $qualityBase = git rev-parse HEAD^
           }
-          python scripts/check-quality.py `
+          python -u scripts/check-quality.py `
             --base $qualityBase `
             --preset windows-clang-debug
 
@@ -205,4 +210,15 @@ jobs:
         with:
           name: windows-debug-host-junit
           path: out/validation/windows-clang-debug/host-junit.xml
+          if-no-files-found: warn
+
+      - name: Upload quality diagnostics and CUDA commands
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: windows-debug-quality
+          path: |
+            out/validation/windows-clang-debug/quality/**/*.log
+            out/validation/windows-clang-debug/quality/cuda-command-*.json
+            out/build/windows-clang-debug/compile_commands.json
           if-no-files-found: warn
