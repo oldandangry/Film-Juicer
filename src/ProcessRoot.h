@@ -570,7 +570,7 @@ namespace JuicerProcess {
         bool shutdown(std::mutex& nativeCallMutex, JuicerCuda::Failure& outError);
         bool retire_known_contexts(JuicerCuda::Failure& outError);
         bool release_cuda_context_resource_owners() noexcept;
-        void release_process_host_services() noexcept;
+        FjStatus release_process_host_services(FjErrorBuffer* error = nullptr) noexcept;
         std::unique_ptr<JuicerAssets::Library> detach_host_assets() noexcept;
         void finish_frame_preparation() noexcept;
         bool wait_for_frame_preparation() noexcept;

@@ -86,7 +86,7 @@ namespace {
         // Scanner uses a linear traversal, so these cases have no partition precondition.
         EXPECT_FALSE(AssetLookupTest::interp_clamped_monotonic_for_test(1.0f, {kNan}, {1.0f}));
         EXPECT_FALSE(AssetLookupTest::interp_clamped_monotonic_for_test(1.0f, {0.0f, kNan, 2.0f}, {0.0f, 1.0f, 2.0f}));
-        Profiles::SpektrafilmProfileSamples data;
+        Profiles::FilmProfileSamples data;
         EXPECT_FALSE(AssetLookupTest::sample_density_curve_for_test(0.0f, data, 0u));
         data.logExposure = {0.0f};
         EXPECT_FALSE(AssetLookupTest::sample_density_curve_for_test(0.0f, data, 0u));
@@ -98,8 +98,8 @@ namespace {
 
     struct ScannerCorrectionFixture {
         RenderRecipe recipe;
-        std::shared_ptr<Profiles::ValidatedFilmProfile> film = std::make_shared<Profiles::ValidatedFilmProfile>();
-        std::shared_ptr<Profiles::ValidatedPrintProfile> print = std::make_shared<Profiles::ValidatedPrintProfile>();
+        std::shared_ptr<Profiles::FilmProfile> film = std::make_shared<Profiles::FilmProfile>();
+        std::shared_ptr<Profiles::PrintProfile> print = std::make_shared<Profiles::PrintProfile>();
         Spectral::SpectralTables tables;
         std::array<float, 81> illuminant{};
         std::array<float, 3> preflash{};
@@ -186,7 +186,7 @@ namespace {
     TEST(AssetLookup, SyntheticBuilderRejectsNaNQueryBeforePublication) {
         const ScopedMallettBasis basis;
         RenderRecipe recipe;
-        recipe.profileRoute.filmProfile = std::make_shared<Profiles::ValidatedFilmProfile>();
+        recipe.profileRoute.filmProfile = std::make_shared<Profiles::FilmProfile>();
         recipe.profileRoute.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
         recipe.filmRaw.rgbToRawMethod = Spektrafilm::RgbToRawMethod::Mallett2019;
         recipe.filmRaw.mallettGreenMidgrayScale = 1.0f;

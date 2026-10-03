@@ -21,6 +21,9 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include "render_assertions.h"
+#include "nlohmann/json.hpp"
+
 #include "Hash.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "JuicerState.h"
@@ -516,6 +519,9 @@ namespace {
         double time = 37.0;
         double scaleX = 1.0;
         double scaleY = 1.0;
+        const std::vector<float>* sourcePixels = nullptr;
+        int fullWidth = 0;
+        int fullHeight = 0;
     };
 
     struct DeviceFrame {
@@ -610,6 +616,17 @@ namespace {
                 }
             }
         }
+        if (test.sourcePixels) {
+            const std::size_t rowSamples = static_cast<std::size_t>(width) * static_cast<std::size_t>(test.components);
+            if (test.sourcePixels->size() != rowSamples * static_cast<std::size_t>(height)) {
+                throw std::runtime_error("accepted capture input shape mismatch");
+            }
+            for (int y = 0; y < height; ++y) {
+                const std::size_t sourceOffset = static_cast<std::size_t>(y) * rowSamples;
+                const std::size_t destinationOffset = static_cast<std::size_t>(y) * static_cast<std::size_t>(pitch);
+                std::copy_n(test.sourcePixels->data() + sourceOffset, rowSamples, input.data() + destinationOffset);
+            }
+        }
         DeviceFrame device;
         require_cuda(cudaStreamCreateWithFlags(&device.stream, cudaStreamNonBlocking), "create stream");
         device.destinationInSource = destinationLayout == DestinationLayout::DisjointRows;
@@ -631,6 +648,10 @@ namespace {
         fill_image_properties(sourceProperties, device.source, imageInput);
         const OfxRectI destinationBounds{bounds.x1 - border, bounds.y1 - border, bounds.x2 + border - (destinationLayout == DestinationLayout::Uncovered ? 1 : 0), bounds.y2 + border};
         fill_image_properties(destinationProperties, device.destination, {destinationBounds, test.components, destinationPitch * static_cast<int>(sizeof(float))});
+        if (test.fullWidth > 0 && test.fullHeight > 0) {
+            sourceProperties.ints[kOfxImagePropRegionOfDefinition] = {0, 0, test.fullWidth, test.fullHeight};
+            destinationProperties.ints[kOfxImagePropRegionOfDefinition] = {0, 0, test.fullWidth, test.fullHeight};
+        }
         sourceProperties.doubles[kOfxImageEffectPropRenderScale] = {test.scaleX, test.scaleY};
         destinationProperties.doubles[kOfxImageEffectPropRenderScale] = {test.scaleX, test.scaleY};
         const OfxPropertySetHandle sourceHandle =
@@ -665,13 +686,17 @@ namespace {
             const OfxRectI renderWindow = emptyWindow
                                               ? OfxRectI{test.originX, test.originY, test.originX, test.originY}
                                               : bounds;
-            const float pixelSizeUm = 35'000.0f / static_cast<float>(width);
+            const OfxRectI fullBounds = test.fullWidth > 0 && test.fullHeight > 0
+                                            ? OfxRectI{0, 0, test.fullWidth, test.fullHeight}
+                                            : bounds;
+            const int physicalWidth = test.fullWidth > 0 ? test.fullWidth : width;
+            const float pixelSizeUm = 35'000.0f / static_cast<float>(physicalWidth);
             const Spektrafilm::FilmJuicerEffectsGeometry effectsGeometry{
-                {test.originX, test.originY, width, height},
-                static_cast<double>(test.originX),
-                static_cast<double>(test.originY),
-                static_cast<double>(width),
-                static_cast<double>(height),
+                {fullBounds.x1, fullBounds.y1, fullBounds.x2 - fullBounds.x1, fullBounds.y2 - fullBounds.y1},
+                static_cast<double>(fullBounds.x1),
+                static_cast<double>(fullBounds.y1),
+                static_cast<double>(fullBounds.x2 - fullBounds.x1),
+                static_cast<double>(fullBounds.y2 - fullBounds.y1),
                 test.scaleX,
                 test.scaleY,
                 1.0};
@@ -697,7 +722,7 @@ namespace {
                 request.diffusionFrameSet = diffusion;
                 request.scatterHalation = halation;
                 request.renderWindow = renderWindow;
-                request.fullFrameExtent = bounds;
+                request.fullFrameExtent = fullBounds;
                 request.sessionSeed = 0x20260923;
                 request.instanceToken = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
                 request.clipToken = 0x5312;
@@ -712,7 +737,7 @@ namespace {
                 request.diffusionFrameSet = diffusion;
                 request.scatterHalation = halation;
                 request.renderWindow = renderWindow;
-                request.fullFrameExtent = bounds;
+                request.fullFrameExtent = fullBounds;
                 request.sessionSeed = 0x20260923;
                 request.instanceToken = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
                 request.clipToken = 0x5312;
@@ -806,9 +831,8 @@ namespace {
                     if (!std::isfinite(value)) {
                         throw std::runtime_error(std::string(test.name) + ": nonfinite output");
                     }
-                    if (c == 3 && std::bit_cast<std::uint32_t>(value) !=
-                                      std::bit_cast<std::uint32_t>(input[static_cast<std::size_t>(y) * static_cast<std::size_t>(pitch) + static_cast<std::size_t>(x) * static_cast<std::size_t>(test.components) + static_cast<std::size_t>(c)])) {
-                        throw std::runtime_error(std::string(test.name) + ": alpha changed");
+                    if (c == 3) {
+                        RenderAssertions::require_same_bits(std::string(test.name) + ": alpha", value, input[static_cast<std::size_t>(y) * static_cast<std::size_t>(pitch) + static_cast<std::size_t>(x) * static_cast<std::size_t>(test.components) + static_cast<std::size_t>(c)]);
                     }
                     pixels.push_back(value);
                 }
@@ -818,26 +842,16 @@ namespace {
             for (int x = 0; x < destinationPitch; ++x) {
                 const bool rendered = y >= border && y < border + height &&
                                       x >= border * test.components && x < (border + width) * test.components;
-                if (!rendered && std::bit_cast<std::uint32_t>(output[static_cast<std::size_t>(y) * static_cast<std::size_t>(destinationPitch) + static_cast<std::size_t>(x)]) != std::bit_cast<std::uint32_t>(kCanary)) {
-                    throw std::runtime_error(std::string(test.name) + ": destination outside render window changed");
+                if (!rendered) {
+                    RenderAssertions::require_same_bits(std::string(test.name) + ": destination outside render window", output[static_cast<std::size_t>(y) * static_cast<std::size_t>(destinationPitch) + static_cast<std::size_t>(x)], kCanary);
                 }
             }
         }
         return pixels;
     }
 
-    void compare_pixels(const std::string& name, const std::vector<float>& actual, const std::vector<float>& expected) {
-        if (actual.size() != expected.size()) {
-            throw std::runtime_error(name + ": pixel count mismatch");
-        }
-        for (std::size_t i = 0; i < actual.size(); ++i) {
-            const float allowed = 2e-4f + 3e-4f * std::abs(expected[i]);
-            if (std::abs(actual[i] - expected[i]) > allowed) {
-                throw std::runtime_error(name + ": pixel " + std::to_string(i) + " differs: " +
-                                         std::to_string(actual[i]) + " versus " + std::to_string(expected[i]));
-            }
-        }
-    }
+    using RenderAssertions::compare_pixels;
+
 } // namespace
 
 namespace {
@@ -1174,6 +1188,54 @@ namespace {
 } // namespace
 #endif
 
+#if defined(JUICER_ACCEPTED_CAPTURE_PATH)
+namespace {
+    void run_accepted_clean_captures() {
+        std::ifstream fixture(JUICER_ACCEPTED_CAPTURE_PATH);
+        if (!fixture) {
+            throw std::runtime_error("accepted CUDA capture fixture unavailable");
+        }
+        const auto captures = nlohmann::json::parse(fixture);
+        const auto decode = [](const nlohmann::json& bits) {
+            std::vector<float> pixels;
+            pixels.reserve(bits.size());
+            for (const auto& value : bits) {
+                pixels.push_back(std::bit_cast<float>(value.get<std::uint32_t>()));
+            }
+            return pixels;
+        };
+        const auto input = decode(captures.at("input_bits"));
+        for (const auto& capture : captures.at("cases")) {
+            const auto& settings = capture.at("settings");
+            const std::string name = capture.at("name").get<std::string>();
+            Case test{};
+            test.name = name.c_str();
+            test.route = static_cast<Spektrafilm::ScanRoute>(settings.at("route").get<int>());
+            test.components = 3;
+            test.sourcePixels = &input;
+            test.fullWidth = settings.at("width").get<int>();
+            test.fullHeight = settings.at("height").get<int>();
+            auto parameters = parameters_for(test);
+            parameters.filmProfileKey = settings.at("film").get<std::string>();
+            parameters.printProfileKey = settings.at("print").get<std::string>();
+            parameters.printGammaFactor = settings.at("print_gamma").get<double>();
+            parameters.inputColorSpace = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::ITU_R_BT2020);
+            parameters.inputCctfDecoding = 0;
+            parameters.outputColorSpace = OutputEncoding::toIndex(OutputEncoding::ColorSpace::ITU_R_BT2020);
+            parameters.outputCctfEncoding = 0;
+            parameters.dirCouplers.active = false;
+            parameters.grainControls.active = false;
+            parameters.glareActive = false;
+            parameters.glarePercent = 0.03;
+            InstanceState state;
+            const auto pixels = render_case(test, parameters, state);
+            compare_pixels(name, pixels, decode(capture.at("output_bits")));
+            std::cerr << name << ": exact stored CUDA samples within retained pixel bounds\n";
+        }
+    }
+} // namespace
+#endif
+
 int main(int argc, char** argv) {
     JuicerCuda::Owner cudaOwner;
     try {
@@ -1182,6 +1244,15 @@ int main(int argc, char** argv) {
         require_cuda(cudaSetDevice(0), "select device");
         require_cuda(cudaFree(nullptr), "initialize CUDA");
         JuicerProcess::root().ensure_bootstrap();
+#if defined(JUICER_ACCEPTED_CAPTURE_PATH)
+        if (argc == 2 && std::string(argv[1]) == "--accepted-clean-captures") {
+            run_accepted_clean_captures();
+            if (cudaOwner.close().category != FJ_STATUS_SUCCESS) {
+                throw std::runtime_error("accepted capture owner cleanup failed");
+            }
+            return 0;
+        }
+#endif
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
         if (argc == 3 && std::string(argv[1]) == "--resource-failure") {
             const std::string resourceFailure = argv[2];
@@ -1230,8 +1301,13 @@ int main(int argc, char** argv) {
                                          {"combined-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 3, 0, 0, true},
                                          {"glare-plus-zero", Spektrafilm::ScanRoute::NegativePrintScan, 0, 3, 0, 0, false, true, false},
                                          {"glare-minus-zero", Spektrafilm::ScanRoute::NegativePrintScan, 0, 3, 0, 0, false, true, true}}};
+#if defined(JUICER_PREPARED_BOUNDARY_TEST)
+        constexpr bool numericalFixture = false;
+#else
+        const bool numericalFixture = !emit && !sequentialOwners && !cutoverContract;
+#endif
         std::ifstream fixture;
-        if (!emit) {
+        if (numericalFixture) {
             fixture.open(JUICER_PROCESSOR_REFERENCE_PATH);
             if (!fixture) {
                 throw std::runtime_error("processor reference fixture unavailable");
@@ -1253,7 +1329,9 @@ int main(int argc, char** argv) {
         for (const Case& test : cases) {
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
             if (preparedCase != test.name) {
-                fixture.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+                if (numericalFixture) {
+                    fixture.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+                }
                 continue;
             }
             preparedCaseFound = true;
@@ -1300,20 +1378,23 @@ int main(int argc, char** argv) {
                 }
                 std::cout << '\n';
             } else {
-                std::string name;
-                std::size_t count = 0;
-                fixture >> name >> count;
-                if (!fixture || name != test.name || count != pixels.size()) {
-                    throw std::runtime_error(std::string(test.name) + ": fixture row mismatch");
+                std::vector<float> expected = pixels;
+                if (numericalFixture) {
+                    std::string name;
+                    std::size_t count = 0;
+                    fixture >> name >> count;
+                    if (!fixture || name != test.name || count != pixels.size()) {
+                        throw std::runtime_error(std::string(test.name) + ": fixture row mismatch");
+                    }
+                    expected.resize(count);
+                    for (float& pixel : expected) {
+                        fixture >> pixel;
+                    }
+                    if (!fixture) {
+                        throw std::runtime_error(std::string(test.name) + ": incomplete fixture row");
+                    }
+                    compare_pixels(test.name, pixels, expected);
                 }
-                std::vector<float> expected(count);
-                for (float& pixel : expected) {
-                    fixture >> pixel;
-                }
-                if (!fixture) {
-                    throw std::runtime_error(std::string(test.name) + ": incomplete fixture row");
-                }
-                compare_pixels(test.name, pixels, expected);
 #if !defined(JUICER_PREPARED_BOUNDARY_TEST)
                 if (cutoverContract && (std::string_view(test.name) == "negative-direct" || std::string_view(test.name) == "negative-print")) {
                     check_cutover_callbacks(test, expected);
@@ -1371,18 +1452,10 @@ int main(int argc, char** argv) {
                 }
 #endif
 #if defined(JUICER_PREPARED_BOUNDARY_TEST)
-                compare_pixels(std::string(test.name) + ": direct executor", direct, expected);
-                compare_pixels(std::string(test.name) + ": C boundary", boundary, expected);
-                compare_pixels(std::string(test.name) + ": warm C boundary", warmBoundary, expected);
-                const auto bitEqual = [](const std::vector<float>& left, const std::vector<float>& right) {
-                    return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(), [](float a, float b) {
-                               return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
-                           });
-                };
-                if (!bitEqual(direct, boundary) || !bitEqual(boundary, warmBoundary)) {
-                    throw std::runtime_error(std::string(test.name) + ": C boundary differs from direct executor");
-                }
-                std::cerr << test.name << ": processor/direct/cold C/warm C match immutable fixture; direct/C bit-exact\n";
+                RenderAssertions::compare_bits(std::string(test.name) + ": processor/direct", pixels, direct);
+                RenderAssertions::compare_bits(std::string(test.name) + ": direct/cold C", direct, boundary);
+                RenderAssertions::compare_bits(std::string(test.name) + ": cold/warm C", boundary, warmBoundary);
+                std::cerr << test.name << ": processor/direct/cold C/warm C bit-exact\n";
                 if (renderContract) {
                     auto grainParameters = parameters_for(test);
                     grainParameters.grainControls.active = true;

@@ -34,7 +34,7 @@ extern "C" const std::size_t* fj_test_profile_abi_c_facts(std::size_t* count);
 #undef FJ_ABI_VALUE
 
 static_assert(std::is_same_v<decltype(&fj_test_film_profile_acquire), FjStatus (*)(FjStringView, FjStringView, FjFilmProfile**, FjErrorBuffer*)>);
-static_assert(std::is_same_v<decltype(&fj_test_film_profile_view), FjStatus (*)(const FjFilmProfile*, FjFilmProfileView*, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_test_film_profile_view), FjStatus (*)(const FjFilmProfile*, FjFilmFixtureView*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_film_profile_release), FjStatus (*)(FjFilmProfile*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_test_profile_abi_facts), const std::size_t* (*)(std::size_t*)>);
 
@@ -124,7 +124,7 @@ namespace {
         FjFilmProfile* owner = nullptr;
     };
 
-    void expect_empty(const FjFilmProfileView& view) {
+    void expect_empty(const FjFilmFixtureView& view) {
         EXPECT_EQ(view.use, 0u);
         EXPECT_EQ(view.antihalation, 0u);
         EXPECT_EQ(view.asset_token, 0u);
@@ -176,7 +176,7 @@ namespace {
     TEST(ProfileOwner, ExactProjectionOutlivesAssetsAndCopyOutlivesOwner) {
         const auto root = catalog("projection");
         FilmLease lease(root, "kodak_portra_400");
-        FjFilmProfileView view{};
+        FjFilmFixtureView view{};
         expect_status(fj_test_film_profile_view(lease.owner, &view, nullptr), FJ_STATUS_SUCCESS);
         ASSERT_EQ(view.source_log_exposure.count, 4u);
         ASSERT_EQ(view.log_exposure.count, 4u);
@@ -221,7 +221,7 @@ namespace {
 
         const std::vector<double> sourceCopy(view.source_log_exposure.data, view.source_log_exposure.data + view.source_log_exposure.count);
         const std::vector<float> totalsCopy(view.density_curves_cmy.data, view.density_curves_cmy.data + view.density_curves_cmy.count);
-        FjFilmProfileView repeat{};
+        FjFilmFixtureView repeat{};
         expect_status(fj_test_film_profile_view(lease.owner, &repeat, nullptr), FJ_STATUS_SUCCESS);
         EXPECT_EQ(repeat.asset_token, view.asset_token);
         EXPECT_EQ(repeat.source_log_exposure.data, view.source_log_exposure.data);
@@ -232,7 +232,7 @@ namespace {
         EXPECT_EQ(totalsCopy[9], 6.0f);
         const auto copiedBytes = sourceCopy.size() * sizeof(double) + totalsCopy.size() * sizeof(float);
         EXPECT_EQ(copiedBytes, 80u);
-        std::printf("Borrowed projection duplicates 0 profile-table bytes; view is %zu bytes including 24 digest bytes; local independent copies own %zu bytes.\n", sizeof(FjFilmProfileView), copiedBytes);
+        std::printf("Borrowed projection duplicates 0 profile-table bytes; view is %zu bytes including 24 digest bytes; local independent copies own %zu bytes.\n", sizeof(FjFilmFixtureView), copiedBytes);
     }
 
     TEST(ProfileOwner, AllMetadataTagsAndIndependentHalationBits) {
@@ -246,7 +246,7 @@ namespace {
                 const std::string metadata = ",\"use\":\"" + std::string(kUses[use]) + "\",\"antihalation\":\"" + kAntihalation[antihalation] + "\"";
                 write_profile(root, key, {.metadata = metadata.c_str()});
                 FilmLease lease(root, key);
-                FjFilmProfileView view{};
+                FjFilmFixtureView view{};
                 expect_status(fj_test_film_profile_view(lease.owner, &view, nullptr), FJ_STATUS_SUCCESS);
                 EXPECT_EQ(view.use, use);
                 EXPECT_EQ(view.antihalation, antihalation);
@@ -279,7 +279,7 @@ namespace {
         expect_status(fj_test_film_profile_acquire(text(path), text(key), &output, &error), FJ_STATUS_UNSUPPORTED_INPUT);
         EXPECT_EQ(output, nullptr);
         EXPECT_EQ(error.length, 0u);
-        FjFilmProfileView view{};
+        FjFilmFixtureView view{};
         expect_status(fj_test_film_profile_view(retained.owner, &view, nullptr), FJ_STATUS_SUCCESS);
         expect_status(fj_test_film_profile_view(nullptr, &view, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         expect_empty(view);
@@ -357,7 +357,7 @@ namespace {
         const auto root = catalog("concurrent-read");
         FilmLease lease(root, "kodak_portra_400");
         std::array<FjStatus, 4> statuses{};
-        std::array<FjFilmProfileView, 4> views{};
+        std::array<FjFilmFixtureView, 4> views{};
         {
             std::array<std::jthread, 4> readers;
             for (std::size_t index = 0; index < readers.size(); ++index) {

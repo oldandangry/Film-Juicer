@@ -1,6 +1,11 @@
 #include "RustAssetBridge.h"
 
+#include <algorithm>
 #include <array>
+#include <span>
+#include <mutex>
+#include <exception>
+#include <cstddef>
 #include <limits>
 #include <memory>
 #include <string_view>
@@ -8,6 +13,7 @@
 
 #include "Cuda/JuicerCudaFailure.h"
 #include "Cuda/JuicerCudaExecutor.h"
+#include "Logging.h"
 
 namespace JuicerAssets {
     namespace {
@@ -24,15 +30,117 @@ namespace JuicerAssets {
             fail({FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "invalid native resource path extent or encoding");
         }
 
+        void report_cleanup(FjStatus result) noexcept {
+            if (result.category != FJ_STATUS_SUCCESS) {
+                try {
+                    JTRACE("ASSETS", "unexpected Rust asset owner release failure category=" + std::to_string(result.category));
+                } catch (...) {
+                    JuicerLogging::discard_current_exception();
+                }
+            }
+        }
+        struct FilmDeleter {
+            void operator()(FjFilmProfile* owner) const noexcept {
+                report_cleanup(fj_legacy_film_profile_release(owner, nullptr));
+            }
+        };
+        struct PrintDeleter {
+            void operator()(FjPrintProfile* owner) const noexcept {
+                report_cleanup(fj_legacy_print_profile_release(owner, nullptr));
+            }
+        };
+        struct DensityDeleter {
+            void operator()(FjPrintDensityCurves* owner) const noexcept {
+                report_cleanup(fj_legacy_print_density_release(owner, nullptr));
+            }
+        };
+        [[noreturn]] void invalid_view() {
+            fail({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "invalid Rust profile view shape, tag or token");
+        }
+        std::span<const float> float_span(FjFloatSpan view) {
+            if (view.count > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) / sizeof(float) ||
+                (view.count == 0 ? view.data != nullptr : !view.data || reinterpret_cast<std::uintptr_t>(view.data) % alignof(float) != 0)) {
+                invalid_view();
+            }
+            return {view.data, view.count};
+        }
+        void copy_fixed(FjFloatSpan view, std::span<float> target) {
+            const auto values = float_span(view);
+            if (values.size() != target.size()) {
+                invalid_view();
+            }
+            std::copy(values.begin(), values.end(), target.begin());
+        }
+        template <std::size_t Rows, std::size_t Channels>
+        void copy_rows(FjFloatSpan view, std::array<std::array<float, Channels>, Rows>& target) {
+            const auto values = float_span(view);
+            if (values.size() != Rows * Channels) {
+                invalid_view();
+            }
+            for (std::size_t row = 0; row < Rows; ++row) {
+                std::copy_n(values.data() + row * Channels, Channels, target[row].begin());
+            }
+        }
+        Profiles::ProfileIlluminant copy_illuminant(FjIlluminantView view);
+
+        template <typename Samples>
+        void copy_tables(FjProfileTablesView view, Samples& data) {
+            copy_rows(view.linear_sensitivity_rgb, data.linearSensitivity);
+            copy_rows(view.channel_density_cmy, data.channelDensity);
+            copy_fixed(view.base_density, data.baseDensity);
+            const auto axis = float_span(view.log_exposure);
+            const auto totals = float_span(view.density_curves_cmy);
+            if (axis.empty() || axis.size() > std::numeric_limits<std::size_t>::max() / 3 || totals.size() != axis.size() * 3) {
+                invalid_view();
+            }
+            if (axis.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) || axis.size() > data.logExposure.max_size() || axis.size() > data.densityCurves.max_size()) {
+                fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "profile exposure count exceeds native representation");
+            }
+            data.logExposure.assign(axis.begin(), axis.end());
+            data.densityCurves.resize(axis.size());
+            for (std::size_t row = 0; row < axis.size(); ++row) {
+                std::copy_n(totals.data() + row * 3, 3, data.densityCurves[row].begin());
+            }
+        }
+
         struct CatalogDeleter {
             void operator()(FjCatalog* catalog) const noexcept {
-                (void)fj_legacy_catalog_release(catalog, nullptr);
+                report_cleanup(fj_legacy_catalog_release(catalog, nullptr));
             }
         };
 
         std::string copy_text(FjStringView view) {
+            if (view.count > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) || (view.count == 0 ? view.data != nullptr : !view.data)) {
+                invalid_view();
+            }
+            if (view.count > std::string().max_size()) {
+                fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "profile text exceeds native representation");
+            }
             return view.count == 0 ? std::string() : std::string(view.data, view.count);
         }
+
+        Profiles::ProfileIlluminant copy_illuminant(FjIlluminantView view) {
+            auto label = copy_text(view.label);
+            switch (view.kind) {
+                case FJ_ILLUMINANT_NAMED:
+                    return {std::move(label), Profiles::NamedIlluminant{}};
+                case FJ_ILLUMINANT_BLACKBODY:
+                    return {std::move(label), Profiles::BlackbodyIlluminant{view.temperature_kelvin}};
+                default:
+                    invalid_view();
+            }
+        }
+
+        struct FilmSource final {
+            FjFilmProfile* owner = nullptr;
+            std::shared_ptr<const Profiles::FilmProfile> profile;
+            ~FilmSource() {
+                report_cleanup(close());
+            }
+            FjStatus close(FjErrorBuffer* error = nullptr) noexcept {
+                return owner ? fj_legacy_film_profile_release(std::exchange(owner, nullptr), error) : FjStatus{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+            }
+        };
 
         void escaped_unit(unsigned unit, std::string& out, char prefix) {
             static constexpr char kHex[] = "0123456789abcdef";
@@ -183,6 +291,278 @@ namespace JuicerAssets {
         return readable;
     }
 
+    struct AssetBridge::ConversionSlots {
+        std::mutex mutex;
+        std::vector<std::string> filmKeys;
+        std::vector<std::string> printKeys;
+        std::vector<std::shared_ptr<FilmSource>> films;
+        std::vector<std::shared_ptr<const PrintProfileSource>> prints;
+    };
+
+    PrintProfileSource::PrintProfileSource(FjPrintProfile* owner, std::shared_ptr<const Profiles::PrintProfile> profile)
+        : _owner(owner), _profile(std::move(profile)) {}
+    PrintProfileSource::~PrintProfileSource() {
+        report_cleanup(close());
+    }
+    const std::shared_ptr<const Profiles::PrintProfile>& PrintProfileSource::profile() const noexcept {
+        return _profile;
+    }
+    FjStatus PrintProfileSource::close(FjErrorBuffer* error) const noexcept {
+        return _owner ? fj_legacy_print_profile_release(std::exchange(_owner, nullptr), error) : FjStatus{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+    }
+    Profiles::PrintDensityCurves PrintProfileSource::sample_density_curves(double gamma) const {
+        std::array<char, 1024> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        FjPrintDensityCurves* acquired = nullptr;
+        auto result = fj_legacy_print_profile_sample_density(_owner, gamma, &acquired, &error);
+        std::unique_ptr<FjPrintDensityCurves, DensityDeleter> owner(acquired);
+        if (result.category != FJ_STATUS_SUCCESS) {
+            fail(result, {message.data(), error.length});
+        }
+        FjPrintDensityView view{};
+        result = fj_legacy_print_density_view(owner.get(), &view, &error);
+        if (result.category != FJ_STATUS_SUCCESS) {
+            fail(result, {message.data(), error.length});
+        }
+        const auto totals = float_span(view.totals_cmy);
+        if (totals.size() != _profile->data.logExposure.size() * 3 || view.hash == 0) {
+            invalid_view();
+        }
+        Profiles::PrintDensityCurves curves;
+        curves.totals.resize(_profile->data.logExposure.size());
+        for (std::size_t row = 0; row < curves.totals.size(); ++row) {
+            std::copy_n(totals.data() + row * 3, 3, curves.totals[row].begin());
+        }
+        curves.hash = view.hash;
+        result = fj_legacy_print_density_release(owner.release(), &error);
+        if (result.category != FJ_STATUS_SUCCESS) {
+            fail(result, {message.data(), error.length});
+        }
+        return curves;
+    }
+
+    std::shared_ptr<const Profiles::FilmProfile> AssetBridge::film(const std::string& key) {
+        if (!_slots) {
+            fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "film catalog unavailable");
+        }
+        const auto found = std::find(_slots->filmKeys.begin(), _slots->filmKeys.end(), key);
+        if (found == _slots->filmKeys.end()) {
+            fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "missing selected film profile key");
+        }
+        const auto index = static_cast<std::size_t>(found - _slots->filmKeys.begin());
+        std::shared_ptr<FilmSource> winner;
+        {
+            std::lock_guard<std::mutex> lock(_slots->mutex);
+            winner = _slots->films[index];
+        }
+        if (winner) {
+            return winner->profile;
+        }
+        std::shared_ptr<FilmSource> candidate;
+        try {
+            std::array<char, 1024> message{};
+            FjErrorBuffer error{message.data(), message.size(), 0};
+            FjFilmProfile* acquired = nullptr;
+            auto result = fj_legacy_film_profile_acquire(_assets, {key.empty() ? nullptr : key.data(), key.size()}, &acquired, &error);
+            std::unique_ptr<FjFilmProfile, FilmDeleter> owner(acquired);
+            if (result.category != FJ_STATUS_SUCCESS) {
+                fail(result, {message.data(), error.length});
+            }
+            FjFilmProfileView view{};
+            result = fj_legacy_film_profile_view(owner.get(), &view, &error);
+            if (result.category != FJ_STATUS_SUCCESS) {
+                fail(result, {message.data(), error.length});
+            }
+#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
+            ProfileTest::film_view(view);
+#endif
+            if (!view.asset_token || view.support != FJ_PROFILE_SUPPORT_FILM || view.stage != FJ_PROFILE_STAGE_FILMING) {
+                invalid_view();
+            }
+            auto profile = std::make_shared<Profiles::FilmProfile>();
+            profile->info.stock = copy_text(view.stock);
+            profile->info.referenceIlluminant = copy_illuminant(view.reference_illuminant);
+            profile->info.viewingIlluminant = copy_illuminant(view.viewing_illuminant);
+            switch (view.polarity) {
+                case FJ_POLARITY_NEGATIVE:
+                    profile->info.type = Spektrafilm::ProfilePolarity::Negative;
+                    break;
+                case FJ_POLARITY_POSITIVE:
+                    profile->info.type = Spektrafilm::ProfilePolarity::Positive;
+                    break;
+                default:
+                    invalid_view();
+            }
+            copy_tables(view.tables, profile->data);
+#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
+            ProfileTest::after_tables();
+#endif
+            copy_fixed(view.wavelengths, profile->data.wavelengths);
+            for (std::size_t layer = 0; layer < 3; ++layer) {
+                for (std::size_t channel = 0; channel < 3; ++channel) {
+                    const auto values = float_span(view.density_curves_layers[layer][channel]);
+                    auto& target = profile->data.densityCurvesLayers[layer][channel];
+                    if (values.size() != profile->data.logExposure.size()) {
+                        invalid_view();
+                    }
+                    if (values.size() > target.max_size()) {
+                        fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "profile layer count exceeds native representation");
+                    }
+                    target.assign(values.begin(), values.end());
+                }
+            }
+            auto& data = profile->data;
+            if (view.hanatos_window.count != 0) {
+                copy_fixed(view.hanatos_window, data.hanatos2025AdaptationWindowParams);
+                data.hasHanatos2025AdaptationWindowParams = true;
+            } else {
+                (void)float_span(view.hanatos_window);
+            }
+            if (view.hanatos_surface_rgb.count != 0) {
+                copy_rows(view.hanatos_surface_rgb, data.hanatos2025AdaptationSurfaceParams);
+                data.hasHanatos2025AdaptationSurfaceParams = true;
+            } else {
+                (void)float_span(view.hanatos_surface_rgb);
+            }
+            auto& digest = profile->digest;
+            std::copy_n(view.digest.gamma_samelayer_rgb, 3, digest.gammaSamelayerRgb.begin());
+            std::copy_n(view.digest.gamma_interlayer_r_to_gb, 2, digest.gammaInterlayerRToGb.begin());
+            std::copy_n(view.digest.gamma_interlayer_g_to_rb, 2, digest.gammaInterlayerGToRb.begin());
+            std::copy_n(view.digest.gamma_interlayer_b_to_rg, 2, digest.gammaInterlayerBToRg.begin());
+            std::copy_n(view.digest.halation_first_sigma_um, 3, digest.halationFirstSigmaUm.begin());
+            std::copy_n(view.digest.halation_primary_amount, 3, digest.halationPrimaryAmount.begin());
+            digest.hanatosSpectralGaussianBlurDefault = view.digest.hanatos_spectral_gaussian_blur_default;
+            profile->assetVersionToken = view.asset_token;
+            candidate = std::make_shared<FilmSource>();
+            candidate->profile = std::move(profile);
+            candidate->owner = owner.release();
+#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
+            ProfileTest::before_publication();
+#endif
+        } catch (...) {
+            {
+                std::lock_guard<std::mutex> lock(_slots->mutex);
+                winner = _slots->films[index];
+            }
+            if (winner) {
+                return winner->profile;
+            }
+            throw;
+        }
+        {
+            std::lock_guard<std::mutex> lock(_slots->mutex);
+            if (!_slots->films[index]) {
+                _slots->films[index] = candidate;
+            }
+            winner = _slots->films[index];
+        }
+        return winner->profile;
+    }
+
+    std::shared_ptr<const PrintProfileSource> AssetBridge::print(const std::string& key) {
+        if (!_slots) {
+            fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "print catalog unavailable");
+        }
+        const auto found = std::find(_slots->printKeys.begin(), _slots->printKeys.end(), key);
+        if (found == _slots->printKeys.end()) {
+            fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "missing selected print profile key");
+        }
+        const auto index = static_cast<std::size_t>(found - _slots->printKeys.begin());
+        std::shared_ptr<const PrintProfileSource> winner;
+        {
+            std::lock_guard<std::mutex> lock(_slots->mutex);
+            winner = _slots->prints[index];
+        }
+        if (winner) {
+            return winner;
+        }
+        std::shared_ptr<PrintProfileSource> candidate;
+        try {
+            std::array<char, 1024> message{};
+            FjErrorBuffer error{message.data(), message.size(), 0};
+            FjPrintProfile* acquired = nullptr;
+            auto result = fj_legacy_print_profile_acquire(_assets, {key.empty() ? nullptr : key.data(), key.size()}, &acquired, &error);
+            std::unique_ptr<FjPrintProfile, PrintDeleter> owner(acquired);
+            if (result.category != FJ_STATUS_SUCCESS) {
+                fail(result, {message.data(), error.length});
+            }
+            FjPrintProfileView view{};
+            result = fj_legacy_print_profile_view(owner.get(), &view, &error);
+            if (result.category != FJ_STATUS_SUCCESS) {
+                fail(result, {message.data(), error.length});
+            }
+#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
+            ProfileTest::print_view(view);
+#endif
+            if (!view.asset_token || view.stage != FJ_PROFILE_STAGE_PRINTING) {
+                invalid_view();
+            }
+            auto profile = std::make_shared<Profiles::PrintProfile>();
+            profile->info.stock = copy_text(view.stock);
+            profile->info.viewingIlluminant = copy_illuminant(view.viewing_illuminant);
+            copy_tables(view.tables, profile->data);
+#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
+            ProfileTest::after_tables();
+#endif
+            profile->assetVersionToken = view.asset_token;
+            candidate = std::shared_ptr<PrintProfileSource>(new PrintProfileSource(nullptr, std::move(profile)));
+            candidate->_owner = owner.release();
+#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
+            ProfileTest::before_publication();
+#endif
+        } catch (...) {
+            {
+                std::lock_guard<std::mutex> lock(_slots->mutex);
+                winner = _slots->prints[index];
+            }
+            if (winner) {
+                return winner;
+            }
+            throw;
+        }
+        {
+            std::lock_guard<std::mutex> lock(_slots->mutex);
+            if (!_slots->prints[index]) {
+                _slots->prints[index] = candidate;
+            }
+            winner = _slots->prints[index];
+        }
+        return winner;
+    }
+
+    FjStatus AssetBridge::release_cached_payloads(FjErrorBuffer* error) noexcept {
+        FjStatus first{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+        try {
+            ConversionSlots* slots = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(_slotsMutex);
+                slots = _slots.get();
+            }
+            // Published slots remain fixed until terminal close excludes readers.
+            if (slots) {
+                std::vector<std::shared_ptr<FilmSource>> films(slots->films.size());
+                std::vector<std::shared_ptr<const PrintProfileSource>> prints(slots->prints.size());
+                {
+                    std::lock_guard<std::mutex> lock(slots->mutex);
+                    for (std::size_t i = 0; i < films.size(); ++i) {
+                        films[i].swap(slots->films[i]);
+                    }
+                    for (std::size_t i = 0; i < prints.size(); ++i) {
+                        prints[i].swap(slots->prints[i]);
+                    }
+                }
+            }
+        } catch (const std::bad_alloc&) {
+            first = JuicerCuda::write_status({FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "native profile cache detachment allocation failed", error);
+        } catch (const std::exception& detail) {
+            first = JuicerCuda::write_status({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what(), error);
+        } catch (...) {
+            first = JuicerCuda::write_status({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "native profile cache detachment failed", error);
+        }
+        const auto result = fj_legacy_assets_release_cached_payloads(_assets, first.category == FJ_STATUS_SUCCESS ? error : nullptr);
+        return first.category == FJ_STATUS_SUCCESS ? result : first;
+    }
+
     AssetBridge::AssetBridge(const std::filesystem::path& resourceRoot) {
         const NativePathArgument argument(resourceRoot);
         std::array<char, 1024> message{};
@@ -194,15 +574,38 @@ namespace JuicerAssets {
     }
 
     AssetBridge::~AssetBridge() {
-        (void)close();
+        report_cleanup(close());
     }
 
     FjStatus AssetBridge::close(FjErrorBuffer* error) noexcept {
-        const auto catalog = _catalog ? fj_legacy_catalog_release(std::exchange(_catalog, nullptr), error)
-                                      : FjStatus{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
-        const auto assets = _assets ? fj_legacy_assets_destroy(std::exchange(_assets, nullptr), catalog.category == FJ_STATUS_SUCCESS ? error : nullptr)
-                                    : FjStatus{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
-        return catalog.category == FJ_STATUS_SUCCESS ? assets : catalog;
+        FjStatus first{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+        const auto collect = [&](FjStatus result) {
+            if (first.category == FJ_STATUS_SUCCESS) {
+                first = result;
+            }
+        };
+        // Terminal close excludes all host builds, source leases and views.
+        auto slots = std::move(_slots);
+        if (slots) {
+            for (const auto& film : slots->films) {
+                if (film) {
+                    collect(film->close(first.category == FJ_STATUS_SUCCESS ? error : nullptr));
+                }
+            }
+            for (const auto& print : slots->prints) {
+                if (print) {
+                    collect(print->close(first.category == FJ_STATUS_SUCCESS ? error : nullptr));
+                }
+            }
+        }
+        slots.reset();
+        if (_catalog) {
+            collect(fj_legacy_catalog_release(std::exchange(_catalog, nullptr), first.category == FJ_STATUS_SUCCESS ? error : nullptr));
+        }
+        if (_assets) {
+            collect(fj_legacy_assets_destroy(std::exchange(_assets, nullptr), first.category == FJ_STATUS_SUCCESS ? error : nullptr));
+        }
+        return first;
     }
 
     Spektrafilm::ProfileCatalog AssetBridge::load_catalog() {
@@ -249,7 +652,7 @@ namespace JuicerAssets {
                     default:
                         fail({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "invalid Rust catalog polarity");
                 }
-                entries.push_back({copy_text(view.key), copy_text(view.label), copy_native_path(view.source_path), polarity});
+                entries.push_back({copy_text(view.key), copy_text(view.label), polarity});
             }
         };
         copy_entries(FJ_PROFILE_ROLE_FILM, candidate.filmProfiles, counts.film_count);
@@ -257,6 +660,24 @@ namespace JuicerAssets {
         candidate.valid = true;
         candidate.defaultFilmPresent = true;
         candidate.defaultPrintPresent = true;
+        auto slots = std::make_unique<ConversionSlots>();
+        slots->filmKeys.reserve(candidate.filmProfiles.size());
+        slots->printKeys.reserve(candidate.printProfiles.size());
+        for (const auto& entry : candidate.filmProfiles) {
+            slots->filmKeys.push_back(entry.key);
+        }
+        for (const auto& entry : candidate.printProfiles) {
+            slots->printKeys.push_back(entry.key);
+        }
+        slots->films.resize(candidate.filmProfiles.size());
+        slots->prints.resize(candidate.printProfiles.size());
+#if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
+        ProfileTest::before_catalog_publication();
+#endif
+        {
+            std::lock_guard<std::mutex> lock(_slotsMutex);
+            _slots.swap(slots);
+        }
         _catalog = owner.release();
         return candidate;
     }

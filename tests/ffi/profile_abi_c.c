@@ -15,7 +15,7 @@
 #undef FJ_ABI_VALUE
 
 _Static_assert(_Generic(&fj_test_film_profile_acquire, FjStatus (*)(FjStringView, FjStringView, FjFilmProfile**, FjErrorBuffer*): 1, default: 0), "acquire signature");
-_Static_assert(_Generic(&fj_test_film_profile_view, FjStatus (*)(const FjFilmProfile*, FjFilmProfileView*, FjErrorBuffer*): 1, default: 0), "view signature");
+_Static_assert(_Generic(&fj_test_film_profile_view, FjStatus (*)(const FjFilmProfile*, FjFilmFixtureView*, FjErrorBuffer*): 1, default: 0), "view signature");
 _Static_assert(_Generic(&fj_test_film_profile_release, FjStatus (*)(FjFilmProfile*, FjErrorBuffer*): 1, default: 0), "release signature");
 _Static_assert(_Generic(&fj_test_profile_abi_facts, const size_t* (*)(size_t*): 1, default: 0), "facts signature");
 

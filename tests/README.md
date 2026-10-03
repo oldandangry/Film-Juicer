@@ -345,9 +345,12 @@ first to `out/validation/`.
   `linux-debug-quality` and `windows-debug-quality` artifacts retain quality
   logs, translated CUDA commands, and the compilation database even on failure.
   Both lanes compile against CUDA 13.2 but expose no NVIDIA device and run no
-  `gpu` tests. GPU,
-  installed-Resolve-library, and Resolve-render evidence are reported
-  separately.
+  `gpu` tests. The host selection automatically includes
+  `Ofx.Host.RenderAssertions`, which checks rejection of corrupted pixels,
+  non-finite samples, changed identities/seeds, alpha, padding, and execution
+  bits. CUDA pixel fixtures and accepted-capture comparisons run in the `gpu`
+  selection. GPU, installed-Resolve-library, and Resolve-render evidence are
+  reported separately.
 - The historical gamma capture baseline remains deferred because its resource
   inventory and `Release`/`Release-Clang` identities do not establish current
   four-preset applicability. Two G09 captures are configuration-invalid and
@@ -466,13 +469,15 @@ extent and attachment constraints, and accepted direct/print scratch generations
 These are product contracts and need no device at runtime.
 
 `Ffi.Gpu.PreparedBoundary.*` links a fixture-only C caller into the native executor.
-It compares all seven processor characterization rows against their immutable
-platform fixtures and requires bit-exact direct/C results. Each case starts a fresh
-process and native owner, calls the C boundary before any other render to exercise
-cold uploads, then repeats with warm resources and calls the direct executor. It
-never resets the CUDA context. Production callbacks now project their immutable
-state into the same admitted native C-boundary render body. The prepared-boundary
-comparisons cover numerical parity; the separate render-contract, owner/terminal,
+It checks bit-exact equivalence between cold/warm C-boundary execution, the direct
+executor and the processor adapter for all seven scenarios. Each case starts a
+fresh process and native owner, calls the C boundary before any other render to
+exercise cold uploads, then repeats with warm resources and calls the other paths.
+Independent numerical expectations are checked separately by
+`Ofx.Gpu.ProcessorReference` and `Ofx.Gpu.AcceptedCudaCaptures`, so a baseline-image
+failure cannot prevent the path-equivalence checks from running. No case resets
+the CUDA context. Production callbacks project their immutable state into the same
+admitted native C-boundary render body. The separate render-contract, owner/terminal,
 and processor-cutover cases cover admission, borrowed-storage expiry, and callback
 lifecycle behavior. See the FFI guide for their scope and remaining host evidence.
 
@@ -484,3 +489,19 @@ the failed and unprocessed entries charged and discoverable; explicit subsequent
 drains reach zero without disturbing the unrelated context. The storage case
 rejects C++ allocation during extraction and restoration, and ordinary failure
 uses a real context mismatch. Only fixture-created contexts are destroyed.
+
+The `Ffi.Host.ProductionProfileOwner` group qualifies the production film/print
+and owned gamma ABI independently of the feature-only C7 fixture interface. It
+also exercises cold-conversion races, same-source print leases, memory capacities,
+typed profile illuminants, canonical computational axes and consuming Hanatos
+window behavior. `Ffi.Host.CudaTerminal.host-cache-failure` and
+`.host-cache-native-precedence` cover fallible host cleanup publication and native
+close precedence. These host-runtime groups require the normal CUDA build tools
+but perform no driver/device operation.
+
+The OFX render baselines now follow the accepted Rust density policy. See
+[CUDA render baselines](ofx/README.md#cuda-render-baselines) for exact accepted
+capture samples, independently derived procedural CUDA fixtures, strict pixel
+limits and finite checks, exact identity/seed expectations, negative controls,
+and separate lifecycle/boundary CTest processes. Ordinary runs do not generate
+or update expectations.

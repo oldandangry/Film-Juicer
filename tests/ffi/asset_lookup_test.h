@@ -10,7 +10,7 @@
 #endif
 
 namespace Profiles {
-    struct SpektrafilmProfileSamples;
+    struct FilmProfileSamples;
 }
 
 namespace AssetLookupTest {
@@ -26,7 +26,7 @@ namespace AssetLookupTest {
         const std::vector<float>& values);
     std::optional<float> sample_density_curve_for_test(
         float query,
-        const Profiles::SpektrafilmProfileSamples& data,
+        const Profiles::FilmProfileSamples& data,
         std::size_t channel);
     float hanatos_window_sample_for_test(float wavelength, const std::array<float, 4>& params);
 

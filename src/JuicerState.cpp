@@ -27,7 +27,7 @@ namespace {
     }
 
     static bool build_scanner_illuminant(
-        const std::string& source,
+        const Profiles::ProfileIlluminant& illuminant,
         const char* label,
         Scanner::ScannerIlluminant& out);
 
@@ -42,9 +42,9 @@ namespace {
             return false;
         }
 
-        const Profiles::ValidatedFilmProfile& profile = *recipe.profileRoute.filmProfile;
+        const Profiles::FilmProfile& profile = *recipe.profileRoute.filmProfile;
         auto assign_channel = [&](Spectral::Curve& curve, std::size_t channel) {
-            curve.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+            Spectral::assign_reference_axis(curve.lambda_nm);
             curve.linear.resize(profile.data.channelDensity.size());
             for (std::size_t sample = 0; sample < profile.data.channelDensity.size(); ++sample) {
                 curve.linear[sample] = profile.data.channelDensity[sample][channel];
@@ -58,12 +58,12 @@ namespace {
         assign_channel(epsC, 0u);
         assign_channel(epsM, 1u);
         assign_channel(epsY, 2u);
-        baseDensityMin.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+        Spectral::assign_reference_axis(baseDensityMin.lambda_nm);
         baseDensityMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
 
         Scanner::ScannerIlluminant referenceIlluminant;
         if (!build_scanner_illuminant(
-                profile.info.referenceIlluminant.value,
+                profile.info.referenceIlluminant,
                 "focused film reference",
                 referenceIlluminant)) {
             diagnostic =
@@ -193,7 +193,7 @@ namespace {
         Spectral::Curve sensB;
         Spectral::Curve sensG;
         Spectral::Curve sensR;
-        sensB.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+        Spectral::assign_reference_axis(sensB.lambda_nm);
         sensG.lambda_nm = sensB.lambda_nm;
         sensR.lambda_nm = sensB.lambda_nm;
         sensB.linear.resize(recipe.filmRaw.finalSensitivity.size());
@@ -223,9 +223,12 @@ namespace {
             return false;
         }
 
-        const Profiles::ValidatedFilmProfile& profile = *recipe.profileRoute.filmProfile;
+        const Profiles::FilmProfile& profile = *recipe.profileRoute.filmProfile;
+        if (recipe.scannerOutput.viewingIlluminant != profile.info.viewingIlluminant.value) {
+            return false;
+        }
         auto assign_channel = [&](Spectral::Curve& curve, std::size_t channel) {
-            curve.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+            Spectral::assign_reference_axis(curve.lambda_nm);
             curve.linear.resize(profile.data.channelDensity.size());
             for (std::size_t sample = 0; sample < profile.data.channelDensity.size(); ++sample) {
                 curve.linear[sample] = profile.data.channelDensity[sample][channel];
@@ -239,12 +242,12 @@ namespace {
         assign_channel(epsC, 0u);
         assign_channel(epsM, 1u);
         assign_channel(epsY, 2u);
-        baseDensityMin.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+        Spectral::assign_reference_axis(baseDensityMin.lambda_nm);
         baseDensityMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
 
         Scanner::ScannerIlluminant scannerIlluminant;
         if (!build_scanner_illuminant(
-                recipe.scannerOutput.viewingIlluminant,
+                profile.info.viewingIlluminant,
                 "focused direct viewing",
                 scannerIlluminant)) {
             return false;
@@ -298,9 +301,12 @@ namespace {
             return false;
         }
 
-        const Profiles::ValidatedPrintProfile& profile = *recipe.profileRoute.printProfile;
+        const Profiles::PrintProfile& profile = *recipe.profileRoute.printProfile;
+        if (recipe.scannerOutput.viewingIlluminant != profile.info.viewingIlluminant.value) {
+            return false;
+        }
         auto assign_channel = [&](Spectral::Curve& curve, std::size_t channel) {
-            curve.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+            Spectral::assign_reference_axis(curve.lambda_nm);
             curve.linear.resize(profile.data.channelDensity.size());
             for (std::size_t sample = 0; sample < profile.data.channelDensity.size(); ++sample) {
                 curve.linear[sample] = profile.data.channelDensity[sample][channel];
@@ -314,12 +320,12 @@ namespace {
         assign_channel(epsC, 0u);
         assign_channel(epsM, 1u);
         assign_channel(epsY, 2u);
-        baseDensityMin.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+        Spectral::assign_reference_axis(baseDensityMin.lambda_nm);
         baseDensityMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
 
         Scanner::ScannerIlluminant scannerIlluminant;
         if (!build_scanner_illuminant(
-                recipe.scannerOutput.viewingIlluminant,
+                profile.info.viewingIlluminant,
                 "focused print viewing",
                 scannerIlluminant)) {
             return false;
@@ -709,9 +715,6 @@ namespace {
 
     static Spectral::Curve build_blackbody_curve(float temperature) {
         Spectral::Curve curve;
-        if (!(temperature > 0.0f)) {
-            return curve;
-        }
         const int K = Spectral::gShape.K;
         Spectral::assign_reference_axis(curve.lambda_nm);
         curve.linear.resize(static_cast<size_t>(K));
@@ -757,27 +760,19 @@ namespace {
             return Spectral::build_curve_equal_energy_pinned();
         }
 
-        if (normalized.size() > 2 && normalized[0] == 'B' && normalized[1] == 'B') {
-            const char* start = normalized.c_str() + 2;
-            while (*start != '\0' && std::isspace(static_cast<unsigned char>(*start))) {
-                ++start;
-            }
-            char* endPtr = nullptr;
-            const double temperature = std::strtod(start, &endPtr);
-            while (endPtr && *endPtr != '\0' && std::isspace(static_cast<unsigned char>(*endPtr))) {
-                ++endPtr;
-            }
-            if (start != endPtr && endPtr && *endPtr == '\0' && temperature > 0.0) {
-                return build_blackbody_curve(static_cast<float>(temperature));
-            }
-        }
-
         if (!normalized.empty()) {
             std::ostringstream oss;
             oss << "unknown illuminant string '" << source << "'; returning empty curve";
             JTRACE("ILLUM", oss.str());
         }
         return Spectral::Curve{};
+    }
+
+    static Spectral::Curve build_profile_illuminant(const Profiles::ProfileIlluminant& illuminant) {
+        if (const auto* blackbody = std::get_if<Profiles::BlackbodyIlluminant>(&illuminant.kind)) {
+            return build_blackbody_curve(static_cast<float>(blackbody->temperatureKelvin));
+        }
+        return build_illuminant_from_string(illuminant.value);
     }
 
     static bool curve_matches_reference_axis(const Spectral::Curve& curve) {
@@ -800,10 +795,11 @@ namespace {
     }
 
     static bool build_scanner_illuminant(
-        const std::string& source,
+        const Profiles::ProfileIlluminant& illuminant,
         const char* label,
         Scanner::ScannerIlluminant& out) {
         out = Scanner::ScannerIlluminant{};
+        const std::string& source = illuminant.value;
         if (source.empty()) {
             std::ostringstream oss;
             oss << "FATAL: missing viewing illuminant for " << label;
@@ -811,7 +807,7 @@ namespace {
             return false;
         }
 
-        Spectral::Curve curve = build_illuminant_from_string(source);
+        Spectral::Curve curve = build_profile_illuminant(illuminant);
         if (!curve_matches_reference_axis(curve)) {
             std::ostringstream oss;
             oss << "FATAL: viewing illuminant '" << source
@@ -922,14 +918,25 @@ namespace {
         return true;
     }
 
+    bool copy_profile_illuminant_samples(
+        const Profiles::ProfileIlluminant& illuminant,
+        std::array<float, Spectral::kNumSamples>& out) {
+        const auto curve = build_profile_illuminant(illuminant);
+        if (!curve_matches_reference_axis(curve)) {
+            return false;
+        }
+        std::copy(curve.linear.begin(), curve.linear.end(), out.begin());
+        return true;
+    }
+
     bool finish_state_reference_recipes(
         RenderRecipe& recipe,
         FocusedRenderPayload& payload,
         std::string& diagnostic) {
         std::array<float, Spectral::kNumSamples> filmIlluminant{};
-        if (!copy_reference_illuminant_samples(
-                recipe.filmRaw.referenceIlluminant,
-                filmIlluminant)) {
+        if (!recipe.profileRoute.filmProfile || !copy_profile_illuminant_samples(
+                                                    recipe.profileRoute.filmProfile->info.referenceIlluminant,
+                                                    filmIlluminant)) {
             diagnostic =
                 "MissingRequiredResource phase=3B field=film_reference_illuminant";
             return false;
@@ -996,7 +1003,7 @@ namespace {
 
     Spektrafilm::FilmFoundationBuildInput film_foundation_input_from_snapshot(
         const ParamSnapshot& params,
-        const std::shared_ptr<const Profiles::ValidatedFilmProfile>& filmProfile,
+        const std::shared_ptr<const Profiles::FilmProfile>& filmProfile,
         Spektrafilm::ScanRoute route,
         JuicerAssets::Library& assets) {
         Spektrafilm::FilmFoundationBuildInput input{};
@@ -1040,7 +1047,11 @@ namespace {
             IlluminantKeys::normalize(
                 filmProfile->info.referenceIlluminant.value);
         const Spectral::Curve* referenceIlluminant = nullptr;
-        if (IlluminantKeys::matches_any(illuminantKey, {"D65"})) {
+        Spectral::Curve blackbodyReference;
+        if (std::holds_alternative<Profiles::BlackbodyIlluminant>(filmProfile->info.referenceIlluminant.kind)) {
+            blackbodyReference = build_profile_illuminant(filmProfile->info.referenceIlluminant);
+            referenceIlluminant = &blackbodyReference;
+        } else if (IlluminantKeys::matches_any(illuminantKey, {"D65"})) {
             referenceIlluminant = &illuminants.d65;
         } else if (IlluminantKeys::matches_any(illuminantKey, {"D55"})) {
             referenceIlluminant = &illuminants.d55;
@@ -1066,7 +1077,7 @@ namespace {
         }
         Scanner::ScannerIlluminant integratedReference;
         if (build_scanner_illuminant(
-                filmProfile->info.referenceIlluminant.value,
+                filmProfile->info.referenceIlluminant,
                 "film TC reference",
                 integratedReference)) {
             std::copy_n(
@@ -1094,7 +1105,7 @@ namespace {
         } else if (params.spectralUpsamplingMode == 2) {
             Scanner::ScannerIlluminant integratedD65;
             if (build_scanner_illuminant(
-                    "D65",
+                    Profiles::ProfileIlluminant{"D65", Profiles::NamedIlluminant{}},
                     "Arctic TC projection",
                     integratedD65)) {
                 std::copy_n(
@@ -1228,7 +1239,7 @@ namespace {
                     params.filmProfileKey,
                     params.printProfileKey,
                     params.scanRoute});
-        if (!selected.valid || !selected.filmProfile || !selected.printProfile) {
+        if (!selected.valid || !selected.filmProfile || !selected.printSource) {
             outError = selected.diagnostic.empty()
                            ? "MissingRequiredResource phase=4A field=selected_profile"
                            : selected.diagnostic;
@@ -1242,11 +1253,11 @@ namespace {
             params.scanRoute,
             assets);
         input.printProfileKey = params.printProfileKey;
-        input.printProfile = selected.printProfile;
+        input.printSource = selected.printSource;
         input.printIlluminantKey = print_illuminant_key_from_choice(params.enlIll);
         const JuicerAssets::NeutralPrintCalibrationResult neutral =
             assets.neutral_print_calibration(
-                selected.printProfile->info.stock,
+                selected.printSource->profile()->info.stock,
                 input.printIlluminantKey,
                 selected.filmProfile->info.stock);
         if (neutral.status == JuicerAssets::NeutralPrintCalibrationStatus::Malformed) {

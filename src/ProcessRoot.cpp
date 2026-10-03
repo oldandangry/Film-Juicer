@@ -5608,10 +5608,8 @@ namespace JuicerProcess {
         }
     }
 
-    void Root::release_process_host_services() noexcept {
-        if (_assets) {
-            _assets->release_cached_payloads();
-        }
+    FjStatus Root::release_process_host_services(FjErrorBuffer* error) noexcept {
+        return _assets ? _assets->release_cached_payloads(error) : JuicerCuda::write_status({FJ_STATUS_SUCCESS, FJ_API_NONE, 0}, {}, error);
     }
 
     std::unique_ptr<JuicerAssets::Library> Root::detach_host_assets() noexcept {

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -31,7 +30,6 @@ namespace Spektrafilm {
     struct ProfileCatalogEntry {
         std::string key;
         std::string label;
-        std::filesystem::path sourcePath;
         ProfilePolarity polarity = ProfilePolarity::Negative;
     };
 

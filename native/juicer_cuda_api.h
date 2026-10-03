@@ -370,16 +370,16 @@ typedef struct FjOutputColor {
 #define FJ_PRINT_PREFLASH 1U
 typedef struct FjPrint {
     /* float[81*3], [wavelength][CMY] optical extinction, and float[81] base
-     * optical density, ascending canonical wavelength order. ValidatedFilmProfile
+     * optical density, ascending canonical wavelength order. FilmProfile
      * -> prepare_print_resources film-density upload; expires at native-call return. */
     FjFloatSpan film_density_cmy;
     FjFloatSpan film_base_density;
     /* float[81*3], [wavelength][CMY], relative linear sensitivity.
-     * ValidatedPrintProfile::linearSensitivity -> print sensitivity upload;
+     * PrintProfile::data.linearSensitivity -> print sensitivity upload;
      * expires at native-call return. */
     FjFloatSpan sensitivity_cmy;
     /* float[N], ascending log10 exposure, and float[N*3], [sample][CMY] density.
-     * ValidatedPrintProfile::logExposure / PrintRecipe::develop.densityCurves ->
+     * PrintProfile::data.logExposure / PrintRecipe::develop.densityCurves ->
      * print development upload; expires at native-call return. */
     FjFloatSpan log_exposure;
     FjFloatSpan density_cmy;
@@ -767,7 +767,9 @@ FjRenderOutcome fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const
 FjStatus fj_cuda_retire_instance(FjCuda* cuda, uint64_t instance_token, FjErrorBuffer* error);
 
 /* Borrows: success leaves a closed caller-owned handle, failure a blocked
- * caller-owned handle retaining the graph. Already-closed shutdown is harmless. */
+ * caller-owned handle retaining the graph. A post-close host-cache failure
+ * returns its separate once-published result while native state remains Closed;
+ * subsequent shutdown does not repeat CUDA retirement or host-cache release. */
 FjStatus fj_cuda_shutdown(FjCuda* cuda, FjErrorBuffer* error);
 
 /* Legal terminal use excludes ALL host asset/options/profile/rebuild readers,

@@ -27,6 +27,8 @@ namespace {
     const std::system_error ownerLockFailure{std::make_error_code(std::errc::invalid_argument)};
     std::atomic<bool> holdShutdown{false};
     std::atomic<bool> ownerLockAttempted{false};
+    std::atomic<bool> holdHostCleanup{false};
+    std::atomic<unsigned> hostCleanupAttempts{0};
 
     void require(bool condition, const char* message) {
         if (!condition) {
@@ -68,7 +70,7 @@ namespace {
     }
 
     void require_host_detached() {
-        require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0, "retained native graph owns Rust assets");
+        require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0 && fj_test_profile_live_owners() == 0 && fj_test_print_density_live_owners() == 0, "retained native graph owns Rust assets");
         bool rejected = false;
         try {
             (void)JuicerProcess::root().assets();
@@ -119,6 +121,59 @@ namespace {
         }
         require(shutdownAttempts == attempts + 1 && destructions == 4 && !JuicerCuda::borrowed_owner(),
                 "accepting destructor did not make exactly one shutdown attempt");
+    }
+
+    void check_host_cache_result(bool nativeFailure) {
+        JuicerCuda::Owner owner;
+        owner.create(JuicerProcess::data_directory());
+        {
+            const auto selected = JuicerProcess::root().assets().selected_profiles_for_route({"kodak_portra_400", "kodak_portra_endura", Spektrafilm::ScanRoute::NegativePrintScan});
+            require(selected.valid && fj_test_profile_live_owners() == 2, "terminal profile acquisition failed");
+        }
+        fj_test_cache_release_failure();
+        auto* borrowed = JuicerCuda::borrowed_owner();
+        if (nativeFailure) {
+            injection = "typed";
+            require(fj_cuda_shutdown(borrowed, nullptr).native_code == -701, "host failure erased native close failure");
+            require(hostCleanupAttempts == 0 && fj_test_profile_live_owners() == 2, "native failure started host purge");
+            fj_test_profile_fault(3);
+            injection.clear();
+            require(owner.close().native_code == -701, "terminal cleanup erased native failure");
+            require_host_detached();
+            require(shutdownAttempts == 1 && destructions == 0, "failed native close was retired again or deleted");
+            return;
+        }
+        holdHostCleanup = true;
+        std::array<FjStatus, 8> results{};
+        std::array<std::array<char, 256>, 8> diagnostics{};
+        std::array<std::thread, 8> workers;
+        std::atomic<unsigned> completed{0};
+        const auto call = [&](std::size_t i) {
+            FjErrorBuffer error{diagnostics[i].data(), diagnostics[i].size(), 0};
+            results[i] = fj_cuda_shutdown(borrowed, &error);
+            completed.fetch_add(1);
+        };
+        workers[0] = std::thread(call, 0);
+        while (hostCleanupAttempts.load() == 0) {
+            hostCleanupAttempts.wait(0);
+        }
+        for (std::size_t i = 1; i < workers.size(); ++i) {
+            workers[i] = std::thread(call, i);
+        }
+        require(completed == 0, "shutdown returned before cleanup result publication");
+        holdHostCleanup = false;
+        holdHostCleanup.notify_all();
+        for (auto& worker : workers) {
+            worker.join();
+        }
+        for (std::size_t i = 0; i < workers.size(); ++i) {
+            require(results[i].category == FJ_STATUS_INTERNAL_FAILURE && same_status(results[i], results[0]) && std::strcmp(diagnostics[i].data(), diagnostics[0].data()) == 0, "concurrent shutdown saw another cleanup result");
+        }
+        require(hostCleanupAttempts == 1 && shutdownAttempts == 1 && fj_test_profile_live_owners() == 0, "cache release repeated or failed to detach profiles");
+        reject_accepting_calls(borrowed);
+        require(same_status(fj_cuda_shutdown(borrowed, nullptr), results[0]) && hostCleanupAttempts == 1 && shutdownAttempts == 1, "repeated shutdown retried cleanup/native retirement");
+        require(same_status(owner.close(), results[0]) && destructions == 1 && !JuicerCuda::borrowed_owner(), "host cleanup failure retained closed native graph or lost precedence");
+        require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0 && fj_test_profile_live_owners() == 0, "terminal close retained host owners");
     }
 
     void check_serialization() {
@@ -383,6 +438,11 @@ namespace JuicerCuda::TerminalTest {
         holdShutdown.wait(true);
         inject();
     }
+    void before_host_cleanup() noexcept {
+        hostCleanupAttempts.fetch_add(1);
+        hostCleanupAttempts.notify_all();
+        holdHostCleanup.wait(true);
+    }
     void before_retire_instance() {
         inject();
     }
@@ -451,6 +511,10 @@ int main(int argc, char** argv) {
             require(fj_cuda_destroy(JuicerCuda::borrowed_owner(), nullptr).category == FJ_STATUS_UNSUPPORTED_INPUT, "saved reentry failure lost");
             require_host_detached();
             require(shutdownAttempts == 0, "reentry recovery retried CUDA");
+        } else if (mode == "host-cache-failure") {
+            check_host_cache_result(false);
+        } else if (mode == "host-cache-native-precedence") {
+            check_host_cache_result(true);
         } else if (mode == "success") {
             check_success();
         } else if (mode == "serialization") {

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use film_juicer_core::assets::{AssetError, Assets};
 use film_juicer_core::profile::{Antihalation, ProfileCompletionErrorKind, ProfileUse};
 
-use crate::asset_profile::{FilmOwner, FilmView};
+use crate::asset_profile::{FilmOwner, FilmFixtureView};
 use crate::cuda::sys::{FjErrorBuffer, FjFloatSpan, FjStatus, FjStringView};
 use crate::cuda::sys::{
     FJ_API_NONE, FJ_STATUS_ALLOCATION_FAILURE, FJ_STATUS_INTERNAL_FAILURE,
@@ -33,7 +33,7 @@ struct FjDoubleSpan {
 }
 
 #[repr(C)]
-struct FjFilmProfileView {
+struct FjFilmFixtureView {
     r#use: u32,
     antihalation: u32,
     asset_token: u64,
@@ -47,7 +47,7 @@ struct FjFilmProfileView {
     base_density: FjFloatSpan,
 }
 
-impl FjFilmProfileView {
+impl FjFilmFixtureView {
     fn empty() -> Self {
         let empty = floats(&[]);
         Self {
@@ -70,7 +70,7 @@ impl FjFilmProfileView {
 
     // Raw projection stays private to this foreign boundary. The export's caller
     // retains the owner through every subsequent use of the returned spans.
-    fn from_view(view: FilmView<'_>) -> Self {
+    fn from_view(view: FilmFixtureView<'_>) -> Self {
         Self {
             r#use: match view.usage {
                 ProfileUse::Still => FJ_PROFILE_USE_STILL,
@@ -303,12 +303,12 @@ unsafe extern "C" fn fj_test_film_profile_acquire(
 #[unsafe(no_mangle)]
 unsafe extern "C" fn fj_test_film_profile_view(
     owner: *const FjFilmProfile,
-    out_view: *mut FjFilmProfileView,
+    out_view: *mut FjFilmFixtureView,
     error: *mut FjErrorBuffer,
 ) -> FjStatus {
     if !out_view.is_null() {
         // SAFETY: The foreign caller authorizes this exclusive record.
-        unsafe { out_view.write(FjFilmProfileView::empty()) };
+        unsafe { out_view.write(FjFilmFixtureView::empty()) };
     }
     // SAFETY: Disjoint error storage and live-owner lifetime are caller obligations.
     let result = unsafe {
@@ -322,7 +322,7 @@ unsafe extern "C" fn fj_test_film_profile_view(
             let owner = &*owner.cast::<FilmOwner>();
             // Only this foreign boundary detaches the raw record from its borrow;
             // the C contract requires owner retention until the last span use.
-            out_view.write(FjFilmProfileView::from_view(owner.view()));
+            out_view.write(FjFilmFixtureView::from_view(owner.fixture_view()));
             Ok(())
         })
     };
@@ -364,19 +364,19 @@ static ABI_FACTS: &[usize] = &[
     align_of::<FjDoubleSpan>(),
     offset_of!(FjDoubleSpan, data),
     offset_of!(FjDoubleSpan, count),
-    size_of::<FjFilmProfileView>(),
-    align_of::<FjFilmProfileView>(),
-    offset_of!(FjFilmProfileView, r#use),
-    offset_of!(FjFilmProfileView, antihalation),
-    offset_of!(FjFilmProfileView, asset_token),
-    offset_of!(FjFilmProfileView, halation_first_sigma_um),
-    offset_of!(FjFilmProfileView, halation_primary_amount),
-    offset_of!(FjFilmProfileView, source_log_exposure),
-    offset_of!(FjFilmProfileView, log_exposure),
-    offset_of!(FjFilmProfileView, density_curves_cmy),
-    offset_of!(FjFilmProfileView, density_curves_layers),
-    offset_of!(FjFilmProfileView, channel_density_cmy),
-    offset_of!(FjFilmProfileView, base_density),
+    size_of::<FjFilmFixtureView>(),
+    align_of::<FjFilmFixtureView>(),
+    offset_of!(FjFilmFixtureView, r#use),
+    offset_of!(FjFilmFixtureView, antihalation),
+    offset_of!(FjFilmFixtureView, asset_token),
+    offset_of!(FjFilmFixtureView, halation_first_sigma_um),
+    offset_of!(FjFilmFixtureView, halation_primary_amount),
+    offset_of!(FjFilmFixtureView, source_log_exposure),
+    offset_of!(FjFilmFixtureView, log_exposure),
+    offset_of!(FjFilmFixtureView, density_curves_cmy),
+    offset_of!(FjFilmFixtureView, density_curves_layers),
+    offset_of!(FjFilmFixtureView, channel_density_cmy),
+    offset_of!(FjFilmFixtureView, base_density),
     FJ_PROFILE_USE_STILL as usize,
     FJ_PROFILE_USE_CINE as usize,
     FJ_PROFILE_ANTIHALATION_STRONG as usize,
@@ -406,7 +406,7 @@ const _: unsafe extern "C" fn(
 ) -> FjStatus = fj_test_film_profile_acquire;
 const _: unsafe extern "C" fn(
     *const FjFilmProfile,
-    *mut FjFilmProfileView,
+    *mut FjFilmFixtureView,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_film_profile_view;
 const _: unsafe extern "C" fn(*mut FjFilmProfile, *mut FjErrorBuffer) -> FjStatus =
@@ -429,7 +429,7 @@ mod tests {
         let owner = FilmOwner::new(Arc::clone(&profile));
         assets.release_cached_payloads().unwrap();
         drop(assets);
-        let raw = FjFilmProfileView::from_view(owner.view());
+        let raw = FjFilmFixtureView::from_view(owner.fixture_view());
         let tables = profile.tables();
         assert_eq!(raw.r#use, FJ_PROFILE_USE_STILL);
         assert_eq!(raw.antihalation, FJ_PROFILE_ANTIHALATION_STRONG);

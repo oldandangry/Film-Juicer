@@ -4,13 +4,19 @@
 
 use std::sync::Arc;
 
-use film_juicer_core::profile::{Antihalation, FilmProfile, ProfileUse};
+use film_juicer_core::profile::{
+    FilmDigest, FilmProfile, IlluminantKind, Polarity, PrintDensityCurves, PrintDensityError,
+    PrintProfile, ProfileTables, Stage, Support,
+};
+#[cfg(feature = "test-support")]
+use film_juicer_core::profile::{Antihalation, ProfileUse};
 
 pub(crate) struct FilmOwner {
     profile: Arc<FilmProfile>,
 }
 
-pub(crate) struct FilmView<'a> {
+#[cfg(feature = "test-support")]
+pub(crate) struct FilmFixtureView<'a> {
     pub usage: ProfileUse,
     pub antihalation: Antihalation,
     pub asset_token: u64,
@@ -29,10 +35,11 @@ impl FilmOwner {
         Self { profile }
     }
 
-    pub(crate) fn view(&self) -> FilmView<'_> {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn fixture_view(&self) -> FilmFixtureView<'_> {
         let tables = self.profile.tables();
         let digest = self.profile.digest();
-        FilmView {
+        FilmFixtureView {
             usage: self.profile.info().usage(),
             antihalation: self.profile.info().antihalation(),
             asset_token: self.profile.asset_token(),
@@ -52,7 +59,123 @@ impl FilmOwner {
     }
 }
 
-#[cfg(test)]
+pub(crate) struct IlluminantView<'a> {
+    pub label: &'a str,
+    pub kind: IlluminantKind,
+}
+
+pub(crate) struct ProfileTablesView<'a> {
+    pub linear_sensitivity_rgb: &'a [f32],
+    pub channel_density_cmy: &'a [f32],
+    pub base_density: &'a [f32],
+    pub log_exposure: &'a [f32],
+    pub density_curves_cmy: &'a [f32],
+}
+
+impl<'a> ProfileTablesView<'a> {
+    fn new(tables: &'a ProfileTables) -> Self {
+        Self {
+            linear_sensitivity_rgb: tables.linear_sensitivity().as_flattened(),
+            channel_density_cmy: tables.channel_density().as_flattened(),
+            base_density: tables.base_density(),
+            log_exposure: tables.log_exposure(),
+            density_curves_cmy: tables.density_curves().as_flattened(),
+        }
+    }
+}
+
+pub(crate) struct FilmView<'a> {
+    pub stock: &'a str,
+    pub reference_illuminant: IlluminantView<'a>,
+    pub viewing_illuminant: IlluminantView<'a>,
+    pub tables: ProfileTablesView<'a>,
+    pub wavelengths: &'a [f32],
+    pub density_curves_layers: [[&'a [f32]; 3]; 3],
+    pub digest: &'a FilmDigest,
+    pub hanatos_window: &'a [f32],
+    pub hanatos_surface_rgb: &'a [f32],
+    pub asset_token: u64,
+    pub support: Support,
+    pub stage: Stage,
+    pub polarity: Polarity,
+}
+
+impl FilmOwner {
+    pub(crate) fn view(&self) -> FilmView<'_> {
+        let info = self.profile.info();
+        let tables = self.profile.tables();
+        FilmView {
+            stock: info.stock(),
+            reference_illuminant: IlluminantView {
+                label: info.reference_illuminant(),
+                kind: info.reference_illuminant_kind(),
+            },
+            viewing_illuminant: IlluminantView {
+                label: info.viewing_illuminant(),
+                kind: info.viewing_illuminant_kind(),
+            },
+            tables: ProfileTablesView::new(tables),
+            wavelengths: tables.wavelengths(),
+            density_curves_layers: std::array::from_fn(|layer| {
+                std::array::from_fn(|channel| {
+                    tables.density_curves_layers()[layer][channel].as_slice()
+                })
+            }),
+            digest: self.profile.digest(),
+            hanatos_window: tables
+                .hanatos2025_adaptation_window_params()
+                .map_or(&[], |values| values.as_slice()),
+            hanatos_surface_rgb: tables
+                .hanatos2025_adaptation_surface_params()
+                .map_or(&[], |values| values.as_flattened()),
+            asset_token: self.profile.asset_token(),
+            support: info.support(),
+            stage: info.stage(),
+            polarity: info.polarity(),
+        }
+    }
+}
+
+pub(crate) struct PrintOwner {
+    profile: Arc<PrintProfile>,
+}
+
+pub(crate) struct PrintView<'a> {
+    pub stock: &'a str,
+    pub viewing_illuminant: IlluminantView<'a>,
+    pub tables: ProfileTablesView<'a>,
+    pub asset_token: u64,
+    pub stage: Stage,
+}
+
+impl PrintOwner {
+    pub(crate) fn new(profile: Arc<PrintProfile>) -> Self {
+        Self { profile }
+    }
+
+    pub(crate) fn view(&self) -> PrintView<'_> {
+        let info = self.profile.info();
+        PrintView {
+            stock: info.stock(),
+            viewing_illuminant: IlluminantView {
+                label: info.viewing_illuminant(),
+                kind: info.viewing_illuminant_kind(),
+            },
+            tables: ProfileTablesView::new(self.profile.tables()),
+            asset_token: self.profile.asset_token(),
+            stage: info.stage(),
+        }
+    }
+
+    pub(crate) fn sample_density_curves(
+        &self,
+        gamma: f64,
+    ) -> Result<PrintDensityCurves, PrintDensityError> {
+        self.profile.sample_density_curves(gamma)
+    }
+}
+
+#[cfg(all(test, feature = "test-support"))]
 mod tests {
     use std::path::Path;
 
@@ -68,7 +191,7 @@ mod tests {
         let owner = FilmOwner::new(Arc::clone(&profile));
         assets.release_cached_payloads().unwrap();
         drop(assets);
-        let view = owner.view();
+        let view = owner.fixture_view();
         let tables = profile.tables();
         assert_eq!(view.usage, ProfileUse::Still);
         assert_eq!(view.antihalation, Antihalation::Strong);
@@ -116,5 +239,55 @@ mod tests {
         assert_eq!(weak.strong_count(), 1);
         drop(owner);
         assert!(weak.upgrade().is_none());
+    }
+}
+
+#[cfg(test)]
+mod production_tests {
+    use std::path::Path;
+    use film_juicer_core::assets::Assets;
+    use super::*;
+
+    #[test]
+    fn production_projection_shares_source_and_gamma_owns_its_result() {
+        let assets = Assets::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
+        let film = assets.film("kodak_portra_400").unwrap();
+        let print = assets.print("kodak_portra_endura").unwrap();
+        let film_weak = Arc::downgrade(&film);
+        let print_weak = Arc::downgrade(&print);
+        let film_owner = FilmOwner::new(Arc::clone(&film));
+        let print_owner = PrintOwner::new(Arc::clone(&print));
+        assert_eq!(
+            film_owner.view().tables.log_exposure.as_ptr(),
+            film.tables().log_exposure().as_ptr()
+        );
+        assert_eq!(
+            print_owner.view().tables.log_exposure.as_ptr(),
+            print.tables().log_exposure().as_ptr()
+        );
+        let curves = print_owner.sample_density_curves(1.1).unwrap();
+        assert_ne!(
+            curves.totals().as_ptr(),
+            print.tables().density_curves().as_ptr()
+        );
+        let hash = curves.hash();
+        assets.release_cached_payloads().unwrap();
+        drop(assets);
+        drop(film);
+        drop(print);
+        assert_eq!(film_weak.strong_count(), 1);
+        assert_eq!(print_weak.strong_count(), 1);
+        assert!(!film_owner.view().tables.log_exposure.is_empty());
+        drop(film_owner);
+        drop(print_owner);
+        assert!(film_weak.upgrade().is_none());
+        assert!(print_weak.upgrade().is_none());
+        assert_eq!(curves.hash(), hash);
+        assert!(!curves.totals().is_empty());
+        println!(
+            "Safe retained owner inline: film={} print={}; Arc payload shared, zero warm table copy",
+            std::mem::size_of::<FilmOwner>(),
+            std::mem::size_of::<PrintOwner>()
+        );
     }
 }

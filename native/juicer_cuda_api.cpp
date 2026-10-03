@@ -112,8 +112,26 @@ struct FjCuda final {
         }
     }
 
-    void release_host_caches() noexcept {
-        root.release_process_host_services();
+    FjStatus release_host_caches(FjErrorBuffer* error) noexcept {
+        auto state = hostCleanup.load(std::memory_order_acquire);
+        for (;;) {
+            if (state == HostCleanup::Complete) {
+                return JuicerCuda::write_status(hostCleanupStatus, {hostCleanupDiagnostic.data(), hostCleanupDiagnosticLength}, error);
+            }
+            if (state == HostCleanup::Running) {
+                hostCleanup.wait(state, std::memory_order_acquire);
+            } else if (hostCleanup.compare_exchange_weak(state, HostCleanup::Running, std::memory_order_acq_rel)) {
+                FjErrorBuffer retained{hostCleanupDiagnostic.data(), hostCleanupDiagnostic.size(), 0};
+#if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
+                JuicerCuda::TerminalTest::before_host_cleanup();
+#endif
+                hostCleanupStatus = root.release_process_host_services(&retained);
+                hostCleanupDiagnosticLength = retained.length;
+                hostCleanup.store(HostCleanup::Complete, std::memory_order_release);
+                hostCleanup.notify_all();
+            }
+            state = hostCleanup.load(std::memory_order_acquire);
+        }
     }
 
     std::unique_ptr<JuicerAssets::Library> detach_host_assets() noexcept {
@@ -128,6 +146,16 @@ struct FjCuda final {
     FjStatus terminalStatus{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
     std::array<char, 1024> terminalDiagnostic{};
     std::size_t terminalDiagnosticLength = 0;
+
+    enum class HostCleanup : std::uint8_t {
+        Pending,
+        Running,
+        Complete
+    };
+    std::atomic<HostCleanup> hostCleanup{HostCleanup::Pending};
+    FjStatus hostCleanupStatus{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+    std::array<char, 1024> hostCleanupDiagnostic{};
+    std::size_t hostCleanupDiagnosticLength = 0;
 
     std::mutex callMutex;
     JuicerProcess::Root root;
@@ -573,17 +601,15 @@ FjStatus fj_cuda_shutdown(FjCuda* cuda, FjErrorBuffer* error) {
         JuicerCuda::TerminalTest::before_owner_lock();
 #endif
         FjStatus result{};
-        bool releaseHostCaches = false;
         {
             std::lock_guard<std::mutex> lock(gOwnerMutex);
             if (cuda != gOwner.load(std::memory_order_acquire)) {
                 return status(FJ_STATUS_PREPARATION_FAILURE, error, "CUDA shutdown requires the registered owner");
             }
-            releaseHostCaches = cuda->lifecycle.load(std::memory_order_acquire) == FjCuda::Lifecycle::Accepting;
             result = cuda->shutdown();
         }
-        if (result.category == FJ_STATUS_SUCCESS && releaseHostCaches) {
-            cuda->release_host_caches();
+        if (result.category == FJ_STATUS_SUCCESS) {
+            return cuda->release_host_caches(error);
         }
         return JuicerCuda::write_status(result,
                                         result.category == FJ_STATUS_SUCCESS ? std::string_view{} : std::string_view{cuda->terminalDiagnostic.data(), cuda->terminalDiagnosticLength},
@@ -639,6 +665,9 @@ FjStatus fj_cuda_destroy(FjCuda* cuda, FjErrorBuffer* error) {
         result = terminal_admission_failure(cuda, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what(), true, nativeError);
     } catch (...) {
         result = terminal_admission_failure(cuda, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA destroy admission failed", true, nativeError);
+    }
+    if (closed && cuda->hostCleanup.load(std::memory_order_acquire) == FjCuda::HostCleanup::Complete) {
+        result = JuicerCuda::write_status(cuda->hostCleanupStatus, {cuda->hostCleanupDiagnostic.data(), cuda->hostCleanupDiagnosticLength}, nativeError);
     }
     // Neither Rust cleanup nor native metadata destruction runs under a lock.
     const auto hostResult = hostAssets ? hostAssets->close(result.category == FJ_STATUS_SUCCESS ? error : nullptr)

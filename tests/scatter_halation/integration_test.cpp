@@ -1,4 +1,5 @@
 #include "integration_test.h"
+#include "../ofx/render_assertions.h"
 
 #include <algorithm>
 #include <array>
@@ -657,7 +658,7 @@ namespace {
             return status;
         }
 
-        const FjFilmProfileView& view() const noexcept {
+        const FjFilmFixtureView& view() const noexcept {
             return _view;
         }
         bool has_owner() const noexcept {
@@ -666,7 +667,7 @@ namespace {
 
     private:
         FjFilmProfile* _owner = nullptr;
-        FjFilmProfileView _view{};
+        FjFilmFixtureView _view{};
     };
 
     void run_profile_rows(const Arguments& arguments, Results& results) {
@@ -1383,7 +1384,7 @@ namespace {
         const ParamSnapshot& a,
         const ParamSnapshot& b,
         bool signedZero,
-        std::optional<std::array<FreshIdentity, 2>> original) {
+        std::optional<std::array<FreshIdentity, 2>> accepted) {
         const bool printRoute = Spektrafilm::scan_route_is_print(a.scanRoute);
         FocusedRenderStateBuildProduct freshA;
         FocusedRenderStateBuildProduct freshB;
@@ -1410,20 +1411,19 @@ namespace {
         results.record(std::string(name) + "/fresh-distinct",
                        freshDiffer,
                        identity.str());
-        const auto agrees_with_original = [&](const RenderRecipe& recipe,
+        const auto agrees_with_accepted = [&](const RenderRecipe& recipe,
                                               const FreshIdentity& expected) {
             const std::uint64_t fixedSeed = printRoute
                                                 ? Hash::hash_uint64_values({recipe.print.hash, 37, 5, 9})
                                                 : 0;
-            return recipe.hash == expected.recipe &&
-                   recipe.filmRaw.hash == expected.filmRaw &&
-                   recipe.print.hash == expected.printSeedInput &&
-                   fixedSeed == expected.fixedGlareSeed;
+            return RenderAssertions::identities_match(
+                {recipe.hash, recipe.filmRaw.hash, recipe.print.hash, fixedSeed},
+                {expected.recipe, expected.filmRaw, expected.printSeedInput, expected.fixedGlareSeed});
         };
-        if (original) {
-            results.record(std::string(name) + "/original-fresh-identities",
-                           agrees_with_original(freshA.recipe, (*original)[0]) &&
-                               agrees_with_original(freshB.recipe, (*original)[1]),
+        if (accepted) {
+            results.record(std::string(name) + "/accepted-rust-identities",
+                           agrees_with_accepted(freshA.recipe, (*accepted)[0]) &&
+                               agrees_with_accepted(freshB.recipe, (*accepted)[1]),
                            identity.str());
         }
         for (bool reverse : {false, true}) {
@@ -1465,29 +1465,24 @@ namespace {
     }
 
     void run_parameter_identity_rows(Results& results) {
-#if defined(_WIN32)
-        constexpr std::array<FreshIdentity, 2> kDirectSmall{{{0xdfcabb6e6759a780ULL, 0x490500e8b8b605afULL, 0, 0},
-                                                             {0xf9696f2fa63dacecULL, 0x64123468ae706b13ULL, 0, 0}}};
-        constexpr std::array<FreshIdentity, 2> kDirectZero{{{0xc6e074fb35227a43ULL, 0xf97a0a9d566ca20aULL, 0, 0},
-                                                            {0x8eda58c315f7260dULL, 0x3ae737796e1dca8aULL, 0, 0}}};
-        constexpr std::array<FreshIdentity, 2> kPrintSmall{{{0x5a1b3da9ec40632eULL, 0x490500e8b8b605afULL, 0x9df7d770d575371bULL, 0xe16a200be10e91b5ULL},
-                                                            {0x3e76bfb906ecbda6ULL, 0x64123468ae706b13ULL, 0x16cb45119ad471c9ULL, 0xcb9e1d42321c5b47ULL}}};
-        constexpr std::array<FreshIdentity, 2> kPrintZero{{{0xb804fb11ade82dd9ULL, 0xf97a0a9d566ca20aULL, 0x9bef5a74ee002bf6ULL, 0x3c249a5b8360e4f1ULL},
-                                                           {0x4ecc7154f0985236ULL, 0x3ae737796e1dca8aULL, 0x7dca83ea271274c5ULL, 0x573f180892665854ULL}}};
-        constexpr std::array<FreshIdentity, 2> kPrintMediumSmall{{{0xb804fb11ade82dd9ULL, 0xf97a0a9d566ca20aULL, 0x9bef5a74ee002bf6ULL, 0x3c249a5b8360e4f1ULL},
-                                                                  {0xd019f32dd5a43605ULL, 0xf97a0a9d566ca20aULL, 0xa965462e4057d804ULL, 0x3c6e4abcde81e015ULL}}};
-#else
-        constexpr std::array<FreshIdentity, 2> kDirectSmall{{{0x338170d935d02a04ULL, 0x5cf0615ba88212a5ULL, 0, 0},
-                                                             {0x80046ccce934defcULL, 0x0445480c2ed12931ULL, 0, 0}}};
-        constexpr std::array<FreshIdentity, 2> kDirectZero{{{0x1cf69f5f80e30ca7ULL, 0xd99013f993d44c8cULL, 0, 0},
-                                                            {0x3c9e966627a3d263ULL, 0xa60caaf53143ad0cULL, 0, 0}}};
-        constexpr std::array<FreshIdentity, 2> kPrintSmall{{{0x9f199e0860dc6c8fULL, 0x5cf0615ba88212a5ULL, 0x2b30c3117010018dULL, 0xc0b706a628429f8bULL},
-                                                            {0xf2d421fdf52861b7ULL, 0x0445480c2ed12931ULL, 0x2a80092e5d768da0ULL, 0xbe3a24ef5d0467a1ULL}}};
-        constexpr std::array<FreshIdentity, 2> kPrintZero{{{0xd47539b394dd7974ULL, 0xd99013f993d44c8cULL, 0xad737c77fdce1f57ULL, 0x1bf0cce1723b593cULL},
-                                                           {0x28cd11ce8a544701ULL, 0xa60caaf53143ad0cULL, 0x6fe6d2f9916b573cULL, 0x704844fef09d3445ULL}}};
-        constexpr std::array<FreshIdentity, 2> kPrintMediumSmall{{{0xd47539b394dd7974ULL, 0xd99013f993d44c8cULL, 0xad737c77fdce1f57ULL, 0x1bf0cce1723b593cULL},
-                                                                  {0x3ce25ffd7c1e33d7ULL, 0xd99013f993d44c8cULL, 0xc1628d37147a0705ULL, 0xcde831039d9c6b57ULL}}};
-#endif
+        std::ifstream fixture(JUICER_PARAMETER_IDENTITY_PATH);
+        if (!fixture) {
+            throw std::runtime_error("Rust parameter identity fixture unavailable");
+        }
+        const auto identities = nlohmann::json::parse(fixture);
+        const auto pair = [&](const char* name) {
+            std::array<FreshIdentity, 2> expected{};
+            for (std::size_t i = 0; i < expected.size(); ++i) {
+                const auto& row = identities.at(std::string(name) + (i == 0 ? "/A" : "/B"));
+                expected[i] = {row.at("recipe").get<std::uint64_t>(), row.at("filmRaw").get<std::uint64_t>(), row.at("printSeedInput").get<std::uint64_t>(), row.at("fixedGlareSeed").get<std::uint64_t>()};
+            }
+            return expected;
+        };
+        const auto kDirectSmall = pair("direct-exposure-small");
+        const auto kDirectZero = pair("direct-exposure-zero");
+        const auto kPrintSmall = pair("print-exposure-small");
+        const auto kPrintZero = pair("print-exposure-zero");
+        const auto kPrintMediumSmall = pair("print-medium-exposure-small");
         for (bool printRoute : {false, true}) {
             ParamSnapshot a = direct_snapshot();
             if (printRoute) {

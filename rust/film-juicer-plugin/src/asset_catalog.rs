@@ -2,14 +2,13 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::TryReserveError;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStrExt;
 #[cfg(target_os = "windows")]
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::ffi::OsStringExt;
 
 use film_juicer_core::profile::{Catalog, Polarity, Role};
 
@@ -54,47 +53,17 @@ impl PathView<'_> {
 
 pub(crate) struct CatalogOwner {
     catalog: Arc<Catalog>,
-    #[cfg(target_os = "windows")]
-    film_paths: Vec<Vec<u16>>,
-    #[cfg(target_os = "windows")]
-    print_paths: Vec<Vec<u16>>,
 }
 
 pub(crate) struct CatalogEntryView<'a> {
     pub key: &'a str,
     pub label: &'a str,
-    pub source_path: PathView<'a>,
     pub polarity: Polarity,
 }
 
 impl CatalogOwner {
-    pub(crate) fn new(catalog: Arc<Catalog>) -> Result<Self, TryReserveError> {
-        #[cfg(target_os = "windows")]
-        fn paths(
-            entries: &[film_juicer_core::profile::CatalogEntry],
-        ) -> Result<Vec<Vec<u16>>, TryReserveError> {
-            let mut paths = Vec::new();
-            paths.try_reserve_exact(entries.len())?;
-            for entry in entries {
-                let encoded = entry.source_path().as_os_str().encode_wide();
-                let mut units = Vec::new();
-                #[cfg(any(test, feature = "test-support"))]
-                if FAIL_ENCODING.replace(false) {
-                    units.try_reserve_exact(usize::MAX)?;
-                }
-                units.try_reserve_exact(encoded.clone().count())?;
-                units.extend(encoded);
-                paths.push(units);
-            }
-            Ok(paths)
-        }
-        Ok(Self {
-            #[cfg(target_os = "windows")]
-            film_paths: paths(catalog.films())?,
-            #[cfg(target_os = "windows")]
-            print_paths: paths(catalog.prints())?,
-            catalog,
-        })
+    pub(crate) fn new(catalog: Arc<Catalog>) -> Self {
+        Self { catalog }
     }
 
     pub(crate) fn count(&self, role: Role) -> usize {
@@ -110,28 +79,12 @@ impl CatalogOwner {
             Role::Print => self.catalog.prints(),
         };
         let entry = entries.get(index)?;
-        #[cfg(target_os = "windows")]
-        let paths = match role {
-            Role::Film => &self.film_paths,
-            Role::Print => &self.print_paths,
-        };
         Some(CatalogEntryView {
             key: entry.key(),
             label: entry.label(),
-            #[cfg(target_os = "linux")]
-            source_path: PathView::Bytes(entry.source_path().as_os_str().as_bytes()),
-            #[cfg(target_os = "windows")]
-            source_path: PathView::Wide(&paths[index]),
             polarity: entry.polarity(),
         })
     }
-}
-
-#[cfg(all(target_os = "windows", any(test, feature = "test-support")))]
-thread_local! { static FAIL_ENCODING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
-#[cfg(all(target_os = "windows", any(test, feature = "test-support")))]
-pub(crate) fn fail_next_path_encoding() {
-    FAIL_ENCODING.set(true);
 }
 
 #[cfg(test)]
@@ -158,39 +111,16 @@ mod tests {
             std::mem::size_of::<Catalog>()
         );
         let weak = Arc::downgrade(&catalog);
-        let first = CatalogOwner::new(Arc::clone(&catalog)).unwrap();
-        let second = CatalogOwner::new(catalog).unwrap();
+        let first = CatalogOwner::new(Arc::clone(&catalog));
+        let second = CatalogOwner::new(catalog);
         println!(
             "Catalog retained handle inline={} bytes; two handles share one source allocation",
             std::mem::size_of::<CatalogOwner>()
         );
-        #[cfg(target_os = "windows")]
-        println!(
-            "Catalog Windows path encoding capacity={} bytes per handle (including path-vector records)",
-            first
-                .film_paths
-                .iter()
-                .chain(&first.print_paths)
-                .map(|path| path.capacity() * 2)
-                .sum::<usize>()
-                + (first.film_paths.capacity() + first.print_paths.capacity())
-                    * std::mem::size_of::<Vec<u16>>()
-        );
         drop(assets);
         let view = first.entry(Role::Film, 0).unwrap();
-        let path = view
-            .source_path
-            .to_path_buf()
-            .unwrap_or_else(|_| panic!("valid native path"));
         let repeated = first.entry(Role::Film, 0).unwrap();
         assert_eq!(view.key.as_ptr(), repeated.key.as_ptr());
-        assert_eq!(
-            path,
-            repeated
-                .source_path
-                .to_path_buf()
-                .unwrap_or_else(|_| panic!("valid native path"))
-        );
         assert_eq!(first.count(Role::Film), second.count(Role::Film));
         drop(second);
         assert_eq!(weak.strong_count(), 1);
@@ -223,6 +153,7 @@ mod tests {
             let path = PathView::Wide(&units)
                 .to_path_buf()
                 .unwrap_or_else(|_| panic!("valid units"));
+            use std::os::windows::ffi::OsStrExt;
             assert_eq!(path.as_os_str().encode_wide().collect::<Vec<_>>(), units);
             assert!(matches!(
                 PathView::Wide(&[]).to_path_buf(),

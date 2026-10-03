@@ -11,6 +11,8 @@
 #include <string_view>
 
 #include "GamutCompression.h"
+#include "RustAssetBridge.h"
+#include "Cuda/JuicerCudaExecutor.h"
 #include "Hash.h"
 #include "SpectralProcessing.h"
 
@@ -23,27 +25,6 @@ namespace {
 
     void hash_string(std::uint64_t& hash, const std::string& value) {
         Hash::hash_bytes_update(hash, value.data(), value.size());
-    }
-
-    bool build_print_gamma_density_model(
-        const Profiles::DensityCurveModel& baseline,
-        double gammaFactor,
-        Profiles::DensityCurveModel& adjusted) {
-        if (!std::isfinite(gammaFactor) || gammaFactor <= 0.0) {
-            return false;
-        }
-        adjusted = baseline;
-        if (gammaFactor != 1.0) {
-            for (std::size_t channel = 0; channel < 3u; ++channel) {
-                for (std::size_t layer = 0; layer < 3u; ++layer) {
-                    adjusted.centers[channel][layer] /= gammaFactor;
-                    adjusted.sigmas[channel][layer] = std::max(
-                        adjusted.sigmas[channel][layer] / gammaFactor,
-                        0.05);
-                }
-            }
-        }
-        return Profiles::density_curve_model_coefficients_supported(adjusted);
     }
 
     std::uint64_t hash_nan_preserving_floats(const float* values, std::size_t count) {
@@ -214,7 +195,7 @@ namespace {
     }
 
     bool build_spatial_optics_recipe(
-        const Profiles::ValidatedFilmProfile& profile,
+        const Profiles::FilmProfile& profile,
         const Spektrafilm::SpatialOpticsControls& controls,
         bool includePrintDomain,
         SpatialOptics& out,
@@ -359,12 +340,6 @@ namespace {
         return uv * ir;
     }
 
-    bool hanatos_window_params_valid(const std::array<float, 4>& params) {
-        return std::all_of(params.begin(), params.end(), [](float value) {
-                   return std::isfinite(value);
-               }) &&
-               params[1] > 0.0f && params[3] > 0.0f;
-    }
 
     std::uint64_t hash_tc_lut_recipe(
         const FilmRawRecipe& recipe,
@@ -453,8 +428,7 @@ namespace {
 
         if (recipe.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025 &&
             recipe.hanatos.applyWindow) {
-            if (!hanatos_window_params_valid(recipe.hanatos.windowParams) ||
-                !input.reconstructedReferenceWhiteValid) {
+            if (!input.reconstructedReferenceWhiteValid) {
                 return false;
             }
 
@@ -1282,7 +1256,7 @@ namespace {
     }
 
     bool build_dir_couplers_recipe(
-        const Profiles::ValidatedFilmProfile& profile,
+        const Profiles::FilmProfile& profile,
         const FilmDevelopRecipe& develop,
         const DirCouplersControls& controls,
         Spektrafilm::ScanRoute route,
@@ -1566,7 +1540,7 @@ namespace {
     }
 
     bool build_film_density_bounds(
-        const Profiles::ValidatedFilmProfile& profile,
+        const Profiles::FilmProfile& profile,
         const FilmDevelopRecipe& develop,
         const GrainContract& grain,
         Spektrafilm::ScanRoute route,
@@ -1593,7 +1567,7 @@ namespace {
     }
 
     bool build_print_density_bounds(
-        const Profiles::ValidatedPrintProfile& profile,
+        const Profiles::PrintProfile& profile,
         Spektrafilm::ScanRoute route,
         Spektrafilm::ProfilePolarity capturePolarity,
         DensityBoundsRecipe& out) {
@@ -1838,78 +1812,25 @@ namespace AssetLookupTest {
 #endif
 
 namespace Spektrafilm {
-    std::array<double, 3> evaluate_print_density_sample(
-        const Profiles::DensityCurveModel& model,
-        double gammaFactor,
-        ProfilePolarity polarity,
-        double logExposure) {
-        Profiles::DensityCurveModel adjusted{};
-        if (!build_print_gamma_density_model(
-                model,
-                gammaFactor,
-                adjusted)) {
-            std::array<double, 3> invalid{};
-            invalid.fill(std::numeric_limits<double>::quiet_NaN());
-            return invalid;
-        }
-        const Profiles::DensityCurveSample evaluated =
-            Profiles::evaluate_density_curve_sample(
-                adjusted,
-                polarity,
-                logExposure);
-        std::array<double, 3> density{};
-        if (!evaluated.valid) {
-            density.fill(std::numeric_limits<double>::quiet_NaN());
-            return density;
-        }
-        for (std::size_t channel = 0; channel < density.size(); ++channel) {
-            density[channel] =
-                static_cast<double>(evaluated.total[channel]);
-        }
-        return density;
-    }
-
     namespace {
 
         bool build_print_develop_recipe(
-            const Profiles::ValidatedPrintProfile& profile,
+            const JuicerAssets::PrintProfileSource& source,
             double gammaFactor,
             PrintDevelopRecipe& out) {
             out = PrintDevelopRecipe{};
-            const std::size_t sampleCount = profile.sourceLogExposure.size();
-            out.gammaFactor = gammaFactor;
-            out.densityCurves.resize(sampleCount);
-            Profiles::DensityCurveModel adjustedModel{};
-            if (!build_print_gamma_density_model(
-                    profile.densityModel,
-                    gammaFactor,
-                    adjustedModel)) {
+            try {
+                auto curves = source.sample_density_curves(gammaFactor);
+                out.gammaFactor = gammaFactor;
+                out.densityCurves = std::move(curves.totals);
+                out.densityCurvesHash = curves.hash;
+                return true;
+            } catch (const JuicerCuda::ExecutionFailure& failure) {
+                if (failure.failure.status.category != FJ_STATUS_PREPARATION_FAILURE) {
+                    throw;
+                }
                 return false;
             }
-            for (std::size_t sample = 0; sample < sampleCount; ++sample) {
-                const double sourceExposure = profile.sourceLogExposure[sample];
-                const Profiles::DensityCurveSample derived =
-                    Profiles::evaluate_density_curve_sample(
-                        adjustedModel,
-                        profile.info.type,
-                        sourceExposure);
-                if (!derived.valid) {
-                    return false;
-                }
-                out.densityCurves[sample] = derived.total;
-            }
-
-            out.densityCurvesHash = Hash::kFnvOffset;
-            hash_value(out.densityCurvesHash, sampleCount);
-            Hash::hash_bytes_update(
-                out.densityCurvesHash,
-                profile.data.logExposure.data(),
-                sampleCount * sizeof(profile.data.logExposure.front()));
-            Hash::hash_bytes_update(
-                out.densityCurvesHash,
-                &out.densityCurves[0][0],
-                sampleCount * 3u * sizeof(float));
-            return out.densityCurvesHash != 0;
         }
 
         bool build_film_foundation(
@@ -1947,7 +1868,7 @@ namespace Spektrafilm {
                     "InvalidAuthoredControl component=film_development field=film_gamma_factor");
             }
 
-            const Profiles::ValidatedFilmProfile& profile = *input.filmProfile;
+            const Profiles::FilmProfile& profile = *input.filmProfile;
             ScanRoute resolvedRoute{};
             if (!resolve_scan_route(
                     profile.info.type, input.scanRoute, resolvedRoute, diagnostic)) {
@@ -2284,7 +2205,7 @@ namespace Spektrafilm {
         ProfileRoute& profileRoute = recipe.profileRoute;
         profileRoute.hash = hash_profile_route(profileRoute);
 
-        const Profiles::ValidatedFilmProfile& profile = *film.filmProfile;
+        const Profiles::FilmProfile& profile = *film.filmProfile;
         ScannerOutputRecipe& scanner = recipe.scannerOutput;
         scanner.route = film.scanRoute;
         scanner.medium = DensityMedium::Film;
@@ -2332,7 +2253,7 @@ namespace Spektrafilm {
                 "UnsupportedMode phase=4A field=scan_route expected=print";
             return result;
         }
-        if (!film.filmProfile || !input.printProfile) {
+        if (!film.filmProfile || !input.printSource) {
             result.diagnostic =
                 "MissingRequiredResource phase=4A field=selected_profile";
             return result;
@@ -2344,7 +2265,7 @@ namespace Spektrafilm {
                 "InvalidAuthoredControl component=print_development field=print_gamma_factor";
             return result;
         }
-        if (input.printProfile->info.stage != ProfileStage::Printing) {
+        if (input.printSource->profile()->info.stage != ProfileStage::Printing) {
             result.diagnostic =
                 "UnsupportedMode phase=4A selected profile route mismatch";
             return result;
@@ -2381,12 +2302,12 @@ namespace Spektrafilm {
 
         ProfileRoute& route = recipe.profileRoute;
         route.printProfileAssetVersionToken =
-            input.printProfile->assetVersionToken;
-        route.printProfile = input.printProfile;
+            input.printSource->profile()->assetVersionToken;
+        route.printProfile = input.printSource->profile();
         route.hash = hash_profile_route(route);
 
         if (!build_print_density_bounds(
-                *input.printProfile,
+                *input.printSource->profile(),
                 film.scanRoute,
                 film.filmProfile->info.type,
                 recipe.densityBounds)) {
@@ -2400,7 +2321,7 @@ namespace Spektrafilm {
         scanner.medium = DensityMedium::Print;
         scanner.polarity = film.filmProfile->info.type;
         scanner.viewingIlluminant =
-            input.printProfile->info.viewingIlluminant.value;
+            input.printSource->profile()->info.viewingIlluminant.value;
         scanner.lutResolution =
             std::clamp(input.scannerLutResolution, 17u, 128u);
         scanner.outputColorSpace = input.outputColorSpace;
@@ -2427,7 +2348,7 @@ namespace Spektrafilm {
 
         PrintRecipe& print = recipe.print;
         if (!build_print_develop_recipe(
-                *input.printProfile,
+                *input.printSource,
                 input.printGammaFactor,
                 print.develop)) {
             result.diagnostic =
@@ -2720,9 +2641,9 @@ namespace Spektrafilm {
                     "MissingRequiredResource phase=4A field=filtered_print_illuminant";
                 return false;
             }
-            const Profiles::SpektrafilmProfileSamples& film =
+            const Profiles::FilmProfileSamples& film =
                 recipe.profileRoute.filmProfile->data;
-            const Profiles::SpektrafilmProfileSamples& print =
+            const Profiles::PrintProfileSamples& print =
                 recipe.profileRoute.printProfile->data;
             auto derive_print_raw = [&](
                                         const std::array<float, 3>& densityCmy,

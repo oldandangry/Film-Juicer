@@ -175,9 +175,10 @@ namespace {
         return std::nullopt;
     }
 
+    template <typename Samples>
     std::optional<float> sample_density_curve(
         float logExposure,
-        const Profiles::SpektrafilmProfileSamples& data,
+        const Samples& data,
         std::size_t channel) {
         if (std::isnan(logExposure) || data.logExposure.empty() ||
             data.logExposure.size() != data.densityCurves.size() || channel >= 3u) {
@@ -332,7 +333,7 @@ namespace AssetLookupTest {
 
     std::optional<float> sample_density_curve_for_test(
         float query,
-        const Profiles::SpektrafilmProfileSamples& data,
+        const Profiles::FilmProfileSamples& data,
         std::size_t channel) {
         return sample_density_curve(query, data, channel);
     }
@@ -577,7 +578,7 @@ namespace Scanner {
             return false;
         }
 
-        const Profiles::ValidatedFilmProfile& profile = *profileRoute.filmProfile;
+        const Profiles::FilmProfile& profile = *profileRoute.filmProfile;
         ScannerSpectralLutDescriptor descriptor{};
         descriptor.route = profileRoute.scanRoute;
         descriptor.medium = ScannedMediumKind::Film;
@@ -633,7 +634,7 @@ namespace Scanner {
             return false;
         }
 
-        const Profiles::ValidatedPrintProfile& profile = *route.printProfile;
+        const Profiles::PrintProfile& profile = *route.printProfile;
         ScannerSpectralLutDescriptor descriptor{};
         descriptor.route = route.scanRoute;
         descriptor.medium = ScannedMediumKind::Print;
@@ -683,7 +684,7 @@ namespace Scanner {
             return false;
         }
 
-        const Profiles::SpektrafilmProfileSamples& data =
+        const Profiles::FilmProfileSamples& data =
             recipe.profileRoute.filmProfile->data;
         const SyntheticFilmReferenceRecipe& syntheticReference =
             output.syntheticFilmReference;
@@ -794,9 +795,9 @@ namespace Scanner {
             return false;
         }
 
-        const Profiles::SpektrafilmProfileSamples& film =
+        const Profiles::FilmProfileSamples& film =
             recipe.profileRoute.filmProfile->data;
-        const Profiles::SpektrafilmProfileSamples& print =
+        const Profiles::PrintProfileSamples& print =
             recipe.profileRoute.printProfile->data;
         const auto film_to_print_density = [&](const std::array<float, 3>& filmDensity)
             -> std::optional<std::array<float, 3>> {

@@ -18,7 +18,6 @@ mod asset_catalog;
 )]
 mod asset_bridge;
 
-#[cfg(feature = "test-support")]
 mod asset_profile;
 
 #[cfg(feature = "test-support")]

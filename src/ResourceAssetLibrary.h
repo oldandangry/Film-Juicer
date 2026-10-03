@@ -77,7 +77,7 @@ namespace JuicerAssets {
         ~Library();
 
         const Spektrafilm::ProfileCatalog& spektrafilm_profile_catalog();
-        std::shared_ptr<const Profiles::ValidatedFilmProfile>
+        std::shared_ptr<const Profiles::FilmProfile>
         selected_film_profile_for_key(const std::string& key);
         SelectedProfileResult selected_profiles_for_route(
             const SelectedProfileRequest& request);
@@ -93,7 +93,7 @@ namespace JuicerAssets {
             const std::string& printProfileKey,
             const std::string& printIlluminantKey,
             const std::string& filmProfileKey);
-        void release_cached_payloads() noexcept;
+        FjStatus release_cached_payloads(FjErrorBuffer* error = nullptr) noexcept;
         FjStatus close(FjErrorBuffer* error = nullptr) noexcept;
 
     private:
@@ -127,7 +127,6 @@ namespace JuicerAssets {
             _outputBoundaryTableCache;
         std::unique_ptr<NeutralPrintCalibrationCacheState>
             _neutralPrintCalibrationCache;
-        std::unique_ptr<Profiles::ProfileAssetStore> _selectedProfileAssets;
     };
 
 } // namespace JuicerAssets

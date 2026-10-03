@@ -23,9 +23,9 @@
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 
-static_assert(sizeof(FjCatalogEntryView) == 64 && alignof(FjCatalogEntryView) == 8);
+static_assert(sizeof(FjCatalogEntryView) == 40 && alignof(FjCatalogEntryView) == 8);
 static_assert(offsetof(FjCatalogEntryView, key) == 0 && offsetof(FjCatalogEntryView, label) == 16 &&
-              offsetof(FjCatalogEntryView, source_path) == 32 && offsetof(FjCatalogEntryView, polarity) == 56);
+              offsetof(FjCatalogEntryView, polarity) == 32);
 static_assert(sizeof(FjCatalogCounts) == 16 && alignof(FjCatalogCounts) == 8);
 static_assert(offsetof(FjCatalogCounts, film_count) == 0 && offsetof(FjCatalogCounts, print_count) == 8);
 static_assert(std::is_same_v<decltype(&fj_legacy_assets_create), FjStatus (*)(FjPathView, FjAssets**, FjErrorBuffer*)>);
@@ -111,7 +111,7 @@ namespace {
         for (const auto& [role, index] : {std::pair{99u, std::size_t{0}}, std::pair{FJ_PROFILE_ROLE_FILM, first.counts.film_count}}) {
             auto out = film;
             require_status(fj_legacy_catalog_entry(first.handle, role, index, &out, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
-            require(!out.key.data && !out.label.data && !out.source_path.data && !out.key.count && !out.source_path.encoding && out.polarity == 0, "entry failure not cleared");
+            require(!out.key.data && !out.label.data && !out.key.count && out.polarity == 0, "entry failure not cleared");
         }
         require_status(fj_legacy_catalog_entry(nullptr, 0, 0, &film, nullptr), FJ_STATUS_UNSUPPORTED_INPUT);
         film = first.entry(0, 0);
@@ -122,7 +122,7 @@ namespace {
                 Catalog other(assets.handle);
                 const auto repeated = other.entry(0, 0);
                 const auto sharedRead = first.entry(0, 0);
-                passed[i] = repeated.key.data == film.key.data && sharedRead.source_path.data == film.source_path.data && text(repeated.key) == "kodak_portra_400";
+                passed[i] = repeated.key.data == film.key.data && sharedRead.key.data == film.key.data && text(repeated.key) == "kodak_portra_400";
             });
         }
         for (auto& reader : readers) {
@@ -131,11 +131,7 @@ namespace {
         for (bool pass : passed) {
             require(pass, "concurrent acquisition changed source publication");
         }
-#if defined(_WIN32)
-        fj_test_catalog_fault(3);
-        require_status(fj_legacy_catalog_acquire(assets.handle, &cleared, &counts, nullptr), FJ_STATUS_ALLOCATION_FAILURE);
-        require(!cleared && !counts.film_count && !counts.print_count, "Windows encoding failure published owner");
-#endif
+
         Catalog independent(assets.handle);
         FjErrorBuffer malformed{nullptr, 1, 99};
         require_status(fj_legacy_assets_destroy(std::exchange(assets.handle, nullptr), &malformed), FJ_STATUS_UNSUPPORTED_INPUT);
@@ -199,8 +195,8 @@ namespace {
             nativeSize += entries->size() * sizeof(Spektrafilm::ProfileCatalogEntry);
             nativeCapacity += entries->capacity() * sizeof(Spektrafilm::ProfileCatalogEntry);
             for (const auto& entry : *entries) {
-                nativeSize += entry.key.size() + entry.label.size() + entry.sourcePath.native().size() * sizeof(fs::path::value_type);
-                nativeCapacity += entry.key.capacity() + entry.label.capacity() + entry.sourcePath.native().capacity() * sizeof(fs::path::value_type);
+                nativeSize += entry.key.size() + entry.label.size();
+                nativeCapacity += entry.key.capacity() + entry.label.capacity();
             }
         }
         std::printf("Catalog cold native copy logical=%zu bytes capacity=%zu bytes; one retained handle, two discarded cold candidates, warm publication reused\n", nativeSize, nativeCapacity);
@@ -265,7 +261,11 @@ namespace {
         const auto filmPath = root / "profiles" / fs::path(unusual + fs::path("-film.json").native());
         const auto printPath = root / "profiles" / fs::path(unusual + fs::path("-print.json").native());
         const JuicerAssets::NativePathArgument argument(root);
-        require(JuicerAssets::copy_native_path(argument.view()).native() == root.native(), "root native units changed");
+#if defined(_WIN32)
+        require(argument.view().count == root.native().size(), "root native unit count changed");
+#else
+        require(std::string(static_cast<const char*>(argument.view().data), argument.view().count) == root.native(), "root native units changed");
+#endif
         std::error_code ec;
         fs::create_directories(root / "profiles", ec);
         if (ec) {
@@ -278,17 +278,18 @@ namespace {
         owner.create(root);
         auto& library = JuicerProcess::root().assets();
         const auto& catalog = library.spektrafilm_profile_catalog();
-        require(catalog.valid && catalog.filmProfiles.front().sourcePath.native() == filmPath.native() && catalog.printProfiles.front().sourcePath.native() == printPath.native(), "catalog changed native file units");
+        require(catalog.valid && catalog.filmProfiles.front().key == "kodak_portra_400" && catalog.printProfiles.front().key == "kodak_portra_endura", "catalog changed native file units");
         require(film_profile_option_count() == 1 && print_profile_option_count() == 1 &&
                     std::string(film_profile_option_key(0)) == "kodak_portra_400" && std::string(print_profile_option_key(0)) == "kodak_portra_endura" &&
                     std::string(film_profile_option_label(0)) == catalog.filmProfiles.front().label,
                 "production OFX option accessors did not consume Rust publication");
-        require(library.selected_film_profile_for_key("kodak_portra_400") != nullptr, "native selected film opener failed exact path");
-        const auto selected = library.selected_profiles_for_route({"kodak_portra_400", "kodak_portra_endura", Spektrafilm::ScanRoute::NegativePrintScan});
-        require(selected.valid && selected.filmProfile && selected.printProfile, "native selected print opener failed exact path");
-        std::printf("PASS native root/catalog bytes and actual film/print opens: %s\n", JuicerAssets::path_diagnostic(root).c_str());
+        require(library.selected_film_profile_for_key("kodak_portra_400") != nullptr, "Rust selected film opener failed exact path");
+        auto selected = library.selected_profiles_for_route({"kodak_portra_400", "kodak_portra_endura", Spektrafilm::ScanRoute::NegativePrintScan});
+        require(selected.valid && selected.filmProfile && selected.printSource, "Rust selected print opener failed exact path");
+        std::printf("PASS native root and Rust film/print opens: %s\n", JuicerAssets::path_diagnostic(root).c_str());
         require(fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr).category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 1, "borrowed shutdown consumed host/catalog");
-        require(catalog.filmProfiles.front().sourcePath.native() == filmPath.native(), "borrowed shutdown expired options/path");
+        require(catalog.filmProfiles.front().key == "kodak_portra_400", "borrowed shutdown expired options");
+        selected = {};
         require(owner.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0, "terminal cleanup did not consume host owners");
     }
 
@@ -303,8 +304,8 @@ namespace {
             logical += entries->size() * sizeof(Spektrafilm::ProfileCatalogEntry);
             capacity += entries->capacity() * sizeof(Spektrafilm::ProfileCatalogEntry);
             for (const auto& entry : *entries) {
-                logical += entry.key.size() + entry.label.size() + entry.sourcePath.native().size() * sizeof(fs::path::value_type);
-                capacity += entry.key.capacity() + entry.label.capacity() + entry.sourcePath.native().capacity() * sizeof(fs::path::value_type);
+                logical += entry.key.size() + entry.label.size();
+                capacity += entry.key.capacity() + entry.label.capacity();
             }
         }
         const auto* publication = &catalog;

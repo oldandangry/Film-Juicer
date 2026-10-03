@@ -27,7 +27,7 @@ typedef struct FjDoubleSpan {
  * All spans borrow the immutable owner, independent of Assets/cache lifetime.
  * C copies of this record do not retain it. Empty spans are (NULL,0).
  * No full render/prepared-host record or unconsumed profile graph is exposed. */
-typedef struct FjFilmProfileView {
+typedef struct FjFilmFixtureView {
     uint32_t use;
     uint32_t antihalation;
     uint64_t asset_token;
@@ -39,7 +39,7 @@ typedef struct FjFilmProfileView {
     FjFloatSpan density_curves_layers[3][3];
     FjFloatSpan channel_density_cmy;
     FjFloatSpan base_density;
-} FjFilmProfileView;
+} FjFilmFixtureView;
 
 /* Input strings are nonempty UTF-8 bytes without NUL, count <= PTRDIFF_MAX.
  * The caller authorizes readable initialized bytes until return. The root must
@@ -67,7 +67,7 @@ typedef struct FjFilmProfileView {
  * Each operation contains its own Rust panics; no foreign callbacks occur. */
 FjStatus fj_test_film_profile_acquire(FjStringView resource_root, FjStringView key, FjFilmProfile** out_owner, FjErrorBuffer* error);
 FjStatus fj_test_film_profile_view(const FjFilmProfile* owner,
-                                   FjFilmProfileView* out_view,
+                                   FjFilmFixtureView* out_view,
                                    FjErrorBuffer* error);
 
 /* Consumes a nonnull live owner exactly once on EVERY outcome, including malformed
@@ -80,6 +80,10 @@ const size_t* fj_test_profile_abi_facts(size_t* count);
 
 /* Feature-only process/catalog ownership and one-shot projection fault probes. */
 void fj_test_catalog_fault(uint32_t fault);
+void fj_test_profile_fault(uint32_t fault);
+size_t fj_test_profile_live_owners(void);
+size_t fj_test_print_density_live_owners(void);
+void fj_test_cache_release_failure(void);
 size_t fj_test_assets_live_owners(void);
 size_t fj_test_catalog_live_owners(void);
 

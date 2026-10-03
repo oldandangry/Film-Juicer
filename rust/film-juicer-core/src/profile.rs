@@ -336,6 +336,12 @@ pub fn load_catalog(resource_dir: &Path) -> Result<Catalog, CatalogError> {
     Ok(catalog)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum IlluminantKind {
+    Named,
+    Blackbody { temperature_kelvin: f64 },
+}
+
 #[derive(Debug)]
 pub struct ProfileInfo {
     stock: String,
@@ -348,6 +354,8 @@ pub struct ProfileInfo {
     channel_model: ChannelModel,
     reference_illuminant: String,
     viewing_illuminant: String,
+    reference_illuminant_kind: IlluminantKind,
+    viewing_illuminant_kind: IlluminantKind,
 }
 impl ProfileInfo {
     pub fn stock(&self) -> &str {
@@ -379,6 +387,12 @@ impl ProfileInfo {
     }
     pub fn viewing_illuminant(&self) -> &str {
         &self.viewing_illuminant
+    }
+    pub fn reference_illuminant_kind(&self) -> IlluminantKind {
+        self.reference_illuminant_kind
+    }
+    pub fn viewing_illuminant_kind(&self) -> IlluminantKind {
+        self.viewing_illuminant_kind
     }
 }
 
@@ -632,7 +646,7 @@ fn blackbody_temperature(raw: &str) -> Option<f64> {
         .filter(|temperature| temperature.is_finite())
 }
 
-fn supported_illuminant(raw: &str) -> bool {
+fn illuminant_kind(raw: &str) -> Option<IlluminantKind> {
     let normalized = normalize_illuminant(raw);
     if matches!(
         normalized.as_str(),
@@ -647,12 +661,14 @@ fn supported_illuminant(raw: &str) -> bool {
             | "TH-KG3-L"
             | "THKG3L"
     ) {
-        return true;
+        return Some(IlluminantKind::Named);
     }
     if let Some(digits) = normalized.strip_prefix('D') {
-        return !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit());
+        return (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+            .then_some(IlluminantKind::Named);
     }
-    blackbody_temperature(raw).is_some()
+    blackbody_temperature(raw)
+        .map(|temperature_kelvin| IlluminantKind::Blackbody { temperature_kelvin })
 }
 
 fn read_info(root: &Value, role: Role) -> Result<ProfileInfo, FieldError> {
@@ -696,19 +712,11 @@ fn read_info(root: &Value, role: Role) -> Result<ProfileInfo, FieldError> {
         }
     };
     let reference_illuminant = read_string(info, "reference_illuminant", Some("D55"))?;
-    if !supported_illuminant(reference_illuminant) {
-        return Err(field_error(
-            "info.reference_illuminant",
-            Requirement::Illuminant,
-        ));
-    }
+    let reference_illuminant_kind = illuminant_kind(reference_illuminant)
+        .ok_or_else(|| field_error("info.reference_illuminant", Requirement::Illuminant))?;
     let viewing_illuminant = read_string(info, "viewing_illuminant", Some("D50"))?;
-    if !supported_illuminant(viewing_illuminant) {
-        return Err(field_error(
-            "info.viewing_illuminant",
-            Requirement::Illuminant,
-        ));
-    }
+    let viewing_illuminant_kind = illuminant_kind(viewing_illuminant)
+        .ok_or_else(|| field_error("info.viewing_illuminant", Requirement::Illuminant))?;
     Ok(ProfileInfo {
         stock: stock.to_owned(),
         name: name.to_owned(),
@@ -720,6 +728,8 @@ fn read_info(root: &Value, role: Role) -> Result<ProfileInfo, FieldError> {
         channel_model,
         reference_illuminant: reference_illuminant.to_owned(),
         viewing_illuminant: viewing_illuminant.to_owned(),
+        reference_illuminant_kind,
+        viewing_illuminant_kind,
     })
 }
 

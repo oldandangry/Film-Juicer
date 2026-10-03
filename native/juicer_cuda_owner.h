@@ -47,6 +47,7 @@ namespace JuicerCuda {
         void after_construct();
         void before_owner_lock();
         void before_shutdown();
+        void before_host_cleanup() noexcept;
         void before_retire_instance();
         void owner_destroyed() noexcept;
     } // namespace TerminalTest
