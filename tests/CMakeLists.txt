@@ -297,6 +297,18 @@ endif()
 add_test(NAME Ffi.Host.PreparedProjection COMMAND JuicerPreparedProjectionTests)
 set_tests_properties(Ffi.Host.PreparedProjection PROPERTIES LABELS "host" TIMEOUT 30)
 
+add_executable(JuicerProfileCudaSafetyTests profile/native_cuda_safety_test.cu)
+target_link_libraries(JuicerProfileCudaSafetyTests PRIVATE juicer_core GTest::gtest_main)
+set_target_properties(JuicerProfileCudaSafetyTests PROPERTIES
+    LINKER_LANGUAGE CXX
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerProfileCudaSafetyTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Profile.Gpu.NativeSafety COMMAND JuicerProfileCudaSafetyTests)
+set_tests_properties(Profile.Gpu.NativeSafety PROPERTIES
+    LABELS "gpu" TIMEOUT 60 RESOURCE_LOCK juicer_gpu)
+
 # These objects expose only the real private asset lookups and Hanatos formula.
 add_library(juicer_asset_lookup_test_objects OBJECT ../src/RenderRecipe.cpp ../src/Scanner.cpp)
 target_link_libraries(juicer_asset_lookup_test_objects PRIVATE juicer_settings)
