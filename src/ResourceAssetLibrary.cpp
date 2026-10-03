@@ -12,6 +12,8 @@
 #include <utility>
 
 #include "Logging.h"
+#include "Cuda/JuicerCudaExecutor.h"
+#include "Cuda/JuicerCudaFailure.h"
 #include "Illuminants.h"
 #include "nlohmann/json.hpp"
 
@@ -379,8 +381,9 @@ namespace JuicerAssets {
         std::shared_ptr<const NeutralPrintCalibrationSnapshot> snapshot;
     };
 
-    Library::Library(std::string dataDir)
+    Library::Library(const std::filesystem::path& resourceRoot, std::string dataDir)
         : _dataDir(std::move(dataDir)),
+          _bridge(resourceRoot),
           _staticNoiseAssets(std::make_unique<StaticNoiseAssetSet>()),
           _illuminantFilterAssets(std::make_unique<IlluminantFilterAssetSet>()),
           _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
@@ -391,12 +394,14 @@ namespace JuicerAssets {
           _outputBoundaryTableCache(
               std::make_unique<OutputBoundaryTableCacheState>()),
           _neutralPrintCalibrationCache(
-              std::make_unique<NeutralPrintCalibrationCacheState>()),
-          _selectedProfileAssets(
-              std::make_unique<Profiles::ProfileAssetStore>()) {
+              std::make_unique<NeutralPrintCalibrationCacheState>()) {
     }
 
     Library::~Library() = default;
+
+    FjStatus Library::close(FjErrorBuffer* error) noexcept {
+        return _bridge.close(error);
+    }
 
     void Library::ensure_catalogs() {
         std::call_once(_catalogOnce, [this]() {
@@ -417,30 +422,25 @@ namespace JuicerAssets {
     }
 
     void Library::load_catalogs() {
-        const bool traceCatalog = JTRACE_ENABLED(1);
-        _spektrafilmProfileCatalog =
-            Spektrafilm::build_profile_catalog(_dataDir);
-        if (!_spektrafilmProfileCatalog.valid) {
-            if (traceCatalog) {
-                JTRACE(
-                    "CATALOG",
-                    "spektrafilm profile catalog unavailable: " +
-                        _spektrafilmProfileCatalog.failure);
+        _spektrafilmProfileCatalog = _bridge.load_catalog();
+        // Optional trace formatting must not reopen a completed once-publication
+        // or replace its retained catalog owner after a diagnostic allocation.
+        try {
+            if (!JTRACE_ENABLED(1)) {
+                return;
             }
-            return;
-        }
-
-        if (traceCatalog) {
+            if (!_spektrafilmProfileCatalog.valid) {
+                JTRACE("CATALOG", "spektrafilm profile catalog unavailable: " + _spektrafilmProfileCatalog.failure);
+                return;
+            }
             std::ostringstream oss;
-            oss << "spektrafilm profile catalog film="
-                << _spektrafilmProfileCatalog.filmProfiles.size()
-                << " print="
-                << _spektrafilmProfileCatalog.printProfiles.size()
-                << " defaultFilm="
-                << (_spektrafilmProfileCatalog.defaultFilmPresent ? 1 : 0)
-                << " defaultPrint="
-                << (_spektrafilmProfileCatalog.defaultPrintPresent ? 1 : 0);
+            oss << "spektrafilm profile catalog film=" << _spektrafilmProfileCatalog.filmProfiles.size()
+                << " print=" << _spektrafilmProfileCatalog.printProfiles.size()
+                << " defaultFilm=" << (_spektrafilmProfileCatalog.defaultFilmPresent ? 1 : 0)
+                << " defaultPrint=" << (_spektrafilmProfileCatalog.defaultPrintPresent ? 1 : 0);
             JTRACE("CATALOG", oss.str());
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
         }
     }
 
@@ -457,20 +457,37 @@ namespace JuicerAssets {
         return _spektrafilmProfileCatalog;
     }
 
-    std::shared_ptr<const Profiles::ValidatedFilmProfile>
+    std::shared_ptr<const Profiles::FilmProfile>
     Library::selected_film_profile_for_key(const std::string& key) {
         ensure_catalogs();
-        return _selectedProfileAssets->load_film_profile_by_key(
-            _spektrafilmProfileCatalog,
-            key);
+        try {
+            return _bridge.film(key);
+        } catch (const JuicerCuda::ExecutionFailure& failure) {
+            if (failure.failure.status.category != FJ_STATUS_PREPARATION_FAILURE) {
+                throw;
+            }
+            JTRACE("PROFILE", failure.failure.diagnostic);
+            return {};
+        }
     }
 
     SelectedProfileResult Library::selected_profiles_for_route(
         const SelectedProfileRequest& request) {
         ensure_catalogs();
-        return _selectedProfileAssets->selected_profiles_for_route(
-            _spektrafilmProfileCatalog,
-            request);
+        SelectedProfileResult result;
+        try {
+            result.filmProfile = _bridge.film(request.filmProfileKey);
+            if (Spektrafilm::scan_route_is_print(request.scanRoute)) {
+                result.printSource = _bridge.print(request.printProfileKey);
+            }
+            result.valid = true;
+        } catch (const JuicerCuda::ExecutionFailure& failure) {
+            if (failure.failure.status.category != FJ_STATUS_PREPARATION_FAILURE) {
+                throw;
+            }
+            result.diagnostic = failure.failure.diagnostic;
+        }
+        return result;
     }
 
     std::shared_ptr<const StaticNoisePayloadSet>
@@ -636,35 +653,63 @@ namespace JuicerAssets {
         return result;
     }
 
-    void Library::release_cached_payloads() noexcept {
-        try {
+    FjStatus Library::release_cached_payloads(FjErrorBuffer* error) noexcept {
+        FjStatus first{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+        const auto cleanup = [&](auto operation) {
+            try {
+                operation();
+            } catch (const std::bad_alloc&) {
+                if (first.category == FJ_STATUS_SUCCESS) {
+                    first = JuicerCuda::write_status({FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "host cache cleanup allocation failed", error);
+                }
+            } catch (const std::exception& detail) {
+                if (first.category == FJ_STATUS_SUCCESS) {
+                    first = JuicerCuda::write_status({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what(), error);
+                }
+            } catch (...) {
+                if (first.category == FJ_STATUS_SUCCESS) {
+                    first = JuicerCuda::write_status({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "host cache cleanup failed", error);
+                }
+            }
+        };
+        cleanup([&] {
             if (_staticNoisePayloadCache) {
-                std::lock_guard<std::mutex> lock(
-                    _staticNoisePayloadCache->mutex);
-                _staticNoisePayloadCache->payloads.reset();
+                std::shared_ptr<const StaticNoisePayloadSet> detached;
+                {
+                    std::lock_guard<std::mutex> lock(_staticNoisePayloadCache->mutex);
+                    detached.swap(_staticNoisePayloadCache->payloads);
+                }
             }
+        });
+        cleanup([&] {
             if (_illuminantFilterCurveCache) {
-                std::lock_guard<std::mutex> lock(
-                    _illuminantFilterCurveCache->mutex);
-                _illuminantFilterCurveCache->entry =
-                    IlluminantFilterCurveCacheEntry{};
+                IlluminantFilterCurveCacheEntry detached;
+                {
+                    std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);
+                    std::swap(detached, _illuminantFilterCurveCache->entry);
+                }
             }
+        });
+        cleanup([&] {
             if (_neutralPrintCalibrationCache) {
-                std::lock_guard<std::mutex> lock(
-                    _neutralPrintCalibrationCache->mutex);
-                _neutralPrintCalibrationCache->snapshot.reset();
+                decltype(_neutralPrintCalibrationCache->snapshot) detached;
+                {
+                    std::lock_guard<std::mutex> lock(_neutralPrintCalibrationCache->mutex);
+                    detached.swap(_neutralPrintCalibrationCache->snapshot);
+                }
             }
+        });
+        cleanup([&] {
             if (_outputBoundaryTableCache) {
-                std::lock_guard<std::mutex> lock(
-                    _outputBoundaryTableCache->mutex);
-                _outputBoundaryTableCache->tables = {};
+                decltype(_outputBoundaryTableCache->tables) detached;
+                {
+                    std::lock_guard<std::mutex> lock(_outputBoundaryTableCache->mutex);
+                    detached.swap(_outputBoundaryTableCache->tables);
+                }
             }
-            if (_selectedProfileAssets) {
-                _selectedProfileAssets->release_cached_payloads();
-            }
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-        }
+        });
+        const auto result = _bridge.release_cached_payloads(first.category == FJ_STATUS_SUCCESS ? error : nullptr);
+        return first.category == FJ_STATUS_SUCCESS ? result : first;
     }
 
 } // namespace JuicerAssets

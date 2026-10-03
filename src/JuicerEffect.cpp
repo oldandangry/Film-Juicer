@@ -1373,7 +1373,7 @@ void JuicerEffect::updateGammaControlState(
     const bool dirActive = read_bool_param(_pCouplersActive);
     const double coreUm = read_double_param(_pCouplersDiffusionSizeUm);
     const double tailWeight = read_double_param(_pCouplersDiffusionTailWeight);
-    const std::shared_ptr<const Profiles::ValidatedFilmProfile> profile =
+    const std::shared_ptr<const Profiles::FilmProfile> profile =
         JuicerProcess::root().assets().selected_film_profile_for_key(filmProfileKey);
     const bool positive = profile &&
                           profile->info.type == Spektrafilm::ProfilePolarity::Positive;
@@ -1399,7 +1399,7 @@ void JuicerEffect::applyDirGammaProfileDefaults() {
 
     const std::string filmKey =
         read_str_choice_param_or_empty(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
-    const std::shared_ptr<const Profiles::ValidatedFilmProfile> profile =
+    const std::shared_ptr<const Profiles::FilmProfile> profile =
         JuicerProcess::root().assets().selected_film_profile_for_key(filmKey);
     if (!profile) {
         JTRACE("SPEKTRAFILM", "MissingRequiredResource field=dir_gamma_profile_defaults");

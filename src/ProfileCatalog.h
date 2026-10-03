@@ -30,26 +30,16 @@ namespace Spektrafilm {
     struct ProfileCatalogEntry {
         std::string key;
         std::string label;
-        std::string sourcePath;
-        ProfileSupport support = ProfileSupport::Film;
-        ProfileStage stage = ProfileStage::Filming;
         ProfilePolarity polarity = ProfilePolarity::Negative;
-        bool supportDefaulted = false;
-        bool stageDefaulted = false;
-        bool polarityDefaulted = false;
     };
 
     struct ProfileCatalog {
         std::vector<ProfileCatalogEntry> filmProfiles;
         std::vector<ProfileCatalogEntry> printProfiles;
-        std::vector<std::string> ignoredResources;
-        std::vector<std::string> unavailableProfiles;
         bool valid = false;
         bool defaultFilmPresent = false;
         bool defaultPrintPresent = false;
         std::string failure;
     };
-
-    ProfileCatalog build_profile_catalog(const std::string& dataDir);
 
 } // namespace Spektrafilm

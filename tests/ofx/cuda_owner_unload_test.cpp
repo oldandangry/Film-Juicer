@@ -5,6 +5,7 @@
 #include "ofxsImageEffect.h"
 
 #include "ProcessRoot.h"
+#include "RustAssetBridge.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "juicer_cuda_api.h"
 
@@ -67,7 +68,7 @@ int main() {
         require(JuicerCuda::ResourceManager::registry_begin_owner_retire(key, snapshot),
                 "repeated factory unload retried context retirement");
         FjCuda* replacement = nullptr;
-        const FjStatus result = fj_cuda_create(FjStringView{"other", 5}, &replacement, nullptr);
+        const FjStatus result = fj_cuda_create(JuicerAssets::NativePathArgument(std::filesystem::path("other")).view(), &replacement, nullptr);
         require(result.category == FJ_STATUS_PREPARATION_FAILURE && !replacement,
                 "failed factory unload allowed a replacement owner");
         std::puts("PASS factory unload: noncreating teardown, close/reload, fatal OFX status and consume-once retention");

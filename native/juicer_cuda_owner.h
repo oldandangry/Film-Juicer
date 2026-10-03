@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -43,15 +44,18 @@ namespace JuicerCuda {
 
 #if defined(JUICER_CUDA_TERMINAL_TEST_HOOK)
     namespace TerminalTest {
+        void after_construct();
         void before_owner_lock();
         void before_shutdown();
+        void before_host_cleanup() noexcept;
         void before_retire_instance();
         void owner_destroyed() noexcept;
     } // namespace TerminalTest
 #endif
 
     // Temporary C++ runtime holder; replaced by the Rust owner at its cutover.
-    // Host load/unload serializes lifetime against all borrowed render calls.
+    // Host load/unload excludes all asset/options/profile readers, outstanding
+    // borrowed views, and render/preparation calls from legal terminal close.
     class Owner final {
     public:
         Owner() noexcept = default;
@@ -60,7 +64,7 @@ namespace JuicerCuda {
         Owner(const Owner&) = delete;
         Owner& operator=(const Owner&) = delete;
 
-        void create(std::string_view dataDirectory);
+        void create(const std::filesystem::path& dataDirectory);
         // Consumes the handle even on failure; destruction never retries it.
         FjStatus close(FjErrorBuffer* error = nullptr) noexcept;
 

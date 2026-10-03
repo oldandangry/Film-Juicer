@@ -11,8 +11,10 @@
 #include <utility>
 
 #include "ProcessRoot.h"
+#include "RustAssetBridge.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "juicer_cuda_owner.h"
+#include "juicer_test_api.h"
 
 namespace {
     std::atomic<std::size_t> allocations{0};
@@ -21,9 +23,12 @@ namespace {
     unsigned destructions = 0;
     std::string injection;
     thread_local bool failOwnerLock = false;
+    thread_local bool failLibraryConstruction = false;
     const std::system_error ownerLockFailure{std::make_error_code(std::errc::invalid_argument)};
     std::atomic<bool> holdShutdown{false};
     std::atomic<bool> ownerLockAttempted{false};
+    std::atomic<bool> holdHostCleanup{false};
+    std::atomic<unsigned> hostCleanupAttempts{0};
 
     void require(bool condition, const char* message) {
         if (!condition) {
@@ -62,6 +67,17 @@ namespace {
             throw JuicerCuda::ExecutionFailure{{{FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_DRIVER, -701},
                                                 injection == "typed" ? "terminal driver diagnostic" : "different words: allocation capacity context lost"}};
         }
+    }
+
+    void require_host_detached() {
+        require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0 && fj_test_profile_live_owners() == 0 && fj_test_print_density_live_owners() == 0, "retained native graph owns Rust assets");
+        bool rejected = false;
+        try {
+            (void)JuicerProcess::root().assets();
+        } catch (const std::logic_error&) {
+            rejected = true;
+        }
+        require(rejected, "detached Root served or recreated host assets");
     }
 
     void reject_accepting_calls(FjCuda* cuda) {
@@ -107,6 +123,59 @@ namespace {
                 "accepting destructor did not make exactly one shutdown attempt");
     }
 
+    void check_host_cache_result(bool nativeFailure) {
+        JuicerCuda::Owner owner;
+        owner.create(JuicerProcess::data_directory());
+        {
+            const auto selected = JuicerProcess::root().assets().selected_profiles_for_route({"kodak_portra_400", "kodak_portra_endura", Spektrafilm::ScanRoute::NegativePrintScan});
+            require(selected.valid && fj_test_profile_live_owners() == 2, "terminal profile acquisition failed");
+        }
+        fj_test_cache_release_failure();
+        auto* borrowed = JuicerCuda::borrowed_owner();
+        if (nativeFailure) {
+            injection = "typed";
+            require(fj_cuda_shutdown(borrowed, nullptr).native_code == -701, "host failure erased native close failure");
+            require(hostCleanupAttempts == 0 && fj_test_profile_live_owners() == 2, "native failure started host purge");
+            fj_test_profile_fault(3);
+            injection.clear();
+            require(owner.close().native_code == -701, "terminal cleanup erased native failure");
+            require_host_detached();
+            require(shutdownAttempts == 1 && destructions == 0, "failed native close was retired again or deleted");
+            return;
+        }
+        holdHostCleanup = true;
+        std::array<FjStatus, 8> results{};
+        std::array<std::array<char, 256>, 8> diagnostics{};
+        std::array<std::thread, 8> workers;
+        std::atomic<unsigned> completed{0};
+        const auto call = [&](std::size_t i) {
+            FjErrorBuffer error{diagnostics[i].data(), diagnostics[i].size(), 0};
+            results[i] = fj_cuda_shutdown(borrowed, &error);
+            completed.fetch_add(1);
+        };
+        workers[0] = std::thread(call, 0);
+        while (hostCleanupAttempts.load() == 0) {
+            hostCleanupAttempts.wait(0);
+        }
+        for (std::size_t i = 1; i < workers.size(); ++i) {
+            workers[i] = std::thread(call, i);
+        }
+        require(completed == 0, "shutdown returned before cleanup result publication");
+        holdHostCleanup = false;
+        holdHostCleanup.notify_all();
+        for (auto& worker : workers) {
+            worker.join();
+        }
+        for (std::size_t i = 0; i < workers.size(); ++i) {
+            require(results[i].category == FJ_STATUS_INTERNAL_FAILURE && same_status(results[i], results[0]) && std::strcmp(diagnostics[i].data(), diagnostics[0].data()) == 0, "concurrent shutdown saw another cleanup result");
+        }
+        require(hostCleanupAttempts == 1 && shutdownAttempts == 1 && fj_test_profile_live_owners() == 0, "cache release repeated or failed to detach profiles");
+        reject_accepting_calls(borrowed);
+        require(same_status(fj_cuda_shutdown(borrowed, nullptr), results[0]) && hostCleanupAttempts == 1 && shutdownAttempts == 1, "repeated shutdown retried cleanup/native retirement");
+        require(same_status(owner.close(), results[0]) && destructions == 1 && !JuicerCuda::borrowed_owner(), "host cleanup failure retained closed native graph or lost precedence");
+        require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0 && fj_test_profile_live_owners() == 0, "terminal close retained host owners");
+    }
+
     void check_serialization() {
         JuicerCuda::Owner owner;
         owner.create("admission-order");
@@ -143,7 +212,12 @@ namespace {
         } else {
             failOwnerLock = true;
             const auto result = mode == "unregistered-shutdown-lock" ? fj_cuda_shutdown(invalid, nullptr) : fj_cuda_destroy(invalid, nullptr);
-            require(!failOwnerLock && result.category == FJ_STATUS_INTERNAL_FAILURE, "unregistered admission exception not contained");
+            if (mode == "unregistered-destroy-lock") {
+                require(failOwnerLock && result.category == FJ_STATUS_PREPARATION_FAILURE, "unregistered destroy reached throwable admission");
+                failOwnerLock = false;
+            } else {
+                require(!failOwnerLock && result.category == FJ_STATUS_INTERNAL_FAILURE, "unregistered admission exception not contained");
+            }
         }
         require(fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), 1, nullptr).category == FJ_STATUS_SUCCESS, "invalid handle changed registered admission");
         require(owner.close().category == FJ_STATUS_SUCCESS && destructions == 1, "valid owner was lost");
@@ -183,6 +257,7 @@ namespace {
             }
             require(owner.close().category == FJ_STATUS_SUCCESS, "wrapper consumed twice");
         }
+        require_host_detached();
         require(destructions == 0 && shutdownAttempts == (saved ? 1u : 0u), "destructor retried retained admission failure");
     }
 
@@ -216,6 +291,10 @@ namespace {
                 }
             }
         }
+        if (blocked) {
+            require_host_detached();
+        }
+        require(fj_test_assets_live_owners() == 0, "malformed diagnostics retained Rust Assets");
         require(shutdownAttempts == 1 && destructions == (blocked ? 0u : 1u), "malformed output abandoned or retried owner");
     }
 
@@ -275,6 +354,7 @@ namespace {
             require(same_status(result, expected) && error.length != 0, "terminal failure lost category/API/code/diagnostic");
             require(shutdownAttempts == 1 && destructions == 0 && JuicerCuda::borrowed_owner() == borrow,
                     "failed terminal call retried, freed or unregistered graph");
+            require(fj_test_assets_live_owners() == (destroyAccepting ? 0u : 1u), "borrowed versus terminal host lifetime mismatch");
             if (!destroyAccepting) {
                 reject_accepting_calls(borrow);
                 const std::string original(diagnostic.data());
@@ -299,7 +379,7 @@ namespace {
         }
         require(shutdownAttempts == 1 && destructions == 0, "destructor retried or walked retained graph");
         FjCuda* replacement = nullptr;
-        require(fj_cuda_create({"new", 3}, &replacement, nullptr).category == FJ_STATUS_PREPARATION_FAILURE && !replacement,
+        require(fj_cuda_create(JuicerAssets::NativePathArgument(std::filesystem::path("new")).view(), &replacement, nullptr).category == FJ_STATUS_PREPARATION_FAILURE && !replacement,
                 "retention permitted a replacement graph");
     }
 } // namespace
@@ -310,6 +390,10 @@ namespace {
 void* operator new(std::size_t size) {
     allocations.fetch_add(1, std::memory_order_relaxed);
     if (rejectDiagnosticAllocation) {
+        throw std::bad_alloc();
+    }
+    if (failLibraryConstruction && fj_test_assets_live_owners() != 0) {
+        failLibraryConstruction = false;
         throw std::bad_alloc();
     }
     if (void* value = std::malloc(size ? size : 1)) {
@@ -336,6 +420,11 @@ void operator delete[](void* block, std::size_t) noexcept {
 #endif
 
 namespace JuicerCuda::TerminalTest {
+    void after_construct() {
+        if (injection == "construction") {
+            throw std::bad_alloc();
+        }
+    }
     void before_owner_lock() {
         if (std::exchange(failOwnerLock, false)) {
             ownerLockAttempted = true;
@@ -349,6 +438,11 @@ namespace JuicerCuda::TerminalTest {
         holdShutdown.wait(true);
         inject();
     }
+    void before_host_cleanup() noexcept {
+        hostCleanupAttempts.fetch_add(1);
+        hostCleanupAttempts.notify_all();
+        holdHostCleanup.wait(true);
+    }
     void before_retire_instance() {
         inject();
     }
@@ -360,7 +454,68 @@ namespace JuicerCuda::TerminalTest {
 int main(int argc, char** argv) {
     try {
         const std::string mode = argc > 1 ? argv[1] : "success";
-        if (mode == "success") {
+        if (mode == "partial-library") {
+            JuicerCuda::Owner owner;
+            failLibraryConstruction = true;
+            bool failed = false;
+            try {
+                owner.create("partial-library-construction");
+            } catch (const std::bad_alloc&) {
+                failed = true;
+            }
+            require(failed && !failLibraryConstruction, "partial Library allocation fault did not run");
+            require(!JuicerCuda::borrowed_owner() && fj_test_assets_live_owners() == 0, "partial Library leaked acquired Rust Assets");
+            require(destructions == 0, "partial Library published/completed FjCuda");
+        } else if (mode == "construction") {
+            injection = "construction";
+            JuicerCuda::Owner owner;
+            bool failed = false;
+            try {
+                owner.create("partial-host-construction");
+            } catch (const std::bad_alloc&) {
+                failed = true;
+            }
+            require(failed && !JuicerCuda::borrowed_owner() && fj_test_assets_live_owners() == 0, "partial construction leaked/published host owner");
+            injection.clear();
+            owner.create("retry-after-partial-construction");
+            require(owner.close().category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 0, "construction retry failed");
+        } else if (mode == "catalog-retention") {
+            JuicerCuda::Owner owner;
+            owner.create(JuicerProcess::data_directory());
+            const auto& catalog = JuicerProcess::root().assets().spektrafilm_profile_catalog();
+            require(catalog.valid && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 1, "cold terminal catalog failed");
+            const auto* label = catalog.filmProfiles.front().label.c_str();
+            injection = "typed";
+            require(fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr).native_code == -701, "borrowed close lost injected failure");
+            require(fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 1 && catalog.filmProfiles.front().label.c_str() == label, "failed borrowed close expired catalog");
+            injection.clear();
+            const auto before = allocations.load();
+            require(owner.close().native_code == -701, "catalog cleanup lost primary native failure");
+            require(allocations.load() == before, "terminal whole-Library detachment allocated");
+            require_host_detached();
+            require(shutdownAttempts == 1 && destructions == 0, "catalog cleanup retried uncertain CUDA teardown");
+        } else if (mode == "registered-reentry") {
+            JuicerCuda::Owner owner;
+            owner.create(JuicerProcess::data_directory());
+            const auto& catalog = JuicerProcess::root().assets().spektrafilm_profile_catalog();
+            const auto* label = catalog.filmProfiles.front().label.c_str();
+            {
+                JuicerCuda::NativeCall call(JuicerCuda::borrowed_owner());
+                require(owner.close().category == FJ_STATUS_UNSUPPORTED_INPUT, "registered reentry accepted");
+                require(fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 1, "reentry detached active host borrow");
+                require(label == catalog.filmProfiles.front().label.c_str(), "reentry invalidated option borrow");
+            }
+            // Reentry is explicitly an illegal terminal overlap, not evidence
+            // of cleanup. After the active borrow ends, a legal terminal call
+            // may consume its retained host owner without retrying native work.
+            require(fj_cuda_destroy(JuicerCuda::borrowed_owner(), nullptr).category == FJ_STATUS_UNSUPPORTED_INPUT, "saved reentry failure lost");
+            require_host_detached();
+            require(shutdownAttempts == 0, "reentry recovery retried CUDA");
+        } else if (mode == "host-cache-failure") {
+            check_host_cache_result(false);
+        } else if (mode == "host-cache-native-precedence") {
+            check_host_cache_result(true);
+        } else if (mode == "success") {
             check_success();
         } else if (mode == "serialization") {
             check_serialization();

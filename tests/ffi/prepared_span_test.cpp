@@ -221,6 +221,22 @@ namespace {
         expect_rejected(source, "print.log_exposure.count");
     }
 
+    TEST(PreparedSpans, ExposureTripletLimitRejectsBeforeMultiplicationOrRead) {
+        const auto limit = static_cast<std::size_t>(std::numeric_limits<int>::max()) / 3u;
+        for (const bool print : {false, true}) {
+            auto source = print ? print_input() : direct_input();
+            auto& axis = print ? source.print.log_exposure : source.film_development.log_exposure;
+            const char* countField = print ? "print.log_exposure.count" : "film_development.log_exposure.count";
+            const char* densityField = print ? "print.density_cmy" : "film_development.density_rgb";
+            // A count at the limit reaches the exact total-count check. A count
+            // above it fails first. Neither case may read this two-element axis.
+            axis.count = limit;
+            expect_rejected(source, densityField);
+            axis.count = limit + 1u;
+            expect_rejected(source, countField);
+        }
+    }
+
     TEST(PreparedSpans, EveryLayerAndDirAxisObeysItsActivationAndSampleCount) {
         for (std::size_t layer = 0; layer < 3; ++layer) {
             for (std::size_t channel = 0; channel < 3; ++channel) {

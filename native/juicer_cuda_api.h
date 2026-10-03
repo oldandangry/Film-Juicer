@@ -10,7 +10,7 @@ extern "C" {
 
 /* Private in-process ABI; C and Rust ship together. No packing or version negotiation.
  * All records are non-owning values except the opaque FjCuda handle. No padding is
- * hashed. Every host span expires at native-call return: native code must copy into
+ * hashed. CUDA input spans expire at native-call return: native code must copy into
  * its own staging before returning if a GPU transfer remains outstanding.
  * Empty spans are (NULL, 0); nonempty counts denote initialized elements, not bytes.
  * Arrays are row-major unless an individual field states otherwise. */
@@ -57,11 +57,23 @@ typedef struct FjErrorBuffer {
 
 typedef struct FjStringView {
     /* char[count], length-delimited UTF-8 bytes (no terminator required).
-     * Producer: module bootstrap or selected profile identity. Consumer: native
-     * create/diagnostics. No physical units; expires at native-call return. */
+     * Expiry follows the consuming export: CUDA inputs expire at return;
+     * catalog outputs borrow their retained catalog owner. */
     const char* data;
     size_t count;
 } FjStringView;
+
+/* Native path units excluding any terminator; nonempty and NUL-free.
+ * Only the current platform tag is accepted. Input borrows expire at return;
+ * catalog outputs borrow their FjCatalog. Wide data is uint16_t-aligned.
+ * Checked byte extent must fit PTRDIFF_MAX; no Unicode admission. */
+#define FJ_PATH_UNIX_BYTES 1U
+#define FJ_PATH_WINDOWS_WIDE 2U
+typedef struct FjPathView {
+    const void* data;
+    size_t count;
+    uint32_t encoding;
+} FjPathView;
 
 typedef struct FjFloatSpan {
     /* float[count]; each containing field specifies shape/order/units and its
@@ -358,16 +370,16 @@ typedef struct FjOutputColor {
 #define FJ_PRINT_PREFLASH 1U
 typedef struct FjPrint {
     /* float[81*3], [wavelength][CMY] optical extinction, and float[81] base
-     * optical density, ascending canonical wavelength order. ValidatedFilmProfile
+     * optical density, ascending canonical wavelength order. FilmProfile
      * -> prepare_print_resources film-density upload; expires at native-call return. */
     FjFloatSpan film_density_cmy;
     FjFloatSpan film_base_density;
     /* float[81*3], [wavelength][CMY], relative linear sensitivity.
-     * ValidatedPrintProfile::linearSensitivity -> print sensitivity upload;
+     * PrintProfile::data.linearSensitivity -> print sensitivity upload;
      * expires at native-call return. */
     FjFloatSpan sensitivity_cmy;
     /* float[N], ascending log10 exposure, and float[N*3], [sample][CMY] density.
-     * ValidatedPrintProfile::logExposure / PrintRecipe::develop.densityCurves ->
+     * PrintProfile::data.logExposure / PrintRecipe::develop.densityCurves ->
      * print development upload; expires at native-call return. */
     FjFloatSpan log_exposure;
     FjFloatSpan density_cmy;
@@ -737,7 +749,7 @@ typedef struct FjPreparedHostData {
 /* data_directory: module bootstrap -> native Root bootstrap, copied if retained.
  * Host metadata only: no CUDA discovery. Success publishes exactly one owner in
  * out_cuda; failure publishes none. A duplicate active runtime is rejected. */
-FjStatus fj_cuda_create(FjStringView data_directory, FjCuda** out_cuda, FjErrorBuffer* error);
+FjStatus fj_cuda_create(FjPathView data_directory, FjCuda** out_cuda, FjErrorBuffer* error);
 
 /* Borrows owner/frame; writes exact discovered identity on success only.
  * Coverage, supported strides/aliases and stream completion are qualified by
@@ -755,12 +767,20 @@ FjRenderOutcome fj_cuda_render(FjCuda* cuda, const FjCudaContext* context, const
 FjStatus fj_cuda_retire_instance(FjCuda* cuda, uint64_t instance_token, FjErrorBuffer* error);
 
 /* Borrows: success leaves a closed caller-owned handle, failure a blocked
- * caller-owned handle retaining the graph. Already-closed shutdown is harmless. */
+ * caller-owned handle retaining the graph. A post-close host-cache failure
+ * returns its separate once-published result while native state remains Closed;
+ * subsequent shutdown does not repeat CUDA retirement or host-cache release. */
 FjStatus fj_cuda_shutdown(FjCuda* cuda, FjErrorBuffer* error);
 
-/* Consumes exactly once on EVERY outcome. Clear the owning pointer before the
+/* Legal terminal use excludes ALL host asset/options/profile/rebuild readers,
+ * render/preparation calls and outstanding views, independently of GPU drain.
+ * Registered reentry retains active host borrows and rejects terminal overlap.
+ * Under that host contract, consumes exactly once. Clear the owning pointer before the
  * call. An accepting owner gets one close attempt; blocked/uncertain graphs
  * remain under native quarantine without retry, allocation or destructor walk.
+ * Whole-Library host ownership is detached before throwable admission and
+ * consumed outside native locks even on native failure. The uncertain graph
+ * retains no Library/Rust owner/borrow. Asset access cannot recreate Library.
  * Failed native retention never extends host image/context/module lifetime. */
 FjStatus fj_cuda_destroy(FjCuda* cuda, FjErrorBuffer* error);
 

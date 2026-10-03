@@ -831,4 +831,71 @@ mod tests {
             PrintDensityError::InvalidGamma
         );
     }
+    #[test]
+    fn bundled_payload_memory_reports_logical_and_capacity_bytes() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources");
+        let catalog = super::super::load_catalog(&root).unwrap();
+        for role in [Role::Film, Role::Print] {
+            let entries = if role == Role::Film {
+                catalog.films()
+            } else {
+                catalog.prints()
+            };
+            for entry in entries {
+                let source = super::super::load_source(entry.source_path(), role).unwrap();
+                let profile =
+                    complete(source, role, Vec::try_reserve_exact, Vec::try_reserve_exact).unwrap();
+                let tables = &profile.tables;
+                let vectors = tables.source_log_exposure.len() * 8
+                    + tables.log_exposure.len() * 4
+                    + tables.density_curves.len() * 12
+                    + tables
+                        .density_curves_layers
+                        .iter()
+                        .flatten()
+                        .map(|v| v.len() * 4)
+                        .sum::<usize>();
+                let capacity = tables.source_log_exposure.capacity() * 8
+                    + tables.log_exposure.capacity() * 4
+                    + tables.density_curves.capacity() * 12
+                    + tables
+                        .density_curves_layers
+                        .iter()
+                        .flatten()
+                        .map(|v| v.capacity() * 4)
+                        .sum::<usize>();
+                let strings = [
+                    &profile.info.stock,
+                    &profile.info.name,
+                    &profile.info.reference_illuminant,
+                    &profile.info.viewing_illuminant,
+                ];
+                let inline = std::mem::size_of::<CompletedProfile>()
+                    + if role == Role::Film {
+                        std::mem::size_of::<FilmDigest>()
+                    } else {
+                        0
+                    };
+                let logical = inline + vectors + strings.iter().map(|s| s.len()).sum::<usize>();
+                let retained =
+                    inline + capacity + strings.iter().map(|s| s.capacity()).sum::<usize>();
+                assert!(retained >= logical);
+                println!(
+                    "Rust payload {}: logical={logical} capacity={retained}, Arc counters=16, Arc handle=8 (allocator/RSS excluded)",
+                    entry.key()
+                );
+                if role == Role::Print {
+                    let print = PrintProfile { profile };
+                    let curves = print.sample_density_curves(1.1).unwrap();
+                    println!(
+                        "Rust gamma {}: inline={} logical={} capacity={}",
+                        entry.key(),
+                        std::mem::size_of::<PrintDensityCurves>(),
+                        curves.totals.len() * 12,
+                        curves.totals.capacity() * 12
+                    );
+                }
+            }
+        }
+    }
 }

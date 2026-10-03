@@ -25,8 +25,7 @@ set(JUICER_NATIVE_SOURCES
 set(JUICER_HOST_SOURCES
     src/CudaRenderProjection.cpp
     src/JuicerState.cpp
-    src/ProfileAssets.cpp
-    src/ProfileCatalog.cpp
+    src/RustAssetBridge.cpp
     src/DiffusionHostBehavior.cpp
     src/GamutCompression.cpp
     src/RenderRecipe.cpp

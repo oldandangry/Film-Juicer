@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -51,6 +53,7 @@ PRESET_TARGETS = {
 RUST_VERSION = "1.98.1"
 REPRESENTATIVE_NATIVE_FILES = (
     "src/main.cpp",
+    "src/Cuda/Film/JuicerCudaFilmPipeline.cu",
     "tests/hash/hash_contract_test.cpp",
 )
 
@@ -73,6 +76,8 @@ class SourcePolicy:
 class CompilationEntry:
     path: str
     command: str
+    directory: Path = Path(".")
+    arguments: tuple[str, ...] = ()
 
 
 class Runner:
@@ -87,6 +92,7 @@ class Runner:
         command: Sequence[str],
         *,
         env: dict[str, str] | None = None,
+        cwd: Path | None = None,
         label: str,
     ) -> str:
         self.index += 1
@@ -95,7 +101,7 @@ class Runner:
         print("+", subprocess.list2cmdline(command))
         completed = subprocess.run(
             command,
-            cwd=self.root,
+            cwd=cwd or self.root,
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -465,6 +471,31 @@ def check_rust(
     )
 
 
+def split_compiler_command(command: str) -> tuple[str, ...]:
+    if os.name != "nt":
+        try:
+            return tuple(shlex.split(command))
+        except ValueError as exc:
+            raise QualityError(f"invalid compiler command: {exc}") from exc
+    # CMake uses Windows quoting, including attached -I"paths with spaces".
+    # POSIX shlex would also consume the backslashes in Windows paths.
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    split = shell32.CommandLineToArgvW
+    split.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+    split.restype = ctypes.POINTER(ctypes.c_wchar_p)
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    count = ctypes.c_int()
+    memory = split(command, ctypes.byref(count))
+    if not memory:
+        raise QualityError("cannot parse Windows compiler command")
+    try:
+        return tuple(memory[index] for index in range(count.value))
+    finally:
+        kernel32.LocalFree(memory)
+
+
 def compilation_entries(root: Path, preset: str) -> list[CompilationEntry]:
     path = root / "out/build" / preset / "compile_commands.json"
     try:
@@ -480,15 +511,16 @@ def compilation_entries(root: Path, preset: str) -> list[CompilationEntry]:
             relative = file_path.resolve().relative_to(root).as_posix()
         except ValueError:
             continue
-        command = raw.get("command") or " ".join(raw.get("arguments", []))
+        command = raw.get("command") or subprocess.list2cmdline(raw.get("arguments", []))
         if command:
-            entries.append(CompilationEntry(relative, command))
+            arguments = tuple(raw["arguments"]) if "arguments" in raw else split_compiler_command(command)
+            entries.append(CompilationEntry(relative, command, Path(raw["directory"]), arguments))
     if not entries:
         raise QualityError(f"compilation database contains no owned entries: {path}")
     return entries
 
 
-INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
+INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s*["<]([^">]+)[">]', re.MULTILINE)
 
 
 def includes_header(root: Path, translation_unit: str, header: str) -> bool:
@@ -532,39 +564,182 @@ def tidy_translation_units(
     entries: Sequence[CompilationEntry],
     policy: SourcePolicy,
 ) -> list[str]:
-    host_entries = [entry for entry in entries if not entry.path.endswith(".cu")]
     selected: set[str] = set()
-    cuda_paths: list[str] = []
     for path in selected_native:
         suffix = PurePosixPath(path).suffix.lower()
-        if suffix in {".cu", ".cuh"}:
-            cuda_paths.append(path)
-            continue
         if suffix in policy.translation_extensions:
-            matches = [entry for entry in host_entries if entry.path == path]
-            production_matches = [
-                entry for entry in matches if "JUICER_ADMISSION_TEST_HOOK" not in entry.command
-                and "JUICER_CONTEXT_DRAIN_TEST_HOOK" not in entry.command
-            ]
-            if production_matches:
-                matches = production_matches
+            matches = [entry for entry in entries if entry.path == path]
             if not matches:
                 raise QualityError(f"selected translation unit is absent from the compilation database: {path}")
             selected.add(path)
         elif suffix in policy.header_extensions:
             owners = [
-                entry.path for entry in host_entries if includes_header(root, entry.path, path)
+                entry.path for entry in entries if includes_header(root, entry.path, path)
             ]
             if not owners:
                 raise QualityError(f"no consuming translation unit found for selected header: {path}")
             selected.update(owners)
-    if cuda_paths:
-        joined = ", ".join(cuda_paths)
-        raise QualityError(
-            "tracked CUDA clang-tidy argument translation is not yet qualified; "
-            f"selected CUDA source is incomplete evidence: {joined}"
-        )
     return sorted(selected)
+
+
+def cuda_frontend_arguments(root: Path, entry: CompilationEntry) -> tuple[Path, Path, list[str]]:
+    """Translate the supported CMake/NVCC dialect; never discard unknown options."""
+    arguments = entry.arguments or split_compiler_command(entry.command)
+    if not arguments or Path(arguments[0]).name.lower() not in {"nvcc", "nvcc.exe"}:
+        raise QualityError(f"CUDA entry must invoke NVCC directly: {entry.path}")
+    nvcc = (entry.directory / arguments[0]).resolve()
+    frontend: list[str] = []
+    host: Path | None = None
+    architectures: set[str] = set()
+    language = False
+    source = False
+    exception_mode = False
+    runtime = False
+    index = 1
+    while index < len(arguments):
+        argument = arguments[index]
+        index += 1
+
+        def operand() -> str:
+            nonlocal index
+            if index == len(arguments):
+                raise QualityError(f"missing operand for {argument}: {entry.path}")
+            value = arguments[index]
+            index += 1
+            return value
+
+        if argument.startswith(("-D", "-U", "-I")):
+            value = argument[2:] or operand()
+            frontend.extend([argument[:2], value])
+        elif argument == "-isystem":
+            frontend.extend([argument, operand()])
+        elif argument.startswith("-isystem="):
+            frontend.extend(["-isystem", argument.partition("=")[2]])
+        elif argument in {"-std=c++20", "--std=c++20"}:
+            frontend.append("-std=c++20")
+            language = True
+        elif argument.startswith(("-ccbin=", "--compiler-bindir=")):
+            host = (entry.directory / argument.partition("=")[2]).resolve()
+        elif argument.startswith("--generate-code="):
+            architectures.add(argument.partition("=")[2])
+        elif argument.startswith("-Xcompiler="):
+            # NVCC accepts comma-separated options and CMake's quoted groups.
+            for flag in argument.partition("=")[2].replace(",", " ").split():
+                if os.name == "nt":
+                    option = flag.removeprefix("/").removeprefix("-")
+                    if option == "EHsc":
+                        exception_mode = True
+                    elif option in {"MD", "MDd"}:
+                        frontend.append("-fms-runtime-lib=" + ("dll_dbg" if option == "MDd" else "dll"))
+                        runtime = True
+                    elif option in {"O2", "Od"}:
+                        frontend.append("-O2" if option == "O2" else "-O0")
+                    elif option in {"Ob0", "Ob2", "Oi", "Gy", "Gw", "GF", "RTC1", "Z7", "FS"} or option.startswith("Fd"):
+                        # Inlining, object layout, runtime instrumentation and PDB output only.
+                        continue
+                    else:
+                        raise QualityError(f"unsupported CUDA host option {flag}: {entry.path}")
+                elif flag in {"-fPIC", "-fPIE", "-fvisibility=hidden"}:
+                    frontend.append(flag)
+                else:
+                    raise QualityError(f"unsupported CUDA host option {flag}: {entry.path}")
+        elif argument == "-x":
+            if operand() != "cu":
+                raise QualityError(f"CUDA entry must use -x cu: {entry.path}")
+        elif argument == "-c":
+            source_path = (entry.directory / operand()).resolve()
+            if source_path == (root / entry.path).resolve():
+                source = True
+            else:
+                raise QualityError(f"CUDA source operand differs from database file: {entry.path}")
+        elif argument == "-o":
+            operand()
+        elif argument in {"-g", "-O0", "-O1", "-O2", "-O3"}:
+            frontend.append(argument)
+        elif argument in {"-forward-unknown-to-host-compiler", "--cudart=hybrid", "-Xptxas=-O3"}:
+            # Driver dispatch, runtime linking and assembler optimization do not configure the AST.
+            continue
+        else:
+            raise QualityError(f"unsupported NVCC option {argument}: {entry.path}")
+    if not language or not source or host is None:
+        raise QualityError(f"CUDA entry requires C++20, a source operand and an explicit host compiler: {entry.path}")
+    if architectures != {"arch=compute_75,code=[sm_75]", "arch=compute_75,code=[compute_75]"}:
+        raise QualityError(f"CUDA entry requires the qualified sm_75/compute_75 architecture pair: {entry.path}")
+    if os.name == "nt":
+        if host.name.lower() != "cl.exe" or not exception_mode or not runtime:
+            raise QualityError(f"CUDA Windows entry requires MSVC, /EHsc and /MD or /MDd: {entry.path}")
+        frontend.extend(["-fms-extensions", "-fms-compatibility", "-fdelayed-template-parsing"])
+    elif not re.fullmatch(r"(?:[\w-]+-)?g\+\+-13", host.name):
+        raise QualityError(f"CUDA Linux entry requires the GCC 13 host compiler: {entry.path}")
+    return nvcc, host, ["-xcuda", f"--cuda-path={nvcc.parent.parent}",
+                        "--cuda-gpu-arch=sm_75", "-fexceptions", *frontend]
+
+
+def prepare_cuda_overlay(root: Path, log_dir: Path) -> Path:
+    """Keep Clang 22/CUDA 13.2 parsing adaptations out of product include paths."""
+    overlay = log_dir / "cuda-include"
+    (overlay / "openrand").mkdir(parents=True, exist_ok=True)
+    (overlay / "texture_fetch_functions.h").write_text(
+        "// CUDA 13 removed this header; Clang 22's runtime wrapper still includes it.\n"
+        "#pragma once\n", encoding="utf-8",
+    )
+    vendor = root / "third_party/openrand/util.h"
+    try:
+        text = vendor.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise QualityError(f"cannot read CUDA analysis input: {vendor}: {exc}") from exc
+    condition = "#ifdef __CUDA_ARCH__\n"
+    if text.count(condition) != 1:
+        raise QualityError("OpenRAND CUDA attribute guard changed; review the Clang analysis adaptation")
+    # Clang parses both host/device callables in the same pass. Retain the vendor's
+    # entire implementation and license; only make its attributes visible in both passes.
+    (overlay / "openrand/util.h").write_text(
+        text.replace(condition, "#if defined(__CUDACC__)\n"), encoding="utf-8",
+    )
+    return overlay
+
+
+def check_cuda(
+    root: Path, runner: Runner, clang_tidy: str, entries: Sequence[CompilationEntry],
+) -> None:
+    overlay = prepare_cuda_overlay(root, runner.log_dir)
+    qualified: dict[tuple[Path, Path], list[str]] = {}
+    for index, entry in enumerate(entries, start=1):
+        nvcc, host, frontend = cuda_frontend_arguments(root, entry)
+        key = (nvcc, host)
+        if key not in qualified:
+            version = runner.run([str(nvcc), "--version"], label="cuda-nvcc-version")
+            if not re.search(r"release 13\.2,", version):
+                raise QualityError(f"CUDA analysis requires Toolkit 13.2: {nvcc}")
+            toolkit = nvcc.parent.parent
+            if not (toolkit / "include/curand_mtgp32_kernel.h").is_file():
+                raise QualityError(f"Clang CUDA analysis requires the cuRAND development headers in {toolkit}")
+            if os.name == "nt":
+                active_tools = os.environ.get("VCToolsInstallDir", "")
+                active_host = Path(active_tools) / "bin/Hostx64/x64/cl.exe"
+                if not active_tools or active_host.resolve() != host:
+                    raise QualityError("run CUDA quality in the VS developer environment used by the CMake preset")
+                qualified[key] = []
+            else:
+                version = runner.run([str(host), "-dumpfullversion"], label="cuda-host-version")
+                if not version.startswith("13."):
+                    raise QualityError(f"CUDA analysis requires GCC 13: {host}")
+                library = runner.run([str(host), "-print-file-name=libstdc++.so"], label="cuda-host-library")
+                if not Path(library).is_file():
+                    raise QualityError(f"cannot locate GCC 13's libstdc++: {library}")
+                qualified[key] = [f"--gcc-install-dir={Path(library).parent}"]
+        # _NV_RSQRT_SPECIFIER must exist before Clang's forced runtime wrapper
+        # includes CUDA's math declarations. No diagnostics are disabled.
+        frontend = [*qualified[key], "-D_NV_RSQRT_SPECIFIER=", "-I", str(overlay), *frontend]
+        command = [clang_tidy, "--warnings-as-errors=*", f"--config-file={root / '.clang-tidy'}",
+                   str(root / entry.path), "--", *frontend]
+        receipt = runner.log_dir / f"cuda-command-{index}.json"
+        receipt.write_text(json.dumps({
+            "source": entry.path, "directory": str(entry.directory),
+            "nvcc_arguments": list(entry.arguments or split_compiler_command(entry.command)),
+            "clang_tidy_arguments": command,
+        }, indent=2) + "\n", encoding="utf-8")
+        runner.run(command, cwd=entry.directory, label=f"clang-tidy-cuda-{index}-{Path(entry.path).name}")
 
 
 def check_native(
@@ -608,6 +783,8 @@ def check_native(
         raise QualityError("native selection has no translation unit for clang-tidy")
     build_dir = root / "out/build" / arguments.preset
     for index, translation_unit in enumerate(translation_units, start=1):
+        if PurePosixPath(translation_unit).suffix.lower() == ".cu":
+            continue
         runner.run(
             [
                 clang_tidy,
@@ -618,6 +795,12 @@ def check_native(
             ],
             label=f"clang-tidy-{index}-{PurePosixPath(translation_unit).name}",
         )
+    cuda_entries = list(dict.fromkeys(
+        entry for entry in entries
+        if entry.path in translation_units and PurePosixPath(entry.path).suffix.lower() == ".cu"
+    ))
+    if cuda_entries:
+        check_cuda(root, runner, clang_tidy, cuda_entries)
 
 
 def main() -> int:
@@ -669,6 +852,13 @@ def main() -> int:
 
     if rust_required:
         check_rust(root, runner, arguments, target)
+    if runner_changed:
+        runner.run(
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests/quality",
+             "-p", "test_check_quality.py", "-v"],
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            label="quality-dispatcher-tests",
+        )
     if native_required:
         native_files = [path for path in selected if is_native(path, policy)]
         if runner_changed or any(path in {".clang-format", ".clang-tidy"} for path in selected):

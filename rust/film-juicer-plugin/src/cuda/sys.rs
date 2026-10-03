@@ -14,6 +14,8 @@ pub const FJ_API_CUDA_RUNTIME: u32 = 1;
 pub const FJ_API_CUDA_DRIVER: u32 = 2;
 pub const FJ_API_CUFFT: u32 = 3;
 pub const FJ_RENDER_DEFERRED_DIR_ERROR: u32 = 1;
+pub const FJ_PATH_UNIX_BYTES: u32 = 1;
+pub const FJ_PATH_WINDOWS_WIDE: u32 = 2;
 pub const FJ_COMPONENTS_UNKNOWN: u32 = 0;
 pub const FJ_COMPONENTS_RGB: u32 = 3;
 pub const FJ_COMPONENTS_RGBA: u32 = 4;
@@ -163,6 +165,22 @@ const _: () = {
     ["Alignment of FjStringView"][::core::mem::align_of::<FjStringView>() - 8usize];
     ["Offset of field: FjStringView::data"][::core::mem::offset_of!(FjStringView, data) - 0usize];
     ["Offset of field: FjStringView::count"][::core::mem::offset_of!(FjStringView, count) - 8usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FjPathView {
+    pub data: *const ::core::ffi::c_void,
+    pub count: usize,
+    pub encoding: u32,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjPathView"][::core::mem::size_of::<FjPathView>() - 24usize];
+    ["Alignment of FjPathView"][::core::mem::align_of::<FjPathView>() - 8usize];
+    ["Offset of field: FjPathView::data"][::core::mem::offset_of!(FjPathView, data) - 0usize];
+    ["Offset of field: FjPathView::count"][::core::mem::offset_of!(FjPathView, count) - 8usize];
+    ["Offset of field: FjPathView::encoding"]
+        [::core::mem::offset_of!(FjPathView, encoding) - 16usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1610,7 +1628,7 @@ const _: () = {
 };
 unsafe extern "C" {
     pub fn fj_cuda_create(
-        data_directory: FjStringView,
+        data_directory: FjPathView,
         out_cuda: *mut *mut FjCuda,
         error: *mut FjErrorBuffer,
     ) -> FjStatus;

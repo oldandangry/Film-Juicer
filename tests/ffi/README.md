@@ -10,7 +10,7 @@ new CUDA operations in a linked binary. The fixture contains no CUDA build or
 render implementation.
 
 `Rust.Bridge` additionally runs the plugin's internal ABI tests. The fixture's
-one Rust export is gated by the nondefault `test-support` feature selected by
+Test exports are gated by the nondefault `test-support` feature selected by
 CMake only for `BUILD_TESTING=ON`. Product builds consume the committed bindings;
 they do not require bindgen or libclang. Toggling `BUILD_TESTING` rebuilds the
 archive with the corresponding feature selection.
@@ -201,10 +201,12 @@ patch is removed with the support library's compiled consumer at S6.
 production routing, the implemented operation set, and absence of live-context
 reset calls. These structural checks supplement the runtime evidence below.
 
-`Ffi.Gpu.PreparedBoundary.*` now calls the real `fj_cuda_render` from C11,
-compares it with the direct C++ executor and processor adapter, and retains the
-independent immutable platform captures as behavioral authority. Production
-continues through the temporary direct C++ adapter during S2.D.
+`Ffi.Gpu.PreparedBoundary.*` calls the real `fj_cuda_render` from C11 and checks
+bit-exact equivalence between cold/warm C-boundary execution, the direct C++
+executor and the processor adapter. Independent numerical expectations are checked
+separately by `Ofx.Gpu.ProcessorReference` and `Ofx.Gpu.AcceptedCudaCaptures`;
+a baseline-image failure cannot prevent these path-equivalence checks from running.
+Production callbacks use the same admitted native C-boundary render body.
 
 `Ffi.Gpu.CudaRender.negative-direct` and `.negative-print` additionally exercise
 raw argument and prepared/submission binding failures, current-context and stream
@@ -289,3 +291,154 @@ the measured call. This isolates the C return/staging lifetime from legitimate
 synchronous renderer paths. Existing pinned-upload tests independently cover
 reservation, exceptional completion and quarantine. The uploader hook object
 remains confined to the test executable.
+
+## Native asset lookup safety
+
+`Assets.Host.LookupSafety` runs the real private synthetic density, Scanner
+interpolation/density and Hanatos window helpers through dedicated test objects.
+`JUICER_ASSET_LOOKUP_TEST_HOOK` is defined only on those objects and their test
+executable. Product objects and normal Release modules contain no wrappers.
+The existing admission and context-drain seams are independent and unchanged.
+
+The group checks finite endpoints/interpolation, distinct duplicate selection,
+ascending/descending Scanner traversal, singleton axes, ordered infinities,
+NaN/shape/channel failures, and public direct/print/synthetic builder failure
+propagation before reference or descriptor publication. It performs no CUDA
+runtime or driver operation. CUDA linking/build prerequisites remain required.
+[Independent expectations and provenance](asset_lookup_expectations.md) explain
+why synthetic invalid brackets are unreachable for admitted axes and define the
+three Hanatos formula cases The production-profile consumer group now also reaches those three formula cases
+with adaptation enabled through selected-profile recipe construction.
+
+```sh
+cmake --preset linux-debug -DBUILD_TESTING=ON
+cmake --build --preset linux-debug --target JuicerAssetLookupTests
+ctest --preset linux-debug -R '^Assets\.Host\.LookupSafety$'
+```
+
+`Ffi.Host.ProfileOwner` links the feature-only profile facade declared in
+`juicer_test_api.h` to C11/C++20 consumers. It checks 24 layout/tag facts and four
+signatures against Rust, exact exposure/CMY/layer transport using analytical
+center/endpoint expectations, metadata/default tags, nullable spectra, failure
+outputs, diagnostic bounds/uninitialized output, concurrent immutable reads,
+release pairing and independent-copy lifetime.
+`Rust.Bridge` compares projection pointers/bits and tokens directly with the
+complete core owner, tests retention after explicit cache release, and uses Weak
+for reclamation on release (including malformed diagnostics), unpublished
+input/capacity failure and contained panic. No test dereferences an expired pointer.
+
+Each acquisition uses the real Assets catalog and complete film producer; the
+opaque owner retains its Arc after the temporary Assets is destroyed. The view
+exposes only fields consumed by the current profile-row qualification and the
+actual asset token. Other optional/model/digest data stays in the full immutable
+owner. There is no profile-array conversion or duplicate decoder. The fixed view is 264 bytes on x64, including 24 copied halation-digest bytes.
+It duplicates zero spectral/exposure/layer table bytes. The local
+native lifetime test copies 80 payload bytes into its own vectors; those are test scratch,
+not a production cache. Future production bridges share `asset_profile` projection
+and obey the same lifetime; native invocation expiry still applies.
+
+The host fixture creates isolated resources beneath the preset's
+`out/validation/<preset>/ffi/profile-owner-resources`, including both required
+catalog roles/default keys. It never writes Resources or checked-in fixtures,
+links no CUDA runtime and performs no driver operation. Detailed pointer,
+concurrency, status, diagnostic and consume-on-every-outcome rules are beside
+its declarations in `juicer_test_api.h`. Incidental small Box/Arc/path/parser
+allocation aborts remain outside panic recovery. Normal `BUILD_TESTING=OFF`
+does not compile this fixture facade. Safe production owner/projection modules
+remain available; the non-default `test-support` feature enables the fixture interface.
+
+After configuring/building with tests explicitly ON, run the new boundary and
+its Rust owner checks with `ctest --preset <preset> -R
+'^(Ffi.Host.ProfileOwner|Rust.Bridge)$' --output-on-failure`. The fixture record is named `FjFilmFixtureView`; its 264-byte layout and
+numerical oracle remain independent of the production profile records.
+
+## Production catalog bridge
+
+`Ffi.Host.CatalogOwner` checks the private production catalog ABI in C11,
+C++20 and Rust, the retained-owner lifetime, failure-output clearing,
+concurrent acquisition, source-error stickiness and native conversion retry.
+It calls the actual native option accessors and selected film/print loaders.
+`FjCatalogEntryView` contains key, label and polarity only
+(40 bytes, alignment 8 on both supported x64 targets). Counts are role-local
+entry counts; indices are zero-based. Text is length-delimited UTF-8, including
+empty labels and embedded NUL bytes. Existing OFX C-string behavior remains.
+
+`FjPathView` counts Linux native bytes or Windows uint16_t units, excluding a
+terminator. Only the current platform's encoding is accepted; nonempty/NUL-free
+input and a checked byte extent bounded by PTRDIFF_MAX are required. No Unicode
+admission or diagnostic-text round trip selects files. Windows forwarding copies
+wchar_t units by value. Selected-profile paths stay private to Rust Assets; the actual Rust loader opens
+them under the retained native root. Unrepresentable path units are
+escaped for diagnostics only. The Linux unusual-name opening fixture uses the
+native temporary filesystem because WSL's Windows-mounted volume may replace
+invalid UTF-8 bytes; it removes those fixture files on exit. Windows uses its
+configured artifact directory. Other resource families still use their existing
+root-string conversion until their own cutovers.
+
+Assets create is lazy and performs no discovery or CUDA initialization. One
+Assets belongs to the process Library. Catalog acquisition retains an immutable
+Arc; independent handles survive Assets destruction and each other's release.
+Reads allocate nothing. Catalog paths do not cross this boundary.
+Caller excludes Assets destruction from acquisitions, and catalog release from
+all reads and outstanding view uses. Outputs and diagnostics are aligned,
+exclusive and disjoint. Every valid output is cleared before validation.
+Malformed diagnostics skip ordinary work, but destroy/release consume their
+owner once on every result. Truncation changes text only. Native `call_once`
+publishes a complete conversion or complete ordinary source failure. Conversion
+allocation/internal failure leaves it incomplete; subsequent explicit requests
+retry against the unchanged Rust snapshot without a second parser or reload.
+
+Root owns the whole Library through a detachable unique_ptr. Legal terminal
+close requires the host to exclude **all** option/catalog/profile/rebuild readers,
+render/preparation calls and outstanding views. A drained preparation count or
+failed GPU drain does not establish that condition. Registered reentry retains
+active host borrows and its blocked graph; it is not legal reader-excluded
+terminal completion. Registration is checked before dereference. Under legal
+terminal exclusion, Library detachment is allocation-free and precedes throwing
+owner admission. It stays alive through the single native close attempt, then
+Rust owners and native host copies are consumed outside every native lock.
+Native failure keeps precedence over host/diagnostic cleanup failure; cleanup
+never retries uncertain CUDA teardown. The retained native graph has no Library,
+Rust owner or borrowed Rust/OFX storage, and asset access fails after detachment.
+Successful or failed borrowed shutdown keeps Library attached; successful cache
+release runs after native locks unwind and retains catalog ownership.
+Construction and rejected-candidate destruction likewise run outside registration
+locks. Terminal construction/reentry/lock-failure tests use isolated API objects;
+catalog conversion seams and Rust owner/fault probes are test-only.
+
+The catalog path transport/Windows encoding/native selected-profile opening
+bridge has been removed. Native root-path transport remains an actual consumer. Asset conversion is removed in S4.E; native host Library ownership
+is removed in S5.C. These are distinct boundaries. The fallible cache-clear export invokes the existing Rust cache-release operation.
+Later-family production acquisition remains outside this boundary. Installed Resolve acceptance remains
+separate from these automated ABI, host and GPU checks.
+
+## Production profile and gamma bridge
+
+`Ffi.Host.ProductionProfileOwner` calls the actual film/print acquisition, borrowed
+view, gamma sampling and consume-once release APIs in `juicer_legacy_api.h`.
+C11, C++20 and Rust check every production field, tag and signature. All 28
+profiles and the accepted gamma cohort are compared with immutable public
+captures. Owned gamma totals survive print release, and retained profiles survive
+Assets release/destruction. Safe projections share the core Arc and borrow tables.
+
+Native conversions publish one complete copy per finite catalog slot. Concurrent
+cold candidates copy outside the slot mutex; losers release after unlock. A failed
+attempt rechecks a concurrent winner. Warm requests reuse the published copy.
+The print build carries one `PrintProfileSource` lease and samples that exact Rust
+owner, including across cache release and source-file changes. Recipes and CUDA
+state retain independently allocated native values. Cold-copy, Arc retention and
+gamma-overlap capacity measurements exclude allocator/RSS claims.
+
+The consumer cases cover typed original-decimal BB values, preserved named
+illuminants, canonical positional wavelengths, authored-label hash encoding,
+broader interpolation axes and active DIR prerequisites, direct builds with an
+unselected malformed print, and the three consuming Hanatos window cases.
+They create scratch resources and do not modify fixture expectations or Resources.
+
+CUDA terminal cases distinguish native close from fallible host cache release.
+Concurrent successful borrowed shutdown calls observe one recorded host outcome
+outside native locks; repeated calls do not purge or retire CUDA again. Native
+failure stays primary and prevents borrowed cache release. Consuming destroy
+always detaches/consumes the host graph under the existing reader-exclusion
+precondition; native close alone decides graph deletion or uncertain retention.
+The retained uncertain graph contains no Rust profile source or build lease.

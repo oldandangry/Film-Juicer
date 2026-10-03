@@ -1,0 +1,1353 @@
+//! Private raw edge for the native process asset/catalog conversion.
+
+#[cfg(any(test, feature = "test-support"))]
+use std::collections::TryReserveError;
+use std::fmt::{self, Write};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+use film_juicer_core::assets::{AssetError, Assets};
+use film_juicer_core::profile::{
+    IlluminantKind, Polarity, Role, Stage, Support, ProfileCompletionErrorKind, PrintDensityCurves,
+    PrintDensityError,
+};
+use crate::asset_profile::{
+    FilmOwner, FilmView, IlluminantView, PrintOwner, PrintView, ProfileTablesView,
+};
+
+use crate::asset_catalog::{CatalogEntryView, CatalogOwner, PathError, PathView};
+use crate::cuda::sys::{
+    FJ_API_NONE, FJ_POLARITY_NEGATIVE, FJ_POLARITY_POSITIVE, FJ_STATUS_ALLOCATION_FAILURE,
+    FJ_STATUS_INTERNAL_FAILURE, FJ_STATUS_PREPARATION_FAILURE, FJ_STATUS_SUCCESS,
+    FJ_STATUS_UNSUPPORTED_INPUT, FjErrorBuffer, FjPathView, FjStatus, FjStringView, FjFloatSpan,
+};
+
+#[cfg(target_os = "linux")]
+use crate::cuda::sys::FJ_PATH_UNIX_BYTES;
+#[cfg(target_os = "windows")]
+use crate::cuda::sys::FJ_PATH_WINDOWS_WIDE;
+
+const FJ_PROFILE_ROLE_FILM: u32 = 0;
+const FJ_PROFILE_ROLE_PRINT: u32 = 1;
+
+#[repr(C)]
+struct FjAssets {
+    _opaque: [u8; 0],
+}
+#[repr(C)]
+struct FjCatalog {
+    _opaque: [u8; 0],
+}
+#[repr(C)]
+#[derive(Default)]
+struct FjCatalogCounts {
+    film_count: usize,
+    print_count: usize,
+}
+#[repr(C)]
+struct FjCatalogEntryView {
+    key: FjStringView,
+    label: FjStringView,
+    polarity: u32,
+}
+
+impl FjCatalogEntryView {
+    fn empty() -> Self {
+        Self {
+            key: text(""),
+            label: text(""),
+            polarity: 0,
+        }
+    }
+
+    fn from_view(view: CatalogEntryView<'_>) -> Result<Self, Failure> {
+        Ok(Self {
+            key: text(view.key),
+            label: text(view.label),
+            polarity: match view.polarity {
+                Polarity::Negative => FJ_POLARITY_NEGATIVE,
+                Polarity::Positive => FJ_POLARITY_POSITIVE,
+            },
+        })
+    }
+}
+
+#[repr(C)]
+struct FjFilmProfile {
+    _opaque: [u8; 0],
+}
+#[repr(C)]
+struct FjPrintProfile {
+    _opaque: [u8; 0],
+}
+#[repr(C)]
+struct FjPrintDensityCurves {
+    _opaque: [u8; 0],
+}
+const FJ_ILLUMINANT_NAMED: u32 = 0;
+const FJ_ILLUMINANT_BLACKBODY: u32 = 1;
+const FJ_PROFILE_SUPPORT_FILM: u32 = 0;
+const FJ_PROFILE_SUPPORT_PAPER: u32 = 1;
+const FJ_PROFILE_STAGE_FILMING: u32 = 0;
+const FJ_PROFILE_STAGE_PRINTING: u32 = 1;
+#[repr(C)]
+struct FjIlluminantView {
+    label: FjStringView,
+    temperature_kelvin: f64,
+    kind: u32,
+}
+#[repr(C)]
+struct FjProfileTablesView {
+    linear_sensitivity_rgb: FjFloatSpan,
+    channel_density_cmy: FjFloatSpan,
+    base_density: FjFloatSpan,
+    log_exposure: FjFloatSpan,
+    density_curves_cmy: FjFloatSpan,
+}
+#[repr(C)]
+struct FjFilmDigest {
+    gamma_samelayer_rgb: [f32; 3],
+    gamma_interlayer_r_to_gb: [f32; 2],
+    gamma_interlayer_g_to_rb: [f32; 2],
+    gamma_interlayer_b_to_rg: [f32; 2],
+    halation_first_sigma_um: [f32; 3],
+    halation_primary_amount: [f32; 3],
+    hanatos_spectral_gaussian_blur_default: f32,
+}
+#[repr(C)]
+struct FjFilmProfileView {
+    stock: FjStringView,
+    reference_illuminant: FjIlluminantView,
+    viewing_illuminant: FjIlluminantView,
+    tables: FjProfileTablesView,
+    wavelengths: FjFloatSpan,
+    density_curves_layers: [[FjFloatSpan; 3]; 3],
+    digest: FjFilmDigest,
+    hanatos_window: FjFloatSpan,
+    hanatos_surface_rgb: FjFloatSpan,
+    asset_token: u64,
+    support: u32,
+    stage: u32,
+    polarity: u32,
+}
+#[repr(C)]
+struct FjPrintProfileView {
+    stock: FjStringView,
+    viewing_illuminant: FjIlluminantView,
+    tables: FjProfileTablesView,
+    asset_token: u64,
+    stage: u32,
+}
+#[repr(C)]
+struct FjPrintDensityView {
+    totals_cmy: FjFloatSpan,
+    hash: u64,
+}
+
+fn floats(values: &[f32]) -> FjFloatSpan {
+    FjFloatSpan {
+        data: if values.is_empty() {
+            std::ptr::null()
+        } else {
+            values.as_ptr()
+        },
+        count: values.len(),
+    }
+}
+fn illuminant(view: IlluminantView<'_>) -> FjIlluminantView {
+    let (kind, temperature_kelvin) = match view.kind {
+        IlluminantKind::Named => (FJ_ILLUMINANT_NAMED, 0.0),
+        IlluminantKind::Blackbody { temperature_kelvin } => {
+            (FJ_ILLUMINANT_BLACKBODY, temperature_kelvin)
+        }
+    };
+    FjIlluminantView {
+        label: text(view.label),
+        kind,
+        temperature_kelvin,
+    }
+}
+fn tables(view: ProfileTablesView<'_>) -> FjProfileTablesView {
+    FjProfileTablesView {
+        linear_sensitivity_rgb: floats(view.linear_sensitivity_rgb),
+        channel_density_cmy: floats(view.channel_density_cmy),
+        base_density: floats(view.base_density),
+        log_exposure: floats(view.log_exposure),
+        density_curves_cmy: floats(view.density_curves_cmy),
+    }
+}
+fn stage(stage: Stage) -> u32 {
+    match stage {
+        Stage::Filming => FJ_PROFILE_STAGE_FILMING,
+        Stage::Printing => FJ_PROFILE_STAGE_PRINTING,
+    }
+}
+impl FjFilmProfileView {
+    fn from_view(view: FilmView<'_>) -> Self {
+        let digest = view.digest;
+        Self {
+            stock: text(view.stock),
+            reference_illuminant: illuminant(view.reference_illuminant),
+            viewing_illuminant: illuminant(view.viewing_illuminant),
+            tables: tables(view.tables),
+            wavelengths: floats(view.wavelengths),
+            density_curves_layers: view.density_curves_layers.map(|layer| layer.map(floats)),
+            digest: FjFilmDigest {
+                gamma_samelayer_rgb: digest.gamma_samelayer_rgb,
+                gamma_interlayer_r_to_gb: digest.gamma_interlayer_r_to_gb,
+                gamma_interlayer_g_to_rb: digest.gamma_interlayer_g_to_rb,
+                gamma_interlayer_b_to_rg: digest.gamma_interlayer_b_to_rg,
+                halation_first_sigma_um: digest.halation_first_sigma_um,
+                halation_primary_amount: digest.halation_primary_amount,
+                hanatos_spectral_gaussian_blur_default: digest
+                    .hanatos_spectral_gaussian_blur_default,
+            },
+            hanatos_window: floats(view.hanatos_window),
+            hanatos_surface_rgb: floats(view.hanatos_surface_rgb),
+            asset_token: view.asset_token,
+            support: match view.support {
+                Support::Film => FJ_PROFILE_SUPPORT_FILM,
+                Support::Paper => FJ_PROFILE_SUPPORT_PAPER,
+            },
+            stage: stage(view.stage),
+            polarity: match view.polarity {
+                Polarity::Negative => FJ_POLARITY_NEGATIVE,
+                Polarity::Positive => FJ_POLARITY_POSITIVE,
+            },
+        }
+    }
+}
+impl FjPrintProfileView {
+    fn from_view(view: PrintView<'_>) -> Self {
+        Self {
+            stock: text(view.stock),
+            viewing_illuminant: illuminant(view.viewing_illuminant),
+            tables: tables(view.tables),
+            asset_token: view.asset_token,
+            stage: stage(view.stage),
+        }
+    }
+}
+
+/// # Safety
+/// The caller authorizes a live initialized byte extent, disjoint from outputs.
+unsafe fn key<'a>(view: FjStringView) -> Result<&'a str, Failure> {
+    if view.count > isize::MAX as usize || (view.count != 0 && view.data.is_null()) {
+        return Err(Failure::Input("invalid profile key extent"));
+    }
+    let bytes = if view.count == 0 {
+        &[]
+    } else {
+        // SAFETY: The checked extent belongs to the caller for this operation.
+        unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.count) }
+    };
+    std::str::from_utf8(bytes).map_err(|_| Failure::Input("invalid profile key UTF-8"))
+}
+
+fn text(value: &str) -> FjStringView {
+    FjStringView {
+        data: if value.is_empty() {
+            std::ptr::null()
+        } else {
+            value.as_ptr().cast()
+        },
+        count: value.len(),
+    }
+}
+
+enum Failure {
+    Input(&'static str),
+    Asset(AssetError),
+    #[cfg(any(test, feature = "test-support"))]
+    Capacity(TryReserveError),
+    Gamma(PrintDensityError),
+    #[cfg(any(test, feature = "test-support"))]
+    Internal(&'static str),
+}
+impl Failure {
+    fn category(&self) -> u32 {
+        match self {
+            Self::Input(_) => FJ_STATUS_UNSUPPORTED_INPUT,
+            Self::Asset(
+                AssetError::Catalog(_)
+                | AssetError::MissingProfile { .. }
+                | AssetError::ProfileDecode(_),
+            ) => FJ_STATUS_PREPARATION_FAILURE,
+            Self::Asset(AssetError::ProfileCompletion(error)) => match error.kind {
+                ProfileCompletionErrorKind::Capacity => FJ_STATUS_ALLOCATION_FAILURE,
+                _ => FJ_STATUS_PREPARATION_FAILURE,
+            },
+            Self::Gamma(PrintDensityError::InvalidGamma) => FJ_STATUS_UNSUPPORTED_INPUT,
+            Self::Gamma(PrintDensityError::Capacity) => FJ_STATUS_ALLOCATION_FAILURE,
+            Self::Gamma(_) => FJ_STATUS_PREPARATION_FAILURE,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Capacity(_) => FJ_STATUS_ALLOCATION_FAILURE,
+            Self::Asset(_) => FJ_STATUS_INTERNAL_FAILURE,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Internal(_) => FJ_STATUS_INTERNAL_FAILURE,
+        }
+    }
+}
+impl fmt::Display for Failure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Input(message) => formatter.write_str(message),
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Internal(message) => formatter.write_str(message),
+            Self::Asset(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Capacity(error) => write!(formatter, "asset boundary capacity: {error}"),
+            Self::Gamma(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+fn status(category: u32) -> FjStatus {
+    FjStatus {
+        category,
+        api: FJ_API_NONE,
+        native_code: 0,
+    }
+}
+
+struct Diagnostic<'a> {
+    data: *mut u8,
+    capacity: usize,
+    length: &'a mut usize,
+}
+impl Write for Diagnostic<'_> {
+    fn write_str(&mut self, message: &str) -> fmt::Result {
+        let count = message.len().min(self.capacity - 1 - *self.length);
+        // SAFETY: run constructs this writer from disjoint, exclusive foreign
+        // bytes. The checked capacity and initialized length bound every write.
+        unsafe {
+            std::ptr::copy_nonoverlapping(message.as_ptr(), self.data.add(*self.length), count);
+            self.data.add(*self.length + count).write(0);
+        }
+        *self.length += count;
+        Ok(())
+    }
+}
+
+/// # Safety
+/// A nonnull diagnostic is initialized, aligned and exclusively writable; its
+/// nonempty backing extent is disjoint from all other call storage.
+unsafe fn run<T>(
+    error: *mut FjErrorBuffer,
+    operation: impl FnOnce() -> Result<T, Failure>,
+) -> Result<T, FjStatus> {
+    // Captured consumed owners are dropped inside containment even when the
+    // diagnostic is malformed and the ordinary operation must be skipped.
+    catch_unwind(AssertUnwindSafe(|| {
+        let mut diagnostic = if error.is_null() {
+            None
+        } else {
+            // SAFETY: The caller supplies the record; zero capacity deliberately
+            // does not read the data field, which need not be initialized.
+            let (capacity, length) = unsafe {
+                let capacity = std::ptr::addr_of!((*error).capacity).read();
+                let length = std::ptr::addr_of_mut!((*error).length);
+                length.write(0);
+                (capacity, &mut *length)
+            };
+            if capacity == 0 {
+                None
+            } else {
+                // SAFETY: Nonzero capacity requires an initialized data field.
+                let data = unsafe { std::ptr::addr_of!((*error).data).read() };
+                if data.is_null() || capacity > isize::MAX as usize {
+                    return Err(status(FJ_STATUS_UNSUPPORTED_INPUT));
+                }
+                // SAFETY: The caller authorizes capacity writable bytes.
+                unsafe { data.write(0) };
+                Some(Diagnostic {
+                    data: data.cast(),
+                    capacity,
+                    length,
+                })
+            }
+        };
+        let result = catch_unwind(AssertUnwindSafe(|| match operation() {
+            Ok(value) => Ok(value),
+            Err(failure) => {
+                if let Some(diagnostic) = &mut diagnostic {
+                    let _ = write!(diagnostic, "{failure}");
+                }
+                Err(status(failure.category()))
+            }
+        }));
+        result.unwrap_or_else(|_| {
+            if let Some(diagnostic) = &mut diagnostic {
+                *diagnostic.length = 0;
+                let _ = diagnostic.write_str("asset boundary panic");
+            }
+            Err(status(FJ_STATUS_INTERNAL_FAILURE))
+        })
+    }))
+    .unwrap_or(Err(status(FJ_STATUS_INTERNAL_FAILURE)))
+}
+
+/// # Safety
+/// The caller authorizes the initialized, platform-native input extent.
+unsafe fn path(view: FjPathView) -> Result<std::path::PathBuf, Failure> {
+    if view.data.is_null() || view.count == 0 {
+        return Err(Failure::Input("empty resource root"));
+    }
+    #[cfg(target_os = "linux")]
+    let units = {
+        if view.encoding != FJ_PATH_UNIX_BYTES || view.count > isize::MAX as usize {
+            return Err(Failure::Input("invalid Unix path extent or encoding"));
+        }
+        // SAFETY: Bounds checked before forming the caller-authorized byte slice.
+        PathView::Bytes(unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.count) })
+    };
+    #[cfg(target_os = "windows")]
+    let units = {
+        if view.encoding != FJ_PATH_WINDOWS_WIDE
+            || view.count > isize::MAX as usize / 2
+            || !(view.data as usize).is_multiple_of(std::mem::align_of::<u16>())
+        {
+            return Err(Failure::Input("invalid Windows path extent or encoding"));
+        }
+        // SAFETY: Checked aligned byte extent precedes the authorized u16 slice.
+        PathView::Wide(unsafe { std::slice::from_raw_parts(view.data.cast::<u16>(), view.count) })
+    };
+    units.to_path_buf().map_err(|error| match error {
+        PathError::Empty => Failure::Input("empty resource root"),
+        PathError::ContainsNul => Failure::Input("resource root contains NUL"),
+    })
+}
+
+// FJ_TEMP_BRIDGE: asset conversion; remove S4.E.
+/// # Safety
+/// Inputs have the documented initialized extent. Nonnull outputs/diagnostics
+/// are aligned, exclusive and mutually disjoint. Root borrows expire at return.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_assets_create(
+    resource_root: FjPathView,
+    out_assets: *mut *mut FjAssets,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_assets.is_null() {
+        // SAFETY: Caller provides one exclusive output slot.
+        unsafe { out_assets.write(std::ptr::null_mut()) };
+    }
+    // SAFETY: Diagnostic/input/output storage follows the export contract.
+    unsafe {
+        run(error, || {
+            if out_assets.is_null() {
+                return Err(Failure::Input("NULL Assets output"));
+            }
+            let assets = Box::new(Assets::new(path(resource_root)?));
+            #[cfg(feature = "test-support")]
+            LIVE_ASSETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out_assets.write(Box::into_raw(assets).cast());
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// assets is NULL or a live matching owner taken once; caller excludes all reads.
+/// Diagnostics follow the exclusive disjoint storage contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_assets_destroy(
+    assets: *mut FjAssets,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Matching live allocation is consumed, including rejected diagnostics.
+    #[cfg(feature = "test-support")]
+    if !assets.is_null() {
+        LIVE_ASSETS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    let owner = if assets.is_null() {
+        None
+    } else {
+        // SAFETY: The matching live Box allocation is taken exactly once.
+        Some(unsafe { Box::from_raw(assets.cast::<Assets>()) })
+    };
+    // SAFETY: Captured owner cleanup and diagnostics are contained by run.
+    unsafe {
+        run(error, move || {
+            drop(owner);
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// assets is live through return; outputs and diagnostics are exclusive and
+/// disjoint. Catalog release is excluded from every returned-view use.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_catalog_acquire(
+    assets: *const FjAssets,
+    out_catalog: *mut *mut FjCatalog,
+    out_counts: *mut FjCatalogCounts,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Each nonnull output is a caller-authorized exclusive slot.
+    unsafe {
+        if !out_catalog.is_null() {
+            out_catalog.write(std::ptr::null_mut());
+        }
+        if !out_counts.is_null() {
+            out_counts.write(FjCatalogCounts::default());
+        }
+    }
+    // SAFETY: The live owner and disjoint output/diagnostic storage are authorized.
+    unsafe {
+        run(error, || {
+            if assets.is_null() || out_catalog.is_null() || out_counts.is_null() {
+                return Err(Failure::Input("NULL catalog acquisition input/output"));
+            }
+            let catalog = (&*assets.cast::<Assets>())
+                .catalog()
+                .map_err(Failure::Asset)?;
+            #[cfg(any(test, feature = "test-support"))]
+            inject()?;
+            let owner = Box::new(CatalogOwner::new(catalog));
+            let counts = FjCatalogCounts {
+                film_count: owner.count(Role::Film),
+                print_count: owner.count(Role::Print),
+            };
+            #[cfg(feature = "test-support")]
+            LIVE_CATALOGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out_counts.write(counts);
+            out_catalog.write(Box::into_raw(owner).cast());
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// catalog is live through all returned-view use. Outputs and diagnostics are
+/// aligned, exclusive and disjoint from owner storage and other call storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_catalog_entry(
+    catalog: *const FjCatalog,
+    role: u32,
+    index: usize,
+    out_entry: *mut FjCatalogEntryView,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_entry.is_null() {
+        // SAFETY: Caller authorizes this exclusive record.
+        unsafe { out_entry.write(FjCatalogEntryView::empty()) };
+    }
+    // SAFETY: The owner and disjoint output/diagnostics obey the export contract.
+    unsafe {
+        run(error, || {
+            if catalog.is_null() || out_entry.is_null() {
+                return Err(Failure::Input("NULL catalog entry input/output"));
+            }
+            let role = match role {
+                FJ_PROFILE_ROLE_FILM => Role::Film,
+                FJ_PROFILE_ROLE_PRINT => Role::Print,
+                _ => return Err(Failure::Input("unknown profile role")),
+            };
+            let view = (&*catalog.cast::<CatalogOwner>())
+                .entry(role, index)
+                .ok_or(Failure::Input("catalog index out of range"))?;
+            out_entry.write(FjCatalogEntryView::from_view(view)?);
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// catalog is NULL or a matching live owner taken once; release excludes reads
+/// and outstanding views. Diagnostics follow the exclusive storage contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_catalog_release(
+    catalog: *mut FjCatalog,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Matching live allocation is taken before diagnostic validation.
+    #[cfg(feature = "test-support")]
+    if !catalog.is_null() {
+        LIVE_CATALOGS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    let owner = if catalog.is_null() {
+        None
+    } else {
+        // SAFETY: The matching live Box allocation is taken exactly once.
+        Some(unsafe { Box::from_raw(catalog.cast::<CatalogOwner>()) })
+    };
+    // SAFETY: Cleanup of the captured owner is contained even on malformed error.
+    unsafe {
+        run(error, move || {
+            drop(owner);
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+#[cfg(feature = "test-support")]
+static LIVE_ASSETS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(feature = "test-support")]
+static LIVE_CATALOGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(any(test, feature = "test-support"))]
+thread_local! { static FAULT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+#[cfg(any(test, feature = "test-support"))]
+fn inject() -> Result<(), Failure> {
+    match FAULT.replace(0) {
+        1 => panic!("catalog projection fixture panic"),
+        2 => {
+            let mut units = Vec::<u16>::new();
+            units.try_reserve(usize::MAX).map_err(Failure::Capacity)
+        }
+        _ => Ok(()),
+    }
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_catalog_fault(fault: u32) {
+    FAULT.set(fault);
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_assets_live_owners() -> usize {
+    LIVE_ASSETS.load(std::sync::atomic::Ordering::Relaxed)
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_catalog_live_owners() -> usize {
+    LIVE_CATALOGS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn layouts_and_explicit_tags() {
+        assert_eq!(
+            (size_of::<FjCatalogCounts>(), align_of::<FjCatalogCounts>()),
+            (16, 8)
+        );
+        assert_eq!(
+            (
+                offset_of!(FjCatalogCounts, film_count),
+                offset_of!(FjCatalogCounts, print_count)
+            ),
+            (0, 8)
+        );
+        assert_eq!(
+            (
+                size_of::<FjCatalogEntryView>(),
+                align_of::<FjCatalogEntryView>()
+            ),
+            (40, 8)
+        );
+        assert_eq!(
+            (
+                offset_of!(FjCatalogEntryView, key),
+                offset_of!(FjCatalogEntryView, label),
+                offset_of!(FjCatalogEntryView, polarity)
+            ),
+            (0, 16, 32)
+        );
+        assert_eq!(
+            (
+                FJ_PROFILE_ROLE_FILM,
+                FJ_PROFILE_ROLE_PRINT,
+                FJ_POLARITY_NEGATIVE,
+                FJ_POLARITY_POSITIVE
+            ),
+            (0, 1, 0, 1)
+        );
+    }
+
+    #[test]
+    fn rejected_diagnostics_drop_taken_capture_inside_containment() {
+        struct Observed<'a>(&'a std::cell::Cell<bool>);
+        impl Drop for Observed<'_> {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let dropped = std::cell::Cell::new(false);
+        let owner = Observed(&dropped);
+        let mut malformed = FjErrorBuffer {
+            data: std::ptr::null_mut(),
+            capacity: 1,
+            length: 99,
+        };
+        // SAFETY: Exclusive aligned error record; no backing accessed for malformed shape.
+        let result = unsafe {
+            run(&raw mut malformed, move || {
+                drop(owner);
+                Ok(())
+            })
+        };
+        assert!(matches!(
+            result,
+            Err(FjStatus {
+                category: FJ_STATUS_UNSUPPORTED_INPUT,
+                ..
+            })
+        ));
+        assert!(dropped.get());
+        assert_eq!(malformed.length, 0);
+    }
+
+    #[test]
+    fn panic_and_capacity_leave_acquisition_empty_and_retry_source() {
+        let assets =
+            Assets::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
+        let borrowed = (&raw const assets).cast::<FjAssets>();
+        for (fault, expected) in [
+            (1, FJ_STATUS_INTERNAL_FAILURE),
+            (2, FJ_STATUS_ALLOCATION_FAILURE),
+        ] {
+            FAULT.set(fault);
+            let mut owner = std::ptr::null_mut();
+            let mut counts = FjCatalogCounts {
+                film_count: 999,
+                print_count: 999,
+            };
+            // SAFETY: Live stack owner and exclusive disjoint outputs, null diagnostics.
+            let result = unsafe {
+                fj_legacy_catalog_acquire(
+                    borrowed,
+                    &raw mut owner,
+                    &raw mut counts,
+                    std::ptr::null_mut(),
+                )
+            };
+            assert_eq!(result.category, expected);
+            assert!(owner.is_null());
+            assert_eq!((counts.film_count, counts.print_count), (0, 0));
+        }
+        let snapshot = assets.catalog().unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &snapshot,
+            &assets.catalog().unwrap()
+        ));
+    }
+}
+
+/// # Safety
+/// Assets is live through return; key has its documented initialized extent.
+/// Outputs/diagnostics are aligned, exclusive and disjoint from all borrows.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_film_profile_acquire(
+    assets: *const FjAssets,
+    input_key: FjStringView,
+    out_profile: *mut *mut FjFilmProfile,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_profile.is_null() {
+        // SAFETY: The caller authorizes one exclusive output slot.
+        unsafe { out_profile.write(std::ptr::null_mut()) };
+    }
+    // SAFETY: Live owner and disjoint caller storage follow the export contract.
+    unsafe {
+        run(error, || {
+            if assets.is_null() || out_profile.is_null() {
+                return Err(Failure::Input("NULL film acquisition input/output"));
+            }
+            let profile = (&*assets.cast::<Assets>())
+                .film(key(input_key)?)
+                .map_err(Failure::Asset)?;
+            #[cfg(any(test, feature = "test-support"))]
+            profile_inject()?;
+            let owner = Box::new(FilmOwner::new(profile));
+            #[cfg(feature = "test-support")]
+            LIVE_PROFILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out_profile.write(Box::into_raw(owner).cast());
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Profile is live through every returned-view use; release excludes borrows.
+/// Outputs and diagnostics are aligned, exclusive and mutually disjoint.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_film_profile_view(
+    profile: *const FjFilmProfile,
+    out_view: *mut FjFilmProfileView,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_view.is_null() {
+        // SAFETY: This raw record contains only numeric fields and nullable
+        // pointers; all-zero initializes every semantic empty output field.
+        unsafe { out_view.write(std::mem::zeroed()) };
+    }
+    // SAFETY: Matching live owner and authorized disjoint output storage.
+    unsafe {
+        run(error, || {
+            if profile.is_null() || out_view.is_null() {
+                return Err(Failure::Input("NULL film view input/output"));
+            }
+            out_view.write(FjFilmProfileView::from_view(
+                (&*profile.cast::<FilmOwner>()).view(),
+            ));
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Profile is NULL or a matching live allocation consumed once. The caller
+/// excludes every use/outstanding view. Diagnostics obey the disjoint contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_film_profile_release(
+    profile: *mut FjFilmProfile,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let owner = if profile.is_null() {
+        None
+    } else {
+        #[cfg(feature = "test-support")]
+        LIVE_PROFILES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: Matching Box is taken once before diagnostic validation.
+        Some(unsafe { Box::from_raw(profile.cast::<FilmOwner>()) })
+    };
+    // SAFETY: Taken owner drops inside containment even on rejected diagnostics.
+    unsafe {
+        run(error, move || {
+            drop(owner);
+            #[cfg(any(test, feature = "test-support"))]
+            if PROFILE_FAULT.replace(0) == 3 {
+                return Err(Failure::Internal(
+                    "profile release fixture failure after consume",
+                ));
+            }
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Assets is live through return; key has its documented initialized extent.
+/// Outputs/diagnostics are aligned, exclusive and disjoint from all borrows.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_print_profile_acquire(
+    assets: *const FjAssets,
+    input_key: FjStringView,
+    out_profile: *mut *mut FjPrintProfile,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_profile.is_null() {
+        // SAFETY: The caller authorizes one exclusive output slot.
+        unsafe { out_profile.write(std::ptr::null_mut()) };
+    }
+    // SAFETY: Live owner and disjoint caller storage follow the export contract.
+    unsafe {
+        run(error, || {
+            if assets.is_null() || out_profile.is_null() {
+                return Err(Failure::Input("NULL print acquisition input/output"));
+            }
+            let profile = (&*assets.cast::<Assets>())
+                .print(key(input_key)?)
+                .map_err(Failure::Asset)?;
+            #[cfg(any(test, feature = "test-support"))]
+            profile_inject()?;
+            let owner = Box::new(PrintOwner::new(profile));
+            #[cfg(feature = "test-support")]
+            LIVE_PROFILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out_profile.write(Box::into_raw(owner).cast());
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Profile is live through every returned-view use; release excludes borrows.
+/// Outputs and diagnostics are aligned, exclusive and mutually disjoint.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_print_profile_view(
+    profile: *const FjPrintProfile,
+    out_view: *mut FjPrintProfileView,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_view.is_null() {
+        // SAFETY: This raw record contains only numeric fields and nullable
+        // pointers; all-zero initializes every semantic empty output field.
+        unsafe { out_view.write(std::mem::zeroed()) };
+    }
+    // SAFETY: Matching live owner and authorized disjoint output storage.
+    unsafe {
+        run(error, || {
+            if profile.is_null() || out_view.is_null() {
+                return Err(Failure::Input("NULL print view input/output"));
+            }
+            out_view.write(FjPrintProfileView::from_view(
+                (&*profile.cast::<PrintOwner>()).view(),
+            ));
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Profile is NULL or a matching live allocation consumed once. The caller
+/// excludes every use/outstanding view. Diagnostics obey the disjoint contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_print_profile_release(
+    profile: *mut FjPrintProfile,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let owner = if profile.is_null() {
+        None
+    } else {
+        #[cfg(feature = "test-support")]
+        LIVE_PROFILES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: Matching Box is taken once before diagnostic validation.
+        Some(unsafe { Box::from_raw(profile.cast::<PrintOwner>()) })
+    };
+    // SAFETY: Taken owner drops inside containment even on rejected diagnostics.
+    unsafe {
+        run(error, move || {
+            drop(owner);
+            #[cfg(any(test, feature = "test-support"))]
+            if PROFILE_FAULT.replace(0) == 3 {
+                return Err(Failure::Internal(
+                    "profile release fixture failure after consume",
+                ));
+            }
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Print profile is a live matching owner; disjoint output and diagnostics are
+/// exclusive. Immutable samples may overlap only with disjoint output storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_print_profile_sample_density(
+    profile: *const FjPrintProfile,
+    gamma: f64,
+    out_curves: *mut *mut FjPrintDensityCurves,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_curves.is_null() {
+        // SAFETY: Caller authorizes one exclusive output slot.
+        unsafe { out_curves.write(std::ptr::null_mut()) };
+    }
+    // SAFETY: Matching live owner and disjoint authorized output storage.
+    unsafe {
+        run(error, || {
+            if profile.is_null() || out_curves.is_null() {
+                return Err(Failure::Input("NULL print sample input/output"));
+            }
+            #[cfg(any(test, feature = "test-support"))]
+            profile_inject()?;
+            let curves = (&*profile.cast::<PrintOwner>())
+                .sample_density_curves(gamma)
+                .map_err(Failure::Gamma)?;
+            #[cfg(feature = "test-support")]
+            LIVE_DENSITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out_curves.write(Box::into_raw(Box::new(curves)).cast());
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Curves is live through returned-view use; output/diagnostics are disjoint,
+/// aligned and exclusive. Release excludes every use and outstanding view.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_print_density_view(
+    curves: *const FjPrintDensityCurves,
+    out_view: *mut FjPrintDensityView,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_view.is_null() {
+        // SAFETY: Exclusive raw output; null pointer/zero count and hash are empty.
+        unsafe {
+            out_view.write(FjPrintDensityView {
+                totals_cmy: floats(&[]),
+                hash: 0,
+            })
+        };
+    }
+    // SAFETY: Matching live result and authorized disjoint output storage.
+    unsafe {
+        run(error, || {
+            if curves.is_null() || out_view.is_null() {
+                return Err(Failure::Input("NULL print density view input/output"));
+            }
+            let owner = &*curves.cast::<PrintDensityCurves>();
+            out_view.write(FjPrintDensityView {
+                totals_cmy: floats(owner.totals().as_flattened()),
+                hash: owner.hash(),
+            });
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Curves is NULL or a matching live owner consumed once; caller excludes use
+/// and outstanding views. Diagnostics are authorized disjoint writable storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_print_density_release(
+    curves: *mut FjPrintDensityCurves,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let owner = if curves.is_null() {
+        None
+    } else {
+        #[cfg(feature = "test-support")]
+        LIVE_DENSITY.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: Matching Box consumed once before diagnostic validation.
+        Some(unsafe { Box::from_raw(curves.cast::<PrintDensityCurves>()) })
+    };
+    // SAFETY: Taken owner drops within containment including malformed error.
+    unsafe {
+        run(error, move || {
+            drop(owner);
+            #[cfg(any(test, feature = "test-support"))]
+            if PROFILE_FAULT.replace(0) == 3 {
+                return Err(Failure::Internal(
+                    "profile release fixture failure after consume",
+                ));
+            }
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Assets is live throughout this borrow; diagnostics obey the disjoint contract.
+/// Release detaches cache holds and does not revoke separately acquired owners.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_assets_release_cached_payloads(
+    assets: *const FjAssets,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Live Assets and caller-authorized diagnostics follow the contract.
+    unsafe {
+        run(error, || {
+            if assets.is_null() {
+                return Err(Failure::Input("NULL Assets cache release"));
+            }
+            (&*assets.cast::<Assets>())
+                .release_cached_payloads()
+                .map_err(Failure::Asset)?;
+            #[cfg(any(test, feature = "test-support"))]
+            if CACHE_FAILURE.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                return Err(Failure::Internal("injected post-release cache failure"));
+            }
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+#[cfg(feature = "test-support")]
+static LIVE_PROFILES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(feature = "test-support")]
+static LIVE_DENSITY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(any(test, feature = "test-support"))]
+thread_local! { static PROFILE_FAULT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+#[cfg(any(test, feature = "test-support"))]
+static CACHE_FAILURE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(any(test, feature = "test-support"))]
+fn profile_inject() -> Result<(), Failure> {
+    match PROFILE_FAULT.replace(0) {
+        1 => panic!("profile boundary fixture panic"),
+        2 => Vec::<f32>::new()
+            .try_reserve(usize::MAX)
+            .map_err(Failure::Capacity),
+        _ => Ok(()),
+    }
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_profile_fault(fault: u32) {
+    PROFILE_FAULT.set(fault);
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_profile_live_owners() -> usize {
+    LIVE_PROFILES.load(std::sync::atomic::Ordering::Relaxed)
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_print_density_live_owners() -> usize {
+    LIVE_DENSITY.load(std::sync::atomic::Ordering::Relaxed)
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_cache_release_failure() {
+    CACHE_FAILURE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(feature = "test-support")]
+static PRODUCTION_PROFILE_ABI_FACTS: &[usize] = &[
+    std::mem::size_of::<FjIlluminantView>(),
+    std::mem::align_of::<FjIlluminantView>(),
+    std::mem::offset_of!(FjIlluminantView, label),
+    std::mem::offset_of!(FjIlluminantView, temperature_kelvin),
+    std::mem::offset_of!(FjIlluminantView, kind),
+    std::mem::size_of::<FjProfileTablesView>(),
+    std::mem::align_of::<FjProfileTablesView>(),
+    std::mem::offset_of!(FjProfileTablesView, linear_sensitivity_rgb),
+    std::mem::offset_of!(FjProfileTablesView, channel_density_cmy),
+    std::mem::offset_of!(FjProfileTablesView, base_density),
+    std::mem::offset_of!(FjProfileTablesView, log_exposure),
+    std::mem::offset_of!(FjProfileTablesView, density_curves_cmy),
+    std::mem::size_of::<FjFilmDigest>(),
+    std::mem::align_of::<FjFilmDigest>(),
+    std::mem::offset_of!(FjFilmDigest, gamma_samelayer_rgb),
+    std::mem::offset_of!(FjFilmDigest, gamma_interlayer_r_to_gb),
+    std::mem::offset_of!(FjFilmDigest, gamma_interlayer_g_to_rb),
+    std::mem::offset_of!(FjFilmDigest, gamma_interlayer_b_to_rg),
+    std::mem::offset_of!(FjFilmDigest, halation_first_sigma_um),
+    std::mem::offset_of!(FjFilmDigest, halation_primary_amount),
+    std::mem::offset_of!(FjFilmDigest, hanatos_spectral_gaussian_blur_default),
+    std::mem::size_of::<FjFilmProfileView>(),
+    std::mem::align_of::<FjFilmProfileView>(),
+    std::mem::offset_of!(FjFilmProfileView, stock),
+    std::mem::offset_of!(FjFilmProfileView, reference_illuminant),
+    std::mem::offset_of!(FjFilmProfileView, viewing_illuminant),
+    std::mem::offset_of!(FjFilmProfileView, tables),
+    std::mem::offset_of!(FjFilmProfileView, wavelengths),
+    std::mem::offset_of!(FjFilmProfileView, density_curves_layers),
+    std::mem::offset_of!(FjFilmProfileView, digest),
+    std::mem::offset_of!(FjFilmProfileView, hanatos_window),
+    std::mem::offset_of!(FjFilmProfileView, hanatos_surface_rgb),
+    std::mem::offset_of!(FjFilmProfileView, asset_token),
+    std::mem::offset_of!(FjFilmProfileView, support),
+    std::mem::offset_of!(FjFilmProfileView, stage),
+    std::mem::offset_of!(FjFilmProfileView, polarity),
+    std::mem::size_of::<FjPrintProfileView>(),
+    std::mem::align_of::<FjPrintProfileView>(),
+    std::mem::offset_of!(FjPrintProfileView, stock),
+    std::mem::offset_of!(FjPrintProfileView, viewing_illuminant),
+    std::mem::offset_of!(FjPrintProfileView, tables),
+    std::mem::offset_of!(FjPrintProfileView, asset_token),
+    std::mem::offset_of!(FjPrintProfileView, stage),
+    std::mem::size_of::<FjPrintDensityView>(),
+    std::mem::align_of::<FjPrintDensityView>(),
+    std::mem::offset_of!(FjPrintDensityView, totals_cmy),
+    std::mem::offset_of!(FjPrintDensityView, hash),
+    std::mem::size_of::<FjCatalogEntryView>(),
+    std::mem::align_of::<FjCatalogEntryView>(),
+    std::mem::offset_of!(FjCatalogEntryView, key),
+    std::mem::offset_of!(FjCatalogEntryView, label),
+    std::mem::offset_of!(FjCatalogEntryView, polarity),
+    FJ_ILLUMINANT_NAMED as usize,
+    FJ_ILLUMINANT_BLACKBODY as usize,
+    FJ_PROFILE_SUPPORT_FILM as usize,
+    FJ_PROFILE_SUPPORT_PAPER as usize,
+    FJ_PROFILE_STAGE_FILMING as usize,
+    FJ_PROFILE_STAGE_PRINTING as usize,
+];
+/// # Safety
+/// count is one aligned exclusive writable size_t slot.
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_production_profile_abi_facts(count: *mut usize) -> *const usize {
+    if count.is_null() {
+        return std::ptr::null();
+    }
+    // SAFETY: Caller authorizes this exclusive output slot.
+    unsafe { count.write(PRODUCTION_PROFILE_ABI_FACTS.len()) };
+    PRODUCTION_PROFILE_ABI_FACTS.as_ptr()
+}
+#[cfg(test)]
+#[test]
+fn production_profile_layouts() {
+    assert_eq!(
+        (
+            std::mem::size_of::<FjIlluminantView>(),
+            std::mem::align_of::<FjIlluminantView>()
+        ),
+        (32, 8)
+    );
+    assert_eq!(std::mem::offset_of!(FjIlluminantView, label), 0);
+    assert_eq!(
+        std::mem::offset_of!(FjIlluminantView, temperature_kelvin),
+        16
+    );
+    assert_eq!(std::mem::offset_of!(FjIlluminantView, kind), 24);
+    assert_eq!(
+        (
+            std::mem::size_of::<FjProfileTablesView>(),
+            std::mem::align_of::<FjProfileTablesView>()
+        ),
+        (80, 8)
+    );
+    assert_eq!(
+        std::mem::offset_of!(FjProfileTablesView, linear_sensitivity_rgb),
+        0
+    );
+    assert_eq!(
+        std::mem::offset_of!(FjProfileTablesView, channel_density_cmy),
+        16
+    );
+    assert_eq!(std::mem::offset_of!(FjProfileTablesView, base_density), 32);
+    assert_eq!(std::mem::offset_of!(FjProfileTablesView, log_exposure), 48);
+    assert_eq!(
+        std::mem::offset_of!(FjProfileTablesView, density_curves_cmy),
+        64
+    );
+    assert_eq!(
+        (
+            std::mem::size_of::<FjFilmDigest>(),
+            std::mem::align_of::<FjFilmDigest>()
+        ),
+        (64, 4)
+    );
+    assert_eq!(std::mem::offset_of!(FjFilmDigest, gamma_samelayer_rgb), 0);
+    assert_eq!(
+        std::mem::offset_of!(FjFilmDigest, gamma_interlayer_r_to_gb),
+        12
+    );
+    assert_eq!(
+        std::mem::offset_of!(FjFilmDigest, gamma_interlayer_g_to_rb),
+        20
+    );
+    assert_eq!(
+        std::mem::offset_of!(FjFilmDigest, gamma_interlayer_b_to_rg),
+        28
+    );
+    assert_eq!(
+        std::mem::offset_of!(FjFilmDigest, halation_first_sigma_um),
+        36
+    );
+    assert_eq!(
+        std::mem::offset_of!(FjFilmDigest, halation_primary_amount),
+        48
+    );
+    assert_eq!(
+        std::mem::offset_of!(FjFilmDigest, hanatos_spectral_gaussian_blur_default),
+        60
+    );
+    assert_eq!(
+        (
+            std::mem::size_of::<FjFilmProfileView>(),
+            std::mem::align_of::<FjFilmProfileView>()
+        ),
+        (440, 8)
+    );
+    assert_eq!(std::mem::offset_of!(FjFilmProfileView, stock), 0);
+    assert_eq!(
+        std::mem::offset_of!(FjFilmProfileView, reference_illuminant),
+        16
+    );
+    assert_eq!(
+        std::mem::offset_of!(FjFilmProfileView, viewing_illuminant),
+        48
+    );
+    assert_eq!(std::mem::offset_of!(FjFilmProfileView, tables), 80);
+    assert_eq!(std::mem::offset_of!(FjFilmProfileView, wavelengths), 160);
+    assert_eq!(
+        std::mem::offset_of!(FjFilmProfileView, density_curves_layers),
+        176
+    );
+    assert_eq!(std::mem::offset_of!(FjFilmProfileView, digest), 320);
+    assert_eq!(std::mem::offset_of!(FjFilmProfileView, hanatos_window), 384);
+    assert_eq!(
+        std::mem::offset_of!(FjFilmProfileView, hanatos_surface_rgb),
+        400
+    );
+    assert_eq!(std::mem::offset_of!(FjFilmProfileView, asset_token), 416);
+    assert_eq!(std::mem::offset_of!(FjFilmProfileView, support), 424);
+    assert_eq!(std::mem::offset_of!(FjFilmProfileView, stage), 428);
+    assert_eq!(std::mem::offset_of!(FjFilmProfileView, polarity), 432);
+    assert_eq!(
+        (
+            std::mem::size_of::<FjPrintProfileView>(),
+            std::mem::align_of::<FjPrintProfileView>()
+        ),
+        (144, 8)
+    );
+    assert_eq!(std::mem::offset_of!(FjPrintProfileView, stock), 0);
+    assert_eq!(
+        std::mem::offset_of!(FjPrintProfileView, viewing_illuminant),
+        16
+    );
+    assert_eq!(std::mem::offset_of!(FjPrintProfileView, tables), 48);
+    assert_eq!(std::mem::offset_of!(FjPrintProfileView, asset_token), 128);
+    assert_eq!(std::mem::offset_of!(FjPrintProfileView, stage), 136);
+    assert_eq!(
+        (
+            std::mem::size_of::<FjPrintDensityView>(),
+            std::mem::align_of::<FjPrintDensityView>()
+        ),
+        (24, 8)
+    );
+    assert_eq!(std::mem::offset_of!(FjPrintDensityView, totals_cmy), 0);
+    assert_eq!(std::mem::offset_of!(FjPrintDensityView, hash), 16);
+    assert_eq!(
+        (
+            std::mem::size_of::<FjCatalogEntryView>(),
+            std::mem::align_of::<FjCatalogEntryView>()
+        ),
+        (40, 8)
+    );
+    assert_eq!(std::mem::offset_of!(FjCatalogEntryView, key), 0);
+    assert_eq!(std::mem::offset_of!(FjCatalogEntryView, label), 16);
+    assert_eq!(std::mem::offset_of!(FjCatalogEntryView, polarity), 32);
+    assert_eq!(FJ_ILLUMINANT_NAMED, 0);
+    assert_eq!(FJ_ILLUMINANT_BLACKBODY, 1);
+    assert_eq!(FJ_PROFILE_SUPPORT_FILM, 0);
+    assert_eq!(FJ_PROFILE_SUPPORT_PAPER, 1);
+    assert_eq!(FJ_PROFILE_STAGE_FILMING, 0);
+    assert_eq!(FJ_PROFILE_STAGE_PRINTING, 1);
+}
+
+#[cfg(test)]
+#[test]
+fn production_profile_signatures() {
+    let _: unsafe extern "C" fn(
+        *const FjAssets,
+        FjStringView,
+        *mut *mut FjFilmProfile,
+        *mut FjErrorBuffer,
+    ) -> FjStatus = fj_legacy_film_profile_acquire;
+    let _: unsafe extern "C" fn(
+        *const FjAssets,
+        FjStringView,
+        *mut *mut FjPrintProfile,
+        *mut FjErrorBuffer,
+    ) -> FjStatus = fj_legacy_print_profile_acquire;
+    let _: unsafe extern "C" fn(
+        *const FjFilmProfile,
+        *mut FjFilmProfileView,
+        *mut FjErrorBuffer,
+    ) -> FjStatus = fj_legacy_film_profile_view;
+    let _: unsafe extern "C" fn(
+        *const FjPrintProfile,
+        *mut FjPrintProfileView,
+        *mut FjErrorBuffer,
+    ) -> FjStatus = fj_legacy_print_profile_view;
+    let _: unsafe extern "C" fn(
+        *const FjPrintProfile,
+        f64,
+        *mut *mut FjPrintDensityCurves,
+        *mut FjErrorBuffer,
+    ) -> FjStatus = fj_legacy_print_profile_sample_density;
+    let _: unsafe extern "C" fn(
+        *const FjPrintDensityCurves,
+        *mut FjPrintDensityView,
+        *mut FjErrorBuffer,
+    ) -> FjStatus = fj_legacy_print_density_view;
+    let _: unsafe extern "C" fn(*mut FjFilmProfile, *mut FjErrorBuffer) -> FjStatus =
+        fj_legacy_film_profile_release;
+    let _: unsafe extern "C" fn(*mut FjPrintProfile, *mut FjErrorBuffer) -> FjStatus =
+        fj_legacy_print_profile_release;
+    let _: unsafe extern "C" fn(*mut FjPrintDensityCurves, *mut FjErrorBuffer) -> FjStatus =
+        fj_legacy_print_density_release;
+    let _: unsafe extern "C" fn(*const FjAssets, *mut FjErrorBuffer) -> FjStatus =
+        fj_legacy_assets_release_cached_payloads;
+}
