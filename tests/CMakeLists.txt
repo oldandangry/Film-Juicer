@@ -99,6 +99,23 @@ add_test(NAME Ffi.Host.ProfileOwner COMMAND JuicerProfileOwnerTests
     "${JUICER_TEST_ARTIFACT_ROOT}/ffi/profile-owner-resources")
 set_tests_properties(Ffi.Host.ProfileOwner PROPERTIES LABELS "host" TIMEOUT 30)
 
+add_library(juicer_catalog_test_objects OBJECT ../src/RustAssetBridge.cpp)
+target_link_libraries(juicer_catalog_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_catalog_test_objects PRIVATE JUICER_CATALOG_TEST_HOOK=1)
+add_executable(JuicerCatalogOwnerTests ffi/catalog_abi_c.c ffi/catalog_owner_test.cpp
+    $<TARGET_OBJECTS:juicer_catalog_test_objects>)
+target_link_libraries(JuicerCatalogOwnerTests PRIVATE juicer_core)
+target_compile_definitions(JuicerCatalogOwnerTests PRIVATE JUICER_CATALOG_TEST_HOOK=1)
+set_target_properties(JuicerCatalogOwnerTests PROPERTIES
+    LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerCatalogOwnerTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Ffi.Host.CatalogOwner COMMAND JuicerCatalogOwnerTests
+    "${JUICER_TEST_ARTIFACT_ROOT}/trusted-resource-decoding/C8/slice-1/catalog")
+set_tests_properties(Ffi.Host.CatalogOwner PROPERTIES LABELS "host" TIMEOUT 60)
+
 add_executable(JuicerCudaOwnerTests ffi/cuda_owner_test.cpp)
 target_link_libraries(JuicerCudaOwnerTests PRIVATE juicer_core)
 set_target_properties(JuicerCudaOwnerTests PROPERTIES LINKER_LANGUAGE CXX)
@@ -119,7 +136,7 @@ set_target_properties(JuicerCudaTerminalTests PROPERTIES LINKER_LANGUAGE CXX)
 if(UNIX)
     set_property(TARGET JuicerCudaTerminalTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
-foreach(terminal_case IN ITEMS success serialization allocation standard unknown typed wording runtime context-loss diagnostic-allocation accepting-failure
+foreach(terminal_case IN ITEMS partial-library construction catalog-retention registered-reentry success serialization allocation standard unknown typed wording runtime context-loss diagnostic-allocation accepting-failure
         unregistered unregistered-reentry unregistered-shutdown-lock unregistered-destroy-lock
         saved-shutdown-lock saved-destroy-lock accepting-shutdown-lock accepting-destroy-lock
         buffers malformed-destroy malformed-blocked-destroy shutdown-progress)

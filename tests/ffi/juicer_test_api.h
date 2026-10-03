@@ -78,6 +78,11 @@ FjStatus fj_test_film_profile_release(FjFilmProfile* owner, FjErrorBuffer* error
 /* Static process-lifetime size_t facts. count is NULL or writable size_t storage; NULL returns NULL. */
 const size_t* fj_test_profile_abi_facts(size_t* count);
 
+/* Feature-only process/catalog ownership and one-shot projection fault probes. */
+void fj_test_catalog_fault(uint32_t fault);
+size_t fj_test_assets_live_owners(void);
+size_t fj_test_catalog_live_owners(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -10,6 +10,14 @@ mod legacy_bridge;
 
 mod cuda;
 
+mod asset_catalog;
+
+#[allow(
+    unsafe_code,
+    reason = "the private production asset edge checks foreign extents and owns consume-once handles"
+)]
+mod asset_bridge;
+
 #[cfg(feature = "test-support")]
 mod asset_profile;
 

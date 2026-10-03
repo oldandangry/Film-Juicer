@@ -5,16 +5,18 @@
 #include <type_traits>
 
 #include "ProcessRoot.h"
+#include "RustAssetBridge.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "juicer_cuda_api.h"
 #include "juicer_cuda_owner.h"
+#include "juicer_test_api.h"
 
 namespace JuicerProcess::TestSupport {
 
     class RootLifetimeObserver final {
     public:
         static bool has_only_host_metadata(const Root& root, const std::string& directory) {
-            return root._dataDir == directory && root._cudaContextResources.empty() &&
+            return root._dataDir == directory + static_cast<char>(std::filesystem::path::preferred_separator) && root._cudaContextResources.empty() &&
                    root._cudaDeviceLedgers.empty() && root._activeFramePreparations == 0;
         }
     };
@@ -63,6 +65,7 @@ namespace {
             const auto consumed = owner.close();
             require(consumed.category == failed.category && consumed.api == failed.api && consumed.native_code == failed.native_code,
                     "blocked destroy retried shutdown or lost its failure");
+            require(fj_test_assets_live_owners() == 0 && fj_test_catalog_live_owners() == 0, "failed terminal close retained Rust ownership");
             require(owner.close().category == FJ_STATUS_SUCCESS, "repeated consumed close failed");
         }
         require(&JuicerProcess::root() == retained &&
@@ -72,14 +75,14 @@ namespace {
         require(JuicerCuda::ResourceManager::registry_begin_owner_retire(key, snapshot),
                 "consumed close or destruction retried context retirement");
         FjCuda* replacement = nullptr;
-        const FjStatus result = fj_cuda_create(FjStringView{"other", 5}, &replacement, nullptr);
+        const FjStatus result = fj_cuda_create(JuicerAssets::NativePathArgument(std::filesystem::path("other")).view(), &replacement, nullptr);
         require(result.category == FJ_STATUS_PREPARATION_FAILURE && !replacement,
                 "failed close allowed a replacement owner");
     }
 
 } // namespace
 
-static_assert(!std::is_constructible_v<JuicerProcess::Root, std::string>);
+static_assert(!std::is_constructible_v<JuicerProcess::Root, std::filesystem::path>);
 static_assert(!std::is_destructible_v<JuicerProcess::Root>);
 static_assert(!std::is_copy_constructible_v<JuicerCuda::Owner>);
 
@@ -96,16 +99,16 @@ int main() {
         std::array<char, 8> diagnostic{};
         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 99};
         FjCuda* rejected = nullptr;
-        FjStatus result = fj_cuda_create(FjStringView{nullptr, 1}, &rejected, &error);
+        FjStatus result = fj_cuda_create(FjPathView{nullptr, 1, FJ_PATH_UNIX_BYTES}, &rejected, &error);
         require(result.category == FJ_STATUS_UNSUPPORTED_INPUT && !rejected,
                 "invalid creation published an owner");
         require(error.length == diagnostic.size() - 1 && diagnostic.back() == '\0',
                 "creation diagnostic did not truncate/terminate");
         require_no_owner();
-        result = fj_cuda_create(FjStringView{"path", 4}, nullptr, nullptr);
+        result = fj_cuda_create(JuicerAssets::NativePathArgument(std::filesystem::path("path")).view(), nullptr, nullptr);
         require(result.category == FJ_STATUS_UNSUPPORTED_INPUT, "null output accepted");
         const std::array<char, 3> embeddedNul{{'a', '\0', 'b'}};
-        result = fj_cuda_create(FjStringView{embeddedNul.data(), embeddedNul.size()}, &rejected, nullptr);
+        result = fj_cuda_create(JuicerAssets::NativePathArgument(std::filesystem::path(std::string(embeddedNul.data(), embeddedNul.size()))).view(), &rejected, nullptr);
         require(result.category == FJ_STATUS_UNSUPPORTED_INPUT && !rejected,
                 "embedded NUL accepted in data directory");
         require_no_owner();
@@ -117,7 +120,7 @@ int main() {
             require(&root == &JuicerProcess::Root::instance(), "root accessors disagree");
             require(JuicerProcess::TestSupport::RootLifetimeObserver::has_only_host_metadata(root, directory),
                     "creation discovered CUDA resources or failed to copy directory metadata");
-            result = fj_cuda_create(FjStringView{"other", 5}, &rejected, &error);
+            result = fj_cuda_create(JuicerAssets::NativePathArgument(std::filesystem::path("other")).view(), &rejected, &error);
             require(result.category == FJ_STATUS_PREPARATION_FAILURE && !rejected,
                     "duplicate runtime was accepted");
             require(&root == &JuicerProcess::root(), "duplicate creation replaced the owner");

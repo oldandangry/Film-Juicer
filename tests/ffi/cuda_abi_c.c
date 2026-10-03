@@ -16,7 +16,7 @@
 #undef FJ_ABI_VALUE
 
 _Static_assert(_Generic((FjAbortQuery)0, uint32_t (*)(void*): 1, default: 0), "abort signature");
-_Static_assert(_Generic(&fj_cuda_create, FjStatus (*)(FjStringView, FjCuda**, FjErrorBuffer*): 1, default: 0), "create signature");
+_Static_assert(_Generic(&fj_cuda_create, FjStatus (*)(FjPathView, FjCuda**, FjErrorBuffer*): 1, default: 0), "create signature");
 _Static_assert(_Generic(&fj_cuda_inspect, FjStatus (*)(FjCuda*, const FjFrame*, FjCudaContext*, FjErrorBuffer*): 1, default: 0), "inspect signature");
 _Static_assert(_Generic(&fj_cuda_render, FjRenderOutcome (*)(FjCuda*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, FjAbortCallback, FjErrorBuffer*): 1, default: 0), "render signature");
 _Static_assert(_Generic(&fj_cuda_retire_instance, FjStatus (*)(FjCuda*, uint64_t, FjErrorBuffer*): 1, default: 0), "retire signature");

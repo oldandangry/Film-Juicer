@@ -379,8 +379,9 @@ namespace JuicerAssets {
         std::shared_ptr<const NeutralPrintCalibrationSnapshot> snapshot;
     };
 
-    Library::Library(std::string dataDir)
+    Library::Library(const std::filesystem::path& resourceRoot, std::string dataDir)
         : _dataDir(std::move(dataDir)),
+          _bridge(resourceRoot),
           _staticNoiseAssets(std::make_unique<StaticNoiseAssetSet>()),
           _illuminantFilterAssets(std::make_unique<IlluminantFilterAssetSet>()),
           _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
@@ -397,6 +398,10 @@ namespace JuicerAssets {
     }
 
     Library::~Library() = default;
+
+    FjStatus Library::close(FjErrorBuffer* error) noexcept {
+        return _bridge.close(error);
+    }
 
     void Library::ensure_catalogs() {
         std::call_once(_catalogOnce, [this]() {
@@ -417,30 +422,25 @@ namespace JuicerAssets {
     }
 
     void Library::load_catalogs() {
-        const bool traceCatalog = JTRACE_ENABLED(1);
-        _spektrafilmProfileCatalog =
-            Spektrafilm::build_profile_catalog(_dataDir);
-        if (!_spektrafilmProfileCatalog.valid) {
-            if (traceCatalog) {
-                JTRACE(
-                    "CATALOG",
-                    "spektrafilm profile catalog unavailable: " +
-                        _spektrafilmProfileCatalog.failure);
+        _spektrafilmProfileCatalog = _bridge.load_catalog();
+        // Optional trace formatting must not reopen a completed once-publication
+        // or replace its retained catalog owner after a diagnostic allocation.
+        try {
+            if (!JTRACE_ENABLED(1)) {
+                return;
             }
-            return;
-        }
-
-        if (traceCatalog) {
+            if (!_spektrafilmProfileCatalog.valid) {
+                JTRACE("CATALOG", "spektrafilm profile catalog unavailable: " + _spektrafilmProfileCatalog.failure);
+                return;
+            }
             std::ostringstream oss;
-            oss << "spektrafilm profile catalog film="
-                << _spektrafilmProfileCatalog.filmProfiles.size()
-                << " print="
-                << _spektrafilmProfileCatalog.printProfiles.size()
-                << " defaultFilm="
-                << (_spektrafilmProfileCatalog.defaultFilmPresent ? 1 : 0)
-                << " defaultPrint="
-                << (_spektrafilmProfileCatalog.defaultPrintPresent ? 1 : 0);
+            oss << "spektrafilm profile catalog film=" << _spektrafilmProfileCatalog.filmProfiles.size()
+                << " print=" << _spektrafilmProfileCatalog.printProfiles.size()
+                << " defaultFilm=" << (_spektrafilmProfileCatalog.defaultFilmPresent ? 1 : 0)
+                << " defaultPrint=" << (_spektrafilmProfileCatalog.defaultPrintPresent ? 1 : 0);
             JTRACE("CATALOG", oss.str());
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
         }
     }
 

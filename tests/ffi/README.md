@@ -10,7 +10,7 @@ new CUDA operations in a linked binary. The fixture contains no CUDA build or
 render implementation.
 
 `Rust.Bridge` additionally runs the plugin's internal ABI tests. The fixture's
-one Rust export is gated by the nondefault `test-support` feature selected by
+Test exports are gated by the nondefault `test-support` feature selected by
 CMake only for `BUILD_TESTING=ON`. Product builds consume the committed bindings;
 they do not require bindgen or libclang. Toggling `BUILD_TESTING` rebuilds the
 archive with the corresponding feature selection.
@@ -350,3 +350,64 @@ its Rust owner checks with `ctest --preset <preset> -R
 '^(Ffi.Host.ProfileOwner|Rust.Bridge)$' --output-on-failure`. Existing integration
 profile fixtures still use their native loader until their separately qualified
 migration; introducing this boundary does not change production ingestion.
+
+## Production catalog bridge
+
+`Ffi.Host.CatalogOwner` checks the private production catalog ABI in C11,
+C++20 and Rust, the retained-owner lifetime, failure-output clearing,
+concurrent acquisition, source-error stickiness and native conversion retry.
+It calls the actual native option accessors and selected film/print loaders.
+`FjCatalogEntryView` contains key, label, native source path and polarity only
+(64 bytes, alignment 8 on both supported x64 targets). Counts are role-local
+entry counts; indices are zero-based. Text is length-delimited UTF-8, including
+empty labels and embedded NUL bytes. Existing OFX C-string behavior remains.
+
+`FjPathView` counts Linux native bytes or Windows uint16_t units, excluding a
+terminator. Only the current platform's encoding is accepted; nonempty/NUL-free
+input and a checked byte extent bounded by PTRDIFF_MAX are required. No Unicode
+admission or diagnostic-text round trip selects files. Windows forwarding copies
+wchar_t units by value. Catalog paths borrow their retained FjCatalog; native
+copies own filesystem paths and the retained profile loaders open those paths
+through the native filesystem-path overload. Unrepresentable path units are
+escaped for diagnostics only. The Linux unusual-name opening fixture uses the
+native temporary filesystem because WSL's Windows-mounted volume may replace
+invalid UTF-8 bytes; it removes those fixture files on exit. Windows uses its
+configured artifact directory. Other resource families still use their existing
+root-string conversion until their own cutovers.
+
+Assets create is lazy and performs no discovery or CUDA initialization. One
+Assets belongs to the process Library. Catalog acquisition retains an immutable
+Arc; independent handles survive Assets destruction and each other's release.
+Reads allocate nothing. Windows path encodings are completed before publication.
+Caller excludes Assets destruction from acquisitions, and catalog release from
+all reads and outstanding view uses. Outputs and diagnostics are aligned,
+exclusive and disjoint. Every valid output is cleared before validation.
+Malformed diagnostics skip ordinary work, but destroy/release consume their
+owner once on every result. Truncation changes text only. Native `call_once`
+publishes a complete conversion or complete ordinary source failure. Conversion
+allocation/internal failure leaves it incomplete; subsequent explicit requests
+retry against the unchanged Rust snapshot without a second parser or reload.
+
+Root owns the whole Library through a detachable unique_ptr. Legal terminal
+close requires the host to exclude **all** option/catalog/profile/rebuild readers,
+render/preparation calls and outstanding views. A drained preparation count or
+failed GPU drain does not establish that condition. Registered reentry retains
+active host borrows and its blocked graph; it is not legal reader-excluded
+terminal completion. Registration is checked before dereference. Under legal
+terminal exclusion, Library detachment is allocation-free and precedes throwing
+owner admission. It stays alive through the single native close attempt, then
+Rust owners and native host copies are consumed outside every native lock.
+Native failure keeps precedence over host/diagnostic cleanup failure; cleanup
+never retries uncertain CUDA teardown. The retained native graph has no Library,
+Rust owner or borrowed Rust/OFX storage, and asset access fails after detachment.
+Successful or failed borrowed shutdown keeps Library attached; successful cache
+release runs after native locks unwind and retains catalog ownership.
+Construction and rejected-candidate destruction likewise run outside registration
+locks. Terminal construction/reentry/lock-failure tests use isolated API objects;
+catalog conversion seams and Rust owner/fault probes are test-only.
+
+The catalog path transport/Windows encoding/native file-open bridge is removed
+in C8 Slice 2. Asset conversion is removed in S4.E; native host Library ownership
+is removed in S5.C. These are distinct boundaries. No cache-clear or later-family
+production operation is introduced here. Installed Resolve acceptance remains
+separate from these automated ABI, host and GPU checks.

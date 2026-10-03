@@ -4462,7 +4462,7 @@ namespace JuicerProcess {
     }
 
 
-    std::string data_directory() {
+    std::filesystem::path data_directory() {
         namespace fs = std::filesystem;
 
 #if defined(_WIN32)
@@ -4471,7 +4471,7 @@ namespace JuicerProcess {
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                 reinterpret_cast<LPCWSTR>(&data_directory),
                 &module)) {
-            return std::string();
+            return {};
         }
 
         std::wstring buffer(MAX_PATH, L'\0');
@@ -4480,7 +4480,7 @@ namespace JuicerProcess {
             SetLastError(ERROR_SUCCESS);
             length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
             if (length == 0) {
-                return std::string();
+                return {};
             }
             if (length < buffer.size()) {
                 buffer.resize(length);
@@ -4496,69 +4496,80 @@ namespace JuicerProcess {
         fs::path modulePath(buffer);
         fs::path moduleDir = modulePath.parent_path();
         if (moduleDir.empty()) {
-            return std::string();
+            return {};
         }
         fs::path contentsDir = moduleDir.parent_path();
         if (contentsDir.empty()) {
-            return std::string();
+            return {};
         }
 
         fs::path resourcesDir = (contentsDir / "Resources").lexically_normal();
         resourcesDir.make_preferred();
-        std::wstring native = resourcesDir.native();
-        if (!native.empty() && native.back() != L'\\') {
-            native.push_back(L'\\');
-        }
-
-        if (native.empty()) {
-            return std::string();
-        }
-
-        int required = WideCharToMultiByte(
-            CP_UTF8,
-            0,
-            native.c_str(),
-            static_cast<int>(native.size()),
-            nullptr,
-            0,
-            nullptr,
-            nullptr);
-        if (required <= 0) {
-            return std::string();
-        }
-
-        std::string path(static_cast<size_t>(required), '\0');
-        WideCharToMultiByte(CP_UTF8, 0, native.c_str(), static_cast<int>(native.size()), path.data(), required, nullptr, nullptr);
-        return path;
+        return resourcesDir;
 #else
         Dl_info info{};
         if (dladdr(reinterpret_cast<const void*>(&data_directory), &info) == 0 || info.dli_fname == nullptr) {
-            return std::string();
+            return {};
         }
 
         fs::path modulePath(info.dli_fname);
         fs::path moduleDir = modulePath.parent_path();
         if (moduleDir.empty()) {
-            return std::string();
+            return {};
         }
         fs::path contentsDir = moduleDir.parent_path();
         if (contentsDir.empty()) {
-            return std::string();
+            return {};
         }
 
         fs::path resourcesDir = (contentsDir / "Resources").lexically_normal();
         resourcesDir.make_preferred();
-        const std::u8string utf8Path = resourcesDir.u8string();
-        std::string path(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
-        if (!path.empty() && path.back() != '/') {
-            path.push_back('/');
-        }
-        return path;
+        return resourcesDir;
 #endif
     }
 
-    Root::Root(std::string dataDirectory)
-        : _dataDir(std::move(dataDirectory)), _assets(_dataDir) {
+    namespace {
+        std::string compatibility_data_directory(const std::filesystem::path& resourcesDir) {
+#if defined(_WIN32)
+            std::wstring native = resourcesDir.native();
+            if (!native.empty() && native.back() != L'\\') {
+                native.push_back(L'\\');
+            }
+
+            if (native.empty()) {
+                return std::string();
+            }
+
+            int required = WideCharToMultiByte(
+                CP_UTF8,
+                0,
+                native.c_str(),
+                static_cast<int>(native.size()),
+                nullptr,
+                0,
+                nullptr,
+                nullptr);
+            if (required <= 0) {
+                return std::string();
+            }
+
+            std::string path(static_cast<size_t>(required), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, native.c_str(), static_cast<int>(native.size()), path.data(), required, nullptr, nullptr);
+            return path;
+#else
+            const std::u8string utf8Path = resourcesDir.u8string();
+            std::string path(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
+            if (!path.empty() && path.back() != '/') {
+                path.push_back('/');
+            }
+            return path;
+#endif
+        }
+    } // namespace
+
+    Root::Root(const std::filesystem::path& dataDirectory)
+        : _dataDir(compatibility_data_directory(dataDirectory)),
+          _assets(std::make_unique<JuicerAssets::Library>(dataDirectory, _dataDir)) {
     }
 
     Root::~Root() = default;
@@ -4584,7 +4595,6 @@ namespace JuicerProcess {
             JuicerCuda::set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "CUDA shutdown could not release context owners");
             return false;
         }
-        release_process_host_services();
         return true;
     }
 
@@ -4610,8 +4620,11 @@ namespace JuicerProcess {
         }
     }
 
-    JuicerAssets::Library& Root::assets() noexcept {
-        return _assets;
+    JuicerAssets::Library& Root::assets() {
+        if (!_assets) {
+            throw std::logic_error("terminal CUDA owner has no host assets");
+        }
+        return *_assets;
     }
 
     Root::FramePreparationToken Root::begin_frame_preparation() noexcept {
@@ -5221,7 +5234,7 @@ namespace JuicerProcess {
         }
         PreparedFrameInput prepared{preparation_identity(*request.recipe), focused, *request.filmRawConfig, *request.scannerColor, request.recipe->scannerOutput.outputGamut, {}};
         if (Spektrafilm::scan_route_is_print(prepared.identity.scanRoute)) {
-            prepared.print = JuicerCuda::PrintResourcePreparation{request.recipe, &_assets, request.printMainIlluminant};
+            prepared.print = JuicerCuda::PrintResourcePreparation{request.recipe, &assets(), request.printMainIlluminant};
         }
         prepared.scannerPostEffects = request.scannerPostEffects;
         prepared.spatialDirDescriptor = request.spatialDirDescriptor;
@@ -5596,7 +5609,13 @@ namespace JuicerProcess {
     }
 
     void Root::release_process_host_services() noexcept {
-        _assets.release_cached_payloads();
+        if (_assets) {
+            _assets->release_cached_payloads();
+        }
+    }
+
+    std::unique_ptr<JuicerAssets::Library> Root::detach_host_assets() noexcept {
+        return std::move(_assets);
     }
 
     bool Root::stop_frame_preparation() noexcept {

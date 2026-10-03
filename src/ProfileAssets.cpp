@@ -21,6 +21,7 @@
 #include "Hash.h"
 #include "Illuminants.h"
 #include "Logging.h"
+#include "RustAssetBridge.h"
 #include "SpectralData.h"
 #include "nlohmann/json.hpp"
 
@@ -157,13 +158,13 @@ namespace Profiles {
             return "unknown";
         }
 
-        bool parse_selected_json_file(const std::string& path, Json& out, std::string& error) {
+        bool parse_selected_json_file(const std::filesystem::path& path, Json& out, std::string& error) {
             errno = 0;
             std::ifstream file(path, std::ios::binary);
             if (!file.is_open()) {
                 const int err = errno;
                 error = std::string("MissingRequiredResource phase=2 field=<file> expected=profile-json actual=open-failed path=") +
-                        path + (err != 0 ? (" reason=" + std::system_category().message(err)) : std::string());
+                        JuicerAssets::path_diagnostic(path) + (err != 0 ? (" reason=" + std::system_category().message(err)) : std::string());
                 return false;
             }
 
@@ -173,7 +174,7 @@ namespace Profiles {
                 out = Json::parse(oss.str());
             } catch (const Json::exception& ex) {
                 error = std::string("MalformedRequiredProfileData phase=2 field=<json> expected=strict-json actual=parse-error path=") +
-                        path + " reason=" + ex.what();
+                        JuicerAssets::path_diagnostic(path) + " reason=" + ex.what();
                 return false;
             }
             return out.is_object();
@@ -1073,7 +1074,7 @@ namespace Profiles {
 
         template <typename ProfileT>
         bool load_validated_profile_json_impl(
-            const std::string& jsonPath,
+            const std::filesystem::path& jsonPath,
             SelectedProfileKind kind,
             ProfileT& outProfile,
             std::string* outDiagnostic) {
@@ -1088,7 +1089,7 @@ namespace Profiles {
             }
 
             SelectedProfileContext ctx;
-            ctx.path = jsonPath;
+            ctx.path = JuicerAssets::path_diagnostic(jsonPath);
             ctx.role = kind == SelectedProfileKind::Print ? "print" : "film";
 
             SpektrafilmProfileInfo info;
@@ -1149,7 +1150,7 @@ namespace Profiles {
         }
 
         bool load_validated_film_profile_json(
-            const std::string& jsonPath,
+            const std::filesystem::path& jsonPath,
             ValidatedFilmProfile& outProfile,
             std::string* outDiagnostic) {
             if (!load_validated_profile_json_impl(
@@ -1164,7 +1165,7 @@ namespace Profiles {
         }
 
         bool load_validated_print_profile_json(
-            const std::string& jsonPath,
+            const std::filesystem::path& jsonPath,
             ValidatedPrintProfile& outProfile,
             std::string* outDiagnostic) {
             return load_validated_profile_json_impl(

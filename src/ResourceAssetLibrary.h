@@ -11,6 +11,7 @@
 #include "ProfileAssets.h"
 #include "ProfileCatalog.h"
 #include "ScanRoute.h"
+#include "RustAssetBridge.h"
 #include "SpectralData.h"
 
 namespace JuicerAssets {
@@ -72,7 +73,7 @@ namespace JuicerAssets {
         struct StaticNoiseAssetSet;
         struct IlluminantFilterAssetSet;
 
-        explicit Library(std::string dataDir);
+        Library(const std::filesystem::path& resourceRoot, std::string dataDir);
         ~Library();
 
         const Spektrafilm::ProfileCatalog& spektrafilm_profile_catalog();
@@ -93,6 +94,7 @@ namespace JuicerAssets {
             const std::string& printIlluminantKey,
             const std::string& filmProfileKey);
         void release_cached_payloads() noexcept;
+        FjStatus close(FjErrorBuffer* error = nullptr) noexcept;
 
     private:
         void ensure_catalogs();
@@ -112,6 +114,7 @@ namespace JuicerAssets {
         std::once_flag _staticNoiseOnce;
         std::once_flag _illuminantFilterOnce;
         std::string _dataDir;
+        AssetBridge _bridge;
         Spektrafilm::ProfileCatalog _spektrafilmProfileCatalog;
         std::unique_ptr<StaticNoiseAssetSet> _staticNoiseAssets;
         std::unique_ptr<IlluminantFilterAssetSet> _illuminantFilterAssets;
