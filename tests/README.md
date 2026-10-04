@@ -163,6 +163,7 @@ cmake --build --preset linux-debug
 | `quality/test_check_quality.py` | Quality dispatcher selection, CUDA command translation and header owners, source hygiene, and failure propagation | `host` |
 | `quality/test_rust_naming.py` | Product naming-policy contract: current Rust code, accepted names, individually rejected names, test targets, and reasoned foreign-name exceptions under the actual workspace lints | `host`; pinned Cargo and Clippy required |
 | `quality/test_rust_boundaries.py` | Dependency/build contract and compiler-enforced profile privacy, borrowed-view lifetimes and safe-module prohibitions, with valid consumer controls | `host`; pinned Cargo required |
+| `ffi/spectral_owner_test.cpp`, `ffi/spectral_bootstrap_test.cpp` | Production spectral ABI, independent native copies, fail-closed bootstrap, selected computation and measured lifetime/capacity checks | `host` |
 | `ffi/test_native_boundary.py` | Native operation/host/context boundaries and retired profile authority, including new nested source/header and forbidden-symbol controls | `host` |
 | `ofx/probe.py` | Linux synthetic OFX load/describe/unload and captured describe properties; no parameter varargs or render | `host`, Linux only |
 | `ofx/processor_reference_test.cpp` | Native OFX image/property seam driving the current CUDA processor for four routes, a combined optics/grain/print case, and signed-zero print transitions | `gpu` |

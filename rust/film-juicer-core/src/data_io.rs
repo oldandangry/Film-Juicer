@@ -544,6 +544,22 @@ mod tests {
     }
 
     #[test]
+    fn cmf_source_capacity_receipt() {
+        let rows = load_csv_triplets(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources/cie1931_2deg.csv"),
+        )
+        .unwrap();
+        assert_eq!(rows.rows.len(), 81);
+        println!(
+            "source cmf: length={} capacity={} requested_row_bytes={} inline_payload_bytes={}",
+            rows.rows.len(),
+            rows.rows.capacity(),
+            rows.rows.capacity() * size_of::<[f32; 4]>(),
+            size_of::<CsvTriplets>()
+        );
+    }
+
+    #[test]
     fn half_conversion_bits() {
         for (half, bits) in [
             (0, 0),

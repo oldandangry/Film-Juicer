@@ -16,3 +16,8 @@ pub fn bypass_film_owner(film_owner: &FilmOwner) {
 pub fn bypass_print_owner(print_owner: &PrintOwner) {
     let _ = &print_owner.profile;
 }
+
+use crate::asset_spectral::{SpectraOwner, MallettOwner, CmfOwner};
+pub fn private_spectra(spectra_owner: SpectraOwner) { let _ = spectra_owner.lut; }
+pub fn private_mallett(mallett_owner: MallettOwner) { let _ = mallett_owner.basis; }
+pub fn private_cmf(cmf_owner: CmfOwner) { let _ = cmf_owner.rows; }

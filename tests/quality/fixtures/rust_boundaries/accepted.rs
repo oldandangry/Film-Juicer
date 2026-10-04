@@ -28,3 +28,14 @@ pub fn consume_print(owner: PrintOwner) -> usize {
     drop(owner);
     count
 }
+
+use crate::asset_spectral::{SpectraOwner, SpectraView, MallettOwner, CmfOwner};
+use film_juicer_core::assets::SpectraLut;
+use film_juicer_core::data_io::CsvTriplets;
+use std::sync::Arc;
+pub fn spectra_owner(lut: Arc<SpectraLut>) -> SpectraOwner { SpectraOwner::new(lut) }
+pub fn spectra_view(owner: &SpectraOwner) -> SpectraView<'_> { owner.view() }
+pub fn mallett_owner(basis: Arc<[[f32;3];81]>) -> MallettOwner { MallettOwner::new(basis) }
+pub fn mallett_samples(owner: &MallettOwner) -> &[[f32;3];81] { owner.samples() }
+pub fn cmf_owner(rows: Arc<CsvTriplets>) -> CmfOwner { CmfOwner::new(rows) }
+pub fn cmf_rows(owner: &CmfOwner) -> &[[f32;4]] { owner.rows() }

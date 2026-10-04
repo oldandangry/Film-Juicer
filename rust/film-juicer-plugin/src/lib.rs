@@ -20,6 +20,8 @@ mod asset_bridge;
 
 mod asset_profile;
 
+mod asset_spectral;
+
 #[cfg(feature = "test-support")]
 #[allow(
     unsafe_code,

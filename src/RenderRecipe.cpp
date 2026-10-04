@@ -2511,7 +2511,7 @@ namespace Spektrafilm {
                 return false;
             }
             if (recipe.filmRaw.rgbToRawMethod == RgbToRawMethod::Mallett2019) {
-                const NpyFloat2D& basis = Spectral::context().mallettBasis;
+                const Spectral::MallettBasis& basis = Spectral::context().mallettBasis;
                 if (basis.rows != 81 || basis.cols != 3 || basis.data.size() != 243u) {
                     return false;
                 }

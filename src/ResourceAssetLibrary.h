@@ -76,6 +76,10 @@ namespace JuicerAssets {
         Library(const std::filesystem::path& resourceRoot, std::string dataDir);
         ~Library();
 
+        Spectral::ReconstructionLut copy_hanatos_lut();
+        Spectral::ReconstructionLut copy_arctic_lut();
+        Spectral::MallettBasis copy_mallett_basis();
+        Spectral::CMFTriplets copy_cmf_triplets();
         const Spektrafilm::ProfileCatalog& spektrafilm_profile_catalog();
         std::shared_ptr<const Profiles::FilmProfile>
         selected_film_profile_for_key(const std::string& key);

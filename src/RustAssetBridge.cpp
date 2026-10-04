@@ -54,8 +54,23 @@ namespace JuicerAssets {
                 report_cleanup(fj_legacy_print_density_release(owner, nullptr));
             }
         };
+        struct SpectraDeleter {
+            void operator()(FjSpectraLut* owner) const noexcept {
+                report_cleanup(fj_legacy_spectra_lut_release(owner, nullptr));
+            }
+        };
+        struct MallettDeleter {
+            void operator()(FjMallettBasis* owner) const noexcept {
+                report_cleanup(fj_legacy_mallett_release(owner, nullptr));
+            }
+        };
+        struct CmfDeleter {
+            void operator()(FjCmf* owner) const noexcept {
+                report_cleanup(fj_legacy_cmf_release(owner, nullptr));
+            }
+        };
         [[noreturn]] void invalid_view() {
-            fail({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "invalid Rust profile view shape, tag or token");
+            fail({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "invalid Rust asset view shape, tag or token");
         }
         std::span<const float> float_span(FjFloatSpan view) {
             if (view.count > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) / sizeof(float) ||
@@ -81,6 +96,52 @@ namespace JuicerAssets {
                 std::copy_n(values.data() + row * Channels, Channels, target[row].begin());
             }
         }
+        // FJ_TEMP_BRIDGE: spectral source conversion; remove S4.E.
+        Spectral::ReconstructionLut copy_lut(
+            const FjAssets* assets,
+            FjStatus (*acquire)(const FjAssets*, FjSpectraLut**, FjErrorBuffer*),
+            const char* family) {
+            std::array<char, 512> diagnostic{};
+            FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+            FjSpectraLut* acquired = nullptr;
+            const FjStatus result = acquire(assets, &acquired, &error);
+            const std::unique_ptr<FjSpectraLut, SpectraDeleter> owner(acquired);
+            if (result.category != FJ_STATUS_SUCCESS) {
+                fail(result, {diagnostic.data(), error.length});
+            }
+            FjSpectraLutView view{};
+            const FjStatus viewed = fj_legacy_spectra_lut_view(owner.get(), &view, &error);
+            if (viewed.category != FJ_STATUS_SUCCESS) {
+                fail(viewed, {diagnostic.data(), error.length});
+            }
+#if defined(JUICER_SPECTRAL_TEST_HOOK)
+            SpectralTest::lut_view(family, view);
+#else
+            (void)family;
+#endif
+            const auto samples = float_span(view.samples);
+            constexpr std::size_t kCount = std::size_t{192} * 192u * 81u;
+            if (samples.size() != kCount || view.asset_hash == 0) {
+                invalid_view();
+            }
+            Spectral::ReconstructionLut copy;
+            if (samples.size() > copy.data.max_size()) {
+                invalid_view();
+            }
+            copy.data.resize(kCount);
+#if defined(JUICER_SPECTRAL_TEST_HOOK)
+            SpectralTest::copy_allocated(family, copy.data.capacity());
+#endif
+            std::copy(samples.begin(), samples.end(), copy.data.begin());
+            copy.size = 192;
+            copy.numSamples = 81;
+            copy.assetHash = view.asset_hash;
+#if defined(JUICER_SPECTRAL_TEST_HOOK)
+            SpectralTest::copy_complete(family, copy.data.size(), copy.data.capacity());
+#endif
+            return copy;
+        }
+
         Profiles::ProfileIlluminant copy_illuminant(FjIlluminantView view);
 
         template <typename Samples>
@@ -680,5 +741,91 @@ namespace JuicerAssets {
         }
         _catalog = owner.release();
         return candidate;
+    }
+} // namespace JuicerAssets
+
+namespace JuicerAssets {
+    Spectral::ReconstructionLut AssetBridge::copy_hanatos_lut() {
+        return copy_lut(_assets, fj_legacy_hanatos_acquire, "hanatos");
+    }
+    Spectral::ReconstructionLut AssetBridge::copy_arctic_lut() {
+        return copy_lut(_assets, fj_legacy_arctic_acquire, "arctic");
+    }
+    Spectral::MallettBasis AssetBridge::copy_mallett_basis() {
+        std::array<char, 512> diagnostic{};
+        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+        FjMallettBasis* acquired = nullptr;
+        const auto result = fj_legacy_mallett_acquire(_assets, &acquired, &error);
+        const std::unique_ptr<FjMallettBasis, MallettDeleter> owner(acquired);
+        if (result.category != FJ_STATUS_SUCCESS) {
+            fail(result, {diagnostic.data(), error.length});
+        }
+        FjFloatSpan view{};
+        const auto viewed = fj_legacy_mallett_view(owner.get(), &view, &error);
+        if (viewed.category != FJ_STATUS_SUCCESS) {
+            fail(viewed, {diagnostic.data(), error.length});
+        }
+#if defined(JUICER_SPECTRAL_TEST_HOOK)
+        SpectralTest::mallett_view(view);
+#endif
+        const auto samples = float_span(view);
+        if (samples.size() != 243u) {
+            invalid_view();
+        }
+        Spectral::MallettBasis copy;
+        copy.data.resize(243u);
+#if defined(JUICER_SPECTRAL_TEST_HOOK)
+        SpectralTest::copy_allocated("mallett", copy.data.capacity());
+#endif
+        std::copy(samples.begin(), samples.end(), copy.data.begin());
+        copy.rows = 81;
+        copy.cols = 3;
+#if defined(JUICER_SPECTRAL_TEST_HOOK)
+        SpectralTest::copy_complete("mallett", copy.data.size(), copy.data.capacity());
+#endif
+        return copy;
+    }
+    Spectral::CMFTriplets AssetBridge::copy_cmf_triplets() {
+        std::array<char, 512> diagnostic{};
+        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+        FjCmf* acquired = nullptr;
+        const auto result = fj_legacy_cmf_acquire(_assets, &acquired, &error);
+        const std::unique_ptr<FjCmf, CmfDeleter> owner(acquired);
+        if (result.category != FJ_STATUS_SUCCESS) {
+            fail(result, {diagnostic.data(), error.length});
+        }
+        FjFloatSpan view{};
+        const auto viewed = fj_legacy_cmf_view(owner.get(), &view, &error);
+        if (viewed.category != FJ_STATUS_SUCCESS) {
+            fail(viewed, {diagnostic.data(), error.length});
+        }
+#if defined(JUICER_SPECTRAL_TEST_HOOK)
+        SpectralTest::cmf_view(view);
+#endif
+        const auto samples = float_span(view);
+        if (samples.size() % 4u != 0) {
+            invalid_view();
+        }
+        const auto rows = samples.size() / 4u;
+        Spectral::CMFTriplets copy;
+        if (rows > copy.xbar.max_size()) {
+            invalid_view();
+        }
+        for (auto* channel : {&copy.xbar, &copy.ybar, &copy.zbar}) {
+            channel->resize(rows);
+#if defined(JUICER_SPECTRAL_TEST_HOOK)
+            SpectralTest::copy_allocated("cmf", channel->capacity());
+#endif
+        }
+        for (std::size_t row = 0; row < rows; ++row) {
+            const auto base = row * 4u;
+            copy.xbar[row] = {samples[base], samples[base + 1u]};
+            copy.ybar[row] = {samples[base], samples[base + 2u]};
+            copy.zbar[row] = {samples[base], samples[base + 3u]};
+        }
+#if defined(JUICER_SPECTRAL_TEST_HOOK)
+        SpectralTest::copy_complete("cmf", rows * 3u, copy.xbar.capacity() + copy.ybar.capacity() + copy.zbar.capacity());
+#endif
+        return copy;
     }
 } // namespace JuicerAssets

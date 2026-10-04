@@ -10,6 +10,9 @@ use film_juicer_core::profile::{
     IlluminantKind, Polarity, Role, Stage, Support, ProfileCompletionErrorKind, PrintDensityCurves,
     PrintDensityError,
 };
+use film_juicer_core::data_io::ReadErrorKind;
+use crate::asset_spectral::{CmfOwner, MallettOwner, SpectraOwner};
+
 use crate::asset_profile::{
     FilmOwner, FilmView, IlluminantView, PrintOwner, PrintView, ProfileTablesView,
 };
@@ -276,6 +279,12 @@ impl Failure {
                 ProfileCompletionErrorKind::Capacity => FJ_STATUS_ALLOCATION_FAILURE,
                 _ => FJ_STATUS_PREPARATION_FAILURE,
             },
+            Self::Asset(AssetError::Reconstruction(error) | AssetError::Cmf(error)) => {
+                match error.kind {
+                    ReadErrorKind::Capacity => FJ_STATUS_ALLOCATION_FAILURE,
+                    _ => FJ_STATUS_PREPARATION_FAILURE,
+                }
+            }
             Self::Gamma(PrintDensityError::InvalidGamma) => FJ_STATUS_UNSUPPORTED_INPUT,
             Self::Gamma(PrintDensityError::Capacity) => FJ_STATUS_ALLOCATION_FAILURE,
             Self::Gamma(_) => FJ_STATUS_PREPARATION_FAILURE,
@@ -1350,4 +1359,463 @@ fn production_profile_signatures() {
         fj_legacy_print_density_release;
     let _: unsafe extern "C" fn(*const FjAssets, *mut FjErrorBuffer) -> FjStatus =
         fj_legacy_assets_release_cached_payloads;
+}
+
+// FJ_TEMP_BRIDGE: spectral source conversion; remove S4.E.
+#[repr(C)]
+struct FjSpectraLut {
+    _opaque: [u8; 0],
+}
+#[repr(C)]
+struct FjMallettBasis {
+    _opaque: [u8; 0],
+}
+#[repr(C)]
+struct FjCmf {
+    _opaque: [u8; 0],
+}
+#[repr(C)]
+struct FjSpectraLutView {
+    samples: FjFloatSpan,
+    asset_hash: u64,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! { static SPECTRAL_FAULT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+#[cfg(feature = "test-support")]
+static LIVE_SPECTRAL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(any(test, feature = "test-support"))]
+fn spectral_inject() -> Result<(), Failure> {
+    match SPECTRAL_FAULT.replace(0) {
+        1 => panic!("spectral projection fixture panic"),
+        2 => Vec::<f32>::new()
+            .try_reserve(usize::MAX)
+            .map_err(Failure::Capacity),
+        _ => Ok(()),
+    }
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_spectral_fault(fault: u32) {
+    SPECTRAL_FAULT.set(fault);
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_spectral_live_owners() -> usize {
+    LIVE_SPECTRAL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// # Safety
+/// Assets is live through return. Outputs/diagnostics are aligned, exclusive
+/// and disjoint from all input/owner storage. Only success transfers ownership.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_hanatos_acquire(
+    assets: *const FjAssets,
+    out_owner: *mut *mut FjSpectraLut,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_owner.is_null() {
+        // SAFETY: The caller authorizes one exclusive output slot.
+        unsafe { out_owner.write(std::ptr::null_mut()) };
+    }
+    // SAFETY: Live matching owner and disjoint caller storage obey the contract.
+    unsafe {
+        run(error, || {
+            if assets.is_null() || out_owner.is_null() {
+                return Err(Failure::Input("NULL hanatos acquisition input/output"));
+            }
+            let source = (&*assets.cast::<Assets>())
+                .hanatos()
+                .map_err(Failure::Asset)?;
+            #[cfg(any(test, feature = "test-support"))]
+            spectral_inject()?;
+            let owner = Box::new(SpectraOwner::new(source));
+            #[cfg(feature = "test-support")]
+            LIVE_SPECTRAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out_owner.write(Box::into_raw(owner).cast());
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Assets is live through return. Outputs/diagnostics are aligned, exclusive
+/// and disjoint from all input/owner storage. Only success transfers ownership.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_arctic_acquire(
+    assets: *const FjAssets,
+    out_owner: *mut *mut FjSpectraLut,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_owner.is_null() {
+        // SAFETY: The caller authorizes one exclusive output slot.
+        unsafe { out_owner.write(std::ptr::null_mut()) };
+    }
+    // SAFETY: Live matching owner and disjoint caller storage obey the contract.
+    unsafe {
+        run(error, || {
+            if assets.is_null() || out_owner.is_null() {
+                return Err(Failure::Input("NULL arctic acquisition input/output"));
+            }
+            let source = (&*assets.cast::<Assets>())
+                .arctic()
+                .map_err(Failure::Asset)?;
+            #[cfg(any(test, feature = "test-support"))]
+            spectral_inject()?;
+            let owner = Box::new(SpectraOwner::new(source));
+            #[cfg(feature = "test-support")]
+            LIVE_SPECTRAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out_owner.write(Box::into_raw(owner).cast());
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Assets is live through return. Outputs/diagnostics are aligned, exclusive
+/// and disjoint from all input/owner storage. Only success transfers ownership.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_mallett_acquire(
+    assets: *const FjAssets,
+    out_owner: *mut *mut FjMallettBasis,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_owner.is_null() {
+        // SAFETY: The caller authorizes one exclusive output slot.
+        unsafe { out_owner.write(std::ptr::null_mut()) };
+    }
+    // SAFETY: Live matching owner and disjoint caller storage obey the contract.
+    unsafe {
+        run(error, || {
+            if assets.is_null() || out_owner.is_null() {
+                return Err(Failure::Input("NULL mallett acquisition input/output"));
+            }
+            let source = (&*assets.cast::<Assets>())
+                .mallett()
+                .map_err(Failure::Asset)?;
+            #[cfg(any(test, feature = "test-support"))]
+            spectral_inject()?;
+            let owner = Box::new(MallettOwner::new(source));
+            #[cfg(feature = "test-support")]
+            LIVE_SPECTRAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out_owner.write(Box::into_raw(owner).cast());
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Assets is live through return. Outputs/diagnostics are aligned, exclusive
+/// and disjoint from all input/owner storage. Only success transfers ownership.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_cmf_acquire(
+    assets: *const FjAssets,
+    out_owner: *mut *mut FjCmf,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_owner.is_null() {
+        // SAFETY: The caller authorizes one exclusive output slot.
+        unsafe { out_owner.write(std::ptr::null_mut()) };
+    }
+    // SAFETY: Live matching owner and disjoint caller storage obey the contract.
+    unsafe {
+        run(error, || {
+            if assets.is_null() || out_owner.is_null() {
+                return Err(Failure::Input("NULL cmf acquisition input/output"));
+            }
+            let source = (&*assets.cast::<Assets>()).cmf().map_err(Failure::Asset)?;
+            #[cfg(any(test, feature = "test-support"))]
+            spectral_inject()?;
+            let owner = Box::new(CmfOwner::new(source));
+            #[cfg(feature = "test-support")]
+            LIVE_SPECTRAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out_owner.write(Box::into_raw(owner).cast());
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// The live matching owner remains held through every returned-view use.
+/// Output/diagnostics are aligned, exclusive and disjoint. Release excludes reads.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_spectra_lut_view(
+    owner: *const FjSpectraLut,
+    out_view: *mut FjSpectraLutView,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_view.is_null() {
+        // SAFETY: Nullable pointers and integer fields have all-zero empty values.
+        unsafe { out_view.write(std::mem::zeroed()) };
+    }
+    // SAFETY: Matching owner and authorized disjoint output/diagnostic storage.
+    unsafe {
+        run(error, || {
+            if owner.is_null() || out_view.is_null() {
+                return Err(Failure::Input("NULL spectra_lut view input/output"));
+            }
+            #[cfg(any(test, feature = "test-support"))]
+            spectral_inject()?;
+            let view = (&*owner.cast::<SpectraOwner>()).view();
+            out_view.write(FjSpectraLutView {
+                samples: floats(view.samples),
+                asset_hash: view.asset_hash,
+            });
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// owner is NULL or a live matching allocation consumed once. Caller excludes
+/// all operations and outstanding borrows; diagnostics obey the disjoint contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_spectra_lut_release(
+    owner: *mut FjSpectraLut,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let taken = if owner.is_null() {
+        None
+    } else {
+        #[cfg(feature = "test-support")]
+        LIVE_SPECTRAL.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: Matching Box is taken exactly once before diagnostic validation.
+        Some(unsafe { Box::from_raw(owner.cast::<SpectraOwner>()) })
+    };
+    // SAFETY: Captured owner drops within containment even on rejected diagnostics.
+    unsafe {
+        run(error, move || {
+            drop(taken);
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// The live matching owner remains held through every returned-view use.
+/// Output/diagnostics are aligned, exclusive and disjoint. Release excludes reads.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_mallett_view(
+    owner: *const FjMallettBasis,
+    out_view: *mut FjFloatSpan,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_view.is_null() {
+        // SAFETY: Nullable pointers and integer fields have all-zero empty values.
+        unsafe { out_view.write(std::mem::zeroed()) };
+    }
+    // SAFETY: Matching owner and authorized disjoint output/diagnostic storage.
+    unsafe {
+        run(error, || {
+            if owner.is_null() || out_view.is_null() {
+                return Err(Failure::Input("NULL mallett view input/output"));
+            }
+            #[cfg(any(test, feature = "test-support"))]
+            spectral_inject()?;
+            out_view.write(floats(
+                (&*owner.cast::<MallettOwner>()).samples().as_flattened(),
+            ));
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// owner is NULL or a live matching allocation consumed once. Caller excludes
+/// all operations and outstanding borrows; diagnostics obey the disjoint contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_mallett_release(
+    owner: *mut FjMallettBasis,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let taken = if owner.is_null() {
+        None
+    } else {
+        #[cfg(feature = "test-support")]
+        LIVE_SPECTRAL.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: Matching Box is taken exactly once before diagnostic validation.
+        Some(unsafe { Box::from_raw(owner.cast::<MallettOwner>()) })
+    };
+    // SAFETY: Captured owner drops within containment even on rejected diagnostics.
+    unsafe {
+        run(error, move || {
+            drop(taken);
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// The live matching owner remains held through every returned-view use.
+/// Output/diagnostics are aligned, exclusive and disjoint. Release excludes reads.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_cmf_view(
+    owner: *const FjCmf,
+    out_view: *mut FjFloatSpan,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_view.is_null() {
+        // SAFETY: Nullable pointers and integer fields have all-zero empty values.
+        unsafe { out_view.write(std::mem::zeroed()) };
+    }
+    // SAFETY: Matching owner and authorized disjoint output/diagnostic storage.
+    unsafe {
+        run(error, || {
+            if owner.is_null() || out_view.is_null() {
+                return Err(Failure::Input("NULL cmf view input/output"));
+            }
+            #[cfg(any(test, feature = "test-support"))]
+            spectral_inject()?;
+            out_view.write(floats((&*owner.cast::<CmfOwner>()).rows().as_flattened()));
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// owner is NULL or a live matching allocation consumed once. Caller excludes
+/// all operations and outstanding borrows; diagnostics obey the disjoint contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_cmf_release(
+    owner: *mut FjCmf,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let taken = if owner.is_null() {
+        None
+    } else {
+        #[cfg(feature = "test-support")]
+        LIVE_SPECTRAL.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: Matching Box is taken exactly once before diagnostic validation.
+        Some(unsafe { Box::from_raw(owner.cast::<CmfOwner>()) })
+    };
+    // SAFETY: Captured owner drops within containment even on rejected diagnostics.
+    unsafe {
+        run(error, move || {
+            drop(taken);
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+#[cfg(test)]
+mod spectral_tests {
+    use super::*;
+    use std::mem::{align_of, offset_of, size_of};
+    #[test]
+    fn production_spectral_signatures() {
+        let _: unsafe extern "C" fn(
+            *const FjAssets,
+            *mut *mut FjSpectraLut,
+            *mut FjErrorBuffer,
+        ) -> FjStatus = fj_legacy_hanatos_acquire;
+        let _: unsafe extern "C" fn(
+            *const FjAssets,
+            *mut *mut FjSpectraLut,
+            *mut FjErrorBuffer,
+        ) -> FjStatus = fj_legacy_arctic_acquire;
+        let _: unsafe extern "C" fn(
+            *const FjSpectraLut,
+            *mut FjSpectraLutView,
+            *mut FjErrorBuffer,
+        ) -> FjStatus = fj_legacy_spectra_lut_view;
+        let _: unsafe extern "C" fn(*mut FjSpectraLut, *mut FjErrorBuffer) -> FjStatus =
+            fj_legacy_spectra_lut_release;
+        let _: unsafe extern "C" fn(
+            *const FjAssets,
+            *mut *mut FjMallettBasis,
+            *mut FjErrorBuffer,
+        ) -> FjStatus = fj_legacy_mallett_acquire;
+        let _: unsafe extern "C" fn(
+            *const FjMallettBasis,
+            *mut FjFloatSpan,
+            *mut FjErrorBuffer,
+        ) -> FjStatus = fj_legacy_mallett_view;
+        let _: unsafe extern "C" fn(*mut FjMallettBasis, *mut FjErrorBuffer) -> FjStatus =
+            fj_legacy_mallett_release;
+        let _: unsafe extern "C" fn(
+            *const FjAssets,
+            *mut *mut FjCmf,
+            *mut FjErrorBuffer,
+        ) -> FjStatus = fj_legacy_cmf_acquire;
+        let _: unsafe extern "C" fn(
+            *const FjCmf,
+            *mut FjFloatSpan,
+            *mut FjErrorBuffer,
+        ) -> FjStatus = fj_legacy_cmf_view;
+        let _: unsafe extern "C" fn(*mut FjCmf, *mut FjErrorBuffer) -> FjStatus =
+            fj_legacy_cmf_release;
+    }
+    #[test]
+    fn layout_and_source_error_categories() {
+        assert_eq!(
+            (size_of::<FjFloatSpan>(), align_of::<FjFloatSpan>()),
+            (16, 8)
+        );
+        assert_eq!(
+            (
+                offset_of!(FjFloatSpan, data),
+                offset_of!(FjFloatSpan, count)
+            ),
+            (0, 8)
+        );
+        assert_eq!(
+            (
+                size_of::<FjSpectraLutView>(),
+                align_of::<FjSpectraLutView>()
+            ),
+            (24, 8)
+        );
+        assert_eq!(
+            (
+                offset_of!(FjSpectraLutView, samples),
+                offset_of!(FjSpectraLutView, asset_hash)
+            ),
+            (0, 16)
+        );
+        for kind in [
+            ReadErrorKind::Capacity,
+            ReadErrorKind::Size,
+            ReadErrorKind::Open(std::io::ErrorKind::NotFound),
+            ReadErrorKind::Io {
+                part: film_juicer_core::data_io::ReadPart::Payload,
+                kind: std::io::ErrorKind::UnexpectedEof,
+            },
+            ReadErrorKind::ShortRead(film_juicer_core::data_io::ReadPart::Header),
+            ReadErrorKind::InvalidNpy {
+                expected: "fixture",
+                reason: "dtype",
+            },
+            ReadErrorKind::CsvLineTooLong { line: 1 },
+        ] {
+            for cmf in [false, true] {
+                let error = std::sync::Arc::new(film_juicer_core::data_io::ReadError {
+                    path: "spectral-source".into(),
+                    kind,
+                });
+                let failure = Failure::Asset(if cmf {
+                    AssetError::Cmf(error)
+                } else {
+                    AssetError::Reconstruction(error)
+                });
+                assert_eq!(
+                    failure.category(),
+                    if kind == ReadErrorKind::Capacity {
+                        FJ_STATUS_ALLOCATION_FAILURE
+                    } else {
+                        FJ_STATUS_PREPARATION_FAILURE
+                    }
+                );
+            }
+        }
+    }
 }

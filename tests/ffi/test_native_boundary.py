@@ -33,6 +33,7 @@ def forbidden_uses(paths, pattern):
 
 HOST_MESSAGES = r"\b(?:DirFailureMessage|sendMessage)\b|OFX::"
 CONTEXT_RESET = r"\b(?:cudaDeviceReset|cuDevicePrimaryCtxReset|cuCtxReset)\s*\("
+RETIRED_SPECTRAL = r"\b(?:NpySpectraLUT|NpyFloat2D|load_npy_spectra_lut|load_npy_float2d|load_csv_triplets|load_hanatos_spectra_lut|load_arctic2026beta04_spectra_lut|load_mallett2019_basis_npy|sourceElementBytes|hanatosAssetHash|arcticAssetHash|kExpectedDecodedAssetHash|data_file_string)\b|NpyLoader\.h"
 RETIRED_PROFILES = r"\b(?:ProfileAssetStore|ProfileJSONLoader)\b|ProfileAssets\.cpp"
 
 
@@ -89,6 +90,19 @@ class NativeBoundary(unittest.TestCase):
             self.assertFalse((ROOT / "src" / f"{stem}.cpp").exists())
         self.assertFalse((ROOT / "src/ProfileJSONLoader.h").exists())
 
+    def test_retired_spectral_source_authority_stays_deleted(self):
+        paths = [
+            path for directory in (ROOT / "src", ROOT / "native", ROOT / "cmake", ROOT / "tests")
+            for path in directory.rglob("*")
+            if path.is_file() and (
+                path.suffix.lower() in SOURCE_SUFFIXES or path.suffix == ".cmake" or path.name == "CMakeLists.txt"
+            )
+        ]
+        paths.append(ROOT / "CMakeLists.txt")
+        self.assertEqual(forbidden_uses(paths, RETIRED_SPECTRAL), [])
+        self.assertFalse((ROOT / "src/NpyLoader.h").exists())
+
+
 
 class NativeBoundaryControls(unittest.TestCase):
     def test_new_nested_sources_and_headers_are_checked(self):
@@ -115,6 +129,28 @@ class NativeBoundaryControls(unittest.TestCase):
                 self.assertEqual(len(forbidden_uses([source], RETIRED_PROFILES)), 1)
             source.write_text("src/RustAssetBridge.cpp\n", encoding="utf-8")
             self.assertEqual(forbidden_uses([source], RETIRED_PROFILES), [])
+
+    def test_spectral_deletions_reject_definitions_includes_and_fixture_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.hpp"
+            for text in (
+                '#include "NpyLoader.h"', "struct NpySpectraLUT {};", "NpyFloat2D basis;",
+                "load_csv_triplets(path);", "load_hanatos_spectra_lut(path);",
+                "load_arctic2026beta04_spectra_lut(path);", "load_mallett2019_basis_npy(path);",
+                "load_npy_float2d(path);", "load_npy_spectra_lut(path);",
+                "sourceElementBytes = 2;", "hanatosAssetHash = 1;", "arcticAssetHash = 2;",
+                "kExpectedDecodedAssetHash = 3;", "data_file_string(root, name);",
+            ):
+                with self.subTest(text=text):
+                    source.write_text(text, encoding="utf-8")
+                    self.assertEqual(len(forbidden_uses([source], RETIRED_SPECTRAL)), 1)
+            source.write_text(
+                "ReconstructionLut lut; MallettBasis basis; copy_cmf_triplets(); "
+                "build_film_tc_lut(); load_csv_pairs(path); set_cie_1931_2deg_cmf(x, y, z);",
+                encoding="utf-8",
+            )
+            self.assertEqual(forbidden_uses([source], RETIRED_SPECTRAL), [])
+
 
 
 if __name__ == "__main__":

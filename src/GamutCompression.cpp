@@ -146,7 +146,7 @@ namespace Gamut {
                 }
                 partitions[static_cast<std::size_t>(insertion)] = value;
             }
-            const auto uniqueEnd = std::unique(
+            const std::array<double, 4>::iterator uniqueEnd = std::unique(
                 partitions.begin(),
                 partitions.begin() + partitionCount,
                 [](double left, double right) {

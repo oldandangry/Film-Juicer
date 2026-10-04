@@ -18,7 +18,7 @@ struct FilmRawRecipe;
 namespace Spectral {
 
     bool build_hanatos_reconstructed_reference_white(
-        const NpySpectraLUT& spectra,
+        const ReconstructionLut& spectra,
         float spectralGaussianBlur,
         const std::array<float, 3>& referenceWhiteXYZ,
         std::array<float, kNumSamples>& out,
@@ -26,7 +26,7 @@ namespace Spectral {
 
     bool build_film_tc_lut(
         const ::FilmRawRecipe& recipe,
-        const NpySpectraLUT& spectra,
+        const ReconstructionLut& spectra,
         const std::array<float, kNumSamples>& referenceIlluminant,
         FilmTcLut& out,
         std::string& diagnostic);

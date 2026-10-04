@@ -147,6 +147,37 @@ FjStatus fj_legacy_print_density_view(const FjPrintDensityCurves* curves,
 FjStatus fj_legacy_print_density_release(FjPrintDensityCurves* curves, FjErrorBuffer* error);
 FjStatus fj_legacy_assets_release_cached_payloads(const FjAssets* assets, FjErrorBuffer* error);
 
+/* FJ_TEMP_BRIDGE: spectral source conversion; remove S4.E.
+ * Source views borrow their matching family owner, independently of Assets.
+ * LUT samples: 192*192*81 f32 C-order [i][j][wavelength], 380..780 nm @ 5nm.
+ * asset_hash is the C6 identity of these actual samples. Mallett: 243 samples,
+ * wavelength-major RGB. CMF: 4*N in file order [nm,x_bar,y_bar,z_bar]; N may be
+ * zero, with (NULL,0). Native CMF construction owns its distinct axis contract.
+ * View/acquire failures clear valid outputs, including hashes. Matching release
+ * consumes once even with malformed diagnostics. No allocation/I/O/hash on view.
+ * Reconstruction/CMF read capacity -> AllocationFailure, other read failures ->
+ * PreparationFailure, contained panic -> InternalFailure; API=None/code=0.
+ * Explicit large-buffer capacity failures are recoverable; incidental Box/Arc/
+ * path/parser allocation aborts are not. The shared pointer/diagnostic contract
+ * above applies; spans expire on family release, excluded from all active reads. */
+typedef struct FjSpectraLut FjSpectraLut;
+typedef struct FjMallettBasis FjMallettBasis;
+typedef struct FjCmf FjCmf;
+typedef struct FjSpectraLutView {
+    FjFloatSpan samples;
+    uint64_t asset_hash;
+} FjSpectraLutView;
+FjStatus fj_legacy_hanatos_acquire(const FjAssets* assets, FjSpectraLut** out_lut, FjErrorBuffer* error);
+FjStatus fj_legacy_arctic_acquire(const FjAssets* assets, FjSpectraLut** out_lut, FjErrorBuffer* error);
+FjStatus fj_legacy_spectra_lut_view(const FjSpectraLut* lut, FjSpectraLutView* out_view, FjErrorBuffer* error);
+FjStatus fj_legacy_spectra_lut_release(FjSpectraLut* lut, FjErrorBuffer* error);
+FjStatus fj_legacy_mallett_acquire(const FjAssets* assets, FjMallettBasis** out_basis, FjErrorBuffer* error);
+FjStatus fj_legacy_mallett_view(const FjMallettBasis* basis, FjFloatSpan* out_samples_rgb, FjErrorBuffer* error);
+FjStatus fj_legacy_mallett_release(FjMallettBasis* basis, FjErrorBuffer* error);
+FjStatus fj_legacy_cmf_acquire(const FjAssets* assets, FjCmf** out_cmf, FjErrorBuffer* error);
+FjStatus fj_legacy_cmf_view(const FjCmf* cmf, FjFloatSpan* out_rows, FjErrorBuffer* error);
+FjStatus fj_legacy_cmf_release(FjCmf* cmf, FjErrorBuffer* error);
+
 #ifdef __cplusplus
 }
 #endif

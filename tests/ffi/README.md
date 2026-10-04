@@ -442,3 +442,41 @@ failure stays primary and prevents borrowed cache release. Consuming destroy
 always detaches/consumes the host graph under the existing reader-exclusion
 precondition; native close alone decides graph deletion or uncertain retention.
 The retained uncertain graph contains no Rust profile source or build lease.
+
+
+## Production spectral sources
+
+`Ffi.Host.SpectralOwner` checks all ten production reconstruction/CMF operations
+with C11/C++20/Rust signatures and x64 layouts. The 24-byte `FjSpectraLutView`
+borrows C-order 192×192×81 samples with their actual C6 identity. Mallett is
+wavelength-major 81×RGB; CMF rows are `[wavelength_nm,x_bar,y_bar,z_bar]`.
+The fixture checks output clearing, diagnostic bounds, consuming release,
+independent source failures, source sharing, concurrent views and owner expiry.
+
+`Assets.Host.SpectralBootstrap` and `Assets.Host.SpectralCopy` use the actual
+Library/Root bootstrap and native copy implementations. Isolated test objects
+observe copy extents and inject structural/copy faults; an executable-local
+allocator verifies partial-copy cleanup and actual CMF construction failure.
+Product objects contain neither hook. Fresh resource roots cover supported NPY
+widths, equivalent headers, signed special values, narrowing overflow, malformed
+sources and native platform paths. Source bits and identities have independent
+expectations before selected computation. Sequential Root success/failure must
+clear stale CMFs and reconstruction records. Warm bootstrap makes no copies;
+native bytes survive consuming Library destruction.
+
+The independent processor pixels cover Hanatos negative-direct and positive-print,
+Mallett negative-print and Arctic positive-direct, plus Hanatos combined/glare
+cases. `Ffi.Gpu.PreparedBoundary.mallett-direct` and `.arctic-print` add the missing
+direct/print execution paths through cold/warm C, native direct and OFX processor
+entry. They check path consistency, finite output, alpha and canaries, with no new
+numerical oracle or fixture tolerance. Full-resolution captures use Hanatos and
+remain separate evidence.
+
+After configuring/building with tests ON, run the affected host groups with
+`ctest --preset <preset> -R 'Spectral|Rust.Bridge|Quality.RustBoundaries|NativeBoundary'`.
+Capacity receipts report requested payload bytes and actual capacities, excluding
+allocator metadata/RSS. Each LUT has one 11,943,936-byte Rust source and one equally
+sized native copy. Projections duplicate no samples; each opaque Box holds an
+8-byte Arc. CMF triplets expire after complete curve publication. Source math moves
+in S4.A; conversion/global storage is removed in S4.E and remaining Library/Root
+forwarding in S5.C. Installed Resolve and real recovery qualification stay separate.

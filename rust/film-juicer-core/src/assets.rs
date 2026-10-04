@@ -1088,6 +1088,35 @@ mod tests {
     }
 
     #[test]
+    fn spectral_source_capacity_receipt() {
+        let assets = assets();
+        for (name, lut) in [
+            ("hanatos", assets.hanatos().unwrap()),
+            ("arctic", assets.arctic().unwrap()),
+        ] {
+            assert_eq!(lut.samples.len(), 192 * 192 * 81);
+            assert_eq!(lut.samples.capacity(), lut.samples.len());
+            println!(
+                "source {name}: length={} capacity={} requested_sample_bytes={} inline_payload_bytes={} Arc_handle_bytes={} live_strong_holds={}",
+                lut.samples.len(),
+                lut.samples.capacity(),
+                lut.samples.capacity() * size_of::<f32>(),
+                size_of::<SpectraLut>(),
+                size_of::<Arc<SpectraLut>>(),
+                Arc::strong_count(&lut)
+            );
+        }
+        let mallett = assets.mallett().unwrap();
+        println!(
+            "source mallett: fixed_rows={} fixed_sample_bytes={} Arc_handle_bytes={} live_strong_holds={}",
+            mallett.len(),
+            size_of::<[[f32; 3]; 81]>(),
+            size_of::<Arc<[[f32; 3]; 81]>>(),
+            Arc::strong_count(&mallett)
+        );
+    }
+
+    #[test]
     fn spectra_owner_moves_the_decoded_allocation() {
         let path = assets()
             .resource_dir

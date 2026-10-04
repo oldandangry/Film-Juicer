@@ -180,7 +180,7 @@ namespace {
         ScopedMallettBasis& operator=(const ScopedMallettBasis&) = delete;
 
     private:
-        NpyFloat2D previous_;
+        Spectral::MallettBasis previous_;
     };
 
     TEST(AssetLookup, SyntheticBuilderRejectsNaNQueryBeforePublication) {

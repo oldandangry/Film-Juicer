@@ -144,7 +144,7 @@ namespace {
             recipe.filmRaw.rgbToRawMethod ==
                 Spektrafilm::RgbToRawMethod::Arctic2026beta04;
         if (tcMethod) {
-            const NpySpectraLUT* spectra =
+            const Spectral::ReconstructionLut* spectra =
                 recipe.filmRaw.rgbToRawMethod ==
                         Spektrafilm::RgbToRawMethod::Arctic2026beta04
                     ? &Spectral::context().arcticSpectra
@@ -1090,7 +1090,7 @@ namespace {
         if (params.spectralUpsamplingMode == 0) {
             input.projectionWhiteXYZ = input.referenceIlluminantWhiteXYZ;
             input.projectionWhiteValid = input.referenceIlluminantWhiteValid;
-            input.tcSourceAssetHash = Spectral::context().hanatosAssetHash;
+            input.tcSourceAssetHash = Spectral::gHanSpectra.assetHash;
             if (params.hanatos2025AdaptationWindow != 0 &&
                 input.projectionWhiteValid && Spectral::hanatos_available()) {
                 std::string diagnostic;
@@ -1114,7 +1114,7 @@ namespace {
                     input.projectionWhiteXYZ.begin());
                 input.projectionWhiteValid = true;
             }
-            input.tcSourceAssetHash = Spectral::context().arcticAssetHash;
+            input.tcSourceAssetHash = Spectral::context().arcticSpectra.assetHash;
         }
         if (params.spectralUpsamplingMode == 0 ||
             params.spectralUpsamplingMode == 2) {

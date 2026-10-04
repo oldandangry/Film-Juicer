@@ -319,73 +319,52 @@ namespace JuicerProcess {
         }
 
 
-        template <typename... Parts>
-        std::string data_file_string(const std::string& dataDir, Parts&&... parts) {
-            std::filesystem::path path(dataDir);
-            ((path /= std::filesystem::path(std::forward<Parts>(parts))), ...);
-            path.make_preferred();
-            return path.string();
-        }
-
-        void load_process_spectral_assets(const std::string& dataDir) {
+        void load_process_spectral_assets(JuicerAssets::Library& assets) {
+            // Next-owner replacement excludes prior host readers. A failed attempt
+            // must never leave stale CMFs available to the new owner's consumers.
+            Spectral::gXBar = {};
+            Spectral::gYBar = {};
+            Spectral::gZBar = {};
             try {
                 Spectral::lock_shape_to_reference_axis();
-                const auto cmf = Spectral::load_csv_triplets(data_file_string(dataDir, "cie1931_2deg.csv"));
+                const auto cmf = assets.copy_cmf_triplets();
                 if (!Spectral::cmf_triplets_match_reference_axis(cmf)) {
-                    JTRACE("INIT", "FATAL: CMF wavelengths do not match 380-780@5nm grid");
                     throw std::runtime_error("CMF grid mismatch");
                 }
                 Spectral::set_cie_1931_2deg_cmf(cmf.xbar, cmf.ybar, cmf.zbar);
-            } catch (const std::exception& ex) {
-                Spectral::set_hanatos_available(false);
-                Spectral::set_arctic_available(false);
-                Spectral::set_mallett_available(false);
-                (void)ex;
-#if JUICER_DIAGNOSTICS_COMPILED
-                if (JTRACE_ENABLED(1)) {
-                    std::string msg = "FATAL: spectral bootstrap failed: ";
-                    msg += ex.what();
-                    JTRACE("INIT", msg);
+            } catch (...) {
+                Spectral::gXBar = {};
+                Spectral::gYBar = {};
+                Spectral::gZBar = {};
+                try {
+                    JTRACE("INIT", "FATAL: CMF bootstrap failed");
+                } catch (...) {
+                    JuicerLogging::discard_current_exception();
                 }
-#endif
-            } catch (...) {
-                Spectral::set_hanatos_available(false);
-                Spectral::set_arctic_available(false);
-                Spectral::set_mallett_available(false);
-                JTRACE("INIT", "FATAL: spectral bootstrap failed with unknown error");
             }
 
+            Spectral::set_hanatos_available(false);
             try {
-                const std::string lutPath = data_file_string(
-                    dataDir,
-                    "luts",
-                    "spectral_upsampling",
-                    "irradiance_xy_tc.npy");
-                Spectral::load_hanatos_spectra_lut(lutPath);
+                Spectral::gHanSpectra = assets.copy_hanatos_lut();
+                Spectral::set_hanatos_available(true);
             } catch (...) {
-                Spectral::set_hanatos_available(false);
+                Spectral::gHanSpectra = {};
             }
 
+            Spectral::set_arctic_available(false);
             try {
-                const std::string lutPath = data_file_string(
-                    dataDir,
-                    "luts",
-                    "spectral_upsampling",
-                    "arctic2026beta04_reflectance_xy_tc.npy");
-                Spectral::load_arctic2026beta04_spectra_lut(lutPath);
+                Spectral::context().arcticSpectra = assets.copy_arctic_lut();
+                Spectral::set_arctic_available(true);
             } catch (...) {
-                Spectral::set_arctic_available(false);
+                Spectral::context().arcticSpectra = {};
             }
 
+            Spectral::set_mallett_available(false);
             try {
-                const std::string basisPath = data_file_string(
-                    dataDir,
-                    "luts",
-                    "spectral_upsampling",
-                    "mallett2019_basis.npy");
-                Spectral::load_mallett2019_basis_npy(basisPath);
+                Spectral::gMallettBasis = assets.copy_mallett_basis();
+                Spectral::set_mallett_available(true);
             } catch (...) {
-                Spectral::set_mallett_available(false);
+                Spectral::gMallettBasis = {};
             }
         }
 
@@ -4576,7 +4555,7 @@ namespace JuicerProcess {
 
     void Root::ensure_bootstrap() {
         std::call_once(_bootstrapOnce, [this]() {
-            load_process_spectral_assets(_dataDir);
+            load_process_spectral_assets(assets());
         });
     }
 

@@ -79,6 +79,8 @@ FjStatus fj_test_film_profile_release(FjFilmProfile* owner, FjErrorBuffer* error
 const size_t* fj_test_profile_abi_facts(size_t* count);
 
 /* Feature-only process/catalog ownership and one-shot projection fault probes. */
+void fj_test_spectral_fault(uint32_t fault);
+size_t fj_test_spectral_live_owners(void);
 void fj_test_catalog_fault(uint32_t fault);
 void fj_test_profile_fault(uint32_t fault);
 size_t fj_test_profile_live_owners(void);

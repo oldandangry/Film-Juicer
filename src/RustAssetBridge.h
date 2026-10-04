@@ -9,6 +9,7 @@
 
 #include "ProfileCatalog.h"
 #include "ProfileAssets.h"
+#include "SpectralData.h"
 #include "juicer_legacy_api.h"
 
 namespace JuicerAssets {
@@ -64,6 +65,17 @@ namespace JuicerAssets {
     } // namespace ProfileTest
 #endif
 
+#if defined(JUICER_SPECTRAL_TEST_HOOK)
+    namespace SpectralTest {
+        void lut_view(const char* family, FjSpectraLutView& view);
+        void mallett_view(FjFloatSpan& view);
+        void cmf_view(FjFloatSpan& view);
+        void copy_allocated(const char* family, std::size_t capacity);
+        void copy_complete(const char* family, std::size_t length, std::size_t capacity);
+        void before_curve_allocation();
+    } // namespace SpectralTest
+#endif
+
     // FJ_TEMP_BRIDGE: asset conversion; remove S4.E.
     // All retained foreign owners nest inside the detachable native Library.
     class AssetBridge final {
@@ -73,6 +85,10 @@ namespace JuicerAssets {
         AssetBridge(const AssetBridge&) = delete;
         AssetBridge& operator=(const AssetBridge&) = delete;
 
+        Spectral::ReconstructionLut copy_hanatos_lut();
+        Spectral::ReconstructionLut copy_arctic_lut();
+        Spectral::MallettBasis copy_mallett_basis();
+        Spectral::CMFTriplets copy_cmf_triplets();
         Spektrafilm::ProfileCatalog load_catalog();
         std::shared_ptr<const Profiles::FilmProfile> film(const std::string& key);
         std::shared_ptr<const PrintProfileSource> print(const std::string& key);

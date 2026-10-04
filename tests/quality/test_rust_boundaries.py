@@ -128,8 +128,8 @@ class RustBoundaryTests(unittest.TestCase):
         for release in (False, True):
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assert_rejected(status, diagnostics, {
-                "E0515": ("film_owner.view()", "print_owner.view()"),
-                "E0505": ("drop(film_owner)", "drop(print_owner)"),
+                "E0515": ("film_owner.view()", "print_owner.view()", "spectra_owner.view()", "mallett_owner.samples()", "cmf_owner.rows()"),
+                "E0505": ("drop(film_owner)", "drop(print_owner)", "drop(spectra_owner)", "drop(mallett_owner)", "drop(cmf_owner)"),
             })
 
     def test_completed_profile_storage_is_private_to_its_owner(self) -> None:
@@ -139,7 +139,7 @@ class RustBoundaryTests(unittest.TestCase):
         for release in (False, True):
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assert_rejected(status, diagnostics, {
-                "E0616": ("film.digest", "tables.log_exposure", "film_owner.profile", "print_owner.profile"),
+                "E0616": ("film.digest", "tables.log_exposure", "film_owner.profile", "print_owner.profile", "spectra_owner.lut", "mallett_owner.basis", "cmf_owner.rows"),
             })
 
     def test_completed_profile_construction_cannot_be_bypassed(self) -> None:
@@ -155,6 +155,7 @@ class RustBoundaryTests(unittest.TestCase):
             ("film-juicer-core", "lib.rs"),
             ("film-juicer-plugin", "asset_catalog.rs"),
             ("film-juicer-plugin", "asset_profile.rs"),
+            ("film-juicer-plugin", "asset_spectral.rs"),
         )
         for package, source in owners:
             with self.subTest(package=package, source=source):

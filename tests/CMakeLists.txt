@@ -99,6 +99,21 @@ add_test(NAME Ffi.Host.ProfileOwner COMMAND JuicerProfileOwnerTests
     "${JUICER_TEST_ARTIFACT_ROOT}/ffi/profile-owner-resources")
 set_tests_properties(Ffi.Host.ProfileOwner PROPERTIES LABELS "host" TIMEOUT 30)
 
+add_executable(JuicerSpectralOwnerTests ffi/spectral_abi_c.c ffi/spectral_owner_test.cpp)
+set_target_properties(JuicerSpectralOwnerTests PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(JuicerSpectralOwnerTests PRIVATE "${PROJECT_SOURCE_DIR}/native")
+target_link_libraries(JuicerSpectralOwnerTests PRIVATE film_juicer_rust GTest::gtest)
+if(WIN32)
+    target_compile_options(JuicerSpectralOwnerTests PRIVATE /W3 /WX)
+else()
+    target_compile_options(JuicerSpectralOwnerTests PRIVATE -Wall -Wextra -Werror -pedantic-errors)
+endif()
+add_test(NAME Ffi.Host.SpectralOwner COMMAND JuicerSpectralOwnerTests
+    "${JUICER_TEST_RESOURCE_DIR}"
+    "${JUICER_TEST_ARTIFACT_ROOT}/trusted-resource-decoding/C8/slice-3/spectral-owner")
+set_tests_properties(Ffi.Host.SpectralOwner PROPERTIES LABELS "host" TIMEOUT 60)
+
 add_library(juicer_catalog_test_objects OBJECT ../src/RustAssetBridge.cpp)
 target_link_libraries(juicer_catalog_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_catalog_test_objects PRIVATE JUICER_CATALOG_TEST_HOOK=1)
@@ -514,7 +529,7 @@ if(UNIX)
     set_property(TARGET JuicerPreparedBoundaryProbe PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 foreach(prepared_case IN ITEMS negative-direct negative-print positive-direct positive-print
-        combined-print glare-plus-zero glare-minus-zero)
+        combined-print glare-plus-zero glare-minus-zero mallett-direct arctic-print)
     add_test(NAME "Ffi.Gpu.PreparedBoundary.${prepared_case}"
         COMMAND JuicerPreparedBoundaryProbe --prepared-case "${prepared_case}")
     set_tests_properties("Ffi.Gpu.PreparedBoundary.${prepared_case}" PROPERTIES
@@ -717,3 +732,26 @@ set_tests_properties(Ofx.Host.RenderAssertions PROPERTIES LABELS "host" TIMEOUT 
 
 add_test(NAME Ofx.Gpu.AcceptedCudaCaptures COMMAND JuicerProcessorReferenceProbe --accepted-clean-captures)
 set_tests_properties(Ofx.Gpu.AcceptedCudaCaptures PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
+
+add_dependencies(JuicerSpectralOwnerTests juicer_test_resources)
+
+add_library(juicer_spectral_test_objects OBJECT ../src/RustAssetBridge.cpp ../src/SpectralProcessing.cpp)
+target_link_libraries(juicer_spectral_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_spectral_test_objects PRIVATE JUICER_SPECTRAL_TEST_HOOK=1)
+add_executable(JuicerSpectralBootstrapTests ffi/spectral_bootstrap_test.cpp
+    $<TARGET_OBJECTS:juicer_spectral_test_objects>)
+target_link_libraries(JuicerSpectralBootstrapTests PRIVATE juicer_core GTest::gtest)
+target_compile_definitions(JuicerSpectralBootstrapTests PRIVATE JUICER_SPECTRAL_TEST_HOOK=1)
+set_target_properties(JuicerSpectralBootstrapTests PROPERTIES
+    LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerSpectralBootstrapTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_dependencies(JuicerSpectralBootstrapTests juicer_test_resources)
+foreach(spectral_group IN ITEMS Bootstrap Copy)
+    add_test(NAME Assets.Host.Spectral${spectral_group} COMMAND JuicerSpectralBootstrapTests
+        "--gtest_filter=Spectral${spectral_group}.*"
+        "${JUICER_TEST_RESOURCE_DIR}"
+        "${JUICER_TEST_ARTIFACT_ROOT}/trusted-resource-decoding/C8/slice-3/bootstrap")
+    set_tests_properties(Assets.Host.Spectral${spectral_group} PROPERTIES LABELS "host" TIMEOUT 120)
+endforeach()

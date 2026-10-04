@@ -713,3 +713,18 @@ namespace JuicerAssets {
     }
 
 } // namespace JuicerAssets
+
+namespace JuicerAssets {
+    Spectral::ReconstructionLut Library::copy_hanatos_lut() {
+        return _bridge.copy_hanatos_lut();
+    }
+    Spectral::ReconstructionLut Library::copy_arctic_lut() {
+        return _bridge.copy_arctic_lut();
+    }
+    Spectral::MallettBasis Library::copy_mallett_basis() {
+        return _bridge.copy_mallett_basis();
+    }
+    Spectral::CMFTriplets Library::copy_cmf_triplets() {
+        return _bridge.copy_cmf_triplets();
+    }
+} // namespace JuicerAssets
