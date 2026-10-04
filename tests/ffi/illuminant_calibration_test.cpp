@@ -400,7 +400,7 @@ namespace {
     }
 
     TEST(IlluminantLibrary, SevenDerivedCurvesMatchAcceptedNativeProducerAndRetainSnapshots) {
-        JuicerAssets::Library library(resources, resources.string());
+        JuicerAssets::Library library(resources);
         pairCapacity = 0;
         std::vector<CsvSource> order;
         acquisitions = &order;
@@ -445,7 +445,7 @@ namespace {
         const auto root = full_root("partial-curves");
         fs::remove(root / "illuminants/D55.csv");
         write(root / "filters/heat_absorbing/schott/KG3.csv", "# empty decoded success\n");
-        JuicerAssets::Library library(root, root.string());
+        JuicerAssets::Library library(root);
         std::vector<CsvSource> order;
         acquisitions = &order;
         const auto partial = library.illuminant_filter_curves();
@@ -467,7 +467,7 @@ namespace {
     }
 
     TEST(IlluminantLibrary, ConcurrentColdWinnersAndReleaseDuringBuild) {
-        JuicerAssets::Library library(resources, resources.string());
+        JuicerAssets::Library library(resources);
         std::barrier barrier(2);
         publicationBarrier = &barrier;
         publications = 0;
@@ -512,7 +512,7 @@ namespace {
     }
 
     TEST(IlluminantLibrary, RequestedAllocationReclaimsOldSnapshotsAndPrepublicationFailures) {
-        JuicerAssets::Library library(resources, resources.string());
+        JuicerAssets::Library library(resources);
         CurveAllocationTest::counting = true;
         auto old = library.illuminant_filter_curves();
         CurveAllocationTest::counting = false;

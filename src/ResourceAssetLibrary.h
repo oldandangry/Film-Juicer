@@ -16,31 +16,6 @@
 
 namespace JuicerAssets {
 
-    struct StbnNoisePayload {
-        std::vector<std::uint8_t> data;
-        int width = 512;
-        int height = 512;
-        int frames = 256;
-        bool valid = false;
-        std::string error;
-    };
-
-    struct WangNoisePayload {
-        std::vector<std::uint8_t> tiles;
-        std::vector<std::uint8_t> lut;
-        int width = 0;
-        int height = 0;
-        int count = 0;
-        int colors = 0;
-        bool valid = false;
-        std::string error;
-    };
-
-    struct StaticNoisePayloadSet {
-        StbnNoisePayload stbn;
-        WangNoisePayload wang;
-    };
-
     struct IlluminantFilterCurveSet {
         Spectral::Curve d65;
         Spectral::Curve d55;
@@ -56,9 +31,7 @@ namespace JuicerAssets {
 
     class Library {
     public:
-        struct StaticNoiseAssetSet;
-
-        Library(const std::filesystem::path& resourceRoot, std::string dataDir);
+        explicit Library(const std::filesystem::path& resourceRoot);
         ~Library();
 
         Spectral::ReconstructionLut copy_hanatos_lut();
@@ -70,7 +43,7 @@ namespace JuicerAssets {
         selected_film_profile_for_key(const std::string& key);
         SelectedProfileResult selected_profiles_for_route(
             const SelectedProfileRequest& request);
-        std::shared_ptr<const StaticNoisePayloadSet> static_noise_payloads();
+        NoiseSource noise();
         std::shared_ptr<const IlluminantFilterCurveSet> illuminant_filter_curves();
         std::shared_ptr<const Gamut::InputCompressionHull>
         input_compression_hull();
@@ -87,22 +60,15 @@ namespace JuicerAssets {
 
     private:
         void ensure_catalogs();
-        void ensure_static_noise_assets();
         void load_catalogs();
-        void load_static_noise_assets();
 
-        struct StaticNoisePayloadCacheState;
         struct IlluminantFilterCurveCacheState;
         struct InputCompressionHullCacheState;
         struct OutputBoundaryTableCacheState;
 
         std::once_flag _catalogOnce;
-        std::once_flag _staticNoiseOnce;
-        std::string _dataDir;
         AssetBridge _bridge;
         Spektrafilm::ProfileCatalog _spektrafilmProfileCatalog;
-        std::unique_ptr<StaticNoiseAssetSet> _staticNoiseAssets;
-        std::unique_ptr<StaticNoisePayloadCacheState> _staticNoisePayloadCache;
         std::unique_ptr<IlluminantFilterCurveCacheState>
             _illuminantFilterCurveCache;
         std::unique_ptr<InputCompressionHullCacheState>

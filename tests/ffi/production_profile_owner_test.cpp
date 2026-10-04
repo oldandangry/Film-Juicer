@@ -383,7 +383,7 @@ namespace {
     }
 
     TEST(ProductionProfileOwner, TerminalHostCloseReportsFirstFailureAndConsumesEveryFamily) {
-        JuicerAssets::Library library(resources, resources.string());
+        JuicerAssets::Library library(resources);
         {
             auto selected = library.selected_profiles_for_route({"kodak_portra_400", "kodak_portra_endura", Spektrafilm::ScanRoute::NegativePrintScan});
             ASSERT_TRUE(selected.valid);
@@ -401,7 +401,7 @@ namespace {
 
     TEST(ProductionProfileOwner, NativeColdCandidatesPublishOneWinnerAndWarmCallsCopyNothing) {
         for (bool print : {false, true}) {
-            JuicerAssets::Library library(resources, resources.string());
+            JuicerAssets::Library library(resources);
             (void)library.spektrafilm_profile_catalog();
             peakProfileOwners = 0;
             std::barrier barrier(8);
@@ -445,7 +445,7 @@ namespace {
 
     TEST(ProductionProfileOwner, PartialNativeCopiesCleanUpAndRetryTheRetainedSource) {
         for (unsigned fault : {1u, 2u, 3u}) {
-            JuicerAssets::Library library(resources, resources.string());
+            JuicerAssets::Library library(resources);
             (void)library.spektrafilm_profile_catalog();
             conversionFault = fault;
             bool failed = false;
@@ -464,7 +464,7 @@ namespace {
 
 
     TEST(ProductionProfileOwner, FailedColdAttemptReturnsConcurrentCompleteWinner) {
-        JuicerAssets::Library library(resources, resources.string());
+        JuicerAssets::Library library(resources);
         (void)library.spektrafilm_profile_catalog();
         failedCandidateReady = false;
         winnerPublished = false;
@@ -486,7 +486,7 @@ namespace {
 
     TEST(ProductionProfileOwner, CacheReleaseOverlapsFirstCatalogPublication) {
         for (unsigned attempt = 0; attempt < 8; ++attempt) {
-            JuicerAssets::Library library(resources, resources.string());
+            JuicerAssets::Library library(resources);
             expect_status(library.release_cached_payloads(), FJ_STATUS_SUCCESS);
             EXPECT_EQ(fj_test_catalog_live_owners(), 0u);
             std::barrier barrier(2);
@@ -533,7 +533,7 @@ namespace {
         fs::create_directories(root / "profiles");
         fs::copy_file(resources / "profiles/kodak_portra_400.json", root / "profiles/kodak_portra_400.json", fs::copy_options::overwrite_existing);
         fs::copy_file(resources / "profiles/kodak_portra_endura.json", root / "profiles/kodak_portra_endura.json", fs::copy_options::overwrite_existing);
-        JuicerAssets::Library library(root, root.string());
+        JuicerAssets::Library library(root);
         auto selected = library.selected_profiles_for_route({"kodak_portra_400", "kodak_portra_endura", Spektrafilm::ScanRoute::NegativePrintScan});
         ASSERT_TRUE(selected.valid);
         const auto old = selected.printSource->sample_density_curves(1.1);

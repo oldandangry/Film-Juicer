@@ -17,6 +17,7 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
+#include "../ffi/juicer_test_api.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/JuicerCudaResources.h"
 
@@ -204,6 +205,42 @@ namespace {
         JuicerCuda::PinnedUploadTest::poll(key);
         EXPECT_EQ(JuicerCuda::PinnedUploadTest::snapshot(key).available, 1);
         EXPECT_EQ(JuicerCuda::PinnedUploadTest::snapshot(key).inFlight, 0);
+    }
+
+    TEST_F(PinnedUpload, RustNoiseOwnerExpiresBeforeNativeStagingCompletes) {
+        std::vector<std::uint8_t> initial(4096, 0);
+        warm(initial);
+        const std::string root = JUICER_TEST_RESOURCE_DIR;
+        FjNoise* source = nullptr;
+        ASSERT_EQ(fj_test_noise_acquire({root.data(), root.size()}, &source, nullptr).category, FJ_STATUS_SUCCESS);
+        struct Release {
+            FjNoise* owner;
+            ~Release() {
+                (void)fj_test_noise_release(owner, nullptr);
+            }
+        } owner{source};
+        FjStaticNoise view{};
+        ASSERT_EQ(fj_test_noise_view(source, &view, nullptr).category, FJ_STATUS_SUCCESS);
+        const std::vector<std::uint8_t> expected(view.stbn.data, view.stbn.data + 4096);
+        UploadGate gate(stream);
+        ASSERT_TRUE(upload(view.stbn.data, expected.size())) << failure.diagnostic;
+        const auto pending = JuicerCuda::PinnedUploadTest::snapshot(key);
+        ASSERT_EQ(pending.inFlight, 1);
+        const auto* block = pending.blocks.front().pointer;
+        EXPECT_NE(block, view.stbn.data);
+        auto* event = static_cast<cudaEvent_t>(pending.blocks.front().event);
+        ASSERT_EQ(cudaEventQuery(event), cudaErrorNotReady);
+        ASSERT_EQ(fj_test_noise_release(std::exchange(owner.owner, nullptr), nullptr).category, FJ_STATUS_SUCCESS);
+        EXPECT_EQ(fj_test_live_noise_owners(), 0u);
+        view = {};
+        ASSERT_EQ(cudaEventQuery(event), cudaErrorNotReady);
+        gate.release();
+        require_cuda(cudaEventSynchronize(event));
+        std::array<std::uint8_t, 4096> actual{};
+        require_cuda(cudaMemcpy(actual.data(), destination, actual.size(), cudaMemcpyDeviceToHost));
+        EXPECT_TRUE(std::equal(actual.begin(), actual.end(), expected.begin()));
+        EXPECT_FALSE(gate.timed_out());
+        JuicerCuda::PinnedUploadTest::poll(key);
     }
 
     TEST_F(PinnedUpload, OversizedAndBusyPoolFailuresDoNotSelectDeviceReclaim) {

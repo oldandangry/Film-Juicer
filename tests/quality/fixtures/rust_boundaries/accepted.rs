@@ -44,3 +44,8 @@ use crate::asset_spectral::CsvPairsOwner;
 use film_juicer_core::data_io::CsvPairs;
 pub fn csv_owner(rows: Arc<CsvPairs>) -> CsvPairsOwner { CsvPairsOwner::new(rows) }
 pub fn csv_rows(owner: &CsvPairsOwner) -> &[[f32;2]] { owner.rows() }
+
+use crate::asset_noise::{NoiseOwner, NoiseView};
+use film_juicer_core::assets::NoiseBundle;
+pub fn noise_owner(bundle: Arc<NoiseBundle>) -> NoiseOwner { NoiseOwner::new(bundle) }
+pub fn noise_view(owner: &NoiseOwner) -> NoiseView<'_> { owner.view() }

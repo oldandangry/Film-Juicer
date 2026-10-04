@@ -135,6 +135,9 @@ impl Failure {
                 | AssetError::CalibrationCachePoisoned
                 | AssetError::NoiseCachePoisoned,
             ) => FJ_STATUS_INTERNAL_FAILURE,
+            Self::Asset(AssetError::Noise(error)) => {
+                crate::asset_bridge::noise_category(error.kind())
+            }
             Self::Asset(_) => FJ_STATUS_PREPARATION_FAILURE,
         }
     }
@@ -413,6 +416,63 @@ const _: unsafe extern "C" fn(
 const _: unsafe extern "C" fn(*mut FjFilmProfile, *mut FjErrorBuffer) -> FjStatus =
     fj_test_film_profile_release;
 const _: unsafe extern "C" fn(*mut usize) -> *const usize = fj_test_profile_abi_facts;
+
+use crate::asset_bridge::{self, FjNoise};
+use crate::cuda::sys::FjStaticNoise;
+
+/// # Safety
+/// Root is nonempty initialized UTF-8 without NUL, live through return. Output
+/// and diagnostics are aligned, exclusive and disjoint. Success transfers one owner.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_noise_acquire(
+    resource_root: FjStringView,
+    out_owner: *mut *mut FjNoise,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The common noise edge clears output and contains parsing/cleanup.
+    unsafe {
+        asset_bridge::acquire_noise(out_owner, error, || {
+            let root = text(resource_root)
+                .map_err(|_| asset_bridge::Failure::Input("invalid fixture resource root"))?;
+            if root.is_empty() || root.contains('\0') {
+                return Err(asset_bridge::Failure::Input(
+                    "invalid fixture resource root",
+                ));
+            }
+            Assets::new(PathBuf::from(root))
+                .noise()
+                .map_err(asset_bridge::Failure::Asset)
+        })
+    }
+}
+/// # Safety
+/// Matching owner remains live through every view use; release excludes readers.
+/// Output and diagnostics are exclusive, aligned and disjoint from owner storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_noise_view(
+    owner: *const FjNoise,
+    out_view: *mut FjStaticNoise,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Same borrow/storage contract as the shared raw projection.
+    unsafe { asset_bridge::view_noise(owner, out_view, error) }
+}
+/// # Safety
+/// Owner is NULL or a matching live handle consumed once, excluding reads and
+/// borrows. Diagnostics obey the exclusive/disjoint storage contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_noise_release(
+    owner: *mut FjNoise,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Same consuming contract, including malformed diagnostics and panic.
+    unsafe { asset_bridge::release_noise(owner, error) }
+}
+const _: unsafe extern "C" fn(FjStringView, *mut *mut FjNoise, *mut FjErrorBuffer) -> FjStatus =
+    fj_test_noise_acquire;
+const _: unsafe extern "C" fn(*const FjNoise, *mut FjStaticNoise, *mut FjErrorBuffer) -> FjStatus =
+    fj_test_noise_view;
+const _: unsafe extern "C" fn(*mut FjNoise, *mut FjErrorBuffer) -> FjStatus = fj_test_noise_release;
 
 #[cfg(test)]
 mod tests {

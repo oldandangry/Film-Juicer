@@ -47,3 +47,11 @@ pub fn drop_csv(csv_owner: CsvPairsOwner) -> usize {
     drop(csv_owner);
     rows.len()
 }
+
+use crate::asset_noise::{NoiseOwner, NoiseView};
+pub fn escape_noise(noise_owner: NoiseOwner) -> NoiseView<'static> { noise_owner.view() }
+pub fn drop_noise(noise_owner: NoiseOwner) -> usize {
+    let view = noise_owner.view();
+    drop(noise_owner);
+    view.stbn.len()
+}

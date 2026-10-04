@@ -15,8 +15,8 @@ namespace JuicerProcess::TestSupport {
 
     class RootLifetimeObserver final {
     public:
-        static bool has_only_host_metadata(const Root& root, const std::string& directory) {
-            return root._dataDir == directory + static_cast<char>(std::filesystem::path::preferred_separator) && root._cudaContextResources.empty() &&
+        static bool has_only_host_metadata(const Root& root) {
+            return root._assets && root._cudaContextResources.empty() &&
                    root._cudaDeviceLedgers.empty() && root._activeFramePreparations == 0;
         }
     };
@@ -118,7 +118,7 @@ int main() {
             owner.create(directory);
             auto& root = JuicerProcess::root();
             require(&root == &JuicerProcess::Root::instance(), "root accessors disagree");
-            require(JuicerProcess::TestSupport::RootLifetimeObserver::has_only_host_metadata(root, directory),
+            require(JuicerProcess::TestSupport::RootLifetimeObserver::has_only_host_metadata(root),
                     "creation discovered CUDA resources or failed to copy directory metadata");
             result = fj_cuda_create(JuicerAssets::NativePathArgument(std::filesystem::path("other")).view(), &rejected, &error);
             require(result.category == FJ_STATUS_PREPARATION_FAILURE && !rejected,

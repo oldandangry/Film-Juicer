@@ -576,7 +576,6 @@ namespace JuicerProcess {
         bool wait_for_frame_preparation() noexcept;
 
         std::once_flag _bootstrapOnce;
-        std::string _dataDir;
         // FJ_TEMP_BRIDGE: native host asset owner; remove S5.C.
         std::unique_ptr<JuicerAssets::Library> _assets;
         std::mutex _framePreparationMutex;

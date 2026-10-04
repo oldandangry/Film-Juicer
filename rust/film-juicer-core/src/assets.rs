@@ -892,6 +892,26 @@ mod tests {
     }
 
     #[test]
+    fn reported_noise_io_oom_is_an_ordinary_error_snapshot() {
+        for open in [false, true] {
+            let assets = assets();
+            let Err(AssetError::Noise(first)) =
+                assets.noise_with(|root| Err(noise::test_support::io_oom_error(root, open)))
+            else {
+                panic!("I/O OOM expected");
+            };
+            let Err(AssetError::Noise(second)) =
+                assets.noise_with(|_| panic!("ordinary I/O OOM must stay cached"))
+            else {
+                panic!("cached I/O OOM expected");
+            };
+            assert!(Arc::ptr_eq(&first, &second));
+            assets.release_cached_payloads().unwrap();
+            assert!(assets.noise().is_ok());
+        }
+    }
+
+    #[test]
     fn noise_capacity_failure_retries_without_release() {
         let assets = assets();
         let error = assets

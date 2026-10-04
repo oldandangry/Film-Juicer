@@ -173,7 +173,7 @@ namespace {
     void sticky_source_and_retry(const fs::path& scratch) {
         const auto root = scratch / "retry";
         minimal_catalog(root);
-        JuicerAssets::Library library(root, root.string());
+        JuicerAssets::Library library(root);
         for (unsigned fault : {1u, 2u}) {
             conversionFault = fault;
             bool rejected = false;
@@ -204,7 +204,7 @@ namespace {
         require(library.spektrafilm_profile_catalog().printProfiles.front().label.data() == label, "warm native catalog copied");
 
         const auto missing = scratch / "sticky-error";
-        JuicerAssets::Library failed(missing, missing.string());
+        JuicerAssets::Library failed(missing);
         diagnosticFault = true;
         bool rejected = false;
         try {
@@ -218,12 +218,12 @@ namespace {
         const auto duplicate = scratch / "duplicate";
         minimal_catalog(duplicate);
         fs::copy_file(duplicate / "profiles/film.json", duplicate / "profiles/duplicate.json");
-        JuicerAssets::Library duplicates(duplicate, duplicate.string());
+        JuicerAssets::Library duplicates(duplicate);
         require(!duplicates.spektrafilm_profile_catalog().valid, "duplicate key accepted");
         const auto absentDefault = scratch / "missing-default";
         minimal_catalog(absentDefault);
         fs::remove(absentDefault / "profiles/print.json");
-        JuicerAssets::Library noDefault(absentDefault, absentDefault.string());
+        JuicerAssets::Library noDefault(absentDefault);
         require(!noDefault.spektrafilm_profile_catalog().valid, "missing default accepted");
     }
 
@@ -295,7 +295,7 @@ namespace {
 
     void bundled_cold_and_warm_publication() {
         const auto root = JuicerProcess::data_directory();
-        JuicerAssets::Library library(root, JuicerAssets::path_diagnostic(root));
+        JuicerAssets::Library library(root);
         const auto& catalog = library.spektrafilm_profile_catalog();
         require(catalog.valid, "bundled production catalog unavailable");
         std::size_t logical = 0;

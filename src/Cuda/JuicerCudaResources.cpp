@@ -9,10 +9,10 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
+#include "ResourceAssetLibrary.h"
 #include "ColorTransforms.h"
 #include "GamutCompression.h"
 #include "SpectralProcessing.h"
-#include "ResourceAssetLibrary.h"
 #include "Scanner.h"
 
 #include "Logging.h"
@@ -3246,41 +3246,6 @@ namespace JuicerCuda {
         return true;
     }
 
-
-    bool build_static_noise_input(
-        const JuicerAssets::StaticNoisePayloadSet& payloads,
-        StaticNoiseInput& input,
-        std::string& outError) {
-        outError.clear();
-        const JuicerAssets::StbnNoisePayload& stbn = payloads.stbn;
-        const JuicerAssets::WangNoisePayload& wang = payloads.wang;
-        if (!stbn.valid) {
-            outError = stbn.error.empty()
-                           ? "grain static STBN payload is invalid"
-                           : stbn.error;
-            return false;
-        }
-        if (!wang.valid) {
-            outError = wang.error.empty()
-                           ? "grain static Wang payload is invalid"
-                           : wang.error;
-            return false;
-        }
-        input = StaticNoiseInput{
-            stbn.data, wang.tiles, wang.lut, stbn.width, stbn.height, stbn.frames, wang.width, wang.height, wang.count, wang.colors};
-        return true;
-    }
-
-    bool ensure_grain_static_assets_uploaded(
-        Resources& resources,
-        const JuicerAssets::StaticNoisePayloadSet& payloads,
-        void* cudaStreamOpaque,
-        Failure& outError) {
-        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
-        StaticNoiseInput input;
-        return build_static_noise_input(payloads, input, outError.diagnostic) &&
-               ensure_grain_static_assets_uploaded(resources, input, cudaStreamOpaque, outError);
-    }
 
     bool ensure_grain_static_assets_uploaded(
         Resources& resources,

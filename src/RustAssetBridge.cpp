@@ -39,6 +39,14 @@ namespace JuicerAssets {
                 }
             }
         }
+        struct NoiseDeleter {
+            void operator()(FjNoise* owner) const noexcept {
+#if defined(JUICER_NOISE_TEST_HOOK)
+                NoiseTest::observe(NoiseTest::Operation::Release);
+#endif
+                report_cleanup(fj_legacy_noise_release(owner, nullptr));
+            }
+        };
         struct FilmDeleter {
             void operator()(FjFilmProfile* owner) const noexcept {
                 report_cleanup(fj_legacy_film_profile_release(owner, nullptr));
@@ -255,6 +263,58 @@ namespace JuicerAssets {
             }
         }
     } // namespace
+
+    NoiseSource::NoiseSource(FjNoise* owner, const FjStaticNoise& view) noexcept
+        : _owner(owner), _view(view) {
+    }
+
+    NoiseSource::NoiseSource(NoiseSource&& source) noexcept
+        : _owner(std::exchange(source._owner, nullptr)), _view(source._view) {
+    }
+
+    NoiseSource::~NoiseSource() {
+        if (_owner) {
+            NoiseDeleter{}(_owner);
+        }
+    }
+
+    JuicerCuda::StaticNoiseInput NoiseSource::view() const& {
+        return {{_view.stbn.data, _view.stbn.count}, {_view.wang_tiles.data, _view.wang_tiles.count}, {_view.wang_lut.data, _view.wang_lut.count}, _view.stbn_width, _view.stbn_height, _view.stbn_frames, _view.wang_width, _view.wang_height, static_cast<int>(_view.wang_tile_count), _view.wang_colors};
+    }
+
+    NoiseSource AssetBridge::noise() {
+        std::array<char, 512> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        FjNoise* acquired = nullptr;
+#if defined(JUICER_NOISE_TEST_HOOK)
+        NoiseTest::observe(NoiseTest::Operation::Acquire);
+#endif
+        const auto result = fj_legacy_noise_acquire(_assets, &acquired, &error);
+        std::unique_ptr<FjNoise, NoiseDeleter> owner(acquired);
+        if (result.category != FJ_STATUS_SUCCESS) {
+            fail(result, message.data());
+        }
+        FjStaticNoise view{};
+#if defined(JUICER_NOISE_TEST_HOOK)
+        NoiseTest::observe(NoiseTest::Operation::View);
+#endif
+        const auto viewed = fj_legacy_noise_view(owner.get(), &view, &error);
+        if (viewed.category != FJ_STATUS_SUCCESS) {
+            fail(viewed, message.data());
+        }
+#if defined(JUICER_NOISE_TEST_HOOK)
+        NoiseTest::view(view);
+#endif
+        if (!owner || view.stbn_width != 512 || view.stbn_height != 512 || view.stbn_frames != 256 ||
+            !view.stbn.data || view.stbn.count != std::size_t{512} * 512 * 256 ||
+            view.wang_width != 256 || view.wang_height != 256 || view.wang_tile_count != 16 ||
+            view.wang_tile_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) || view.wang_colors != 2 ||
+            !view.wang_tiles.data || view.wang_tiles.count != std::size_t{256} * 256 * 16 ||
+            !view.wang_lut.data || view.wang_lut.count != 16) {
+            fail({FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "invalid complete Rust noise view extent");
+        }
+        return NoiseSource(owner.release(), view);
+    }
 
     NativePathArgument::NativePathArgument(const std::filesystem::path& path)
 #if !defined(_WIN32)

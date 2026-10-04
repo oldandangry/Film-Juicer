@@ -59,6 +59,18 @@ FjStatus fj_legacy_catalog_acquire(const FjAssets* assets, FjCatalog** out_catal
 FjStatus fj_legacy_catalog_entry(const FjCatalog* catalog, uint32_t role, size_t index, FjCatalogEntryView* out_entry, FjErrorBuffer* error);
 FjStatus fj_legacy_catalog_release(FjCatalog* catalog, FjErrorBuffer* error);
 
+/* Complete STBN/Wang source; views reuse FjStaticNoise and borrow their owner.
+ * Owners survive Assets/cache release. No byte copy, runtime identity or CUDA
+ * work occurs here. Capacity and reported Open/Read OOM -> AllocationFailure;
+ * other decoder failures -> PreparationFailure; poison/panic -> InternalFailure.
+ * Capacity is nonsticky; reported I/O OOM retains the ordinary error-cache policy.
+ * Shared output/diagnostic/consume-once obligations above apply on every outcome.
+ * Incidental Box/Arc/path/parser allocator aborts are not recoverable. */
+typedef struct FjNoise FjNoise;
+FjStatus fj_legacy_noise_acquire(const FjAssets* assets, FjNoise** out_owner, FjErrorBuffer* error);
+FjStatus fj_legacy_noise_view(const FjNoise* owner, FjStaticNoise* out_view, FjErrorBuffer* error);
+FjStatus fj_legacy_noise_release(FjNoise* owner, FjErrorBuffer* error);
+
 /* Profile views borrow their matching owner. Gamma results own totals and
  * survive print release. Sampling uses the retained original f64 source axis.
  * Span counts are elements; empty spans are (NULL,0). Release excludes every

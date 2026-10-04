@@ -528,3 +528,18 @@ capture samples, independently derived procedural CUDA fixtures, strict pixel
 limits and finite checks, exact identity/seed expectations, negative controls,
 and separate lifecycle/boundary CTest processes. Ordinary runs do not generate
 or update expectations.
+
+
+`Ffi.Host.NoiseOwner` qualifies the complete production noise owner and the
+single fixture facade: borrowed spans, cache/Assets expiry, concurrent readers,
+consume-once release, cleared failures, native paths and layout/signatures.
+`Ofx.Gpu.NoiseSourceLifetime` checks the actual direct/print caller's acquisition
+before NativeCall, same-thread reentry rejection, deferred error precedence,
+cancellation and release after gate/recovery scopes. Its scope observations use
+the calling thread's actual NativeCall lifetime. Grain upload failure cases also
+retain the source through abort/recovery. `Resource.Gpu.PinnedUpload` includes a
+Rust noise owner released while the native staging transfer is still pending.
+The prepared-boundary fixture acquires through the same safe Rust source via the
+test facade and asserts that supplied views cause no fallback acquisition.
+These seams exist only in test objects/test-support; normal Release has none.
+Installed Resolve and actual driver/context-loss acceptance remain separate.

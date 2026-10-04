@@ -39,7 +39,6 @@ namespace Gamut {
 } // namespace Gamut
 namespace JuicerAssets {
     class Library;
-    struct StaticNoisePayloadSet;
 } // namespace JuicerAssets
 
 struct JuicerCudaAutoExposurePartial {
@@ -568,11 +567,6 @@ namespace JuicerCuda {
         Resources& resources) noexcept;
 
     // Narrow context-static serving helper used by the process-owned Root grain slots.
-    bool ensure_grain_static_assets_uploaded(
-        Resources& resources,
-        const JuicerAssets::StaticNoisePayloadSet& payloads,
-        void* cudaStreamOpaque,
-        Failure& outError);
 
     bool ensure_grain_static_assets_uploaded(
         Resources& resources,

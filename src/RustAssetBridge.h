@@ -12,6 +12,10 @@
 #include "SpectralData.h"
 #include "juicer_legacy_api.h"
 
+namespace JuicerCuda {
+    struct StaticNoiseInput;
+}
+
 namespace JuicerAssets {
     struct IlluminantFilterCurveSet;
 
@@ -76,6 +80,38 @@ namespace JuicerAssets {
     } // namespace CatalogTest
 #endif
 
+#if defined(JUICER_NOISE_TEST_HOOK)
+    namespace NoiseTest {
+        enum class Operation : unsigned char {
+            Acquire,
+            View,
+            Release
+        };
+        void observe(Operation operation) noexcept;
+        void view(FjStaticNoise& view);
+        void projection_step() noexcept;
+        void outcome(FjStatus status) noexcept;
+    } // namespace NoiseTest
+#endif
+
+    // FJ_TEMP_BRIDGE: noise source borrow; remove S4.E.
+    class NoiseSource final {
+    public:
+        ~NoiseSource();
+        NoiseSource(NoiseSource&& source) noexcept;
+        NoiseSource(const NoiseSource&) = delete;
+        NoiseSource& operator=(const NoiseSource&) = delete;
+        NoiseSource& operator=(NoiseSource&&) = delete;
+        JuicerCuda::StaticNoiseInput view() const&;
+        JuicerCuda::StaticNoiseInput view() const&& = delete;
+
+    private:
+        friend class AssetBridge;
+        NoiseSource(FjNoise* owner, const FjStaticNoise& view) noexcept;
+        FjNoise* _owner;
+        FjStaticNoise _view;
+    };
+
     class PrintProfileSource final {
     public:
         ~PrintProfileSource();
@@ -122,6 +158,7 @@ namespace JuicerAssets {
         AssetBridge(const AssetBridge&) = delete;
         AssetBridge& operator=(const AssetBridge&) = delete;
 
+        NoiseSource noise();
         Spectral::ReconstructionLut copy_hanatos_lut();
         Spectral::ReconstructionLut copy_arctic_lut();
         Spectral::MallettBasis copy_mallett_basis();

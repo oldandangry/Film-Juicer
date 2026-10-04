@@ -1,4 +1,5 @@
 #include "prepared_boundary.h"
+#include "juicer_test_api.h"
 
 #include <algorithm>
 #include <array>
@@ -30,9 +31,6 @@ namespace {
         return bytes.empty() ? FjFloatSpan{} : FjFloatSpan{reinterpret_cast<const float*>(bytes.data()), source.scalar_count()};
     }
 
-    FjByteSpan project(std::span<const std::uint8_t> source) {
-        return source.empty() ? FjByteSpan{} : FjByteSpan{source.data(), source.size()};
-    }
 
     FjStringView project(std::string_view source) {
         return source.empty() ? FjStringView{} : FjStringView{source.data(), source.size()};
@@ -148,6 +146,7 @@ namespace JuicerCudaTest {
         std::string& diagnostic,
         bool checkContract) {
         diagnostic.clear();
+        const auto sourceBaseline = fj_test_noise_acquisition_count();
         JuicerCuda::PreparedDescriptors preparedDescriptors = descriptors;
         JuicerCuda::FocusedRouteResourceInput focused;
         const JuicerCuda::FocusedRouteResourcePreparation request{
@@ -172,13 +171,29 @@ namespace JuicerCudaTest {
                 return false;
             }
         }
-        std::shared_ptr<const JuicerAssets::StaticNoisePayloadSet> noiseOwner;
-        JuicerCuda::StaticNoiseInput noise;
+        struct NoiseRelease {
+            void operator()(FjNoise* owner) const noexcept {
+                (void)fj_test_noise_release(owner, nullptr);
+            }
+        };
+        std::unique_ptr<FjNoise, NoiseRelease> noiseOwner;
+        FjStaticNoise noise{};
         if (recipe.visualGrain.active) {
-            noiseOwner = JuicerProcess::root().assets().static_noise_payloads();
-            if (!noiseOwner || !JuicerCuda::build_static_noise_input(*noiseOwner, noise, diagnostic)) {
+            constexpr std::string_view root = JUICER_TEST_RESOURCE_DIR;
+            std::array<char, 512> message{};
+            FjErrorBuffer error{message.data(), message.size(), 0};
+            FjNoise* acquired = nullptr;
+            const auto result = fj_test_noise_acquire({root.data(), root.size()}, &acquired, &error);
+            noiseOwner.reset(acquired);
+            if (result.category != FJ_STATUS_SUCCESS ||
+                fj_test_noise_view(noiseOwner.get(), &noise, &error).category != FJ_STATUS_SUCCESS) {
+                diagnostic = message.data();
                 return false;
             }
+        }
+        if (fj_test_noise_acquisition_count() != sourceBaseline + (recipe.visualGrain.active ? 1u : 0u)) {
+            diagnostic = "noise fixture activity acquisition count changed";
+            return false;
         }
         FjPreparedHostData prepared{};
         encode_prepared_descriptors(preparedDescriptors, prepared);
@@ -200,7 +215,7 @@ namespace JuicerCudaTest {
             prepared.output_color.gamut_table_hash = focused.outputGamut.tableHash;
         }
         if (recipe.visualGrain.active) {
-            prepared.noise = {project(noise.stbn), noise.stbnWidth, noise.stbnHeight, noise.stbnFrames, project(noise.wangTiles), project(noise.wangLut), noise.wangWidth, noise.wangHeight, static_cast<std::size_t>(noise.wangCount), noise.wangColors};
+            prepared.noise = noise;
         }
         const auto& meter = frame.autoExposureDescriptor;
         prepared.auto_exposure = {{meter.sourceX1, meter.sourceY1, meter.sourceX2, meter.sourceY2},
@@ -234,10 +249,15 @@ namespace JuicerCudaTest {
         const FjSubmission submission{snapshot.instanceToken.value, snapshot.frameToken.value, snapshot.snapshotId, snapshot.keyDigests.uploadCoreHash, snapshot.keyDigests.dirHash, snapshot.keyDigests.scannerHash, snapshot.keyDigests.autoExposureHash};
         std::array<char, 2048> message{};
         FjErrorBuffer error{message.data(), message.size(), 0};
+        const auto sourceAcquisitions = fj_test_noise_acquisition_count();
         check_frame_bindings(JuicerCuda::borrowed_owner(), context, projectedFrame, submission, prepared, recipe);
         const int result = checkContract
                                ? check_render_contract(JuicerCuda::borrowed_owner(), context, projectedFrame, submission, prepared, &error).category == FJ_STATUS_SUCCESS
                                : fj_test_execute_prepared_c(JuicerCuda::borrowed_owner(), &prepared, &projectedFrame, &context, &submission, &error);
+        if (fj_test_noise_acquisition_count() != sourceAcquisitions) {
+            diagnostic = "supplied noise performed a fallback acquisition";
+            return false;
+        }
         if (result == 0) {
             diagnostic.assign(message.data(), error.length);
         }

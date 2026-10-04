@@ -36,9 +36,7 @@
 
 #include "Cuda/JuicerCudaFailure.h"
 #include "Cuda/JuicerCudaResources.h"
-#if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
 #include "Cuda/JuicerCudaExecutor.h"
-#endif
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
 namespace JuicerProcess {
@@ -3422,14 +3420,9 @@ namespace JuicerProcess {
         }
 
         const bool active = _state->visualGrainDescriptor.has_value();
-        std::shared_ptr<const JuicerAssets::StaticNoisePayloadSet> payloads;
         if (active && !noise) {
-            payloads = root.assets().static_noise_payloads();
-            if (!payloads) {
-                outError.diagnostic =
-                    "MissingRequiredResource phase=grain_static field=payloads";
-                return false;
-            }
+            outError.diagnostic = "MissingRequiredResource phase=grain_static field=noise";
+            return false;
         }
 
         const auto& snapshot = _state->transaction.snapshot;
@@ -3467,9 +3460,7 @@ namespace JuicerProcess {
 
         const Spektrafilm::VisualGrainFrameDescriptor& descriptor =
             *_state->visualGrainDescriptor;
-        const bool uploaded = noise
-                                  ? JuicerCuda::ensure_grain_static_assets_uploaded(*_state->grainStaticResources, *noise, cudaStreamOpaque, outError)
-                                  : JuicerCuda::ensure_grain_static_assets_uploaded(*_state->grainStaticResources, *payloads, cudaStreamOpaque, outError);
+        const bool uploaded = JuicerCuda::ensure_grain_static_assets_uploaded(*_state->grainStaticResources, *noise, cudaStreamOpaque, outError);
         if (!uploaded) {
             return fail_preparation(
                 "ensure_grain_static_assets_uploaded",
@@ -4507,48 +4498,8 @@ namespace JuicerProcess {
 #endif
     }
 
-    namespace {
-        std::string compatibility_data_directory(const std::filesystem::path& resourcesDir) {
-#if defined(_WIN32)
-            std::wstring native = resourcesDir.native();
-            if (!native.empty() && native.back() != L'\\') {
-                native.push_back(L'\\');
-            }
-
-            if (native.empty()) {
-                return std::string();
-            }
-
-            int required = WideCharToMultiByte(
-                CP_UTF8,
-                0,
-                native.c_str(),
-                static_cast<int>(native.size()),
-                nullptr,
-                0,
-                nullptr,
-                nullptr);
-            if (required <= 0) {
-                return std::string();
-            }
-
-            std::string path(static_cast<size_t>(required), '\0');
-            WideCharToMultiByte(CP_UTF8, 0, native.c_str(), static_cast<int>(native.size()), path.data(), required, nullptr, nullptr);
-            return path;
-#else
-            const std::u8string utf8Path = resourcesDir.u8string();
-            std::string path(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
-            if (!path.empty() && path.back() != '/') {
-                path.push_back('/');
-            }
-            return path;
-#endif
-        }
-    } // namespace
-
     Root::Root(const std::filesystem::path& dataDirectory)
-        : _dataDir(compatibility_data_directory(dataDirectory)),
-          _assets(std::make_unique<JuicerAssets::Library>(dataDirectory, _dataDir)) {
+        : _assets(std::make_unique<JuicerAssets::Library>(dataDirectory)) {
     }
 
     Root::~Root() = default;
@@ -5494,9 +5445,32 @@ namespace JuicerProcess {
             frame.abort();
             return frame;
         }
+        std::optional<JuicerAssets::NoiseSource> noiseSource;
+        JuicerCuda::StaticNoiseInput noise;
+        const JuicerCuda::StaticNoiseInput* selectedNoise = request.noise;
+        if (frame._state->visualGrainDescriptor && !selectedNoise) {
+            try {
+                noiseSource.emplace(assets().noise());
+                noise = noiseSource->view();
+                selectedNoise = &noise;
+            } catch (JuicerCuda::ExecutionFailure& failure) {
+                outError = std::move(failure.failure);
+            } catch (const std::bad_alloc&) {
+                JuicerCuda::set_failure(outError, {FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "static noise source allocation failed");
+            } catch (const std::exception& detail) {
+                JuicerCuda::set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what());
+            } catch (...) {
+                JuicerCuda::set_failure(outError, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "static noise source failed with unknown exception");
+            }
+            if (!selectedNoise) {
+                recordFailure("acquire_noise_source", "CUDA grain-static source preparation failed");
+                frame.abort();
+                return frame;
+            }
+        }
         if (!frame.prepare_visual_grain_resources(
                 *this,
-                request.noise,
+                selectedNoise,
                 deviceContextKey,
                 cudaStreamOpaque,
                 outError)) {

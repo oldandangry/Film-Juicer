@@ -4,239 +4,17 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
-#include <fstream>
-#include <initializer_list>
 #include <memory>
-#include <sstream>
-#include <system_error>
 #include <utility>
 
 #include "Logging.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Cuda/JuicerCudaFailure.h"
 #include "Illuminants.h"
-#include "nlohmann/json.hpp"
 
 namespace JuicerAssets {
 
-    struct Library::StaticNoiseAssetSet {
-        std::string stbnPath;
-        std::string wangTilesPath;
-        std::string wangMetadataPath;
-    };
-
     namespace {
-        namespace fs = std::filesystem;
-        using Json = nlohmann::json;
-
-        std::string data_path_string(const std::string& dataDir, std::initializer_list<const char*> segments) {
-            fs::path path(dataDir);
-            for (const char* segment : segments) {
-                if (segment && *segment) {
-                    path /= segment;
-                }
-            }
-            path.make_preferred();
-            return path.string();
-        }
-
-        std::string noise_asset_path(const std::string& dataDir, std::initializer_list<const char*> segments) {
-            if (dataDir.empty()) {
-                return {};
-            }
-            return data_path_string(dataDir, segments);
-        }
-
-        Library::StaticNoiseAssetSet make_static_noise_assets(const std::string& dataDir) {
-            Library::StaticNoiseAssetSet asset;
-            asset.stbnPath = noise_asset_path(dataDir, {"Noise", "stbn_scalar_512x512x256_u8.bin"});
-            asset.wangTilesPath = noise_asset_path(dataDir, {"Noise", "Wang", "wang_tiles_256x256x16_u8.bin"});
-            asset.wangMetadataPath = noise_asset_path(dataDir, {"Noise", "Wang", "tiles.json"});
-            return asset;
-        }
-
-        StbnNoisePayload load_stbn_noise_payload(const Library::StaticNoiseAssetSet& assets) {
-            StbnNoisePayload payload;
-            payload.width = 512;
-            payload.height = 512;
-            payload.frames = 256;
-
-            if (assets.stbnPath.empty()) {
-                payload.error = "STBN load failed: data directory missing";
-                return payload;
-            }
-
-            fs::path path = fs::path(assets.stbnPath);
-            path.make_preferred();
-
-            std::ifstream file(path, std::ios::binary | std::ios::ate);
-            if (!file) {
-                payload.error = "STBN load failed: cannot open logical noise asset";
-                return payload;
-            }
-
-            const std::streamsize size = file.tellg();
-            if (size <= 0) {
-                payload.error = "STBN load failed: logical noise asset is empty";
-                return payload;
-            }
-
-            const std::size_t expected = static_cast<std::size_t>(payload.width) *
-                                         static_cast<std::size_t>(payload.height) *
-                                         static_cast<std::size_t>(payload.frames);
-            if (static_cast<std::size_t>(size) != expected) {
-                payload.error = "STBN load failed: logical noise asset has unexpected size";
-                return payload;
-            }
-
-            payload.data.resize(expected);
-            file.seekg(0, std::ios::beg);
-            if (!file.read(reinterpret_cast<char*>(payload.data.data()), size)) {
-                payload.error = "STBN load failed: logical noise asset read error";
-                payload.data.clear();
-                return payload;
-            }
-
-            payload.valid = true;
-            return payload;
-        }
-
-        struct WangTileEdges {
-            int left = 0;
-            int right = 0;
-            int top = 0;
-            int bottom = 0;
-        };
-
-        std::size_t wang_lut_index(const WangTileEdges& edges, int colors) {
-            const std::size_t c = static_cast<std::size_t>(colors);
-            return (((static_cast<std::size_t>(edges.left) * c + static_cast<std::size_t>(edges.right)) * c +
-                     static_cast<std::size_t>(edges.top)) *
-                        c +
-                    static_cast<std::size_t>(edges.bottom));
-        }
-
-        WangNoisePayload load_wang_noise_payload(const Library::StaticNoiseAssetSet& assets) {
-            WangNoisePayload payload;
-
-            if (assets.wangTilesPath.empty() || assets.wangMetadataPath.empty()) {
-                payload.error = "Wang tiles load failed: data directory missing";
-                return payload;
-            }
-
-            fs::path binPath = fs::path(assets.wangTilesPath);
-            fs::path jsonPath = fs::path(assets.wangMetadataPath);
-            binPath.make_preferred();
-            jsonPath.make_preferred();
-
-            if (!fs::exists(binPath) || !fs::exists(jsonPath)) {
-                payload.error = "Wang tiles load failed: logical noise asset set is incomplete";
-                return payload;
-            }
-
-            std::ifstream jf(jsonPath);
-            if (!jf) {
-                payload.error = "Wang tiles load failed: cannot open logical metadata asset";
-                return payload;
-            }
-
-            Json root;
-            try {
-                jf >> root;
-            } catch (const std::exception& e) {
-                payload.error = std::string("Wang tiles load failed: invalid JSON ") + e.what();
-                return payload;
-            }
-
-            if (!root.contains("resolution") || !root.contains("tiles") || !root.contains("colors") ||
-                !root.contains("mapping")) {
-                payload.error = "Wang tiles load failed: tiles.json missing required fields";
-                return payload;
-            }
-
-            const int width = root.value("resolution", 0);
-            const int height = width;
-            const int count = root.value("tiles", 0);
-            const int colors = root.value("colors", 0);
-            if (width <= 0 || height <= 0 || count <= 0 || colors <= 0) {
-                payload.error = "Wang tiles load failed: invalid metadata in tiles.json";
-                return payload;
-            }
-
-            const std::size_t lutSize = static_cast<std::size_t>(colors) *
-                                        static_cast<std::size_t>(colors) *
-                                        static_cast<std::size_t>(colors) *
-                                        static_cast<std::size_t>(colors);
-            std::vector<std::uint8_t> lut(lutSize, 0);
-
-            const auto& mapping = root["mapping"];
-            if (!mapping.is_array()) {
-                payload.error = "Wang tiles load failed: mapping is not an array";
-                return payload;
-            }
-
-            for (const auto& entry : mapping) {
-                if (!entry.contains("index") || !entry.contains("labels")) {
-                    continue;
-                }
-                const int idx = entry.value("index", 0);
-                const auto& labels = entry["labels"];
-                const int l = labels.value("L", 0);
-                const int r = labels.value("R", 0);
-                const int t = labels.value("T", 0);
-                const int b = labels.value("B", 0);
-                if (l < 0 || r < 0 || t < 0 || b < 0 ||
-                    l >= colors || r >= colors || t >= colors || b >= colors) {
-                    continue;
-                }
-                const std::size_t lutIndex = wang_lut_index(WangTileEdges{l, r, t, b}, colors);
-                if (lutIndex < lut.size() && idx >= 0 && idx < count) {
-                    lut[lutIndex] = static_cast<std::uint8_t>(idx);
-                }
-            }
-
-            std::ifstream bin(binPath, std::ios::binary | std::ios::ate);
-            if (!bin) {
-                payload.error = "Wang tiles load failed: cannot open logical tile asset";
-                return payload;
-            }
-            const std::streamsize size = bin.tellg();
-            if (size <= 0) {
-                payload.error = "Wang tiles load failed: logical tile asset is empty";
-                return payload;
-            }
-            const std::size_t expected = static_cast<std::size_t>(width) *
-                                         static_cast<std::size_t>(height) *
-                                         static_cast<std::size_t>(count);
-            if (static_cast<std::size_t>(size) != expected) {
-                payload.error = "Wang tiles load failed: logical tile asset has unexpected size";
-                return payload;
-            }
-
-            std::vector<std::uint8_t> tiles(expected);
-            bin.seekg(0, std::ios::beg);
-            if (!bin.read(reinterpret_cast<char*>(tiles.data()), size)) {
-                payload.error = "Wang tiles load failed: logical tile asset read error";
-                return payload;
-            }
-
-            payload.tiles = std::move(tiles);
-            payload.lut = std::move(lut);
-            payload.width = width;
-            payload.height = height;
-            payload.count = count;
-            payload.colors = colors;
-            payload.valid = true;
-            return payload;
-        }
-
-        StaticNoisePayloadSet load_static_noise_payloads(const Library::StaticNoiseAssetSet& assets) {
-            StaticNoisePayloadSet payloads;
-            payloads.stbn = load_stbn_noise_payload(assets);
-            payloads.wang = load_wang_noise_payload(assets);
-            return payloads;
-        }
-
         std::optional<std::vector<std::pair<float, float>>> copy_available_csv(AssetBridge& bridge, CsvSource source) {
             try {
                 return bridge.copy_csv_pairs(source);
@@ -296,11 +74,6 @@ namespace JuicerAssets {
 
     } // namespace
 
-    struct Library::StaticNoisePayloadCacheState {
-        std::mutex mutex;
-        std::shared_ptr<const StaticNoisePayloadSet> payloads;
-    };
-
     struct Library::IlluminantFilterCurveCacheState {
         std::mutex mutex;
         std::shared_ptr<const IlluminantFilterCurveSet> curves;
@@ -318,11 +91,8 @@ namespace JuicerAssets {
             tables;
     };
 
-    Library::Library(const std::filesystem::path& resourceRoot, std::string dataDir)
-        : _dataDir(std::move(dataDir)),
-          _bridge(resourceRoot),
-          _staticNoiseAssets(std::make_unique<StaticNoiseAssetSet>()),
-          _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
+    Library::Library(const std::filesystem::path& resourceRoot)
+        : _bridge(resourceRoot),
           _illuminantFilterCurveCache(
               std::make_unique<IlluminantFilterCurveCacheState>()),
           _inputCompressionHullCache(
@@ -343,11 +113,6 @@ namespace JuicerAssets {
         });
     }
 
-    void Library::ensure_static_noise_assets() {
-        std::call_once(_staticNoiseOnce, [this]() {
-            load_static_noise_assets();
-        });
-    }
 
     void Library::load_catalogs() {
         _spektrafilmProfileCatalog = _bridge.load_catalog();
@@ -372,9 +137,6 @@ namespace JuicerAssets {
         }
     }
 
-    void Library::load_static_noise_assets() {
-        *_staticNoiseAssets = make_static_noise_assets(_dataDir);
-    }
 
     const Spektrafilm::ProfileCatalog& Library::spektrafilm_profile_catalog() {
         ensure_catalogs();
@@ -414,16 +176,8 @@ namespace JuicerAssets {
         return result;
     }
 
-    std::shared_ptr<const StaticNoisePayloadSet>
-    Library::static_noise_payloads() {
-        ensure_static_noise_assets();
-        std::lock_guard<std::mutex> lock(_staticNoisePayloadCache->mutex);
-        if (!_staticNoisePayloadCache->payloads) {
-            _staticNoisePayloadCache->payloads =
-                std::make_shared<StaticNoisePayloadSet>(
-                    load_static_noise_payloads(*_staticNoiseAssets));
-        }
-        return _staticNoisePayloadCache->payloads;
+    NoiseSource Library::noise() {
+        return _bridge.noise();
     }
 
     std::shared_ptr<const IlluminantFilterCurveSet> Library::illuminant_filter_curves() {
@@ -537,15 +291,6 @@ namespace JuicerAssets {
                 }
             }
         };
-        cleanup([&] {
-            if (_staticNoisePayloadCache) {
-                std::shared_ptr<const StaticNoisePayloadSet> detached;
-                {
-                    std::lock_guard<std::mutex> lock(_staticNoisePayloadCache->mutex);
-                    detached.swap(_staticNoisePayloadCache->payloads);
-                }
-            }
-        });
         cleanup([&] {
             if (_illuminantFilterCurveCache) {
                 std::shared_ptr<const IlluminantFilterCurveSet> detached;

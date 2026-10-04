@@ -260,7 +260,7 @@ fn text(value: &str) -> FjStringView {
     }
 }
 
-enum Failure {
+pub(crate) enum Failure {
     Input(&'static str),
     Asset(AssetError),
     #[cfg(any(test, feature = "test-support"))]
@@ -305,6 +305,8 @@ impl Failure {
             Self::Gamma(_) => FJ_STATUS_PREPARATION_FAILURE,
             #[cfg(any(test, feature = "test-support"))]
             Self::Capacity(_) => FJ_STATUS_ALLOCATION_FAILURE,
+            Self::Asset(AssetError::Noise(error)) => noise_category(error.kind()),
+            Self::Asset(AssetError::NoiseCachePoisoned) => FJ_STATUS_INTERNAL_FAILURE,
             Self::Asset(_) => FJ_STATUS_INTERNAL_FAILURE,
             #[cfg(any(test, feature = "test-support"))]
             Self::Internal(_) => FJ_STATUS_INTERNAL_FAILURE,
@@ -2147,5 +2149,253 @@ mod illuminant_calibration_tests {
             *mut FjNeutralCalibrationResult,
             *mut FjErrorBuffer,
         ) -> FjStatus = fj_legacy_neutral_calibration_lookup;
+    }
+}
+
+// Raw noise projection is shared only by the production and fixture edges.
+use crate::asset_noise::{NoiseOwner, NoiseView};
+use crate::cuda::sys::{FjByteSpan, FjStaticNoise};
+use film_juicer_core::assets::NoiseBundle;
+use std::sync::Arc;
+use film_juicer_core::data_io::noise;
+
+#[repr(C)]
+pub(crate) struct FjNoise {
+    _opaque: [u8; 0],
+}
+
+pub(crate) fn noise_category(kind: noise::ErrorKind) -> u32 {
+    match kind {
+        noise::ErrorKind::Capacity
+        | noise::ErrorKind::Open(std::io::ErrorKind::OutOfMemory)
+        | noise::ErrorKind::Read(std::io::ErrorKind::OutOfMemory) => FJ_STATUS_ALLOCATION_FAILURE,
+        noise::ErrorKind::Missing
+        | noise::ErrorKind::Open(_)
+        | noise::ErrorKind::Read(_)
+        | noise::ErrorKind::ShortRead
+        | noise::ErrorKind::Length { .. }
+        | noise::ErrorKind::Size
+        | noise::ErrorKind::Json
+        | noise::ErrorKind::Metadata
+        | noise::ErrorKind::Dimensions => FJ_STATUS_PREPARATION_FAILURE,
+    }
+}
+
+fn noise_projection(view: NoiseView<'_>) -> FjStaticNoise {
+    let bytes = |samples: &[u8]| FjByteSpan {
+        data: samples.as_ptr(),
+        count: samples.len(),
+    };
+    // The complete core representation has fixed dimensions bounded by i32.
+    FjStaticNoise {
+        stbn: bytes(view.stbn),
+        stbn_width: view.stbn_dimensions[0] as i32,
+        stbn_height: view.stbn_dimensions[1] as i32,
+        stbn_frames: view.stbn_dimensions[2] as i32,
+        wang_tiles: bytes(view.wang_tiles),
+        wang_lut: bytes(view.wang_lut),
+        wang_width: view.wang_dimensions[0] as i32,
+        wang_height: view.wang_dimensions[1] as i32,
+        wang_tile_count: view.wang_dimensions[2],
+        wang_colors: view.wang_colors as i32,
+    }
+}
+
+#[cfg(feature = "test-support")]
+thread_local! {
+    static NOISE_ACQUISITIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static NOISE_FAULT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+#[cfg(feature = "test-support")]
+static LIVE_NOISE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// # Safety
+/// Output/diagnostics are exclusive aligned disjoint authorized storage.
+/// The operation borrows its inputs only until return and publishes complete data.
+pub(crate) unsafe fn acquire_noise(
+    out_owner: *mut *mut FjNoise,
+    error: *mut FjErrorBuffer,
+    acquire: impl FnOnce() -> Result<Arc<NoiseBundle>, Failure>,
+) -> FjStatus {
+    if !out_owner.is_null() {
+        // SAFETY: Authorized output slot is cleared before all other validation.
+        unsafe { out_owner.write(std::ptr::null_mut()) };
+    }
+    // SAFETY: Call storage obeys the common foreign diagnostic contract.
+    unsafe {
+        run(error, || {
+            if out_owner.is_null() {
+                return Err(Failure::Input("NULL noise acquisition output"));
+            }
+            #[cfg(feature = "test-support")]
+            if NOISE_FAULT.with(|fault| fault.get()) == 1 {
+                panic!("noise acquisition fixture panic");
+            }
+            #[cfg(feature = "test-support")]
+            NOISE_ACQUISITIONS.with(|value| value.set(value.get() + 1));
+            let owner = Box::new(NoiseOwner::new(acquire()?));
+            #[cfg(feature = "test-support")]
+            LIVE_NOISE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out_owner.write(Box::into_raw(owner).cast());
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Matching live owner remains held through all view use; output/diagnostics
+/// are exclusive aligned disjoint storage. Release excludes all readers.
+pub(crate) unsafe fn view_noise(
+    owner: *const FjNoise,
+    out_view: *mut FjStaticNoise,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_view.is_null() {
+        // SAFETY: Numeric and nullable span fields have all-zero empty values.
+        unsafe { out_view.write(std::mem::zeroed()) };
+    }
+    // SAFETY: Live owner and caller-authorized output/diagnostics obey the contract.
+    unsafe {
+        run(error, || {
+            if owner.is_null() || out_view.is_null() {
+                return Err(Failure::Input("NULL noise view input/output"));
+            }
+            #[cfg(feature = "test-support")]
+            if NOISE_FAULT.with(|fault| fault.get()) == 2 {
+                panic!("noise view fixture panic");
+            }
+            out_view.write(noise_projection((&*owner.cast::<NoiseOwner>()).view()));
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Owner is NULL or one matching live handle consumed once, with all reads and
+/// borrows excluded. Diagnostic storage obeys the common disjoint contract.
+pub(crate) unsafe fn release_noise(owner: *mut FjNoise, error: *mut FjErrorBuffer) -> FjStatus {
+    let taken = if owner.is_null() {
+        None
+    } else {
+        #[cfg(feature = "test-support")]
+        LIVE_NOISE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: The matching acquired Box is taken exactly once before validation.
+        Some(unsafe { Box::from_raw(owner.cast::<NoiseOwner>()) })
+    };
+    // SAFETY: Captured cleanup occurs inside containment, even on malformed diagnostics.
+    unsafe {
+        run(error, move || {
+            drop(taken);
+            #[cfg(feature = "test-support")]
+            if NOISE_FAULT.with(|fault| fault.get()) == 3 {
+                panic!("noise release fixture panic");
+            }
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Assets is live through return; output/diagnostics are aligned, exclusive and
+/// disjoint. Only success transfers a complete source owner requiring release.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_noise_acquire(
+    assets: *const FjAssets,
+    out_owner: *mut *mut FjNoise,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Shared implementation contains the operation and validates outputs.
+    unsafe {
+        acquire_noise(out_owner, error, || {
+            if assets.is_null() {
+                return Err(Failure::Input("NULL noise Assets"));
+            }
+            (&*assets.cast::<Assets>()).noise().map_err(Failure::Asset)
+        })
+    }
+}
+/// # Safety
+/// Matching owner is live through view use; aligned exclusive outputs and
+/// diagnostics are disjoint from each other and all owner storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_noise_view(
+    owner: *const FjNoise,
+    out_view: *mut FjStaticNoise,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Identical owner/borrow/storage obligations to the shared operation.
+    unsafe { view_noise(owner, out_view, error) }
+}
+/// # Safety
+/// Matching live owner is consumed once, with every read/borrow excluded.
+/// Diagnostics follow the common exclusive/disjoint contract; NULL is allowed.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_noise_release(
+    owner: *mut FjNoise,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Shared cleanup consumes even on diagnostic failure or panic.
+    unsafe { release_noise(owner, error) }
+}
+
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_noise_fault(fault: u32) {
+    NOISE_FAULT.with(|value| value.set(fault));
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_live_noise_owners() -> usize {
+    LIVE_NOISE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+const _: unsafe extern "C" fn(*const FjAssets, *mut *mut FjNoise, *mut FjErrorBuffer) -> FjStatus =
+    fj_legacy_noise_acquire;
+const _: unsafe extern "C" fn(*const FjNoise, *mut FjStaticNoise, *mut FjErrorBuffer) -> FjStatus =
+    fj_legacy_noise_view;
+const _: unsafe extern "C" fn(*mut FjNoise, *mut FjErrorBuffer) -> FjStatus =
+    fj_legacy_noise_release;
+
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_noise_acquisition_count() -> usize {
+    NOISE_ACQUISITIONS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+mod noise_tests {
+    use super::*;
+    #[test]
+    fn explicit_noise_statuses_do_not_define_cache_retry() {
+        for kind in [
+            noise::ErrorKind::Capacity,
+            noise::ErrorKind::Open(std::io::ErrorKind::OutOfMemory),
+            noise::ErrorKind::Read(std::io::ErrorKind::OutOfMemory),
+        ] {
+            assert_eq!(noise_category(kind), FJ_STATUS_ALLOCATION_FAILURE);
+        }
+        for kind in [
+            noise::ErrorKind::Missing,
+            noise::ErrorKind::ShortRead,
+            noise::ErrorKind::Json,
+            noise::ErrorKind::Metadata,
+            noise::ErrorKind::Dimensions,
+            noise::ErrorKind::Size,
+            noise::ErrorKind::Length {
+                expected: 1,
+                actual: 0,
+            },
+            noise::ErrorKind::Open(std::io::ErrorKind::PermissionDenied),
+            noise::ErrorKind::Read(std::io::ErrorKind::UnexpectedEof),
+        ] {
+            assert_eq!(noise_category(kind), FJ_STATUS_PREPARATION_FAILURE);
+        }
+        assert_eq!(
+            Failure::Asset(AssetError::NoiseCachePoisoned).category(),
+            FJ_STATUS_INTERNAL_FAILURE
+        );
     }
 }

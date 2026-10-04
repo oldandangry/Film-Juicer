@@ -128,8 +128,8 @@ class RustBoundaryTests(unittest.TestCase):
         for release in (False, True):
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assert_rejected(status, diagnostics, {
-                "E0515": ("film_owner.view()", "print_owner.view()", "spectra_owner.view()", "mallett_owner.samples()", "cmf_owner.rows()", "csv_owner.rows()"),
-                "E0505": ("drop(film_owner)", "drop(print_owner)", "drop(spectra_owner)", "drop(mallett_owner)", "drop(cmf_owner)", "drop(csv_owner)"),
+                "E0515": ("film_owner.view()", "print_owner.view()", "spectra_owner.view()", "mallett_owner.samples()", "cmf_owner.rows()", "csv_owner.rows()", "noise_owner.view()"),
+                "E0505": ("drop(film_owner)", "drop(print_owner)", "drop(spectra_owner)", "drop(mallett_owner)", "drop(cmf_owner)", "drop(csv_owner)", "drop(noise_owner)"),
             })
 
     def test_completed_profile_storage_is_private_to_its_owner(self) -> None:
@@ -139,8 +139,21 @@ class RustBoundaryTests(unittest.TestCase):
         for release in (False, True):
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assert_rejected(status, diagnostics, {
-                "E0616": ("film.processing_defaults", "tables.interpolation_log_exposure", "film_owner.profile", "print_owner.profile", "spectra_owner.lut", "mallett_owner.basis", "cmf_owner.rows", "csv_owner.rows"),
+                "E0616": ("film.processing_defaults", "tables.interpolation_log_exposure", "film_owner.profile", "print_owner.profile", "spectra_owner.lut", "mallett_owner.basis", "cmf_owner.rows", "csv_owner.rows", "noise_owner.bundle"),
             })
+
+    def test_noise_borrows_and_storage_under_test_support(self) -> None:
+        for fixture, expected in (
+            ("noise_borrowed", {"E0515": ("noise_owner.view()",), "E0505": ("drop(noise_owner)",)}),
+            ("noise_private", {"E0616": ("noise_owner.bundle",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in (False, True):
+                    status, diagnostics = self.check("film-juicer-plugin", release, True)
+                    self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
 
     def test_completed_profile_construction_cannot_be_bypassed(self) -> None:
         self.attach("film-juicer-plugin/src/lib.rs", "private_construction")
@@ -156,6 +169,7 @@ class RustBoundaryTests(unittest.TestCase):
             ("film-juicer-plugin", "asset_catalog.rs"),
             ("film-juicer-plugin", "asset_profile.rs"),
             ("film-juicer-plugin", "asset_spectral.rs"),
+            ("film-juicer-plugin", "asset_noise.rs"),
             ("film-juicer-plugin", "asset_calibration.rs"),
         )
         for package, source in owners:

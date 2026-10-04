@@ -37,6 +37,8 @@ RETIRED_SPECTRAL = r"\b(?:NpySpectraLUT|NpyFloat2D|load_npy_spectra_lut|load_npy
 RETIRED_ILLUMINANTS_CALIBRATION = r"\b(?:load_csv_pairs|build_curve_from_csv_pinned|build_curve_D65_pinned|build_curve_D55_pinned|build_curve_D50_pinned|build_curve_T_pinned|build_curve_K75P_pinned|build_curve_TH_KG3_pinned|build_curve_TH_KG3_L_pinned|IlluminantFilterAssetSet|IlluminantFilterCurveCacheEntry|NeutralPrintCalibrationSnapshot|NeutralPrintCalibrationCacheState|load_neutral_print_calibration_snapshot|neutral_print_calibration_path|read_file_bytes)\b"
 RETIRED_PROFILES = r"\b(?:ProfileAssetStore|ProfileJSONLoader)\b|ProfileAssets\.cpp"
 
+RETIRED_NOISE = r"\b(?:StbnNoisePayload|WangNoisePayload|StaticNoisePayloadSet|StaticNoiseAssetSet|StaticNoisePayloadCacheState|static_noise_payloads|load_stbn_noise_payload|load_wang_noise_payload|load_static_noise_payloads|ensure_static_noise_assets|load_static_noise_assets|make_static_noise_assets|noise_asset_path|build_static_noise_input|compatibility_data_directory|_staticNoiseOnce|_staticNoiseAssets|_staticNoisePayloadCache|_dataDir)\b"
+
 
 class NativeBoundary(unittest.TestCase):
     def test_executor_has_no_host_message_surface(self):
@@ -166,9 +168,36 @@ class NativeBoundaryControls(unittest.TestCase):
                          "load_neutral_print_calibration_snapshot", "neutral_print_calibration_path", "read_file_bytes"):
                 source.write_text(f"// retired: {name}();\n", encoding="utf-8")
                 self.assertEqual(len(forbidden_uses([source], RETIRED_ILLUMINANTS_CALIBRATION)), 1)
-            source.write_text("Json noise; load_static_noise_payloads(); build_illuminant_curve(rows, label); "
+            source.write_text("NoiseSource noise; build_illuminant_curve(rows, label); "
                               "prepare_tungsten_kg3_lens_input(rows, label); copy_csv_pairs(source);", encoding="utf-8")
             self.assertEqual(forbidden_uses([source], RETIRED_ILLUMINANTS_CALIBRATION), [])
+
+    def test_noise_source_and_path_authority_stays_deleted(self):
+        paths = [path for directory in (ROOT / "src", ROOT / "native", ROOT / "tests/ffi")
+                 for path in directory.rglob("*")
+                 if path.is_file() and path.suffix.lower() in SOURCE_SUFFIXES]
+        self.assertEqual(forbidden_uses(paths, RETIRED_NOISE), [])
+        source = (ROOT / "src/ResourceAssetLibrary.cpp").read_text(encoding="utf-8")
+        self.assertNotRegex(source, r"nlohmann|\bJson\b|fstream|ifstream|read_bytes")
+        projection = (ROOT / "src/CudaRenderProjection.cpp").read_text(encoding="utf-8")
+        self.assertNotRegex(projection, r"(?:assets\(\)\.noise|fj_legacy_noise_|NoiseSource)")
+        fixture = (ROOT / "tests/ffi/prepared_boundary.cpp").read_text(encoding="utf-8")
+        self.assertIn("fj_test_noise_acquire", fixture)
+        self.assertNotIn("fj_legacy_noise_", fixture)
+
+    def test_noise_deletion_controls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.hpp"
+            for name in ("StbnNoisePayload", "WangNoisePayload", "StaticNoisePayloadSet",
+                         "StaticNoiseAssetSet", "StaticNoisePayloadCacheState", "static_noise_payloads",
+                         "load_stbn_noise_payload", "load_wang_noise_payload", "load_static_noise_payloads",
+                         "build_static_noise_input", "compatibility_data_directory", "_dataDir"):
+                source.write_text(f"// retired {name};\n", encoding="utf-8")
+                self.assertEqual(len(forbidden_uses([source], RETIRED_NOISE)), 1)
+            source.write_text("NoiseSource source; StaticNoiseInput view; Library(nativePath); "
+                              "fj_legacy_noise_view(owner, out, error); ensure_grain_static_assets_uploaded(view);",
+                              encoding="utf-8")
+            self.assertEqual(forbidden_uses([source], RETIRED_NOISE), [])
 
 
 

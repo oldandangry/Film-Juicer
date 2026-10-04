@@ -339,6 +339,17 @@ pub(crate) mod test_support {
         (stbn, probe)
     }
 
+    pub(crate) fn io_oom_error(path: &Path, open: bool) -> Error {
+        Error {
+            path: path.to_owned(),
+            kind: if open {
+                ErrorKind::Open(io::ErrorKind::OutOfMemory)
+            } else {
+                ErrorKind::Read(io::ErrorKind::OutOfMemory)
+            },
+        }
+    }
+
     pub(crate) fn capacity_error(path: &Path) -> Error {
         let kind = read_stbn(&mut io::empty(), 67_108_864, |bytes, _| {
             bytes.try_reserve_exact(usize::MAX)
@@ -494,5 +505,49 @@ mod tests {
                 ErrorKind::Read(io::ErrorKind::PermissionDenied)
             );
         }
+    }
+    #[test]
+    fn metadata_reader_preserves_reported_oom_before_and_after_prefix() {
+        struct OomReader {
+            remaining: usize,
+        }
+        impl Read for OomReader {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                if self.remaining == 0 {
+                    return Err(io::ErrorKind::OutOfMemory.into());
+                }
+                let count = out.len().min(self.remaining);
+                out[..count].fill(b' ');
+                self.remaining -= count;
+                Ok(count)
+            }
+        }
+        for remaining in [0, 1, 3, 64] {
+            assert_eq!(
+                read_metadata(OomReader { remaining }).unwrap_err(),
+                ErrorKind::Read(io::ErrorKind::OutOfMemory)
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_noise_requested_capacities() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources/Noise");
+        let stbn = load_stbn(root.join("stbn_scalar_512x512x256_u8.bin")).unwrap();
+        let wang = load_wang(
+            root.join("Wang/wang_tiles_256x256x16_u8.bin"),
+            root.join("Wang/tiles.json"),
+        )
+        .unwrap();
+        assert_eq!(stbn.bytes.capacity(), 67_108_864);
+        assert_eq!(wang.tiles.capacity(), 1_048_576);
+        println!(
+            "noise actual capacities: STBN={} Wang={} LUT={} container sizes STBN={} Wang={}",
+            stbn.bytes.capacity(),
+            wang.tiles.capacity(),
+            wang.lut.len(),
+            size_of::<Stbn>(),
+            size_of::<Wang>()
+        );
     }
 }

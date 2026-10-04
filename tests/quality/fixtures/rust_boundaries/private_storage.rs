@@ -24,3 +24,6 @@ pub fn private_cmf(cmf_owner: CmfOwner) { let _ = cmf_owner.rows; }
 
 use crate::asset_spectral::CsvPairsOwner;
 pub fn private_csv(csv_owner: CsvPairsOwner) { let _ = csv_owner.rows; }
+
+use crate::asset_noise::NoiseOwner;
+pub fn noise_storage(noise_owner: &NoiseOwner) { let _ = &noise_owner.bundle; }

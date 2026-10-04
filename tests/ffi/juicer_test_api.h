@@ -98,6 +98,19 @@ void fj_test_cache_release_failure(void);
 size_t fj_test_assets_live_owners(void);
 size_t fj_test_catalog_live_owners(void);
 
+/* Fixture-only UTF-8, nonempty, NUL-free root; same complete safe producer and
+ * borrowed FjStaticNoise as production. Pair with this facade's consuming release.
+ * Shared owner/output/diagnostic/panic obligations apply, including malformed
+ * diagnostic consuming release. No catalog/profile discovery is performed. */
+typedef struct FjNoise FjNoise;
+FjStatus fj_test_noise_acquire(FjStringView resource_root, FjNoise** out_owner, FjErrorBuffer* error);
+FjStatus fj_test_noise_view(const FjNoise* owner, FjStaticNoise* out_view, FjErrorBuffer* error);
+FjStatus fj_test_noise_release(FjNoise* owner, FjErrorBuffer* error);
+/* Calling-thread bounded probes: 1=acquire panic, 2=view panic, 3=release panic. */
+void fj_test_noise_fault(uint32_t fault);
+size_t fj_test_noise_acquisition_count(void);
+size_t fj_test_live_noise_owners(void);
+
 #ifdef __cplusplus
 }
 #endif

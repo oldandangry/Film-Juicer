@@ -688,19 +688,22 @@ typedef struct FjFilmEffects {
 
 typedef struct FjStaticNoise {
     /* uint8_t[width*height*frames], [frame][y][x], dimensionless STBN samples.
-     * ResourceAssetLibrary::static_noise_payloads -> static-grain upload;
-     * empty when grain is inactive; expires at native-call return. */
+     * Rust NoiseOwner/FjNoise borrowed bytes -> static-grain upload;
+     * empty when grain is inactive; source owner must outlive native-call return.
+     * Native staging copies synchronously before asynchronous upload. */
     FjByteSpan stbn;
     int32_t stbn_width;
     int32_t stbn_height;
     int32_t stbn_frames;
     /* uint8_t[width*height*tile_count], [tile][y][x], dimensionless noise.
-     * ResourceAssetLibrary::static_noise_payloads -> Wang tile upload;
-     * empty when grain is inactive; expires at native-call return. */
+     * Rust NoiseOwner/FjNoise borrowed bytes -> Wang tile upload;
+     * empty when grain is inactive; source owner must outlive native-call return.
+     * Native staging copies synchronously before asynchronous upload. */
     FjByteSpan wang_tiles;
     /* uint8_t[colors^4], index (((L*colors+R)*colors+T)*colors+B), tile indices.
-     * ResourceAssetLibrary::static_noise_payloads -> Wang LUT upload;
-     * empty when grain is inactive; expires at native-call return. */
+     * Rust NoiseOwner/FjNoise borrowed bytes -> Wang LUT upload;
+     * empty when grain is inactive; source owner must outlive native-call return.
+     * Native staging copies synchronously before asynchronous upload. */
     FjByteSpan wang_lut;
     int32_t wang_width;
     int32_t wang_height;

@@ -14,6 +14,12 @@ namespace JuicerCuda {
     // Callback-local borrow of the registered owner; never constructs one.
     FjCuda* borrowed_owner() noexcept;
 
+    // Registration/reentry precheck only: no lock, reservation or lifecycle admission.
+    void check_native_call_admission(FjCuda* cuda);
+#if defined(JUICER_NOISE_TEST_HOOK)
+    bool calling_thread_native_gate_active() noexcept;
+#endif
+
     // Private callback-local admission. Owns no runtime or CUDA context. The
     // host lifetime excludes owner destruction until this borrow ends.
     class NativeCall final {

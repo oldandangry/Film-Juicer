@@ -174,12 +174,7 @@ namespace {
     }
 
     std::mutex& native_call_mutex(FjCuda* cuda) {
-        if (!cuda || gNativeCallActive) {
-            reject_native_call(FJ_STATUS_UNSUPPORTED_INPUT, "invalid or reentrant CUDA call");
-        }
-        if (cuda != gOwner.load(std::memory_order_acquire)) {
-            reject_native_call(FJ_STATUS_PREPARATION_FAILURE, "CUDA call requires the registered owner");
-        }
+        JuicerCuda::check_native_call_admission(cuda);
         return cuda->callMutex;
     }
 
@@ -697,6 +692,21 @@ namespace JuicerProcess {
 } // namespace JuicerProcess
 
 namespace JuicerCuda {
+
+    void check_native_call_admission(FjCuda* cuda) {
+        if (!cuda || gNativeCallActive) {
+            reject_native_call(FJ_STATUS_UNSUPPORTED_INPUT, "invalid or reentrant CUDA call");
+        }
+        if (cuda != gOwner.load(std::memory_order_acquire)) {
+            reject_native_call(FJ_STATUS_PREPARATION_FAILURE, "CUDA call requires the registered owner");
+        }
+    }
+
+#if defined(JUICER_NOISE_TEST_HOOK)
+    bool calling_thread_native_gate_active() noexcept {
+        return gNativeCallActive;
+    }
+#endif
 
     NativeCall::NativeCall(FjCuda* cuda)
         : _lock(native_call_mutex(cuda)), _cuda(cuda) {
