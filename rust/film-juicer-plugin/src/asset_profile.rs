@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use film_juicer_core::profile::{
-    FilmDigest, FilmProfile, IlluminantKind, Polarity, PrintDensityCurves, PrintDensityError,
-    PrintProfile, ProfileTables, Stage, Support,
+    FilmProcessingDefaults, FilmProfile, IlluminantKind, Polarity, PrintDensityCurves,
+    PrintDensityError, PrintProfile, ProfileTables, Stage, Support,
 };
 #[cfg(feature = "test-support")]
 use film_juicer_core::profile::{Antihalation, ProfileUse};
@@ -22,8 +22,8 @@ pub(crate) struct FilmFixtureView<'a> {
     pub asset_token: u64,
     pub halation_first_sigma_um: [f32; 3],
     pub halation_primary_amount: [f32; 3],
-    pub source_log_exposure: &'a [f64],
-    pub log_exposure: &'a [f32],
+    pub authored_log_exposure: &'a [f64],
+    pub interpolation_log_exposure: &'a [f32],
     pub density_curves_cmy: &'a [f32],
     pub density_curves_layers: [[&'a [f32]; 3]; 3],
     pub channel_density_cmy: &'a [f32],
@@ -38,15 +38,15 @@ impl FilmOwner {
     #[cfg(feature = "test-support")]
     pub(crate) fn fixture_view(&self) -> FilmFixtureView<'_> {
         let tables = self.profile.tables();
-        let digest = self.profile.digest();
+        let processing_defaults = self.profile.processing_defaults();
         FilmFixtureView {
             usage: self.profile.info().usage(),
             antihalation: self.profile.info().antihalation(),
             asset_token: self.profile.asset_token(),
-            halation_first_sigma_um: digest.halation_first_sigma_um,
-            halation_primary_amount: digest.halation_primary_amount,
-            source_log_exposure: tables.source_log_exposure(),
-            log_exposure: tables.log_exposure(),
+            halation_first_sigma_um: processing_defaults.halation_first_sigma_um,
+            halation_primary_amount: processing_defaults.halation_primary_amount,
+            authored_log_exposure: tables.authored_log_exposure(),
+            interpolation_log_exposure: tables.interpolation_log_exposure(),
             density_curves_cmy: tables.density_curves().as_flattened(),
             density_curves_layers: std::array::from_fn(|layer| {
                 std::array::from_fn(|channel| {
@@ -68,7 +68,7 @@ pub(crate) struct ProfileTablesView<'a> {
     pub linear_sensitivity_rgb: &'a [f32],
     pub channel_density_cmy: &'a [f32],
     pub base_density: &'a [f32],
-    pub log_exposure: &'a [f32],
+    pub interpolation_log_exposure: &'a [f32],
     pub density_curves_cmy: &'a [f32],
 }
 
@@ -78,7 +78,7 @@ impl<'a> ProfileTablesView<'a> {
             linear_sensitivity_rgb: tables.linear_sensitivity().as_flattened(),
             channel_density_cmy: tables.channel_density().as_flattened(),
             base_density: tables.base_density(),
-            log_exposure: tables.log_exposure(),
+            interpolation_log_exposure: tables.interpolation_log_exposure(),
             density_curves_cmy: tables.density_curves().as_flattened(),
         }
     }
@@ -91,7 +91,7 @@ pub(crate) struct FilmView<'a> {
     pub tables: ProfileTablesView<'a>,
     pub wavelengths: &'a [f32],
     pub density_curves_layers: [[&'a [f32]; 3]; 3],
-    pub digest: &'a FilmDigest,
+    pub processing_defaults: &'a FilmProcessingDefaults,
     pub hanatos_window: &'a [f32],
     pub hanatos_surface_rgb: &'a [f32],
     pub asset_token: u64,
@@ -121,7 +121,7 @@ impl FilmOwner {
                     tables.density_curves_layers()[layer][channel].as_slice()
                 })
             }),
-            digest: self.profile.digest(),
+            processing_defaults: self.profile.processing_defaults(),
             hanatos_window: tables
                 .hanatos2025_adaptation_window_params()
                 .map_or(&[], |values| values.as_slice()),
@@ -198,22 +198,31 @@ mod tests {
         assert_eq!(view.asset_token, profile.asset_token());
         assert_eq!(
             view.halation_first_sigma_um.map(f32::to_bits),
-            profile.digest().halation_first_sigma_um.map(f32::to_bits)
+            profile
+                .processing_defaults()
+                .halation_first_sigma_um
+                .map(f32::to_bits)
         );
         assert_eq!(
             view.halation_primary_amount.map(f32::to_bits),
-            profile.digest().halation_primary_amount.map(f32::to_bits)
+            profile
+                .processing_defaults()
+                .halation_primary_amount
+                .map(f32::to_bits)
         );
         assert_eq!(
-            view.source_log_exposure.as_ptr(),
-            tables.source_log_exposure().as_ptr()
+            view.authored_log_exposure.as_ptr(),
+            tables.authored_log_exposure().as_ptr()
         );
         assert_eq!(
-            view.source_log_exposure.len(),
-            tables.source_log_exposure().len()
+            view.authored_log_exposure.len(),
+            tables.authored_log_exposure().len()
         );
         for (span, expected) in [
-            (view.log_exposure, tables.log_exposure()),
+            (
+                view.interpolation_log_exposure,
+                tables.interpolation_log_exposure(),
+            ),
             (
                 view.density_curves_cmy,
                 tables.density_curves().as_flattened(),
@@ -258,12 +267,16 @@ mod production_tests {
         let film_owner = FilmOwner::new(Arc::clone(&film));
         let print_owner = PrintOwner::new(Arc::clone(&print));
         assert_eq!(
-            film_owner.view().tables.log_exposure.as_ptr(),
-            film.tables().log_exposure().as_ptr()
+            film_owner.view().tables.interpolation_log_exposure.as_ptr(),
+            film.tables().interpolation_log_exposure().as_ptr()
         );
         assert_eq!(
-            print_owner.view().tables.log_exposure.as_ptr(),
-            print.tables().log_exposure().as_ptr()
+            print_owner
+                .view()
+                .tables
+                .interpolation_log_exposure
+                .as_ptr(),
+            print.tables().interpolation_log_exposure().as_ptr()
         );
         let curves = print_owner.sample_density_curves(1.1).unwrap();
         assert_ne!(
@@ -277,7 +290,13 @@ mod production_tests {
         drop(print);
         assert_eq!(film_weak.strong_count(), 1);
         assert_eq!(print_weak.strong_count(), 1);
-        assert!(!film_owner.view().tables.log_exposure.is_empty());
+        assert!(
+            !film_owner
+                .view()
+                .tables
+                .interpolation_log_exposure
+                .is_empty()
+        );
         drop(film_owner);
         drop(print_owner);
         assert!(film_weak.upgrade().is_none());

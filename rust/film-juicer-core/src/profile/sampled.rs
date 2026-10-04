@@ -19,8 +19,8 @@ pub struct ProfileTables {
     linear_sensitivity: [[f32; 3]; 81],
     channel_density: [[f32; 3]; 81],
     base_density: [f32; 81],
-    source_log_exposure: Vec<f64>,
-    log_exposure: Vec<f32>,
+    authored_log_exposure: Vec<f64>,
+    interpolation_log_exposure: Vec<f32>,
     density_curves: Vec<[f32; 3]>,
     density_curves_layers: [[Vec<f32>; 3]; 3],
     hanatos2025_adaptation_window_params: Option<[f32; 4]>,
@@ -45,13 +45,15 @@ impl ProfileTables {
     pub fn base_density(&self) -> &[f32; 81] {
         &self.base_density
     }
-    /// Original f64 values and order, including distinctions hidden by narrowing.
-    pub fn source_log_exposure(&self) -> &[f64] {
-        &self.source_log_exposure
+    /// Authored f64 values and order, retained for density-model sampling and
+    /// profile identity, including distinctions hidden by interpolation narrowing.
+    pub fn authored_log_exposure(&self) -> &[f64] {
+        &self.authored_log_exposure
     }
-    /// Nonempty, NaN-free, nondecreasing axis. Equality and infinities are allowed.
-    pub fn log_exposure(&self) -> &[f32] {
-        &self.log_exposure
+    /// Narrowed f32 axis for downstream density interpolation. Nonempty, NaN-free
+    /// and nondecreasing; equality and infinities are allowed.
+    pub fn interpolation_log_exposure(&self) -> &[f32] {
+        &self.interpolation_log_exposure
     }
     /// Exposure-major CMY totals; row count matches the interpolation axis.
     pub fn density_curves(&self) -> &[[f32; 3]] {
@@ -69,8 +71,10 @@ impl ProfileTables {
     }
 }
 
+/// Metadata-selected DIR, halation and reconstruction defaults, before recipe
+/// controls are applied. These parameters are not a content fingerprint.
 #[derive(Debug)]
-pub struct FilmDigest {
+pub struct FilmProcessingDefaults {
     pub gamma_samelayer_rgb: [f32; 3],
     pub gamma_interlayer_r_to_gb: [f32; 2],
     pub gamma_interlayer_g_to_rb: [f32; 2],
@@ -93,7 +97,7 @@ struct CompletedProfile {
 #[derive(Debug)]
 pub struct FilmProfile {
     profile: CompletedProfile,
-    digest: FilmDigest,
+    processing_defaults: FilmProcessingDefaults,
 }
 
 impl FilmProfile {
@@ -104,8 +108,11 @@ impl FilmProfile {
             Vec::try_reserve_exact,
             Vec::try_reserve_exact,
         )?;
-        let digest = film_digest(&profile.info);
-        Ok(Self { profile, digest })
+        let processing_defaults = film_processing_defaults(&profile.info);
+        Ok(Self {
+            profile,
+            processing_defaults,
+        })
     }
     pub fn info(&self) -> &ProfileInfo {
         &self.profile.info
@@ -116,11 +123,13 @@ impl FilmProfile {
     pub fn density_model(&self) -> &DensityCurveModel {
         &self.profile.density_model
     }
+    /// Versioned completed-profile identity; zero maps to one. See `profile_token`
+    /// for contributing metadata, authored/model inputs and sampled tables.
     pub fn asset_token(&self) -> u64 {
         self.profile.asset_token
     }
-    pub fn digest(&self) -> &FilmDigest {
-        &self.digest
+    pub fn processing_defaults(&self) -> &FilmProcessingDefaults {
+        &self.processing_defaults
     }
 }
 
@@ -148,6 +157,8 @@ impl PrintProfile {
     pub fn density_model(&self) -> &DensityCurveModel {
         &self.profile.density_model
     }
+    /// Same completed-profile identity contract as [`FilmProfile::asset_token`].
+    /// Gamma-adjusted output has its own [`PrintDensityCurves::hash`].
     pub fn asset_token(&self) -> u64 {
         self.profile.asset_token
     }
@@ -240,11 +251,11 @@ fn sample_print_density(
 ) -> Result<PrintDensityCurves, PrintDensityError> {
     let adjusted = print_gamma_model(profile.density_model(), gamma)?;
     let tables = profile.tables();
-    let count = tables.source_log_exposure.len();
+    let count = tables.authored_log_exposure.len();
     check_print_density_size(count)?;
     let mut totals = Vec::new();
     reserve(&mut totals, count).map_err(|_| PrintDensityError::Capacity)?;
-    for (index, &exposure) in tables.source_log_exposure.iter().enumerate() {
+    for (index, &exposure) in tables.authored_log_exposure.iter().enumerate() {
         let sample = adjusted
             .sample(profile.info().polarity, exposure)
             .map_err(|source| PrintDensityError::Density { index, source })?;
@@ -252,7 +263,7 @@ fn sample_print_density(
     }
     let mut hash = hash::FNV_OFFSET;
     hash::update_bytes(&mut hash, &(count as u64).to_le_bytes());
-    for exposure in &tables.log_exposure {
+    for exposure in &tables.interpolation_log_exposure {
         hash::update_bytes(&mut hash, &exposure.to_le_bytes());
     }
     for total in totals.as_flattened() {
@@ -370,20 +381,21 @@ fn sample_tables(
 ) -> Result<ProfileTables, ProfileCompletionErrorKind> {
     let count = samples.log_exposure.len();
     check_table_size(count)?;
-    let mut log_exposure = Vec::new();
-    reserve_samples(&mut log_exposure, count).map_err(|_| ProfileCompletionErrorKind::Capacity)?;
+    let mut interpolation_log_exposure = Vec::new();
+    reserve_samples(&mut interpolation_log_exposure, count)
+        .map_err(|_| ProfileCompletionErrorKind::Capacity)?;
     for (index, &authored) in samples.log_exposure.iter().enumerate() {
         let narrowed = authored as f32;
         if narrowed.is_nan() {
             return Err(ProfileCompletionErrorKind::NanAxis { index });
         }
-        if log_exposure
+        if interpolation_log_exposure
             .last()
             .is_some_and(|&previous| previous > narrowed)
         {
             return Err(ProfileCompletionErrorKind::DescendingAxis { index });
         }
-        log_exposure.push(narrowed);
+        interpolation_log_exposure.push(narrowed);
     }
     let mut density_curves = Vec::new();
     reserve_totals(&mut density_curves, count).map_err(|_| ProfileCompletionErrorKind::Capacity)?;
@@ -416,8 +428,8 @@ fn sample_tables(
         linear_sensitivity,
         channel_density: samples.channel_density,
         base_density: samples.base_density,
-        source_log_exposure: samples.log_exposure,
-        log_exposure,
+        authored_log_exposure: samples.log_exposure,
+        interpolation_log_exposure,
         density_curves,
         density_curves_layers,
         hanatos2025_adaptation_window_params: samples.hanatos2025_adaptation_window_params,
@@ -425,7 +437,7 @@ fn sample_tables(
     })
 }
 
-fn film_digest(info: &ProfileInfo) -> FilmDigest {
+fn film_processing_defaults(info: &ProfileInfo) -> FilmProcessingDefaults {
     let (same, red, green, blue) = if info.polarity == Polarity::Positive {
         (
             [0.2291, 0.1029, 0.2651],
@@ -476,7 +488,7 @@ fn film_digest(info: &ProfileInfo) -> FilmDigest {
         ),
         _ => (same, red, green, blue),
     };
-    FilmDigest {
+    FilmProcessingDefaults {
         gamma_samelayer_rgb: same,
         gamma_interlayer_r_to_gb: red,
         gamma_interlayer_g_to_rb: green,
@@ -551,7 +563,11 @@ fn profile_token(info: &ProfileInfo, tables: &ProfileTables, model: &DensityCurv
         tables.channel_density.as_flattened(),
     );
     tagged_samples(&mut token, "data.base_density", &tables.base_density);
-    tagged_samples(&mut token, "data.log_exposure", &tables.log_exposure);
+    tagged_samples(
+        &mut token,
+        "data.log_exposure",
+        &tables.interpolation_log_exposure,
+    );
     tagged_samples(
         &mut token,
         "data.density_curves",
@@ -583,9 +599,9 @@ fn profile_token(info: &ProfileInfo, tables: &ProfileTables, model: &DensityCurv
     hash::update_bytes(&mut token, b"data.log_exposure.source-double");
     hash::update_bytes(
         &mut token,
-        &(tables.source_log_exposure.len() as u64).to_le_bytes(),
+        &(tables.authored_log_exposure.len() as u64).to_le_bytes(),
     );
-    for sample in &tables.source_log_exposure {
+    for sample in &tables.authored_log_exposure {
         hash::update_bytes(&mut token, &sample.to_le_bytes());
     }
     for (tag, coefficients) in [
@@ -846,8 +862,8 @@ mod tests {
                 let profile =
                     complete(source, role, Vec::try_reserve_exact, Vec::try_reserve_exact).unwrap();
                 let tables = &profile.tables;
-                let vectors = tables.source_log_exposure.len() * 8
-                    + tables.log_exposure.len() * 4
+                let vectors = tables.authored_log_exposure.len() * 8
+                    + tables.interpolation_log_exposure.len() * 4
                     + tables.density_curves.len() * 12
                     + tables
                         .density_curves_layers
@@ -855,8 +871,8 @@ mod tests {
                         .flatten()
                         .map(|v| v.len() * 4)
                         .sum::<usize>();
-                let capacity = tables.source_log_exposure.capacity() * 8
-                    + tables.log_exposure.capacity() * 4
+                let capacity = tables.authored_log_exposure.capacity() * 8
+                    + tables.interpolation_log_exposure.capacity() * 4
                     + tables.density_curves.capacity() * 12
                     + tables
                         .density_curves_layers
@@ -872,7 +888,7 @@ mod tests {
                 ];
                 let inline = std::mem::size_of::<CompletedProfile>()
                     + if role == Role::Film {
-                        std::mem::size_of::<FilmDigest>()
+                        std::mem::size_of::<FilmProcessingDefaults>()
                     } else {
                         0
                     };

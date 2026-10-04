@@ -1,12 +1,12 @@
 use crate::asset_profile::{FilmOwner, PrintOwner};
-use film_juicer_core::profile::{FilmDigest, FilmProfile, ProfileTables};
+use film_juicer_core::profile::{FilmProcessingDefaults, FilmProfile, ProfileTables};
 
-pub fn replace_digest(film: &mut FilmProfile, digest: FilmDigest) {
-    film.digest = digest;
+pub fn replace_processing_defaults(film: &mut FilmProfile, processing_defaults: FilmProcessingDefaults) {
+    film.processing_defaults = processing_defaults;
 }
 
 pub fn replace_axis(tables: &mut ProfileTables) {
-    tables.log_exposure.clear();
+    tables.interpolation_log_exposure.clear();
 }
 
 pub fn bypass_film_owner(film_owner: &FilmOwner) {

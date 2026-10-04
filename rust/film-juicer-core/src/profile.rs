@@ -2,7 +2,7 @@
 
 mod sampled;
 pub use sampled::{
-    FilmDigest, FilmProfile, PrintDensityCurves, PrintDensityError, PrintProfile,
+    FilmProcessingDefaults, FilmProfile, PrintDensityCurves, PrintDensityError, PrintProfile,
     ProfileCompletionError, ProfileCompletionErrorKind, ProfileTables,
 };
 
@@ -18,18 +18,21 @@ use serde_json::Value;
 const DEFAULT_FILM_KEY: &str = "kodak_portra_400";
 const DEFAULT_PRINT_KEY: &str = "kodak_portra_endura";
 
+/// Selected catalog/loader use, distinct from authored support and stage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Role {
     Film,
     Print,
 }
 
+/// Authored photographic substrate (`info.support`). Printing can use film or paper.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Support {
     Film,
     Paper,
 }
 
+/// Authored photographic process step (`info.stage`), used to select the catalog role.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Stage {
     Filming,

@@ -139,7 +139,7 @@ class RustBoundaryTests(unittest.TestCase):
         for release in (False, True):
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assert_rejected(status, diagnostics, {
-                "E0616": ("film.digest", "tables.log_exposure", "film_owner.profile", "print_owner.profile", "spectra_owner.lut", "mallett_owner.basis", "cmf_owner.rows", "csv_owner.rows"),
+                "E0616": ("film.processing_defaults", "tables.interpolation_log_exposure", "film_owner.profile", "print_owner.profile", "spectra_owner.lut", "mallett_owner.basis", "cmf_owner.rows", "csv_owner.rows"),
             })
 
     def test_completed_profile_construction_cannot_be_bypassed(self) -> None:

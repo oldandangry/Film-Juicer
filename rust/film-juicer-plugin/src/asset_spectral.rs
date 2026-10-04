@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 use film_juicer_core::assets::SpectraLut;
-use film_juicer_core::data_io::{CsvPairs, CsvTriplets};
+use film_juicer_core::data_io::{CsvPairs, CmfRows};
 
 pub(crate) struct SpectraOwner {
     lut: Arc<SpectraLut>,
@@ -40,10 +40,10 @@ impl MallettOwner {
 }
 
 pub(crate) struct CmfOwner {
-    rows: Arc<CsvTriplets>,
+    rows: Arc<CmfRows>,
 }
 impl CmfOwner {
-    pub(crate) fn new(rows: Arc<CsvTriplets>) -> Self {
+    pub(crate) fn new(rows: Arc<CmfRows>) -> Self {
         Self { rows }
     }
     pub(crate) fn rows(&self) -> &[[f32; 4]] {

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use film_juicer_core::data_io::{
-    ReadError, ReadErrorKind, ReadPart, load_csv_pairs, load_csv_triplets, load_mallett_basis,
+    ReadError, ReadErrorKind, ReadPart, load_csv_pairs, load_cmf_csv, load_mallett_basis,
     load_spectra_lut,
 };
 
@@ -199,7 +199,7 @@ fn bundled_csv_bits() {
     for &(resource, rows, hash, samples) in &BUNDLE[..8] {
         let path = repository().join("Resources").join(resource);
         let values: Vec<f32> = if resource == "cie1931_2deg.csv" {
-            let csv = load_csv_triplets(&path).unwrap();
+            let csv = load_cmf_csv(&path).unwrap();
             assert_eq!(csv.rows().len(), rows);
             csv.rows().iter().flatten().copied().collect()
         } else {
@@ -303,7 +303,7 @@ fn csv_pair_extraction() {
 }
 
 #[test]
-fn csv_triplet_extraction() {
+fn cmf_csv_extraction() {
     let directory = Directory::new();
     for line in [
         "1,2,3,4",
@@ -313,7 +313,7 @@ fn csv_triplet_extraction() {
         "1,2,3,4#comment",
         "1,2,3,4;comment",
     ] {
-        let csv = load_csv_triplets(directory.write(line)).unwrap();
+        let csv = load_cmf_csv(directory.write(line)).unwrap();
         assert_eq!(csv.rows(), &[[1.0, 2.0, 3.0, 4.0]], "{line}");
     }
     for line in [
@@ -327,14 +327,14 @@ fn csv_triplet_extraction() {
         "1;2;3;4",
     ] {
         assert!(
-            load_csv_triplets(directory.write(line))
+            load_cmf_csv(directory.write(line))
                 .unwrap()
                 .rows()
                 .is_empty(),
             "{line}"
         );
     }
-    let csv = load_csv_triplets(directory.write("-0,+0,-0e0,1e-50")).unwrap();
+    let csv = load_cmf_csv(directory.write("-0,+0,-0e0,1e-50")).unwrap();
     assert_eq!(
         csv.rows()[0].map(f32::to_bits),
         [0x8000_0000, 0, 0x8000_0000, 0]
@@ -346,7 +346,7 @@ fn csv_preserves_raw_rows() {
     let directory = Directory::new();
     let csv = load_csv_pairs(directory.write("2,3\nbad\n1,4\n1,5\n\n")).unwrap();
     assert_eq!(csv.rows(), &[[2.0, 3.0], [1.0, 4.0], [1.0, 5.0]]);
-    let csv = load_csv_triplets(directory.write("2,3,4,5\n1,2,3,4")).unwrap();
+    let csv = load_cmf_csv(directory.write("2,3,4,5\n1,2,3,4")).unwrap();
     assert_eq!(csv.rows(), &[[2.0, 3.0, 4.0, 5.0], [1.0, 2.0, 3.0, 4.0]]);
     assert!(
         load_csv_pairs(directory.write(""))
@@ -377,7 +377,7 @@ fn missing_files() {
     let path = directory.0.join("absent");
     for error in [
         load_csv_pairs(&path).unwrap_err(),
-        load_csv_triplets(&path).unwrap_err(),
+        load_cmf_csv(&path).unwrap_err(),
         load_spectra_lut(&path).unwrap_err(),
         load_mallett_basis(&path).unwrap_err(),
     ] {

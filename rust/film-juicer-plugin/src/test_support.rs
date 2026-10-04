@@ -84,15 +84,16 @@ impl FjFilmFixtureView {
             asset_token: view.asset_token,
             halation_first_sigma_um: view.halation_first_sigma_um,
             halation_primary_amount: view.halation_primary_amount,
+            // Fixed fixture ABI names map authored and interpolation representations.
             source_log_exposure: FjDoubleSpan {
-                data: if view.source_log_exposure.is_empty() {
+                data: if view.authored_log_exposure.is_empty() {
                     std::ptr::null()
                 } else {
-                    view.source_log_exposure.as_ptr()
+                    view.authored_log_exposure.as_ptr()
                 },
-                count: view.source_log_exposure.len(),
+                count: view.authored_log_exposure.len(),
             },
-            log_exposure: floats(view.log_exposure),
+            log_exposure: floats(view.interpolation_log_exposure),
             density_curves_cmy: floats(view.density_curves_cmy),
             density_curves_layers: view.density_curves_layers.map(|layer| layer.map(floats)),
             channel_density_cmy: floats(view.channel_density_cmy),
@@ -436,22 +437,28 @@ mod tests {
         assert_eq!(raw.asset_token, profile.asset_token());
         assert_eq!(
             raw.halation_first_sigma_um.map(f32::to_bits),
-            profile.digest().halation_first_sigma_um.map(f32::to_bits)
+            profile
+                .processing_defaults()
+                .halation_first_sigma_um
+                .map(f32::to_bits)
         );
         assert_eq!(
             raw.halation_primary_amount.map(f32::to_bits),
-            profile.digest().halation_primary_amount.map(f32::to_bits)
+            profile
+                .processing_defaults()
+                .halation_primary_amount
+                .map(f32::to_bits)
         );
         assert_eq!(
             raw.source_log_exposure.data,
-            tables.source_log_exposure().as_ptr()
+            tables.authored_log_exposure().as_ptr()
         );
         assert_eq!(
             raw.source_log_exposure.count,
-            tables.source_log_exposure().len()
+            tables.authored_log_exposure().len()
         );
         for (span, expected) in [
-            (raw.log_exposure, tables.log_exposure()),
+            (raw.log_exposure, tables.interpolation_log_exposure()),
             (
                 raw.density_curves_cmy,
                 tables.density_curves().as_flattened(),

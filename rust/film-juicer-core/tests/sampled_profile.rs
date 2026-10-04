@@ -1,4 +1,4 @@
-//! Complete-profile contracts use frozen native fields/digests, qualified native
+//! Complete-profile contracts use frozen native fields/processing defaults, qualified native
 //! sensitivity and approved density bits with independent native identity replay.
 //! Synthetic token expectations were captured before the completion encoder.
 
@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use film_juicer_core::profile::{
-    DensityCurveModel, DensitySampleError, FilmDigest, FilmProfile, PrintProfile,
+    DensityCurveModel, DensitySampleError, FilmProcessingDefaults, FilmProfile, PrintProfile,
     ProfileCompletionError, ProfileCompletionErrorKind, ProfileInfo, ProfileSource, ProfileTables,
     Role, load_catalog, load_film_source, load_print_source,
 };
@@ -105,7 +105,7 @@ fn bits(samples: impl IntoIterator<Item = f32>) -> Vec<u32> {
 fn expected_bits(node: &Value) -> Vec<u32> {
     serde_json::from_value(node.clone()).unwrap()
 }
-fn assert_digest(actual: &FilmDigest, expected: &Value) {
+fn assert_processing_defaults(actual: &FilmProcessingDefaults, expected: &Value) {
     for (name, samples) in [
         ("gamma_samelayer_rgb", actual.gamma_samelayer_rgb.as_slice()),
         (
@@ -201,7 +201,7 @@ fn all_bundled_profiles_match_independent_completed_fields_and_approved_density(
             );
             let tables = completed.tables();
             assert_eq!(
-                tables.source_log_exposure().as_ptr(),
+                tables.authored_log_exposure().as_ptr(),
                 axis_ptr,
                 "f64 axis moves without allocation"
             );
@@ -217,7 +217,10 @@ fn all_bundled_profiles_match_independent_completed_fields_and_approved_density(
                     bits(tables.channel_density().iter().flatten().copied()),
                 ),
                 ("base_density", bits(*tables.base_density())),
-                ("log_exposure", bits(tables.log_exposure().iter().copied())),
+                (
+                    "log_exposure",
+                    bits(tables.interpolation_log_exposure().iter().copied()),
+                ),
             ] {
                 assert_eq!(samples, expected_bits(&fields[name]), "{key} {name}");
             }
@@ -254,7 +257,7 @@ fn all_bundled_profiles_match_independent_completed_fields_and_approved_density(
                 .unwrap();
             assert_eq!(
                 tables
-                    .source_log_exposure()
+                    .authored_log_exposure()
                     .iter()
                     .map(|v| v.to_bits())
                     .collect::<Vec<_>>(),
@@ -273,7 +276,10 @@ fn all_bundled_profiles_match_independent_completed_fields_and_approved_density(
                 completed.model().sigmas().map(|r| r.map(f64::to_bits)),
                 case.model.sigmas
             );
-            assert_eq!(tables.density_curves().len(), tables.log_exposure().len());
+            assert_eq!(
+                tables.density_curves().len(),
+                tables.interpolation_log_exposure().len()
+            );
             for (i, total) in tables.density_curves().iter().enumerate() {
                 let offset = (case.sample_start.unwrap() + i) * 49;
                 assert_eq!(payload[offset], 1);
@@ -288,7 +294,7 @@ fn all_bundled_profiles_match_independent_completed_fields_and_approved_density(
                 for layer in 0..3 {
                     for channel in 0..3 {
                         let curve = &tables.density_curves_layers()[layer][channel];
-                        assert_eq!(curve.len(), tables.log_exposure().len());
+                        assert_eq!(curve.len(), tables.interpolation_log_exposure().len());
                         assert_eq!(
                             curve[i].to_bits(),
                             row[3 + layer * 3 + channel],
@@ -303,7 +309,10 @@ fn all_bundled_profiles_match_independent_completed_fields_and_approved_density(
                 "{key} native replay token"
             );
             if let Completed::Film(film) = &completed {
-                assert_digest(film.digest(), &expected["profiles"][key]["digest"]);
+                assert_processing_defaults(
+                    film.processing_defaults(),
+                    &expected["profiles"][key]["digest"],
+                );
             }
             count += 1;
         }
@@ -357,7 +366,7 @@ fn synthetic_completions_match_frozen_identity_composition_and_digests() {
             case["id"]
         );
         if let Completed::Film(film) = &completed {
-            assert_digest(film.digest(), &case["digest"]);
+            assert_processing_defaults(film.processing_defaults(), &case["digest"]);
         }
     }
 }
@@ -382,14 +391,14 @@ fn interpolation_structure_is_established_only_after_f32_narrowing() {
             let tables = profile.tables();
             assert_eq!(
                 tables
-                    .source_log_exposure()
+                    .authored_log_exposure()
                     .iter()
                     .map(|v| v.to_bits())
                     .collect::<Vec<_>>(),
                 axis.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
             );
             assert_eq!(
-                bits(tables.log_exposure().iter().copied()),
+                bits(tables.interpolation_log_exposure().iter().copied()),
                 bits(axis.iter().map(|&v| v as f32))
             );
             assert_eq!(tables.density_curves().len(), axis.len());
@@ -647,8 +656,8 @@ fn identity_retains_f64_distinctions_and_canonicalizes_only_f32_zero_signs() {
                 .unwrap();
         assert_ne!(changed.asset_token(), baseline.asset_token(), "{id}");
         assert_eq!(
-            changed.tables().log_exposure(),
-            baseline.tables().log_exposure()
+            changed.tables().interpolation_log_exposure(),
+            baseline.tables().interpolation_log_exposure()
         );
         assert_eq!(
             changed.tables().density_curves(),

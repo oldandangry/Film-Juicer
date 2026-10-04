@@ -15,6 +15,54 @@ CMake only for `BUILD_TESTING=ON`. Product builds consume the committed bindings
 they do not require bindgen or libclang. Toggling `BUILD_TESTING` rebuilds the
 archive with the corresponding feature selection.
 
+## Profile and resource terminology
+
+The safe Rust API calls metadata-selected DIR, halation and reconstruction
+parameters `FilmProcessingDefaults`, exposed by `FilmProfile::processing_defaults()`.
+The fixed C ABI retains `FjFilmDigest` and `digest`; the explicit mapping lives
+in `asset_bridge.rs`. Fixture keys and retained native spellings also stay fixed.
+These defaults feed recipe controls; they are not identity values.
+
+`ProfileTables::authored_log_exposure()` retains the original f64 sequence for
+density-model sampling (including print-gamma resampling) and profile identity.
+`interpolation_log_exposure()` exposes its admitted f32 density-lookup axis.
+Admission requires a nonempty, NaN-free, nondecreasing narrowed axis; equal values
+and infinities are allowed. The authored sequence need not be ordered when
+narrowing hides the distinction. The production C ABI calls the interpolation
+span `log_exposure`; the fixture ABI additionally calls the authored span
+`source_log_exposure`. The source-only `ProfileSamples::log_exposure()` and JSON
+`data.log_exposure` keep their single authored meaning.
+
+`CmfRows` and `load_cmf_csv` describe decoded source rows
+`[wavelength_nm,x_bar,y_bar,z_bar]`, before native axis/curve preparation.
+`profile::Role` selects film/print use in the catalog and loader;
+`profile::Support` is the authored photographic substrate, film or paper;
+`profile::Stage` is the authored filming/printing step. Printing can use either
+substrate, so these axes and their schema/ABI mappings remain distinct.
+
+Identity terms have separate scopes and encodings:
+
+| Rust term | Contributing inputs and zero rule | Boundary/consumer |
+| --- | --- | --- |
+| `hash::{bytes,u64s,finite_f32s,resource_f32s,f32s_with_nan_mask}` / `FloatSpanHash` | FNV-1a primitives with each function's byte, signed-zero and NaN rules; no final zero remapping. `FloatSpanHash` has separate value and NaN-mask streams. | Raw encoding building blocks, not asset identities by themselves. |
+| `SpectraLut::asset_hash()` | Decoded reconstruction sample bits; signed zeros and NaNs canonicalized in one stream, final zero mapped to one. No path, metadata or evaluator version. | `FjSpectraLutView.asset_hash`, native reconstruction reuse. |
+| `FilmProfile::asset_token()` / `PrintProfile::asset_token()` | Stock and consumed metadata, tagged sampled tables/adaptation presence, authored exposure/model bits and density evaluator version; final zero mapped to one. Display name, file path and JSON formatting do not contribute. | Profile views' `asset_token`, native `assetVersionToken` and downstream recipe identities. |
+| `profile_token` / `finish_asset_token` | Private producer and zero finalizer for that same completed-profile token. | No second identity contract or process-handle allocation. |
+| `PrintDensityCurves::hash()` | Count, raw narrowed-axis bits and gamma-adjusted CMY total bits, in order; zero is rejected, never remapped. | `FjPrintDensityView.hash`, native print development. |
+
+These content identities are deterministic across process runs given the same
+encoded inputs/evaluator outputs. They are not cryptographic digests or
+interchangeable across domains, and do not promise equal numerical outputs on
+different platforms. Equal profile tokens do not imply equal gamma-adjusted
+curve hashes, and a raw sample hash cannot substitute for a profile token.
+
+Generated CUDA bindings additionally transport native-owned recipe, descriptor,
+table and submission hashes unchanged. Each enclosing ABI record establishes
+the component and its native producer/zero contract. Their `clip_token`,
+`instance_token` and `frame_token` instead identify clip/session/frame lifetime
+or temporal facts; they are not resource content fingerprints. Fixed ABI field
+names remain governed by `native/juicer_cuda_api.h`.
+
 Configure and build first, then run the bounded evidence (substitute any of the
 four supported presets):
 

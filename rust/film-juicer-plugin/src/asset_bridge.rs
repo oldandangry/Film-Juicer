@@ -171,11 +171,12 @@ fn illuminant(view: IlluminantView<'_>) -> FjIlluminantView {
     }
 }
 fn tables(view: ProfileTablesView<'_>) -> FjProfileTablesView {
+    // Fixed ABI `log_exposure` carries the admitted interpolation axis.
     FjProfileTablesView {
         linear_sensitivity_rgb: floats(view.linear_sensitivity_rgb),
         channel_density_cmy: floats(view.channel_density_cmy),
         base_density: floats(view.base_density),
-        log_exposure: floats(view.log_exposure),
+        log_exposure: floats(view.interpolation_log_exposure),
         density_curves_cmy: floats(view.density_curves_cmy),
     }
 }
@@ -187,7 +188,7 @@ fn stage(stage: Stage) -> u32 {
 }
 impl FjFilmProfileView {
     fn from_view(view: FilmView<'_>) -> Self {
-        let digest = view.digest;
+        let defaults = view.processing_defaults;
         Self {
             stock: text(view.stock),
             reference_illuminant: illuminant(view.reference_illuminant),
@@ -195,14 +196,15 @@ impl FjFilmProfileView {
             tables: tables(view.tables),
             wavelengths: floats(view.wavelengths),
             density_curves_layers: view.density_curves_layers.map(|layer| layer.map(floats)),
+            // Fixed ABI `digest`/`FjFilmDigest` carries processing defaults.
             digest: FjFilmDigest {
-                gamma_samelayer_rgb: digest.gamma_samelayer_rgb,
-                gamma_interlayer_r_to_gb: digest.gamma_interlayer_r_to_gb,
-                gamma_interlayer_g_to_rb: digest.gamma_interlayer_g_to_rb,
-                gamma_interlayer_b_to_rg: digest.gamma_interlayer_b_to_rg,
-                halation_first_sigma_um: digest.halation_first_sigma_um,
-                halation_primary_amount: digest.halation_primary_amount,
-                hanatos_spectral_gaussian_blur_default: digest
+                gamma_samelayer_rgb: defaults.gamma_samelayer_rgb,
+                gamma_interlayer_r_to_gb: defaults.gamma_interlayer_r_to_gb,
+                gamma_interlayer_g_to_rb: defaults.gamma_interlayer_g_to_rb,
+                gamma_interlayer_b_to_rg: defaults.gamma_interlayer_b_to_rg,
+                halation_first_sigma_um: defaults.halation_first_sigma_um,
+                halation_primary_amount: defaults.halation_primary_amount,
+                hanatos_spectral_gaussian_blur_default: defaults
                     .hanatos_spectral_gaussian_blur_default,
             },
             hanatos_window: floats(view.hanatos_window),
