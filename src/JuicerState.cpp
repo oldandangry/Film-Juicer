@@ -732,29 +732,29 @@ namespace {
 
     static Spectral::Curve build_illuminant_from_string(const std::string& source) {
         const std::string normalized = IlluminantKeys::normalize(source);
-        const JuicerAssets::IlluminantFilterCurveSet& curveAssets =
+        const auto curveAssets =
             JuicerProcess::root().assets().illuminant_filter_curves();
 
         if (IlluminantKeys::matches_any(normalized, {"D65"})) {
-            return curveAssets.d65;
+            return curveAssets->d65;
         }
         if (IlluminantKeys::matches_any(normalized, {"D55"})) {
-            return curveAssets.d55;
+            return curveAssets->d55;
         }
         if (IlluminantKeys::matches_any(normalized, {"D50"})) {
-            return curveAssets.d50;
+            return curveAssets->d50;
         }
         if (IlluminantKeys::matches_any(normalized, {"TH-KG3-L", "THKG3L", "TH-KG3L"})) {
-            return curveAssets.tungstenKg3Lens;
+            return curveAssets->tungstenKg3Lens;
         }
         if (IlluminantKeys::matches_any(normalized, {"TH-KG3", "THKG3"})) {
-            return curveAssets.tungstenKg3;
+            return curveAssets->tungstenKg3;
         }
         if (IlluminantKeys::matches_any(normalized, {"T", "INCANDESCENT"})) {
-            return curveAssets.tungsten;
+            return curveAssets->tungsten;
         }
         if (IlluminantKeys::matches_any(normalized, {"K75P", "KINOTON75P"})) {
-            return curveAssets.kinoton75P;
+            return curveAssets->kinoton75P;
         }
         if (IlluminantKeys::matches_any(normalized, {"EQUAL", "EQUALENERGY", "EQUAL-ENERGY"})) {
             return Spectral::build_curve_equal_energy_pinned();
@@ -1007,7 +1007,7 @@ namespace {
         Spektrafilm::ScanRoute route,
         JuicerAssets::Library& assets) {
         Spektrafilm::FilmFoundationBuildInput input{};
-        const JuicerAssets::IlluminantFilterCurveSet& illuminants =
+        const auto illuminants =
             assets.illuminant_filter_curves();
         input.filmProfileKey = params.filmProfileKey;
         input.scanRoute = route;
@@ -1052,19 +1052,19 @@ namespace {
             blackbodyReference = build_profile_illuminant(filmProfile->info.referenceIlluminant);
             referenceIlluminant = &blackbodyReference;
         } else if (IlluminantKeys::matches_any(illuminantKey, {"D65"})) {
-            referenceIlluminant = &illuminants.d65;
+            referenceIlluminant = &illuminants->d65;
         } else if (IlluminantKeys::matches_any(illuminantKey, {"D55"})) {
-            referenceIlluminant = &illuminants.d55;
+            referenceIlluminant = &illuminants->d55;
         } else if (IlluminantKeys::matches_any(illuminantKey, {"D50"})) {
-            referenceIlluminant = &illuminants.d50;
+            referenceIlluminant = &illuminants->d50;
         } else if (IlluminantKeys::matches_any(
                        illuminantKey,
                        {"T", "TUNGSTEN"})) {
-            referenceIlluminant = &illuminants.tungsten;
+            referenceIlluminant = &illuminants->tungsten;
         } else if (IlluminantKeys::matches_any(
                        illuminantKey,
                        {"TH-KG3", "TUNGSTEN-KG3"})) {
-            referenceIlluminant = &illuminants.tungstenKg3Lens;
+            referenceIlluminant = &illuminants->tungstenKg3Lens;
         }
         if (referenceIlluminant &&
             referenceIlluminant->linear.size() ==
@@ -1074,6 +1074,9 @@ namespace {
                 referenceIlluminant->linear.end(),
                 input.referenceIlluminant.begin());
             input.referenceIlluminantValid = true;
+#if defined(JUICER_ILLUMINANT_TEST_HOOK)
+            JuicerAssets::IlluminantTest::film_reference_samples(input.referenceIlluminant);
+#endif
         }
         Scanner::ScannerIlluminant integratedReference;
         if (build_scanner_illuminant(

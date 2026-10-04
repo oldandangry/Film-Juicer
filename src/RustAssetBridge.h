@@ -13,6 +13,43 @@
 #include "juicer_legacy_api.h"
 
 namespace JuicerAssets {
+    struct IlluminantFilterCurveSet;
+
+    enum class NeutralPrintCalibrationStatus : unsigned char {
+        MissingFile,
+        MissingEntry,
+        Found,
+        Malformed
+    };
+
+    struct NeutralPrintCalibrationResult {
+        NeutralPrintCalibrationStatus status =
+            NeutralPrintCalibrationStatus::MissingEntry;
+        std::array<float, 3> cmyCc{};
+        std::string diagnostic;
+    };
+
+    enum class CsvSource : unsigned char {
+        D65,
+        D55,
+        D50,
+        T,
+        K75p,
+        Kg3,
+        Canon24F28Is
+    };
+
+#if defined(JUICER_ILLUMINANT_TEST_HOOK)
+    namespace IlluminantTest {
+        void before_csv_acquisition(CsvSource source);
+        void csv_view(CsvSource source, FjFloatSpan& view);
+        void before_csv_copy(CsvSource source, std::size_t rows);
+        void after_csv_copy(CsvSource source, std::size_t rows, std::size_t capacity);
+        void calibration_result(FjNeutralCalibrationResult& result);
+        void film_reference_samples(const std::array<float, 81>& samples);
+        void before_curve_publication(const std::shared_ptr<const IlluminantFilterCurveSet>& candidate);
+    } // namespace IlluminantTest
+#endif
 
     // Synchronous argument: native path bytes borrow the path; Windows units
     // are copied by value, never aliased between wchar_t and uint16_t.
@@ -89,6 +126,10 @@ namespace JuicerAssets {
         Spectral::ReconstructionLut copy_arctic_lut();
         Spectral::MallettBasis copy_mallett_basis();
         Spectral::CMFTriplets copy_cmf_triplets();
+        std::vector<std::pair<float, float>> copy_csv_pairs(CsvSource source);
+        NeutralPrintCalibrationResult neutral_print_calibration(const std::string& printStock,
+                                                                const std::string& illuminant,
+                                                                const std::string& filmStock);
         Spektrafilm::ProfileCatalog load_catalog();
         std::shared_ptr<const Profiles::FilmProfile> film(const std::string& key);
         std::shared_ptr<const PrintProfileSource> print(const std::string& key);

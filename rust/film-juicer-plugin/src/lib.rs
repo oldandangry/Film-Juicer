@@ -22,6 +22,8 @@ mod asset_profile;
 
 mod asset_spectral;
 
+mod asset_calibration;
+
 #[cfg(feature = "test-support")]
 #[allow(
     unsafe_code,

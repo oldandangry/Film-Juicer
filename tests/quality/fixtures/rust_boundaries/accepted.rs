@@ -39,3 +39,8 @@ pub fn mallett_owner(basis: Arc<[[f32;3];81]>) -> MallettOwner { MallettOwner::n
 pub fn mallett_samples(owner: &MallettOwner) -> &[[f32;3];81] { owner.samples() }
 pub fn cmf_owner(rows: Arc<CsvTriplets>) -> CmfOwner { CmfOwner::new(rows) }
 pub fn cmf_rows(owner: &CmfOwner) -> &[[f32;4]] { owner.rows() }
+
+use crate::asset_spectral::CsvPairsOwner;
+use film_juicer_core::data_io::CsvPairs;
+pub fn csv_owner(rows: Arc<CsvPairs>) -> CsvPairsOwner { CsvPairsOwner::new(rows) }
+pub fn csv_rows(owner: &CsvPairsOwner) -> &[[f32;2]] { owner.rows() }

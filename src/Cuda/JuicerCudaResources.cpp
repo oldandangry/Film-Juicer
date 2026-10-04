@@ -4147,9 +4147,8 @@ namespace JuicerCuda {
                 out.fill(1.0f);
                 return true;
             }
-            const JuicerAssets::IlluminantFilterCurveSet& curves =
-                assets.illuminant_filter_curves();
-            const Spectral::Curve* selected = select_print_illuminant(curves, key);
+            const auto curves = assets.illuminant_filter_curves();
+            const Spectral::Curve* selected = select_print_illuminant(*curves, key);
             if (!selected ||
                 selected->linear.size() != out.size() ||
                 selected->lambda_nm.size() != out.size()) {

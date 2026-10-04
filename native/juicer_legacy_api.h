@@ -178,6 +178,50 @@ FjStatus fj_legacy_cmf_acquire(const FjAssets* assets, FjCmf** out_cmf, FjErrorB
 FjStatus fj_legacy_cmf_view(const FjCmf* cmf, FjFloatSpan* out_rows, FjErrorBuffer* error);
 FjStatus fj_legacy_cmf_release(FjCmf* cmf, FjErrorBuffer* error);
 
+/* FJ_TEMP_BRIDGE: CSV source conversion and selected calibration; remove S4.E.
+ * CSV source is one of the seven explicit tags below. Rows are 2*N f32 values
+ * in authored [wavelength_nm,value] order; empty success is (NULL,0). A view
+ * borrows its CsvPairs owner until matching release, independently of Assets
+ * cache release/destruction. Native copies each element before release; no rows
+ * reach CUDA/retirement state. Capacity failure is AllocationFailure, ordinary
+ * CSV read failure PreparationFailure, poison/panic InternalFailure.
+ * Calibration keys are exact length-delimited UTF-8 stock/illuminant strings;
+ * empty and embedded NUL are preserved. Its result is owned by value. All four
+ * domain outcomes return Success; malformed is still a recipe failure. Reported
+ * read/probe OutOfMemory returns AllocationFailure, never a domain outcome.
+ * Non-Found coefficients are zero; only Malformed has a known nonzero field.
+ * Valid outputs clear before other validation. Matching CSV release consumes
+ * once even for malformed diagnostics; NULL release succeeds. The shared
+ * exclusive/disjoint-storage and optional bounded diagnostic contract applies.
+ * Incidental infallible allocation can abort; no allocator recovery is promised. */
+typedef struct FjCsvPairs FjCsvPairs;
+#define FJ_CSV_D65 UINT32_C(1)
+#define FJ_CSV_D55 UINT32_C(2)
+#define FJ_CSV_D50 UINT32_C(3)
+#define FJ_CSV_T UINT32_C(4)
+#define FJ_CSV_K75P UINT32_C(5)
+#define FJ_CSV_KG3 UINT32_C(6)
+#define FJ_CSV_CANON_24_F28_IS UINT32_C(7)
+#define FJ_CALIBRATION_FOUND UINT32_C(1)
+#define FJ_CALIBRATION_MISSING_FILE UINT32_C(2)
+#define FJ_CALIBRATION_MISSING_ENTRY UINT32_C(3)
+#define FJ_CALIBRATION_MALFORMED UINT32_C(4)
+#define FJ_CALIBRATION_FIELD_NONE UINT32_C(0)
+#define FJ_CALIBRATION_FIELD_RESOURCE_READ UINT32_C(1)
+#define FJ_CALIBRATION_FIELD_ROOT UINT32_C(2)
+#define FJ_CALIBRATION_FIELD_PRINT_PROFILE UINT32_C(3)
+#define FJ_CALIBRATION_FIELD_PRINT_ILLUMINANT UINT32_C(4)
+#define FJ_CALIBRATION_FIELD_CMY_CC UINT32_C(5)
+typedef struct FjNeutralCalibrationResult {
+    uint32_t outcome;
+    uint32_t field;
+    float cmy_cc[3];
+} FjNeutralCalibrationResult;
+FjStatus fj_legacy_csv_acquire(const FjAssets* assets, uint32_t source, FjCsvPairs** out_pairs, FjErrorBuffer* error);
+FjStatus fj_legacy_csv_view(const FjCsvPairs* pairs, FjFloatSpan* out_rows, FjErrorBuffer* error);
+FjStatus fj_legacy_csv_release(FjCsvPairs* pairs, FjErrorBuffer* error);
+FjStatus fj_legacy_neutral_calibration_lookup(const FjAssets* assets, FjStringView print_stock, FjStringView illuminant, FjStringView film_stock, FjNeutralCalibrationResult* out_result, FjErrorBuffer* error);
+
 #ifdef __cplusplus
 }
 #endif

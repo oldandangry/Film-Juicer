@@ -7,7 +7,6 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <fstream>
 #include <initializer_list>
 #include <limits>
 #include <sstream>
@@ -523,38 +522,6 @@ namespace Spectral {
     // ============================================================================
 
     // Utility: Load wavelength/value pairs from a CSV file
-    inline std::vector<std::pair<float, float>> load_csv_pairs(const std::string& path) {
-        std::vector<std::pair<float, float>> data;
-        std::ifstream file(path);
-        if (!file.is_open()) {
-            throw std::runtime_error("Could not open CSV: " + path);
-        }
-        std::string line;
-        while (std::getline(file, line)) {
-            if (line.empty())
-                continue;
-            // Strip comments starting at # or ;
-            auto strip_comment = [&](char c) {
-                size_t p = line.find(c);
-                if (p != std::string::npos)
-                    line.erase(p);
-            };
-            strip_comment('#');
-            strip_comment(';');
-            std::istringstream ss(line);
-            float x = 0.0f, y = 0.0f;
-            if (!(ss >> x))
-                continue;
-            // Skip optional comma/semicolon
-            while (ss.peek() == ',' || ss.peek() == ';')
-                ss.get();
-            if (!(ss >> y))
-                continue;
-            data.emplace_back(x, y);
-        }
-        return data;
-    }
-
     // ============================================================================
     // SpectralShape Management
     // ============================================================================

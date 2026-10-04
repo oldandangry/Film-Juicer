@@ -39,3 +39,11 @@ pub fn drop_cmf(cmf_owner: CmfOwner) -> usize {
     drop(cmf_owner);
     view.len()
 }
+
+use crate::asset_spectral::CsvPairsOwner;
+pub fn escape_csv(csv_owner: CsvPairsOwner) -> &'static [[f32;2]] { csv_owner.rows() }
+pub fn drop_csv(csv_owner: CsvPairsOwner) -> usize {
+    let rows = csv_owner.rows();
+    drop(csv_owner);
+    rows.len()
+}

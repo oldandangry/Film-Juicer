@@ -480,3 +480,34 @@ sized native copy. Projections duplicate no samples; each opaque Box holds an
 8-byte Arc. CMF triplets expire after complete curve publication. Source math moves
 in S4.A; conversion/global storage is removed in S4.E and remaining Library/Root
 forwarding in S5.C. Installed Resolve and real recovery qualification stay separate.
+
+
+## Illuminant and calibration source boundary
+
+`Assets.Host.IlluminantAbi`, `IlluminantCopy`, `IlluminantLibrary`, `IlluminantMath`,
+`CalibrationAbi`, `CalibrationNative` and `IlluminantNative` exercise the private
+production CSV and selected calibration calls. All require no driver/device at
+runtime. The C11/C++20/Rust boundary asserts fixed layouts, explicit tags and
+signatures. Curve captures under `fixtures/illuminants/` characterize the accepted
+native producer at the manifest's revision; exact target-local float bits are
+compared, with no new tolerance. Existing raw CSV and 160-entry CMY captures retain
+their independent frozen expectations.
+
+The immutable native curve snapshot holds independently allocated derived data.
+Seven successful Rust CSV cache slots retain source rows; call-local opaque owners
+expire after native elementwise copies. No raw rows or calibration JSON cache is
+retained in native code. Complete sets alone are published; ordinary unavailable
+sources return uncached partial snapshots. Allocation/internal errors abort cold
+construction. Retained readers survive cache release; candidates build and losing
+or old snapshots destruct outside cache locks. Executable-local allocation probes
+measure requested native bytes and exercise reentrant release during actual
+snapshot/loser destruction. They do not measure Rust heap or RSS.
+
+Only explicit `test-support` enables the core classifier read/probe fault seam;
+normal Release builds exclude it. F1 tests inject errors at the actual core read
+boundary, observe probe bypass and sticky first-outcome caching, then verify ABI
+allocation failure with cleared results and native print `bad_alloc` before any
+recipe fallback. The CSV category probe injects a typed reader-capacity/poison
+error at the raw edge; accepted core reader/cache tests cover their owning
+behavior. Native view/copy/publication hooks are confined to test object targets.
+Their qualification/removal boundary is S4.E when native conversions move.

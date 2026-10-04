@@ -5,13 +5,14 @@ use std::collections::TryReserveError;
 use std::fmt::{self, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use film_juicer_core::assets::{AssetError, Assets};
+use film_juicer_core::assets::{AssetError, Assets, CsvSource};
 use film_juicer_core::profile::{
     IlluminantKind, Polarity, Role, Stage, Support, ProfileCompletionErrorKind, PrintDensityCurves,
     PrintDensityError,
 };
 use film_juicer_core::data_io::ReadErrorKind;
-use crate::asset_spectral::{CmfOwner, MallettOwner, SpectraOwner};
+use crate::asset_spectral::{CmfOwner, CsvPairsOwner, MallettOwner, SpectraOwner};
+use crate::asset_calibration::{self, CalibrationField, CalibrationLookup};
 
 use crate::asset_profile::{
     FilmOwner, FilmView, IlluminantView, PrintOwner, PrintView, ProfileTablesView,
@@ -285,6 +286,18 @@ impl Failure {
                     _ => FJ_STATUS_PREPARATION_FAILURE,
                 }
             }
+            Self::Asset(AssetError::Calibration(error))
+                if error.kind()
+                    == film_juicer_core::data_io::calibration::ErrorKind::Read(
+                        std::io::ErrorKind::OutOfMemory,
+                    ) =>
+            {
+                FJ_STATUS_ALLOCATION_FAILURE
+            }
+            Self::Asset(AssetError::CsvSource { error, .. }) => match error.kind {
+                ReadErrorKind::Capacity => FJ_STATUS_ALLOCATION_FAILURE,
+                _ => FJ_STATUS_PREPARATION_FAILURE,
+            },
             Self::Gamma(PrintDensityError::InvalidGamma) => FJ_STATUS_UNSUPPORTED_INPUT,
             Self::Gamma(PrintDensityError::Capacity) => FJ_STATUS_ALLOCATION_FAILURE,
             Self::Gamma(_) => FJ_STATUS_PREPARATION_FAILURE,
@@ -1817,5 +1830,320 @@ mod spectral_tests {
                 );
             }
         }
+    }
+}
+
+// FJ_TEMP_BRIDGE: CSV source conversion and selected calibration; remove S4.E.
+const FJ_CSV_D65: u32 = 1;
+const FJ_CSV_D55: u32 = 2;
+const FJ_CSV_D50: u32 = 3;
+const FJ_CSV_T: u32 = 4;
+const FJ_CSV_K75P: u32 = 5;
+const FJ_CSV_KG3: u32 = 6;
+const FJ_CSV_CANON_24_F28_IS: u32 = 7;
+const FJ_CALIBRATION_FOUND: u32 = 1;
+const FJ_CALIBRATION_MISSING_FILE: u32 = 2;
+const FJ_CALIBRATION_MISSING_ENTRY: u32 = 3;
+const FJ_CALIBRATION_MALFORMED: u32 = 4;
+const FJ_CALIBRATION_FIELD_NONE: u32 = 0;
+const FJ_CALIBRATION_FIELD_RESOURCE_READ: u32 = 1;
+const FJ_CALIBRATION_FIELD_ROOT: u32 = 2;
+const FJ_CALIBRATION_FIELD_PRINT_PROFILE: u32 = 3;
+const FJ_CALIBRATION_FIELD_PRINT_ILLUMINANT: u32 = 4;
+const FJ_CALIBRATION_FIELD_CMY_CC: u32 = 5;
+
+#[repr(C)]
+struct FjCsvPairs {
+    _opaque: [u8; 0],
+}
+#[repr(C)]
+#[derive(Default)]
+struct FjNeutralCalibrationResult {
+    outcome: u32,
+    field: u32,
+    cmy_cc: [f32; 3],
+}
+const _: () = {
+    assert!(size_of::<FjNeutralCalibrationResult>() == 20);
+    assert!(align_of::<FjNeutralCalibrationResult>() == 4);
+    assert!(std::mem::offset_of!(FjNeutralCalibrationResult, outcome) == 0);
+    assert!(std::mem::offset_of!(FjNeutralCalibrationResult, field) == 4);
+    assert!(std::mem::offset_of!(FjNeutralCalibrationResult, cmy_cc) == 8);
+};
+fn csv_source(tag: u32) -> Result<CsvSource, Failure> {
+    match tag {
+        FJ_CSV_D65 => Ok(CsvSource::D65),
+        FJ_CSV_D55 => Ok(CsvSource::D55),
+        FJ_CSV_D50 => Ok(CsvSource::D50),
+        FJ_CSV_T => Ok(CsvSource::T),
+        FJ_CSV_K75P => Ok(CsvSource::K75p),
+        FJ_CSV_KG3 => Ok(CsvSource::Kg3),
+        FJ_CSV_CANON_24_F28_IS => Ok(CsvSource::Canon24F28Is),
+        _ => Err(Failure::Input("unsupported CSV source tag")),
+    }
+}
+impl FjNeutralCalibrationResult {
+    fn from_lookup(result: CalibrationLookup) -> Self {
+        let mut raw = Self {
+            field: FJ_CALIBRATION_FIELD_NONE,
+            ..Self::default()
+        };
+        match result {
+            CalibrationLookup::Found(cmy_cc) => {
+                raw.outcome = FJ_CALIBRATION_FOUND;
+                raw.cmy_cc = cmy_cc;
+            }
+            CalibrationLookup::MissingFile => raw.outcome = FJ_CALIBRATION_MISSING_FILE,
+            CalibrationLookup::MissingEntry => raw.outcome = FJ_CALIBRATION_MISSING_ENTRY,
+            CalibrationLookup::Malformed(field) => {
+                raw.outcome = FJ_CALIBRATION_MALFORMED;
+                raw.field = match field {
+                    CalibrationField::ResourceRead => FJ_CALIBRATION_FIELD_RESOURCE_READ,
+                    CalibrationField::Root => FJ_CALIBRATION_FIELD_ROOT,
+                    CalibrationField::PrintProfile => FJ_CALIBRATION_FIELD_PRINT_PROFILE,
+                    CalibrationField::PrintIlluminant => FJ_CALIBRATION_FIELD_PRINT_ILLUMINANT,
+                    CalibrationField::CmyCc => FJ_CALIBRATION_FIELD_CMY_CC,
+                };
+            }
+        }
+        raw
+    }
+}
+#[cfg(feature = "test-support")]
+static LIVE_CSV: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_csv_live_owners() -> usize {
+    LIVE_CSV.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(feature = "test-support")]
+thread_local! { static CSV_FAULT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_csv_fault(fault: u32) {
+    CSV_FAULT.set(fault);
+}
+#[cfg(feature = "test-support")]
+fn csv_inject(source: CsvSource) -> Result<(), Failure> {
+    match CSV_FAULT.replace(0) {
+        1 => panic!("CSV boundary fixture panic"),
+        2 => Err(Failure::Asset(AssetError::CsvSource {
+            source,
+            error: film_juicer_core::data_io::ReadError {
+                path: "CSV capacity fixture".into(),
+                kind: ReadErrorKind::Capacity,
+            },
+        })),
+        3 => Err(Failure::Asset(AssetError::CsvCachePoisoned { source })),
+        _ => Ok(()),
+    }
+}
+
+/// # Safety
+/// Assets stays live through return; outputs/diagnostics are aligned, exclusive
+/// and disjoint. Only success transfers one owner requiring matching release.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_csv_acquire(
+    assets: *const FjAssets,
+    source: u32,
+    out_pairs: *mut *mut FjCsvPairs,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_pairs.is_null() {
+        // SAFETY: One valid caller-authorized output slot, cleared before validation.
+        unsafe { out_pairs.write(std::ptr::null_mut()) };
+    }
+    // SAFETY: Live owner and disjoint authorized call storage obey the contract.
+    unsafe {
+        run(error, || {
+            if assets.is_null() || out_pairs.is_null() {
+                return Err(Failure::Input("NULL CSV acquisition input/output"));
+            }
+            let source = csv_source(source)?;
+            #[cfg(feature = "test-support")]
+            csv_inject(source)?;
+            let rows = (&*assets.cast::<Assets>())
+                .csv_source(source)
+                .map_err(Failure::Asset)?;
+            let owner = Box::new(CsvPairsOwner::new(rows));
+            #[cfg(feature = "test-support")]
+            LIVE_CSV.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out_pairs.write(Box::into_raw(owner).cast());
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+/// # Safety
+/// The matching owner remains held through view use; release excludes reads.
+/// Output/diagnostics are aligned, exclusive and disjoint from all owner storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_csv_view(
+    pairs: *const FjCsvPairs,
+    out_rows: *mut FjFloatSpan,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_rows.is_null() {
+        // SAFETY: Pointer/count have all-zero empty representations.
+        unsafe { out_rows.write(std::mem::zeroed()) };
+    }
+    // SAFETY: Matching live owner and caller-authorized output/diagnostic storage.
+    unsafe {
+        run(error, || {
+            if pairs.is_null() || out_rows.is_null() {
+                return Err(Failure::Input("NULL CSV view input/output"));
+            }
+            let rows = (&*pairs.cast::<CsvPairsOwner>()).rows();
+            if rows.len() > isize::MAX as usize / (2 * size_of::<f32>()) {
+                return Err(Failure::Input("CSV span exceeds addressable bytes"));
+            }
+            out_rows.write(floats(rows.as_flattened()));
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+/// # Safety
+/// Pairs is NULL or one live matching owner, consumed once with all reads excluded.
+/// Diagnostics obey the shared exclusive/disjoint storage contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_csv_release(
+    pairs: *mut FjCsvPairs,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let taken = if pairs.is_null() {
+        None
+    } else {
+        #[cfg(feature = "test-support")]
+        LIVE_CSV.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: Matching Box taken exactly once before diagnostic validation.
+        Some(unsafe { Box::from_raw(pairs.cast::<CsvPairsOwner>()) })
+    };
+    // SAFETY: Captured owner drops inside containment even with bad diagnostics.
+    unsafe {
+        run(error, move || {
+            drop(taken);
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+/// # Safety
+/// Assets and initialized key extents remain live through return. Output and
+/// diagnostics are aligned, exclusive and disjoint from inputs and each other.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_neutral_calibration_lookup(
+    assets: *const FjAssets,
+    print_stock: FjStringView,
+    illuminant: FjStringView,
+    film_stock: FjStringView,
+    out_result: *mut FjNeutralCalibrationResult,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    if !out_result.is_null() {
+        // SAFETY: Caller authorizes one complete output, cleared before validation.
+        unsafe { out_result.write(FjNeutralCalibrationResult::default()) };
+    }
+    // SAFETY: Live Assets and initialized disjoint key/output/diagnostic extents.
+    unsafe {
+        run(error, || {
+            if assets.is_null() || out_result.is_null() {
+                return Err(Failure::Input("NULL calibration input/output"));
+            }
+            let result = asset_calibration::lookup(
+                &*assets.cast::<Assets>(),
+                key(print_stock)?,
+                key(illuminant)?,
+                key(film_stock)?,
+            )
+            .map_err(Failure::Asset)?;
+            out_result.write(FjNeutralCalibrationResult::from_lookup(result));
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_calibration_read_fault(mode: u32) {
+    use film_juicer_core::data_io::calibration::test_support;
+    use std::io::ErrorKind::{OutOfMemory, PermissionDenied};
+    match mode {
+        1 => test_support::set_read_fault(OutOfMemory, Ok(true)),
+        2 => test_support::set_read_fault(OutOfMemory, Ok(false)),
+        3 => test_support::set_read_fault(OutOfMemory, Err(PermissionDenied)),
+        4 => test_support::set_read_fault(PermissionDenied, Err(OutOfMemory)),
+        5 => test_support::set_read_fault(PermissionDenied, Ok(true)),
+        6 => test_support::set_read_fault(PermissionDenied, Ok(false)),
+        7 => test_support::set_read_fault(PermissionDenied, Err(PermissionDenied)),
+        _ => test_support::clear_read_fault(),
+    }
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_calibration_reads() -> usize {
+    film_juicer_core::data_io::calibration::test_support::counts().0
+}
+#[cfg(feature = "test-support")]
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_calibration_probes() -> usize {
+    film_juicer_core::data_io::calibration::test_support::counts().1
+}
+
+#[cfg(test)]
+mod illuminant_calibration_tests {
+    use super::*;
+    #[test]
+    fn source_categories_and_signatures() {
+        use film_juicer_core::data_io::ReadError;
+        for (kind, category) in [
+            (ReadErrorKind::Capacity, FJ_STATUS_ALLOCATION_FAILURE),
+            (
+                ReadErrorKind::Open(std::io::ErrorKind::NotFound),
+                FJ_STATUS_PREPARATION_FAILURE,
+            ),
+        ] {
+            assert_eq!(
+                Failure::Asset(AssetError::CsvSource {
+                    source: CsvSource::D65,
+                    error: ReadError {
+                        path: "csv-source".into(),
+                        kind
+                    }
+                })
+                .category(),
+                category
+            );
+        }
+        assert_eq!(
+            Failure::Asset(AssetError::CsvCachePoisoned {
+                source: CsvSource::D65
+            })
+            .category(),
+            FJ_STATUS_INTERNAL_FAILURE
+        );
+        let _: unsafe extern "C" fn(
+            *const FjAssets,
+            u32,
+            *mut *mut FjCsvPairs,
+            *mut FjErrorBuffer,
+        ) -> FjStatus = fj_legacy_csv_acquire;
+        let _: unsafe extern "C" fn(
+            *const FjCsvPairs,
+            *mut FjFloatSpan,
+            *mut FjErrorBuffer,
+        ) -> FjStatus = fj_legacy_csv_view;
+        let _: unsafe extern "C" fn(*mut FjCsvPairs, *mut FjErrorBuffer) -> FjStatus =
+            fj_legacy_csv_release;
+        let _: unsafe extern "C" fn(
+            *const FjAssets,
+            FjStringView,
+            FjStringView,
+            FjStringView,
+            *mut FjNeutralCalibrationResult,
+            *mut FjErrorBuffer,
+        ) -> FjStatus = fj_legacy_neutral_calibration_lookup;
     }
 }

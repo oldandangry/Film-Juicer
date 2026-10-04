@@ -69,6 +69,30 @@ namespace JuicerAssets {
                 report_cleanup(fj_legacy_cmf_release(owner, nullptr));
             }
         };
+        struct CsvDeleter {
+            void operator()(FjCsvPairs* owner) const noexcept {
+                report_cleanup(fj_legacy_csv_release(owner, nullptr));
+            }
+        };
+        std::uint32_t csv_tag(CsvSource source) {
+            switch (source) {
+                case CsvSource::D65:
+                    return FJ_CSV_D65;
+                case CsvSource::D55:
+                    return FJ_CSV_D55;
+                case CsvSource::D50:
+                    return FJ_CSV_D50;
+                case CsvSource::T:
+                    return FJ_CSV_T;
+                case CsvSource::K75p:
+                    return FJ_CSV_K75P;
+                case CsvSource::Kg3:
+                    return FJ_CSV_KG3;
+                case CsvSource::Canon24F28Is:
+                    return FJ_CSV_CANON_24_F28_IS;
+            }
+            fail({FJ_STATUS_UNSUPPORTED_INPUT, FJ_API_NONE, 0}, "unsupported native CSV source");
+        }
         [[noreturn]] void invalid_view() {
             fail({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "invalid Rust asset view shape, tag or token");
         }
@@ -827,5 +851,112 @@ namespace JuicerAssets {
         SpectralTest::copy_complete("cmf", rows * 3u, copy.xbar.capacity() + copy.ybar.capacity() + copy.zbar.capacity());
 #endif
         return copy;
+    }
+
+    std::vector<std::pair<float, float>> AssetBridge::copy_csv_pairs(CsvSource source) {
+#if defined(JUICER_ILLUMINANT_TEST_HOOK)
+        IlluminantTest::before_csv_acquisition(source);
+#endif
+        std::array<char, 512> diagnostic{};
+        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+        FjCsvPairs* acquired = nullptr;
+        const auto result = fj_legacy_csv_acquire(_assets, csv_tag(source), &acquired, &error);
+        const std::unique_ptr<FjCsvPairs, CsvDeleter> owner(acquired);
+        if (result.category != FJ_STATUS_SUCCESS) {
+            fail(result, {diagnostic.data(), error.length});
+        }
+        FjFloatSpan view{};
+        const auto viewed = fj_legacy_csv_view(owner.get(), &view, &error);
+        if (viewed.category != FJ_STATUS_SUCCESS) {
+            fail(viewed, {diagnostic.data(), error.length});
+        }
+#if defined(JUICER_ILLUMINANT_TEST_HOOK)
+        IlluminantTest::csv_view(source, view);
+#endif
+        const auto samples = float_span(view);
+        if (samples.size() % 2u != 0) {
+            invalid_view();
+        }
+        const auto rows = samples.size() / 2u;
+        std::vector<std::pair<float, float>> copy;
+        if (rows > copy.max_size()) {
+            invalid_view();
+        }
+#if defined(JUICER_ILLUMINANT_TEST_HOOK)
+        IlluminantTest::before_csv_copy(source, rows);
+#endif
+        copy.resize(rows);
+        for (std::size_t row = 0; row < rows; ++row) {
+            copy[row] = {samples[row * 2u], samples[row * 2u + 1u]};
+        }
+#if defined(JUICER_ILLUMINANT_TEST_HOOK)
+        IlluminantTest::after_csv_copy(source, rows, copy.capacity());
+#endif
+        return copy;
+    }
+
+    NeutralPrintCalibrationResult AssetBridge::neutral_print_calibration(const std::string& printStock,
+                                                                         const std::string& illuminant,
+                                                                         const std::string& filmStock) {
+        std::array<char, 512> diagnostic{};
+        FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
+        FjNeutralCalibrationResult raw{};
+        const auto text = [](const std::string& value) -> FjStringView {
+            return {value.empty() ? nullptr : value.data(), value.size()};
+        };
+        const auto status = fj_legacy_neutral_calibration_lookup(_assets, text(printStock), text(illuminant), text(filmStock), &raw, &error);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            fail(status, {diagnostic.data(), error.length});
+        }
+#if defined(JUICER_ILLUMINANT_TEST_HOOK)
+        IlluminantTest::calibration_result(raw);
+#endif
+        NeutralPrintCalibrationResult result;
+        if (raw.outcome == FJ_CALIBRATION_FOUND) {
+            if (raw.field != FJ_CALIBRATION_FIELD_NONE) {
+                invalid_view();
+            }
+            result.status = NeutralPrintCalibrationStatus::Found;
+            std::copy(std::begin(raw.cmy_cc), std::end(raw.cmy_cc), result.cmyCc.begin());
+            return result;
+        }
+        if (!std::all_of(std::begin(raw.cmy_cc), std::end(raw.cmy_cc), [](float cc) {
+                return cc == 0.0f;
+            })) {
+            invalid_view();
+        }
+        if (raw.outcome == FJ_CALIBRATION_MISSING_FILE || raw.outcome == FJ_CALIBRATION_MISSING_ENTRY) {
+            if (raw.field != FJ_CALIBRATION_FIELD_NONE) {
+                invalid_view();
+            }
+            result.status = raw.outcome == FJ_CALIBRATION_MISSING_FILE ? NeutralPrintCalibrationStatus::MissingFile : NeutralPrintCalibrationStatus::MissingEntry;
+            return result;
+        }
+        if (raw.outcome != FJ_CALIBRATION_MALFORMED) {
+            invalid_view();
+        }
+        const char* field = nullptr;
+        switch (raw.field) {
+            case FJ_CALIBRATION_FIELD_RESOURCE_READ:
+                field = "resource_read";
+                break;
+            case FJ_CALIBRATION_FIELD_ROOT:
+                field = "root";
+                break;
+            case FJ_CALIBRATION_FIELD_PRINT_PROFILE:
+                field = "print_profile";
+                break;
+            case FJ_CALIBRATION_FIELD_PRINT_ILLUMINANT:
+                field = "print_illuminant";
+                break;
+            case FJ_CALIBRATION_FIELD_CMY_CC:
+                field = "cmy_cc";
+                break;
+            default:
+                invalid_view();
+        }
+        result.status = NeutralPrintCalibrationStatus::Malformed;
+        result.diagnostic = std::string("MalformedNeutralPrintCalibration phase=4A field=") + field;
+        return result;
     }
 } // namespace JuicerAssets

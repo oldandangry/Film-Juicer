@@ -21,3 +21,6 @@ use crate::asset_spectral::{SpectraOwner, MallettOwner, CmfOwner};
 pub fn private_spectra(spectra_owner: SpectraOwner) { let _ = spectra_owner.lut; }
 pub fn private_mallett(mallett_owner: MallettOwner) { let _ = mallett_owner.basis; }
 pub fn private_cmf(cmf_owner: CmfOwner) { let _ = cmf_owner.rows; }
+
+use crate::asset_spectral::CsvPairsOwner;
+pub fn private_csv(csv_owner: CsvPairsOwner) { let _ = csv_owner.rows; }

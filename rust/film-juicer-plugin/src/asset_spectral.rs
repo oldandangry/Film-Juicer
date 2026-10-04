@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 use film_juicer_core::assets::SpectraLut;
-use film_juicer_core::data_io::CsvTriplets;
+use film_juicer_core::data_io::{CsvPairs, CsvTriplets};
 
 pub(crate) struct SpectraOwner {
     lut: Arc<SpectraLut>,
@@ -51,11 +51,45 @@ impl CmfOwner {
     }
 }
 
+pub(crate) struct CsvPairsOwner {
+    rows: Arc<CsvPairs>,
+}
+impl CsvPairsOwner {
+    pub(crate) fn new(rows: Arc<CsvPairs>) -> Self {
+        Self { rows }
+    }
+    pub(crate) fn rows(&self) -> &[[f32; 2]] {
+        self.rows.rows()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use film_juicer_core::assets::Assets;
     use std::path::Path;
+
+    #[test]
+    fn csv_rows_borrow_source_and_survive_cache_and_assets_release() {
+        let assets = Assets::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources"));
+        let rows = assets
+            .csv_source(film_juicer_core::assets::CsvSource::Kg3)
+            .unwrap();
+        let weak = Arc::downgrade(&rows);
+        let owner = CsvPairsOwner::new(Arc::clone(&rows));
+        assert_eq!(owner.rows().as_ptr(), rows.rows().as_ptr());
+        assets.release_cached_payloads().unwrap();
+        drop(assets);
+        drop(rows);
+        assert_eq!(weak.strong_count(), 1);
+        assert_eq!(owner.rows().len(), 146);
+        println!(
+            "CSV Box payload={}, Arc count header=2*usize, no row copies in view",
+            size_of::<CsvPairsOwner>()
+        );
+        drop(owner);
+        assert!(weak.upgrade().is_none());
+    }
 
     #[test]
     fn projections_share_sources_and_expire_with_their_owners() {

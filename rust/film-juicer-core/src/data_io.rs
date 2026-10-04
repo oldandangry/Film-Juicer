@@ -535,6 +535,29 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    #[test]
+    fn csv_source_capacity_receipt() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources");
+        for name in [
+            "illuminants/D65.csv",
+            "illuminants/D55.csv",
+            "illuminants/D50.csv",
+            "illuminants/T.csv",
+            "illuminants/K75P.csv",
+            "filters/heat_absorbing/schott/KG3.csv",
+            "filters/lens_transmission/canon/canon_24_f28_is.csv",
+        ] {
+            let source = load_csv_pairs(root.join(name)).unwrap();
+            println!(
+                "CSV {name}: length={} capacity={} requested_row_bytes={} inline_payload_bytes={}",
+                source.rows.len(),
+                source.rows.capacity(),
+                source.rows.capacity() * size_of::<[f32; 2]>(),
+                size_of::<CsvPairs>()
+            );
+        }
+    }
+
     fn bundled_lut() -> Vec<u8> {
         std::fs::read(
             Path::new(env!("CARGO_MANIFEST_DIR"))

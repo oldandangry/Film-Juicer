@@ -79,6 +79,15 @@ FjStatus fj_test_film_profile_release(FjFilmProfile* owner, FjErrorBuffer* error
 const size_t* fj_test_profile_abi_facts(size_t* count);
 
 /* Feature-only process/catalog ownership and one-shot projection fault probes. */
+/* Classifier faults: 1-3 read OOM with true/false/failed probe, 4 probe OOM;
+ * 5-7 ordinary read with true/false/failed probe. Zero clears injection.
+ * Thread-local counts observe actual core loading and existence probing. */
+void fj_test_calibration_read_fault(uint32_t mode);
+size_t fj_test_calibration_reads(void);
+size_t fj_test_calibration_probes(void);
+size_t fj_test_csv_live_owners(void);
+/* One-shot ABI classification: 1 contained panic, 2 CSV reader capacity, 3 CSV poison. */
+void fj_test_csv_fault(uint32_t fault);
 void fj_test_spectral_fault(uint32_t fault);
 size_t fj_test_spectral_live_owners(void);
 void fj_test_catalog_fault(uint32_t fault);

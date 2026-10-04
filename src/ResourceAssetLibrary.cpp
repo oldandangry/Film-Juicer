@@ -25,45 +25,9 @@ namespace JuicerAssets {
         std::string wangMetadataPath;
     };
 
-    struct Library::IlluminantFilterAssetSet {
-        std::string d65Path;
-        std::string d55Path;
-        std::string d50Path;
-        std::string tungstenPath;
-        std::string kinoton75PPath;
-        std::string kg3Path;
-        std::string lensTransmissionPath;
-    };
-
     namespace {
         namespace fs = std::filesystem;
         using Json = nlohmann::json;
-
-        struct IlluminantFilterCurveCacheEntry {
-            IlluminantFilterCurveSet curves;
-            bool ready = false;
-        };
-
-        bool read_file_bytes(
-            const std::string& path,
-            std::string& out) {
-            out.clear();
-            std::ifstream file(path, std::ios::binary | std::ios::ate);
-            if (!file) {
-                return false;
-            }
-            const std::streamsize size = file.tellg();
-            if (size < 0) {
-                return false;
-            }
-            out.resize(static_cast<std::size_t>(size));
-            file.seekg(0, std::ios::beg);
-            if (size > 0 && !file.read(out.data(), size)) {
-                out.clear();
-                return false;
-            }
-            return true;
-        }
 
         std::string data_path_string(const std::string& dataDir, std::initializer_list<const char*> segments) {
             fs::path path(dataDir);
@@ -74,42 +38,6 @@ namespace JuicerAssets {
             }
             path.make_preferred();
             return path.string();
-        }
-
-        std::string neutral_print_calibration_path(const std::string& dataDir) {
-            return data_path_string(dataDir, {"filters", "neutral_print_filters.json"});
-        }
-
-        struct NeutralPrintCalibrationSnapshot {
-            NeutralPrintCalibrationStatus rootStatus =
-                NeutralPrintCalibrationStatus::MissingFile;
-            Json root;
-            std::string diagnostic;
-        };
-
-        std::shared_ptr<const NeutralPrintCalibrationSnapshot>
-        load_neutral_print_calibration_snapshot(const std::string& path) {
-            auto snapshot = std::make_shared<NeutralPrintCalibrationSnapshot>();
-            std::string bytes;
-            if (!read_file_bytes(path, bytes)) {
-                std::error_code ec;
-                if (fs::exists(path, ec) && !ec) {
-                    snapshot->rootStatus = NeutralPrintCalibrationStatus::Malformed;
-                    snapshot->diagnostic =
-                        "MalformedNeutralPrintCalibration phase=4A field=resource_read";
-                }
-                return snapshot;
-            }
-            Json root = Json::parse(bytes, nullptr, false);
-            if (root.is_discarded() || !root.is_object()) {
-                snapshot->rootStatus = NeutralPrintCalibrationStatus::Malformed;
-                snapshot->diagnostic =
-                    "MalformedNeutralPrintCalibration phase=4A field=root";
-                return snapshot;
-            }
-            snapshot->rootStatus = NeutralPrintCalibrationStatus::Found;
-            snapshot->root = std::move(root);
-            return snapshot;
         }
 
         std::string noise_asset_path(const std::string& dataDir, std::initializer_list<const char*> segments) {
@@ -309,31 +237,45 @@ namespace JuicerAssets {
             return payloads;
         }
 
-        Library::IlluminantFilterAssetSet make_illuminant_filter_assets(const std::string& dataDir) {
-            Library::IlluminantFilterAssetSet asset;
-            asset.d65Path = data_path_string(dataDir, {"illuminants", "D65.csv"});
-            asset.d55Path = data_path_string(dataDir, {"illuminants", "D55.csv"});
-            asset.d50Path = data_path_string(dataDir, {"illuminants", "D50.csv"});
-            asset.tungstenPath = data_path_string(dataDir, {"illuminants", "T.csv"});
-            asset.kinoton75PPath = data_path_string(dataDir, {"illuminants", "K75P.csv"});
-            asset.kg3Path = data_path_string(dataDir, {"filters", "heat_absorbing", "schott", "KG3.csv"});
-            asset.lensTransmissionPath = data_path_string(
-                dataDir,
-                {"filters", "lens_transmission", "canon", "canon_24_f28_is.csv"});
-            return asset;
+        std::optional<std::vector<std::pair<float, float>>> copy_available_csv(AssetBridge& bridge, CsvSource source) {
+            try {
+                return bridge.copy_csv_pairs(source);
+            } catch (const JuicerCuda::ExecutionFailure& failure) {
+                if (failure.failure.status.category != FJ_STATUS_PREPARATION_FAILURE) {
+                    throw;
+                }
+                JTRACE("ILLUM", failure.failure.diagnostic);
+                return std::nullopt;
+            }
         }
 
-        IlluminantFilterCurveSet load_illuminant_filter_curves(const Library::IlluminantFilterAssetSet& asset) {
+        IlluminantFilterCurveSet load_illuminant_filter_curves(AssetBridge& bridge) {
             IlluminantFilterCurveSet curves;
-            curves.d65 = Spectral::build_curve_D65_pinned(asset.d65Path);
-            curves.d55 = Spectral::build_curve_D55_pinned(asset.d55Path);
-            curves.d50 = Spectral::build_curve_D50_pinned(asset.d50Path);
-            curves.tungsten = Spectral::build_curve_T_pinned(asset.tungstenPath);
-            curves.kinoton75P = Spectral::build_curve_K75P_pinned(asset.kinoton75PPath);
-            curves.tungstenKg3 = Spectral::build_curve_TH_KG3_pinned(asset.kg3Path);
-            curves.tungstenKg3Lens = Spectral::build_curve_TH_KG3_L_pinned(
-                asset.kg3Path,
-                asset.lensTransmissionPath);
+            const auto build = [&](CsvSource source, std::string_view label) {
+                const auto pairs = copy_available_csv(bridge, source);
+                return pairs ? Spectral::build_illuminant_curve(*pairs, label) : Spectral::Curve{};
+            };
+            curves.d65 = build(CsvSource::D65, "D65");
+            curves.d55 = build(CsvSource::D55, "D55");
+            curves.d50 = build(CsvSource::D50, "D50");
+            curves.tungsten = build(CsvSource::T, "T");
+            curves.kinoton75P = build(CsvSource::K75p, "K75P");
+            auto kg3 = copy_available_csv(bridge, CsvSource::Kg3);
+            if (kg3) {
+                curves.tungstenKg3 = Spectral::build_tungsten_kg3_curve(*kg3, "KG3");
+            } else {
+                // The second consumer may make its ordinary acquisition after failure.
+                kg3 = copy_available_csv(bridge, CsvSource::Kg3);
+            }
+            if (kg3) {
+                auto input = Spectral::prepare_tungsten_kg3_lens_input(*kg3, "KG3");
+                if (input) {
+                    const auto lens = copy_available_csv(bridge, CsvSource::Canon24F28Is);
+                    if (lens) {
+                        curves.tungstenKg3Lens = Spectral::build_tungsten_kg3_lens_curve(std::move(*input), *lens, "Canon 24 F2.8 IS");
+                    }
+                }
+            }
             return curves;
         }
 
@@ -361,7 +303,7 @@ namespace JuicerAssets {
 
     struct Library::IlluminantFilterCurveCacheState {
         std::mutex mutex;
-        IlluminantFilterCurveCacheEntry entry;
+        std::shared_ptr<const IlluminantFilterCurveSet> curves;
     };
 
     struct Library::InputCompressionHullCacheState {
@@ -376,25 +318,17 @@ namespace JuicerAssets {
             tables;
     };
 
-    struct Library::NeutralPrintCalibrationCacheState {
-        std::mutex mutex;
-        std::shared_ptr<const NeutralPrintCalibrationSnapshot> snapshot;
-    };
-
     Library::Library(const std::filesystem::path& resourceRoot, std::string dataDir)
         : _dataDir(std::move(dataDir)),
           _bridge(resourceRoot),
           _staticNoiseAssets(std::make_unique<StaticNoiseAssetSet>()),
-          _illuminantFilterAssets(std::make_unique<IlluminantFilterAssetSet>()),
           _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
           _illuminantFilterCurveCache(
               std::make_unique<IlluminantFilterCurveCacheState>()),
           _inputCompressionHullCache(
               std::make_unique<InputCompressionHullCacheState>()),
           _outputBoundaryTableCache(
-              std::make_unique<OutputBoundaryTableCacheState>()),
-          _neutralPrintCalibrationCache(
-              std::make_unique<NeutralPrintCalibrationCacheState>()) {
+              std::make_unique<OutputBoundaryTableCacheState>()) {
     }
 
     Library::~Library() = default;
@@ -412,12 +346,6 @@ namespace JuicerAssets {
     void Library::ensure_static_noise_assets() {
         std::call_once(_staticNoiseOnce, [this]() {
             load_static_noise_assets();
-        });
-    }
-
-    void Library::ensure_illuminant_filter_assets() {
-        std::call_once(_illuminantFilterOnce, [this]() {
-            load_illuminant_filter_assets();
         });
     }
 
@@ -446,10 +374,6 @@ namespace JuicerAssets {
 
     void Library::load_static_noise_assets() {
         *_staticNoiseAssets = make_static_noise_assets(_dataDir);
-    }
-
-    void Library::load_illuminant_filter_assets() {
-        *_illuminantFilterAssets = make_illuminant_filter_assets(_dataDir);
     }
 
     const Spektrafilm::ProfileCatalog& Library::spektrafilm_profile_catalog() {
@@ -502,19 +426,27 @@ namespace JuicerAssets {
         return _staticNoisePayloadCache->payloads;
     }
 
-    const IlluminantFilterCurveSet& Library::illuminant_filter_curves() {
-        ensure_illuminant_filter_assets();
-        std::lock_guard<std::mutex> lock(
-            _illuminantFilterCurveCache->mutex);
-        IlluminantFilterCurveCacheEntry& entry =
-            _illuminantFilterCurveCache->entry;
-        if (!entry.ready) {
-            entry.curves =
-                load_illuminant_filter_curves(*_illuminantFilterAssets);
-            entry.ready =
-                illuminant_filter_curves_complete(entry.curves);
+    std::shared_ptr<const IlluminantFilterCurveSet> Library::illuminant_filter_curves() {
+        {
+            std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);
+            if (_illuminantFilterCurveCache->curves) {
+                return _illuminantFilterCurveCache->curves;
+            }
         }
-        return entry.curves;
+        const auto candidate = std::make_shared<const IlluminantFilterCurveSet>(load_illuminant_filter_curves(_bridge));
+        const bool complete = illuminant_filter_curves_complete(*candidate);
+#if defined(JUICER_ILLUMINANT_TEST_HOOK)
+        IlluminantTest::before_curve_publication(candidate);
+#endif
+        std::shared_ptr<const IlluminantFilterCurveSet> selected;
+        {
+            std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);
+            if (!_illuminantFilterCurveCache->curves && complete) {
+                _illuminantFilterCurveCache->curves = candidate;
+            }
+            selected = _illuminantFilterCurveCache->curves;
+        }
+        return selected ? selected : candidate;
     }
 
     std::shared_ptr<const Gamut::InputCompressionHull>
@@ -525,13 +457,13 @@ namespace JuicerAssets {
                 return _inputCompressionHullCache->hull;
             }
         }
-        const IlluminantFilterCurveSet& curves = illuminant_filter_curves();
+        const auto curves = illuminant_filter_curves();
         auto candidate = std::make_shared<Gamut::InputCompressionHull>();
         if (!Gamut::build_input_compression_hull(
                 Spectral::gXBar,
                 Spectral::gYBar,
                 Spectral::gZBar,
-                curves.d65,
+                curves->d65,
                 *candidate)) {
             return {};
         }
@@ -580,77 +512,10 @@ namespace JuicerAssets {
         return cached;
     }
 
-    NeutralPrintCalibrationResult Library::neutral_print_calibration(
-        const std::string& printProfileKey,
-        const std::string& printIlluminantKey,
-        const std::string& filmProfileKey) {
-        NeutralPrintCalibrationResult result;
-        std::shared_ptr<const NeutralPrintCalibrationSnapshot> snapshot;
-        {
-            std::lock_guard<std::mutex> lock(_neutralPrintCalibrationCache->mutex);
-            snapshot = _neutralPrintCalibrationCache->snapshot;
-        }
-        if (!snapshot) {
-            std::shared_ptr<const NeutralPrintCalibrationSnapshot> loaded =
-                load_neutral_print_calibration_snapshot(
-                    neutral_print_calibration_path(_dataDir));
-            {
-                std::lock_guard<std::mutex> lock(_neutralPrintCalibrationCache->mutex);
-                if (!_neutralPrintCalibrationCache->snapshot) {
-                    _neutralPrintCalibrationCache->snapshot = std::move(loaded);
-                }
-                snapshot = _neutralPrintCalibrationCache->snapshot;
-            }
-        }
-        if (snapshot->rootStatus != NeutralPrintCalibrationStatus::Found) {
-            result.status = snapshot->rootStatus;
-            result.diagnostic = snapshot->diagnostic;
-            return result;
-        }
-
-        const Json& root = snapshot->root;
-        const auto printIt = root.find(printProfileKey);
-        if (printIt == root.end()) {
-            result.status = NeutralPrintCalibrationStatus::MissingEntry;
-        } else if (!printIt->is_object()) {
-            result.status = NeutralPrintCalibrationStatus::Malformed;
-            result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=print_profile";
-        } else {
-            const auto illuminantIt = printIt->find(printIlluminantKey);
-            if (illuminantIt == printIt->end()) {
-                result.status = NeutralPrintCalibrationStatus::MissingEntry;
-            } else if (!illuminantIt->is_object()) {
-                result.status = NeutralPrintCalibrationStatus::Malformed;
-                result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=print_illuminant";
-            } else {
-                const auto filmIt = illuminantIt->find(filmProfileKey);
-                if (filmIt == illuminantIt->end()) {
-                    result.status = NeutralPrintCalibrationStatus::MissingEntry;
-                } else if (!filmIt->is_array() || filmIt->size() != result.cmyCc.size()) {
-                    result.status = NeutralPrintCalibrationStatus::Malformed;
-                    result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
-                } else {
-                    result.status = NeutralPrintCalibrationStatus::Found;
-                    for (std::size_t channel = 0; channel < result.cmyCc.size(); ++channel) {
-                        const Json& value = (*filmIt)[channel];
-                        if (!value.is_number()) {
-                            result.status = NeutralPrintCalibrationStatus::Malformed;
-                            result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
-                            break;
-                        }
-                        const double cc = value.get<double>();
-                        if (!std::isfinite(cc)) {
-                            result.status = NeutralPrintCalibrationStatus::Malformed;
-                            result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
-                            break;
-                        }
-                        result.cmyCc[channel] = static_cast<float>(cc);
-                    }
-                }
-            }
-        }
-
-        return result;
+    NeutralPrintCalibrationResult Library::neutral_print_calibration(const std::string& printStock,
+                                                                     const std::string& printIlluminantKey,
+                                                                     const std::string& filmStock) {
+        return _bridge.neutral_print_calibration(printStock, printIlluminantKey, filmStock);
     }
 
     FjStatus Library::release_cached_payloads(FjErrorBuffer* error) noexcept {
@@ -683,19 +548,10 @@ namespace JuicerAssets {
         });
         cleanup([&] {
             if (_illuminantFilterCurveCache) {
-                IlluminantFilterCurveCacheEntry detached;
+                std::shared_ptr<const IlluminantFilterCurveSet> detached;
                 {
                     std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);
-                    std::swap(detached, _illuminantFilterCurveCache->entry);
-                }
-            }
-        });
-        cleanup([&] {
-            if (_neutralPrintCalibrationCache) {
-                decltype(_neutralPrintCalibrationCache->snapshot) detached;
-                {
-                    std::lock_guard<std::mutex> lock(_neutralPrintCalibrationCache->mutex);
-                    detached.swap(_neutralPrintCalibrationCache->snapshot);
+                    detached.swap(_illuminantFilterCurveCache->curves);
                 }
             }
         });

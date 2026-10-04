@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+test-support = []
+
 [dependencies]
 libm = "=0.2.15"
 serde = { version = "=1.0.229", features = ["derive"] }

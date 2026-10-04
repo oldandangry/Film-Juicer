@@ -34,6 +34,7 @@ def forbidden_uses(paths, pattern):
 HOST_MESSAGES = r"\b(?:DirFailureMessage|sendMessage)\b|OFX::"
 CONTEXT_RESET = r"\b(?:cudaDeviceReset|cuDevicePrimaryCtxReset|cuCtxReset)\s*\("
 RETIRED_SPECTRAL = r"\b(?:NpySpectraLUT|NpyFloat2D|load_npy_spectra_lut|load_npy_float2d|load_csv_triplets|load_hanatos_spectra_lut|load_arctic2026beta04_spectra_lut|load_mallett2019_basis_npy|sourceElementBytes|hanatosAssetHash|arcticAssetHash|kExpectedDecodedAssetHash|data_file_string)\b|NpyLoader\.h"
+RETIRED_ILLUMINANTS_CALIBRATION = r"\b(?:load_csv_pairs|build_curve_from_csv_pinned|build_curve_D65_pinned|build_curve_D55_pinned|build_curve_D50_pinned|build_curve_T_pinned|build_curve_K75P_pinned|build_curve_TH_KG3_pinned|build_curve_TH_KG3_L_pinned|IlluminantFilterAssetSet|IlluminantFilterCurveCacheEntry|NeutralPrintCalibrationSnapshot|NeutralPrintCalibrationCacheState|load_neutral_print_calibration_snapshot|neutral_print_calibration_path|read_file_bytes)\b"
 RETIRED_PROFILES = r"\b(?:ProfileAssetStore|ProfileJSONLoader)\b|ProfileAssets\.cpp"
 
 
@@ -102,6 +103,12 @@ class NativeBoundary(unittest.TestCase):
         self.assertEqual(forbidden_uses(paths, RETIRED_SPECTRAL), [])
         self.assertFalse((ROOT / "src/NpyLoader.h").exists())
 
+    def test_retired_illuminant_and_calibration_authority_stays_deleted(self):
+        paths = [path for directory in (ROOT / "src", ROOT / "native", ROOT / "cmake", ROOT / "tests")
+                 for path in directory.rglob("*") if path.is_file() and
+                 (path.suffix.lower() in SOURCE_SUFFIXES or path.suffix == ".cmake")]
+        self.assertEqual(forbidden_uses(paths, RETIRED_ILLUMINANTS_CALIBRATION), [])
+
 
 
 class NativeBoundaryControls(unittest.TestCase):
@@ -146,10 +153,22 @@ class NativeBoundaryControls(unittest.TestCase):
                     self.assertEqual(len(forbidden_uses([source], RETIRED_SPECTRAL)), 1)
             source.write_text(
                 "ReconstructionLut lut; MallettBasis basis; copy_cmf_triplets(); "
-                "build_film_tc_lut(); load_csv_pairs(path); set_cie_1931_2deg_cmf(x, y, z);",
+                "build_film_tc_lut(); build_illuminant_curve(rows, label); set_cie_1931_2deg_cmf(x, y, z);",
                 encoding="utf-8",
             )
             self.assertEqual(forbidden_uses([source], RETIRED_SPECTRAL), [])
+
+    def test_illuminant_calibration_controls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.hpp"
+            for name in ("load_csv_pairs", "build_curve_D65_pinned", "build_curve_TH_KG3_pinned",
+                         "build_curve_TH_KG3_L_pinned", "IlluminantFilterAssetSet", "NeutralPrintCalibrationSnapshot",
+                         "load_neutral_print_calibration_snapshot", "neutral_print_calibration_path", "read_file_bytes"):
+                source.write_text(f"// retired: {name}();\n", encoding="utf-8")
+                self.assertEqual(len(forbidden_uses([source], RETIRED_ILLUMINANTS_CALIBRATION)), 1)
+            source.write_text("Json noise; load_static_noise_payloads(); build_illuminant_curve(rows, label); "
+                              "prepare_tungsten_kg3_lens_input(rows, label); copy_csv_pairs(source);", encoding="utf-8")
+            self.assertEqual(forbidden_uses([source], RETIRED_ILLUMINANTS_CALIBRATION), [])
 
 
 

@@ -31,6 +31,7 @@ set(JUICER_HOST_SOURCES
     src/RenderRecipe.cpp
     src/FilmEffectsFrameDescriptors.cpp
     src/ResourceAssetLibrary.cpp
+    src/Illuminants.cpp
     src/ScatterHalation.cpp
     src/ScanRoute.cpp
     src/Scanner.cpp
