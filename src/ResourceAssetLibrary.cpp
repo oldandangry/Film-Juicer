@@ -4,334 +4,56 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
-#include <fstream>
-#include <initializer_list>
 #include <memory>
-#include <sstream>
-#include <system_error>
 #include <utility>
 
 #include "Logging.h"
+#include "Cuda/JuicerCudaExecutor.h"
+#include "Cuda/JuicerCudaFailure.h"
 #include "Illuminants.h"
-#include "nlohmann/json.hpp"
 
 namespace JuicerAssets {
 
-    struct Library::StaticNoiseAssetSet {
-        std::string stbnPath;
-        std::string wangTilesPath;
-        std::string wangMetadataPath;
-    };
-
-    struct Library::IlluminantFilterAssetSet {
-        std::string d65Path;
-        std::string d55Path;
-        std::string d50Path;
-        std::string tungstenPath;
-        std::string kinoton75PPath;
-        std::string kg3Path;
-        std::string lensTransmissionPath;
-    };
-
     namespace {
-        namespace fs = std::filesystem;
-        using Json = nlohmann::json;
-
-        struct IlluminantFilterCurveCacheEntry {
-            IlluminantFilterCurveSet curves;
-            bool ready = false;
-        };
-
-        bool read_file_bytes(
-            const std::string& path,
-            std::string& out) {
-            out.clear();
-            std::ifstream file(path, std::ios::binary | std::ios::ate);
-            if (!file) {
-                return false;
-            }
-            const std::streamsize size = file.tellg();
-            if (size < 0) {
-                return false;
-            }
-            out.resize(static_cast<std::size_t>(size));
-            file.seekg(0, std::ios::beg);
-            if (size > 0 && !file.read(out.data(), size)) {
-                out.clear();
-                return false;
-            }
-            return true;
-        }
-
-        std::string data_path_string(const std::string& dataDir, std::initializer_list<const char*> segments) {
-            fs::path path(dataDir);
-            for (const char* segment : segments) {
-                if (segment && *segment) {
-                    path /= segment;
-                }
-            }
-            path.make_preferred();
-            return path.string();
-        }
-
-        std::string neutral_print_calibration_path(const std::string& dataDir) {
-            return data_path_string(dataDir, {"filters", "neutral_print_filters.json"});
-        }
-
-        struct NeutralPrintCalibrationSnapshot {
-            NeutralPrintCalibrationStatus rootStatus =
-                NeutralPrintCalibrationStatus::MissingFile;
-            Json root;
-            std::string diagnostic;
-        };
-
-        std::shared_ptr<const NeutralPrintCalibrationSnapshot>
-        load_neutral_print_calibration_snapshot(const std::string& path) {
-            auto snapshot = std::make_shared<NeutralPrintCalibrationSnapshot>();
-            std::string bytes;
-            if (!read_file_bytes(path, bytes)) {
-                std::error_code ec;
-                if (fs::exists(path, ec) && !ec) {
-                    snapshot->rootStatus = NeutralPrintCalibrationStatus::Malformed;
-                    snapshot->diagnostic =
-                        "MalformedNeutralPrintCalibration phase=4A field=resource_read";
-                }
-                return snapshot;
-            }
-            Json root = Json::parse(bytes, nullptr, false);
-            if (root.is_discarded() || !root.is_object()) {
-                snapshot->rootStatus = NeutralPrintCalibrationStatus::Malformed;
-                snapshot->diagnostic =
-                    "MalformedNeutralPrintCalibration phase=4A field=root";
-                return snapshot;
-            }
-            snapshot->rootStatus = NeutralPrintCalibrationStatus::Found;
-            snapshot->root = std::move(root);
-            return snapshot;
-        }
-
-        std::string noise_asset_path(const std::string& dataDir, std::initializer_list<const char*> segments) {
-            if (dataDir.empty()) {
-                return {};
-            }
-            return data_path_string(dataDir, segments);
-        }
-
-        Library::StaticNoiseAssetSet make_static_noise_assets(const std::string& dataDir) {
-            Library::StaticNoiseAssetSet asset;
-            asset.stbnPath = noise_asset_path(dataDir, {"Noise", "stbn_scalar_512x512x256_u8.bin"});
-            asset.wangTilesPath = noise_asset_path(dataDir, {"Noise", "Wang", "wang_tiles_256x256x16_u8.bin"});
-            asset.wangMetadataPath = noise_asset_path(dataDir, {"Noise", "Wang", "tiles.json"});
-            return asset;
-        }
-
-        StbnNoisePayload load_stbn_noise_payload(const Library::StaticNoiseAssetSet& assets) {
-            StbnNoisePayload payload;
-            payload.width = 512;
-            payload.height = 512;
-            payload.frames = 256;
-
-            if (assets.stbnPath.empty()) {
-                payload.error = "STBN load failed: data directory missing";
-                return payload;
-            }
-
-            fs::path path = fs::path(assets.stbnPath);
-            path.make_preferred();
-
-            std::ifstream file(path, std::ios::binary | std::ios::ate);
-            if (!file) {
-                payload.error = "STBN load failed: cannot open logical noise asset";
-                return payload;
-            }
-
-            const std::streamsize size = file.tellg();
-            if (size <= 0) {
-                payload.error = "STBN load failed: logical noise asset is empty";
-                return payload;
-            }
-
-            const std::size_t expected = static_cast<std::size_t>(payload.width) *
-                                         static_cast<std::size_t>(payload.height) *
-                                         static_cast<std::size_t>(payload.frames);
-            if (static_cast<std::size_t>(size) != expected) {
-                payload.error = "STBN load failed: logical noise asset has unexpected size";
-                return payload;
-            }
-
-            payload.data.resize(expected);
-            file.seekg(0, std::ios::beg);
-            if (!file.read(reinterpret_cast<char*>(payload.data.data()), size)) {
-                payload.error = "STBN load failed: logical noise asset read error";
-                payload.data.clear();
-                return payload;
-            }
-
-            payload.valid = true;
-            return payload;
-        }
-
-        struct WangTileEdges {
-            int left = 0;
-            int right = 0;
-            int top = 0;
-            int bottom = 0;
-        };
-
-        std::size_t wang_lut_index(const WangTileEdges& edges, int colors) {
-            const std::size_t c = static_cast<std::size_t>(colors);
-            return (((static_cast<std::size_t>(edges.left) * c + static_cast<std::size_t>(edges.right)) * c +
-                     static_cast<std::size_t>(edges.top)) *
-                        c +
-                    static_cast<std::size_t>(edges.bottom));
-        }
-
-        WangNoisePayload load_wang_noise_payload(const Library::StaticNoiseAssetSet& assets) {
-            WangNoisePayload payload;
-
-            if (assets.wangTilesPath.empty() || assets.wangMetadataPath.empty()) {
-                payload.error = "Wang tiles load failed: data directory missing";
-                return payload;
-            }
-
-            fs::path binPath = fs::path(assets.wangTilesPath);
-            fs::path jsonPath = fs::path(assets.wangMetadataPath);
-            binPath.make_preferred();
-            jsonPath.make_preferred();
-
-            if (!fs::exists(binPath) || !fs::exists(jsonPath)) {
-                payload.error = "Wang tiles load failed: logical noise asset set is incomplete";
-                return payload;
-            }
-
-            std::ifstream jf(jsonPath);
-            if (!jf) {
-                payload.error = "Wang tiles load failed: cannot open logical metadata asset";
-                return payload;
-            }
-
-            Json root;
+        std::optional<std::vector<std::pair<float, float>>> copy_available_csv(AssetBridge& bridge, CsvSource source) {
             try {
-                jf >> root;
-            } catch (const std::exception& e) {
-                payload.error = std::string("Wang tiles load failed: invalid JSON ") + e.what();
-                return payload;
-            }
-
-            if (!root.contains("resolution") || !root.contains("tiles") || !root.contains("colors") ||
-                !root.contains("mapping")) {
-                payload.error = "Wang tiles load failed: tiles.json missing required fields";
-                return payload;
-            }
-
-            const int width = root.value("resolution", 0);
-            const int height = width;
-            const int count = root.value("tiles", 0);
-            const int colors = root.value("colors", 0);
-            if (width <= 0 || height <= 0 || count <= 0 || colors <= 0) {
-                payload.error = "Wang tiles load failed: invalid metadata in tiles.json";
-                return payload;
-            }
-
-            const std::size_t lutSize = static_cast<std::size_t>(colors) *
-                                        static_cast<std::size_t>(colors) *
-                                        static_cast<std::size_t>(colors) *
-                                        static_cast<std::size_t>(colors);
-            std::vector<std::uint8_t> lut(lutSize, 0);
-
-            const auto& mapping = root["mapping"];
-            if (!mapping.is_array()) {
-                payload.error = "Wang tiles load failed: mapping is not an array";
-                return payload;
-            }
-
-            for (const auto& entry : mapping) {
-                if (!entry.contains("index") || !entry.contains("labels")) {
-                    continue;
+                return bridge.copy_csv_pairs(source);
+            } catch (const JuicerCuda::ExecutionFailure& failure) {
+                if (failure.failure.status.category != FJ_STATUS_PREPARATION_FAILURE) {
+                    throw;
                 }
-                const int idx = entry.value("index", 0);
-                const auto& labels = entry["labels"];
-                const int l = labels.value("L", 0);
-                const int r = labels.value("R", 0);
-                const int t = labels.value("T", 0);
-                const int b = labels.value("B", 0);
-                if (l < 0 || r < 0 || t < 0 || b < 0 ||
-                    l >= colors || r >= colors || t >= colors || b >= colors) {
-                    continue;
-                }
-                const std::size_t lutIndex = wang_lut_index(WangTileEdges{l, r, t, b}, colors);
-                if (lutIndex < lut.size() && idx >= 0 && idx < count) {
-                    lut[lutIndex] = static_cast<std::uint8_t>(idx);
-                }
+                JTRACE("ILLUM", failure.failure.diagnostic);
+                return std::nullopt;
             }
-
-            std::ifstream bin(binPath, std::ios::binary | std::ios::ate);
-            if (!bin) {
-                payload.error = "Wang tiles load failed: cannot open logical tile asset";
-                return payload;
-            }
-            const std::streamsize size = bin.tellg();
-            if (size <= 0) {
-                payload.error = "Wang tiles load failed: logical tile asset is empty";
-                return payload;
-            }
-            const std::size_t expected = static_cast<std::size_t>(width) *
-                                         static_cast<std::size_t>(height) *
-                                         static_cast<std::size_t>(count);
-            if (static_cast<std::size_t>(size) != expected) {
-                payload.error = "Wang tiles load failed: logical tile asset has unexpected size";
-                return payload;
-            }
-
-            std::vector<std::uint8_t> tiles(expected);
-            bin.seekg(0, std::ios::beg);
-            if (!bin.read(reinterpret_cast<char*>(tiles.data()), size)) {
-                payload.error = "Wang tiles load failed: logical tile asset read error";
-                return payload;
-            }
-
-            payload.tiles = std::move(tiles);
-            payload.lut = std::move(lut);
-            payload.width = width;
-            payload.height = height;
-            payload.count = count;
-            payload.colors = colors;
-            payload.valid = true;
-            return payload;
         }
 
-        StaticNoisePayloadSet load_static_noise_payloads(const Library::StaticNoiseAssetSet& assets) {
-            StaticNoisePayloadSet payloads;
-            payloads.stbn = load_stbn_noise_payload(assets);
-            payloads.wang = load_wang_noise_payload(assets);
-            return payloads;
-        }
-
-        Library::IlluminantFilterAssetSet make_illuminant_filter_assets(const std::string& dataDir) {
-            Library::IlluminantFilterAssetSet asset;
-            asset.d65Path = data_path_string(dataDir, {"illuminants", "D65.csv"});
-            asset.d55Path = data_path_string(dataDir, {"illuminants", "D55.csv"});
-            asset.d50Path = data_path_string(dataDir, {"illuminants", "D50.csv"});
-            asset.tungstenPath = data_path_string(dataDir, {"illuminants", "T.csv"});
-            asset.kinoton75PPath = data_path_string(dataDir, {"illuminants", "K75P.csv"});
-            asset.kg3Path = data_path_string(dataDir, {"filters", "heat_absorbing", "schott", "KG3.csv"});
-            asset.lensTransmissionPath = data_path_string(
-                dataDir,
-                {"filters", "lens_transmission", "canon", "canon_24_f28_is.csv"});
-            return asset;
-        }
-
-        IlluminantFilterCurveSet load_illuminant_filter_curves(const Library::IlluminantFilterAssetSet& asset) {
+        IlluminantFilterCurveSet load_illuminant_filter_curves(AssetBridge& bridge) {
             IlluminantFilterCurveSet curves;
-            curves.d65 = Spectral::build_curve_D65_pinned(asset.d65Path);
-            curves.d55 = Spectral::build_curve_D55_pinned(asset.d55Path);
-            curves.d50 = Spectral::build_curve_D50_pinned(asset.d50Path);
-            curves.tungsten = Spectral::build_curve_T_pinned(asset.tungstenPath);
-            curves.kinoton75P = Spectral::build_curve_K75P_pinned(asset.kinoton75PPath);
-            curves.tungstenKg3 = Spectral::build_curve_TH_KG3_pinned(asset.kg3Path);
-            curves.tungstenKg3Lens = Spectral::build_curve_TH_KG3_L_pinned(
-                asset.kg3Path,
-                asset.lensTransmissionPath);
+            const auto build = [&](CsvSource source, std::string_view label) {
+                const auto pairs = copy_available_csv(bridge, source);
+                return pairs ? Spectral::build_illuminant_curve(*pairs, label) : Spectral::Curve{};
+            };
+            curves.d65 = build(CsvSource::D65, "D65");
+            curves.d55 = build(CsvSource::D55, "D55");
+            curves.d50 = build(CsvSource::D50, "D50");
+            curves.tungsten = build(CsvSource::T, "T");
+            curves.kinoton75P = build(CsvSource::K75p, "K75P");
+            auto kg3 = copy_available_csv(bridge, CsvSource::Kg3);
+            if (kg3) {
+                curves.tungstenKg3 = Spectral::build_tungsten_kg3_curve(*kg3, "KG3");
+            } else {
+                // The second consumer may make its ordinary acquisition after failure.
+                kg3 = copy_available_csv(bridge, CsvSource::Kg3);
+            }
+            if (kg3) {
+                auto input = Spectral::prepare_tungsten_kg3_lens_input(*kg3, "KG3");
+                if (input) {
+                    const auto lens = copy_available_csv(bridge, CsvSource::Canon24F28Is);
+                    if (lens) {
+                        curves.tungstenKg3Lens = Spectral::build_tungsten_kg3_lens_curve(std::move(*input), *lens, "Canon 24 F2.8 IS");
+                    }
+                }
+            }
             return curves;
         }
 
@@ -352,14 +74,9 @@ namespace JuicerAssets {
 
     } // namespace
 
-    struct Library::StaticNoisePayloadCacheState {
-        std::mutex mutex;
-        std::shared_ptr<const StaticNoisePayloadSet> payloads;
-    };
-
     struct Library::IlluminantFilterCurveCacheState {
         std::mutex mutex;
-        IlluminantFilterCurveCacheEntry entry;
+        std::shared_ptr<const IlluminantFilterCurveSet> curves;
     };
 
     struct Library::InputCompressionHullCacheState {
@@ -374,29 +91,21 @@ namespace JuicerAssets {
             tables;
     };
 
-    struct Library::NeutralPrintCalibrationCacheState {
-        std::mutex mutex;
-        std::shared_ptr<const NeutralPrintCalibrationSnapshot> snapshot;
-    };
-
-    Library::Library(std::string dataDir)
-        : _dataDir(std::move(dataDir)),
-          _staticNoiseAssets(std::make_unique<StaticNoiseAssetSet>()),
-          _illuminantFilterAssets(std::make_unique<IlluminantFilterAssetSet>()),
-          _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
+    Library::Library(const std::filesystem::path& resourceRoot)
+        : _bridge(resourceRoot),
           _illuminantFilterCurveCache(
               std::make_unique<IlluminantFilterCurveCacheState>()),
           _inputCompressionHullCache(
               std::make_unique<InputCompressionHullCacheState>()),
           _outputBoundaryTableCache(
-              std::make_unique<OutputBoundaryTableCacheState>()),
-          _neutralPrintCalibrationCache(
-              std::make_unique<NeutralPrintCalibrationCacheState>()),
-          _selectedProfileAssets(
-              std::make_unique<Profiles::ProfileAssetStore>()) {
+              std::make_unique<OutputBoundaryTableCacheState>()) {
     }
 
     Library::~Library() = default;
+
+    FjStatus Library::close(FjErrorBuffer* error) noexcept {
+        return _bridge.close(error);
+    }
 
     void Library::ensure_catalogs() {
         std::call_once(_catalogOnce, [this]() {
@@ -404,100 +113,94 @@ namespace JuicerAssets {
         });
     }
 
-    void Library::ensure_static_noise_assets() {
-        std::call_once(_staticNoiseOnce, [this]() {
-            load_static_noise_assets();
-        });
-    }
-
-    void Library::ensure_illuminant_filter_assets() {
-        std::call_once(_illuminantFilterOnce, [this]() {
-            load_illuminant_filter_assets();
-        });
-    }
 
     void Library::load_catalogs() {
-        const bool traceCatalog = JTRACE_ENABLED(1);
-        _spektrafilmProfileCatalog =
-            Spektrafilm::build_profile_catalog(_dataDir);
-        if (!_spektrafilmProfileCatalog.valid) {
-            if (traceCatalog) {
-                JTRACE(
-                    "CATALOG",
-                    "spektrafilm profile catalog unavailable: " +
-                        _spektrafilmProfileCatalog.failure);
+        _spektrafilmProfileCatalog = _bridge.load_catalog();
+        // Optional trace formatting must not reopen a completed once-publication
+        // or replace its retained catalog owner after a diagnostic allocation.
+        try {
+            if (!JTRACE_ENABLED(1)) {
+                return;
             }
-            return;
-        }
-
-        if (traceCatalog) {
+            if (!_spektrafilmProfileCatalog.valid) {
+                JTRACE("CATALOG", "spektrafilm profile catalog unavailable: " + _spektrafilmProfileCatalog.failure);
+                return;
+            }
             std::ostringstream oss;
-            oss << "spektrafilm profile catalog film="
-                << _spektrafilmProfileCatalog.filmProfiles.size()
-                << " print="
-                << _spektrafilmProfileCatalog.printProfiles.size()
-                << " defaultFilm="
-                << (_spektrafilmProfileCatalog.defaultFilmPresent ? 1 : 0)
-                << " defaultPrint="
-                << (_spektrafilmProfileCatalog.defaultPrintPresent ? 1 : 0);
+            oss << "spektrafilm profile catalog film=" << _spektrafilmProfileCatalog.filmProfiles.size()
+                << " print=" << _spektrafilmProfileCatalog.printProfiles.size()
+                << " defaultFilm=" << (_spektrafilmProfileCatalog.defaultFilmPresent ? 1 : 0)
+                << " defaultPrint=" << (_spektrafilmProfileCatalog.defaultPrintPresent ? 1 : 0);
             JTRACE("CATALOG", oss.str());
+        } catch (...) {
+            JuicerLogging::discard_current_exception();
         }
     }
 
-    void Library::load_static_noise_assets() {
-        *_staticNoiseAssets = make_static_noise_assets(_dataDir);
-    }
-
-    void Library::load_illuminant_filter_assets() {
-        *_illuminantFilterAssets = make_illuminant_filter_assets(_dataDir);
-    }
 
     const Spektrafilm::ProfileCatalog& Library::spektrafilm_profile_catalog() {
         ensure_catalogs();
         return _spektrafilmProfileCatalog;
     }
 
-    std::shared_ptr<const Profiles::ValidatedFilmProfile>
+    std::shared_ptr<const Profiles::FilmProfile>
     Library::selected_film_profile_for_key(const std::string& key) {
         ensure_catalogs();
-        return _selectedProfileAssets->load_film_profile_by_key(
-            _spektrafilmProfileCatalog,
-            key);
+        try {
+            return _bridge.film(key);
+        } catch (const JuicerCuda::ExecutionFailure& failure) {
+            if (failure.failure.status.category != FJ_STATUS_PREPARATION_FAILURE) {
+                throw;
+            }
+            JTRACE("PROFILE", failure.failure.diagnostic);
+            return {};
+        }
     }
 
     SelectedProfileResult Library::selected_profiles_for_route(
         const SelectedProfileRequest& request) {
         ensure_catalogs();
-        return _selectedProfileAssets->selected_profiles_for_route(
-            _spektrafilmProfileCatalog,
-            request);
+        SelectedProfileResult result;
+        try {
+            result.filmProfile = _bridge.film(request.filmProfileKey);
+            if (Spektrafilm::scan_route_is_print(request.scanRoute)) {
+                result.printSource = _bridge.print(request.printProfileKey);
+            }
+            result.valid = true;
+        } catch (const JuicerCuda::ExecutionFailure& failure) {
+            if (failure.failure.status.category != FJ_STATUS_PREPARATION_FAILURE) {
+                throw;
+            }
+            result.diagnostic = failure.failure.diagnostic;
+        }
+        return result;
     }
 
-    std::shared_ptr<const StaticNoisePayloadSet>
-    Library::static_noise_payloads() {
-        ensure_static_noise_assets();
-        std::lock_guard<std::mutex> lock(_staticNoisePayloadCache->mutex);
-        if (!_staticNoisePayloadCache->payloads) {
-            _staticNoisePayloadCache->payloads =
-                std::make_shared<StaticNoisePayloadSet>(
-                    load_static_noise_payloads(*_staticNoiseAssets));
-        }
-        return _staticNoisePayloadCache->payloads;
+    NoiseSource Library::noise() {
+        return _bridge.noise();
     }
 
-    const IlluminantFilterCurveSet& Library::illuminant_filter_curves() {
-        ensure_illuminant_filter_assets();
-        std::lock_guard<std::mutex> lock(
-            _illuminantFilterCurveCache->mutex);
-        IlluminantFilterCurveCacheEntry& entry =
-            _illuminantFilterCurveCache->entry;
-        if (!entry.ready) {
-            entry.curves =
-                load_illuminant_filter_curves(*_illuminantFilterAssets);
-            entry.ready =
-                illuminant_filter_curves_complete(entry.curves);
+    std::shared_ptr<const IlluminantFilterCurveSet> Library::illuminant_filter_curves() {
+        {
+            std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);
+            if (_illuminantFilterCurveCache->curves) {
+                return _illuminantFilterCurveCache->curves;
+            }
         }
-        return entry.curves;
+        const auto candidate = std::make_shared<const IlluminantFilterCurveSet>(load_illuminant_filter_curves(_bridge));
+        const bool complete = illuminant_filter_curves_complete(*candidate);
+#if defined(JUICER_ILLUMINANT_TEST_HOOK)
+        IlluminantTest::before_curve_publication(candidate);
+#endif
+        std::shared_ptr<const IlluminantFilterCurveSet> selected;
+        {
+            std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);
+            if (!_illuminantFilterCurveCache->curves && complete) {
+                _illuminantFilterCurveCache->curves = candidate;
+            }
+            selected = _illuminantFilterCurveCache->curves;
+        }
+        return selected ? selected : candidate;
     }
 
     std::shared_ptr<const Gamut::InputCompressionHull>
@@ -508,13 +211,13 @@ namespace JuicerAssets {
                 return _inputCompressionHullCache->hull;
             }
         }
-        const IlluminantFilterCurveSet& curves = illuminant_filter_curves();
+        const auto curves = illuminant_filter_curves();
         auto candidate = std::make_shared<Gamut::InputCompressionHull>();
         if (!Gamut::build_input_compression_hull(
                 Spectral::gXBar,
                 Spectral::gYBar,
                 Spectral::gZBar,
-                curves.d65,
+                curves->d65,
                 *candidate)) {
             return {};
         }
@@ -563,108 +266,66 @@ namespace JuicerAssets {
         return cached;
     }
 
-    NeutralPrintCalibrationResult Library::neutral_print_calibration(
-        const std::string& printProfileKey,
-        const std::string& printIlluminantKey,
-        const std::string& filmProfileKey) {
-        NeutralPrintCalibrationResult result;
-        std::shared_ptr<const NeutralPrintCalibrationSnapshot> snapshot;
-        {
-            std::lock_guard<std::mutex> lock(_neutralPrintCalibrationCache->mutex);
-            snapshot = _neutralPrintCalibrationCache->snapshot;
-        }
-        if (!snapshot) {
-            std::shared_ptr<const NeutralPrintCalibrationSnapshot> loaded =
-                load_neutral_print_calibration_snapshot(
-                    neutral_print_calibration_path(_dataDir));
-            {
-                std::lock_guard<std::mutex> lock(_neutralPrintCalibrationCache->mutex);
-                if (!_neutralPrintCalibrationCache->snapshot) {
-                    _neutralPrintCalibrationCache->snapshot = std::move(loaded);
-                }
-                snapshot = _neutralPrintCalibrationCache->snapshot;
-            }
-        }
-        if (snapshot->rootStatus != NeutralPrintCalibrationStatus::Found) {
-            result.status = snapshot->rootStatus;
-            result.diagnostic = snapshot->diagnostic;
-            return result;
-        }
-
-        const Json& root = snapshot->root;
-        const auto printIt = root.find(printProfileKey);
-        if (printIt == root.end()) {
-            result.status = NeutralPrintCalibrationStatus::MissingEntry;
-        } else if (!printIt->is_object()) {
-            result.status = NeutralPrintCalibrationStatus::Malformed;
-            result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=print_profile";
-        } else {
-            const auto illuminantIt = printIt->find(printIlluminantKey);
-            if (illuminantIt == printIt->end()) {
-                result.status = NeutralPrintCalibrationStatus::MissingEntry;
-            } else if (!illuminantIt->is_object()) {
-                result.status = NeutralPrintCalibrationStatus::Malformed;
-                result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=print_illuminant";
-            } else {
-                const auto filmIt = illuminantIt->find(filmProfileKey);
-                if (filmIt == illuminantIt->end()) {
-                    result.status = NeutralPrintCalibrationStatus::MissingEntry;
-                } else if (!filmIt->is_array() || filmIt->size() != result.cmyCc.size()) {
-                    result.status = NeutralPrintCalibrationStatus::Malformed;
-                    result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
-                } else {
-                    result.status = NeutralPrintCalibrationStatus::Found;
-                    for (std::size_t channel = 0; channel < result.cmyCc.size(); ++channel) {
-                        const Json& value = (*filmIt)[channel];
-                        if (!value.is_number()) {
-                            result.status = NeutralPrintCalibrationStatus::Malformed;
-                            result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
-                            break;
-                        }
-                        const double cc = value.get<double>();
-                        if (!std::isfinite(cc)) {
-                            result.status = NeutralPrintCalibrationStatus::Malformed;
-                            result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
-                            break;
-                        }
-                        result.cmyCc[channel] = static_cast<float>(cc);
-                    }
-                }
-            }
-        }
-
-        return result;
+    NeutralPrintCalibrationResult Library::neutral_print_calibration(const std::string& printStock,
+                                                                     const std::string& printIlluminantKey,
+                                                                     const std::string& filmStock) {
+        return _bridge.neutral_print_calibration(printStock, printIlluminantKey, filmStock);
     }
 
-    void Library::release_cached_payloads() noexcept {
-        try {
-            if (_staticNoisePayloadCache) {
-                std::lock_guard<std::mutex> lock(
-                    _staticNoisePayloadCache->mutex);
-                _staticNoisePayloadCache->payloads.reset();
+    FjStatus Library::release_cached_payloads(FjErrorBuffer* error) noexcept {
+        FjStatus first{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+        const auto cleanup = [&](auto operation) {
+            try {
+                operation();
+            } catch (const std::bad_alloc&) {
+                if (first.category == FJ_STATUS_SUCCESS) {
+                    first = JuicerCuda::write_status({FJ_STATUS_ALLOCATION_FAILURE, FJ_API_NONE, 0}, "host cache cleanup allocation failed", error);
+                }
+            } catch (const std::exception& detail) {
+                if (first.category == FJ_STATUS_SUCCESS) {
+                    first = JuicerCuda::write_status({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, detail.what(), error);
+                }
+            } catch (...) {
+                if (first.category == FJ_STATUS_SUCCESS) {
+                    first = JuicerCuda::write_status({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "host cache cleanup failed", error);
+                }
             }
+        };
+        cleanup([&] {
             if (_illuminantFilterCurveCache) {
-                std::lock_guard<std::mutex> lock(
-                    _illuminantFilterCurveCache->mutex);
-                _illuminantFilterCurveCache->entry =
-                    IlluminantFilterCurveCacheEntry{};
+                std::shared_ptr<const IlluminantFilterCurveSet> detached;
+                {
+                    std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);
+                    detached.swap(_illuminantFilterCurveCache->curves);
+                }
             }
-            if (_neutralPrintCalibrationCache) {
-                std::lock_guard<std::mutex> lock(
-                    _neutralPrintCalibrationCache->mutex);
-                _neutralPrintCalibrationCache->snapshot.reset();
-            }
+        });
+        cleanup([&] {
             if (_outputBoundaryTableCache) {
-                std::lock_guard<std::mutex> lock(
-                    _outputBoundaryTableCache->mutex);
-                _outputBoundaryTableCache->tables = {};
+                decltype(_outputBoundaryTableCache->tables) detached;
+                {
+                    std::lock_guard<std::mutex> lock(_outputBoundaryTableCache->mutex);
+                    detached.swap(_outputBoundaryTableCache->tables);
+                }
             }
-            if (_selectedProfileAssets) {
-                _selectedProfileAssets->release_cached_payloads();
-            }
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-        }
+        });
+        const auto result = _bridge.release_cached_payloads(first.category == FJ_STATUS_SUCCESS ? error : nullptr);
+        return first.category == FJ_STATUS_SUCCESS ? result : first;
     }
 
+} // namespace JuicerAssets
+
+namespace JuicerAssets {
+    Spectral::ReconstructionLut Library::copy_hanatos_lut() {
+        return _bridge.copy_hanatos_lut();
+    }
+    Spectral::ReconstructionLut Library::copy_arctic_lut() {
+        return _bridge.copy_arctic_lut();
+    }
+    Spectral::MallettBasis Library::copy_mallett_basis() {
+        return _bridge.copy_mallett_basis();
+    }
+    Spectral::CMFTriplets Library::copy_cmf_triplets() {
+        return _bridge.copy_cmf_triplets();
+    }
 } // namespace JuicerAssets

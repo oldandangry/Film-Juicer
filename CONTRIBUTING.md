@@ -99,7 +99,7 @@ Configure the requested CMake preset, explicitly enabling tests before CTest:
 ```sh
 cmake --preset linux-debug -DBUILD_TESTING=ON
 cmake --build --preset linux-debug
-python scripts/check-quality.py --base <accepted-parent> --preset linux-debug
+python scripts/check-quality.py --base <accepted-parent> --preset linux-debug --jobs 2
 ctest --preset linux-debug --output-on-failure
 ```
 
@@ -111,6 +111,46 @@ tools or compiler/lint failures as incomplete work. Formatting and lints do
 not replace review of ownership, names, numerical parity, GPU lifetime, or
 installed Resolve behavior.
 
+During development, build the affected test targets and run the smallest owning
+CTest selection that proves the changed behavior. Exercise new compiled tests
+on both native platforms early, and check edited native sources before starting
+broader qualification. At final qualification, run each applicable unfiltered
+suite once for the stable candidate. Its JUnit report also supplies focused-domain
+evidence; see [the test guide](tests/README.md). Separate reference
+captures, transition checkpoints and production Release checks retain their
+own requirements.
+
+`--jobs` limits concurrent native and CUDA analysis commands; the default is 2
+and `--jobs 1` provides serial execution. Formatting, toolchain/CUDA preparation
+and Cargo checks remain sequential. Each analysis command retains its compilation
+arguments, working directory and separate log; all command results are observed
+before a failing batch returns. Keep GPU campaigns serialized on a shared device
+and avoid concurrent Cargo operations using the same target directory.
+
+CUDA files use Clang's CUDA frontend with the preset's real NVCC compilation
+database entries. Both `.cu` sources and consuming translation units for `.cuh`
+or shared headers are checked; distinct CUDA build variants are retained. The
+supported presets require CUDA 13.2, C++20, `sm_75`/`compute_75`, GCC 13 on Linux,
+and the matching VS developer environment on Windows. Install the cuRAND
+development headers too (`libcurand-dev-13-2` on Linux, `curand_dev_13.2` in the
+Windows installer): Clang's runtime wrapper includes them even when a source
+does not use cuRAND. No GPU is needed for this analysis.
+
+The dispatcher preserves ordered definitions and include paths, host runtime
+and exception settings, and the compilation working directory. Unknown NVCC
+or host options fail with a diagnostic instead of being silently discarded.
+Each `cuda-command-*.json` log records the original and translated arguments.
+Clang 22 needs three narrow parsing adaptations: an empty removed CUDA texture
+header, an early `_NV_RSQRT_SPECIFIER` definition, and OpenRAND's existing
+host/device attributes enabled during both Clang passes. The OpenRAND analysis
+copy is generated from the vendored header with only that guard changed; its
+implementation and license are preserved. These files live under the quality
+log directory and are used only by analysis. The repository's normal tidy
+checks and warnings-as-errors remain enabled.
+
+Changes to the runner or its tests also run the dispatcher regression tests
+and representative host, CUDA, and Rust checks.
+
 Any selected Rust change runs rustfmt and Clippy over both complete crates, with
 all targets in development and release profiles, followed by the Rust naming
 enforcement tests. The runner selects the repository's Clippy configuration.
@@ -119,6 +159,33 @@ workspace copies using the actual manifests and policy, verifies individual
 rejected identifiers by compiler diagnostic code and location, and exercises
 valid domain names and a narrow foreign-boundary exception. It adds no product
 dependency and leaves the production source and checked-in fixtures untouched.
+
+`Quality.RustBoundaries` checks the current two-crate dependency contract using
+Cargo metadata, including inactive target-specific declarations and resolved
+source overrides. Direct dependency changes, new workspace members and crate
+build/link hooks require an explicit change to the contract in the quality
+runner and contextual review. This does not audit dependency internals.
+Compiler probes also require valid profile consumers to compile and reject
+escaping borrowed views, early owner release, private profile-storage access,
+and local unsafe overrides in the core and safe asset modules. Probes run in
+disposable workspace copies in both profiles and check diagnostic codes and
+locations. Extend them when a new construction or safe orchestration boundary
+lands; do not create speculative production APIs for tests.
+
+The dispatcher always runs the inexpensive native boundary guards across their
+whole source scope, including new nested headers. They reject host messaging in
+native/CUDA execution, host-context reset calls, and the retired native profile
+parser/store and build entries. These are narrow source-text checks, including
+comments, not a general architectural proof. Add a guard when a cutover completes,
+with accepted and rejected examples; do not forbid a still-required bridge early.
+Family tests must separately establish relevant/irrelevant identity changes,
+conversion ownership, reuse and failure publication at the actual consumer.
+
+CI runs these tests in the existing Linux and Windows host lanes. Repository
+administrators must make those statuses required and configure independent review
+to enforce them at merge; checked-in workflows cannot establish branch protection.
+Changes to a guard, its scope, or its exceptions require review of the boundary
+and a negative control, not just a green run of the modified check.
 
 Before invoking compiler tools, the shared dispatcher checks whole selected
 owned C/C++/CUDA files for trailing whitespace, merge conflict markers, retired

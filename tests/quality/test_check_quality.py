@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import argparse
 import contextlib
+import copy
 import importlib.util
 import io
+import json
+import os
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts/check-quality.py"
@@ -102,6 +108,34 @@ class CheckQualityTests(unittest.TestCase):
                 native.assert_not_called()
                 self.assertNotIn("Quality checks passed", output.getvalue())
 
+    def test_policy_changes_cannot_skip_required_checks(self) -> None:
+        for path in ("Cargo.toml", "rust/film-juicer-core/Cargo.toml", "tests/quality/test_rust_boundaries.py", "scripts/check-quality.py"):
+            with (
+                self.subTest(path=path),
+                patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", path]),
+                patch.object(check_quality, "Runner") as runner,
+                patch.object(check_quality, "check_source_hygiene"),
+                patch.object(check_quality, "check_rust") as rust,
+                patch.object(check_quality, "check_native"),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(check_quality.main(), 0)
+                rust.assert_called_once()
+                labels = [call.kwargs["label"] for call in runner.return_value.run.call_args_list]
+                self.assertIn("native-boundary-enforcement", labels)
+
+    def test_native_boundary_failure_blocks_even_documentation_selection(self) -> None:
+        with (
+            patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", "CONTRIBUTING.md"]),
+            patch.object(check_quality, "Runner") as runner,
+            patch.object(check_quality, "check_source_hygiene"),
+            contextlib.redirect_stdout(io.StringIO()) as output,
+        ):
+            runner.return_value.run.side_effect = ["", check_quality.QualityError("boundary violation")]
+            with self.assertRaisesRegex(check_quality.QualityError, "boundary violation"):
+                check_quality.main()
+            self.assertNotIn("Quality checks passed", output.getvalue())
+
     def test_cuda_header_selects_real_c_and_cpp_consumers(self) -> None:
         root = SCRIPT_PATH.parent.parent
         policy = check_quality.load_policy(root)
@@ -148,6 +182,348 @@ class CheckQualityTests(unittest.TestCase):
                 )
             with self.assertRaises(check_quality.QualityError):
                 check_quality.check_workspace_contract(root)
+
+
+class ParallelAnalysisTests(unittest.TestCase):
+    def test_cli_requires_a_positive_worker_limit(self) -> None:
+        base = [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", "CONTRIBUTING.md"]
+        for count in (1, 2, 4):
+            with self.subTest(count=count), patch.object(sys, "argv", [*base, "--jobs", str(count)]):
+                self.assertEqual(check_quality.parse_arguments().jobs, count)
+        with patch.object(sys, "argv", base):
+            self.assertEqual(check_quality.parse_arguments().jobs, 2)
+        for count in ("0", "-1", "invalid"):
+            with self.subTest(count=count), patch.object(sys, "argv", [*base, "--jobs", count]), \
+                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
+                check_quality.parse_arguments()
+            self.assertEqual(failure.exception.code, 2)
+
+    def test_serial_and_parallel_commands_keep_arguments_directories_and_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for jobs in (1, 2, 4):
+                logs = root / str(jobs)
+                runner = check_quality.Runner(root, logs, jobs)
+                commands = [check_quality.AnalysisCommand(
+                    [sys.executable, "-c", "import os,sys; print(os.getcwd()); print(sys.argv[1])", token],
+                    root, "same-label",
+                ) for token in ("one space", "two", "three", "four")]
+                with contextlib.redirect_stdout(io.StringIO()):
+                    runner.run_analysis(commands)
+                outputs = [path.read_text(encoding="utf-8").splitlines() for path in logs.glob("*.log")]
+                self.assertEqual(len(outputs), 4)
+                self.assertEqual({output[1] for output in outputs}, {item.command[-1] for item in commands})
+                self.assertTrue(all(Path(output[0]).resolve() == root.resolve() for output in outputs))
+
+    def test_worker_limit_allows_overlap_without_exceeding_the_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = check_quality.Runner(root, root / "logs", 2)
+            barrier = threading.Barrier(2, timeout=5)
+            lock = threading.Lock()
+            active = peak = 0
+
+            def command(arguments, **kwargs):
+                nonlocal active, peak
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                try:
+                    barrier.wait()
+                    return subprocess.CompletedProcess(arguments, 0, stdout=arguments[-1] + "\n")
+                finally:
+                    with lock:
+                        active -= 1
+
+            commands = [check_quality.AnalysisCommand(["tool", str(i)], root, f"analysis-{i}") for i in range(4)]
+            with patch.object(check_quality.subprocess, "run", side_effect=command), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                runner.run_analysis(commands)
+            self.assertEqual(peak, 2)
+            self.assertEqual(active, 0)
+            self.assertEqual(len(list(runner.log_dir.glob("*.log"))), 4)
+
+    def test_all_findings_are_observed_before_parallel_analysis_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = check_quality.Runner(root, root / "logs", 2)
+            barrier = threading.Barrier(2, timeout=5)
+
+            def command(arguments, **kwargs):
+                status = int(arguments[-1])
+                if status:
+                    barrier.wait()
+                return subprocess.CompletedProcess(arguments, status, stdout=f"status {status}\n")
+
+            commands = [check_quality.AnalysisCommand(["tool", str(i)], root, f"analysis-{i}") for i in (7, 9, 0)]
+            with patch.object(check_quality.subprocess, "run", side_effect=command), \
+                 contextlib.redirect_stdout(io.StringIO()), self.assertRaises(check_quality.QualityError) as failure:
+                runner.run_analysis(commands)
+            self.assertIn("exit code 7", str(failure.exception))
+            self.assertIn("exit code 9", str(failure.exception))
+            self.assertEqual(len(list(runner.log_dir.glob("*.log"))), 3)
+
+    def test_launch_failure_is_logged_and_cannot_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = check_quality.Runner(root, root / "logs", 2)
+            commands = [check_quality.AnalysisCommand(
+                [str(root / "missing-tool")], root, "missing-tool",
+            )]
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(check_quality.QualityError):
+                runner.run_analysis(commands)
+            self.assertIn("could not start command", (runner.log_dir / "01-missing-tool.log").read_text())
+
+
+class DependencyContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = SCRIPT_PATH.parent.parent
+        registry = "registry+https://github.com/rust-lang/crates.io-index"
+        self.core = {
+            "id": "core", "name": "film-juicer-core",
+            "manifest_path": str(self.root / "rust/film-juicer-core/Cargo.toml"),
+            "links": None, "targets": [{"kind": ["lib"]}],
+            "dependencies": [
+                {"name": name, "kind": None, "source": registry}
+                for name in ("libm", "serde", "serde_json")
+            ],
+        }
+        self.plugin = {
+            "id": "plugin", "name": "film-juicer-plugin",
+            "manifest_path": str(self.root / "rust/film-juicer-plugin/Cargo.toml"),
+            "links": None, "targets": [{"kind": ["staticlib"]}],
+            "dependencies": [{
+                "name": "film-juicer-core", "kind": None,
+                "path": str(self.root / "rust/film-juicer-core"),
+            }],
+        }
+        self.metadata = {
+            "packages": [self.core, self.plugin, *[
+                {"id": name, "name": name, "source": registry}
+                for name in ("libm", "serde", "serde_json")
+            ]],
+            "workspace_members": ["core", "plugin"],
+            "resolve": {"nodes": [
+                {"id": "core", "deps": [{"pkg": name} for name in ("libm", "serde", "serde_json")]},
+                {"id": "plugin", "deps": [{"pkg": "core"}]},
+            ]},
+        }
+
+    def test_current_dependencies_pass(self) -> None:
+        check_quality.check_dependency_contract(self.root, self.metadata)
+
+    def test_inactive_renamed_dependency_is_not_hidden(self) -> None:
+        self.core["dependencies"].append({
+            "name": "cuda-sys", "rename": "tables", "kind": None,
+            "target": "cfg(windows)", "optional": True,
+        })
+        with self.assertRaisesRegex(check_quality.QualityError, "direct dependencies"):
+            check_quality.check_dependency_contract(self.root, self.metadata)
+
+    def test_native_build_hooks_and_links_are_rejected(self) -> None:
+        for index in (0, 1):
+            for field, value in (("links", "cuda"), ("targets", [{"kind": ["custom-build"]}])):
+                with self.subTest(member=index, field=field):
+                    metadata = copy.deepcopy(self.metadata)
+                    metadata["packages"][index][field] = value
+                    with self.assertRaisesRegex(check_quality.QualityError, "belong to CMake"):
+                        check_quality.check_dependency_contract(self.root, metadata)
+
+    def test_build_or_dev_dependency_requires_contract_change(self) -> None:
+        for kind in ("build", "dev"):
+            self.core["dependencies"][0]["kind"] = kind
+            with self.subTest(kind=kind), self.assertRaisesRegex(check_quality.QualityError, "unapproved"):
+                check_quality.check_dependency_contract(self.root, self.metadata)
+
+    def test_plugin_cannot_select_another_core(self) -> None:
+        self.plugin["dependencies"][0]["path"] = str(self.root / "alternate-core")
+        with self.assertRaisesRegex(check_quality.QualityError, "workspace core by path"):
+            check_quality.check_dependency_contract(self.root, self.metadata)
+
+    def test_local_registry_patch_is_not_hidden(self) -> None:
+        self.metadata["packages"][2]["source"] = None
+        with self.assertRaisesRegex(check_quality.QualityError, "source override: libm"):
+            check_quality.check_dependency_contract(self.root, self.metadata)
+
+    def test_new_workspace_member_requires_contract_change(self) -> None:
+        self.metadata["workspace_members"].append("libm")
+        with self.assertRaisesRegex(check_quality.QualityError, "only the core and plugin"):
+            check_quality.check_dependency_contract(self.root, self.metadata)
+
+
+class CudaQualityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory(prefix="cuda quality ")
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+        self.build = self.root / "out/build/linux-debug"
+        self.build.mkdir(parents=True)
+        self.policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+        self.nvcc = self.root / "cuda/bin" / ("nvcc.exe" if os.name == "nt" else "nvcc")
+        self.host = self.root / ("msvc/bin/Hostx64/x64/cl.exe" if os.name == "nt" else "gcc/bin/g++-13")
+        self.arguments = [
+            str(self.nvcc), "-forward-unknown-to-host-compiler", f"-ccbin={self.host}",
+            "-DJUICER_DIAGNOSTICS_COMPILED=1", "-I../../include with spaces",
+            "-isystem", "../../third party", '-DLABEL="a b"', "-UOLD", "-DOLD=2",
+            "-std=c++20", "--generate-code=arch=compute_75,code=[sm_75]",
+            "--generate-code=arch=compute_75,code=[compute_75]",
+        ]
+        self.arguments += (
+            ["--cudart=hybrid", "-Xcompiler= /EHsc", "-Xcompiler= -Ob0 -Od",
+             "-Xcompiler=-MD", "-Xcompiler=-Fdobject.dir/,-FS"]
+            if os.name == "nt" else ["-Xcompiler=-fPIE", "-Xcompiler=-fvisibility=hidden"]
+        )
+        self.arguments += ["-x", "cu", "-c", str(self.root / "src/kernel.cu"), "-o", "kernel.o"]
+
+    def entry(self, arguments: list[str] | None = None) -> check_quality.CompilationEntry:
+        args = self.arguments if arguments is None else arguments
+        command = subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
+        return check_quality.CompilationEntry("src/kernel.cu", command, self.build, tuple(args))
+
+    def write_source(self, name: str, text: str) -> None:
+        destination = self.root / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(text, encoding="utf-8")
+
+    def test_platform_command_parser_preserves_attached_quotes_and_backslashes(self) -> None:
+        entry = self.entry()
+        self.assertEqual(check_quality.split_compiler_command(entry.command), entry.arguments)
+
+    def test_arguments_database_retains_working_directory_and_quoted_values(self) -> None:
+        entry = self.entry()
+        (self.build / "compile_commands.json").write_text(json.dumps([{
+            "directory": str(self.build), "file": "../../../src/kernel.cu",
+            "arguments": list(entry.arguments), "command": "this command must not be parsed",
+        }]), encoding="utf-8")
+        actual = check_quality.compilation_entries(self.root, "linux-debug")
+        self.assertEqual(actual[0].arguments, entry.arguments)
+        self.assertEqual(actual[0].directory, self.build)
+        self.assertEqual(actual[0].path, "src/kernel.cu")
+
+    def test_translation_preserves_ordered_preprocessor_inputs_and_host_semantics(self) -> None:
+        nvcc, host, arguments = check_quality.cuda_frontend_arguments(self.root, self.entry())
+        self.assertEqual(nvcc, self.nvcc)
+        self.assertEqual(host, self.host)
+        expected = ["-D", "JUICER_DIAGNOSTICS_COMPILED=1", "-I", "../../include with spaces",
+                    "-isystem", "../../third party", "-D", 'LABEL="a b"', "-U", "OLD", "-D", "OLD=2"]
+        start = arguments.index("-D")
+        self.assertEqual(arguments[start:start + len(expected)], expected)
+        self.assertIn("-std=c++20", arguments)
+        self.assertIn("-xcuda", arguments)
+        self.assertIn("--cuda-gpu-arch=sm_75", arguments)
+        self.assertIn(f"--cuda-path={self.nvcc.parent.parent}", arguments)
+        if os.name == "nt":
+            self.assertIn("-fms-runtime-lib=dll", arguments)
+            self.assertIn("-fdelayed-template-parsing", arguments)
+        else:
+            self.assertIn("-fPIE", arguments)
+            self.assertIn("-fvisibility=hidden", arguments)
+        self.assertFalse(any(argument.startswith("-Wno-") for argument in arguments))
+
+    def test_release_definition_and_optimization_are_taken_from_database(self) -> None:
+        args = [arg.replace("JUICER_DIAGNOSTICS_COMPILED=1", "JUICER_DIAGNOSTICS_COMPILED=0")
+                for arg in self.arguments]
+        args += ["-O3", "-Xptxas=-O3"]
+        if os.name == "nt":
+            args += ["-Xcompiler=/EHsc,/O2,/Oi,/Ob2,/Gy,/Gw,/GF"]
+        _, _, frontend = check_quality.cuda_frontend_arguments(self.root, self.entry(args))
+        self.assertIn("JUICER_DIAGNOSTICS_COMPILED=0", frontend)
+        self.assertNotIn("JUICER_DIAGNOSTICS_COMPILED=1", frontend)
+        self.assertIn("-O3", frontend)
+
+    def test_unknown_or_incomplete_options_fail_instead_of_weakening_analysis(self) -> None:
+        cases = [
+            self.arguments + ["--use_fast_math"],
+            self.arguments + ["@flags.rsp"],
+            self.arguments + ["-Xcompiler=-fno-exceptions"],
+            self.arguments + ["-I"],
+            [arg.replace("c++20", "c++17") for arg in self.arguments],
+            [arg.replace("compute_75", "compute_86") for arg in self.arguments],
+            [arg for arg in self.arguments if not arg.startswith("-ccbin=")],
+            [arg.replace("kernel.cu", "other.cu") for arg in self.arguments],
+            [str(self.root / "other/src/kernel.cu") if arg == str(self.root / "src/kernel.cu") else arg
+             for arg in self.arguments],
+        ]
+        for args in cases:
+            with self.subTest(args=args), self.assertRaises(check_quality.QualityError):
+                check_quality.cuda_frontend_arguments(self.root, self.entry(args))
+
+    def test_headers_select_transitive_cuda_and_cpp_owners_without_duplicates(self) -> None:
+        self.write_source("src/shared.h", "#pragma once\n")
+        self.write_source("src/kernel.cuh", '#include "shared.h"\n')
+        self.write_source("src/kernel.cu", '#include "kernel.cuh"\n')
+        self.write_source("src/host.cpp", '#include <shared.h>\n')
+        entries = [self.entry(), self.entry(), check_quality.CompilationEntry("src/host.cpp", "c++")]
+        self.assertEqual(check_quality.tidy_translation_units(
+            self.root, ["src/shared.h"], entries, self.policy,
+        ), ["src/host.cpp", "src/kernel.cu"])
+        self.assertEqual(check_quality.tidy_translation_units(
+            self.root, ["src/kernel.cuh", "src/kernel.cu"], entries, self.policy,
+        ), ["src/kernel.cu"])
+
+    def test_missing_cuda_source_or_header_owner_fails(self) -> None:
+        for source in ["src/missing.cu", "src/missing.cuh"]:
+            with self.subTest(source=source), self.assertRaises(check_quality.QualityError):
+                check_quality.tidy_translation_units(self.root, [source], [self.entry()], self.policy)
+
+    def test_native_dispatch_checks_all_cuda_variants_and_propagates_findings(self) -> None:
+        self.write_source("src/kernel.cuh", "#pragma once\n")
+        self.write_source("src/kernel.cu", '#include "kernel.cuh"\n')
+        entries = [self.entry(), self.entry(self.arguments + ["-DTEST_VARIANT=1"])]
+        runner = Mock()
+        runner.run.side_effect = ["clang-format version 22.1.8", "LLVM version 22.1.8", "", ""]
+        arguments = argparse.Namespace(clang_format=None, clang_tidy=None, preset="linux-debug")
+        with patch.object(check_quality, "resolve_tool", return_value="tool"), \
+             patch.object(check_quality, "compilation_entries", return_value=entries), \
+             patch.object(check_quality, "prepare_cuda_analysis", side_effect=check_quality.QualityError("CUDA finding")) as cuda:
+            with self.assertRaisesRegex(check_quality.QualityError, "CUDA finding"):
+                check_quality.check_native(self.root, runner, arguments, ["src/kernel.cuh"], self.policy)
+        cuda.assert_called_once_with(self.root, runner, "tool", entries)
+        runner.run_analysis.assert_not_called()
+
+    def test_overlay_retains_vendor_implementation_and_license(self) -> None:
+        root = SCRIPT_PATH.parent.parent
+        vendor = (root / "third_party/openrand/util.h").read_text(encoding="utf-8")
+        overlay = check_quality.prepare_cuda_overlay(root, self.root / "logs")
+        self.assertEqual((overlay / "openrand/util.h").read_text(encoding="utf-8"),
+                         vendor.replace("#ifdef __CUDA_ARCH__\n", "#if defined(__CUDACC__)\n"))
+        self.assertTrue((overlay / "texture_fetch_functions.h").is_file())
+        self.write_source("third_party/openrand/util.h", "// changed attribute guard\n")
+        with self.assertRaisesRegex(check_quality.QualityError, "guard changed"):
+            check_quality.prepare_cuda_overlay(self.root, self.root / "logs")
+
+    def test_cuda_invocation_keeps_variants_config_warnings_and_compile_directory(self) -> None:
+        log_dir = self.root / "logs"
+        log_dir.mkdir()
+        runner = Mock(log_dir=log_dir)
+        library = self.root / "gcc/lib/libstdc++.so"
+        self.write_source("gcc/lib/libstdc++.so", "")
+        self.write_source("cuda/include/curand_mtgp32_kernel.h", "")
+        runner.run.side_effect = lambda command, **kwargs: {
+            "cuda-nvcc-version": "Cuda compilation tools, release 13.2, V13.2.86",
+            "cuda-host-version": "13.3.0", "cuda-host-library": str(library),
+        }.get(kwargs["label"], "")
+        entries = [self.entry(), self.entry(self.arguments + ["-DTEST_VARIANT=1"])]
+        with patch.object(check_quality, "prepare_cuda_overlay", return_value=log_dir), \
+             patch.dict(os.environ, {"VCToolsInstallDir": str(self.root / "msvc")}):
+            commands = check_quality.prepare_cuda_analysis(self.root, runner, "clang-tidy", entries)
+        self.assertEqual(len(commands), 2)
+        self.assertIn("TEST_VARIANT=1", commands[1].command)
+        for item in commands:
+            self.assertIn("--warnings-as-errors=*", item.command)
+            self.assertIn(f"--config-file={self.root / '.clang-tidy'}", item.command)
+            self.assertEqual(item.directory, self.build)
+        self.assertFalse(any(call.args[0][0] == "clang-tidy" for call in runner.run.call_args_list))
+        receipt = json.loads((log_dir / "cuda-command-1.json").read_text(encoding="utf-8"))
+        self.assertEqual(receipt["nvcc_arguments"], self.arguments)
+
+    def test_missing_curand_is_an_actionable_failure(self) -> None:
+        runner = Mock(log_dir=self.root / "logs")
+        runner.run.return_value = "Cuda compilation tools, release 13.2, V13.2.86"
+        with patch.object(check_quality, "prepare_cuda_overlay", return_value=self.root):
+            with self.assertRaisesRegex(check_quality.QualityError, "cuRAND development headers"):
+                check_quality.prepare_cuda_analysis(self.root, runner, "clang-tidy", [self.entry()])
+        self.assertEqual(runner.run.call_count, 1)
 
 
 class SourceHygieneTests(unittest.TestCase):

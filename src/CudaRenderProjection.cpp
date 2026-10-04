@@ -503,7 +503,7 @@ namespace {
 } // namespace
 
 FjRenderOutcome JuicerCuda::project_and_render(
-    NativeCall& call, const RenderRecipe& recipe, const FocusedRenderPayload& payload, const ExecutionFrame& frame, const FjFrame& rawFrame, const ResourceManager::SubmissionSnapshot& snapshot, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback, std::string& diagnostic) {
+    NativeCall& call, const RenderRecipe& recipe, const FocusedRenderPayload& payload, const ExecutionFrame& frame, const FjFrame& rawFrame, const ResourceManager::SubmissionSnapshot& snapshot, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback, const StaticNoiseInput* noise, const std::exception_ptr& noiseFailure, std::string& diagnostic) {
     try {
         diagnostic.clear();
         JuicerCuda::PreparedDescriptors preparedDescriptors = JuicerCuda::describe_execution(recipe, payload, frame);
@@ -530,15 +530,15 @@ FjRenderOutcome JuicerCuda::project_and_render(
                 return {{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, 0};
             }
         }
-        std::shared_ptr<const JuicerAssets::StaticNoisePayloadSet> noiseOwner;
-        JuicerCuda::StaticNoiseInput noise;
         if (recipe.visualGrain.active) {
-            noiseOwner = JuicerProcess::root().assets().static_noise_payloads();
-            if (!noiseOwner) {
-                diagnostic = "MissingRequiredResource phase=grain_static field=payloads";
-                return {{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, 0};
+#if defined(JUICER_NOISE_TEST_HOOK)
+            JuicerAssets::NoiseTest::projection_step();
+#endif
+            if (noiseFailure) {
+                std::rethrow_exception(noiseFailure);
             }
-            if (!JuicerCuda::build_static_noise_input(*noiseOwner, noise, diagnostic)) {
+            if (!noise) {
+                diagnostic = "MissingRequiredResource phase=grain_static field=noise";
                 return {{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, 0};
             }
         }
@@ -562,7 +562,7 @@ FjRenderOutcome JuicerCuda::project_and_render(
             prepared.output_color.gamut_table_hash = focused.outputGamut.tableHash;
         }
         if (recipe.visualGrain.active) {
-            prepared.noise = {project(noise.stbn), noise.stbnWidth, noise.stbnHeight, noise.stbnFrames, project(noise.wangTiles), project(noise.wangLut), noise.wangWidth, noise.wangHeight, static_cast<std::size_t>(noise.wangCount), noise.wangColors};
+            prepared.noise = {project(noise->stbn), noise->stbnWidth, noise->stbnHeight, noise->stbnFrames, project(noise->wangTiles), project(noise->wangLut), noise->wangWidth, noise->wangHeight, static_cast<std::size_t>(noise->wangCount), noise->wangColors};
         }
         const auto& meter = frame.autoExposureDescriptor;
         prepared.auto_exposure = {{meter.sourceX1, meter.sourceY1, meter.sourceX2, meter.sourceY2},

@@ -602,8 +602,8 @@ fn successful_hits_share_payloads_without_reparsing() {
     assert!(Arc::ptr_eq(&film, &reused_film));
     assert!(Arc::ptr_eq(&print, &reused_print));
     assert_eq!(
-        film.tables().source_log_exposure().as_ptr(),
-        reused_film.tables().source_log_exposure().as_ptr()
+        film.tables().authored_log_exposure().as_ptr(),
+        reused_film.tables().authored_log_exposure().as_ptr()
     );
     assert_eq!(
         print.tables().density_curves().as_ptr(),
@@ -738,7 +738,7 @@ fn handles_survive_release_and_owner_drop_with_fresh_reacquisition() {
     assert!(released_print.upgrade().is_none());
     drop(assets);
     assert_eq!(tokens, (film.asset_token(), print.asset_token()));
-    assert_eq!(film.tables().source_log_exposure(), &[-1.0, 0.0, 1.0]);
+    assert_eq!(film.tables().authored_log_exposure(), &[-1.0, 0.0, 1.0]);
     assert_eq!(
         print.sample_density_curves(1.0).unwrap().totals()[1],
         [1.5; 3]

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::data_io::{
-    CsvPairs, CsvTriplets, ReadError, load_csv_pairs, load_csv_triplets, load_mallett_basis,
+    CsvPairs, CmfRows, ReadError, load_csv_pairs, load_cmf_csv, load_mallett_basis,
     load_spectra_lut,
 };
 use crate::data_io::calibration::{self, NeutralCalibration, load_neutral_calibration};
@@ -95,6 +95,8 @@ impl SpectraLut {
         &self.samples
     }
 
+    /// Decoded-sample resource fingerprint: canonical zero signs/NaNs, zero maps
+    /// to one. No path, metadata, profile evaluator version or NaN-mask stream.
     pub fn asset_hash(&self) -> u64 {
         self.asset_hash
     }
@@ -160,7 +162,7 @@ pub struct Assets {
     hanatos: OnceLock<Result<Arc<SpectraLut>, Arc<ReadError>>>,
     arctic: OnceLock<Result<Arc<SpectraLut>, Arc<ReadError>>>,
     mallett: OnceLock<Result<Arc<MallettBasis>, Arc<ReadError>>>,
-    cmf: OnceLock<Result<Arc<CsvTriplets>, Arc<ReadError>>>,
+    cmf: OnceLock<Result<Arc<CmfRows>, Arc<ReadError>>>,
     csv_sources: [Mutex<Option<Arc<CsvPairs>>>; 7],
     calibration: Mutex<Option<CalibrationSnapshot>>,
     noise: Mutex<Option<NoiseSnapshot>>,
@@ -237,8 +239,8 @@ impl Assets {
     }
 
     /// Decoded CMF source rows; the first complete outcome lasts for this owner.
-    pub fn cmf(&self) -> Result<Arc<CsvTriplets>, AssetError> {
-        self.cmf_with(|path| load_csv_triplets(path).map(Arc::new))
+    pub fn cmf(&self) -> Result<Arc<CmfRows>, AssetError> {
+        self.cmf_with(|path| load_cmf_csv(path).map(Arc::new))
     }
 
     /// Cache successful source rows only. A later explicit request may retry a failure.
@@ -264,8 +266,8 @@ impl Assets {
 
     fn cmf_with(
         &self,
-        load: impl FnOnce(&Path) -> Result<Arc<CsvTriplets>, ReadError>,
-    ) -> Result<Arc<CsvTriplets>, AssetError> {
+        load: impl FnOnce(&Path) -> Result<Arc<CmfRows>, ReadError>,
+    ) -> Result<Arc<CmfRows>, AssetError> {
         if self.cmf.get().is_none() {
             let prepared = load(&self.resource_dir.join("cie1931_2deg.csv")).map_err(Arc::new);
             drop(self.cmf.set(prepared));
@@ -609,7 +611,7 @@ mod tests {
         load_spectra, nonzero_asset_hash,
     };
     use crate::data_io::{
-        ReadError, ReadErrorKind, load_csv_pairs, load_csv_triplets, load_mallett_basis,
+        ReadError, ReadErrorKind, load_csv_pairs, load_cmf_csv, load_mallett_basis,
         load_spectra_lut,
     };
     use crate::data_io::calibration::load_neutral_calibration;
@@ -657,7 +659,7 @@ mod tests {
             let assets = &assets;
             let attempt = scope.spawn(move || {
                 assets.cmf_with(|path| {
-                    let candidate = Arc::new(load_csv_triplets(path)?);
+                    let candidate = Arc::new(load_cmf_csv(path)?);
                     ready_tx.send(Arc::downgrade(&candidate)).unwrap();
                     resume_rx.recv_timeout(WAIT).unwrap();
                     Ok(candidate)
@@ -685,7 +687,7 @@ mod tests {
                         ready_tx.send(()).unwrap();
                         resume_rx.recv_timeout(WAIT).unwrap();
                         if error_first {
-                            load_csv_triplets(path).map(Arc::new)
+                            load_cmf_csv(path).map(Arc::new)
                         } else {
                             Err(ReadError {
                                 path: path.to_owned(),
@@ -890,6 +892,26 @@ mod tests {
     }
 
     #[test]
+    fn reported_noise_io_oom_is_an_ordinary_error_snapshot() {
+        for open in [false, true] {
+            let assets = assets();
+            let Err(AssetError::Noise(first)) =
+                assets.noise_with(|root| Err(noise::test_support::io_oom_error(root, open)))
+            else {
+                panic!("I/O OOM expected");
+            };
+            let Err(AssetError::Noise(second)) =
+                assets.noise_with(|_| panic!("ordinary I/O OOM must stay cached"))
+            else {
+                panic!("cached I/O OOM expected");
+            };
+            assert!(Arc::ptr_eq(&first, &second));
+            assets.release_cached_payloads().unwrap();
+            assert!(assets.noise().is_ok());
+        }
+    }
+
+    #[test]
     fn noise_capacity_failure_retries_without_release() {
         let assets = assets();
         let error = assets
@@ -1085,6 +1107,35 @@ mod tests {
         for hash in [1, 0x81ebefd4e4cc9926, 0x9262ffb765e3289e, u64::MAX] {
             assert_eq!(nonzero_asset_hash(hash), hash);
         }
+    }
+
+    #[test]
+    fn spectral_source_capacity_receipt() {
+        let assets = assets();
+        for (name, lut) in [
+            ("hanatos", assets.hanatos().unwrap()),
+            ("arctic", assets.arctic().unwrap()),
+        ] {
+            assert_eq!(lut.samples.len(), 192 * 192 * 81);
+            assert_eq!(lut.samples.capacity(), lut.samples.len());
+            println!(
+                "source {name}: length={} capacity={} requested_sample_bytes={} inline_payload_bytes={} Arc_handle_bytes={} live_strong_holds={}",
+                lut.samples.len(),
+                lut.samples.capacity(),
+                lut.samples.capacity() * size_of::<f32>(),
+                size_of::<SpectraLut>(),
+                size_of::<Arc<SpectraLut>>(),
+                Arc::strong_count(&lut)
+            );
+        }
+        let mallett = assets.mallett().unwrap();
+        println!(
+            "source mallett: fixed_rows={} fixed_sample_bytes={} Arc_handle_bytes={} live_strong_holds={}",
+            mallett.len(),
+            size_of::<[[f32; 3]; 81]>(),
+            size_of::<Arc<[[f32; 3]; 81]>>(),
+            Arc::strong_count(&mallett)
+        );
     }
 
     #[test]

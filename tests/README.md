@@ -126,6 +126,38 @@ On a normal GPU development machine, prefer the single unfiltered command.
 Labels are for CI, machines without a GPU, and focused diagnosis; they are not
 additional passes that must be run after the full suite.
 
+During implementation, build the affected test targets and run only the owning
+cases needed to check the current edit. Run new compiled cases on Linux and
+Windows early so platform-specific compilation, lifetime or diagnostic issues
+are found before the final matrix. For example, quality-tool changes can start
+with these short development checks in each native Python environment:
+
+```sh
+python -m unittest discover -s tests/quality -p test_check_quality.py -v
+python -m unittest discover -s tests/ctest -p test_report.py -v
+```
+
+Once the candidate is stable, run one unfiltered suite per applicable preset.
+Do not precede it with another broad focused pass solely to produce a separate
+receipt. Record focused-domain results from that same full-suite JUnit report:
+
+```sh
+ctest --preset linux-debug --parallel 4 --output-junit out/validation/linux-debug/ctest.xml
+ctest --preset linux-debug -R 'Quality.Dispatcher|Ctest.Host.Report' --show-only=json-v1 > out/validation/linux-debug/focused-tests.json
+python tests/ctest/report.py --junit out/validation/linux-debug/ctest.xml --inventory out/validation/linux-debug/focused-tests.json > out/validation/linux-debug/focused-summary.json
+```
+
+Use the required owning-domain selection and corresponding preset/campaign
+paths. `--show-only` lists tests without executing them. The report command fails
+for an empty selection, missing required case, failure, skip or malformed input;
+its output explicitly identifies evidence extracted from the full run. It does
+not replace checking the full CTest exit status. Keep inventory and report tied
+to the same candidate/configuration; neither an older report nor a result from
+another preset qualifies the current build. Preserve separately required
+reference captures, transition checkpoints and production Release isolation.
+When redirecting the inventory in Windows PowerShell 5, use `Set-Content
+-Encoding utf8` so the JSON is UTF-8 rather than PowerShell's default UTF-16.
+
 `host` means execution does not require an NVIDIA driver or device. It still
 requires the CUDA 13.2 toolkit to configure/build and may load toolkit runtime
 libraries. `gpu` means the executable loader or the case itself needs the
@@ -160,8 +192,13 @@ cmake --build --preset linux-debug
 | `grain/delta_fusion_test.cu` | Grain output against a separate FP32 blur/accumulation/delta oracle, including finite sanitation and final-layer dispatch | `gpu` |
 | `dir/exposure_cache_test.cpp` | Source-pass versus separate-pass log-exposure caches and final capture density through production CUDA operators | `gpu` |
 | `gamma/test_compare.py` | Comparator bounds, applicability, non-finite rejection and CLI failure propagation | `host` |
-| `quality/test_check_quality.py` | Quality dispatcher selection, source hygiene, and failure propagation | `host` |
+| `quality/test_check_quality.py` | Quality dispatcher selection, CUDA command translation and header owners, source hygiene, and failure propagation | `host` |
+| `ctest/test_report.py` | Focused evidence extraction from full-suite JUnit, including missing, failed, skipped and malformed-input rejection | `host` |
 | `quality/test_rust_naming.py` | Product naming-policy contract: current Rust code, accepted names, individually rejected names, test targets, and reasoned foreign-name exceptions under the actual workspace lints | `host`; pinned Cargo and Clippy required |
+| `quality/test_rust_boundaries.py` | Dependency/build contract and compiler-enforced profile/CSV privacy, borrowed-view lifetimes and safe-module prohibitions, with valid consumer controls | `host`; pinned Cargo required |
+| `ffi/spectral_owner_test.cpp`, `ffi/spectral_bootstrap_test.cpp` | Production spectral ABI, independent native copies, fail-closed bootstrap, selected computation and measured lifetime/capacity checks | `host` |
+| `ffi/illuminant_calibration_test.cpp` | Closed CSV ABI, independent seven-curve captures, retained snapshots, selected CMY calibration and actual read/probe allocation transport through native recipes | `host` |
+| `ffi/test_native_boundary.py` | Native operation/host/context boundaries and retired profile authority, including new nested source/header and forbidden-symbol controls | `host` |
 | `ofx/probe.py` | Linux synthetic OFX load/describe/unload and captured describe properties; no parameter varargs or render | `host`, Linux only |
 | `ofx/processor_reference_test.cpp` | Native OFX image/property seam driving the current CUDA processor for four routes, a combined optics/grain/print case, and signed-zero print transitions | `gpu` |
 | `ofx/adapter_trace_test.cpp` | Genuine native OFX parameter/image fixture driving the actual `JuicerEffect` event and render callbacks through time, seek, preset/reset, undo/redo-like, and invalid/recovery sequences | `gpu` |
@@ -178,6 +215,25 @@ the normal configured build supplies cached dependencies. Logs remain in the
 artifact directory after temporary workspace cleanup. Run it with
 `ctest --preset <preset> -R '^Quality.RustNaming$' --output-on-failure`, or use
 the quality dispatcher, which supplies the same tool and artifact environment.
+
+`Quality.RustBoundaries` uses one temporary workspace per run and reuses its Cargo
+cache across compiler probes. It removes that workspace on completion and keeps
+logs under `out/validation/<preset>/quality/rust-boundaries/`. Run
+`ctest --preset <preset> -R '^Quality.RustBoundaries$' --output-on-failure` or the
+quality dispatcher. Cargo is offline and locked; the configured build supplies
+the dependencies. Each negative fixture in `quality/fixtures/rust_boundaries/`
+must fail for its expected compiler code at its own source location, not because
+of missing tooling or an unrelated error. These are product API contracts, not
+external numerical references. Valid use runs with and without `test-support`;
+both development and release profiles are checked. The probes compile without
+linking or executing native CUDA calls.
+
+Add construction/lifetime probes as the corresponding real API lands. Put
+identity, reuse, conversion and failure-transition cases in the owning domain's
+existing tests, using independent expected values. After a completed cutover,
+extend `Ffi.Host.NativeBoundary` for concrete retired symbols/dependencies and
+add accepted/rejected controls. Do not replace contextual ownership review with
+function-size limits, generic source parsers or an expanding exception baseline.
 
 The diffusion fixture is an external reference. The scatter binary fixture is
 also an external reference with revision, shape, channel order and numerical
@@ -340,10 +396,17 @@ first to `out/validation/`.
 - The build still requires CUDA 13.2 even for `-L host`; a toolkit-free C++
   mode is outside this consolidation.
 - Standard public CI runs Linux and Windows Debug host selections plus the
-  tracked native/Rust quality and Python checks. Both lanes compile against
-  CUDA 13.2 but expose no NVIDIA device and run no `gpu` tests. GPU,
-  installed-Resolve-library, and Resolve-render evidence are reported
-  separately.
+  tracked native/CUDA/Rust quality and Python checks. Both lanes install and
+  verify the cuRAND and CCCL headers required by Clang's CUDA frontend. The
+  `linux-debug-quality` and `windows-debug-quality` artifacts retain quality
+  logs, translated CUDA commands, and the compilation database even on failure.
+  Both lanes compile against CUDA 13.2 but expose no NVIDIA device and run no
+  `gpu` tests. The host selection automatically includes
+  `Ofx.Host.RenderAssertions`, which checks rejection of corrupted pixels,
+  non-finite samples, changed identities/seeds, alpha, padding, and execution
+  bits. CUDA pixel fixtures and accepted-capture comparisons run in the `gpu`
+  selection. GPU, installed-Resolve-library, and Resolve-render evidence are
+  reported separately.
 - The historical gamma capture baseline remains deferred because its resource
   inventory and `Release`/`Release-Clang` identities do not establish current
   four-preset applicability. Two G09 captures are configuration-invalid and
@@ -462,13 +525,15 @@ extent and attachment constraints, and accepted direct/print scratch generations
 These are product contracts and need no device at runtime.
 
 `Ffi.Gpu.PreparedBoundary.*` links a fixture-only C caller into the native executor.
-It compares all seven processor characterization rows against their immutable
-platform fixtures and requires bit-exact direct/C results. Each case starts a fresh
-process and native owner, calls the C boundary before any other render to exercise
-cold uploads, then repeats with warm resources and calls the direct executor. It
-never resets the CUDA context. Production callbacks now project their immutable
-state into the same admitted native C-boundary render body. The prepared-boundary
-comparisons cover numerical parity; the separate render-contract, owner/terminal,
+It checks bit-exact equivalence between cold/warm C-boundary execution, the direct
+executor and the processor adapter for all seven scenarios. Each case starts a
+fresh process and native owner, calls the C boundary before any other render to
+exercise cold uploads, then repeats with warm resources and calls the other paths.
+Independent numerical expectations are checked separately by
+`Ofx.Gpu.ProcessorReference` and `Ofx.Gpu.AcceptedCudaCaptures`, so a baseline-image
+failure cannot prevent the path-equivalence checks from running. No case resets
+the CUDA context. Production callbacks project their immutable state into the same
+admitted native C-boundary render body. The separate render-contract, owner/terminal,
 and processor-cutover cases cover admission, borrowed-storage expiry, and callback
 lifecycle behavior. See the FFI guide for their scope and remaining host evidence.
 
@@ -480,3 +545,34 @@ the failed and unprocessed entries charged and discoverable; explicit subsequent
 drains reach zero without disturbing the unrelated context. The storage case
 rejects C++ allocation during extraction and restoration, and ordinary failure
 uses a real context mismatch. Only fixture-created contexts are destroyed.
+
+The `Ffi.Host.ProductionProfileOwner` group qualifies the production film/print
+and owned gamma ABI independently of the feature-only C7 fixture interface. It
+also exercises cold-conversion races, same-source print leases, memory capacities,
+typed profile illuminants, canonical computational axes and consuming Hanatos
+window behavior. `Ffi.Host.CudaTerminal.host-cache-failure` and
+`.host-cache-native-precedence` cover fallible host cleanup publication and native
+close precedence. These host-runtime groups require the normal CUDA build tools
+but perform no driver/device operation.
+
+The OFX render baselines now follow the accepted Rust density policy. See
+[CUDA render baselines](ofx/README.md#cuda-render-baselines) for exact accepted
+capture samples, independently derived procedural CUDA fixtures, strict pixel
+limits and finite checks, exact identity/seed expectations, negative controls,
+and separate lifecycle/boundary CTest processes. Ordinary runs do not generate
+or update expectations.
+
+
+`Ffi.Host.NoiseOwner` qualifies the complete production noise owner and the
+single fixture facade: borrowed spans, cache/Assets expiry, concurrent readers,
+consume-once release, cleared failures, native paths and layout/signatures.
+`Ofx.Gpu.NoiseSourceLifetime` checks the actual direct/print caller's acquisition
+before NativeCall, same-thread reentry rejection, deferred error precedence,
+cancellation and release after gate/recovery scopes. Its scope observations use
+the calling thread's actual NativeCall lifetime. Grain upload failure cases also
+retain the source through abort/recovery. `Resource.Gpu.PinnedUpload` includes a
+Rust noise owner released while the native staging transfer is still pending.
+The prepared-boundary fixture acquires through the same safe Rust source via the
+test facade and asserts that supplied views cause no fallback acquisition.
+These seams exist only in test objects/test-support; normal Release has none.
+Installed Resolve and actual driver/context-loss acceptance remain separate.

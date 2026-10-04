@@ -283,8 +283,21 @@ void JuicerProcessor::processImagesCUDA() {
     FjCudaContext inspected{};
     std::array<char, 512> inspectionMessage{};
     FjErrorBuffer inspectionError{inspectionMessage.data(), inspectionMessage.size(), 0};
+    std::optional<JuicerAssets::NoiseSource> noiseSource;
+    JuicerCuda::StaticNoiseInput noise;
+    std::exception_ptr noiseFailure;
+    FjCuda* nativeOwner = JuicerCuda::borrowed_owner();
+    if (focusedRecipe && focusedRecipe->visualGrain.active) {
+        JuicerCuda::check_native_call_admission(nativeOwner);
+        try {
+            noiseSource.emplace(JuicerProcess::root().assets().noise());
+            noise = noiseSource->view();
+        } catch (...) {
+            noiseFailure = std::current_exception();
+        }
+    }
     std::optional<JuicerCuda::NativeCall> nativeCall;
-    nativeCall.emplace(JuicerCuda::borrowed_owner());
+    nativeCall.emplace(nativeOwner);
     const auto inspection = nativeCall->inspect(&rawFrame, &inspected, &inspectionError);
     if (inspection.category != FJ_STATUS_SUCCESS) {
         JTRACE("CUDA", inspectionMessage.data());
@@ -517,8 +530,11 @@ void JuicerProcessor::processImagesCUDA() {
         },
         &abortAccess};
     const auto outcome = JuicerCuda::project_and_render(
-        *nativeCall, *focusedRecipe, directPayload ? *directPayload : *printPayload, frame, rawFrame, snapshot, pendingContextLossRecovery, abortCallback, diagnostic);
+        *nativeCall, *focusedRecipe, directPayload ? *directPayload : *printPayload, frame, rawFrame, snapshot, pendingContextLossRecovery, abortCallback, noiseSource ? &noise : nullptr, noiseFailure, diagnostic);
     nativeCall.reset();
+#if defined(JUICER_NOISE_TEST_HOOK)
+    JuicerAssets::NoiseTest::outcome(outcome.status);
+#endif
     if (!pendingContextLossRecovery.pending && outcome.status.category == FJ_STATUS_CONTEXT_LOSS) {
         pendingContextLossRecovery = {true, {outcome.status, diagnostic}, "native_render"};
     }

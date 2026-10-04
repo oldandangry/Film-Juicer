@@ -1,0 +1,24 @@
+{
+  "producer_head": "28764d7ab8ba11af79e8af5d266c147f586e3f7b",
+  "producer": "accepted native path builders in Illuminants.h; no candidate producer",
+  "order": [
+    "D65",
+    "D55",
+    "D50",
+    "T",
+    "K75P",
+    "TH-KG3",
+    "TH-KG3-L"
+  ],
+  "layout": "7 x (81 wavelength_nm u32 bits,81 linear u32 bits)",
+  "linux_sha256": "66ee8d82e65eaf17b3aea5ac48f517a3913a00ee3eeb09eaf18fd5711f843ddc",
+  "windows_sha256": "3e391640d1a0e4e0419974fbd9d90800bc4eee2f87a2255464a1ff7ce32dbe3f",
+  "cross_target_bit_differences": 0,
+  "commands": [
+    "g++-13 -std=c++20 -O0 -Isrc capture.cpp -o capture-native",
+    "clang-cl /std:c++20 /Od /MD /EHsc /Isrc capture.cpp",
+    "capture-native Resources derived-curves.bits"
+  ],
+  "harness_sha256": "0b50ce6db65187e9d41cc9fd7a588648fb0867ab669fee6c98eb6ab17f13c0da",
+  "classification": "Film-Juicer characterization captured from the accepted native producer before cutover; exact bit comparison, no invented tolerance"
+}

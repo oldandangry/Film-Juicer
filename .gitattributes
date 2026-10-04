@@ -61,6 +61,12 @@ CMakeLists.txt text
 
 *.csv text eol=lf
 
+# Preserve the original bytes of provenance-pinned CUDA pixel fixtures.
+tests/ofx/processor_rust_pixels_*.dat -text whitespace=cr-at-eol
+
+# Preserve the original bytes of platform-specific native illuminant captures.
+tests/ffi/fixtures/illuminants/*.bits -text whitespace=cr-at-eol
+
 # Preserve whitespace in byte-identifiable vendored dependency snapshots.
 third_party/nlohmann/LICENSE.MIT -whitespace
 third_party/ofxs/Legal/OFXS-LICENSE.txt -whitespace

@@ -1,4 +1,5 @@
 #include "integration_test.h"
+#include "../ofx/render_assertions.h"
 
 #include <algorithm>
 #include <array>
@@ -8,6 +9,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -34,6 +36,7 @@
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
+#include "../ffi/juicer_test_api.h"
 #include "ProfileAssets.h"
 #include "ScatterHalation.h"
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
@@ -604,6 +607,10 @@ namespace {
             "every active focused recipe must avoid the reserved zero identity");
     }
 
+    bool contains_text(const std::string& text, std::string_view expected) {
+        return text.find(expected) != std::string::npos;
+    }
+
     nlohmann::json load_json(const std::filesystem::path& path) {
         std::ifstream stream(path);
         if (!stream) {
@@ -625,29 +632,60 @@ namespace {
         }
     }
 
-    std::shared_ptr<const Profiles::ValidatedFilmProfile> load_scratch_profile(
-        const std::filesystem::path& path,
-        const std::string& key,
-        std::string& diagnostic) {
-        Spektrafilm::ProfileCatalogEntry entry;
-        entry.key = key;
-        entry.label = key;
-        entry.sourcePath = path.string();
+    class FilmProfileOwner {
+    public:
+        ~FilmProfileOwner() noexcept {
+            const FjStatus status = fj_test_film_profile_release(std::exchange(_owner, nullptr), nullptr);
+            if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0) {
+                std::fprintf(stderr, "profile fixture release failed: category=%u api=%u code=%d\n", status.category, status.api, status.native_code);
+                std::abort();
+            }
+        }
+        FilmProfileOwner() = default;
+        FilmProfileOwner(const FilmProfileOwner&) = delete;
+        FilmProfileOwner& operator=(const FilmProfileOwner&) = delete;
 
-        Spektrafilm::ProfileCatalog catalog;
-        catalog.valid = true;
-        catalog.filmProfiles.push_back(std::move(entry));
+        FjStatus load_profile_view(const std::filesystem::path& root, const std::string& key, std::string& diagnostic) {
+            const std::string path = root.generic_string();
+            std::array<char, 512> bytes{};
+            FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+            FjStatus status = fj_test_film_profile_acquire({path.data(), path.size()}, {key.data(), key.size()}, &_owner, &error);
+            if (status.category == FJ_STATUS_SUCCESS) {
+                status = fj_test_film_profile_view(_owner, &_view, &error);
+            }
+            // This object already owns any published handle if formatting throws.
+            diagnostic.assign(bytes.data(), error.length);
+            return status;
+        }
 
-        Profiles::ProfileAssetStore store;
-        return store.load_film_profile_by_key(catalog, key, &diagnostic);
-    }
+        const FjFilmFixtureView& view() const noexcept {
+            return _view;
+        }
+        bool has_owner() const noexcept {
+            return _owner != nullptr;
+        }
+
+    private:
+        FjFilmProfile* _owner = nullptr;
+        FjFilmFixtureView _view{};
+    };
 
     void run_profile_rows(const Arguments& arguments, Results& results) {
         const std::filesystem::path source =
             arguments.resourceRoot / "profiles" / "kodak_portra_400.json";
         const nlohmann::json completeProfile = load_json(source);
-        const std::filesystem::path profileRoot = arguments.scratchRoot / "profiles";
-        std::filesystem::create_directories(profileRoot);
+        const auto stage_profile = [&](const std::string& key, const nlohmann::json& profile) {
+            const auto root = arguments.scratchRoot / "profile-catalogs" / key;
+            std::filesystem::create_directories(root / "profiles");
+            for (const char* defaultKey : {"kodak_portra_400", "kodak_portra_endura"}) {
+                std::filesystem::copy_file(
+                    arguments.resourceRoot / "profiles" / (std::string(defaultKey) + ".json"),
+                    root / "profiles" / (std::string(defaultKey) + ".json"),
+                    std::filesystem::copy_options::overwrite_existing);
+            }
+            write_json(root / "profiles" / (key + ".json"), profile);
+            return root;
+        };
 
         struct Mapping {
             const char* use;
@@ -671,18 +709,17 @@ namespace {
             profile["info"]["name"] = key;
             profile["info"]["use"] = mapping.use;
             profile["info"]["antihalation"] = mapping.antihalation;
-            const std::filesystem::path path = profileRoot / (key + ".json");
-            write_json(path, profile);
-
+            const auto root = stage_profile(key, profile);
             std::string diagnostic;
-            const auto loaded = load_scratch_profile(path, key, diagnostic);
-            bool passed = loaded != nullptr;
-            if (loaded) {
+            FilmProfileOwner loaded;
+            const FjStatus status = loaded.load_profile_view(root, key, diagnostic);
+            bool passed = status.category == FJ_STATUS_SUCCESS;
+            if (passed) {
                 for (std::size_t channel = 0; channel < 3; ++channel) {
                     passed = passed &&
-                             float_bits(loaded->digest.halationFirstSigmaUm[channel]) ==
+                             float_bits(loaded.view().halation_first_sigma_um[channel]) ==
                                  float_bits(mapping.sigma) &&
-                             float_bits(loaded->digest.halationPrimaryAmount[channel]) ==
+                             float_bits(loaded.view().halation_primary_amount[channel]) ==
                                  float_bits(mapping.strength[channel]);
                 }
             }
@@ -698,22 +735,21 @@ namespace {
         defaulted["info"]["name"] = defaultedKey;
         defaulted["info"].erase("use");
         defaulted["info"].erase("antihalation");
-        const std::filesystem::path defaultedPath =
-            profileRoot / (defaultedKey + ".json");
-        write_json(defaultedPath, defaulted);
+        const auto defaultedRoot = stage_profile(defaultedKey, defaulted);
         std::string diagnostic;
-        const auto defaultedProfile =
-            load_scratch_profile(defaultedPath, defaultedKey, diagnostic);
-        results.record(
-            "profile/missing-metadata-defaults-still-weak",
-            defaultedProfile &&
-                defaultedProfile->info.use == Profiles::ProfileUse::Still &&
-                defaultedProfile->info.antihalation == Profiles::ProfileAntihalation::Weak &&
-                defaultedProfile->digest.halationFirstSigmaUm ==
-                    std::array<float, 3>{{65.0f, 65.0f, 65.0f}} &&
-                defaultedProfile->digest.halationPrimaryAmount ==
-                    std::array<float, 3>{{0.08f, 0.02f, 0.0f}},
-            diagnostic);
+        FilmProfileOwner defaultedProfile;
+        const FjStatus defaultedStatus = defaultedProfile.load_profile_view(defaultedRoot, defaultedKey, diagnostic);
+        const auto& defaultedView = defaultedProfile.view();
+        bool defaultedPassed = defaultedStatus.category == FJ_STATUS_SUCCESS &&
+                               defaultedView.use == FJ_PROFILE_USE_STILL &&
+                               defaultedView.antihalation == FJ_PROFILE_ANTIHALATION_WEAK;
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            constexpr std::array<float, 3> kAmounts{0.08f, 0.02f, 0.0f};
+            defaultedPassed = defaultedPassed &&
+                              float_bits(defaultedView.halation_first_sigma_um[channel]) == float_bits(65.0f) &&
+                              float_bits(defaultedView.halation_primary_amount[channel]) == float_bits(kAmounts[channel]);
+        }
+        results.record("profile/missing-metadata-defaults-still-weak", defaultedPassed, diagnostic);
 
         const auto check_unsupported = [&](const char* field, const char* value) {
             const std::string key = std::string("recipe_profile_unsupported_") + field;
@@ -721,44 +757,135 @@ namespace {
             profile["info"]["stock"] = key;
             profile["info"]["name"] = key;
             profile["info"][field] = value;
-            const std::filesystem::path path = profileRoot / (key + ".json");
-            write_json(path, profile);
+            const auto root = stage_profile(key, profile);
             std::string failure;
-            const auto loaded = load_scratch_profile(path, key, failure);
+            FilmProfileOwner loaded;
+            const FjStatus status = loaded.load_profile_view(root, key, failure);
             results.record(
                 "profile/unsupported-" + std::string(field) + "-rejected",
-                !loaded && !failure.empty(),
+                status.category == FJ_STATUS_PREPARATION_FAILURE && !loaded.has_owner() && !failure.empty(),
                 failure);
         };
         check_unsupported("use", "unsupported");
         check_unsupported("antihalation", "unsupported");
 
-        struct RejectedCoefficientCase {
+        struct CoefficientCase {
             const char* name;
             const char* arrayName;
             double value;
+            bool completes;
         };
-        const std::array<RejectedCoefficientCase, 5> rejectedCoefficientCases{{{"zero-sigma", "sigmas", 0.0},
-                                                                               {"negative-sigma", "sigmas", -0.01},
-                                                                               {"unrepresentable-center", "centers", std::numeric_limits<double>::max()},
-                                                                               {"unrepresentable-amplitude", "amplitudes", std::numeric_limits<double>::max()},
-                                                                               {"unrepresentable-sigma", "sigmas", std::numeric_limits<double>::max()}}};
-        for (const RejectedCoefficientCase& testCase : rejectedCoefficientCases) {
+        const std::array<CoefficientCase, 5> coefficientCases{{{"zero-sigma", "sigmas", 0.0, true},
+                                                               {"negative-sigma", "sigmas", -0.01, true},
+                                                               {"unrepresentable-center", "centers", std::numeric_limits<double>::max(), true},
+                                                               {"unrepresentable-amplitude", "amplitudes", std::numeric_limits<double>::max(), false},
+                                                               {"unrepresentable-sigma", "sigmas", std::numeric_limits<double>::max(), true}}};
+        // C1/C4: narrowing precedes z=(exposure-center)/sigma and amplitude*CDF.
+        // erfc(+inf)=0, erfc(-inf)=2, erfc(0)=1 establish exact special cases.
+        const float center = completeProfile["data"]["density_curves_model"]["centers"][0][0].get<float>();
+        const float amplitude = completeProfile["data"]["density_curves_model"]["amplitudes"][0][0].get<float>();
+        for (const CoefficientCase& testCase : coefficientCases) {
             const std::string key = std::string("recipe_profile_") + testCase.name;
             nlohmann::json profile = completeProfile;
             profile["info"]["stock"] = key;
             profile["info"]["name"] = key;
-            profile["data"]["density_curves_model"][testCase.arrayName][0][0] =
-                testCase.value;
-            const std::filesystem::path path = profileRoot / (key + ".json");
-            write_json(path, profile);
-            std::string failure;
-            const auto loaded = load_scratch_profile(path, key, failure);
-            results.record(
-                "profile/" + std::string(testCase.name) + "-rejected",
-                !loaded && !failure.empty(),
-                failure);
+            profile["data"]["density_curves_model"][testCase.arrayName][0][0] = testCase.value;
+            const auto root = stage_profile(key, profile);
+            std::string detail;
+            FilmProfileOwner loaded;
+            const FjStatus status = loaded.load_profile_view(root, key, detail);
+            bool passed = status.category == (testCase.completes ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
+            if (testCase.completes && status.category == FJ_STATUS_SUCCESS) {
+                const auto& view = loaded.view();
+                const auto layer = view.density_curves_layers[0][0];
+                passed = passed && layer.count == view.log_exposure.count && layer.count > 0;
+                for (std::size_t sample = 0; passed && sample < layer.count; ++sample) {
+                    const float density = layer.data[sample];
+                    if (testCase.value == 0.0) {
+                        const float exposure = view.log_exposure.data[sample];
+                        // The original Portra axis has no exact-center sample.
+                        passed = exposure != center && float_bits(density) == float_bits(exposure < center ? 0.0f : amplitude);
+                    } else if (testCase.value < 0.0) {
+                        passed = std::isfinite(density) && density >= 0.0f && density <= amplitude &&
+                                 (sample == 0 || layer.data[sample - 1] >= density);
+                    } else {
+                        const float expected = std::string_view(testCase.arrayName) == "centers" ? 0.0f : 0.5f * amplitude;
+                        passed = float_bits(density) == float_bits(expected);
+                    }
+                }
+            } else if (!testCase.completes) {
+                passed = passed && !loaded.has_owner() && !detail.empty() &&
+                         contains_text(detail, "Density { index: 0, source: NonfiniteLayer { channel: 0, layer: 0 }");
+            }
+            results.record("profile/" + std::string(testCase.name) + (testCase.completes ? "-completed" : "-computed-failure"), passed, detail);
         }
+
+        const auto check_completion = [&](const char* name, nlohmann::json profile, bool completes, const char* reason) {
+            const std::string key = std::string("recipe_profile_") + name;
+            profile["info"]["stock"] = key;
+            const auto root = stage_profile(key, profile);
+            FilmProfileOwner loaded;
+            std::string detail;
+            const FjStatus status = loaded.load_profile_view(root, key, detail);
+            bool passed = status.category == (completes ? FJ_STATUS_SUCCESS : FJ_STATUS_PREPARATION_FAILURE);
+            if (completes && status.category == FJ_STATUS_SUCCESS) {
+                passed = loaded.view().log_exposure.count == 1 &&
+                         loaded.view().density_curves_layers[0][0].count == 1 &&
+                         float_bits(loaded.view().density_curves_layers[0][0].data[0]) == float_bits(0.5f * amplitude);
+            } else {
+                passed = passed && !loaded.has_owner() && !detail.empty() && contains_text(detail, reason);
+            }
+            results.record("profile/" + std::string(name), passed, detail);
+        };
+        nlohmann::json atCenter = completeProfile;
+        atCenter["data"]["log_exposure"] = {completeProfile["data"]["density_curves_model"]["centers"][0][0]};
+        atCenter["data"]["density_curves_model"]["sigmas"][0][0] = -0.01;
+        check_completion("negative-sigma-center-half", atCenter, true, "");
+        atCenter["data"]["density_curves_model"]["sigmas"][0][0] = 0.0;
+        check_completion("zero-sigma-center-computed-failure", atCenter, false, "NonfiniteLayer { channel: 0, layer: 0 }");
+        nlohmann::json malformed = completeProfile;
+        malformed["data"]["log_exposure"] = {1.0, 0.0};
+        check_completion("descending-axis-completion-failure", malformed, false, "DescendingAxis { index: 1 }");
+        malformed = completeProfile;
+        malformed["data"]["wavelengths"].erase(80);
+        check_completion("spectral-shape-decode-failure", malformed, false, "wavelengths");
+        malformed = completeProfile;
+        malformed["data"]["density_curves_model"]["sigmas"][0][0] = "unsupported";
+        check_completion("coefficient-representation-decode-failure", malformed, false, "data.density_curves_model requires ModelCoefficients");
+
+        nlohmann::json endpoints = completeProfile;
+        const std::string endpointKey = "recipe_profile_infinite_axis_layer_order";
+        endpoints["info"]["stock"] = endpointKey;
+        endpoints["data"]["log_exposure"] = {-1e40, 0.0, 1e40};
+        constexpr std::array<std::array<float, 3>, 3> kAmplitudes{{{1.0f, 2.0f, 3.0f}, {4.0f, 5.0f, 6.0f}, {7.0f, 8.0f, 9.0f}}};
+        endpoints["data"]["density_curves_model"]["centers"] = std::array<std::array<float, 3>, 3>{};
+        endpoints["data"]["density_curves_model"]["sigmas"] = std::array<std::array<float, 3>, 3>{{{1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f}}};
+        endpoints["data"]["density_curves_model"]["amplitudes"] = kAmplitudes;
+        FilmProfileOwner endpointProfile;
+        std::string endpointDetail;
+        const FjStatus endpointStatus = endpointProfile.load_profile_view(stage_profile(endpointKey, endpoints), endpointKey, endpointDetail);
+        bool endpointPassed = endpointStatus.category == FJ_STATUS_SUCCESS;
+        if (endpointPassed) {
+            const auto& endpointView = endpointProfile.view();
+            endpointPassed = endpointView.source_log_exposure.count == 3 && endpointView.log_exposure.count == 3 &&
+                             endpointView.density_curves_cmy.count == 9 && endpointView.log_exposure.data[0] == -std::numeric_limits<float>::infinity() &&
+                             endpointView.log_exposure.data[2] == std::numeric_limits<float>::infinity() &&
+                             endpointView.source_log_exposure.data[0] == -1e40 && endpointView.source_log_exposure.data[2] == 1e40;
+            for (std::size_t channel = 0; endpointPassed && channel < 3; ++channel) {
+                for (std::size_t sample = 0; endpointPassed && sample < 3; ++sample) {
+                    const float cdf = static_cast<float>(sample) * 0.5f;
+                    float total = 0.0f;
+                    for (std::size_t layer = 0; layer < 3; ++layer) {
+                        const auto curve = endpointView.density_curves_layers[layer][channel];
+                        const float expected = kAmplitudes[channel][layer] * cdf;
+                        endpointPassed = endpointPassed && curve.count == 3 && float_bits(curve.data[sample]) == float_bits(expected);
+                        total += expected;
+                    }
+                    endpointPassed = endpointPassed && float_bits(endpointView.density_curves_cmy.data[sample * 3 + channel]) == float_bits(total);
+                }
+            }
+        }
+        results.record("profile/ordered-infinity-axis-and-layer-cmy-order", endpointPassed, endpointDetail);
 
         const std::string variableAxisKey = "recipe_profile_variable_axis";
         nlohmann::json variableAxis = completeProfile;
@@ -771,28 +898,21 @@ namespace {
         }
         logExposure[8] = logExposure[7];
         variableAxis["data"]["log_exposure"] = logExposure;
-        const std::filesystem::path variableAxisPath =
-            profileRoot / (variableAxisKey + ".json");
-        write_json(variableAxisPath, variableAxis);
+        const auto variableAxisRoot = stage_profile(variableAxisKey, variableAxis);
         std::string variableAxisDiagnostic;
-        const auto variableAxisProfile = load_scratch_profile(
-            variableAxisPath,
-            variableAxisKey,
-            variableAxisDiagnostic);
-        bool variableAxisAccepted = variableAxisProfile &&
-                                    variableAxisProfile->sourceLogExposure.size() == 17u &&
-                                    variableAxisProfile->data.logExposure.size() == 17u &&
-                                    variableAxisProfile->data.densityCurves.size() == 17u &&
-                                    variableAxisProfile->sourceLogExposure[7] ==
-                                        variableAxisProfile->sourceLogExposure[8] &&
-                                    variableAxisProfile->data.logExposure[7] ==
-                                        variableAxisProfile->data.logExposure[8] &&
-                                    std::isnan(variableAxisProfile->data.channelDensity[0][0]) &&
-                                    std::isnan(variableAxisProfile->data.baseDensity[0]);
-        if (variableAxisProfile) {
-            for (const auto& layer : variableAxisProfile->data.densityCurvesLayers) {
+        FilmProfileOwner variableAxisProfile;
+        const FjStatus variableAxisStatus = variableAxisProfile.load_profile_view(variableAxisRoot, variableAxisKey, variableAxisDiagnostic);
+        const auto& view = variableAxisProfile.view();
+        bool variableAxisAccepted = variableAxisStatus.category == FJ_STATUS_SUCCESS &&
+                                    view.source_log_exposure.count == 17u && view.log_exposure.count == 17u &&
+                                    view.density_curves_cmy.count == 51u &&
+                                    view.source_log_exposure.data[7] == view.source_log_exposure.data[8] &&
+                                    view.log_exposure.data[7] == view.log_exposure.data[8] &&
+                                    std::isnan(view.channel_density_cmy.data[0]) && std::isnan(view.base_density.data[0]);
+        if (variableAxisStatus.category == FJ_STATUS_SUCCESS) {
+            for (const auto& layer : view.density_curves_layers) {
                 for (const auto& channel : layer) {
-                    variableAxisAccepted = variableAxisAccepted && channel.size() == 17u;
+                    variableAxisAccepted = variableAxisAccepted && channel.count == 17u;
                 }
             }
         }
@@ -1264,7 +1384,7 @@ namespace {
         const ParamSnapshot& a,
         const ParamSnapshot& b,
         bool signedZero,
-        std::optional<std::array<FreshIdentity, 2>> original) {
+        std::optional<std::array<FreshIdentity, 2>> accepted) {
         const bool printRoute = Spektrafilm::scan_route_is_print(a.scanRoute);
         FocusedRenderStateBuildProduct freshA;
         FocusedRenderStateBuildProduct freshB;
@@ -1291,20 +1411,19 @@ namespace {
         results.record(std::string(name) + "/fresh-distinct",
                        freshDiffer,
                        identity.str());
-        const auto agrees_with_original = [&](const RenderRecipe& recipe,
+        const auto agrees_with_accepted = [&](const RenderRecipe& recipe,
                                               const FreshIdentity& expected) {
             const std::uint64_t fixedSeed = printRoute
                                                 ? Hash::hash_uint64_values({recipe.print.hash, 37, 5, 9})
                                                 : 0;
-            return recipe.hash == expected.recipe &&
-                   recipe.filmRaw.hash == expected.filmRaw &&
-                   recipe.print.hash == expected.printSeedInput &&
-                   fixedSeed == expected.fixedGlareSeed;
+            return RenderAssertions::identities_match(
+                {recipe.hash, recipe.filmRaw.hash, recipe.print.hash, fixedSeed},
+                {expected.recipe, expected.filmRaw, expected.printSeedInput, expected.fixedGlareSeed});
         };
-        if (original) {
-            results.record(std::string(name) + "/original-fresh-identities",
-                           agrees_with_original(freshA.recipe, (*original)[0]) &&
-                               agrees_with_original(freshB.recipe, (*original)[1]),
+        if (accepted) {
+            results.record(std::string(name) + "/accepted-rust-identities",
+                           agrees_with_accepted(freshA.recipe, (*accepted)[0]) &&
+                               agrees_with_accepted(freshB.recipe, (*accepted)[1]),
                            identity.str());
         }
         for (bool reverse : {false, true}) {
@@ -1346,29 +1465,24 @@ namespace {
     }
 
     void run_parameter_identity_rows(Results& results) {
-#if defined(_WIN32)
-        constexpr std::array<FreshIdentity, 2> kDirectSmall{{{0xdfcabb6e6759a780ULL, 0x490500e8b8b605afULL, 0, 0},
-                                                             {0xf9696f2fa63dacecULL, 0x64123468ae706b13ULL, 0, 0}}};
-        constexpr std::array<FreshIdentity, 2> kDirectZero{{{0xc6e074fb35227a43ULL, 0xf97a0a9d566ca20aULL, 0, 0},
-                                                            {0x8eda58c315f7260dULL, 0x3ae737796e1dca8aULL, 0, 0}}};
-        constexpr std::array<FreshIdentity, 2> kPrintSmall{{{0x5a1b3da9ec40632eULL, 0x490500e8b8b605afULL, 0x9df7d770d575371bULL, 0xe16a200be10e91b5ULL},
-                                                            {0x3e76bfb906ecbda6ULL, 0x64123468ae706b13ULL, 0x16cb45119ad471c9ULL, 0xcb9e1d42321c5b47ULL}}};
-        constexpr std::array<FreshIdentity, 2> kPrintZero{{{0xb804fb11ade82dd9ULL, 0xf97a0a9d566ca20aULL, 0x9bef5a74ee002bf6ULL, 0x3c249a5b8360e4f1ULL},
-                                                           {0x4ecc7154f0985236ULL, 0x3ae737796e1dca8aULL, 0x7dca83ea271274c5ULL, 0x573f180892665854ULL}}};
-        constexpr std::array<FreshIdentity, 2> kPrintMediumSmall{{{0xb804fb11ade82dd9ULL, 0xf97a0a9d566ca20aULL, 0x9bef5a74ee002bf6ULL, 0x3c249a5b8360e4f1ULL},
-                                                                  {0xd019f32dd5a43605ULL, 0xf97a0a9d566ca20aULL, 0xa965462e4057d804ULL, 0x3c6e4abcde81e015ULL}}};
-#else
-        constexpr std::array<FreshIdentity, 2> kDirectSmall{{{0x338170d935d02a04ULL, 0x5cf0615ba88212a5ULL, 0, 0},
-                                                             {0x80046ccce934defcULL, 0x0445480c2ed12931ULL, 0, 0}}};
-        constexpr std::array<FreshIdentity, 2> kDirectZero{{{0x1cf69f5f80e30ca7ULL, 0xd99013f993d44c8cULL, 0, 0},
-                                                            {0x3c9e966627a3d263ULL, 0xa60caaf53143ad0cULL, 0, 0}}};
-        constexpr std::array<FreshIdentity, 2> kPrintSmall{{{0x9f199e0860dc6c8fULL, 0x5cf0615ba88212a5ULL, 0x2b30c3117010018dULL, 0xc0b706a628429f8bULL},
-                                                            {0xf2d421fdf52861b7ULL, 0x0445480c2ed12931ULL, 0x2a80092e5d768da0ULL, 0xbe3a24ef5d0467a1ULL}}};
-        constexpr std::array<FreshIdentity, 2> kPrintZero{{{0xd47539b394dd7974ULL, 0xd99013f993d44c8cULL, 0xad737c77fdce1f57ULL, 0x1bf0cce1723b593cULL},
-                                                           {0x28cd11ce8a544701ULL, 0xa60caaf53143ad0cULL, 0x6fe6d2f9916b573cULL, 0x704844fef09d3445ULL}}};
-        constexpr std::array<FreshIdentity, 2> kPrintMediumSmall{{{0xd47539b394dd7974ULL, 0xd99013f993d44c8cULL, 0xad737c77fdce1f57ULL, 0x1bf0cce1723b593cULL},
-                                                                  {0x3ce25ffd7c1e33d7ULL, 0xd99013f993d44c8cULL, 0xc1628d37147a0705ULL, 0xcde831039d9c6b57ULL}}};
-#endif
+        std::ifstream fixture(JUICER_PARAMETER_IDENTITY_PATH);
+        if (!fixture) {
+            throw std::runtime_error("Rust parameter identity fixture unavailable");
+        }
+        const auto identities = nlohmann::json::parse(fixture);
+        const auto pair = [&](const char* name) {
+            std::array<FreshIdentity, 2> expected{};
+            for (std::size_t i = 0; i < expected.size(); ++i) {
+                const auto& row = identities.at(std::string(name) + (i == 0 ? "/A" : "/B"));
+                expected[i] = {row.at("recipe").get<std::uint64_t>(), row.at("filmRaw").get<std::uint64_t>(), row.at("printSeedInput").get<std::uint64_t>(), row.at("fixedGlareSeed").get<std::uint64_t>()};
+            }
+            return expected;
+        };
+        const auto kDirectSmall = pair("direct-exposure-small");
+        const auto kDirectZero = pair("direct-exposure-zero");
+        const auto kPrintSmall = pair("print-exposure-small");
+        const auto kPrintZero = pair("print-exposure-zero");
+        const auto kPrintMediumSmall = pair("print-medium-exposure-small");
         for (bool printRoute : {false, true}) {
             ParamSnapshot a = direct_snapshot();
             if (printRoute) {
@@ -1991,9 +2105,6 @@ namespace {
         std::atomic<bool> _releaseFailed{false};
     };
 
-    bool contains_text(const std::string& text, std::string_view expected) {
-        return text.find(expected) != std::string::npos;
-    }
 
     std::string prepared_shape_detail(
         int width,

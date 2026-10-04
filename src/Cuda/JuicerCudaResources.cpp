@@ -9,10 +9,10 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
+#include "ResourceAssetLibrary.h"
 #include "ColorTransforms.h"
 #include "GamutCompression.h"
 #include "SpectralProcessing.h"
-#include "ResourceAssetLibrary.h"
 #include "Scanner.h"
 
 #include "Logging.h"
@@ -22,6 +22,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <bit>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -3246,41 +3247,6 @@ namespace JuicerCuda {
     }
 
 
-    bool build_static_noise_input(
-        const JuicerAssets::StaticNoisePayloadSet& payloads,
-        StaticNoiseInput& input,
-        std::string& outError) {
-        outError.clear();
-        const JuicerAssets::StbnNoisePayload& stbn = payloads.stbn;
-        const JuicerAssets::WangNoisePayload& wang = payloads.wang;
-        if (!stbn.valid) {
-            outError = stbn.error.empty()
-                           ? "grain static STBN payload is invalid"
-                           : stbn.error;
-            return false;
-        }
-        if (!wang.valid) {
-            outError = wang.error.empty()
-                           ? "grain static Wang payload is invalid"
-                           : wang.error;
-            return false;
-        }
-        input = StaticNoiseInput{
-            stbn.data, wang.tiles, wang.lut, stbn.width, stbn.height, stbn.frames, wang.width, wang.height, wang.count, wang.colors};
-        return true;
-    }
-
-    bool ensure_grain_static_assets_uploaded(
-        Resources& resources,
-        const JuicerAssets::StaticNoisePayloadSet& payloads,
-        void* cudaStreamOpaque,
-        Failure& outError) {
-        outError.status = {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0};
-        StaticNoiseInput input;
-        return build_static_noise_input(payloads, input, outError.diagnostic) &&
-               ensure_grain_static_assets_uploaded(resources, input, cudaStreamOpaque, outError);
-    }
-
     bool ensure_grain_static_assets_uploaded(
         Resources& resources,
         const StaticNoiseInput& input,
@@ -4073,8 +4039,9 @@ namespace JuicerCuda {
             hash_print_descriptor_value(hash, value.y);
         }
 
+        template <typename Samples>
         std::uint64_t hash_profile_sensitivities(
-            const Profiles::SpektrafilmProfileSamples& data) {
+            const Samples& data) {
             const Hash::FloatSpanHash sensitivities = Hash::hash_float_span_with_nan_mask(
                 &data.linearSensitivity[0][0],
                 data.linearSensitivity.size() * 3u);
@@ -4082,15 +4049,28 @@ namespace JuicerCuda {
                                              sensitivities.nanMaskHash});
         }
 
+        std::uint64_t hash_authored_wavelengths(const std::array<float, 81>& wavelengths) {
+            std::uint64_t hash = Hash::kFnvOffset;
+            for (float value : wavelengths) {
+                const std::uint32_t bits = value == 0.0f ? 0u : std::isnan(value) ? 0x7fc00000u
+                                                                                  : std::bit_cast<std::uint32_t>(value);
+                for (unsigned shift = 0; shift < 32; shift += 8) {
+                    const auto byte = static_cast<std::uint8_t>(bits >> shift);
+                    Hash::hash_bytes_update(hash, &byte, 1);
+                }
+            }
+            return hash;
+        }
+
         std::uint64_t hash_profile_film_density_tables(
-            const Profiles::SpektrafilmProfileSamples& data) {
+            const Profiles::FilmProfileSamples& data) {
             const Hash::FloatSpanHash channelDensity = Hash::hash_float_span_with_nan_mask(
                 &data.channelDensity[0][0],
                 data.channelDensity.size() * 3u);
             const Hash::FloatSpanHash baseDensity = Hash::hash_float_span_with_nan_mask(
                 data.baseDensity.data(),
                 data.baseDensity.size());
-            return Hash::hash_uint64_values({Hash::hash_float_span(data.wavelengths.data(), data.wavelengths.size()),
+            return Hash::hash_uint64_values({hash_authored_wavelengths(data.wavelengths),
                                              channelDensity.valueHash,
                                              channelDensity.nanMaskHash,
                                              baseDensity.valueHash,
@@ -4132,9 +4112,8 @@ namespace JuicerCuda {
                 out.fill(1.0f);
                 return true;
             }
-            const JuicerAssets::IlluminantFilterCurveSet& curves =
-                assets.illuminant_filter_curves();
-            const Spectral::Curve* selected = select_print_illuminant(curves, key);
+            const auto curves = assets.illuminant_filter_curves();
+            const Spectral::Curve* selected = select_print_illuminant(*curves, key);
             if (!selected ||
                 selected->linear.size() != out.size() ||
                 selected->lambda_nm.size() != out.size()) {
@@ -4164,8 +4143,8 @@ namespace JuicerCuda {
         }
 
         bool derive_preflash_raw(
-            const Profiles::ValidatedFilmProfile& film,
-            const Profiles::ValidatedPrintProfile& print,
+            const Profiles::FilmProfile& film,
+            const Profiles::PrintProfile& print,
             const std::array<float, Spectral::kNumSamples>& preflashIlluminant,
             std::array<float, 3>& out,
             std::string& diagnostic) {
@@ -4207,8 +4186,8 @@ namespace JuicerCuda {
             return false;
         }
 
-        const Profiles::ValidatedFilmProfile& film = *recipe.profileRoute.filmProfile;
-        const Profiles::ValidatedPrintProfile& print = *recipe.profileRoute.printProfile;
+        const Profiles::FilmProfile& film = *recipe.profileRoute.filmProfile;
+        const Profiles::PrintProfile& print = *recipe.profileRoute.printProfile;
         PrintProfileTablesDescriptor& profile = out.profileTables;
         profile.printProfileAssetVersionToken = recipe.profileRoute.printProfileAssetVersionToken;
         profile.densityCurvesHash = recipe.print.develop.densityCurvesHash;
@@ -4592,8 +4571,8 @@ namespace JuicerCuda {
             std::array<float, Spectral::kNumSamples>& preflashIlluminant,
             PrintResourceInput& input,
             std::string& error) {
-            const Profiles::ValidatedFilmProfile& film = *request.recipe->profileRoute.filmProfile;
-            const Profiles::ValidatedPrintProfile& print = *request.recipe->profileRoute.printProfile;
+            const Profiles::FilmProfile& film = *request.recipe->profileRoute.filmProfile;
+            const Profiles::PrintProfile& print = *request.recipe->profileRoute.printProfile;
             input.descriptors = descriptors;
             input.filmChannelDensityCmy = ThreeChannelSamplesView(film.data.channelDensity);
             input.filmBaseDensity = film.data.baseDensity;

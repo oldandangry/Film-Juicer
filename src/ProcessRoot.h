@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <filesystem>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -545,7 +546,7 @@ namespace JuicerProcess {
             const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
             JuicerCuda::Failure& outError);
-        JuicerAssets::Library& assets() noexcept;
+        JuicerAssets::Library& assets();
 
     private:
         friend class TestSupport::RootLifetimeObserver;
@@ -561,7 +562,7 @@ namespace JuicerProcess {
             void* cudaStreamOpaque,
             JuicerCuda::Failure& outError);
 
-        explicit Root(std::string dataDirectory);
+        explicit Root(const std::filesystem::path& dataDirectory);
         ~Root();
 
         void retire_grain_static_instance(std::uint64_t instanceToken);
@@ -569,13 +570,14 @@ namespace JuicerProcess {
         bool shutdown(std::mutex& nativeCallMutex, JuicerCuda::Failure& outError);
         bool retire_known_contexts(JuicerCuda::Failure& outError);
         bool release_cuda_context_resource_owners() noexcept;
-        void release_process_host_services() noexcept;
+        FjStatus release_process_host_services(FjErrorBuffer* error = nullptr) noexcept;
+        std::unique_ptr<JuicerAssets::Library> detach_host_assets() noexcept;
         void finish_frame_preparation() noexcept;
         bool wait_for_frame_preparation() noexcept;
 
         std::once_flag _bootstrapOnce;
-        std::string _dataDir;
-        JuicerAssets::Library _assets;
+        // FJ_TEMP_BRIDGE: native host asset owner; remove S5.C.
+        std::unique_ptr<JuicerAssets::Library> _assets;
         std::mutex _framePreparationMutex;
         std::condition_variable _framePreparationCv;
         std::uint32_t _activeFramePreparations = 0;
@@ -667,6 +669,6 @@ namespace JuicerProcess {
     };
 
     Root& root();
-    std::string data_directory();
+    std::filesystem::path data_directory();
 
 } // namespace JuicerProcess

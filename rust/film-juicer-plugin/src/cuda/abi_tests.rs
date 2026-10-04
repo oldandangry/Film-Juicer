@@ -28,6 +28,13 @@ static FACTS: &[usize] = &[
     align_of::<FjStringView>(),
     offset_of!(FjStringView, data),
     offset_of!(FjStringView, count),
+    size_of::<FjPathView>(),
+    align_of::<FjPathView>(),
+    offset_of!(FjPathView, data),
+    offset_of!(FjPathView, count),
+    offset_of!(FjPathView, encoding),
+    FJ_PATH_UNIX_BYTES as usize,
+    FJ_PATH_WINDOWS_WIDE as usize,
     size_of::<FjFloatSpan>(),
     align_of::<FjFloatSpan>(),
     offset_of!(FjFloatSpan, data),
@@ -599,7 +606,7 @@ pub unsafe extern "C" fn fj_test_cuda_abi_facts(out_count: *mut usize) -> *const
 // in a linked binary. The C and C++ fixture checks the same types independently.
 const _: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> u32> =
     None::<FjAbortQuery>.flatten();
-const _: unsafe extern "C" fn(FjStringView, *mut *mut FjCuda, *mut FjErrorBuffer) -> FjStatus =
+const _: unsafe extern "C" fn(FjPathView, *mut *mut FjCuda, *mut FjErrorBuffer) -> FjStatus =
     fj_cuda_create;
 const _: unsafe extern "C" fn(
     *mut FjCuda,
@@ -628,7 +635,7 @@ mod tests {
     #[test]
     fn facts_cover_generated_records_and_values() {
         // Cardinality changes require reviewing both native and Rust fact lists.
-        assert_eq!(FACTS.len(), 575);
+        assert_eq!(FACTS.len(), 582);
     }
 
     #[test]

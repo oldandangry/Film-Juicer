@@ -17,9 +17,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Value, json};
 
 use film_juicer_core::profile::{
-    Antihalation, CatalogEntryErrorKind, CatalogError, ChannelModel, Polarity, ProfileError,
-    ProfileErrorKind, ProfileSource, ProfileUse, Requirement, Role, Stage, Support, load_catalog,
-    load_film_source, load_print_source,
+    IlluminantKind, Antihalation, CatalogEntryErrorKind, CatalogError, ChannelModel, Polarity,
+    ProfileError, ProfileErrorKind, ProfileSource, ProfileUse, Requirement, Role, Stage, Support,
+    load_catalog, load_film_source, load_print_source,
 };
 
 fn repository() -> PathBuf {
@@ -1649,4 +1649,52 @@ fn catalog_rejects_null_metadata() {
             .iter()
             .all(|entry| matches!(entry.kind, CatalogEntryErrorKind::UnsupportedRole))
     );
+}
+
+#[test]
+fn illuminant_kinds_preserve_original_decimal_bits_and_named_precedence() {
+    let directory = Directory::new();
+    for role in [Role::Film, Role::Print] {
+        for (label, expected) in [
+            (" BB+3200.5 ", 3200.5_f64),
+            ("bb3.2005e3", 3200.5),
+            ("BB0", 0.0),
+            ("BB-0.0", -0.0),
+            ("BB-3200", -3200.0),
+            ("BB1e-400", 0.0),
+        ] {
+            let mut document = profile_document(role);
+            document["info"]["reference_illuminant"] = json!(label);
+            document["info"]["viewing_illuminant"] = json!(label);
+            let source = directory.load_source(&document, role).unwrap();
+            for (original, kind) in [
+                (
+                    source.info().reference_illuminant(),
+                    source.info().reference_illuminant_kind(),
+                ),
+                (
+                    source.info().viewing_illuminant(),
+                    source.info().viewing_illuminant_kind(),
+                ),
+            ] {
+                assert_eq!(original, label);
+                match kind {
+                    IlluminantKind::Blackbody { temperature_kelvin } => {
+                        assert_eq!(temperature_kelvin.to_bits(), expected.to_bits())
+                    }
+                    IlluminantKind::Named => panic!("BB must retain its decimal interpretation"),
+                }
+            }
+        }
+        for label in ["D65", "TH_KG3", "D1234", "KINOTON75P"] {
+            let mut document = profile_document(role);
+            document["info"]["viewing_illuminant"] = json!(label);
+            let source = directory.load_source(&document, role).unwrap();
+            assert_eq!(
+                source.info().viewing_illuminant_kind(),
+                IlluminantKind::Named
+            );
+            assert_eq!(source.info().viewing_illuminant(), label);
+        }
+    }
 }

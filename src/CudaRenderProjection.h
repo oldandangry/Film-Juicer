@@ -1,5 +1,7 @@
 #pragma once
 
+#include <exception>
+
 #include "Cuda/JuicerCudaExecutor.h"
 
 namespace JuicerCuda {
@@ -9,5 +11,5 @@ namespace JuicerCuda {
     // Borrows all owners through the immediate admitted C-record render call.
     // No projected record or host pointer escapes; asynchronous copies are native.
     FjRenderOutcome project_and_render(
-        NativeCall& call, const RenderRecipe& recipe, const FocusedRenderPayload& payload, const ExecutionFrame& frame, const FjFrame& rawFrame, const ResourceManager::SubmissionSnapshot& snapshot, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback, std::string& diagnostic);
+        NativeCall& call, const RenderRecipe& recipe, const FocusedRenderPayload& payload, const ExecutionFrame& frame, const FjFrame& rawFrame, const ResourceManager::SubmissionSnapshot& snapshot, PendingContextLossRecovery& recovery, FjAbortCallback abortCallback, const StaticNoiseInput* noise, const std::exception_ptr& noiseFailure, std::string& diagnostic);
 } // namespace JuicerCuda

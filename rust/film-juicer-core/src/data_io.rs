@@ -70,13 +70,14 @@ impl CsvPairs {
     }
 }
 
-/// Rows are [wavelength, x_bar, y_bar, z_bar], in file order.
+/// Decoded color-matching-function source rows [wavelength_nm, x_bar, y_bar, z_bar]
+/// in file order, before axis admission or spectral preparation.
 #[derive(Debug)]
-pub struct CsvTriplets {
+pub struct CmfRows {
     rows: Vec<[f32; 4]>,
 }
 
-impl CsvTriplets {
+impl CmfRows {
     pub fn rows(&self) -> &[[f32; 4]] {
         &self.rows
     }
@@ -91,12 +92,13 @@ pub fn load_csv_pairs(path: impl AsRef<Path>) -> Result<CsvPairs, ReadError> {
     result.map_err(|kind| ReadError { path, kind })
 }
 
-pub fn load_csv_triplets(path: impl AsRef<Path>) -> Result<CsvTriplets, ReadError> {
+/// Decode wavelength and XYZ color-matching samples with the source CSV extraction rules.
+pub fn load_cmf_csv(path: impl AsRef<Path>) -> Result<CmfRows, ReadError> {
     let path = path.as_ref().to_path_buf();
     let result = File::open(&path)
         .map_err(|error| ReadErrorKind::Open(error.kind()))
         .and_then(|file| read_csv(BufReader::new(file)))
-        .map(|rows| CsvTriplets { rows });
+        .map(|rows| CmfRows { rows });
     result.map_err(|kind| ReadError { path, kind })
 }
 
@@ -535,12 +537,51 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    #[test]
+    fn csv_source_capacity_receipt() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources");
+        for name in [
+            "illuminants/D65.csv",
+            "illuminants/D55.csv",
+            "illuminants/D50.csv",
+            "illuminants/T.csv",
+            "illuminants/K75P.csv",
+            "filters/heat_absorbing/schott/KG3.csv",
+            "filters/lens_transmission/canon/canon_24_f28_is.csv",
+        ] {
+            let source = load_csv_pairs(root.join(name)).unwrap();
+            println!(
+                "CSV {name}: length={} capacity={} requested_row_bytes={} inline_payload_bytes={}",
+                source.rows.len(),
+                source.rows.capacity(),
+                source.rows.capacity() * size_of::<[f32; 2]>(),
+                size_of::<CsvPairs>()
+            );
+        }
+    }
+
     fn bundled_lut() -> Vec<u8> {
         std::fs::read(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../Resources/luts/spectral_upsampling/irradiance_xy_tc.npy"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn cmf_source_capacity_receipt() {
+        let rows = load_cmf_csv(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Resources/cie1931_2deg.csv"),
+        )
+        .unwrap();
+        assert_eq!(rows.rows.len(), 81);
+        println!(
+            "source cmf: length={} capacity={} requested_row_bytes={} inline_payload_bytes={}",
+            rows.rows.len(),
+            rows.rows.capacity(),
+            rows.rows.capacity() * size_of::<[f32; 4]>(),
+            size_of::<CmfRows>()
+        );
     }
 
     #[test]

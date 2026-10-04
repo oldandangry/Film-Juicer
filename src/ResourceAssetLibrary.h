@@ -11,34 +11,10 @@
 #include "ProfileAssets.h"
 #include "ProfileCatalog.h"
 #include "ScanRoute.h"
+#include "RustAssetBridge.h"
 #include "SpectralData.h"
 
 namespace JuicerAssets {
-
-    struct StbnNoisePayload {
-        std::vector<std::uint8_t> data;
-        int width = 512;
-        int height = 512;
-        int frames = 256;
-        bool valid = false;
-        std::string error;
-    };
-
-    struct WangNoisePayload {
-        std::vector<std::uint8_t> tiles;
-        std::vector<std::uint8_t> lut;
-        int width = 0;
-        int height = 0;
-        int count = 0;
-        int colors = 0;
-        bool valid = false;
-        std::string error;
-    };
-
-    struct StaticNoisePayloadSet {
-        StbnNoisePayload stbn;
-        WangNoisePayload wang;
-    };
 
     struct IlluminantFilterCurveSet {
         Spectral::Curve d65;
@@ -50,38 +26,25 @@ namespace JuicerAssets {
         Spectral::Curve tungstenKg3Lens;
     };
 
-    enum class NeutralPrintCalibrationStatus : unsigned char {
-        MissingFile,
-        MissingEntry,
-        Found,
-        Malformed
-    };
-
-    struct NeutralPrintCalibrationResult {
-        NeutralPrintCalibrationStatus status =
-            NeutralPrintCalibrationStatus::MissingEntry;
-        std::array<float, 3> cmyCc{};
-        std::string diagnostic;
-    };
-
     using SelectedProfileRequest = Profiles::SelectedProfileRequest;
     using SelectedProfileResult = Profiles::SelectedProfileResult;
 
     class Library {
     public:
-        struct StaticNoiseAssetSet;
-        struct IlluminantFilterAssetSet;
-
-        explicit Library(std::string dataDir);
+        explicit Library(const std::filesystem::path& resourceRoot);
         ~Library();
 
+        Spectral::ReconstructionLut copy_hanatos_lut();
+        Spectral::ReconstructionLut copy_arctic_lut();
+        Spectral::MallettBasis copy_mallett_basis();
+        Spectral::CMFTriplets copy_cmf_triplets();
         const Spektrafilm::ProfileCatalog& spektrafilm_profile_catalog();
-        std::shared_ptr<const Profiles::ValidatedFilmProfile>
+        std::shared_ptr<const Profiles::FilmProfile>
         selected_film_profile_for_key(const std::string& key);
         SelectedProfileResult selected_profiles_for_route(
             const SelectedProfileRequest& request);
-        std::shared_ptr<const StaticNoisePayloadSet> static_noise_payloads();
-        const IlluminantFilterCurveSet& illuminant_filter_curves();
+        NoiseSource noise();
+        std::shared_ptr<const IlluminantFilterCurveSet> illuminant_filter_curves();
         std::shared_ptr<const Gamut::InputCompressionHull>
         input_compression_hull();
         std::shared_ptr<const Gamut::OutputBoundaryTable>
@@ -89,42 +52,29 @@ namespace JuicerAssets {
             const Gamut::OutputGamutTransform& transform,
             std::string& diagnostic);
         NeutralPrintCalibrationResult neutral_print_calibration(
-            const std::string& printProfileKey,
+            const std::string& printStock,
             const std::string& printIlluminantKey,
-            const std::string& filmProfileKey);
-        void release_cached_payloads() noexcept;
+            const std::string& filmStock);
+        FjStatus release_cached_payloads(FjErrorBuffer* error = nullptr) noexcept;
+        FjStatus close(FjErrorBuffer* error = nullptr) noexcept;
 
     private:
         void ensure_catalogs();
-        void ensure_static_noise_assets();
-        void ensure_illuminant_filter_assets();
         void load_catalogs();
-        void load_static_noise_assets();
-        void load_illuminant_filter_assets();
 
-        struct StaticNoisePayloadCacheState;
         struct IlluminantFilterCurveCacheState;
         struct InputCompressionHullCacheState;
         struct OutputBoundaryTableCacheState;
-        struct NeutralPrintCalibrationCacheState;
 
         std::once_flag _catalogOnce;
-        std::once_flag _staticNoiseOnce;
-        std::once_flag _illuminantFilterOnce;
-        std::string _dataDir;
+        AssetBridge _bridge;
         Spektrafilm::ProfileCatalog _spektrafilmProfileCatalog;
-        std::unique_ptr<StaticNoiseAssetSet> _staticNoiseAssets;
-        std::unique_ptr<IlluminantFilterAssetSet> _illuminantFilterAssets;
-        std::unique_ptr<StaticNoisePayloadCacheState> _staticNoisePayloadCache;
         std::unique_ptr<IlluminantFilterCurveCacheState>
             _illuminantFilterCurveCache;
         std::unique_ptr<InputCompressionHullCacheState>
             _inputCompressionHullCache;
         std::unique_ptr<OutputBoundaryTableCacheState>
             _outputBoundaryTableCache;
-        std::unique_ptr<NeutralPrintCalibrationCacheState>
-            _neutralPrintCalibrationCache;
-        std::unique_ptr<Profiles::ProfileAssetStore> _selectedProfileAssets;
     };
 
 } // namespace JuicerAssets

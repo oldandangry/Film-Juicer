@@ -7,7 +7,6 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <fstream>
 #include <initializer_list>
 #include <limits>
 #include <sstream>
@@ -17,8 +16,6 @@
 #include <vector>
 
 #include "Logging.h"
-#include "Hash.h"
-#include "NpyLoader.h"
 
 namespace Spectral {
 
@@ -56,18 +53,29 @@ namespace Spectral {
         std::vector<float> rgba;
     };
 
+    // FJ_TEMP_BRIDGE: independent spectral source storage; remove S4.E.
+    struct ReconstructionLut {
+        int size = 0;
+        int numSamples = 0;
+        std::vector<float> data;
+        std::uint64_t assetHash = 0;
+    };
+
+    struct MallettBasis {
+        int rows = 0;
+        int cols = 0;
+        std::vector<float> data;
+    };
+
     struct SpectralContext {
         SpectralShape shape;
         Curve xBar, yBar, zBar;
         std::atomic<bool> hanatosAvailable{false};
-        NpySpectraLUT hanSpectra;
-        std::uint64_t hanatosAssetHash = 0;
+        ReconstructionLut hanSpectra;
         std::atomic<bool> arcticAvailable{false};
-        NpySpectraLUT arcticSpectra;
-        std::uint64_t arcticAssetHash = 0;
-        std::string arcticFailure;
+        ReconstructionLut arcticSpectra;
         std::atomic<bool> mallettAvailable{false};
-        NpyFloat2D mallettBasis;
+        MallettBasis mallettBasis;
     };
 
     inline SpectralContext& context() {
@@ -327,9 +335,9 @@ namespace Spectral {
         gHanatosAvailable.store(available, std::memory_order_release);
     }
 
-    inline NpySpectraLUT& gHanSpectra = context().hanSpectra;
+    inline ReconstructionLut& gHanSpectra = context().hanSpectra;
     inline std::atomic<bool>& gMallettAvailable = context().mallettAvailable;
-    inline NpyFloat2D& gMallettBasis = context().mallettBasis;
+    inline MallettBasis& gMallettBasis = context().mallettBasis;
 
     inline bool hanatos_matches_reference_shape() {
         if (gHanSpectra.size <= 0) {
@@ -344,109 +352,12 @@ namespace Spectral {
         return gShape.K == gHanSpectra.numSamples;
     }
 
-    inline void load_hanatos_spectra_lut(const std::string& path) {
-        NpySpectraLUT spectra;
-        const bool success = load_npy_spectra_lut(path, spectra);
-        const std::size_t expectedDataCount =
-            static_cast<std::size_t>(FilmTcLut::kSize) *
-            static_cast<std::size_t>(FilmTcLut::kSize) *
-            static_cast<std::size_t>(kNumSamples);
-        const bool accepted =
-            success && spectra.size == FilmTcLut::kSize &&
-            spectra.numSamples == kNumSamples &&
-            spectra.data.size() == expectedDataCount &&
-            spectral_shape_matches_reference(gShape) &&
-            gShape.K == spectra.numSamples &&
-            std::all_of(
-                spectra.data.begin(),
-                spectra.data.end(),
-                [](float value) {
-                    return std::isfinite(value);
-                });
-        if (!accepted) {
-            gHanSpectra = NpySpectraLUT{};
-            context().hanatosAssetHash = 0;
-            set_hanatos_available(false);
-            return;
-        }
-
-        gHanSpectra = std::move(spectra);
-        context().hanatosAssetHash = Hash::hash_float_span(
-            gHanSpectra.data.data(),
-            gHanSpectra.data.size());
-        if (context().hanatosAssetHash == 0) {
-            gHanSpectra = NpySpectraLUT{};
-            context().hanatosAssetHash = 0;
-            set_hanatos_available(false);
-            return;
-        }
-        set_hanatos_available(true);
-    }
-
     inline bool arctic_available() {
         return context().arcticAvailable.load(std::memory_order_acquire);
     }
 
     inline void set_arctic_available(bool available) {
         context().arcticAvailable.store(available, std::memory_order_release);
-    }
-
-    inline const std::string& arctic_failure() {
-        return context().arcticFailure;
-    }
-
-    inline void load_arctic2026beta04_spectra_lut(const std::string& path) {
-        constexpr std::uint64_t kExpectedDecodedAssetHash =
-            0x9262ffb765e3289eULL;
-        SpectralContext& spectralContext = context();
-        spectralContext.arcticFailure.clear();
-        NpySpectraLUT spectra;
-        if (!load_npy_spectra_lut(path, spectra)) {
-            spectralContext.arcticFailure =
-                "MissingRequiredResource resource=arctic2026beta04_reflectance_xy_tc.npy requirement=readable_float16_c_order_192x192x81";
-        } else if (spectra.size != FilmTcLut::kSize ||
-                   spectra.numSamples != kNumSamples ||
-                   spectra.sourceElementBytes != 2 ||
-                   spectra.data.size() !=
-                       static_cast<std::size_t>(FilmTcLut::kSize) *
-                           static_cast<std::size_t>(FilmTcLut::kSize) *
-                           static_cast<std::size_t>(kNumSamples)) {
-            spectralContext.arcticFailure =
-                "MalformedRequiredResource resource=arctic2026beta04_reflectance_xy_tc.npy requirement=float16_c_order_192x192x81";
-        } else {
-            const auto [minimum, maximum] =
-                std::minmax_element(spectra.data.begin(), spectra.data.end());
-            const bool finite = std::all_of(
-                spectra.data.begin(),
-                spectra.data.end(),
-                [](float value) {
-                    return std::isfinite(value);
-                });
-            if (!finite || minimum == spectra.data.end() ||
-                *minimum != 0.0f || *maximum != 41.0625f) {
-                spectralContext.arcticFailure =
-                    "MalformedRequiredResource resource=arctic2026beta04_reflectance_xy_tc.npy requirement=finite_range_0_to_41.0625";
-            }
-        }
-        if (!spectralContext.arcticFailure.empty()) {
-            spectralContext.arcticSpectra = NpySpectraLUT{};
-            spectralContext.arcticAssetHash = 0;
-            set_arctic_available(false);
-            return;
-        }
-        spectralContext.arcticAssetHash = Hash::hash_float_span(
-            spectra.data.data(),
-            spectra.data.size());
-        if (spectralContext.arcticAssetHash != kExpectedDecodedAssetHash) {
-            spectralContext.arcticFailure =
-                "MalformedRequiredResource resource=arctic2026beta04_reflectance_xy_tc.npy requirement=sha256_cf5b3dafad6470cdd3981038149374c967820654b94142332808681d364083a6";
-            spectralContext.arcticSpectra = NpySpectraLUT{};
-            spectralContext.arcticAssetHash = 0;
-            set_arctic_available(false);
-            return;
-        }
-        spectralContext.arcticSpectra = std::move(spectra);
-        set_arctic_available(true);
     }
 
     inline bool mallett_available() {
@@ -465,35 +376,6 @@ namespace Spectral {
             return false;
         }
         return true;
-    }
-
-    inline void load_mallett2019_basis_npy(const std::string& path) {
-        NpyFloat2D basis;
-        bool success = load_npy_float2d(path, basis);
-        if (success) {
-            if (basis.rows == Spectral::kNumSamples && basis.cols == 3) {
-                gMallettBasis = std::move(basis);
-                set_mallett_available(true);
-                return;
-            }
-            if (basis.rows == 3 && basis.cols == Spectral::kNumSamples) {
-                NpyFloat2D transposed;
-                transposed.rows = Spectral::kNumSamples;
-                transposed.cols = 3;
-                transposed.data.resize(static_cast<size_t>(transposed.rows) * transposed.cols);
-                for (int r = 0; r < basis.rows; ++r) {
-                    for (int c = 0; c < basis.cols; ++c) {
-                        transposed.data[static_cast<size_t>(c) * 3 + r] =
-                            basis.data[static_cast<size_t>(r) * basis.cols + c];
-                    }
-                }
-                gMallettBasis = std::move(transposed);
-                set_mallett_available(true);
-                return;
-            }
-        }
-        gMallettBasis = NpyFloat2D{};
-        set_mallett_available(false);
     }
 
     // =========================================================================
@@ -640,84 +522,6 @@ namespace Spectral {
     // ============================================================================
 
     // Utility: Load wavelength/value pairs from a CSV file
-    inline std::vector<std::pair<float, float>> load_csv_pairs(const std::string& path) {
-        std::vector<std::pair<float, float>> data;
-        std::ifstream file(path);
-        if (!file.is_open()) {
-            throw std::runtime_error("Could not open CSV: " + path);
-        }
-        std::string line;
-        while (std::getline(file, line)) {
-            if (line.empty())
-                continue;
-            // Strip comments starting at # or ;
-            auto strip_comment = [&](char c) {
-                size_t p = line.find(c);
-                if (p != std::string::npos)
-                    line.erase(p);
-            };
-            strip_comment('#');
-            strip_comment(';');
-            std::istringstream ss(line);
-            float x = 0.0f, y = 0.0f;
-            if (!(ss >> x))
-                continue;
-            // Skip optional comma/semicolon
-            while (ss.peek() == ',' || ss.peek() == ';')
-                ss.get();
-            if (!(ss >> y))
-                continue;
-            data.emplace_back(x, y);
-        }
-        return data;
-    }
-
-    inline CMFTriplets load_csv_triplets(const std::string& path) {
-        CMFTriplets out;
-        std::ifstream file(path);
-        if (!file.is_open()) {
-            throw std::runtime_error("Could not open CSV: " + path);
-        }
-        std::string line;
-        while (std::getline(file, line)) {
-            if (line.empty())
-                continue;
-            auto strip_comment = [&](char c) {
-                size_t p = line.find(c);
-                if (p != std::string::npos)
-                    line.erase(p);
-            };
-            strip_comment('#');
-            strip_comment(';');
-
-            std::istringstream ss(line);
-            float l = 0.0f, xv = 0.0f, yv = 0.0f, zv = 0.0f;
-
-            if (!(ss >> l))
-                continue;
-            while (ss.peek() == ',' || ss.peek() == ';')
-                ss.get();
-
-            if (!(ss >> xv))
-                continue;
-            while (ss.peek() == ',' || ss.peek() == ';')
-                ss.get();
-
-            if (!(ss >> yv))
-                continue;
-            while (ss.peek() == ',' || ss.peek() == ';')
-                ss.get();
-
-            if (!(ss >> zv))
-                continue;
-
-            out.xbar.emplace_back(l, xv);
-            out.ybar.emplace_back(l, yv);
-            out.zbar.emplace_back(l, zv);
-        }
-        return out;
-    }
-
     // ============================================================================
     // SpectralShape Management
     // ============================================================================
@@ -764,37 +568,10 @@ namespace Spectral {
                matches_reference(cmf.zbar);
     }
 
-    inline void set_cie_1931_2deg_cmf(
+    // Construction commits all three curves under bootstrap reader exclusion.
+    void set_cie_1931_2deg_cmf(
         const std::vector<std::pair<float, float>>& xbar,
         const std::vector<std::pair<float, float>>& ybar,
-        const std::vector<std::pair<float, float>>& zbar) {
-        const auto assign_cmf = [](Curve& curve,
-                                   const std::vector<std::pair<float, float>>& samples) {
-            curve.lambda_nm.clear();
-            curve.linear.clear();
-            if (!samples_follow_reference_axis(samples)) {
-                return false;
-            }
-            curve.lambda_nm.reserve(samples.size());
-            curve.linear.reserve(samples.size());
-            for (const auto& sample : samples) {
-                if (!std::isfinite(sample.first)) {
-                    curve.lambda_nm.clear();
-                    curve.linear.clear();
-                    return false;
-                }
-                curve.lambda_nm.push_back(sample.first);
-                curve.linear.push_back(sample.second);
-            }
-            return true;
-        };
-        const bool xOk = assign_cmf(gXBar, xbar);
-        const bool yOk = assign_cmf(gYBar, ybar);
-        const bool zOk = assign_cmf(gZBar, zbar);
-        if (!(xOk && yOk && zOk)) {
-            log_resample_failure("CIE 1931 CMF resample failed",
-                                 {{"x", xOk}, {"y", yOk}, {"z", zOk}});
-        }
-    }
+        const std::vector<std::pair<float, float>>& zbar);
 
 } // namespace Spectral

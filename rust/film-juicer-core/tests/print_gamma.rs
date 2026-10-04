@@ -147,7 +147,7 @@ fn bundled_and_floor_gamma_samples_and_downstream_identities_match_captures() {
         assert_eq!(
             profile
                 .tables()
-                .source_log_exposure()
+                .authored_log_exposure()
                 .iter()
                 .map(|x| x.to_bits())
                 .collect::<Vec<_>>(),

@@ -19,7 +19,7 @@
 #undef FJ_ABI_VALUE
 
 static_assert(std::is_same_v<FjAbortQuery, std::uint32_t (*)(void*)>);
-static_assert(std::is_same_v<decltype(&fj_cuda_create), FjStatus (*)(FjStringView, FjCuda**, FjErrorBuffer*)>);
+static_assert(std::is_same_v<decltype(&fj_cuda_create), FjStatus (*)(FjPathView, FjCuda**, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_cuda_inspect), FjStatus (*)(FjCuda*, const FjFrame*, FjCudaContext*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_cuda_render), FjRenderOutcome (*)(FjCuda*, const FjCudaContext*, const FjFrame*, const FjSubmission*, const FjPreparedHostData*, FjAbortCallback, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_cuda_retire_instance), FjStatus (*)(FjCuda*, std::uint64_t, FjErrorBuffer*)>);

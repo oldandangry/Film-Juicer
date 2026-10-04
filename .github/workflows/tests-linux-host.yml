@@ -40,10 +40,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          wget -qO "$RUNNER_TEMP/cuda-keyring.deb" \
+            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
           sudo apt-get update
-          sudo apt-get install -y gcc-13 g++-13 ninja-build cuda-toolkit-13-2
+          # Clang's CUDA wrapper also needs cuRAND, even for sources that do not use it.
+          sudo apt-get install -y gcc-13 g++-13 ninja-build cuda-toolkit-13-2 libcurand-dev-13-2
+          for header in cuda_runtime.h curand_mtgp32_kernel.h cccl/nv/target; do
+            if [[ ! -f "$CUDAToolkit_ROOT/include/$header" ]]; then
+              echo "::error::CUDA analysis header is missing: $CUDAToolkit_ROOT/include/$header"
+              exit 1
+            fi
+          done
 
       - name: Install LLVM 22 quality tools
         shell: bash
@@ -91,7 +99,7 @@ jobs:
           cmake --preset linux-debug -DBUILD_TESTING=ON
           cmake --build --preset linux-debug
 
-      - name: Run tracked quality checks
+      - name: Run tracked native, CUDA, and Rust quality checks
         shell: bash
         env:
           JUICER_CLANG_FORMAT: clang-format-22
@@ -102,9 +110,10 @@ jobs:
           if [[ -z "$QUALITY_BASE" || "$QUALITY_BASE" =~ ^0+$ ]]; then
             QUALITY_BASE="$(git rev-parse HEAD^)"
           fi
-          python scripts/check-quality.py \
+          python -u scripts/check-quality.py \
             --base "$QUALITY_BASE" \
-            --preset linux-debug
+            --preset linux-debug \
+            --jobs 2
 
       - name: List tests and run host selection
         shell: bash
@@ -122,4 +131,15 @@ jobs:
         with:
           name: linux-debug-host-junit
           path: out/validation/linux-debug/host-junit.xml
+          if-no-files-found: warn
+
+      - name: Upload quality diagnostics and CUDA commands
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: linux-debug-quality
+          path: |
+            out/validation/linux-debug/quality/**/*.log
+            out/validation/linux-debug/quality/cuda-command-*.json
+            out/build/linux-debug/compile_commands.json
           if-no-files-found: warn

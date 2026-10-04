@@ -106,8 +106,8 @@ struct ProfileRoute {
     Spektrafilm::ProfilePolarity capturePolarity = Spektrafilm::ProfilePolarity::Unsupported;
     std::uint64_t filmProfileAssetVersionToken = 0;
     std::uint64_t printProfileAssetVersionToken = 0;
-    std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
-    std::shared_ptr<const Profiles::ValidatedPrintProfile> printProfile;
+    std::shared_ptr<const Profiles::FilmProfile> filmProfile;
+    std::shared_ptr<const Profiles::PrintProfile> printProfile;
     std::uint64_t hash = 0;
 };
 
@@ -757,7 +757,7 @@ namespace Spektrafilm {
     struct FilmFoundationBuildInput {
         double gateWeaveAmount = 0.0;
         std::uint64_t tcSourceAssetHash = 0;
-        std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
+        std::shared_ptr<const Profiles::FilmProfile> filmProfile;
         std::shared_ptr<const Gamut::InputCompressionHull> inputCompressionHull;
         std::array<double, 3> cameraFilterUV{{1.0, 410.0, 8.0}};
         std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
@@ -817,7 +817,7 @@ namespace Spektrafilm {
     struct PrintRecipeBuildInput {
         FilmFoundationBuildInput film;
         std::string printProfileKey;
-        std::shared_ptr<const Profiles::ValidatedPrintProfile> printProfile;
+        std::shared_ptr<const JuicerAssets::PrintProfileSource> printSource;
         NeutralCalibrationStatus neutralCalibrationStatus = NeutralCalibrationStatus::MissingEntry;
         CmyCcTriplet currentNeutralCmyCc{0.0f, 65.0f, 55.0f};
         CmyCcTriplet calibratedNeutralCmyCc{0.0f, 65.0f, 55.0f};
@@ -873,11 +873,6 @@ namespace Spektrafilm {
 
     DirectRecipeBuildResult build_direct_render_recipe(const DirectRecipeBuildInput& input);
     PrintRecipeBuildResult build_print_render_recipe(const PrintRecipeBuildInput& input);
-    std::array<double, 3> evaluate_print_density_sample(
-        const Profiles::DensityCurveModel& model,
-        double gammaFactor,
-        ProfilePolarity polarity,
-        double logExposure);
     float print_exposure_normalizer(
         PrintNormalizationMode mode,
         float factorMidgray,

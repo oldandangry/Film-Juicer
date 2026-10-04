@@ -113,10 +113,6 @@ namespace JuicerCuda {
         FocusedRouteResourceInput& input,
         std::string& outError);
 
-    bool build_static_noise_input(
-        const JuicerAssets::StaticNoisePayloadSet& payloads,
-        StaticNoiseInput& input,
-        std::string& outError);
 
     // The returned illuminant span borrows the caller's storage through the immediate call.
     // Production preparation invokes this derivation only for missing resource descriptors.

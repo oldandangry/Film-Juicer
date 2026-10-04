@@ -44,3 +44,28 @@ cohort.
 Ordinary CTest execution reads the fixture but never modifies or regenerates
 it. Reference regeneration remains separate private evidence work until its
 generator and pinned environment form a complete public maintenance unit.
+
+The profile rows in `ScatterHalation.Gpu.HostContracts` acquire completed film
+profiles through `tests/ffi/juicer_test_api.h`. Each row stages a separate real
+catalog with the required film/print defaults. Its consume-once owner remains
+live for all borrowed-view reads; JSON is used only to author scratch inputs.
+Production profile ingestion remains separate until its cutover.
+
+Coefficient assertions follow the accepted Rust density contract: zero sigma
+produces a step away from the center, negative sigma reverses the CDF, a center
+narrowing to positive infinity produces zero, and a sigma narrowing to infinity
+produces half amplitude. Infinite amplitude and zero sigma at the exact center
+fail during density computation. Exact endpoint/center identities and the
+approved C1/C4 density contract supply expectations; no candidate capture or
+native evaluator is used. Metadata defaults/tags, unsupported representations,
+descending-axis and shape failures, nullable spectra, variable/duplicate axes,
+ordered narrowing infinities, and exposure-major CMY/layer-channel order remain
+covered. Checked-in numerical fixtures retain their bytes and provenance.
+
+`Profile.Gpu.NativeSafety` qualifies the production device density helpers,
+TC/scanner coordinate conversions and LUT consumers, plus direct/print film
+capture-development launchers at singleton, 17- and 257-sample axes. It preserves
+the existing device special-value sanitation and interpolation policy. Native
+prepared-span count/product failures remain in `Ffi.Host.PreparedProjection`.
+These tests require CUDA hardware; they do not establish installed-host or
+visual acceptance.
