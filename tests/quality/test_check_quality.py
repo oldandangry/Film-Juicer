@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import importlib.util
 import io
 import json
@@ -106,6 +107,34 @@ class CheckQualityTests(unittest.TestCase):
                 native.assert_not_called()
                 self.assertNotIn("Quality checks passed", output.getvalue())
 
+    def test_policy_changes_cannot_skip_required_checks(self) -> None:
+        for path in ("Cargo.toml", "rust/film-juicer-core/Cargo.toml", "tests/quality/test_rust_boundaries.py", "scripts/check-quality.py"):
+            with (
+                self.subTest(path=path),
+                patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", path]),
+                patch.object(check_quality, "Runner") as runner,
+                patch.object(check_quality, "check_source_hygiene"),
+                patch.object(check_quality, "check_rust") as rust,
+                patch.object(check_quality, "check_native"),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(check_quality.main(), 0)
+                rust.assert_called_once()
+                labels = [call.kwargs["label"] for call in runner.return_value.run.call_args_list]
+                self.assertIn("native-boundary-enforcement", labels)
+
+    def test_native_boundary_failure_blocks_even_documentation_selection(self) -> None:
+        with (
+            patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", "CONTRIBUTING.md"]),
+            patch.object(check_quality, "Runner") as runner,
+            patch.object(check_quality, "check_source_hygiene"),
+            contextlib.redirect_stdout(io.StringIO()) as output,
+        ):
+            runner.return_value.run.side_effect = ["", check_quality.QualityError("boundary violation")]
+            with self.assertRaisesRegex(check_quality.QualityError, "boundary violation"):
+                check_quality.main()
+            self.assertNotIn("Quality checks passed", output.getvalue())
+
     def test_cuda_header_selects_real_c_and_cpp_consumers(self) -> None:
         root = SCRIPT_PATH.parent.parent
         policy = check_quality.load_policy(root)
@@ -152,6 +181,82 @@ class CheckQualityTests(unittest.TestCase):
                 )
             with self.assertRaises(check_quality.QualityError):
                 check_quality.check_workspace_contract(root)
+
+
+class DependencyContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = SCRIPT_PATH.parent.parent
+        registry = "registry+https://github.com/rust-lang/crates.io-index"
+        self.core = {
+            "id": "core", "name": "film-juicer-core",
+            "manifest_path": str(self.root / "rust/film-juicer-core/Cargo.toml"),
+            "links": None, "targets": [{"kind": ["lib"]}],
+            "dependencies": [
+                {"name": name, "kind": None, "source": registry}
+                for name in ("libm", "serde", "serde_json")
+            ],
+        }
+        self.plugin = {
+            "id": "plugin", "name": "film-juicer-plugin",
+            "manifest_path": str(self.root / "rust/film-juicer-plugin/Cargo.toml"),
+            "links": None, "targets": [{"kind": ["staticlib"]}],
+            "dependencies": [{
+                "name": "film-juicer-core", "kind": None,
+                "path": str(self.root / "rust/film-juicer-core"),
+            }],
+        }
+        self.metadata = {
+            "packages": [self.core, self.plugin, *[
+                {"id": name, "name": name, "source": registry}
+                for name in ("libm", "serde", "serde_json")
+            ]],
+            "workspace_members": ["core", "plugin"],
+            "resolve": {"nodes": [
+                {"id": "core", "deps": [{"pkg": name} for name in ("libm", "serde", "serde_json")]},
+                {"id": "plugin", "deps": [{"pkg": "core"}]},
+            ]},
+        }
+
+    def test_current_dependencies_pass(self) -> None:
+        check_quality.check_dependency_contract(self.root, self.metadata)
+
+    def test_inactive_renamed_dependency_is_not_hidden(self) -> None:
+        self.core["dependencies"].append({
+            "name": "cuda-sys", "rename": "tables", "kind": None,
+            "target": "cfg(windows)", "optional": True,
+        })
+        with self.assertRaisesRegex(check_quality.QualityError, "direct dependencies"):
+            check_quality.check_dependency_contract(self.root, self.metadata)
+
+    def test_native_build_hooks_and_links_are_rejected(self) -> None:
+        for index in (0, 1):
+            for field, value in (("links", "cuda"), ("targets", [{"kind": ["custom-build"]}])):
+                with self.subTest(member=index, field=field):
+                    metadata = copy.deepcopy(self.metadata)
+                    metadata["packages"][index][field] = value
+                    with self.assertRaisesRegex(check_quality.QualityError, "belong to CMake"):
+                        check_quality.check_dependency_contract(self.root, metadata)
+
+    def test_build_or_dev_dependency_requires_contract_change(self) -> None:
+        for kind in ("build", "dev"):
+            self.core["dependencies"][0]["kind"] = kind
+            with self.subTest(kind=kind), self.assertRaisesRegex(check_quality.QualityError, "unapproved"):
+                check_quality.check_dependency_contract(self.root, self.metadata)
+
+    def test_plugin_cannot_select_another_core(self) -> None:
+        self.plugin["dependencies"][0]["path"] = str(self.root / "alternate-core")
+        with self.assertRaisesRegex(check_quality.QualityError, "workspace core by path"):
+            check_quality.check_dependency_contract(self.root, self.metadata)
+
+    def test_local_registry_patch_is_not_hidden(self) -> None:
+        self.metadata["packages"][2]["source"] = None
+        with self.assertRaisesRegex(check_quality.QualityError, "source override: libm"):
+            check_quality.check_dependency_contract(self.root, self.metadata)
+
+    def test_new_workspace_member_requires_contract_change(self) -> None:
+        self.metadata["workspace_members"].append("libm")
+        with self.assertRaisesRegex(check_quality.QualityError, "only the core and plugin"):
+            check_quality.check_dependency_contract(self.root, self.metadata)
 
 
 class CudaQualityTests(unittest.TestCase):

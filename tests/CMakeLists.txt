@@ -275,6 +275,18 @@ add_test(NAME Quality.RustNaming
 set_tests_properties(Quality.RustNaming PROPERTIES
     LABELS "host" TIMEOUT 180)
 
+add_test(NAME Quality.RustBoundaries
+    COMMAND "${CMAKE_COMMAND}" -E env
+        "JUICER_CARGO=${JUICER_CARGO_EXECUTABLE}"
+        "JUICER_RUST_TARGET=${JUICER_RUST_TARGET}"
+        "JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/quality/rust-boundaries"
+        "PYTHONDONTWRITEBYTECODE=1"
+        "${Python3_EXECUTABLE}" -m unittest discover
+            -s "${CMAKE_CURRENT_SOURCE_DIR}/quality"
+            -p test_rust_boundaries.py -v)
+set_tests_properties(Quality.RustBoundaries PROPERTIES
+    LABELS "host" TIMEOUT 240)
+
 file(GLOB_RECURSE JUICER_TEST_RESOURCE_FILES CONFIGURE_DEPENDS
     LIST_DIRECTORIES FALSE "${PROJECT_SOURCE_DIR}/Resources/*")
 set(JUICER_TEST_RESOURCE_STAMP "${CMAKE_CURRENT_BINARY_DIR}/resources.stamp")

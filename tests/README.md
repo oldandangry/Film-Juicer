@@ -162,6 +162,8 @@ cmake --build --preset linux-debug
 | `gamma/test_compare.py` | Comparator bounds, applicability, non-finite rejection and CLI failure propagation | `host` |
 | `quality/test_check_quality.py` | Quality dispatcher selection, CUDA command translation and header owners, source hygiene, and failure propagation | `host` |
 | `quality/test_rust_naming.py` | Product naming-policy contract: current Rust code, accepted names, individually rejected names, test targets, and reasoned foreign-name exceptions under the actual workspace lints | `host`; pinned Cargo and Clippy required |
+| `quality/test_rust_boundaries.py` | Dependency/build contract and compiler-enforced profile privacy, borrowed-view lifetimes and safe-module prohibitions, with valid consumer controls | `host`; pinned Cargo required |
+| `ffi/test_native_boundary.py` | Native operation/host/context boundaries and retired profile authority, including new nested source/header and forbidden-symbol controls | `host` |
 | `ofx/probe.py` | Linux synthetic OFX load/describe/unload and captured describe properties; no parameter varargs or render | `host`, Linux only |
 | `ofx/processor_reference_test.cpp` | Native OFX image/property seam driving the current CUDA processor for four routes, a combined optics/grain/print case, and signed-zero print transitions | `gpu` |
 | `ofx/adapter_trace_test.cpp` | Genuine native OFX parameter/image fixture driving the actual `JuicerEffect` event and render callbacks through time, seek, preset/reset, undo/redo-like, and invalid/recovery sequences | `gpu` |
@@ -178,6 +180,25 @@ the normal configured build supplies cached dependencies. Logs remain in the
 artifact directory after temporary workspace cleanup. Run it with
 `ctest --preset <preset> -R '^Quality.RustNaming$' --output-on-failure`, or use
 the quality dispatcher, which supplies the same tool and artifact environment.
+
+`Quality.RustBoundaries` uses one temporary workspace per run and reuses its Cargo
+cache across compiler probes. It removes that workspace on completion and keeps
+logs under `out/validation/<preset>/quality/rust-boundaries/`. Run
+`ctest --preset <preset> -R '^Quality.RustBoundaries$' --output-on-failure` or the
+quality dispatcher. Cargo is offline and locked; the configured build supplies
+the dependencies. Each negative fixture in `quality/fixtures/rust_boundaries/`
+must fail for its expected compiler code at its own source location, not because
+of missing tooling or an unrelated error. These are product API contracts, not
+external numerical references. Valid use runs with and without `test-support`;
+both development and release profiles are checked. The probes compile without
+linking or executing native CUDA calls.
+
+Add construction/lifetime probes as the corresponding real API lands. Put
+identity, reuse, conversion and failure-transition cases in the owning domain's
+existing tests, using independent expected values. After a completed cutover,
+extend `Ffi.Host.NativeBoundary` for concrete retired symbols/dependencies and
+add accepted/rejected controls. Do not replace contextual ownership review with
+function-size limits, generic source parsers or an expanding exception baseline.
 
 The diffusion fixture is an external reference. The scatter binary fixture is
 also an external reference with revision, shape, channel order and numerical

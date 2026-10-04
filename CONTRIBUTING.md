@@ -144,6 +144,33 @@ rejected identifiers by compiler diagnostic code and location, and exercises
 valid domain names and a narrow foreign-boundary exception. It adds no product
 dependency and leaves the production source and checked-in fixtures untouched.
 
+`Quality.RustBoundaries` checks the current two-crate dependency contract using
+Cargo metadata, including inactive target-specific declarations and resolved
+source overrides. Direct dependency changes, new workspace members and crate
+build/link hooks require an explicit change to the contract in the quality
+runner and contextual review. This does not audit dependency internals.
+Compiler probes also require valid profile consumers to compile and reject
+escaping borrowed views, early owner release, private profile-storage access,
+and local unsafe overrides in the core and safe asset modules. Probes run in
+disposable workspace copies in both profiles and check diagnostic codes and
+locations. Extend them when a new construction or safe orchestration boundary
+lands; do not create speculative production APIs for tests.
+
+The dispatcher always runs the inexpensive native boundary guards across their
+whole source scope, including new nested headers. They reject host messaging in
+native/CUDA execution, host-context reset calls, and the retired native profile
+parser/store and build entries. These are narrow source-text checks, including
+comments, not a general architectural proof. Add a guard when a cutover completes,
+with accepted and rejected examples; do not forbid a still-required bridge early.
+Family tests must separately establish relevant/irrelevant identity changes,
+conversion ownership, reuse and failure publication at the actual consumer.
+
+CI runs these tests in the existing Linux and Windows host lanes. Repository
+administrators must make those statuses required and configure independent review
+to enforce them at merge; checked-in workflows cannot establish branch protection.
+Changes to a guard, its scope, or its exceptions require review of the boundary
+and a negative control, not just a green run of the modified check.
+
 Before invoking compiler tools, the shared dispatcher checks whole selected
 owned C/C++/CUDA files for trailing whitespace, merge conflict markers, retired
 `JUICER_TESTS` and `JUICER_BUILD_VALIDATION` flags, `std::endl`, and line-leading

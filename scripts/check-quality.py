@@ -51,6 +51,12 @@ PRESET_TARGETS = {
     "windows-clang-release": "x86_64-pc-windows-msvc",
 }
 RUST_VERSION = "1.98.1"
+# Direct package dependencies, including inactive target-specific declarations.
+# A new dependency or build hook is an architectural change, not just a lock update.
+RUST_DEPENDENCIES = {
+    "film-juicer-core": frozenset({"libm", "serde", "serde_json"}),
+    "film-juicer-plugin": frozenset({"film-juicer-core"}),
+}
 REPRESENTATIVE_NATIVE_FILES = (
     "src/main.cpp",
     "src/Cuda/Film/JuicerCudaFilmPipeline.cu",
@@ -94,6 +100,7 @@ class Runner:
         env: dict[str, str] | None = None,
         cwd: Path | None = None,
         label: str,
+        display_output: bool = True,
     ) -> str:
         self.index += 1
         safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-")
@@ -111,7 +118,7 @@ class Runner:
             check=False,
         )
         log_path.write_text(completed.stdout, encoding="utf-8")
-        if completed.stdout:
+        if completed.stdout and display_output:
             print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
         if completed.returncode != 0:
             raise QualityError(
@@ -392,6 +399,47 @@ def check_workspace_contract(root: Path) -> None:
         raise QualityError("film-juicer-core must retain #![forbid(unsafe_code)]")
 
 
+def check_dependency_contract(root: Path, metadata: dict) -> None:
+    packages = {package["id"]: package for package in metadata["packages"]}
+    resolved = {node["id"]: node for node in metadata["resolve"]["nodes"]}
+    members = [packages[identity] for identity in metadata["workspace_members"]]
+    if {member["name"] for member in members} != set(RUST_DEPENDENCIES) or len(members) != 2:
+        raise QualityError("Rust workspace must contain only the core and plugin crates")
+    for member in members:
+        name = member["name"]
+        manifest = root / "rust" / name / "Cargo.toml"
+        if Path(member["manifest_path"]).resolve() != manifest.resolve():
+            raise QualityError(f"unexpected workspace member location: {name}")
+        if member.get("links") or any(
+            "custom-build" in target["kind"] for target in member["targets"]
+        ):
+            raise QualityError(f"{name}: native link declarations/build scripts belong to CMake")
+        dependencies = member["dependencies"]
+        if {dependency["name"] for dependency in dependencies} != RUST_DEPENDENCIES[name]:
+            raise QualityError(f"{name}: direct dependencies differ from the architectural contract")
+        for dependency in dependencies:
+            identity = dependency["name"]
+            if dependency["kind"] is not None:
+                raise QualityError(f"{name}: unapproved {dependency['kind']} dependency: {identity}")
+            if identity == "film-juicer-core":
+                expected = root / "rust/film-juicer-core"
+                if not dependency.get("path") or Path(dependency["path"]).resolve() != expected.resolve():
+                    raise QualityError("plugin must depend on the workspace core by path")
+            elif dependency.get("path") or dependency.get("source") != "registry+https://github.com/rust-lang/crates.io-index":
+                raise QualityError(f"{name}: {identity} must retain its crates.io source")
+        # Inspect actual direct resolutions too: a workspace patch can replace
+        # a crates.io declaration with a local/native implementation.
+        for edge in resolved[member["id"]]["deps"]:
+            dependency = packages[edge["pkg"]]
+            if dependency["name"] not in RUST_DEPENDENCIES[name]:
+                raise QualityError(f"{name}: unexpected resolved dependency: {dependency['name']}")
+            if dependency["name"] == "film-juicer-core":
+                if Path(dependency["manifest_path"]).resolve() != (root / "rust/film-juicer-core/Cargo.toml").resolve():
+                    raise QualityError("plugin resolves a different core package")
+            elif dependency.get("source") != "registry+https://github.com/rust-lang/crates.io-index":
+                raise QualityError(f"{name}: dependency source override: {dependency['name']}")
+
+
 def check_rust(
     root: Path,
     runner: Runner,
@@ -425,6 +473,13 @@ def check_rust(
         raise QualityError(f"qualified Clippy 0.1.98 is required; got {clippy_version}")
 
     check_workspace_contract(root)
+    metadata = runner.run(
+        [cargo, "metadata", "--locked", "--offline", "--format-version", "1"],
+        env=environment,
+        label="rust-dependency-contract",
+        display_output=False,
+    )
+    check_dependency_contract(root, json.loads(metadata))
     target_dir = root / "out/build" / arguments.preset / "cargo"
     common = [
         cargo,
@@ -468,6 +523,18 @@ def check_rust(
             "PYTHONDONTWRITEBYTECODE": "1",
         },
         label="rust-naming-enforcement",
+    )
+    runner.run(
+        [sys.executable, "-m", "unittest", "discover", "-s", "tests/quality",
+         "-p", "test_rust_boundaries.py", "-v"],
+        env={
+            **environment,
+            "JUICER_CARGO": cargo,
+            "JUICER_RUST_TARGET": target,
+            "JUICER_TEST_ARTIFACT_DIR": str(runner.log_dir / "rust-boundaries"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        label="rust-boundary-enforcement",
     )
 
 
@@ -835,6 +902,15 @@ def main() -> int:
         diff_command = ["git", "diff", "--check"]
     runner.run(diff_command, label="git-diff-check")
 
+    # These inexpensive guards inspect their complete boundary, even for a
+    # documentation-only selection or a newly introduced native helper/header.
+    runner.run(
+        [sys.executable, "-m", "unittest", "discover", "-s", "tests/ffi",
+         "-p", "test_native_boundary.py", "-v"],
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        label="native-boundary-enforcement",
+    )
+
     runner_changed = (
         any(path.startswith(QUALITY_RUNNER_PREFIXES) for path in selected)
         or any(path in NATIVE_POLICY_FILES for path in selected)
@@ -871,7 +947,7 @@ def main() -> int:
         check_native(root, runner, arguments, native_files, policy)
 
     if not rust_required and not native_required:
-        print("Documentation/configuration-only selection: diff check and review apply.")
+        print("Documentation/configuration-only selection: diff/boundary checks and review apply.")
     print(f"Quality checks passed; logs: {log_dir}")
     return 0
 
