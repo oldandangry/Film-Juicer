@@ -12,7 +12,9 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Sequence
@@ -86,12 +88,23 @@ class CompilationEntry:
     arguments: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class AnalysisCommand:
+    command: Sequence[str]
+    directory: Path
+    label: str
+
+
 class Runner:
-    def __init__(self, root: Path, log_dir: Path) -> None:
+    def __init__(self, root: Path, log_dir: Path, jobs: int = 1) -> None:
+        if jobs < 1:
+            raise QualityError("analysis jobs must be at least 1")
         self.root = root
         self.log_dir = log_dir
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.jobs = jobs
         self.index = 0
+        self.output_lock = threading.Lock()
 
     def run(
         self,
@@ -102,29 +115,50 @@ class Runner:
         label: str,
         display_output: bool = True,
     ) -> str:
-        self.index += 1
         safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-")
-        log_path = self.log_dir / f"{self.index:02d}-{safe_label}.log"
-        print("+", subprocess.list2cmdline(command))
-        completed = subprocess.run(
-            command,
-            cwd=cwd or self.root,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        with self.output_lock:
+            self.index += 1
+            log_path = self.log_dir / f"{self.index:02d}-{safe_label}.log"
+            print("+", subprocess.list2cmdline(command))
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=cwd or self.root,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except OSError as exc:
+            log_path.write_text(f"{label}: could not start command: {exc}\n", encoding="utf-8")
+            raise QualityError(f"{label}: could not start command; see {log_path}") from exc
         log_path.write_text(completed.stdout, encoding="utf-8")
         if completed.stdout and display_output:
-            print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
+            with self.output_lock:
+                print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
         if completed.returncode != 0:
             raise QualityError(
                 f"{label} failed with exit code {completed.returncode}; see {log_path}"
             )
         return completed.stdout.strip()
+
+
+    def run_analysis(self, commands: Sequence[AnalysisCommand]) -> None:
+        failures: list[str] = []
+        with ThreadPoolExecutor(max_workers=self.jobs) as executor:
+            futures = [executor.submit(
+                self.run, item.command, cwd=item.directory, label=item.label,
+            ) for item in commands]
+            for item, future in zip(commands, futures):
+                try:
+                    future.result()
+                except Exception as exc:
+                    failures.append(f"{item.label}: {exc}")
+        if failures:
+            raise QualityError("analysis failed:\n" + "\n".join(failures))
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -140,7 +174,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--rustc", help="rustc executable override")
     parser.add_argument("--clang-format", dest="clang_format")
     parser.add_argument("--clang-tidy", dest="clang_tidy")
-    return parser.parse_args()
+    parser.add_argument("--jobs", type=int, default=2,
+                        help="maximum concurrent native/CUDA analysis commands (default: 2)")
+    arguments = parser.parse_args()
+    if arguments.jobs < 1:
+        parser.error("--jobs must be at least 1")
+    return arguments
 
 
 def normalize_path(root: Path, value: str) -> str:
@@ -766,11 +805,12 @@ def prepare_cuda_overlay(root: Path, log_dir: Path) -> Path:
     return overlay
 
 
-def check_cuda(
+def prepare_cuda_analysis(
     root: Path, runner: Runner, clang_tidy: str, entries: Sequence[CompilationEntry],
-) -> None:
+) -> list[AnalysisCommand]:
     overlay = prepare_cuda_overlay(root, runner.log_dir)
     qualified: dict[tuple[Path, Path], list[str]] = {}
+    commands: list[AnalysisCommand] = []
     for index, entry in enumerate(entries, start=1):
         nvcc, host, frontend = cuda_frontend_arguments(root, entry)
         key = (nvcc, host)
@@ -806,7 +846,10 @@ def check_cuda(
             "nvcc_arguments": list(entry.arguments or split_compiler_command(entry.command)),
             "clang_tidy_arguments": command,
         }, indent=2) + "\n", encoding="utf-8")
-        runner.run(command, cwd=entry.directory, label=f"clang-tidy-cuda-{index}-{Path(entry.path).name}")
+        commands.append(AnalysisCommand(
+            command, entry.directory, f"clang-tidy-cuda-{index}-{Path(entry.path).name}",
+        ))
+    return commands
 
 
 def check_native(
@@ -849,10 +892,11 @@ def check_native(
     if not translation_units:
         raise QualityError("native selection has no translation unit for clang-tidy")
     build_dir = root / "out/build" / arguments.preset
+    commands: list[AnalysisCommand] = []
     for index, translation_unit in enumerate(translation_units, start=1):
         if PurePosixPath(translation_unit).suffix.lower() == ".cu":
             continue
-        runner.run(
+        commands.append(AnalysisCommand(
             [
                 clang_tidy,
                 "-p",
@@ -860,14 +904,16 @@ def check_native(
                 "--warnings-as-errors=*",
                 translation_unit,
             ],
-            label=f"clang-tidy-{index}-{PurePosixPath(translation_unit).name}",
-        )
+            root,
+            f"clang-tidy-{index}-{PurePosixPath(translation_unit).name}",
+        ))
     cuda_entries = list(dict.fromkeys(
         entry for entry in entries
         if entry.path in translation_units and PurePosixPath(entry.path).suffix.lower() == ".cu"
     ))
     if cuda_entries:
-        check_cuda(root, runner, clang_tidy, cuda_entries)
+        commands.extend(prepare_cuda_analysis(root, runner, clang_tidy, cuda_entries))
+    runner.run_analysis(commands)
 
 
 def main() -> int:
@@ -877,7 +923,7 @@ def main() -> int:
     selected, excluded = select_paths(root, arguments, policy)
     target = PRESET_TARGETS[arguments.preset]
     log_dir = root / "out/validation" / arguments.preset / "quality"
-    runner = Runner(root, log_dir)
+    runner = Runner(root, log_dir, jobs=arguments.jobs)
 
     print("Selected files:")
     for path in selected:

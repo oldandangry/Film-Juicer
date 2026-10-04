@@ -173,7 +173,8 @@ jobs:
           }
           python -u scripts/check-quality.py `
             --base $qualityBase `
-            --preset windows-clang-debug
+            --preset windows-clang-debug `
+            --jobs 2
 
       - name: List tests and run host selection
         shell: pwsh

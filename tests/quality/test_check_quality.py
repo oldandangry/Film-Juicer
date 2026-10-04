@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -181,6 +182,97 @@ class CheckQualityTests(unittest.TestCase):
                 )
             with self.assertRaises(check_quality.QualityError):
                 check_quality.check_workspace_contract(root)
+
+
+class ParallelAnalysisTests(unittest.TestCase):
+    def test_cli_requires_a_positive_worker_limit(self) -> None:
+        base = [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", "CONTRIBUTING.md"]
+        for count in (1, 2, 4):
+            with self.subTest(count=count), patch.object(sys, "argv", [*base, "--jobs", str(count)]):
+                self.assertEqual(check_quality.parse_arguments().jobs, count)
+        with patch.object(sys, "argv", base):
+            self.assertEqual(check_quality.parse_arguments().jobs, 2)
+        for count in ("0", "-1", "invalid"):
+            with self.subTest(count=count), patch.object(sys, "argv", [*base, "--jobs", count]), \
+                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
+                check_quality.parse_arguments()
+            self.assertEqual(failure.exception.code, 2)
+
+    def test_serial_and_parallel_commands_keep_arguments_directories_and_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for jobs in (1, 2, 4):
+                logs = root / str(jobs)
+                runner = check_quality.Runner(root, logs, jobs)
+                commands = [check_quality.AnalysisCommand(
+                    [sys.executable, "-c", "import os,sys; print(os.getcwd()); print(sys.argv[1])", token],
+                    root, "same-label",
+                ) for token in ("one space", "two", "three", "four")]
+                with contextlib.redirect_stdout(io.StringIO()):
+                    runner.run_analysis(commands)
+                outputs = [path.read_text(encoding="utf-8").splitlines() for path in logs.glob("*.log")]
+                self.assertEqual(len(outputs), 4)
+                self.assertEqual({output[1] for output in outputs}, {item.command[-1] for item in commands})
+                self.assertTrue(all(Path(output[0]).resolve() == root.resolve() for output in outputs))
+
+    def test_worker_limit_allows_overlap_without_exceeding_the_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = check_quality.Runner(root, root / "logs", 2)
+            barrier = threading.Barrier(2, timeout=5)
+            lock = threading.Lock()
+            active = peak = 0
+
+            def command(arguments, **kwargs):
+                nonlocal active, peak
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                try:
+                    barrier.wait()
+                    return subprocess.CompletedProcess(arguments, 0, stdout=arguments[-1] + "\n")
+                finally:
+                    with lock:
+                        active -= 1
+
+            commands = [check_quality.AnalysisCommand(["tool", str(i)], root, f"analysis-{i}") for i in range(4)]
+            with patch.object(check_quality.subprocess, "run", side_effect=command), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                runner.run_analysis(commands)
+            self.assertEqual(peak, 2)
+            self.assertEqual(active, 0)
+            self.assertEqual(len(list(runner.log_dir.glob("*.log"))), 4)
+
+    def test_all_findings_are_observed_before_parallel_analysis_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = check_quality.Runner(root, root / "logs", 2)
+            barrier = threading.Barrier(2, timeout=5)
+
+            def command(arguments, **kwargs):
+                status = int(arguments[-1])
+                if status:
+                    barrier.wait()
+                return subprocess.CompletedProcess(arguments, status, stdout=f"status {status}\n")
+
+            commands = [check_quality.AnalysisCommand(["tool", str(i)], root, f"analysis-{i}") for i in (7, 9, 0)]
+            with patch.object(check_quality.subprocess, "run", side_effect=command), \
+                 contextlib.redirect_stdout(io.StringIO()), self.assertRaises(check_quality.QualityError) as failure:
+                runner.run_analysis(commands)
+            self.assertIn("exit code 7", str(failure.exception))
+            self.assertIn("exit code 9", str(failure.exception))
+            self.assertEqual(len(list(runner.log_dir.glob("*.log"))), 3)
+
+    def test_launch_failure_is_logged_and_cannot_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = check_quality.Runner(root, root / "logs", 2)
+            commands = [check_quality.AnalysisCommand(
+                [str(root / "missing-tool")], root, "missing-tool",
+            )]
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(check_quality.QualityError):
+                runner.run_analysis(commands)
+            self.assertIn("could not start command", (runner.log_dir / "01-missing-tool.log").read_text())
 
 
 class DependencyContractTests(unittest.TestCase):
@@ -383,10 +475,11 @@ class CudaQualityTests(unittest.TestCase):
         arguments = argparse.Namespace(clang_format=None, clang_tidy=None, preset="linux-debug")
         with patch.object(check_quality, "resolve_tool", return_value="tool"), \
              patch.object(check_quality, "compilation_entries", return_value=entries), \
-             patch.object(check_quality, "check_cuda", side_effect=check_quality.QualityError("CUDA finding")) as cuda:
+             patch.object(check_quality, "prepare_cuda_analysis", side_effect=check_quality.QualityError("CUDA finding")) as cuda:
             with self.assertRaisesRegex(check_quality.QualityError, "CUDA finding"):
                 check_quality.check_native(self.root, runner, arguments, ["src/kernel.cuh"], self.policy)
         cuda.assert_called_once_with(self.root, runner, "tool", entries)
+        runner.run_analysis.assert_not_called()
 
     def test_overlay_retains_vendor_implementation_and_license(self) -> None:
         root = SCRIPT_PATH.parent.parent
@@ -413,14 +506,14 @@ class CudaQualityTests(unittest.TestCase):
         entries = [self.entry(), self.entry(self.arguments + ["-DTEST_VARIANT=1"])]
         with patch.object(check_quality, "prepare_cuda_overlay", return_value=log_dir), \
              patch.dict(os.environ, {"VCToolsInstallDir": str(self.root / "msvc")}):
-            check_quality.check_cuda(self.root, runner, "clang-tidy", entries)
-        calls = [call for call in runner.run.call_args_list if call.args[0][0] == "clang-tidy"]
-        self.assertEqual(len(calls), 2)
-        self.assertIn("TEST_VARIANT=1", calls[1].args[0])
-        for call in calls:
-            self.assertIn("--warnings-as-errors=*", call.args[0])
-            self.assertIn(f"--config-file={self.root / '.clang-tidy'}", call.args[0])
-            self.assertEqual(call.kwargs["cwd"], self.build)
+            commands = check_quality.prepare_cuda_analysis(self.root, runner, "clang-tidy", entries)
+        self.assertEqual(len(commands), 2)
+        self.assertIn("TEST_VARIANT=1", commands[1].command)
+        for item in commands:
+            self.assertIn("--warnings-as-errors=*", item.command)
+            self.assertIn(f"--config-file={self.root / '.clang-tidy'}", item.command)
+            self.assertEqual(item.directory, self.build)
+        self.assertFalse(any(call.args[0][0] == "clang-tidy" for call in runner.run.call_args_list))
         receipt = json.loads((log_dir / "cuda-command-1.json").read_text(encoding="utf-8"))
         self.assertEqual(receipt["nvcc_arguments"], self.arguments)
 
@@ -429,7 +522,7 @@ class CudaQualityTests(unittest.TestCase):
         runner.run.return_value = "Cuda compilation tools, release 13.2, V13.2.86"
         with patch.object(check_quality, "prepare_cuda_overlay", return_value=self.root):
             with self.assertRaisesRegex(check_quality.QualityError, "cuRAND development headers"):
-                check_quality.check_cuda(self.root, runner, "clang-tidy", [self.entry()])
+                check_quality.prepare_cuda_analysis(self.root, runner, "clang-tidy", [self.entry()])
         self.assertEqual(runner.run.call_count, 1)
 
 

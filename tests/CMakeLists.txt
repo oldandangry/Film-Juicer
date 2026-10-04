@@ -294,6 +294,12 @@ set_tests_properties(Quality.Dispatcher PROPERTIES
     TIMEOUT 60
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
+add_test(NAME Ctest.Host.Report
+    COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_CURRENT_SOURCE_DIR}/ctest" -p test_report.py -v)
+set_tests_properties(Ctest.Host.Report PROPERTIES
+    LABELS "host" TIMEOUT 30 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
 add_test(NAME Quality.RustNaming
     COMMAND "${CMAKE_COMMAND}" -E env
         "JUICER_CARGO=${JUICER_CARGO_EXECUTABLE}"

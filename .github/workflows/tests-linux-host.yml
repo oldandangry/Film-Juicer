@@ -112,7 +112,8 @@ jobs:
           fi
           python -u scripts/check-quality.py \
             --base "$QUALITY_BASE" \
-            --preset linux-debug
+            --preset linux-debug \
+            --jobs 2
 
       - name: List tests and run host selection
         shell: bash

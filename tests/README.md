@@ -126,6 +126,38 @@ On a normal GPU development machine, prefer the single unfiltered command.
 Labels are for CI, machines without a GPU, and focused diagnosis; they are not
 additional passes that must be run after the full suite.
 
+During implementation, build the affected test targets and run only the owning
+cases needed to check the current edit. Run new compiled cases on Linux and
+Windows early so platform-specific compilation, lifetime or diagnostic issues
+are found before the final matrix. For example, quality-tool changes can start
+with these short development checks in each native Python environment:
+
+```sh
+python -m unittest discover -s tests/quality -p test_check_quality.py -v
+python -m unittest discover -s tests/ctest -p test_report.py -v
+```
+
+Once the candidate is stable, run one unfiltered suite per applicable preset.
+Do not precede it with another broad focused pass solely to produce a separate
+receipt. Record focused-domain results from that same full-suite JUnit report:
+
+```sh
+ctest --preset linux-debug --parallel 4 --output-junit out/validation/linux-debug/ctest.xml
+ctest --preset linux-debug -R 'Quality.Dispatcher|Ctest.Host.Report' --show-only=json-v1 > out/validation/linux-debug/focused-tests.json
+python tests/ctest/report.py --junit out/validation/linux-debug/ctest.xml --inventory out/validation/linux-debug/focused-tests.json > out/validation/linux-debug/focused-summary.json
+```
+
+Use the required owning-domain selection and corresponding preset/campaign
+paths. `--show-only` lists tests without executing them. The report command fails
+for an empty selection, missing required case, failure, skip or malformed input;
+its output explicitly identifies evidence extracted from the full run. It does
+not replace checking the full CTest exit status. Keep inventory and report tied
+to the same candidate/configuration; neither an older report nor a result from
+another preset qualifies the current build. Preserve separately required
+reference captures, transition checkpoints and production Release isolation.
+When redirecting the inventory in Windows PowerShell 5, use `Set-Content
+-Encoding utf8` so the JSON is UTF-8 rather than PowerShell's default UTF-16.
+
 `host` means execution does not require an NVIDIA driver or device. It still
 requires the CUDA 13.2 toolkit to configure/build and may load toolkit runtime
 libraries. `gpu` means the executable loader or the case itself needs the
@@ -161,6 +193,7 @@ cmake --build --preset linux-debug
 | `dir/exposure_cache_test.cpp` | Source-pass versus separate-pass log-exposure caches and final capture density through production CUDA operators | `gpu` |
 | `gamma/test_compare.py` | Comparator bounds, applicability, non-finite rejection and CLI failure propagation | `host` |
 | `quality/test_check_quality.py` | Quality dispatcher selection, CUDA command translation and header owners, source hygiene, and failure propagation | `host` |
+| `ctest/test_report.py` | Focused evidence extraction from full-suite JUnit, including missing, failed, skipped and malformed-input rejection | `host` |
 | `quality/test_rust_naming.py` | Product naming-policy contract: current Rust code, accepted names, individually rejected names, test targets, and reasoned foreign-name exceptions under the actual workspace lints | `host`; pinned Cargo and Clippy required |
 | `quality/test_rust_boundaries.py` | Dependency/build contract and compiler-enforced profile/CSV privacy, borrowed-view lifetimes and safe-module prohibitions, with valid consumer controls | `host`; pinned Cargo required |
 | `ffi/spectral_owner_test.cpp`, `ffi/spectral_bootstrap_test.cpp` | Production spectral ABI, independent native copies, fail-closed bootstrap, selected computation and measured lifetime/capacity checks | `host` |
