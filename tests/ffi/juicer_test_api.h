@@ -8,6 +8,19 @@ extern "C" {
 #endif
 
 /* BUILD_TESTING's nondefault Rust test-support facade; never an installed API. */
+/* CAT16 value facade uses the production fixed-array pointer/extent contract.
+ * Faults affect only the calling thread's actual production exports: one-based
+ * matching call count, consumed before action. Invalid arm disarms; clear is
+ * idempotent. Fault storage/branches/exports are absent without test-support. */
+#define FJ_TEST_CAT16_MATRIX UINT32_C(1)
+#define FJ_TEST_CAT16_ADAPT UINT32_C(2)
+#define FJ_TEST_CAT16_UNSUPPORTED_INPUT UINT32_C(1)
+#define FJ_TEST_CAT16_PANIC UINT32_C(2)
+FjStatus fj_test_cat16_matrix(const float source_white_xyz[3], const float destination_white_xyz[3], float out_row_major[9]);
+FjStatus fj_test_adapt_cat16(const float xyz[3], const float source_white_xyz[3], const float destination_white_xyz[3], float out_xyz[3]);
+FjStatus fj_test_cat16_arm_fault(uint32_t operation, uint32_t call_index, uint32_t fault);
+FjStatus fj_test_cat16_clear_fault(void);
+
 typedef struct FjFilmProfile FjFilmProfile;
 
 #define FJ_PROFILE_USE_STILL UINT32_C(0)

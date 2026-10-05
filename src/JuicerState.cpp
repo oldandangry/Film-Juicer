@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "Cuda/JuicerCudaExecutor.h"
 #include "Illuminants.h"
 #include "Logging.h"
 #include "ProcessRoot.h"
@@ -1663,17 +1664,36 @@ PendingRenderAdmissionResult admit_pending_render_state(InstanceState& state) {
 #endif
 
         std::string rebuildDiagnostic;
-        const bool rebuilt = Spektrafilm::scan_route_is_print(snapshot.scanRoute)
-                                 ? rebuild_print_render_state_for_hash(
-                                       state,
-                                       snapshot,
-                                       fullHash,
-                                       &rebuildDiagnostic)
-                                 : rebuild_direct_render_state_for_hash(
-                                       state,
-                                       snapshot,
-                                       fullHash,
-                                       &rebuildDiagnostic);
+        bool rebuilt = false;
+        try {
+            rebuilt = Spektrafilm::scan_route_is_print(snapshot.scanRoute)
+                          ? rebuild_print_render_state_for_hash(
+                                state,
+                                snapshot,
+                                fullHash,
+                                &rebuildDiagnostic)
+                          : rebuild_direct_render_state_for_hash(
+                                state,
+                                snapshot,
+                                fullHash,
+                                &rebuildDiagnostic);
+        } catch (const JuicerCuda::ExecutionFailure& failure) {
+            const auto category = failure.failure.status.category;
+            if (failure.deferredDirError ||
+                (category != FJ_STATUS_UNSUPPORTED_INPUT && category != FJ_STATUS_INTERNAL_FAILURE)) {
+                throw;
+            }
+            // Construction and its rebuild lock have unwound; the pending recheck
+            // below decides whether this failed attempt is still current.
+            std::ostringstream diagnostic;
+            diagnostic << "RenderStateConstructionFailure category="
+                       << (category == FJ_STATUS_UNSUPPORTED_INPUT ? "UnsupportedInput" : "InternalFailure")
+                       << " route=" << static_cast<unsigned>(snapshot.scanRoute)
+                       << " film=" << snapshot.filmProfileKey
+                       << " print=" << snapshot.printProfileKey
+                       << " operation=" << failure.failure.diagnostic;
+            rebuildDiagnostic = diagnostic.str();
+        }
 
         std::lock_guard<std::mutex> pendingLock(state.pending.m);
         const auto* current = std::get_if<PendingParamsState::Valid>(&state.pending.value);

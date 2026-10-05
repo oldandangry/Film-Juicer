@@ -7,3 +7,4 @@ pub mod profile;
 pub mod data_io;
 pub mod hash;
 pub mod assets;
+pub mod color;

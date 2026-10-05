@@ -1,0 +1,99 @@
+{
+  "kind": "Film-Juicer accepted Stage 3 native CAT16 characterization",
+  "parent": "9da9bbf816f520d416b5eec66004de46f95dbf64",
+  "upstream_semantic_reference": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+  "capture_review": "Integrator review and owner-authorized adoption, 4 October 2026; independent implementation review remains outstanding",
+  "float_layout": "ordered IEEE f32 bits, XYZ triplets; row-major 3x3; Cmax [64][720] lightness-major; finite and signed zero exact, infinity sign exact, NaN classification only",
+  "case_counts": {
+    "leaf": 933,
+    "threshold": 25,
+    "transforms": 9,
+    "recipes": 15,
+    "tables": 4
+  },
+  "settings": "recipe-polarity-route-method; polarity 0 Portra/1 Provia; route 0 direct/1 print; method 0 Hanatos/1 Mallett/2 Arctic; 0.75 camera EV, auto exposure and input compression off, all remaining ParamSnapshot accepted-parent defaults; variants CCTF off, sRGB input, DCI-P3 output",
+  "identity_order": [
+    "film_raw",
+    "tc_lut",
+    "synthetic_reference",
+    "print_balance",
+    "print",
+    "scanner_output",
+    "output_gamut",
+    "final_recipe",
+    "upload_core",
+    "scanner_payload"
+  ],
+  "captures": [
+    {
+      "preset": "linux-debug",
+      "file": "linux-debug.json",
+      "sha256": "b7bdaa3d8e480d1b3c49019676906691f0b04df939353d0458242c722cf709a2",
+      "inverse_bits": [
+        1072584766,
+        3212931274,
+        1041810538,
+        1053190625,
+        1059002158,
+        3155363742,
+        3162621447,
+        3171665021,
+        1065772348
+      ],
+      "native_harness_sha256": "1f12ef052b8117118698ceb3ae048206578be12cdc19c68d6a57842ec887d1e3"
+    },
+    {
+      "preset": "linux-release",
+      "file": "linux-release.json",
+      "sha256": "b7bdaa3d8e480d1b3c49019676906691f0b04df939353d0458242c722cf709a2",
+      "inverse_bits": [
+        1072584766,
+        3212931274,
+        1041810538,
+        1053190625,
+        1059002158,
+        3155363742,
+        3162621447,
+        3171665021,
+        1065772348
+      ],
+      "native_harness_sha256": "1f12ef052b8117118698ceb3ae048206578be12cdc19c68d6a57842ec887d1e3"
+    },
+    {
+      "preset": "windows-clang-debug",
+      "file": "windows-clang-debug.json",
+      "sha256": "301f173e7f427311683f9f2cc71bf30a7e618edc5aadd3e83278fa341ba6bab3",
+      "inverse_bits": [
+        1072584766,
+        3212931274,
+        1041810538,
+        1053190625,
+        1059002158,
+        3155363742,
+        3162621447,
+        3171665021,
+        1065772348
+      ],
+      "native_harness_sha256": "1f12ef052b8117118698ceb3ae048206578be12cdc19c68d6a57842ec887d1e3"
+    },
+    {
+      "preset": "windows-clang-release",
+      "file": "windows-clang-release.json",
+      "sha256": "301f173e7f427311683f9f2cc71bf30a7e618edc5aadd3e83278fa341ba6bab3",
+      "inverse_bits": [
+        1072584766,
+        3212931274,
+        1041810538,
+        1053190625,
+        1059002158,
+        3155363742,
+        3162621447,
+        3171665021,
+        1065772348
+      ],
+      "native_harness_sha256": "1f12ef052b8117118698ceb3ae048206578be12cdc19c68d6a57842ec887d1e3"
+    }
+  ],
+  "print_profile_key": "kodak_portra_endura",
+  "leaf_configuration_policy": "All four native parent captures agree for leaf/inverse/threshold values. Core tests use linux-debug leaf expectations; native complete-consumer tests select their exact preset capture."
+}

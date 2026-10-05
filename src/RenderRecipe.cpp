@@ -12,6 +12,7 @@
 
 #include "GamutCompression.h"
 #include "RustAssetBridge.h"
+#include "RustColorBridge.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Hash.h"
 #include "SpectralProcessing.h"
@@ -1978,12 +1979,7 @@ namespace Spektrafilm {
                 const Spectral::ChromaticAdaptationWhites whites{
                     filmRaw.inputNominalWhiteXYZ.data(),
                     filmRaw.projectionWhiteXYZ.data()};
-                const Spectral::Mat3 inputAdapt =
-                    Spectral::build_chromatic_adaptation_matrix_CAT16(whites);
-                std::copy_n(
-                    inputAdapt.m,
-                    filmRaw.inputXyzAdapt.size(),
-                    filmRaw.inputXyzAdapt.begin());
+                filmRaw.inputXyzAdapt = JuicerColor::cat16_matrix(whites);
                 filmRaw.tcSourceAssetHash = input.tcSourceAssetHash;
                 filmRaw.inputCompressionActive =
                     input.inputCompressionActive;
@@ -2542,15 +2538,13 @@ namespace Spektrafilm {
                     return false;
                 }
                 const float sourceRgb[3] = {source, source, source};
-                float sourceXyz[3]{};
-                float projectedXyz[3]{};
-                Spectral::kRGB_to_XYZ_sRGB_Rec709.mul(sourceRgb, sourceXyz);
-                Spectral::chromatic_adapt_XYZ_CAT16(
+                std::array<float, 3> sourceXyz{};
+                Spectral::kRGB_to_XYZ_sRGB_Rec709.mul(sourceRgb, sourceXyz.data());
+                const auto projectedXyz = JuicerColor::adapt_cat16(
                     sourceXyz,
                     Spectral::ChromaticAdaptationWhites{
                         Spectral::kInputD65WhiteXYZ,
-                        recipe.filmRaw.projectionWhiteXYZ.data()},
-                    projectedXyz);
+                        recipe.filmRaw.projectionWhiteXYZ.data()});
                 out = Spectral::sample_film_tc_lut(
                     *filmTcLut,
                     {projectedXyz[0], projectedXyz[1], projectedXyz[2]});

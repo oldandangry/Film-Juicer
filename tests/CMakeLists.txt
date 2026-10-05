@@ -806,3 +806,29 @@ foreach(illuminant_group IN ITEMS IlluminantAbi IlluminantCopy IlluminantLibrary
         "${JUICER_TEST_ARTIFACT_ROOT}/trusted-resource-decoding/C8/slice-4/consumers")
     set_tests_properties(Assets.Host.${illuminant_group} PROPERTIES LABELS "host" TIMEOUT 120)
 endforeach()
+
+add_executable(JuicerColorPreparationTests ffi/color_abi_c.c ffi/color_preparation_test.cpp
+    $<TARGET_OBJECTS:juicer_admission_test_state>
+    $<TARGET_OBJECTS:juicer_profile_conversion_test_objects>)
+target_compile_definitions(JuicerColorPreparationTests PRIVATE
+    JUICER_ADMISSION_TEST_HOOK=1 JUICER_PROFILE_CONVERSION_TEST_HOOK=1)
+set_target_properties(JuicerColorPreparationTests PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_link_libraries(JuicerColorPreparationTests PRIVATE juicer_core)
+set_target_properties(JuicerColorPreparationTests PROPERTIES
+    LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerColorPreparationTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_dependencies(JuicerColorPreparationTests juicer_test_resources)
+
+add_test(NAME Color.Host.Cat16 COMMAND JuicerColorPreparationTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/${JUICER_TEST_PRESET_NAME}.json" leaf)
+set_tests_properties(Color.Host.Cat16 PROPERTIES LABELS "host" TIMEOUT 60)
+add_test(NAME Ffi.Host.ColorPreparation COMMAND JuicerColorPreparationTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/${JUICER_TEST_PRESET_NAME}.json" preparation)
+set_tests_properties(Ffi.Host.ColorPreparation PROPERTIES LABELS "host" TIMEOUT 180 RUN_SERIAL TRUE)
+
+add_test(NAME Color.Gpu.ScannerReuse COMMAND JuicerColorPreparationTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/${JUICER_TEST_PRESET_NAME}.json" reuse-gpu)
+set_tests_properties(Color.Gpu.ScannerReuse PROPERTIES LABELS "gpu" TIMEOUT 120 RESOURCE_LOCK juicer_gpu)

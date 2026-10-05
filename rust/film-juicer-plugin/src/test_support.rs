@@ -474,6 +474,94 @@ const _: unsafe extern "C" fn(*const FjNoise, *mut FjStaticNoise, *mut FjErrorBu
     fj_test_noise_view;
 const _: unsafe extern "C" fn(*mut FjNoise, *mut FjErrorBuffer) -> FjStatus = fj_test_noise_release;
 
+/// Value-only CAT16 fixture facade, independent of the production export.
+///
+/// # Safety
+/// Read-only inputs authorize three initialized aligned floats each; output
+/// authorizes nine exclusive aligned floats disjoint from inputs until return.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_cat16_matrix(
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_row_major: *mut f32,
+) -> FjStatus {
+    catch_unwind(|| {
+        if out_row_major.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller authorizes nine exclusive output floats.
+        unsafe { out_row_major.write_bytes(0, 9) };
+        if source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: Both read-only inputs authorize three initialized floats.
+        let whites = unsafe {
+            film_juicer_core::color::Whites {
+                source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+            }
+        };
+        let matrix = film_juicer_core::color::cat16_matrix(whites);
+        // SAFETY: The local complete array is disjoint from the output extent.
+        unsafe { out_row_major.copy_from_nonoverlapping(matrix.as_ptr(), 9) };
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Value-only scalar CAT16 fixture facade.
+///
+/// # Safety
+/// Read-only inputs authorize three initialized aligned floats each; output
+/// authorizes three exclusive aligned floats disjoint from inputs until return.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_adapt_cat16(
+    xyz: *const f32,
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    catch_unwind(|| {
+        if out_xyz.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller authorizes three exclusive output floats.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if xyz.is_null() || source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: All read-only inputs authorize three initialized floats.
+        let (value, whites) = unsafe {
+            (
+                xyz.cast::<[f32; 3]>().read(),
+                film_juicer_core::color::Whites {
+                    source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                    destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+                },
+            )
+        };
+        let adapted = film_juicer_core::color::adapt_cat16(value, whites);
+        // SAFETY: The local complete array is disjoint from the output extent.
+        unsafe { out_xyz.copy_from_nonoverlapping(adapted.as_ptr(), 3) };
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Arm a one-shot calling-thread fault on a matching production export.
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_cat16_arm_fault(operation: u32, call_index: u32, fault: u32) -> FjStatus {
+    catch_unwind(|| crate::legacy_bridge::arm_cat16_fault(operation, call_index, fault))
+        .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Idempotently disarm the calling thread's fault.
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_cat16_clear_fault() -> FjStatus {
+    catch_unwind(crate::legacy_bridge::clear_cat16_fault)
+        .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;

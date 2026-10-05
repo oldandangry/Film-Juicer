@@ -402,50 +402,6 @@ namespace Spectral {
         return adapt;
     }
 
-    inline void chromatic_adapt_XYZ_CAT16(
-        const float XYZ[3],
-        const ChromaticAdaptationWhites& whites,
-        float outXYZ[3]) {
-        static constexpr Mat3 kCat16 = {{0.401288f, 0.650173f, -0.051461f, -0.250268f, 1.204414f, 0.045854f, -0.002079f, 0.048952f, 0.953127f}};
-        static const Mat3 kCat16Inverse = kCat16.inverse();
-
-        float sourceWhite[3];
-        float destinationWhite[3];
-        sanitize_nonnegative_triplet(sourceWhite, whites.source);
-        sanitize_nonnegative_triplet(destinationWhite, whites.destination);
-        normalize_triplet_to_unit_y(sourceWhite);
-        normalize_triplet_to_unit_y(destinationWhite);
-
-        float sourceLms[3];
-        float destinationLms[3];
-        float valueLms[3];
-        kCat16.mul(sourceWhite, sourceLms);
-        kCat16.mul(destinationWhite, destinationLms);
-        kCat16.mul(XYZ, valueLms);
-        for (int channel = 0; channel < 3; ++channel) {
-            const float scale = sourceLms[channel] > 1e-6f
-                                    ? destinationLms[channel] / sourceLms[channel]
-                                    : 1.0f;
-            valueLms[channel] *= scale;
-        }
-        kCat16Inverse.mul(valueLms, outXYZ);
-    }
-
-    inline Mat3 build_chromatic_adaptation_matrix_CAT16(
-        const ChromaticAdaptationWhites& whites) {
-        Mat3 adaptation = make_identity_mat3();
-        for (int column = 0; column < 3; ++column) {
-            float basis[3] = {0.0f, 0.0f, 0.0f};
-            basis[column] = 1.0f;
-            float adapted[3];
-            chromatic_adapt_XYZ_CAT16(basis, whites, adapted);
-            for (int row = 0; row < 3; ++row) {
-                adaptation.m[row * 3 + column] = adapted[row];
-            }
-        }
-        return adaptation;
-    }
-
     // ============================================================================
     // Film Raw Input
     // ============================================================================

@@ -26,6 +26,17 @@ extern "C" {
 // A nonnull out_route must point to one writable byte; failures leave it unchanged.
 uint32_t fj_legacy_resolve_route(uint8_t capture_polarity, uint8_t selected_route, uint8_t* out_route);
 
+/* FJ_TEMP_BRIDGE: CAT16 host preparation; remove S4.E.
+ * Inputs are initialized aligned XYZ triplets (12 bytes), read-only until
+ * return and may share storage. Outputs are exclusive, aligned and disjoint
+ * from every input: 9 row-major floats (36 bytes) or 3 XYZ floats (12 bytes).
+ * No pointer/owner is retained. Valid output clears before input checks.
+ * NULL required pointers -> UnsupportedInput; contained panic -> InternalFailure;
+ * normally returned arrays, including nonfinite mathematics, -> Success.
+ * Every result has API=None/native_code=0. Completed output belongs to caller. */
+FjStatus fj_legacy_cat16_matrix(const float source_white_xyz[3], const float destination_white_xyz[3], float out_row_major[9]);
+FjStatus fj_legacy_adapt_cat16(const float xyz[3], const float source_white_xyz[3], const float destination_white_xyz[3], float out_xyz[3]);
+
 /* FJ_TEMP_BRIDGE: asset conversion; remove S4.E.
  * Handles own immutable Rust storage; only matching create/acquire values are
  * legal. Caller excludes destruction from operations and release from every

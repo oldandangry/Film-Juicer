@@ -1,4 +1,10 @@
-//! Temporary scalar boundary for C++ route consumers.
+//! Temporary CPU boundaries for native route and color preparation.
+
+use film_juicer_core::color::{self, Whites};
+use crate::cuda::sys::{
+    FjStatus, FJ_API_NONE, FJ_STATUS_SUCCESS, FJ_STATUS_UNSUPPORTED_INPUT,
+    FJ_STATUS_INTERNAL_FAILURE,
+};
 
 use film_juicer_core::route::{self, CapturePolarity, RouteSelection, ScanRoute};
 
@@ -55,6 +61,159 @@ pub unsafe extern "C" fn fj_legacy_resolve_route(
         }
         Err(status) => status,
     }
+}
+
+const _: () = assert!(
+    std::mem::size_of::<f32>() == 4
+        && std::mem::size_of::<[f32; 3]>() == 12
+        && std::mem::size_of::<[f32; 9]>() == 36
+);
+
+fn color_status(category: u32) -> FjStatus {
+    FjStatus {
+        category,
+        api: FJ_API_NONE,
+        native_code: 0,
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy)]
+struct Cat16Fault {
+    operation: u32,
+    remaining: u32,
+    fault: u32,
+}
+
+#[cfg(feature = "test-support")]
+thread_local! {
+    static CAT16_FAULT: std::cell::Cell<Option<Cat16Fault>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn arm_cat16_fault(operation: u32, call_index: u32, fault: u32) -> FjStatus {
+    clear_cat16_fault();
+    if !(1..=2).contains(&operation) || call_index == 0 || !(1..=2).contains(&fault) {
+        return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+    }
+    CAT16_FAULT.set(Some(Cat16Fault {
+        operation,
+        remaining: call_index,
+        fault,
+    }));
+    color_status(FJ_STATUS_SUCCESS)
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn clear_cat16_fault() -> FjStatus {
+    CAT16_FAULT.set(None);
+    color_status(FJ_STATUS_SUCCESS)
+}
+
+#[cfg(feature = "test-support")]
+fn cat16_fault(operation: u32) -> Result<(), u32> {
+    let Some(mut armed) = CAT16_FAULT.get() else {
+        return Ok(());
+    };
+    if armed.operation != operation {
+        return Ok(());
+    }
+    armed.remaining -= 1;
+    if armed.remaining != 0 {
+        CAT16_FAULT.set(Some(armed));
+        return Ok(());
+    }
+    CAT16_FAULT.set(None);
+    if armed.fault == 1 {
+        return Err(FJ_STATUS_UNSUPPORTED_INPUT);
+    }
+    panic!("CAT16 production boundary fault");
+}
+
+// FJ_TEMP_BRIDGE: CAT16 host preparation; remove S4.E.
+/// Prepare a row-major CAT16 matrix by sampling the three basis vectors.
+///
+/// # Safety
+/// Nonnull inputs authorize three initialized aligned floats each until return;
+/// they may alias each other. Nonnull output authorizes nine exclusive aligned
+/// floats, disjoint from every input. No storage is retained.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fj_legacy_cat16_matrix(
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_row_major: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_row_major.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller provides the exclusive nine-float output extent.
+        unsafe { out_row_major.write_bytes(0, 9) };
+        if source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        #[cfg(feature = "test-support")]
+        if let Err(category) = cat16_fault(1) {
+            return color_status(category);
+        }
+        // SAFETY: Both nonnull read-only inputs authorize exactly three floats.
+        let whites = unsafe {
+            Whites {
+                source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+            }
+        };
+        let matrix = color::cat16_matrix(whites);
+        // SAFETY: The complete local result is disjoint from the authorized output.
+        unsafe { out_row_major.copy_from_nonoverlapping(matrix.as_ptr(), 9) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+// FJ_TEMP_BRIDGE: CAT16 host preparation; remove S4.E.
+/// Adapt an unsanitized XYZ value between the supplied whites.
+///
+/// # Safety
+/// Nonnull inputs authorize three initialized aligned floats each until return;
+/// they may alias each other. Nonnull output authorizes three exclusive aligned
+/// floats disjoint from every input. No storage is retained.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fj_legacy_adapt_cat16(
+    xyz: *const f32,
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller provides the exclusive three-float output extent.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if xyz.is_null() || source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        #[cfg(feature = "test-support")]
+        if let Err(category) = cat16_fault(2) {
+            return color_status(category);
+        }
+        // SAFETY: Each nonnull read-only input authorizes exactly three floats.
+        let (value, whites) = unsafe {
+            (
+                xyz.cast::<[f32; 3]>().read(),
+                Whites {
+                    source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                    destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+                },
+            )
+        };
+        let adapted = color::adapt_cat16(value, whites);
+        // SAFETY: The complete local result is disjoint from the authorized output.
+        unsafe { out_xyz.copy_from_nonoverlapping(adapted.as_ptr(), 3) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
 }
 
 #[cfg(test)]

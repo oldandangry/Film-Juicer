@@ -31,6 +31,17 @@ def forbidden_uses(paths, pattern):
     return findings
 
 
+def cat16_sources(root):
+    return sorted(
+        path for directory in (root / "src", root / "native", root / "cmake", root / "tests")
+        for path in directory.rglob("*")
+        if path.is_file() and (path.suffix.lower() in SOURCE_SUFFIXES or path.suffix == ".cmake")
+    ) + [root / "CMakeLists.txt"]
+
+
+RETIRED_CAT16 = r"\b(?:chromatic_adapt_XYZ_CAT16|build_chromatic_adaptation_matrix_CAT16)\b"
+
+
 HOST_MESSAGES = r"\b(?:DirFailureMessage|sendMessage)\b|OFX::"
 CONTEXT_RESET = r"\b(?:cudaDeviceReset|cuDevicePrimaryCtxReset|cuCtxReset)\s*\("
 RETIRED_SPECTRAL = r"\b(?:NpySpectraLUT|NpyFloat2D|load_npy_spectra_lut|load_npy_float2d|load_csv_triplets|load_hanatos_spectra_lut|load_arctic2026beta04_spectra_lut|load_mallett2019_basis_npy|sourceElementBytes|hanatosAssetHash|arcticAssetHash|kExpectedDecodedAssetHash|data_file_string)\b|NpyLoader\.h"
@@ -78,6 +89,9 @@ class NativeBoundary(unittest.TestCase):
         paths = native_sources(ROOT)
         paths.append(ROOT / "src/ProcessRoot.cpp")
         self.assertEqual(forbidden_uses(paths, CONTEXT_RESET), [])
+
+    def test_retired_cat16_producers_stay_deleted(self):
+        self.assertEqual(forbidden_uses(cat16_sources(ROOT), RETIRED_CAT16), [])
 
     def test_retired_native_profile_authority_stays_deleted(self):
         paths = [
@@ -129,6 +143,21 @@ class NativeBoundaryControls(unittest.TestCase):
                 path.write_text("execute_prepared_frame();\n", encoding="utf-8")
             for pattern in (HOST_MESSAGES, CONTEXT_RESET):
                 self.assertEqual(forbidden_uses(paths, pattern), [])
+
+    def test_cat16_deletion_controls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CMakeLists.txt").write_text("", encoding="utf-8")
+            for relative in ("src/new/nested.hpp", "native/new/body.cpp", "tests/ffi/new/fixture.c", "cmake/new/check.cmake"):
+                source = root / relative
+                source.parent.mkdir(parents=True, exist_ok=True)
+                for text in ("void chromatic_adapt_XYZ_CAT16();", "build_chromatic_adaptation_matrix_CAT16(whites);"):
+                    source.write_text(text, encoding="utf-8")
+                    self.assertEqual(len(forbidden_uses(cat16_sources(root), RETIRED_CAT16)), 1)
+                source.write_text("chromatic_adapt_XYZ_CAT02(); build_chromatic_adaptation_matrix(whites); "
+                                  "Mat3 matrix; fj_legacy_cat16_matrix(source, destination, out); "
+                                  "JuicerColor::adapt_cat16(xyz, whites);", encoding="utf-8")
+                self.assertEqual(forbidden_uses(cat16_sources(root), RETIRED_CAT16), [])
 
     def test_retired_authority_and_build_entry_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

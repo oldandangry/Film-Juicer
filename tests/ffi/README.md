@@ -559,3 +559,34 @@ recipe fallback. The CSV category probe injects a typed reader-capacity/poison
 error at the raw edge; accepted core reader/cache tests cover their owning
 behavior. Native view/copy/publication hooks are confined to test object targets.
 Their qualification/removal boundary is S4.E when native conversions move.
+
+## CAT16 preparation
+
+`Color.Host.Cat16` compares the safe core facade and actual production wrappers
+against independently captured accepted Stage 3 native scalar/matrix bits. It
+also runs a real C11 caller for status layout, pointer/null handling, exact write
+extents and contained production panics. `Ffi.Host.ColorPreparation` checks all
+nine transforms, four complete Cmax tables, 15 complete route/recipe cases,
+state/table ownership and actual admission failure/retry/recovery. Isolated
+admission/profile objects supply the existing hooks; the shared product targets
+receive none. Cases modifying the process-global pending hook run serially.
+
+The test-support CAT16 fault is thread-local and one-shot. It selects a matching
+production matrix/scalar export by positive one-based call index, consumes the
+fault before action, and preserves production pointer validation/output clearing.
+Invalid arm disarms; clear is idempotent. Supersession tests perform N2's valid
+raw-export calls for the original armed count on the admission thread before
+cleanup, proving consumption for newer valid, invalid and uninitialized input.
+Other-category/deferred controls throw inside real profile conversion; cold
+asset panic/capacity cases exercise the shared admission boundary separately.
+
+`Color.Gpu.ScannerReuse` separately proves actual six-allocation scanner LUT
+address/content/identity reuse across direct/print CCTF-only and warm transitions.
+The host groups execute no device operation. All groups have finite CTest
+process timeouts. No ordinary run generates or changes expectations.
+
+`fixtures/color/manifest.json` records native-parent provenance, representation,
+case membership and exact identity order. Finite values, signed zero and infinity
+signs are exact; NaNs compare classification. Each complete-consumer run selects
+its preset capture. Existing Rust-density/render fixtures and their limits stay
+unchanged. The temporary native value bridge has removal owner S4.E.

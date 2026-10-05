@@ -8,6 +8,7 @@
 #include <limits>
 
 #include "ColorTransforms.h"
+#include "RustColorBridge.h"
 #include "Hash.h"
 #include "SpectralData.h"
 #include "SpectralProcessing.h"
@@ -434,10 +435,10 @@ namespace Gamut {
         const Spectral::ChromaticAdaptationWhites exitWhites{
             d65Space.whiteXYZ,
             normalizedNativeWhite};
-        const Spectral::Mat3 entryAdapt =
-            Spectral::build_chromatic_adaptation_matrix_CAT16(entryWhites);
-        const Spectral::Mat3 exitAdapt =
-            Spectral::build_chromatic_adaptation_matrix_CAT16(exitWhites);
+        const auto entryAdapt =
+            JuicerColor::cat16_matrix(entryWhites);
+        const auto exitAdapt =
+            JuicerColor::cat16_matrix(exitWhites);
         Matrix entryAdaptMatrix{};
         Matrix exitAdaptMatrix{};
         Matrix rgbToXyz{};
@@ -445,8 +446,8 @@ namespace Gamut {
         for (std::size_t index = 0; index < rgbToXyz.size(); ++index) {
             rgbToXyz[index] = static_cast<double>(output.rgbToXyz[index]);
             xyzToRgb[index] = static_cast<double>(output.xyzToRgb[index]);
-            entryAdaptMatrix[index] = static_cast<double>(entryAdapt.m[index]);
-            exitAdaptMatrix[index] = static_cast<double>(exitAdapt.m[index]);
+            entryAdaptMatrix[index] = static_cast<double>(entryAdapt[index]);
+            exitAdaptMatrix[index] = static_cast<double>(exitAdapt[index]);
         }
         const Matrix entry = multiply_matrix(
             entryAdaptMatrix,
