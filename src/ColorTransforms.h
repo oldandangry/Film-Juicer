@@ -97,17 +97,6 @@ namespace Spectral {
         }
     };
 
-    inline bool mat3_has_only_finite(const Mat3& matrix) {
-        const float* mIt = matrix.m;
-        const float* const mEnd = mIt + 9;
-        for (; mIt < mEnd; ++mIt) {
-            if (!is_finite(*mIt)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     inline Mat3 make_identity_mat3(float diag = 1.0f) {
         return Mat3{{diag, 0.0f, 0.0f, 0.0f, diag, 0.0f, 0.0f, 0.0f, diag}};
     }
@@ -232,36 +221,6 @@ namespace Spectral {
         }
     }
 
-    inline void sanitize_nonnegative_triplet(float out[3], const float in[3]) {
-        float* outIt = out;
-        const float* inIt = in;
-        for (int i = 0; i < 3; ++i, ++outIt, ++inIt) {
-            *outIt = sanitize_nonnegative_channel(*inIt);
-        }
-    }
-
-    inline void normalize_triplet_to_unit_y(float values[3]) {
-        const float y = (values[1] > 0.0f) ? values[1] : 1.0f;
-        const float invY = 1.0f / y;
-        float* valueIt = values;
-        for (int i = 0; i < 3; ++i, ++valueIt) {
-            *valueIt *= invY;
-        }
-        values[1] = 1.0f;
-    }
-
-    inline bool triplet_has_positive_finite_sum(const float values[3]) {
-        const float sum = values[0] + values[1] + values[2];
-        return is_finite(sum) && sum > 0.0f;
-    }
-
-    inline void sanitize_white_or_dwg(const float in[3], float out[3]) {
-        sanitize_nonnegative_triplet(out, in);
-        if (!triplet_has_positive_finite_sum(out)) {
-            copy_triplet(out, gDWG_WhitePoint_XYZ);
-        }
-    }
-
     inline float sanitize_raw_midgray_green_or_one(float value) {
         const float sanitized = sanitize_channel(value);
         return (sanitized > 1e-9f) ? sanitized : 1.0f;
@@ -351,57 +310,6 @@ namespace Spectral {
         const float* destination = nullptr;
     };
 
-    // CAT02/Von Kries based chromatic adaptation (matches colour.XYZ_to_RGB default)
-    inline void chromatic_adapt_XYZ_CAT02(
-        const float XYZ[3],
-        const ChromaticAdaptationWhites& whites,
-        float outXYZ[3]) {
-        static const float M[9] = {
-            0.7328000f, 0.4296000f, -0.1624000f, -0.7036000f, 1.6975000f, 0.0061000f, 0.0030000f, 0.0136000f, 0.9834000f};
-        static const float M_inv[9] = {
-            1.0961238f, -0.2788690f, 0.1827452f, 0.4543690f, 0.4735332f, 0.0720978f, -0.0096276f, -0.0056980f, 1.0153256f};
-
-        float srcWhite[3];
-        float dstWhite[3];
-        sanitize_nonnegative_triplet(srcWhite, whites.source);
-        sanitize_nonnegative_triplet(dstWhite, whites.destination);
-        normalize_triplet_to_unit_y(srcWhite);
-        normalize_triplet_to_unit_y(dstWhite);
-
-        float srcLMS[3];
-        float dstLMS[3];
-        float XYZ_LMS[3];
-        mul_3x3_vec3(M, srcWhite, srcLMS);
-        mul_3x3_vec3(M, dstWhite, dstLMS);
-        mul_3x3_vec3(M, XYZ, XYZ_LMS);
-
-        float adaptedLMS[3];
-        const float* srcLMSIt = srcLMS;
-        const float* dstLMSIt = dstLMS;
-        const float* xyzLMSIt = XYZ_LMS;
-        float* adaptedIt = adaptedLMS;
-        for (int i = 0; i < 3; ++i, ++srcLMSIt, ++dstLMSIt, ++xyzLMSIt, ++adaptedIt) {
-            const float scale = (*srcLMSIt > 1e-6f) ? (*dstLMSIt / *srcLMSIt) : 1.0f;
-            *adaptedIt = scale * *xyzLMSIt;
-        }
-
-        mul_3x3_vec3(M_inv, adaptedLMS, outXYZ);
-    }
-
-    inline Mat3 build_chromatic_adaptation_matrix(const ChromaticAdaptationWhites& whites) {
-        Mat3 adapt = make_identity_mat3();
-        for (int col = 0; col < 3; ++col) {
-            float basis[3] = {0.0f, 0.0f, 0.0f};
-            basis[col] = 1.0f;
-            float adapted[3];
-            chromatic_adapt_XYZ_CAT02(basis, whites, adapted);
-            for (int row = 0; row < 3; ++row) {
-                adapt.m[row * 3 + col] = adapted[row];
-            }
-        }
-        return adapt;
-    }
-
     // ============================================================================
     // Film Raw Input
     // ============================================================================
@@ -433,47 +341,6 @@ namespace Spectral {
         bool hasRefIllumWhite = false;
         bool valid = false;
     };
-
-    inline bool whites_approximately_equal(const ChromaticAdaptationWhites& whites) {
-        auto scale = [](float v) {
-            return std::max(1.0f, std::fabs(v));
-        };
-        const float* aIt = whites.source;
-        const float* bIt = whites.destination;
-        for (int i = 0; i < 3; ++i, ++aIt, ++bIt) {
-            const float av = *aIt;
-            const float bv = *bIt;
-            const float diff = std::fabs(av - bv);
-            if (diff > 1e-4f * scale(av) || diff > 1e-4f * scale(bv)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    inline void prepare_film_raw_config(FilmRawConfig& cfg) {
-        cfg.inputRGBToXYZ = matrix_input_rgb_to_xyz(cfg.inputColorSpace);
-        input_colorspace_white_xyz(cfg.inputColorSpace, cfg.inputWhiteXYZ);
-        copy_triplet(cfg.workingWhiteXYZ, gDWG_WhitePoint_XYZ);
-        sanitize_white_or_dwg(cfg.inputWhiteXYZ, cfg.inputWhiteXYZ);
-        sanitize_white_or_dwg(cfg.workingWhiteXYZ, cfg.workingWhiteXYZ);
-
-        ChromaticAdaptationWhites whites{};
-        whites.source = cfg.inputWhiteXYZ;
-        whites.destination = cfg.workingWhiteXYZ;
-        cfg.applyInputChromaticAdapt = !whites_approximately_equal(whites);
-        if (cfg.applyInputChromaticAdapt) {
-            cfg.inputXYZAdapt = build_chromatic_adaptation_matrix(whites);
-            if (!mat3_has_only_finite(cfg.inputXYZAdapt)) {
-                cfg.inputXYZAdapt = make_identity_mat3();
-                cfg.applyInputChromaticAdapt = false;
-            }
-        } else {
-            cfg.inputXYZAdapt = make_identity_mat3();
-        }
-
-        cfg.valid = true;
-    }
 
     inline void convert_input_rgb_to_DWG(
         const FilmRawConfig& cfg,

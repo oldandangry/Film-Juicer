@@ -829,6 +829,13 @@ add_test(NAME Ffi.Host.ColorPreparation COMMAND JuicerColorPreparationTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/${JUICER_TEST_PRESET_NAME}.json" preparation)
 set_tests_properties(Ffi.Host.ColorPreparation PROPERTIES LABELS "host" TIMEOUT 180 RUN_SERIAL TRUE)
 
+add_test(NAME Color.Host.Cat02 COMMAND JuicerColorPreparationTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/cat02-${JUICER_TEST_PRESET_NAME}.json" cat02-leaf)
+set_tests_properties(Color.Host.Cat02 PROPERTIES LABELS "host" TIMEOUT 60)
+add_test(NAME Ffi.Host.Cat02Preparation COMMAND JuicerColorPreparationTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/cat02-${JUICER_TEST_PRESET_NAME}.json" cat02-preparation)
+set_tests_properties(Ffi.Host.Cat02Preparation PROPERTIES LABELS "host" TIMEOUT 180 RUN_SERIAL TRUE)
+
 add_test(NAME Color.Gpu.ScannerReuse COMMAND JuicerColorPreparationTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/${JUICER_TEST_PRESET_NAME}.json" reuse-gpu)
 set_tests_properties(Color.Gpu.ScannerReuse PROPERTIES LABELS "gpu" TIMEOUT 120 RESOURCE_LOCK juicer_gpu)

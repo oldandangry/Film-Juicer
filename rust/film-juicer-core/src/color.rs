@@ -1,4 +1,4 @@
-//! CAT16 host preparation. XYZ operands are unsanitized; whites are Y-relative.
+//! CAT02/CAT16 host preparation. XYZ operands are unsanitized; whites are Y-relative.
 
 #[derive(Clone, Copy)]
 pub struct Whites {
@@ -76,6 +76,43 @@ pub fn cat16_matrix(whites: Whites) -> [f32; 9] {
         let mut basis = [0.0; 3];
         basis[column] = 1.0;
         let adapted = adapt_cat16(basis, whites);
+        for row in 0..3 {
+            matrix[row * 3 + column] = adapted[row];
+        }
+    }
+    matrix
+}
+
+const CAT02: [f32; 9] = [
+    0.7328, 0.4296, -0.1624, -0.7036, 1.6975, 0.0061, 0.003, 0.0136, 0.9834,
+];
+const CAT02_INVERSE: [f32; 9] = [
+    1.0961238, -0.278869, 0.1827452, 0.454369, 0.4735332, 0.0720978, -0.0096276, -0.005698,
+    1.0153256,
+];
+
+pub fn adapt_cat02(xyz: [f32; 3], whites: Whites) -> [f32; 3] {
+    let source_lms = multiply(CAT02, normalize_white(whites.source_xyz));
+    let destination_lms = multiply(CAT02, normalize_white(whites.destination_xyz));
+    let mut lms = multiply(CAT02, xyz);
+    for channel in 0..3 {
+        let scale = if source_lms[channel] > 1e-6 {
+            destination_lms[channel] / source_lms[channel]
+        } else {
+            1.0
+        };
+        let value = lms[channel];
+        lms[channel] = scale * value;
+    }
+    multiply(CAT02_INVERSE, lms)
+}
+
+pub fn cat02_matrix(whites: Whites) -> [f32; 9] {
+    let mut matrix = [0.0; 9];
+    for column in 0..3 {
+        let mut basis = [0.0; 3];
+        basis[column] = 1.0;
+        let adapted = adapt_cat02(basis, whites);
         for row in 0..3 {
             matrix[row * 3 + column] = adapted[row];
         }

@@ -2003,12 +2003,7 @@ namespace Spektrafilm {
                 const Spectral::ChromaticAdaptationWhites whites{
                     filmRaw.inputNominalWhiteXYZ.data(),
                     filmRaw.projectionWhiteXYZ.data()};
-                const Spectral::Mat3 inputAdapt =
-                    Spectral::build_chromatic_adaptation_matrix(whites);
-                std::copy_n(
-                    inputAdapt.m,
-                    filmRaw.inputXyzAdapt.size(),
-                    filmRaw.inputXyzAdapt.begin());
+                filmRaw.inputXyzAdapt = JuicerColor::cat02_matrix(whites);
                 filmRaw.inputCompressionActive = false;
                 filmRaw.inputCompressionHullHash = 0;
                 filmRaw.inputCompressionHull.reset();

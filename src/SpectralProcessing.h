@@ -12,6 +12,7 @@
 
 #include "ColorTransforms.h"
 #include "Hash.h"
+#include "RustColorBridge.h"
 #include "SpectralData.h"
 
 struct FilmRawRecipe;
@@ -267,17 +268,16 @@ namespace Spectral {
 
         // Apply CAT02 chromatic adaptation from D65 to reference illuminant.
         // This matches Python: colour.RGB_to_XYZ(..., illuminant=ref_illum, chromatic_adaptation_transform='CAT02')
-        float adaptedXYZ[3];
         ChromaticAdaptationWhites whites{};
         whites.source = gDWG_WhitePoint_XYZ;
         whites.destination = refWhiteXYZ;
-        chromatic_adapt_XYZ_CAT02(XYZ, whites, adaptedXYZ);
+        auto adaptedXYZ = JuicerColor::adapt_cat02({XYZ[0], XYZ[1], XYZ[2]}, whites);
 
         // agx-emulsion parity:
         // - sanitize adaptedXYZ (non-finite -> 0), do not clamp negatives
         // - b = sum(adaptedXYZ) (signed)
         // - xy uses denom = max(b, 1e-10) and is then clamped to [0, 1]
-        sanitize_nonfinite_triplet(adaptedXYZ);
+        sanitize_nonfinite_triplet(adaptedXYZ.data());
         const float b = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
         const float bSafe = sanitize_nonfinite_component(b);
 
@@ -443,13 +443,12 @@ namespace Spectral {
             copy_triplet3(gDWG_WhitePoint_XYZ, refWhite);
         }
 
-        float adaptedXYZ[3];
         ChromaticAdaptationWhites whites{};
         whites.source = gDWG_WhitePoint_XYZ;
         whites.destination = refWhite;
-        chromatic_adapt_XYZ_CAT02(sanitizedXYZ, whites, adaptedXYZ);
+        auto adaptedXYZ = JuicerColor::adapt_cat02({sanitizedXYZ[0], sanitizedXYZ[1], sanitizedXYZ[2]}, whites);
 
-        clamp_triplet_nonnegative(adaptedXYZ);
+        clamp_triplet_nonnegative(adaptedXYZ.data());
 
         const float targetScale = (adaptedXYZ[1] > 0.0f) ? adaptedXYZ[1] : sanitizedXYZ[1];
 

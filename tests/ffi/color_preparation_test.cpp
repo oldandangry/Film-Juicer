@@ -1,10 +1,14 @@
+#include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <thread>
 #include <stdexcept>
@@ -31,6 +35,7 @@
 
 static_assert(sizeof(float) == 4 && sizeof(std::array<float, 3>) == 12 && sizeof(std::array<float, 9>) == 36);
 extern "C" int fj_test_color_abi_c();
+extern "C" int fj_test_cat02_abi_c();
 
 namespace {
     using Json = nlohmann::json;
@@ -124,7 +129,7 @@ namespace {
         return {{"cmax", bits(table.cmax)}, {"hash", table.hash}, {"transform_hash", table.transformHash}, {"contract_hash", table.contractHash}};
     }
     void expect_status(FjStatus status, std::uint32_t category) {
-        require(status.category == category && status.api == FJ_API_NONE && status.native_code == 0, "CAT16 status category/API/code");
+        require(status.category == category && status.api == FJ_API_NONE && status.native_code == 0, "color status category/API/code");
     }
     bool same_values(const Json& actual, const Json& expected) {
         if (actual.size() != expected.size()) {
@@ -145,12 +150,20 @@ namespace {
     }
     FjStatus raw_call(std::uint32_t operation) {
         constexpr std::array<float, 3> white{0.95045593f, 1.0f, 1.08905775f};
-        if (operation == FJ_TEST_CAT16_MATRIX) {
-            std::array<float, 9> out{};
-            return fj_legacy_cat16_matrix(white.data(), white.data(), out.data());
+        std::array<float, 9> matrix{};
+        std::array<float, 3> adapted{};
+        switch (operation) {
+            case FJ_TEST_CAT16_MATRIX:
+                return fj_legacy_cat16_matrix(white.data(), white.data(), matrix.data());
+            case FJ_TEST_CAT16_ADAPT:
+                return fj_legacy_adapt_cat16(white.data(), white.data(), white.data(), adapted.data());
+            case FJ_TEST_CAT02_MATRIX:
+                return fj_legacy_cat02_matrix(white.data(), white.data(), matrix.data());
+            case FJ_TEST_CAT02_ADAPT:
+                return fj_legacy_adapt_cat02(white.data(), white.data(), white.data(), adapted.data());
+            default:
+                throw std::runtime_error("unknown color operation");
         }
-        std::array<float, 3> out{};
-        return fj_legacy_adapt_cat16(white.data(), white.data(), white.data(), out.data());
     }
     thread_local unsigned constructionFault = 0;
     struct FaultScope {
@@ -158,7 +171,7 @@ namespace {
         FaultScope(const FaultScope&) = delete;
         FaultScope& operator=(const FaultScope&) = delete;
         ~FaultScope() {
-            const auto status = fj_test_cat16_clear_fault();
+            const auto status = fj_test_color_clear_fault();
             if (status.category != FJ_STATUS_SUCCESS) {
                 std::abort();
             }
@@ -198,24 +211,24 @@ namespace {
         require(fj_test_color_abi_c() == 0, "real C transport/null/panic/canaries");
         FaultScope cleanup;
         for (std::uint32_t operation : {FJ_TEST_CAT16_MATRIX, FJ_TEST_CAT16_ADAPT}) {
-            expect_status(fj_test_cat16_arm_fault(operation, 2, FJ_TEST_CAT16_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_color_arm_fault(operation, 2, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation == 1 ? 2 : 1), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation), FJ_STATUS_UNSUPPORTED_INPUT);
             expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
             for (const auto& invalid : std::array<std::array<std::uint32_t, 3>, 3>{{{0, 1, 1}, {operation, 0, 1}, {operation, 1, 99}}}) {
-                expect_status(fj_test_cat16_arm_fault(operation, 1, FJ_TEST_CAT16_PANIC), FJ_STATUS_SUCCESS);
-                expect_status(fj_test_cat16_arm_fault(invalid[0], invalid[1], invalid[2]), FJ_STATUS_UNSUPPORTED_INPUT);
+                expect_status(fj_test_color_arm_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+                expect_status(fj_test_color_arm_fault(invalid[0], invalid[1], invalid[2]), FJ_STATUS_UNSUPPORTED_INPUT);
                 expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
             }
-            expect_status(fj_test_cat16_arm_fault(operation, 1, FJ_TEST_CAT16_PANIC), FJ_STATUS_SUCCESS);
-            expect_status(fj_test_cat16_arm_fault(operation, 2, FJ_TEST_CAT16_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_color_arm_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_color_arm_fault(operation, 2, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation), FJ_STATUS_UNSUPPORTED_INPUT);
-            expect_status(fj_test_cat16_clear_fault(), FJ_STATUS_SUCCESS);
-            expect_status(fj_test_cat16_clear_fault(), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
         }
-        expect_status(fj_test_cat16_arm_fault(FJ_TEST_CAT16_MATRIX, 1, FJ_TEST_CAT16_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
+        expect_status(fj_test_color_arm_fault(FJ_TEST_CAT16_MATRIX, 1, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
         FjStatus otherThread{};
         std::thread worker([&] {
             otherThread = raw_call(FJ_TEST_CAT16_MATRIX);
@@ -241,11 +254,14 @@ namespace {
         std::uint32_t callIndex;
         std::uint32_t fault;
     };
-    void failed(const PendingRenderAdmissionResult& result, const FaultCase& selected) {
+    void failed(const PendingRenderAdmissionResult& result, const FaultCase& selected, const std::string& film = "kodak_portra_400") {
         require(result.status == PendingRenderAdmissionStatus::RebuildFailed && !result.directState && !result.printState, "current exceptional attempt fails with empty result owners");
         require(result.diagnostic.find(selected.fault == 1 ? "UnsupportedInput" : "InternalFailure") != std::string::npos, "original category diagnostic");
-        require(result.diagnostic.find(selected.operation == 1 ? "CAT16 matrix" : "CAT16 scalar") != std::string::npos, "original operation diagnostic");
-        require(result.diagnostic.find("film=kodak_portra_400") != std::string::npos && result.diagnostic.find("route=") != std::string::npos, "attempted selection diagnostic");
+        const char* operation = selected.operation == FJ_TEST_CAT16_MATRIX ? "CAT16 matrix" : selected.operation == FJ_TEST_CAT16_ADAPT ? "CAT16 scalar"
+                                                                                          : selected.operation == FJ_TEST_CAT02_MATRIX  ? "CAT02 matrix"
+                                                                                                                                        : "CAT02 scalar";
+        require(result.diagnostic.find(operation) != std::string::npos, "original operation diagnostic");
+        require(result.diagnostic.find("film=" + film) != std::string::npos && result.diagnostic.find("route=") != std::string::npos, "attempted selection diagnostic");
     }
     struct Supersession {
         ParamSnapshot newer;
@@ -277,7 +293,7 @@ namespace {
                 for (std::uint32_t operation : {FJ_TEST_CAT16_MATRIX, FJ_TEST_CAT16_ADAPT}) {
                     const std::uint32_t calls = operation == 1 ? 3 : 2;
                     for (std::uint32_t index = 1; index <= calls; ++index) {
-                        for (std::uint32_t fault : {FJ_TEST_CAT16_UNSUPPORTED_INPUT, FJ_TEST_CAT16_PANIC}) {
+                        for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
                             const FaultCase selected{operation, index, fault};
                             FaultScope cleanup;
                             InstanceState state;
@@ -288,7 +304,7 @@ namespace {
                             const auto counter = state.buildCounterNext.load();
                             const auto oldRecipe = route == 1 ? old.printState->recipe.hash : old.directState->recipe.hash;
                             pending(state, changed);
-                            expect_status(fj_test_cat16_arm_fault(selected.operation, selected.callIndex, selected.fault), FJ_STATUS_SUCCESS);
+                            expect_status(fj_test_color_arm_fault(selected.operation, selected.callIndex, selected.fault), FJ_STATUS_SUCCESS);
                             const auto result = admit_pending_render_state(state);
                             failed(result, selected);
                             unchanged(state, old, hash, counter);
@@ -296,7 +312,7 @@ namespace {
                             const auto reused = admit_pending_render_state(state);
                             require(reused.directState == old.directState && reused.printState == old.printState, "revert to matching retained publication reuses owner");
                             unchanged(state, old, hash, counter);
-                            expect_status(fj_test_cat16_clear_fault(), FJ_STATUS_SUCCESS);
+                            expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
                             pending(state, changed);
                             const auto recovered = admit_pending_render_state(state);
                             require(admitted(recovered, route == 1), "recovery admitted");
@@ -311,7 +327,7 @@ namespace {
                                 const auto liveCounter = state.buildCounterNext.load();
                                 pending(state, controls);
                                 set_pending_capture_test_hook(supersede, &selection);
-                                expect_status(fj_test_cat16_arm_fault(selected.operation, selected.callIndex, selected.fault), FJ_STATUS_SUCCESS);
+                                expect_status(fj_test_color_arm_fault(selected.operation, selected.callIndex, selected.fault), FJ_STATUS_SUCCESS);
                                 const auto newer = admit_pending_render_state(state);
                                 require(selection.fired, "captured snapshot superseded");
                                 if (mode == 0) {
@@ -326,7 +342,7 @@ namespace {
                                     expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
                                 }
                                 set_pending_capture_test_hook(nullptr, nullptr);
-                                expect_status(fj_test_cat16_clear_fault(), FJ_STATUS_SUCCESS);
+                                expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
                                 ++supersessions;
                             }
                         }
@@ -450,7 +466,7 @@ namespace {
             const auto old = admit_pending_render_state(state);
             const auto counter = state.buildCounterNext.load();
             FaultScope cleanup;
-            expect_status(fj_test_cat16_arm_fault(FJ_TEST_CAT16_MATRIX, 1, FJ_TEST_CAT16_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_color_arm_fault(FJ_TEST_CAT16_MATRIX, 1, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
             const auto repeated = admit_pending_render_state(state);
             require(repeated.directState == old.directState && repeated.printState == old.printState && state.buildCounterNext.load() == counter, "unchanged admission reuses actual state");
             expect_status(raw_call(FJ_TEST_CAT16_MATRIX), FJ_STATUS_UNSUPPORTED_INPUT);
@@ -460,6 +476,589 @@ namespace {
         std::puts("Preparation: native-parent complete identities, tables, contributing controls and retained-owner reuse passed");
     }
 
+    namespace Cat02Fixtures {
+        using Json = nlohmann::json;
+        void require(bool condition, const std::string& diagnostic) {
+            if (!condition)
+                throw std::runtime_error(diagnostic);
+        }
+        template <typename Range>
+        Json bits(const Range& values) {
+            Json out = Json::array();
+            for (float value : values)
+                out.push_back(std::bit_cast<std::uint32_t>(value));
+            return out;
+        }
+        std::array<float, 3> triplet(const Json& values) {
+            std::array<float, 3> out{};
+            for (std::size_t i = 0; i < out.size(); ++i)
+                out[i] = std::bit_cast<float>(values.at(i).get<std::uint32_t>());
+            return out;
+        }
+        Json leaf_result(const Json& input) {
+            const auto source = triplet(input.at("source"));
+            const auto destination = triplet(input.at("destination"));
+            const auto xyz = triplet(input.at("xyz"));
+            const Spectral::ChromaticAdaptationWhites whites{source.data(), destination.data()};
+            const auto matrix = JuicerColor::cat02_matrix(whites);
+            std::array<float, 3> adapted{};
+            adapted = JuicerColor::adapt_cat02(xyz, whites);
+            return {{"matrix", bits(matrix)}, {"adapted", bits(adapted)}};
+        }
+        ParamSnapshot snapshot(Spektrafilm::ScanRoute route, Spektrafilm::RgbToRawMethod method) {
+            ParamSnapshot out;
+            out.filmProfileKey = Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Negative ? "kodak_portra_400" : "fujifilm_provia_100f";
+            out.printProfileKey = "kodak_portra_endura";
+            out.scanRoute = route;
+            out.spectralUpsamplingMode = static_cast<int>(method);
+            out.cameraExposureCompensationEv = 0.75;
+            out.cameraAutoExposureEnabled = 0;
+            out.inputCompressionEnabled = 0;
+            return out;
+        }
+        std::vector<std::pair<std::string, ParamSnapshot>> scenarios() {
+            std::vector<std::pair<std::string, ParamSnapshot>> out;
+            for (int polarity = 0; polarity < 2; ++polarity) {
+                for (int route = 0; route < 2; ++route) {
+                    const auto scanRoute = static_cast<Spektrafilm::ScanRoute>(polarity * 2 + route);
+                    for (int input = 0; input < 4; ++input) {
+                        for (int decoding = 0; decoding < 2; ++decoding) {
+                            auto controls = snapshot(scanRoute, Spektrafilm::RgbToRawMethod::Mallett2019);
+                            controls.inputColorSpace = input;
+                            controls.inputCctfDecoding = decoding;
+                            out.emplace_back("mallett-" + std::to_string(polarity) + "-" + std::to_string(route) + "-input-" + std::to_string(input) + "-decode-" + std::to_string(decoding), controls);
+                        }
+                    }
+                    for (int method : {0, 2})
+                        out.emplace_back("tc-" + std::to_string(polarity) + "-" + std::to_string(route) + "-method-" + std::to_string(method), snapshot(scanRoute, static_cast<Spektrafilm::RgbToRawMethod>(method)));
+                    for (int method = 0; method < 3; ++method) {
+                        auto controls = snapshot(scanRoute, static_cast<Spektrafilm::RgbToRawMethod>(method));
+                        controls.outputCctfEncoding = 0;
+                        out.emplace_back("encoding-off-" + std::to_string(polarity) + "-" + std::to_string(route) + "-method-" + std::to_string(method), controls);
+                    }
+                    auto controls = snapshot(scanRoute, Spektrafilm::RgbToRawMethod::Mallett2019);
+                    controls.outputColorSpace = OutputEncoding::toIndex(OutputEncoding::ColorSpace::DCI_P3);
+                    out.emplace_back("output-dci-" + std::to_string(polarity) + "-" + std::to_string(route), controls);
+                }
+            }
+            return out;
+        }
+        FocusedRenderStateBuildProduct build(const ParamSnapshot& input) {
+            FocusedRenderStateBuildProduct out;
+            std::string diagnostic;
+            const bool built = Spektrafilm::scan_route_is_print(input.scanRoute) ? build_print_render_state_product(input, out, diagnostic) : build_direct_render_state_product(input, out, diagnostic);
+            require(built, "complete recipe: " + diagnostic);
+            return out;
+        }
+        Json color_result(const Scanner::ColorRuntime& color) {
+            return {{"cat02", bits(color.cat02)}, {"xyz_to_rgb", bits(color.xyzToRgb)}, {"illuminant_xyz", bits(color.illuminantXYZ)}, {"encoding", {static_cast<int>(color.encoding.colorSpace), color.encoding.applyCctfEncoding, color.encoding.inputIsOutputSpace}}, {"gamut_recipe_hash", color.outputGamutRecipeHash}, {"hash", color.hash}};
+        }
+        Json tables_result(const Spectral::SpectralTables& tables) {
+            return {{"lambda", bits(tables.lambda)}, {"K", tables.K}, {"delta_lambda", bits(std::array{tables.deltaLambda})}, {"inv_yn", bits(std::array{tables.invYn})}, {"white_xyz", bits(tables.whiteXYZ)}, {"ref_illum_white_xyz", bits(tables.refIllumWhiteXYZ)}, {"ax", bits(tables.Ax)}, {"ay", bits(tables.Ay)}, {"az", bits(tables.Az)}, {"xbar", bits(tables.Xbar)}, {"ybar", bits(tables.Ybar)}, {"zbar", bits(tables.Zbar)}, {"illum", bits(tables.illum)}, {"eps_c", bits(tables.epsC)}, {"eps_m", bits(tables.epsM)}, {"eps_y", bits(tables.epsY)}, {"base_density_min", bits(tables.baseDensityMin)}, {"base_density_mid", bits(tables.baseDensityMid)}, {"has_baseline", tables.hasBaseline}, {"baseline_mix", bits(std::array{tables.densityBaselineMixReference})}, {"illuminant_hash", tables.illuminantHash}, {"tables_hash", tables.tablesHash}};
+        }
+        template <typename State>
+        Json scanner_descriptor(const State& product) {
+            Scanner::ScannerSpectralLutDescriptor out;
+            std::string diagnostic;
+            const auto& recipe = product.recipe;
+            const bool ok = Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ? Scanner::build_print_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, out, diagnostic) : Scanner::build_direct_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, out, diagnostic);
+            require(ok, diagnostic);
+            return {{"route", static_cast<int>(out.route)}, {"medium", static_cast<int>(out.medium)}, {"polarity", static_cast<int>(out.polarity)}, {"density_bounds_hash", out.densityBoundsHash}, {"channel_density_hash", out.channelDensityHash}, {"base_density_hash", out.baseDensityHash}, {"illuminant_hash", out.scanIlluminantHash}, {"observer_hash", out.observerHash}, {"resolution", out.lutResolution}, {"hash", out.hash}};
+        }
+        template <typename State>
+        Json complete_result(const State& product) {
+            const auto& recipe = product.recipe;
+            const auto& raw = recipe.filmRaw;
+            const auto& reference = recipe.scannerOutput.syntheticFilmReference;
+            const auto& balance = recipe.print.balance;
+            const auto& config = product.payload.filmRawConfig;
+            return {{"input_rgb_to_xyz", bits(raw.inputRgbToXyz)}, {"input_adapt", bits(raw.inputXyzAdapt)}, {"xyz_to_linear_srgb", bits(raw.xyzToLinearSrgb)}, {"source_white", bits(raw.inputNominalWhiteXYZ)}, {"projection_white", bits(raw.projectionWhiteXYZ)}, {"config_rgb_to_xyz", bits(config.inputRGBToXYZ.m)}, {"config_adapt", bits(config.inputXYZAdapt.m)}, {"raw_midgray", bits(config.rawMidgray)}, {"midgray_dwg", bits(config.midgrayDWG)}, {"midgray_scale_green", bits(std::array{config.midgrayScale, config.rawMidgrayGreen})}, {"config_whites", {bits(config.inputWhiteXYZ), bits(config.workingWhiteXYZ), bits(config.refIllumWhiteXYZ)}}, {"config_flags", {static_cast<int>(config.inputColorSpace), config.applyCctfDecoding, static_cast<int>(config.spectralUpsamplingMode), config.applyInputChromaticAdapt, config.hasRefIllumWhite, config.valid}}, {"spd_s_inv", bits(product.payload.spdSInv)}, {"baseline_raw", bits(reference.baselineRawRgb)}, {"compensated_raw", bits(reference.compensatedRawRgb)}, {"baseline_density", bits(reference.baselineDensityCmy)}, {"compensated_density", bits(reference.compensatedDensityCmy)}, {"print_baseline_raw", bits(balance.baselinePrintRawRgb)}, {"print_compensated_raw", bits(balance.compensatedPrintRawRgb)}, {"print_factors", bits(std::array{balance.factorMidgray, balance.factorMidgrayComp, balance.normalizer})}, {"hashes", {raw.hash, raw.tcLutHash, reference.hash, balance.hash, recipe.print.hash, recipe.scannerOutput.hash, recipe.scannerOutput.outputGamut.hash, recipe.hash, product.payload.uploadCoreHash, product.payload.scannerHash}}, {"scanner_color", color_result(product.payload.scannerColor)}, {"scanner_tables", tables_result(product.payload.scannerTables)}, {"scanner_descriptor", scanner_descriptor(product)}, {"gamut_entry", bits(recipe.scannerOutput.outputGamut.transform.nativeRgbToD65Xyz)}, {"gamut_exit", bits(recipe.scannerOutput.outputGamut.transform.d65XyzToNativeRgb)}};
+        }
+        Scanner::ScannerIlluminant scanner_illuminant(const FocusedRenderStateBuildProduct& product) {
+            const auto& tables = product.payload.scannerTables;
+            Scanner::ScannerIlluminant out;
+            out.curve.linear = tables.illum;
+            out.curve.lambda_nm = tables.lambda;
+            std::copy_n(product.payload.scannerColor.illuminantXYZ, 3, out.whiteXYZ);
+            double sumX = 0.0, sumY = 0.0, sumZ = 0.0;
+            for (std::size_t i = 0; i < out.curve.linear.size(); ++i) {
+                sumX += static_cast<double>(out.curve.linear[i]) * static_cast<double>(Spectral::gXBar.linear[i]);
+                sumY += static_cast<double>(out.curve.linear[i]) * static_cast<double>(Spectral::gYBar.linear[i]);
+                sumZ += static_cast<double>(out.curve.linear[i]) * static_cast<double>(Spectral::gZBar.linear[i]);
+            }
+            out.normalization = static_cast<float>(sumY);
+            out.whiteXY[0] = static_cast<float>(sumX / (sumX + sumY + sumZ));
+            out.whiteXY[1] = static_cast<float>(sumY / (sumX + sumY + sumZ));
+            out.hash = tables.illuminantHash;
+            require(out.hash != 0, "actual completed scanner illuminant hash");
+            return out;
+        }
+        std::vector<Json> helper_inputs() {
+            std::vector<Json> out;
+            const std::array<std::array<float, 3>, 8> rgb{{{0, 0, 0}, {.184f, .184f, .184f}, {1, 1, 1}, {2, -.25f, .5f}, {-.2f, -.1f, -.3f}, {-0.0f, .05f, -.05f}, {.1f, 1e-30f, .2f}, {.05f, -.5f, 1.5f}}};
+            const std::array<std::array<float, 3>, 4> refs{{{.95047f, 1.0f, 1.08883f}, {.96429567f, 1.0f, .8251046f}, {0, 0, 0}, {.8f, 0, 1.2f}}};
+            for (std::size_t i = 0; i < rgb.size(); ++i)
+                for (std::size_t j = 0; j < refs.size(); ++j)
+                    out.push_back({{"id", "helper-rgb-" + std::to_string(i) + "-white-" + std::to_string(j)}, {"rgb", bits(rgb[i])}, {"reference_white", bits(refs[j])}});
+            return out;
+        }
+        Json helper_result(const Json& input, const Spectral::SpectralTables& canonicalTables, const std::array<float, 9>& sInv, bool hanatos) {
+            const auto rgb = triplet(input.at("rgb"));
+            const auto reference = triplet(input.at("reference_white"));
+            std::array<float, 3> xyz{}, white{}, adapted{};
+            Spectral::DWG_linear_to_XYZ(rgb.data(), xyz.data());
+            if (hanatos) {
+                Spectral::sanitize_nonfinite_triplet(xyz.data());
+                Spectral::sanitize_ref_white_or_dwg(reference.data(), white.data());
+            } else {
+                auto original = xyz;
+                Spectral::sanitize_nonnegative_triplet_sp(xyz.data(), original.data());
+                Spectral::sanitize_nonnegative_triplet_sp(white.data(), reference.data());
+                if (white[1] <= 0.0f)
+                    std::copy_n(Spectral::gDWG_WhitePoint_XYZ, 3, white.data());
+            }
+            const Spectral::ChromaticAdaptationWhites whites{Spectral::gDWG_WhitePoint_XYZ, white.data()};
+            adapted = JuicerColor::adapt_cat02(xyz, whites);
+            if (hanatos)
+                Spectral::sanitize_nonfinite_triplet(adapted.data());
+            else
+                Spectral::clamp_triplet_nonnegative(adapted.data());
+            std::vector<float> spectrum;
+            if (hanatos)
+                Spectral::reconstruct_Ee_from_DWG_RGB_hanatos(rgb.data(), spectrum, reference.data());
+            else {
+                auto tables = canonicalTables;
+                std::copy(reference.begin(), reference.end(), tables.refIllumWhiteXYZ);
+                Spectral::reconstruct_Ee_from_DWG_RGB_with_tables(rgb.data(), tables, sInv.data(), spectrum);
+            }
+            require(spectrum.size() == 81, "canonical helper spectrum size");
+            return {{"pre_xyz", bits(xyz)}, {"consumer_white", bits(white)}, {"post_adapt_xyz", bits(adapted)}, {"spectrum", bits(spectrum)}};
+        }
+    } // namespace Cat02Fixtures
+    FjStatus facade_call(std::uint32_t operation) {
+        constexpr std::array<float, 3> white{0.95045593f, 1.0f, 1.08905775f};
+        std::array<float, 9> matrix{};
+        std::array<float, 3> adapted{};
+        switch (operation) {
+            case FJ_TEST_CAT16_MATRIX:
+                return fj_test_cat16_matrix(white.data(), white.data(), matrix.data());
+            case FJ_TEST_CAT16_ADAPT:
+                return fj_test_adapt_cat16(white.data(), white.data(), white.data(), adapted.data());
+            case FJ_TEST_CAT02_MATRIX:
+                return fj_test_cat02_matrix(white.data(), white.data(), matrix.data());
+            case FJ_TEST_CAT02_ADAPT:
+                return fj_test_adapt_cat02(white.data(), white.data(), white.data(), adapted.data());
+            default:
+                throw std::runtime_error("unknown color operation");
+        }
+    }
+    struct NullColorCase {
+        std::uint32_t operation;
+        int slot;
+    };
+    FjStatus null_color_call(NullColorCase selected) {
+        constexpr std::array<float, 3> white{0.95045593f, 1.0f, 1.08905775f};
+        std::array<float, 9> out{};
+        const auto* source = selected.slot == 0 ? nullptr : white.data();
+        const auto* destination = selected.slot == 1 ? nullptr : white.data();
+        if (selected.operation == FJ_TEST_CAT16_MATRIX || selected.operation == FJ_TEST_CAT02_MATRIX) {
+            auto* output = selected.slot == 2 ? nullptr : out.data();
+            return selected.operation == FJ_TEST_CAT16_MATRIX ? fj_legacy_cat16_matrix(source, destination, output) : fj_legacy_cat02_matrix(source, destination, output);
+        }
+        const auto* xyz = selected.slot == 0 ? nullptr : white.data();
+        source = selected.slot == 1 ? nullptr : white.data();
+        destination = selected.slot == 2 ? nullptr : white.data();
+        auto* output = selected.slot == 3 ? nullptr : out.data();
+        return selected.operation == FJ_TEST_CAT16_ADAPT ? fj_legacy_adapt_cat16(xyz, source, destination, output) : fj_legacy_adapt_cat02(xyz, source, destination, output);
+    }
+    void color_fault_tests() {
+        FaultScope cleanup;
+        constexpr std::array<std::uint32_t, 4> operations{FJ_TEST_CAT16_MATRIX, FJ_TEST_CAT16_ADAPT, FJ_TEST_CAT02_MATRIX, FJ_TEST_CAT02_ADAPT};
+        for (const auto operation : operations) {
+            for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
+                expect_status(fj_test_color_arm_fault(operation, 2, fault), FJ_STATUS_SUCCESS);
+                for (const auto unrelated : operations) {
+                    if (unrelated != operation) {
+                        expect_status(raw_call(unrelated), FJ_STATUS_SUCCESS);
+                    }
+                }
+                expect_status(facade_call(operation), FJ_STATUS_SUCCESS);
+                const int pointers = operation == FJ_TEST_CAT16_MATRIX || operation == FJ_TEST_CAT02_MATRIX ? 3 : 4;
+                for (int slot = 0; slot < pointers; ++slot) {
+                    expect_status(null_color_call({.operation = operation, .slot = slot}), FJ_STATUS_UNSUPPORTED_INPUT);
+                }
+                expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
+                expect_status(raw_call(operation), fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
+                expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
+                expect_status(fj_test_color_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
+                FjStatus otherThread{};
+                std::thread worker([&] {
+                    otherThread = raw_call(operation);
+                });
+                worker.join();
+                expect_status(otherThread, FJ_STATUS_SUCCESS);
+                expect_status(raw_call(operation), fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
+                expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
+            }
+            for (const auto& invalid : std::array<std::array<std::uint32_t, 3>, 5>{{{0, 1, 1}, {5, 1, 1}, {99, 1, 1}, {operation, 0, 1}, {operation, 1, 99}}}) {
+                expect_status(fj_test_color_arm_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+                expect_status(fj_test_color_arm_fault(invalid[0], invalid[1], invalid[2]), FJ_STATUS_UNSUPPORTED_INPUT);
+                expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
+            }
+            for (const auto replacement : operations) {
+                expect_status(fj_test_color_arm_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+                expect_status(fj_test_color_arm_fault(replacement, 2, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
+                if (replacement != operation) {
+                    expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
+                }
+                expect_status(raw_call(replacement), FJ_STATUS_SUCCESS);
+                expect_status(raw_call(replacement), FJ_STATUS_UNSUPPORTED_INPUT);
+                expect_status(raw_call(replacement), FJ_STATUS_SUCCESS);
+            }
+            expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
+            expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
+        }
+        std::puts("Color fault slot: four operations, cross-family counting/replacement, facade/null independence and thread locality passed");
+    }
+    void cat02_leaf_tests(const Json& fixture) {
+        bool scalarDistinct = false;
+        for (const auto* group : {"leaf", "threshold"}) {
+            for (const auto& row : fixture.at(group)) {
+                const auto source = triplet(row.at("source"));
+                const auto destination = triplet(row.at("destination"));
+                const auto xyz = triplet(row.at("xyz"));
+                const Spectral::ChromaticAdaptationWhites whites{source.data(), destination.data()};
+                const auto& expected = row.at("expected");
+                const std::string id = row.at("id").get<std::string>();
+                const auto matrix = JuicerColor::cat02_matrix(whites);
+                const auto adapted = JuicerColor::adapt_cat02(xyz, whites);
+                require(same_values(bits(matrix), expected.at("matrix")), id + " production matrix bits/classification");
+                require(same_values(bits(adapted), expected.at("adapted")), id + " production scalar bits/classification");
+                std::array<float, 9> facadeMatrix{};
+                std::array<float, 3> facadeAdapted{};
+                expect_status(fj_test_cat02_matrix(source.data(), destination.data(), facadeMatrix.data()), FJ_STATUS_SUCCESS);
+                expect_status(fj_test_adapt_cat02(xyz.data(), source.data(), destination.data(), facadeAdapted.data()), FJ_STATUS_SUCCESS);
+                require(same_values(bits(facadeMatrix), expected.at("matrix")), id + " facade matrix bits/classification");
+                require(same_values(bits(facadeAdapted), expected.at("adapted")), id + " facade scalar bits/classification");
+                std::array<float, 3> multiplied{};
+                Spectral::mul_3x3_vec3(matrix.data(), xyz.data(), multiplied.data());
+                scalarDistinct = scalarDistinct || !same_values(bits(multiplied), expected.at("adapted"));
+            }
+        }
+        require(scalarDistinct, "independent CAT02 captures distinguish scalar from matrix shortcut");
+        const auto selected = std::find_if(fixture.at("leaf").begin(), fixture.at("leaf").end(), [](const auto& row) {
+            return row.at("id") == "d65-to-output-d50-xyz-0";
+        });
+        require(selected != fixture.at("leaf").end(), "CAT02 direction comparator case");
+        const auto& expected = selected->at("expected").at("matrix");
+        auto altered = expected;
+        std::swap(altered[1], altered[3]);
+        require(!same_values(altered, expected), "CAT02 transpose comparator rejection");
+        altered = expected;
+        altered[0] = altered[0].get<std::uint32_t>() ^ 1u;
+        require(!same_values(altered, expected), "CAT02 one-bit comparator rejection");
+        auto swapped = *selected;
+        std::swap(swapped["source"], swapped["destination"]);
+        require(!same_values(Cat02Fixtures::leaf_result(swapped).at("matrix"), expected), "CAT02 white-direction comparator rejection");
+        require(fj_test_cat02_abi_c() == 0, "real C11 CAT02 layout/status/null/clear/canary/alias/nonfinite/panic transport");
+        color_fault_tests();
+        std::printf("CAT02: %zu leaf and %zu strict-threshold cases passed independently through production and facade\n", fixture.at("leaf").size(), fixture.at("threshold").size());
+    }
+    template <typename Range>
+    std::vector<std::uint32_t> retained_bits(const Range& values) {
+        std::vector<std::uint32_t> out;
+        out.reserve(std::size(values));
+        for (float value : values) {
+            out.push_back(std::bit_cast<std::uint32_t>(value));
+        }
+        return out;
+    }
+    struct RetainedValues {
+        Json complete;
+        Json exposureTables;
+        std::vector<std::uint32_t> tcRgba;
+        std::vector<std::uint32_t> printIlluminant;
+        std::vector<std::uint32_t> boundary;
+        std::array<std::uint64_t, 3> boundaryHashes{};
+        std::string boundaryDiagnostic;
+    };
+    template <typename State>
+    RetainedValues retain_values(const State& state) {
+        RetainedValues out;
+        out.complete = Cat02Fixtures::complete_result(state);
+        out.exposureTables = Cat02Fixtures::tables_result(state.payload.exposureTables);
+        if (state.payload.filmTcLut) {
+            out.tcRgba = retained_bits(state.payload.filmTcLut->rgba);
+        }
+        if (state.payload.printMainIlluminant) {
+            out.printIlluminant = retained_bits(*state.payload.printMainIlluminant);
+        }
+        require(bool(state.payload.outputBoundaryTable), "completed state boundary owner");
+        const auto& boundary = *state.payload.outputBoundaryTable;
+        require(boundary.valid, "retained completed boundary table validity");
+        out.boundary = retained_bits(boundary.cmax);
+        out.boundaryHashes = {boundary.transformHash, boundary.contractHash, boundary.hash};
+        out.boundaryDiagnostic = boundary.diagnostic;
+        return out;
+    }
+    template <typename State>
+    void require_retained_values(const State& state, const RetainedValues& expected) {
+        const auto actual = retain_values(state);
+        require(actual.complete == expected.complete && actual.exposureTables == expected.exposureTables && actual.tcRgba == expected.tcRgba && actual.printIlluminant == expected.printIlluminant && actual.boundary == expected.boundary && actual.boundaryHashes == expected.boundaryHashes && actual.boundaryDiagnostic == expected.boundaryDiagnostic, "retained complete route/color/tables/TC/boundary values remain exact");
+    }
+    RetainedValues retain_values(const PendingRenderAdmissionResult& result) {
+        if (result.printState) {
+            return retain_values(*result.printState);
+        }
+        require(bool(result.directState), "admitted retained state owner");
+        return retain_values(*result.directState);
+    }
+    void require_retained_values(const PendingRenderAdmissionResult& result, const RetainedValues& expected) {
+        if (result.printState) {
+            require_retained_values(*result.printState, expected);
+        } else {
+            require(bool(result.directState), "admitted retained state owner");
+            require_retained_values(*result.directState, expected);
+        }
+    }
+    void cat02_admission_tests() {
+        std::size_t failures = 0;
+        std::size_t supersessions = 0;
+        for (int route = 0; route < 4; ++route) {
+            for (int method = 0; method < 3; ++method) {
+                const auto controls = Cat02Fixtures::snapshot(static_cast<Spektrafilm::ScanRoute>(route), static_cast<Spektrafilm::RgbToRawMethod>(method));
+                auto changed = controls;
+                changed.cameraExposureCompensationEv = 1.0;
+                const std::uint32_t calls = method == 1 ? 2 : 1;
+                for (std::uint32_t index = 1; index <= calls; ++index) {
+                    for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
+                        const FaultCase selected{FJ_TEST_CAT02_MATRIX, index, fault};
+                        FaultScope cleanup;
+                        InstanceState state;
+                        pending(state, controls);
+                        const auto old = admit_pending_render_state(state);
+                        require(admitted(old, route % 2 == 1), "initial CAT02 route admitted");
+                        const auto oldValues = retain_values(old);
+                        const auto hash = state.lastHash.load();
+                        const auto counter = state.buildCounterNext.load();
+                        pending(state, changed);
+                        expect_status(fj_test_color_arm_fault(selected.operation, index, fault), FJ_STATUS_SUCCESS);
+                        const auto result = admit_pending_render_state(state);
+                        failed(result, selected, controls.filmProfileKey);
+                        unchanged(state, old, hash, counter);
+                        require_retained_values(old, oldValues);
+                        for (std::uint32_t call = 0; call < index; ++call) {
+                            expect_status(raw_call(FJ_TEST_CAT02_MATRIX), FJ_STATUS_SUCCESS);
+                        }
+                        pending(state, controls);
+                        const auto reused = admit_pending_render_state(state);
+                        require(reused.directState == old.directState && reused.printState == old.printState, "failed CAT02 rebuild retains reusable accepted publication");
+                        unchanged(state, old, hash, counter);
+                        pending(state, changed);
+                        const auto recovered = admit_pending_render_state(state);
+                        require(admitted(recovered, route % 2 == 1), "CAT02 recovery admitted");
+                        require(recovered.directState != old.directState || recovered.printState != old.printState, "CAT02 recovery replaces route publication");
+                        require(state.lastHash.load() == hash_params(changed) && state.buildCounterNext.load() == counter + 1, "CAT02 recovery publishes matching hash/counter");
+                        require_retained_values(old, oldValues);
+                        const auto recoveredValues = retain_values(recovered);
+                        ++failures;
+                        for (int mode = 0; mode < 3; ++mode) {
+                            Supersession selection{changed, mode, false};
+                            const auto liveHash = state.lastHash.load();
+                            const auto liveCounter = state.buildCounterNext.load();
+                            pending(state, controls);
+                            set_pending_capture_test_hook(supersede, &selection);
+                            expect_status(fj_test_color_arm_fault(selected.operation, index, fault), FJ_STATUS_SUCCESS);
+                            const auto newer = admit_pending_render_state(state);
+                            require(selection.fired, "CAT02 captured snapshot superseded");
+                            if (mode == 0) {
+                                require(admitted(newer, route % 2 == 1) && newer.directState == recovered.directState && newer.printState == recovered.printState, "CAT02 superseded valid attempt reuses current successful publication");
+                            } else {
+                                require(newer.status == (mode == 1 ? PendingRenderAdmissionStatus::InvalidSnapshotControls : PendingRenderAdmissionStatus::NeedsSnapshotAcquisition) && !newer.directState && !newer.printState, "CAT02 superseded invalid/uninitialized normal acquisition");
+                            }
+                            unchanged(state, recovered, liveHash, liveCounter);
+                            require_retained_values(old, oldValues);
+                            require_retained_values(recovered, recoveredValues);
+                            // Same admission thread and original matching count, before cleanup.
+                            for (std::uint32_t call = 0; call < index; ++call) {
+                                expect_status(raw_call(FJ_TEST_CAT02_MATRIX), FJ_STATUS_SUCCESS);
+                            }
+                            set_pending_capture_test_hook(nullptr, nullptr);
+                            expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
+                            ++supersessions;
+                        }
+                    }
+                }
+            }
+        }
+        std::printf("CAT02 admission: %zu current failure/recovery and %zu N2 supersession witnesses on four routes passed\n", failures, supersessions);
+    }
+    template <typename Function>
+    void require_cat02_scalar_failure(Function&& function, std::uint32_t fault) {
+        FaultScope cleanup;
+        expect_status(fj_test_color_arm_fault(FJ_TEST_CAT02_ADAPT, 1, fault), FJ_STATUS_SUCCESS);
+        bool thrown = false;
+        try {
+            function();
+        } catch (const JuicerCuda::ExecutionFailure& error) {
+            require(error.failure.status.category == (fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE) && error.failure.status.api == FJ_API_NONE && error.failure.status.native_code == 0 && !error.deferredDirError && error.failure.diagnostic.find("CAT02 scalar") != std::string::npos, "CAT02 scalar typed failure and diagnostic preserved");
+            thrown = true;
+        }
+        require(thrown, "actual scalar consumer propagates CAT02 failure");
+        expect_status(raw_call(FJ_TEST_CAT02_ADAPT), FJ_STATUS_SUCCESS);
+    }
+    void cat02_helper_tests(const Json& fixture) {
+        const auto product = Cat02Fixtures::build(Cat02Fixtures::snapshot(Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::RgbToRawMethod::Mallett2019));
+        const auto& tables = product.payload.exposureTables;
+        const auto& sInv = product.payload.spdSInv;
+        require(Cat02Fixtures::tables_result(tables) == fixture.at("helper_tables") && bits(sInv) == fixture.at("helper_s_inv"), "independent canonical helper tables/S inverse");
+        require(Json{{"K", Spectral::gShape.K}, {"dwg_white", bits(Spectral::gDWG_WhitePoint_XYZ)}} == fixture.at("helper_hanatos_axes"), "independent retained Hanatos helper axes/white");
+        const auto cases = Cat02Fixtures::helper_inputs();
+        require(cases.size() == fixture.at("helpers").size(), "retained helper case membership");
+        for (std::size_t i = 0; i < cases.size(); ++i) {
+            const auto& input = cases[i];
+            const auto& row = fixture.at("helpers").at(i);
+            require(input.at("id") == row.at("id") && input.at("rgb") == row.at("rgb") && input.at("reference_white") == row.at("reference_white"), "frozen retained helper inputs");
+            require(Cat02Fixtures::helper_result(input, tables, sInv, true) == row.at("hanatos_expected"), input.at("id").get<std::string>() + " signed Hanatos sanitation/spectrum");
+            require(Cat02Fixtures::helper_result(input, tables, sInv, false) == row.at("tables_expected"), input.at("id").get<std::string>() + " tables sanitation/spectrum");
+        }
+        const std::array<float, 3> rgb{2.0f, -0.25f, 0.5f};
+        const Spectral::ChromaticAdaptationWhites whites{Spectral::gDWG_WhitePoint_XYZ, tables.refIllumWhiteXYZ};
+        const auto held = retain_values(product);
+        for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
+            require_cat02_scalar_failure([&] {
+                (void)JuicerColor::adapt_cat02(rgb, whites);
+            },
+                                         fault);
+            require_cat02_scalar_failure([&] {
+                std::vector<float> spectrum;
+                Spectral::reconstruct_Ee_from_DWG_RGB_hanatos(rgb.data(), spectrum, tables.refIllumWhiteXYZ);
+            },
+                                         fault);
+            require_cat02_scalar_failure([&] {
+                std::vector<float> spectrum;
+                Spectral::reconstruct_Ee_from_DWG_RGB_with_tables(rgb.data(), tables, sInv.data(), spectrum);
+            },
+                                         fault);
+            require_retained_values(product, held);
+        }
+        std::printf("CAT02 retained helpers: %zu independent pre/post sanitation/spectrum cases per helper and both typed failure categories passed\n", cases.size());
+    }
+    void cat02_control_tests() {
+        for (int route = 0; route < 4; ++route) {
+            for (int method = 0; method < 3; ++method) {
+                const auto controls = Cat02Fixtures::snapshot(static_cast<Spektrafilm::ScanRoute>(route), static_cast<Spektrafilm::RgbToRawMethod>(method));
+                const auto product = Cat02Fixtures::build(controls);
+                const auto productHeld = retain_values(product);
+                auto decoding = controls;
+                decoding.inputCctfDecoding = 1;
+                const auto decoded = Cat02Fixtures::build(decoding);
+                require(product.recipe.filmRaw.inputXyzAdapt == decoded.recipe.filmRaw.inputXyzAdapt && product.recipe.filmRaw.hash != decoded.recipe.filmRaw.hash && product.recipe.hash != decoded.recipe.hash, "input CCTF decoding keeps adaptation and changes film identity");
+                auto input = controls;
+                input.inputColorSpace = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::ACES2065_1);
+                const auto inputChanged = Cat02Fixtures::build(input);
+                require(product.recipe.filmRaw.inputNominalWhiteXYZ != inputChanged.recipe.filmRaw.inputNominalWhiteXYZ && product.recipe.filmRaw.inputXyzAdapt != inputChanged.recipe.filmRaw.inputXyzAdapt && product.recipe.filmRaw.hash != inputChanged.recipe.filmRaw.hash && product.recipe.hash != inputChanged.recipe.hash, "input space/white changes contributing matrix and film identity");
+                require(Cat02Fixtures::color_result(product.payload.scannerColor) == Cat02Fixtures::color_result(inputChanged.payload.scannerColor), "input space leaves selected scanner color values/identity unchanged");
+                auto output = controls;
+                output.outputColorSpace = OutputEncoding::toIndex(OutputEncoding::ColorSpace::DCI_P3);
+                const auto outputChanged = Cat02Fixtures::build(output);
+                require(bits(product.payload.scannerColor.cat02) != bits(outputChanged.payload.scannerColor.cat02) && product.payload.scannerColor.hash != outputChanged.payload.scannerColor.hash && product.recipe.hash != outputChanged.recipe.hash, "output space/white changes scanner matrix/color/final identity");
+                require(product.recipe.filmRaw.hash == outputChanged.recipe.filmRaw.hash && product.recipe.filmRaw.inputXyzAdapt == outputChanged.recipe.filmRaw.inputXyzAdapt, "output space preserves film identity/matrix");
+                auto encoding = controls;
+                encoding.outputCctfEncoding = 0;
+                const auto encodedOff = Cat02Fixtures::build(encoding);
+                require(product.recipe.filmRaw.inputXyzAdapt == encodedOff.recipe.filmRaw.inputXyzAdapt && product.recipe.filmRaw.hash == encodedOff.recipe.filmRaw.hash && product.recipe.filmRaw.tcLutHash == encodedOff.recipe.filmRaw.tcLutHash, "output CCTF-only changes preserve film/TC family");
+                require(product.payload.outputBoundaryTable == encodedOff.payload.outputBoundaryTable, "output CCTF-only reuses actual boundary table owner");
+                require(Cat02Fixtures::tables_result(product.payload.scannerTables) == Cat02Fixtures::tables_result(encodedOff.payload.scannerTables) && Cat02Fixtures::scanner_descriptor(product) == Cat02Fixtures::scanner_descriptor(encodedOff), "output CCTF-only preserves complete scanner tables/descriptor");
+                require(bits(product.payload.scannerColor.cat02) == bits(encodedOff.payload.scannerColor.cat02) && product.payload.scannerColor.hash != encodedOff.payload.scannerColor.hash && product.recipe.scannerOutput.hash != encodedOff.recipe.scannerOutput.hash && product.recipe.hash != encodedOff.recipe.hash, "output CCTF-only changes identities at color/output owners");
+                InstanceState state;
+                pending(state, controls);
+                const auto old = admit_pending_render_state(state);
+                require(admitted(old, route % 2 == 1), "unchanged CAT02 admission baseline");
+                const auto hash = state.lastHash.load();
+                const auto counter = state.buildCounterNext.load();
+                const auto held = retain_values(old);
+                FaultScope cleanup;
+                expect_status(fj_test_color_arm_fault(FJ_TEST_CAT02_MATRIX, 1, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
+                const auto repeated = admit_pending_render_state(state);
+                require(repeated.directState == old.directState && repeated.printState == old.printState, "unchanged CAT02 admission reuses exact publication");
+                unchanged(state, old, hash, counter);
+                expect_status(raw_call(FJ_TEST_CAT02_MATRIX), FJ_STATUS_UNSUPPORTED_INPUT);
+                expect_status(JuicerProcess::root().assets().release_cached_payloads(), FJ_STATUS_SUCCESS);
+                require_retained_values(old, held);
+                require_retained_values(product, productHeld);
+                const auto rebuilt = Cat02Fixtures::build(controls);
+                const auto& oldPayload = old.printState ? old.printState->payload : old.directState->payload;
+                require(rebuilt.payload.outputBoundaryTable != oldPayload.outputBoundaryTable && retained_bits(rebuilt.payload.outputBoundaryTable->cmax) == held.boundary, "cache release makes a new equal table without mutating admitted hold");
+                pending(state, output);
+                const auto replacement = admit_pending_render_state(state);
+                require(admitted(replacement, route % 2 == 1) && (replacement.directState != old.directState || replacement.printState != old.printState) && state.lastHash.load() == hash_params(output) && state.buildCounterNext.load() == counter + 1, "output-space state replacement publishes complete owner/hash/counter");
+                require_retained_values(old, held);
+            }
+        }
+    }
+    void cat02_preparation_tests(const Json& fixture, const std::filesystem::path& fixturePath) {
+        cat02_admission_tests();
+        const auto cases = Cat02Fixtures::scenarios();
+        require(cases.size() == fixture.at("recipes").size(), "frozen CAT02 recipe case membership");
+        std::vector<Json> otherPresets;
+        for (const auto* preset : {"linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"}) {
+            const auto path = fixturePath.parent_path() / (std::string("cat02-") + preset + ".json");
+            if (path != fixturePath) {
+                std::ifstream input(path);
+                otherPresets.push_back(Json::parse(input));
+            }
+        }
+        bool wrongPresetRejected = false;
+        for (std::size_t i = 0; i < cases.size(); ++i) {
+            const auto& [id, controls] = cases[i];
+            const auto& row = fixture.at("recipes").at(i);
+            require(id == row.at("id").get<std::string>(), "frozen CAT02 recipe ordered case identity");
+            const auto& settings = row.at("controls");
+            require(settings.at("filmProfileKey") == controls.filmProfileKey && settings.at("printProfileKey") == controls.printProfileKey && settings.at("scanRoute") == static_cast<int>(controls.scanRoute) && settings.at("spectralUpsamplingMode") == controls.spectralUpsamplingMode && settings.at("inputColorSpace") == controls.inputColorSpace && settings.at("inputCctfDecoding") == controls.inputCctfDecoding && settings.at("outputColorSpace") == controls.outputColorSpace && settings.at("outputCctfEncoding") == controls.outputCctfEncoding && settings.at("cameraAutoExposureEnabled") == controls.cameraAutoExposureEnabled && settings.at("inputCompressionEnabled") == controls.inputCompressionEnabled && settings.at("cameraExposureCompensationEv").at("f64_bits") == std::bit_cast<std::uint64_t>(controls.cameraExposureCompensationEv), "frozen CAT02 selected controls");
+            const auto product = Cat02Fixtures::build(controls);
+            const auto actual = Cat02Fixtures::complete_result(product);
+            require(actual == row.at("expected"), id + " independent complete film/raw-midgray/scanner/tables/descriptors/identities");
+            for (const auto& other : otherPresets) {
+                const auto& wrong = other.at("recipes").at(i);
+                require(wrong.at("id") == row.at("id") && wrong.at("controls") == row.at("controls"), "wrong-preset comparator uses identical inputs");
+                if (wrong.at("expected") != row.at("expected")) {
+                    require(actual != wrong.at("expected"), id + " wrong-preset value/identity comparator rejection");
+                    wrongPresetRejected = true;
+                }
+            }
+            auto changedIdentity = actual;
+            changedIdentity["hashes"][0] = changedIdentity["hashes"][0].get<std::uint64_t>() ^ 1u;
+            require(changedIdentity != row.at("expected"), id + " complete identity comparator rejection");
+        }
+        require(wrongPresetRejected, "different native-preset value/identity baselines reject incorrect expectation");
+        std::array<Scanner::ScannerIlluminant, 4> illuminants;
+        for (int route = 0; route < 4; ++route) {
+            const auto product = Cat02Fixtures::build(Cat02Fixtures::snapshot(static_cast<Spektrafilm::ScanRoute>(route), Spektrafilm::RgbToRawMethod::Mallett2019));
+            illuminants[route] = Cat02Fixtures::scanner_illuminant(product);
+            const auto& row = fixture.at("scanner_illuminants").at(route);
+            const auto& illuminant = illuminants[route];
+            require(row.at("route") == route && row.at("viewing_illuminant") == product.recipe.scannerOutput.viewingIlluminant && row.at("white_xyz") == bits(illuminant.whiteXYZ) && row.at("white_xy") == bits(illuminant.whiteXY) && row.at("normalization") == bits(std::array{illuminant.normalization}) && row.at("hash") == illuminant.hash && row.at("samples") == bits(illuminant.curve.linear), "actual selected-route scanner illuminant exact fields/identity");
+        }
+        for (const auto& row : fixture.at("scanner_cases")) {
+            const OutputEncoding::Params encoding{static_cast<OutputEncoding::ColorSpace>(row.at("space").get<int>()), row.at("encoding").get<int>() != 0, true};
+            const auto color = Scanner::build_color_runtime(static_cast<Scanner::ScannerMedium>(row.at("medium").get<int>()), illuminants[row.at("route").get<int>()], encoding, row.at("gamut_recipe_hash").get<std::uint64_t>());
+            require(Cat02Fixtures::color_result(color) == row.at("expected"), row.at("id").get<std::string>() + " real scanner color exact arrays/encoding/hash");
+        }
+        for (const auto& row : fixture.at("scanner_invalid_cases")) {
+            auto invalid = illuminants[0];
+            invalid.hash = 0;
+            FaultScope cleanup;
+            expect_status(fj_test_color_arm_fault(FJ_TEST_CAT02_MATRIX, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+            const auto color = Scanner::build_color_runtime(static_cast<Scanner::ScannerMedium>(row.at("medium").get<int>()), invalid, {}, 0);
+            require(Cat02Fixtures::color_result(color) == row.at("expected"), "invalid scanner illuminant keeps early zero-hash color result");
+            expect_status(raw_call(FJ_TEST_CAT02_MATRIX), FJ_STATUS_INTERNAL_FAILURE);
+        }
+        cat02_helper_tests(fixture);
+        cat02_control_tests();
+        std::printf("CAT02 preparation: %zu independent recipes, %zu scanner cases, distinct controls and full retained arrays passed\n", cases.size(), fixture.at("scanner_cases").size());
+    }
+
     void gpu_reuse_tests() {
         require(cudaSetDevice(0) == cudaSuccess && cudaFree(nullptr) == cudaSuccess, "GPU initialization");
         void* context = nullptr;
@@ -467,71 +1066,95 @@ namespace {
         require(JuicerCuda::query_current_cuda_context(context, contextError), contextError);
         const JuicerCuda::ResourceManager::DeviceContextKey key{0, context};
         std::uint64_t sequence = 1;
-        for (int route = 0; route < 2; ++route) {
-            auto controls = snapshot(static_cast<Spektrafilm::ScanRoute>(route), Spektrafilm::RgbToRawMethod::Hanatos2025);
-            controls.grainControls.active = false;
-            controls.dirCouplers.active = false;
-            const auto product = build(controls);
-            controls.outputCctfEncoding = 0;
-            const auto encodedOff = build(controls);
-            const auto descriptor = scanner_descriptor(product);
-            const auto offDescriptor = scanner_descriptor(encodedOff);
-            require(descriptor.hash == offDescriptor.hash, "CCTF-only scanner identity");
-            std::array<const float*, 6> previous{};
-            std::vector<std::uint32_t> previousContent;
-            std::uint64_t previousHash = 0;
-            for (const auto* prepared : {&product, &encodedOff, &product}) {
-                JuicerProcess::Root::CudaFramePreparationRequest request;
-                request.recipe = &prepared->recipe;
-                request.exposureTables = &prepared->payload.exposureTables;
-                request.filmRawConfig = &prepared->payload.filmRawConfig;
-                request.filmTcLut = prepared->payload.filmTcLut ? &*prepared->payload.filmTcLut : nullptr;
-                request.printMainIlluminant = prepared->payload.printMainIlluminant ? &*prepared->payload.printMainIlluminant : nullptr;
-                request.scannerTables = &prepared->payload.scannerTables;
-                request.scannerColor = &prepared->payload.scannerColor;
-                request.scannerLutDescriptor = &descriptor;
-                request.outputBoundaryTable = prepared->payload.outputBoundaryTable.get();
-                request.requestedWidth = 16;
-                request.requestedHeight = 16;
-                JuicerCuda::ResourceManager::SubmissionSnapshot submission;
-                submission.instanceToken.value = 0x4341543136ull;
-                submission.frameToken.value = sequence;
-                submission.snapshotId = sequence++;
-                submission.deviceContextKey = key;
-                submission.keyDigests = JuicerCuda::ResourceManager::make_key_digests(prepared->payload.uploadCoreHash, prepared->recipe.dirCouplers.hash, prepared->payload.scannerHash, 0);
-                JuicerCuda::Failure error;
-                auto frame = JuicerProcess::root().prepare_cuda_frame(key, submission, request, {}, nullptr, error);
-                require(frame.active(), error.diagnostic);
-                const auto* lut = frame.focused_resources().scanLut;
-                require(lut && lut->canonical_ready(), "actual owning scanner LUT prepared");
-                const std::array<const float*, 6> addresses{lut->log2PchipXYZ, lut->slopeC, lut->slopeM, lut->slopeY, lut->cellMin, lut->cellMax};
-                const std::size_t voxels = static_cast<std::size_t>(lut->res) * lut->res * lut->res * 3;
-                const std::size_t cells = static_cast<std::size_t>(lut->res - 1) * (lut->res - 1) * (lut->res - 1) * 3;
-                std::vector<std::uint32_t> content;
-                for (std::size_t plane = 0; plane < addresses.size(); ++plane) {
-                    std::vector<float> values(plane < 4 ? voxels : cells);
-                    require(cudaMemcpy(values.data(), addresses[plane], values.size() * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess, "owning scanner LUT content read");
-                    for (float value : values) {
-                        content.push_back(std::bit_cast<std::uint32_t>(value));
+        for (int method : {0, 1}) {
+            for (int route = 0; route < 2; ++route) {
+                auto controls = snapshot(static_cast<Spektrafilm::ScanRoute>(route), static_cast<Spektrafilm::RgbToRawMethod>(method));
+                if (method == 1) {
+                    controls.printProfileKey = "kodak_portra_endura";
+                }
+                controls.grainControls.active = false;
+                controls.dirCouplers.active = false;
+                const auto product = build(controls);
+                controls.outputCctfEncoding = 0;
+                const auto encodedOff = build(controls);
+                const auto descriptor = scanner_descriptor(product);
+                const auto offDescriptor = scanner_descriptor(encodedOff);
+                require(descriptor.hash == offDescriptor.hash, "CCTF-only scanner identity");
+                std::array<const float*, 6> previous{};
+                std::vector<std::uint32_t> previousContent;
+                std::uint64_t previousHash = 0;
+                std::array<long long, 3> preparationUs{};
+                std::size_t transition = 0;
+                for (const auto* prepared : {&product, &encodedOff, &product}) {
+                    JuicerProcess::Root::CudaFramePreparationRequest request;
+                    request.recipe = &prepared->recipe;
+                    request.exposureTables = &prepared->payload.exposureTables;
+                    request.filmRawConfig = &prepared->payload.filmRawConfig;
+                    request.filmTcLut = prepared->payload.filmTcLut ? &*prepared->payload.filmTcLut : nullptr;
+                    request.printMainIlluminant = prepared->payload.printMainIlluminant ? &*prepared->payload.printMainIlluminant : nullptr;
+                    request.scannerTables = &prepared->payload.scannerTables;
+                    request.scannerColor = &prepared->payload.scannerColor;
+                    request.scannerLutDescriptor = &descriptor;
+                    request.outputBoundaryTable = prepared->payload.outputBoundaryTable.get();
+                    request.requestedWidth = 16;
+                    request.requestedHeight = 16;
+                    JuicerCuda::ResourceManager::SubmissionSnapshot submission;
+                    submission.instanceToken.value = 0x4341543136ull;
+                    submission.frameToken.value = sequence;
+                    submission.snapshotId = sequence++;
+                    submission.deviceContextKey = key;
+                    submission.keyDigests = JuicerCuda::ResourceManager::make_key_digests(prepared->payload.uploadCoreHash, prepared->recipe.dirCouplers.hash, prepared->payload.scannerHash, 0);
+                    JuicerCuda::Failure error;
+                    const auto begin = std::chrono::steady_clock::now();
+                    auto frame = JuicerProcess::root().prepare_cuda_frame(key, submission, request, {}, nullptr, error);
+                    preparationUs[transition++] = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - begin).count();
+                    require(frame.active(), error.diagnostic);
+                    const auto* lut = frame.focused_resources().scanLut;
+                    require(lut && lut->canonical_ready(), "actual owning scanner LUT prepared");
+                    const std::array<const float*, 6> addresses{lut->log2PchipXYZ, lut->slopeC, lut->slopeM, lut->slopeY, lut->cellMin, lut->cellMax};
+                    const std::size_t voxels = static_cast<std::size_t>(lut->res) * lut->res * lut->res * 3;
+                    const std::size_t cells = static_cast<std::size_t>(lut->res - 1) * (lut->res - 1) * (lut->res - 1) * 3;
+                    std::vector<std::uint32_t> content;
+                    for (std::size_t plane = 0; plane < addresses.size(); ++plane) {
+                        std::vector<float> values(plane < 4 ? voxels : cells);
+                        require(cudaMemcpy(values.data(), addresses[plane], values.size() * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess, "owning scanner LUT content read");
+                        for (float value : values) {
+                            content.push_back(std::bit_cast<std::uint32_t>(value));
+                        }
                     }
+                    if (previous[0]) {
+                        require(addresses == previous && content == previousContent && lut->hash == previousHash, "CCTF-only and warm reuse actual six device allocations/content/identity");
+                    } else {
+                        previous = addresses;
+                        previousContent = std::move(content);
+                        previousHash = lut->hash;
+                    }
+                    int* flag = nullptr;
+                    require(frame.prepare_scan_error_stage(flag, nullptr, error) == JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready, error.diagnostic);
+                    require(frame.finalize_scan_error_stage(flag, nullptr, error), error.diagnostic);
+                    require(frame.finish(nullptr, error), error.diagnostic);
                 }
-                if (previous[0]) {
-                    require(addresses == previous && content == previousContent && lut->hash == previousHash, "CCTF-only and warm reuse actual six device allocations/content/identity");
-                } else {
-                    previous = addresses;
-                    previousContent = std::move(content);
-                    previousHash = lut->hash;
-                }
-                int* flag = nullptr;
-                require(frame.prepare_scan_error_stage(flag, nullptr, error) == JuicerProcess::Root::PreparedCudaFrame::ScanErrorStageResult::Ready, error.diagnostic);
-                require(frame.finalize_scan_error_stage(flag, nullptr, error), error.diagnostic);
-                require(frame.finish(nullptr, error), error.diagnostic);
+                std::printf("GPU scanner route=%d method=%d preparation_us cold=%lld cctf=%lld warm=%lld identity=%llu exact_values=%zu allocations=[%p,%p,%p,%p,%p,%p]\n",
+                            route,
+                            method,
+                            preparationUs[0],
+                            preparationUs[1],
+                            preparationUs[2],
+                            static_cast<unsigned long long>(previousHash),
+                            previousContent.size(),
+                            static_cast<const void*>(previous[0]),
+                            static_cast<const void*>(previous[1]),
+                            static_cast<const void*>(previous[2]),
+                            static_cast<const void*>(previous[3]),
+                            static_cast<const void*>(previous[4]),
+                            static_cast<const void*>(previous[5]));
+                std::string diagnostic;
+                require(JuicerProcess::root().retire_idle_context(0, context, diagnostic), diagnostic);
             }
         }
-        std::string diagnostic;
-        require(JuicerProcess::root().retire_idle_context(0, context, diagnostic), diagnostic);
-        std::puts("GPU reuse: direct/print CCTF-only and warm scanner allocation/content/identity reuse passed");
+        std::puts("GPU reuse: Hanatos/Mallett direct/print CCTF-only and warm six-allocation/content/identity reuse passed");
     }
+
 } // namespace
 
 namespace JuicerAssets::ProfileTest {
@@ -572,6 +1195,10 @@ int main(int argc, char** argv) {
             leaf_tests(fixture);
         } else if (group == "preparation") {
             preparation_tests(fixture);
+        } else if (group == "cat02-leaf") {
+            cat02_leaf_tests(fixture);
+        } else if (group == "cat02-preparation") {
+            cat02_preparation_tests(fixture, argv[2]);
         } else if (group == "reuse-gpu") {
             gpu_reuse_tests();
         } else {
@@ -580,10 +1207,10 @@ int main(int argc, char** argv) {
         expect_status(owner.close(), FJ_STATUS_SUCCESS);
         return 0;
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "CAT16 tests: %s\n", error.what());
+        std::fprintf(stderr, "Color tests: %s\n", error.what());
         return 1;
     } catch (const JuicerCuda::ExecutionFailure& error) {
-        std::fprintf(stderr, "CAT16 construction status=%u: %s\n", error.failure.status.category, error.failure.diagnostic.c_str());
+        std::fprintf(stderr, "Color construction status=%u: %s\n", error.failure.status.category, error.failure.diagnostic.c_str());
         return 1;
     }
 }

@@ -571,8 +571,9 @@ state/table ownership and actual admission failure/retry/recovery. Isolated
 admission/profile objects supply the existing hooks; the shared product targets
 receive none. Cases modifying the process-global pending hook run serially.
 
-The test-support CAT16 fault is thread-local and one-shot. It selects a matching
-production matrix/scalar export by positive one-based call index, consumes the
+The shared test-support color fault is thread-local and one-shot. Its four
+operation tags select CAT16/CAT02 matrix/scalar production exports by positive
+one-based call index. It consumes the
 fault before action, and preserves production pointer validation/output clearing.
 Invalid arm disarms; clear is idempotent. Supersession tests perform N2's valid
 raw-export calls for the original armed count on the admission thread before
@@ -581,7 +582,9 @@ Other-category/deferred controls throw inside real profile conversion; cold
 asset panic/capacity cases exercise the shared admission boundary separately.
 
 `Color.Gpu.ScannerReuse` separately proves actual six-allocation scanner LUT
-address/content/identity reuse across direct/print CCTF-only and warm transitions.
+address/content/identity reuse across Hanatos/Mallett direct/print CCTF-only and
+warm transitions. It records bounded preparation times and retires only its idle
+test-owned context between completed triplets.
 The host groups execute no device operation. All groups have finite CTest
 process timeouts. No ordinary run generates or changes expectations.
 
@@ -590,3 +593,34 @@ case membership and exact identity order. Finite values, signed zero and infinit
 signs are exact; NaNs compare classification. Each complete-consumer run selects
 its preset capture. Existing Rust-density/render fixtures and their limits stay
 unchanged. The temporary native value bridge has removal owner S4.E.
+
+
+## CAT02 preparation
+
+`Color.Host.Cat02` independently compares production wrappers and direct-core
+facades with 1,874 accepted-parent leaf cases and 162 strict-threshold cases.
+Its C11 caller checks status layout, null handling, positive-zero clearing,
+exact write extents, read-only aliases, nonfinite values and panic containment.
+The shared `fj_test_color_arm_fault`/`fj_test_color_clear_fault` slot covers all
+four production operations. Unrelated operations, invalid pointers and facades
+do not count; replacement, invalid-arm disarming and thread locality are checked.
+
+`Ffi.Host.Cat02Preparation` checks 56 complete recipe cases, 144 real scanner
+color cases, two early-invalid scanner returns, and 32 cases per retained scalar
+helper. Recipes, table payloads, whites, matrices, encoding and identities compare
+exactly. The signed Hanatos and nonnegative tables sanitation paths stay separate.
+Current failures, recovery and N2 supersession exercise actual film/scanner
+matrix calls on all four routes. Both retained scalar helpers propagate typed
+failures. Same-thread raw calls before cleanup witness consumed faults. Retained
+route owners preserve values through state replacement and cache release.
+
+`fixtures/color/cat02-manifest.json` identifies the accepted native parent,
+source/configuration/resource capture, explicit defaults, ordered controls and
+new per-preset expectations. These are native-parent characterization fixtures;
+ordinary tests never regenerate them. Known exceptional leaf floats compare
+NaN classification; completed consumers, identities and control fields compare
+exactly. Comparator controls reject transpose, one-bit, reversed whites, changed
+identity and the wrong platform fixture. Platform differences in downstream
+recipes remain in their respective captures. Existing CAT16 fixtures and limits
+are unchanged. Both temporary color bridges have removal owner S4.E; device
+CAT02 and input/RGB conversion families retain their existing owners.

@@ -15,6 +15,7 @@
 #include "GaussianSciPy.h"
 #include "Logging.h"
 #include "RenderRecipe.h"
+#include "RustColorBridge.h"
 #include "SpectralProcessing.h"
 
 namespace {
@@ -506,10 +507,8 @@ namespace Scanner {
         Spectral::ChromaticAdaptationWhites whites{};
         whites.source = illuminant.whiteXYZ;
         whites.destination = outSpace.whiteXYZ;
-        Spectral::Mat3 adapt = Spectral::build_chromatic_adaptation_matrix(whites);
-        for (int i = 0; i < 9; ++i) {
-            rt.cat02[i] = adapt.m[i];
-        }
+        const auto adapt = JuicerColor::cat02_matrix(whites);
+        std::copy(adapt.begin(), adapt.end(), rt.cat02);
 
         for (int i = 0; i < 9; ++i) {
             rt.xyzToRgb[i] = outSpace.xyzToRgb[i];

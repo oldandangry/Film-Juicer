@@ -31,13 +31,15 @@ def forbidden_uses(paths, pattern):
     return findings
 
 
-def cat16_sources(root):
+def color_sources(root):
     return sorted(
         path for directory in (root / "src", root / "native", root / "cmake", root / "tests")
         for path in directory.rglob("*")
         if path.is_file() and (path.suffix.lower() in SOURCE_SUFFIXES or path.suffix == ".cmake")
     ) + [root / "CMakeLists.txt"]
 
+
+RETIRED_CAT02 = r"\b(?:chromatic_adapt_XYZ_CAT02|build_chromatic_adaptation_matrix|prepare_film_raw_config|mat3_has_only_finite|sanitize_nonnegative_triplet|normalize_triplet_to_unit_y|triplet_has_positive_finite_sum|sanitize_white_or_dwg|whites_approximately_equal)\b"
 
 RETIRED_CAT16 = r"\b(?:chromatic_adapt_XYZ_CAT16|build_chromatic_adaptation_matrix_CAT16)\b"
 
@@ -91,7 +93,10 @@ class NativeBoundary(unittest.TestCase):
         self.assertEqual(forbidden_uses(paths, CONTEXT_RESET), [])
 
     def test_retired_cat16_producers_stay_deleted(self):
-        self.assertEqual(forbidden_uses(cat16_sources(ROOT), RETIRED_CAT16), [])
+        self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_CAT16), [])
+
+    def test_retired_cat02_producers_stay_deleted(self):
+        self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_CAT02), [])
 
     def test_retired_native_profile_authority_stays_deleted(self):
         paths = [
@@ -153,11 +158,33 @@ class NativeBoundaryControls(unittest.TestCase):
                 source.parent.mkdir(parents=True, exist_ok=True)
                 for text in ("void chromatic_adapt_XYZ_CAT16();", "build_chromatic_adaptation_matrix_CAT16(whites);"):
                     source.write_text(text, encoding="utf-8")
-                    self.assertEqual(len(forbidden_uses(cat16_sources(root), RETIRED_CAT16)), 1)
-                source.write_text("chromatic_adapt_XYZ_CAT02(); build_chromatic_adaptation_matrix(whites); "
+                    self.assertEqual(len(forbidden_uses(color_sources(root), RETIRED_CAT16)), 1)
+                source.write_text("chromatic_adapt_XYZ_CAT02_device(); JuicerColor::cat02_matrix(whites); "
                                   "Mat3 matrix; fj_legacy_cat16_matrix(source, destination, out); "
                                   "JuicerColor::adapt_cat16(xyz, whites);", encoding="utf-8")
-                self.assertEqual(forbidden_uses(cat16_sources(root), RETIRED_CAT16), [])
+                self.assertEqual(forbidden_uses(color_sources(root), RETIRED_CAT16), [])
+
+    def test_cat02_deletion_controls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CMakeLists.txt").write_text("", encoding="utf-8")
+            for relative in ("src/new/nested.hpp", "src/Cuda/new/body.cuh", "native/new/body.cpp",
+                             "tests/ffi/new/fixture.c", "cmake/new/check.cmake"):
+                source = root / relative
+                source.parent.mkdir(parents=True, exist_ok=True)
+                for text in ("void chromatic_adapt_XYZ_CAT02();", "build_chromatic_adaptation_matrix(whites);",
+                             "prepare_film_raw_config(config);", "mat3_has_only_finite(matrix);",
+                             "sanitize_nonnegative_triplet(out, in);", "normalize_triplet_to_unit_y(xyz);",
+                             "triplet_has_positive_finite_sum(xyz);", "sanitize_white_or_dwg(in, out);",
+                             "whites_approximately_equal(whites);"):
+                    source.write_text(text, encoding="utf-8")
+                    self.assertEqual(len(forbidden_uses(color_sources(root), RETIRED_CAT02)), 1)
+                source.write_text("chromatic_adapt_XYZ_CAT02_device(xyz, whites, out); "
+                                  "Mat3 matrix; mul_3x3_vec3(m, v, out); matrix_input_rgb_to_xyz(space); "
+                                  "apply_input_cctf_decoding(space, decode, in, out); "
+                                  "JuicerColor::cat02_matrix(whites); JuicerColor::adapt_cat02(xyz, whites); "
+                                  "fj_legacy_cat16_matrix(source, destination, out);", encoding="utf-8")
+                self.assertEqual(forbidden_uses(color_sources(root), RETIRED_CAT02), [])
 
     def test_retired_authority_and_build_entry_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
