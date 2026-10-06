@@ -93,7 +93,7 @@ thread_local! {
 #[cfg(feature = "test-support")]
 pub(crate) fn arm_color_fault(operation: u32, call_index: u32, fault: u32) -> FjStatus {
     clear_color_fault();
-    if !(1..=4).contains(&operation) || call_index == 0 || !(1..=2).contains(&fault) {
+    if !(1..=10).contains(&operation) || call_index == 0 || !(1..=2).contains(&fault) {
         return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
     }
     COLOR_FAULT.set(Some(ColorFault {
@@ -301,6 +301,360 @@ pub unsafe extern "C" fn fj_legacy_adapt_cat02(
     })
     .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
 }
+
+#[repr(C)]
+pub(crate) struct FjInputColorMatrices {
+    pub(crate) rgb_to_xyz: [f32; 9],
+    pub(crate) nominal_white_xyz: [f32; 3],
+    pub(crate) xyz_to_linear_srgb: [f32; 9],
+    pub(crate) d65_white_xyz: [f32; 3],
+}
+
+impl From<color::InputMatrices> for FjInputColorMatrices {
+    fn from(input: color::InputMatrices) -> Self {
+        Self {
+            rgb_to_xyz: input.rgb_to_xyz,
+            nominal_white_xyz: input.nominal_white_xyz,
+            xyz_to_linear_srgb: input.xyz_to_linear_srgb,
+            d65_white_xyz: input.d65_white_xyz,
+        }
+    }
+}
+
+#[repr(C)]
+pub(crate) struct FjInputColorConversion {
+    pub(crate) input_space: u32,
+    pub(crate) decode_cctf: u32,
+    pub(crate) adapt_xyz: u32,
+    pub(crate) rgb_to_xyz: [f32; 9],
+    pub(crate) xyz_adapt: [f32; 9],
+}
+
+pub(crate) fn input_space(tag: u32) -> Option<color::InputSpace> {
+    match tag {
+        0 => Some(color::InputSpace::DavinciWideGamut),
+        1 => Some(color::InputSpace::Bt2020),
+        2 => Some(color::InputSpace::Aces2065_1),
+        3 => Some(color::InputSpace::SrgbRec709),
+        _ => None,
+    }
+}
+
+impl FjInputColorConversion {
+    pub(crate) fn into_core(self) -> Option<color::InputConversion> {
+        let space = input_space(self.input_space)?;
+        if self.decode_cctf > 1 || self.adapt_xyz > 1 {
+            return None;
+        }
+        Some(color::InputConversion {
+            space,
+            decode_cctf: self.decode_cctf != 0,
+            rgb_to_xyz: self.rgb_to_xyz,
+            xyz_adaptation: (self.adapt_xyz != 0).then_some(self.xyz_adapt),
+        })
+    }
+}
+
+const _: () = {
+    use std::mem::{align_of, offset_of, size_of};
+    assert!(size_of::<FjInputColorMatrices>() == 96 && align_of::<FjInputColorMatrices>() == 4);
+    assert!(offset_of!(FjInputColorMatrices, rgb_to_xyz) == 0);
+    assert!(offset_of!(FjInputColorMatrices, nominal_white_xyz) == 36);
+    assert!(offset_of!(FjInputColorMatrices, xyz_to_linear_srgb) == 48);
+    assert!(offset_of!(FjInputColorMatrices, d65_white_xyz) == 84);
+    assert!(size_of::<FjInputColorConversion>() == 84 && align_of::<FjInputColorConversion>() == 4);
+    assert!(offset_of!(FjInputColorConversion, input_space) == 0);
+    assert!(offset_of!(FjInputColorConversion, decode_cctf) == 4);
+    assert!(offset_of!(FjInputColorConversion, adapt_xyz) == 8);
+    assert!(offset_of!(FjInputColorConversion, rgb_to_xyz) == 12);
+    assert!(offset_of!(FjInputColorConversion, xyz_adapt) == 48);
+};
+
+// FJ_TEMP_BRIDGE: input-color host preparation; remove S4.E.
+/// Prepare input matrices as caller-owned values.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_input_matrices(
+    input_space_tag: u32,
+    out: *mut FjInputColorMatrices,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller authorizes the complete exclusive output record.
+        unsafe { out.write_bytes(0, 1) };
+        let Some(space) = input_space(input_space_tag) else {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        };
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(5) {
+            return color_status(category);
+        }
+        let output = FjInputColorMatrices::from(color::input_matrices(space));
+        // SAFETY: The initialized local record is committed to the exclusive output.
+        unsafe { out.write(output) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+// FJ_TEMP_BRIDGE: input-color host preparation; remove S4.E.
+/// Prepare input to dwg as caller-owned values.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_input_to_dwg(
+    input: *const FjInputColorConversion,
+    rgb: *const f32,
+    clamp_nonnegative: u32,
+    out_rgb: *mut f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        // SAFETY: Each nonnull output authorizes three exclusive aligned floats.
+        unsafe {
+            if !out_rgb.is_null() {
+                out_rgb.write_bytes(0, 3);
+            }
+            if !out_xyz.is_null() {
+                out_xyz.write_bytes(0, 3);
+            }
+        }
+        if input.is_null()
+            || rgb.is_null()
+            || out_rgb.is_null()
+            || out_xyz.is_null()
+            || clamp_nonnegative > 1
+        {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The input record is fully initialized, including disabled adaptation.
+        let Some(input) = (unsafe { input.read() }).into_core() else {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        };
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(6) {
+            return color_status(category);
+        }
+        // SAFETY: The read-only RGB extent authorizes three initialized aligned floats.
+        let rgb = unsafe { rgb.cast::<[f32; 3]>().read() };
+        let output = color::input_to_dwg(input, rgb, clamp_nonnegative != 0);
+        // SAFETY: Outputs are mutually disjoint and disjoint from inputs/local arrays.
+        unsafe {
+            out_rgb.copy_from_nonoverlapping(output.rgb.as_ptr(), 3);
+            out_xyz.copy_from_nonoverlapping(output.xyz.as_ptr(), 3);
+        }
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+// FJ_TEMP_BRIDGE: input-color host preparation; remove S4.E.
+/// Prepare input to linear srgb as caller-owned values.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_input_to_linear_srgb(
+    input: *const FjInputColorConversion,
+    rgb: *const f32,
+    xyz_to_linear_srgb: *const f32,
+    out_rgb: *mut f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        // SAFETY: Each nonnull output authorizes three exclusive aligned floats.
+        unsafe {
+            if !out_rgb.is_null() {
+                out_rgb.write_bytes(0, 3);
+            }
+            if !out_xyz.is_null() {
+                out_xyz.write_bytes(0, 3);
+            }
+        }
+        if input.is_null()
+            || rgb.is_null()
+            || xyz_to_linear_srgb.is_null()
+            || out_rgb.is_null()
+            || out_xyz.is_null()
+        {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The input record is fully initialized, including disabled adaptation.
+        let Some(input) = (unsafe { input.read() }).into_core() else {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        };
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(7) {
+            return color_status(category);
+        }
+        // SAFETY: Read-only inputs authorize three RGB and nine matrix floats respectively.
+        let (rgb, inverse) = unsafe {
+            (
+                rgb.cast::<[f32; 3]>().read(),
+                xyz_to_linear_srgb.cast::<[f32; 9]>().read(),
+            )
+        };
+        let output = color::input_to_linear_srgb(input, rgb, inverse);
+        // SAFETY: Outputs are mutually disjoint and disjoint from inputs/local arrays.
+        unsafe {
+            out_rgb.copy_from_nonoverlapping(output.rgb.as_ptr(), 3);
+            out_xyz.copy_from_nonoverlapping(output.xyz.as_ptr(), 3);
+        }
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+// FJ_TEMP_BRIDGE: input-color host preparation; remove S4.E.
+/// Prepare linear srgb to xyz as caller-owned values.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_linear_srgb_to_xyz(
+    rgb: *const f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The output authorizes three exclusive aligned floats.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if rgb.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(8) {
+            return color_status(category);
+        }
+        // SAFETY: The read-only RGB extent authorizes three initialized aligned floats.
+        let rgb = unsafe { rgb.cast::<[f32; 3]>().read() };
+        let output = color::linear_srgb_to_xyz(rgb);
+        // SAFETY: The initialized local triplet is disjoint from the output extent.
+        unsafe { out_xyz.copy_from_nonoverlapping(output.as_ptr(), 3) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+// FJ_TEMP_BRIDGE: input-color host preparation; remove S4.E.
+/// Prepare dwg to xyz as caller-owned values.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_dwg_to_xyz(
+    rgb: *const f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The output authorizes three exclusive aligned floats.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if rgb.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(9) {
+            return color_status(category);
+        }
+        // SAFETY: The read-only RGB extent authorizes three initialized aligned floats.
+        let rgb = unsafe { rgb.cast::<[f32; 3]>().read() };
+        let output = color::dwg_to_xyz(rgb);
+        // SAFETY: The initialized local triplet is disjoint from the output extent.
+        unsafe { out_xyz.copy_from_nonoverlapping(output.as_ptr(), 3) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+// FJ_TEMP_BRIDGE: input-color host preparation; remove S4.E.
+/// Prepare project linear rgb to xyz as caller-owned values.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_project_linear_rgb_to_xyz(
+    rgb: *const f32,
+    rgb_to_xyz: *const f32,
+    xyz_adapt: *const f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The output authorizes three exclusive aligned floats.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if rgb.is_null() || rgb_to_xyz.is_null() || xyz_adapt.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(10) {
+            return color_status(category);
+        }
+        // SAFETY: Inputs authorize an initialized RGB triplet and two nine-float matrices.
+        let (rgb, matrix, adaptation) = unsafe {
+            (
+                rgb.cast::<[f32; 3]>().read(),
+                rgb_to_xyz.cast::<[f32; 9]>().read(),
+                xyz_adapt.cast::<[f32; 9]>().read(),
+            )
+        };
+        let output = color::project_linear_rgb_to_xyz(rgb, matrix, adaptation);
+        // SAFETY: The initialized local triplet is disjoint from the output extent.
+        unsafe { out_xyz.copy_from_nonoverlapping(output.as_ptr(), 3) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+const _: unsafe extern "C" fn(u32, *mut FjInputColorMatrices) -> FjStatus =
+    fj_legacy_input_matrices;
+const _: unsafe extern "C" fn(
+    *const FjInputColorConversion,
+    *const f32,
+    u32,
+    *mut f32,
+    *mut f32,
+) -> FjStatus = fj_legacy_input_to_dwg;
+const _: unsafe extern "C" fn(
+    *const FjInputColorConversion,
+    *const f32,
+    *const f32,
+    *mut f32,
+    *mut f32,
+) -> FjStatus = fj_legacy_input_to_linear_srgb;
+const _: unsafe extern "C" fn(*const f32, *mut f32) -> FjStatus = fj_legacy_linear_srgb_to_xyz;
+const _: unsafe extern "C" fn(*const f32, *mut f32) -> FjStatus = fj_legacy_dwg_to_xyz;
+const _: unsafe extern "C" fn(*const f32, *const f32, *const f32, *mut f32) -> FjStatus =
+    fj_legacy_project_linear_rgb_to_xyz;
 
 #[cfg(test)]
 mod tests {

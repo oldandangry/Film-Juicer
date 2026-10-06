@@ -1913,21 +1913,10 @@ namespace Spektrafilm {
             filmRaw.cameraBandPass.ir = copy_filter_triplet(input.cameraFilterIR, input.cameraFilterOverride);
             const Spectral::InputColorSpace inputColorSpace =
                 Spectral::inputColorSpaceFromIndex(input.inputColorSpace);
-            const Spectral::Mat3 inputRgbToXyz =
-                Spectral::matrix_input_rgb_to_xyz(inputColorSpace);
-            std::copy_n(
-                inputRgbToXyz.m,
-                filmRaw.inputRgbToXyz.size(),
-                filmRaw.inputRgbToXyz.begin());
-            Spectral::input_colorspace_white_xyz(
-                inputColorSpace,
-                filmRaw.inputNominalWhiteXYZ.data());
-            const Spectral::Mat3 xyzToLinearSrgb =
-                Spectral::kRGB_to_XYZ_sRGB_Rec709.inverse();
-            std::copy_n(
-                xyzToLinearSrgb.m,
-                filmRaw.xyzToLinearSrgb.size(),
-                filmRaw.xyzToLinearSrgb.begin());
+            const auto inputMatrices = JuicerColor::input_matrices(inputColorSpace);
+            filmRaw.inputRgbToXyz = inputMatrices.rgbToXyz;
+            filmRaw.inputNominalWhiteXYZ = inputMatrices.nominalWhiteXYZ;
+            filmRaw.xyzToLinearSrgb = inputMatrices.xyzToLinearSrgb;
             filmRaw.referenceIlluminant =
                 profile.info.referenceIlluminant.value;
             filmRaw.hanatos = HanatosAdaptationRecipe{};
@@ -1995,10 +1984,7 @@ namespace Spektrafilm {
                         "MissingRequiredResource component=film_tc_lut requirement=input_compression_hull");
                 }
             } else {
-                filmRaw.projectionWhiteXYZ =
-                    {Spectral::kInputD65WhiteXYZ[0],
-                     Spectral::kInputD65WhiteXYZ[1],
-                     Spectral::kInputD65WhiteXYZ[2]};
+                filmRaw.projectionWhiteXYZ = inputMatrices.d65WhiteXYZ;
                 filmRaw.projectionIlluminant = "D65";
                 const Spectral::ChromaticAdaptationWhites whites{
                     filmRaw.inputNominalWhiteXYZ.data(),
@@ -2532,13 +2518,12 @@ namespace Spektrafilm {
                 if (!filmTcLut) {
                     return false;
                 }
-                const float sourceRgb[3] = {source, source, source};
-                std::array<float, 3> sourceXyz{};
-                Spectral::kRGB_to_XYZ_sRGB_Rec709.mul(sourceRgb, sourceXyz.data());
+                const auto inputMatrices = JuicerColor::input_matrices(Spectral::InputColorSpace::SRGB_Rec709);
+                const auto sourceXyz = JuicerColor::linear_srgb_to_xyz({source, source, source});
                 const auto projectedXyz = JuicerColor::adapt_cat16(
                     sourceXyz,
                     Spectral::ChromaticAdaptationWhites{
-                        Spectral::kInputD65WhiteXYZ,
+                        inputMatrices.d65WhiteXYZ.data(),
                         recipe.filmRaw.projectionWhiteXYZ.data()});
                 out = Spectral::sample_film_tc_lut(
                     *filmTcLut,

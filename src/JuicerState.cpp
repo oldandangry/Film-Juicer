@@ -173,10 +173,10 @@ namespace {
             payload.filmTcLut = std::move(integrated);
 
             const float inputMidgray[3] = {0.184f, 0.184f, 0.184f};
-            float xyz[3]{};
-            float projected[3]{};
-            payload.filmRawConfig.inputRGBToXYZ.mul(inputMidgray, xyz);
-            payload.filmRawConfig.inputXYZAdapt.mul(xyz, projected);
+            const auto projected = JuicerColor::project_linear_rgb_to_xyz(
+                {inputMidgray[0], inputMidgray[1], inputMidgray[2]},
+                payload.filmRawConfig.inputRGBToXYZ,
+                payload.filmRawConfig.inputXYZAdapt);
             const std::array<float, 3> raw =
                 Spectral::sample_film_tc_lut(
                     *payload.filmTcLut,

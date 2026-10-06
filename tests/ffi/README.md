@@ -571,8 +571,8 @@ state/table ownership and actual admission failure/retry/recovery. Isolated
 admission/profile objects supply the existing hooks; the shared product targets
 receive none. Cases modifying the process-global pending hook run serially.
 
-The shared test-support color fault is thread-local and one-shot. Its four
-operation tags select CAT16/CAT02 matrix/scalar production exports by positive
+The shared test-support color fault is thread-local and one-shot. Its ten
+operation tags select the four CAT16/CAT02 and six input-color production exports by positive
 one-based call index. It consumes the
 fault before action, and preserves production pointer validation/output clearing.
 Invalid arm disarms; clear is idempotent. Supersession tests perform N2's valid
@@ -602,7 +602,7 @@ facades with 1,874 accepted-parent leaf cases and 162 strict-threshold cases.
 Its C11 caller checks status layout, null handling, positive-zero clearing,
 exact write extents, read-only aliases, nonfinite values and panic containment.
 The shared `fj_test_color_arm_fault`/`fj_test_color_clear_fault` slot covers all
-four production operations. Unrelated operations, invalid pointers and facades
+ten production operations. Unrelated operations, invalid pointers and facades
 do not count; replacement, invalid-arm disarming and thread locality are checked.
 
 `Ffi.Host.Cat02Preparation` checks 56 complete recipe cases, 144 real scanner
@@ -623,4 +623,50 @@ exactly. Comparator controls reject transpose, one-bit, reversed whites, changed
 identity and the wrong platform fixture. Platform differences in downstream
 recipes remain in their respective captures. Existing CAT16 fixtures and limits
 are unchanged. Both temporary color bridges have removal owner S4.E; device
-CAT02 and input/RGB conversion families retain their existing owners.
+CAT02 device execution retains its existing owner. Input-color host mathematics use the boundary described below; CUDA decoders remain unchanged.
+
+
+## Input-color preparation
+
+`Color.Host.InputColor` compares production wrappers and direct-core facades with
+four matrix/tag/white selections, 432 decoder triplets, 1,729 explicit-matrix
+conversion cases, 54 unsanitized linear leaves and 216 ordered linear projections.
+The C11 caller proves both record layouts, signatures/tags, complete/partial output
+clearing, null/bad-flag handling, read-only input sharing and contained panics.
+The shared ten-operation TLS fault slot also proves cross-operation counting and
+replacement, invalid-arm disarming, thread locality, null/flag non-consumption,
+facade independence and default-construction non-consumption.
+
+`Ffi.Host.InputColorPreparation` compares 96 base completed products and 44
+bounded auto-exposure, compression and output-only controls with all frozen
+settings/defaults. Matrices, whites, both distinct mid-gray scales, TC/reference/
+print balance, sensitivity/scanner arrays/descriptors and final/upload identities
+remain exact. Real early and late failures cover foundation matrices, both Mallett
+conversions, TC mid-gray and both synthetic-reference evaluations on negative/
+positive direct/print routes. Cold/current failures, recovery and deterministic
+pending supersession retain owners/hashes/counters; same-thread matching raw calls
+before cleanup witness consumption. Retained products stay exact across asset
+cache release and state replacement. Both retained DWG helpers propagate failure.
+
+`fixtures/color/input-color-manifest.json` contains self-contained native-parent,
+compiler, control, representation and reference-role provenance. The owner-adopted
+6 October 2026 inverse mapping uses A from every agreeing completed recipe/config
+as the new matrix producer's exact reference. Original standalone/default inverse
+observations remain native characterization; Windows Release B is retained there.
+All four capture payloads are unchanged. Conversion tests consume their explicitly
+supplied inverse, including B, without replacing it through the matrix producer.
+Every other numerical/identity obligation and existing fixture/limit is unchanged.
+Ordinary tests read only public fixtures and never generate expectations.
+
+The unready native carrier has plain identity matrices; completed producers bind
+all three consumed matrices before use. Host input mathematics are value-only Rust
+operations with synchronous, exclusive/disjoint foreign outputs. Wrappers propagate
+operation-specific typed construction failure through the existing admission path.
+The temporary value bridge is removed at S4.E; native enum/labels/plain storage and
+CUDA decoding/execution retain their assigned responsibilities.
+
+`Color.Gpu.ScannerReuse` additionally checks decoded BT.2020 and sRGB Mallett states
+on negative direct/print routes. Cold, output-CCTF-only and warm preparation reuse
+all six scanner allocations with identical contents/identities. It verifies exact
+prepared film matrices and unconsumed host-math faults during native preparation.
+These are GPU checks; host groups introduce no eager CUDA-driver dependency.

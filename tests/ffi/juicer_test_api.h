@@ -1,7 +1,7 @@
 #ifndef FJ_JUICER_TEST_API_H
 #define FJ_JUICER_TEST_API_H
 
-#include "juicer_cuda_api.h"
+#include "juicer_legacy_api.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,12 +16,26 @@ extern "C" {
 #define FJ_TEST_CAT16_ADAPT UINT32_C(2)
 #define FJ_TEST_CAT02_MATRIX UINT32_C(3)
 #define FJ_TEST_CAT02_ADAPT UINT32_C(4)
+#define FJ_TEST_INPUT_MATRICES UINT32_C(5)
+#define FJ_TEST_INPUT_TO_DWG UINT32_C(6)
+#define FJ_TEST_INPUT_TO_LINEAR_SRGB UINT32_C(7)
+#define FJ_TEST_LINEAR_SRGB_TO_XYZ UINT32_C(8)
+#define FJ_TEST_DWG_TO_XYZ UINT32_C(9)
+#define FJ_TEST_PROJECT_LINEAR_RGB_TO_XYZ UINT32_C(10)
 #define FJ_TEST_COLOR_UNSUPPORTED_INPUT UINT32_C(1)
 #define FJ_TEST_COLOR_PANIC UINT32_C(2)
 FjStatus fj_test_cat16_matrix(const float source_white_xyz[3], const float destination_white_xyz[3], float out_row_major[9]);
 FjStatus fj_test_adapt_cat16(const float xyz[3], const float source_white_xyz[3], const float destination_white_xyz[3], float out_xyz[3]);
 FjStatus fj_test_cat02_matrix(const float source_white_xyz[3], const float destination_white_xyz[3], float out_row_major[9]);
 FjStatus fj_test_adapt_cat02(const float xyz[3], const float source_white_xyz[3], const float destination_white_xyz[3], float out_xyz[3]);
+FjStatus fj_test_input_matrices(uint32_t input_space, FjInputColorMatrices* out);
+FjStatus fj_test_input_to_dwg(const FjInputColorConversion* input, const float rgb[3], uint32_t clamp_nonnegative, float out_rgb[3], float out_xyz[3]);
+FjStatus fj_test_input_to_linear_srgb(const FjInputColorConversion* input, const float rgb[3], const float xyz_to_linear_srgb[9], float out_rgb[3], float out_xyz[3]);
+FjStatus fj_test_linear_srgb_to_xyz(const float rgb[3], float out_xyz[3]);
+FjStatus fj_test_dwg_to_xyz(const float rgb[3], float out_xyz[3]);
+FjStatus fj_test_project_linear_rgb_to_xyz(const float rgb[3], const float rgb_to_xyz[9], const float xyz_adapt[9], float out_xyz[3]);
+
+FjStatus fj_test_decode_input(uint32_t input_space, uint32_t decode_cctf, const float rgb[3], float out_rgb[3]);
 FjStatus fj_test_color_arm_fault(uint32_t operation, uint32_t call_index, uint32_t fault);
 FjStatus fj_test_color_clear_fault(void);
 

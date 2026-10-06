@@ -1,4 +1,4 @@
-// SpectralProcessing.h
+﻿// SpectralProcessing.h
 // Spectral processing operations: SPD reconstruction, table operations, integration, and math utilities
 
 #pragma once
@@ -259,7 +259,8 @@ namespace Spectral {
 
         // Convert DWG RGB to XYZ (DWG uses D65 white point)
         float XYZ[3];
-        DWG_linear_to_XYZ(rgbDWG, XYZ);
+        const auto convertedXyz = JuicerColor::dwg_to_xyz({rgbDWG[0], rgbDWG[1], rgbDWG[2]});
+        std::copy(convertedXyz.begin(), convertedXyz.end(), XYZ);
         // agx-emulsion parity: keep signed XYZ; only sanitize non-finite components.
         sanitize_nonfinite_triplet(XYZ);
 
@@ -432,7 +433,8 @@ namespace Spectral {
         const float S_inv[9],
         std::vector<float>& Ee_out) {
         float XYZ[3];
-        DWG_linear_to_XYZ(rgbDWG, XYZ);
+        const auto convertedXyz = JuicerColor::dwg_to_xyz({rgbDWG[0], rgbDWG[1], rgbDWG[2]});
+        std::copy(convertedXyz.begin(), convertedXyz.end(), XYZ);
 
         float sanitizedXYZ[3];
         sanitize_nonnegative_triplet_sp(sanitizedXYZ, XYZ);

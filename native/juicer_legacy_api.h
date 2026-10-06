@@ -40,6 +40,39 @@ FjStatus fj_legacy_adapt_cat16(const float xyz[3], const float source_white_xyz[
 FjStatus fj_legacy_cat02_matrix(const float source_white_xyz[3], const float destination_white_xyz[3], float out_row_major[9]);
 FjStatus fj_legacy_adapt_cat02(const float xyz[3], const float source_white_xyz[3], const float destination_white_xyz[3], float out_xyz[3]);
 
+/* FJ_TEMP_BRIDGE: input-color host preparation; remove S4.E.
+ * Inputs are complete initialized aligned records/arrays, read-only until return;
+ * they may share storage. Disabled adaptation is also initialized. Outputs are
+ * exclusive, mutually disjoint and disjoint from every input. Concurrent calls
+ * require disjoint outputs; no input mutation/release during a call.
+ * Every nonnull output clears its full extent inside panic containment before
+ * pointer/tag/flag checks, even when another required output is NULL. All outputs
+ * are required. No pointer or owner is retained. Unknown tags/non-0/1 flags/NULL
+ * required pointers -> UnsupportedInput; panic -> InternalFailure; mathematical
+ * nonfinite results -> Success. All statuses have API=None/native_code=0.
+ * Matrices record is 96 bytes/align4, conversion 84 bytes/align4; triplets 12 bytes,
+ * row-major matrices 36 bytes. Completed values are copied into native owners. */
+/* input_space uses the FJ_INPUT_* uint32 tags declared in juicer_cuda_api.h. */
+typedef struct FjInputColorMatrices {
+    float rgb_to_xyz[9];
+    float nominal_white_xyz[3];
+    float xyz_to_linear_srgb[9];
+    float d65_white_xyz[3];
+} FjInputColorMatrices;
+typedef struct FjInputColorConversion {
+    uint32_t input_space;
+    uint32_t decode_cctf;
+    uint32_t adapt_xyz;
+    float rgb_to_xyz[9];
+    float xyz_adapt[9];
+} FjInputColorConversion;
+FjStatus fj_legacy_input_matrices(uint32_t input_space, FjInputColorMatrices* out);
+FjStatus fj_legacy_input_to_dwg(const FjInputColorConversion* input, const float rgb[3], uint32_t clamp_nonnegative, float out_rgb[3], float out_xyz[3]);
+FjStatus fj_legacy_input_to_linear_srgb(const FjInputColorConversion* input, const float rgb[3], const float xyz_to_linear_srgb[9], float out_rgb[3], float out_xyz[3]);
+FjStatus fj_legacy_linear_srgb_to_xyz(const float rgb[3], float out_xyz[3]);
+FjStatus fj_legacy_dwg_to_xyz(const float rgb[3], float out_xyz[3]);
+FjStatus fj_legacy_project_linear_rgb_to_xyz(const float rgb[3], const float rgb_to_xyz[9], const float xyz_adapt[9], float out_xyz[3]);
+
 /* FJ_TEMP_BRIDGE: asset conversion; remove S4.E.
  * Handles own immutable Rust storage; only matching create/acquire values are
  * legal. Caller excludes destruction from operations and release from every
