@@ -241,7 +241,7 @@ FjStatus fj_legacy_cmf_release(FjCmf* cmf, FjErrorBuffer* error);
  * CSV source is one of the seven explicit tags below. Rows are 2*N f32 values
  * in authored [wavelength_nm,value] order; empty success is (NULL,0). A view
  * borrows its CsvPairs owner until matching release, independently of Assets
- * cache release/destruction. Native copies each element before release; no rows
+ * cache release/destruction. Native borrows checked rows through synchronous construction; no rows
  * reach CUDA/retirement state. Capacity failure is AllocationFailure, ordinary
  * CSV read failure PreparationFailure, poison/panic InternalFailure.
  * Calibration keys are exact length-delimited UTF-8 stock/illuminant strings;
@@ -280,6 +280,37 @@ FjStatus fj_legacy_csv_acquire(const FjAssets* assets, uint32_t source, FjCsvPai
 FjStatus fj_legacy_csv_view(const FjCsvPairs* pairs, FjFloatSpan* out_rows, FjErrorBuffer* error);
 FjStatus fj_legacy_csv_release(FjCsvPairs* pairs, FjErrorBuffer* error);
 FjStatus fj_legacy_neutral_calibration_lookup(const FjAssets* assets, FjStringView print_stock, FjStringView illuminant, FjStringView film_stock, FjNeutralCalibrationResult* out_result, FjErrorBuffer* error);
+
+/* FJ_TEMP_BRIDGE: synchronous illuminant values/source/lens binding; remove S4.E.
+ * Samples are 81 relative-linear SPD values on 380..780 nm, 5 nm positions.
+ * Rows count interleaved f32 scalars [wavelength_nm,value,...], not pairs.
+ * Sources borrow immutable caller storage through return; no pointer is retained.
+ * All declared output/error locations are required, aligned, writable and disjoint
+ * from each other and inputs. Error backing storage follows FjErrorBuffer's bound.
+ * Curves and coverage clear before fallible work. Coverage warnings are low=1,
+ * high=2 with finite observed min/max; no finite range yields zero metadata.
+ * Finish/release take and clear a valid io_lens before other validation, consuming
+ * once even on malformed output/error or failure. NULL incoming release succeeds.
+ * Stale/dangling handles, concurrent use and invalid storage violate the caller
+ * contract. Prepare returns no handle on failure. Native retains sources only
+ * through synchronous calls. Checked scratch failure is AllocationFailure;
+ * incidental Box/Arc allocator abort is not recoverable by panic containment. */
+typedef struct FjIlluminant {
+    float samples[81];
+} FjIlluminant;
+typedef struct FjIlluminantCoverage {
+    uint32_t warnings;
+    float min_nm;
+    float max_nm;
+} FjIlluminantCoverage;
+typedef struct FjIlluminantLens FjIlluminantLens;
+FjStatus fj_legacy_illuminant_from_samples(FjFloatSpan rows, FjIlluminant* out_curve, FjErrorBuffer* error);
+FjStatus fj_legacy_illuminant_blackbody(float temperature_kelvin, FjIlluminant* out_curve, FjErrorBuffer* error);
+FjStatus fj_legacy_illuminant_equal_energy(FjIlluminant* out_curve, FjErrorBuffer* error);
+FjStatus fj_legacy_illuminant_tungsten_kg3(FjFloatSpan rows, FjIlluminant* out_curve, FjIlluminantCoverage* out_coverage, FjErrorBuffer* error);
+FjStatus fj_legacy_illuminant_lens_prepare(FjFloatSpan rows, FjIlluminantLens** out_lens, FjIlluminantCoverage* out_coverage, FjErrorBuffer* error);
+FjStatus fj_legacy_illuminant_lens_finish(FjIlluminantLens** io_lens, FjFloatSpan lens_rows, FjIlluminant* out_curve, FjIlluminantCoverage* out_coverage, FjErrorBuffer* error);
+FjStatus fj_legacy_illuminant_lens_release(FjIlluminantLens** io_lens, FjErrorBuffer* error);
 
 #ifdef __cplusplus
 }

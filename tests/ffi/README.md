@@ -543,7 +543,7 @@ their independent frozen expectations.
 
 The immutable native curve snapshot holds independently allocated derived data.
 Seven successful Rust CSV cache slots retain source rows; call-local opaque owners
-expire after native elementwise copies. No raw rows or calibration JSON cache is
+expire after synchronous Rust curve construction. Independent C8 copy tests retain their explicit elementwise-copy binding. No raw rows or calibration JSON cache is
 retained in native code. Complete sets alone are published; ordinary unavailable
 sources return uncached partial snapshots. Allocation/internal errors abort cold
 construction. Retained readers survive cache release; candidates build and losing
@@ -670,3 +670,43 @@ on negative direct/print routes. Cold, output-CCTF-only and warm preparation reu
 all six scanner allocations with identical contents/identities. It verifies exact
 prepared film matrices and unconsumed host-math faults during native preparation.
 These are GPU checks; host groups introduce no eager CUDA-driver dependency.
+
+
+## Illuminant construction
+
+`Assets.Host.IlluminantConstruction` compares raw production C calls, the direct
+safe-core fixture facade, native wrappers and real direct/print callers against
+four frozen accepted-parent captures. `fixtures/illuminants/construction-manifest.json`
+records exact provenance; existing seven-curve fixtures remain immutable. It covers
+41 BB cases, direct/Akima boundaries, all 270 caller outcomes and 144 complete
+products, including reachable EQUAL print/preflash and the native 3200 K lens
+contract. Matrices, spectral samples, whites, filtered lights and all compared
+identities are exact. Synthetic interpolation NaNs use their established
+classification contract; no tolerance is introduced.
+
+The seven production math operations use required bounded diagnostics and cleared
+failure outputs. Lens finish/release take and clear the owner before validating
+other descriptors. Scoped `CsvRows` borrows retain Rust sources through synchronous
+calls and cache/Assets release; production makes zero native source-row copies.
+The native seven-curve cache remains the only derived cache. Existing order,
+partial retry, decoded-empty, concurrent winner, late-publication, retained
+snapshot and reentrant destructor cases remain active. Printed native capacities
+and Rust Akima Vec capacities are actual scoped observations, excluding allocator
+metadata/RSS; Rust capacities are cumulative allocations, not a live high-water mark.
+
+Closed TLS fault selectors prove intended raw-export consumption and independence
+from CSV/color slots and the facade's own slot. Checked scratch-capacity errors map
+to AllocationFailure in production. Panic containment does not recover ordinary
+Box/Arc allocator abort. Compiler probes reject default/field construction and
+mutation of private `LensInput`; the safe core exposes only slice/value APIs.
+
+Construction/admission tests retain old publications while rejecting failed
+replacement and allow subsequent recovery. EQUAL projection failures prove no
+native submission and preserve the actual published print state. The separate
+`Ffi.Gpu.CudaRender.negative-print` rows enter real native Root print preparation,
+observe prepared-frame abort, verify actual absent-stream completion and its
+existing error precedence, and reuse resources after clearing the fault. The
+completion override is isolated test code following the physical synchronization;
+it does not establish real driver failure or Resolve recovery acceptance.
+All host groups remain free of driver/device runtime requirements. Normal Release
+excludes the fault, memory and observation seams.

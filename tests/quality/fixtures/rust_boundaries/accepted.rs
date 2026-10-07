@@ -49,3 +49,7 @@ use crate::asset_noise::{NoiseOwner, NoiseView};
 use film_juicer_core::assets::NoiseBundle;
 pub fn noise_owner(bundle: Arc<NoiseBundle>) -> NoiseOwner { NoiseOwner::new(bundle) }
 pub fn noise_view(owner: &NoiseOwner) -> NoiseView<'_> { owner.view() }
+
+use film_juicer_core::illuminant::{self, LensInput};
+pub fn lens(rows: &[[f32;2]]) -> Result<LensInput, illuminant::Error> { illuminant::prepare_lens(rows).map(|(input,_)|input) }
+pub fn finish_lens(input: LensInput, rows: &[[f32;2]]) -> Result<[f32;81], illuminant::Error> { illuminant::finish_lens(input,rows).map(|(curve,_)|curve) }

@@ -576,3 +576,9 @@ The prepared-boundary fixture acquires through the same safe Rust source via the
 test facade and asserts that supplied views cause no fallback acquisition.
 These seams exist only in test objects/test-support; normal Release has none.
 Installed Resolve and actual driver/context-loss acceptance remain separate.
+
+`Assets.Host.IlluminantConstruction` qualifies Rust illuminant math and its
+synchronous C/native bindings against four frozen native-parent captures, with
+exact products/identities, scoped source/lens lifetimes, cache and failure
+contracts. The separate negative-print C render contract checks the later native
+preflash unwind/completion terminal. See [the illuminant guide](ffi/README.md#illuminant-construction).

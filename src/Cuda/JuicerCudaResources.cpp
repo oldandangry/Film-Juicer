@@ -3,6 +3,7 @@
 // Descriptor-driven CUDA uploads and primitive validation hooks.
 //
 #include "Cuda/JuicerCudaResources.h"
+#include "Illuminants.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/JuicerCudaDriver.h"
 #include "Cuda/JuicerCudaPayloads.h"
@@ -4109,7 +4110,8 @@ namespace JuicerCuda {
             std::array<float, Spectral::kNumSamples>& out,
             std::string& diagnostic) {
             if (key == "EQUAL") {
-                out.fill(1.0f);
+                const auto equal = JuicerIlluminant::equal_energy();
+                std::copy(equal.linear.begin(), equal.linear.end(), out.begin());
                 return true;
             }
             const auto curves = assets.illuminant_filter_curves();

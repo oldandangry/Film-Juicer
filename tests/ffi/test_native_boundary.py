@@ -45,6 +45,7 @@ RETIRED_INPUT_COLOR = r"\b(?:matrix_input_rgb_to_xyz|input_colorspace_white_xyz|
 INPUT_MATRIX_METHODS = r"\b(?:Mat3::(?:mul|inverse)|void\s+mul|Mat3\s+inverse)\s*\("
 
 RETIRED_CAT16 = r"\b(?:chromatic_adapt_XYZ_CAT16|build_chromatic_adaptation_matrix_CAT16)\b"
+RETIRED_ILLUMINANT_MATH = r"\b(?:PlanckBlackbodySample|planck_blackbody|build_blackbody_curve|build_illuminant_curve|build_tungsten_kg3_curve|prepare_tungsten_kg3_lens_input|build_tungsten_kg3_lens_curve|TungstenKg3LensInput|build_curve_equal_energy_pinned|SpectralResampleDetail|scalar_akima_resample|akima_resample_agx|resample_pairs_akima_to_reference_axis|mean_power_normalize)\b"
 
 
 HOST_MESSAGES = r"\b(?:DirFailureMessage|sendMessage)\b|OFX::"
@@ -57,6 +58,8 @@ RETIRED_NOISE = r"\b(?:StbnNoisePayload|WangNoisePayload|StaticNoisePayloadSet|S
 
 
 class NativeBoundary(unittest.TestCase):
+    def test_native_illuminant_math_is_retired(self):
+        self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_ILLUMINANT_MATH), [])
     def test_executor_has_no_host_message_surface(self):
         self.assertEqual(forbidden_uses(native_sources(ROOT), HOST_MESSAGES), [])
 
@@ -140,6 +143,18 @@ class NativeBoundary(unittest.TestCase):
 
 
 class NativeBoundaryControls(unittest.TestCase):
+    def test_illuminant_deletion_guard_rejects_each_retired_definition(self):
+        symbols = ("PlanckBlackbodySample", "planck_blackbody", "build_blackbody_curve", "build_illuminant_curve", "build_tungsten_kg3_curve", "prepare_tungsten_kg3_lens_input", "build_tungsten_kg3_lens_curve", "TungstenKg3LensInput", "build_curve_equal_energy_pinned", "SpectralResampleDetail", "scalar_akima_resample", "akima_resample_agx", "resample_pairs_akima_to_reference_axis", "mean_power_normalize")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src/Illuminants.cpp"
+            source.parent.mkdir(parents=True)
+            (root / "CMakeLists.txt").write_text("", encoding="utf-8")
+            for symbol in symbols:
+                source.write_text(f"void {symbol}();\n", encoding="utf-8")
+                self.assertEqual(len(forbidden_uses(color_sources(root), RETIRED_ILLUMINANT_MATH)), 1)
+            source.write_text("JuicerIlluminant::blackbody(3200);\nSpectral::samples_follow_reference_axis(rows);\n", encoding="utf-8")
+            self.assertEqual(forbidden_uses(color_sources(root), RETIRED_ILLUMINANT_MATH), [])
     def test_new_nested_sources_and_headers_are_checked(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -26,6 +26,12 @@ mod asset_noise;
 
 mod asset_calibration;
 
+#[allow(
+    unsafe_code,
+    reason = "the illuminant C edge validates spans and consumes call-local lens owners"
+)]
+mod asset_illuminant;
+
 #[cfg(feature = "test-support")]
 #[allow(
     unsafe_code,

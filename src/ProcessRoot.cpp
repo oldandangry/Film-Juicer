@@ -2541,6 +2541,9 @@ namespace JuicerProcess {
     }
 
     void Root::PreparedCudaFrame::abort() noexcept {
+#if defined(JUICER_ILLUMINANT_TEST_HOOK)
+        const bool illuminantAbortedSubmission = _state && _state->transaction.active && !_state->transaction.committed;
+#endif
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
         const bool abortedSubmission = _state && _state->transaction.active && !_state->transaction.committed;
 #endif
@@ -2674,6 +2677,11 @@ namespace JuicerProcess {
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
         if (abortedSubmission) {
             JuicerCuda::ExecutorTest::observe_frame_abort();
+        }
+#endif
+#if defined(JUICER_ILLUMINANT_TEST_HOOK)
+        if (illuminantAbortedSubmission) {
+            JuicerAssets::IlluminantTest::frame_abort();
         }
 #endif
     }

@@ -714,23 +714,6 @@ namespace {
     }
 
 
-    static Spectral::Curve build_blackbody_curve(float temperature) {
-        Spectral::Curve curve;
-        const int K = Spectral::gShape.K;
-        Spectral::assign_reference_axis(curve.lambda_nm);
-        curve.linear.resize(static_cast<size_t>(K));
-        const float* wavelengths = Spectral::gShape.wavelengths.data();
-        float* outLinear = curve.linear.data();
-        for (int i = 0; i < K; ++i) {
-            Spectral::PlanckBlackbodySample sample{};
-            sample.wavelengthNm = wavelengths[i];
-            sample.temperatureKelvin = temperature;
-            outLinear[i] = Spectral::planck_blackbody(sample);
-        }
-        Spectral::mean_power_normalize(curve.linear);
-        return curve;
-    }
-
     static Spectral::Curve build_illuminant_from_string(const std::string& source) {
         const std::string normalized = IlluminantKeys::normalize(source);
         const auto curveAssets =
@@ -758,7 +741,7 @@ namespace {
             return curveAssets->kinoton75P;
         }
         if (IlluminantKeys::matches_any(normalized, {"EQUAL", "EQUALENERGY", "EQUAL-ENERGY"})) {
-            return Spectral::build_curve_equal_energy_pinned();
+            return JuicerIlluminant::equal_energy();
         }
 
         if (!normalized.empty()) {
@@ -771,7 +754,7 @@ namespace {
 
     static Spectral::Curve build_profile_illuminant(const Profiles::ProfileIlluminant& illuminant) {
         if (const auto* blackbody = std::get_if<Profiles::BlackbodyIlluminant>(&illuminant.kind)) {
-            return build_blackbody_curve(static_cast<float>(blackbody->temperatureKelvin));
+            return JuicerIlluminant::blackbody(static_cast<float>(blackbody->temperatureKelvin));
         }
         return build_illuminant_from_string(illuminant.value);
     }

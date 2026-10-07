@@ -1,5 +1,115 @@
 //! Feature-only C fixture facade. Raw pointers never enter the safe core.
 
+use crate::asset_illuminant::{self, FjIlluminant, FjIlluminantCoverage};
+use film_juicer_core::illuminant;
+
+thread_local! { static ILLUMINANT_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_illuminant_arm_fault(
+    operation: u32,
+    call_index: u32,
+    fault: u32,
+) -> FjStatus {
+    asset_illuminant::arm_fault(operation, call_index, fault)
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_illuminant_clear_fault() {
+    asset_illuminant::clear_fault();
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_illuminant_live_lenses() -> usize {
+    asset_illuminant::live_lenses()
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_illuminant_arm_facade_fault() {
+    ILLUMINANT_FACADE_FAULT.set(true);
+}
+/// # Safety
+/// Output authorizes ten exclusive aligned usize elements, with no overlapping call storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_illuminant_scratch_capacities(out: *mut usize) -> usize {
+    if out.is_null() || !(out as usize).is_multiple_of(align_of::<usize>()) {
+        return 0;
+    }
+    let (bytes, count) = illuminant::test_support::scratch_capacities();
+    // SAFETY: The caller retains ten writable aligned elements through return.
+    unsafe {
+        out.copy_from_nonoverlapping(bytes.as_ptr(), 10);
+    }
+    count
+}
+/// # Safety
+/// Required storage follows the illuminant header; rows are immutable until return.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_illuminant_curve(
+    operation: u32,
+    source: FjFloatSpan,
+    lens: FjFloatSpan,
+    temperature: f32,
+    out: *mut FjIlluminant,
+    coverage: *mut FjIlluminantCoverage,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Only aligned, caller-authorized outputs are cleared or published;
+    // the shared edge checks diagnostics/extents, and the facade invokes core directly.
+    unsafe {
+        let curve_valid =
+            !out.is_null() && (out as usize).is_multiple_of(align_of::<FjIlluminant>());
+        let coverage_valid = !coverage.is_null()
+            && (coverage as usize).is_multiple_of(align_of::<FjIlluminantCoverage>());
+        if curve_valid {
+            out.write(FjIlluminant::default());
+        }
+        if coverage_valid {
+            coverage.write(FjIlluminantCoverage::default());
+        }
+        asset_illuminant::run(error, || {
+            if !curve_valid || !coverage_valid {
+                return Err(crate::asset_bridge::Failure::Input(
+                    "invalid fixture curve output",
+                ));
+            }
+            let source = asset_illuminant::rows(source)?;
+            let lens = asset_illuminant::rows(lens)?;
+            if ILLUMINANT_FACADE_FAULT.replace(false) {
+                return Err(crate::asset_bridge::Failure::Internal(
+                    "illuminant fixture-only fault",
+                ));
+            }
+            let result = match operation {
+                1 => illuminant::from_samples(source)
+                    .map(|curve| (curve, illuminant::Coverage::default())),
+                2 => Ok((
+                    illuminant::blackbody(temperature),
+                    illuminant::Coverage::default(),
+                )),
+                3 => Ok((illuminant::equal_energy(), illuminant::Coverage::default())),
+                4 => illuminant::tungsten_kg3(source),
+                5 => illuminant::prepare_lens(source)
+                    .and_then(|(input, _)| illuminant::finish_lens(input, lens)),
+                8 => illuminant::test_support::resample(source)
+                    .map(|curve| (curve, illuminant::Coverage::default())),
+                _ => {
+                    return Err(crate::asset_bridge::Failure::Input(
+                        "invalid fixture illuminant operation",
+                    ));
+                }
+            };
+            match result {
+                Ok((samples, metadata)) => {
+                    coverage.write(metadata.into());
+                    out.write(FjIlluminant { samples });
+                    Ok(())
+                }
+                Err(error) => {
+                    coverage.write(error.coverage.into());
+                    Err(crate::asset_bridge::Failure::Illuminant(error))
+                }
+            }
+        })
+    }
+}
+
 use std::fmt::{self, Write};
 use std::mem::{align_of, offset_of, size_of};
 use std::panic::{AssertUnwindSafe, catch_unwind};

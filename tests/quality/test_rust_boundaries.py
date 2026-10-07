@@ -163,6 +163,22 @@ class RustBoundaryTests(unittest.TestCase):
                 "E0451": ("FilmProfile { ..film }", "PrintProfile { ..print }"),
             })
 
+    def test_lens_construction_and_storage_are_private(self) -> None:
+        # Type-check errors can suppress later field-privacy diagnostics, so
+        # each rejected construction/access is its own compiler consumer.
+        for fixture, expected in (
+            ("illuminant_private", {"E0451": ("LensInput {",)}),
+            ("illuminant_default", {"E0599": ("LensInput::default()",)}),
+            ("illuminant_mutation", {"E0616": ("input.kg3[0]",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in (False, True):
+                    status, diagnostics = self.check("film-juicer-plugin", release)
+                    self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_safe_modules_cannot_relax_unsafe_prohibition(self) -> None:
         owners = (
             ("film-juicer-core", "lib.rs"),

@@ -266,6 +266,7 @@ pub(crate) enum Failure {
     #[cfg(any(test, feature = "test-support"))]
     Capacity(TryReserveError),
     Gamma(PrintDensityError),
+    Illuminant(film_juicer_core::illuminant::Error),
     #[cfg(any(test, feature = "test-support"))]
     Internal(&'static str),
 }
@@ -303,6 +304,12 @@ impl Failure {
             Self::Gamma(PrintDensityError::InvalidGamma) => FJ_STATUS_UNSUPPORTED_INPUT,
             Self::Gamma(PrintDensityError::Capacity) => FJ_STATUS_ALLOCATION_FAILURE,
             Self::Gamma(_) => FJ_STATUS_PREPARATION_FAILURE,
+            Self::Illuminant(error) => match error.kind {
+                film_juicer_core::illuminant::ErrorKind::Capacity => FJ_STATUS_ALLOCATION_FAILURE,
+                film_juicer_core::illuminant::ErrorKind::Preparation => {
+                    FJ_STATUS_PREPARATION_FAILURE
+                }
+            },
             #[cfg(any(test, feature = "test-support"))]
             Self::Capacity(_) => FJ_STATUS_ALLOCATION_FAILURE,
             Self::Asset(AssetError::Noise(error)) => noise_category(error.kind()),
@@ -323,6 +330,7 @@ impl fmt::Display for Failure {
             #[cfg(any(test, feature = "test-support"))]
             Self::Capacity(error) => write!(formatter, "asset boundary capacity: {error}"),
             Self::Gamma(error) => write!(formatter, "{error}"),
+            Self::Illuminant(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -356,7 +364,7 @@ impl Write for Diagnostic<'_> {
 /// # Safety
 /// A nonnull diagnostic is initialized, aligned and exclusively writable; its
 /// nonempty backing extent is disjoint from all other call storage.
-unsafe fn run<T>(
+pub(crate) unsafe fn run<T>(
     error: *mut FjErrorBuffer,
     operation: impl FnOnce() -> Result<T, Failure>,
 ) -> Result<T, FjStatus> {

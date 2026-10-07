@@ -45,6 +45,7 @@ namespace JuicerCuda {
     namespace RenderTest {
         void before_execute();
         void after_execute();
+        int completion_status(int actual) noexcept;
     } // namespace RenderTest
 #endif
 

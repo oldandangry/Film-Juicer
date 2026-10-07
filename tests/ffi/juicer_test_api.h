@@ -8,6 +8,26 @@ extern "C" {
 #endif
 
 /* BUILD_TESTING's nondefault Rust test-support facade; never an installed API. */
+/* Closed production math selectors; 1=unsupported, 2=panic, 3=real checked
+ * scratch capacity, 4=preparation faults. TLS one-shot matching raw-call count.
+ * The curve facade invokes core directly: 1..4 as below, 5 composed lens,
+ * 8 private resampling projection. Its one-shot fault slot is independent. */
+#define FJ_TEST_ILLUMINANT_FROM_SAMPLES UINT32_C(1)
+#define FJ_TEST_ILLUMINANT_BLACKBODY UINT32_C(2)
+#define FJ_TEST_ILLUMINANT_EQUAL_ENERGY UINT32_C(3)
+#define FJ_TEST_ILLUMINANT_TUNGSTEN_KG3 UINT32_C(4)
+#define FJ_TEST_ILLUMINANT_LENS_PREPARE UINT32_C(5)
+#define FJ_TEST_ILLUMINANT_LENS_FINISH UINT32_C(6)
+#define FJ_TEST_ILLUMINANT_LENS_RELEASE UINT32_C(7)
+FjStatus fj_test_illuminant_arm_fault(uint32_t operation, uint32_t call_index, uint32_t fault);
+void fj_test_illuminant_clear_fault(void);
+size_t fj_test_illuminant_live_lenses(void);
+void fj_test_illuminant_arm_facade_fault(void);
+/* Ten initialized writable size_t elements; returns actual successful Vec count.
+ * Values are byte capacities, cumulative within the last resampling call, not
+ * simultaneous live bytes, allocator metadata or RSS. OFF builds omit probes. */
+size_t fj_test_illuminant_scratch_capacities(size_t* out_bytes);
+FjStatus fj_test_illuminant_curve(uint32_t operation, FjFloatSpan rows, FjFloatSpan lens_rows, float temperature_kelvin, FjIlluminant* out_curve, FjIlluminantCoverage* out_coverage, FjErrorBuffer* error);
 /* CAT02/CAT16 value facade uses the production fixed-array pointer/extent contract.
  * Faults affect only the calling thread's actual production exports: one-based
  * matching call count, consumed before action. Invalid arm disarms; clear is

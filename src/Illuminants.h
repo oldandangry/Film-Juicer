@@ -1,14 +1,10 @@
 // Illuminants.h
 #pragma once
-#include <algorithm>
 #include <cctype>
-#include <cmath>
 #include <initializer_list>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <utility>
-#include <vector>
 
 #include "SpectralData.h"
 
@@ -60,62 +56,30 @@ namespace IlluminantKeys {
 } // namespace IlluminantKeys
 
 
-namespace Spectral {
-
-    // --------------------------
-    // Physics: Planck blackbody
-    // --------------------------
-    struct PlanckBlackbodySample {
-        float wavelengthNm = 0.0f;
-        float temperatureKelvin = 0.0f;
-    };
-
-    inline float planck_blackbody(const PlanckBlackbodySample& sample) {
-        // Spectral radiance up to a scale factor; we normalize later.
-        // lambda in meters
-        const double lambda_m = static_cast<double>(sample.wavelengthNm) * 1e-9;
-        const double c = 2.99792458e8;
-        const double h = 6.62607015e-34;
-        const double k = 1.380649e-23;
-
-        const double c1 = 2.0 * h * c * c;
-        const double c2 = h * c / k;
-        const double denom = std::exp(c2 / (lambda_m * static_cast<double>(sample.temperatureKelvin))) - 1.0;
-        const double L = (denom > 0.0) ? c1 / (std::pow(lambda_m, 5) * denom) : 0.0;
-        return static_cast<float>(L);
-    }
-
-    Curve build_illuminant_curve(const std::vector<std::pair<float, float>>& pairs, std::string_view label);
-    Curve build_tungsten_kg3_curve(const std::vector<std::pair<float, float>>& pairs, std::string_view label);
-
-    // Complete call-local 3200 K/KG3 preparation permits conditional lens acquisition.
-    class TungstenKg3LensInput final {
+namespace JuicerAssets {
+    class CsvRows;
+}
+struct FjIlluminantLens;
+// FJ_TEMP_BRIDGE: native illuminant value/lens projection; remove S4.E.
+namespace JuicerIlluminant {
+    class Lens final {
     public:
-        TungstenKg3LensInput(TungstenKg3LensInput&&) = default;
-        TungstenKg3LensInput& operator=(TungstenKg3LensInput&&) = default;
+        ~Lens();
+        Lens(Lens&& lens) noexcept;
+        Lens(const Lens&) = delete;
+        Lens& operator=(const Lens&) = delete;
+        Lens& operator=(Lens&&) = delete;
 
     private:
-        friend std::optional<TungstenKg3LensInput> prepare_tungsten_kg3_lens_input(
-            const std::vector<std::pair<float, float>>&, std::string_view);
-        friend Curve build_tungsten_kg3_lens_curve(TungstenKg3LensInput,
-                                                   const std::vector<std::pair<float, float>>&,
-                                                   std::string_view);
-        TungstenKg3LensInput(std::vector<float> bb, std::vector<std::pair<float, float>> filter);
-        std::vector<float> blackbody;
-        std::vector<std::pair<float, float>> kg3;
+        friend std::optional<Lens> prepare_lens(const JuicerAssets::CsvRows&, std::string_view);
+        friend Spectral::Curve finish_lens(Lens, const JuicerAssets::CsvRows&, std::string_view);
+        explicit Lens(FjIlluminantLens* owner) noexcept;
+        FjIlluminantLens* _owner;
     };
-    std::optional<TungstenKg3LensInput> prepare_tungsten_kg3_lens_input(
-        const std::vector<std::pair<float, float>>& pairs, std::string_view label);
-    Curve build_tungsten_kg3_lens_curve(TungstenKg3LensInput input,
-                                        const std::vector<std::pair<float, float>>& lens,
-                                        std::string_view label);
-
-    inline Spectral::Curve build_curve_equal_energy_pinned() {
-        Spectral::Curve c;
-        Spectral::assign_reference_axis(c.lambda_nm);
-        c.linear.assign(Spectral::gShape.K, 1.0f);
-        return c;
-    }
-
-
-} // namespace Spectral
+    Spectral::Curve from_samples(const JuicerAssets::CsvRows& rows, std::string_view label);
+    Spectral::Curve blackbody(float temperatureKelvin);
+    Spectral::Curve equal_energy();
+    Spectral::Curve tungsten_kg3(const JuicerAssets::CsvRows& rows, std::string_view label);
+    std::optional<Lens> prepare_lens(const JuicerAssets::CsvRows& rows, std::string_view label);
+    Spectral::Curve finish_lens(Lens lens, const JuicerAssets::CsvRows& rows, std::string_view label);
+} // namespace JuicerIlluminant

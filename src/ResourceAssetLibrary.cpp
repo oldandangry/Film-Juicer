@@ -15,9 +15,9 @@
 namespace JuicerAssets {
 
     namespace {
-        std::optional<std::vector<std::pair<float, float>>> copy_available_csv(AssetBridge& bridge, CsvSource source) {
+        std::optional<CsvRows> available_csv_rows(AssetBridge& bridge, CsvSource source) {
             try {
-                return bridge.copy_csv_pairs(source);
+                return bridge.csv_rows(source);
             } catch (const JuicerCuda::ExecutionFailure& failure) {
                 if (failure.failure.status.category != FJ_STATUS_PREPARATION_FAILURE) {
                     throw;
@@ -30,27 +30,30 @@ namespace JuicerAssets {
         IlluminantFilterCurveSet load_illuminant_filter_curves(AssetBridge& bridge) {
             IlluminantFilterCurveSet curves;
             const auto build = [&](CsvSource source, std::string_view label) {
-                const auto pairs = copy_available_csv(bridge, source);
-                return pairs ? Spectral::build_illuminant_curve(*pairs, label) : Spectral::Curve{};
+                const auto pairs = available_csv_rows(bridge, source);
+                return pairs ? JuicerIlluminant::from_samples(*pairs, label) : Spectral::Curve{};
             };
             curves.d65 = build(CsvSource::D65, "D65");
             curves.d55 = build(CsvSource::D55, "D55");
             curves.d50 = build(CsvSource::D50, "D50");
             curves.tungsten = build(CsvSource::T, "T");
             curves.kinoton75P = build(CsvSource::K75p, "K75P");
-            auto kg3 = copy_available_csv(bridge, CsvSource::Kg3);
+            auto kg3 = available_csv_rows(bridge, CsvSource::Kg3);
             if (kg3) {
-                curves.tungstenKg3 = Spectral::build_tungsten_kg3_curve(*kg3, "KG3");
+                curves.tungstenKg3 = JuicerIlluminant::tungsten_kg3(*kg3, "KG3");
             } else {
                 // The second consumer may make its ordinary acquisition after failure.
-                kg3 = copy_available_csv(bridge, CsvSource::Kg3);
+                auto retry = available_csv_rows(bridge, CsvSource::Kg3);
+                if (retry) {
+                    kg3.emplace(std::move(*retry));
+                }
             }
             if (kg3) {
-                auto input = Spectral::prepare_tungsten_kg3_lens_input(*kg3, "KG3");
+                auto input = JuicerIlluminant::prepare_lens(*kg3, "KG3");
                 if (input) {
-                    const auto lens = copy_available_csv(bridge, CsvSource::Canon24F28Is);
+                    const auto lens = available_csv_rows(bridge, CsvSource::Canon24F28Is);
                     if (lens) {
-                        curves.tungstenKg3Lens = Spectral::build_tungsten_kg3_lens_curve(std::move(*input), *lens, "Canon 24 F2.8 IS");
+                        curves.tungstenKg3Lens = JuicerIlluminant::finish_lens(std::move(*input), *lens, "Canon 24 F2.8 IS");
                     }
                 }
             }
@@ -74,6 +77,7 @@ namespace JuicerAssets {
 
     } // namespace
 
+    // FJ_TEMP_BRIDGE: sole native derived illuminant cache; remove S4.E.
     struct Library::IlluminantFilterCurveCacheState {
         std::mutex mutex;
         std::shared_ptr<const IlluminantFilterCurveSet> curves;
