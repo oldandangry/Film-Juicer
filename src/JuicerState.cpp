@@ -21,11 +21,9 @@
 #include "Logging.h"
 #include "ProcessRoot.h"
 #include "SpectralProcessing.h"
+#include "RustSpectralBridge.h"
 
 namespace {
-    inline void copy_float3(float dst[3], const float src[3]) {
-        std::memcpy(dst, src, 3u * sizeof(float));
-    }
 
     static bool build_scanner_illuminant(
         const Profiles::ProfileIlluminant& illuminant,
@@ -44,23 +42,6 @@ namespace {
         }
 
         const Profiles::FilmProfile& profile = *recipe.profileRoute.filmProfile;
-        auto assign_channel = [&](Spectral::Curve& curve, std::size_t channel) {
-            Spectral::assign_reference_axis(curve.lambda_nm);
-            curve.linear.resize(profile.data.channelDensity.size());
-            for (std::size_t sample = 0; sample < profile.data.channelDensity.size(); ++sample) {
-                curve.linear[sample] = profile.data.channelDensity[sample][channel];
-            }
-        };
-        Spectral::Curve epsC;
-        Spectral::Curve epsM;
-        Spectral::Curve epsY;
-        Spectral::Curve baseDensityMin;
-        Spectral::Curve baseDensityMid;
-        assign_channel(epsC, 0u);
-        assign_channel(epsM, 1u);
-        assign_channel(epsY, 2u);
-        Spectral::assign_reference_axis(baseDensityMin.lambda_nm);
-        baseDensityMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
 
         Scanner::ScannerIlluminant referenceIlluminant;
         if (!build_scanner_illuminant(
@@ -71,20 +52,12 @@ namespace {
                 "MissingRequiredResource component=focused_film_payload field=reference_illuminant";
             return false;
         }
-        Spectral::build_tables_from_curves_non_global(
-            epsY,
-            epsM,
-            epsC,
-            Spectral::gXBar,
-            Spectral::gYBar,
-            Spectral::gZBar,
+        JuicerSpectral::build_tables(
+            profile.data.channelDensity,
+            profile.data.baseDensity,
             referenceIlluminant.curve,
-            baseDensityMin,
-            baseDensityMid,
-            true,
-            0.0f,
-            payload.exposureTables,
-            referenceIlluminant.hash);
+            referenceIlluminant.hash,
+            payload.exposureTables);
         const auto valid_white = [](const float white[3]) {
             return std::isfinite(white[0]) &&
                    std::isfinite(white[1]) &&
@@ -99,9 +72,7 @@ namespace {
                 "MalformedRequiredResource component=focused_film_payload field=exposure_tables";
             return false;
         }
-        Spectral::compute_S_inverse_from_tables(
-            payload.exposureTables,
-            payload.spdSInv.data());
+        payload.spdSInv = JuicerSpectral::s_inverse(payload.exposureTables);
 
         payload.filmRawConfig = Spectral::FilmRawConfig{};
         payload.filmRawConfig.inputColorSpace =
@@ -228,23 +199,6 @@ namespace {
         if (recipe.scannerOutput.viewingIlluminant != profile.info.viewingIlluminant.value) {
             return false;
         }
-        auto assign_channel = [&](Spectral::Curve& curve, std::size_t channel) {
-            Spectral::assign_reference_axis(curve.lambda_nm);
-            curve.linear.resize(profile.data.channelDensity.size());
-            for (std::size_t sample = 0; sample < profile.data.channelDensity.size(); ++sample) {
-                curve.linear[sample] = profile.data.channelDensity[sample][channel];
-            }
-        };
-        Spectral::Curve epsC;
-        Spectral::Curve epsM;
-        Spectral::Curve epsY;
-        Spectral::Curve baseDensityMin;
-        Spectral::Curve baseDensityMid;
-        assign_channel(epsC, 0u);
-        assign_channel(epsM, 1u);
-        assign_channel(epsY, 2u);
-        Spectral::assign_reference_axis(baseDensityMin.lambda_nm);
-        baseDensityMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
 
         Scanner::ScannerIlluminant scannerIlluminant;
         if (!build_scanner_illuminant(
@@ -253,20 +207,12 @@ namespace {
                 scannerIlluminant)) {
             return false;
         }
-        Spectral::build_tables_from_curves_non_global(
-            epsY,
-            epsM,
-            epsC,
-            Spectral::gXBar,
-            Spectral::gYBar,
-            Spectral::gZBar,
+        JuicerSpectral::build_tables(
+            profile.data.channelDensity,
+            profile.data.baseDensity,
             scannerIlluminant.curve,
-            baseDensityMin,
-            baseDensityMid,
-            true,
-            0.0f,
-            payload.scannerTables,
-            scannerIlluminant.hash);
+            scannerIlluminant.hash,
+            payload.scannerTables);
         if (payload.scannerTables.K != Spectral::kNumSamples ||
             payload.scannerTables.tablesHash == 0) {
             return false;
@@ -306,23 +252,6 @@ namespace {
         if (recipe.scannerOutput.viewingIlluminant != profile.info.viewingIlluminant.value) {
             return false;
         }
-        auto assign_channel = [&](Spectral::Curve& curve, std::size_t channel) {
-            Spectral::assign_reference_axis(curve.lambda_nm);
-            curve.linear.resize(profile.data.channelDensity.size());
-            for (std::size_t sample = 0; sample < profile.data.channelDensity.size(); ++sample) {
-                curve.linear[sample] = profile.data.channelDensity[sample][channel];
-            }
-        };
-        Spectral::Curve epsC;
-        Spectral::Curve epsM;
-        Spectral::Curve epsY;
-        Spectral::Curve baseDensityMin;
-        Spectral::Curve baseDensityMid;
-        assign_channel(epsC, 0u);
-        assign_channel(epsM, 1u);
-        assign_channel(epsY, 2u);
-        Spectral::assign_reference_axis(baseDensityMin.lambda_nm);
-        baseDensityMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
 
         Scanner::ScannerIlluminant scannerIlluminant;
         if (!build_scanner_illuminant(
@@ -331,20 +260,12 @@ namespace {
                 scannerIlluminant)) {
             return false;
         }
-        Spectral::build_tables_from_curves_non_global(
-            epsY,
-            epsM,
-            epsC,
-            Spectral::gXBar,
-            Spectral::gYBar,
-            Spectral::gZBar,
+        JuicerSpectral::build_tables(
+            profile.data.channelDensity,
+            profile.data.baseDensity,
             scannerIlluminant.curve,
-            baseDensityMin,
-            baseDensityMid,
-            true,
-            0.0f,
-            payload.scannerTables,
-            scannerIlluminant.hash);
+            scannerIlluminant.hash,
+            payload.scannerTables);
         if (payload.scannerTables.K != Spectral::kNumSamples ||
             payload.scannerTables.tablesHash == 0) {
             return false;
@@ -404,9 +325,6 @@ namespace {
         return std::isfinite(value);
     }
 
-    inline bool is_positive_finite(double value) {
-        return is_finite(value) && value > 0.0;
-    }
 
     inline uint64_t hash_mix(uint64_t h, uint64_t v) {
         h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
@@ -813,81 +731,10 @@ namespace {
             return false;
         }
 
-        double sumX = 0.0;
-        double sumY = 0.0;
-        double sumZ = 0.0;
-        const float* spdData = curve.linear.data();
-        const float* xData = xBar.data();
-        const float* yData = yBar.data();
-        const float* zData = zBar.data();
-        for (int i = 0; i < K; ++i) {
-            const float spd = spdData[i];
-            const float xb = xData[i];
-            const float yb = yData[i];
-            const float zb = zData[i];
-            if (!(is_finite(spd) && is_finite(xb) && is_finite(yb) && is_finite(zb))) {
-                std::ostringstream oss;
-                oss << "FATAL: non-finite CMF/SPD sample in " << label << " illuminant";
-                JTRACE("ILLUM", oss.str());
-                return false;
-            }
-            sumX += static_cast<double>(spd) * static_cast<double>(xb);
-            sumY += static_cast<double>(spd) * static_cast<double>(yb);
-            sumZ += static_cast<double>(spd) * static_cast<double>(zb);
-        }
-
-        if (!is_positive_finite(sumY)) {
-            std::ostringstream oss;
-            oss << "FATAL: invalid luminance sum for " << label << " (Yn=" << sumY << ")";
-            JTRACE("ILLUM", oss.str());
+        if (!JuicerSpectral::integrate_white(curve, label, out)) {
             return false;
         }
-
         out.curve = std::move(curve);
-        out.normalization = static_cast<float>(sumY);
-        const double invYn = 1.0 / sumY;
-        const float whiteXYZ[3] = {
-            static_cast<float>(sumX * invYn),
-            1.0f,
-            static_cast<float>(sumZ * invYn)};
-        copy_float3(out.whiteXYZ, whiteXYZ);
-
-        const double whiteSum = sumX + sumY + sumZ;
-        if (!is_positive_finite(whiteSum)) {
-            JTRACE("ILLUM", "FATAL: invalid white sum while building scanner illuminant");
-            return false;
-        }
-        out.whiteXY[0] = static_cast<float>(sumX / whiteSum);
-        out.whiteXY[1] = static_cast<float>(sumY / whiteSum);
-
-        constexpr int kReferenceAxisSamples = 81;
-        constexpr size_t kReferenceAxisSampleCount = 81u;
-        const size_t sampleCount = out.curve.linear.size();
-        if (K == kReferenceAxisSamples && sampleCount == kReferenceAxisSampleCount) {
-            float hashSamples[kReferenceAxisSampleCount + 1u];
-            std::memcpy(
-                hashSamples,
-                out.curve.linear.data(),
-                kReferenceAxisSampleCount * sizeof(float));
-            hashSamples[kReferenceAxisSampleCount] = out.normalization;
-            out.hash = Hash::hash_float_span(hashSamples, kReferenceAxisSampleCount + 1u);
-        } else {
-            std::vector<float> hashSamples(sampleCount + 1);
-            if (sampleCount > 0) {
-                std::memcpy(
-                    hashSamples.data(),
-                    out.curve.linear.data(),
-                    sampleCount * sizeof(float));
-            }
-            hashSamples[sampleCount] = out.normalization;
-            out.hash = Hash::hash_float_span(hashSamples.data(), hashSamples.size());
-        }
-        if (out.hash == 0) {
-            std::ostringstream oss;
-            oss << "FATAL: failed to hash viewing illuminant for " << label;
-            JTRACE("ILLUM", oss.str());
-            return false;
-        }
         return true;
     }
 

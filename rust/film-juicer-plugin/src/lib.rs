@@ -38,3 +38,9 @@ mod asset_illuminant;
     reason = "the test facade checks foreign inputs and consumes retained profile owners at the C boundary"
 )]
 mod test_support;
+
+#[allow(
+    unsafe_code,
+    reason = "the fixed spectral edge checks foreign extents and scopes immutable borrows"
+)]
+mod spectral_bridge;

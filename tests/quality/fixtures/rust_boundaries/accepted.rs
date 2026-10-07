@@ -53,3 +53,8 @@ pub fn noise_view(owner: &NoiseOwner) -> NoiseView<'_> { owner.view() }
 use film_juicer_core::illuminant::{self, LensInput};
 pub fn lens(rows: &[[f32;2]]) -> Result<LensInput, illuminant::Error> { illuminant::prepare_lens(rows).map(|(input,_)|input) }
 pub fn finish_lens(input: LensInput, rows: &[[f32;2]]) -> Result<[f32;81], illuminant::Error> { illuminant::finish_lens(input,rows).map(|(curve,_)|curve) }
+
+use film_juicer_core::spectral::{self, Tables, White};
+pub fn spectral_tables(input: spectral::Input<'_>) -> Tables { spectral::build_tables(input) }
+pub fn spectral_white(observer: spectral::Observer<'_>, illuminant: &[f32;81]) -> Result<White,spectral::WhiteError> { spectral::integrate_white(observer,illuminant) }
+pub fn spectral_values(tables: &Tables, white: &White) -> [f32;9] { let _=(tables.hash(),white.hash(),white.xyz(),tables.lambda_nm());let w=tables.weighted_xyz();spectral::s_inverse([&w[0],&w[1],&w[2]]) }

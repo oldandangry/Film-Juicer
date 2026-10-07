@@ -582,3 +582,11 @@ synchronous C/native bindings against four frozen native-parent captures, with
 exact products/identities, scoped source/lens lifetimes, cache and failure
 contracts. The separate negative-print C render contract checks the later native
 preflash unwind/completion terminal. See [the illuminant guide](ffi/README.md#illuminant-construction).
+
+`Spectral.Host.{Tables,White,SInverse,Products,Admission}` and
+`Ffi.Host.SpectralPreparation` qualify fixed spectral math, synchronous C11/native
+bindings and production route preparation against four frozen native-parent
+captures. They preserve exact family/enclosing identities, the distinct white
+precision contracts and the film gate before inverse. See
+[the spectral guide](ffi/README.md#spectral-tables-whites-and-film-s-inverse)
+for provenance, failure, lifetime, allocation and isolation boundaries.

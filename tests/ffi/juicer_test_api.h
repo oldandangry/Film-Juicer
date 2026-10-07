@@ -7,6 +7,18 @@
 extern "C" {
 #endif
 
+/* Fixed spectral direct-core facade; same synchronous storage contract as production.
+ * Independent TLS fault slots: raw operations 1 tables, 2 white, 3 inverse;
+ * fault 1 unsupported, 2 panic, 3 allocation category, 4 preparation category.
+ * Fixed math allocates no Rust heap: category injection does not test an allocator.
+ * One-based matching call count is consumed before the numerical action. */
+FjStatus fj_test_spectral_arm_fault(uint32_t operation, uint32_t call_index, uint32_t fault);
+void fj_test_spectral_clear_fault(void);
+void fj_test_spectral_arm_facade_fault(void);
+FjStatus fj_test_spectral_tables(const FjSpectralInput* input, FjSpectralTables* out, FjErrorBuffer* error);
+FjStatus fj_test_spectral_white(const FjSpectralWhiteInput* input, FjSpectralWhite* out, FjSpectralWhiteFailure* failure, FjErrorBuffer* error);
+FjStatus fj_test_spectral_s_inverse(const FjSpectralSInput* input, FjSpectralInverse* out, FjErrorBuffer* error);
+
 /* BUILD_TESTING's nondefault Rust test-support facade; never an installed API. */
 /* Closed production math selectors; 1=unsupported, 2=panic, 3=real checked
  * scratch capacity, 4=preparation faults. TLS one-shot matching raw-call count.

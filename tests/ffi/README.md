@@ -710,3 +710,40 @@ completion override is isolated test code following the physical synchronization
 it does not establish real driver failure or Resolve recovery acceptance.
 All host groups remain free of driver/device runtime requirements. Normal Release
 excludes the fault, memory and observation seams.
+
+### Spectral tables, whites and film S inverse
+
+`Spectral.Host.Tables`, `.White`, `.SInverse`, `.Products`, `.Admission` and
+`Ffi.Host.SpectralPreparation` use the four native-parent captures in
+`fixtures/spectral/`. The manifest identifies accepted source, preset, frozen
+capture and independent hash derivation. These are Film-Juicer migration
+contracts. Ordinary tests neither generate fixtures nor consume private or
+upstream files. Finite bits, signed zero and identities are exact; arithmetic
+NaN payloads compare by classification. Captured intermediates retain the
+rounded float products, double sums and determinant for diagnosis.
+
+The safe core owns fixed complete Tables/White results with private readonly
+storage. Three synchronous C11 exports borrow initialized fixed source arrays,
+clear defined outputs before fallible work and retain no pointers. The existing
+native payload owns projected vectors. Table products/reciprocals and
+scanner-white promoted products/reciprocals deliberately remain distinct.
+The film table white/hash gate precedes the weighted-CMF S inverse; singular
+S retains its strict determinant threshold and identity fallback.
+
+Tests compare raw exports and the direct-core facade independently to captures,
+then exercise real route products, all serialized controls and enclosing hashes.
+They check closed white failure metadata, malformed spans, TLS raw/facade fault
+independence, typed propagation, publication distinctions, admitted holds, cache
+release, exact operation counts and recovery. A controlled CMF scaling reaches
+actual float-reciprocal overflow and proves inverse suppression. Fixture-only
+replacement of C++ allocation rejects the actual 324-byte native vector request;
+Rust fixed-array math allocates no heap. Reported vector capacities are not RSS
+or live-peak measurements. Compiler probes accept normal result consumers and
+reject Default, field construction, direct mutation and readonly-view mutation
+with and without test support. Definition-specific source controls guard the
+removed native producers.
+
+Products run in disposable resource copies under the selected validation tree.
+These groups require no driver/device at runtime. Existing scanner GPU reuse,
+full route/scanner suites and installed-host acceptance keep their separate scope.
+Normal Release excludes fault slots, facade exports and fixture allocators.

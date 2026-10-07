@@ -641,15 +641,17 @@ namespace {
             out.curve.linear = tables.illum;
             out.curve.lambda_nm = tables.lambda;
             std::copy_n(product.payload.scannerColor.illuminantXYZ, 3, out.whiteXYZ);
-            double sumX = 0.0, sumY = 0.0, sumZ = 0.0;
-            for (std::size_t i = 0; i < out.curve.linear.size(); ++i) {
-                sumX += static_cast<double>(out.curve.linear[i]) * static_cast<double>(Spectral::gXBar.linear[i]);
-                sumY += static_cast<double>(out.curve.linear[i]) * static_cast<double>(Spectral::gYBar.linear[i]);
-                sumZ += static_cast<double>(out.curve.linear[i]) * static_cast<double>(Spectral::gZBar.linear[i]);
-            }
-            out.normalization = static_cast<float>(sumY);
-            out.whiteXY[0] = static_cast<float>(sumX / (sumX + sumY + sumZ));
-            out.whiteXY[1] = static_cast<float>(sumY / (sumX + sumY + sumZ));
+            const auto span = [](const std::vector<float>& samples) -> FjFloatSpan {
+                return {samples.data(), samples.size()};
+            };
+            const FjSpectralWhiteInput input{{span(Spectral::gXBar.linear), span(Spectral::gYBar.linear), span(Spectral::gZBar.linear)}, span(out.curve.linear)};
+            FjSpectralWhite white{};
+            FjSpectralWhiteFailure failure{};
+            std::array<char, 256> bytes{};
+            FjErrorBuffer diagnostic{bytes.data(), bytes.size(), 0};
+            require(fj_test_spectral_white(&input, &white, &failure, &diagnostic).category == FJ_STATUS_SUCCESS, "direct core scanner illuminant fixture");
+            out.normalization = white.normalization;
+            std::copy_n(white.white_xy, 2, out.whiteXY);
             out.hash = tables.illuminantHash;
             require(out.hash != 0, "actual completed scanner illuminant hash");
             return out;

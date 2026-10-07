@@ -26,6 +26,61 @@ extern "C" {
 // A nonnull out_route must point to one writable byte; failures leave it unchanged.
 uint32_t fj_legacy_resolve_route(uint8_t capture_polarity, uint8_t selected_route, uint8_t* out_route);
 
+/* FJ_TEMP_BRIDGE: spectral value preparation; remove S4.E.
+ * Required pointers authorize complete initialized aligned records. Input spans
+ * remain immutable and live through synchronous return; outputs/error backing
+ * are exclusive and disjoint. No pointer or result owner is retained.
+ * Fixed observer/illuminant arrays contain 81 positional samples on 380..780 nm
+ * at 5 nm. Dyes contain 243 wavelength-major C/M/Y floats from profile storage.
+ * Baselines are null/zero absent or exactly 81; midpoint requires minimum.
+ * Tables project into native FocusedRenderPayload; family math/hashes are Rust.
+ * Defined writable outputs clear before fallible work (padding is not a value).
+ * Malformed structures -> UnsupportedInput; computed white -> PreparationFailure;
+ * contained panic/integrity -> InternalFailure. Fixed array math has no allocator.
+ */
+typedef struct FjSpectralObserver {
+    FjFloatSpan x, y, z;
+} FjSpectralObserver;
+typedef struct FjSpectralInput {
+    FjFloatSpan dyes_cmy;
+    FjSpectralObserver observer;
+    FjFloatSpan illuminant;
+    FjFloatSpan baseline_min, baseline_mid;
+    uint64_t illuminant_hash;
+} FjSpectralInput;
+typedef struct FjSpectralTables {
+    float lambda_nm[81], illuminant[81];
+    float observer_xyz[3][81], weighted_xyz[3][81], dyes_cmy[3][81];
+    float baseline_min[81], baseline_mid[81];
+    float delta_lambda, inv_yn, white_xyz[3], reference_white_xyz[3];
+    uint32_t has_baseline;
+    uint64_t illuminant_hash, tables_hash;
+} FjSpectralTables;
+typedef struct FjSpectralWhiteInput {
+    FjSpectralObserver observer;
+    FjFloatSpan illuminant;
+} FjSpectralWhiteInput;
+typedef struct FjSpectralWhite {
+    float normalization, white_xyz[3], white_xy[2];
+    uint64_t hash;
+} FjSpectralWhite;
+/* Closed diagnostic reasons: 0 none, 1 nonfinite sample, 2 invalid luminance,
+ * 3 invalid white sum, 4 nonfinite hash operand, 5 zero identity. Only reason 2
+ * carries the observed f64 luminance sum; no failure record confers readiness. */
+typedef struct FjSpectralWhiteFailure {
+    uint32_t reason;
+    double luminance_sum;
+} FjSpectralWhiteFailure;
+typedef struct FjSpectralSInput {
+    FjFloatSpan weighted_x, weighted_y, weighted_z;
+} FjSpectralSInput;
+typedef struct FjSpectralInverse {
+    float matrix[9];
+} FjSpectralInverse;
+FjStatus fj_legacy_spectral_tables(const FjSpectralInput* input, FjSpectralTables* out, FjErrorBuffer* error);
+FjStatus fj_legacy_spectral_white(const FjSpectralWhiteInput* input, FjSpectralWhite* out, FjSpectralWhiteFailure* out_failure, FjErrorBuffer* error);
+FjStatus fj_legacy_spectral_s_inverse(const FjSpectralSInput* input, FjSpectralInverse* out, FjErrorBuffer* error);
+
 /* FJ_TEMP_BRIDGE: CAT02/CAT16 host preparation; remove S4.E.
  * Inputs are initialized aligned XYZ triplets (12 bytes), read-only until
  * return and may share storage. Outputs are exclusive, aligned and disjoint

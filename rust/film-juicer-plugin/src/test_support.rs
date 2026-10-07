@@ -1216,3 +1216,60 @@ mod tests {
         }
     }
 }
+
+thread_local! { static SPECTRAL_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_spectral_arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
+    crate::spectral_bridge::arm_fault(operation, index, fault)
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_spectral_clear_fault() {
+    crate::spectral_bridge::clear_fault();
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_spectral_arm_facade_fault() {
+    SPECTRAL_FACADE_FAULT.set(true);
+}
+fn spectral_facade_fault() -> Result<(), crate::asset_bridge::Failure> {
+    if SPECTRAL_FACADE_FAULT.replace(false) {
+        Err(crate::asset_bridge::Failure::Internal(
+            "spectral fixture-only fault",
+        ))
+    } else {
+        Ok(())
+    }
+}
+/// # Safety
+/// Initialized input spans and exclusive output/error follow the spectral header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_spectral_tables(
+    input: *const crate::spectral_bridge::FjSpectralInput,
+    out: *mut crate::spectral_bridge::FjSpectralTables,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked projection scopes source borrows; core is called directly.
+    unsafe { crate::spectral_bridge::tables_call(input, out, error, spectral_facade_fault) }
+}
+/// # Safety
+/// Initialized source and exclusive output/failure/error records follow the header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_spectral_white(
+    input: *const crate::spectral_bridge::FjSpectralWhiteInput,
+    out: *mut crate::spectral_bridge::FjSpectralWhite,
+    failure: *mut crate::spectral_bridge::FjSpectralWhiteFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Same scoped checked input projection; no production export is called.
+    unsafe { crate::spectral_bridge::white_call(input, out, failure, error, spectral_facade_fault) }
+}
+/// # Safety
+/// Weighted source spans and exclusive output/error follow the spectral header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_spectral_s_inverse(
+    input: *const crate::spectral_bridge::FjSpectralSInput,
+    out: *mut crate::spectral_bridge::FjSpectralInverse,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls core with checked local borrows through shared projection.
+    unsafe { crate::spectral_bridge::inverse_call(input, out, error, spectral_facade_fault) }
+}

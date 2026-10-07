@@ -850,3 +850,40 @@ set_tests_properties(Ffi.Host.InputColorPreparation PROPERTIES LABELS "host" TIM
 add_test(NAME Color.Gpu.ScannerReuse COMMAND JuicerColorPreparationTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/${JUICER_TEST_PRESET_NAME}.json" reuse-gpu)
 set_tests_properties(Color.Gpu.ScannerReuse PROPERTIES LABELS "gpu" TIMEOUT 120 RESOURCE_LOCK juicer_gpu)
+
+add_executable(JuicerSpectralPreparationTests ffi/spectral_preparation_abi_c.c ffi/spectral_preparation_test.cpp ffi/spectral_products_test.cpp ffi/spectral_allocation_probe.cpp)
+target_link_libraries(JuicerSpectralPreparationTests PRIVATE juicer_core)
+set_target_properties(JuicerSpectralPreparationTests PROPERTIES
+    LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerSpectralPreparationTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_dependencies(JuicerSpectralPreparationTests juicer_test_resources)
+foreach(spectral_case IN ITEMS tables white inverse edge)
+    if(spectral_case STREQUAL "edge")
+        set(spectral_name Ffi.Host.SpectralPreparation)
+    elseif(spectral_case STREQUAL "inverse")
+        set(spectral_name Spectral.Host.SInverse)
+    elseif(spectral_case STREQUAL "white")
+        set(spectral_name Spectral.Host.White)
+    else()
+        set(spectral_name Spectral.Host.Tables)
+    endif()
+    add_test(NAME ${spectral_name} COMMAND JuicerSpectralPreparationTests ${spectral_case}
+        "${PROJECT_SOURCE_DIR}/tests/ffi/fixtures/spectral/${JUICER_TEST_PRESET_NAME}.json"
+        "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/spectral/${spectral_case}")
+    set_tests_properties(${spectral_name} PROPERTIES LABELS "host" TIMEOUT 120)
+endforeach()
+
+foreach(spectral_case IN ITEMS products admission)
+    if(spectral_case STREQUAL "products")
+        set(spectral_name Spectral.Host.Products)
+    else()
+        set(spectral_name Spectral.Host.Admission)
+    endif()
+    add_test(NAME ${spectral_name} COMMAND JuicerSpectralPreparationTests ${spectral_case}
+        "${PROJECT_SOURCE_DIR}/tests/ffi/fixtures/spectral/${JUICER_TEST_PRESET_NAME}.json"
+        "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/spectral/${spectral_case}")
+    set_tests_properties(${spectral_name} PROPERTIES LABELS "host" TIMEOUT 300 RUN_SERIAL TRUE)
+endforeach()

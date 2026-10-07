@@ -9,3 +9,5 @@ pub mod hash;
 pub mod assets;
 pub mod color;
 pub mod illuminant;
+
+pub mod spectral;

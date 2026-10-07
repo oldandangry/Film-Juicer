@@ -171,6 +171,8 @@ namespace Spectral {
     // SpectralTables: Per-instance spectral tables (consolidated from SpectralTables.h)
     // ============================================================================
 
+    // FJ_TEMP_BRIDGE: native immutable spectral transport; remove S4.E.
+    // Rust owns table arithmetic/identity; FocusedRenderPayload owns these vectors.
     struct SpectralTables {
         // Wavelength axis
         std::vector<float> lambda;

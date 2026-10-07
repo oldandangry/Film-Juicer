@@ -179,6 +179,49 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_deleted_spectral_producers_and_white_loop(self) -> None:
+        import re
+        processing = (ROOT / "src/SpectralProcessing.h").read_text(encoding="utf-8")
+        state = (ROOT / "src/JuicerState.cpp").read_text(encoding="utf-8")
+        removed = (
+            "build_tables_from_curves_non_global", "compute_S_inverse_from_tables",
+            "hash_float_span_digest_sp", "hash_float_vector_digest_sp",
+            "hash_float_scalar_digest_sp", "hash_float_triplet_digest_sp",
+            "set_identity_3x3", "store_3x3_rowmajor", "determinant_near_zero",
+        )
+        for name in removed:
+            pattern = rf"\b(?:void|bool|std::uint64_t)\s+{name}\s*\("
+            self.assertIsNone(re.search(pattern, processing), name)
+            self.assertIsNotNone(re.search(pattern, processing + f"\ninline void {name}() {{}}"), name)
+        self.assertNotIn("struct RowMajor3x3d", processing)
+        self.assertEqual(state.count("JuicerSpectral::build_tables("), 3)
+        self.assertIn("JuicerSpectral::integrate_white(curve, label, out)", state)
+        loop = r"double\s+sum[XYZ]\s*=\s*0\.0"
+        self.assertIsNone(re.search(loop, state))
+        self.assertIsNotNone(re.search(loop, state + "\ndouble sumX = 0.0;"))
+        fixture = (ROOT / "tests/ffi/color_preparation_test.cpp").read_text(encoding="utf-8")
+        start = fixture.index("Scanner::ScannerIlluminant scanner_illuminant(")
+        end = fixture.index("std::vector<Json> helper_inputs()", start)
+        helper = fixture[start:end]
+        self.assertIn("fj_test_spectral_white", helper)
+        self.assertIsNone(re.search(loop, helper))
+
+    def test_completed_spectral_results_are_private_and_readonly(self) -> None:
+        for fixture, expected in (
+            ("spectral_default", {"E0599": ("Tables::default()", "White::default()")}),
+            ("spectral_private", {"E0451": ("Tables { ..tables }", "White { ..white }")}),
+            ("spectral_mutation", {"E0616": ("tables.white_xyz[0]", "white.xyz[0]")}),
+            ("spectral_readonly", {"E0594": ("tables.white_xyz()[0]", "white.xyz()[0]")}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in (False, True):
+                    for test_support in (False, True):
+                        status, diagnostics = self.check("film-juicer-plugin", release, test_support)
+                        self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_safe_modules_cannot_relax_unsafe_prohibition(self) -> None:
         owners = (
             ("film-juicer-core", "lib.rs"),

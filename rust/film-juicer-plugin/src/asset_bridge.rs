@@ -267,6 +267,9 @@ pub(crate) enum Failure {
     Capacity(TryReserveError),
     Gamma(PrintDensityError),
     Illuminant(film_juicer_core::illuminant::Error),
+    Spectral(film_juicer_core::spectral::WhiteError),
+    #[cfg(feature = "test-support")]
+    InjectedAllocation,
     #[cfg(any(test, feature = "test-support"))]
     Internal(&'static str),
 }
@@ -301,6 +304,9 @@ impl Failure {
                 ReadErrorKind::Capacity => FJ_STATUS_ALLOCATION_FAILURE,
                 _ => FJ_STATUS_PREPARATION_FAILURE,
             },
+            Self::Spectral(_) => FJ_STATUS_PREPARATION_FAILURE,
+            #[cfg(feature = "test-support")]
+            Self::InjectedAllocation => FJ_STATUS_ALLOCATION_FAILURE,
             Self::Gamma(PrintDensityError::InvalidGamma) => FJ_STATUS_UNSUPPORTED_INPUT,
             Self::Gamma(PrintDensityError::Capacity) => FJ_STATUS_ALLOCATION_FAILURE,
             Self::Gamma(_) => FJ_STATUS_PREPARATION_FAILURE,
@@ -331,6 +337,11 @@ impl fmt::Display for Failure {
             Self::Capacity(error) => write!(formatter, "asset boundary capacity: {error}"),
             Self::Gamma(error) => write!(formatter, "{error}"),
             Self::Illuminant(error) => write!(formatter, "{error}"),
+            Self::Spectral(error) => write!(formatter, "{error}"),
+            #[cfg(feature = "test-support")]
+            Self::InjectedAllocation => {
+                formatter.write_str("injected spectral allocation category")
+            }
         }
     }
 }
