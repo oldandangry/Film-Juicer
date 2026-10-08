@@ -590,3 +590,8 @@ captures. They preserve exact family/enclosing identities, the distinct white
 precision contracts and the film gate before inverse. See
 [the spectral guide](ffi/README.md#spectral-tables-whites-and-film-s-inverse)
 for provenance, failure, lifetime, allocation and isolation boundaries.
+
+A5 spectral exposure migration is covered by the `Exposure.Host.*` and
+`Ffi.Host.ExposurePreparation` groups. See [the FFI domain guide](ffi/README.md)
+for exact fixture provenance, the scoped pinned-erff decision, immutable earlier
+fixtures and independently qualified completed-product supplements.

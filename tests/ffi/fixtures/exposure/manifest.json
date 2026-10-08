@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "authority": "Film-Juicer A5 Rust migration contract, owner-approved 2026-10-08 pinned erff rounding and actual-value identity decision",
+  "native_parent": "4fe634bd3ba4ff4b4543e6a18846594c0d9203c0",
+  "spektrafilm_reference": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+  "libm_version": "0.2.15",
+  "expected_values": "Native reference reconstruction exact in the defined integer domain; frozen pinned Rust sensitivity coefficients/scales/hashes; complete products independently replayed through frozen native parent using those approved coefficients. Earlier fixtures unchanged; updates contain exact test/replace operations over completed products. No candidate implementation generates expectations.",
+  "shape": "192x192x81 immutable tensor borrowed; 81 positional wavelengths 380..780 step5; wavelength-major RGB sensitivity 81x3; 81 reference-white samples",
+  "numeric_contract": "Exact finite bits, signed zeros and actual-value hashes. Arithmetic NaNs compare by classification. No widened tolerances. Kernel size/reservation beyond native-defined integer domain uses checked Rust semantics and independent category tests.",
+  "records": [
+    {
+      "preset": "linux-debug",
+      "reference_cases": 68,
+      "sensitivity_cases": 544,
+      "product_attempts": 420,
+      "native_input_capture_sha256": "89c46643a1bf728c8119029026dce6f2c312a948f2147b1e16ba2b57499b07c5",
+      "frozen_producer_study_sha256": "cf2b4155f234033b4815fbc9ad269e5c1d4844707616d0984c086511ec1dac59",
+      "independent_products_replay_sha256": "c31c1f784ca70ff4728bb176ba985dbb1d59cf52cb3177e6eaba373a2642fed8",
+      "legacy_color_replay_sha256": "9f8d2aade4d353ae943b0f7141e3a99f57981ae138ff335018e9dc5d223911e7",
+      "legacy_spectral_replay_sha256": "e6d96e8f5fc242f3062333e6e96b51ab9f459e4af7f433824cf2cba9b8fcb409"
+    },
+    {
+      "preset": "linux-release",
+      "reference_cases": 68,
+      "sensitivity_cases": 544,
+      "product_attempts": 420,
+      "native_input_capture_sha256": "6da800e2b28d6b82303824c824c77b562e8822fcbaae348f5d6c164ffcecdea1",
+      "frozen_producer_study_sha256": "cf2b4155f234033b4815fbc9ad269e5c1d4844707616d0984c086511ec1dac59",
+      "independent_products_replay_sha256": "022b5c3fc637fa2a35d976258f4b57b810dda8a3fb3276d2ac7da379f814b64b",
+      "legacy_color_replay_sha256": "9f8d2aade4d353ae943b0f7141e3a99f57981ae138ff335018e9dc5d223911e7",
+      "legacy_spectral_replay_sha256": "e6d96e8f5fc242f3062333e6e96b51ab9f459e4af7f433824cf2cba9b8fcb409"
+    },
+    {
+      "preset": "windows-clang-debug",
+      "reference_cases": 68,
+      "sensitivity_cases": 544,
+      "product_attempts": 420,
+      "native_input_capture_sha256": "bbb8ebfe32b551493f8e0750ac550e64075bdbc14d27b6238ff7d5345c0108e4",
+      "frozen_producer_study_sha256": "6a780b0e7ed522e83b594c49d2e2d984329325075a8799c8010dd798d45f633c",
+      "independent_products_replay_sha256": "ad563053662aa2c1e14942c79eb8f3406fe9bdff72a2025ee2166f41b778dd7f",
+      "legacy_color_replay_sha256": "592fa0ebfbc2359a0748c671795f0f2ecbf0b89cbe80d90c5f85ff8feb73901b",
+      "legacy_spectral_replay_sha256": "9a165795cfc2249d91c3fd1795b4640ab932030f55149d9cbf393be4597be5e4"
+    },
+    {
+      "preset": "windows-clang-release",
+      "reference_cases": 68,
+      "sensitivity_cases": 544,
+      "product_attempts": 420,
+      "native_input_capture_sha256": "83d12a9542037b1bd18e1e5044e17b79b4604a90798de9038591403d2b37f74d",
+      "frozen_producer_study_sha256": "6a780b0e7ed522e83b594c49d2e2d984329325075a8799c8010dd798d45f633c",
+      "independent_products_replay_sha256": "cc2e59b3113190823f9cee93f3fc76231d77e12f5acabc2bf3897fcfbfbe45aa",
+      "legacy_color_replay_sha256": "592fa0ebfbc2359a0748c671795f0f2ecbf0b89cbe80d90c5f85ff8feb73901b",
+      "legacy_spectral_replay_sha256": "9a165795cfc2249d91c3fd1795b4640ab932030f55149d9cbf393be4597be5e4"
+    }
+  ],
+  "files": {
+    "linux-debug.json": "bba37e71e46c03b01ccd86127f6affc14fd3f06327cae3d2f7ae6c25cc2b46a8",
+    "linux-release.json": "bba37e71e46c03b01ccd86127f6affc14fd3f06327cae3d2f7ae6c25cc2b46a8",
+    "products-linux-debug.json": "0daa875b71b94d1a8bfddb5bb5d84aacadceb43eb74fc3dfda5cf944a82a7dae",
+    "products-linux-release.json": "46588fa7645aae26d143d33f1d2700a0c21c7a50a703e51273a227d73f9177eb",
+    "products-windows-clang-debug.json": "1de98d7655bc0352356833fbba1ee922a10ce9a5d2cf4fb07a4bd86687880a89",
+    "products-windows-clang-release.json": "9b99156c8926fc2a8be94b3db2921d2b1e49393a1a015194142b63abd2f4b336",
+    "updates/color/cat02-linux-debug.json": "db4aeea9a8c45796d3893b04d514fafd8c0eeb88ab6f7028d5ae46b955151089",
+    "updates/color/cat02-linux-release.json": "9cca5d90990eff35756ce582607839c5fe30848f4f55023ead865ea67efe06d3",
+    "updates/color/cat02-windows-clang-debug.json": "741379b71639a1a4da78acfc879caac5f26ebd9d2ec52357d1c37d99a641610f",
+    "updates/color/cat02-windows-clang-release.json": "abeff849d5553ef23e32b79f3e4455a08f43a1e4047ec09e2cddc791917dce21",
+    "updates/color/input-color-linux-debug.json": "70074100f688b812b61507d646eefef9fded1f1a10541553ff00b6451820f34b",
+    "updates/color/input-color-linux-release.json": "db0a46dd2b094a45f1f49e594a0d1c41a114f6a23606c2cb86c55f2001b5ecbe",
+    "updates/color/input-color-windows-clang-debug.json": "ea3a8d100f42c99ee5de439b7ad7c404f6a9031c9660b7f90232f08347e456cb",
+    "updates/color/input-color-windows-clang-release.json": "02c9aab809e913cf5cccbfad0b09b4f518c8788df5034ca4a7bf500b0efb9735",
+    "updates/color/linux-debug.json": "938d1187522e5a22d3123fa274f95df7876a2a2b096f5351f50cfced9cdaf0bd",
+    "updates/color/linux-release.json": "0e0a4e0502a56a99eddcd645a74b239b7934297f64aee617d36897b7055ff492",
+    "updates/color/windows-clang-debug.json": "f9b52551e5f27a4cb25cda7a44b09cc08247a5b34c64860fd08f572d11ca472c",
+    "updates/color/windows-clang-release.json": "51cfbed801df5a8ac5a148208472bf5b1edd534de3cabf56fe44db11ec0202c4",
+    "updates/spectral/linux-debug.json": "c7c6b8e4b9c3115d1efb32ff5625a240a12f7cb2af6d97b277440c2ef9094634",
+    "updates/spectral/linux-release.json": "b855372fa8824c109686546ae24af5deae9664c072120c18284ce1a643555470",
+    "updates/spectral/windows-clang-debug.json": "7d7862c18a4412b5ac0f607e9ebe7966ebf700b7e93ed04039d57c77e4da7c79",
+    "updates/spectral/windows-clang-release.json": "269b89a0627739fa79ec38439c89e5a8788007de01bab37f6283a08c1d37d86a",
+    "windows-clang-debug.json": "db34515280fcd7de42a93f7c239d6052a69ac9cb216b02d840d1c87ac712112b",
+    "windows-clang-release.json": "db34515280fcd7de42a93f7c239d6052a69ac9cb216b02d840d1c87ac712112b"
+  },
+  "visual_comparison": "Owner declined; no Resolve render/driver recovery acceptance claimed"
+}

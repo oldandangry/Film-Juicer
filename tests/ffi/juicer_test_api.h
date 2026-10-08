@@ -7,6 +7,21 @@
 extern "C" {
 #endif
 
+/* Direct-core exposure facade; same synchronous storage rules as production.
+ * Closed raw fault slots: 1 reference, 2 sensitivity; fault 1 unsupported,
+ * 2 panic, 3 allocation category, 4 preparation. One-based matching call count.
+ * Read the consume-once same-thread witness immediately, before another call or
+ * cleanup. The independent facade slot has its own consume-once witness.
+ * Category injection is distinct from the core's real kernel reservation test. */
+FjStatus fj_test_exposure_arm_fault(uint32_t operation, uint32_t call_index, uint32_t fault);
+void fj_test_exposure_clear_fault(void);
+uint32_t fj_test_exposure_fault_consumed(uint32_t operation, uint32_t fault);
+void fj_test_exposure_arm_facade_fault(void);
+uint32_t fj_test_exposure_facade_fault_consumed(void);
+FjStatus fj_test_reconstruction_reference_white(const FjReferenceWhiteInput* input, FjReferenceWhite* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_sensitivity(const FjSensitivityInput* input, FjSensitivity* out, FjSensitivityFailure* failure, FjErrorBuffer* error);
+FjStatus fj_test_exposure_window_sample(float wavelength, FjFloatSpan params, float* out, FjErrorBuffer* error);
+
 /* Fixed spectral direct-core facade; same synchronous storage contract as production.
  * Independent TLS fault slots: raw operations 1 tables, 2 white, 3 inverse;
  * fault 1 unsupported, 2 panic, 3 allocation category, 4 preparation category.

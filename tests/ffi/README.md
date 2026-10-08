@@ -747,3 +747,45 @@ Products run in disposable resource copies under the selected validation tree.
 These groups require no driver/device at runtime. Existing scanner GPU reuse,
 full route/scanner suites and installed-host acceptance keep their separate scope.
 Normal Release excludes fault slots, facade exports and fixture allocators.
+
+### Hanatos reference and final sensitivity
+
+`Exposure.Host.Reference`, `.Sensitivity`, `.Products`, `.Admission` and
+`Ffi.Host.ExposurePreparation` check A5 reconstruction, final film sensitivity,
+recipe Mallett scale, both C11 exports, direct-core facade, actual native callers,
+and publication/retained-owner behavior. The 68 reference cases and 544 sensitivity
+cases retain exact finite bits and classify arithmetic NaNs. Complete products
+cover 420 attempts across methods, routes, profiles, illuminants, windows, surfaces
+and UV/IR activation; surfaces and TC construction remain native A6 work.
+
+A5 uses pinned `libm::erff` 0.2.15 under the owner-approved numerical decision.
+Native and pinned-Rust preimplementation studies retain provenance in the
+exposure manifest. Reference reconstruction and ordinary f32 exp retain exact
+native-defined expectations. Final hashes describe the actual Rust coefficients.
+The small rounding differences and resulting enclosing identities are accepted
+for this family; no numerical bounds in another family are widened.
+
+Earlier color and spectral fixture bytes remain unchanged. Exact supplements in
+`fixtures/exposure/updates/` use test/replace JSON operations over completed
+products replayed independently through the frozen native parent with frozen
+approved A5 values. The tests still compare every field and reject wrong preset
+values. Leaf expectations, source controls and failure outcomes retain their
+original authority. Ordinary tests do not regenerate any fixture.
+
+The tensor is borrowed synchronously and no foreign source survives the call.
+Completed core results have private readonly fields and no Default. Checked
+kernel sizes and real fallible reservation distinguish impossible layouts from
+allocation failure; the native binding maps AllocationFailure to `std::bad_alloc`.
+Closed raw/facade fault slots prove consumption before cleanup or recovery and
+are absent from normal Release. Tests cover malformed consumed spans, ignored
+inactive spans, panic containment, cleared outputs/metadata, concurrent calls,
+source expiry, signed-zero/tiny blur, failure ordering, cache release and recovery.
+Visual A/B comparison was declined; these automated checks do not establish
+Resolve render acceptance or real driver/context-loss recovery.
+
+The existing processor and parameter-identity tests select new exact per-preset
+A5 fixtures under `tests/ofx/fixtures/exposure/`. Seven processor rows and ten
+identities come from frozen-parent GPU replay using the original pinned study
+values. Candidate GPU samples must agree bit for bit before adoption. The old
+processor/identity files and every existing pixel bound remain unchanged. This
+is automated numerical capture; no visual comparison images are generated.

@@ -22,6 +22,7 @@
 #include "ProcessRoot.h"
 #include "SpectralProcessing.h"
 #include "RustSpectralBridge.h"
+#include "RustExposureBridge.h"
 
 namespace {
 
@@ -929,7 +930,7 @@ namespace {
                 input.projectionWhiteValid && Spectral::hanatos_available()) {
                 std::string diagnostic;
                 input.reconstructedReferenceWhiteValid =
-                    Spectral::build_hanatos_reconstructed_reference_white(
+                    JuicerExposure::reference_white(
                         Spectral::gHanSpectra,
                         filmProfile->digest.hanatosSpectralGaussianBlurDefault,
                         input.projectionWhiteXYZ,

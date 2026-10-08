@@ -31,6 +31,7 @@
 #include "Cuda/JuicerCudaExecutor.h"
 #include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
+#include "exposure_fixture.h"
 #include "juicer_cuda_owner.h"
 
 static_assert(sizeof(float) == 4 && sizeof(std::array<float, 3>) == 12 && sizeof(std::array<float, 9>) == 36);
@@ -1128,8 +1129,7 @@ namespace {
         for (const auto* preset : {"linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"}) {
             const auto path = fixturePath.parent_path() / (std::string("cat02-") + preset + ".json");
             if (path != fixturePath) {
-                std::ifstream input(path);
-                otherPresets.push_back(Json::parse(input));
+                otherPresets.push_back(load_exposure_qualified_fixture(path));
             }
         }
         bool wrongPresetRejected = false;
@@ -1705,8 +1705,7 @@ namespace {
         for (const auto* preset : {"linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"}) {
             const auto path = fixturePath.parent_path() / (std::string("input-color-") + preset + ".json");
             if (path != fixturePath) {
-                std::ifstream file(path);
-                otherPresets.push_back(Json::parse(file));
+                otherPresets.push_back(load_exposure_qualified_fixture(path));
             }
         }
         bool wrongPreset = false;
@@ -1921,8 +1920,7 @@ int main(int argc, char** argv) {
         require(argc == 4, "resources, immutable fixture and group required");
         owner.create(argv[1]);
         JuicerProcess::root().ensure_bootstrap();
-        std::ifstream file(argv[2]);
-        const auto fixture = Json::parse(file);
+        const auto fixture = load_exposure_qualified_fixture(argv[2]);
         const std::string group = argv[3];
         if (group == "leaf") {
             leaf_tests(fixture);

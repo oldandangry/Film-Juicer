@@ -48,6 +48,9 @@ RETIRED_CAT16 = r"\b(?:chromatic_adapt_XYZ_CAT16|build_chromatic_adaptation_matr
 RETIRED_ILLUMINANT_MATH = r"\b(?:PlanckBlackbodySample|planck_blackbody|build_blackbody_curve|build_illuminant_curve|build_tungsten_kg3_curve|prepare_tungsten_kg3_lens_input|build_tungsten_kg3_lens_curve|TungstenKg3LensInput|build_curve_equal_energy_pinned|SpectralResampleDetail|scalar_akima_resample|akima_resample_agx|resample_pairs_akima_to_reference_axis|mean_power_normalize)\b"
 
 
+RETIRED_EXPOSURE_DEFINITIONS = r"\b(?:bool\s+(?:build_hanatos_reconstructed_reference_white|derive_final_sensitivity)|float\s+(?:camera_filter_sample|hanatos_window_sample))\s*\([^;{}]*\)\s*\{"
+
+
 HOST_MESSAGES = r"\b(?:DirFailureMessage|sendMessage)\b|OFX::"
 CONTEXT_RESET = r"\b(?:cudaDeviceReset|cuDevicePrimaryCtxReset|cuCtxReset)\s*\("
 RETIRED_SPECTRAL = r"\b(?:NpySpectraLUT|NpyFloat2D|load_npy_spectra_lut|load_npy_float2d|load_csv_triplets|load_hanatos_spectra_lut|load_arctic2026beta04_spectra_lut|load_mallett2019_basis_npy|sourceElementBytes|hanatosAssetHash|arcticAssetHash|kExpectedDecodedAssetHash|data_file_string)\b|NpyLoader\.h"
@@ -58,6 +61,23 @@ RETIRED_NOISE = r"\b(?:StbnNoisePayload|WangNoisePayload|StaticNoisePayloadSet|S
 
 
 class NativeBoundary(unittest.TestCase):
+    def test_retired_exposure_definitions_stay_deleted(self):
+        paths = [path for directory in (ROOT / "src", ROOT / "native")
+                 for path in directory.rglob("*") if path.is_file() and path.suffix.lower() in SOURCE_SUFFIXES]
+        self.assertEqual(forbidden_uses(paths, RETIRED_EXPOSURE_DEFINITIONS), [])
+        for declaration in ("bool derive_final_sensitivity() {}", "float camera_filter_sample(float x) { return x; }",
+                            "float hanatos_window_sample(float x) { return x; }",
+                            "bool build_hanatos_reconstructed_reference_white() {}"):
+            self.assertRegex(declaration, RETIRED_EXPOSURE_DEFINITIONS)
+        for survivor in ("float sample_spectrum() {}", "bool build_gaussian_kernel() {}",
+                         "float hanatos_window_sample_for_test(float x) { return x; }",
+                         "JuicerExposure::reference_white(x, y, z, out, diagnostic);"):
+            self.assertNotRegex(survivor, RETIRED_EXPOSURE_DEFINITIONS)
+        recipe = (ROOT / "src/RenderRecipe.cpp").read_text(encoding="utf-8")
+        self.assertEqual(recipe.count("std::uint64_t hash_tc_lut_recipe("), 1)
+        self.assertEqual(recipe.count("JuicerExposure::prepare_sensitivity("), 1)
+        self.assertEqual((ROOT / "src/JuicerState.cpp").read_text(encoding="utf-8").count("JuicerExposure::reference_white("), 1)
+
     def test_native_illuminant_math_is_retired(self):
         self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_ILLUMINANT_MATH), [])
     def test_executor_has_no_host_message_surface(self):

@@ -44,3 +44,9 @@ mod test_support;
     reason = "the fixed spectral edge checks foreign extents and scopes immutable borrows"
 )]
 mod spectral_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "the exposure edge checks fixed foreign spans and scopes immutable tensor borrows"
+)]
+mod exposure_bridge;

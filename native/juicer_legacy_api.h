@@ -81,6 +81,58 @@ FjStatus fj_legacy_spectral_tables(const FjSpectralInput* input, FjSpectralTable
 FjStatus fj_legacy_spectral_white(const FjSpectralWhiteInput* input, FjSpectralWhite* out, FjSpectralWhiteFailure* out_failure, FjErrorBuffer* error);
 FjStatus fj_legacy_spectral_s_inverse(const FjSpectralSInput* input, FjSpectralInverse* out, FjErrorBuffer* error);
 
+/* FJ_TEMP_BRIDGE: reference reconstruction/final sensitivity; remove S4.E.
+ * Required pointers authorize initialized aligned records. Every consumed span
+ * remains immutable/live through synchronous return. Output, failure, error record
+ * and nonempty error backing are exclusive, mutually disjoint and disjoint from
+ * all inputs. No foreign pointer is retained. Defined writable outputs clear
+ * before fallible work; padding is neither a value nor an identity input.
+ * spectra borrows the existing C-order [C=192][M=192][wavelength=81] Hanatos
+ * irradiance tensor (2,985,984 f32s), never an Arctic/TC-LUT or a copied owner.
+ * linear sensitivity is 243 wavelength-major R/G/B f32s already prepared by the
+ * profile; illuminant is 81 positional samples at 380..780 nm, 5 nm steps.
+ * method: 0 Hanatos2025, 1 Mallett2019, 2 Arctic2026beta04; flags are 0/1.
+ * Only active Hanatos window spans are consumed: params must contain 4, white
+ * is absent (NULL,0) or exactly 81. Absence fails at the late window stage.
+ * Inactive window spans are ignored, including their pointer/count values.
+ * UV/IR controls are already narrowed amplitude/center_nm/width_nm triplets;
+ * band_pass_active retains native cameraFilterOverride activation policy.
+ * Complete sensitivity/hash/recipe Mallett scale bind once into native FilmRawRecipe;
+ * reference white is invocation-local. TC/enclosing keys remain native.
+ * Malformed structure -> UnsupportedInput; computed/size failure -> PreparationFailure;
+ * real kernel reservation failure -> AllocationFailure; panic -> InternalFailure.
+ * The owner-approved A5 numerical policy selects pinned libm erff; no native math
+ * callback, scientific tensor rescan, durable mirror or fallback exists here.
+ */
+typedef struct FjReferenceWhiteInput {
+    FjFloatSpan spectra;
+    float white_xyz[3];
+    float spectral_blur;
+} FjReferenceWhiteInput;
+typedef struct FjReferenceWhite {
+    float samples[81];
+} FjReferenceWhite;
+typedef struct FjSensitivityInput {
+    FjFloatSpan linear_sensitivity_rgb;
+    FjFloatSpan reference_illuminant;
+    uint32_t method, band_pass_active, apply_window;
+    float uv[3], ir[3];
+    FjFloatSpan window_params, reconstructed_reference_white;
+} FjSensitivityInput;
+typedef struct FjSensitivity {
+    float values_rgb[81][3];
+    float mallett_green_scale;
+    uint64_t hash;
+} FjSensitivity;
+/* Diagnostic-only hash failure: 0 none, 1 nonfinite operand, 2 zero identity.
+ * Index is meaningful only for 1. Earlier metadata survives a later scale failure;
+ * a failure record never confers readiness or supplies an identity substitute. */
+typedef struct FjSensitivityFailure {
+    uint32_t hash_failure, hash_sample_index;
+} FjSensitivityFailure;
+FjStatus fj_legacy_reconstruction_reference_white(const FjReferenceWhiteInput* input, FjReferenceWhite* out, FjErrorBuffer* error);
+FjStatus fj_legacy_exposure_sensitivity(const FjSensitivityInput* input, FjSensitivity* out, FjSensitivityFailure* out_failure, FjErrorBuffer* error);
+
 /* FJ_TEMP_BRIDGE: CAT02/CAT16 host preparation; remove S4.E.
  * Inputs are initialized aligned XYZ triplets (12 bytes), read-only until
  * return and may share storage. Outputs are exclusive, aligned and disjoint

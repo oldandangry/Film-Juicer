@@ -399,6 +399,7 @@ set_tests_properties(Profile.Gpu.NativeSafety PROPERTIES
 # These objects expose only the real private asset lookups and Hanatos formula.
 add_library(juicer_asset_lookup_test_objects OBJECT ../src/RenderRecipe.cpp ../src/Scanner.cpp)
 target_link_libraries(juicer_asset_lookup_test_objects PRIVATE juicer_settings)
+target_include_directories(juicer_asset_lookup_test_objects PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ffi")
 target_compile_definitions(juicer_asset_lookup_test_objects PRIVATE JUICER_ASSET_LOOKUP_TEST_HOOK=1)
 add_executable(JuicerAssetLookupTests
     ffi/asset_lookup_test.cpp $<TARGET_OBJECTS:juicer_asset_lookup_test_objects>)
@@ -484,23 +485,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 endif()
 
-if(WIN32)
-    set(JUICER_PARAMETER_IDENTITY_FILE "parameter_rust_identities_windows.json")
-else()
-    set(JUICER_PARAMETER_IDENTITY_FILE "parameter_rust_identities_linux.json")
-endif()
-
 add_executable(JuicerProcessorReferenceProbe ofx/processor_reference_test.cpp ofx/render_assertions.cpp)
 target_link_libraries(JuicerProcessorReferenceProbe PRIVATE
     juicer_core juicer_ofxs CUDA::cuda_driver)
-if(WIN32)
-    set(JUICER_PROCESSOR_REFERENCE_FILE "processor_rust_pixels_windows.dat")
-else()
-    set(JUICER_PROCESSOR_REFERENCE_FILE "processor_rust_pixels_linux.dat")
-endif()
 target_compile_definitions(JuicerProcessorReferenceProbe PRIVATE
     JUICER_ACCEPTED_CAPTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/accepted_cuda_clean_samples.json"
-    JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/${JUICER_PROCESSOR_REFERENCE_FILE}")
+    JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/processor-${JUICER_TEST_PRESET_NAME}.dat")
 set_target_properties(JuicerProcessorReferenceProbe PROPERTIES
     LINKER_LANGUAGE CXX
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
@@ -547,7 +537,7 @@ target_compile_definitions(JuicerPreparedBoundaryProbe PRIVATE
     JUICER_CUDA_RENDER_TEST_HOOK=1
     JUICER_PREPARED_BOUNDARY_TEST=1
     JUICER_TEST_RESOURCE_DIR="${JUICER_TEST_RESOURCE_DIR}"
-    JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/${JUICER_PROCESSOR_REFERENCE_FILE}")
+    JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/processor-${JUICER_TEST_PRESET_NAME}.dat")
 set_target_properties(JuicerPreparedBoundaryProbe PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
     LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
@@ -588,7 +578,7 @@ target_link_libraries(JuicerExecutorFailureOrderProbe PRIVATE
     juicer_core juicer_ofxs CUDA::cuda_driver)
 target_compile_definitions(JuicerExecutorFailureOrderProbe PRIVATE
     JUICER_EXECUTOR_FAILURE_TEST_HOOK=1 JUICER_NOISE_TEST_HOOK=1
-    JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/${JUICER_PROCESSOR_REFERENCE_FILE}")
+    JUICER_PROCESSOR_REFERENCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/processor-${JUICER_TEST_PRESET_NAME}.dat")
 set_target_properties(JuicerExecutorFailureOrderProbe PROPERTIES
     LINKER_LANGUAGE CXX
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
@@ -661,7 +651,7 @@ target_sources(JuicerScatterHalationGpuTests PRIVATE
 target_include_directories(JuicerScatterHalationGpuTests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/scatter_halation")
 target_compile_definitions(JuicerScatterHalationGpuTests PRIVATE
-    JUICER_PARAMETER_IDENTITY_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/${JUICER_PARAMETER_IDENTITY_FILE}")
+    JUICER_PARAMETER_IDENTITY_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/parameter-identities-${JUICER_TEST_PRESET_NAME}.json")
 target_link_libraries(JuicerScatterHalationGpuTests PRIVATE
     juicer_core CUDA::cuda_driver)
 set_target_properties(JuicerScatterHalationGpuTests PROPERTIES
@@ -850,6 +840,44 @@ set_tests_properties(Ffi.Host.InputColorPreparation PROPERTIES LABELS "host" TIM
 add_test(NAME Color.Gpu.ScannerReuse COMMAND JuicerColorPreparationTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/${JUICER_TEST_PRESET_NAME}.json" reuse-gpu)
 set_tests_properties(Color.Gpu.ScannerReuse PROPERTIES LABELS "gpu" TIMEOUT 120 RESOURCE_LOCK juicer_gpu)
+
+add_executable(JuicerExposurePreparationTests ffi/exposure_abi_c.c ffi/exposure_preparation_test.cpp
+    ffi/spectral_products_test.cpp ffi/spectral_allocation_probe.cpp)
+target_link_libraries(JuicerExposurePreparationTests PRIVATE juicer_core)
+set_target_properties(JuicerExposurePreparationTests PROPERTIES
+    LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerExposurePreparationTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+foreach(exposure_case IN ITEMS reference sensitivity boundary)
+    if(exposure_case STREQUAL "boundary")
+        set(exposure_name Ffi.Host.ExposurePreparation)
+    elseif(exposure_case STREQUAL "reference")
+        set(exposure_name Exposure.Host.Reference)
+    else()
+        set(exposure_name Exposure.Host.Sensitivity)
+    endif()
+    if(exposure_case STREQUAL "reference")
+        add_test(NAME ${exposure_name} COMMAND JuicerExposurePreparationTests ${exposure_case}
+            "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/${JUICER_TEST_PRESET_NAME}.json"
+            "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/exposure/reference")
+    else()
+        add_test(NAME ${exposure_name} COMMAND JuicerExposurePreparationTests ${exposure_case}
+            "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/${JUICER_TEST_PRESET_NAME}.json")
+    endif()
+    set_tests_properties(${exposure_name} PROPERTIES LABELS "host" TIMEOUT 90)
+endforeach()
+add_dependencies(JuicerExposurePreparationTests juicer_test_resources)
+add_test(NAME Exposure.Host.Products COMMAND JuicerExposurePreparationTests products
+    "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/products-${JUICER_TEST_PRESET_NAME}.json"
+    "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/exposure/products")
+set_tests_properties(Exposure.Host.Products PROPERTIES LABELS "host" TIMEOUT 300 RUN_SERIAL TRUE)
+add_test(NAME Exposure.Host.Admission COMMAND JuicerExposurePreparationTests admission
+    "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/${JUICER_TEST_PRESET_NAME}.json"
+    "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/exposure/admission")
+set_tests_properties(Exposure.Host.Admission PROPERTIES LABELS "host" TIMEOUT 600 RUN_SERIAL TRUE)
+
 
 add_executable(JuicerSpectralPreparationTests ffi/spectral_preparation_abi_c.c ffi/spectral_preparation_test.cpp ffi/spectral_products_test.cpp ffi/spectral_allocation_probe.cpp)
 target_link_libraries(JuicerSpectralPreparationTests PRIVATE juicer_core)

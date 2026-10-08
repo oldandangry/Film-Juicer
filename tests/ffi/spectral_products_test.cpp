@@ -26,8 +26,6 @@
 #include "juicer_test_api.h"
 #include "juicer_cuda_owner.h"
 
-void fj_test_spectral_native_allocation(const nlohmann::json&);
-
 namespace {
     namespace SpectralFixtures {
         using Json = nlohmann::json;
@@ -278,6 +276,14 @@ namespace {
                 p.printPreflashExposure = route ? .1 : 0;
                 p.preflashMFilterCc = 12.5;
                 p.preflashYFilterCc = 7.25;
+                if (row.contains("variant")) {
+                    const int variant = row.at("variant");
+                    p.hanatos2025AdaptationWindow = variant == 1 || variant >= 3;
+                    p.hanatos2025AdaptationSurface = variant == 2 || variant == 4;
+                    p.cameraFilterOverride = variant >= 3;
+                    p.cameraFilterUV = {.75, 410, 8};
+                    p.cameraFilterIR = {.5, 675, 15};
+                }
                 require(controls_json(p) == row.at("controls"), "all serialized native controls preserved");
                 FocusedRenderStateBuildProduct product;
                 std::string diagnostic;
@@ -287,6 +293,17 @@ namespace {
                     auto result = complete_result(product);
                     result["exposure_tables"] = tables_result(product.payload.exposureTables);
                     result["final_sensitivity_hash"] = product.recipe.filmRaw.finalSensitivityHash;
+                    if (row.contains("variant")) {
+                        result["mallett_green_scale"] = bits(std::array{product.recipe.filmRaw.mallettGreenMidgrayScale});
+                        for (const auto& rgb : product.recipe.profileRoute.filmProfile->data.linearSensitivity)
+                            result["profile_linear"].push_back(bits(rgb));
+                        result["reference_spd"] = bits(product.payload.exposureTables.illum);
+                        result["reference_white"] = bits(product.payload.exposureTables.refIllumWhiteXYZ);
+                        result["recipe_window"] = bits(product.recipe.filmRaw.hanatos.windowParams);
+                        result["recipe_blur"] = bits(std::array{product.recipe.filmRaw.hanatos.spectralGaussianBlur});
+                        result["recipe_band_pass_uv"] = bits(product.recipe.filmRaw.cameraBandPass.uv);
+                        result["recipe_band_pass_ir"] = bits(product.recipe.filmRaw.cameraBandPass.ir);
+                    }
                     for (const auto& rgb : product.recipe.filmRaw.finalSensitivity)
                         result["final_sensitivity"].push_back(bits(rgb));
                     if (route) {
@@ -325,7 +342,7 @@ namespace {
             }
             require(assets.release_cached_payloads().category == FJ_STATUS_SUCCESS, "final source release");
         }
-        require(count == 72, "complete native capture product membership");
+        require(count == (fixture.contains("product_count") ? fixture.at("product_count").get<std::size_t>() : 72u), "complete native capture product membership");
     }
     void admission() {
         auto& assets = JuicerProcess::root().assets();
@@ -470,17 +487,96 @@ namespace {
         std::printf("PASS %zu cold/current spectral fault-consumption, hold/cache/recovery witnesses\n", witnesses);
         fj_test_spectral_clear_fault();
     }
+    void exposure_admission() {
+        auto& assets = JuicerProcess::root().assets();
+        std::size_t witnesses = 0;
+        const auto attempt = [](InstanceState& state, std::uint32_t fault) {
+            try {
+                const auto result = admit_pending_render_state(state);
+                require(fault != 3 && result.status == PendingRenderAdmissionStatus::RebuildFailed && !admitted(result), "A5 failed admission disposition");
+            } catch (const std::bad_alloc&) {
+                require(fault == 3, "A5 allocation keeps memory terminal");
+            }
+        };
+        for (int route = 0; route < 4; ++route)
+            for (int method = 0; method < 3; ++method) {
+                auto controls = snapshot(static_cast<Spektrafilm::ScanRoute>(route), static_cast<Spektrafilm::RgbToRawMethod>(method));
+                controls.hanatos2025AdaptationWindow = 1;
+                auto changed = controls;
+                changed.cameraExposureCompensationEv += 1.0;
+                for (std::uint32_t op = 1; op <= 2; ++op) {
+                    if (op == 1 && method != 0)
+                        continue;
+                    for (std::uint32_t fault = 1; fault <= 4; ++fault) {
+                        InstanceState cold;
+                        pending(cold, controls);
+                        require(fj_test_exposure_arm_fault(op, 1, fault).category == FJ_STATUS_SUCCESS, "arm cold A5 fault");
+                        attempt(cold, fault);
+                        require(fj_test_exposure_fault_consumed(op, fault) == 1, "cold actual A5 consumption before recovery");
+                        require(!JuicerAtomic::load_shared_ptr(&cold.activeDirectState) && !JuicerAtomic::load_shared_ptr(&cold.activePrintState) && cold.lastHash.load() == 0, "A5 cold failure publishes nothing");
+                        InstanceState current;
+                        pending(current, controls);
+                        const auto old = admit_pending_render_state(current);
+                        require(admitted(old), "A5 initial publication");
+                        const auto values = held(old);
+                        const auto hash = current.lastHash.load(), counter = current.buildCounterNext.load();
+                        pending(current, changed);
+                        require(fj_test_exposure_arm_fault(op, 1, fault).category == FJ_STATUS_SUCCESS, "arm changed-current A5 fault");
+                        attempt(current, fault);
+                        require(fj_test_exposure_fault_consumed(op, fault) == 1, "changed-current actual A5 consumption before cleanup/recovery");
+                        if (fault == 4)
+                            require(!JuicerAtomic::load_shared_ptr(&current.activeDirectState) && !JuicerAtomic::load_shared_ptr(&current.activePrintState), "A5 ordinary false clears publication");
+                        else
+                            require(JuicerAtomic::load_shared_ptr(&current.activeDirectState) == old.directState && JuicerAtomic::load_shared_ptr(&current.activePrintState) == old.printState, "A5 exceptional failure preserves publication");
+                        require(current.lastHash.load() == hash && current.buildCounterNext.load() == counter, "A5 failed current adds no identity/counter");
+                        require(held(old) == values && assets.release_cached_payloads().category == FJ_STATUS_SUCCESS && held(old) == values, "A5 held complete owner survives failure/cache release");
+                        pending(current, changed);
+                        const auto recovered = admit_pending_render_state(current);
+                        require(admitted(recovered) && current.lastHash.load() == hash_params(changed) && current.buildCounterNext.load() == counter + 1, "A5 recovery publishes changed-current once");
+                        require(held(old) == values, "A5 old admitted arrays survive replacement");
+                        ++witnesses;
+                    }
+                }
+                // An armed reference operation must stay untouched for every skipped branch.
+                if (method != 0) {
+                    require(fj_test_exposure_arm_fault(1, 1, 1).category == FJ_STATUS_SUCCESS, "arm skipped A5 reference");
+                    FocusedRenderStateBuildProduct product;
+                    std::string diagnostic;
+                    require(route % 2 ? build_print_render_state_product(controls, product, diagnostic) : build_direct_render_state_product(controls, product, diagnostic), "non-Hanatos builder skips reference");
+                    require(fj_test_exposure_fault_consumed(1, 1) == 0, "skipped reference does not consume fault");
+                    std::vector<float> spectra(std::size_t{192} * 192u * 81u, 1);
+                    FjReferenceWhiteInput input{{spectra.data(), spectra.size()}, {1, 1, 1}, 0};
+                    FjReferenceWhite output{};
+                    std::array<char, 256> bytes{};
+                    FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+                    require(fj_legacy_reconstruction_reference_white(&input, &output, &error).category == FJ_STATUS_UNSUPPORTED_INPUT && fj_test_exposure_fault_consumed(1, 1) == 1, "next raw call consumes skipped reference witness");
+                }
+            }
+        fj_test_exposure_clear_fault();
+        std::printf("PASS %zu A5 cold/current, actual fault-consumption, memory/ordinary terminals, hold/cache/recovery witnesses\n", witnesses);
+    }
 } // namespace
-void fj_test_spectral_products(const nlohmann::json& fixture, const std::filesystem::path& resource, const std::filesystem::path& scratch, bool faults) {
+void fj_test_spectral_products(const nlohmann::json& fixture, const std::filesystem::path& resource, const std::filesystem::path& scratch, bool faults, void (*nativeAllocationCheck)(const nlohmann::json&)) {
     std::filesystem::create_directories(scratch);
     std::filesystem::copy(resource, scratch, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
     JuicerCuda::Owner owner;
     owner.create(scratch);
     JuicerProcess::root().ensure_bootstrap();
     if (faults) {
-        fj_test_spectral_native_allocation(fixture);
+        require(nativeAllocationCheck != nullptr, "spectral admission requires its owning allocation check");
+        nativeAllocationCheck(fixture);
         admission();
     } else
         products(fixture, scratch);
     require(owner.close().category == FJ_STATUS_SUCCESS, "spectral fixture owner close");
+}
+
+void fj_test_exposure_admission(const std::filesystem::path& resource, const std::filesystem::path& scratch) {
+    std::filesystem::create_directories(scratch);
+    std::filesystem::copy(resource, scratch, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+    JuicerCuda::Owner owner;
+    owner.create(scratch);
+    JuicerProcess::root().ensure_bootstrap();
+    exposure_admission();
+    require(owner.close().category == FJ_STATUS_SUCCESS, "A5 admission owner close");
 }

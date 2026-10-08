@@ -19,12 +19,12 @@ namespace JuicerIlluminant {
             }
             if (status.category == FJ_STATUS_PREPARATION_FAILURE) {
                 if (JTRACE_ENABLED(1)) {
-                    const std::string detail = "Illuminant preparation (" + std::string(label) + "): " + std::string(diagnostic.bytes.data(), diagnostic.error.length);
+                    [[maybe_unused]] const std::string detail = "Illuminant preparation (" + std::string(label) + "): " + std::string(diagnostic.bytes.data(), diagnostic.error.length);
                     JTRACE("ILLUM", detail);
                 }
                 return false;
             }
-            const std::string detail = "Illuminant preparation (" + std::string(label) + "): " + std::string(diagnostic.bytes.data(), diagnostic.error.length);
+            [[maybe_unused]] const std::string detail = "Illuminant preparation (" + std::string(label) + "): " + std::string(diagnostic.bytes.data(), diagnostic.error.length);
             JuicerCuda::Failure failure;
             JuicerCuda::set_failure(failure, status, detail);
             throw JuicerCuda::ExecutionFailure{std::move(failure)};

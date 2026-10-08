@@ -1218,6 +1218,80 @@ mod tests {
 }
 
 thread_local! { static SPECTRAL_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+thread_local! {
+    static EXPOSURE_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static EXPOSURE_FACADE_CONSUMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_exposure_arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
+    crate::exposure_bridge::arm_fault(operation, index, fault)
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_exposure_clear_fault() {
+    crate::exposure_bridge::clear_fault();
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_exposure_fault_consumed(operation: u32, fault: u32) -> u32 {
+    u32::from(crate::exposure_bridge::fault_consumed(operation, fault))
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_exposure_arm_facade_fault() {
+    EXPOSURE_FACADE_CONSUMED.set(false);
+    EXPOSURE_FACADE_FAULT.set(true);
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_exposure_facade_fault_consumed() -> u32 {
+    u32::from(EXPOSURE_FACADE_CONSUMED.replace(false))
+}
+fn exposure_facade_fault() -> Result<(), crate::asset_bridge::Failure> {
+    if EXPOSURE_FACADE_FAULT.replace(false) {
+        EXPOSURE_FACADE_CONSUMED.set(true);
+        Err(crate::asset_bridge::Failure::Internal(
+            "exposure fixture-only fault",
+        ))
+    } else {
+        Ok(())
+    }
+}
+/// # Safety
+/// Initialized tensor/input and exclusive disjoint output/error obey the header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_reconstruction_reference_white(
+    input: *const crate::exposure_bridge::FjReferenceWhiteInput,
+    out: *mut crate::exposure_bridge::FjReferenceWhite,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Shared checked projection scopes the tensor borrow; calls core directly.
+    unsafe { crate::exposure_bridge::reference_call(input, out, error, exposure_facade_fault) }
+}
+/// # Safety
+/// Required spans/output/failure/error obey the synchronous exposure contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_exposure_sensitivity(
+    input: *const crate::exposure_bridge::FjSensitivityInput,
+    out: *mut crate::exposure_bridge::FjSensitivity,
+    failure: *mut crate::exposure_bridge::FjSensitivityFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The direct-core facade shares only checked call-local projection.
+    unsafe {
+        crate::exposure_bridge::sensitivity_call(input, out, failure, error, exposure_facade_fault)
+    }
+}
+/// # Safety
+/// Initialized four-value parameters and exclusive scalar/error obey the header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_exposure_window_sample(
+    wavelength: f32,
+    params: FjFloatSpan,
+    out: *mut f32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Shared checked facade borrows parameters and calls the core leaf.
+    unsafe {
+        crate::exposure_bridge::window_call(wavelength, params, out, error, exposure_facade_fault)
+    }
+}
 #[unsafe(no_mangle)]
 extern "C" fn fj_test_spectral_arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
     crate::spectral_bridge::arm_fault(operation, index, fault)

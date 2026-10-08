@@ -23,10 +23,11 @@
 #include "ProcessRoot.h"
 #include "SpectralProcessing.h"
 #include "juicer_test_api.h"
+#include "exposure_fixture.h"
 #include "juicer_cuda_owner.h"
 
 extern "C" int fj_test_spectral_preparation_abi_c(void);
-void fj_test_spectral_products(const nlohmann::json&, const std::filesystem::path&, const std::filesystem::path&, bool);
+void fj_test_spectral_products(const nlohmann::json&, const std::filesystem::path&, const std::filesystem::path&, bool, void (*)(const nlohmann::json&));
 void fj_test_spectral_native_allocation(const nlohmann::json&);
 namespace {
     using Json = nlohmann::json;
@@ -310,8 +311,7 @@ namespace {
 int main(int argc, char** argv) {
     try {
         require(argc == 3 || argc == 5, "group, preset fixture and optional product resource/scratch required");
-        std::ifstream f(argv[2]);
-        const Json fixture = Json::parse(f);
+        const Json fixture = load_exposure_qualified_fixture(argv[2]);
         const std::string group = argv[1];
         if (group == "tables")
             tables(fixture);
@@ -322,7 +322,7 @@ int main(int argc, char** argv) {
         else if (group == "edge" && argc == 5)
             edge(fixture, argv[3]);
         else if ((group == "products" || group == "admission") && argc == 5)
-            fj_test_spectral_products(fixture, argv[3], argv[4], group == "admission");
+            fj_test_spectral_products(fixture, argv[3], argv[4], group == "admission", fj_test_spectral_native_allocation);
         else
             throw std::runtime_error("unknown spectral group");
         std::puts("PASS spectral frozen native values/contract");

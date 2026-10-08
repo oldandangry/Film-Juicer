@@ -241,6 +241,28 @@ class RustBoundaryTests(unittest.TestCase):
                 finally:
                     self.doCleanups()
 
+    def test_completed_exposure_results_are_private_and_readonly(self) -> None:
+        for fixture, expected in (
+            ("exposure_default", {"E0599": ("Sensitivity::default()", "ReferenceWhite::default()")}),
+            ("exposure_private", {"E0451": ("Sensitivity { ..sensitivity }", "ReferenceWhite { ..white }")}),
+            ("exposure_mutation", {"E0616": ("sensitivity.values_rgb[0][0]", "white.samples[0]")}),
+            ("exposure_readonly", {"E0594": ("sensitivity.values_rgb()[0][0]", "white.samples()[0]")}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in (False, True):
+                    for test_support in (False, True):
+                        status, diagnostics = self.check("film-juicer-plugin", release, test_support)
+                        self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
+    def test_completed_exposure_results_do_not_retain_sources(self) -> None:
+        self.attach("film-juicer-plugin/src/lib.rs", "exposure_borrow")
+        for release in (False, True):
+            status, diagnostics = self.check("film-juicer-plugin", release)
+            self.assertEqual(status, 0, diagnostics)
+
 
 if __name__ == "__main__":
     unittest.main()

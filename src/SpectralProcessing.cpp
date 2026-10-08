@@ -66,6 +66,8 @@ namespace Spectral {
             float centerM = 0.0f;
         };
 
+        // A6 film-TC construction still owns these native sampling/Gaussian helpers.
+        // Its cutover removes their final consumers, no later than S4.E.
         int gaussian_reflect_index(int index, int size) {
             if (size <= 1) {
                 return 0;
@@ -313,71 +315,6 @@ namespace Spectral {
         }
 
     } // namespace
-
-    bool build_hanatos_reconstructed_reference_white(
-        const ReconstructionLut& spectra,
-        float spectralGaussianBlur,
-        const std::array<float, 3>& referenceWhiteXYZ,
-        std::array<float, kNumSamples>& out,
-        std::string& diagnostic) {
-        diagnostic.clear();
-        out = {};
-        if (!std::isfinite(spectralGaussianBlur) ||
-            spectralGaussianBlur < 0.0f) {
-            diagnostic =
-                "MalformedRequiredResource component=hanatos_window requirement=finite_blur";
-            return false;
-        }
-        float tcC = 0.0f;
-        float tcM = 0.0f;
-        if (!projected_white_to_tc(referenceWhiteXYZ, tcC, tcM)) {
-            diagnostic =
-                "MalformedRequiredResource component=hanatos_window requirement=finite_reference_white";
-            return false;
-        }
-
-        std::array<float, kNumSamples> sampled{};
-        for (int sample = 0; sample < kNumSamples; ++sample) {
-            const float value =
-                sample_spectrum(spectra.data, {tcC, tcM}, sample);
-            if (!std::isfinite(value)) {
-                diagnostic =
-                    "MalformedRequiredResource component=hanatos_window requirement=finite_reconstructed_reference_white";
-                return false;
-            }
-            sampled[static_cast<std::size_t>(sample)] = value;
-        }
-        if (!(spectralGaussianBlur > 0.0f)) {
-            out = sampled;
-            return true;
-        }
-
-        std::vector<float> kernel;
-        if (!build_gaussian_kernel(spectralGaussianBlur, kernel)) {
-            diagnostic =
-                "MalformedRequiredResource component=hanatos_window requirement=finite_blur_kernel";
-            return false;
-        }
-        const int radius = static_cast<int>(kernel.size() / 2u);
-        for (int sample = 0; sample < kNumSamples; ++sample) {
-            float value = 0.0f;
-            for (std::size_t kernelIndex = 0; kernelIndex < kernel.size(); ++kernelIndex) {
-                const int offset = static_cast<int>(kernelIndex) - radius;
-                const int reflected = gaussian_reflect_index(
-                    sample + offset,
-                    kNumSamples);
-                value += kernel[kernelIndex] *
-                         sampled[static_cast<std::size_t>(reflected)];
-            }
-            if (!std::isfinite(value)) {
-                diagnostic =
-                    "MalformedRequiredResource component=hanatos_window requirement=finite_reconstructed_reference_white";
-                return false;
-            }
-            out[static_cast<std::size_t>(sample)] = value;
-        }
-        return true;
-    }
 
     bool build_film_tc_lut(
         const ::FilmRawRecipe& recipe,

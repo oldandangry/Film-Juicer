@@ -1,0 +1,62 @@
+{
+  "direct-exposure-small/A": {
+    "filmRaw": 2241641424517695221,
+    "fixedGlareSeed": 0,
+    "printSeedInput": 0,
+    "recipe": 12005909884467822756
+  },
+  "direct-exposure-small/B": {
+    "filmRaw": 6967833707711994185,
+    "fixedGlareSeed": 0,
+    "printSeedInput": 0,
+    "recipe": 2979222914564911373
+  },
+  "direct-exposure-zero/A": {
+    "filmRaw": 4086346315580443484,
+    "fixedGlareSeed": 0,
+    "printSeedInput": 0,
+    "recipe": 10068350489117958275
+  },
+  "direct-exposure-zero/B": {
+    "filmRaw": 15362957584117401564,
+    "fixedGlareSeed": 0,
+    "printSeedInput": 0,
+    "recipe": 14545732224237345196
+  },
+  "print-exposure-small/A": {
+    "filmRaw": 2241641424517695221,
+    "fixedGlareSeed": 13712722538114687048,
+    "printSeedInput": 11885475444971040948,
+    "recipe": 1608765129718880316
+  },
+  "print-exposure-small/B": {
+    "filmRaw": 6967833707711994185,
+    "fixedGlareSeed": 14488068020747695263,
+    "printSeedInput": 12703933815776459660,
+    "recipe": 14182209927975944219
+  },
+  "print-exposure-zero/A": {
+    "filmRaw": 4086346315580443484,
+    "fixedGlareSeed": 7058193931300668211,
+    "printSeedInput": 888014795715445951,
+    "recipe": 9120374876209586113
+  },
+  "print-exposure-zero/B": {
+    "filmRaw": 15362957584117401564,
+    "fixedGlareSeed": 6902620810518016326,
+    "printSeedInput": 17186610848093856352,
+    "recipe": 175190342601204763
+  },
+  "print-medium-exposure-small/A": {
+    "filmRaw": 4086346315580443484,
+    "fixedGlareSeed": 7058193931300668211,
+    "printSeedInput": 888014795715445951,
+    "recipe": 9120374876209586113
+  },
+  "print-medium-exposure-small/B": {
+    "filmRaw": 4086346315580443484,
+    "fixedGlareSeed": 6306376789910961450,
+    "printSeedInput": 13060378706405228121,
+    "recipe": 9120641815752589120
+  }
+}

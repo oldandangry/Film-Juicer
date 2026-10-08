@@ -77,3 +77,7 @@ third_party/ofxs/OpenFX-1.4/include/ofxImageEffect.h -whitespace
 third_party/ofxs/Support/LICENSE -whitespace
 third_party/ofxs/Support/Library/ofxsCore.cpp -whitespace
 third_party/ofxs/Support/include/ofxsInteract.h -whitespace
+
+# Preserve reviewed bytes of A5 numerical and GPU replay fixtures.
+tests/ffi/fixtures/exposure/** -text whitespace=cr-at-eol
+tests/ofx/fixtures/exposure/** -text whitespace=cr-at-eol
