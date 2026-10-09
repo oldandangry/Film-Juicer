@@ -3,8 +3,20 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <utility>
 
 #include <nlohmann/json.hpp>
+
+inline nlohmann::json load_exposure_product_fixture(const std::filesystem::path& path) {
+    std::ifstream source(path);
+    auto fixture = nlohmann::json::parse(source);
+    std::ifstream values(path.parent_path() / "product-values.json");
+    auto records = nlohmann::json::parse(values);
+    if (records.at("schema_version") != 1)
+        throw std::runtime_error("unsupported A5 product fixture schema");
+    fixture["expected_records"] = std::move(records.at("expected_records"));
+    return fixture;
+}
 
 // Earlier slice fixtures retain their bytes. A5 independently replayed native
 // products supply exact test/replace operations for the approved erff decision.

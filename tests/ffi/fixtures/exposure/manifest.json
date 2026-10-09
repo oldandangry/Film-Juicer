@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "authority": "Film-Juicer A5 Rust migration contract, owner-approved 2026-10-08 pinned erff rounding and actual-value identity decision",
   "native_parent": "4fe634bd3ba4ff4b4543e6a18846594c0d9203c0",
   "spektrafilm_reference": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
@@ -54,12 +54,10 @@
     }
   ],
   "files": {
-    "linux-debug.json": "bba37e71e46c03b01ccd86127f6affc14fd3f06327cae3d2f7ae6c25cc2b46a8",
-    "linux-release.json": "bba37e71e46c03b01ccd86127f6affc14fd3f06327cae3d2f7ae6c25cc2b46a8",
-    "products-linux-debug.json": "0daa875b71b94d1a8bfddb5bb5d84aacadceb43eb74fc3dfda5cf944a82a7dae",
-    "products-linux-release.json": "46588fa7645aae26d143d33f1d2700a0c21c7a50a703e51273a227d73f9177eb",
-    "products-windows-clang-debug.json": "1de98d7655bc0352356833fbba1ee922a10ce9a5d2cf4fb07a4bd86687880a89",
-    "products-windows-clang-release.json": "9b99156c8926fc2a8be94b3db2921d2b1e49393a1a015194142b63abd2f4b336",
+    "products-linux-debug.json": "23d8b2451cdef77554f13cfd8515f505ab408b9e3ee283fbb390d8e9ba24800e",
+    "products-linux-release.json": "7d3a831c70042a45c59b20f9dd525771013db074a91bc3f79dee1aa7c6a4433f",
+    "products-windows-clang-debug.json": "fa7ba240ecf5600aeb6189f050798fe8f560af020113e7aac799fdd5ec4ffc3f",
+    "products-windows-clang-release.json": "c6045782fccdfba3e231f8a44b62f122e34935ffe17ec74aa6821813e0b7d741",
     "updates/color/cat02-linux-debug.json": "db4aeea9a8c45796d3893b04d514fafd8c0eeb88ab6f7028d5ae46b955151089",
     "updates/color/cat02-linux-release.json": "9cca5d90990eff35756ce582607839c5fe30848f4f55023ead865ea67efe06d3",
     "updates/color/cat02-windows-clang-debug.json": "741379b71639a1a4da78acfc879caac5f26ebd9d2ec52357d1c37d99a641610f",
@@ -76,8 +74,23 @@
     "updates/spectral/linux-release.json": "b855372fa8824c109686546ae24af5deae9664c072120c18284ce1a643555470",
     "updates/spectral/windows-clang-debug.json": "7d7862c18a4412b5ac0f607e9ebe7966ebf700b7e93ed04039d57c77e4da7c79",
     "updates/spectral/windows-clang-release.json": "269b89a0627739fa79ec38439c89e5a8788007de01bab37f6283a08c1d37d86a",
-    "windows-clang-debug.json": "db34515280fcd7de42a93f7c239d6052a69ac9cb216b02d840d1c87ac712112b",
-    "windows-clang-release.json": "db34515280fcd7de42a93f7c239d6052a69ac9cb216b02d840d1c87ac712112b"
+    "numerical.json": "a579a46ba427f7cbedb0e8e661a3144bd700fd5fd27e93550d81caffd2a8c99a",
+    "product-values.json": "c75dbffed70160c384580e1450f29c697e2071e8396f2ac19f3d068f4c1eb548"
   },
-  "visual_comparison": "Owner declined; no Resolve render/driver recovery acceptance claimed"
+  "visual_comparison": "Owner declined; no Resolve render/driver recovery acceptance claimed",
+  "format_migration": {
+    "source_commit": "b6519cc35a0a3d9104b29f664653b4406442afef",
+    "source_manifest_sha256": "be8cd3889e3eeb2fc2a2048a15f71604e3fc81dc24741e66a2bcc1b69e283ba0",
+    "source_files": {
+      "linux-debug.json": "bba37e71e46c03b01ccd86127f6affc14fd3f06327cae3d2f7ae6c25cc2b46a8",
+      "products-linux-debug.json": "0daa875b71b94d1a8bfddb5bb5d84aacadceb43eb74fc3dfda5cf944a82a7dae",
+      "linux-release.json": "bba37e71e46c03b01ccd86127f6affc14fd3f06327cae3d2f7ae6c25cc2b46a8",
+      "products-linux-release.json": "46588fa7645aae26d143d33f1d2700a0c21c7a50a703e51273a227d73f9177eb",
+      "windows-clang-debug.json": "db34515280fcd7de42a93f7c239d6052a69ac9cb216b02d840d1c87ac712112b",
+      "products-windows-clang-debug.json": "1de98d7655bc0352356833fbba1ee922a10ce9a5d2cf4fb07a4bd86687880a89",
+      "windows-clang-release.json": "db34515280fcd7de42a93f7c239d6052a69ac9cb216b02d840d1c87ac712112b",
+      "products-windows-clang-release.json": "9b99156c8926fc2a8be94b3db2921d2b1e49393a1a015194142b63abd2f4b336"
+    },
+    "verification": "All four public numerical consumer projections identical; every expanded complete-product document equals its source. All cases, asserted expected bits, hashes, reference/product diagnostics and controls retained. Unconsumed intermediate trace/diagnostic fields remain in original captures and the source revision."
+  }
 }

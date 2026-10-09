@@ -758,6 +758,30 @@ cases retain exact finite bits and classify arithmetic NaNs. Complete products
 cover 420 attempts across methods, routes, profiles, illuminants, windows, surfaces
 and UV/IR activation; surfaces and TC construction remain native A6 work.
 
+The four numerical cohorts share `fixtures/exposure/numerical.json`; only public
+consumer inputs and expectations are stored there. Intermediate native and
+pinned-candidate traces remain in the original capture evidence. Complete-product
+cases keep their preset-specific controls, failures and membership; successful
+rows reference readonly records in `product-values.json`. Every completed field
+is still compared. Admission tests require no numerical fixture and do not load
+one. `Exposure.Host.FixtureFormat` checks manifest hashes, case membership,
+record indices and exact result-sharing controls including signed zero, NaN bits
+and 64-bit identities.
+
+The manifest records the accepted source revision, original fixture hashes and
+verified format migration. For explicit maintenance, prepare a candidate without
+running any mathematical producer:
+
+```sh
+python tests/ffi/compact_exposure_fixtures.py --source-ref <accepted-revision> \
+  --output-dir out/validation/<preset>/exposure-format-candidate
+```
+
+This operation requires the original per-preset format and an unused output
+directory. It proves equality of all four numerical consumer projections and
+every expanded complete-product document before writing candidates. Ordinary
+tests never run this maintenance operation or read Git/private/reference data.
+
 A5 uses pinned `libm::erff` 0.2.15 under the owner-approved numerical decision.
 Native and pinned-Rust preimplementation studies retain provenance in the
 exposure manifest. Reference reconstruction and ordinary f32 exp retain exact

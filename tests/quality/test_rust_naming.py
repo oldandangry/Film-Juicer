@@ -21,6 +21,10 @@ class RustNamingTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.cargo = os.environ["JUICER_CARGO"]
         cls.target = os.environ["JUICER_RUST_TARGET"]
+        cls.target_dir = Path(os.environ["JUICER_RUST_PROBE_DIR"]).resolve()
+        cls.profiles = {"debug": (False,), "release": (True,), "both": (False, True)}[
+            os.environ.get("JUICER_RUST_PROBE_PROFILE", "both")
+        ]
         cls.artifacts = Path(os.environ["JUICER_TEST_ARTIFACT_DIR"]).resolve()
         cls.artifacts.mkdir(parents=True, exist_ok=True)
         cls.environment = os.environ.copy()
@@ -48,7 +52,7 @@ class RustNamingTests(unittest.TestCase):
         command = [
             self.cargo, "clippy", "--locked", "--offline", "--package", package,
             "--all-targets", "--target", self.target,
-            "--target-dir", str(self.workspace / "target"), "--message-format=json",
+            "--target-dir", str(self.target_dir), "--message-format=json",
         ]
         if release:
             command.append("--release")
@@ -73,7 +77,7 @@ class RustNamingTests(unittest.TestCase):
         for package in PACKAGES:
             self.add_probe(package, "accepted")
         for package in PACKAGES:
-            for release in (False, True):
+            for release in self.profiles:
                 with self.subTest(package=package, release=release):
                     status, diagnostics = self.clippy(package, release)
                     self.assertEqual(status, 0, diagnostics)
@@ -95,7 +99,7 @@ class RustNamingTests(unittest.TestCase):
         for package in PACKAGES:
             with self.subTest(package=package):
                 self.add_probe(package, "rejected")
-                for release in (False, True):
+                for release in self.profiles:
                     with self.subTest(release=release):
                         status, diagnostics = self.clippy(package, release)
                         self.assertNotEqual(status, 0)
@@ -123,7 +127,7 @@ class RustNamingTests(unittest.TestCase):
 
     def test_narrow_foreign_boundary_exception_passes(self) -> None:
         self.add_probe("film-juicer-plugin", "boundary")
-        for release in (False, True):
+        for release in self.profiles:
             with self.subTest(release=release):
                 status, diagnostics = self.clippy("film-juicer-plugin", release)
                 self.assertEqual(status, 0, diagnostics)

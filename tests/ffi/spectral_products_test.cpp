@@ -316,8 +316,11 @@ namespace {
                         result["preflash_raw"] = bits(input.preflashRawCmy);
                         result["print_descriptors"] = {input.descriptors.hash, input.descriptors.mainIlluminant.hash, input.descriptors.preflashIlluminant.hash, input.descriptors.preflashRaw.hash, input.descriptors.balance.hash};
                     }
-                    if (result != row.at("expected")) {
-                        const auto diff = Json::diff(row.at("expected"), result);
+                    const auto& expected = fixture.contains("expected_records")
+                                               ? fixture.at("expected_records").at(row.at("expected_record").get<std::size_t>())
+                                               : row.at("expected");
+                    if (result != expected) {
+                        const auto diff = Json::diff(expected, result);
                         throw std::runtime_error("completed product first difference " + std::to_string(polarity) + "/" + std::to_string(route) + "/" + std::to_string(method) + "/" + label.get<std::string>() + ": " + diff[0].dump());
                     }
                 } else {

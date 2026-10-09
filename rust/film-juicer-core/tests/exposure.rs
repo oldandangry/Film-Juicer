@@ -10,21 +10,8 @@ fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 fn fixture() -> Value {
-    let platform = if cfg!(target_os = "windows") {
-        "windows-clang"
-    } else {
-        "linux"
-    };
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
     serde_json::from_slice(
-        &std::fs::read(repository().join(format!(
-            "tests/ffi/fixtures/exposure/{platform}-{profile}.json"
-        )))
-        .unwrap(),
+        &std::fs::read(repository().join("tests/ffi/fixtures/exposure/numerical.json")).unwrap(),
     )
     .unwrap()
 }

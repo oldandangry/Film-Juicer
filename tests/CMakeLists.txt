@@ -51,6 +51,7 @@ add_test(NAME Rust.Core
 set_tests_properties(Rust.Core PROPERTIES
     LABELS "host"
     TIMEOUT 120
+    RESOURCE_LOCK juicer_cargo
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 
 add_test(NAME Rust.Bridge
@@ -65,7 +66,7 @@ add_test(NAME Rust.Bridge
             --target-dir "${JUICER_RUST_TARGET_DIR}"
             ${JUICER_RUST_PROFILE_ARGUMENT})
 set_tests_properties(Rust.Bridge PROPERTIES
-    LABELS "host" TIMEOUT 120 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+    LABELS "host" TIMEOUT 120 RESOURCE_LOCK juicer_cargo WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 
 add_test(NAME Ffi.Host.NativeBoundary
     COMMAND "${Python3_EXECUTABLE}" -m unittest discover
@@ -305,6 +306,8 @@ add_test(NAME Quality.RustNaming
         "JUICER_CARGO=${JUICER_CARGO_EXECUTABLE}"
         "JUICER_RUST_TARGET=${JUICER_RUST_TARGET}"
         "JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/quality/rust-naming"
+        "JUICER_RUST_PROBE_DIR=${JUICER_RUST_TARGET_DIR}/quality-probes/naming"
+        "JUICER_RUST_PROBE_PROFILE=${JUICER_TEST_CONFIGURATION}"
         "PYTHONDONTWRITEBYTECODE=1"
         "${Python3_EXECUTABLE}" -m unittest discover
             -s "${CMAKE_CURRENT_SOURCE_DIR}/quality"
@@ -317,6 +320,8 @@ add_test(NAME Quality.RustBoundaries
         "JUICER_CARGO=${JUICER_CARGO_EXECUTABLE}"
         "JUICER_RUST_TARGET=${JUICER_RUST_TARGET}"
         "JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/quality/rust-boundaries"
+        "JUICER_RUST_PROBE_DIR=${JUICER_RUST_TARGET_DIR}/quality-probes/boundaries"
+        "JUICER_RUST_PROBE_PROFILE=${JUICER_TEST_CONFIGURATION}"
         "PYTHONDONTWRITEBYTECODE=1"
         "${Python3_EXECUTABLE}" -m unittest discover
             -s "${CMAKE_CURRENT_SOURCE_DIR}/quality"
@@ -860,11 +865,11 @@ foreach(exposure_case IN ITEMS reference sensitivity boundary)
     endif()
     if(exposure_case STREQUAL "reference")
         add_test(NAME ${exposure_name} COMMAND JuicerExposurePreparationTests ${exposure_case}
-            "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/${JUICER_TEST_PRESET_NAME}.json"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/numerical.json"
             "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/exposure/reference")
     else()
         add_test(NAME ${exposure_name} COMMAND JuicerExposurePreparationTests ${exposure_case}
-            "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/${JUICER_TEST_PRESET_NAME}.json")
+            "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/numerical.json")
     endif()
     set_tests_properties(${exposure_name} PROPERTIES LABELS "host" TIMEOUT 90)
 endforeach()
@@ -874,9 +879,13 @@ add_test(NAME Exposure.Host.Products COMMAND JuicerExposurePreparationTests prod
     "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/exposure/products")
 set_tests_properties(Exposure.Host.Products PROPERTIES LABELS "host" TIMEOUT 300 RUN_SERIAL TRUE)
 add_test(NAME Exposure.Host.Admission COMMAND JuicerExposurePreparationTests admission
-    "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/${JUICER_TEST_PRESET_NAME}.json"
     "${JUICER_TEST_RESOURCE_DIR}" "${JUICER_TEST_ARTIFACT_ROOT}/exposure/admission")
 set_tests_properties(Exposure.Host.Admission PROPERTIES LABELS "host" TIMEOUT 600 RUN_SERIAL TRUE)
+
+add_test(NAME Exposure.Host.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+    -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_exposure_fixtures.py -v)
+set_tests_properties(Exposure.Host.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 30
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
 
 add_executable(JuicerSpectralPreparationTests ffi/spectral_preparation_abi_c.c ffi/spectral_preparation_test.cpp ffi/spectral_products_test.cpp ffi/spectral_allocation_probe.cpp)

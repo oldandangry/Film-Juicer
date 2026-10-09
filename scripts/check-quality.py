@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -93,6 +94,7 @@ class AnalysisCommand:
     command: Sequence[str]
     directory: Path
     label: str
+    source: str = ""
 
 
 class Runner:
@@ -120,6 +122,8 @@ class Runner:
             self.index += 1
             log_path = self.log_dir / f"{self.index:02d}-{safe_label}.log"
             print("+", subprocess.list2cmdline(command))
+        start = time.perf_counter()
+        record = {"command": list(command), "directory": str(cwd or self.root), "label": label}
         try:
             completed = subprocess.run(
                 command,
@@ -134,7 +138,11 @@ class Runner:
             )
         except OSError as exc:
             log_path.write_text(f"{label}: could not start command: {exc}\n", encoding="utf-8")
+            record.update(seconds=time.perf_counter() - start, returncode=None, error=str(exc))
+            log_path.with_suffix(".command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
             raise QualityError(f"{label}: could not start command; see {log_path}") from exc
+        record.update(seconds=time.perf_counter() - start, returncode=completed.returncode)
+        log_path.with_suffix(".command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         log_path.write_text(completed.stdout, encoding="utf-8")
         if completed.stdout and display_output:
             with self.output_lock:
@@ -559,6 +567,8 @@ def check_rust(
             "JUICER_CARGO": cargo,
             "JUICER_RUST_TARGET": target,
             "JUICER_TEST_ARTIFACT_DIR": str(runner.log_dir / "rust-naming"),
+            "JUICER_RUST_PROBE_DIR": str(target_dir / "quality-probes/naming"),
+            "JUICER_RUST_PROBE_PROFILE": "both",
             "PYTHONDONTWRITEBYTECODE": "1",
         },
         label="rust-naming-enforcement",
@@ -571,6 +581,8 @@ def check_rust(
             "JUICER_CARGO": cargo,
             "JUICER_RUST_TARGET": target,
             "JUICER_TEST_ARTIFACT_DIR": str(runner.log_dir / "rust-boundaries"),
+            "JUICER_RUST_PROBE_DIR": str(target_dir / "quality-probes/boundaries"),
+            "JUICER_RUST_PROBE_PROFILE": "both",
             "PYTHONDONTWRITEBYTECODE": "1",
         },
         label="rust-boundary-enforcement",
@@ -848,17 +860,18 @@ def prepare_cuda_analysis(
         }, indent=2) + "\n", encoding="utf-8")
         commands.append(AnalysisCommand(
             command, entry.directory, f"clang-tidy-cuda-{index}-{Path(entry.path).name}",
+            entry.path,
         ))
     return commands
 
 
-def check_native(
+def prepare_native_analysis(
     root: Path,
     runner: Runner,
     arguments: argparse.Namespace,
     selected_native: Sequence[str],
     policy: SourcePolicy,
-) -> None:
+) -> list[AnalysisCommand]:
     format_candidates = (
         arguments.clang_format,
         os.environ.get("JUICER_CLANG_FORMAT"),
@@ -906,6 +919,7 @@ def check_native(
             ],
             root,
             f"clang-tidy-{index}-{PurePosixPath(translation_unit).name}",
+            translation_unit,
         ))
     cuda_entries = list(dict.fromkeys(
         entry for entry in entries
@@ -913,12 +927,25 @@ def check_native(
     ))
     if cuda_entries:
         commands.extend(prepare_cuda_analysis(root, runner, clang_tidy, cuda_entries))
-    runner.run_analysis(commands)
+    return commands
+
+
+def check_build_path(root: Path, preset: str) -> None:
+    cache = root / "out/build" / preset / "CMakeCache.txt"
+    if not cache.is_file():
+        return
+    for line in cache.read_text(encoding="utf-8").splitlines():
+        if line.startswith("CMAKE_HOME_DIRECTORY:INTERNAL="):
+            configured = Path(line.split("=", 1)[1])
+            if str(configured) != str(root):
+                raise QualityError(f"use the configured checkout path {configured}; current path {root} changes build arguments")
+            return
 
 
 def main() -> int:
     arguments = parse_arguments()
     root = Path(__file__).resolve().parent.parent
+    check_build_path(root, arguments.preset)
     policy = load_policy(root)
     selected, excluded = select_paths(root, arguments, policy)
     target = PRESET_TARGETS[arguments.preset]
@@ -972,8 +999,6 @@ def main() -> int:
         for path in selected
     )
 
-    if rust_required:
-        check_rust(root, runner, arguments, target)
     if runner_changed:
         runner.run(
             [sys.executable, "-m", "unittest", "discover", "-s", "tests/quality",
@@ -981,6 +1006,7 @@ def main() -> int:
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
             label="quality-dispatcher-tests",
         )
+    native_commands: list[AnalysisCommand] = []
     if native_required:
         native_files = [path for path in selected if is_native(path, policy)]
         if runner_changed or any(path in {".clang-format", ".clang-tidy"} for path in selected):
@@ -990,7 +1016,14 @@ def main() -> int:
         native_files = sorted(set(native_files))
         if not native_files:
             raise QualityError("native policy changed without a representative native selection")
-        check_native(root, runner, arguments, native_files, policy)
+        native_commands = prepare_native_analysis(root, runner, arguments, native_files, policy)
+        # Edited producers fail before the broader header-consumer analysis.
+        runner.run_analysis([item for item in native_commands if item.source in native_files])
+
+    if rust_required:
+        check_rust(root, runner, arguments, target)
+    if native_required:
+        runner.run_analysis([item for item in native_commands if item.source not in native_files])
 
     if not rust_required and not native_required:
         print("Documentation/configuration-only selection: diff/boundary checks and review apply.")

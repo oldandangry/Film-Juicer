@@ -108,6 +108,12 @@ ctest --preset linux-debug
 Windows Debug uses the same sequence with `windows-clang-debug`. Release uses
 `linux-release` or `windows-clang-release`.
 
+The presets use four CTest workers. GPU groups share `juicer_gpu`, the two
+product Cargo tests share `juicer_cargo`, and groups with `RUN_SERIAL` still run
+alone. Keep GPU suites from separate Windows/WSL invocations serialized on a
+shared device; CTest resource locks apply within one invocation. Override the
+worker count with `--parallel <count>` when the machine needs a smaller limit.
+
 The unfiltered CTest command runs every automated correctness group applicable
 to that platform and therefore requires a supported GPU and driver. Selection
 uses standard CTest options:
@@ -206,8 +212,9 @@ cmake --build --preset linux-debug
 `Quality.RustNaming` uses the current workspace manifests and Clippy configuration
 in temporary copies under `out/validation/<preset>/quality/rust-naming/`.
 The checked-in `quality/fixtures/rust_naming/*.rs` files are product naming-policy
-contracts, not external references. Both crates are checked in development and
-release, including test targets. Expected failures must produce the specific
+contracts, not external references. Both crates are checked in the preset's
+profile, including test targets; the complete quality dispatcher checks both
+development and release profiles. Expected failures must produce the specific
 error code and primary source span for every rejected identifier; a compiler
 setup failure is not a passing negative test. Valid names and a reasoned raw
 binding exception must compile successfully. Cargo runs offline and locked;
@@ -216,8 +223,11 @@ artifact directory after temporary workspace cleanup. Run it with
 `ctest --preset <preset> -R '^Quality.RustNaming$' --output-on-failure`, or use
 the quality dispatcher, which supplies the same tool and artifact environment.
 
-`Quality.RustBoundaries` uses one temporary workspace per run and reuses its Cargo
-cache across compiler probes. It removes that workspace on completion and keeps
+`Quality.RustBoundaries` uses one temporary workspace per run. Both compiler-probe
+groups reuse Cargo artifacts under `out/build/<preset>/cargo/quality-probes/`,
+separately from product artifacts. Cargo's fingerprints and build lock govern
+reuse; every current probe and its required diagnostics still run. No test
+outcome is cached. The groups remove temporary source workspaces on completion and keep
 logs under `out/validation/<preset>/quality/rust-boundaries/`. Run
 `ctest --preset <preset> -R '^Quality.RustBoundaries$' --output-on-failure` or the
 quality dispatcher. Cargo is offline and locked; the configured build supplies
@@ -225,7 +235,8 @@ the dependencies. Each negative fixture in `quality/fixtures/rust_boundaries/`
 must fail for its expected compiler code at its own source location, not because
 of missing tooling or an unrelated error. These are product API contracts, not
 external numerical references. Valid use runs with and without `test-support`;
-both development and release profiles are checked. The probes compile without
+CTest selects the preset's profile and complete quality gates check both
+development and release. The probes compile without
 linking or executing native CUDA calls.
 
 Add construction/lifetime probes as the corresponding real API lands. Put

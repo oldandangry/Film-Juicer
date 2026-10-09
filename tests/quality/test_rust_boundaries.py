@@ -28,6 +28,10 @@ class RustBoundaryTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.cargo = os.environ["JUICER_CARGO"]
         cls.target = os.environ["JUICER_RUST_TARGET"]
+        cls.target_dir = Path(os.environ["JUICER_RUST_PROBE_DIR"]).resolve()
+        cls.profiles = {"debug": (False,), "release": (True,), "both": (False, True)}[
+            os.environ.get("JUICER_RUST_PROBE_PROFILE", "both")
+        ]
         cls.artifacts = Path(os.environ["JUICER_TEST_ARTIFACT_DIR"]).resolve()
         cls.artifacts.mkdir(parents=True, exist_ok=True)
         directory = tempfile.TemporaryDirectory(prefix="probe-", dir=cls.artifacts)
@@ -73,7 +77,7 @@ class RustBoundaryTests(unittest.TestCase):
     def check(self, package: str, release: bool, test_support: bool = False) -> tuple[int, list[dict]]:
         arguments = [
             "check", "--locked", "--offline", "--package", package, "--all-targets",
-            "--target", self.target, "--target-dir", str(self.workspace / "target"),
+            "--target", self.target, "--target-dir", str(self.target_dir),
             "--message-format=json",
         ]
         if release:
@@ -117,7 +121,7 @@ class RustBoundaryTests(unittest.TestCase):
 
     def test_valid_profile_consumers_compile(self) -> None:
         self.attach("film-juicer-plugin/src/lib.rs", "accepted")
-        for release in (False, True):
+        for release in self.profiles:
             for test_support in (False, True):
                 with self.subTest(release=release, test_support=test_support):
                     status, diagnostics = self.check("film-juicer-plugin", release, test_support)
@@ -125,7 +129,7 @@ class RustBoundaryTests(unittest.TestCase):
 
     def test_profile_views_cannot_outlive_their_owners(self) -> None:
         self.attach("film-juicer-plugin/src/lib.rs", "borrowed_views")
-        for release in (False, True):
+        for release in self.profiles:
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assert_rejected(status, diagnostics, {
                 "E0515": ("film_owner.view()", "print_owner.view()", "spectra_owner.view()", "mallett_owner.samples()", "cmf_owner.rows()", "csv_owner.rows()", "noise_owner.view()"),
@@ -136,7 +140,7 @@ class RustBoundaryTests(unittest.TestCase):
         # The plugin is a real external consumer of the core, and a sibling of
         # asset_profile; inserting the probe inside the owner would bypass privacy.
         self.attach("film-juicer-plugin/src/lib.rs", "private_storage")
-        for release in (False, True):
+        for release in self.profiles:
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assert_rejected(status, diagnostics, {
                 "E0616": ("film.processing_defaults", "tables.interpolation_log_exposure", "film_owner.profile", "print_owner.profile", "spectra_owner.lut", "mallett_owner.basis", "cmf_owner.rows", "csv_owner.rows", "noise_owner.bundle"),
@@ -149,7 +153,7 @@ class RustBoundaryTests(unittest.TestCase):
         ):
             self.attach("film-juicer-plugin/src/lib.rs", fixture)
             try:
-                for release in (False, True):
+                for release in self.profiles:
                     status, diagnostics = self.check("film-juicer-plugin", release, True)
                     self.assert_rejected(status, diagnostics, expected)
             finally:
@@ -157,7 +161,7 @@ class RustBoundaryTests(unittest.TestCase):
 
     def test_completed_profile_construction_cannot_be_bypassed(self) -> None:
         self.attach("film-juicer-plugin/src/lib.rs", "private_construction")
-        for release in (False, True):
+        for release in self.profiles:
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assert_rejected(status, diagnostics, {
                 "E0451": ("FilmProfile { ..film }", "PrintProfile { ..print }"),
@@ -173,7 +177,7 @@ class RustBoundaryTests(unittest.TestCase):
         ):
             self.attach("film-juicer-plugin/src/lib.rs", fixture)
             try:
-                for release in (False, True):
+                for release in self.profiles:
                     status, diagnostics = self.check("film-juicer-plugin", release)
                     self.assert_rejected(status, diagnostics, expected)
             finally:
@@ -215,7 +219,7 @@ class RustBoundaryTests(unittest.TestCase):
         ):
             self.attach("film-juicer-plugin/src/lib.rs", fixture)
             try:
-                for release in (False, True):
+                for release in self.profiles:
                     for test_support in (False, True):
                         status, diagnostics = self.check("film-juicer-plugin", release, test_support)
                         self.assert_rejected(status, diagnostics, expected)
@@ -235,7 +239,7 @@ class RustBoundaryTests(unittest.TestCase):
             with self.subTest(package=package, source=source):
                 self.attach(f"{package}/src/{source}", "unsafe_override")
                 try:
-                    for release in (False, True):
+                    for release in self.profiles:
                         status, diagnostics = self.check(package, release)
                         self.assert_rejected(status, diagnostics, {"E0453": ("unsafe_code",)})
                 finally:
@@ -250,7 +254,7 @@ class RustBoundaryTests(unittest.TestCase):
         ):
             self.attach("film-juicer-plugin/src/lib.rs", fixture)
             try:
-                for release in (False, True):
+                for release in self.profiles:
                     for test_support in (False, True):
                         status, diagnostics = self.check("film-juicer-plugin", release, test_support)
                         self.assert_rejected(status, diagnostics, expected)
@@ -259,7 +263,7 @@ class RustBoundaryTests(unittest.TestCase):
 
     def test_completed_exposure_results_do_not_retain_sources(self) -> None:
         self.attach("film-juicer-plugin/src/lib.rs", "exposure_borrow")
-        for release in (False, True):
+        for release in self.profiles:
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assertEqual(status, 0, diagnostics)
 

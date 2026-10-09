@@ -28,6 +28,19 @@ SPEC.loader.exec_module(check_quality)
 
 
 class CheckQualityTests(unittest.TestCase):
+    def test_configured_checkout_path_rejects_a_different_spelling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            cache = root / "out/build/linux-debug/CMakeCache.txt"
+            check_quality.check_build_path(root, "linux-debug")
+            cache.parent.mkdir(parents=True)
+            cache.write_text(f"CMAKE_HOME_DIRECTORY:INTERNAL={root}\n", encoding="utf-8")
+            check_quality.check_build_path(root, "linux-debug")
+            other = root.parent / "different-checkout"
+            cache.write_text(f"CMAKE_HOME_DIRECTORY:INTERNAL={other}\n", encoding="utf-8")
+            with self.assertRaisesRegex(check_quality.QualityError, "configured checkout path"):
+                check_quality.check_build_path(root, "linux-debug")
+
     def test_name_status_preserves_spaces_and_rename_destination(self) -> None:
         selected, excluded = check_quality.parse_name_status(
             b"M\0native/a file.cpp\0R100\0src/old.cpp\0src/new name.cpp\0"
@@ -69,9 +82,10 @@ class CheckQualityTests(unittest.TestCase):
                 self.subTest(files=files),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", *files]),
                 patch.object(check_quality, "Runner"),
+                patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust") as rust,
-                patch.object(check_quality, "check_native") as native,
+                patch.object(check_quality, "prepare_native_analysis", return_value=[]) as native,
                 contextlib.redirect_stdout(io.StringIO()) as output,
             ):
                 self.assertEqual(check_quality.main(), 0)
@@ -98,14 +112,15 @@ class CheckQualityTests(unittest.TestCase):
                 self.subTest(files=files),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", *files]),
                 patch.object(check_quality, "Runner"),
+                patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust", side_effect=check_quality.QualityError("Rust check failed")),
-                patch.object(check_quality, "check_native") as native,
+                patch.object(check_quality, "prepare_native_analysis", return_value=[]) as native,
                 contextlib.redirect_stdout(io.StringIO()) as output,
             ):
                 with self.assertRaisesRegex(check_quality.QualityError, "Rust check failed"):
                     check_quality.main()
-                native.assert_not_called()
+                self.assertEqual(native.call_count, int("native/juicer_cuda_api.h" in files))
                 self.assertNotIn("Quality checks passed", output.getvalue())
 
     def test_policy_changes_cannot_skip_required_checks(self) -> None:
@@ -114,9 +129,10 @@ class CheckQualityTests(unittest.TestCase):
                 self.subTest(path=path),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", path]),
                 patch.object(check_quality, "Runner") as runner,
+                patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust") as rust,
-                patch.object(check_quality, "check_native"),
+                patch.object(check_quality, "prepare_native_analysis", return_value=[]),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 self.assertEqual(check_quality.main(), 0)
@@ -128,6 +144,7 @@ class CheckQualityTests(unittest.TestCase):
         with (
             patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", "CONTRIBUTING.md"]),
             patch.object(check_quality, "Runner") as runner,
+            patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             contextlib.redirect_stdout(io.StringIO()) as output,
         ):
@@ -135,6 +152,64 @@ class CheckQualityTests(unittest.TestCase):
             with self.assertRaisesRegex(check_quality.QualityError, "boundary violation"):
                 check_quality.main()
             self.assertNotIn("Quality checks passed", output.getvalue())
+
+    def test_edited_native_failure_blocks_rust_and_header_consumers(self) -> None:
+        producer = check_quality.AnalysisCommand(["tool", "producer"], Path("."), "producer", "src/Illuminants.cpp")
+        consumer = check_quality.AnalysisCommand(["tool", "consumer"], Path("."), "consumer", "src/main.cpp")
+        with (
+            patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files",
+                "src/Illuminants.cpp", "native/juicer_legacy_api.h", "rust/film-juicer-core/src/exposure.rs"]),
+            patch.object(check_quality, "Runner") as runner,
+            patch.object(check_quality, "check_build_path"),
+            patch.object(check_quality, "check_source_hygiene"),
+            patch.object(check_quality, "prepare_native_analysis", return_value=[consumer, producer]),
+            patch.object(check_quality, "check_rust") as rust,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            runner.return_value.run_analysis.side_effect = check_quality.QualityError("producer finding")
+            with self.assertRaisesRegex(check_quality.QualityError, "producer finding"):
+                check_quality.main()
+            runner.return_value.run_analysis.assert_called_once_with([producer])
+            rust.assert_not_called()
+
+    def test_success_retains_all_header_consumers_and_cuda_variants(self) -> None:
+        producer = check_quality.AnalysisCommand(["tool", "producer"], Path("."), "producer", "src/Illuminants.cpp")
+        consumers = [check_quality.AnalysisCommand(["tool", variant], Path("."), variant,
+            "src/Cuda/Film/JuicerCudaFilmPipeline.cu") for variant in ("ordinary", "test")]
+        events = []
+        with (
+            patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files",
+                "src/Illuminants.cpp", "native/juicer_legacy_api.h", "rust/film-juicer-core/src/exposure.rs"]),
+            patch.object(check_quality, "Runner") as runner,
+            patch.object(check_quality, "check_build_path"),
+            patch.object(check_quality, "check_source_hygiene"),
+            patch.object(check_quality, "prepare_native_analysis", return_value=[*consumers, producer]),
+            patch.object(check_quality, "check_rust", side_effect=lambda *args: events.append("rust")),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            runner.return_value.run_analysis.side_effect = lambda items: events.append(items)
+            self.assertEqual(check_quality.main(), 0)
+        self.assertEqual(events, [[producer], "rust", consumers])
+
+    def test_rust_probe_profiles_select_the_preset_or_complete_matrix(self) -> None:
+        for module_name in ("test_rust_naming", "test_rust_boundaries"):
+            module = __import__(module_name)
+            suite = module.RustNamingTests if module_name.endswith("naming") else module.RustBoundaryTests
+            with tempfile.TemporaryDirectory() as directory:
+                settings = {"JUICER_CARGO": "cargo", "JUICER_RUST_TARGET": "x86_64-unknown-linux-gnu",
+                    "JUICER_RUST_PROBE_DIR": directory + "/cache", "JUICER_TEST_ARTIFACT_DIR": directory + "/logs"}
+                for profile, expected in (("debug", (False,)), ("release", (True,)), ("both", (False, True))):
+                    with self.subTest(module=module_name, profile=profile), patch.dict(os.environ,
+                        {**settings, "JUICER_RUST_PROBE_PROFILE": profile}):
+                        try:
+                            suite.setUpClass()
+                            self.assertEqual(suite.profiles, expected)
+                            self.assertEqual(suite.target_dir, Path(settings["JUICER_RUST_PROBE_DIR"]).resolve())
+                        finally:
+                            suite.doClassCleanups()
+                with patch.dict(os.environ, {**settings, "JUICER_RUST_PROBE_PROFILE": "invalid"}):
+                    with self.assertRaises(KeyError):
+                        suite.setUpClass()
 
     def test_cuda_header_selects_real_c_and_cpp_consumers(self) -> None:
         root = SCRIPT_PATH.parent.parent
@@ -166,6 +241,9 @@ class CheckQualityTests(unittest.TestCase):
                     label="expected-failure",
                 )
             self.assertTrue((root / "logs/01-expected-failure.log").is_file())
+            record = json.loads((root / "logs/01-expected-failure.command.json").read_text())
+            self.assertEqual(record["returncode"], 7)
+            self.assertGreaterEqual(record["seconds"], 0)
 
     def test_member_lint_inheritance_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -477,7 +555,7 @@ class CudaQualityTests(unittest.TestCase):
              patch.object(check_quality, "compilation_entries", return_value=entries), \
              patch.object(check_quality, "prepare_cuda_analysis", side_effect=check_quality.QualityError("CUDA finding")) as cuda:
             with self.assertRaisesRegex(check_quality.QualityError, "CUDA finding"):
-                check_quality.check_native(self.root, runner, arguments, ["src/kernel.cuh"], self.policy)
+                check_quality.prepare_native_analysis(self.root, runner, arguments, ["src/kernel.cuh"], self.policy)
         cuda.assert_called_once_with(self.root, runner, "tool", entries)
         runner.run_analysis.assert_not_called()
 

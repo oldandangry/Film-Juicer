@@ -27,6 +27,8 @@
 #undef FJ_EXPOSURE_SIZE
 #undef FJ_EXPOSURE_FIELD
 
+#include "exposure_fixture.h"
+
 extern "C" int fj_test_exposure_abi_c(const FjReferenceWhiteInput*, FjReferenceWhite*, const FjSensitivityInput*, FjSensitivity*, FjSensitivityFailure*, FjErrorBuffer*);
 void fj_test_spectral_products(const nlohmann::json&, const std::filesystem::path&, const std::filesystem::path&, bool, void (*)(const nlohmann::json&));
 
@@ -331,10 +333,17 @@ namespace {
 
 int main(int argc, char** argv) {
     try {
-        require(argc == 3 || argc == 5, "exposure group/fixture, optional resource/scratch required");
-        std::ifstream file(argv[2]);
-        const auto fixture = Json::parse(file);
+        require(argc >= 2, "exposure group required");
         const std::string group = argv[1];
+        if (group == "admission") {
+            require(argc == 4, "exposure admission requires resource and scratch");
+            fj_test_exposure_admission(argv[2], argv[3]);
+            std::puts("PASS exposure admission contract");
+            return 0;
+        }
+        require(argc == 3 || argc == 5, "exposure fixture, optional resource/scratch required");
+        std::ifstream file(argv[2]);
+        const auto fixture = group == "products" ? load_exposure_product_fixture(argv[2]) : Json::parse(file);
         if (group == "reference") {
             require(argc == 5, "reference resources and scratch required");
             reference(fixture, argv[3]);
@@ -342,10 +351,7 @@ int main(int argc, char** argv) {
             sensitivity(fixture);
         else if (group == "boundary")
             boundary(fixture);
-        else if (group == "admission") {
-            require(argc == 5, "exposure admission requires resource and scratch");
-            fj_test_exposure_admission(argv[3], argv[4]);
-        } else if (group == "products") {
+        else if (group == "products") {
             require(argc == 5, "exposure products require resource and scratch");
             fj_test_spectral_products(fixture, argv[3], argv[4], false, nullptr);
         } else
