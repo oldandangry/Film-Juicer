@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 import re
@@ -12,11 +13,13 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Sequence
 
@@ -156,15 +159,25 @@ class Runner:
 
     def run_analysis(self, commands: Sequence[AnalysisCommand]) -> None:
         failures: list[str] = []
+        remaining = iter(commands)
         with ThreadPoolExecutor(max_workers=self.jobs) as executor:
-            futures = [executor.submit(
-                self.run, item.command, cwd=item.directory, label=item.label,
-            ) for item in commands]
-            for item, future in zip(commands, futures):
-                try:
-                    future.result()
-                except Exception as exc:
-                    failures.append(f"{item.label}: {exc}")
+            pending = {}
+            while True:
+                while not failures and len(pending) < self.jobs:
+                    item = next(remaining, None)
+                    if item is None:
+                        break
+                    future = executor.submit(self.run, item.command, cwd=item.directory, label=item.label)
+                    pending[future] = item
+                if not pending:
+                    break
+                finished, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    item = pending.pop(future)
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        failures.append(f"{item.label}: {exc}")
         if failures:
             raise QualityError("analysis failed:\n" + "\n".join(failures))
 
@@ -641,7 +654,8 @@ def compilation_entries(root: Path, preset: str) -> list[CompilationEntry]:
 INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s*["<]([^">]+)[">]', re.MULTILINE)
 
 
-def includes_header(root: Path, translation_unit: str, header: str) -> bool:
+def included_paths(root: Path, translation_unit: str, includes: dict[str, tuple[str, ...]]) -> set[str]:
+    """Read each file's direct includes once for this selection, including cycles."""
     pending = [translation_unit]
     visited: set[str] = set()
     while pending:
@@ -649,12 +663,15 @@ def includes_header(root: Path, translation_unit: str, header: str) -> bool:
         if current in visited:
             continue
         visited.add(current)
-        if current == header:
-            return True
+        if current in includes:
+            pending.extend(includes[current])
+            continue
         current_path = root / current
+        children: list[str] = []
         try:
             text = current_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
+            includes[current] = ()
             continue
         for include in INCLUDE_PATTERN.findall(text):
             candidates = (
@@ -671,9 +688,19 @@ def includes_header(root: Path, translation_unit: str, header: str) -> bool:
                     relative = candidate.resolve().relative_to(root).as_posix()
                 except ValueError:
                     continue
-                pending.append(relative)
+                children.append(relative)
                 break
-    return False
+        includes[current] = tuple(children)
+        pending.extend(children)
+    return visited
+
+
+def validate_translation_units(selected_native: Sequence[str], entries: Sequence[CompilationEntry], policy: SourcePolicy) -> None:
+    available = {entry.path for entry in entries}
+    missing = [path for path in selected_native
+               if PurePosixPath(path).suffix.lower() in policy.translation_extensions and path not in available]
+    if missing:
+        raise QualityError("selected translation unit is absent from the compilation database: " + ", ".join(missing))
 
 
 def tidy_translation_units(
@@ -682,21 +709,23 @@ def tidy_translation_units(
     entries: Sequence[CompilationEntry],
     policy: SourcePolicy,
 ) -> list[str]:
+    validate_translation_units(selected_native, entries, policy)
     selected: set[str] = set()
+    headers = {path for path in selected_native if PurePosixPath(path).suffix.lower() in policy.header_extensions}
+    owners: dict[str, set[str]] = {header: set() for header in headers}
+    includes: dict[str, tuple[str, ...]] = {}
+    if headers:
+        for translation_unit in sorted({entry.path for entry in entries}):
+            for header in headers & included_paths(root, translation_unit, includes):
+                owners[header].add(translation_unit)
     for path in selected_native:
         suffix = PurePosixPath(path).suffix.lower()
         if suffix in policy.translation_extensions:
-            matches = [entry for entry in entries if entry.path == path]
-            if not matches:
-                raise QualityError(f"selected translation unit is absent from the compilation database: {path}")
             selected.add(path)
         elif suffix in policy.header_extensions:
-            owners = [
-                entry.path for entry in entries if includes_header(root, entry.path, path)
-            ]
-            if not owners:
+            if not owners[path]:
                 raise QualityError(f"no consuming translation unit found for selected header: {path}")
-            selected.update(owners)
+            selected.update(owners[path])
     return sorted(selected)
 
 
@@ -872,6 +901,8 @@ def prepare_native_analysis(
     selected_native: Sequence[str],
     policy: SourcePolicy,
 ) -> list[AnalysisCommand]:
+    entries = compilation_entries(root, arguments.preset)
+    validate_translation_units(selected_native, entries, policy)
     format_candidates = (
         arguments.clang_format,
         os.environ.get("JUICER_CLANG_FORMAT"),
@@ -900,7 +931,6 @@ def prepare_native_analysis(
         label="clang-format",
     )
     runner.run([clang_tidy, "--verify-config"], label="clang-tidy-config")
-    entries = compilation_entries(root, arguments.preset)
     translation_units = tidy_translation_units(root, selected_native, entries, policy)
     if not translation_units:
         raise QualityError("native selection has no translation unit for clang-tidy")
@@ -942,15 +972,10 @@ def check_build_path(root: Path, preset: str) -> None:
             return
 
 
-def main() -> int:
-    arguments = parse_arguments()
-    root = Path(__file__).resolve().parent.parent
-    check_build_path(root, arguments.preset)
-    policy = load_policy(root)
-    selected, excluded = select_paths(root, arguments, policy)
+def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
+               selected: Sequence[str], excluded: Sequence[str], runner: Runner) -> int:
     target = PRESET_TARGETS[arguments.preset]
-    log_dir = root / "out/validation" / arguments.preset / "quality"
-    runner = Runner(root, log_dir, jobs=arguments.jobs)
+    log_dir = runner.log_dir
 
     print("Selected files:")
     for path in selected:
@@ -1029,6 +1054,46 @@ def main() -> int:
         print("Documentation/configuration-only selection: diff/boundary checks and review apply.")
     print(f"Quality checks passed; logs: {log_dir}")
     return 0
+
+
+def create_run_directory(root: Path, preset: str) -> Path:
+    runs = root / "out/validation" / preset / "quality/runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    prefix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-")
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=runs))
+
+
+def main() -> int:
+    arguments = parse_arguments()
+    root = Path(__file__).resolve().parent.parent
+    check_build_path(root, arguments.preset)
+    policy = load_policy(root)
+    selected, excluded = select_paths(root, arguments, policy)
+    log_dir = create_run_directory(root, arguments.preset)
+    runner = Runner(root, log_dir, jobs=arguments.jobs)
+    record = {
+        "command": [sys.executable, *sys.argv], "directory": str(root),
+        "preset": arguments.preset, "selected": selected,
+        "started_at": datetime.now(timezone.utc).isoformat(), "status": "running",
+        "selected_sha256": {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+                            for name in selected if (root / name).is_file()},
+    }
+    receipt = log_dir / "run.json"
+    receipt.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    print(f"Quality run: {log_dir}", flush=True)
+    start = time.perf_counter()
+    try:
+        result = run_checks(root, arguments, policy, selected, excluded, runner)
+        record["status"] = "passed"
+        return result
+    except BaseException as exc:
+        record.update(status="failed", error=str(exc))
+        raise
+    finally:
+        record.update(seconds=time.perf_counter() - start, finished_at=datetime.now(timezone.utc).isoformat())
+        record["files"] = {path.relative_to(log_dir).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                           for path in sorted(log_dir.rglob("*")) if path.is_file() and path != receipt}
+        receipt.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -28,6 +28,11 @@ SPEC.loader.exec_module(check_quality)
 
 
 class CheckQualityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.enterContext(patch.object(check_quality, "create_run_directory", return_value=Path(directory.name)))
+
     def test_configured_checkout_path_rejects_a_different_spelling(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -321,7 +326,7 @@ class ParallelAnalysisTests(unittest.TestCase):
             self.assertEqual(active, 0)
             self.assertEqual(len(list(runner.log_dir.glob("*.log"))), 4)
 
-    def test_all_findings_are_observed_before_parallel_analysis_fails(self) -> None:
+    def test_running_findings_are_observed_without_starting_queued_work(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             runner = check_quality.Runner(root, root / "logs", 2)
@@ -339,7 +344,17 @@ class ParallelAnalysisTests(unittest.TestCase):
                 runner.run_analysis(commands)
             self.assertIn("exit code 7", str(failure.exception))
             self.assertIn("exit code 9", str(failure.exception))
-            self.assertEqual(len(list(runner.log_dir.glob("*.log"))), 3)
+            self.assertEqual(len(list(runner.log_dir.glob("*.log"))), 2)
+
+    def test_serial_failure_never_starts_the_next_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = check_quality.Runner(root, root / "logs", 1)
+            commands = [check_quality.AnalysisCommand(["tool", str(i)], root, f"analysis-{i}") for i in range(4)]
+            with patch.object(runner, "run", side_effect=check_quality.QualityError("failed")) as run:
+                with self.assertRaisesRegex(check_quality.QualityError, "failed"):
+                    runner.run_analysis(commands)
+            run.assert_called_once()
 
     def test_launch_failure_is_logged_and_cannot_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -723,10 +738,85 @@ class SourceHygieneTests(unittest.TestCase):
                 self.assertIn(f"{path}:1:8:", result.stdout)
                 self.assertIn("source hygiene checks failed", result.stderr)
                 self.assertNotIn("Quality checks passed", result.stdout)
-                report = self.root / "out/validation/linux-debug/quality/source-hygiene.log"
+                reports = sorted((self.root / "out/validation/linux-debug/quality/runs").glob("*/source-hygiene.log"),
+                                 key=lambda path: path.stat().st_mtime_ns)
+                report = reports[-1]
                 self.assertIn("JUICER_BUILD_VALIDATION", report.read_text(encoding="utf-8"))
+                receipt = json.loads((report.parent / "run.json").read_text(encoding="utf-8"))
+                self.assertEqual(receipt["status"], "failed")
+                self.assertIn("source-hygiene.log", receipt["files"])
                 if selection[0] == "--base":
                     self.assertIn("src/untracked.cpp:1:8:", result.stdout)
+
+
+class SelectionAndEvidenceTests(unittest.TestCase):
+    def test_run_directories_are_unique_and_never_include_old_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = root / "out/validation/linux-debug/quality/old.log"
+            old.parent.mkdir(parents=True)
+            old.write_text("retained", encoding="utf-8")
+            first = check_quality.create_run_directory(root, "linux-debug")
+            second = check_quality.create_run_directory(root, "linux-debug")
+            self.assertNotEqual(first, second)
+            self.assertEqual(list(first.iterdir()), [])
+            self.assertEqual(list(second.iterdir()), [])
+            self.assertEqual(old.read_text(encoding="utf-8"), "retained")
+
+    def test_include_graph_preserves_cycles_local_resolution_and_all_consumers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {
+                "src/a.cpp": '#include "shared.h"\n',
+                "src/kernel.cu": '#include "shared.h"\n',
+                "src/shared.h": '#include "cycle.h"\n',
+                "src/cycle.h": '#include "shared.h"\n',
+                "tests/local/a.cpp": '#include "shared.h"\n',
+                "tests/local/shared.h": '#pragma once\n',
+            }
+            for name, content in sources.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            entries = [check_quality.CompilationEntry(name, "compiler") for name in
+                       ["src/a.cpp", "src/kernel.cu", "src/kernel.cu", "tests/local/a.cpp"]]
+            policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+            reads = []
+            original = Path.read_text
+
+            def read(path, *args, **kwargs):
+                reads.append(path)
+                return original(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", read):
+                selected = check_quality.tidy_translation_units(root, ["src/shared.h", "src/cycle.h"], entries, policy)
+            self.assertEqual(selected, ["src/a.cpp", "src/kernel.cu"])
+            self.assertEqual(len(reads), len(set(reads)))
+            # The graph is invocation-local; edits cannot leave cached reachability.
+            (root / "src/a.cpp").write_text("", encoding="utf-8")
+            self.assertEqual(check_quality.tidy_translation_units(root, ["src/shared.h"], entries, policy), ["src/kernel.cu"])
+
+    def test_missing_translation_unit_fails_before_include_or_tool_work(self) -> None:
+        root = SCRIPT_PATH.parent.parent
+        policy = check_quality.load_policy(root)
+        entries = [check_quality.CompilationEntry("src/a.cpp", "compiler")]
+        selected = ["src/ColorTransforms.h", "tests/new.cpp"]
+        with patch.object(check_quality, "included_paths") as includes:
+            with self.assertRaisesRegex(check_quality.QualityError, "tests/new.cpp"):
+                check_quality.tidy_translation_units(root, selected, entries, policy)
+            includes.assert_not_called()
+        with patch.object(check_quality, "compilation_entries", return_value=entries), \
+             patch.object(check_quality, "resolve_tool") as tools:
+            with self.assertRaisesRegex(check_quality.QualityError, "tests/new.cpp"):
+                check_quality.prepare_native_analysis(root, Mock(), argparse.Namespace(preset="linux-debug"), selected, policy)
+            tools.assert_not_called()
+
+    def test_unresolved_header_still_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+            with self.assertRaisesRegex(check_quality.QualityError, "no consuming translation unit"):
+                check_quality.tidy_translation_units(root, ["src/missing.h"], [], policy)
 
 
 if __name__ == "__main__":

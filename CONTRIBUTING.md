@@ -106,8 +106,13 @@ ctest --preset linux-debug --output-on-failure
 Use the corresponding Windows or Release preset when that is the affected
 target. `--files <paths...>` is the bounded package form; `--all-owned` is an
 explicit audit. The dispatcher writes logs only under
-`out/validation/<preset>/quality/`, leaves source unchanged, and treats missing
-tools or compiler/lint failures as incomplete work. Formatting and lints do
+`out/validation/<preset>/quality/runs/<run-id>/`, leaves source unchanged, and treats missing
+tools or compiler/lint failures as incomplete work. Each fresh directory has a
+`run.json` with source identities, command, terminal status, elapsed time and hashes
+of that invocation's evidence. Keep the printed run path in a handoff; do not copy
+the shared quality tree or use an older log as evidence of the current pass.
+Historical logs remain untouched. CI uploads the run receipts and command sidecars.
+Formatting and lints do
 not replace review of ownership, names, numerical parity, GPU lifetime, or
 installed Resolve behavior.
 
@@ -134,10 +139,16 @@ JUnit for final domain evidence instead of repeating passing focused groups.
 `--jobs` limits concurrent native and CUDA analysis commands; the default is 2
 and `--jobs 1` provides serial execution. Formatting, toolchain/CUDA preparation
 and Cargo checks remain sequential. Each analysis command retains its compilation
-arguments, working directory and separate log; all command results are observed
-before a failing batch returns. Keep GPU campaigns serialized on a shared device
+arguments, working directory and separate log. After a failure is observed, no
+additional commands are scheduled; already running commands finish and their
+results are observed before the failing batch returns. Keep GPU campaigns serialized on a shared device
 and avoid concurrent Cargo operations using the same target directory.
 
+The dispatcher first verifies that every selected translation unit exists in the
+configured compilation database. After adding test targets, refresh that preset
+before quality checks. Header selection reads each source's direct includes once
+per invocation and preserves all consumers and distinct CUDA variants. The graph
+is discarded after selection, so a subsequent edit cannot reuse stale dependencies.
 The dispatcher checks formatting/configuration and edited native translation
 units before Rust probes and the remaining header consumers. A failed producer
 batch stops the later batches; a successful run retains every consumer and CUDA

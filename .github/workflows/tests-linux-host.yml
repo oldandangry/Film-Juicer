@@ -140,6 +140,6 @@ jobs:
           name: linux-debug-quality
           path: |
             out/validation/linux-debug/quality/**/*.log
-            out/validation/linux-debug/quality/cuda-command-*.json
+            out/validation/linux-debug/quality/runs/**/*.json
             out/build/linux-debug/compile_commands.json
           if-no-files-found: warn
