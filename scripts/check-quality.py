@@ -110,6 +110,22 @@ class Runner:
         self.jobs = jobs
         self.index = 0
         self.output_lock = threading.Lock()
+        self.inputs: dict[str, str] = {}
+
+    def bind_inputs(self, paths: Sequence[Path]) -> None:
+        """Bind external/generated inputs when consumed; reject later changes."""
+        with self.output_lock:
+            for path in paths:
+                name = str(path.resolve())
+                value = file_digest(path)
+                if name in self.inputs and self.inputs[name] != value:
+                    raise QualityError(f"quality input changed during checks: {name}")
+                self.inputs[name] = value
+
+    def verify_inputs(self) -> None:
+        for name, value in self.inputs.items():
+            if file_digest(Path(name)) != value:
+                raise QualityError(f"quality input changed during checks: {name}")
 
     def run(
         self,
@@ -127,6 +143,10 @@ class Runner:
             print("+", subprocess.list2cmdline(command))
         start = time.perf_counter()
         record = {"command": list(command), "directory": str(cwd or self.root), "label": label}
+        executable = shutil.which(command[0], path=(env or os.environ).get("PATH", ""))
+        if executable:
+            self.bind_inputs([Path(executable)])
+            record["executable_sha256"] = self.inputs[str(Path(executable).resolve())]
         try:
             completed = subprocess.run(
                 command,
@@ -512,6 +532,11 @@ def check_rust(
     rustc = resolve_tool(arguments.rustc, "JUICER_RUSTC", rustc_candidates)
     environment = cargo_environment()
     environment["CLIPPY_CONF_DIR"] = str(root)
+    rustup = shutil.which("rustup", path=environment.get("PATH", ""))
+    if rustup and file_digest(Path(cargo)) == file_digest(Path(rustup)):
+        for tool in ("cargo", "rustc", "rustfmt", "cargo-clippy", "clippy-driver"):
+            resolved = runner.run([rustup, "which", tool], env=environment, label=f"resolve-{tool}").strip()
+            runner.bind_inputs([Path(resolved)])
 
     cargo_version = runner.run([cargo, "--version"], env=environment, label="cargo-version")
     rustc_version = runner.run(
@@ -539,7 +564,12 @@ def check_rust(
         label="rust-dependency-contract",
         display_output=False,
     )
-    check_dependency_contract(root, json.loads(metadata))
+    packages = json.loads(metadata)
+    check_dependency_contract(root, packages)
+    for package in packages["packages"]:
+        if package.get("source"):
+            directory = Path(package["manifest_path"]).parent
+            runner.bind_inputs([path for path in directory.rglob("*") if path.is_file()])
     target_dir = root / "out/build" / arguments.preset / "cargo"
     common = [
         cargo,
@@ -651,46 +681,90 @@ def compilation_entries(root: Path, preset: str) -> list[CompilationEntry]:
     return entries
 
 
-INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s*["<]([^">]+)[">]', re.MULTILINE)
+INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s*(["<])([^">]+)[">]', re.MULTILINE)
 
 
-def included_paths(root: Path, translation_unit: str, includes: dict[str, tuple[str, ...]]) -> set[str]:
-    """Read each file's direct includes once for this selection, including cycles."""
-    pending = [translation_unit]
+@dataclass(frozen=True)
+class IncludeSearch:
+    quoted: tuple[Path, ...]
+    ordinary: tuple[Path, ...]
+    forced: tuple[str, ...]
+
+
+def include_search(root: Path, entry: CompilationEntry) -> IncludeSearch:
+    directory = entry.directory if entry.directory.is_absolute() else root / entry.directory
+    arguments = list(entry.arguments or split_compiler_command(entry.command))
+    quoted, ordinary, system, after, forced = [], [], [], [], []
+    options = (("--include-path", ordinary), ("--system-include", system),
+               ("--pre-include", forced), ("-isystem", system), ("-iquote", quoted),
+               ("-idirafter", after), ("-include", forced), ("/external:I", system),
+               ("/FI", forced), ("/I", ordinary), ("-I", ordinary))
+    index = 1
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument.startswith("@"):
+            raise QualityError(f"expand compiler response file before header selection: {argument}")
+        for option, destination in options:
+            if argument == option:
+                index += 1
+                if index == len(arguments):
+                    raise QualityError(f"missing compiler include argument: {option}")
+                destination.append(arguments[index])
+                break
+            if argument.startswith(option) and (option in {"-I", "/I", "/FI", "/external:I"}
+                                                or argument.startswith(option + "=")):
+                destination.extend(argument[len(option):].lstrip("=").split(",")
+                                   if option.startswith("--") else [argument[len(option):].lstrip("=")])
+                break
+        index += 1
+    ordinary.extend(value for value in os.environ.get("CPATH", "").split(os.pathsep) if value)
+    system.extend(value for value in os.environ.get("INCLUDE" if os.name == "nt" else "CPLUS_INCLUDE_PATH", "").split(os.pathsep) if value)
+
+    def paths(values):
+        return tuple((directory / value).resolve() for value in values)
+
+    return IncludeSearch(paths(quoted), paths([*ordinary, *system, *after]), tuple(forced))
+
+
+def included_paths(root: Path, entry: CompilationEntry,
+                   includes: dict[str, tuple[tuple[str, str], ...]],
+                   edges: dict[tuple[str, IncludeSearch], tuple[str, ...]]) -> set[str]:
+    """Share parsed text; resolve edges separately for each ordered search context."""
+    search = include_search(root, entry)
+    pending = [entry.path]
     visited: set[str] = set()
     while pending:
         current = pending.pop()
         if current in visited:
             continue
         visited.add(current)
-        if current in includes:
-            pending.extend(includes[current])
+        key = (current, search)
+        if key in edges:
+            pending.extend(edges[key])
             continue
         current_path = root / current
         children: list[str] = []
-        try:
-            text = current_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            includes[current] = ()
-            continue
-        for include in INCLUDE_PATTERN.findall(text):
-            candidates = (
-                current_path.parent / include,
-                root / include,
-                root / "src" / include,
-                root / "native" / include,
-                root / "tests" / include,
-            )
+        if current not in includes:
+            try:
+                includes[current] = tuple(INCLUDE_PATTERN.findall(current_path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError) as exc:
+                raise QualityError(f"cannot read include input {current}: {exc}") from exc
+        directives = includes[current]
+        if current == entry.path:
+            directives += tuple(('"', name) for name in search.forced)
+        for delimiter, include in directives:
+            directories = (*((current_path.parent, *search.quoted) if delimiter == '"' else ()), *search.ordinary)
+            candidates = (directory / include for directory in directories)
             for candidate in candidates:
                 if not candidate.is_file():
                     continue
                 try:
                     relative = candidate.resolve().relative_to(root).as_posix()
                 except ValueError:
-                    continue
+                    break  # The first match shadows later project paths too.
                 children.append(relative)
                 break
-        includes[current] = tuple(children)
+        edges[key] = tuple(children)
         pending.extend(children)
     return visited
 
@@ -714,11 +788,12 @@ def tidy_translation_units(
     selected: set[str] = set()
     headers = {path for path in selected_native if PurePosixPath(path).suffix.lower() in policy.header_extensions}
     owners: dict[str, set[str]] = {header: set() for header in headers}
-    includes: dict[str, tuple[str, ...]] = {}
+    includes: dict[str, tuple[tuple[str, str], ...]] = {}
+    edges: dict[tuple[str, IncludeSearch], tuple[str, ...]] = {}
     if headers:
-        for translation_unit in sorted({entry.path for entry in entries}):
-            for header in headers & included_paths(root, translation_unit, includes):
-                owners[header].add(translation_unit)
+        for entry in entries:
+            for header in headers & included_paths(root, entry, includes, edges):
+                owners[header].add(entry.path)
     for path in selected_native:
         suffix = PurePosixPath(path).suffix.lower()
         if suffix in policy.translation_extensions:
@@ -851,6 +926,10 @@ def prepare_cuda_analysis(
     root: Path, runner: Runner, clang_tidy: str, entries: Sequence[CompilationEntry],
 ) -> list[AnalysisCommand]:
     overlay = prepare_cuda_overlay(root, runner.log_dir)
+    runner.bind_inputs([
+        overlay / "openrand/util.h",
+        overlay / "texture_fetch_functions.h",
+    ])
     qualified: dict[tuple[Path, Path], list[str]] = {}
     commands: list[AnalysisCommand] = []
     for index, entry in enumerate(entries, start=1):
@@ -935,6 +1014,12 @@ def prepare_native_analysis(
     translation_units = tidy_translation_units(root, selected_native, entries, policy)
     if not translation_units:
         raise QualityError("native selection has no translation unit for clang-tidy")
+    includes, edges = {}, {}
+    consumed = set()
+    for entry in entries:
+        if entry.path in translation_units:
+            consumed.update(included_paths(root.resolve(), entry, includes, edges))
+    runner.bind_inputs([root / path for path in sorted(consumed)])
     build_dir = root / "out/build" / arguments.preset
     commands: list[AnalysisCommand] = []
     for index, translation_unit in enumerate(translation_units, start=1):
@@ -1053,8 +1138,41 @@ def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
 
     if not rust_required and not native_required:
         print("Documentation/configuration-only selection: diff/boundary checks and review apply.")
-    print(f"Quality checks passed; logs: {log_dir}")
     return 0
+
+
+def file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+    except OSError as exc:
+        raise QualityError(f"cannot identify quality input {path}: {exc}") from exc
+    return digest.hexdigest()
+
+
+def quality_inputs(root: Path, preset: str, selected: Sequence[str], policy: SourcePolicy) -> dict:
+    """Bound the current source tree, never previous validation runs or binaries."""
+    head = run_git(root, ["rev-parse", "HEAD"]).decode().strip()
+    # HEAD binds clean tracked files; hash every dirty file and relevant untracked
+    # input. Include ignored source files: generated headers/bindings are inputs too.
+    dirty = run_git(root, ["diff", "--name-only", "--no-renames", "-z", "HEAD", "--"]).decode().split("\0")
+    others = run_git(root, ["ls-files", "--others", "--exclude-standard", "-z"]).decode().split("\0")
+    roots = [*policy.owned_prefixes, "third_party/", ".cargo/"]
+    ignored = run_git(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", *roots]).decode().split("\0")
+    names = set(selected) | set(dirty) | set(NATIVE_POLICY_FILES) | RUST_POLICY_FILES | ROOT_OWNED_FILES
+    names.update(name for name in [*others, *ignored]
+                 if name.startswith(tuple(roots)) and "__pycache__" not in Path(name).parts
+                 and not name.endswith((".pyc", ".pyo")))
+    # Hash tracked source bytes as well as Git identity to include index flags
+    # such as assume-unchanged, and to avoid relying on Git's timestamp cache.
+    names.update(run_git(root, ["ls-files", "-z", "--", *roots]).decode().split("\0"))
+    names.update(f"out/build/{preset}/{name}" for name in ("compile_commands.json", "CMakeCache.txt", "build.ninja", "CMakeFiles/rules.ninja"))
+    files = {name: file_digest(root / name) if (root / name).is_file() else None
+             for name in sorted(names) if name and not (root / name).is_dir()}
+    return {"git_head": head, "files": files,
+            "environment_sha256": hashlib.sha256(json.dumps(dict(os.environ), sort_keys=True).encode()).hexdigest()}
 
 
 def create_run_directory(root: Path, preset: str) -> Path:
@@ -1084,13 +1202,22 @@ def main() -> int:
     print(f"Quality run: {log_dir}", flush=True)
     start = time.perf_counter()
     try:
+        record["inputs"] = quality_inputs(root, arguments.preset, selected, policy)
+        receipt.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         result = run_checks(root, arguments, policy, selected, excluded, runner)
+        if result != 0:
+            raise QualityError(f"quality checks returned {result}")
+        if quality_inputs(root, arguments.preset, selected, policy) != record["inputs"]:
+            raise QualityError("quality inputs changed during checks; run cannot qualify them")
+        runner.verify_inputs()
         record["status"] = "passed"
+        print(f"Quality checks passed; logs: {log_dir}")
         return result
     except BaseException as exc:
         record.update(status="failed", error=str(exc))
         raise
     finally:
+        record["consumed_inputs"] = runner.inputs if isinstance(runner.inputs, dict) else {}
         record.update(seconds=time.perf_counter() - start, finished_at=datetime.now(timezone.utc).isoformat())
         record["files"] = {path.relative_to(log_dir).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
                            for path in sorted(log_dir.rglob("*")) if path.is_file() and path != receipt}

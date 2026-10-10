@@ -112,6 +112,11 @@ tools or compiler/lint failures as incomplete work. Each fresh directory has a
 of that invocation's evidence. Keep the printed run path in a handoff; do not copy
 the shared quality tree or use an older log as evidence of the current pass.
 Historical logs remain untouched. CI uploads the run receipts and command sidecars.
+Receipts bind the Git revision, current owned source (including untracked and
+generated inputs), policies, compilation database/build configuration and consumed
+tools, dependency sources and project headers. These identities are checked again
+before success; a changed or missing input fails qualification. Environment values
+are hashed rather than printed. This inventory excludes historical output trees.
 Formatting and lints do
 not replace review of ownership, names, numerical parity, GPU lifetime, or
 installed Resolve behavior.
@@ -146,8 +151,11 @@ and avoid concurrent Cargo operations using the same target directory.
 
 The dispatcher first verifies that every selected translation unit exists in the
 configured compilation database. After adding test targets, refresh that preset
-before quality checks. Header selection reads each source's direct includes once
-per invocation and preserves all consumers and distinct CUDA variants. The graph
+before quality checks. Header selection reads each source's literal includes once
+per invocation, then resolves them in each compilation entry's ordered include
+search paths, with separate quote/angle lookup. All conditional branches are
+considered conservatively; distinct CUDA variants are retained. Compiler response
+files must be expanded before selection. The graph
 is discarded after selection, so a subsequent edit cannot reuse stale dependencies.
 The dispatcher checks formatting/configuration and edited native translation
 units before Rust probes and the remaining header consumers. A failed producer

@@ -32,6 +32,9 @@ class CheckQualityTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.enterContext(patch.object(check_quality, "create_run_directory", return_value=Path(directory.name)))
+        # Dispatch tests mock the checks themselves; receipt stability has its
+        # own real temporary-repository witnesses below.
+        self.enterContext(patch.object(check_quality, "quality_inputs", return_value={"dispatch_test": True}))
 
     def test_configured_checkout_path_rejects_a_different_spelling(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -220,8 +223,8 @@ class CheckQualityTests(unittest.TestCase):
         root = SCRIPT_PATH.parent.parent
         policy = check_quality.load_policy(root)
         entries = [
-            check_quality.CompilationEntry("tests/ffi/cuda_abi_c.c", "cc -std=c11"),
-            check_quality.CompilationEntry("tests/ffi/cuda_abi_test.cpp", "c++ -std=c++20"),
+            check_quality.CompilationEntry("tests/ffi/cuda_abi_c.c", "cc -std=c11 -Inative"),
+            check_quality.CompilationEntry("tests/ffi/cuda_abi_test.cpp", "c++ -std=c++20 -Inative"),
         ]
         self.assertEqual(
             check_quality.tidy_translation_units(root, ["native/juicer_cuda_api.h"], entries, policy),
@@ -546,7 +549,7 @@ class CudaQualityTests(unittest.TestCase):
         self.write_source("src/kernel.cuh", '#include "shared.h"\n')
         self.write_source("src/kernel.cu", '#include "kernel.cuh"\n')
         self.write_source("src/host.cpp", '#include <shared.h>\n')
-        entries = [self.entry(), self.entry(), check_quality.CompilationEntry("src/host.cpp", "c++")]
+        entries = [self.entry(), self.entry(), check_quality.CompilationEntry("src/host.cpp", "c++ -Isrc")]
         self.assertEqual(check_quality.tidy_translation_units(
             self.root, ["src/shared.h"], entries, self.policy,
         ), ["src/host.cpp", "src/kernel.cu"])
@@ -846,6 +849,129 @@ class SelectionAndEvidenceTests(unittest.TestCase):
             policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
             with self.assertRaisesRegex(check_quality.QualityError, "no consuming translation unit"):
                 check_quality.tidy_translation_units(root, ["src/missing.h"], [], policy)
+
+    def test_include_search_contexts_preserve_order_and_quote_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for name, content in {
+                "src/a.cpp": '#include "shared.h"\n',
+                "src/b.cpp": '#include "shared.h"\n',
+                "src/shared.h": '#include <choice.h>\n',
+                "src/choice.h": "", "first/choice.h": "", "second/choice.h": "",
+            }.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            entries = [check_quality.CompilationEntry("src/a.cpp", "cc -Ifirst -Isecond"),
+                       check_quality.CompilationEntry("src/b.cpp", "cc -Isecond -Ifirst")]
+            policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+            for header, expected in (("first/choice.h", ["src/a.cpp"]), ("second/choice.h", ["src/b.cpp"])):
+                self.assertEqual(check_quality.tidy_translation_units(root, [header], entries, policy), expected)
+            with self.assertRaisesRegex(check_quality.QualityError, "no consuming"):
+                check_quality.tidy_translation_units(root, ["src/choice.h"], entries, policy)
+
+    def test_asset_lookup_hook_selects_render_recipe_consumer(self) -> None:
+        root = SCRIPT_PATH.parent.parent
+        policy = check_quality.load_policy(root)
+        entries = [check_quality.CompilationEntry(
+            "src/RenderRecipe.cpp", "c++ -DJUICER_ASSET_LOOKUP_TEST_HOOK=1 -Itests/ffi -Isrc -Inative")]
+        self.assertEqual(check_quality.tidy_translation_units(root, ["tests/ffi/juicer_test_api.h"], entries, policy),
+                         ["src/RenderRecipe.cpp"])
+
+    def test_include_search_accepts_msvc_nvcc_quote_system_and_forced_paths(self) -> None:
+        root = Path.cwd().resolve()
+        entry = check_quality.CompilationEntry("src/a.cpp", "", root,
+            ("compiler", "/I", "one space", "--include-path=two,three", "-iquote", "quoted",
+             "-isystem", "system", "/FIforced.h"))
+        with patch.dict(os.environ, {"CPATH": "", "INCLUDE": "", "CPLUS_INCLUDE_PATH": ""}):
+            search = check_quality.include_search(root, entry)
+        self.assertEqual(search.quoted, (root / "quoted",))
+        self.assertEqual(search.ordinary, tuple(root / name for name in ("one space", "two", "three", "system")))
+        self.assertEqual(search.forced, ("forced.h",))
+
+
+class QualityReceiptTests(unittest.TestCase):
+    def test_generated_cuda_inputs_must_remain_stable_until_receipt_completion(self) -> None:
+        headers = ("openrand/util.h", "texture_fetch_functions.h")
+        cases = [(None, None), *((name, action) for name in headers for action in ("modify", "delete"))]
+        for name, action in cases:
+            with self.subTest(header=name, action=action), tempfile.TemporaryDirectory() as directory:
+                log_dir = Path(directory).resolve()
+                expected = {}
+
+                def check_then_mutate(root, arguments, policy, selected, excluded, runner):
+                    # Use real preparation/binding and receipt completion; compiler
+                    # execution is outside this input-lifetime regression.
+                    check_quality.prepare_cuda_analysis(root, runner, "unused", [])
+                    overlay = runner.log_dir / "cuda-include"
+                    expected.update({str((overlay / header).resolve()): check_quality.file_digest(overlay / header)
+                                     for header in headers})
+                    if action == "modify":
+                        with (overlay / name).open("a", encoding="utf-8") as stream:
+                            stream.write("\n#error generated input changed after analysis\n")
+                    elif action == "delete":
+                        (overlay / name).unlink()
+                    return 0
+
+                with (patch.object(sys, "argv", ["quality", "--preset", "linux-debug", "--files", "scripts/check-quality.py"]),
+                      patch.object(check_quality, "check_build_path"),
+                      patch.object(check_quality, "create_run_directory", return_value=log_dir),
+                      patch.object(check_quality, "quality_inputs", return_value={"unchanged_source_inventory": True}),
+                      patch.object(check_quality, "run_checks", side_effect=check_then_mutate),
+                      contextlib.redirect_stdout(io.StringIO()) as output):
+                    if action is None:
+                        self.assertEqual(check_quality.main(), 0)
+                    else:
+                        with self.assertRaisesRegex(check_quality.QualityError, "quality input"):
+                            check_quality.main()
+                record = json.loads((log_dir / "run.json").read_text(encoding="utf-8"))
+                self.assertEqual(record["consumed_inputs"], expected)
+                self.assertEqual(record["status"], "passed" if action is None else "failed")
+                self.assertEqual("Quality checks passed" in output.getvalue(), action is None)
+
+    def test_source_and_configuration_mutations_cannot_pass(self) -> None:
+        for changed in ("scripts/check-quality.py", "src/transitive.h", "rust/core/src/lib.rs",
+                        "out/build/linux-debug/compile_commands.json", "src/new-generated.h"):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                files = ["scripts/check-quality.py", "src/transitive.h", "rust/core/src/lib.rs",
+                         "out/build/linux-debug/compile_commands.json"]
+                for name in files:
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("original", encoding="utf-8")
+                for command in (["git", "init", "-q"], ["git", "add", "scripts", "src", "rust"],
+                                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                                 "-c", "commit.gpgsign=false", "commit", "-qm", "baseline"]):
+                    subprocess.run(command, cwd=root, check=True, capture_output=True)
+                policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+                def mutate(*args):
+                    (root / changed).write_text("changed", encoding="utf-8")
+                    return 0
+                with (patch.object(check_quality, "__file__", str(root / "scripts/check-quality.py")),
+                      patch.object(sys, "argv", ["check-quality", "--preset", "linux-debug", "--files", "scripts/check-quality.py"]),
+                      patch.object(check_quality, "load_policy", return_value=policy),
+                      patch.object(check_quality, "run_checks", side_effect=mutate),
+                      contextlib.redirect_stdout(io.StringIO()) as output):
+                    with self.assertRaisesRegex(check_quality.QualityError, "inputs changed"):
+                        check_quality.main()
+                receipts = list((root / "out/validation").rglob("run.json"))
+                self.assertEqual(len(receipts), 1)
+                record = json.loads(receipts[0].read_text())
+                self.assertEqual(record["status"], "failed")
+                self.assertIn("git_head", record["inputs"])
+                self.assertNotIn("Quality checks passed", output.getvalue())
+
+    def test_consumed_external_input_mutation_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tool = root / "tool"
+            tool.write_bytes(b"original")
+            runner = check_quality.Runner(root, root / "logs")
+            runner.bind_inputs([tool])
+            tool.write_bytes(b"changed")
+            with self.assertRaisesRegex(check_quality.QualityError, "input changed"):
+                runner.verify_inputs()
 
 
 if __name__ == "__main__":
