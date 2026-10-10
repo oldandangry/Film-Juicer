@@ -15,7 +15,7 @@
 #include "Cuda/JuicerCudaHostViews.h"
 #include "FocusedRenderPayload.h"
 #include "ResourceAssetLibrary.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 
 namespace {
 
@@ -573,6 +573,9 @@ FjRenderOutcome JuicerCuda::project_and_render(
                                   meter.hash};
         const FjCudaContext context{snapshot.deviceContextKey.deviceId, reinterpret_cast<std::uintptr_t>(snapshot.deviceContextKey.contextOpaque)};
         const FjSubmission submission{snapshot.instanceToken.value, snapshot.frameToken.value, snapshot.snapshotId, snapshot.keyDigests.uploadCoreHash, snapshot.keyDigests.dirHash, snapshot.keyDigests.scannerHash, snapshot.keyDigests.autoExposureHash};
+#if defined(JUICER_ILLUMINANT_TEST_HOOK)
+        JuicerAssets::IlluminantTest::before_native_render();
+#endif
         return call.render(&context, &rawFrame, &submission, &prepared, abortCallback, recovery, diagnostic);
     } catch (ExecutionFailure& failure) {
         diagnostic = std::move(failure.failure.diagnostic);

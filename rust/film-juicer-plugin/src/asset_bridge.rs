@@ -266,12 +266,23 @@ pub(crate) enum Failure {
     #[cfg(any(test, feature = "test-support"))]
     Capacity(TryReserveError),
     Gamma(PrintDensityError),
+    Illuminant(film_juicer_core::illuminant::Error),
+    Spectral(film_juicer_core::spectral::WhiteError),
+    Reconstruction(film_juicer_core::reconstruction::Error),
+    Exposure(film_juicer_core::exposure::Error),
+    FilmTc(film_juicer_core::reconstruction::TcError),
+    #[cfg(feature = "test-support")]
+    InjectedAllocation,
+    #[cfg(feature = "test-support")]
+    InjectedPreparation(&'static str),
     #[cfg(any(test, feature = "test-support"))]
     Internal(&'static str),
 }
 impl Failure {
     fn category(&self) -> u32 {
         match self {
+            #[cfg(feature = "test-support")]
+            Self::InjectedPreparation(_) => FJ_STATUS_PREPARATION_FAILURE,
             Self::Input(_) => FJ_STATUS_UNSUPPORTED_INPUT,
             Self::Asset(
                 AssetError::Catalog(_)
@@ -300,9 +311,29 @@ impl Failure {
                 ReadErrorKind::Capacity => FJ_STATUS_ALLOCATION_FAILURE,
                 _ => FJ_STATUS_PREPARATION_FAILURE,
             },
+            Self::Spectral(_) => FJ_STATUS_PREPARATION_FAILURE,
+            Self::Exposure(_) => FJ_STATUS_PREPARATION_FAILURE,
+            Self::FilmTc(film_juicer_core::reconstruction::TcError::AllocationFailure) => {
+                FJ_STATUS_ALLOCATION_FAILURE
+            }
+            Self::FilmTc(_) => FJ_STATUS_PREPARATION_FAILURE,
+            Self::Reconstruction(error) => match error {
+                film_juicer_core::reconstruction::Error::AllocationFailure => {
+                    FJ_STATUS_ALLOCATION_FAILURE
+                }
+                _ => FJ_STATUS_PREPARATION_FAILURE,
+            },
+            #[cfg(feature = "test-support")]
+            Self::InjectedAllocation => FJ_STATUS_ALLOCATION_FAILURE,
             Self::Gamma(PrintDensityError::InvalidGamma) => FJ_STATUS_UNSUPPORTED_INPUT,
             Self::Gamma(PrintDensityError::Capacity) => FJ_STATUS_ALLOCATION_FAILURE,
             Self::Gamma(_) => FJ_STATUS_PREPARATION_FAILURE,
+            Self::Illuminant(error) => match error.kind {
+                film_juicer_core::illuminant::ErrorKind::Capacity => FJ_STATUS_ALLOCATION_FAILURE,
+                film_juicer_core::illuminant::ErrorKind::Preparation => {
+                    FJ_STATUS_PREPARATION_FAILURE
+                }
+            },
             #[cfg(any(test, feature = "test-support"))]
             Self::Capacity(_) => FJ_STATUS_ALLOCATION_FAILURE,
             Self::Asset(AssetError::Noise(error)) => noise_category(error.kind()),
@@ -323,6 +354,17 @@ impl fmt::Display for Failure {
             #[cfg(any(test, feature = "test-support"))]
             Self::Capacity(error) => write!(formatter, "asset boundary capacity: {error}"),
             Self::Gamma(error) => write!(formatter, "{error}"),
+            Self::Illuminant(error) => write!(formatter, "{error}"),
+            Self::Spectral(error) => write!(formatter, "{error}"),
+            Self::Reconstruction(error) => write!(formatter, "{error}"),
+            Self::Exposure(error) => write!(formatter, "{error}"),
+            Self::FilmTc(error) => write!(formatter, "{error}"),
+            #[cfg(feature = "test-support")]
+            Self::InjectedAllocation => {
+                formatter.write_str("injected spectral allocation category")
+            }
+            #[cfg(feature = "test-support")]
+            Self::InjectedPreparation(message) => formatter.write_str(message),
         }
     }
 }
@@ -356,7 +398,7 @@ impl Write for Diagnostic<'_> {
 /// # Safety
 /// A nonnull diagnostic is initialized, aligned and exclusively writable; its
 /// nonempty backing extent is disjoint from all other call storage.
-unsafe fn run<T>(
+pub(crate) unsafe fn run<T>(
     error: *mut FjErrorBuffer,
     operation: impl FnOnce() -> Result<T, Failure>,
 ) -> Result<T, FjStatus> {

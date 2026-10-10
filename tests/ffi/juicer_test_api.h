@@ -1,13 +1,134 @@
 #ifndef FJ_JUICER_TEST_API_H
 #define FJ_JUICER_TEST_API_H
 
-#include "juicer_cuda_api.h"
+#include "juicer_legacy_api.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/* Direct-core exposure facade; same synchronous storage rules as production.
+ * Closed raw fault slots: 1 reference, 2 sensitivity, 3 Mallett mid-gray,
+ * 4 TC normalization, 5 reference source, 6 Mallett reference; fault 1 unsupported,
+ * 2 panic, 3 allocation category, 4 preparation. One-based matching call count.
+ * Read the consume-once same-thread witness immediately, before another call or
+ * cleanup. The independent facade slot has its own consume-once witness.
+ * Category injection is distinct from the core's real kernel reservation test.
+ * Allocation fault 3 is supported only by operations 1/2, never fixed A7 math. */
+FjStatus fj_test_exposure_arm_fault(uint32_t operation, uint32_t call_index, uint32_t fault);
+void fj_test_exposure_clear_fault(void);
+uint32_t fj_test_exposure_fault_consumed(uint32_t operation, uint32_t fault);
+void fj_test_exposure_arm_facade_fault(void);
+uint32_t fj_test_exposure_facade_fault_consumed(void);
+FjStatus fj_test_reconstruction_reference_white(const FjReferenceWhiteInput* input, FjReferenceWhite* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_sensitivity(const FjSensitivityInput* input, FjSensitivity* out, FjSensitivityFailure* failure, FjErrorBuffer* error);
+FjStatus fj_test_exposure_window_sample(float wavelength, FjFloatSpan params, float* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_mallett_midgray(const FjMallettMidgrayInput* input, FjMallettMidgray* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_tc_midgray(float green, FjMidgrayNormalization* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_reference_source(float exposure_ev, float* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_mallett_reference_raw(const FjMallettReferenceInput* input, FjReferenceRaw* out, FjErrorBuffer* error);
+
+/* Feature-only fixed-axis spectrum witnesses, independent of legacy color faults.
+ * Borrow initialized aligned immutable inputs/spans only until return; exclusive
+ * aligned output/error storage is mutually disjoint and disjoint from inputs.
+ * Hanatos consumes exactly 192*192*81 samples, tables consume three 81-sample
+ * weights. All outputs clear before fallible work. No source pointer is retained,
+ * heap scratch, method selector or production fallback is supplied by this facade.
+ * Closed fixture slots: 1 Hanatos spectrum, 2 tables spectrum, 3 Mallett BGR leaf;
+ * faults 1 unsupported and 2 panic, with one-based matching-call counts and
+ * consume-once same-thread witnesses read before cleanup. */
+typedef struct FjHanatosSpectrumInput {
+    float rgb_dwg[3], reference_white[3];
+    FjFloatSpan spectra;
+} FjHanatosSpectrumInput;
+typedef struct FjTablesSpectrumInput {
+    float rgb_dwg[3], reference_white[3], s_inverse[9];
+    FjFloatSpan ax, ay, az;
+} FjTablesSpectrumInput;
+typedef struct FjMallettRawInput {
+    float linear_srgb[3];
+    FjFloatSpan basis_rgb, illuminant, sensitivity_rgb;
+} FjMallettRawInput;
+typedef struct FjSpectrumFixture {
+    float pre_xyz[3], consumer_white[3], post_adapt_xyz[3], spectrum[81];
+} FjSpectrumFixture;
+FjStatus fj_test_exposure_hanatos_spectrum(const FjHanatosSpectrumInput* input, FjSpectrumFixture* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_tables_spectrum(const FjTablesSpectrumInput* input, FjSpectrumFixture* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_mallett_raw(const FjMallettRawInput* input, float out_bgr[3], FjErrorBuffer* error);
+FjStatus fj_test_exposure_fixture_arm_fault(uint32_t operation, uint32_t index, uint32_t fault);
+void fj_test_exposure_fixture_clear_fault(void);
+uint32_t fj_test_exposure_fixture_fault_consumed(uint32_t operation, uint32_t fault);
+
+/* Fixed spectral direct-core facade; same synchronous storage contract as production.
+ * Independent TLS fault slots: raw operations 1 tables, 2 white, 3 inverse;
+ * fault 1 unsupported, 2 panic, 3 allocation category, 4 preparation category.
+ * Fixed math allocates no Rust heap: category injection does not test an allocator.
+ * One-based matching call count is consumed before the numerical action. */
+FjStatus fj_test_spectral_arm_fault(uint32_t operation, uint32_t call_index, uint32_t fault);
+void fj_test_spectral_clear_fault(void);
+void fj_test_spectral_arm_facade_fault(void);
+FjStatus fj_test_spectral_tables(const FjSpectralInput* input, FjSpectralTables* out, FjErrorBuffer* error);
+FjStatus fj_test_spectral_white(const FjSpectralWhiteInput* input, FjSpectralWhite* out, FjSpectralWhiteFailure* failure, FjErrorBuffer* error);
+FjStatus fj_test_spectral_s_inverse(const FjSpectralSInput* input, FjSpectralInverse* out, FjErrorBuffer* error);
+
 /* BUILD_TESTING's nondefault Rust test-support facade; never an installed API. */
+/* Closed production math selectors; 1=unsupported, 2=panic, 3=real checked
+ * scratch capacity, 4=preparation faults. TLS one-shot matching raw-call count.
+ * The curve facade invokes core directly: 1..4 as below, 5 composed lens,
+ * 8 private resampling projection. Its one-shot fault slot is independent. */
+#define FJ_TEST_ILLUMINANT_FROM_SAMPLES UINT32_C(1)
+#define FJ_TEST_ILLUMINANT_BLACKBODY UINT32_C(2)
+#define FJ_TEST_ILLUMINANT_EQUAL_ENERGY UINT32_C(3)
+#define FJ_TEST_ILLUMINANT_TUNGSTEN_KG3 UINT32_C(4)
+#define FJ_TEST_ILLUMINANT_LENS_PREPARE UINT32_C(5)
+#define FJ_TEST_ILLUMINANT_LENS_FINISH UINT32_C(6)
+#define FJ_TEST_ILLUMINANT_LENS_RELEASE UINT32_C(7)
+FjStatus fj_test_illuminant_arm_fault(uint32_t operation, uint32_t call_index, uint32_t fault);
+void fj_test_illuminant_clear_fault(void);
+size_t fj_test_illuminant_live_lenses(void);
+void fj_test_illuminant_arm_facade_fault(void);
+/* Ten initialized writable size_t elements; returns actual successful Vec count.
+ * Values are byte capacities, cumulative within the last resampling call, not
+ * simultaneous live bytes, allocator metadata or RSS. OFF builds omit probes. */
+size_t fj_test_illuminant_scratch_capacities(size_t* out_bytes);
+FjStatus fj_test_illuminant_curve(uint32_t operation, FjFloatSpan rows, FjFloatSpan lens_rows, float temperature_kelvin, FjIlluminant* out_curve, FjIlluminantCoverage* out_coverage, FjErrorBuffer* error);
+/* CAT02/CAT16 value facade uses the production fixed-array pointer/extent contract.
+ * Faults affect only the calling thread's actual production exports: one-based
+ * matching call count, consumed before action. Invalid arm disarms; clear is
+ * idempotent. Fault storage/branches/exports are absent without test-support. */
+#define FJ_TEST_CAT16_MATRIX UINT32_C(1)
+#define FJ_TEST_CAT16_ADAPT UINT32_C(2)
+#define FJ_TEST_CAT02_MATRIX UINT32_C(3)
+#define FJ_TEST_CAT02_ADAPT UINT32_C(4)
+#define FJ_TEST_INPUT_MATRICES UINT32_C(5)
+#define FJ_TEST_INPUT_TO_DWG UINT32_C(6)
+#define FJ_TEST_INPUT_TO_LINEAR_SRGB UINT32_C(7)
+#define FJ_TEST_LINEAR_SRGB_TO_XYZ UINT32_C(8)
+#define FJ_TEST_DWG_TO_XYZ UINT32_C(9)
+#define FJ_TEST_PROJECT_LINEAR_RGB_TO_XYZ UINT32_C(10)
+#define FJ_TEST_COLOR_UNSUPPORTED_INPUT UINT32_C(1)
+#define FJ_TEST_COLOR_PANIC UINT32_C(2)
+FjStatus fj_test_cat16_matrix(const float source_white_xyz[3], const float destination_white_xyz[3], float out_row_major[9]);
+FjStatus fj_test_adapt_cat16(const float xyz[3], const float source_white_xyz[3], const float destination_white_xyz[3], float out_xyz[3]);
+FjStatus fj_test_cat02_matrix(const float source_white_xyz[3], const float destination_white_xyz[3], float out_row_major[9]);
+FjStatus fj_test_adapt_cat02(const float xyz[3], const float source_white_xyz[3], const float destination_white_xyz[3], float out_xyz[3]);
+FjStatus fj_test_input_matrices(uint32_t input_space, FjInputColorMatrices* out);
+FjStatus fj_test_input_to_dwg(const FjInputColorConversion* input, const float rgb[3], uint32_t clamp_nonnegative, float out_rgb[3], float out_xyz[3]);
+FjStatus fj_test_input_to_linear_srgb(const FjInputColorConversion* input, const float rgb[3], const float xyz_to_linear_srgb[9], float out_rgb[3], float out_xyz[3]);
+FjStatus fj_test_linear_srgb_to_xyz(const float rgb[3], float out_xyz[3]);
+FjStatus fj_test_dwg_to_xyz(const float rgb[3], float out_xyz[3]);
+FjStatus fj_test_project_linear_rgb_to_xyz(const float rgb[3], const float rgb_to_xyz[9], const float xyz_adapt[9], float out_xyz[3]);
+
+FjStatus fj_test_decode_input(uint32_t input_space, uint32_t decode_cctf, const float rgb[3], float out_rgb[3]);
+FjStatus fj_test_color_arm_fault(uint32_t operation, uint32_t call_index, uint32_t fault);
+FjStatus fj_test_color_clear_fault(void);
+/* Direct current color-facade slots 4/6/7/9, independent of live production
+ * export faults and never visited by pure core composition. Read the consumed
+ * witness before cleanup; an armed/cleared slot is not consumption evidence. */
+FjStatus fj_test_color_arm_facade_fault(uint32_t operation, uint32_t index, uint32_t fault);
+FjStatus fj_test_color_clear_facade_fault(void);
+uint32_t fj_test_color_facade_fault_consumed(uint32_t operation, uint32_t fault);
+
 typedef struct FjFilmProfile FjFilmProfile;
 
 #define FJ_PROFILE_USE_STILL UINT32_C(0)
@@ -110,6 +231,19 @@ FjStatus fj_test_noise_release(FjNoise* owner, FjErrorBuffer* error);
 void fj_test_noise_fault(uint32_t fault);
 size_t fj_test_noise_acquisition_count(void);
 size_t fj_test_live_noise_owners(void);
+
+/* Direct-core TC facade: same live-span and one-allocation ownership contract
+ * as juicer_legacy_api.h; no legacy export is called. Separate facade fault
+ * observes actual direct-core entry. Release has no injected work/failure policy. */
+FjStatus fj_test_reconstruction_tc_lut(const FjFilmTcLutInput*, FjOwnedFilmTcLut*, FjErrorBuffer*);
+FjStatus fj_test_reconstruction_sample_tc_lut(FjFloatSpan, const float[3], float[3], FjErrorBuffer*);
+FjStatus fj_test_reconstruction_release_tc_lut(FjOwnedFilmTcLut*);
+FjStatus fj_test_tc_lut_arm_fault(uint32_t operation, uint32_t index, uint32_t fault);
+void fj_test_tc_lut_clear_fault(void);
+uint32_t fj_test_tc_lut_fault_consumed(uint32_t operation, uint32_t fault);
+FjStatus fj_test_tc_lut_allocation_counts(size_t out_counts[2]);
+void fj_test_tc_lut_arm_facade_fault(void);
+uint32_t fj_test_tc_lut_facade_fault_consumed(void);
 
 #ifdef __cplusplus
 }

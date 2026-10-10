@@ -26,6 +26,10 @@ set(JUICER_HOST_SOURCES
     src/CudaRenderProjection.cpp
     src/JuicerState.cpp
     src/RustAssetBridge.cpp
+    src/RustSpectralBridge.cpp
+    src/RustReconstructionBridge.cpp
+    src/RustExposureBridge.cpp
+    src/RustColorBridge.cpp
     src/DiffusionHostBehavior.cpp
     src/GamutCompression.cpp
     src/RenderRecipe.cpp

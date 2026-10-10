@@ -1,4 +1,10 @@
-//! Temporary scalar boundary for C++ route consumers.
+//! Temporary CPU boundaries for native route and color preparation.
+
+use film_juicer_core::color::{self, Whites};
+use crate::cuda::sys::{
+    FjStatus, FJ_API_NONE, FJ_STATUS_SUCCESS, FJ_STATUS_UNSUPPORTED_INPUT,
+    FJ_STATUS_INTERNAL_FAILURE,
+};
 
 use film_juicer_core::route::{self, CapturePolarity, RouteSelection, ScanRoute};
 
@@ -56,6 +62,456 @@ pub unsafe extern "C" fn fj_legacy_resolve_route(
         Err(status) => status,
     }
 }
+
+const _: () = assert!(
+    std::mem::size_of::<f32>() == 4
+        && std::mem::size_of::<[f32; 3]>() == 12
+        && std::mem::size_of::<[f32; 9]>() == 36
+);
+
+fn color_status(category: u32) -> FjStatus {
+    FjStatus {
+        category,
+        api: FJ_API_NONE,
+        native_code: 0,
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy)]
+struct ColorFault {
+    operation: u32,
+    remaining: u32,
+    fault: u32,
+}
+
+#[cfg(feature = "test-support")]
+thread_local! {
+    static COLOR_FAULT: std::cell::Cell<Option<ColorFault>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn arm_color_fault(operation: u32, call_index: u32, fault: u32) -> FjStatus {
+    clear_color_fault();
+    if !matches!(operation, 1 | 2 | 3 | 5 | 8 | 10) || call_index == 0 || !(1..=2).contains(&fault)
+    {
+        return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+    }
+    COLOR_FAULT.set(Some(ColorFault {
+        operation,
+        remaining: call_index,
+        fault,
+    }));
+    color_status(FJ_STATUS_SUCCESS)
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn clear_color_fault() -> FjStatus {
+    COLOR_FAULT.set(None);
+    color_status(FJ_STATUS_SUCCESS)
+}
+
+#[cfg(feature = "test-support")]
+fn color_fault(operation: u32) -> Result<(), u32> {
+    let Some(mut armed) = COLOR_FAULT.get() else {
+        return Ok(());
+    };
+    if armed.operation != operation {
+        return Ok(());
+    }
+    armed.remaining -= 1;
+    if armed.remaining != 0 {
+        COLOR_FAULT.set(Some(armed));
+        return Ok(());
+    }
+    COLOR_FAULT.set(None);
+    if armed.fault == 1 {
+        return Err(FJ_STATUS_UNSUPPORTED_INPUT);
+    }
+    panic!("color production boundary fault");
+}
+
+// FJ_TEMP_BRIDGE: CAT16 host preparation; remove S4.E.
+/// Prepare a row-major CAT16 matrix by sampling the three basis vectors.
+///
+/// # Safety
+/// Nonnull inputs authorize three initialized aligned floats each until return;
+/// they may alias each other. Nonnull output authorizes nine exclusive aligned
+/// floats, disjoint from every input. No storage is retained.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fj_legacy_cat16_matrix(
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_row_major: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_row_major.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller provides the exclusive nine-float output extent.
+        unsafe { out_row_major.write_bytes(0, 9) };
+        if source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(1) {
+            return color_status(category);
+        }
+        // SAFETY: Both nonnull read-only inputs authorize exactly three floats.
+        let whites = unsafe {
+            Whites {
+                source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+            }
+        };
+        let matrix = color::cat16_matrix(whites);
+        // SAFETY: The complete local result is disjoint from the authorized output.
+        unsafe { out_row_major.copy_from_nonoverlapping(matrix.as_ptr(), 9) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+// FJ_TEMP_BRIDGE: CAT16 host preparation; remove S4.E.
+/// Adapt an unsanitized XYZ value between the supplied whites.
+///
+/// # Safety
+/// Nonnull inputs authorize three initialized aligned floats each until return;
+/// they may alias each other. Nonnull output authorizes three exclusive aligned
+/// floats disjoint from every input. No storage is retained.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fj_legacy_adapt_cat16(
+    xyz: *const f32,
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller provides the exclusive three-float output extent.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if xyz.is_null() || source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(2) {
+            return color_status(category);
+        }
+        // SAFETY: Each nonnull read-only input authorizes exactly three floats.
+        let (value, whites) = unsafe {
+            (
+                xyz.cast::<[f32; 3]>().read(),
+                Whites {
+                    source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                    destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+                },
+            )
+        };
+        let adapted = color::adapt_cat16(value, whites);
+        // SAFETY: The complete local result is disjoint from the authorized output.
+        unsafe { out_xyz.copy_from_nonoverlapping(adapted.as_ptr(), 3) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+// FJ_TEMP_BRIDGE: CAT02 host preparation; remove S4.E.
+/// Prepare a row-major CAT02 matrix by sampling the three basis vectors.
+///
+/// # Safety
+/// Nonnull inputs authorize three initialized aligned floats each until return;
+/// they may alias each other. Nonnull output authorizes nine exclusive aligned
+/// floats, disjoint from every input. No storage is retained.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fj_legacy_cat02_matrix(
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_row_major: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_row_major.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller provides the exclusive nine-float output extent.
+        unsafe { out_row_major.write_bytes(0, 9) };
+        if source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(3) {
+            return color_status(category);
+        }
+        // SAFETY: Both nonnull read-only inputs authorize exactly three floats.
+        let whites = unsafe {
+            Whites {
+                source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+            }
+        };
+        let matrix = color::cat02_matrix(whites);
+        // SAFETY: The complete local result is disjoint from the authorized output.
+        unsafe { out_row_major.copy_from_nonoverlapping(matrix.as_ptr(), 9) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+#[repr(C)]
+pub(crate) struct FjInputColorMatrices {
+    pub(crate) rgb_to_xyz: [f32; 9],
+    pub(crate) nominal_white_xyz: [f32; 3],
+    pub(crate) xyz_to_linear_srgb: [f32; 9],
+    pub(crate) d65_white_xyz: [f32; 3],
+}
+
+impl From<color::InputMatrices> for FjInputColorMatrices {
+    fn from(input: color::InputMatrices) -> Self {
+        Self {
+            rgb_to_xyz: input.rgb_to_xyz,
+            nominal_white_xyz: input.nominal_white_xyz,
+            xyz_to_linear_srgb: input.xyz_to_linear_srgb,
+            d65_white_xyz: input.d65_white_xyz,
+        }
+    }
+}
+
+#[repr(C)]
+pub(crate) struct FjInputColorConversion {
+    pub(crate) input_space: u32,
+    pub(crate) decode_cctf: u32,
+    pub(crate) adapt_xyz: u32,
+    pub(crate) rgb_to_xyz: [f32; 9],
+    pub(crate) xyz_adapt: [f32; 9],
+}
+
+pub(crate) fn input_space(tag: u32) -> Option<color::InputSpace> {
+    match tag {
+        0 => Some(color::InputSpace::DavinciWideGamut),
+        1 => Some(color::InputSpace::Bt2020),
+        2 => Some(color::InputSpace::Aces2065_1),
+        3 => Some(color::InputSpace::SrgbRec709),
+        _ => None,
+    }
+}
+
+impl FjInputColorConversion {
+    pub(crate) fn into_core(self) -> Option<color::InputConversion> {
+        let space = input_space(self.input_space)?;
+        if self.decode_cctf > 1 || self.adapt_xyz > 1 {
+            return None;
+        }
+        Some(color::InputConversion {
+            space,
+            decode_cctf: self.decode_cctf != 0,
+            rgb_to_xyz: self.rgb_to_xyz,
+            xyz_adaptation: (self.adapt_xyz != 0).then_some(self.xyz_adapt),
+        })
+    }
+}
+
+const _: () = {
+    use std::mem::{align_of, offset_of, size_of};
+    assert!(size_of::<FjInputColorMatrices>() == 96 && align_of::<FjInputColorMatrices>() == 4);
+    assert!(offset_of!(FjInputColorMatrices, rgb_to_xyz) == 0);
+    assert!(offset_of!(FjInputColorMatrices, nominal_white_xyz) == 36);
+    assert!(offset_of!(FjInputColorMatrices, xyz_to_linear_srgb) == 48);
+    assert!(offset_of!(FjInputColorMatrices, d65_white_xyz) == 84);
+    assert!(size_of::<FjInputColorConversion>() == 84 && align_of::<FjInputColorConversion>() == 4);
+    assert!(offset_of!(FjInputColorConversion, input_space) == 0);
+    assert!(offset_of!(FjInputColorConversion, decode_cctf) == 4);
+    assert!(offset_of!(FjInputColorConversion, adapt_xyz) == 8);
+    assert!(offset_of!(FjInputColorConversion, rgb_to_xyz) == 12);
+    assert!(offset_of!(FjInputColorConversion, xyz_adapt) == 48);
+};
+
+// FJ_TEMP_BRIDGE: input-color host preparation; remove S4.E.
+/// Prepare input matrices as caller-owned values.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_input_matrices(
+    input_space_tag: u32,
+    out: *mut FjInputColorMatrices,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller authorizes the complete exclusive output record.
+        unsafe { out.write_bytes(0, 1) };
+        let Some(space) = input_space(input_space_tag) else {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        };
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(5) {
+            return color_status(category);
+        }
+        let output = FjInputColorMatrices::from(color::input_matrices(space));
+        // SAFETY: The initialized local record is committed to the exclusive output.
+        unsafe { out.write(output) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+// FJ_TEMP_BRIDGE: input-color host preparation; remove S4.E.
+/// Prepare linear srgb to xyz as caller-owned values.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_linear_srgb_to_xyz(
+    rgb: *const f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The output authorizes three exclusive aligned floats.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if rgb.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(8) {
+            return color_status(category);
+        }
+        // SAFETY: The read-only RGB extent authorizes three initialized aligned floats.
+        let rgb = unsafe { rgb.cast::<[f32; 3]>().read() };
+        let output = color::linear_srgb_to_xyz(rgb);
+        // SAFETY: The initialized local triplet is disjoint from the output extent.
+        unsafe { out_xyz.copy_from_nonoverlapping(output.as_ptr(), 3) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+// FJ_TEMP_BRIDGE: input-color host preparation; remove S4.E.
+/// Prepare project linear rgb to xyz as caller-owned values.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_project_linear_rgb_to_xyz(
+    rgb: *const f32,
+    rgb_to_xyz: *const f32,
+    xyz_adapt: *const f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    std::panic::catch_unwind(|| {
+        if out_xyz.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The output authorizes three exclusive aligned floats.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if rgb.is_null() || rgb_to_xyz.is_null() || xyz_adapt.is_null() {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(10) {
+            return color_status(category);
+        }
+        // SAFETY: Inputs authorize an initialized RGB triplet and two nine-float matrices.
+        let (rgb, matrix, adaptation) = unsafe {
+            (
+                rgb.cast::<[f32; 3]>().read(),
+                rgb_to_xyz.cast::<[f32; 9]>().read(),
+                xyz_adapt.cast::<[f32; 9]>().read(),
+            )
+        };
+        let output = color::project_linear_rgb_to_xyz(rgb, matrix, adaptation);
+        // SAFETY: The initialized local triplet is disjoint from the output extent.
+        unsafe { out_xyz.copy_from_nonoverlapping(output.as_ptr(), 3) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+const _: unsafe extern "C" fn(u32, *mut FjInputColorMatrices) -> FjStatus =
+    fj_legacy_input_matrices;
+const _: unsafe extern "C" fn(*const f32, *mut f32) -> FjStatus = fj_legacy_linear_srgb_to_xyz;
+const _: unsafe extern "C" fn(*const f32, *const f32, *const f32, *mut f32) -> FjStatus =
+    fj_legacy_project_linear_rgb_to_xyz;
+
+// FJ_TEMP_BRIDGE: native TC preparation and allocation ownership; remove S4.E.
+/// # Safety
+/// Input/consumed spans remain live and immutable through return; output is
+/// an exclusive empty ownership record, disjoint from input/error storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_reconstruction_tc_lut(
+    input: *const crate::reconstruction_bridge::FjFilmTcLutInput,
+    out: *mut crate::reconstruction_bridge::FjOwnedFilmTcLut,
+    error: *mut crate::cuda::sys::FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The foreign caller supplies the documented synchronous storage.
+    unsafe {
+        crate::reconstruction_bridge::build_call(input, out, error, || {
+            crate::reconstruction_bridge::fault(1)
+        })
+    }
+}
+/// # Safety
+/// LUT/XYZ are complete immutable live extents; RGB/error are exclusive and
+/// disjoint until return. No view or result borrow is retained.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_reconstruction_sample_tc_lut(
+    lut: crate::cuda::sys::FjFloatSpan,
+    xyz: *const f32,
+    out: *mut f32,
+    error: *mut crate::cuda::sys::FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The foreign caller supplies the documented three-float extents.
+    unsafe {
+        crate::reconstruction_bridge::sample_call(lut, xyz, out, error, || {
+            crate::reconstruction_bridge::fault(2)
+        })
+    }
+}
+/// # Safety
+/// Own the exact one unmodified token returned by this module, or all-zero
+/// empty, with all borrows ended and exclusive access to the aligned record.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_reconstruction_release_tc_lut(
+    owned: *mut crate::reconstruction_bridge::FjOwnedFilmTcLut,
+) -> FjStatus {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: Caller consumes its sole exact Vec allocation/layout once.
+        unsafe { crate::reconstruction_bridge::release_call(owned) }
+    })) {
+        Ok(status) => status,
+        Err(_) => FjStatus {
+            category: FJ_STATUS_INTERNAL_FAILURE,
+            api: FJ_API_NONE,
+            native_code: 0,
+        },
+    }
+}
+const _: unsafe extern "C" fn(
+    *const crate::reconstruction_bridge::FjFilmTcLutInput,
+    *mut crate::reconstruction_bridge::FjOwnedFilmTcLut,
+    *mut crate::cuda::sys::FjErrorBuffer,
+) -> FjStatus = fj_legacy_reconstruction_tc_lut;
+const _: unsafe extern "C" fn(
+    crate::cuda::sys::FjFloatSpan,
+    *const f32,
+    *mut f32,
+    *mut crate::cuda::sys::FjErrorBuffer,
+) -> FjStatus = fj_legacy_reconstruction_sample_tc_lut;
+const _: unsafe extern "C" fn(*mut crate::reconstruction_bridge::FjOwnedFilmTcLut) -> FjStatus =
+    fj_legacy_reconstruction_release_tc_lut;
 
 #[cfg(test)]
 mod tests {

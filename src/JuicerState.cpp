@@ -16,15 +16,15 @@
 #include <utility>
 #include <vector>
 
+#include "Cuda/JuicerCudaExecutor.h"
 #include "Illuminants.h"
 #include "Logging.h"
 #include "ProcessRoot.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
+#include "RustSpectralBridge.h"
+#include "RustExposureBridge.h"
 
 namespace {
-    inline void copy_float3(float dst[3], const float src[3]) {
-        std::memcpy(dst, src, 3u * sizeof(float));
-    }
 
     static bool build_scanner_illuminant(
         const Profiles::ProfileIlluminant& illuminant,
@@ -43,23 +43,6 @@ namespace {
         }
 
         const Profiles::FilmProfile& profile = *recipe.profileRoute.filmProfile;
-        auto assign_channel = [&](Spectral::Curve& curve, std::size_t channel) {
-            Spectral::assign_reference_axis(curve.lambda_nm);
-            curve.linear.resize(profile.data.channelDensity.size());
-            for (std::size_t sample = 0; sample < profile.data.channelDensity.size(); ++sample) {
-                curve.linear[sample] = profile.data.channelDensity[sample][channel];
-            }
-        };
-        Spectral::Curve epsC;
-        Spectral::Curve epsM;
-        Spectral::Curve epsY;
-        Spectral::Curve baseDensityMin;
-        Spectral::Curve baseDensityMid;
-        assign_channel(epsC, 0u);
-        assign_channel(epsM, 1u);
-        assign_channel(epsY, 2u);
-        Spectral::assign_reference_axis(baseDensityMin.lambda_nm);
-        baseDensityMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
 
         Scanner::ScannerIlluminant referenceIlluminant;
         if (!build_scanner_illuminant(
@@ -70,20 +53,12 @@ namespace {
                 "MissingRequiredResource component=focused_film_payload field=reference_illuminant";
             return false;
         }
-        Spectral::build_tables_from_curves_non_global(
-            epsY,
-            epsM,
-            epsC,
-            Spectral::gXBar,
-            Spectral::gYBar,
-            Spectral::gZBar,
+        JuicerSpectral::build_tables(
+            profile.data.channelDensity,
+            profile.data.baseDensity,
             referenceIlluminant.curve,
-            baseDensityMin,
-            baseDensityMid,
-            true,
-            0.0f,
-            payload.exposureTables,
-            referenceIlluminant.hash);
+            referenceIlluminant.hash,
+            payload.exposureTables);
         const auto valid_white = [](const float white[3]) {
             return std::isfinite(white[0]) &&
                    std::isfinite(white[1]) &&
@@ -98,9 +73,7 @@ namespace {
                 "MalformedRequiredResource component=focused_film_payload field=exposure_tables";
             return false;
         }
-        Spectral::compute_S_inverse_from_tables(
-            payload.exposureTables,
-            payload.spdSInv.data());
+        payload.spdSInv = JuicerSpectral::s_inverse(payload.exposureTables);
 
         payload.filmRawConfig = Spectral::FilmRawConfig{};
         payload.filmRawConfig.inputColorSpace =
@@ -160,7 +133,7 @@ namespace {
                 referenceIlluminant.curve.linear.begin(),
                 referenceIlluminant.curve.linear.end(),
                 referenceSamples.begin());
-            Spectral::FilmTcLut integrated;
+            std::optional<Spectral::FilmTcLut> integrated;
             if (!Spectral::build_film_tc_lut(
                     recipe.filmRaw,
                     *spectra,
@@ -172,46 +145,43 @@ namespace {
             payload.filmTcLut = std::move(integrated);
 
             const float inputMidgray[3] = {0.184f, 0.184f, 0.184f};
-            float xyz[3]{};
-            float projected[3]{};
-            payload.filmRawConfig.inputRGBToXYZ.mul(inputMidgray, xyz);
-            payload.filmRawConfig.inputXYZAdapt.mul(xyz, projected);
-            const std::array<float, 3> raw =
-                Spectral::sample_film_tc_lut(
+            const auto projected = JuicerColor::project_linear_rgb_to_xyz(
+                {inputMidgray[0], inputMidgray[1], inputMidgray[2]},
+                payload.filmRawConfig.inputRGBToXYZ,
+                payload.filmRawConfig.inputXYZAdapt);
+            std::array<float, 3> raw{};
+            if (!Spectral::sample_film_tc_lut(
                     *payload.filmTcLut,
-                    {projected[0], projected[1], projected[2]});
+                    {projected[0], projected[1], projected[2]},
+                    raw,
+                    diagnostic)) {
+                return false;
+            }
             std::copy(raw.begin(), raw.end(), payload.filmRawConfig.rawMidgray);
-            const float safeGreen =
-                Spectral::sanitize_raw_midgray_green_or_one(raw[1]);
-            payload.filmRawConfig.rawMidgrayGreen = safeGreen;
-            payload.filmRawConfig.midgrayScale = 1.0f / safeGreen;
+            if (!JuicerExposure::tc_midgray(
+                    raw[1], payload.filmRawConfig, diagnostic)) {
+                return false;
+            }
             std::copy_n(inputMidgray, 3, payload.filmRawConfig.midgrayDWG);
             return payload.filmRawConfig.valid;
         }
         payload.filmTcLut.reset();
 
-        Spectral::Curve sensB;
-        Spectral::Curve sensG;
-        Spectral::Curve sensR;
-        Spectral::assign_reference_axis(sensB.lambda_nm);
-        sensG.lambda_nm = sensB.lambda_nm;
-        sensR.lambda_nm = sensB.lambda_nm;
-        sensB.linear.resize(recipe.filmRaw.finalSensitivity.size());
-        sensG.linear.resize(recipe.filmRaw.finalSensitivity.size());
-        sensR.linear.resize(recipe.filmRaw.finalSensitivity.size());
-        for (std::size_t sample = 0; sample < recipe.filmRaw.finalSensitivity.size(); ++sample) {
-            const auto& rgb = recipe.filmRaw.finalSensitivity[sample];
-            sensB.linear[sample] = rgb[2];
-            sensG.linear[sample] = rgb[1];
-            sensR.linear[sample] = rgb[0];
+        if (!Spectral::mallett_available() ||
+            !Spectral::mallett_basis_matches_reference_shape() ||
+            Spectral::gMallettBasis.data.size() != 243u) {
+            diagnostic =
+                "MissingRequiredResource component=mallett_midgray requirement=81x3_basis";
+            return false;
         }
-        Spectral::compute_film_raw_midgray(
-            payload.filmRawConfig,
-            &payload.exposureTables,
-            payload.spdSInv.data(),
-            sensB,
-            sensG,
-            sensR);
+        if (!JuicerExposure::mallett_midgray(
+                Spectral::gMallettBasis,
+                payload.exposureTables.illum,
+                recipe.filmRaw.finalSensitivity,
+                payload.filmRawConfig,
+                diagnostic)) {
+            return false;
+        }
         return payload.filmRawConfig.valid;
     }
 
@@ -227,23 +197,6 @@ namespace {
         if (recipe.scannerOutput.viewingIlluminant != profile.info.viewingIlluminant.value) {
             return false;
         }
-        auto assign_channel = [&](Spectral::Curve& curve, std::size_t channel) {
-            Spectral::assign_reference_axis(curve.lambda_nm);
-            curve.linear.resize(profile.data.channelDensity.size());
-            for (std::size_t sample = 0; sample < profile.data.channelDensity.size(); ++sample) {
-                curve.linear[sample] = profile.data.channelDensity[sample][channel];
-            }
-        };
-        Spectral::Curve epsC;
-        Spectral::Curve epsM;
-        Spectral::Curve epsY;
-        Spectral::Curve baseDensityMin;
-        Spectral::Curve baseDensityMid;
-        assign_channel(epsC, 0u);
-        assign_channel(epsM, 1u);
-        assign_channel(epsY, 2u);
-        Spectral::assign_reference_axis(baseDensityMin.lambda_nm);
-        baseDensityMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
 
         Scanner::ScannerIlluminant scannerIlluminant;
         if (!build_scanner_illuminant(
@@ -252,20 +205,12 @@ namespace {
                 scannerIlluminant)) {
             return false;
         }
-        Spectral::build_tables_from_curves_non_global(
-            epsY,
-            epsM,
-            epsC,
-            Spectral::gXBar,
-            Spectral::gYBar,
-            Spectral::gZBar,
+        JuicerSpectral::build_tables(
+            profile.data.channelDensity,
+            profile.data.baseDensity,
             scannerIlluminant.curve,
-            baseDensityMin,
-            baseDensityMid,
-            true,
-            0.0f,
-            payload.scannerTables,
-            scannerIlluminant.hash);
+            scannerIlluminant.hash,
+            payload.scannerTables);
         if (payload.scannerTables.K != Spectral::kNumSamples ||
             payload.scannerTables.tablesHash == 0) {
             return false;
@@ -305,23 +250,6 @@ namespace {
         if (recipe.scannerOutput.viewingIlluminant != profile.info.viewingIlluminant.value) {
             return false;
         }
-        auto assign_channel = [&](Spectral::Curve& curve, std::size_t channel) {
-            Spectral::assign_reference_axis(curve.lambda_nm);
-            curve.linear.resize(profile.data.channelDensity.size());
-            for (std::size_t sample = 0; sample < profile.data.channelDensity.size(); ++sample) {
-                curve.linear[sample] = profile.data.channelDensity[sample][channel];
-            }
-        };
-        Spectral::Curve epsC;
-        Spectral::Curve epsM;
-        Spectral::Curve epsY;
-        Spectral::Curve baseDensityMin;
-        Spectral::Curve baseDensityMid;
-        assign_channel(epsC, 0u);
-        assign_channel(epsM, 1u);
-        assign_channel(epsY, 2u);
-        Spectral::assign_reference_axis(baseDensityMin.lambda_nm);
-        baseDensityMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
 
         Scanner::ScannerIlluminant scannerIlluminant;
         if (!build_scanner_illuminant(
@@ -330,20 +258,12 @@ namespace {
                 scannerIlluminant)) {
             return false;
         }
-        Spectral::build_tables_from_curves_non_global(
-            epsY,
-            epsM,
-            epsC,
-            Spectral::gXBar,
-            Spectral::gYBar,
-            Spectral::gZBar,
+        JuicerSpectral::build_tables(
+            profile.data.channelDensity,
+            profile.data.baseDensity,
             scannerIlluminant.curve,
-            baseDensityMin,
-            baseDensityMid,
-            true,
-            0.0f,
-            payload.scannerTables,
-            scannerIlluminant.hash);
+            scannerIlluminant.hash,
+            payload.scannerTables);
         if (payload.scannerTables.K != Spectral::kNumSamples ||
             payload.scannerTables.tablesHash == 0) {
             return false;
@@ -403,9 +323,6 @@ namespace {
         return std::isfinite(value);
     }
 
-    inline bool is_positive_finite(double value) {
-        return is_finite(value) && value > 0.0;
-    }
 
     inline uint64_t hash_mix(uint64_t h, uint64_t v) {
         h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
@@ -713,23 +630,6 @@ namespace {
     }
 
 
-    static Spectral::Curve build_blackbody_curve(float temperature) {
-        Spectral::Curve curve;
-        const int K = Spectral::gShape.K;
-        Spectral::assign_reference_axis(curve.lambda_nm);
-        curve.linear.resize(static_cast<size_t>(K));
-        const float* wavelengths = Spectral::gShape.wavelengths.data();
-        float* outLinear = curve.linear.data();
-        for (int i = 0; i < K; ++i) {
-            Spectral::PlanckBlackbodySample sample{};
-            sample.wavelengthNm = wavelengths[i];
-            sample.temperatureKelvin = temperature;
-            outLinear[i] = Spectral::planck_blackbody(sample);
-        }
-        Spectral::mean_power_normalize(curve.linear);
-        return curve;
-    }
-
     static Spectral::Curve build_illuminant_from_string(const std::string& source) {
         const std::string normalized = IlluminantKeys::normalize(source);
         const auto curveAssets =
@@ -757,7 +657,7 @@ namespace {
             return curveAssets->kinoton75P;
         }
         if (IlluminantKeys::matches_any(normalized, {"EQUAL", "EQUALENERGY", "EQUAL-ENERGY"})) {
-            return Spectral::build_curve_equal_energy_pinned();
+            return JuicerIlluminant::equal_energy();
         }
 
         if (!normalized.empty()) {
@@ -770,7 +670,7 @@ namespace {
 
     static Spectral::Curve build_profile_illuminant(const Profiles::ProfileIlluminant& illuminant) {
         if (const auto* blackbody = std::get_if<Profiles::BlackbodyIlluminant>(&illuminant.kind)) {
-            return build_blackbody_curve(static_cast<float>(blackbody->temperatureKelvin));
+            return JuicerIlluminant::blackbody(static_cast<float>(blackbody->temperatureKelvin));
         }
         return build_illuminant_from_string(illuminant.value);
     }
@@ -829,81 +729,10 @@ namespace {
             return false;
         }
 
-        double sumX = 0.0;
-        double sumY = 0.0;
-        double sumZ = 0.0;
-        const float* spdData = curve.linear.data();
-        const float* xData = xBar.data();
-        const float* yData = yBar.data();
-        const float* zData = zBar.data();
-        for (int i = 0; i < K; ++i) {
-            const float spd = spdData[i];
-            const float xb = xData[i];
-            const float yb = yData[i];
-            const float zb = zData[i];
-            if (!(is_finite(spd) && is_finite(xb) && is_finite(yb) && is_finite(zb))) {
-                std::ostringstream oss;
-                oss << "FATAL: non-finite CMF/SPD sample in " << label << " illuminant";
-                JTRACE("ILLUM", oss.str());
-                return false;
-            }
-            sumX += static_cast<double>(spd) * static_cast<double>(xb);
-            sumY += static_cast<double>(spd) * static_cast<double>(yb);
-            sumZ += static_cast<double>(spd) * static_cast<double>(zb);
-        }
-
-        if (!is_positive_finite(sumY)) {
-            std::ostringstream oss;
-            oss << "FATAL: invalid luminance sum for " << label << " (Yn=" << sumY << ")";
-            JTRACE("ILLUM", oss.str());
+        if (!JuicerSpectral::integrate_white(curve, label, out)) {
             return false;
         }
-
         out.curve = std::move(curve);
-        out.normalization = static_cast<float>(sumY);
-        const double invYn = 1.0 / sumY;
-        const float whiteXYZ[3] = {
-            static_cast<float>(sumX * invYn),
-            1.0f,
-            static_cast<float>(sumZ * invYn)};
-        copy_float3(out.whiteXYZ, whiteXYZ);
-
-        const double whiteSum = sumX + sumY + sumZ;
-        if (!is_positive_finite(whiteSum)) {
-            JTRACE("ILLUM", "FATAL: invalid white sum while building scanner illuminant");
-            return false;
-        }
-        out.whiteXY[0] = static_cast<float>(sumX / whiteSum);
-        out.whiteXY[1] = static_cast<float>(sumY / whiteSum);
-
-        constexpr int kReferenceAxisSamples = 81;
-        constexpr size_t kReferenceAxisSampleCount = 81u;
-        const size_t sampleCount = out.curve.linear.size();
-        if (K == kReferenceAxisSamples && sampleCount == kReferenceAxisSampleCount) {
-            float hashSamples[kReferenceAxisSampleCount + 1u];
-            std::memcpy(
-                hashSamples,
-                out.curve.linear.data(),
-                kReferenceAxisSampleCount * sizeof(float));
-            hashSamples[kReferenceAxisSampleCount] = out.normalization;
-            out.hash = Hash::hash_float_span(hashSamples, kReferenceAxisSampleCount + 1u);
-        } else {
-            std::vector<float> hashSamples(sampleCount + 1);
-            if (sampleCount > 0) {
-                std::memcpy(
-                    hashSamples.data(),
-                    out.curve.linear.data(),
-                    sampleCount * sizeof(float));
-            }
-            hashSamples[sampleCount] = out.normalization;
-            out.hash = Hash::hash_float_span(hashSamples.data(), hashSamples.size());
-        }
-        if (out.hash == 0) {
-            std::ostringstream oss;
-            oss << "FATAL: failed to hash viewing illuminant for " << label;
-            JTRACE("ILLUM", oss.str());
-            return false;
-        }
         return true;
     }
 
@@ -1098,7 +927,7 @@ namespace {
                 input.projectionWhiteValid && Spectral::hanatos_available()) {
                 std::string diagnostic;
                 input.reconstructedReferenceWhiteValid =
-                    Spectral::build_hanatos_reconstructed_reference_white(
+                    JuicerExposure::reference_white(
                         Spectral::gHanSpectra,
                         filmProfile->digest.hanatosSpectralGaussianBlurDefault,
                         input.projectionWhiteXYZ,
@@ -1515,6 +1344,8 @@ namespace {
         }
 
         JTRACE_SCOPE("BUILD", "rebuild_direct_render_state");
+        std::shared_ptr<const DirectRenderState> outgoingDirect;
+        std::shared_ptr<const PrintRenderState> outgoingPrint;
         std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
         if (S.lastHash.load(std::memory_order_acquire) == fullHash) {
             const std::shared_ptr<const DirectRenderState> active =
@@ -1530,6 +1361,7 @@ namespace {
                 *outDiagnostic = diagnostic;
             }
             std::lock_guard<std::mutex> stateLock(S.m);
+            outgoingDirect = JuicerAtomic::load_shared_ptr(&S.activeDirectState);
             JuicerAtomic::store_shared_ptr(
                 &S.activeDirectState,
                 std::shared_ptr<const DirectRenderState>{});
@@ -1543,9 +1375,11 @@ namespace {
         next->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
         {
             std::lock_guard<std::mutex> stateLock(S.m);
+            outgoingDirect = JuicerAtomic::load_shared_ptr(&S.activeDirectState);
             JuicerAtomic::store_shared_ptr(
                 &S.activeDirectState,
                 std::shared_ptr<const DirectRenderState>(next));
+            outgoingPrint = JuicerAtomic::load_shared_ptr(&S.activePrintState);
             JuicerAtomic::store_shared_ptr(
                 &S.activePrintState,
                 std::shared_ptr<const PrintRenderState>{});
@@ -1570,6 +1404,8 @@ namespace {
         }
 
         JTRACE_SCOPE("BUILD", "rebuild_print_render_state");
+        std::shared_ptr<const DirectRenderState> outgoingDirect;
+        std::shared_ptr<const PrintRenderState> outgoingPrint;
         std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
         if (S.lastHash.load(std::memory_order_acquire) == fullHash) {
             const std::shared_ptr<const PrintRenderState> active =
@@ -1585,6 +1421,7 @@ namespace {
                 *outDiagnostic = diagnostic;
             }
             std::lock_guard<std::mutex> stateLock(S.m);
+            outgoingPrint = JuicerAtomic::load_shared_ptr(&S.activePrintState);
             JuicerAtomic::store_shared_ptr(
                 &S.activePrintState,
                 std::shared_ptr<const PrintRenderState>{});
@@ -1598,9 +1435,11 @@ namespace {
         next->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
         {
             std::lock_guard<std::mutex> stateLock(S.m);
+            outgoingDirect = JuicerAtomic::load_shared_ptr(&S.activeDirectState);
             JuicerAtomic::store_shared_ptr(
                 &S.activeDirectState,
                 std::shared_ptr<const DirectRenderState>{});
+            outgoingPrint = JuicerAtomic::load_shared_ptr(&S.activePrintState);
             JuicerAtomic::store_shared_ptr(
                 &S.activePrintState,
                 std::shared_ptr<const PrintRenderState>(next));
@@ -1663,17 +1502,36 @@ PendingRenderAdmissionResult admit_pending_render_state(InstanceState& state) {
 #endif
 
         std::string rebuildDiagnostic;
-        const bool rebuilt = Spektrafilm::scan_route_is_print(snapshot.scanRoute)
-                                 ? rebuild_print_render_state_for_hash(
-                                       state,
-                                       snapshot,
-                                       fullHash,
-                                       &rebuildDiagnostic)
-                                 : rebuild_direct_render_state_for_hash(
-                                       state,
-                                       snapshot,
-                                       fullHash,
-                                       &rebuildDiagnostic);
+        bool rebuilt = false;
+        try {
+            rebuilt = Spektrafilm::scan_route_is_print(snapshot.scanRoute)
+                          ? rebuild_print_render_state_for_hash(
+                                state,
+                                snapshot,
+                                fullHash,
+                                &rebuildDiagnostic)
+                          : rebuild_direct_render_state_for_hash(
+                                state,
+                                snapshot,
+                                fullHash,
+                                &rebuildDiagnostic);
+        } catch (const JuicerCuda::ExecutionFailure& failure) {
+            const auto category = failure.failure.status.category;
+            if (failure.deferredDirError ||
+                (category != FJ_STATUS_UNSUPPORTED_INPUT && category != FJ_STATUS_INTERNAL_FAILURE)) {
+                throw;
+            }
+            // Construction and its rebuild lock have unwound; the pending recheck
+            // below decides whether this failed attempt is still current.
+            std::ostringstream diagnostic;
+            diagnostic << "RenderStateConstructionFailure category="
+                       << (category == FJ_STATUS_UNSUPPORTED_INPUT ? "UnsupportedInput" : "InternalFailure")
+                       << " route=" << static_cast<unsigned>(snapshot.scanRoute)
+                       << " film=" << snapshot.filmProfileKey
+                       << " print=" << snapshot.printProfileKey
+                       << " operation=" << failure.failure.diagnostic;
+            rebuildDiagnostic = diagnostic.str();
+        }
 
         std::lock_guard<std::mutex> pendingLock(state.pending.m);
         const auto* current = std::get_if<PendingParamsState::Valid>(&state.pending.value);

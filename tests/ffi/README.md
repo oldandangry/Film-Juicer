@@ -543,7 +543,7 @@ their independent frozen expectations.
 
 The immutable native curve snapshot holds independently allocated derived data.
 Seven successful Rust CSV cache slots retain source rows; call-local opaque owners
-expire after native elementwise copies. No raw rows or calibration JSON cache is
+expire after synchronous Rust curve construction. Independent C8 copy tests retain their explicit elementwise-copy binding. No raw rows or calibration JSON cache is
 retained in native code. Complete sets alone are published; ordinary unavailable
 sources return uncached partial snapshots. Allocation/internal errors abort cold
 construction. Retained readers survive cache release; candidates build and losing
@@ -559,3 +559,257 @@ recipe fallback. The CSV category probe injects a typed reader-capacity/poison
 error at the raw edge; accepted core reader/cache tests cover their owning
 behavior. Native view/copy/publication hooks are confined to test object targets.
 Their qualification/removal boundary is S4.E when native conversions move.
+
+## CAT16 preparation
+
+`Color.Host.Cat16` compares the safe core facade and actual production wrappers
+against independently captured accepted Stage 3 native scalar/matrix bits. It
+also runs a real C11 caller for status layout, pointer/null handling, exact write
+extents and contained production panics. `Ffi.Host.ColorPreparation` checks all
+nine transforms, four complete Cmax tables, 15 complete route/recipe cases,
+state/table ownership and actual admission failure/retry/recovery. Isolated
+admission/profile objects supply the existing hooks; the shared product targets
+receive none. Cases modifying the process-global pending hook run serially.
+
+The shared test-support color fault is thread-local and one-shot. Its ten
+operation tags select the four CAT16/CAT02 and six input-color production exports by positive
+one-based call index. It consumes the
+fault before action, and preserves production pointer validation/output clearing.
+Invalid arm disarms; clear is idempotent. Supersession tests perform N2's valid
+raw-export calls for the original armed count on the admission thread before
+cleanup, proving consumption for newer valid, invalid and uninitialized input.
+Other-category/deferred controls throw inside real profile conversion; cold
+asset panic/capacity cases exercise the shared admission boundary separately.
+
+`Color.Gpu.ScannerReuse` separately proves actual six-allocation scanner LUT
+address/content/identity reuse across Hanatos/Mallett direct/print CCTF-only and
+warm transitions. It records bounded preparation times and retires only its idle
+test-owned context between completed triplets.
+The host groups execute no device operation. All groups have finite CTest
+process timeouts. No ordinary run generates or changes expectations.
+
+`fixtures/color/manifest.json` records native-parent provenance, representation,
+case membership and exact identity order. Finite values, signed zero and infinity
+signs are exact; NaNs compare classification. Each complete-consumer run selects
+its preset capture. Existing Rust-density/render fixtures and their limits stay
+unchanged. The temporary native value bridge has removal owner S4.E.
+
+
+## CAT02 preparation
+
+`Color.Host.Cat02` independently compares production wrappers and direct-core
+facades with 1,874 accepted-parent leaf cases and 162 strict-threshold cases.
+Its C11 caller checks status layout, null handling, positive-zero clearing,
+exact write extents, read-only aliases, nonfinite values and panic containment.
+The shared `fj_test_color_arm_fault`/`fj_test_color_clear_fault` slot covers all
+ten production operations. Unrelated operations, invalid pointers and facades
+do not count; replacement, invalid-arm disarming and thread locality are checked.
+
+`Ffi.Host.Cat02Preparation` checks 56 complete recipe cases, 144 real scanner
+color cases, two early-invalid scanner returns, and 32 cases per retained scalar
+helper. Recipes, table payloads, whites, matrices, encoding and identities compare
+exactly. The signed Hanatos and nonnegative tables sanitation paths stay separate.
+Current failures, recovery and N2 supersession exercise actual film/scanner
+matrix calls on all four routes. Both retained scalar helpers propagate typed
+failures. Same-thread raw calls before cleanup witness consumed faults. Retained
+route owners preserve values through state replacement and cache release.
+
+`fixtures/color/cat02-manifest.json` identifies the accepted native parent,
+source/configuration/resource capture, explicit defaults, ordered controls and
+new per-preset expectations. These are native-parent characterization fixtures;
+ordinary tests never regenerate them. Known exceptional leaf floats compare
+NaN classification; completed consumers, identities and control fields compare
+exactly. Comparator controls reject transpose, one-bit, reversed whites, changed
+identity and the wrong platform fixture. Platform differences in downstream
+recipes remain in their respective captures. Existing CAT16 fixtures and limits
+are unchanged. Both temporary color bridges have removal owner S4.E; device
+CAT02 device execution retains its existing owner. Input-color host mathematics use the boundary described below; CUDA decoders remain unchanged.
+
+
+## Input-color preparation
+
+`Color.Host.InputColor` compares production wrappers and direct-core facades with
+four matrix/tag/white selections, 432 decoder triplets, 1,729 explicit-matrix
+conversion cases, 54 unsanitized linear leaves and 216 ordered linear projections.
+The C11 caller proves both record layouts, signatures/tags, complete/partial output
+clearing, null/bad-flag handling, read-only input sharing and contained panics.
+The shared ten-operation TLS fault slot also proves cross-operation counting and
+replacement, invalid-arm disarming, thread locality, null/flag non-consumption,
+facade independence and default-construction non-consumption.
+
+`Ffi.Host.InputColorPreparation` compares 96 base completed products and 44
+bounded auto-exposure, compression and output-only controls with all frozen
+settings/defaults. Matrices, whites, both distinct mid-gray scales, TC/reference/
+print balance, sensitivity/scanner arrays/descriptors and final/upload identities
+remain exact. Real early and late failures cover foundation matrices, both Mallett
+conversions, TC mid-gray and both synthetic-reference evaluations on negative/
+positive direct/print routes. Cold/current failures, recovery and deterministic
+pending supersession retain owners/hashes/counters; same-thread matching raw calls
+before cleanup witness consumption. Retained products stay exact across asset
+cache release and state replacement. Both retained DWG helpers propagate failure.
+
+`fixtures/color/input-color-manifest.json` contains self-contained native-parent,
+compiler, control, representation and reference-role provenance. The owner-adopted
+6 October 2026 inverse mapping uses A from every agreeing completed recipe/config
+as the new matrix producer's exact reference. Original standalone/default inverse
+observations remain native characterization; Windows Release B is retained there.
+All four capture payloads are unchanged. Conversion tests consume their explicitly
+supplied inverse, including B, without replacing it through the matrix producer.
+Every other numerical/identity obligation and existing fixture/limit is unchanged.
+Ordinary tests read only public fixtures and never generate expectations.
+
+The unready native carrier has plain identity matrices; completed producers bind
+all three consumed matrices before use. Host input mathematics are value-only Rust
+operations with synchronous, exclusive/disjoint foreign outputs. Wrappers propagate
+operation-specific typed construction failure through the existing admission path.
+The temporary value bridge is removed at S4.E; native enum/labels/plain storage and
+CUDA decoding/execution retain their assigned responsibilities.
+
+`Color.Gpu.ScannerReuse` additionally checks decoded BT.2020 and sRGB Mallett states
+on negative direct/print routes. Cold, output-CCTF-only and warm preparation reuse
+all six scanner allocations with identical contents/identities. It verifies exact
+prepared film matrices and unconsumed host-math faults during native preparation.
+These are GPU checks; host groups introduce no eager CUDA-driver dependency.
+
+
+## Illuminant construction
+
+`Assets.Host.IlluminantConstruction` compares raw production C calls, the direct
+safe-core fixture facade, native wrappers and real direct/print callers against
+four frozen accepted-parent captures. `fixtures/illuminants/construction-manifest.json`
+records exact provenance; existing seven-curve fixtures remain immutable. It covers
+41 BB cases, direct/Akima boundaries, all 270 caller outcomes and 144 complete
+products, including reachable EQUAL print/preflash and the native 3200 K lens
+contract. Matrices, spectral samples, whites, filtered lights and all compared
+identities are exact. Synthetic interpolation NaNs use their established
+classification contract; no tolerance is introduced.
+
+The seven production math operations use required bounded diagnostics and cleared
+failure outputs. Lens finish/release take and clear the owner before validating
+other descriptors. Scoped `CsvRows` borrows retain Rust sources through synchronous
+calls and cache/Assets release; production makes zero native source-row copies.
+The native seven-curve cache remains the only derived cache. Existing order,
+partial retry, decoded-empty, concurrent winner, late-publication, retained
+snapshot and reentrant destructor cases remain active. Printed native capacities
+and Rust Akima Vec capacities are actual scoped observations, excluding allocator
+metadata/RSS; Rust capacities are cumulative allocations, not a live high-water mark.
+
+Closed TLS fault selectors prove intended raw-export consumption and independence
+from CSV/color slots and the facade's own slot. Checked scratch-capacity errors map
+to AllocationFailure in production. Panic containment does not recover ordinary
+Box/Arc allocator abort. Compiler probes reject default/field construction and
+mutation of private `LensInput`; the safe core exposes only slice/value APIs.
+
+Construction/admission tests retain old publications while rejecting failed
+replacement and allow subsequent recovery. EQUAL projection failures prove no
+native submission and preserve the actual published print state. The separate
+`Ffi.Gpu.CudaRender.negative-print` rows enter real native Root print preparation,
+observe prepared-frame abort, verify actual absent-stream completion and its
+existing error precedence, and reuse resources after clearing the fault. The
+completion override is isolated test code following the physical synchronization;
+it does not establish real driver failure or Resolve recovery acceptance.
+All host groups remain free of driver/device runtime requirements. Normal Release
+excludes the fault, memory and observation seams.
+
+### Spectral tables, whites and film S inverse
+
+`Spectral.Host.Tables`, `.White`, `.SInverse`, `.Products`, `.Admission` and
+`Ffi.Host.SpectralPreparation` use the four native-parent captures in
+`fixtures/spectral/`. The manifest identifies accepted source, preset, frozen
+capture and independent hash derivation. These are Film-Juicer migration
+contracts. Ordinary tests neither generate fixtures nor consume private or
+upstream files. Finite bits, signed zero and identities are exact; arithmetic
+NaN payloads compare by classification. Captured intermediates retain the
+rounded float products, double sums and determinant for diagnosis.
+
+The safe core owns fixed complete Tables/White results with private readonly
+storage. Three synchronous C11 exports borrow initialized fixed source arrays,
+clear defined outputs before fallible work and retain no pointers. The existing
+native payload owns projected vectors. Table products/reciprocals and
+scanner-white promoted products/reciprocals deliberately remain distinct.
+The film table white/hash gate precedes the weighted-CMF S inverse; singular
+S retains its strict determinant threshold and identity fallback.
+
+Tests compare raw exports and the direct-core facade independently to captures,
+then exercise real route products, all serialized controls and enclosing hashes.
+They check closed white failure metadata, malformed spans, TLS raw/facade fault
+independence, typed propagation, publication distinctions, admitted holds, cache
+release, exact operation counts and recovery. A controlled CMF scaling reaches
+actual float-reciprocal overflow and proves inverse suppression. Fixture-only
+replacement of C++ allocation rejects the actual 324-byte native vector request;
+Rust fixed-array math allocates no heap. Reported vector capacities are not RSS
+or live-peak measurements. Compiler probes accept normal result consumers and
+reject Default, field construction, direct mutation and readonly-view mutation
+with and without test support. Definition-specific source controls guard the
+removed native producers.
+
+Products run in disposable resource copies under the selected validation tree.
+These groups require no driver/device at runtime. Existing scanner GPU reuse,
+full route/scanner suites and installed-host acceptance keep their separate scope.
+Normal Release excludes fault slots, facade exports and fixture allocators.
+
+### Hanatos reference and final sensitivity
+
+`Exposure.Host.Reference`, `.Sensitivity`, `.Products`, `.Admission` and
+`Ffi.Host.ExposurePreparation` check A5 reconstruction, final film sensitivity,
+recipe Mallett scale, both C11 exports, direct-core facade, actual native callers,
+and publication/retained-owner behavior. The 68 reference cases and 544 sensitivity
+cases retain exact finite bits and classify arithmetic NaNs. Complete products
+cover 420 attempts across methods, routes, profiles, illuminants, windows, surfaces
+and UV/IR activation; surfaces and TC construction remain native A6 work.
+
+The four numerical cohorts share `fixtures/exposure/numerical.json`; only public
+consumer inputs and expectations are stored there. Intermediate native and
+pinned-candidate traces remain in the original capture evidence. Complete-product
+cases keep their preset-specific controls, failures and membership; successful
+rows reference readonly records in `product-values.json`. Every completed field
+is still compared. Admission tests require no numerical fixture and do not load
+one. `Exposure.Host.FixtureFormat` checks manifest hashes, case membership,
+record indices and exact result-sharing controls including signed zero, NaN bits
+and 64-bit identities.
+
+The manifest records the accepted source revision, original fixture hashes and
+verified format migration. For explicit maintenance, prepare a candidate without
+running any mathematical producer:
+
+```sh
+python tests/ffi/compact_exposure_fixtures.py --source-ref <accepted-revision> \
+  --output-dir out/validation/<preset>/exposure-format-candidate
+```
+
+This operation requires the original per-preset format and an unused output
+directory. It proves equality of all four numerical consumer projections and
+every expanded complete-product document before writing candidates. Ordinary
+tests never run this maintenance operation or read Git/private/reference data.
+
+A5 uses pinned `libm::erff` 0.2.15 under the owner-approved numerical decision.
+Native and pinned-Rust preimplementation studies retain provenance in the
+exposure manifest. Reference reconstruction and ordinary f32 exp retain exact
+native-defined expectations. Final hashes describe the actual Rust coefficients.
+The small rounding differences and resulting enclosing identities are accepted
+for this family; no numerical bounds in another family are widened.
+
+Earlier color and spectral fixture bytes remain unchanged. Exact supplements in
+`fixtures/exposure/updates/` use test/replace JSON operations over completed
+products replayed independently through the frozen native parent with frozen
+approved A5 values. The tests still compare every field and reject wrong preset
+values. Leaf expectations, source controls and failure outcomes retain their
+original authority. Ordinary tests do not regenerate any fixture.
+
+The tensor is borrowed synchronously and no foreign source survives the call.
+Completed core results have private readonly fields and no Default. Checked
+kernel sizes and real fallible reservation distinguish impossible layouts from
+allocation failure; the native binding maps AllocationFailure to `std::bad_alloc`.
+Closed raw/facade fault slots prove consumption before cleanup or recovery and
+are absent from normal Release. Tests cover malformed consumed spans, ignored
+inactive spans, panic containment, cleared outputs/metadata, concurrent calls,
+source expiry, signed-zero/tiny blur, failure ordering, cache release and recovery.
+Visual A/B comparison was declined; these automated checks do not establish
+Resolve render acceptance or real driver/context-loss recovery.
+
+The existing processor and parameter-identity tests select new exact per-preset
+A5 fixtures under `tests/ofx/fixtures/exposure/`. Seven processor rows and ten
+identities come from frozen-parent GPU replay using the original pinned study
+values. Candidate GPU samples must agree bit for bit before adoption. The old
+processor/identity files and every existing pixel bound remain unchanged. This
+is automated numerical capture; no visual comparison images are generated.

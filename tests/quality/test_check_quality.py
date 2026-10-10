@@ -28,6 +28,27 @@ SPEC.loader.exec_module(check_quality)
 
 
 class CheckQualityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.enterContext(patch.object(check_quality, "create_run_directory", return_value=Path(directory.name)))
+        # Dispatch tests mock the checks themselves; receipt stability has its
+        # own real temporary-repository witnesses below.
+        self.enterContext(patch.object(check_quality, "quality_inputs", return_value={"dispatch_test": True}))
+
+    def test_configured_checkout_path_rejects_a_different_spelling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            cache = root / "out/build/linux-debug/CMakeCache.txt"
+            check_quality.check_build_path(root, "linux-debug")
+            cache.parent.mkdir(parents=True)
+            cache.write_text(f"CMAKE_HOME_DIRECTORY:INTERNAL={root}\n", encoding="utf-8")
+            check_quality.check_build_path(root, "linux-debug")
+            other = root.parent / "different-checkout"
+            cache.write_text(f"CMAKE_HOME_DIRECTORY:INTERNAL={other}\n", encoding="utf-8")
+            with self.assertRaisesRegex(check_quality.QualityError, "configured checkout path"):
+                check_quality.check_build_path(root, "linux-debug")
+
     def test_name_status_preserves_spaces_and_rename_destination(self) -> None:
         selected, excluded = check_quality.parse_name_status(
             b"M\0native/a file.cpp\0R100\0src/old.cpp\0src/new name.cpp\0"
@@ -69,9 +90,10 @@ class CheckQualityTests(unittest.TestCase):
                 self.subTest(files=files),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", *files]),
                 patch.object(check_quality, "Runner"),
+                patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust") as rust,
-                patch.object(check_quality, "check_native") as native,
+                patch.object(check_quality, "prepare_native_analysis", return_value=[]) as native,
                 contextlib.redirect_stdout(io.StringIO()) as output,
             ):
                 self.assertEqual(check_quality.main(), 0)
@@ -98,14 +120,15 @@ class CheckQualityTests(unittest.TestCase):
                 self.subTest(files=files),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", *files]),
                 patch.object(check_quality, "Runner"),
+                patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust", side_effect=check_quality.QualityError("Rust check failed")),
-                patch.object(check_quality, "check_native") as native,
+                patch.object(check_quality, "prepare_native_analysis", return_value=[]) as native,
                 contextlib.redirect_stdout(io.StringIO()) as output,
             ):
                 with self.assertRaisesRegex(check_quality.QualityError, "Rust check failed"):
                     check_quality.main()
-                native.assert_not_called()
+                self.assertEqual(native.call_count, int("native/juicer_cuda_api.h" in files))
                 self.assertNotIn("Quality checks passed", output.getvalue())
 
     def test_policy_changes_cannot_skip_required_checks(self) -> None:
@@ -114,9 +137,10 @@ class CheckQualityTests(unittest.TestCase):
                 self.subTest(path=path),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", path]),
                 patch.object(check_quality, "Runner") as runner,
+                patch.object(check_quality, "check_build_path"),
                 patch.object(check_quality, "check_source_hygiene"),
                 patch.object(check_quality, "check_rust") as rust,
-                patch.object(check_quality, "check_native"),
+                patch.object(check_quality, "prepare_native_analysis", return_value=[]),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 self.assertEqual(check_quality.main(), 0)
@@ -128,6 +152,7 @@ class CheckQualityTests(unittest.TestCase):
         with (
             patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", "CONTRIBUTING.md"]),
             patch.object(check_quality, "Runner") as runner,
+            patch.object(check_quality, "check_build_path"),
             patch.object(check_quality, "check_source_hygiene"),
             contextlib.redirect_stdout(io.StringIO()) as output,
         ):
@@ -136,12 +161,70 @@ class CheckQualityTests(unittest.TestCase):
                 check_quality.main()
             self.assertNotIn("Quality checks passed", output.getvalue())
 
+    def test_edited_native_failure_blocks_rust_and_header_consumers(self) -> None:
+        producer = check_quality.AnalysisCommand(["tool", "producer"], Path("."), "producer", "src/Illuminants.cpp")
+        consumer = check_quality.AnalysisCommand(["tool", "consumer"], Path("."), "consumer", "src/main.cpp")
+        with (
+            patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files",
+                "src/Illuminants.cpp", "native/juicer_legacy_api.h", "rust/film-juicer-core/src/exposure.rs"]),
+            patch.object(check_quality, "Runner") as runner,
+            patch.object(check_quality, "check_build_path"),
+            patch.object(check_quality, "check_source_hygiene"),
+            patch.object(check_quality, "prepare_native_analysis", return_value=[consumer, producer]),
+            patch.object(check_quality, "check_rust") as rust,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            runner.return_value.run_analysis.side_effect = check_quality.QualityError("producer finding")
+            with self.assertRaisesRegex(check_quality.QualityError, "producer finding"):
+                check_quality.main()
+            runner.return_value.run_analysis.assert_called_once_with([producer])
+            rust.assert_not_called()
+
+    def test_success_retains_all_header_consumers_and_cuda_variants(self) -> None:
+        producer = check_quality.AnalysisCommand(["tool", "producer"], Path("."), "producer", "src/Illuminants.cpp")
+        consumers = [check_quality.AnalysisCommand(["tool", variant], Path("."), variant,
+            "src/Cuda/Film/JuicerCudaFilmPipeline.cu") for variant in ("ordinary", "test")]
+        events = []
+        with (
+            patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files",
+                "src/Illuminants.cpp", "native/juicer_legacy_api.h", "rust/film-juicer-core/src/exposure.rs"]),
+            patch.object(check_quality, "Runner") as runner,
+            patch.object(check_quality, "check_build_path"),
+            patch.object(check_quality, "check_source_hygiene"),
+            patch.object(check_quality, "prepare_native_analysis", return_value=[*consumers, producer]),
+            patch.object(check_quality, "check_rust", side_effect=lambda *args: events.append("rust")),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            runner.return_value.run_analysis.side_effect = lambda items: events.append(items)
+            self.assertEqual(check_quality.main(), 0)
+        self.assertEqual(events, [[producer], "rust", consumers])
+
+    def test_rust_probe_profiles_select_the_preset_or_complete_matrix(self) -> None:
+        for module_name in ("test_rust_naming", "test_rust_boundaries"):
+            module = __import__(module_name)
+            suite = module.RustNamingTests if module_name.endswith("naming") else module.RustBoundaryTests
+            with tempfile.TemporaryDirectory() as directory:
+                settings = {"JUICER_CARGO": "cargo", "JUICER_RUST_TARGET": "x86_64-unknown-linux-gnu",
+                    "JUICER_RUST_PROBE_DIR": directory + "/cache", "JUICER_TEST_ARTIFACT_DIR": directory + "/logs"}
+                for profile, expected in (("debug", (False,)), ("release", (True,)), ("both", (False, True))):
+                    with self.subTest(module=module_name, profile=profile), patch.dict(os.environ,
+                        {**settings, "JUICER_RUST_PROBE_PROFILE": profile}):
+                        try:
+                            suite.setUpClass()
+                            self.assertEqual(suite.profiles, expected)
+                            self.assertEqual(suite.target_dir, Path(settings["JUICER_RUST_PROBE_DIR"]).resolve())
+                        finally:
+                            suite.doClassCleanups()
+                with patch.dict(os.environ, {**settings, "JUICER_RUST_PROBE_PROFILE": "invalid"}):
+                    with self.assertRaises(KeyError):
+                        suite.setUpClass()
+
     def test_cuda_header_selects_real_c_and_cpp_consumers(self) -> None:
         root = SCRIPT_PATH.parent.parent
         policy = check_quality.load_policy(root)
         entries = [
-            check_quality.CompilationEntry("tests/ffi/cuda_abi_c.c", "cc -std=c11"),
-            check_quality.CompilationEntry("tests/ffi/cuda_abi_test.cpp", "c++ -std=c++20"),
+            check_quality.CompilationEntry("tests/ffi/cuda_abi_c.c", "cc -std=c11 -Inative"),
+            check_quality.CompilationEntry("tests/ffi/cuda_abi_test.cpp", "c++ -std=c++20 -Inative"),
         ]
         self.assertEqual(
             check_quality.tidy_translation_units(root, ["native/juicer_cuda_api.h"], entries, policy),
@@ -166,6 +249,9 @@ class CheckQualityTests(unittest.TestCase):
                     label="expected-failure",
                 )
             self.assertTrue((root / "logs/01-expected-failure.log").is_file())
+            record = json.loads((root / "logs/01-expected-failure.command.json").read_text())
+            self.assertEqual(record["returncode"], 7)
+            self.assertGreaterEqual(record["seconds"], 0)
 
     def test_member_lint_inheritance_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -243,7 +329,7 @@ class ParallelAnalysisTests(unittest.TestCase):
             self.assertEqual(active, 0)
             self.assertEqual(len(list(runner.log_dir.glob("*.log"))), 4)
 
-    def test_all_findings_are_observed_before_parallel_analysis_fails(self) -> None:
+    def test_running_findings_are_observed_without_starting_queued_work(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             runner = check_quality.Runner(root, root / "logs", 2)
@@ -261,7 +347,17 @@ class ParallelAnalysisTests(unittest.TestCase):
                 runner.run_analysis(commands)
             self.assertIn("exit code 7", str(failure.exception))
             self.assertIn("exit code 9", str(failure.exception))
-            self.assertEqual(len(list(runner.log_dir.glob("*.log"))), 3)
+            self.assertEqual(len(list(runner.log_dir.glob("*.log"))), 2)
+
+    def test_serial_failure_never_starts_the_next_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = check_quality.Runner(root, root / "logs", 1)
+            commands = [check_quality.AnalysisCommand(["tool", str(i)], root, f"analysis-{i}") for i in range(4)]
+            with patch.object(runner, "run", side_effect=check_quality.QualityError("failed")) as run:
+                with self.assertRaisesRegex(check_quality.QualityError, "failed"):
+                    runner.run_analysis(commands)
+            run.assert_called_once()
 
     def test_launch_failure_is_logged_and_cannot_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -453,7 +549,7 @@ class CudaQualityTests(unittest.TestCase):
         self.write_source("src/kernel.cuh", '#include "shared.h"\n')
         self.write_source("src/kernel.cu", '#include "kernel.cuh"\n')
         self.write_source("src/host.cpp", '#include <shared.h>\n')
-        entries = [self.entry(), self.entry(), check_quality.CompilationEntry("src/host.cpp", "c++")]
+        entries = [self.entry(), self.entry(), check_quality.CompilationEntry("src/host.cpp", "c++ -Isrc")]
         self.assertEqual(check_quality.tidy_translation_units(
             self.root, ["src/shared.h"], entries, self.policy,
         ), ["src/host.cpp", "src/kernel.cu"])
@@ -477,7 +573,7 @@ class CudaQualityTests(unittest.TestCase):
              patch.object(check_quality, "compilation_entries", return_value=entries), \
              patch.object(check_quality, "prepare_cuda_analysis", side_effect=check_quality.QualityError("CUDA finding")) as cuda:
             with self.assertRaisesRegex(check_quality.QualityError, "CUDA finding"):
-                check_quality.check_native(self.root, runner, arguments, ["src/kernel.cuh"], self.policy)
+                check_quality.prepare_native_analysis(self.root, runner, arguments, ["src/kernel.cuh"], self.policy)
         cuda.assert_called_once_with(self.root, runner, "tool", entries)
         runner.run_analysis.assert_not_called()
 
@@ -645,10 +741,237 @@ class SourceHygieneTests(unittest.TestCase):
                 self.assertIn(f"{path}:1:8:", result.stdout)
                 self.assertIn("source hygiene checks failed", result.stderr)
                 self.assertNotIn("Quality checks passed", result.stdout)
-                report = self.root / "out/validation/linux-debug/quality/source-hygiene.log"
+                reports = sorted((self.root / "out/validation/linux-debug/quality/runs").glob("*/source-hygiene.log"),
+                                 key=lambda path: path.stat().st_mtime_ns)
+                report = reports[-1]
                 self.assertIn("JUICER_BUILD_VALIDATION", report.read_text(encoding="utf-8"))
+                receipt = json.loads((report.parent / "run.json").read_text(encoding="utf-8"))
+                self.assertEqual(receipt["status"], "failed")
+                self.assertIn("source-hygiene.log", receipt["files"])
                 if selection[0] == "--base":
                     self.assertIn("src/untracked.cpp:1:8:", result.stdout)
+
+
+class SelectionAndEvidenceTests(unittest.TestCase):
+    def test_run_directories_are_unique_and_never_include_old_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = root / "out/validation/linux-debug/quality/old.log"
+            old.parent.mkdir(parents=True)
+            old.write_text("retained", encoding="utf-8")
+            first = check_quality.create_run_directory(root, "linux-debug")
+            second = check_quality.create_run_directory(root, "linux-debug")
+            self.assertNotEqual(first, second)
+            self.assertEqual(list(first.iterdir()), [])
+            self.assertEqual(list(second.iterdir()), [])
+            self.assertEqual(old.read_text(encoding="utf-8"), "retained")
+
+    def test_include_graph_preserves_cycles_local_resolution_and_all_consumers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {
+                "src/a.cpp": '#include "shared.h"\n',
+                "src/kernel.cu": '#include "shared.h"\n',
+                "src/shared.h": '#include "cycle.h"\n',
+                "src/cycle.h": '#include "shared.h"\n',
+                "tests/local/a.cpp": '#include "shared.h"\n',
+                "tests/local/shared.h": '#pragma once\n',
+            }
+            for name, content in sources.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            entries = [check_quality.CompilationEntry(name, "compiler") for name in
+                       ["src/a.cpp", "src/kernel.cu", "src/kernel.cu", "tests/local/a.cpp"]]
+            policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+            reads = []
+            original = Path.read_text
+
+            def read(path, *args, **kwargs):
+                reads.append(path)
+                return original(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", read):
+                selected = check_quality.tidy_translation_units(root, ["src/shared.h", "src/cycle.h"], entries, policy)
+            self.assertEqual(selected, ["src/a.cpp", "src/kernel.cu"])
+            self.assertEqual(len(reads), len(set(reads)))
+            # The graph is invocation-local; edits cannot leave cached reachability.
+            (root / "src/a.cpp").write_text("", encoding="utf-8")
+            self.assertEqual(check_quality.tidy_translation_units(root, ["src/shared.h"], entries, policy), ["src/kernel.cu"])
+
+    def test_include_graph_resolves_an_aliased_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            root = parent / "source"
+            (root / "src").mkdir(parents=True)
+            (root / "src/owner.cpp").write_text('#include "shared.h"\n', encoding="utf-8")
+            (root / "src/shared.h").write_text("#pragma once\n", encoding="utf-8")
+            alias = parent / "alias"
+            if os.name == "nt":
+                subprocess.run(
+                    ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(root)],
+                    check=True, capture_output=True, timeout=30,
+                )
+            else:
+                alias.symlink_to(root, target_is_directory=True)
+            try:
+                self.assertNotEqual(alias, alias.resolve())
+                entries = [check_quality.CompilationEntry("src/owner.cpp", "compiler")]
+                policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+                self.assertEqual(
+                    check_quality.tidy_translation_units(alias, ["src/shared.h"], entries, policy),
+                    ["src/owner.cpp"],
+                )
+            finally:
+                if os.name == "nt":
+                    alias.rmdir()
+                else:
+                    alias.unlink()
+
+    def test_missing_translation_unit_fails_before_include_or_tool_work(self) -> None:
+        root = SCRIPT_PATH.parent.parent
+        policy = check_quality.load_policy(root)
+        entries = [check_quality.CompilationEntry("src/a.cpp", "compiler")]
+        selected = ["src/ColorTransforms.h", "tests/new.cpp"]
+        with patch.object(check_quality, "included_paths") as includes:
+            with self.assertRaisesRegex(check_quality.QualityError, "tests/new.cpp"):
+                check_quality.tidy_translation_units(root, selected, entries, policy)
+            includes.assert_not_called()
+        with patch.object(check_quality, "compilation_entries", return_value=entries), \
+             patch.object(check_quality, "resolve_tool") as tools:
+            with self.assertRaisesRegex(check_quality.QualityError, "tests/new.cpp"):
+                check_quality.prepare_native_analysis(root, Mock(), argparse.Namespace(preset="linux-debug"), selected, policy)
+            tools.assert_not_called()
+
+    def test_unresolved_header_still_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+            with self.assertRaisesRegex(check_quality.QualityError, "no consuming translation unit"):
+                check_quality.tidy_translation_units(root, ["src/missing.h"], [], policy)
+
+    def test_include_search_contexts_preserve_order_and_quote_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for name, content in {
+                "src/a.cpp": '#include "shared.h"\n',
+                "src/b.cpp": '#include "shared.h"\n',
+                "src/shared.h": '#include <choice.h>\n',
+                "src/choice.h": "", "first/choice.h": "", "second/choice.h": "",
+            }.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            entries = [check_quality.CompilationEntry("src/a.cpp", "cc -Ifirst -Isecond"),
+                       check_quality.CompilationEntry("src/b.cpp", "cc -Isecond -Ifirst")]
+            policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+            for header, expected in (("first/choice.h", ["src/a.cpp"]), ("second/choice.h", ["src/b.cpp"])):
+                self.assertEqual(check_quality.tidy_translation_units(root, [header], entries, policy), expected)
+            with self.assertRaisesRegex(check_quality.QualityError, "no consuming"):
+                check_quality.tidy_translation_units(root, ["src/choice.h"], entries, policy)
+
+    def test_asset_lookup_hook_selects_render_recipe_consumer(self) -> None:
+        root = SCRIPT_PATH.parent.parent
+        policy = check_quality.load_policy(root)
+        entries = [check_quality.CompilationEntry(
+            "src/RenderRecipe.cpp", "c++ -DJUICER_ASSET_LOOKUP_TEST_HOOK=1 -Itests/ffi -Isrc -Inative")]
+        self.assertEqual(check_quality.tidy_translation_units(root, ["tests/ffi/juicer_test_api.h"], entries, policy),
+                         ["src/RenderRecipe.cpp"])
+
+    def test_include_search_accepts_msvc_nvcc_quote_system_and_forced_paths(self) -> None:
+        root = Path.cwd().resolve()
+        entry = check_quality.CompilationEntry("src/a.cpp", "", root,
+            ("compiler", "/I", "one space", "--include-path=two,three", "-iquote", "quoted",
+             "-isystem", "system", "/FIforced.h"))
+        with patch.dict(os.environ, {"CPATH": "", "INCLUDE": "", "CPLUS_INCLUDE_PATH": ""}):
+            search = check_quality.include_search(root, entry)
+        self.assertEqual(search.quoted, (root / "quoted",))
+        self.assertEqual(search.ordinary, tuple(root / name for name in ("one space", "two", "three", "system")))
+        self.assertEqual(search.forced, ("forced.h",))
+
+
+class QualityReceiptTests(unittest.TestCase):
+    def test_generated_cuda_inputs_must_remain_stable_until_receipt_completion(self) -> None:
+        headers = ("openrand/util.h", "texture_fetch_functions.h")
+        cases = [(None, None), *((name, action) for name in headers for action in ("modify", "delete"))]
+        for name, action in cases:
+            with self.subTest(header=name, action=action), tempfile.TemporaryDirectory() as directory:
+                log_dir = Path(directory).resolve()
+                expected = {}
+
+                def check_then_mutate(root, arguments, policy, selected, excluded, runner):
+                    # Use real preparation/binding and receipt completion; compiler
+                    # execution is outside this input-lifetime regression.
+                    check_quality.prepare_cuda_analysis(root, runner, "unused", [])
+                    overlay = runner.log_dir / "cuda-include"
+                    expected.update({str((overlay / header).resolve()): check_quality.file_digest(overlay / header)
+                                     for header in headers})
+                    if action == "modify":
+                        with (overlay / name).open("a", encoding="utf-8") as stream:
+                            stream.write("\n#error generated input changed after analysis\n")
+                    elif action == "delete":
+                        (overlay / name).unlink()
+                    return 0
+
+                with (patch.object(sys, "argv", ["quality", "--preset", "linux-debug", "--files", "scripts/check-quality.py"]),
+                      patch.object(check_quality, "check_build_path"),
+                      patch.object(check_quality, "create_run_directory", return_value=log_dir),
+                      patch.object(check_quality, "quality_inputs", return_value={"unchanged_source_inventory": True}),
+                      patch.object(check_quality, "run_checks", side_effect=check_then_mutate),
+                      contextlib.redirect_stdout(io.StringIO()) as output):
+                    if action is None:
+                        self.assertEqual(check_quality.main(), 0)
+                    else:
+                        with self.assertRaisesRegex(check_quality.QualityError, "quality input"):
+                            check_quality.main()
+                record = json.loads((log_dir / "run.json").read_text(encoding="utf-8"))
+                self.assertEqual(record["consumed_inputs"], expected)
+                self.assertEqual(record["status"], "passed" if action is None else "failed")
+                self.assertEqual("Quality checks passed" in output.getvalue(), action is None)
+
+    def test_source_and_configuration_mutations_cannot_pass(self) -> None:
+        for changed in ("scripts/check-quality.py", "src/transitive.h", "rust/core/src/lib.rs",
+                        "out/build/linux-debug/compile_commands.json", "src/new-generated.h"):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                files = ["scripts/check-quality.py", "src/transitive.h", "rust/core/src/lib.rs",
+                         "out/build/linux-debug/compile_commands.json"]
+                for name in files:
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("original", encoding="utf-8")
+                for command in (["git", "init", "-q"], ["git", "add", "scripts", "src", "rust"],
+                                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                                 "-c", "commit.gpgsign=false", "commit", "-qm", "baseline"]):
+                    subprocess.run(command, cwd=root, check=True, capture_output=True)
+                policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+                def mutate(*args):
+                    (root / changed).write_text("changed", encoding="utf-8")
+                    return 0
+                with (patch.object(check_quality, "__file__", str(root / "scripts/check-quality.py")),
+                      patch.object(sys, "argv", ["check-quality", "--preset", "linux-debug", "--files", "scripts/check-quality.py"]),
+                      patch.object(check_quality, "load_policy", return_value=policy),
+                      patch.object(check_quality, "run_checks", side_effect=mutate),
+                      contextlib.redirect_stdout(io.StringIO()) as output):
+                    with self.assertRaisesRegex(check_quality.QualityError, "inputs changed"):
+                        check_quality.main()
+                receipts = list((root / "out/validation").rglob("run.json"))
+                self.assertEqual(len(receipts), 1)
+                record = json.loads(receipts[0].read_text())
+                self.assertEqual(record["status"], "failed")
+                self.assertIn("git_head", record["inputs"])
+                self.assertNotIn("Quality checks passed", output.getvalue())
+
+    def test_consumed_external_input_mutation_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tool = root / "tool"
+            tool.write_bytes(b"original")
+            runner = check_quality.Runner(root, root / "logs")
+            runner.bind_inputs([tool])
+            tool.write_bytes(b"changed")
+            with self.assertRaisesRegex(check_quality.QualityError, "input changed"):
+                runner.verify_inputs()
 
 
 if __name__ == "__main__":

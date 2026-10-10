@@ -1,5 +1,5 @@
 // SpectralData.h
-// Canonical spectral data, immutable table structures, resource I/O, and narrow resampling
+// Canonical spectral data and immutable table structures.
 #pragma once
 
 #include <algorithm>
@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "Logging.h"
+#include "RustReconstructionBridge.h"
 
 namespace Spectral {
 
@@ -43,14 +44,6 @@ namespace Spectral {
                 wavelengths[static_cast<size_t>(i)] = lambdaMin + delta * static_cast<float>(i);
             }
         }
-    };
-
-    struct FilmTcLut {
-        static constexpr int kSize = 192;
-        static constexpr int kChannels = 4;
-
-        // Fixed C-order [192][192][4]; RGB are followed by one padding channel.
-        std::vector<float> rgba;
     };
 
     // FJ_TEMP_BRIDGE: independent spectral source storage; remove S4.E.
@@ -84,233 +77,6 @@ namespace Spectral {
     }
 
 } // namespace Spectral
-
-namespace SpectralResampleDetail {
-
-    struct IndexedPair {
-        float lambda = 0.0f;
-        float value = 0.0f;
-        size_t originalIndex = 0;
-    };
-
-    inline void dedup_pairs_keep_first_by_wavelength(
-        const std::vector<std::pair<float, float>>& inPairs,
-        std::vector<float>& outX,
-        std::vector<float>& outY) {
-        outX.clear();
-        outY.clear();
-
-        std::vector<IndexedPair> temp;
-        temp.reserve(inPairs.size());
-        for (size_t i = 0; i < inPairs.size(); ++i) {
-            const float lambda = inPairs[i].first;
-            const float value = inPairs[i].second;
-            if (!std::isfinite(lambda) || !std::isfinite(value)) {
-                continue;
-            }
-            temp.push_back({lambda, value, i});
-        }
-        if (temp.empty()) {
-            return;
-        }
-
-        std::sort(temp.begin(), temp.end(), [](const IndexedPair& a, const IndexedPair& b) {
-            if (a.lambda != b.lambda)
-                return a.lambda < b.lambda;
-            return a.originalIndex < b.originalIndex;
-        });
-
-        float currentLambda = temp[0].lambda;
-        float currentValue = temp[0].value;
-        size_t currentFirstIndex = temp[0].originalIndex;
-
-        auto flush = [&]() {
-            outX.push_back(currentLambda);
-            outY.push_back(currentValue);
-        };
-
-        for (size_t i = 1; i < temp.size(); ++i) {
-            const float lambda = temp[i].lambda;
-            const float value = temp[i].value;
-            const size_t idx = temp[i].originalIndex;
-
-            if (lambda == currentLambda) {
-                if (idx < currentFirstIndex) {
-                    currentFirstIndex = idx;
-                    currentValue = value;
-                }
-                continue;
-            }
-
-            flush();
-            currentLambda = lambda;
-            currentValue = value;
-            currentFirstIndex = idx;
-        }
-        flush();
-    }
-
-    inline std::vector<std::pair<float, float>> scalar_akima_resample(
-        const std::vector<float>& x,
-        const std::vector<float>& y,
-        const float* axisNm,
-        size_t axisCount) {
-        std::vector<std::pair<float, float>> out;
-        if (x.size() < 2 || x.size() != y.size()) {
-            return out;
-        }
-
-        std::vector<double> abscissae(x.begin(), x.end());
-        std::vector<double> ordinates(y.begin(), y.end());
-        const std::size_t sampleCount = abscissae.size();
-        for (std::size_t index = 0; index < sampleCount; ++index) {
-            if (!std::isfinite(abscissae[index]) || !std::isfinite(ordinates[index])) {
-                return out;
-            }
-            if (index > 0 && abscissae[index] <= abscissae[index - 1]) {
-                return out;
-            }
-        }
-
-        std::vector<double> slopes(sampleCount, 0.0);
-        if (sampleCount == 2) {
-            const double interval = abscissae[1] - abscissae[0];
-            const double slope = (ordinates[1] - ordinates[0]) / interval;
-            slopes[0] = slope;
-            slopes[1] = slope;
-        } else {
-            const std::size_t extendedSlopeCount = sampleCount + 3;
-            std::vector<double> intervals(sampleCount - 1, 0.0);
-            for (std::size_t index = 0; index + 1 < sampleCount; ++index) {
-                intervals[index] = abscissae[index + 1] - abscissae[index];
-            }
-
-            std::vector<double> extendedSlopes(extendedSlopeCount, 0.0);
-            std::vector<double> defaultSlopes(sampleCount, 0.0);
-            std::vector<double> slopeDifferences(extendedSlopeCount - 1, 0.0);
-            std::vector<double> forwardWeights(sampleCount, 0.0);
-            std::vector<double> backwardWeights(sampleCount, 0.0);
-            std::vector<double> weightSums(sampleCount, 0.0);
-
-            auto calculate_weights = [&]() {
-                std::fill(extendedSlopes.begin(), extendedSlopes.end(), 0.0);
-                for (std::size_t index = 0; index + 1 < sampleCount; ++index) {
-                    extendedSlopes[index + 2] =
-                        (ordinates[index + 1] - ordinates[index]) / intervals[index];
-                }
-                extendedSlopes[1] =
-                    2.0 * extendedSlopes[2] - extendedSlopes[3];
-                extendedSlopes[0] =
-                    2.0 * extendedSlopes[1] - extendedSlopes[2];
-                extendedSlopes[extendedSlopeCount - 2] =
-                    2.0 * extendedSlopes[extendedSlopeCount - 3] -
-                    extendedSlopes[extendedSlopeCount - 4];
-                extendedSlopes[extendedSlopeCount - 1] =
-                    2.0 * extendedSlopes[extendedSlopeCount - 2] -
-                    extendedSlopes[extendedSlopeCount - 3];
-
-                for (std::size_t index = 0; index < sampleCount; ++index) {
-                    defaultSlopes[index] =
-                        0.5 * (extendedSlopes[index] + extendedSlopes[index + 3]);
-                }
-                for (std::size_t index = 0; index + 1 < extendedSlopeCount; ++index) {
-                    slopeDifferences[index] =
-                        std::abs(extendedSlopes[index + 1] - extendedSlopes[index]);
-                }
-
-                double maximumWeightSum = 0.0;
-                for (std::size_t index = 0; index < sampleCount; ++index) {
-                    forwardWeights[index] = slopeDifferences[index + 2];
-                    backwardWeights[index] = slopeDifferences[index];
-                    weightSums[index] =
-                        forwardWeights[index] + backwardWeights[index];
-                    maximumWeightSum = std::max(maximumWeightSum, weightSums[index]);
-                }
-                return maximumWeightSum;
-            };
-
-            constexpr double kBreakMultiplier = 1e-9;
-            const double cutoff = kBreakMultiplier * calculate_weights();
-            for (std::size_t index = 0; index < sampleCount; ++index) {
-                double slope = defaultSlopes[index];
-                if (weightSums[index] > cutoff) {
-                    const double numerator =
-                        backwardWeights[index] *
-                        (extendedSlopes[index + 2] - extendedSlopes[index + 1]);
-                    slope = extendedSlopes[index + 1] + numerator / weightSums[index];
-                }
-                slopes[index] = slope;
-            }
-        }
-
-        const std::size_t segmentCount = sampleCount - 1;
-        std::vector<double> coefficients(segmentCount * 4, 0.0);
-        for (std::size_t segment = 0; segment < segmentCount; ++segment) {
-            const double interval = abscissae[segment + 1] - abscissae[segment];
-            const double inverseInterval = 1.0 / interval;
-            const double inverseIntervalSquared = inverseInterval * inverseInterval;
-            const double delta =
-                (ordinates[segment + 1] - ordinates[segment]) * inverseInterval;
-            const std::size_t coefficientIndex = segment * 4;
-            coefficients[coefficientIndex] = ordinates[segment];
-            coefficients[coefficientIndex + 1] = slopes[segment];
-            coefficients[coefficientIndex + 2] =
-                (3.0 * delta - 2.0 * slopes[segment] - slopes[segment + 1]) *
-                inverseInterval;
-            coefficients[coefficientIndex + 3] =
-                (slopes[segment] + slopes[segment + 1] - 2.0 * delta) *
-                inverseIntervalSquared;
-        }
-
-        out.reserve(axisCount);
-        for (size_t index = 0; index < axisCount; ++index) {
-            const float wavelength = axisNm[index];
-            const double wavelength64 = static_cast<double>(wavelength);
-            float value = std::numeric_limits<float>::quiet_NaN();
-            if (wavelength64 >= abscissae.front() && wavelength64 <= abscissae.back()) {
-                auto upper = std::upper_bound(abscissae.begin(), abscissae.end(), wavelength64);
-                std::size_t upperIndex =
-                    static_cast<std::size_t>(std::distance(abscissae.begin(), upper));
-                if (upperIndex == 0) {
-                    upperIndex = 1;
-                }
-                if (upperIndex >= abscissae.size()) {
-                    upperIndex = abscissae.size() - 1;
-                }
-                const std::size_t segment = upperIndex - 1;
-                const double offset = wavelength64 - abscissae[segment];
-                const double* segmentCoefficients = &coefficients[segment * 4];
-                double interpolated = segmentCoefficients[3];
-                interpolated = interpolated * offset + segmentCoefficients[2];
-                interpolated = interpolated * offset + segmentCoefficients[1];
-                interpolated = interpolated * offset + segmentCoefficients[0];
-                value = static_cast<float>(interpolated);
-            }
-            out.emplace_back(wavelength, value);
-        }
-        return out;
-    }
-
-} // namespace SpectralResampleDetail
-
-inline std::vector<std::pair<float, float>> akima_resample_agx(
-    const std::vector<std::pair<float, float>>& pairs,
-    const float* axis_nm,
-    size_t axis_count) {
-    std::vector<std::pair<float, float>> out;
-    if (!axis_nm || axis_count == 0) {
-        return out;
-    }
-
-    std::vector<float> xs;
-    std::vector<float> ys;
-    SpectralResampleDetail::dedup_pairs_keep_first_by_wavelength(pairs, xs, ys);
-    if (xs.size() < 2) {
-        return out;
-    }
-
-    return SpectralResampleDetail::scalar_akima_resample(xs, ys, axis_nm, axis_count);
-}
 
 namespace Spectral {
 
@@ -398,6 +164,8 @@ namespace Spectral {
     // SpectralTables: Per-instance spectral tables (consolidated from SpectralTables.h)
     // ============================================================================
 
+    // FJ_TEMP_BRIDGE: native immutable spectral transport; remove S4.E.
+    // Rust owns table arithmetic/identity; FocusedRenderPayload owns these vectors.
     struct SpectralTables {
         // Wavelength axis
         std::vector<float> lambda;
@@ -470,19 +238,6 @@ namespace Spectral {
         log_spectral_warning(oss.str());
     }
 
-    inline void mean_power_normalize(std::vector<float>& spd) {
-        if (spd.empty())
-            return;
-        double sum = 0.0;
-        for (float v : spd)
-            sum += static_cast<double>(v);
-        double mean = sum / static_cast<double>(spd.size());
-        if (mean > 0.0) {
-            for (float& v : spd)
-                v = static_cast<float>(v / mean);
-        }
-    }
-
     // ============================================================================
     // Curve Sampling and Resampling Functions
     // ============================================================================
@@ -498,23 +253,6 @@ namespace Spectral {
             }
         }
         return true;
-    }
-
-    inline std::vector<std::pair<float, float>> resample_pairs_akima_to_reference_axis(
-        const std::vector<std::pair<float, float>>& inPairs) {
-        std::vector<std::pair<float, float>> out;
-        if (inPairs.empty()) {
-            return out;
-        }
-
-        if (samples_follow_reference_axis(inPairs)) {
-            return inPairs;
-        }
-
-        // Out-of-domain evaluation must yield NaN (no extrapolation, no endpoint clamp),
-        // matching SciPy Akima with extrapolate=False / extrapolate=None semantics.
-        const SpectralShape& axis = gShape;
-        return akima_resample_agx(inPairs, axis.wavelengths.data(), static_cast<size_t>(axis.K));
     }
 
     // ============================================================================

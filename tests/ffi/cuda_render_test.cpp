@@ -22,6 +22,9 @@
 
 #include "prepared_descriptors.h"
 #include "juicer_cuda_owner.h"
+#include "juicer_test_api.h"
+#include "JuicerState.h"
+#include "ColorTransforms.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
 namespace JuicerProcess::TestSupport {
@@ -64,17 +67,37 @@ namespace JuicerCuda::PinnedUploadTest {
     void before_diagnostic() {}
 } // namespace JuicerCuda::PinnedUploadTest
 
+namespace JuicerAssets::IlluminantTest {
+    thread_local unsigned aborts = 0;
+    void frame_abort() noexcept {
+        ++aborts;
+    }
+} // namespace JuicerAssets::IlluminantTest
+
 namespace JuicerCuda::RenderTest {
     enum class Injection : std::uint8_t {
         None,
         Allocation,
         Standard,
         Unknown,
-        Typed
+        Typed,
+        Preflash
     };
     thread_local Injection injection = Injection::None;
     thread_local FjStatus injectedStatus{};
     thread_local bool injectedDeferredDirError = false;
+    thread_local int completionOverride = 0;
+    thread_local unsigned completionCalls = 0;
+    thread_local int lastCompletion = 0;
+    thread_local const JuicerProcess::Root::CudaFramePreparationRequest* preflashRequest = nullptr;
+    thread_local JuicerCuda::ResourceManager::DeviceContextKey preflashKey{};
+    thread_local JuicerCuda::ResourceManager::SubmissionSnapshot preflashSubmission{};
+    int completion_status(int actual) noexcept {
+        ++completionCalls;
+        lastCompletion = actual;
+        return completionOverride ? std::exchange(completionOverride, 0) : actual;
+    }
+
 
     struct PendingWork {
         cudaStream_t stream = nullptr;
@@ -175,6 +198,14 @@ namespace JuicerCuda::RenderTest {
                 throw std::runtime_error("render injection 100% diagnostic");
             case Injection::Unknown:
                 throw 17;
+            case Injection::Preflash: {
+                JuicerCuda::Failure failure;
+                auto frame = JuicerProcess::root().prepare_cuda_frame(preflashKey, preflashSubmission, *preflashRequest, {}, nullptr, failure);
+                if (!frame.active()) {
+                    throw std::runtime_error("native preparation failed before the EQUAL fault boundary");
+                }
+                throw std::runtime_error("EQUAL preflash fault did not escape native preparation");
+            }
             case Injection::Typed:
                 throw ExecutionFailure{{injectedStatus, "render injection 100% diagnostic"}, injectedDeferredDirError};
         }
@@ -616,7 +647,7 @@ namespace JuicerCudaTest {
             if (!supplied)
                 require(cudaStreamQuery(nullptr) == cudaSuccess, "absent stream abort completion");
         }
-        {
+        for (bool rustTc : {false, true}) {
             const JuicerCuda::ResourceManager::DeviceContextKey uploadKey{context.device_id, reinterpret_cast<void*>(context.context)};
             JuicerCuda::RenderTest::ExpiringUpload upload;
             upload.resources = JuicerProcess::TestSupport::RootLifetimeObserver::resources(JuicerProcess::root(), uploadKey);
@@ -631,14 +662,32 @@ namespace JuicerCudaTest {
             // representation into actual contiguous C scalars without indexing it.
             std::vector<float> borrowed(original.count);
             std::memcpy(borrowed.data(), original.data, original.count * sizeof(float));
-            const auto expected = borrowed;
-            upload.source = {borrowed.data(), borrowed.size()};
+            struct TcOwner {
+                FjOwnedFilmTcLut record{};
+                ~TcOwner() noexcept {
+                    (void)fj_test_reconstruction_release_tc_lut(&record);
+                }
+            } tcOwner;
+            if (rustTc) {
+                std::vector<float> spectra(std::size_t{192} * 192u * 81u, 1.0f);
+                std::array<float, 243> sensitivity{};
+                sensitivity.fill(1.0f);
+                std::array<float, 81> spd{};
+                spd.fill(1.0f);
+                const FjFilmTcLutInput input{{spectra.data(), spectra.size()}, {sensitivity.data(), sensitivity.size()}, {spd.data(), spd.size()}, {1, 1, 1}, 0, 2, 0, {nullptr, 0}, 0, 0, {0, 0}, {nullptr, 0}};
+                require(fj_test_reconstruction_tc_lut(&input, &tcOwner.record, error).category == FJ_STATUS_SUCCESS, "real Rust TC allocation for native staging expiry");
+                upload.source = tcOwner.record.samples;
+            } else
+                upload.source = {borrowed.data(), borrowed.size()};
+            const float* sourceAddress = upload.source.data;
+            const std::vector<float> expected(upload.source.data, upload.source.data + upload.source.count);
             JuicerCuda::Failure warmFailure;
-            require(JuicerCuda::PinnedUploadTest::upload(*upload.resources, upload.second, borrowed.data(), borrowed.size() * sizeof(float), upload.stream, warmFailure), "warm native expiry staging");
+            require(JuicerCuda::PinnedUploadTest::upload(*upload.resources, upload.second, upload.source.data, upload.source.count * sizeof(float), upload.stream, warmFailure), "warm native expiry staging");
             require(cudaStreamSynchronize(upload.stream) == cudaSuccess, "complete expiry warmup before measured call");
             JuicerCuda::PinnedUploadTest::poll(uploadKey);
             auto expired = prepared;
-            expired.film_development.density_rgb = upload.source;
+            if (!rustTc)
+                expired.film_development.density_rgb = upload.source;
             JuicerCuda::RenderTest::expiringUpload = &upload;
             const auto outcome = fj_cuda_render(cuda, &context, &frame, &submission, &expired, {}, error);
             JuicerCuda::RenderTest::expiringUpload = nullptr;
@@ -649,14 +698,18 @@ namespace JuicerCudaTest {
                 if (block.capacity >= expected.size() * sizeof(float) &&
                     cudaEventQuery(static_cast<cudaEvent_t>(block.event)) == cudaErrorNotReady &&
                     std::memcmp(block.pointer, expected.data(), expected.size() * sizeof(float)) == 0) {
-                    require(block.pointer != borrowed.data(), "native staging does not borrow the caller allocation");
+                    require(block.pointer != sourceAddress, "native staging does not borrow the caller allocation");
                     event = static_cast<cudaEvent_t>(block.event);
                     break;
                 }
             }
             require(event != nullptr, "actual native staging event is pending");
-            std::fill(borrowed.begin(), borrowed.end(), -8192.0f);
-            std::vector<float>().swap(borrowed);
+            if (rustTc) {
+                require(fj_test_reconstruction_release_tc_lut(&tcOwner.record).category == FJ_STATUS_SUCCESS && !tcOwner.record.samples.data && tcOwner.record.capacity == 0, "Rust TC allocation released before native upload completes");
+            } else {
+                std::fill(borrowed.begin(), borrowed.end(), -8192.0f);
+                std::vector<float>().swap(borrowed);
+            }
             expired = {};
             upload.source = {};
             require(cudaEventQuery(event) == cudaErrorNotReady, "caller storage expires before upload completion");
@@ -664,7 +717,7 @@ namespace JuicerCudaTest {
             std::vector<float> actual(expected.size());
             require(cudaMemcpy(actual.data(), upload.second, actual.size() * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess, "read native staged values");
             require(std::memcmp(actual.data(), expected.data(), expected.size() * sizeof(float)) == 0, "native staging retained exact borrowed values");
-            std::cout << "caller prepared storage expired after C return with native upload event outstanding\n";
+            std::cout << (rustTc ? "Rust TC allocation" : "caller prepared storage") << " expired after C return with native upload event outstanding\n";
         }
         const JuicerCuda::ResourceManager::DeviceContextKey key{context.device_id, reinterpret_cast<void*>(context.context)};
         JuicerCuda::ResourceManager::RegistryContextSnapshot oldEpoch;
@@ -684,6 +737,78 @@ namespace JuicerCudaTest {
                                nullptr}),
                        cancelled,
                        "query with null user");
+
+        if (prepared.route == 1) {
+            ParamSnapshot controls;
+            controls.filmProfileKey = "kodak_portra_400";
+            controls.printProfileKey = "kodak_portra_endura";
+            controls.scanRoute = Spektrafilm::ScanRoute::NegativePrintScan;
+            controls.spectralUpsamplingMode = 1;
+            controls.enlIll = 7;
+            controls.printPreflashExposure = .1;
+            controls.grainControls.active = false;
+            controls.dirCouplers.active = false;
+            FocusedRenderStateBuildProduct product;
+            std::string diagnostic;
+            require(build_print_render_state_product(controls, product, diagnostic), diagnostic.c_str());
+            Scanner::ScannerSpectralLutDescriptor descriptor;
+            require(Scanner::build_print_scanner_spectral_lut_descriptor({&product.recipe.profileRoute, &product.recipe.densityBounds, &product.recipe.scannerOutput}, descriptor, diagnostic), diagnostic.c_str());
+            JuicerProcess::Root::CudaFramePreparationRequest request;
+            request.recipe = &product.recipe;
+            request.exposureTables = &product.payload.exposureTables;
+            request.filmRawConfig = &product.payload.filmRawConfig;
+            request.printMainIlluminant = &*product.payload.printMainIlluminant;
+            request.scannerTables = &product.payload.scannerTables;
+            request.scannerColor = &product.payload.scannerColor;
+            request.scannerLutDescriptor = &descriptor;
+            request.outputBoundaryTable = product.payload.outputBoundaryTable.get();
+            request.requestedWidth = 16;
+            request.requestedHeight = 16;
+            JuicerCuda::RenderTest::preflashRequest = &request;
+            JuicerCuda::RenderTest::preflashKey = {context.device_id, reinterpret_cast<void*>(context.context)};
+            auto& token = JuicerCuda::RenderTest::preflashSubmission;
+            token.instanceToken.value = 0x494c4c554d;
+            token.frameToken.value = 900;
+            token.snapshotId = 900;
+            token.deviceContextKey = JuicerCuda::RenderTest::preflashKey;
+            token.keyDigests = JuicerCuda::ResourceManager::make_key_digests(product.payload.uploadCoreHash, product.recipe.dirCouplers.hash, product.payload.scannerHash, 0);
+            auto failureFrame = frame;
+            failureFrame.flags &= ~FJ_FRAME_STREAM_PRESENT;
+            failureFrame.stream = 0;
+            for (std::uint32_t fault : {1u, 2u, 3u})
+                for (bool completionFailure : {false, true}) {
+                    // Each attempt uses a cold print descriptor; no successful commit
+                    // precedes the EQUAL binding. The real absent-stream completion
+                    // runs before its test-only status override.
+                    require(JuicerProcess::root().assets().release_cached_payloads().category == FJ_STATUS_SUCCESS, "preflash source release");
+                    JuicerAssets::IlluminantTest::aborts = 0;
+                    JuicerCuda::RenderTest::completionCalls = 0;
+                    require(fj_test_illuminant_arm_fault(3, 1, fault).category == FJ_STATUS_SUCCESS, "arm native preflash export");
+                    JuicerCuda::RenderTest::injection = JuicerCuda::RenderTest::Injection::Preflash;
+                    JuicerCuda::RenderTest::completionOverride = completionFailure ? static_cast<int>(cudaErrorInvalidValue) : 0;
+                    const auto failed = fj_cuda_render(cuda, &context, &failureFrame, &submission, &prepared, {}, error);
+                    JuicerCuda::RenderTest::injection = JuicerCuda::RenderTest::Injection::None;
+                    const FjStatus expected = completionFailure ? JuicerCuda::runtime_failure_status(cudaErrorInvalidValue) : FjStatus{fault == 1 ? FJ_STATUS_UNSUPPORTED_INPUT : fault == 2 ? FJ_STATUS_INTERNAL_FAILURE
+                                                                                                                                                                                             : FJ_STATUS_ALLOCATION_FAILURE,
+                                                                                                                                       FJ_API_NONE,
+                                                                                                                                       0};
+                    require_status(failed, expected, "native EQUAL preflash/completion precedence");
+                    require(JuicerCuda::RenderTest::completionCalls == 1 && JuicerCuda::RenderTest::lastCompletion == cudaSuccess, "actual absent-stream completion precedes status override");
+                    require(JuicerAssets::IlluminantTest::aborts == 1, "native preparation exception aborted one admitted frame");
+                    require(cudaStreamQuery(nullptr) == cudaSuccess, "native preflash unwind completed absent stream work");
+                    require(fj_test_illuminant_live_lenses() == 0 && fj_test_csv_live_owners() == 0, "native unwind reclaimed Rust sources/lenses");
+                    std::array<char, 128> bytes{};
+                    FjErrorBuffer errorBuffer{bytes.data(), bytes.size(), 0};
+                    FjIlluminant equal{};
+                    require(fj_legacy_illuminant_equal_energy(&equal, &errorBuffer).category == FJ_STATUS_SUCCESS, "intended native preflash raw export consumed fault");
+                }
+            JuicerCuda::RenderTest::preflashRequest = nullptr;
+            JuicerCuda::Failure failure;
+            auto recovered = JuicerProcess::root().prepare_cuda_frame(JuicerCuda::RenderTest::preflashKey, token, request, {}, nullptr, failure);
+            require(recovered.active(), "native preflash resources reusable after abort");
+            require(recovered.finish(nullptr, failure), "recovered preflash finish");
+            require_status(render(), success, "ordinary render reuses resources after native preflash abort");
+        }
         std::atomic<bool> started{false};
         std::atomic<bool> acquired{false};
         std::thread blocked;

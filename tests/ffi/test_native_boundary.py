@@ -31,6 +31,26 @@ def forbidden_uses(paths, pattern):
     return findings
 
 
+def color_sources(root):
+    return sorted(
+        path for directory in (root / "src", root / "native", root / "cmake", root / "tests")
+        for path in directory.rglob("*")
+        if path.is_file() and (path.suffix.lower() in SOURCE_SUFFIXES or path.suffix == ".cmake")
+    ) + [root / "CMakeLists.txt"]
+
+
+RETIRED_CAT02 = r"\b(?:chromatic_adapt_XYZ_CAT02|build_chromatic_adaptation_matrix|prepare_film_raw_config|mat3_has_only_finite|sanitize_nonnegative_triplet|normalize_triplet_to_unit_y|triplet_has_positive_finite_sum|sanitize_white_or_dwg|whites_approximately_equal)\b"
+
+RETIRED_INPUT_COLOR = r"\b(?:matrix_input_rgb_to_xyz|input_colorspace_white_xyz|kRGB_to_XYZ_DWG|kRGB_to_XYZ_BT2020|kRGB_to_XYZ_ACES2065|kRGB_to_XYZ_sRGB_Rec709|kInputD65WhiteXYZ|kInputAcesWhiteXYZ|gDWG_RGB_to_XYZ|gDWG_XYZ_to_RGB|XYZ_to_DWG_linear|DWG_linear_to_XYZ|decode_BT2020_nonnegative|decode_BT2020_channel|decode_sRGB_nonnegative|decode_sRGB_channel|apply_input_cctf_decoding|convert_input_rgb_to_DWG|convert_input_rgb_to_sRGB_linear|copy_triplet_sanitized|clamp_triplet_nonnegative_inplace|mul_3x3_vec3)\b"
+INPUT_MATRIX_METHODS = r"\b(?:Mat3::(?:mul|inverse)|void\s+mul|Mat3\s+inverse)\s*\("
+
+RETIRED_CAT16 = r"\b(?:chromatic_adapt_XYZ_CAT16|build_chromatic_adaptation_matrix_CAT16)\b"
+RETIRED_ILLUMINANT_MATH = r"\b(?:PlanckBlackbodySample|planck_blackbody|build_blackbody_curve|build_illuminant_curve|build_tungsten_kg3_curve|prepare_tungsten_kg3_lens_input|build_tungsten_kg3_lens_curve|TungstenKg3LensInput|build_curve_equal_energy_pinned|SpectralResampleDetail|scalar_akima_resample|akima_resample_agx|resample_pairs_akima_to_reference_axis|mean_power_normalize)\b"
+
+
+RETIRED_EXPOSURE_DEFINITIONS = r"\b(?:bool\s+(?:build_hanatos_reconstructed_reference_white|derive_final_sensitivity)|float\s+(?:camera_filter_sample|hanatos_window_sample))\s*\([^;{}]*\)\s*\{"
+
+
 HOST_MESSAGES = r"\b(?:DirFailureMessage|sendMessage)\b|OFX::"
 CONTEXT_RESET = r"\b(?:cudaDeviceReset|cuDevicePrimaryCtxReset|cuCtxReset)\s*\("
 RETIRED_SPECTRAL = r"\b(?:NpySpectraLUT|NpyFloat2D|load_npy_spectra_lut|load_npy_float2d|load_csv_triplets|load_hanatos_spectra_lut|load_arctic2026beta04_spectra_lut|load_mallett2019_basis_npy|sourceElementBytes|hanatosAssetHash|arcticAssetHash|kExpectedDecodedAssetHash|data_file_string)\b|NpyLoader\.h"
@@ -41,6 +61,43 @@ RETIRED_NOISE = r"\b(?:StbnNoisePayload|WangNoisePayload|StaticNoisePayloadSet|S
 
 
 class NativeBoundary(unittest.TestCase):
+    def test_retired_tc_math_definitions_stay_deleted(self):
+        processing = ROOT / "src/SpectralProcessing.cpp"
+        gamut = ROOT / "src/GamutCompression.cpp"
+        tc = r"\b(?:bool\s+(?:build_film_tc_lut|build_blurred_hanatos_spectra|build_gaussian_kernel|projected_white_to_tc)|(?:float|int|void|std::array<\s*float\s*,\s*3\s*>)\s+(?:sample_film_tc_lut|sample_mitchell_2d|sample_integrated|sample_spectrum|mitchell_weight|mitchell_coordinate|mitchell_reflect_index|gaussian_reflect_index|eval_hanatos_surface))\s*\([^;{}]*\)\s*\{"
+        remap = r"\b(?:bool\s+(?:compress_input_xy|remap_film_tc_lut_for_input_compression)|(?:float|double)\s+(?:bilinear_sample|reinhard_knee))\s*\([^;{}]*\)\s*\{"
+        self.assertEqual(forbidden_uses([processing], tc), [])
+        self.assertEqual(forbidden_uses([gamut], remap), [])
+        for body in ("bool build_film_tc_lut() {}", "float eval_hanatos_surface() {}", "int gaussian_reflect_index() {}", "void mitchell_coordinate() {}"):
+            self.assertRegex(body, tc)
+        for body in ("bool compress_input_xy() {}", "bool remap_film_tc_lut_for_input_compression() {}", "double reinhard_knee() {}", "float bilinear_sample() {}"):
+            self.assertRegex(body, remap)
+        self.assertNotRegex("bool build_film_tc_lut();", tc)
+        self.assertNotRegex("double ray_polygon_distance() {}", remap)
+        source = gamut.read_text(encoding="utf-8")
+        self.assertEqual(source.count("double ray_polygon_distance("), 1)
+        self.assertEqual(source.count("ray_polygon_distance("), 2)
+        self.assertIn("set_cie_1931_2deg_cmf(", processing.read_text(encoding="utf-8"))
+
+    def test_retired_exposure_definitions_stay_deleted(self):
+        paths = [path for directory in (ROOT / "src", ROOT / "native")
+                 for path in directory.rglob("*") if path.is_file() and path.suffix.lower() in SOURCE_SUFFIXES]
+        self.assertEqual(forbidden_uses(paths, RETIRED_EXPOSURE_DEFINITIONS), [])
+        for declaration in ("bool derive_final_sensitivity() {}", "float camera_filter_sample(float x) { return x; }",
+                            "float hanatos_window_sample(float x) { return x; }",
+                            "bool build_hanatos_reconstructed_reference_white() {}"):
+            self.assertRegex(declaration, RETIRED_EXPOSURE_DEFINITIONS)
+        for survivor in ("float sample_spectrum() {}", "bool build_gaussian_kernel() {}",
+                         "float hanatos_window_sample_for_test(float x) { return x; }",
+                         "JuicerExposure::reference_white(x, y, z, out, diagnostic);"):
+            self.assertNotRegex(survivor, RETIRED_EXPOSURE_DEFINITIONS)
+        recipe = (ROOT / "src/RenderRecipe.cpp").read_text(encoding="utf-8")
+        self.assertEqual(recipe.count("std::uint64_t hash_tc_lut_recipe("), 1)
+        self.assertEqual(recipe.count("JuicerExposure::prepare_sensitivity("), 1)
+        self.assertEqual((ROOT / "src/JuicerState.cpp").read_text(encoding="utf-8").count("JuicerExposure::reference_white("), 1)
+
+    def test_native_illuminant_math_is_retired(self):
+        self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_ILLUMINANT_MATH), [])
     def test_executor_has_no_host_message_surface(self):
         self.assertEqual(forbidden_uses(native_sources(ROOT), HOST_MESSAGES), [])
 
@@ -79,6 +136,16 @@ class NativeBoundary(unittest.TestCase):
         paths.append(ROOT / "src/ProcessRoot.cpp")
         self.assertEqual(forbidden_uses(paths, CONTEXT_RESET), [])
 
+    def test_retired_cat16_producers_stay_deleted(self):
+        self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_CAT16), [])
+
+    def test_retired_cat02_producers_stay_deleted(self):
+        self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_CAT02), [])
+
+    def test_retired_input_color_producers_stay_deleted(self):
+        self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_INPUT_COLOR), [])
+        self.assertEqual(forbidden_uses([ROOT / "src/ColorTransforms.h"], INPUT_MATRIX_METHODS), [])
+
     def test_retired_native_profile_authority_stays_deleted(self):
         paths = [
             path for directory in (ROOT / "src", ROOT / "native", ROOT / "cmake")
@@ -114,6 +181,18 @@ class NativeBoundary(unittest.TestCase):
 
 
 class NativeBoundaryControls(unittest.TestCase):
+    def test_illuminant_deletion_guard_rejects_each_retired_definition(self):
+        symbols = ("PlanckBlackbodySample", "planck_blackbody", "build_blackbody_curve", "build_illuminant_curve", "build_tungsten_kg3_curve", "prepare_tungsten_kg3_lens_input", "build_tungsten_kg3_lens_curve", "TungstenKg3LensInput", "build_curve_equal_energy_pinned", "SpectralResampleDetail", "scalar_akima_resample", "akima_resample_agx", "resample_pairs_akima_to_reference_axis", "mean_power_normalize")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src/Illuminants.cpp"
+            source.parent.mkdir(parents=True)
+            (root / "CMakeLists.txt").write_text("", encoding="utf-8")
+            for symbol in symbols:
+                source.write_text(f"void {symbol}();\n", encoding="utf-8")
+                self.assertEqual(len(forbidden_uses(color_sources(root), RETIRED_ILLUMINANT_MATH)), 1)
+            source.write_text("JuicerIlluminant::blackbody(3200);\nSpectral::samples_follow_reference_axis(rows);\n", encoding="utf-8")
+            self.assertEqual(forbidden_uses(color_sources(root), RETIRED_ILLUMINANT_MATH), [])
     def test_new_nested_sources_and_headers_are_checked(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -129,6 +208,68 @@ class NativeBoundaryControls(unittest.TestCase):
                 path.write_text("execute_prepared_frame();\n", encoding="utf-8")
             for pattern in (HOST_MESSAGES, CONTEXT_RESET):
                 self.assertEqual(forbidden_uses(paths, pattern), [])
+
+    def test_input_color_deletion_controls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CMakeLists.txt").write_text("", encoding="utf-8")
+            for relative in ("src/new/input.hpp", "native/new/input.cpp", "tests/ffi/new/setup.c", "cmake/new/input.cmake"):
+                source = root / relative
+                source.parent.mkdir(parents=True, exist_ok=True)
+                for text in ("matrix_input_rgb_to_xyz(space);", "gDWG_XYZ_to_RGB.mul(xyz, rgb);", "decode_sRGB_channel(value);", "convert_input_rgb_to_DWG(config, rgb, out);", "mul_3x3_vec3(m, v, out);"):
+                    source.write_text(text, encoding="utf-8")
+                    self.assertEqual(len(forbidden_uses(color_sources(root), RETIRED_INPUT_COLOR)), 1)
+                source.write_text("fj_legacy_input_matrices(space, out);\nfj_test_dwg_to_xyz(rgb, out);\nJuicerColor::input_to_dwg(config, rgb, false);\nfloat gDWG_WhitePoint_XYZ[3];\n", encoding="utf-8")
+                self.assertEqual(forbidden_uses(color_sources(root), RETIRED_INPUT_COLOR), [])
+            owner = root / "src/ColorTransforms.h"
+            for text in ("void mul(const float v[3], float out[3]);", "Mat3 inverse(float fallback) const;", "Mat3::mul(v, out);"):
+                owner.write_text(text, encoding="utf-8")
+                self.assertEqual(len(forbidden_uses([owner], INPUT_MATRIX_METHODS)), 1)
+            owner.write_text("struct Mat3 { float m[9]; };\nMat3 make_identity_mat3();\n", encoding="utf-8")
+            other = root / "src/OutputColor.h"
+            other.write_text("struct Mat3 { void mul(); Mat3 inverse(); };\n", encoding="utf-8")
+            cuda = root / "src/Cuda/device.cuh"
+            cuda.parent.mkdir(parents=True, exist_ok=True)
+            cuda.write_text("decode_BT2020_channel_device(value);\nconvert_input_rgb_to_DWG_device(config, rgb, out);\n", encoding="utf-8")
+            self.assertEqual(forbidden_uses([owner], INPUT_MATRIX_METHODS), [])
+            self.assertEqual(forbidden_uses(color_sources(root), RETIRED_INPUT_COLOR), [])
+
+    def test_cat16_deletion_controls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CMakeLists.txt").write_text("", encoding="utf-8")
+            for relative in ("src/new/nested.hpp", "native/new/body.cpp", "tests/ffi/new/fixture.c", "cmake/new/check.cmake"):
+                source = root / relative
+                source.parent.mkdir(parents=True, exist_ok=True)
+                for text in ("void chromatic_adapt_XYZ_CAT16();", "build_chromatic_adaptation_matrix_CAT16(whites);"):
+                    source.write_text(text, encoding="utf-8")
+                    self.assertEqual(len(forbidden_uses(color_sources(root), RETIRED_CAT16)), 1)
+                source.write_text("chromatic_adapt_XYZ_CAT02_device(); JuicerColor::cat02_matrix(whites); "
+                                  "Mat3 matrix; fj_legacy_cat16_matrix(source, destination, out); "
+                                  "JuicerColor::adapt_cat16(xyz, whites);", encoding="utf-8")
+                self.assertEqual(forbidden_uses(color_sources(root), RETIRED_CAT16), [])
+
+    def test_cat02_deletion_controls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "CMakeLists.txt").write_text("", encoding="utf-8")
+            for relative in ("src/new/nested.hpp", "src/Cuda/new/body.cuh", "native/new/body.cpp",
+                             "tests/ffi/new/fixture.c", "cmake/new/check.cmake"):
+                source = root / relative
+                source.parent.mkdir(parents=True, exist_ok=True)
+                for text in ("void chromatic_adapt_XYZ_CAT02();", "build_chromatic_adaptation_matrix(whites);",
+                             "prepare_film_raw_config(config);", "mat3_has_only_finite(matrix);",
+                             "sanitize_nonnegative_triplet(out, in);", "normalize_triplet_to_unit_y(xyz);",
+                             "triplet_has_positive_finite_sum(xyz);", "sanitize_white_or_dwg(in, out);",
+                             "whites_approximately_equal(whites);"):
+                    source.write_text(text, encoding="utf-8")
+                    self.assertEqual(len(forbidden_uses(color_sources(root), RETIRED_CAT02)), 1)
+                source.write_text("chromatic_adapt_XYZ_CAT02_device(xyz, whites, out); "
+                                  "Mat3 matrix; make_identity_mat3(); JuicerColor::input_matrices(space); "
+                                  "JuicerColor::input_to_dwg(config, rgb, false); "
+                                  "JuicerColor::cat02_matrix(whites); JuicerColor::adapt_cat02(xyz, whites); "
+                                  "fj_legacy_cat16_matrix(source, destination, out);", encoding="utf-8")
+                self.assertEqual(forbidden_uses(color_sources(root), RETIRED_CAT02), [])
 
     def test_retired_authority_and_build_entry_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

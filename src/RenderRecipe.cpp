@@ -12,9 +12,14 @@
 
 #include "GamutCompression.h"
 #include "RustAssetBridge.h"
+#include "RustColorBridge.h"
+#include "RustExposureBridge.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Hash.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
+#if defined(JUICER_ASSET_LOOKUP_TEST_HOOK)
+#include "juicer_test_api.h"
+#endif
 
 namespace {
 
@@ -293,20 +298,6 @@ namespace {
         return true;
     }
 
-    float camera_filter_sample(float wavelength, const std::array<float, 3>& filter, bool uv) {
-        const float amplitude = std::clamp(filter[0], 0.0f, 1.0f);
-        if (!(amplitude > 0.0f)) {
-            return 1.0f;
-        }
-        float width = filter[2];
-        if (!std::isfinite(width) || std::abs(width) < 1e-6f) {
-            width = uv ? 1e-6f : -1e-6f;
-        }
-        width = uv ? std::abs(width) : -std::abs(width);
-        const float sigmoid = 0.5f * (std::erf((wavelength - filter[1]) / width) + 1.0f);
-        return 1.0f - amplitude + amplitude * sigmoid;
-    }
-
     std::optional<float> sample_synthetic_density(
         float query,
         const std::vector<float>& axis,
@@ -332,14 +323,6 @@ namespace {
         const float t = span > 0.0f ? (query - axis[lo]) / span : 0.0f;
         return curves[lo][channel] + t * (curves[hi][channel] - curves[lo][channel]);
     }
-
-    float hanatos_window_sample(float wavelength, const std::array<float, 4>& params) {
-        constexpr float kSqrt2 = 1.4142135623730950488f;
-        const float uv = 0.5f * (1.0f + std::erf((wavelength - params[0]) / (params[1] * kSqrt2)));
-        const float ir = 0.5f * (1.0f - std::erf((wavelength - params[2]) / (params[3] * kSqrt2)));
-        return uv * ir;
-    }
-
 
     std::uint64_t hash_tc_lut_recipe(
         const FilmRawRecipe& recipe,
@@ -372,137 +355,6 @@ namespace {
             hash_value(hash, recipe.inputCompressionHullHash);
         }
         return hash;
-    }
-
-    bool derive_final_sensitivity(
-        const std::array<std::array<float, 3>, 81>& linearSensitivity,
-        FilmRawRecipe& recipe,
-        const Spektrafilm::FilmFoundationBuildInput& input) {
-        const std::array<float, 81>& referenceIlluminant =
-            input.referenceIlluminant;
-        std::array<double, 3> unfilteredResponse{};
-        std::array<double, 3> filteredResponse{};
-        std::array<float, 81> bandPass{};
-        for (std::size_t wavelengthIndex = 0; wavelengthIndex < bandPass.size(); ++wavelengthIndex) {
-            const float wavelength = 380.0f + 5.0f * static_cast<float>(wavelengthIndex);
-            const float filter = recipe.cameraBandPass.active
-                                     ? camera_filter_sample(wavelength, recipe.cameraBandPass.uv, true) *
-                                           camera_filter_sample(wavelength, recipe.cameraBandPass.ir, false)
-                                     : 1.0f;
-            bandPass[wavelengthIndex] = std::isfinite(filter) ? std::max(0.0f, filter) : 0.0f;
-            const float illuminant = referenceIlluminant[wavelengthIndex];
-            if (!std::isfinite(illuminant) || illuminant < 0.0f) {
-                return false;
-            }
-            for (std::size_t channel = 0; channel < 3; ++channel) {
-                const float sensitivity = linearSensitivity[wavelengthIndex][channel];
-                const double finiteSensitivity =
-                    std::isfinite(sensitivity) ? std::max(0.0, static_cast<double>(sensitivity)) : 0.0;
-                unfilteredResponse[channel] += finiteSensitivity * static_cast<double>(illuminant);
-                filteredResponse[channel] +=
-                    finiteSensitivity * static_cast<double>(bandPass[wavelengthIndex]) *
-                    static_cast<double>(illuminant);
-            }
-        }
-
-        std::array<double, 3> normalization{};
-        for (std::size_t channel = 0; channel < normalization.size(); ++channel) {
-            if (!(std::isfinite(unfilteredResponse[channel]) && unfilteredResponse[channel] > 0.0) ||
-                !(std::isfinite(filteredResponse[channel]) && filteredResponse[channel] > 0.0)) {
-                return false;
-            }
-            normalization[channel] = filteredResponse[channel] / unfilteredResponse[channel];
-        }
-
-        for (std::size_t wavelengthIndex = 0; wavelengthIndex < recipe.finalSensitivity.size(); ++wavelengthIndex) {
-            for (std::size_t channel = 0; channel < 3; ++channel) {
-                const float source = linearSensitivity[wavelengthIndex][channel];
-                const double finiteSource =
-                    std::isfinite(source) ? std::max(0.0, static_cast<double>(source)) : 0.0;
-                const double derived =
-                    finiteSource * static_cast<double>(bandPass[wavelengthIndex]) / normalization[channel];
-                recipe.finalSensitivity[wavelengthIndex][channel] =
-                    std::isfinite(derived) ? static_cast<float>(std::max(0.0, derived)) : 0.0f;
-            }
-        }
-
-        if (recipe.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025 &&
-            recipe.hanatos.applyWindow) {
-            if (!input.reconstructedReferenceWhiteValid) {
-                return false;
-            }
-
-            std::array<double, 3> response{};
-            std::array<double, 3> windowedResponse{};
-            std::array<float, 81> window{};
-            for (std::size_t wavelengthIndex = 0; wavelengthIndex < window.size(); ++wavelengthIndex) {
-                const float wavelength = 380.0f + 5.0f * static_cast<float>(wavelengthIndex);
-                const float sample = hanatos_window_sample(wavelength, recipe.hanatos.windowParams);
-                if (!std::isfinite(sample) || sample < 0.0f) {
-                    return false;
-                }
-                window[wavelengthIndex] = sample;
-                for (std::size_t channel = 0; channel < 3; ++channel) {
-                    const double weighted =
-                        static_cast<double>(recipe.finalSensitivity[wavelengthIndex][channel]) *
-                        static_cast<double>(
-                            input.reconstructedReferenceWhite[wavelengthIndex]);
-                    response[channel] += weighted;
-                    windowedResponse[channel] += weighted * static_cast<double>(sample);
-                }
-            }
-
-            std::array<double, 3> windowNormalization{};
-            for (std::size_t channel = 0; channel < windowNormalization.size(); ++channel) {
-                if (!(std::isfinite(response[channel]) && response[channel] > 0.0) ||
-                    !(std::isfinite(windowedResponse[channel]) && windowedResponse[channel] > 0.0)) {
-                    return false;
-                }
-                windowNormalization[channel] = windowedResponse[channel] / response[channel];
-            }
-
-            for (std::size_t wavelengthIndex = 0; wavelengthIndex < recipe.finalSensitivity.size(); ++wavelengthIndex) {
-                for (std::size_t channel = 0; channel < 3; ++channel) {
-                    const double adapted =
-                        static_cast<double>(recipe.finalSensitivity[wavelengthIndex][channel]) *
-                        static_cast<double>(window[wavelengthIndex]) /
-                        windowNormalization[channel];
-                    if (!std::isfinite(adapted) || adapted < 0.0) {
-                        return false;
-                    }
-                    recipe.finalSensitivity[wavelengthIndex][channel] = static_cast<float>(adapted);
-                }
-            }
-        }
-
-        recipe.finalSensitivityHash =
-            Hash::hash_float_span(&recipe.finalSensitivity[0][0], recipe.finalSensitivity.size() * 3u);
-        if (recipe.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019) {
-            double greenMidgray = 0.0;
-            for (std::size_t wavelengthIndex = 0;
-                 wavelengthIndex < recipe.finalSensitivity.size();
-                 ++wavelengthIndex) {
-                greenMidgray +=
-                    0.184 * static_cast<double>(referenceIlluminant[wavelengthIndex]) *
-                    static_cast<double>(recipe.finalSensitivity[wavelengthIndex][1]);
-            }
-            if (!(std::isfinite(greenMidgray) && greenMidgray > 0.0)) {
-                return false;
-            }
-            recipe.mallettGreenMidgrayScale =
-                static_cast<float>(1.0 / greenMidgray);
-            if (!std::isfinite(recipe.mallettGreenMidgrayScale) ||
-                !(recipe.mallettGreenMidgrayScale > 0.0f)) {
-                return false;
-            }
-            recipe.tcLutHash = 0;
-        } else {
-            recipe.mallettGreenMidgrayScale = 1.0f;
-            recipe.tcLutHash = hash_tc_lut_recipe(recipe, referenceIlluminant);
-        }
-        return recipe.finalSensitivityHash != 0 &&
-               (recipe.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019 ||
-                recipe.tcLutHash != 0);
     }
 
     std::uint64_t hash_film_develop_recipe(const FilmDevelopRecipe& recipe) {
@@ -1805,7 +1657,14 @@ namespace AssetLookupTest {
     }
 
     float hanatos_window_sample_for_test(float wavelength, const std::array<float, 4>& params) {
-        return hanatos_window_sample(wavelength, params);
+        float result = 0.0f;
+        std::array<char, 256> bytes{};
+        FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+        const FjStatus status = fj_test_exposure_window_sample(wavelength, {params.data(), params.size()}, &result, &error);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            throw std::runtime_error(std::string(bytes.data(), error.length));
+        }
+        return result;
     }
 
 } // namespace AssetLookupTest
@@ -1912,21 +1771,10 @@ namespace Spektrafilm {
             filmRaw.cameraBandPass.ir = copy_filter_triplet(input.cameraFilterIR, input.cameraFilterOverride);
             const Spectral::InputColorSpace inputColorSpace =
                 Spectral::inputColorSpaceFromIndex(input.inputColorSpace);
-            const Spectral::Mat3 inputRgbToXyz =
-                Spectral::matrix_input_rgb_to_xyz(inputColorSpace);
-            std::copy_n(
-                inputRgbToXyz.m,
-                filmRaw.inputRgbToXyz.size(),
-                filmRaw.inputRgbToXyz.begin());
-            Spectral::input_colorspace_white_xyz(
-                inputColorSpace,
-                filmRaw.inputNominalWhiteXYZ.data());
-            const Spectral::Mat3 xyzToLinearSrgb =
-                Spectral::kRGB_to_XYZ_sRGB_Rec709.inverse();
-            std::copy_n(
-                xyzToLinearSrgb.m,
-                filmRaw.xyzToLinearSrgb.size(),
-                filmRaw.xyzToLinearSrgb.begin());
+            const auto inputMatrices = JuicerColor::input_matrices(inputColorSpace);
+            filmRaw.inputRgbToXyz = inputMatrices.rgbToXyz;
+            filmRaw.inputNominalWhiteXYZ = inputMatrices.nominalWhiteXYZ;
+            filmRaw.xyzToLinearSrgb = inputMatrices.xyzToLinearSrgb;
             filmRaw.referenceIlluminant =
                 profile.info.referenceIlluminant.value;
             filmRaw.hanatos = HanatosAdaptationRecipe{};
@@ -1978,12 +1826,7 @@ namespace Spektrafilm {
                 const Spectral::ChromaticAdaptationWhites whites{
                     filmRaw.inputNominalWhiteXYZ.data(),
                     filmRaw.projectionWhiteXYZ.data()};
-                const Spectral::Mat3 inputAdapt =
-                    Spectral::build_chromatic_adaptation_matrix_CAT16(whites);
-                std::copy_n(
-                    inputAdapt.m,
-                    filmRaw.inputXyzAdapt.size(),
-                    filmRaw.inputXyzAdapt.begin());
+                filmRaw.inputXyzAdapt = JuicerColor::cat16_matrix(whites);
                 filmRaw.tcSourceAssetHash = input.tcSourceAssetHash;
                 filmRaw.inputCompressionActive =
                     input.inputCompressionActive;
@@ -1999,31 +1842,24 @@ namespace Spektrafilm {
                         "MissingRequiredResource component=film_tc_lut requirement=input_compression_hull");
                 }
             } else {
-                filmRaw.projectionWhiteXYZ =
-                    {Spectral::kInputD65WhiteXYZ[0],
-                     Spectral::kInputD65WhiteXYZ[1],
-                     Spectral::kInputD65WhiteXYZ[2]};
+                filmRaw.projectionWhiteXYZ = inputMatrices.d65WhiteXYZ;
                 filmRaw.projectionIlluminant = "D65";
                 const Spectral::ChromaticAdaptationWhites whites{
                     filmRaw.inputNominalWhiteXYZ.data(),
                     filmRaw.projectionWhiteXYZ.data()};
-                const Spectral::Mat3 inputAdapt =
-                    Spectral::build_chromatic_adaptation_matrix(whites);
-                std::copy_n(
-                    inputAdapt.m,
-                    filmRaw.inputXyzAdapt.size(),
-                    filmRaw.inputXyzAdapt.begin());
+                filmRaw.inputXyzAdapt = JuicerColor::cat02_matrix(whites);
                 filmRaw.inputCompressionActive = false;
                 filmRaw.inputCompressionHullHash = 0;
                 filmRaw.inputCompressionHull.reset();
                 filmRaw.tcSourceAssetHash = 0;
             }
-            if (!derive_final_sensitivity(
+            if (!JuicerExposure::prepare_sensitivity(
                     profile.data.linearSensitivity,
                     filmRaw,
                     input)) {
                 return fail("MalformedRequiredProfileData phase=3B field=final_sensitivity");
             }
+            filmRaw.tcLutHash = tcMethod ? hash_tc_lut_recipe(filmRaw, input.referenceIlluminant) : 0;
             filmRaw.hash = hash_film_raw_recipe(filmRaw);
             if (filmRaw.finalSensitivityHash == 0 ||
                 (tcMethod && filmRaw.tcLutHash == 0) ||
@@ -2506,8 +2342,10 @@ namespace Spektrafilm {
 
         auto reconstruct = [&](float exposureEv, std::array<float, 3>& out) {
             out = {};
-            const float source = 0.184f * std::exp2(exposureEv);
-            if (!(std::isfinite(source) && source >= 0.0f)) {
+            float source = 0.0f;
+            std::string exposureDiagnostic;
+            if (!JuicerExposure::reference_source(
+                    exposureEv, source, exposureDiagnostic)) {
                 return false;
             }
             if (recipe.filmRaw.rgbToRawMethod == RgbToRawMethod::Mallett2019) {
@@ -2515,45 +2353,35 @@ namespace Spektrafilm {
                 if (basis.rows != 81 || basis.cols != 3 || basis.data.size() != 243u) {
                     return false;
                 }
-                std::array<double, 3> accumulated{};
-                for (std::size_t sample = 0; sample < filmIlluminant.size(); ++sample) {
-                    const std::size_t basisOffset = sample * 3u;
-                    const double spectrum =
-                        static_cast<double>(source) *
-                        static_cast<double>(basis.data[basisOffset] +
-                                            basis.data[basisOffset + 1u] +
-                                            basis.data[basisOffset + 2u]) *
-                        static_cast<double>(filmIlluminant[sample]);
-                    for (std::size_t channel = 0; channel < out.size(); ++channel) {
-                        accumulated[channel] +=
-                            spectrum * static_cast<double>(
-                                           recipe.filmRaw.finalSensitivity[sample][channel]);
-                    }
-                }
-                for (std::size_t channel = 0; channel < out.size(); ++channel) {
-                    out[channel] = static_cast<float>(
-                        accumulated[channel] *
-                        static_cast<double>(recipe.filmRaw.mallettGreenMidgrayScale));
-                }
+                return JuicerExposure::mallett_reference_raw(
+                    basis,
+                    filmIlluminant,
+                    recipe.filmRaw.finalSensitivity,
+                    source,
+                    recipe.filmRaw.mallettGreenMidgrayScale,
+                    out,
+                    exposureDiagnostic);
             } else if (
                 recipe.filmRaw.rgbToRawMethod == RgbToRawMethod::Hanatos2025 ||
                 recipe.filmRaw.rgbToRawMethod == RgbToRawMethod::Arctic2026beta04) {
                 if (!filmTcLut) {
                     return false;
                 }
-                const float sourceRgb[3] = {source, source, source};
-                float sourceXyz[3]{};
-                float projectedXyz[3]{};
-                Spectral::kRGB_to_XYZ_sRGB_Rec709.mul(sourceRgb, sourceXyz);
-                Spectral::chromatic_adapt_XYZ_CAT16(
+                const auto inputMatrices = JuicerColor::input_matrices(Spectral::InputColorSpace::SRGB_Rec709);
+                const auto sourceXyz = JuicerColor::linear_srgb_to_xyz({source, source, source});
+                const auto projectedXyz = JuicerColor::adapt_cat16(
                     sourceXyz,
                     Spectral::ChromaticAdaptationWhites{
-                        Spectral::kInputD65WhiteXYZ,
-                        recipe.filmRaw.projectionWhiteXYZ.data()},
-                    projectedXyz);
-                out = Spectral::sample_film_tc_lut(
-                    *filmTcLut,
-                    {projectedXyz[0], projectedXyz[1], projectedXyz[2]});
+                        inputMatrices.d65WhiteXYZ.data(),
+                        recipe.filmRaw.projectionWhiteXYZ.data()});
+                std::string samplingDiagnostic;
+                if (!Spectral::sample_film_tc_lut(
+                        *filmTcLut,
+                        {projectedXyz[0], projectedXyz[1], projectedXyz[2]},
+                        out,
+                        samplingDiagnostic)) {
+                    return false;
+                }
             } else {
                 return false;
             }

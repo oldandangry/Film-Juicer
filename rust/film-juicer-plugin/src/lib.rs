@@ -26,9 +26,33 @@ mod asset_noise;
 
 mod asset_calibration;
 
+#[allow(
+    unsafe_code,
+    reason = "the illuminant C edge validates spans and consumes call-local lens owners"
+)]
+mod asset_illuminant;
+
 #[cfg(feature = "test-support")]
 #[allow(
     unsafe_code,
     reason = "the test facade checks foreign inputs and consumes retained profile owners at the C boundary"
 )]
 mod test_support;
+
+#[allow(
+    unsafe_code,
+    reason = "the fixed spectral edge checks foreign extents and scopes immutable borrows"
+)]
+mod spectral_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "the exposure edge checks fixed foreign spans and scopes immutable tensor borrows"
+)]
+mod exposure_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "the TC edge validates spans and transfers/releases an exact Vec allocation"
+)]
+mod reconstruction_bridge;

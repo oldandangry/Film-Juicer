@@ -18,7 +18,7 @@
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"

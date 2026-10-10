@@ -30,7 +30,7 @@
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
 #include "RustAssetBridge.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
@@ -43,6 +43,10 @@ static_assert(std::is_same_v<decltype(&fj_legacy_csv_view), FjStatus (*)(const F
 static_assert(std::is_same_v<decltype(&fj_legacy_csv_release), FjStatus (*)(FjCsvPairs*, FjErrorBuffer*)>);
 static_assert(std::is_same_v<decltype(&fj_legacy_neutral_calibration_lookup), FjStatus (*)(const FjAssets*, FjStringView, FjStringView, FjStringView, FjNeutralCalibrationResult*, FjErrorBuffer*)>);
 
+
+namespace IlluminantConstruction {
+    void initialize(const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&);
+}
 
 namespace CurveAllocationTest {
     struct alignas(std::max_align_t) Header {
@@ -113,6 +117,7 @@ namespace {
     thread_local unsigned viewFault = 0;
     thread_local unsigned calibrationFault = 0;
     thread_local bool failCopy = false;
+    thread_local bool failLensAcquisition = false;
     thread_local std::vector<CsvSource>* acquisitions = nullptr;
     std::barrier<>* publicationBarrier = nullptr;
     std::atomic<unsigned> publications{0};
@@ -407,7 +412,7 @@ namespace {
         auto curves = library.illuminant_filter_curves();
         acquisitions = nullptr;
         EXPECT_EQ(order, (std::vector<CsvSource>{CsvSource::D65, CsvSource::D55, CsvSource::D50, CsvSource::T, CsvSource::K75p, CsvSource::Kg3, CsvSource::Canon24F28Is}));
-        EXPECT_EQ(pairCapacity.load(), 658u);
+        EXPECT_EQ(pairCapacity.load(), 0u);
 #if defined(_WIN32)
         std::ifstream expected(fixtures / "windows.bits");
 #else
@@ -438,7 +443,7 @@ namespace {
         curves.reset();
         EXPECT_TRUE(old.expired());
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
-        std::printf("native pairs capacity: 658 rows/5264 bytes cumulatively; derived curves capacity=%zu per snapshot; retained old+new=%zu; snapshot inline=%zu; no retained CSV handle\n", curveBytes, 2 * curveBytes, sizeof(*newer));
+        std::printf("native source-row copies: 0 bytes (historical 5264 retired); scoped Rust CSV borrows; derived curves capacity=%zu per snapshot; retained old+new=%zu; snapshot inline=%zu; no retained CSV handle\n", curveBytes, 2 * curveBytes, sizeof(*newer));
     }
 
     TEST(IlluminantLibrary, PartialResultsRetryAndLensAcquisitionIsConditional) {
@@ -538,25 +543,60 @@ namespace {
         std::printf("requested native retained bytes: one=%zu overlap=%zu final=0; excludes allocator header/Rust/RSS; old and loser deletion reentered cache release outside locks\n", one, 2 * one);
     }
 
+    TEST(IlluminantNative, LensAcquisitionUnwindConsumesPreparedOwnerAndPreservesSourceFailure) {
+        for (bool cleanupFault : {false, true}) {
+            JuicerAssets::Library library(resources);
+            failLensAcquisition = true;
+            if (cleanupFault) {
+                expect_status(fj_test_illuminant_arm_fault(FJ_TEST_ILLUMINANT_LENS_RELEASE, 1, 2), FJ_STATUS_SUCCESS);
+            }
+            EXPECT_THROW(library.illuminant_filter_curves(), std::bad_alloc);
+            EXPECT_EQ(fj_test_illuminant_live_lenses(), 0u);
+            EXPECT_EQ(fj_test_csv_live_owners(), 0u);
+            // Observe the intended destructor export before clearing any slot.
+            std::array<char, 128> bytes{};
+            FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+            FjIlluminantLens* empty = nullptr;
+            expect_status(fj_legacy_illuminant_lens_release(&empty, &error), FJ_STATUS_SUCCESS);
+            ASSERT_TRUE(library.illuminant_filter_curves());
+        }
+    }
+
     TEST(IlluminantMath, DirectConstraintsAndAsymmetricCoverage) {
         JuicerAssets::AssetBridge bridge(resources);
         auto direct = bridge.copy_csv_pairs(CsvSource::D65);
+        const auto check = [](const std::vector<std::pair<float, float>>& pairs) {
+            std::vector<float> rows;
+            for (const auto& pair : pairs) {
+                rows.push_back(pair.first);
+                rows.push_back(pair.second);
+            }
+            std::array<char, 256> bytes{};
+            FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+            FjIlluminant curve{};
+            expect_status(fj_legacy_illuminant_from_samples({rows.data(), rows.size()}, &curve, &error), FJ_STATUS_PREPARATION_FAILURE);
+        };
         direct[0].first += 0.01f;
-        EXPECT_TRUE(Spectral::build_illuminant_curve(direct, "axis").linear.empty());
+        check(direct);
         direct = bridge.copy_csv_pairs(CsvSource::D65);
         direct[0].second = std::numeric_limits<float>::infinity();
-        EXPECT_TRUE(Spectral::build_illuminant_curve(direct, "finite").linear.empty());
+        check(direct);
         direct = bridge.copy_csv_pairs(CsvSource::D65);
         direct[0].second += 1;
-        EXPECT_TRUE(Spectral::build_illuminant_curve(direct, "mean").linear.empty());
-        const std::vector<std::pair<float, float>> narrow{{380, 1}, {780, 1}};
-        EXPECT_TRUE(Spectral::build_tungsten_kg3_curve(narrow, "coverage").linear.empty());
-        auto prepared = Spectral::prepare_tungsten_kg3_lens_input(narrow, "coverage-warning");
-        ASSERT_TRUE(prepared);
-        EXPECT_EQ(Spectral::build_tungsten_kg3_lens_curve(std::move(*prepared), narrow, "lens-warning").linear.size(), 81u);
-        EXPECT_FALSE(Spectral::prepare_tungsten_kg3_lens_input({}, "empty"));
+        check(direct);
+        const std::array<float, 4> narrow{380, 1, 780, 1};
+        std::array<char, 256> bytes{};
+        FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+        FjIlluminant curve{};
+        FjIlluminantCoverage coverage{};
+        FjIlluminantLens* owner = nullptr;
+        expect_status(fj_legacy_illuminant_tungsten_kg3({narrow.data(), narrow.size()}, &curve, &coverage, &error), FJ_STATUS_PREPARATION_FAILURE);
+        EXPECT_EQ(coverage.warnings, 3u);
+        expect_status(fj_legacy_illuminant_lens_prepare({narrow.data(), narrow.size()}, &owner, &coverage, &error), FJ_STATUS_SUCCESS);
+        expect_status(fj_legacy_illuminant_lens_finish(&owner, {narrow.data(), narrow.size()}, &curve, &coverage, &error), FJ_STATUS_SUCCESS);
+        EXPECT_EQ(owner, nullptr);
+        expect_status(fj_legacy_illuminant_lens_prepare({}, &owner, &coverage, &error), FJ_STATUS_PREPARATION_FAILURE);
     }
-
 
     TEST(IlluminantCopy, BorrowedCopyCompletesAcrossSourceCacheRelease) {
         JuicerAssets::AssetBridge bridge(resources);
@@ -675,8 +715,8 @@ namespace {
         const auto saved = preflash;
         expect_status(assets.release_cached_payloads(), FJ_STATUS_SUCCESS);
         EXPECT_EQ(preflash, saved);
-        failCopy = true;
-        EXPECT_THROW(JuicerCuda::build_print_resource_input(request, input, preflash, diagnostic), std::bad_alloc);
+        expect_status(fj_test_illuminant_arm_fault(FJ_TEST_ILLUMINANT_FROM_SAMPLES, 2, 3), FJ_STATUS_SUCCESS);
+        EXPECT_THROW(JuicerCuda::build_print_resource_input(request, input, preflash, diagnostic), JuicerCuda::ExecutionFailure);
         viewFault = 1;
         EXPECT_THROW(JuicerCuda::build_print_resource_input(request, input, preflash, diagnostic), JuicerCuda::ExecutionFailure);
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
@@ -725,8 +765,8 @@ namespace {
         auto& assets = JuicerProcess::root().assets();
         FocusedRenderStateBuildProduct product;
         std::string diagnostic;
-        failCopy = true;
-        EXPECT_THROW(build_direct_render_state_product(controls(), product, diagnostic), std::bad_alloc);
+        expect_status(fj_test_illuminant_arm_fault(FJ_TEST_ILLUMINANT_FROM_SAMPLES, 2, 3), FJ_STATUS_SUCCESS);
+        EXPECT_THROW(build_direct_render_state_product(controls(), product, diagnostic), JuicerCuda::ExecutionFailure);
         EXPECT_EQ(fj_test_csv_live_owners(), 0u);
         viewFault = 1;
         EXPECT_THROW(build_direct_render_state_product(controls(), product, diagnostic), JuicerCuda::ExecutionFailure);
@@ -749,6 +789,11 @@ namespace {
 
 namespace JuicerAssets::IlluminantTest {
     void before_csv_acquisition(CsvSource source) {
+        if (source == CsvSource::Canon24F28Is && std::exchange(failLensAcquisition, false)) {
+            EXPECT_EQ(fj_test_illuminant_live_lenses(), 1u);
+            throw std::bad_alloc();
+        }
+
         if (acquisitions)
             acquisitions->push_back(source);
     }
@@ -834,6 +879,7 @@ int main(int argc, char** argv) try {
     fixtures = argv[2];
     scratch = argv[3];
     fs::create_directories(scratch);
+    IlluminantConstruction::initialize(resources, fixtures, scratch);
     return RUN_ALL_TESTS();
 } catch (const std::exception& error) {
     std::fprintf(stderr, "illuminant/calibration test setup: %s\n", error.what());

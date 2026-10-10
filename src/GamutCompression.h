@@ -263,15 +263,4 @@ namespace Gamut {
         const Spectral::Curve& d65,
         InputCompressionHull& out);
 
-    bool compress_input_xy(
-        const InputCompressionHull& hull,
-        const std::array<float, 2>& xy,
-        std::array<float, 2>& out);
-
-    bool remap_film_tc_lut_for_input_compression(
-        const InputCompressionHull& hull,
-        const Spectral::FilmTcLut& source,
-        Spectral::FilmTcLut& out,
-        std::string& diagnostic);
-
 } // namespace Gamut

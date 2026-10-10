@@ -17,7 +17,7 @@
 #include "Cuda/JuicerCudaFailure.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "JuicerState.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "ProcessRoot.h"
 #include "RustAssetBridge.h"
 #include "juicer_cuda_owner.h"

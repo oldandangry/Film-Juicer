@@ -220,6 +220,6 @@ jobs:
           name: windows-debug-quality
           path: |
             out/validation/windows-clang-debug/quality/**/*.log
-            out/validation/windows-clang-debug/quality/cuda-command-*.json
+            out/validation/windows-clang-debug/quality/runs/**/*.json
             out/build/windows-clang-debug/compile_commands.json
           if-no-files-found: warn

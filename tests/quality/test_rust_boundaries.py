@@ -28,6 +28,10 @@ class RustBoundaryTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.cargo = os.environ["JUICER_CARGO"]
         cls.target = os.environ["JUICER_RUST_TARGET"]
+        cls.target_dir = Path(os.environ["JUICER_RUST_PROBE_DIR"]).resolve()
+        cls.profiles = {"debug": (False,), "release": (True,), "both": (False, True)}[
+            os.environ.get("JUICER_RUST_PROBE_PROFILE", "both")
+        ]
         cls.artifacts = Path(os.environ["JUICER_TEST_ARTIFACT_DIR"]).resolve()
         cls.artifacts.mkdir(parents=True, exist_ok=True)
         directory = tempfile.TemporaryDirectory(prefix="probe-", dir=cls.artifacts)
@@ -73,7 +77,7 @@ class RustBoundaryTests(unittest.TestCase):
     def check(self, package: str, release: bool, test_support: bool = False) -> tuple[int, list[dict]]:
         arguments = [
             "check", "--locked", "--offline", "--package", package, "--all-targets",
-            "--target", self.target, "--target-dir", str(self.workspace / "target"),
+            "--target", self.target, "--target-dir", str(self.target_dir),
             "--message-format=json",
         ]
         if release:
@@ -117,7 +121,7 @@ class RustBoundaryTests(unittest.TestCase):
 
     def test_valid_profile_consumers_compile(self) -> None:
         self.attach("film-juicer-plugin/src/lib.rs", "accepted")
-        for release in (False, True):
+        for release in self.profiles:
             for test_support in (False, True):
                 with self.subTest(release=release, test_support=test_support):
                     status, diagnostics = self.check("film-juicer-plugin", release, test_support)
@@ -125,7 +129,7 @@ class RustBoundaryTests(unittest.TestCase):
 
     def test_profile_views_cannot_outlive_their_owners(self) -> None:
         self.attach("film-juicer-plugin/src/lib.rs", "borrowed_views")
-        for release in (False, True):
+        for release in self.profiles:
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assert_rejected(status, diagnostics, {
                 "E0515": ("film_owner.view()", "print_owner.view()", "spectra_owner.view()", "mallett_owner.samples()", "cmf_owner.rows()", "csv_owner.rows()", "noise_owner.view()"),
@@ -136,7 +140,7 @@ class RustBoundaryTests(unittest.TestCase):
         # The plugin is a real external consumer of the core, and a sibling of
         # asset_profile; inserting the probe inside the owner would bypass privacy.
         self.attach("film-juicer-plugin/src/lib.rs", "private_storage")
-        for release in (False, True):
+        for release in self.profiles:
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assert_rejected(status, diagnostics, {
                 "E0616": ("film.processing_defaults", "tables.interpolation_log_exposure", "film_owner.profile", "print_owner.profile", "spectra_owner.lut", "mallett_owner.basis", "cmf_owner.rows", "csv_owner.rows", "noise_owner.bundle"),
@@ -149,7 +153,7 @@ class RustBoundaryTests(unittest.TestCase):
         ):
             self.attach("film-juicer-plugin/src/lib.rs", fixture)
             try:
-                for release in (False, True):
+                for release in self.profiles:
                     status, diagnostics = self.check("film-juicer-plugin", release, True)
                     self.assert_rejected(status, diagnostics, expected)
             finally:
@@ -157,11 +161,90 @@ class RustBoundaryTests(unittest.TestCase):
 
     def test_completed_profile_construction_cannot_be_bypassed(self) -> None:
         self.attach("film-juicer-plugin/src/lib.rs", "private_construction")
-        for release in (False, True):
+        for release in self.profiles:
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assert_rejected(status, diagnostics, {
                 "E0451": ("FilmProfile { ..film }", "PrintProfile { ..print }"),
             })
+
+    def test_lens_construction_and_storage_are_private(self) -> None:
+        # Type-check errors can suppress later field-privacy diagnostics, so
+        # each rejected construction/access is its own compiler consumer.
+        for fixture, expected in (
+            ("illuminant_private", {"E0451": ("LensInput {",)}),
+            ("illuminant_default", {"E0599": ("LensInput::default()",)}),
+            ("illuminant_mutation", {"E0616": ("input.kg3[0]",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    status, diagnostics = self.check("film-juicer-plugin", release)
+                    self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
+    def test_deleted_spectral_producers_and_white_loop(self) -> None:
+        import re
+        self.assertFalse((ROOT / "src/SpectralProcessing.h").exists())
+        processing = "\n".join(
+            path.read_text(encoding="utf-8-sig")
+            for directory in (ROOT / "src", ROOT / "native")
+            for path in directory.rglob("*")
+            if path.suffix in {".h", ".cpp", ".cu", ".cuh"}
+        )
+        state = (ROOT / "src/JuicerState.cpp").read_text(encoding="utf-8")
+        removed = (
+            "build_tables_from_curves_non_global", "compute_S_inverse_from_tables",
+            "hash_float_span_digest_sp", "hash_float_vector_digest_sp",
+            "hash_float_scalar_digest_sp", "hash_float_triplet_digest_sp",
+            "set_identity_3x3", "store_3x3_rowmajor", "determinant_near_zero",
+            "compute_film_raw_midgray", "mallett2019_exposures_from_linear_srgb",
+            "mallett_basis_ready_for_tables", "select_spectral_reconstruction_path",
+            "compute_layer_exposures_from_reconstruction_path",
+            "reconstruct_Ee_from_DWG_RGB_hanatos", "reconstruct_Ee_from_DWG_RGB_with_tables",
+            "hanatos_linear_spectrum", "layerExposures_from_sceneSPD_with_curves",
+            "rgbDWG_to_layerExposures_from_tables_with_curves", "sanitize_raw_midgray_green_or_one",
+        )
+        for name in removed:
+            pattern = rf"\b(?:void|bool|float|std::uint64_t|SpectralReconstructionPath)\s+{name}\s*\("
+            self.assertIsNone(re.search(pattern, processing), name)
+            self.assertIsNotNone(re.search(pattern, processing + f"\ninline void {name}() {{}}"), name)
+        self.assertNotIn("struct RowMajor3x3d", processing)
+        tls = r"\bthread_local\s+std::vector<float>"
+        self.assertIsNone(re.search(tls, processing))
+        self.assertIsNotNone(re.search(tls, processing + "\nthread_local std::vector<float> Ee_scene;"))
+        legacy = (ROOT / "rust/film-juicer-plugin/src/legacy_bridge.rs").read_text(encoding="utf-8")
+        for name in ("fj_legacy_adapt_cat02", "fj_legacy_input_to_dwg", "fj_legacy_input_to_linear_srgb", "fj_legacy_dwg_to_xyz"):
+            pattern = rf"\bfn\s+{name}\s*\("
+            self.assertIsNone(re.search(pattern, legacy))
+            self.assertIsNotNone(re.search(pattern, legacy + f"\nfn {name}() {{}}"))
+        self.assertEqual(state.count("JuicerSpectral::build_tables("), 3)
+        self.assertIn("JuicerSpectral::integrate_white(curve, label, out)", state)
+        loop = r"double\s+sum[XYZ]\s*=\s*0\.0"
+        self.assertIsNone(re.search(loop, state))
+        self.assertIsNotNone(re.search(loop, state + "\ndouble sumX = 0.0;"))
+        fixture = (ROOT / "tests/ffi/color_preparation_test.cpp").read_text(encoding="utf-8")
+        start = fixture.index("Scanner::ScannerIlluminant scanner_illuminant(")
+        end = fixture.index("std::vector<Json> helper_inputs()", start)
+        helper = fixture[start:end]
+        self.assertIn("fj_test_spectral_white", helper)
+        self.assertIsNone(re.search(loop, helper))
+
+    def test_completed_spectral_results_are_private_and_readonly(self) -> None:
+        for fixture, expected in (
+            ("spectral_default", {"E0599": ("Tables::default()", "White::default()")}),
+            ("spectral_private", {"E0451": ("Tables { ..tables }", "White { ..white }")}),
+            ("spectral_mutation", {"E0616": ("tables.white_xyz[0]", "white.xyz[0]")}),
+            ("spectral_readonly", {"E0594": ("tables.white_xyz()[0]", "white.xyz()[0]")}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for test_support in (False, True):
+                        status, diagnostics = self.check("film-juicer-plugin", release, test_support)
+                        self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
 
     def test_safe_modules_cannot_relax_unsafe_prohibition(self) -> None:
         owners = (
@@ -176,11 +259,74 @@ class RustBoundaryTests(unittest.TestCase):
             with self.subTest(package=package, source=source):
                 self.attach(f"{package}/src/{source}", "unsafe_override")
                 try:
-                    for release in (False, True):
+                    for release in self.profiles:
                         status, diagnostics = self.check(package, release)
                         self.assert_rejected(status, diagnostics, {"E0453": ("unsafe_code",)})
                 finally:
                     self.doCleanups()
+
+    def test_completed_exposure_results_are_private_and_readonly(self) -> None:
+        for fixture, expected in (
+            ("exposure_default", {"E0599": ("Sensitivity::default()", "ReferenceWhite::default()")}),
+            ("exposure_private", {"E0451": ("Sensitivity { ..sensitivity }", "ReferenceWhite { ..white }")}),
+            ("exposure_mutation", {"E0616": ("sensitivity.values_rgb[0][0]", "white.samples[0]")}),
+            ("exposure_readonly", {"E0594": ("sensitivity.values_rgb()[0][0]", "white.samples()[0]")}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for test_support in (False, True):
+                        status, diagnostics = self.check("film-juicer-plugin", release, test_support)
+                        self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
+    def test_completed_exposure_results_do_not_retain_sources(self) -> None:
+        self.attach("film-juicer-plugin/src/lib.rs", "exposure_borrow")
+        for release in self.profiles:
+            status, diagnostics = self.check("film-juicer-plugin", release)
+            self.assertEqual(status, 0, diagnostics)
+
+    def test_complete_mallett_results_and_input_borrows(self) -> None:
+        for fixture, expected in (
+            ("mallett_default", {"E0599": ("MallettMidgray::default()", "MidgrayNormalization::default()", "ReferenceSource::default()", "ReferenceRaw::default()")}),
+            ("mallett_private", {"E0451": ("MallettMidgray { ..midgray }", "MidgrayNormalization { ..normalization }", "ReferenceSource { ..source }", "ReferenceRaw { ..raw }")}),
+            ("mallett_mutation", {"E0616": ("midgray.raw_midgray_bgr[0]", "normalization.raw_green", "source.value", "raw.rgb[0]")}),
+            ("mallett_readonly", {"E0594": ("midgray.raw_midgray_bgr()[0]", "midgray.midgray_dwg_rgb()[0]", "raw.rgb()[0]")}),
+            ("mallett_borrow", {"E0515": ("basis_rgb: &basis", "illuminant: &illuminant", "sensitivity_rgb: &sensitivity")}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for test_support in (False, True):
+                        status, diagnostics = self.check("film-juicer-plugin", release, test_support)
+                        self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+        self.attach("film-juicer-plugin/src/lib.rs", "mallett_complete")
+        for release in self.profiles:
+            for test_support in (False, True):
+                status, diagnostics = self.check("film-juicer-plugin", release, test_support)
+                self.assertEqual(status, 0, diagnostics)
+
+    def test_complete_tc_lut_privacy_and_borrowing(self) -> None:
+        for fixture, expected in (
+            ("tc_default", {"E0599": ("FilmTcLut::default()",)}),
+            ("tc_private", {"E0451": ("FilmTcLut { ..lut }",)}),
+            ("tc_readonly", {"E0594": ("lut.samples()[0]",)}),
+            ("tc_borrow", {"E0515": ("lut.samples()",), "E0505": ("drop(lut)",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    status, diagnostics = self.check("film-juicer-plugin", release)
+                    self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+        self.attach("film-juicer-plugin/src/lib.rs", "tc_complete")
+        for release in self.profiles:
+            status, diagnostics = self.check("film-juicer-plugin", release)
+            self.assertEqual(status, 0, diagnostics)
 
 
 if __name__ == "__main__":

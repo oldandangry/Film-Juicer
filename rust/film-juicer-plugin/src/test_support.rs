@@ -1,5 +1,115 @@
 //! Feature-only C fixture facade. Raw pointers never enter the safe core.
 
+use crate::asset_illuminant::{self, FjIlluminant, FjIlluminantCoverage};
+use film_juicer_core::illuminant;
+
+thread_local! { static ILLUMINANT_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_illuminant_arm_fault(
+    operation: u32,
+    call_index: u32,
+    fault: u32,
+) -> FjStatus {
+    asset_illuminant::arm_fault(operation, call_index, fault)
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_illuminant_clear_fault() {
+    asset_illuminant::clear_fault();
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_illuminant_live_lenses() -> usize {
+    asset_illuminant::live_lenses()
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_illuminant_arm_facade_fault() {
+    ILLUMINANT_FACADE_FAULT.set(true);
+}
+/// # Safety
+/// Output authorizes ten exclusive aligned usize elements, with no overlapping call storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_illuminant_scratch_capacities(out: *mut usize) -> usize {
+    if out.is_null() || !(out as usize).is_multiple_of(align_of::<usize>()) {
+        return 0;
+    }
+    let (bytes, count) = illuminant::test_support::scratch_capacities();
+    // SAFETY: The caller retains ten writable aligned elements through return.
+    unsafe {
+        out.copy_from_nonoverlapping(bytes.as_ptr(), 10);
+    }
+    count
+}
+/// # Safety
+/// Required storage follows the illuminant header; rows are immutable until return.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_illuminant_curve(
+    operation: u32,
+    source: FjFloatSpan,
+    lens: FjFloatSpan,
+    temperature: f32,
+    out: *mut FjIlluminant,
+    coverage: *mut FjIlluminantCoverage,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Only aligned, caller-authorized outputs are cleared or published;
+    // the shared edge checks diagnostics/extents, and the facade invokes core directly.
+    unsafe {
+        let curve_valid =
+            !out.is_null() && (out as usize).is_multiple_of(align_of::<FjIlluminant>());
+        let coverage_valid = !coverage.is_null()
+            && (coverage as usize).is_multiple_of(align_of::<FjIlluminantCoverage>());
+        if curve_valid {
+            out.write(FjIlluminant::default());
+        }
+        if coverage_valid {
+            coverage.write(FjIlluminantCoverage::default());
+        }
+        asset_illuminant::run(error, || {
+            if !curve_valid || !coverage_valid {
+                return Err(crate::asset_bridge::Failure::Input(
+                    "invalid fixture curve output",
+                ));
+            }
+            let source = asset_illuminant::rows(source)?;
+            let lens = asset_illuminant::rows(lens)?;
+            if ILLUMINANT_FACADE_FAULT.replace(false) {
+                return Err(crate::asset_bridge::Failure::Internal(
+                    "illuminant fixture-only fault",
+                ));
+            }
+            let result = match operation {
+                1 => illuminant::from_samples(source)
+                    .map(|curve| (curve, illuminant::Coverage::default())),
+                2 => Ok((
+                    illuminant::blackbody(temperature),
+                    illuminant::Coverage::default(),
+                )),
+                3 => Ok((illuminant::equal_energy(), illuminant::Coverage::default())),
+                4 => illuminant::tungsten_kg3(source),
+                5 => illuminant::prepare_lens(source)
+                    .and_then(|(input, _)| illuminant::finish_lens(input, lens)),
+                8 => illuminant::test_support::resample(source)
+                    .map(|curve| (curve, illuminant::Coverage::default())),
+                _ => {
+                    return Err(crate::asset_bridge::Failure::Input(
+                        "invalid fixture illuminant operation",
+                    ));
+                }
+            };
+            match result {
+                Ok((samples, metadata)) => {
+                    coverage.write(metadata.into());
+                    out.write(FjIlluminant { samples });
+                    Ok(())
+                }
+                Err(error) => {
+                    coverage.write(error.coverage.into());
+                    Err(crate::asset_bridge::Failure::Illuminant(error))
+                }
+            }
+        })
+    }
+}
+
 use std::fmt::{self, Write};
 use std::mem::{align_of, offset_of, size_of};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -9,6 +119,8 @@ use film_juicer_core::assets::{AssetError, Assets};
 use film_juicer_core::profile::{Antihalation, ProfileCompletionErrorKind, ProfileUse};
 
 use crate::asset_profile::{FilmOwner, FilmFixtureView};
+use film_juicer_core::color;
+use crate::legacy_bridge::{FjInputColorMatrices, FjInputColorConversion, input_space};
 use crate::cuda::sys::{FjErrorBuffer, FjFloatSpan, FjStatus, FjStringView};
 use crate::cuda::sys::{
     FJ_API_NONE, FJ_STATUS_ALLOCATION_FAILURE, FJ_STATUS_INTERNAL_FAILURE,
@@ -474,6 +586,512 @@ const _: unsafe extern "C" fn(*const FjNoise, *mut FjStaticNoise, *mut FjErrorBu
     fj_test_noise_view;
 const _: unsafe extern "C" fn(*mut FjNoise, *mut FjErrorBuffer) -> FjStatus = fj_test_noise_release;
 
+/// Value-only CAT16 fixture facade, independent of the production export.
+///
+/// # Safety
+/// Read-only inputs authorize three initialized aligned floats each; output
+/// authorizes nine exclusive aligned floats disjoint from inputs until return.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_cat16_matrix(
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_row_major: *mut f32,
+) -> FjStatus {
+    catch_unwind(|| {
+        if out_row_major.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller authorizes nine exclusive output floats.
+        unsafe { out_row_major.write_bytes(0, 9) };
+        if source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: Both read-only inputs authorize three initialized floats.
+        let whites = unsafe {
+            film_juicer_core::color::Whites {
+                source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+            }
+        };
+        let matrix = film_juicer_core::color::cat16_matrix(whites);
+        // SAFETY: The local complete array is disjoint from the output extent.
+        unsafe { out_row_major.copy_from_nonoverlapping(matrix.as_ptr(), 9) };
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Value-only scalar CAT16 fixture facade.
+///
+/// # Safety
+/// Read-only inputs authorize three initialized aligned floats each; output
+/// authorizes three exclusive aligned floats disjoint from inputs until return.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_adapt_cat16(
+    xyz: *const f32,
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    catch_unwind(|| {
+        if out_xyz.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller authorizes three exclusive output floats.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if xyz.is_null() || source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: All read-only inputs authorize three initialized floats.
+        let (value, whites) = unsafe {
+            (
+                xyz.cast::<[f32; 3]>().read(),
+                film_juicer_core::color::Whites {
+                    source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                    destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+                },
+            )
+        };
+        let adapted = film_juicer_core::color::adapt_cat16(value, whites);
+        // SAFETY: The local complete array is disjoint from the output extent.
+        unsafe { out_xyz.copy_from_nonoverlapping(adapted.as_ptr(), 3) };
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Value-only CAT02 fixture facade, independent of the production export.
+///
+/// # Safety
+/// Read-only inputs authorize three initialized aligned floats each; output
+/// authorizes nine exclusive aligned floats disjoint from inputs until return.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_cat02_matrix(
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_row_major: *mut f32,
+) -> FjStatus {
+    catch_unwind(|| {
+        if out_row_major.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller authorizes nine exclusive output floats.
+        unsafe { out_row_major.write_bytes(0, 9) };
+        if source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: Both read-only inputs authorize three initialized floats.
+        let whites = unsafe {
+            film_juicer_core::color::Whites {
+                source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+            }
+        };
+        let matrix = film_juicer_core::color::cat02_matrix(whites);
+        // SAFETY: The local complete array is disjoint from the output extent.
+        unsafe { out_row_major.copy_from_nonoverlapping(matrix.as_ptr(), 9) };
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Value-only scalar CAT02 fixture facade.
+///
+/// # Safety
+/// Read-only inputs authorize three initialized aligned floats each; output
+/// authorizes three exclusive aligned floats disjoint from inputs until return.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_adapt_cat02(
+    xyz: *const f32,
+    source_white_xyz: *const f32,
+    destination_white_xyz: *const f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    catch_unwind(|| {
+        if out_xyz.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller authorizes three exclusive output floats.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if xyz.is_null() || source_white_xyz.is_null() || destination_white_xyz.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: All read-only inputs authorize three initialized floats.
+        let (value, whites) = unsafe {
+            (
+                xyz.cast::<[f32; 3]>().read(),
+                film_juicer_core::color::Whites {
+                    source_xyz: source_white_xyz.cast::<[f32; 3]>().read(),
+                    destination_xyz: destination_white_xyz.cast::<[f32; 3]>().read(),
+                },
+            )
+        };
+        if let Err(category) = color_facade_fault(4) {
+            return status(category);
+        }
+        let adapted = film_juicer_core::color::adapt_cat02(value, whites);
+        // SAFETY: The local complete array is disjoint from the output extent.
+        unsafe { out_xyz.copy_from_nonoverlapping(adapted.as_ptr(), 3) };
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+thread_local! {
+    static COLOR_FACADE_FAULT: std::cell::Cell<Option<(u32, u32, u32)>> = const { std::cell::Cell::new(None) };
+    static COLOR_FACADE_CONSUMED: std::cell::Cell<Option<(u32, u32)>> = const { std::cell::Cell::new(None) };
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_color_arm_facade_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
+    COLOR_FACADE_FAULT.set(None);
+    COLOR_FACADE_CONSUMED.set(None);
+    let valid = matches!(operation, 4 | 6 | 7 | 9) && index != 0 && (1..=2).contains(&fault);
+    if valid {
+        COLOR_FACADE_FAULT.set(Some((operation, index, fault)));
+    }
+    status(if valid {
+        FJ_STATUS_SUCCESS
+    } else {
+        FJ_STATUS_UNSUPPORTED_INPUT
+    })
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_color_clear_facade_fault() -> FjStatus {
+    COLOR_FACADE_FAULT.set(None);
+    COLOR_FACADE_CONSUMED.set(None);
+    status(FJ_STATUS_SUCCESS)
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_color_facade_fault_consumed(operation: u32, fault: u32) -> u32 {
+    u32::from(COLOR_FACADE_CONSUMED.take() == Some((operation, fault)))
+}
+fn color_facade_fault(operation: u32) -> Result<(), u32> {
+    if let Some((selected, index, fault)) = COLOR_FACADE_FAULT.get() {
+        if selected != operation {
+            return Ok(());
+        }
+        if index > 1 {
+            COLOR_FACADE_FAULT.set(Some((selected, index - 1, fault)));
+            return Ok(());
+        }
+        COLOR_FACADE_FAULT.set(None);
+        COLOR_FACADE_CONSUMED.set(Some((operation, fault)));
+        if fault == 1 {
+            return Err(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        panic!("direct color facade fault");
+    }
+    Ok(())
+}
+
+/// Arm a one-shot calling-thread fault on a matching production export.
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_color_arm_fault(operation: u32, call_index: u32, fault: u32) -> FjStatus {
+    catch_unwind(|| crate::legacy_bridge::arm_color_fault(operation, call_index, fault))
+        .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Idempotently disarm the calling thread's fault.
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_color_clear_fault() -> FjStatus {
+    catch_unwind(crate::legacy_bridge::clear_color_fault)
+        .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Direct-core input matrices fixture facade; independent of production faults.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_input_matrices(
+    input_space_tag: u32,
+    out: *mut FjInputColorMatrices,
+) -> FjStatus {
+    catch_unwind(|| {
+        if out.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller authorizes the complete exclusive output record.
+        unsafe { out.write_bytes(0, 1) };
+        let Some(space) = input_space(input_space_tag) else {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        };
+        let output = FjInputColorMatrices::from(color::input_matrices(space));
+        // SAFETY: The initialized local record is committed to the exclusive output.
+        unsafe { out.write(output) };
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Direct-core input to dwg fixture facade; independent of production faults.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_input_to_dwg(
+    input: *const FjInputColorConversion,
+    rgb: *const f32,
+    clamp_nonnegative: u32,
+    out_rgb: *mut f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    catch_unwind(|| {
+        // SAFETY: Each nonnull output authorizes three exclusive aligned floats.
+        unsafe {
+            if !out_rgb.is_null() {
+                out_rgb.write_bytes(0, 3);
+            }
+            if !out_xyz.is_null() {
+                out_xyz.write_bytes(0, 3);
+            }
+        }
+        if input.is_null()
+            || rgb.is_null()
+            || out_rgb.is_null()
+            || out_xyz.is_null()
+            || clamp_nonnegative > 1
+        {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The input record is fully initialized, including disabled adaptation.
+        let Some(input) = (unsafe { input.read() }).into_core() else {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        };
+        // SAFETY: The read-only RGB extent authorizes three initialized aligned floats.
+        let rgb = unsafe { rgb.cast::<[f32; 3]>().read() };
+        if let Err(category) = color_facade_fault(6) {
+            return status(category);
+        }
+        let output = color::input_to_dwg(input, rgb, clamp_nonnegative != 0);
+        // SAFETY: Outputs are mutually disjoint and disjoint from inputs/local arrays.
+        unsafe {
+            out_rgb.copy_from_nonoverlapping(output.rgb.as_ptr(), 3);
+            out_xyz.copy_from_nonoverlapping(output.xyz.as_ptr(), 3);
+        }
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Direct-core input to linear srgb fixture facade; independent of production faults.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_input_to_linear_srgb(
+    input: *const FjInputColorConversion,
+    rgb: *const f32,
+    xyz_to_linear_srgb: *const f32,
+    out_rgb: *mut f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    catch_unwind(|| {
+        // SAFETY: Each nonnull output authorizes three exclusive aligned floats.
+        unsafe {
+            if !out_rgb.is_null() {
+                out_rgb.write_bytes(0, 3);
+            }
+            if !out_xyz.is_null() {
+                out_xyz.write_bytes(0, 3);
+            }
+        }
+        if input.is_null()
+            || rgb.is_null()
+            || xyz_to_linear_srgb.is_null()
+            || out_rgb.is_null()
+            || out_xyz.is_null()
+        {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The input record is fully initialized, including disabled adaptation.
+        let Some(input) = (unsafe { input.read() }).into_core() else {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        };
+        // SAFETY: Read-only inputs authorize three RGB and nine matrix floats respectively.
+        let (rgb, inverse) = unsafe {
+            (
+                rgb.cast::<[f32; 3]>().read(),
+                xyz_to_linear_srgb.cast::<[f32; 9]>().read(),
+            )
+        };
+        if let Err(category) = color_facade_fault(7) {
+            return status(category);
+        }
+        let output = color::input_to_linear_srgb(input, rgb, inverse);
+        // SAFETY: Outputs are mutually disjoint and disjoint from inputs/local arrays.
+        unsafe {
+            out_rgb.copy_from_nonoverlapping(output.rgb.as_ptr(), 3);
+            out_xyz.copy_from_nonoverlapping(output.xyz.as_ptr(), 3);
+        }
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Direct-core linear srgb to xyz fixture facade; independent of production faults.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_linear_srgb_to_xyz(rgb: *const f32, out_xyz: *mut f32) -> FjStatus {
+    catch_unwind(|| {
+        if out_xyz.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The output authorizes three exclusive aligned floats.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if rgb.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The read-only RGB extent authorizes three initialized aligned floats.
+        let rgb = unsafe { rgb.cast::<[f32; 3]>().read() };
+        let output = color::linear_srgb_to_xyz(rgb);
+        // SAFETY: The initialized local triplet is disjoint from the output extent.
+        unsafe { out_xyz.copy_from_nonoverlapping(output.as_ptr(), 3) };
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Direct-core dwg to xyz fixture facade; independent of production faults.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_dwg_to_xyz(rgb: *const f32, out_xyz: *mut f32) -> FjStatus {
+    catch_unwind(|| {
+        if out_xyz.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The output authorizes three exclusive aligned floats.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if rgb.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The read-only RGB extent authorizes three initialized aligned floats.
+        let rgb = unsafe { rgb.cast::<[f32; 3]>().read() };
+        if let Err(category) = color_facade_fault(9) {
+            return status(category);
+        }
+        let output = color::dwg_to_xyz(rgb);
+        // SAFETY: The initialized local triplet is disjoint from the output extent.
+        unsafe { out_xyz.copy_from_nonoverlapping(output.as_ptr(), 3) };
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Direct-core project linear rgb to xyz fixture facade; independent of production faults.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_project_linear_rgb_to_xyz(
+    rgb: *const f32,
+    rgb_to_xyz: *const f32,
+    xyz_adapt: *const f32,
+    out_xyz: *mut f32,
+) -> FjStatus {
+    catch_unwind(|| {
+        if out_xyz.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The output authorizes three exclusive aligned floats.
+        unsafe { out_xyz.write_bytes(0, 3) };
+        if rgb.is_null() || rgb_to_xyz.is_null() || xyz_adapt.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: Inputs authorize an initialized RGB triplet and two nine-float matrices.
+        let (rgb, matrix, adaptation) = unsafe {
+            (
+                rgb.cast::<[f32; 3]>().read(),
+                rgb_to_xyz.cast::<[f32; 9]>().read(),
+                xyz_adapt.cast::<[f32; 9]>().read(),
+            )
+        };
+        let output = color::project_linear_rgb_to_xyz(rgb, matrix, adaptation);
+        // SAFETY: The initialized local triplet is disjoint from the output extent.
+        unsafe { out_xyz.copy_from_nonoverlapping(output.as_ptr(), 3) };
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+/// Direct-core decoder fixture facade; does not consume any production fault.
+/// # Safety
+/// Nonnull read-only inputs authorize complete initialized aligned records/arrays
+/// until return and may share storage. RGB triplets have three floats, matrices
+/// nine. Even disabled adaptation is initialized. Nonnull outputs authorize their
+/// complete aligned extents, are exclusive, mutually disjoint and disjoint from
+/// every input. No input mutation/release during the call; no pointer is retained.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_decode_input(
+    input_space_tag: u32,
+    decode_cctf: u32,
+    rgb: *const f32,
+    out_rgb: *mut f32,
+) -> FjStatus {
+    catch_unwind(|| {
+        if out_rgb.is_null() {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        // SAFETY: The caller authorizes three exclusive aligned output floats.
+        unsafe { out_rgb.write_bytes(0, 3) };
+        if rgb.is_null() || decode_cctf > 1 {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        let Some(space) = input_space(input_space_tag) else {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        };
+        // SAFETY: The read-only input authorizes three initialized aligned floats.
+        let rgb = unsafe { rgb.cast::<[f32; 3]>().read() };
+        let output = color::decode_input(space, decode_cctf != 0, rgb);
+        // SAFETY: The complete local result is disjoint from the output.
+        unsafe { out_rgb.copy_from_nonoverlapping(output.as_ptr(), 3) };
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+const _: unsafe extern "C" fn(u32, *mut FjInputColorMatrices) -> FjStatus = fj_test_input_matrices;
+const _: unsafe extern "C" fn(
+    *const FjInputColorConversion,
+    *const f32,
+    u32,
+    *mut f32,
+    *mut f32,
+) -> FjStatus = fj_test_input_to_dwg;
+const _: unsafe extern "C" fn(
+    *const FjInputColorConversion,
+    *const f32,
+    *const f32,
+    *mut f32,
+    *mut f32,
+) -> FjStatus = fj_test_input_to_linear_srgb;
+const _: unsafe extern "C" fn(*const f32, *mut f32) -> FjStatus = fj_test_linear_srgb_to_xyz;
+const _: unsafe extern "C" fn(*const f32, *mut f32) -> FjStatus = fj_test_dwg_to_xyz;
+const _: unsafe extern "C" fn(*const f32, *const f32, *const f32, *mut f32) -> FjStatus =
+    fj_test_project_linear_rgb_to_xyz;
+const _: unsafe extern "C" fn(u32, u32, *const f32, *mut f32) -> FjStatus = fj_test_decode_input;
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -655,5 +1273,294 @@ mod tests {
             assert_eq!(bytes[7], 0);
             assert!(weak.upgrade().is_none());
         }
+    }
+}
+
+thread_local! { static SPECTRAL_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+thread_local! {
+    static EXPOSURE_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static EXPOSURE_FACADE_CONSUMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_exposure_arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
+    crate::exposure_bridge::arm_fault(operation, index, fault)
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_exposure_clear_fault() {
+    crate::exposure_bridge::clear_fault();
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_exposure_fault_consumed(operation: u32, fault: u32) -> u32 {
+    u32::from(crate::exposure_bridge::fault_consumed(operation, fault))
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_exposure_arm_facade_fault() {
+    EXPOSURE_FACADE_CONSUMED.set(false);
+    EXPOSURE_FACADE_FAULT.set(true);
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_exposure_facade_fault_consumed() -> u32 {
+    u32::from(EXPOSURE_FACADE_CONSUMED.replace(false))
+}
+fn exposure_facade_fault() -> Result<(), crate::asset_bridge::Failure> {
+    if EXPOSURE_FACADE_FAULT.replace(false) {
+        EXPOSURE_FACADE_CONSUMED.set(true);
+        Err(crate::asset_bridge::Failure::Internal(
+            "exposure fixture-only fault",
+        ))
+    } else {
+        Ok(())
+    }
+}
+/// # Safety
+/// Initialized tensor/input and exclusive disjoint output/error obey the header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_reconstruction_reference_white(
+    input: *const crate::exposure_bridge::FjReferenceWhiteInput,
+    out: *mut crate::exposure_bridge::FjReferenceWhite,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Shared checked projection scopes the tensor borrow; calls core directly.
+    unsafe { crate::exposure_bridge::reference_call(input, out, error, exposure_facade_fault) }
+}
+/// # Safety
+/// Required spans/output/failure/error obey the synchronous exposure contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_exposure_sensitivity(
+    input: *const crate::exposure_bridge::FjSensitivityInput,
+    out: *mut crate::exposure_bridge::FjSensitivity,
+    failure: *mut crate::exposure_bridge::FjSensitivityFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The direct-core facade shares only checked call-local projection.
+    unsafe {
+        crate::exposure_bridge::sensitivity_call(input, out, failure, error, exposure_facade_fault)
+    }
+}
+/// # Safety
+/// Initialized four-value parameters and exclusive scalar/error obey the header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_exposure_window_sample(
+    wavelength: f32,
+    params: FjFloatSpan,
+    out: *mut f32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Shared checked facade borrows parameters and calls the core leaf.
+    unsafe {
+        crate::exposure_bridge::window_call(wavelength, params, out, error, exposure_facade_fault)
+    }
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_spectral_arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
+    crate::spectral_bridge::arm_fault(operation, index, fault)
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_spectral_clear_fault() {
+    crate::spectral_bridge::clear_fault();
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_spectral_arm_facade_fault() {
+    SPECTRAL_FACADE_FAULT.set(true);
+}
+fn spectral_facade_fault() -> Result<(), crate::asset_bridge::Failure> {
+    if SPECTRAL_FACADE_FAULT.replace(false) {
+        Err(crate::asset_bridge::Failure::Internal(
+            "spectral fixture-only fault",
+        ))
+    } else {
+        Ok(())
+    }
+}
+/// # Safety
+/// Initialized input spans and exclusive output/error follow the spectral header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_spectral_tables(
+    input: *const crate::spectral_bridge::FjSpectralInput,
+    out: *mut crate::spectral_bridge::FjSpectralTables,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked projection scopes source borrows; core is called directly.
+    unsafe { crate::spectral_bridge::tables_call(input, out, error, spectral_facade_fault) }
+}
+/// # Safety
+/// Initialized source and exclusive output/failure/error records follow the header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_spectral_white(
+    input: *const crate::spectral_bridge::FjSpectralWhiteInput,
+    out: *mut crate::spectral_bridge::FjSpectralWhite,
+    failure: *mut crate::spectral_bridge::FjSpectralWhiteFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Same scoped checked input projection; no production export is called.
+    unsafe { crate::spectral_bridge::white_call(input, out, failure, error, spectral_facade_fault) }
+}
+/// # Safety
+/// Weighted source spans and exclusive output/error follow the spectral header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_spectral_s_inverse(
+    input: *const crate::spectral_bridge::FjSpectralSInput,
+    out: *mut crate::spectral_bridge::FjSpectralInverse,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls core with checked local borrows through shared projection.
+    unsafe { crate::spectral_bridge::inverse_call(input, out, error, spectral_facade_fault) }
+}
+
+thread_local! {
+    static TC_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TC_FACADE_CONSUMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_tc_lut_arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
+    crate::reconstruction_bridge::arm_fault(operation, index, fault)
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_tc_lut_clear_fault() {
+    crate::reconstruction_bridge::clear_fault();
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_tc_lut_fault_consumed(operation: u32, fault: u32) -> u32 {
+    u32::from(crate::reconstruction_bridge::take_consumed() == Some((operation, fault)))
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_tc_lut_arm_facade_fault() {
+    TC_FACADE_FAULT.set(true);
+    TC_FACADE_CONSUMED.set(false);
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_tc_lut_facade_fault_consumed() -> u32 {
+    u32::from(TC_FACADE_CONSUMED.replace(false))
+}
+fn tc_facade_fault() -> Result<(), crate::asset_bridge::Failure> {
+    if TC_FACADE_FAULT.replace(false) {
+        TC_FACADE_CONSUMED.set(true);
+        Err(crate::asset_bridge::Failure::Internal(
+            "TC fixture-only fault",
+        ))
+    } else {
+        Ok(())
+    }
+}
+/// # Safety
+/// Live immutable input spans and exclusive empty output/error obey the TC header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_reconstruction_tc_lut(
+    input: *const crate::reconstruction_bridge::FjFilmTcLutInput,
+    out: *mut crate::reconstruction_bridge::FjOwnedFilmTcLut,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Shared checked edge invokes the core directly, never a legacy export.
+    unsafe { crate::reconstruction_bridge::build_call(input, out, error, tc_facade_fault) }
+}
+/// # Safety
+/// Initialized LUT/XYZ and exclusive RGB/error obey the synchronous TC contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_reconstruction_sample_tc_lut(
+    lut: FjFloatSpan,
+    xyz: *const f32,
+    out: *mut f32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Shared extent checks scope the direct-core borrows and outputs.
+    unsafe { crate::reconstruction_bridge::sample_call(lut, xyz, out, error, tc_facade_fault) }
+}
+/// # Safety
+/// Consume the sole unmodified module allocation record with all views ended,
+/// or a fully zero empty record. No duplicate/stale/corrupt token is admissible.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_reconstruction_release_tc_lut(
+    owned: *mut crate::reconstruction_bridge::FjOwnedFilmTcLut,
+) -> FjStatus {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: Caller returns its exact live Vec allocation/layout once.
+        unsafe { crate::reconstruction_bridge::release_call(owned) }
+    })) {
+        Ok(status) => status,
+        Err(_) => FjStatus {
+            category: crate::cuda::sys::FJ_STATUS_INTERNAL_FAILURE,
+            api: crate::cuda::sys::FJ_API_NONE,
+            native_code: 0,
+        },
+    }
+}
+
+/// # Safety
+/// Output authorizes two aligned exclusive usize values, disjoint from all live call storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_tc_lut_allocation_counts(out: *mut usize) -> FjStatus {
+    if out.is_null()
+        || !(out as usize).is_multiple_of(align_of::<usize>())
+        || (out as usize).checked_add(2 * size_of::<usize>()).is_none()
+    {
+        return FjStatus {
+            category: crate::cuda::sys::FJ_STATUS_UNSUPPORTED_INPUT,
+            api: crate::cuda::sys::FJ_API_NONE,
+            native_code: 0,
+        };
+    }
+    let counts = crate::reconstruction_bridge::allocation_counts();
+    // SAFETY: Caller authorizes the full exclusive two-element initialized extent.
+    unsafe { out.cast::<[usize; 2]>().write(counts) };
+    FjStatus {
+        category: crate::cuda::sys::FJ_STATUS_SUCCESS,
+        api: crate::cuda::sys::FJ_API_NONE,
+        native_code: 0,
+    }
+}
+
+/// # Safety
+/// Initialized fixed-exposure input/spans and exclusive disjoint output/error obey the header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_exposure_mallett_midgray(
+    input: *const crate::exposure_bridge::FjMallettMidgrayInput,
+    out: *mut crate::exposure_bridge::FjMallettMidgray,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked projection calls core directly, never a legacy export.
+    unsafe {
+        crate::exposure_bridge::mallett_midgray_call(input, out, error, exposure_facade_fault)
+    }
+}
+/// # Safety
+/// Exclusive aligned fixed output/error records are caller-authorized and disjoint.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_exposure_tc_midgray(
+    green: f32,
+    out: *mut crate::exposure_bridge::FjMidgrayNormalization,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked projection calls core directly with scoped output.
+    unsafe { crate::exposure_bridge::tc_midgray_call(green, out, error, exposure_facade_fault) }
+}
+/// # Safety
+/// The exclusive aligned scalar/error records are caller-authorized and disjoint.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_exposure_reference_source(
+    exposure_ev: f32,
+    out: *mut f32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked projection calls core directly with scoped output.
+    unsafe {
+        crate::exposure_bridge::reference_source_call(
+            exposure_ev,
+            out,
+            error,
+            exposure_facade_fault,
+        )
+    }
+}
+/// # Safety
+/// Initialized fixed input/spans and exclusive disjoint output/error obey the header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_exposure_mallett_reference_raw(
+    input: *const crate::exposure_bridge::FjMallettReferenceInput,
+    out: *mut crate::exposure_bridge::FjReferenceRaw,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked projection calls core directly, retaining no source pointer.
+    unsafe {
+        crate::exposure_bridge::mallett_reference_call(input, out, error, exposure_facade_fault)
     }
 }

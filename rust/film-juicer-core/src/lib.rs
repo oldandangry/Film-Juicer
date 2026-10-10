@@ -7,3 +7,11 @@ pub mod profile;
 pub mod data_io;
 pub mod hash;
 pub mod assets;
+pub mod color;
+pub mod illuminant;
+
+pub mod spectral;
+pub mod reconstruction;
+pub mod exposure;
+
+pub mod gamut;

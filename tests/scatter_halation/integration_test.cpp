@@ -31,7 +31,7 @@
 
 #include "Cuda/JuicerCudaFailure.h"
 
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "Hash.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"

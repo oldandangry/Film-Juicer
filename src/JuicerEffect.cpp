@@ -23,7 +23,6 @@
 #include "juicer_cuda_owner.h"
 #include "ScatterHalation.h"
 #include "SpectralData.h"
-#include "SpectralProcessing.h"
 #include "Logging.h"
 #include "Hash.h"
 #include "mainProcessing.h"

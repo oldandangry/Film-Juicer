@@ -108,6 +108,12 @@ ctest --preset linux-debug
 Windows Debug uses the same sequence with `windows-clang-debug`. Release uses
 `linux-release` or `windows-clang-release`.
 
+The presets use four CTest workers. GPU groups share `juicer_gpu`, the two
+product Cargo tests share `juicer_cargo`, and groups with `RUN_SERIAL` still run
+alone. Keep GPU suites from separate Windows/WSL invocations serialized on a
+shared device; CTest resource locks apply within one invocation. Override the
+worker count with `--parallel <count>` when the machine needs a smaller limit.
+
 The unfiltered CTest command runs every automated correctness group applicable
 to that platform and therefore requires a supported GPU and driver. Selection
 uses standard CTest options:
@@ -206,8 +212,9 @@ cmake --build --preset linux-debug
 `Quality.RustNaming` uses the current workspace manifests and Clippy configuration
 in temporary copies under `out/validation/<preset>/quality/rust-naming/`.
 The checked-in `quality/fixtures/rust_naming/*.rs` files are product naming-policy
-contracts, not external references. Both crates are checked in development and
-release, including test targets. Expected failures must produce the specific
+contracts, not external references. Both crates are checked in the preset's
+profile, including test targets; the complete quality dispatcher checks both
+development and release profiles. Expected failures must produce the specific
 error code and primary source span for every rejected identifier; a compiler
 setup failure is not a passing negative test. Valid names and a reasoned raw
 binding exception must compile successfully. Cargo runs offline and locked;
@@ -216,8 +223,11 @@ artifact directory after temporary workspace cleanup. Run it with
 `ctest --preset <preset> -R '^Quality.RustNaming$' --output-on-failure`, or use
 the quality dispatcher, which supplies the same tool and artifact environment.
 
-`Quality.RustBoundaries` uses one temporary workspace per run and reuses its Cargo
-cache across compiler probes. It removes that workspace on completion and keeps
+`Quality.RustBoundaries` uses one temporary workspace per run. Both compiler-probe
+groups reuse Cargo artifacts under `out/build/<preset>/cargo/quality-probes/`,
+separately from product artifacts. Cargo's fingerprints and build lock govern
+reuse; every current probe and its required diagnostics still run. No test
+outcome is cached. The groups remove temporary source workspaces on completion and keep
 logs under `out/validation/<preset>/quality/rust-boundaries/`. Run
 `ctest --preset <preset> -R '^Quality.RustBoundaries$' --output-on-failure` or the
 quality dispatcher. Cargo is offline and locked; the configured build supplies
@@ -225,7 +235,8 @@ the dependencies. Each negative fixture in `quality/fixtures/rust_boundaries/`
 must fail for its expected compiler code at its own source location, not because
 of missing tooling or an unrelated error. These are product API contracts, not
 external numerical references. Valid use runs with and without `test-support`;
-both development and release profiles are checked. The probes compile without
+CTest selects the preset's profile and complete quality gates check both
+development and release. The probes compile without
 linking or executing native CUDA calls.
 
 Add construction/lifetime probes as the corresponding real API lands. Put
@@ -576,3 +587,59 @@ The prepared-boundary fixture acquires through the same safe Rust source via the
 test facade and asserts that supplied views cause no fallback acquisition.
 These seams exist only in test objects/test-support; normal Release has none.
 Installed Resolve and actual driver/context-loss acceptance remain separate.
+
+`Assets.Host.IlluminantConstruction` qualifies Rust illuminant math and its
+synchronous C/native bindings against four frozen native-parent captures, with
+exact products/identities, scoped source/lens lifetimes, cache and failure
+contracts. The separate negative-print C render contract checks the later native
+preflash unwind/completion terminal. See [the illuminant guide](ffi/README.md#illuminant-construction).
+
+`Spectral.Host.{Tables,White,SInverse,Products,Admission}` and
+`Ffi.Host.SpectralPreparation` qualify fixed spectral math, synchronous C11/native
+bindings and production route preparation against four frozen native-parent
+captures. They preserve exact family/enclosing identities, the distinct white
+precision contracts and the film gate before inverse. See
+[the spectral guide](ffi/README.md#spectral-tables-whites-and-film-s-inverse)
+for provenance, failure, lifetime, allocation and isolation boundaries.
+
+A5 spectral exposure migration is covered by the `Exposure.Host.*` and
+`Ffi.Host.ExposurePreparation` groups. See [the FFI domain guide](ffi/README.md)
+for exact fixture provenance, the scoped pinned-erff decision, immutable earlier
+fixtures and independently qualified completed-product supplements.
+
+### Film TC preparation and allocation ownership
+
+`Reconstruction.Host.TcLut.*` covers complete Hanatos/Arctic tables, Mitchell
+sampling, input remapping, raw C11/C++/Rust ABI, direct-core facade, failures,
+actual route products/admission and final publication release. The TC fixture
+manifest selects independently frozen native expectations by preset. Records
+are shared only when all expanded fields and complete table bytes agree.
+Existing fixture bytes and bounds remain unchanged.
+
+Native-undefined coordinate cases have required ordinary preparation-failure
+categories rather than manufactured native pixels. Defined brightness overflow
+still reaches final sanitation. A completed TC result owns one Rust Vec; the
+native move-only holder exposes readonly spans and releases the original
+pointer/length/capacity once in Rust. Source and hull borrows expire on return.
+The Lifetime group observes actual publication paths without an external old
+state hold and checks release outside both publication and rebuild locks;
+retained-reader and cross-thread cases are separate.
+
+### Mallett exposure preparation
+
+`Exposure.Host.Mallett.*` checks focused BGR mid-gray, separate synthetic RGB
+reference reduction, shared reference-source arithmetic and TC normalization
+against independently frozen native-parent expectations. Its manifest selects
+exact preset records; older color/spectral/exposure fixtures and their assignments
+remain unchanged. `mallett-failure-contract.json` separately records the approved
+earlier focused missing-basis failure and original native outcomes.
+
+The C11/C++/Rust boundary groups cover layouts, values, structural errors,
+cleared outputs, bounded diagnostics and contained panic. Fixed math has no heap
+allocation; fault category injection is not allocator-pressure evidence.
+`products` and `admission` exercise actual publication, skip/consumption,
+recovery, supersession, immutable holds, cache release and same-input reuse.
+Feature-only spectrum operations preserve the current independent CAT02/input
+color witnesses; they use fixed borrows and never provide a production renderer.
+The four value exports remain temporary native bindings. Normal production
+builds omit the fixture facade and fault storage.

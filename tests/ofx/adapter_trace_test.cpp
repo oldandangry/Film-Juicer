@@ -44,7 +44,7 @@
 #include "ParamNames.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "ofxMemory.h"
 #include "ofxMultiThread.h"
 #include "ofxsSupportPrivate.h"

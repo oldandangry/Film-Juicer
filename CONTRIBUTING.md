@@ -106,10 +106,27 @@ ctest --preset linux-debug --output-on-failure
 Use the corresponding Windows or Release preset when that is the affected
 target. `--files <paths...>` is the bounded package form; `--all-owned` is an
 explicit audit. The dispatcher writes logs only under
-`out/validation/<preset>/quality/`, leaves source unchanged, and treats missing
-tools or compiler/lint failures as incomplete work. Formatting and lints do
+`out/validation/<preset>/quality/runs/<run-id>/`, leaves source unchanged, and treats missing
+tools or compiler/lint failures as incomplete work. Each fresh directory has a
+`run.json` with source identities, command, terminal status, elapsed time and hashes
+of that invocation's evidence. Keep the printed run path in a handoff; do not copy
+the shared quality tree or use an older log as evidence of the current pass.
+Historical logs remain untouched. CI uploads the run receipts and command sidecars.
+Receipts bind the Git revision, current owned source (including untracked and
+generated inputs), policies, compilation database/build configuration and consumed
+tools, dependency sources and project headers. These identities are checked again
+before success; a changed or missing input fails qualification. Environment values
+are hashed rather than printed. This inventory excludes historical output trees.
+Formatting and lints do
 not replace review of ownership, names, numerical parity, GPU lifetime, or
 installed Resolve behavior.
+
+Reuse the configured checkout path, including its casing, from
+`CMAKE_HOME_DIRECTORY` in the preset's `CMakeCache.txt`. A differently spelled
+filesystem alias can change compiler arguments and invalidate incremental builds
+even when it reaches the same files. Keep configure, build and quality invocations
+on that path; the quality dispatcher rejects a different spelling. Do not edit
+cache paths to hide a relocation.
 
 During development, build the affected test targets and run the smallest owning
 CTest selection that proves the changed behavior. Exercise new compiled tests
@@ -120,12 +137,31 @@ evidence; see [the test guide](tests/README.md). Separate reference
 captures, transition checkpoints and production Release checks retain their
 own requirements.
 
+Complete any approved numerical-policy fixture replay and run its affected GPU
+reference/identity groups before the final unfiltered suite. Use that suite's
+JUnit for final domain evidence instead of repeating passing focused groups.
+
 `--jobs` limits concurrent native and CUDA analysis commands; the default is 2
 and `--jobs 1` provides serial execution. Formatting, toolchain/CUDA preparation
 and Cargo checks remain sequential. Each analysis command retains its compilation
-arguments, working directory and separate log; all command results are observed
-before a failing batch returns. Keep GPU campaigns serialized on a shared device
+arguments, working directory and separate log. After a failure is observed, no
+additional commands are scheduled; already running commands finish and their
+results are observed before the failing batch returns. Keep GPU campaigns serialized on a shared device
 and avoid concurrent Cargo operations using the same target directory.
+
+The dispatcher first verifies that every selected translation unit exists in the
+configured compilation database. After adding test targets, refresh that preset
+before quality checks. Header selection reads each source's literal includes once
+per invocation, then resolves them in each compilation entry's ordered include
+search paths, with separate quote/angle lookup. All conditional branches are
+considered conservatively; distinct CUDA variants are retained. Compiler response
+files must be expanded before selection. The graph
+is discarded after selection, so a subsequent edit cannot reuse stale dependencies.
+The dispatcher checks formatting/configuration and edited native translation
+units before Rust probes and the remaining header consumers. A failed producer
+batch stops the later batches; a successful run retains every consumer and CUDA
+variant. Each command writes a `.command.json` beside its log with arguments,
+working directory, duration and exit status, including launch failures.
 
 CUDA files use Clang's CUDA frontend with the preset's real NVCC compilation
 database entries. Both `.cu` sources and consuming translation units for `.cuh`
@@ -171,6 +207,13 @@ and local unsafe overrides in the core and safe asset modules. Probes run in
 disposable workspace copies in both profiles and check diagnostic codes and
 locations. Extend them when a new construction or safe orchestration boundary
 lands; do not create speculative production APIs for tests.
+
+CTest compiler probes select the configured Debug or Release profile; complete
+quality gates always exercise both. Probe source workspaces stay disposable,
+while Cargo artifacts reuse `out/build/<preset>/cargo/quality-probes/`. Cargo
+fingerprints and its build lock govern reuse; every invocation still compiles
+each current example and checks its specific diagnostics. Probe outcomes are
+never cached, and these artifacts are separate from product Rust outputs.
 
 The dispatcher always runs the inexpensive native boundary guards across their
 whole source scope, including new nested headers. They reject host messaging in

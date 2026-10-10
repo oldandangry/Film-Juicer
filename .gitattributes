@@ -67,6 +67,9 @@ tests/ofx/processor_rust_pixels_*.dat -text whitespace=cr-at-eol
 # Preserve the original bytes of platform-specific native illuminant captures.
 tests/ffi/fixtures/illuminants/*.bits -text whitespace=cr-at-eol
 
+# Preserve the original bytes of provenance-pinned native CAT16 captures.
+tests/ffi/fixtures/color/*.json -text whitespace=cr-at-eol
+
 # Preserve whitespace in byte-identifiable vendored dependency snapshots.
 third_party/nlohmann/LICENSE.MIT -whitespace
 third_party/ofxs/Legal/OFXS-LICENSE.txt -whitespace
@@ -74,3 +77,7 @@ third_party/ofxs/OpenFX-1.4/include/ofxImageEffect.h -whitespace
 third_party/ofxs/Support/LICENSE -whitespace
 third_party/ofxs/Support/Library/ofxsCore.cpp -whitespace
 third_party/ofxs/Support/include/ofxsInteract.h -whitespace
+
+# Preserve reviewed bytes of A5 numerical and GPU replay fixtures.
+tests/ffi/fixtures/exposure/** -text whitespace=cr-at-eol
+tests/ofx/fixtures/exposure/** -text whitespace=cr-at-eol

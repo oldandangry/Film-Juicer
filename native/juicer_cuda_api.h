@@ -223,7 +223,7 @@ typedef struct FjFilmExposure {
      * FilmRawRecipe::finalSensitivity -> prepare_focused_route_resources (B/G/R
      * curve split); expires at native-call return. */
     FjFloatSpan sensitivity_rgb;
-    /* float[192*192*4] or empty, FilmTcLut::rgba C-order [tc0][tc1][R,G,B,padding].
+    /* float[192*192*4] or empty, FilmTcLut::samples() C-order [tc0][tc1][R,G,B,padding].
      * FocusedRenderPayload -> film TC-LUT upload; integrated reconstruction
      * values, no physical units; expires at native-call return. */
     FjFloatSpan tc_lut_rgba;
