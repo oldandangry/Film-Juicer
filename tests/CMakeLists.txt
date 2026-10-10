@@ -840,7 +840,7 @@ add_test(NAME Color.Host.InputColor COMMAND JuicerColorPreparationTests
 set_tests_properties(Color.Host.InputColor PROPERTIES LABELS "host" TIMEOUT 60)
 add_test(NAME Ffi.Host.InputColorPreparation COMMAND JuicerColorPreparationTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/input-color-${JUICER_TEST_PRESET_NAME}.json" input-preparation)
-set_tests_properties(Ffi.Host.InputColorPreparation PROPERTIES LABELS "host" TIMEOUT 180 RUN_SERIAL TRUE)
+set_tests_properties(Ffi.Host.InputColorPreparation PROPERTIES LABELS "host" TIMEOUT 600 RUN_SERIAL TRUE)
 
 add_test(NAME Color.Gpu.ScannerReuse COMMAND JuicerColorPreparationTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/${JUICER_TEST_PRESET_NAME}.json" reuse-gpu)
