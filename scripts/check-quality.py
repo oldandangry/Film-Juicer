@@ -709,6 +709,7 @@ def tidy_translation_units(
     entries: Sequence[CompilationEntry],
     policy: SourcePolicy,
 ) -> list[str]:
+    root = root.resolve()
     validate_translation_units(selected_native, entries, policy)
     selected: set[str] = set()
     headers = {path for path in selected_native if PurePosixPath(path).suffix.lower() in policy.header_extensions}

@@ -796,6 +796,35 @@ class SelectionAndEvidenceTests(unittest.TestCase):
             (root / "src/a.cpp").write_text("", encoding="utf-8")
             self.assertEqual(check_quality.tidy_translation_units(root, ["src/shared.h"], entries, policy), ["src/kernel.cu"])
 
+    def test_include_graph_resolves_an_aliased_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            root = parent / "source"
+            (root / "src").mkdir(parents=True)
+            (root / "src/owner.cpp").write_text('#include "shared.h"\n', encoding="utf-8")
+            (root / "src/shared.h").write_text("#pragma once\n", encoding="utf-8")
+            alias = parent / "alias"
+            if os.name == "nt":
+                subprocess.run(
+                    ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(root)],
+                    check=True, capture_output=True, timeout=30,
+                )
+            else:
+                alias.symlink_to(root, target_is_directory=True)
+            try:
+                self.assertNotEqual(alias, alias.resolve())
+                entries = [check_quality.CompilationEntry("src/owner.cpp", "compiler")]
+                policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+                self.assertEqual(
+                    check_quality.tidy_translation_units(alias, ["src/shared.h"], entries, policy),
+                    ["src/owner.cpp"],
+                )
+            finally:
+                if os.name == "nt":
+                    alias.rmdir()
+                else:
+                    alias.unlink()
+
     def test_missing_translation_unit_fails_before_include_or_tool_work(self) -> None:
         root = SCRIPT_PATH.parent.parent
         policy = check_quality.load_policy(root)
