@@ -273,12 +273,16 @@ pub(crate) enum Failure {
     FilmTc(film_juicer_core::reconstruction::TcError),
     #[cfg(feature = "test-support")]
     InjectedAllocation,
+    #[cfg(feature = "test-support")]
+    InjectedPreparation(&'static str),
     #[cfg(any(test, feature = "test-support"))]
     Internal(&'static str),
 }
 impl Failure {
     fn category(&self) -> u32 {
         match self {
+            #[cfg(feature = "test-support")]
+            Self::InjectedPreparation(_) => FJ_STATUS_PREPARATION_FAILURE,
             Self::Input(_) => FJ_STATUS_UNSUPPORTED_INPUT,
             Self::Asset(
                 AssetError::Catalog(_)
@@ -359,6 +363,8 @@ impl fmt::Display for Failure {
             Self::InjectedAllocation => {
                 formatter.write_str("injected spectral allocation category")
             }
+            #[cfg(feature = "test-support")]
+            Self::InjectedPreparation(message) => formatter.write_str(message),
         }
     }
 }

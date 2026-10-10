@@ -1,8 +1,11 @@
 //! Final film sensitivity, its identity and the distinct recipe Mallett scale.
 
+#[cfg(feature = "test-support")]
+pub mod fixtures;
+
 use std::fmt;
 
-use crate::hash;
+use crate::{color, hash};
 
 pub struct BandPass {
     pub uv: [f32; 3],
@@ -56,6 +59,8 @@ pub enum ErrorKind {
     Hash,
     MallettResponse,
     MallettScale,
+    ReferenceSource,
+    ReferenceRaw,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Error {
@@ -72,6 +77,12 @@ impl Error {
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if matches!(
+            self.kind,
+            ErrorKind::ReferenceSource | ErrorKind::ReferenceRaw
+        ) {
+            return write!(f, "Exposure preparation failed requirement={:?}", self.kind);
+        }
         write!(
             f,
             "MalformedRequiredProfileData phase=3B field=final_sensitivity requirement={:?}",
@@ -249,4 +260,182 @@ pub fn prepare_sensitivity(input: Input<'_>) -> Result<Sensitivity, Error> {
 #[cfg(feature = "test-support")]
 pub fn window_sample_for_test(wavelength: f32, params: &[f32; 4]) -> f32 {
     hanatos_window_sample(wavelength, params)
+}
+
+pub struct MallettInput<'a> {
+    pub color: color::InputConversion,
+    pub xyz_to_linear_srgb: [f32; 9],
+    pub basis_rgb: &'a [[f32; 3]; 81],
+    pub illuminant: &'a [f32; 81],
+    pub sensitivity_rgb: &'a [[f32; 3]; 81],
+}
+
+#[derive(Debug)]
+pub struct MidgrayNormalization {
+    raw_green: f32,
+    scale: f32,
+}
+impl MidgrayNormalization {
+    /// The resolved denominator bound to the native rawMidgrayGreen carrier.
+    pub fn raw_green(&self) -> f32 {
+        self.raw_green
+    }
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+}
+
+#[derive(Debug)]
+pub struct MallettMidgray {
+    midgray_dwg_rgb: [f32; 3],
+    raw_midgray_bgr: [f32; 3],
+    normalization: MidgrayNormalization,
+}
+impl MallettMidgray {
+    pub fn midgray_dwg_rgb(&self) -> &[f32; 3] {
+        &self.midgray_dwg_rgb
+    }
+    /// Completion preserves finite-f64 narrowing, including infinite raw channels.
+    pub fn raw_midgray_bgr(&self) -> &[f32; 3] {
+        &self.raw_midgray_bgr
+    }
+    pub fn normalization(&self) -> &MidgrayNormalization {
+        &self.normalization
+    }
+}
+
+fn safe_green(green: f32) -> f32 {
+    let finite = if green.is_finite() { green } else { 0.0 };
+    if finite > 1e-9 { finite } else { 1.0 }
+}
+
+pub fn tc_midgray(green: f32) -> MidgrayNormalization {
+    let raw_green = safe_green(green);
+    MidgrayNormalization {
+        raw_green,
+        scale: 1.0 / raw_green,
+    }
+}
+
+fn focused_normalization(green: f32) -> MidgrayNormalization {
+    let raw_green = safe_green(green);
+    let reciprocal = 1.0 / raw_green;
+    MidgrayNormalization {
+        raw_green,
+        scale: if reciprocal.is_finite() && reciprocal > 0.0 {
+            reciprocal
+        } else {
+            1.0
+        },
+    }
+}
+
+fn mallett_raw(
+    linear_srgb: [f32; 3],
+    basis_rgb: &[[f32; 3]; 81],
+    illuminant: &[f32; 81],
+    sensitivity_rgb: &[[f32; 3]; 81],
+) -> [f32; 3] {
+    // Native max(0, value) selects positive zero on ties and nonfinite inputs.
+    let [r, g, b] = linear_srgb.map(|value| {
+        if value.is_finite() && value > 0.0 {
+            value
+        } else {
+            0.0
+        }
+    });
+    let mut accumulated = [0.0_f64; 3];
+    for (i, basis) in basis_rgb.iter().enumerate() {
+        let spd = (r * basis[0] + g * basis[1] + b * basis[2]) * illuminant[i];
+        if !spd.is_finite() {
+            continue;
+        }
+        for (channel, out) in accumulated.iter_mut().enumerate() {
+            let sensitivity = sensitivity_rgb[i][2 - channel];
+            if sensitivity.is_finite() {
+                *out += f64::from(spd) * f64::from(sensitivity);
+            }
+        }
+    }
+    accumulated.map(|value| if value.is_finite() { value as f32 } else { 0.0 })
+}
+
+pub fn mallett_midgray(input: MallettInput<'_>) -> MallettMidgray {
+    let rgb = [0.184; 3];
+    let dwg = color::input_to_dwg(input.color, rgb, true);
+    let linear_srgb = color::input_to_linear_srgb(input.color, rgb, input.xyz_to_linear_srgb);
+    let raw_midgray_bgr = mallett_raw(
+        linear_srgb.rgb,
+        input.basis_rgb,
+        input.illuminant,
+        input.sensitivity_rgb,
+    );
+    MallettMidgray {
+        midgray_dwg_rgb: dwg.rgb,
+        raw_midgray_bgr,
+        normalization: focused_normalization(raw_midgray_bgr[1]),
+    }
+}
+
+#[derive(Debug)]
+pub struct ReferenceSource {
+    value: f32,
+}
+impl ReferenceSource {
+    pub fn value(&self) -> f32 {
+        self.value
+    }
+}
+
+pub fn reference_source(exposure_ev: f32) -> Result<ReferenceSource, Error> {
+    let value = 0.184_f32 * exposure_ev.exp2();
+    if !value.is_finite() || value < 0.0 {
+        return Err(Error {
+            kind: ErrorKind::ReferenceSource,
+            hash_failure: None,
+        });
+    }
+    Ok(ReferenceSource { value })
+}
+
+pub struct ReferenceInput<'a> {
+    pub basis_rgb: &'a [[f32; 3]; 81],
+    pub illuminant: &'a [f32; 81],
+    pub sensitivity_rgb: &'a [[f32; 3]; 81],
+    pub source: f32,
+    pub green_scale: f32,
+}
+
+#[derive(Debug)]
+pub struct ReferenceRaw {
+    rgb: [f32; 3],
+}
+impl ReferenceRaw {
+    pub fn rgb(&self) -> &[f32; 3] {
+        &self.rgb
+    }
+}
+
+pub fn mallett_reference_raw(input: ReferenceInput<'_>) -> Result<ReferenceRaw, Error> {
+    let failure = |kind| Error {
+        kind,
+        hash_failure: None,
+    };
+    if !input.source.is_finite() || input.source < 0.0 {
+        return Err(failure(ErrorKind::ReferenceSource));
+    }
+    let mut accumulated = [0.0_f64; 3];
+    for (i, basis) in input.basis_rgb.iter().enumerate() {
+        let spectrum = f64::from(input.source)
+            * f64::from(basis[0] + basis[1] + basis[2])
+            * f64::from(input.illuminant[i]);
+        for (channel, out) in accumulated.iter_mut().enumerate() {
+            *out += spectrum * f64::from(input.sensitivity_rgb[i][channel]);
+        }
+    }
+    let rgb = accumulated.map(|value| (value * f64::from(input.green_scale)) as f32);
+    if !rgb.iter().all(|value| value.is_finite() && *value >= 0.0) {
+        return Err(failure(ErrorKind::ReferenceRaw));
+    }
+    Ok(ReferenceRaw { rgb })
 }

@@ -8,11 +8,13 @@ extern "C" {
 #endif
 
 /* Direct-core exposure facade; same synchronous storage rules as production.
- * Closed raw fault slots: 1 reference, 2 sensitivity; fault 1 unsupported,
+ * Closed raw fault slots: 1 reference, 2 sensitivity, 3 Mallett mid-gray,
+ * 4 TC normalization, 5 reference source, 6 Mallett reference; fault 1 unsupported,
  * 2 panic, 3 allocation category, 4 preparation. One-based matching call count.
  * Read the consume-once same-thread witness immediately, before another call or
  * cleanup. The independent facade slot has its own consume-once witness.
- * Category injection is distinct from the core's real kernel reservation test. */
+ * Category injection is distinct from the core's real kernel reservation test.
+ * Allocation fault 3 is supported only by operations 1/2, never fixed A7 math. */
 FjStatus fj_test_exposure_arm_fault(uint32_t operation, uint32_t call_index, uint32_t fault);
 void fj_test_exposure_clear_fault(void);
 uint32_t fj_test_exposure_fault_consumed(uint32_t operation, uint32_t fault);
@@ -21,6 +23,41 @@ uint32_t fj_test_exposure_facade_fault_consumed(void);
 FjStatus fj_test_reconstruction_reference_white(const FjReferenceWhiteInput* input, FjReferenceWhite* out, FjErrorBuffer* error);
 FjStatus fj_test_exposure_sensitivity(const FjSensitivityInput* input, FjSensitivity* out, FjSensitivityFailure* failure, FjErrorBuffer* error);
 FjStatus fj_test_exposure_window_sample(float wavelength, FjFloatSpan params, float* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_mallett_midgray(const FjMallettMidgrayInput* input, FjMallettMidgray* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_tc_midgray(float green, FjMidgrayNormalization* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_reference_source(float exposure_ev, float* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_mallett_reference_raw(const FjMallettReferenceInput* input, FjReferenceRaw* out, FjErrorBuffer* error);
+
+/* Feature-only fixed-axis spectrum witnesses, independent of legacy color faults.
+ * Borrow initialized aligned immutable inputs/spans only until return; exclusive
+ * aligned output/error storage is mutually disjoint and disjoint from inputs.
+ * Hanatos consumes exactly 192*192*81 samples, tables consume three 81-sample
+ * weights. All outputs clear before fallible work. No source pointer is retained,
+ * heap scratch, method selector or production fallback is supplied by this facade.
+ * Closed fixture slots: 1 Hanatos spectrum, 2 tables spectrum, 3 Mallett BGR leaf;
+ * faults 1 unsupported and 2 panic, with one-based matching-call counts and
+ * consume-once same-thread witnesses read before cleanup. */
+typedef struct FjHanatosSpectrumInput {
+    float rgb_dwg[3], reference_white[3];
+    FjFloatSpan spectra;
+} FjHanatosSpectrumInput;
+typedef struct FjTablesSpectrumInput {
+    float rgb_dwg[3], reference_white[3], s_inverse[9];
+    FjFloatSpan ax, ay, az;
+} FjTablesSpectrumInput;
+typedef struct FjMallettRawInput {
+    float linear_srgb[3];
+    FjFloatSpan basis_rgb, illuminant, sensitivity_rgb;
+} FjMallettRawInput;
+typedef struct FjSpectrumFixture {
+    float pre_xyz[3], consumer_white[3], post_adapt_xyz[3], spectrum[81];
+} FjSpectrumFixture;
+FjStatus fj_test_exposure_hanatos_spectrum(const FjHanatosSpectrumInput* input, FjSpectrumFixture* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_tables_spectrum(const FjTablesSpectrumInput* input, FjSpectrumFixture* out, FjErrorBuffer* error);
+FjStatus fj_test_exposure_mallett_raw(const FjMallettRawInput* input, float out_bgr[3], FjErrorBuffer* error);
+FjStatus fj_test_exposure_fixture_arm_fault(uint32_t operation, uint32_t index, uint32_t fault);
+void fj_test_exposure_fixture_clear_fault(void);
+uint32_t fj_test_exposure_fixture_fault_consumed(uint32_t operation, uint32_t fault);
 
 /* Fixed spectral direct-core facade; same synchronous storage contract as production.
  * Independent TLS fault slots: raw operations 1 tables, 2 white, 3 inverse;
@@ -85,6 +122,12 @@ FjStatus fj_test_project_linear_rgb_to_xyz(const float rgb[3], const float rgb_t
 FjStatus fj_test_decode_input(uint32_t input_space, uint32_t decode_cctf, const float rgb[3], float out_rgb[3]);
 FjStatus fj_test_color_arm_fault(uint32_t operation, uint32_t call_index, uint32_t fault);
 FjStatus fj_test_color_clear_fault(void);
+/* Direct current color-facade slots 4/6/7/9, independent of live production
+ * export faults and never visited by pure core composition. Read the consumed
+ * witness before cleanup; an armed/cleared slot is not consumption evidence. */
+FjStatus fj_test_color_arm_facade_fault(uint32_t operation, uint32_t index, uint32_t fault);
+FjStatus fj_test_color_clear_facade_fault(void);
+uint32_t fj_test_color_facade_fault_consumed(uint32_t operation, uint32_t fault);
 
 typedef struct FjFilmProfile FjFilmProfile;
 

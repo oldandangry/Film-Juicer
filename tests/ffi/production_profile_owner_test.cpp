@@ -25,7 +25,7 @@
 #include "ResourceAssetLibrary.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "Illuminants.h"
 #include "Hash.h"
 #include "Cuda/JuicerCudaResources.h"

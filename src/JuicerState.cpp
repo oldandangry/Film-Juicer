@@ -20,7 +20,7 @@
 #include "Illuminants.h"
 #include "Logging.h"
 #include "ProcessRoot.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "RustSpectralBridge.h"
 #include "RustExposureBridge.h"
 
@@ -158,37 +158,30 @@ namespace {
                 return false;
             }
             std::copy(raw.begin(), raw.end(), payload.filmRawConfig.rawMidgray);
-            const float safeGreen =
-                Spectral::sanitize_raw_midgray_green_or_one(raw[1]);
-            payload.filmRawConfig.rawMidgrayGreen = safeGreen;
-            payload.filmRawConfig.midgrayScale = 1.0f / safeGreen;
+            if (!JuicerExposure::tc_midgray(
+                    raw[1], payload.filmRawConfig, diagnostic)) {
+                return false;
+            }
             std::copy_n(inputMidgray, 3, payload.filmRawConfig.midgrayDWG);
             return payload.filmRawConfig.valid;
         }
         payload.filmTcLut.reset();
 
-        Spectral::Curve sensB;
-        Spectral::Curve sensG;
-        Spectral::Curve sensR;
-        Spectral::assign_reference_axis(sensB.lambda_nm);
-        sensG.lambda_nm = sensB.lambda_nm;
-        sensR.lambda_nm = sensB.lambda_nm;
-        sensB.linear.resize(recipe.filmRaw.finalSensitivity.size());
-        sensG.linear.resize(recipe.filmRaw.finalSensitivity.size());
-        sensR.linear.resize(recipe.filmRaw.finalSensitivity.size());
-        for (std::size_t sample = 0; sample < recipe.filmRaw.finalSensitivity.size(); ++sample) {
-            const auto& rgb = recipe.filmRaw.finalSensitivity[sample];
-            sensB.linear[sample] = rgb[2];
-            sensG.linear[sample] = rgb[1];
-            sensR.linear[sample] = rgb[0];
+        if (!Spectral::mallett_available() ||
+            !Spectral::mallett_basis_matches_reference_shape() ||
+            Spectral::gMallettBasis.data.size() != 243u) {
+            diagnostic =
+                "MissingRequiredResource component=mallett_midgray requirement=81x3_basis";
+            return false;
         }
-        Spectral::compute_film_raw_midgray(
-            payload.filmRawConfig,
-            &payload.exposureTables,
-            payload.spdSInv.data(),
-            sensB,
-            sensG,
-            sensR);
+        if (!JuicerExposure::mallett_midgray(
+                Spectral::gMallettBasis,
+                payload.exposureTables.illum,
+                recipe.filmRaw.finalSensitivity,
+                payload.filmRawConfig,
+                diagnostic)) {
+            return false;
+        }
         return payload.filmRawConfig.valid;
     }
 

@@ -30,7 +30,7 @@
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
 #include "RustAssetBridge.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "Cuda/JuicerCudaHostViews.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"

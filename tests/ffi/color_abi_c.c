@@ -20,6 +20,11 @@ static int has_status(FjStatus status, uint32_t category) {
 typedef FjStatus (*MatrixOperation)(const float*, const float*, float*);
 typedef FjStatus (*ScalarOperation)(const float*, const float*, const float*, float*);
 
+static FjStatus arm_color_fault(uint32_t operation, uint32_t index, uint32_t fault) {
+    fj_test_color_clear_fault();
+    fj_test_color_clear_facade_fault();
+    return operation == 4 || operation == 6 || operation == 7 || operation == 9 ? fj_test_color_arm_facade_fault(operation, index, fault) : fj_test_color_arm_fault(operation, index, fault);
+}
 static int color_abi_c(const MatrixOperation matrices[2], const ScalarOperation adapters[2], uint32_t matrix_tag) {
     const float white[3] = {0.95045593f, 1.0f, 1.08905775f};
     const float xyz[3] = {2.0f, -0.25f, 0.5f};
@@ -52,7 +57,7 @@ static int color_abi_c(const MatrixOperation matrices[2], const ScalarOperation 
                 for (int i = 0; i < 11; ++i) {
                     output[i] = 42.0f;
                 }
-                failures += !has_status(fj_test_color_arm_fault(matrix_tag + (uint32_t)operation - 1, 1, (uint32_t)fault), FJ_STATUS_SUCCESS);
+                failures += !has_status(arm_color_fault(matrix_tag + (uint32_t)operation - 1, 1, (uint32_t)fault), FJ_STATUS_SUCCESS);
                 const FjStatus result = operation == 1 ? matrix(white, white, output + 1) : adapt(xyz, white, white, output + 1);
                 failures += !has_status(result, fault == 1 ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
                 for (int i = 0; i < 11; ++i) {
@@ -64,6 +69,7 @@ static int color_abi_c(const MatrixOperation matrices[2], const ScalarOperation 
                 }
                 failures += !has_status(operation == 1 ? matrix(white, white, output + 1) : adapt(xyz, white, white, output + 1), FJ_STATUS_SUCCESS);
                 failures += !has_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
+                failures += !has_status(fj_test_color_clear_facade_fault(), FJ_STATUS_SUCCESS);
             }
             for (int special = 0; special < 3; ++special) {
                 float nonfinite[3];
@@ -114,7 +120,7 @@ int fj_test_color_abi_c(void) {
 
 int fj_test_cat02_abi_c(void) {
     const MatrixOperation matrices[2] = {fj_legacy_cat02_matrix, fj_test_cat02_matrix};
-    const ScalarOperation adapters[2] = {fj_legacy_adapt_cat02, fj_test_adapt_cat02};
+    const ScalarOperation adapters[2] = {fj_test_adapt_cat02, fj_test_adapt_cat02};
     return color_abi_c(matrices, adapters, FJ_TEST_CAT02_MATRIX);
 }
 
@@ -150,9 +156,9 @@ static int matrices_cleared(const FjInputColorMatrices* output) {
 
 int fj_test_input_color_abi_c(void) {
     const InputMatricesOperation matrices[2] = {fj_legacy_input_matrices, fj_test_input_matrices};
-    const InputDwgOperation dwg[2] = {fj_legacy_input_to_dwg, fj_test_input_to_dwg};
-    const InputSrgbOperation srgb[2] = {fj_legacy_input_to_linear_srgb, fj_test_input_to_linear_srgb};
-    const InputLeafOperation leaves[2][2] = {{fj_legacy_linear_srgb_to_xyz, fj_legacy_dwg_to_xyz}, {fj_test_linear_srgb_to_xyz, fj_test_dwg_to_xyz}};
+    const InputDwgOperation dwg[2] = {fj_test_input_to_dwg, fj_test_input_to_dwg};
+    const InputSrgbOperation srgb[2] = {fj_test_input_to_linear_srgb, fj_test_input_to_linear_srgb};
+    const InputLeafOperation leaves[2][2] = {{fj_legacy_linear_srgb_to_xyz, fj_test_dwg_to_xyz}, {fj_test_linear_srgb_to_xyz, fj_test_dwg_to_xyz}};
     const InputProjectionOperation projection[2] = {fj_legacy_project_linear_rgb_to_xyz, fj_test_project_linear_rgb_to_xyz};
     const float rgb[3] = {0.184f, -0.25f, 2.0f};
     const float identity[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
@@ -250,7 +256,7 @@ int fj_test_input_color_abi_c(void) {
             memset(&matrix, 42, sizeof(matrix));
             seed_triplet(out_rgb);
             seed_triplet(out_xyz);
-            failures += !has_status(fj_test_color_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
+            failures += !has_status(arm_color_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
             FjStatus result;
             switch (operation) {
                 case FJ_TEST_INPUT_MATRICES:
@@ -280,6 +286,7 @@ int fj_test_input_color_abi_c(void) {
                 failures += !triplet_canaries(out_rgb, 1);
             }
             failures += !has_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
+            failures += !has_status(fj_test_color_clear_facade_fault(), FJ_STATUS_SUCCESS);
         }
     }
     for (uint32_t space = 0; space < 4; ++space) {

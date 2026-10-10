@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "Cuda/JuicerCudaExecutor.h"
+#include "ColorTransforms.h"
 #include "Logging.h"
 #include "RenderRecipe.h"
 #include "SpectralData.h"
@@ -29,9 +30,20 @@ namespace JuicerExposure {
                 throw JuicerCuda::ExecutionFailure{std::move(failure)};
             }
         }
+        bool completed(FjStatus status, const Diagnostic& error, const char* operation, std::string& diagnostic) {
+            if (status.category == FJ_STATUS_PREPARATION_FAILURE) {
+                diagnostic.assign(error.bytes.data(), error.error.length);
+                return false;
+            }
+            require_success(status, error, operation);
+            return true;
+        }
     } // namespace
 
     static_assert(sizeof(std::array<std::array<float, 3>, 81>) == 243 * sizeof(float));
+    static_assert(sizeof(FjInputColorConversion) == 84 && alignof(FjInputColorConversion) == 4);
+    static_assert(offsetof(FjInputColorConversion, input_space) == 0 && offsetof(FjInputColorConversion, decode_cctf) == 4);
+    static_assert(offsetof(FjInputColorConversion, adapt_xyz) == 8 && offsetof(FjInputColorConversion, rgb_to_xyz) == 12 && offsetof(FjInputColorConversion, xyz_adapt) == 48);
     static_assert(alignof(std::array<std::array<float, 3>, 81>) == alignof(float));
     static_assert(sizeof(FjReferenceWhiteInput) == 32 && alignof(FjReferenceWhiteInput) == 8);
     static_assert(sizeof(FjReferenceWhite) == 324 && alignof(FjReferenceWhite) == 4);
@@ -93,6 +105,84 @@ namespace JuicerExposure {
         }
         recipe.finalSensitivityHash = result.hash;
         recipe.mallettGreenMidgrayScale = result.mallett_green_scale;
+        return true;
+    }
+
+    // FJ_TEMP_BRIDGE: focused Mallett mid-gray value binding; remove S4.E.
+    bool mallett_midgray(const Spectral::MallettBasis& basis,
+                         std::span<const float> illuminant,
+                         const std::array<std::array<float, 3>, 81>& sensitivity,
+                         Spectral::FilmRawConfig& config,
+                         std::string& diagnostic) {
+        diagnostic.clear();
+        FjMallettMidgrayInput input{};
+        input.color.input_space = static_cast<std::uint32_t>(config.inputColorSpace);
+        input.color.decode_cctf = config.applyCctfDecoding ? 1u : 0u;
+        input.color.adapt_xyz = config.applyInputChromaticAdapt ? 1u : 0u;
+        std::copy_n(config.inputRGBToXYZ.m, 9, input.color.rgb_to_xyz);
+        std::copy_n(config.inputXYZAdapt.m, 9, input.color.xyz_adapt);
+        std::copy_n(config.xyzToLinearSrgb.m, 9, input.xyz_to_linear_srgb);
+        input.basis_rgb = {basis.data.data(), basis.data.size()};
+        input.illuminant = {illuminant.data(), illuminant.size()};
+        input.sensitivity_rgb = {sensitivity.front().data(), 243};
+        FjMallettMidgray result{};
+        Diagnostic error;
+        const auto status = fj_legacy_exposure_mallett_midgray(&input, &result, &error.error);
+        if (!completed(status, error, "Mallett mid-gray preparation", diagnostic)) {
+            return false;
+        }
+        std::copy_n(result.midgray_dwg_rgb, 3, config.midgrayDWG);
+        std::copy_n(result.raw_midgray_bgr, 3, config.rawMidgray);
+        config.rawMidgrayGreen = result.raw_green;
+        config.midgrayScale = result.scale;
+        return true;
+    }
+
+    // FJ_TEMP_BRIDGE: TC normalization value binding; remove S4.E.
+    bool tc_midgray(float green, Spectral::FilmRawConfig& config, std::string& diagnostic) {
+        diagnostic.clear();
+        FjMidgrayNormalization result{};
+        Diagnostic error;
+        const auto status = fj_legacy_exposure_tc_midgray(green, &result, &error.error);
+        if (!completed(status, error, "TC mid-gray normalization", diagnostic)) {
+            return false;
+        }
+        config.rawMidgrayGreen = result.raw_green;
+        config.midgrayScale = result.scale;
+        return true;
+    }
+
+    // FJ_TEMP_BRIDGE: shared reference source value binding; remove S4.E.
+    bool reference_source(float exposureEv, float& out, std::string& diagnostic) {
+        out = 0.0f;
+        diagnostic.clear();
+        Diagnostic error;
+        return completed(fj_legacy_exposure_reference_source(exposureEv, &out, &error.error), error, "Reference source preparation", diagnostic);
+    }
+
+    // FJ_TEMP_BRIDGE: synthetic Mallett reference value binding; remove S4.E.
+    bool mallett_reference_raw(const Spectral::MallettBasis& basis,
+                               std::span<const float> illuminant,
+                               const std::array<std::array<float, 3>, 81>& sensitivity,
+                               float source,
+                               float greenScale,
+                               std::array<float, 3>& out,
+                               std::string& diagnostic) {
+        out = {};
+        diagnostic.clear();
+        const FjMallettReferenceInput input{
+            {basis.data.data(), basis.data.size()},
+            {illuminant.data(), illuminant.size()},
+            {sensitivity.front().data(), 243},
+            source,
+            greenScale};
+        FjReferenceRaw result{};
+        Diagnostic error;
+        const auto status = fj_legacy_exposure_mallett_reference_raw(&input, &result, &error.error);
+        if (!completed(status, error, "Mallett reference preparation", diagnostic)) {
+            return false;
+        }
+        std::copy_n(result.rgb, 3, out.begin());
         return true;
     }
 } // namespace JuicerExposure

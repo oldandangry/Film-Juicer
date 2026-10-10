@@ -13,7 +13,6 @@
 #include "ResourceAssetLibrary.h"
 #include "ColorTransforms.h"
 #include "GamutCompression.h"
-#include "SpectralProcessing.h"
 #include "Scanner.h"
 
 #include "Logging.h"

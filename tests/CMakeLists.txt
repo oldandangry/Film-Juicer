@@ -888,6 +888,41 @@ set_tests_properties(Exposure.Host.FixtureFormat PROPERTIES LABELS "host" TIMEOU
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
 
+add_executable(JuicerMallettExposureTests ffi/mallett_exposure_abi_c.c ffi/mallett_exposure_test.cpp ffi/mallett_caller_test.cpp
+    $<TARGET_OBJECTS:juicer_admission_test_state>)
+target_compile_definitions(JuicerMallettExposureTests PRIVATE JUICER_ADMISSION_TEST_HOOK=1)
+target_link_libraries(JuicerMallettExposureTests PRIVATE juicer_core)
+set_target_properties(JuicerMallettExposureTests PROPERTIES
+    LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerMallettExposureTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+foreach(mallett_case IN ITEMS numerical boundary)
+    add_test(NAME Exposure.Host.Mallett.${mallett_case} COMMAND JuicerMallettExposureTests
+        "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/mallett-manifest.json" "${JUICER_TEST_PRESET_NAME}" ${mallett_case})
+    set_tests_properties(Exposure.Host.Mallett.${mallett_case} PROPERTIES LABELS "host" TIMEOUT 120)
+endforeach()
+
+add_dependencies(JuicerMallettExposureTests juicer_test_resources)
+add_test(NAME Exposure.Host.Mallett.Spectra COMMAND JuicerMallettExposureTests
+    "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/mallett-manifest.json" "${JUICER_TEST_PRESET_NAME}" spectra
+    "${JUICER_TEST_RESOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/cat02-${JUICER_TEST_PRESET_NAME}.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/input-color-${JUICER_TEST_PRESET_NAME}.json")
+set_tests_properties(Exposure.Host.Mallett.Spectra PROPERTIES LABELS "host" TIMEOUT 120)
+
+foreach(mallett_case IN ITEMS products admission)
+    add_test(NAME Exposure.Host.Mallett.${mallett_case} COMMAND JuicerMallettExposureTests
+        "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/exposure/mallett-manifest.json" "${JUICER_TEST_PRESET_NAME}" ${mallett_case} "${JUICER_TEST_RESOURCE_DIR}")
+    set_tests_properties(Exposure.Host.Mallett.${mallett_case} PROPERTIES LABELS "host" TIMEOUT 600 RUN_SERIAL TRUE)
+endforeach()
+
+add_test(NAME Exposure.Host.Mallett.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+    -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_mallett_exposure_fixtures.py -v)
+set_tests_properties(Exposure.Host.Mallett.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 30
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
 add_executable(JuicerSpectralPreparationTests ffi/spectral_preparation_abi_c.c ffi/spectral_preparation_test.cpp ffi/spectral_products_test.cpp ffi/spectral_allocation_probe.cpp)
 target_link_libraries(JuicerSpectralPreparationTests PRIVATE juicer_core)
 set_target_properties(JuicerSpectralPreparationTests PROPERTIES

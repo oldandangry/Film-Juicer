@@ -30,7 +30,7 @@
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "mainProcessing.h"
 #include "ofxsSupportPrivate.h"
 

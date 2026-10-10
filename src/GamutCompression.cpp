@@ -11,7 +11,6 @@
 #include "RustColorBridge.h"
 #include "Hash.h"
 #include "SpectralData.h"
-#include "SpectralProcessing.h"
 
 namespace Gamut {
     namespace {

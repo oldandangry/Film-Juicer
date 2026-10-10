@@ -16,7 +16,7 @@
 #include "RustExposureBridge.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Hash.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #if defined(JUICER_ASSET_LOOKUP_TEST_HOOK)
 #include "juicer_test_api.h"
 #endif
@@ -2342,8 +2342,10 @@ namespace Spektrafilm {
 
         auto reconstruct = [&](float exposureEv, std::array<float, 3>& out) {
             out = {};
-            const float source = 0.184f * std::exp2(exposureEv);
-            if (!(std::isfinite(source) && source >= 0.0f)) {
+            float source = 0.0f;
+            std::string exposureDiagnostic;
+            if (!JuicerExposure::reference_source(
+                    exposureEv, source, exposureDiagnostic)) {
                 return false;
             }
             if (recipe.filmRaw.rgbToRawMethod == RgbToRawMethod::Mallett2019) {
@@ -2351,26 +2353,14 @@ namespace Spektrafilm {
                 if (basis.rows != 81 || basis.cols != 3 || basis.data.size() != 243u) {
                     return false;
                 }
-                std::array<double, 3> accumulated{};
-                for (std::size_t sample = 0; sample < filmIlluminant.size(); ++sample) {
-                    const std::size_t basisOffset = sample * 3u;
-                    const double spectrum =
-                        static_cast<double>(source) *
-                        static_cast<double>(basis.data[basisOffset] +
-                                            basis.data[basisOffset + 1u] +
-                                            basis.data[basisOffset + 2u]) *
-                        static_cast<double>(filmIlluminant[sample]);
-                    for (std::size_t channel = 0; channel < out.size(); ++channel) {
-                        accumulated[channel] +=
-                            spectrum * static_cast<double>(
-                                           recipe.filmRaw.finalSensitivity[sample][channel]);
-                    }
-                }
-                for (std::size_t channel = 0; channel < out.size(); ++channel) {
-                    out[channel] = static_cast<float>(
-                        accumulated[channel] *
-                        static_cast<double>(recipe.filmRaw.mallettGreenMidgrayScale));
-                }
+                return JuicerExposure::mallett_reference_raw(
+                    basis,
+                    filmIlluminant,
+                    recipe.filmRaw.finalSensitivity,
+                    source,
+                    recipe.filmRaw.mallettGreenMidgrayScale,
+                    out,
+                    exposureDiagnostic);
             } else if (
                 recipe.filmRaw.rgbToRawMethod == RgbToRawMethod::Hanatos2025 ||
                 recipe.filmRaw.rgbToRawMethod == RgbToRawMethod::Arctic2026beta04) {

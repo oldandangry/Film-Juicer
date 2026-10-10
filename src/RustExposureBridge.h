@@ -1,11 +1,14 @@
 #pragma once
 
 #include <array>
+#include <span>
 #include <string>
 
 namespace Spectral {
     struct ReconstructionLut;
-}
+    struct MallettBasis;
+    struct FilmRawConfig;
+} // namespace Spectral
 struct FilmRawRecipe;
 namespace Spektrafilm {
     struct FilmFoundationBuildInput;
@@ -19,4 +22,18 @@ namespace JuicerExposure {
     bool prepare_sensitivity(const std::array<std::array<float, 3>, 81>& linearSensitivity,
                              FilmRawRecipe& recipe,
                              const Spektrafilm::FilmFoundationBuildInput& input);
+    bool mallett_midgray(const Spectral::MallettBasis& basis,
+                         std::span<const float> illuminant,
+                         const std::array<std::array<float, 3>, 81>& sensitivity,
+                         Spectral::FilmRawConfig& config,
+                         std::string& diagnostic);
+    bool tc_midgray(float green, Spectral::FilmRawConfig& config, std::string& diagnostic);
+    bool reference_source(float exposureEv, float& out, std::string& diagnostic);
+    bool mallett_reference_raw(const Spectral::MallettBasis& basis,
+                               std::span<const float> illuminant,
+                               const std::array<std::array<float, 3>, 81>& sensitivity,
+                               float source,
+                               float greenScale,
+                               std::array<float, 3>& out,
+                               std::string& diagnostic);
 } // namespace JuicerExposure

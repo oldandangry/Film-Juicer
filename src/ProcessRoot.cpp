@@ -30,7 +30,7 @@
 #include "Logging.h"
 #include "Scanner.h"
 #include "SpectralData.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 
 #include <cuda_runtime.h>
 

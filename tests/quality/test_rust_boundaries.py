@@ -185,19 +185,39 @@ class RustBoundaryTests(unittest.TestCase):
 
     def test_deleted_spectral_producers_and_white_loop(self) -> None:
         import re
-        processing = (ROOT / "src/SpectralProcessing.h").read_text(encoding="utf-8")
+        self.assertFalse((ROOT / "src/SpectralProcessing.h").exists())
+        processing = "\n".join(
+            path.read_text(encoding="utf-8-sig")
+            for directory in (ROOT / "src", ROOT / "native")
+            for path in directory.rglob("*")
+            if path.suffix in {".h", ".cpp", ".cu", ".cuh"}
+        )
         state = (ROOT / "src/JuicerState.cpp").read_text(encoding="utf-8")
         removed = (
             "build_tables_from_curves_non_global", "compute_S_inverse_from_tables",
             "hash_float_span_digest_sp", "hash_float_vector_digest_sp",
             "hash_float_scalar_digest_sp", "hash_float_triplet_digest_sp",
             "set_identity_3x3", "store_3x3_rowmajor", "determinant_near_zero",
+            "compute_film_raw_midgray", "mallett2019_exposures_from_linear_srgb",
+            "mallett_basis_ready_for_tables", "select_spectral_reconstruction_path",
+            "compute_layer_exposures_from_reconstruction_path",
+            "reconstruct_Ee_from_DWG_RGB_hanatos", "reconstruct_Ee_from_DWG_RGB_with_tables",
+            "hanatos_linear_spectrum", "layerExposures_from_sceneSPD_with_curves",
+            "rgbDWG_to_layerExposures_from_tables_with_curves", "sanitize_raw_midgray_green_or_one",
         )
         for name in removed:
-            pattern = rf"\b(?:void|bool|std::uint64_t)\s+{name}\s*\("
+            pattern = rf"\b(?:void|bool|float|std::uint64_t|SpectralReconstructionPath)\s+{name}\s*\("
             self.assertIsNone(re.search(pattern, processing), name)
             self.assertIsNotNone(re.search(pattern, processing + f"\ninline void {name}() {{}}"), name)
         self.assertNotIn("struct RowMajor3x3d", processing)
+        tls = r"\bthread_local\s+std::vector<float>"
+        self.assertIsNone(re.search(tls, processing))
+        self.assertIsNotNone(re.search(tls, processing + "\nthread_local std::vector<float> Ee_scene;"))
+        legacy = (ROOT / "rust/film-juicer-plugin/src/legacy_bridge.rs").read_text(encoding="utf-8")
+        for name in ("fj_legacy_adapt_cat02", "fj_legacy_input_to_dwg", "fj_legacy_input_to_linear_srgb", "fj_legacy_dwg_to_xyz"):
+            pattern = rf"\bfn\s+{name}\s*\("
+            self.assertIsNone(re.search(pattern, legacy))
+            self.assertIsNotNone(re.search(pattern, legacy + f"\nfn {name}() {{}}"))
         self.assertEqual(state.count("JuicerSpectral::build_tables("), 3)
         self.assertIn("JuicerSpectral::integrate_white(curve, label, out)", state)
         loop = r"double\s+sum[XYZ]\s*=\s*0\.0"
@@ -266,6 +286,28 @@ class RustBoundaryTests(unittest.TestCase):
         for release in self.profiles:
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assertEqual(status, 0, diagnostics)
+
+    def test_complete_mallett_results_and_input_borrows(self) -> None:
+        for fixture, expected in (
+            ("mallett_default", {"E0599": ("MallettMidgray::default()", "MidgrayNormalization::default()", "ReferenceSource::default()", "ReferenceRaw::default()")}),
+            ("mallett_private", {"E0451": ("MallettMidgray { ..midgray }", "MidgrayNormalization { ..normalization }", "ReferenceSource { ..source }", "ReferenceRaw { ..raw }")}),
+            ("mallett_mutation", {"E0616": ("midgray.raw_midgray_bgr[0]", "normalization.raw_green", "source.value", "raw.rgb[0]")}),
+            ("mallett_readonly", {"E0594": ("midgray.raw_midgray_bgr()[0]", "midgray.midgray_dwg_rgb()[0]", "raw.rgb()[0]")}),
+            ("mallett_borrow", {"E0515": ("basis_rgb: &basis", "illuminant: &illuminant", "sensitivity_rgb: &sensitivity")}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for test_support in (False, True):
+                        status, diagnostics = self.check("film-juicer-plugin", release, test_support)
+                        self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+        self.attach("film-juicer-plugin/src/lib.rs", "mallett_complete")
+        for release in self.profiles:
+            for test_support in (False, True):
+                status, diagnostics = self.check("film-juicer-plugin", release, test_support)
+                self.assertEqual(status, 0, diagnostics)
 
     def test_complete_tc_lut_privacy_and_borrowing(self) -> None:
         for fixture, expected in (

@@ -624,3 +624,22 @@ pointer/length/capacity once in Rust. Source and hull borrows expire on return.
 The Lifetime group observes actual publication paths without an external old
 state hold and checks release outside both publication and rebuild locks;
 retained-reader and cross-thread cases are separate.
+
+### Mallett exposure preparation
+
+`Exposure.Host.Mallett.*` checks focused BGR mid-gray, separate synthetic RGB
+reference reduction, shared reference-source arithmetic and TC normalization
+against independently frozen native-parent expectations. Its manifest selects
+exact preset records; older color/spectral/exposure fixtures and their assignments
+remain unchanged. `mallett-failure-contract.json` separately records the approved
+earlier focused missing-basis failure and original native outcomes.
+
+The C11/C++/Rust boundary groups cover layouts, values, structural errors,
+cleared outputs, bounded diagnostics and contained panic. Fixed math has no heap
+allocation; fault category injection is not allocator-pressure evidence.
+`products` and `admission` exercise actual publication, skip/consumption,
+recovery, supersession, immutable holds, cache release and same-input reuse.
+Feature-only spectrum operations preserve the current independent CAT02/input
+color witnesses; they use fixed borrows and never provide a production renderer.
+The four value exports remain temporary native bindings. Normal production
+builds omit the fixture facade and fault storage.

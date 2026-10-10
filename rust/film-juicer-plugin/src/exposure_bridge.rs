@@ -1,9 +1,13 @@
 //! Synchronous borrowed reconstruction and complete sensitivity value edge.
 
+#[cfg(feature = "test-support")]
+pub(crate) mod fixtures;
+
 use film_juicer_core::{exposure, reconstruction};
 
 use crate::asset_bridge::Failure;
 use crate::asset_illuminant;
+use crate::legacy_bridge::FjInputColorConversion;
 use crate::cuda::sys::{FjErrorBuffer, FjFloatSpan, FjStatus};
 #[cfg(feature = "test-support")]
 use crate::cuda::sys::{FJ_API_NONE, FJ_STATUS_SUCCESS, FJ_STATUS_UNSUPPORTED_INPUT};
@@ -57,6 +61,78 @@ pub(crate) struct FjSensitivityFailure {
     pub hash_sample_index: u32,
 }
 
+#[repr(C)]
+pub(crate) struct FjMallettMidgrayInput {
+    pub color: FjInputColorConversion,
+    pub xyz_to_linear_srgb: [f32; 9],
+    pub basis_rgb: FjFloatSpan,
+    pub illuminant: FjFloatSpan,
+    pub sensitivity_rgb: FjFloatSpan,
+}
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct FjMallettMidgray {
+    pub midgray_dwg_rgb: [f32; 3],
+    pub raw_midgray_bgr: [f32; 3],
+    pub raw_green: f32,
+    pub scale: f32,
+}
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct FjMidgrayNormalization {
+    pub raw_green: f32,
+    pub scale: f32,
+}
+impl From<exposure::MidgrayNormalization> for FjMidgrayNormalization {
+    fn from(value: exposure::MidgrayNormalization) -> Self {
+        Self {
+            raw_green: value.raw_green(),
+            scale: value.scale(),
+        }
+    }
+}
+#[repr(C)]
+pub(crate) struct FjMallettReferenceInput {
+    pub basis_rgb: FjFloatSpan,
+    pub illuminant: FjFloatSpan,
+    pub sensitivity_rgb: FjFloatSpan,
+    pub source: f32,
+    pub green_scale: f32,
+}
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct FjReferenceRaw {
+    pub rgb: [f32; 3],
+}
+
+const _: () = {
+    use std::mem::{align_of, offset_of, size_of};
+    assert!(size_of::<FjMallettMidgrayInput>() == 168 && align_of::<FjMallettMidgrayInput>() == 8);
+    assert!(offset_of!(FjMallettMidgrayInput, color) == 0);
+    assert!(offset_of!(FjMallettMidgrayInput, xyz_to_linear_srgb) == 84);
+    assert!(offset_of!(FjMallettMidgrayInput, basis_rgb) == 120);
+    assert!(offset_of!(FjMallettMidgrayInput, illuminant) == 136);
+    assert!(offset_of!(FjMallettMidgrayInput, sensitivity_rgb) == 152);
+    assert!(size_of::<FjMallettMidgray>() == 32 && align_of::<FjMallettMidgray>() == 4);
+    assert!(offset_of!(FjMallettMidgray, midgray_dwg_rgb) == 0);
+    assert!(offset_of!(FjMallettMidgray, raw_midgray_bgr) == 12);
+    assert!(offset_of!(FjMallettMidgray, raw_green) == 24);
+    assert!(offset_of!(FjMallettMidgray, scale) == 28);
+    assert!(size_of::<FjMidgrayNormalization>() == 8 && align_of::<FjMidgrayNormalization>() == 4);
+    assert!(offset_of!(FjMidgrayNormalization, raw_green) == 0);
+    assert!(offset_of!(FjMidgrayNormalization, scale) == 4);
+    assert!(
+        size_of::<FjMallettReferenceInput>() == 56 && align_of::<FjMallettReferenceInput>() == 8
+    );
+    assert!(offset_of!(FjMallettReferenceInput, basis_rgb) == 0);
+    assert!(offset_of!(FjMallettReferenceInput, illuminant) == 16);
+    assert!(offset_of!(FjMallettReferenceInput, sensitivity_rgb) == 32);
+    assert!(offset_of!(FjMallettReferenceInput, source) == 48);
+    assert!(offset_of!(FjMallettReferenceInput, green_scale) == 52);
+    assert!(size_of::<FjReferenceRaw>() == 12 && align_of::<FjReferenceRaw>() == 4);
+    assert!(offset_of!(FjReferenceRaw, rgb) == 0);
+};
+
 fn aligned<T>(pointer: *const T) -> bool {
     !pointer.is_null()
         && (pointer as usize).is_multiple_of(align_of::<T>())
@@ -89,6 +165,15 @@ unsafe fn fixed<'a, const N: usize>(span: FjFloatSpan) -> Result<&'a [f32; N], F
     }
     // SAFETY: Exact layout/addressable extent and caller-proven immutable lifetime.
     Ok(unsafe { &*span.data.cast::<[f32; N]>() })
+}
+
+/// # Safety
+/// The caller retains the initialized immutable 243-scalar span through the call.
+unsafe fn rgb_tensor<'a>(span: FjFloatSpan) -> Result<&'a [[f32; 3]; 81], Failure> {
+    // SAFETY: Exact checked scalar extent; fixed RGB arrays have no padding.
+    let scalars = unsafe { fixed::<243>(span)? };
+    // SAFETY: Identical alignment/layout, and the borrow cannot outlive its source.
+    Ok(unsafe { &*scalars.as_ptr().cast::<[[f32; 3]; 81]>() })
 }
 /// # Safety
 /// Input and consumed initialized spans remain immutable through this call.
@@ -150,7 +235,10 @@ thread_local! {
 #[cfg(feature = "test-support")]
 pub(crate) fn arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
     clear_fault();
-    let valid = (1..=2).contains(&operation) && index != 0 && (1..=4).contains(&fault);
+    let valid = (1..=6).contains(&operation)
+        && index != 0
+        && (1..=4).contains(&fault)
+        && (operation <= 2 || fault != 3);
     if valid {
         EXPOSURE_FAULT.set(Some((operation, index, fault)));
     }
@@ -190,6 +278,9 @@ fn inject(operation: u32) -> Result<(), Failure> {
             2 => panic!("exposure production boundary fault"),
             3 => Err(Failure::Reconstruction(
                 reconstruction::Error::AllocationFailure,
+            )),
+            4 if operation > 2 => Err(Failure::InjectedPreparation(
+                "fixed exposure preparation category fault",
             )),
             4 => Err(Failure::Reconstruction(
                 reconstruction::Error::InvalidKernel,
@@ -333,6 +424,176 @@ pub(crate) unsafe fn window_call(
             Ok(())
         })
     }
+}
+
+/// # Safety
+/// Initialized input/consumed spans and exclusive disjoint output/error storage
+/// obey the synchronous fixed-exposure contract. No source pointer is retained.
+pub(crate) unsafe fn mallett_midgray_call(
+    input: *const FjMallettMidgrayInput,
+    out: *mut FjMallettMidgray,
+    error: *mut FjErrorBuffer,
+    fault: impl FnOnce() -> Result<(), Failure>,
+) -> FjStatus {
+    // SAFETY: Valid output clears before fallible work; checked immutable borrows
+    // are local to this call, and only a completed core result is projected.
+    unsafe {
+        let valid_out = clear(out);
+        asset_illuminant::run(error, || {
+            if !valid_out || !aligned(input) {
+                return Err(Failure::Input("invalid Mallett mid-gray records"));
+            }
+            let input = &*input;
+            // The initialized raw color record owns no storage; copy its small
+            // value fields into the existing consuming decoder, retaining input.
+            let color = std::ptr::addr_of!(input.color)
+                .read()
+                .into_core()
+                .ok_or(Failure::Input("invalid Mallett color tags or flags"))?;
+            let request = exposure::MallettInput {
+                color,
+                xyz_to_linear_srgb: input.xyz_to_linear_srgb,
+                basis_rgb: rgb_tensor(input.basis_rgb)?,
+                illuminant: fixed(input.illuminant)?,
+                sensitivity_rgb: rgb_tensor(input.sensitivity_rgb)?,
+            };
+            fault()?;
+            let value = exposure::mallett_midgray(request);
+            out.write(FjMallettMidgray {
+                midgray_dwg_rgb: *value.midgray_dwg_rgb(),
+                raw_midgray_bgr: *value.raw_midgray_bgr(),
+                raw_green: value.normalization().raw_green(),
+                scale: value.normalization().scale(),
+            });
+            Ok(())
+        })
+    }
+}
+/// # Safety
+/// The exclusive aligned output/error records are initialized, writable and disjoint.
+pub(crate) unsafe fn tc_midgray_call(
+    green: f32,
+    out: *mut FjMidgrayNormalization,
+    error: *mut FjErrorBuffer,
+    fault: impl FnOnce() -> Result<(), Failure>,
+) -> FjStatus {
+    // SAFETY: The checked output clears first; no input borrow or pointer escapes.
+    unsafe {
+        let valid_out = clear(out);
+        asset_illuminant::run(error, || {
+            if !valid_out {
+                return Err(Failure::Input("invalid TC normalization output"));
+            }
+            fault()?;
+            out.write(exposure::tc_midgray(green).into());
+            Ok(())
+        })
+    }
+}
+/// # Safety
+/// The scalar/error storage is caller-authorized, aligned, exclusive and disjoint.
+pub(crate) unsafe fn reference_source_call(
+    exposure_ev: f32,
+    out: *mut f32,
+    error: *mut FjErrorBuffer,
+    fault: impl FnOnce() -> Result<(), Failure>,
+) -> FjStatus {
+    // SAFETY: Checked output clears before computation and receives only success.
+    unsafe {
+        let valid_out = clear(out);
+        asset_illuminant::run(error, || {
+            if !valid_out {
+                return Err(Failure::Input("invalid reference source output"));
+            }
+            fault()?;
+            out.write(
+                exposure::reference_source(exposure_ev)
+                    .map_err(Failure::Exposure)?
+                    .value(),
+            );
+            Ok(())
+        })
+    }
+}
+/// # Safety
+/// Complete immutable input/spans and exclusive disjoint output/error records
+/// remain live for this synchronous call; no source pointer is retained.
+pub(crate) unsafe fn mallett_reference_call(
+    input: *const FjMallettReferenceInput,
+    out: *mut FjReferenceRaw,
+    error: *mut FjErrorBuffer,
+    fault: impl FnOnce() -> Result<(), Failure>,
+) -> FjStatus {
+    // SAFETY: Local checked borrows feed safe math; failed work leaves cleared output.
+    unsafe {
+        let valid_out = clear(out);
+        asset_illuminant::run(error, || {
+            if !valid_out || !aligned(input) {
+                return Err(Failure::Input("invalid Mallett reference records"));
+            }
+            let input = &*input;
+            let request = exposure::ReferenceInput {
+                basis_rgb: rgb_tensor(input.basis_rgb)?,
+                illuminant: fixed(input.illuminant)?,
+                sensitivity_rgb: rgb_tensor(input.sensitivity_rgb)?,
+                source: input.source,
+                green_scale: input.green_scale,
+            };
+            fault()?;
+            let value = exposure::mallett_reference_raw(request).map_err(Failure::Exposure)?;
+            out.write(FjReferenceRaw { rgb: *value.rgb() });
+            Ok(())
+        })
+    }
+}
+
+// FJ_TEMP_BRIDGE: focused Mallett mid-gray binding; remove S4.E.
+/// # Safety
+/// Required initialized input/spans and exclusive disjoint output/error obey the header.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_exposure_mallett_midgray(
+    input: *const FjMallettMidgrayInput,
+    out: *mut FjMallettMidgray,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Caller retains scoped inputs and disjoint writable outputs.
+    unsafe { mallett_midgray_call(input, out, error, || inject(3)) }
+}
+// FJ_TEMP_BRIDGE: TC green normalization binding; remove S4.E.
+/// # Safety
+/// Required initialized output/error records obey the synchronous header contract.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_exposure_tc_midgray(
+    green: f32,
+    out: *mut FjMidgrayNormalization,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Caller authorizes the complete exclusive output/error storage.
+    unsafe { tc_midgray_call(green, out, error, || inject(4)) }
+}
+// FJ_TEMP_BRIDGE: shared synthetic reference source binding; remove S4.E.
+/// # Safety
+/// Required scalar/error storage obeys the synchronous header contract.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_exposure_reference_source(
+    exposure_ev: f32,
+    out: *mut f32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Caller authorizes the complete exclusive output/error storage.
+    unsafe { reference_source_call(exposure_ev, out, error, || inject(5)) }
+}
+// FJ_TEMP_BRIDGE: synthetic Mallett reference reduction binding; remove S4.E.
+/// # Safety
+/// Required initialized input/spans and exclusive disjoint output/error obey the header.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_exposure_mallett_reference_raw(
+    input: *const FjMallettReferenceInput,
+    out: *mut FjReferenceRaw,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Scoped inputs remain immutable; only completed fixed values project.
+    unsafe { mallett_reference_call(input, out, error, || inject(6)) }
 }
 
 #[cfg(test)]

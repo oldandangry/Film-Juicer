@@ -15,7 +15,7 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include "Illuminants.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "RustColorBridge.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"

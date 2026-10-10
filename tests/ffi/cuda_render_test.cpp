@@ -24,7 +24,7 @@
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "JuicerState.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
 namespace JuicerProcess::TestSupport {

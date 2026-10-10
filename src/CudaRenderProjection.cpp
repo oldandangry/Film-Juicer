@@ -15,7 +15,7 @@
 #include "Cuda/JuicerCudaHostViews.h"
 #include "FocusedRenderPayload.h"
 #include "ResourceAssetLibrary.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 
 namespace {
 

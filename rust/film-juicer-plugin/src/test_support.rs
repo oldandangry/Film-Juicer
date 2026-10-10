@@ -726,12 +726,62 @@ unsafe extern "C" fn fj_test_adapt_cat02(
                 },
             )
         };
+        if let Err(category) = color_facade_fault(4) {
+            return status(category);
+        }
         let adapted = film_juicer_core::color::adapt_cat02(value, whites);
         // SAFETY: The local complete array is disjoint from the output extent.
         unsafe { out_xyz.copy_from_nonoverlapping(adapted.as_ptr(), 3) };
         status(FJ_STATUS_SUCCESS)
     })
     .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+
+thread_local! {
+    static COLOR_FACADE_FAULT: std::cell::Cell<Option<(u32, u32, u32)>> = const { std::cell::Cell::new(None) };
+    static COLOR_FACADE_CONSUMED: std::cell::Cell<Option<(u32, u32)>> = const { std::cell::Cell::new(None) };
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_color_arm_facade_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
+    COLOR_FACADE_FAULT.set(None);
+    COLOR_FACADE_CONSUMED.set(None);
+    let valid = matches!(operation, 4 | 6 | 7 | 9) && index != 0 && (1..=2).contains(&fault);
+    if valid {
+        COLOR_FACADE_FAULT.set(Some((operation, index, fault)));
+    }
+    status(if valid {
+        FJ_STATUS_SUCCESS
+    } else {
+        FJ_STATUS_UNSUPPORTED_INPUT
+    })
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_color_clear_facade_fault() -> FjStatus {
+    COLOR_FACADE_FAULT.set(None);
+    COLOR_FACADE_CONSUMED.set(None);
+    status(FJ_STATUS_SUCCESS)
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_color_facade_fault_consumed(operation: u32, fault: u32) -> u32 {
+    u32::from(COLOR_FACADE_CONSUMED.take() == Some((operation, fault)))
+}
+fn color_facade_fault(operation: u32) -> Result<(), u32> {
+    if let Some((selected, index, fault)) = COLOR_FACADE_FAULT.get() {
+        if selected != operation {
+            return Ok(());
+        }
+        if index > 1 {
+            COLOR_FACADE_FAULT.set(Some((selected, index - 1, fault)));
+            return Ok(());
+        }
+        COLOR_FACADE_FAULT.set(None);
+        COLOR_FACADE_CONSUMED.set(Some((operation, fault)));
+        if fault == 1 {
+            return Err(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        panic!("direct color facade fault");
+    }
+    Ok(())
 }
 
 /// Arm a one-shot calling-thread fault on a matching production export.
@@ -816,6 +866,9 @@ unsafe extern "C" fn fj_test_input_to_dwg(
         };
         // SAFETY: The read-only RGB extent authorizes three initialized aligned floats.
         let rgb = unsafe { rgb.cast::<[f32; 3]>().read() };
+        if let Err(category) = color_facade_fault(6) {
+            return status(category);
+        }
         let output = color::input_to_dwg(input, rgb, clamp_nonnegative != 0);
         // SAFETY: Outputs are mutually disjoint and disjoint from inputs/local arrays.
         unsafe {
@@ -871,6 +924,9 @@ unsafe extern "C" fn fj_test_input_to_linear_srgb(
                 xyz_to_linear_srgb.cast::<[f32; 9]>().read(),
             )
         };
+        if let Err(category) = color_facade_fault(7) {
+            return status(category);
+        }
         let output = color::input_to_linear_srgb(input, rgb, inverse);
         // SAFETY: Outputs are mutually disjoint and disjoint from inputs/local arrays.
         unsafe {
@@ -930,6 +986,9 @@ unsafe extern "C" fn fj_test_dwg_to_xyz(rgb: *const f32, out_xyz: *mut f32) -> F
         }
         // SAFETY: The read-only RGB extent authorizes three initialized aligned floats.
         let rgb = unsafe { rgb.cast::<[f32; 3]>().read() };
+        if let Err(category) = color_facade_fault(9) {
+            return status(category);
+        }
         let output = color::dwg_to_xyz(rgb);
         // SAFETY: The initialized local triplet is disjoint from the output extent.
         unsafe { out_xyz.copy_from_nonoverlapping(output.as_ptr(), 3) };
@@ -1447,5 +1506,61 @@ unsafe extern "C" fn fj_test_tc_lut_allocation_counts(out: *mut usize) -> FjStat
         category: crate::cuda::sys::FJ_STATUS_SUCCESS,
         api: crate::cuda::sys::FJ_API_NONE,
         native_code: 0,
+    }
+}
+
+/// # Safety
+/// Initialized fixed-exposure input/spans and exclusive disjoint output/error obey the header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_exposure_mallett_midgray(
+    input: *const crate::exposure_bridge::FjMallettMidgrayInput,
+    out: *mut crate::exposure_bridge::FjMallettMidgray,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked projection calls core directly, never a legacy export.
+    unsafe {
+        crate::exposure_bridge::mallett_midgray_call(input, out, error, exposure_facade_fault)
+    }
+}
+/// # Safety
+/// Exclusive aligned fixed output/error records are caller-authorized and disjoint.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_exposure_tc_midgray(
+    green: f32,
+    out: *mut crate::exposure_bridge::FjMidgrayNormalization,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked projection calls core directly with scoped output.
+    unsafe { crate::exposure_bridge::tc_midgray_call(green, out, error, exposure_facade_fault) }
+}
+/// # Safety
+/// The exclusive aligned scalar/error records are caller-authorized and disjoint.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_exposure_reference_source(
+    exposure_ev: f32,
+    out: *mut f32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked projection calls core directly with scoped output.
+    unsafe {
+        crate::exposure_bridge::reference_source_call(
+            exposure_ev,
+            out,
+            error,
+            exposure_facade_fault,
+        )
+    }
+}
+/// # Safety
+/// Initialized fixed input/spans and exclusive disjoint output/error obey the header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_exposure_mallett_reference_raw(
+    input: *const crate::exposure_bridge::FjMallettReferenceInput,
+    out: *mut crate::exposure_bridge::FjReferenceRaw,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked projection calls core directly, retaining no source pointer.
+    unsafe {
+        crate::exposure_bridge::mallett_reference_call(input, out, error, exposure_facade_fault)
     }
 }

@@ -12,7 +12,7 @@
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
 #include "RustReconstructionBridge.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "spectral_allocation_probe.h"

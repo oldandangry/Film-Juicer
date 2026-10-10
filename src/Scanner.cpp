@@ -16,7 +16,6 @@
 #include "Logging.h"
 #include "RenderRecipe.h"
 #include "RustColorBridge.h"
-#include "SpectralProcessing.h"
 
 namespace {
 

@@ -145,7 +145,6 @@ FjStatus fj_legacy_cat16_matrix(const float source_white_xyz[3], const float des
 FjStatus fj_legacy_adapt_cat16(const float xyz[3], const float source_white_xyz[3], const float destination_white_xyz[3], float out_xyz[3]);
 
 FjStatus fj_legacy_cat02_matrix(const float source_white_xyz[3], const float destination_white_xyz[3], float out_row_major[9]);
-FjStatus fj_legacy_adapt_cat02(const float xyz[3], const float source_white_xyz[3], const float destination_white_xyz[3], float out_xyz[3]);
 
 /* FJ_TEMP_BRIDGE: input-color host preparation; remove S4.E.
  * Inputs are complete initialized aligned records/arrays, read-only until return;
@@ -174,11 +173,48 @@ typedef struct FjInputColorConversion {
     float xyz_adapt[9];
 } FjInputColorConversion;
 FjStatus fj_legacy_input_matrices(uint32_t input_space, FjInputColorMatrices* out);
-FjStatus fj_legacy_input_to_dwg(const FjInputColorConversion* input, const float rgb[3], uint32_t clamp_nonnegative, float out_rgb[3], float out_xyz[3]);
-FjStatus fj_legacy_input_to_linear_srgb(const FjInputColorConversion* input, const float rgb[3], const float xyz_to_linear_srgb[9], float out_rgb[3], float out_xyz[3]);
 FjStatus fj_legacy_linear_srgb_to_xyz(const float rgb[3], float out_xyz[3]);
-FjStatus fj_legacy_dwg_to_xyz(const float rgb[3], float out_xyz[3]);
 FjStatus fj_legacy_project_linear_rgb_to_xyz(const float rgb[3], const float rgb_to_xyz[9], const float xyz_adapt[9], float out_xyz[3]);
+
+/* Fixed exposure calls borrow initialized, aligned, immutable inputs only until
+ * return. Basis/final-sensitivity spans contain exactly 243 wavelength-major RGB
+ * floats; illuminant has 81 canonical positional samples. Current process/state
+ * owners retain those arrays. No source ownership or pointer escapes the call.
+ * Complete fixed results bind once into FilmRawConfig or synthetic references.
+ * Output/error storage is exclusive, mutually disjoint and disjoint from inputs.
+ * Valid outputs clear before fallible work. Unsupported structure/tags/flags ->
+ * UnsupportedInput; computed source/reference failure -> PreparationFailure;
+ * contained panic -> InternalFailure. Fixed mathematics allocates no heap.
+ * Diagnostics require an initialized FjErrorBuffer; zero capacity is status-only.
+ * Focused raw fields are BGR and may preserve finite-f64 narrowing to infinity;
+ * raw_green is the resolved denominator. Reference output is RGB. */
+typedef struct FjMallettMidgrayInput {
+    FjInputColorConversion color;
+    float xyz_to_linear_srgb[9];
+    FjFloatSpan basis_rgb, illuminant, sensitivity_rgb;
+} FjMallettMidgrayInput;
+typedef struct FjMallettMidgray {
+    float midgray_dwg_rgb[3], raw_midgray_bgr[3];
+    float raw_green, scale;
+} FjMallettMidgray;
+typedef struct FjMidgrayNormalization {
+    float raw_green, scale;
+} FjMidgrayNormalization;
+typedef struct FjMallettReferenceInput {
+    FjFloatSpan basis_rgb, illuminant, sensitivity_rgb;
+    float source, green_scale;
+} FjMallettReferenceInput;
+typedef struct FjReferenceRaw {
+    float rgb[3];
+} FjReferenceRaw;
+/* FJ_TEMP_BRIDGE: focused Mallett mid-gray binding; remove S4.E. */
+FjStatus fj_legacy_exposure_mallett_midgray(const FjMallettMidgrayInput* input, FjMallettMidgray* out, FjErrorBuffer* error);
+/* FJ_TEMP_BRIDGE: TC green normalization binding; remove S4.E. */
+FjStatus fj_legacy_exposure_tc_midgray(float green, FjMidgrayNormalization* out, FjErrorBuffer* error);
+/* FJ_TEMP_BRIDGE: shared synthetic reference source binding; remove S4.E. */
+FjStatus fj_legacy_exposure_reference_source(float exposure_ev, float* out, FjErrorBuffer* error);
+/* FJ_TEMP_BRIDGE: synthetic Mallett reference reduction binding; remove S4.E. */
+FjStatus fj_legacy_exposure_mallett_reference_raw(const FjMallettReferenceInput* input, FjReferenceRaw* out, FjErrorBuffer* error);
 
 /* FJ_TEMP_BRIDGE: asset conversion; remove S4.E.
  * Handles own immutable Rust storage; only matching create/acquire values are

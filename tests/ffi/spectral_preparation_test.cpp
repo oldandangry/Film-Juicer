@@ -21,7 +21,7 @@
 #include "spectral_allocation_probe.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
 #include "juicer_cuda_owner.h"

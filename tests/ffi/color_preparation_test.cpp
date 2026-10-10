@@ -19,7 +19,6 @@
 #include <nlohmann/json.hpp>
 #include <cuda_runtime_api.h>
 
-#include "SpectralProcessing.h"
 #include "ColorTransforms.h"
 #include "GamutCompression.h"
 #include "JuicerState.h"
@@ -163,6 +162,14 @@ namespace {
         }
         return true;
     }
+    bool color_facade_operation(std::uint32_t operation) {
+        return operation == FJ_TEST_CAT02_ADAPT || operation == FJ_TEST_INPUT_TO_DWG || operation == FJ_TEST_INPUT_TO_LINEAR_SRGB || operation == FJ_TEST_DWG_TO_XYZ;
+    }
+    FjStatus arm_color_fault(std::uint32_t operation, std::uint32_t index, std::uint32_t fault) {
+        fj_test_color_clear_fault();
+        fj_test_color_clear_facade_fault();
+        return color_facade_operation(operation) ? fj_test_color_arm_facade_fault(operation, index, fault) : fj_test_color_arm_fault(operation, index, fault);
+    }
     FjStatus raw_call(std::uint32_t operation) {
         constexpr std::array<float, 3> white{0.95045593f, 1.0f, 1.08905775f};
         constexpr std::array<float, 9> identity{1, 0, 0, 0, 1, 0, 0, 0, 1};
@@ -178,17 +185,17 @@ namespace {
             case FJ_TEST_CAT02_MATRIX:
                 return fj_legacy_cat02_matrix(white.data(), white.data(), matrix.data());
             case FJ_TEST_CAT02_ADAPT:
-                return fj_legacy_adapt_cat02(white.data(), white.data(), white.data(), adapted.data());
+                return fj_test_adapt_cat02(white.data(), white.data(), white.data(), adapted.data());
             case FJ_TEST_INPUT_MATRICES:
                 return fj_legacy_input_matrices(FJ_INPUT_DWG, &matrices);
             case FJ_TEST_INPUT_TO_DWG:
-                return fj_legacy_input_to_dwg(&input, white.data(), 1, rgb.data(), adapted.data());
+                return fj_test_input_to_dwg(&input, white.data(), 1, rgb.data(), adapted.data());
             case FJ_TEST_INPUT_TO_LINEAR_SRGB:
-                return fj_legacy_input_to_linear_srgb(&input, white.data(), identity.data(), rgb.data(), adapted.data());
+                return fj_test_input_to_linear_srgb(&input, white.data(), identity.data(), rgb.data(), adapted.data());
             case FJ_TEST_LINEAR_SRGB_TO_XYZ:
                 return fj_legacy_linear_srgb_to_xyz(white.data(), adapted.data());
             case FJ_TEST_DWG_TO_XYZ:
-                return fj_legacy_dwg_to_xyz(white.data(), adapted.data());
+                return fj_test_dwg_to_xyz(white.data(), adapted.data());
             case FJ_TEST_PROJECT_LINEAR_RGB_TO_XYZ:
                 return fj_legacy_project_linear_rgb_to_xyz(white.data(), identity.data(), identity.data(), adapted.data());
             default:
@@ -202,6 +209,7 @@ namespace {
         FaultScope& operator=(const FaultScope&) = delete;
         ~FaultScope() {
             const auto status = fj_test_color_clear_fault();
+            fj_test_color_clear_facade_fault();
             if (status.category != FJ_STATUS_SUCCESS) {
                 std::abort();
             }
@@ -241,24 +249,24 @@ namespace {
         require(fj_test_color_abi_c() == 0, "real C transport/null/panic/canaries");
         FaultScope cleanup;
         for (std::uint32_t operation : {FJ_TEST_CAT16_MATRIX, FJ_TEST_CAT16_ADAPT}) {
-            expect_status(fj_test_color_arm_fault(operation, 2, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
+            expect_status(arm_color_fault(operation, 2, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation == 1 ? 2 : 1), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation), FJ_STATUS_UNSUPPORTED_INPUT);
             expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
             for (const auto& invalid : std::array<std::array<std::uint32_t, 3>, 3>{{{0, 1, 1}, {operation, 0, 1}, {operation, 1, 99}}}) {
-                expect_status(fj_test_color_arm_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
-                expect_status(fj_test_color_arm_fault(invalid[0], invalid[1], invalid[2]), FJ_STATUS_UNSUPPORTED_INPUT);
+                expect_status(arm_color_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+                expect_status(arm_color_fault(invalid[0], invalid[1], invalid[2]), FJ_STATUS_UNSUPPORTED_INPUT);
                 expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
             }
-            expect_status(fj_test_color_arm_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
-            expect_status(fj_test_color_arm_fault(operation, 2, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
+            expect_status(arm_color_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+            expect_status(arm_color_fault(operation, 2, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
             expect_status(raw_call(operation), FJ_STATUS_UNSUPPORTED_INPUT);
             expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
             expect_status(fj_test_color_clear_fault(), FJ_STATUS_SUCCESS);
         }
-        expect_status(fj_test_color_arm_fault(FJ_TEST_CAT16_MATRIX, 1, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
+        expect_status(arm_color_fault(FJ_TEST_CAT16_MATRIX, 1, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
         FjStatus otherThread{};
         std::thread worker([&] {
             otherThread = raw_call(FJ_TEST_CAT16_MATRIX);
@@ -366,7 +374,7 @@ namespace {
                             const auto counter = state.buildCounterNext.load();
                             const auto oldRecipe = route == 1 ? old.printState->recipe.hash : old.directState->recipe.hash;
                             pending(state, changed);
-                            expect_status(fj_test_color_arm_fault(selected.operation, selected.callIndex, selected.fault), FJ_STATUS_SUCCESS);
+                            expect_status(arm_color_fault(selected.operation, selected.callIndex, selected.fault), FJ_STATUS_SUCCESS);
                             const auto result = admit_pending_render_state(state);
                             failed(result, selected);
                             unchanged(state, old, hash, counter);
@@ -389,7 +397,7 @@ namespace {
                                 const auto liveCounter = state.buildCounterNext.load();
                                 pending(state, controls);
                                 set_pending_capture_test_hook(supersede, &selection);
-                                expect_status(fj_test_color_arm_fault(selected.operation, selected.callIndex, selected.fault), FJ_STATUS_SUCCESS);
+                                expect_status(arm_color_fault(selected.operation, selected.callIndex, selected.fault), FJ_STATUS_SUCCESS);
                                 const auto newer = admit_pending_render_state(state);
                                 require(selection.fired, "captured snapshot superseded");
                                 if (mode == 0) {
@@ -528,7 +536,7 @@ namespace {
             const auto old = admit_pending_render_state(state);
             const auto counter = state.buildCounterNext.load();
             FaultScope cleanup;
-            expect_status(fj_test_color_arm_fault(FJ_TEST_CAT16_MATRIX, 1, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
+            expect_status(arm_color_fault(FJ_TEST_CAT16_MATRIX, 1, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
             const auto repeated = admit_pending_render_state(state);
             require(repeated.directState == old.directState && repeated.printState == old.printState && state.buildCounterNext.load() == counter, "unchanged admission reuses actual state");
             expect_status(raw_call(FJ_TEST_CAT16_MATRIX), FJ_STATUS_UNSUPPORTED_INPUT);
@@ -564,7 +572,7 @@ namespace {
             const Spectral::ChromaticAdaptationWhites whites{source.data(), destination.data()};
             const auto matrix = JuicerColor::cat02_matrix(whites);
             std::array<float, 3> adapted{};
-            adapted = JuicerColor::adapt_cat02(xyz, whites);
+            expect_status(fj_test_adapt_cat02(xyz.data(), whites.source, whites.destination, adapted.data()), FJ_STATUS_SUCCESS);
             return {{"matrix", bits(matrix)}, {"adapted", bits(adapted)}};
         }
         ParamSnapshot snapshot(Spektrafilm::ScanRoute route, Spektrafilm::RgbToRawMethod method) {
@@ -666,38 +674,22 @@ namespace {
                     out.push_back({{"id", "helper-rgb-" + std::to_string(i) + "-white-" + std::to_string(j)}, {"rgb", bits(rgb[i])}, {"reference_white", bits(refs[j])}});
             return out;
         }
-        Json helper_result(const Json& input, const Spectral::SpectralTables& canonicalTables, const std::array<float, 9>& sInv, bool hanatos) {
-            const auto rgb = triplet(input.at("rgb"));
-            const auto reference = triplet(input.at("reference_white"));
-            std::array<float, 3> xyz{}, white{}, adapted{};
-            expect_status(fj_test_dwg_to_xyz(rgb.data(), xyz.data()), FJ_STATUS_SUCCESS);
+        Json helper_result(const Json& input, const Spectral::SpectralTables& tables, const std::array<float, 9>& sInv, bool hanatos) {
+            const auto rgb = triplet(input.at("rgb")), white = triplet(input.at("reference_white"));
+            FjSpectrumFixture out{};
+            std::array<char, 512> bytes{};
+            FjErrorBuffer error{bytes.data(), bytes.size(), 0};
             if (hanatos) {
-                Spectral::sanitize_nonfinite_triplet(xyz.data());
-                Spectral::sanitize_ref_white_or_dwg(reference.data(), white.data());
+                const FjHanatosSpectrumInput request{{rgb[0], rgb[1], rgb[2]}, {white[0], white[1], white[2]}, {Spectral::gHanSpectra.data.data(), Spectral::gHanSpectra.data.size()}};
+                expect_status(fj_test_exposure_hanatos_spectrum(&request, &out, &error), FJ_STATUS_SUCCESS);
             } else {
-                auto original = xyz;
-                Spectral::sanitize_nonnegative_triplet_sp(xyz.data(), original.data());
-                Spectral::sanitize_nonnegative_triplet_sp(white.data(), reference.data());
-                if (white[1] <= 0.0f)
-                    std::copy_n(Spectral::gDWG_WhitePoint_XYZ, 3, white.data());
+                FjTablesSpectrumInput request{{rgb[0], rgb[1], rgb[2]}, {white[0], white[1], white[2]}, {}, {tables.Ax.data(), tables.Ax.size()}, {tables.Ay.data(), tables.Ay.size()}, {tables.Az.data(), tables.Az.size()}};
+                std::copy(sInv.begin(), sInv.end(), request.s_inverse);
+                expect_status(fj_test_exposure_tables_spectrum(&request, &out, &error), FJ_STATUS_SUCCESS);
             }
-            const Spectral::ChromaticAdaptationWhites whites{Spectral::gDWG_WhitePoint_XYZ, white.data()};
-            adapted = JuicerColor::adapt_cat02(xyz, whites);
-            if (hanatos)
-                Spectral::sanitize_nonfinite_triplet(adapted.data());
-            else
-                Spectral::clamp_triplet_nonnegative(adapted.data());
-            std::vector<float> spectrum;
-            if (hanatos)
-                Spectral::reconstruct_Ee_from_DWG_RGB_hanatos(rgb.data(), spectrum, reference.data());
-            else {
-                auto tables = canonicalTables;
-                std::copy(reference.begin(), reference.end(), tables.refIllumWhiteXYZ);
-                Spectral::reconstruct_Ee_from_DWG_RGB_with_tables(rgb.data(), tables, sInv.data(), spectrum);
-            }
-            require(spectrum.size() == 81, "canonical helper spectrum size");
-            return {{"pre_xyz", bits(xyz)}, {"consumer_white", bits(white)}, {"post_adapt_xyz", bits(adapted)}, {"spectrum", bits(spectrum)}};
+            return {{"pre_xyz", bits(out.pre_xyz)}, {"consumer_white", bits(out.consumer_white)}, {"post_adapt_xyz", bits(out.post_adapt_xyz)}, {"spectrum", bits(out.spectrum)}};
         }
+
     } // namespace Cat02Fixtures
     FjStatus facade_call(std::uint32_t operation) {
         constexpr std::array<float, 3> white{0.95045593f, 1.0f, 1.08905775f};
@@ -778,17 +770,17 @@ namespace {
             case FJ_TEST_CAT16_ADAPT:
                 return fj_legacy_adapt_cat16(pointer(0), pointer(1), pointer(2), output(3));
             case FJ_TEST_CAT02_ADAPT:
-                return fj_legacy_adapt_cat02(pointer(0), pointer(1), pointer(2), output(3));
+                return fj_test_adapt_cat02(pointer(0), pointer(1), pointer(2), output(3));
             case FJ_TEST_INPUT_MATRICES:
                 return fj_legacy_input_matrices(FJ_INPUT_DWG, selected.slot == 0 ? nullptr : &matrices);
             case FJ_TEST_INPUT_TO_DWG:
-                return fj_legacy_input_to_dwg(conversion, pointer(1), 1, selected.slot == 2 ? nullptr : rgb.data(), output(3));
+                return fj_test_input_to_dwg(conversion, pointer(1), 1, selected.slot == 2 ? nullptr : rgb.data(), output(3));
             case FJ_TEST_INPUT_TO_LINEAR_SRGB:
-                return fj_legacy_input_to_linear_srgb(conversion, pointer(1), selected.slot == 2 ? nullptr : identity.data(), selected.slot == 3 ? nullptr : rgb.data(), output(4));
+                return fj_test_input_to_linear_srgb(conversion, pointer(1), selected.slot == 2 ? nullptr : identity.data(), selected.slot == 3 ? nullptr : rgb.data(), output(4));
             case FJ_TEST_LINEAR_SRGB_TO_XYZ:
                 return fj_legacy_linear_srgb_to_xyz(pointer(0), output(1));
             case FJ_TEST_DWG_TO_XYZ:
-                return fj_legacy_dwg_to_xyz(pointer(0), output(1));
+                return fj_test_dwg_to_xyz(pointer(0), output(1));
             case FJ_TEST_PROJECT_LINEAR_RGB_TO_XYZ:
                 return fj_legacy_project_linear_rgb_to_xyz(pointer(0), selected.slot == 1 ? nullptr : identity.data(), selected.slot == 2 ? nullptr : identity.data(), output(3));
             default:
@@ -800,13 +792,15 @@ namespace {
         constexpr std::array<std::uint32_t, 10> operations{FJ_TEST_CAT16_MATRIX, FJ_TEST_CAT16_ADAPT, FJ_TEST_CAT02_MATRIX, FJ_TEST_CAT02_ADAPT, FJ_TEST_INPUT_MATRICES, FJ_TEST_INPUT_TO_DWG, FJ_TEST_INPUT_TO_LINEAR_SRGB, FJ_TEST_LINEAR_SRGB_TO_XYZ, FJ_TEST_DWG_TO_XYZ, FJ_TEST_PROJECT_LINEAR_RGB_TO_XYZ};
         for (const auto operation : operations) {
             for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
-                expect_status(fj_test_color_arm_fault(operation, 2, fault), FJ_STATUS_SUCCESS);
+                expect_status(arm_color_fault(operation, 2, fault), FJ_STATUS_SUCCESS);
                 for (const auto unrelated : operations) {
                     if (unrelated != operation) {
                         expect_status(raw_call(unrelated), FJ_STATUS_SUCCESS);
                     }
                 }
-                expect_status(facade_call(operation), FJ_STATUS_SUCCESS);
+                if (!color_facade_operation(operation)) {
+                    expect_status(facade_call(operation), FJ_STATUS_SUCCESS);
+                }
                 const int pointers = color_pointer_count(operation);
                 for (int slot = 0; slot < pointers; ++slot) {
                     expect_status(null_color_call({.operation = operation, .slot = slot}), FJ_STATUS_UNSUPPORTED_INPUT);
@@ -814,7 +808,7 @@ namespace {
                 expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
                 expect_status(raw_call(operation), fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
                 expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
-                expect_status(fj_test_color_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
+                expect_status(arm_color_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
                 FjStatus otherThread{};
                 std::thread worker([&] {
                     otherThread = raw_call(operation);
@@ -825,13 +819,13 @@ namespace {
                 expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
             }
             for (const auto& invalid : std::array<std::array<std::uint32_t, 3>, 5>{{{0, 1, 1}, {11, 1, 1}, {99, 1, 1}, {operation, 0, 1}, {operation, 1, 99}}}) {
-                expect_status(fj_test_color_arm_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
-                expect_status(fj_test_color_arm_fault(invalid[0], invalid[1], invalid[2]), FJ_STATUS_UNSUPPORTED_INPUT);
+                expect_status(arm_color_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+                expect_status(arm_color_fault(invalid[0], invalid[1], invalid[2]), FJ_STATUS_UNSUPPORTED_INPUT);
                 expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
             }
             for (const auto replacement : operations) {
-                expect_status(fj_test_color_arm_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
-                expect_status(fj_test_color_arm_fault(replacement, 2, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
+                expect_status(arm_color_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+                expect_status(arm_color_fault(replacement, 2, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
                 if (replacement != operation) {
                     expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
                 }
@@ -855,7 +849,8 @@ namespace {
                 const auto& expected = row.at("expected");
                 const std::string id = row.at("id").get<std::string>();
                 const auto matrix = JuicerColor::cat02_matrix(whites);
-                const auto adapted = JuicerColor::adapt_cat02(xyz, whites);
+                std::array<float, 3> adapted{};
+                expect_status(fj_test_adapt_cat02(xyz.data(), whites.source, whites.destination, adapted.data()), FJ_STATUS_SUCCESS);
                 require(same_values(bits(matrix), expected.at("matrix")), id + " production matrix bits/classification");
                 require(same_values(bits(adapted), expected.at("adapted")), id + " production scalar bits/classification");
                 std::array<float, 9> facadeMatrix{};
@@ -966,7 +961,7 @@ namespace {
                         const auto hash = state.lastHash.load();
                         const auto counter = state.buildCounterNext.load();
                         pending(state, changed);
-                        expect_status(fj_test_color_arm_fault(selected.operation, index, fault), FJ_STATUS_SUCCESS);
+                        expect_status(arm_color_fault(selected.operation, index, fault), FJ_STATUS_SUCCESS);
                         const auto result = admit_pending_render_state(state);
                         failed(result, selected, controls.filmProfileKey);
                         unchanged(state, old, hash, counter);
@@ -992,7 +987,7 @@ namespace {
                             const auto liveCounter = state.buildCounterNext.load();
                             pending(state, controls);
                             set_pending_capture_test_hook(supersede, &selection);
-                            expect_status(fj_test_color_arm_fault(selected.operation, index, fault), FJ_STATUS_SUCCESS);
+                            expect_status(arm_color_fault(selected.operation, index, fault), FJ_STATUS_SUCCESS);
                             const auto newer = admit_pending_render_state(state);
                             require(selection.fired, "CAT02 captured snapshot superseded");
                             if (mode == 0) {
@@ -1018,18 +1013,25 @@ namespace {
         std::printf("CAT02 admission: %zu current failure/recovery and %zu N2 supersession witnesses on four routes passed\n", failures, supersessions);
     }
     template <typename Function>
-    void require_cat02_scalar_failure(Function&& function, std::uint32_t fault) {
+    void require_color_facade_failure(std::uint32_t operation, std::uint32_t fault, Function&& function) {
         FaultScope cleanup;
-        expect_status(fj_test_color_arm_fault(FJ_TEST_CAT02_ADAPT, 1, fault), FJ_STATUS_SUCCESS);
-        bool thrown = false;
-        try {
-            function();
-        } catch (const JuicerCuda::ExecutionFailure& error) {
-            require(error.failure.status.category == (fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE) && error.failure.status.api == FJ_API_NONE && error.failure.status.native_code == 0 && !error.deferredDirError && error.failure.diagnostic.find("CAT02 scalar") != std::string::npos, "CAT02 scalar typed failure and diagnostic preserved");
-            thrown = true;
-        }
-        require(thrown, "actual scalar consumer propagates CAT02 failure");
-        expect_status(raw_call(FJ_TEST_CAT02_ADAPT), FJ_STATUS_SUCCESS);
+        expect_status(arm_color_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
+        expect_status(function(), fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
+        require(fj_test_color_facade_fault_consumed(operation, fault) == 1, "direct current color-facade consumption before cleanup");
+        expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
+    }
+    void require_spectrum_fixture_failure(const Spectral::SpectralTables& tables, const std::array<float, 9>& inverse, std::uint32_t operation, std::uint32_t fault) {
+        const float rgb[3]{2.0f, -.25f, .5f};
+        const FjHanatosSpectrumInput hanatos{{rgb[0], rgb[1], rgb[2]}, {tables.refIllumWhiteXYZ[0], tables.refIllumWhiteXYZ[1], tables.refIllumWhiteXYZ[2]}, {Spectral::gHanSpectra.data.data(), Spectral::gHanSpectra.data.size()}};
+        FjTablesSpectrumInput request{{rgb[0], rgb[1], rgb[2]}, {tables.refIllumWhiteXYZ[0], tables.refIllumWhiteXYZ[1], tables.refIllumWhiteXYZ[2]}, {}, {tables.Ax.data(), 81}, {tables.Ay.data(), 81}, {tables.Az.data(), 81}};
+        std::copy(inverse.begin(), inverse.end(), request.s_inverse);
+        FjSpectrumFixture out{};
+        std::array<char, 512> bytes{};
+        FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+        expect_status(fj_test_exposure_fixture_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
+        expect_status(operation == 1 ? fj_test_exposure_hanatos_spectrum(&hanatos, &out, &error) : fj_test_exposure_tables_spectrum(&request, &out, &error), fault == 1 ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
+        require(fj_test_exposure_fixture_fault_consumed(operation, fault) == 1, "closed spectrum operation consumed before cleanup");
+        fj_test_exposure_fixture_clear_fault();
     }
     void cat02_helper_tests(const Json& fixture) {
         const auto product = Cat02Fixtures::build(Cat02Fixtures::snapshot(Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::RgbToRawMethod::Mallett2019));
@@ -1047,23 +1049,14 @@ namespace {
             require(Cat02Fixtures::helper_result(input, tables, sInv, false) == row.at("tables_expected"), input.at("id").get<std::string>() + " tables sanitation/spectrum");
         }
         const std::array<float, 3> rgb{2.0f, -0.25f, 0.5f};
-        const Spectral::ChromaticAdaptationWhites whites{Spectral::gDWG_WhitePoint_XYZ, tables.refIllumWhiteXYZ};
         const auto held = retain_values(product);
         for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
-            require_cat02_scalar_failure([&] {
-                (void)JuicerColor::adapt_cat02(rgb, whites);
-            },
-                                         fault);
-            require_cat02_scalar_failure([&] {
-                std::vector<float> spectrum;
-                Spectral::reconstruct_Ee_from_DWG_RGB_hanatos(rgb.data(), spectrum, tables.refIllumWhiteXYZ);
-            },
-                                         fault);
-            require_cat02_scalar_failure([&] {
-                std::vector<float> spectrum;
-                Spectral::reconstruct_Ee_from_DWG_RGB_with_tables(rgb.data(), tables, sInv.data(), spectrum);
-            },
-                                         fault);
+            std::array<float, 3> adapted{};
+            require_color_facade_failure(FJ_TEST_CAT02_ADAPT, fault, [&] {
+                return fj_test_adapt_cat02(rgb.data(), Spectral::gDWG_WhitePoint_XYZ, tables.refIllumWhiteXYZ, adapted.data());
+            });
+            require_spectrum_fixture_failure(tables, sInv, 1, fault);
+            require_spectrum_fixture_failure(tables, sInv, 2, fault);
             require_retained_values(product, held);
         }
         std::printf("CAT02 retained helpers: %zu independent pre/post sanitation/spectrum cases per helper and both typed failure categories passed\n", cases.size());
@@ -1103,7 +1096,7 @@ namespace {
                 const auto counter = state.buildCounterNext.load();
                 const auto held = retain_values(old);
                 FaultScope cleanup;
-                expect_status(fj_test_color_arm_fault(FJ_TEST_CAT02_MATRIX, 1, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
+                expect_status(arm_color_fault(FJ_TEST_CAT02_MATRIX, 1, FJ_TEST_COLOR_UNSUPPORTED_INPUT), FJ_STATUS_SUCCESS);
                 const auto repeated = admit_pending_render_state(state);
                 require(repeated.directState == old.directState && repeated.printState == old.printState, "unchanged CAT02 admission reuses exact publication");
                 unchanged(state, old, hash, counter);
@@ -1172,7 +1165,7 @@ namespace {
             auto invalid = illuminants[0];
             invalid.hash = 0;
             FaultScope cleanup;
-            expect_status(fj_test_color_arm_fault(FJ_TEST_CAT02_MATRIX, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+            expect_status(arm_color_fault(FJ_TEST_CAT02_MATRIX, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
             const auto color = Scanner::build_color_runtime(static_cast<Scanner::ScannerMedium>(row.at("medium").get<int>()), invalid, {}, 0);
             require(Cat02Fixtures::color_result(color) == row.at("expected"), "invalid scanner illuminant keeps early zero-hash color result");
             expect_status(raw_call(FJ_TEST_CAT02_MATRIX), FJ_STATUS_INTERNAL_FAILURE);
@@ -1434,17 +1427,13 @@ namespace {
             const auto rgb = triplet(row.at("rgb"));
             const auto& expected = row.at("expected");
             for (bool clamp : {false, true}) {
-                const auto actual = JuicerColor::input_to_dwg(config, rgb, clamp);
                 std::array<float, 3> facadeRgb{}, facadeXyz{};
                 expect_status(fj_test_input_to_dwg(&input, rgb.data(), clamp ? 1u : 0u, facadeRgb.data(), facadeXyz.data()), FJ_STATUS_SUCCESS);
                 const std::string prefix = clamp ? "dwg_clamped" : "dwg_signed";
-                require(same_values(bits(actual.rgb), expected.at(prefix + "_rgb")) && same_values(bits(actual.xyz), expected.at(prefix + "_xyz")), row.at("id").get<std::string>() + " production DWG conversion/XYZ observation");
                 require(same_values(bits(facadeRgb), expected.at(prefix + "_rgb")) && same_values(bits(facadeXyz), expected.at(prefix + "_xyz")), row.at("id").get<std::string>() + " facade DWG conversion/XYZ observation");
             }
-            const auto actual = JuicerColor::input_to_linear_srgb(config, rgb);
             std::array<float, 3> facadeRgb{}, facadeXyz{};
             expect_status(fj_test_input_to_linear_srgb(&input, rgb.data(), config.xyzToLinearSrgb.m, facadeRgb.data(), facadeXyz.data()), FJ_STATUS_SUCCESS);
-            require(same_values(bits(actual.rgb), expected.at("srgb_rgb")) && same_values(bits(actual.xyz), expected.at("srgb_xyz")), row.at("id").get<std::string>() + " production linear sRGB/XYZ observation");
             require(same_values(bits(facadeRgb), expected.at("srgb_rgb")) && same_values(bits(facadeXyz), expected.at("srgb_xyz")), row.at("id").get<std::string>() + " facade explicit inverse linear sRGB/XYZ");
         }
         for (const auto& row : fixture.at("linear")) {
@@ -1453,7 +1442,7 @@ namespace {
             expect_status(fj_test_linear_srgb_to_xyz(rgb.data(), srgb.data()), FJ_STATUS_SUCCESS);
             expect_status(fj_test_dwg_to_xyz(rgb.data(), dwg.data()), FJ_STATUS_SUCCESS);
             require(same_values(bits(srgb), row.at("expected").at("srgb_xyz")) && same_values(bits(JuicerColor::linear_srgb_to_xyz(rgb)), row.at("expected").at("srgb_xyz")), row.at("id").get<std::string>() + " unsanitized linear sRGB leaf");
-            require(same_values(bits(dwg), row.at("expected").at("dwg_xyz")) && same_values(bits(JuicerColor::dwg_to_xyz(rgb)), row.at("expected").at("dwg_xyz")), row.at("id").get<std::string>() + " unsanitized DWG leaf");
+            require(same_values(bits(dwg), row.at("expected").at("dwg_xyz")), row.at("id").get<std::string>() + " unsanitized DWG leaf");
         }
         for (const auto& row : fixture.at("projection")) {
             const auto rgb = triplet(row.at("rgb"));
@@ -1502,7 +1491,7 @@ namespace {
         color_fault_tests();
         for (std::uint32_t operation = 5; operation <= 10; ++operation) {
             FaultScope cleanup;
-            expect_status(fj_test_color_arm_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+            expect_status(arm_color_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
             Spectral::FilmRawConfig unready;
             require(!unready.valid, "default carrier remains unready");
             const auto identity = Spectral::make_identity_mat3();
@@ -1515,7 +1504,7 @@ namespace {
         for (std::uint32_t operation : {FJ_TEST_INPUT_MATRICES, FJ_TEST_INPUT_TO_DWG, FJ_TEST_INPUT_TO_LINEAR_SRGB}) {
             for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
                 FaultScope cleanup;
-                expect_status(fj_test_color_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
+                expect_status(arm_color_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
                 FjInputColorMatrices matrices{};
                 const std::array<float, 3> rgb{.184f, -.25f, .5f};
                 const std::array<float, 9> identity{1, 0, 0, 0, 1, 0, 0, 0, 1};
@@ -1529,15 +1518,15 @@ namespace {
                         input.decode_cctf = invalid == 1 ? 2u : 0u;
                         input.adapt_xyz = invalid == 2 ? 2u : 0u;
                         const auto status = operation == FJ_TEST_INPUT_TO_DWG
-                                                ? fj_legacy_input_to_dwg(&input, rgb.data(), 0, outRgb.data(), outXyz.data())
-                                                : fj_legacy_input_to_linear_srgb(&input, rgb.data(), identity.data(), outRgb.data(), outXyz.data());
+                                                ? fj_test_input_to_dwg(&input, rgb.data(), 0, outRgb.data(), outXyz.data())
+                                                : fj_test_input_to_linear_srgb(&input, rgb.data(), identity.data(), outRgb.data(), outXyz.data());
                         expect_status(status, FJ_STATUS_UNSUPPORTED_INPUT);
                     }
                     if (operation == FJ_TEST_INPUT_TO_DWG) {
                         input.input_space = 0;
                         input.decode_cctf = 0;
                         input.adapt_xyz = 0;
-                        expect_status(fj_legacy_input_to_dwg(&input, rgb.data(), 2, outRgb.data(), outXyz.data()), FJ_STATUS_UNSUPPORTED_INPUT);
+                        expect_status(fj_test_input_to_dwg(&input, rgb.data(), 2, outRgb.data(), outXyz.data()), FJ_STATUS_UNSUPPORTED_INPUT);
                     }
                 }
                 expect_status(raw_call(operation), fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
@@ -1558,12 +1547,12 @@ namespace {
                     controls.inputCctfDecoding = 1;
                     auto changed = controls;
                     changed.cameraExposureCompensationEv = 1.0;
-                    const std::array<std::uint32_t, 6> callCounts{method == 1 ? 1u : 3u, method == 1 ? 1u : 0u, method == 1 ? 1u : 0u, method == 1 ? 0u : 2u, 0u, method == 1 ? 0u : 1u};
+                    const std::array<std::uint32_t, 6> callCounts{method == 1 ? 1u : 3u, 0u, 0u, method == 1 ? 0u : 2u, 0u, method == 1 ? 0u : 1u};
                     for (std::uint32_t operation = 5; operation <= 10; ++operation) {
                         const auto calls = callCounts[operation - 5];
                         {
                             FaultScope cleanup;
-                            expect_status(fj_test_color_arm_fault(operation, calls + 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+                            expect_status(arm_color_fault(operation, calls + 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
                             (void)Cat02Fixtures::build(controls);
                             expect_status(raw_call(operation), FJ_STATUS_INTERNAL_FAILURE);
                             ++counts;
@@ -1574,7 +1563,7 @@ namespace {
                                 FaultScope cleanup;
                                 InstanceState cold;
                                 pending(cold, controls);
-                                expect_status(fj_test_color_arm_fault(operation, index, fault), FJ_STATUS_SUCCESS);
+                                expect_status(arm_color_fault(operation, index, fault), FJ_STATUS_SUCCESS);
                                 const auto coldFailure = admit_pending_render_state(cold);
                                 failed(coldFailure, selected, controls.filmProfileKey);
                                 require(!JuicerAtomic::load_shared_ptr(&cold.activeDirectState) && !JuicerAtomic::load_shared_ptr(&cold.activePrintState) && cold.lastHash.load() == 0 && cold.buildCounterNext.load() == 0, "cold failed construction publishes no owner/hash/counter");
@@ -1588,7 +1577,7 @@ namespace {
                                 const auto oldValues = retain_values(old);
                                 const auto hash = state.lastHash.load(), counter = state.buildCounterNext.load();
                                 pending(state, changed);
-                                expect_status(fj_test_color_arm_fault(operation, index, fault), FJ_STATUS_SUCCESS);
+                                expect_status(arm_color_fault(operation, index, fault), FJ_STATUS_SUCCESS);
                                 const auto result = admit_pending_render_state(state);
                                 failed(result, selected, controls.filmProfileKey);
                                 unchanged(state, old, hash, counter);
@@ -1614,7 +1603,7 @@ namespace {
                                     const auto liveHash = state.lastHash.load(), liveCounter = state.buildCounterNext.load();
                                     pending(state, controls);
                                     set_pending_capture_test_hook(supersede, &selection);
-                                    expect_status(fj_test_color_arm_fault(operation, index, fault), FJ_STATUS_SUCCESS);
+                                    expect_status(arm_color_fault(operation, index, fault), FJ_STATUS_SUCCESS);
                                     const auto newer = admit_pending_render_state(state);
                                     require(selection.fired, "captured input-color snapshot superseded");
                                     if (mode == 0) {
@@ -1644,7 +1633,7 @@ namespace {
     template <typename Function>
     void require_input_failure(std::uint32_t operation, std::uint32_t fault, Function&& function) {
         FaultScope cleanup;
-        expect_status(fj_test_color_arm_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
+        expect_status(arm_color_fault(operation, 1, fault), FJ_STATUS_SUCCESS);
         bool thrown = false;
         try {
             function();
@@ -1667,16 +1656,18 @@ namespace {
         }
         const std::array<float, 3> rgb{2.0f, -.25f, .5f};
         for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
-            require_input_failure(FJ_TEST_DWG_TO_XYZ, fault, [&] {
-                std::vector<float> spectrum;
-                Spectral::reconstruct_Ee_from_DWG_RGB_hanatos(rgb.data(), spectrum, tables.refIllumWhiteXYZ);
+            require_spectrum_fixture_failure(tables, inverse, 1, fault);
+            require_spectrum_fixture_failure(tables, inverse, 2, fault);
+            std::array<float, 3> output{}, xyz{};
+            require_color_facade_failure(FJ_TEST_DWG_TO_XYZ, fault, [&] {
+                return fj_test_dwg_to_xyz(rgb.data(), output.data());
             });
-            require_input_failure(FJ_TEST_DWG_TO_XYZ, fault, [&] {
-                std::vector<float> spectrum;
-                Spectral::reconstruct_Ee_from_DWG_RGB_with_tables(rgb.data(), tables, inverse.data(), spectrum);
+            const auto conversion = InputFixtures::foreign(product.payload.filmRawConfig);
+            require_color_facade_failure(FJ_TEST_INPUT_TO_DWG, fault, [&] {
+                return fj_test_input_to_dwg(&conversion, rgb.data(), 0, output.data(), xyz.data());
             });
-            require_input_failure(FJ_TEST_DWG_TO_XYZ, fault, [&] {
-                (void)JuicerColor::dwg_to_xyz(rgb);
+            require_color_facade_failure(FJ_TEST_INPUT_TO_LINEAR_SRGB, fault, [&] {
+                return fj_test_input_to_linear_srgb(&conversion, rgb.data(), product.payload.filmRawConfig.xyzToLinearSrgb.m, output.data(), xyz.data());
             });
             require_input_failure(FJ_TEST_LINEAR_SRGB_TO_XYZ, fault, [&] {
                 (void)JuicerColor::linear_srgb_to_xyz(rgb);
@@ -1686,12 +1677,6 @@ namespace {
             });
             require_input_failure(FJ_TEST_INPUT_MATRICES, fault, [&] {
                 (void)JuicerColor::input_matrices(Spectral::InputColorSpace::ITU_R_BT2020);
-            });
-            require_input_failure(FJ_TEST_INPUT_TO_DWG, fault, [&] {
-                (void)JuicerColor::input_to_dwg(product.payload.filmRawConfig, rgb, false);
-            });
-            require_input_failure(FJ_TEST_INPUT_TO_LINEAR_SRGB, fault, [&] {
-                (void)JuicerColor::input_to_linear_srgb(product.payload.filmRawConfig, rgb);
             });
         }
         std::puts("Input-color helpers: independent spectra and both-category direct primitive/DWG helper failures passed");
@@ -1834,7 +1819,7 @@ namespace {
                     JuicerCuda::Failure error;
                     const auto begin = std::chrono::steady_clock::now();
                     const auto operation = static_cast<std::uint32_t>(5 + (sequence % 6));
-                    expect_status(fj_test_color_arm_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+                    expect_status(arm_color_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
                     auto frame = JuicerProcess::root().prepare_cuda_frame(key, submission, request, {}, nullptr, error);
                     preparationUs[transition++] = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - begin).count();
                     require(frame.active(), error.diagnostic);
