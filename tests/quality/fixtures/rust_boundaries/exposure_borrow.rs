@@ -1,6 +1,6 @@
 use film_juicer_core::{exposure, reconstruction};
 fn reference_result_owns_only_completed_white() -> reconstruction::ReferenceWhite {
-    let tensor = vec![1.0; reconstruction::HANATOS_SAMPLE_COUNT];
+    let tensor = vec![1.0; reconstruction::SPECTRA_SAMPLE_COUNT];
     let white = reconstruction::reference_white(tensor.as_slice().try_into().unwrap(), 0.0, [1.0, 1.0, 1.0]).unwrap();
     drop(tensor);
     white

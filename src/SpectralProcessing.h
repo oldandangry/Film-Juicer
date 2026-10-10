@@ -18,17 +18,6 @@
 struct FilmRawRecipe;
 namespace Spectral {
 
-    bool build_film_tc_lut(
-        const ::FilmRawRecipe& recipe,
-        const ReconstructionLut& spectra,
-        const std::array<float, kNumSamples>& referenceIlluminant,
-        FilmTcLut& out,
-        std::string& diagnostic);
-
-    std::array<float, 3> sample_film_tc_lut(
-        const FilmTcLut& lut,
-        const std::array<float, 3>& projectedXYZ);
-
     inline bool is_finite_sp(float value) {
         return std::isfinite(value);
     }

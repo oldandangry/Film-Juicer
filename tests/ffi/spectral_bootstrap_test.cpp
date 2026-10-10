@@ -324,11 +324,11 @@ namespace {
         recipe.finalSensitivity.fill({1.0f, 1.0f, 1.0f});
         std::array<float, 81> illuminant{};
         illuminant.fill(1.0f);
-        Spectral::FilmTcLut result;
+        std::optional<Spectral::FilmTcLut> result;
         std::string diagnostic;
         EXPECT_FALSE(Spectral::build_film_tc_lut(recipe, Spectral::gHanSpectra, illuminant, result, diagnostic));
         EXPECT_NE(diagnostic.find("finite_integrated_samples"), std::string::npos) << diagnostic;
-        EXPECT_TRUE(result.rgba.empty());
+        EXPECT_FALSE(result.has_value());
         FocusedRenderStateBuildProduct product;
         EXPECT_FALSE(build_direct_render_state_product(controls(0), product, diagnostic));
         EXPECT_NE(diagnostic.find("finite_integrated_samples"), std::string::npos) << diagnostic;
@@ -386,7 +386,7 @@ namespace {
             recipe.finalSensitivity.fill({1.0f, 1.0f, 1.0f});
             std::array<float, 81> illuminant{};
             illuminant.fill(1.0f);
-            Spectral::FilmTcLut integrated;
+            std::optional<Spectral::FilmTcLut> integrated;
             std::string diagnostic;
             EXPECT_FALSE(Spectral::build_film_tc_lut(recipe, Spectral::context().arcticSpectra, illuminant, integrated, diagnostic));
             EXPECT_NE(diagnostic.find("finite_integrated_samples"), std::string::npos) << diagnostic;

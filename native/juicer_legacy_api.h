@@ -419,6 +419,47 @@ FjStatus fj_legacy_illuminant_lens_prepare(FjFloatSpan rows, FjIlluminantLens** 
 FjStatus fj_legacy_illuminant_lens_finish(FjIlluminantLens** io_lens, FjFloatSpan lens_rows, FjIlluminant* out_curve, FjIlluminantCoverage* out_coverage, FjErrorBuffer* error);
 FjStatus fj_legacy_illuminant_lens_release(FjIlluminantLens** io_lens, FjErrorBuffer* error);
 
+/* FJ_TEMP_BRIDGE: film TC preparation, sampling and allocation ownership; remove S4.E.
+ * Input/consumed spans are initialized, aligned, live immutable storage through
+ * synchronous return. Outputs, ownership/error records and nonempty error bytes
+ * are exclusive/disjoint from each other and inputs. Inactive surface/hull spans
+ * are ignored. Borrow the existing [192][192][81] source (C/M/wavelength), final
+ * [81][3] RGB sensitivity and [81] SPD. Active Hanatos surface is [3][15], and
+ * available active input hull is the native A8 center and closed [1025][2] polygon.
+ * Only method 0 Hanatos irradiance and 2 Arctic reflectance construct a TC LUT;
+ * all flags are 0/1. Missing active hull fails after integration. No source or
+ * hull borrow is retained by the completed RGB/padding [192][192][4] result.
+ * Build output must initially be all-zero empty; never overwrite a live token.
+ * Success transfers the original Vec pointer/length/capacity with no extra
+ * allocation/copy. Samples are readonly while the single owner is live. Release
+ * consumes the exact unmodified token in the same loaded Rust module/allocator,
+ * clears it, and accepts all-zero empty as a no-op. Copying a live record does
+ * not create another owner. Corrupt/stale/duplicate/foreign tokens are outside
+ * the contract. Final release may cross threads after all use ends. There is no
+ * release fault, retry/retirement policy or diagnostic allocation. The module
+ * must outlive every holder. Failed build/sample leaves no ready result.
+ * Structural failures are UnsupportedInput; computed failures PreparationFailure;
+ * failed reservation AllocationFailure; contained panic InternalFailure. Native
+ * undefined coordinate conversions are checked failures, never zero substitutes.
+ */
+typedef struct FjFilmTcLutInput {
+    FjFloatSpan spectra, sensitivity_rgb, reference_illuminant;
+    float projection_white_xyz[3];
+    float spectral_blur;
+    uint32_t method, apply_surface;
+    FjFloatSpan surface_rgb;
+    uint32_t compression_active, hull_available;
+    float hull_center_xy[2];
+    FjFloatSpan hull_xy;
+} FjFilmTcLutInput;
+typedef struct FjOwnedFilmTcLut {
+    FjFloatSpan samples; /* 147456 readonly f32 RGB/padding values, native host/CUDA staging consumer */
+    size_t capacity;     /* Actual original allocator capacity, not a recomputed count. */
+} FjOwnedFilmTcLut;
+FjStatus fj_legacy_reconstruction_tc_lut(const FjFilmTcLutInput* input, FjOwnedFilmTcLut* out, FjErrorBuffer* error);
+FjStatus fj_legacy_reconstruction_sample_tc_lut(FjFloatSpan lut, const float projected_xyz[3], float out_rgb[3], FjErrorBuffer* error);
+FjStatus fj_legacy_reconstruction_release_tc_lut(FjOwnedFilmTcLut* owned);
+
 #ifdef __cplusplus
 }
 #endif

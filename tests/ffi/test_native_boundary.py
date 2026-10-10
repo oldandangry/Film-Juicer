@@ -61,6 +61,24 @@ RETIRED_NOISE = r"\b(?:StbnNoisePayload|WangNoisePayload|StaticNoisePayloadSet|S
 
 
 class NativeBoundary(unittest.TestCase):
+    def test_retired_tc_math_definitions_stay_deleted(self):
+        processing = ROOT / "src/SpectralProcessing.cpp"
+        gamut = ROOT / "src/GamutCompression.cpp"
+        tc = r"\b(?:bool\s+(?:build_film_tc_lut|build_blurred_hanatos_spectra|build_gaussian_kernel|projected_white_to_tc)|(?:float|int|void|std::array<\s*float\s*,\s*3\s*>)\s+(?:sample_film_tc_lut|sample_mitchell_2d|sample_integrated|sample_spectrum|mitchell_weight|mitchell_coordinate|mitchell_reflect_index|gaussian_reflect_index|eval_hanatos_surface))\s*\([^;{}]*\)\s*\{"
+        remap = r"\b(?:bool\s+(?:compress_input_xy|remap_film_tc_lut_for_input_compression)|(?:float|double)\s+(?:bilinear_sample|reinhard_knee))\s*\([^;{}]*\)\s*\{"
+        self.assertEqual(forbidden_uses([processing], tc), [])
+        self.assertEqual(forbidden_uses([gamut], remap), [])
+        for body in ("bool build_film_tc_lut() {}", "float eval_hanatos_surface() {}", "int gaussian_reflect_index() {}", "void mitchell_coordinate() {}"):
+            self.assertRegex(body, tc)
+        for body in ("bool compress_input_xy() {}", "bool remap_film_tc_lut_for_input_compression() {}", "double reinhard_knee() {}", "float bilinear_sample() {}"):
+            self.assertRegex(body, remap)
+        self.assertNotRegex("bool build_film_tc_lut();", tc)
+        self.assertNotRegex("double ray_polygon_distance() {}", remap)
+        source = gamut.read_text(encoding="utf-8")
+        self.assertEqual(source.count("double ray_polygon_distance("), 1)
+        self.assertEqual(source.count("ray_polygon_distance("), 2)
+        self.assertIn("set_cie_1931_2deg_cmf(", processing.read_text(encoding="utf-8"))
+
     def test_retired_exposure_definitions_stay_deleted(self):
         paths = [path for directory in (ROOT / "src", ROOT / "native")
                  for path in directory.rglob("*") if path.is_file() and path.suffix.lower() in SOURCE_SUFFIXES]

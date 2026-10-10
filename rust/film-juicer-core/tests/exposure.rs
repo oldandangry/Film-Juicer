@@ -108,7 +108,7 @@ fn sensitivity_matches_frozen_leaves_and_actual_producer_inputs() {
 
 #[test]
 fn reference_matches_native_sampling_reflection_and_failure_priority() {
-    let mut procedural: Vec<f32> = (0..reconstruction::HANATOS_SAMPLE_COUNT)
+    let mut procedural: Vec<f32> = (0..reconstruction::SPECTRA_SAMPLE_COUNT)
         .map(|i| f32::from_bits(0x3e00_0123 + (i % 4093) as u32 * 173))
         .collect();
     let hanatos = data_io::load_spectra_lut(

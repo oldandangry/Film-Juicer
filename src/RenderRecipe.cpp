@@ -2384,9 +2384,14 @@ namespace Spektrafilm {
                     Spectral::ChromaticAdaptationWhites{
                         inputMatrices.d65WhiteXYZ.data(),
                         recipe.filmRaw.projectionWhiteXYZ.data()});
-                out = Spectral::sample_film_tc_lut(
-                    *filmTcLut,
-                    {projectedXyz[0], projectedXyz[1], projectedXyz[2]});
+                std::string samplingDiagnostic;
+                if (!Spectral::sample_film_tc_lut(
+                        *filmTcLut,
+                        {projectedXyz[0], projectedXyz[1], projectedXyz[2]},
+                        out,
+                        samplingDiagnostic)) {
+                    return false;
+                }
             } else {
                 return false;
             }

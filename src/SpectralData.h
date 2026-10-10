@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "Logging.h"
+#include "RustReconstructionBridge.h"
 
 namespace Spectral {
 
@@ -43,14 +44,6 @@ namespace Spectral {
                 wavelengths[static_cast<size_t>(i)] = lambdaMin + delta * static_cast<float>(i);
             }
         }
-    };
-
-    struct FilmTcLut {
-        static constexpr int kSize = 192;
-        static constexpr int kChannels = 4;
-
-        // Fixed C-order [192][192][4]; RGB are followed by one padding channel.
-        std::vector<float> rgba;
     };
 
     // FJ_TEMP_BRIDGE: independent spectral source storage; remove S4.E.

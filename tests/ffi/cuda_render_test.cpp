@@ -647,7 +647,7 @@ namespace JuicerCudaTest {
             if (!supplied)
                 require(cudaStreamQuery(nullptr) == cudaSuccess, "absent stream abort completion");
         }
-        {
+        for (bool rustTc : {false, true}) {
             const JuicerCuda::ResourceManager::DeviceContextKey uploadKey{context.device_id, reinterpret_cast<void*>(context.context)};
             JuicerCuda::RenderTest::ExpiringUpload upload;
             upload.resources = JuicerProcess::TestSupport::RootLifetimeObserver::resources(JuicerProcess::root(), uploadKey);
@@ -662,14 +662,32 @@ namespace JuicerCudaTest {
             // representation into actual contiguous C scalars without indexing it.
             std::vector<float> borrowed(original.count);
             std::memcpy(borrowed.data(), original.data, original.count * sizeof(float));
-            const auto expected = borrowed;
-            upload.source = {borrowed.data(), borrowed.size()};
+            struct TcOwner {
+                FjOwnedFilmTcLut record{};
+                ~TcOwner() noexcept {
+                    (void)fj_test_reconstruction_release_tc_lut(&record);
+                }
+            } tcOwner;
+            if (rustTc) {
+                std::vector<float> spectra(std::size_t{192} * 192u * 81u, 1.0f);
+                std::array<float, 243> sensitivity{};
+                sensitivity.fill(1.0f);
+                std::array<float, 81> spd{};
+                spd.fill(1.0f);
+                const FjFilmTcLutInput input{{spectra.data(), spectra.size()}, {sensitivity.data(), sensitivity.size()}, {spd.data(), spd.size()}, {1, 1, 1}, 0, 2, 0, {nullptr, 0}, 0, 0, {0, 0}, {nullptr, 0}};
+                require(fj_test_reconstruction_tc_lut(&input, &tcOwner.record, error).category == FJ_STATUS_SUCCESS, "real Rust TC allocation for native staging expiry");
+                upload.source = tcOwner.record.samples;
+            } else
+                upload.source = {borrowed.data(), borrowed.size()};
+            const float* sourceAddress = upload.source.data;
+            const std::vector<float> expected(upload.source.data, upload.source.data + upload.source.count);
             JuicerCuda::Failure warmFailure;
-            require(JuicerCuda::PinnedUploadTest::upload(*upload.resources, upload.second, borrowed.data(), borrowed.size() * sizeof(float), upload.stream, warmFailure), "warm native expiry staging");
+            require(JuicerCuda::PinnedUploadTest::upload(*upload.resources, upload.second, upload.source.data, upload.source.count * sizeof(float), upload.stream, warmFailure), "warm native expiry staging");
             require(cudaStreamSynchronize(upload.stream) == cudaSuccess, "complete expiry warmup before measured call");
             JuicerCuda::PinnedUploadTest::poll(uploadKey);
             auto expired = prepared;
-            expired.film_development.density_rgb = upload.source;
+            if (!rustTc)
+                expired.film_development.density_rgb = upload.source;
             JuicerCuda::RenderTest::expiringUpload = &upload;
             const auto outcome = fj_cuda_render(cuda, &context, &frame, &submission, &expired, {}, error);
             JuicerCuda::RenderTest::expiringUpload = nullptr;
@@ -680,14 +698,18 @@ namespace JuicerCudaTest {
                 if (block.capacity >= expected.size() * sizeof(float) &&
                     cudaEventQuery(static_cast<cudaEvent_t>(block.event)) == cudaErrorNotReady &&
                     std::memcmp(block.pointer, expected.data(), expected.size() * sizeof(float)) == 0) {
-                    require(block.pointer != borrowed.data(), "native staging does not borrow the caller allocation");
+                    require(block.pointer != sourceAddress, "native staging does not borrow the caller allocation");
                     event = static_cast<cudaEvent_t>(block.event);
                     break;
                 }
             }
             require(event != nullptr, "actual native staging event is pending");
-            std::fill(borrowed.begin(), borrowed.end(), -8192.0f);
-            std::vector<float>().swap(borrowed);
+            if (rustTc) {
+                require(fj_test_reconstruction_release_tc_lut(&tcOwner.record).category == FJ_STATUS_SUCCESS && !tcOwner.record.samples.data && tcOwner.record.capacity == 0, "Rust TC allocation released before native upload completes");
+            } else {
+                std::fill(borrowed.begin(), borrowed.end(), -8192.0f);
+                std::vector<float>().swap(borrowed);
+            }
             expired = {};
             upload.source = {};
             require(cudaEventQuery(event) == cudaErrorNotReady, "caller storage expires before upload completion");
@@ -695,7 +717,7 @@ namespace JuicerCudaTest {
             std::vector<float> actual(expected.size());
             require(cudaMemcpy(actual.data(), upload.second, actual.size() * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess, "read native staged values");
             require(std::memcmp(actual.data(), expected.data(), expected.size() * sizeof(float)) == 0, "native staging retained exact borrowed values");
-            std::cout << "caller prepared storage expired after C return with native upload event outstanding\n";
+            std::cout << (rustTc ? "Rust TC allocation" : "caller prepared storage") << " expired after C return with native upload event outstanding\n";
         }
         const JuicerCuda::ResourceManager::DeviceContextKey key{context.device_id, reinterpret_cast<void*>(context.context)};
         JuicerCuda::ResourceManager::RegistryContextSnapshot oldEpoch;

@@ -656,6 +656,73 @@ const _: unsafe extern "C" fn(*const f32, *mut f32) -> FjStatus = fj_legacy_dwg_
 const _: unsafe extern "C" fn(*const f32, *const f32, *const f32, *mut f32) -> FjStatus =
     fj_legacy_project_linear_rgb_to_xyz;
 
+// FJ_TEMP_BRIDGE: native TC preparation and allocation ownership; remove S4.E.
+/// # Safety
+/// Input/consumed spans remain live and immutable through return; output is
+/// an exclusive empty ownership record, disjoint from input/error storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_reconstruction_tc_lut(
+    input: *const crate::reconstruction_bridge::FjFilmTcLutInput,
+    out: *mut crate::reconstruction_bridge::FjOwnedFilmTcLut,
+    error: *mut crate::cuda::sys::FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The foreign caller supplies the documented synchronous storage.
+    unsafe {
+        crate::reconstruction_bridge::build_call(input, out, error, || {
+            crate::reconstruction_bridge::fault(1)
+        })
+    }
+}
+/// # Safety
+/// LUT/XYZ are complete immutable live extents; RGB/error are exclusive and
+/// disjoint until return. No view or result borrow is retained.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_reconstruction_sample_tc_lut(
+    lut: crate::cuda::sys::FjFloatSpan,
+    xyz: *const f32,
+    out: *mut f32,
+    error: *mut crate::cuda::sys::FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The foreign caller supplies the documented three-float extents.
+    unsafe {
+        crate::reconstruction_bridge::sample_call(lut, xyz, out, error, || {
+            crate::reconstruction_bridge::fault(2)
+        })
+    }
+}
+/// # Safety
+/// Own the exact one unmodified token returned by this module, or all-zero
+/// empty, with all borrows ended and exclusive access to the aligned record.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_reconstruction_release_tc_lut(
+    owned: *mut crate::reconstruction_bridge::FjOwnedFilmTcLut,
+) -> FjStatus {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: Caller consumes its sole exact Vec allocation/layout once.
+        unsafe { crate::reconstruction_bridge::release_call(owned) }
+    })) {
+        Ok(status) => status,
+        Err(_) => FjStatus {
+            category: FJ_STATUS_INTERNAL_FAILURE,
+            api: FJ_API_NONE,
+            native_code: 0,
+        },
+    }
+}
+const _: unsafe extern "C" fn(
+    *const crate::reconstruction_bridge::FjFilmTcLutInput,
+    *mut crate::reconstruction_bridge::FjOwnedFilmTcLut,
+    *mut crate::cuda::sys::FjErrorBuffer,
+) -> FjStatus = fj_legacy_reconstruction_tc_lut;
+const _: unsafe extern "C" fn(
+    crate::cuda::sys::FjFloatSpan,
+    *const f32,
+    *mut f32,
+    *mut crate::cuda::sys::FjErrorBuffer,
+) -> FjStatus = fj_legacy_reconstruction_sample_tc_lut;
+const _: unsafe extern "C" fn(*mut crate::reconstruction_bridge::FjOwnedFilmTcLut) -> FjStatus =
+    fj_legacy_reconstruction_release_tc_lut;
+
 #[cfg(test)]
 mod tests {
     use super::*;

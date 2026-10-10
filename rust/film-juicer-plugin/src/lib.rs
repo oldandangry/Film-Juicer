@@ -50,3 +50,9 @@ mod spectral_bridge;
     reason = "the exposure edge checks fixed foreign spans and scopes immutable tensor borrows"
 )]
 mod exposure_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "the TC edge validates spans and transfers/releases an exact Vec allocation"
+)]
+mod reconstruction_bridge;

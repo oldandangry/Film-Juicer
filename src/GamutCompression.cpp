@@ -22,9 +22,6 @@ namespace Gamut {
         constexpr double kVertexTolerance = 1e-9;
         constexpr double kMinimumRadius = 1e-12;
         constexpr double kHullDetail = 5.0;
-        constexpr double kKneeThreshold = 0.815;
-        constexpr double kKneeLimit = 1.0;
-        constexpr double kKneePower = 1.2;
         constexpr std::uint32_t kInputCompressionVersion = 1u;
         constexpr std::uint32_t kOutputTransformVersion = 1u;
         constexpr std::uint32_t kOutputBoundaryVersion = 1u;
@@ -224,6 +221,7 @@ namespace Gamut {
                 matrix[6] * value[0] + matrix[7] * value[1] + matrix[8] * value[2]};
         }
 
+        // A8 hull construction retains this native ray helper; consolidate/remove at A8, no later S4.E.
         double ray_polygon_distance(
             const Ray& ray,
             const auto& polygon) {
@@ -354,49 +352,6 @@ namespace Gamut {
                 out[static_cast<std::size_t>(sample)] =
                     value.real() / static_cast<double>(kInputHullDirectionCount);
             }
-        }
-
-        double reinhard_knee(double distance) {
-            if (!(distance > kKneeThreshold)) {
-                return distance;
-            }
-            const double scale = kKneeLimit - kKneeThreshold;
-            const double normalized = (distance - kKneeThreshold) / scale;
-            const double compressed =
-                normalized /
-                std::pow(1.0 + std::pow(normalized, kKneePower),
-                         1.0 / kKneePower);
-            return kKneeThreshold + scale * compressed;
-        }
-
-        float bilinear_sample(
-            const Spectral::FilmTcLut& source,
-            const std::array<float, 2>& tc,
-            int channel) {
-            constexpr int size = Spectral::FilmTcLut::kSize;
-            const float cPosition =
-                std::clamp(tc[0], 0.0f, 1.0f) * static_cast<float>(size - 1);
-            const float mPosition =
-                std::clamp(tc[1], 0.0f, 1.0f) * static_cast<float>(size - 1);
-            const int c0 = static_cast<int>(std::floor(cPosition));
-            const int m0 = static_cast<int>(std::floor(mPosition));
-            const int c1 = std::min(c0 + 1, size - 1);
-            const int m1 = std::min(m0 + 1, size - 1);
-            const float cFraction = cPosition - static_cast<float>(c0);
-            const float mFraction = mPosition - static_cast<float>(m0);
-            const auto value = [&](int c, int m) {
-                const std::size_t offset =
-                    (static_cast<std::size_t>(c) * static_cast<std::size_t>(size) +
-                     static_cast<std::size_t>(m)) *
-                        Spectral::FilmTcLut::kChannels +
-                    static_cast<std::size_t>(channel);
-                return source.rgba[offset];
-            };
-            const float row0 =
-                value(c0, m0) + cFraction * (value(c1, m0) - value(c0, m0));
-            const float row1 =
-                value(c0, m1) + cFraction * (value(c1, m1) - value(c0, m1));
-            return row0 + mFraction * (row1 - row0);
         }
 
     } // namespace
@@ -757,99 +712,6 @@ namespace Gamut {
                 "MalformedRequiredResource component=input_gamut_hull requirement=stable_identity";
         }
         return out.valid;
-    }
-
-    bool compress_input_xy(
-        const InputCompressionHull& hull,
-        const std::array<float, 2>& xy,
-        std::array<float, 2>& out) {
-        out = {};
-        if (!hull.valid || hull.hash == 0 ||
-            !std::isfinite(xy[0]) || !std::isfinite(xy[1])) {
-            return false;
-        }
-        const Point center{
-            static_cast<double>(hull.center[0]),
-            static_cast<double>(hull.center[1])};
-        const double deltaX = static_cast<double>(xy[0]) - center[0];
-        const double deltaY = static_cast<double>(xy[1]) - center[1];
-        const double distance = std::hypot(deltaX, deltaY);
-        if (distance < kVertexTolerance) {
-            out = xy;
-            return true;
-        }
-        const Point direction{deltaX / distance, deltaY / distance};
-        const double boundary =
-            ray_polygon_distance(Ray{center, direction}, hull.xy);
-        if (!(std::isfinite(boundary) && boundary > kMinimumRadius)) {
-            return false;
-        }
-        const double compressedDistance =
-            reinhard_knee(distance / boundary) * boundary;
-        const double resultX = center[0] + direction[0] * compressedDistance;
-        const double resultY = center[1] + direction[1] * compressedDistance;
-        if (!(std::isfinite(resultX) && std::isfinite(resultY))) {
-            return false;
-        }
-        out = {static_cast<float>(resultX), static_cast<float>(resultY)};
-        return true;
-    }
-
-    bool remap_film_tc_lut_for_input_compression(
-        const InputCompressionHull& hull,
-        const Spectral::FilmTcLut& source,
-        Spectral::FilmTcLut& out,
-        std::string& diagnostic) {
-        diagnostic.clear();
-        constexpr int size = Spectral::FilmTcLut::kSize;
-        constexpr std::size_t expected =
-            static_cast<std::size_t>(size) * static_cast<std::size_t>(size) *
-            Spectral::FilmTcLut::kChannels;
-        if (!hull.valid || hull.hash == 0 || source.rgba.size() != expected) {
-            diagnostic =
-                "MalformedRequiredResource component=input_gamut_remap requirement=valid_hull_and_192x192x4_tc_lut";
-            return false;
-        }
-        Spectral::FilmTcLut remapped;
-        remapped.rgba.resize(expected);
-        for (int c = 0; c < size; ++c) {
-            const float tcC = static_cast<float>(c) / static_cast<float>(size - 1);
-            const float root = std::sqrt(tcC);
-            for (int m = 0; m < size; ++m) {
-                const float tcM = static_cast<float>(m) / static_cast<float>(size - 1);
-                const std::array<float, 2> xy{1.0f - root, tcM * root};
-                std::array<float, 2> compressed{};
-                if (!compress_input_xy(hull, xy, compressed)) {
-                    diagnostic =
-                        "MalformedRequiredResource component=input_gamut_remap requirement=finite_compressed_coordinates";
-                    return false;
-                }
-                float sampleC = 0.0f;
-                float sampleM = 0.0f;
-                Spectral::tri2quad(
-                    compressed[0],
-                    compressed[1],
-                    sampleC,
-                    sampleM);
-                const std::size_t base =
-                    (static_cast<std::size_t>(c) * static_cast<std::size_t>(size) +
-                     static_cast<std::size_t>(m)) *
-                    Spectral::FilmTcLut::kChannels;
-                for (int channel = 0; channel < 3; ++channel) {
-                    const float value =
-                        bilinear_sample(source, {sampleC, sampleM}, channel);
-                    if (!std::isfinite(value)) {
-                        diagnostic =
-                            "MalformedRequiredResource component=input_gamut_remap requirement=finite_remapped_tc_lut";
-                        return false;
-                    }
-                    remapped.rgba[base + static_cast<std::size_t>(channel)] = value;
-                }
-                remapped.rgba[base + 3u] = 0.0f;
-            }
-        }
-        out = std::move(remapped);
-        return true;
     }
 
 } // namespace Gamut

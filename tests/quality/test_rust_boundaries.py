@@ -267,6 +267,25 @@ class RustBoundaryTests(unittest.TestCase):
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assertEqual(status, 0, diagnostics)
 
+    def test_complete_tc_lut_privacy_and_borrowing(self) -> None:
+        for fixture, expected in (
+            ("tc_default", {"E0599": ("FilmTcLut::default()",)}),
+            ("tc_private", {"E0451": ("FilmTcLut { ..lut }",)}),
+            ("tc_readonly", {"E0594": ("lut.samples()[0]",)}),
+            ("tc_borrow", {"E0515": ("lut.samples()",), "E0505": ("drop(lut)",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    status, diagnostics = self.check("film-juicer-plugin", release)
+                    self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+        self.attach("film-juicer-plugin/src/lib.rs", "tc_complete")
+        for release in self.profiles:
+            status, diagnostics = self.check("film-juicer-plugin", release)
+            self.assertEqual(status, 0, diagnostics)
+
 
 if __name__ == "__main__":
     unittest.main()

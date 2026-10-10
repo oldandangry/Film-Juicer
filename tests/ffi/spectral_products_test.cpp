@@ -235,7 +235,7 @@ namespace {
         const auto& p = result.printState ? result.printState->payload : result.directState->payload;
         out["exposure_tables"] = tables_result(p.exposureTables);
         if (p.filmTcLut)
-            out["tc_rgba"] = bits(p.filmTcLut->rgba);
+            out["tc_rgba"] = bits(p.filmTcLut->samples());
         if (p.printMainIlluminant)
             out["print_light"] = bits(*p.printMainIlluminant);
         if (p.outputBoundaryTable)
@@ -582,4 +582,106 @@ void fj_test_exposure_admission(const std::filesystem::path& resource, const std
     JuicerProcess::root().ensure_bootstrap();
     exposure_admission();
     require(owner.close().category == FJ_STATUS_SUCCESS, "A5 admission owner close");
+}
+
+void fj_test_tc_lut_products(const nlohmann::json& fixture) {
+    for (const auto& row : fixture["products"]) {
+        const int polarity = row["polarity"], route = row["route"], method = row["method"], variant = row["variant"];
+        auto p = snapshot(static_cast<Spektrafilm::ScanRoute>(polarity * 2 + route), static_cast<Spektrafilm::RgbToRawMethod>(method));
+        p.hanatos2025AdaptationSurface = variant == 1;
+        p.hanatos2025AdaptationWindow = variant == 1;
+        p.inputCompressionEnabled = variant == 2;
+        p.printPreflashExposure = route ? .1 : 0;
+        p.preflashMFilterCc = 12.5;
+        p.preflashYFilterCc = 7.25;
+        FocusedRenderStateBuildProduct product;
+        std::string diagnostic;
+        const bool built = route ? build_print_render_state_product(p, product, diagnostic) : build_direct_render_state_product(p, product, diagnostic);
+        require(built == row["built"].get<bool>() && diagnostic == row["diagnostic"].get<std::string>(), "TC actual product status");
+        if (!built)
+            continue;
+        const auto actual = complete_result(product);
+        for (const auto& [name, value] : actual.items())
+            require(value == row["expected"][name], "TC complete native product field: " + name);
+        require(bool(product.payload.filmTcLut) == (method != 1), "Mallett no-TC owner");
+        if (product.payload.filmTcLut) {
+            std::uint64_t hash = Hash::kFnvOffset;
+            const auto samples = product.payload.filmTcLut->samples();
+            Hash::hash_bytes_update(hash, samples.data(), samples.size_bytes());
+            require(hash == row["expected"]["tc_table"]["native_byte_digest_fnv1a64"], "actual TC product complete table");
+        }
+        if (variant == 0) {
+            const auto key = product.recipe.filmRaw.tcLutHash;
+            auto changed = p;
+            changed.outputCctfEncoding = changed.outputCctfEncoding ? 0 : 1;
+            FocusedRenderStateBuildProduct outputOnly;
+            require(route ? build_print_render_state_product(changed, outputOnly, diagnostic) : build_direct_render_state_product(changed, outputOnly, diagnostic), "output-only product");
+            require(outputOnly.recipe.filmRaw.tcLutHash == key && outputOnly.payload.uploadCoreHash != product.payload.uploadCoreHash, "CCTF-only keeps TC identity and changes the enclosing upload identity");
+            changed = p;
+            changed.cameraExposureCompensationEv += .25;
+            FocusedRenderStateBuildProduct exposureOnly;
+            require(route ? build_print_render_state_product(changed, exposureOnly, diagnostic) : build_direct_render_state_product(changed, exposureOnly, diagnostic), "exposure-only product");
+            require(exposureOnly.recipe.filmRaw.tcLutHash == key && exposureOnly.recipe.hash != product.recipe.hash, "manual exposure excludes TC but invalidates enclosing recipe");
+        }
+    }
+}
+void fj_test_tc_lut_admission() {
+    std::size_t count = 0;
+    for (int route = 0; route < 4; ++route)
+        for (int method : {0, 2}) {
+            auto p = snapshot(static_cast<Spektrafilm::ScanRoute>(route), static_cast<Spektrafilm::RgbToRawMethod>(method));
+            for (std::uint32_t operation = 1; operation <= 2; ++operation)
+                for (std::uint32_t index = 1; index <= (operation == 1 ? 1u : 3u); ++index)
+                    for (std::uint32_t fault = 1; fault <= 4; ++fault) {
+                        for (bool current : {false, true}) {
+                            InstanceState state;
+                            std::optional<PendingRenderAdmissionResult> old;
+                            if (current) {
+                                pending(state, p);
+                                old = admit_pending_render_state(state);
+                                require(admitted(*old), "TC current admitted");
+                            }
+                            const auto hash = state.lastHash.load(), counter = state.buildCounterNext.load();
+                            auto changed = p;
+                            changed.cameraExposureCompensationEv += .25;
+                            pending(state, changed);
+                            require(fj_test_tc_lut_arm_fault(operation, index, fault).category == FJ_STATUS_SUCCESS, "arm real TC caller");
+                            bool memory = false;
+                            try {
+                                const auto result = admit_pending_render_state(state);
+                                require(result.status == PendingRenderAdmissionStatus::RebuildFailed && !result.directState && !result.printState, "TC failed current never admits older state");
+                            } catch (const std::bad_alloc&) {
+                                memory = true;
+                            }
+                            require(fj_test_tc_lut_fault_consumed(operation, fault) == 1, "actual raw consumption before cleanup/recovery");
+                            require(memory == (fault == 3), "allocation reaches native bad_alloc terminal");
+                            require(state.lastHash.load() == hash && state.buildCounterNext.load() == counter, "TC failure preserves identities/counters");
+                            if (fault == 4)
+                                require(!JuicerAtomic::load_shared_ptr(&state.activeDirectState) && !JuicerAtomic::load_shared_ptr(&state.activePrintState), "ordinary TC false clears selected publication");
+                            else if (current)
+                                require(JuicerAtomic::load_shared_ptr(&state.activeDirectState) == old->directState && JuicerAtomic::load_shared_ptr(&state.activePrintState) == old->printState, "exceptional TC failure preserves publication");
+                            if (current) {
+                                const auto& payload = old->printState ? old->printState->payload : old->directState->payload;
+                                std::array<float, 3> rgb{};
+                                std::string diagnostic;
+                                require(Spectral::sample_film_tc_lut(*payload.filmTcLut, {1, 0, 0}, rgb, diagnostic), "admitted immutable hold survives failure");
+                            }
+                            fj_test_tc_lut_clear_fault();
+                            const auto recovered = admit_pending_render_state(state);
+                            require(admitted(recovered) && state.lastHash.load() == hash_params(changed) && state.buildCounterNext.load() == counter + 1, "TC recovery publishes once");
+                            ++count;
+                        }
+                    }
+            auto mallett = p;
+            mallett.spectralUpsamplingMode = 1;
+            for (std::uint32_t operation = 1; operation <= 2; ++operation) {
+                require(fj_test_tc_lut_arm_fault(operation, 1, 1).category == FJ_STATUS_SUCCESS, "arm skipped TC");
+                FocusedRenderStateBuildProduct product;
+                std::string diagnostic;
+                require(route % 2 ? build_print_render_state_product(mallett, product, diagnostic) : build_direct_render_state_product(mallett, product, diagnostic), "Mallett build");
+                require(fj_test_tc_lut_fault_consumed(operation, 1) == 0, "Mallett skipped call cannot consume TC fault");
+                fj_test_tc_lut_clear_fault();
+            }
+        }
+    std::printf("PASS %zu TC actual-caller cold/current/failure/retention/recovery witnesses\n", count);
 }

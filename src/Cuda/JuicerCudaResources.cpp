@@ -3550,7 +3550,7 @@ namespace JuicerCuda {
         input.exposureIlluminant = request.exposureTables->illum;
         input.exposureSampleCount = request.exposureTables->K;
         if (request.filmTcLut) {
-            input.filmTcLut = request.filmTcLut->rgba;
+            input.filmTcLut = request.filmTcLut->samples();
         }
         const Spectral::SpectralContext& context = Spectral::context();
         input.mallettBasis = context.mallettBasis.data;

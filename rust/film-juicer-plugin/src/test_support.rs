@@ -1347,3 +1347,105 @@ unsafe extern "C" fn fj_test_spectral_s_inverse(
     // SAFETY: The facade calls core with checked local borrows through shared projection.
     unsafe { crate::spectral_bridge::inverse_call(input, out, error, spectral_facade_fault) }
 }
+
+thread_local! {
+    static TC_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TC_FACADE_CONSUMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_tc_lut_arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
+    crate::reconstruction_bridge::arm_fault(operation, index, fault)
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_tc_lut_clear_fault() {
+    crate::reconstruction_bridge::clear_fault();
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_tc_lut_fault_consumed(operation: u32, fault: u32) -> u32 {
+    u32::from(crate::reconstruction_bridge::take_consumed() == Some((operation, fault)))
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_tc_lut_arm_facade_fault() {
+    TC_FACADE_FAULT.set(true);
+    TC_FACADE_CONSUMED.set(false);
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_tc_lut_facade_fault_consumed() -> u32 {
+    u32::from(TC_FACADE_CONSUMED.replace(false))
+}
+fn tc_facade_fault() -> Result<(), crate::asset_bridge::Failure> {
+    if TC_FACADE_FAULT.replace(false) {
+        TC_FACADE_CONSUMED.set(true);
+        Err(crate::asset_bridge::Failure::Internal(
+            "TC fixture-only fault",
+        ))
+    } else {
+        Ok(())
+    }
+}
+/// # Safety
+/// Live immutable input spans and exclusive empty output/error obey the TC header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_reconstruction_tc_lut(
+    input: *const crate::reconstruction_bridge::FjFilmTcLutInput,
+    out: *mut crate::reconstruction_bridge::FjOwnedFilmTcLut,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Shared checked edge invokes the core directly, never a legacy export.
+    unsafe { crate::reconstruction_bridge::build_call(input, out, error, tc_facade_fault) }
+}
+/// # Safety
+/// Initialized LUT/XYZ and exclusive RGB/error obey the synchronous TC contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_reconstruction_sample_tc_lut(
+    lut: FjFloatSpan,
+    xyz: *const f32,
+    out: *mut f32,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Shared extent checks scope the direct-core borrows and outputs.
+    unsafe { crate::reconstruction_bridge::sample_call(lut, xyz, out, error, tc_facade_fault) }
+}
+/// # Safety
+/// Consume the sole unmodified module allocation record with all views ended,
+/// or a fully zero empty record. No duplicate/stale/corrupt token is admissible.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_reconstruction_release_tc_lut(
+    owned: *mut crate::reconstruction_bridge::FjOwnedFilmTcLut,
+) -> FjStatus {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: Caller returns its exact live Vec allocation/layout once.
+        unsafe { crate::reconstruction_bridge::release_call(owned) }
+    })) {
+        Ok(status) => status,
+        Err(_) => FjStatus {
+            category: crate::cuda::sys::FJ_STATUS_INTERNAL_FAILURE,
+            api: crate::cuda::sys::FJ_API_NONE,
+            native_code: 0,
+        },
+    }
+}
+
+/// # Safety
+/// Output authorizes two aligned exclusive usize values, disjoint from all live call storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_tc_lut_allocation_counts(out: *mut usize) -> FjStatus {
+    if out.is_null()
+        || !(out as usize).is_multiple_of(align_of::<usize>())
+        || (out as usize).checked_add(2 * size_of::<usize>()).is_none()
+    {
+        return FjStatus {
+            category: crate::cuda::sys::FJ_STATUS_UNSUPPORTED_INPUT,
+            api: crate::cuda::sys::FJ_API_NONE,
+            native_code: 0,
+        };
+    }
+    let counts = crate::reconstruction_bridge::allocation_counts();
+    // SAFETY: Caller authorizes the full exclusive two-element initialized extent.
+    unsafe { out.cast::<[usize; 2]>().write(counts) };
+    FjStatus {
+        category: crate::cuda::sys::FJ_STATUS_SUCCESS,
+        api: crate::cuda::sys::FJ_API_NONE,
+        native_code: 0,
+    }
+}

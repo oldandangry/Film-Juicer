@@ -133,7 +133,7 @@ namespace {
                 referenceIlluminant.curve.linear.begin(),
                 referenceIlluminant.curve.linear.end(),
                 referenceSamples.begin());
-            Spectral::FilmTcLut integrated;
+            std::optional<Spectral::FilmTcLut> integrated;
             if (!Spectral::build_film_tc_lut(
                     recipe.filmRaw,
                     *spectra,
@@ -149,10 +149,14 @@ namespace {
                 {inputMidgray[0], inputMidgray[1], inputMidgray[2]},
                 payload.filmRawConfig.inputRGBToXYZ,
                 payload.filmRawConfig.inputXYZAdapt);
-            const std::array<float, 3> raw =
-                Spectral::sample_film_tc_lut(
+            std::array<float, 3> raw{};
+            if (!Spectral::sample_film_tc_lut(
                     *payload.filmTcLut,
-                    {projected[0], projected[1], projected[2]});
+                    {projected[0], projected[1], projected[2]},
+                    raw,
+                    diagnostic)) {
+                return false;
+            }
             std::copy(raw.begin(), raw.end(), payload.filmRawConfig.rawMidgray);
             const float safeGreen =
                 Spectral::sanitize_raw_midgray_green_or_one(raw[1]);
@@ -1347,6 +1351,8 @@ namespace {
         }
 
         JTRACE_SCOPE("BUILD", "rebuild_direct_render_state");
+        std::shared_ptr<const DirectRenderState> outgoingDirect;
+        std::shared_ptr<const PrintRenderState> outgoingPrint;
         std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
         if (S.lastHash.load(std::memory_order_acquire) == fullHash) {
             const std::shared_ptr<const DirectRenderState> active =
@@ -1362,6 +1368,7 @@ namespace {
                 *outDiagnostic = diagnostic;
             }
             std::lock_guard<std::mutex> stateLock(S.m);
+            outgoingDirect = JuicerAtomic::load_shared_ptr(&S.activeDirectState);
             JuicerAtomic::store_shared_ptr(
                 &S.activeDirectState,
                 std::shared_ptr<const DirectRenderState>{});
@@ -1375,9 +1382,11 @@ namespace {
         next->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
         {
             std::lock_guard<std::mutex> stateLock(S.m);
+            outgoingDirect = JuicerAtomic::load_shared_ptr(&S.activeDirectState);
             JuicerAtomic::store_shared_ptr(
                 &S.activeDirectState,
                 std::shared_ptr<const DirectRenderState>(next));
+            outgoingPrint = JuicerAtomic::load_shared_ptr(&S.activePrintState);
             JuicerAtomic::store_shared_ptr(
                 &S.activePrintState,
                 std::shared_ptr<const PrintRenderState>{});
@@ -1402,6 +1411,8 @@ namespace {
         }
 
         JTRACE_SCOPE("BUILD", "rebuild_print_render_state");
+        std::shared_ptr<const DirectRenderState> outgoingDirect;
+        std::shared_ptr<const PrintRenderState> outgoingPrint;
         std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
         if (S.lastHash.load(std::memory_order_acquire) == fullHash) {
             const std::shared_ptr<const PrintRenderState> active =
@@ -1417,6 +1428,7 @@ namespace {
                 *outDiagnostic = diagnostic;
             }
             std::lock_guard<std::mutex> stateLock(S.m);
+            outgoingPrint = JuicerAtomic::load_shared_ptr(&S.activePrintState);
             JuicerAtomic::store_shared_ptr(
                 &S.activePrintState,
                 std::shared_ptr<const PrintRenderState>{});
@@ -1430,9 +1442,11 @@ namespace {
         next->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
         {
             std::lock_guard<std::mutex> stateLock(S.m);
+            outgoingDirect = JuicerAtomic::load_shared_ptr(&S.activeDirectState);
             JuicerAtomic::store_shared_ptr(
                 &S.activeDirectState,
                 std::shared_ptr<const DirectRenderState>{});
+            outgoingPrint = JuicerAtomic::load_shared_ptr(&S.activePrintState);
             JuicerAtomic::store_shared_ptr(
                 &S.activePrintState,
                 std::shared_ptr<const PrintRenderState>(next));

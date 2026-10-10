@@ -189,6 +189,19 @@ void fj_test_noise_fault(uint32_t fault);
 size_t fj_test_noise_acquisition_count(void);
 size_t fj_test_live_noise_owners(void);
 
+/* Direct-core TC facade: same live-span and one-allocation ownership contract
+ * as juicer_legacy_api.h; no legacy export is called. Separate facade fault
+ * observes actual direct-core entry. Release has no injected work/failure policy. */
+FjStatus fj_test_reconstruction_tc_lut(const FjFilmTcLutInput*, FjOwnedFilmTcLut*, FjErrorBuffer*);
+FjStatus fj_test_reconstruction_sample_tc_lut(FjFloatSpan, const float[3], float[3], FjErrorBuffer*);
+FjStatus fj_test_reconstruction_release_tc_lut(FjOwnedFilmTcLut*);
+FjStatus fj_test_tc_lut_arm_fault(uint32_t operation, uint32_t index, uint32_t fault);
+void fj_test_tc_lut_clear_fault(void);
+uint32_t fj_test_tc_lut_fault_consumed(uint32_t operation, uint32_t fault);
+FjStatus fj_test_tc_lut_allocation_counts(size_t out_counts[2]);
+void fj_test_tc_lut_arm_facade_fault(void);
+uint32_t fj_test_tc_lut_facade_fault_consumed(void);
+
 #ifdef __cplusplus
 }
 #endif

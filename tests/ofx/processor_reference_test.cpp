@@ -769,7 +769,16 @@ namespace {
                     if (!published || earlier == JuicerAssets::NoiseTest::EarlierFailure::None || earlier == JuicerAssets::NoiseTest::EarlierFailure::Missing) {
                         return;
                     }
-                    auto copy = std::make_shared<std::remove_const_t<typename std::remove_reference_t<decltype(published)>::element_type>>(*published);
+                    FocusedRenderStateBuildProduct product;
+                    std::string diagnostic;
+                    const bool print = Spektrafilm::scan_route_is_print(parameters.scanRoute);
+                    if (!(print ? build_print_render_state_product(parameters, product, diagnostic) : build_direct_render_state_product(parameters, product, diagnostic))) {
+                        throw std::runtime_error("failure fixture preparation: " + diagnostic);
+                    }
+                    auto copy = std::make_shared<std::remove_const_t<typename std::remove_reference_t<decltype(published)>::element_type>>();
+                    copy->recipe = std::move(product.recipe);
+                    copy->payload = std::move(product.payload);
+                    copy->buildCounter = published->buildCounter;
                     if (earlier == JuicerAssets::NoiseTest::EarlierFailure::Preflight) {
                         copy->recipe.spatialOptics.cameraLensBlur.sigmaUm = 1;
                         copy->recipe.spatialOptics.cameraLensBlur.hash = 1;

@@ -912,7 +912,7 @@ namespace {
         out.complete = Cat02Fixtures::complete_result(state);
         out.exposureTables = Cat02Fixtures::tables_result(state.payload.exposureTables);
         if (state.payload.filmTcLut) {
-            out.tcRgba = retained_bits(state.payload.filmTcLut->rgba);
+            out.tcRgba = retained_bits(state.payload.filmTcLut->samples());
         }
         if (state.payload.printMainIlluminant) {
             out.printIlluminant = retained_bits(*state.payload.printMainIlluminant);
@@ -1396,11 +1396,11 @@ namespace {
                 result["sensitivity"].push_back(bits(sample));
             }
             result["tc_source_hash"] = raw.tcSourceAssetHash;
-            result["tc_lut_size"] = product.payload.filmTcLut ? product.payload.filmTcLut->rgba.size() : 0;
+            result["tc_lut_size"] = product.payload.filmTcLut ? product.payload.filmTcLut->samples().size() : 0;
             if (product.payload.filmTcLut) {
-                const auto& data = product.payload.filmTcLut->rgba;
+                const auto& data = product.payload.filmTcLut->samples();
                 for (std::size_t index : std::array<std::size_t, 5>{0, 768, 73728, 100000, 147452}) {
-                    result["tc_samples"].push_back({{"index", index}, {"rgba", bits(std::array{data.at(index), data.at(index + 1), data.at(index + 2), data.at(index + 3)})}});
+                    result["tc_samples"].push_back({{"index", index}, {"rgba", bits(std::array{data[index], data[index + 1], data[index + 2], data[index + 3]})}});
                 }
             }
             return result;
@@ -1783,14 +1783,17 @@ namespace {
         require(JuicerCuda::query_current_cuda_context(context, contextError), contextError);
         const JuicerCuda::ResourceManager::DeviceContextKey key{0, context};
         std::uint64_t sequence = 1;
-        for (int scenario = 0; scenario < 4; ++scenario) {
-            const int method = scenario == 0 ? 0 : 1;
+        // Keep the accepted input-color cases and exercise both TC methods/polarities.
+        for (int scenario = 0; scenario < 7; ++scenario) {
+            const int method = scenario == 0 || scenario == 5 ? 0 : (scenario == 4 || scenario == 6 ? 2 : 1);
+            const int polarity = scenario >= 5 ? 1 : 0;
             for (int route = 0; route < 2; ++route) {
-                auto controls = snapshot(static_cast<Spektrafilm::ScanRoute>(route), static_cast<Spektrafilm::RgbToRawMethod>(method));
+                const int selectedRoute = polarity * 2 + route;
+                auto controls = snapshot(static_cast<Spektrafilm::ScanRoute>(selectedRoute), static_cast<Spektrafilm::RgbToRawMethod>(method));
                 if (method == 1) {
                     controls.printProfileKey = "kodak_portra_endura";
                 }
-                if (scenario >= 2) {
+                if (scenario == 2 || scenario == 3) {
                     controls.inputColorSpace = scenario == 2 ? 1 : 3;
                     controls.inputCctfDecoding = 1;
                 }
@@ -1805,6 +1808,8 @@ namespace {
                 std::array<const float*, 6> previous{};
                 std::vector<std::uint32_t> previousContent;
                 std::uint64_t previousHash = 0;
+                const float* previousTc = nullptr;
+                std::vector<std::uint32_t> previousTcContent;
                 std::array<long long, 3> preparationUs{};
                 std::size_t transition = 0;
                 for (const auto* prepared : {&product, &encodedOff, &product}) {
@@ -1834,6 +1839,26 @@ namespace {
                     preparationUs[transition++] = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - begin).count();
                     require(frame.active(), error.diagnostic);
                     const auto focused = frame.focused_resources();
+                    if (prepared->payload.filmTcLut) {
+                        const auto expected = prepared->payload.filmTcLut->samples();
+                        require(focused.film.filmTcLut && focused.film.filmTcLutExtent == 192, "actual TC device allocation bound");
+                        std::vector<float> uploaded(expected.size());
+                        require(cudaMemcpy(uploaded.data(), focused.film.filmTcLut, uploaded.size() * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess, "TC full device content read");
+                        std::vector<std::uint32_t> tcContent;
+                        tcContent.reserve(uploaded.size());
+                        for (std::size_t i = 0; i < uploaded.size(); ++i) {
+                            tcContent.push_back(std::bit_cast<std::uint32_t>(uploaded[i]));
+                            require(tcContent.back() == std::bit_cast<std::uint32_t>(expected[i]), "TC upload preserves complete Rust-owned table bits");
+                        }
+                        if (previousTc) {
+                            require(previousTc == focused.film.filmTcLut && tcContent == previousTcContent, "CCTF-only and warm reuse actual TC allocation/content");
+                        } else {
+                            previousTc = focused.film.filmTcLut;
+                            previousTcContent = std::move(tcContent);
+                        }
+                    } else {
+                        require(!focused.film.filmTcLut && focused.film.filmTcLutExtent == 0, "Mallett has no TC device allocation");
+                    }
                     require(bits(focused.film.inputRGBToXYZ) == bits(prepared->payload.filmRawConfig.inputRGBToXYZ.m) &&
                                 bits(focused.film.inputXYZAdapt) == bits(prepared->payload.filmRawConfig.inputXYZAdapt.m) &&
                                 bits(focused.film.xyzToLinearSrgb) == bits(prepared->payload.filmRawConfig.xyzToLinearSrgb.m),
@@ -1865,7 +1890,7 @@ namespace {
                     expect_status(raw_call(operation), FJ_STATUS_INTERNAL_FAILURE);
                 }
                 std::printf("GPU scanner route=%d method=%d input=%d decode=%d preparation_us cold=%lld cctf=%lld warm=%lld identity=%llu exact_values=%zu allocations=[%p,%p,%p,%p,%p,%p]\n",
-                            route,
+                            selectedRoute,
                             method,
                             controls.inputColorSpace,
                             controls.inputCctfDecoding,
@@ -1880,11 +1905,12 @@ namespace {
                             static_cast<const void*>(previous[3]),
                             static_cast<const void*>(previous[4]),
                             static_cast<const void*>(previous[5]));
+                std::printf("GPU TC route=%d method=%d identity=%llu exact_values=%zu allocation=%p\n", selectedRoute, method, static_cast<unsigned long long>(product.recipe.filmRaw.tcLutHash), previousTcContent.size(), static_cast<const void*>(previousTc));
                 std::string diagnostic;
                 require(JuicerProcess::root().retire_idle_context(0, context, diagnostic), diagnostic);
             }
         }
-        std::puts("GPU reuse: Hanatos/Mallett and decoded BT.2020/sRGB direct/print six-allocation/content/identity reuse; prepared binding leaves math faults unconsumed");
+        std::puts("GPU reuse: Hanatos/Arctic both polarities and retained Mallett input-color cases; direct/print scanner and TC allocations/content/identity reuse; prepared binding leaves math faults unconsumed");
     }
 
 } // namespace

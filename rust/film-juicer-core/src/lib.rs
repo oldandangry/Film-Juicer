@@ -13,3 +13,5 @@ pub mod illuminant;
 pub mod spectral;
 pub mod reconstruction;
 pub mod exposure;
+
+pub mod gamut;

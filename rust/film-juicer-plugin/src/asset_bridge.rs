@@ -270,6 +270,7 @@ pub(crate) enum Failure {
     Spectral(film_juicer_core::spectral::WhiteError),
     Reconstruction(film_juicer_core::reconstruction::Error),
     Exposure(film_juicer_core::exposure::Error),
+    FilmTc(film_juicer_core::reconstruction::TcError),
     #[cfg(feature = "test-support")]
     InjectedAllocation,
     #[cfg(any(test, feature = "test-support"))]
@@ -308,6 +309,10 @@ impl Failure {
             },
             Self::Spectral(_) => FJ_STATUS_PREPARATION_FAILURE,
             Self::Exposure(_) => FJ_STATUS_PREPARATION_FAILURE,
+            Self::FilmTc(film_juicer_core::reconstruction::TcError::AllocationFailure) => {
+                FJ_STATUS_ALLOCATION_FAILURE
+            }
+            Self::FilmTc(_) => FJ_STATUS_PREPARATION_FAILURE,
             Self::Reconstruction(error) => match error {
                 film_juicer_core::reconstruction::Error::AllocationFailure => {
                     FJ_STATUS_ALLOCATION_FAILURE
@@ -349,6 +354,7 @@ impl fmt::Display for Failure {
             Self::Spectral(error) => write!(formatter, "{error}"),
             Self::Reconstruction(error) => write!(formatter, "{error}"),
             Self::Exposure(error) => write!(formatter, "{error}"),
+            Self::FilmTc(error) => write!(formatter, "{error}"),
             #[cfg(feature = "test-support")]
             Self::InjectedAllocation => {
                 formatter.write_str("injected spectral allocation category")

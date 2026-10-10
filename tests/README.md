@@ -606,3 +606,21 @@ A5 spectral exposure migration is covered by the `Exposure.Host.*` and
 `Ffi.Host.ExposurePreparation` groups. See [the FFI domain guide](ffi/README.md)
 for exact fixture provenance, the scoped pinned-erff decision, immutable earlier
 fixtures and independently qualified completed-product supplements.
+
+### Film TC preparation and allocation ownership
+
+`Reconstruction.Host.TcLut.*` covers complete Hanatos/Arctic tables, Mitchell
+sampling, input remapping, raw C11/C++/Rust ABI, direct-core facade, failures,
+actual route products/admission and final publication release. The TC fixture
+manifest selects independently frozen native expectations by preset. Records
+are shared only when all expanded fields and complete table bytes agree.
+Existing fixture bytes and bounds remain unchanged.
+
+Native-undefined coordinate cases have required ordinary preparation-failure
+categories rather than manufactured native pixels. Defined brightness overflow
+still reaches final sanitation. A completed TC result owns one Rust Vec; the
+native move-only holder exposes readonly spans and releases the original
+pointer/length/capacity once in Rust. Source and hull borrows expire on return.
+The Lifetime group observes actual publication paths without an external old
+state hold and checks release outside both publication and rebuild locks;
+retained-reader and cross-thread cases are separate.
