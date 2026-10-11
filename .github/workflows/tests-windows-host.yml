@@ -20,6 +20,7 @@ jobs:
     runs-on: windows-2025-vs2026
     timeout-minutes: 75
     env:
+      PYTHONDONTWRITEBYTECODE: "1"
       CUDA_PATH: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2
       CUDA_PATH_V13_2: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2
 

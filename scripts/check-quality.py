@@ -1204,6 +1204,9 @@ def create_run_directory(root: Path, preset: str) -> Path:
 
 
 def main() -> int:
+    # Manifest preparation imports probe_evidence after the compiler probes have
+    # captured their context. Keep that import from adding a cached runtime file.
+    sys.dont_write_bytecode = True
     arguments = parse_arguments()
     root = Path(__file__).resolve().parent.parent
     check_build_path(root, arguments.preset)

@@ -260,6 +260,12 @@ Metadata and structural tests still run fresh. There are no skips or fabricated
 compiler logs. `Quality.ProbeEvidence` covers stale or incomplete evidence,
 wrong contexts, changed inputs/logs, diagnostic failures and positive controls.
 
+Keep `PYTHONDONTWRITEBYTECODE=1` set throughout quality, publication and CTest,
+as both CI jobs do. The quality runner also disables its own bytecode writes so
+its final manifest import cannot create a new runtime input after probe capture.
+Existing bytecode remains part of the verified Python context; changing it
+invalidates the evidence.
+
 An absent manifest means a fresh compile. An explicitly supplied but invalid
 manifest fails; remove it only when deliberately starting a fresh run and retain
 the failure. A quality selection without Rust produces no pending request, so

@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
+      PYTHONDONTWRITEBYTECODE: "1"
       CUDACXX: /usr/local/cuda-13.2/bin/nvcc
       CUDAToolkit_ROOT: /usr/local/cuda-13.2
       JUICER_CLANG_FORMAT: clang-format-22

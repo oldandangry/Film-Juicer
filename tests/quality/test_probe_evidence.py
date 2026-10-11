@@ -293,6 +293,17 @@ class ProbeEvidenceTests(unittest.TestCase):
 
 
 class WorkflowEnvironmentTests(unittest.TestCase):
+    def test_both_jobs_disable_bytecode_for_the_entire_handoff(self):
+        root = Path(__file__).resolve().parents[2]
+        for platform in ('linux', 'windows'):
+            with self.subTest(platform=platform):
+                workflow = (root / f'.github/workflows/tests-{platform}-host.yml').read_text(encoding='utf-8')
+                job = workflow.split(f'\n  {platform}-debug-host:\n', 1)[1].split('\n    steps:\n', 1)[0]
+                block = re.search(r'^    env:\n((?:      [^\n]*\n)+)', job, re.MULTILINE)
+                self.assertIsNotNone(block)
+                environment = dict(line.strip().split(': ', 1) for line in block[1].splitlines())
+                self.assertEqual(environment.get('PYTHONDONTWRITEBYTECODE'), '"1"')
+
     def test_linux_quality_and_ctest_share_compiler_environment(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / '.github/workflows/tests-linux-host.yml').read_text(encoding='utf-8')
@@ -327,7 +338,7 @@ class ContextTests(unittest.TestCase):
                          'rustfmt.toml', 'scripts/check-quality.py', 'rust/core/lib.rs',
                          'tests/quality/fixture.rs', 'tools/rustc',
                          'tools/cargo', 'tools/cargo-clippy', 'tools/clippy-driver', 'dependency/Cargo.toml',
-                         'python-runtime/unittest.py'):
+                         'python-runtime/unittest.py', 'python-runtime/__pycache__/unittest.pyc'):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('original')
@@ -341,11 +352,12 @@ class ContextTests(unittest.TestCase):
                 return str(root / 'sysroot')
             with patch.object(evidence.subprocess, 'check_output', side_effect=output), \
                     patch.dict(sys.modules, {'probe_runtime_fixture': types.SimpleNamespace(
-                        __file__=str(root / 'python-runtime/unittest.py'))}), \
+                        __file__=str(root / 'python-runtime/unittest.py'),
+                        __cached__=str(root / 'python-runtime/__pycache__/unittest.pyc'))}), \
                     patch.object(evidence.shutil, 'which', return_value=str(root / 'tools/cargo')):
                 initial = evidence.context(root, str(root / 'tools/cargo'), 'target', {})
                 for name in ('rust/core/lib.rs', '.cargo/config.toml', 'dependency/Cargo.toml', 'tools/rustc',
-                             'python-runtime/unittest.py'):
+                             'python-runtime/unittest.py', 'python-runtime/__pycache__/unittest.pyc'):
                     path = root / name
                     original = path.read_text()
                     path.write_text('# changed')

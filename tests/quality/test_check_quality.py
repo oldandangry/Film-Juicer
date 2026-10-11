@@ -772,6 +772,44 @@ class SourceHygieneTests(unittest.TestCase):
 
 
 class SelectionAndEvidenceTests(unittest.TestCase):
+    def test_manifest_preparation_preserves_an_empty_bytecode_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            scripts = root / "scripts"
+            quality = root / "tests/quality"
+            scripts.mkdir()
+            quality.mkdir(parents=True)
+            shutil.copy2(SCRIPT_PATH, scripts)
+            shutil.copy2(SCRIPT_PATH.parent / "source_file_policy.json", scripts)
+            shutil.copy2(SCRIPT_PATH.parent.parent / "tests/quality/probe_evidence.py", quality)
+            # Exercise the real terminal receipt and late manifest import. The
+            # compiler work is irrelevant to whether that import creates a cache.
+            bootstrap = (
+                "import importlib.util, sys; from unittest.mock import patch; "
+                "spec = importlib.util.spec_from_file_location('check_quality', sys.argv[1]); "
+                "module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; "
+                "spec.loader.exec_module(module); sys.argv = sys.argv[1:]; "
+                "patch.object(module, 'select_paths', return_value=([], [])).start(); "
+                "patch.object(module, 'quality_inputs', return_value={}).start(); "
+                "patch.object(module, 'run_checks', return_value=0).start(); "
+                "raise SystemExit(module.main())"
+            )
+            environment = dict(os.environ)
+            environment.pop("PYTHONDONTWRITEBYTECODE", None)
+            environment.pop("PYTHONPYCACHEPREFIX", None)
+            result = subprocess.run(
+                [sys.executable, "-c", bootstrap, str(scripts / SCRIPT_PATH.name),
+                 "--preset", "linux-debug", "--files", "CONTRIBUTING.md",
+                 "--probe-manifest", str(root / "probes.json"),
+                 "--qualification-id", "01234567-89ab-4def-8012-3456789abcde"],
+                cwd=root, env=environment, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            receipt, = (root / "out/validation/linux-debug/quality/runs").glob("*/run.json")
+            self.assertEqual(json.loads(receipt.read_text(encoding="utf-8"))["status"], "passed")
+            self.assertEqual(list(quality.rglob("*.pyc")), [],
+                             "manifest preparation must not change the captured Python context")
+
     def test_run_directories_are_unique_and_never_include_old_logs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
