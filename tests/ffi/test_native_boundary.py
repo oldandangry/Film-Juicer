@@ -49,6 +49,7 @@ RETIRED_ILLUMINANT_MATH = r"\b(?:PlanckBlackbodySample|planck_blackbody|build_bl
 
 
 RETIRED_EXPOSURE_DEFINITIONS = r"\b(?:bool\s+(?:build_hanatos_reconstructed_reference_white|derive_final_sensitivity)|float\s+(?:camera_filter_sample|hanatos_window_sample))\s*\([^;{}]*\)\s*\{"
+RETIRED_INPUT_HULL_DEFINITIONS = r"\b(?:bool\s+(?:build_input_compression_hull|build_locus|build_d65_center|curve_has_reference_samples)|void\s+fourier_lowpass|double\s+ray_polygon_distance)\s*\([^;{}]*\)\s*\{"
 
 
 HOST_MESSAGES = r"\b(?:DirFailureMessage|sendMessage)\b|OFX::"
@@ -74,10 +75,27 @@ class NativeBoundary(unittest.TestCase):
             self.assertRegex(body, remap)
         self.assertNotRegex("bool build_film_tc_lut();", tc)
         self.assertNotRegex("double ray_polygon_distance() {}", remap)
-        source = gamut.read_text(encoding="utf-8")
-        self.assertEqual(source.count("double ray_polygon_distance("), 1)
-        self.assertEqual(source.count("ray_polygon_distance("), 2)
         self.assertIn("set_cie_1931_2deg_cmf(", processing.read_text(encoding="utf-8"))
+
+    def test_native_input_hull_math_is_retired(self):
+        self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_INPUT_HULL_DEFINITIONS), [])
+        source = (ROOT / "src/GamutCompression.cpp").read_text(encoding="utf-8")
+        self.assertNotRegex(source, r"\b(?:kLocusSampleCount|kHullDetail|kInputCompressionVersion|struct\s+Ray|using\s+Locus)\b")
+        self.assertNotIn("build_input_compression_hull", (ROOT / "src/GamutCompression.h").read_text(encoding="utf-8"))
+        self.assertEqual(source.count("kTwoPi"), 3, "A9 output hue still owns this shared constant")
+        library = (ROOT / "src/ResourceAssetLibrary.cpp").read_text(encoding="utf-8")
+        self.assertEqual(library.count("JuicerGamut::input_hull("), 1)
+        core = (ROOT / "rust/film-juicer-core/src/gamut.rs").read_text(encoding="utf-8")
+        self.assertEqual(core.count("fn ray_polygon_distance<"), 1)
+
+    def test_input_hull_deletion_controls(self):
+        for result, name in (("bool", "build_input_compression_hull"), ("bool", "build_locus"),
+                             ("bool", "build_d65_center"), ("bool", "curve_has_reference_samples"),
+                             ("void", "fourier_lowpass"), ("double", "ray_polygon_distance")):
+            self.assertRegex(f"{result} {name}(const auto& source) {{ return {{}}; }}", RETIRED_INPUT_HULL_DEFINITIONS)
+            self.assertNotRegex(f"{result} {name}(const Source&);", RETIRED_INPUT_HULL_DEFINITIONS)
+            self.assertNotRegex(f"{name}(source);", RETIRED_INPUT_HULL_DEFINITIONS)
+        self.assertNotRegex("double evaluate_cubic(const Cubic& c, double x) { return x; }", RETIRED_INPUT_HULL_DEFINITIONS)
 
     def test_retired_exposure_definitions_stay_deleted(self):
         paths = [path for directory in (ROOT / "src", ROOT / "native")

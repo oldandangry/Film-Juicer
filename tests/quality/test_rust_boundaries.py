@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import importlib.util
 import json
 import os
@@ -11,6 +12,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from probe_evidence import ProbeEvidence, compiler_environment
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,8 +43,13 @@ class RustBoundaryTests(unittest.TestCase):
         for name in ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml"):
             shutil.copy2(ROOT / name, cls.workspace / name)
         shutil.copytree(ROOT / "rust", cls.workspace / "rust")
-        cls.environment = quality.cargo_environment()
-        cls.environment.pop("CLIPPY_CONF_DIR", None)
+        cls.environment = compiler_environment()
+        # The native-source guard uses this decoder; load it before binding the
+        # interpreter inputs so its lazy import is not mistaken for a change.
+        codecs.lookup("utf-8-sig")
+        cls.evidence = ProbeEvidence(ROOT, "boundaries", cls.cargo, cls.target,
+                                     cls.profiles, cls.environment, cls.artifacts)
+        cls.addClassCleanup(cls.evidence.finish)
         cls.invocation = 0
 
     def command(self, arguments: list[str], label: str) -> subprocess.CompletedProcess:
@@ -59,6 +67,7 @@ class RustBoundaryTests(unittest.TestCase):
         return result
 
     def attach(self, owner: str, fixture: str) -> None:
+        self.probe_owner, self.probe_fixture = owner, fixture
         source = self.workspace / "rust" / owner
         original = source.read_text(encoding="utf-8")
         self.addCleanup(source.write_text, original, encoding="utf-8")
@@ -85,7 +94,13 @@ class RustBoundaryTests(unittest.TestCase):
         if test_support:
             arguments += ["--features", "test-support"]
         label = f"{package}-{'release' if release else 'dev'}-{'test-support' if test_support else 'default'}"
-        result = self.command(arguments, label)
+        type(self).invocation += 1
+        log = self.artifacts / f"{self.invocation:02d}-{self._testMethodName}-{label}.log"
+        result = self.evidence.run(
+            {"test": self._testMethodName, "package": package,
+             "profile": "release" if release else "dev", "features": ["test-support"] if test_support else [],
+             "fixtures": {self.probe_owner: self.probe_fixture}},
+            [self.cargo, *arguments], self.workspace, log)
         diagnostics = [
             message["message"]
             for line in result.stdout.splitlines()
@@ -324,6 +339,27 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
         self.attach("film-juicer-plugin/src/lib.rs", "tc_complete")
+        for release in self.profiles:
+            status, diagnostics = self.check("film-juicer-plugin", release)
+            self.assertEqual(status, 0, diagnostics)
+
+
+    def test_complete_input_hull_privacy_and_borrows(self) -> None:
+        for fixture, expected in (
+            ("hull_default", {"E0599": ("Hull::default()",)}),
+            ("hull_private", {"E0451": ("Hull { ..hull }",)}),
+            ("hull_mutation", {"E0616": ("hull.xy", "hull.hash", "hull.center")}),
+            ("hull_readonly", {"E0594": ("hull.xy()", "hull.center()")}),
+            ("hull_borrow", {"E0515": ("HullInput { x: &samples",), "E0505": ("drop(hull)",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    status, diagnostics = self.check("film-juicer-plugin", release)
+                    self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+        self.attach("film-juicer-plugin/src/lib.rs", "hull_complete")
         for release in self.profiles:
             status, diagnostics = self.check("film-juicer-plugin", release)
             self.assertEqual(status, 0, diagnostics)

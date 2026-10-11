@@ -56,3 +56,9 @@ mod exposure_bridge;
     reason = "the TC edge validates spans and transfers/releases an exact Vec allocation"
 )]
 mod reconstruction_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "the input hull edge checks fixed foreign spectra and scopes synchronous borrows"
+)]
+mod gamut_bridge;

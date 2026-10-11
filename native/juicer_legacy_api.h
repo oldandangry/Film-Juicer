@@ -26,6 +26,27 @@ extern "C" {
 // A nonnull out_route must point to one writable byte; failures leave it unchanged.
 uint32_t fj_legacy_resolve_route(uint8_t capture_polarity, uint8_t selected_route, uint8_t* out_route);
 
+/* FJ_TEMP_BRIDGE: completed input hull value; remove S4.E.
+ * Required records authorize initialized, aligned storage. Each source is
+ * exactly 81 positional f32 values, immutable/live until synchronous return.
+ * Immutable inputs may alias each other. Output, error record and nonempty
+ * diagnostic backing are exclusive, mutually disjoint and disjoint from inputs.
+ * No source pointer escapes. Authorized output values clear before fallible work;
+ * padding is not a value. No heap result owner or release operation exists.
+ * Malformed structure -> UnsupportedInput; computed hull -> PreparationFailure;
+ * contained panic -> InternalFailure. Fixed math has no AllocationFailure.
+ * Library cache and recipe ownership remain native until S4.E.
+ */
+typedef struct FjInputHullSource {
+    FjFloatSpan x, y, z, d65;
+} FjInputHullSource;
+typedef struct FjInputHull {
+    float center_xy[2];
+    float xy[2050];
+    uint64_t hash;
+} FjInputHull;
+FjStatus fj_legacy_gamut_input_hull(const FjInputHullSource* source, FjInputHull* out, FjErrorBuffer* error);
+
 /* FJ_TEMP_BRIDGE: spectral value preparation; remove S4.E.
  * Required pointers authorize complete initialized aligned records. Input spans
  * remain immutable and live through synchronous return; outputs/error backing

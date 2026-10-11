@@ -7,8 +7,8 @@ namespace {
     thread_local bool rejectNativeAllocation = false;
     thread_local std::size_t rejectedNativeBytes = 0;
 } // namespace
-// Fixture-only rejection of the real native vector allocation, after Rust's
-// fixed-array result returns. No product allocator or policy seam is added.
+// Fixture-only rejection of real native projection/cache allocations.
+// No product allocator or policy seam is added.
 // CRT replacement declarations use platform-specific parameter spellings.
 // Keep this exception on the fixture's three replacement operators only.
 // NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)

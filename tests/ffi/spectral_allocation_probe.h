@@ -2,7 +2,7 @@
 
 #include <cstddef>
 
-// Fixture-only interception of the actual native vector allocation. Separate
+// Fixture-only interception of an actual native allocation. Separate
 // compilation keeps replacement new/delete outside allocator consumers.
 namespace SpectralAllocationProbe {
     void arm();

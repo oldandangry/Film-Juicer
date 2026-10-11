@@ -11,6 +11,7 @@
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Cuda/JuicerCudaFailure.h"
 #include "Illuminants.h"
+#include "RustGamutBridge.h"
 
 namespace JuicerAssets {
 
@@ -217,7 +218,7 @@ namespace JuicerAssets {
         }
         const auto curves = illuminant_filter_curves();
         auto candidate = std::make_shared<Gamut::InputCompressionHull>();
-        if (!Gamut::build_input_compression_hull(
+        if (!JuicerGamut::input_hull(
                 Spectral::gXBar,
                 Spectral::gYBar,
                 Spectral::gZBar,

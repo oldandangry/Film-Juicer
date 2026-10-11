@@ -211,6 +211,8 @@ def parse_arguments() -> argparse.Namespace:
         "--all-owned", action="store_true", help="audit every tracked owned source"
     )
     parser.add_argument("--preset", required=True, choices=sorted(PRESET_TARGETS))
+    parser.add_argument("--probe-manifest", type=Path, help="stage fresh compiler evidence for explicit publication after this gate exits")
+    parser.add_argument("--qualification-id", help="UUID shared explicitly with this qualification's CTest launches")
     parser.add_argument("--cargo", help="Cargo executable override")
     parser.add_argument("--rustc", help="rustc executable override")
     parser.add_argument("--clang-format", dest="clang_format")
@@ -220,6 +222,18 @@ def parse_arguments() -> argparse.Namespace:
     arguments = parser.parse_args()
     if arguments.jobs < 1:
         parser.error("--jobs must be at least 1")
+    if bool(arguments.probe_manifest) != bool(arguments.qualification_id):
+        parser.error("--probe-manifest and --qualification-id are required together")
+    if arguments.qualification_id:
+        import uuid
+        try:
+            canonical = str(uuid.UUID(arguments.qualification_id))
+        except ValueError:
+            parser.error("--qualification-id must be a canonical UUID")
+        if canonical != arguments.qualification_id:
+            parser.error("--qualification-id must be a canonical UUID")
+        if arguments.probe_manifest.exists() or arguments.probe_manifest.with_name(arguments.probe_manifest.name + ".pending").exists():
+            parser.error("probe manifest already exists; start a new qualification")
     return arguments
 
 
@@ -531,6 +545,7 @@ def check_rust(
     rustc_candidates = (str(Path(cargo_dir) / ("rustc.exe" if os.name == "nt" else "rustc")), "rustc")
     rustc = resolve_tool(arguments.rustc, "JUICER_RUSTC", rustc_candidates)
     environment = cargo_environment()
+    environment.pop("JUICER_RUST_PROBE_MANIFEST", None)  # Quality always compiles fresh.
     environment["CLIPPY_CONF_DIR"] = str(root)
     rustup = shutil.which("rustup", path=environment.get("PATH", ""))
     if rustup and file_digest(Path(cargo)) == file_digest(Path(rustup)):
@@ -1117,6 +1132,12 @@ def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
             label="quality-dispatcher-tests",
         )
+        runner.run(
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests/quality",
+             "-p", "test_probe_evidence.py", "-v"],
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            label="probe-evidence-tests",
+        )
     native_commands: list[AnalysisCommand] = []
     if native_required:
         native_files = [path for path in selected if is_native(path, policy)]
@@ -1222,6 +1243,11 @@ def main() -> int:
         record["files"] = {path.relative_to(log_dir).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
                            for path in sorted(log_dir.rglob("*")) if path.is_file() and path != receipt}
         receipt.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        if record["status"] == "passed" and arguments.probe_manifest:
+            sys.path.insert(0, str(root / "tests/quality"))
+            from probe_evidence import prepare_manifest
+            if prepare_manifest(receipt, arguments.probe_manifest, arguments.qualification_id):
+                print(f"Pending probe evidence: {arguments.probe_manifest}.pending", flush=True)
 
 
 if __name__ == "__main__":

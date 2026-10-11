@@ -171,10 +171,20 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($qualityBase) -or $qualityBase -match "^0+$") {
             $qualityBase = git rev-parse HEAD^
           }
+          $qualificationId = [guid]::NewGuid().ToString()
+          $probeManifest = "$env:GITHUB_WORKSPACE/out/validation/windows-clang-debug/quality/probes-$qualificationId.json"
           python -u scripts/check-quality.py `
+            --probe-manifest $probeManifest --qualification-id $qualificationId `
             --base $qualityBase `
             --preset windows-clang-debug `
             --jobs 2
+          if ($LASTEXITCODE -ne 0) { throw "Quality gate failed" }
+          if (Test-Path "$probeManifest.pending") {
+            python tests/quality/probe_evidence.py --manifest $probeManifest --qualification-id $qualificationId
+            if ($LASTEXITCODE -ne 0) { throw "Probe evidence publication failed" }
+            "JUICER_RUST_PROBE_MANIFEST=$probeManifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "JUICER_QUALIFICATION_ID=$qualificationId" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
 
       - name: List tests and run host selection
         shell: pwsh
@@ -221,5 +231,6 @@ jobs:
           path: |
             out/validation/windows-clang-debug/quality/**/*.log
             out/validation/windows-clang-debug/quality/runs/**/*.json
+            out/validation/windows-clang-debug/quality/probes-*.json*
             out/build/windows-clang-debug/compile_commands.json
           if-no-files-found: warn

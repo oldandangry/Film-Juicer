@@ -108,7 +108,7 @@ ctest --preset linux-debug
 Windows Debug uses the same sequence with `windows-clang-debug`. Release uses
 `linux-release` or `windows-clang-release`.
 
-The presets use four CTest workers. GPU groups share `juicer_gpu`, the two
+The presets use four CTest workers. GPU groups share `juicer_gpu`, the
 product Cargo tests share `juicer_cargo`, and groups with `RUN_SERIAL` still run
 alone. Keep GPU suites from separate Windows/WSL invocations serialized on a
 shared device; CTest resource locks apply within one invocation. Override the
@@ -198,6 +198,7 @@ cmake --build --preset linux-debug
 | `grain/delta_fusion_test.cu` | Grain output against a separate FP32 blur/accumulation/delta oracle, including finite sanitation and final-layer dispatch | `gpu` |
 | `dir/exposure_cache_test.cpp` | Source-pass versus separate-pass log-exposure caches and final capture density through production CUDA operators | `gpu` |
 | `gamma/test_compare.py` | Comparator bounds, applicability, non-finite rejection and CLI failure propagation | `host` |
+| `ffi/input_hull_*`, `ffi/test_input_hull_fixtures.py`, core `input_hull` | Exact ordered hull math, primitive context, shared ray, C11/core/native boundary, cache race/retry/retained ownership, complete caller TC bytes and admission | `host`; `Gamut.Host.InputHull.*` |
 | `quality/test_check_quality.py` | Quality dispatcher selection, CUDA command translation and header owners, source hygiene, and failure propagation | `host` |
 | `ctest/test_report.py` | Focused evidence extraction from full-suite JUnit, including missing, failed, skipped and malformed-input rejection | `host` |
 | `quality/test_rust_naming.py` | Product naming-policy contract: current Rust code, accepted names, individually rejected names, test targets, and reasoned foreign-name exceptions under the actual workspace lints | `host`; pinned Cargo and Clippy required |
@@ -226,8 +227,8 @@ the quality dispatcher, which supplies the same tool and artifact environment.
 `Quality.RustBoundaries` uses one temporary workspace per run. Both compiler-probe
 groups reuse Cargo artifacts under `out/build/<preset>/cargo/quality-probes/`,
 separately from product artifacts. Cargo's fingerprints and build lock govern
-reuse; every current probe and its required diagnostics still run. No test
-outcome is cached. The groups remove temporary source workspaces on completion and keep
+reuse; standalone runs compile every current probe and check its diagnostics.
+The groups remove temporary source workspaces on completion and keep
 logs under `out/validation/<preset>/quality/rust-boundaries/`. Run
 `ctest --preset <preset> -R '^Quality.RustBoundaries$' --output-on-failure` or the
 quality dispatcher. Cargo is offline and locked; the configured build supplies
@@ -238,6 +239,33 @@ external numerical references. Valid use runs with and without `test-support`;
 CTest selects the preset's profile and complete quality gates check both
 development and release. The probes compile without
 linking or executing native CUDA calls.
+
+A complete quality gate can explicitly share its fresh compiler diagnostics with
+Debug and Release CTest in the same qualification. Supply a new UUID and manifest
+path to `scripts/check-quality.py` using `--qualification-id` and
+`--probe-manifest`; this stages a `.pending` request. Once the command and its
+process tree have completed successfully, publish it with:
+
+```text
+python tests/quality/probe_evidence.py --manifest <same-path> --qualification-id <same-UUID>
+```
+
+Set `JUICER_RUST_PROBE_MANIFEST=<same-path>` and
+`JUICER_QUALIFICATION_ID=<same-UUID>` for the following CTest commands. Both
+compiler groups execute every existing case and diagnostic assertion for the
+preset's profile. They verify source and compiler context before and after the
+run, the exact case set, and the producer's original receipt and log hashes.
+Logs report `verified existing probe evidence` and identify that producer.
+Metadata and structural tests still run fresh. There are no skips or fabricated
+compiler logs. `Quality.ProbeEvidence` covers stale or incomplete evidence,
+wrong contexts, changed inputs/logs, diagnostic failures and positive controls.
+
+An absent manifest means a fresh compile. An explicitly supplied but invalid
+manifest fails; remove it only when deliberately starting a fresh run and retain
+the failure. A quality selection without Rust produces no pending request, so
+CTest compiles fresh. Never reuse a manifest from another qualification or
+publish it while the quality process tree is still active. These rules preserve
+each platform/profile/feature combination and every numerical and product gate.
 
 Add construction/lifetime probes as the corresponding real API lands. Put
 identity, reuse, conversion and failure-transition cases in the owning domain's

@@ -3,41 +3,26 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <complex>
 #include <cstddef>
 #include <limits>
 
 #include "ColorTransforms.h"
 #include "RustColorBridge.h"
 #include "Hash.h"
-#include "SpectralData.h"
 
 namespace Gamut {
     namespace {
 
-        constexpr int kLocusSampleCount = 65;
         constexpr double kTwoPi = 6.283185307179586476925286766559;
-        constexpr double kParallelTolerance = 1e-12;
-        constexpr double kVertexTolerance = 1e-9;
-        constexpr double kMinimumRadius = 1e-12;
-        constexpr double kHullDetail = 5.0;
-        constexpr std::uint32_t kInputCompressionVersion = 1u;
         constexpr std::uint32_t kOutputTransformVersion = 1u;
         constexpr std::uint32_t kOutputBoundaryVersion = 1u;
         constexpr int kOutputBoundaryBisections = 20;
         constexpr double kDerivativeTolerance = 1.0e-14;
 
-        using Point = std::array<double, 2>;
-        using Locus = std::array<Point, kLocusSampleCount + 1>;
         using Matrix = std::array<double, 9>;
 
         struct Cubic {
             double coefficient[4]{};
-        };
-
-        struct Ray {
-            Point origin;
-            Point direction;
         };
 
         Matrix multiply_matrix(const Matrix& left, const Matrix& right) {
@@ -218,139 +203,6 @@ namespace Gamut {
                 matrix[0] * value[0] + matrix[1] * value[1] + matrix[2] * value[2],
                 matrix[3] * value[0] + matrix[4] * value[1] + matrix[5] * value[2],
                 matrix[6] * value[0] + matrix[7] * value[1] + matrix[8] * value[2]};
-        }
-
-        // A8 hull construction retains this native ray helper; consolidate/remove at A8, no later S4.E.
-        double ray_polygon_distance(
-            const Ray& ray,
-            const auto& polygon) {
-            double minimum = std::numeric_limits<double>::infinity();
-            for (std::size_t index = 0; index + 1 < polygon.size(); ++index) {
-                const double ax = static_cast<double>(polygon[index][0]);
-                const double ay = static_cast<double>(polygon[index][1]);
-                const double ex =
-                    static_cast<double>(polygon[index + 1][0]) - ax;
-                const double ey =
-                    static_cast<double>(polygon[index + 1][1]) - ay;
-                const double denominator =
-                    ray.direction[0] * ey - ray.direction[1] * ex;
-                if (std::abs(denominator) <= kParallelTolerance) {
-                    continue;
-                }
-                const double ox = ray.origin[0] - ax;
-                const double oy = ray.origin[1] - ay;
-                const double distance = (-ox * ey + oy * ex) / denominator;
-                const double edgePosition =
-                    (-ox * ray.direction[1] + oy * ray.direction[0]) /
-                    denominator;
-                if (distance > kVertexTolerance &&
-                    edgePosition >= -kVertexTolerance &&
-                    edgePosition <= 1.0 + kVertexTolerance) {
-                    minimum = std::min(minimum, distance);
-                }
-            }
-            return minimum;
-        }
-
-        bool curve_has_reference_samples(const Spectral::Curve& curve) {
-            return curve.linear.size() ==
-                       static_cast<std::size_t>(Spectral::kNumSamples) &&
-                   curve.lambda_nm.size() ==
-                       static_cast<std::size_t>(Spectral::kNumSamples);
-        }
-
-        bool build_locus(
-            const Spectral::Curve& xBar,
-            const Spectral::Curve& yBar,
-            const Spectral::Curve& zBar,
-            Locus& out) {
-            if (!curve_has_reference_samples(xBar) ||
-                !curve_has_reference_samples(yBar) ||
-                !curve_has_reference_samples(zBar)) {
-                return false;
-            }
-            for (int index = 0; index < kLocusSampleCount; ++index) {
-                const double x = static_cast<double>(xBar.linear[index]);
-                const double y = static_cast<double>(yBar.linear[index]);
-                const double z = static_cast<double>(zBar.linear[index]);
-                const double sum = x + y + z;
-                if (!(std::isfinite(x) && std::isfinite(y) &&
-                      std::isfinite(z) && std::isfinite(sum) &&
-                      sum > kMinimumRadius)) {
-                    return false;
-                }
-                out[static_cast<std::size_t>(index)] = {x / sum, y / sum};
-            }
-            out.back() = out.front();
-            return true;
-        }
-
-        bool build_d65_center(
-            const Spectral::Curve& xBar,
-            const Spectral::Curve& yBar,
-            const Spectral::Curve& zBar,
-            const Spectral::Curve& d65,
-            Point& out) {
-            if (!curve_has_reference_samples(d65)) {
-                return false;
-            }
-            double xyz[3]{};
-            for (int index = 0; index < Spectral::kNumSamples; ++index) {
-                const double illuminant =
-                    static_cast<double>(d65.linear[static_cast<std::size_t>(index)]);
-                if (!std::isfinite(illuminant)) {
-                    return false;
-                }
-                xyz[0] += illuminant *
-                          static_cast<double>(xBar.linear[static_cast<std::size_t>(index)]);
-                xyz[1] += illuminant *
-                          static_cast<double>(yBar.linear[static_cast<std::size_t>(index)]);
-                xyz[2] += illuminant *
-                          static_cast<double>(zBar.linear[static_cast<std::size_t>(index)]);
-            }
-            const double sum = xyz[0] + xyz[1] + xyz[2];
-            if (!(std::isfinite(sum) && sum > kMinimumRadius)) {
-                return false;
-            }
-            out = {xyz[0] / sum, xyz[1] / sum};
-            return std::isfinite(out[0]) && std::isfinite(out[1]);
-        }
-
-        void fourier_lowpass(
-            const std::array<double, kInputHullDirectionCount>& source,
-            std::array<double, kInputHullDirectionCount>& out) {
-            using Complex = std::complex<double>;
-            std::array<Complex, kInputHullDirectionCount> coefficients{};
-            for (int mode = 0; mode < kInputHullDirectionCount; ++mode) {
-                Complex coefficient{};
-                for (int sample = 0; sample < kInputHullDirectionCount; ++sample) {
-                    const double angle =
-                        -kTwoPi * static_cast<double>(mode * sample) /
-                        static_cast<double>(kInputHullDirectionCount);
-                    coefficient += source[static_cast<std::size_t>(sample)] *
-                                   Complex(std::cos(angle), std::sin(angle));
-                }
-                const int signedMode =
-                    mode <= kInputHullDirectionCount / 2
-                        ? mode
-                        : mode - kInputHullDirectionCount;
-                const double normalizedMode =
-                    static_cast<double>(signedMode) / kHullDetail;
-                coefficients[static_cast<std::size_t>(mode)] =
-                    coefficient * std::exp(-0.5 * normalizedMode * normalizedMode);
-            }
-            for (int sample = 0; sample < kInputHullDirectionCount; ++sample) {
-                Complex value{};
-                for (int mode = 0; mode < kInputHullDirectionCount; ++mode) {
-                    const double angle =
-                        kTwoPi * static_cast<double>(mode * sample) /
-                        static_cast<double>(kInputHullDirectionCount);
-                    value += coefficients[static_cast<std::size_t>(mode)] *
-                             Complex(std::cos(angle), std::sin(angle));
-                }
-                out[static_cast<std::size_t>(sample)] =
-                    value.real() / static_cast<double>(kInputHullDirectionCount);
-            }
         }
 
     } // namespace
@@ -640,77 +492,5 @@ namespace Gamut {
         return multiply_float_matrix_vector(transform.d65XyzToNativeRgb, xyz);
     }
 
-    bool build_input_compression_hull(
-        const Spectral::Curve& xBar,
-        const Spectral::Curve& yBar,
-        const Spectral::Curve& zBar,
-        const Spectral::Curve& d65,
-        InputCompressionHull& out) {
-        out = InputCompressionHull{};
-        Locus locus{};
-        Point center{};
-        if (!build_locus(xBar, yBar, zBar, locus) ||
-            !build_d65_center(xBar, yBar, zBar, d65, center)) {
-            out.diagnostic =
-                "MalformedRequiredResource component=input_gamut_hull requirement=cie1931_380_700_and_d65";
-            return false;
-        }
-
-        std::array<double, kInputHullDirectionCount> reach{};
-        for (int index = 0; index < kInputHullDirectionCount; ++index) {
-            const double angle =
-                kTwoPi * static_cast<double>(index) /
-                static_cast<double>(kInputHullDirectionCount);
-            const Point direction{std::cos(angle), std::sin(angle)};
-            reach[static_cast<std::size_t>(index)] =
-                ray_polygon_distance(Ray{center, direction}, locus);
-            if (!(std::isfinite(reach[static_cast<std::size_t>(index)]) &&
-                  reach[static_cast<std::size_t>(index)] > 0.0)) {
-                out.diagnostic =
-                    "MalformedRequiredResource component=input_gamut_hull requirement=finite_locus_ray_intersections";
-                return false;
-            }
-        }
-
-        std::array<double, kInputHullDirectionCount> smoothed{};
-        fourier_lowpass(reach, smoothed);
-        double inscribedScale = std::numeric_limits<double>::infinity();
-        for (int index = 0; index < kInputHullDirectionCount; ++index) {
-            double& radius = smoothed[static_cast<std::size_t>(index)];
-            radius = std::max(radius, kMinimumRadius);
-            inscribedScale = std::min(
-                inscribedScale,
-                reach[static_cast<std::size_t>(index)] / radius);
-        }
-        if (!(std::isfinite(inscribedScale) && inscribedScale > 0.0)) {
-            out.diagnostic =
-                "MalformedRequiredResource component=input_gamut_hull requirement=finite_inscribed_scale";
-            return false;
-        }
-
-        out.center = {static_cast<float>(center[0]), static_cast<float>(center[1])};
-        for (int index = 0; index < kInputHullDirectionCount; ++index) {
-            const double angle =
-                kTwoPi * static_cast<double>(index) /
-                static_cast<double>(kInputHullDirectionCount);
-            const double radius =
-                smoothed[static_cast<std::size_t>(index)] * inscribedScale;
-            out.xy[static_cast<std::size_t>(index)] = {
-                static_cast<float>(center[0] + radius * std::cos(angle)),
-                static_cast<float>(center[1] + radius * std::sin(angle))};
-        }
-        out.xy.back() = out.xy.front();
-        std::uint64_t hash = Hash::kFnvOffset;
-        Hash::hash_bytes_update(hash, &kInputCompressionVersion, sizeof(kInputCompressionVersion));
-        Hash::hash_bytes_update(hash, out.center.data(), sizeof(out.center));
-        Hash::hash_bytes_update(hash, out.xy.data(), sizeof(out.xy));
-        out.hash = hash;
-        out.valid = out.hash != 0;
-        if (!out.valid) {
-            out.diagnostic =
-                "MalformedRequiredResource component=input_gamut_hull requirement=stable_identity";
-        }
-        return out.valid;
-    }
 
 } // namespace Gamut

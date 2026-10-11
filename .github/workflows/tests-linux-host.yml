@@ -22,6 +22,8 @@ jobs:
     env:
       CUDACXX: /usr/local/cuda-13.2/bin/nvcc
       CUDAToolkit_ROOT: /usr/local/cuda-13.2
+      JUICER_CLANG_FORMAT: clang-format-22
+      JUICER_CLANG_TIDY: clang-tidy-22
 
     steps:
       - name: Check out source
@@ -102,18 +104,24 @@ jobs:
       - name: Run tracked native, CUDA, and Rust quality checks
         shell: bash
         env:
-          JUICER_CLANG_FORMAT: clang-format-22
-          JUICER_CLANG_TIDY: clang-tidy-22
           QUALITY_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
           if [[ -z "$QUALITY_BASE" || "$QUALITY_BASE" =~ ^0+$ ]]; then
             QUALITY_BASE="$(git rev-parse HEAD^)"
           fi
+          qualification_id="$(python -c 'import uuid; print(uuid.uuid4())')"
+          probe_manifest="$GITHUB_WORKSPACE/out/validation/linux-debug/quality/probes-$qualification_id.json"
           python -u scripts/check-quality.py \
+            --probe-manifest "$probe_manifest" --qualification-id "$qualification_id" \
             --base "$QUALITY_BASE" \
             --preset linux-debug \
             --jobs 2
+          if [[ -f "$probe_manifest.pending" ]]; then
+            python tests/quality/probe_evidence.py --manifest "$probe_manifest" --qualification-id "$qualification_id"
+            echo "JUICER_RUST_PROBE_MANIFEST=$probe_manifest" >> "$GITHUB_ENV"
+            echo "JUICER_QUALIFICATION_ID=$qualification_id" >> "$GITHUB_ENV"
+          fi
 
       - name: List tests and run host selection
         shell: bash
@@ -141,5 +149,6 @@ jobs:
           path: |
             out/validation/linux-debug/quality/**/*.log
             out/validation/linux-debug/quality/runs/**/*.json
+            out/validation/linux-debug/quality/probes-*.json*
             out/build/linux-debug/compile_commands.json
           if-no-files-found: warn

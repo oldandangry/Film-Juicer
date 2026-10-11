@@ -29,6 +29,7 @@ set(JUICER_HOST_SOURCES
     src/RustSpectralBridge.cpp
     src/RustReconstructionBridge.cpp
     src/RustExposureBridge.cpp
+    src/RustGamutBridge.cpp
     src/RustColorBridge.cpp
     src/DiffusionHostBehavior.cpp
     src/GamutCompression.cpp

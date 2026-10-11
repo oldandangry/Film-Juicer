@@ -295,6 +295,12 @@ set_tests_properties(Quality.Dispatcher PROPERTIES
     TIMEOUT 60
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
+add_test(NAME Quality.ProbeEvidence
+    COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_CURRENT_SOURCE_DIR}/quality" -p test_probe_evidence.py -v)
+set_tests_properties(Quality.ProbeEvidence PROPERTIES
+    LABELS "host" TIMEOUT 60 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
 add_test(NAME Ctest.Host.Report
     COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s "${CMAKE_CURRENT_SOURCE_DIR}/ctest" -p test_report.py -v)
@@ -988,3 +994,25 @@ set_tests_properties(Reconstruction.Host.TcLut.Lifetime PROPERTIES LABELS "host"
 
 add_test(NAME Reconstruction.Host.TcLut.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_tc_lut_fixtures.py -v)
 set_tests_properties(Reconstruction.Host.TcLut.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 30 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
+add_library(juicer_input_hull_test_objects OBJECT ../src/RustGamutBridge.cpp)
+target_link_libraries(juicer_input_hull_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_input_hull_test_objects PRIVATE JUICER_INPUT_HULL_TEST_HOOK=1)
+add_executable(JuicerInputHullTests ffi/input_hull_abi_c.c ffi/input_hull_test.cpp ffi/spectral_products_test.cpp ffi/spectral_allocation_probe.cpp $<TARGET_OBJECTS:juicer_input_hull_test_objects>)
+target_link_libraries(JuicerInputHullTests PRIVATE juicer_core)
+set_target_properties(JuicerInputHullTests PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerInputHullTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_dependencies(JuicerInputHullTests juicer_test_resources)
+foreach(hull_case IN ITEMS boundary binding products cache admission-1 admission-2 admission-3 admission-4 admission-5 admission-6)
+    add_test(NAME Gamut.Host.InputHull.${hull_case} COMMAND JuicerInputHullTests ${hull_case}
+        "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/input_hull/manifest.json" "${JUICER_TEST_PRESET_NAME}")
+    set_tests_properties(Gamut.Host.InputHull.${hull_case} PROPERTIES LABELS "host" TIMEOUT 180 RUN_SERIAL TRUE)
+endforeach()
+add_test(NAME Gamut.Host.InputHull.Math
+    COMMAND "${CMAKE_COMMAND}" -E env "RUSTFLAGS=" "CARGO_BUILD_RUSTFLAGS=" "CARGO_ENCODED_RUSTFLAGS="
+        ${JUICER_RUST_TEST_COMMAND} --features test-support --test input_hull)
+set_tests_properties(Gamut.Host.InputHull.Math PROPERTIES LABELS "host" TIMEOUT 120 RESOURCE_LOCK juicer_cargo WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+add_test(NAME Gamut.Host.InputHull.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_input_hull_fixtures.py -v)
+set_tests_properties(Gamut.Host.InputHull.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 30 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")

@@ -245,6 +245,15 @@ FjStatus fj_test_tc_lut_allocation_counts(size_t out_counts[2]);
 void fj_test_tc_lut_arm_facade_fault(void);
 uint32_t fj_test_tc_lut_facade_fault_consumed(void);
 
+/* Direct checked core hull facade; never calls the production legacy export.
+ * facade 0 = production, 1 = fixture. Closed one-call faults: 1 structure,
+ * 2 panic, 3 locus/center, 4 rays, 5 scale, 6 identity. No allocation fault.
+ * Consume observation before clear; these are category witnesses, not preimages. */
+FjStatus fj_test_gamut_input_hull(const FjInputHullSource*, FjInputHull*, FjErrorBuffer*);
+FjStatus fj_test_gamut_arm_fault(uint32_t facade, uint32_t fault);
+uint32_t fj_test_gamut_fault_consumed(uint32_t facade, uint32_t fault);
+void fj_test_gamut_clear_fault(void);
+
 #ifdef __cplusplus
 }
 #endif

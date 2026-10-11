@@ -8,7 +8,6 @@
 #include "OutputColor.h"
 
 namespace Spectral {
-    struct Curve;
     struct FilmTcLut;
 } // namespace Spectral
 
@@ -248,6 +247,7 @@ namespace Gamut {
         const OutputGamutTransform& transform,
         const std::array<float, 3>& lab);
 
+    // FJ_TEMP_BRIDGE: completed Rust hull in native cache/recipe holds; remove S4.E.
     struct InputCompressionHull {
         std::array<std::array<float, 2>, kInputHullDirectionCount + 1> xy{};
         std::array<float, 2> center{};
@@ -256,11 +256,5 @@ namespace Gamut {
         std::string diagnostic;
     };
 
-    bool build_input_compression_hull(
-        const Spectral::Curve& xBar,
-        const Spectral::Curve& yBar,
-        const Spectral::Curve& zBar,
-        const Spectral::Curve& d65,
-        InputCompressionHull& out);
 
 } // namespace Gamut

@@ -211,9 +211,28 @@ lands; do not create speculative production APIs for tests.
 CTest compiler probes select the configured Debug or Release profile; complete
 quality gates always exercise both. Probe source workspaces stay disposable,
 while Cargo artifacts reuse `out/build/<preset>/cargo/quality-probes/`. Cargo
-fingerprints and its build lock govern reuse; every invocation still compiles
-each current example and checks its specific diagnostics. Probe outcomes are
-never cached, and these artifacts are separate from product Rust outputs.
+fingerprints and its build lock govern artifact reuse, separately from product
+Rust outputs. Standalone quality and standalone CTest compile every current
+example and check its specific diagnostics.
+
+Within one explicitly named qualification, a complete fresh quality gate can
+supply compiler output to its subsequent Debug and Release CTest groups. Stage
+it with `--probe-manifest <new-path> --qualification-id <new-UUID>`. After the
+quality command and its process tree finish successfully, publish that exact
+request with `python tests/quality/probe_evidence.py --manifest <new-path>
+--qualification-id <same-UUID>`. Pass that published path and identity to CTest
+as `JUICER_RUST_PROBE_MANIFEST` and `JUICER_QUALIFICATION_ID`.
+
+Both groups still execute their original case loops and assertions against the
+original compiler diagnostics. They report `verified existing probe evidence`,
+with the producer path; they do not skip tests or create duplicate compiler logs.
+Source membership/bytes, fixtures, dependency sources, configuration, tools,
+runtime, effective environment, target, profile, features and arguments must
+match. Missing, changed, incomplete or unpublished evidence fails the group.
+Without an explicit manifest CTest compiles fresh. Quality always compiles
+fresh, even if it inherits a manifest. There is no cross-qualification lookup.
+Workspace/dependency metadata and structural guards continue to execute fresh.
+`Quality.ProbeEvidence` checks this handoff's invalidation and failure behavior.
 
 The dispatcher always runs the inexpensive native boundary guards across their
 whole source scope, including new nested headers. They reject host messaging in

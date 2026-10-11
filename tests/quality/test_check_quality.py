@@ -132,7 +132,7 @@ class CheckQualityTests(unittest.TestCase):
                 self.assertNotIn("Quality checks passed", output.getvalue())
 
     def test_policy_changes_cannot_skip_required_checks(self) -> None:
-        for path in ("Cargo.toml", "rust/film-juicer-core/Cargo.toml", "tests/quality/test_rust_boundaries.py", "scripts/check-quality.py"):
+        for path in ("Cargo.toml", "rust/film-juicer-core/Cargo.toml", "tests/quality/test_rust_boundaries.py", "tests/quality/probe_evidence.py", "scripts/check-quality.py"):
             with (
                 self.subTest(path=path),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", path]),
@@ -208,7 +208,7 @@ class CheckQualityTests(unittest.TestCase):
                     "JUICER_RUST_PROBE_DIR": directory + "/cache", "JUICER_TEST_ARTIFACT_DIR": directory + "/logs"}
                 for profile, expected in (("debug", (False,)), ("release", (True,)), ("both", (False, True))):
                     with self.subTest(module=module_name, profile=profile), patch.dict(os.environ,
-                        {**settings, "JUICER_RUST_PROBE_PROFILE": profile}):
+                        {**settings, "JUICER_RUST_PROBE_PROFILE": profile}), patch.object(module, "ProbeEvidence"):
                         try:
                             suite.setUpClass()
                             self.assertEqual(suite.profiles, expected)
@@ -283,6 +283,25 @@ class ParallelAnalysisTests(unittest.TestCase):
                  contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
                 check_quality.parse_arguments()
             self.assertEqual(failure.exception.code, 2)
+
+    def test_probe_handoff_requires_new_path_and_matching_identity_arguments(self) -> None:
+        base = [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", "CONTRIBUTING.md"]
+        identity = "01234567-89ab-4def-8012-3456789abcde"
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "probes.json"
+            for extra in (["--probe-manifest", str(manifest)], ["--qualification-id", identity],
+                          ["--probe-manifest", str(manifest), "--qualification-id", "bad-id"]):
+                with self.subTest(extra=extra), patch.object(sys, "argv", [*base, *extra]), \
+                        contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    check_quality.parse_arguments()
+            arguments = [*base, "--probe-manifest", str(manifest), "--qualification-id", identity]
+            with patch.object(sys, "argv", arguments):
+                self.assertEqual(check_quality.parse_arguments().qualification_id, identity)
+            for path in (manifest, manifest.with_name(manifest.name + ".pending")):
+                path.write_text("existing")
+                with patch.object(sys, "argv", arguments), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    check_quality.parse_arguments()
+                path.unlink()
 
     def test_serial_and_parallel_commands_keep_arguments_directories_and_logs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

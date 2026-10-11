@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -684,4 +685,95 @@ void fj_test_tc_lut_admission() {
             }
         }
     std::printf("PASS %zu TC actual-caller cold/current/failure/retention/recovery witnesses\n", count);
+}
+
+void fj_test_input_hull_products(const nlohmann::json& fixture, const std::filesystem::path& tablesPath) {
+    require(fj_test_gamut_arm_fault(0, 1).category == FJ_STATUS_SUCCESS, "arm cold no-work hull witness");
+    for (int method : {0, 1, 2}) {
+        auto controls = snapshot(Spektrafilm::ScanRoute::NegativeDirectScan, static_cast<Spektrafilm::RgbToRawMethod>(method));
+        controls.inputCompressionEnabled = method == 1;
+        FocusedRenderStateBuildProduct product;
+        std::string diagnostic;
+        require(build_direct_render_state_product(controls, product, diagnostic) && !product.recipe.filmRaw.inputCompressionHull, "disabled/Mallett acquires no hull");
+        require(fj_test_gamut_fault_consumed(0, 1) == 0, "no-work does not consume construction fault");
+    }
+    const auto d65 = JuicerProcess::root().assets().illuminant_filter_curves();
+    FjInputHullSource source{{Spectral::gXBar.linear.data(), 81}, {Spectral::gYBar.linear.data(), 81}, {Spectral::gZBar.linear.data(), 81}, {d65->d65.linear.data(), 81}};
+    FjInputHull hull{};
+    FjErrorBuffer error{nullptr, 0, 0};
+    require(fj_legacy_gamut_input_hull(&source, &hull, &error).category == FJ_STATUS_UNSUPPORTED_INPUT && fj_test_gamut_fault_consumed(0, 1) == 1, "next real call consumes skipped construction fault before cleanup");
+    fj_test_gamut_clear_fault();
+    std::ifstream tables(tablesPath, std::ios::binary);
+    for (const auto& row : fixture["products"]) {
+        const int route = row.value("route", 0), polarity = row.value("polarity", 0), method = row["method"];
+        auto controls = snapshot(static_cast<Spektrafilm::ScanRoute>(polarity * 2 + route), static_cast<Spektrafilm::RgbToRawMethod>(method));
+        controls.inputCompressionEnabled = row["compression"];
+        FocusedRenderStateBuildProduct product;
+        std::string diagnostic;
+        require(route ? build_print_render_state_product(controls, product, diagnostic) : build_direct_render_state_product(controls, product, diagnostic), "actual A8 product completes");
+        require(complete_result(product) == row["expected"], "all native A8 product fields exact");
+        require(bool(product.recipe.filmRaw.inputCompressionHull) == row.contains("hull"), "route/method hull ownership");
+        if (product.recipe.filmRaw.inputCompressionHull) {
+            const auto& actual = *product.recipe.filmRaw.inputCompressionHull;
+            require(actual.hash == row["hull"]["hash"] && bits(actual.center) == row["hull"]["center"], "actual recipe hull identity");
+            for (std::size_t i = 0; i < actual.xy.size(); ++i)
+                require(bits(actual.xy[i]) == row["hull"]["xy"][i], "actual recipe polygon");
+        }
+        require(bool(product.payload.filmTcLut) == row.contains("table_count"), "actual TC ownership");
+        if (product.payload.filmTcLut) {
+            const auto samples = product.payload.filmTcLut->samples();
+            require(samples.size() == row["table_count"], "complete TC extent");
+            std::vector<char> expected(samples.size_bytes());
+            tables.seekg(row["table_offset"].get<std::streamoff>());
+            tables.read(expected.data(), static_cast<std::streamsize>(expected.size()));
+            require(tables.good() && std::memcmp(expected.data(), samples.data(), expected.size()) == 0, "every native TC byte including padding");
+        }
+    }
+}
+
+void fj_test_input_hull_admission(std::uint32_t fault) {
+    require(fault >= 1 && fault <= 6, "closed hull admission witness");
+    auto controls = snapshot(Spektrafilm::ScanRoute::PositivePrintScan, Spektrafilm::RgbToRawMethod::Arctic2026beta04);
+    controls.inputCompressionEnabled = 1;
+    InstanceState cold;
+    pending(cold, controls);
+    require(fj_test_gamut_arm_fault(0, fault).category == FJ_STATUS_SUCCESS, "arm cold hull failure");
+    const auto coldFailure = admit_pending_render_state(cold);
+    require(coldFailure.status == PendingRenderAdmissionStatus::RebuildFailed && !admitted(coldFailure) && cold.lastHash.load() == 0 && !JuicerAtomic::load_shared_ptr(&cold.activePrintState), "cold hull failure admits and publishes nothing");
+    require(fj_test_gamut_fault_consumed(0, fault) == 1, "cold fault consumed before cleanup/retry");
+    InstanceState current;
+    auto disabled = controls;
+    disabled.inputCompressionEnabled = 0;
+    pending(current, disabled);
+    const auto old = admit_pending_render_state(current);
+    require(admitted(old), "disabled hull initial publication");
+    const auto retained = held(old);
+    const auto previousHash = current.lastHash.load(), counter = current.buildCounterNext.load();
+    pending(current, controls);
+    require(fj_test_gamut_arm_fault(0, fault).category == FJ_STATUS_SUCCESS, "arm changed-current hull failure");
+    const auto failed = admit_pending_render_state(current);
+    require(failed.status == PendingRenderAdmissionStatus::RebuildFailed && !admitted(failed), "failed current cannot admit old publication");
+    require(fj_test_gamut_fault_consumed(0, fault) == 1, "current fault consumed before cleanup/recovery");
+    require(current.lastHash.load() == previousHash && current.buildCounterNext.load() == counter && held(old) == retained, "failed build preserves counters and admitted immutable hold");
+    if (fault >= 3)
+        require(!JuicerAtomic::load_shared_ptr(&current.activePrintState), "ordinary missing hull clears publication");
+    else
+        require(JuicerAtomic::load_shared_ptr(&current.activePrintState) == old.printState, "exceptional hull fault preserves publication");
+    fj_test_gamut_clear_fault();
+    const auto recovered = admit_pending_render_state(current);
+    require(admitted(recovered) && current.lastHash.load() == hash_params(controls) && current.buildCounterNext.load() == counter + 1, "current recovery publishes complete state once");
+    require(admitted(admit_pending_render_state(cold)), "cold retry recovers");
+    require(fj_test_gamut_arm_fault(0, 1).category == FJ_STATUS_SUCCESS, "arm warm skip");
+    auto changed = controls;
+    changed.cameraExposureCompensationEv += .25;
+    pending(current, changed);
+    require(admitted(admit_pending_render_state(current)) && fj_test_gamut_fault_consumed(0, 1) == 0, "warm Library bypasses hull construction");
+    const auto& hull = recovered.printState->recipe.filmRaw.inputCompressionHull;
+    require(hull && hull == JuicerProcess::root().assets().input_compression_hull(), "recipe retains sole cached winner");
+    const auto curves = JuicerProcess::root().assets().illuminant_filter_curves();
+    FjInputHullSource source{{Spectral::gXBar.linear.data(), 81}, {Spectral::gYBar.linear.data(), 81}, {Spectral::gZBar.linear.data(), 81}, {curves->d65.linear.data(), 81}};
+    FjInputHull out{};
+    FjErrorBuffer error{nullptr, 0, 0};
+    require(fj_legacy_gamut_input_hull(&source, &out, &error).category == FJ_STATUS_UNSUPPORTED_INPUT && fj_test_gamut_fault_consumed(0, 1) == 1, "warm skipped fault remains armed until actual operation");
+    fj_test_gamut_clear_fault();
 }
