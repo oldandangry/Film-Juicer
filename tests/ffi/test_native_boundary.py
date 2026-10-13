@@ -61,14 +61,27 @@ RETIRED_PROFILES = r"\b(?:ProfileAssetStore|ProfileJSONLoader)\b|ProfileAssets\.
 RETIRED_NOISE = r"\b(?:StbnNoisePayload|WangNoisePayload|StaticNoisePayloadSet|StaticNoiseAssetSet|StaticNoisePayloadCacheState|static_noise_payloads|load_stbn_noise_payload|load_wang_noise_payload|load_static_noise_payloads|ensure_static_noise_assets|load_static_noise_assets|make_static_noise_assets|noise_asset_path|build_static_noise_input|compatibility_data_directory|_staticNoiseOnce|_staticNoiseAssets|_staticNoisePayloadCache|_dataDir)\b"
 
 
+RETIRED_OUTPUT_GAMUT = r"\b(?:kOutputBoundaryCubeSlack|kOutputBoundaryMaximumChroma|build_output_gamut_transform|output_boundary_contract_hash|build_output_boundary_table|native_rgb_to_oklab|oklab_to_native_rgb|evaluate_cubic|append_interior_derivative_roots|first_channel_exit|build_boundary_cubics|multiply_float_matrix_vector)\b|GamutCompression\.cpp"
+
+
 class NativeBoundary(unittest.TestCase):
+    def test_native_output_gamut_math_is_retired(self):
+        self.assertFalse((ROOT / "src/GamutCompression.cpp").exists())
+        self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_OUTPUT_GAMUT), [])
+        header = (ROOT / "src/GamutCompression.h").read_text(encoding="utf-8")
+        for survivor in ("kOklabXyzToLms", "kOklabLmsToXyz", "kOklabLmsRootToLab", "kOklabLabToLmsRoot", "sample_output_boundary", "compress_output_oklch"):
+            self.assertIn(survivor, header)
+        for removed in ("build_output_gamut_transform", "output_boundary_contract_hash", "build_output_boundary_table", "native_rgb_to_oklab", "oklab_to_native_rgb", "evaluate_cubic", "append_interior_derivative_roots", "first_channel_exit", "build_boundary_cubics", "multiply_float_matrix_vector"):
+            self.assertRegex(f"void {removed}() {{}}", RETIRED_OUTPUT_GAMUT)
+        self.assertRegex("src/GamutCompression.cpp", RETIRED_OUTPUT_GAMUT)
+        self.assertNotRegex("compress_output_oklch(); sample_output_boundary(); JuicerGamut::output_boundary();", RETIRED_OUTPUT_GAMUT)
+
     def test_retired_tc_math_definitions_stay_deleted(self):
         processing = ROOT / "src/SpectralProcessing.cpp"
-        gamut = ROOT / "src/GamutCompression.cpp"
         tc = r"\b(?:bool\s+(?:build_film_tc_lut|build_blurred_hanatos_spectra|build_gaussian_kernel|projected_white_to_tc)|(?:float|int|void|std::array<\s*float\s*,\s*3\s*>)\s+(?:sample_film_tc_lut|sample_mitchell_2d|sample_integrated|sample_spectrum|mitchell_weight|mitchell_coordinate|mitchell_reflect_index|gaussian_reflect_index|eval_hanatos_surface))\s*\([^;{}]*\)\s*\{"
         remap = r"\b(?:bool\s+(?:compress_input_xy|remap_film_tc_lut_for_input_compression)|(?:float|double)\s+(?:bilinear_sample|reinhard_knee))\s*\([^;{}]*\)\s*\{"
         self.assertEqual(forbidden_uses([processing], tc), [])
-        self.assertEqual(forbidden_uses([gamut], remap), [])
+        self.assertEqual(forbidden_uses(color_sources(ROOT), remap), [])
         for body in ("bool build_film_tc_lut() {}", "float eval_hanatos_surface() {}", "int gaussian_reflect_index() {}", "void mitchell_coordinate() {}"):
             self.assertRegex(body, tc)
         for body in ("bool compress_input_xy() {}", "bool remap_film_tc_lut_for_input_compression() {}", "double reinhard_knee() {}", "float bilinear_sample() {}"):
@@ -79,10 +92,8 @@ class NativeBoundary(unittest.TestCase):
 
     def test_native_input_hull_math_is_retired(self):
         self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_INPUT_HULL_DEFINITIONS), [])
-        source = (ROOT / "src/GamutCompression.cpp").read_text(encoding="utf-8")
-        self.assertNotRegex(source, r"\b(?:kLocusSampleCount|kHullDetail|kInputCompressionVersion|struct\s+Ray|using\s+Locus)\b")
+        self.assertFalse((ROOT / "src/GamutCompression.cpp").exists())
         self.assertNotIn("build_input_compression_hull", (ROOT / "src/GamutCompression.h").read_text(encoding="utf-8"))
-        self.assertEqual(source.count("kTwoPi"), 3, "A9 output hue still owns this shared constant")
         library = (ROOT / "src/ResourceAssetLibrary.cpp").read_text(encoding="utf-8")
         self.assertEqual(library.count("JuicerGamut::input_hull("), 1)
         core = (ROOT / "rust/film-juicer-core/src/gamut.rs").read_text(encoding="utf-8")

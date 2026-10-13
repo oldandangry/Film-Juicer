@@ -18,21 +18,22 @@ namespace Gamut {
     inline constexpr int kOutputBoundaryHueCount = 720;
     inline constexpr float kOutputBoundaryMinimumLightness = 0.02f;
     inline constexpr float kOutputBoundaryMaximumLightness = 1.0f;
-    inline constexpr float kOutputBoundaryCubeSlack = 1.0e-6f;
-    inline constexpr float kOutputBoundaryMaximumChroma = 2.0f;
     inline constexpr std::size_t kOutputBoundaryValueCount =
         static_cast<std::size_t>(kOutputBoundaryLightnessCount) *
         static_cast<std::size_t>(kOutputBoundaryHueCount);
 
+    // FJ_TEMP_BRIDGE: completed Rust transform carrier; remove S4.E.
     struct OutputGamutTransform {
         std::array<float, 9> nativeRgbToD65Xyz{};
         std::array<float, 9> d65XyzToNativeRgb{};
         OutputEncoding::ColorSpace outputColorSpace =
             OutputEncoding::ColorSpace::sRGB;
         std::uint64_t hash = 0;
+        std::uint64_t contractHash = 0;
         bool valid = false;
     };
 
+    // FJ_TEMP_BRIDGE: native fixed boundary/cache carrier; remove S4.E.
     struct OutputBoundaryTable {
         std::array<float, kOutputBoundaryValueCount> cmax{};
         std::uint64_t transformHash = 0;
@@ -226,26 +227,6 @@ namespace Gamut {
     }
 
 #undef JUICER_GAMUT_HOST_DEVICE
-
-    bool build_output_gamut_transform(
-        OutputEncoding::ColorSpace outputColorSpace,
-        OutputGamutTransform& out,
-        std::string& diagnostic);
-
-    bool build_output_boundary_table(
-        const OutputGamutTransform& transform,
-        OutputBoundaryTable& out);
-
-    std::uint64_t output_boundary_contract_hash(
-        const OutputGamutTransform& transform);
-
-    std::array<float, 3> native_rgb_to_oklab(
-        const OutputGamutTransform& transform,
-        const std::array<float, 3>& rgb);
-
-    std::array<float, 3> oklab_to_native_rgb(
-        const OutputGamutTransform& transform,
-        const std::array<float, 3>& lab);
 
     // FJ_TEMP_BRIDGE: completed Rust hull in native cache/recipe holds; remove S4.E.
     struct InputCompressionHull {

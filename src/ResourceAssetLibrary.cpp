@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <limits>
 #include <utility>
 
 #include "Logging.h"
@@ -14,6 +15,26 @@
 #include "RustGamutBridge.h"
 
 namespace JuicerAssets {
+#if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
+    namespace OutputGamutTest {
+        void enter_lock() noexcept;
+        void leave_lock() noexcept;
+        void observe_generation(std::uint64_t& generation) noexcept;
+        void after_miss(std::uint64_t generation);
+        void after_selection(bool warm, std::uint64_t generation, const std::shared_ptr<const Gamut::OutputBoundaryTable>& hold);
+        void before_illuminant_clear();
+        void after_clear(bool exhausted, std::uint64_t generation) noexcept;
+        struct LockObservation {
+            LockObservation() noexcept {
+                enter_lock();
+            }
+            ~LockObservation() {
+                leave_lock();
+            }
+        };
+    } // namespace OutputGamutTest
+#endif
+
 
     namespace {
         std::optional<CsvRows> available_csv_rows(AssetBridge& bridge, CsvSource source) {
@@ -89,8 +110,10 @@ namespace JuicerAssets {
         std::shared_ptr<const Gamut::InputCompressionHull> hull;
     };
 
+    // FJ_TEMP_BRIDGE: sole native output boundary cache; remove S4.E.
     struct Library::OutputBoundaryTableCacheState {
         std::mutex mutex;
+        std::uint64_t generation = 0;
         std::array<std::shared_ptr<const Gamut::OutputBoundaryTable>,
                    OutputEncoding::kColorSpaceCount>
             tables;
@@ -240,35 +263,77 @@ namespace JuicerAssets {
         diagnostic.clear();
         const int outputIndex =
             OutputEncoding::toIndex(transform.outputColorSpace);
-        if (!transform.valid || transform.hash == 0 || outputIndex < 0 ||
+        if (!transform.valid || transform.hash == 0 || transform.contractHash == 0 || outputIndex < 0 ||
             outputIndex >= static_cast<int>(OutputEncoding::kColorSpaceCount)) {
             diagnostic =
                 "ResourceDescriptorMismatch component=output_boundary_cache field=transform";
             return {};
         }
         const std::size_t index = static_cast<std::size_t>(outputIndex);
-        std::lock_guard<std::mutex> lock(_outputBoundaryTableCache->mutex);
-        auto& cached = _outputBoundaryTableCache->tables[index];
-        if (!cached) {
-            auto candidate = std::make_shared<Gamut::OutputBoundaryTable>();
-            if (!Gamut::build_output_boundary_table(transform, *candidate)) {
-                diagnostic = candidate->diagnostic;
-                return {};
+        const auto expectedTransform = transform.hash;
+        const auto expectedContract = transform.contractHash;
+        const auto identities_match = [&](const std::shared_ptr<const Gamut::OutputBoundaryTable>& hold) {
+            if (hold->transformHash != expectedTransform) {
+                diagnostic = "ResourceDescriptorMismatch component=output_boundary_cache field=published_identity";
+                return false;
             }
-            cached = std::move(candidate);
+            if (hold->contractHash != expectedContract) {
+                diagnostic = "ResourceDescriptorMismatch component=output_boundary_cache field=contract_identity";
+                return false;
+            }
+            return true;
+        };
+        std::shared_ptr<const Gamut::OutputBoundaryTable> selected;
+        std::uint64_t generation = 0;
+        {
+            std::lock_guard<std::mutex> lock(_outputBoundaryTableCache->mutex);
+#if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
+            OutputGamutTest::LockObservation observed;
+            OutputGamutTest::observe_generation(_outputBoundaryTableCache->generation);
+#endif
+            selected = _outputBoundaryTableCache->tables[index];
+            generation = _outputBoundaryTableCache->generation;
         }
-        if (cached->transformHash != transform.hash) {
-            diagnostic =
-                "ResourceDescriptorMismatch component=output_boundary_cache field=published_identity";
+        if (selected) {
+#if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
+            OutputGamutTest::after_selection(true, generation, selected);
+#endif
+            if (!identities_match(selected))
+                return {};
+            return selected;
+        }
+#if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
+        OutputGamutTest::after_miss(generation);
+#endif
+        auto candidate = std::make_shared<Gamut::OutputBoundaryTable>();
+        if (!JuicerGamut::output_boundary(transform, *candidate)) {
+            diagnostic = candidate->diagnostic;
             return {};
         }
-        if (cached->contractHash !=
-            Gamut::output_boundary_contract_hash(transform)) {
-            diagnostic =
-                "ResourceDescriptorMismatch component=output_boundary_cache field=contract_identity";
-            return {};
+        bool stale = false;
+        {
+            std::lock_guard<std::mutex> lock(_outputBoundaryTableCache->mutex);
+#if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
+            OutputGamutTest::LockObservation observed;
+#endif
+            stale = generation != _outputBoundaryTableCache->generation;
+            if (!stale) {
+                auto& cached = _outputBoundaryTableCache->tables[index];
+                if (!cached)
+                    cached = candidate;
+                selected = cached;
+            }
         }
-        return cached;
+        // Clear changes publication eligibility, never a completed private result.
+        // Once selected, a hold remains authoritative even across a later clear.
+        if (stale)
+            return candidate;
+#if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
+        OutputGamutTest::after_selection(false, generation, selected);
+#endif
+        if (!identities_match(selected))
+            return {};
+        return selected;
     }
 
     NeutralPrintCalibrationResult Library::neutral_print_calibration(const std::string& printStock,
@@ -298,6 +363,9 @@ namespace JuicerAssets {
         };
         cleanup([&] {
             if (_illuminantFilterCurveCache) {
+#if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
+                OutputGamutTest::before_illuminant_clear();
+#endif
                 std::shared_ptr<const IlluminantFilterCurveSet> detached;
                 {
                     std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);
@@ -308,9 +376,29 @@ namespace JuicerAssets {
         cleanup([&] {
             if (_outputBoundaryTableCache) {
                 decltype(_outputBoundaryTableCache->tables) detached;
+                bool exhausted = false;
+#if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
+                std::uint64_t generation = 0;
+#endif
                 {
                     std::lock_guard<std::mutex> lock(_outputBoundaryTableCache->mutex);
-                    detached.swap(_outputBoundaryTableCache->tables);
+#if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
+                    OutputGamutTest::LockObservation observed;
+#endif
+                    exhausted = _outputBoundaryTableCache->generation == std::numeric_limits<std::uint64_t>::max();
+                    if (!exhausted) {
+                        ++_outputBoundaryTableCache->generation;
+                        detached.swap(_outputBoundaryTableCache->tables);
+                    }
+#if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
+                    generation = _outputBoundaryTableCache->generation;
+#endif
+                }
+#if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
+                OutputGamutTest::after_clear(exhausted, generation);
+#endif
+                if (exhausted && first.category == FJ_STATUS_SUCCESS) {
+                    first = JuicerCuda::write_status({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "output boundary cache generation exhausted", error);
                 }
             }
         });

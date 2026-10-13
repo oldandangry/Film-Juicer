@@ -151,6 +151,21 @@ class RustBoundaryTests(unittest.TestCase):
                 "E0505": ("drop(film_owner)", "drop(print_owner)", "drop(spectra_owner)", "drop(mallett_owner)", "drop(cmf_owner)", "drop(csv_owner)", "drop(noise_owner)"),
             })
 
+    def test_output_gamut_completed_api_is_private_and_borrowed(self) -> None:
+        for fixture, expected in (
+            ("output_gamut_private", {"E0616": ("transform.hash", "boundary.cmax[0]")}),
+            ("output_gamut_default", {"E0599": ("OutputTransform::default()", "OutputBoundary::default()")}),
+            ("output_gamut_construction", {"E0451": ("OutputTransform { ..transform }", "OutputBoundary { ..boundary }")}),
+            ("output_gamut_borrowed", {"E0515": ("boundary.cmax()",), "E0505": ("drop(boundary)", "drop(transform)")}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    status, diagnostics = self.check("film-juicer-plugin", release)
+                    self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_completed_profile_storage_is_private_to_its_owner(self) -> None:
         # The plugin is a real external consumer of the core, and a sibling of
         # asset_profile; inserting the probe inside the owner would bypass privacy.

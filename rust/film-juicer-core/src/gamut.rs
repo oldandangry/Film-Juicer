@@ -381,3 +381,482 @@ mod tests {
         assert_ne!(super::hull_hash(&center, &polygon), open_polygon);
     }
 }
+
+// Output construction shares the native fixed carrier until S4.E; cache policy
+// and CUDA execution remain outside this safe mathematical producer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum OutputSpace {
+    Srgb,
+    DciP3,
+    DisplayP3,
+    AdobeRgb,
+    Bt2020,
+    ProPhotoRgb,
+    Aces2065,
+    DaVinciWideGamut,
+    Rec709,
+}
+impl TryFrom<u32> for OutputSpace {
+    type Error = ();
+    fn try_from(tag: u32) -> Result<Self, Self::Error> {
+        match tag {
+            0 => Ok(Self::Srgb),
+            1 => Ok(Self::DciP3),
+            2 => Ok(Self::DisplayP3),
+            3 => Ok(Self::AdobeRgb),
+            4 => Ok(Self::Bt2020),
+            5 => Ok(Self::ProPhotoRgb),
+            6 => Ok(Self::Aces2065),
+            7 => Ok(Self::DaVinciWideGamut),
+            8 => Ok(Self::Rec709),
+            _ => Err(()),
+        }
+    }
+}
+#[derive(Clone, Copy)]
+pub struct TransformInput<'a> {
+    pub space: OutputSpace,
+    pub rgb_to_xyz: &'a [f32; 9],
+    pub xyz_to_rgb: &'a [f32; 9],
+    pub white_xyz: &'a [f32; 3],
+    pub d65_white_xyz: &'a [f32; 3],
+}
+pub struct OutputTransform {
+    native_rgb_to_d65_xyz: [f32; 9],
+    d65_xyz_to_native_rgb: [f32; 9],
+    space: OutputSpace,
+    hash: u64,
+    contract_hash: u64,
+}
+impl OutputTransform {
+    pub fn native_rgb_to_d65_xyz(&self) -> &[f32; 9] {
+        &self.native_rgb_to_d65_xyz
+    }
+    pub fn d65_xyz_to_native_rgb(&self) -> &[f32; 9] {
+        &self.d65_xyz_to_native_rgb
+    }
+    pub fn space(&self) -> OutputSpace {
+        self.space
+    }
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+    pub fn contract_hash(&self) -> u64 {
+        self.contract_hash
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransformError {
+    FiniteNativeWhiteCat16,
+    Identity,
+}
+impl std::fmt::Display for TransformError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::FiniteNativeWhiteCat16 => "MalformedRequiredResource component=output_gamut_transform requirement=finite_native_white_cat16",
+            Self::Identity => "ResourceDescriptorMismatch component=output_gamut_transform field=identity",
+        })
+    }
+}
+impl std::error::Error for TransformError {}
+
+pub const OUTPUT_BOUNDARY_VALUE_COUNT: usize = 64 * 720;
+const OUTPUT_LIGHTNESS_COUNT: usize = 64;
+const OUTPUT_HUE_COUNT: usize = 720;
+const OUTPUT_BISECTIONS: usize = 20;
+const OUTPUT_MINIMUM_LIGHTNESS: f32 = 0.02;
+const OUTPUT_MAXIMUM_LIGHTNESS: f32 = 1.0;
+const OUTPUT_CUBE_SLACK: f32 = 1e-6;
+const OUTPUT_MAXIMUM_CHROMA: f32 = 2.0;
+const DERIVATIVE_TOLERANCE: f64 = 1e-14;
+
+#[expect(
+    clippy::excessive_precision,
+    reason = "retain every authored f32 OkLab literal shared with CUDA"
+)]
+const OKLAB_XYZ_TO_LMS: [f32; 9] = [
+    0.8189330101,
+    0.3618667424,
+    -0.1288597137,
+    0.0329845436,
+    0.9293118715,
+    0.0361456387,
+    0.0482003018,
+    0.2643662691,
+    0.6338517070,
+];
+
+#[expect(
+    clippy::excessive_precision,
+    reason = "retain every authored f32 OkLab literal shared with CUDA"
+)]
+const OKLAB_LMS_TO_XYZ: [f32; 9] = [
+    1.2270138511,
+    -0.5577999807,
+    0.2812561490,
+    -0.0405801784,
+    1.1122568696,
+    -0.0716766787,
+    -0.0763812845,
+    -0.4214819784,
+    1.5861632204,
+];
+
+#[expect(
+    clippy::excessive_precision,
+    reason = "retain every authored f32 OkLab literal shared with CUDA"
+)]
+const OKLAB_LMS_ROOT_TO_LAB: [f32; 9] = [
+    0.2104542553,
+    0.7936177850,
+    -0.0040720468,
+    1.9779984951,
+    -2.4285922050,
+    0.4505937099,
+    0.0259040371,
+    0.7827717662,
+    -0.8086757660,
+];
+
+#[expect(
+    clippy::excessive_precision,
+    reason = "retain every authored f32 OkLab literal shared with CUDA"
+)]
+const OKLAB_LAB_TO_LMS_ROOT: [f32; 9] = [
+    1.0,
+    0.3963377774,
+    0.2158037573,
+    1.0,
+    -0.1055613458,
+    -0.0638541728,
+    1.0,
+    -0.0894841775,
+    -1.2914855480,
+];
+
+fn multiply_matrix(left: &[f64; 9], right: &[f64; 9]) -> [f64; 9] {
+    let mut result = [0.0; 9];
+    for row in 0..3 {
+        for column in 0..3 {
+            for inner in 0..3 {
+                result[row * 3 + column] += left[row * 3 + inner] * right[inner * 3 + column];
+            }
+        }
+    }
+    result
+}
+fn output_contract_hash(transform_hash: u64) -> u64 {
+    let mut identity = hash::FNV_OFFSET;
+    hash::update_bytes(&mut identity, &1_u32.to_le_bytes());
+    hash::update_bytes(&mut identity, &transform_hash.to_le_bytes());
+    for value in [OUTPUT_LIGHTNESS_COUNT, OUTPUT_HUE_COUNT, OUTPUT_BISECTIONS] {
+        hash::update_bytes(&mut identity, &(value as i32).to_le_bytes());
+    }
+    for value in [
+        OUTPUT_MINIMUM_LIGHTNESS,
+        OUTPUT_MAXIMUM_LIGHTNESS,
+        OUTPUT_CUBE_SLACK,
+        OUTPUT_MAXIMUM_CHROMA,
+    ] {
+        hash::update_bytes(&mut identity, &value.to_bits().to_le_bytes());
+    }
+    identity
+}
+pub fn output_transform(input: TransformInput<'_>) -> Result<OutputTransform, TransformError> {
+    let native_white = input
+        .white_xyz
+        .map(|v| (f64::from(v) / f64::from(input.white_xyz[1])) as f32);
+    let entry_adapt = crate::color::cat16_matrix(crate::color::Whites {
+        source_xyz: native_white,
+        destination_xyz: *input.d65_white_xyz,
+    });
+    let exit_adapt = crate::color::cat16_matrix(crate::color::Whites {
+        source_xyz: *input.d65_white_xyz,
+        destination_xyz: native_white,
+    });
+    let entry = multiply_matrix(
+        &entry_adapt.map(f64::from),
+        &input.rgb_to_xyz.map(f64::from),
+    );
+    let exit = multiply_matrix(&input.xyz_to_rgb.map(f64::from), &exit_adapt.map(f64::from));
+    if !entry.iter().chain(&exit).all(|v| v.is_finite()) {
+        return Err(TransformError::FiniteNativeWhiteCat16);
+    }
+    let entry = entry.map(|v| v as f32);
+    let exit = exit.map(|v| v as f32);
+    let mut identity = hash::FNV_OFFSET;
+    hash::update_bytes(&mut identity, &1_u32.to_le_bytes());
+    // The native enum occupies one byte, independently of the raw C u32 tag.
+    hash::update_bytes(&mut identity, &[input.space as u8]);
+    for sample in input
+        .rgb_to_xyz
+        .iter()
+        .chain(input.xyz_to_rgb)
+        .chain(input.white_xyz)
+        .chain(&entry)
+        .chain(&exit)
+        .chain(&OKLAB_XYZ_TO_LMS)
+        .chain(&OKLAB_LMS_TO_XYZ)
+        .chain(&OKLAB_LMS_ROOT_TO_LAB)
+        .chain(&OKLAB_LAB_TO_LMS_ROOT)
+    {
+        hash::update_bytes(&mut identity, &sample.to_bits().to_le_bytes());
+    }
+    if identity == 0 {
+        return Err(TransformError::Identity);
+    }
+    Ok(OutputTransform {
+        native_rgb_to_d65_xyz: entry,
+        d65_xyz_to_native_rgb: exit,
+        space: input.space,
+        hash: identity,
+        contract_hash: output_contract_hash(identity),
+    })
+}
+
+/// Synchronous operands from a completed native transform. Correspondence of
+/// its matrix and identity belongs to that immutable producer, not a new scan.
+#[derive(Clone, Copy)]
+pub struct BoundaryInput<'a> {
+    pub space: OutputSpace,
+    pub d65_xyz_to_native_rgb: &'a [f32; 9],
+    pub transform_hash: u64,
+}
+pub struct OutputBoundary {
+    cmax: Vec<f32>,
+    transform_hash: u64,
+    contract_hash: u64,
+    hash: u64,
+}
+impl OutputBoundary {
+    pub fn cmax(&self) -> &[f32] {
+        &self.cmax
+    }
+    pub fn transform_hash(&self) -> u64 {
+        self.transform_hash
+    }
+    pub fn contract_hash(&self) -> u64 {
+        self.contract_hash
+    }
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundaryError {
+    Transform,
+    C2Outside {
+        space: OutputSpace,
+        lightness_index: u32,
+        hue_index: u32,
+    },
+    FiniteFirstExit,
+    Identity,
+    AllocationFailure,
+}
+impl std::fmt::Display for BoundaryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transform => formatter.write_str("ResourceDescriptorMismatch component=output_boundary_table field=transform"),
+            Self::C2Outside { space, lightness_index, hue_index } => write!(formatter,"MalformedRequiredResource component=output_boundary_table requirement=c2_outside output_space={} lightness_index={lightness_index} hue_index={hue_index}", *space as u8),
+            Self::FiniteFirstExit => formatter.write_str("MalformedRequiredResource component=output_boundary_table requirement=finite_first_exit"),
+            Self::Identity => formatter.write_str("ResourceDescriptorMismatch component=output_boundary_table field=identity"),
+            Self::AllocationFailure => formatter.write_str("output boundary allocation failed"),
+        }
+    }
+}
+impl std::error::Error for BoundaryError {}
+
+fn evaluate_cubic(coefficient: &[f64; 4], chroma: f64) -> f64 {
+    ((coefficient[3] * chroma + coefficient[2]) * chroma + coefficient[1]) * chroma + coefficient[0]
+}
+fn channel_inside_cube(value: f64) -> bool {
+    let slack = f64::from(OUTPUT_CUBE_SLACK);
+    value.is_finite() && value >= -slack && value <= 1.0 + slack
+}
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "native discriminant rejection includes unordered values"
+)]
+fn append_derivative_roots(coefficient: &[f64; 4], partitions: &mut [f64; 4], count: &mut usize) {
+    let a = 3.0 * coefficient[3];
+    let b = 2.0 * coefficient[2];
+    let c = coefficient[1];
+    let mut append = |root: f64| {
+        if root.is_finite() && root > 0.0 && root < f64::from(OUTPUT_MAXIMUM_CHROMA) {
+            partitions[*count] = root;
+            *count += 1;
+        }
+    };
+    // std::max(initializer_list) retains the first operand on ties and NaN.
+    let mut scale = a.abs();
+    for value in [b.abs(), c.abs(), 1.0] {
+        if scale < value {
+            scale = value;
+        }
+    }
+    if a.abs() <= DERIVATIVE_TOLERANCE * scale {
+        if b.abs() > DERIVATIVE_TOLERANCE * scale {
+            append(-c / b);
+        }
+        return;
+    }
+    let discriminant = b * b - 4.0 * a * c;
+    if !(discriminant >= 0.0) {
+        return;
+    }
+    let square_root = discriminant.sqrt();
+    let q = -0.5 * (b + square_root.copysign(b));
+    if q.abs() <= DERIVATIVE_TOLERANCE * scale {
+        append(-b / (2.0 * a));
+        return;
+    }
+    append(q / a);
+    append(c / q);
+}
+fn first_channel_exit(coefficient: &[f64; 4]) -> f64 {
+    if !channel_inside_cube(evaluate_cubic(coefficient, 0.0)) {
+        return 0.0;
+    }
+    let mut partitions = [0.0, f64::from(OUTPUT_MAXIMUM_CHROMA), 0.0, 0.0];
+    let mut count = 2;
+    append_derivative_roots(coefficient, &mut partitions, &mut count);
+    for index in 1..count {
+        let value = partitions[index];
+        let mut insertion = index;
+        while insertion > 0 && value < partitions[insertion - 1] {
+            partitions[insertion] = partitions[insertion - 1];
+            insertion -= 1;
+        }
+        partitions[insertion] = value;
+    }
+    let mut retained = 1;
+    for index in 1..count {
+        if (partitions[retained - 1] - partitions[index]).abs() <= 1e-12 {
+            continue;
+        }
+        partitions[retained] = partitions[index];
+        retained += 1;
+    }
+    for partition in 1..retained {
+        let mut lower = partitions[partition - 1];
+        let mut upper = partitions[partition];
+        if channel_inside_cube(evaluate_cubic(coefficient, upper)) {
+            continue;
+        }
+        for _ in 0..OUTPUT_BISECTIONS {
+            let middle = 0.5 * (lower + upper);
+            if channel_inside_cube(evaluate_cubic(coefficient, middle)) {
+                lower = middle;
+            } else {
+                upper = middle;
+            }
+        }
+        return lower;
+    }
+    f64::INFINITY
+}
+fn boundary_cubics(
+    lms_to_native_rgb: &[f64; 9],
+    lightness: f64,
+    direction: [f64; 2],
+) -> [[f64; 4]; 3] {
+    let mut u = [0.0; 3];
+    let mut v = [0.0; 3];
+    for row in 0..3 {
+        u[row] = f64::from(OKLAB_LAB_TO_LMS_ROOT[row * 3]) * lightness;
+        v[row] = f64::from(OKLAB_LAB_TO_LMS_ROOT[row * 3 + 1]) * direction[0]
+            + f64::from(OKLAB_LAB_TO_LMS_ROOT[row * 3 + 2]) * direction[1];
+    }
+    let mut cubics = [[0.0; 4]; 3];
+    for channel in 0..3 {
+        for component in 0..3 {
+            let weight = lms_to_native_rgb[channel * 3 + component];
+            let component_u = u[component];
+            let component_v = v[component];
+            cubics[channel][0] += weight * component_u * component_u * component_u;
+            cubics[channel][1] += weight * 3.0 * component_u * component_u * component_v;
+            cubics[channel][2] += weight * 3.0 * component_u * component_v * component_v;
+            cubics[channel][3] += weight * component_v * component_v * component_v;
+        }
+    }
+    cubics
+}
+fn boundary_storage(count: usize) -> Result<Vec<f32>, BoundaryError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(count)
+        .map_err(|_| BoundaryError::AllocationFailure)?;
+    Ok(values)
+}
+pub fn build_output_boundary(input: BoundaryInput<'_>) -> Result<OutputBoundary, BoundaryError> {
+    let contract_hash = output_contract_hash(input.transform_hash);
+    if input.transform_hash == 0 || contract_hash == 0 {
+        return Err(BoundaryError::Transform);
+    }
+    let lms_to_native = multiply_matrix(
+        &input.d65_xyz_to_native_rgb.map(f64::from),
+        &OKLAB_LMS_TO_XYZ.map(f64::from),
+    );
+    let directions: [[f64; 2]; OUTPUT_HUE_COUNT] = std::array::from_fn(|h| {
+        let hue = -0.5 * TWO_PI + TWO_PI * h as f64 / OUTPUT_HUE_COUNT as f64;
+        [hue.cos(), hue.sin()]
+    });
+    let mut cmax = boundary_storage(OUTPUT_BOUNDARY_VALUE_COUNT)?;
+    for lightness_index in 0..OUTPUT_LIGHTNESS_COUNT {
+        let lightness = f64::from(OUTPUT_MINIMUM_LIGHTNESS)
+            + (f64::from(OUTPUT_MAXIMUM_LIGHTNESS) - f64::from(OUTPUT_MINIMUM_LIGHTNESS))
+                * lightness_index as f64
+                / (OUTPUT_LIGHTNESS_COUNT - 1) as f64;
+        for (hue_index, &direction) in directions.iter().enumerate() {
+            let cubics = boundary_cubics(&lms_to_native, lightness, direction);
+            let mut endpoint_outside = false;
+            let mut neutral_inside = true;
+            let mut first_exit = f64::INFINITY;
+            for cubic in &cubics {
+                neutral_inside = neutral_inside && channel_inside_cube(evaluate_cubic(cubic, 0.0));
+                endpoint_outside = endpoint_outside
+                    || !channel_inside_cube(evaluate_cubic(
+                        cubic,
+                        f64::from(OUTPUT_MAXIMUM_CHROMA),
+                    ));
+                let exit = first_channel_exit(cubic);
+                if exit < first_exit {
+                    first_exit = exit;
+                }
+            }
+            if !endpoint_outside {
+                return Err(BoundaryError::C2Outside {
+                    space: input.space,
+                    lightness_index: lightness_index as u32,
+                    hue_index: hue_index as u32,
+                });
+            }
+            if !neutral_inside {
+                first_exit = 0.0;
+            }
+            if !(first_exit.is_finite()
+                && first_exit >= 0.0
+                && first_exit <= f64::from(OUTPUT_MAXIMUM_CHROMA))
+            {
+                return Err(BoundaryError::FiniteFirstExit);
+            }
+            cmax.push(first_exit as f32);
+        }
+    }
+    let mut identity = hash::FNV_OFFSET;
+    hash::update_bytes(&mut identity, &contract_hash.to_le_bytes());
+    for value in &cmax {
+        hash::update_bytes(&mut identity, &value.to_bits().to_le_bytes());
+    }
+    if identity == 0 {
+        return Err(BoundaryError::Identity);
+    }
+    Ok(OutputBoundary {
+        cmax,
+        transform_hash: input.transform_hash,
+        contract_hash,
+        hash: identity,
+    })
+}

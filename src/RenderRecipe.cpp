@@ -11,6 +11,7 @@
 #include <string_view>
 
 #include "GamutCompression.h"
+#include "RustGamutBridge.h"
 #include "RustAssetBridge.h"
 #include "RustColorBridge.h"
 #include "RustExposureBridge.h"
@@ -1364,14 +1365,14 @@ namespace {
         }
         out.enabled = enabled;
         out.outputColorSpace = outputColorSpace;
-        if (!Gamut::build_output_gamut_transform(
+        if (!JuicerGamut::output_transform(
                 OutputEncoding::colorSpaceFromIndex(outputColorSpace),
                 out.transform,
                 diagnostic)) {
             return false;
         }
         out.transformTableVersionHash =
-            Gamut::output_boundary_contract_hash(out.transform);
+            out.transform.contractHash;
         if (out.transformTableVersionHash == 0) {
             diagnostic =
                 "ResourceDescriptorMismatch component=output_gamut_recipe field=table_contract_identity";

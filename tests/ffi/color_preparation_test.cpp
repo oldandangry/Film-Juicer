@@ -21,6 +21,7 @@
 
 #include "ColorTransforms.h"
 #include "GamutCompression.h"
+#include "RustGamutBridge.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
@@ -131,15 +132,15 @@ namespace {
     Json transform_result(int space) {
         Gamut::OutputGamutTransform out;
         std::string diagnostic;
-        require(Gamut::build_output_gamut_transform(static_cast<OutputEncoding::ColorSpace>(space), out, diagnostic), diagnostic);
-        return {{"entry", bits(out.nativeRgbToD65Xyz)}, {"exit", bits(out.d65XyzToNativeRgb)}, {"hash", out.hash}, {"contract_hash", Gamut::output_boundary_contract_hash(out)}};
+        require(JuicerGamut::output_transform(static_cast<OutputEncoding::ColorSpace>(space), out, diagnostic), diagnostic);
+        return {{"entry", bits(out.nativeRgbToD65Xyz)}, {"exit", bits(out.d65XyzToNativeRgb)}, {"hash", out.hash}, {"contract_hash", out.contractHash}};
     }
     Json table_result(int space) {
         Gamut::OutputGamutTransform transform;
         Gamut::OutputBoundaryTable table;
         std::string diagnostic;
-        require(Gamut::build_output_gamut_transform(static_cast<OutputEncoding::ColorSpace>(space), transform, diagnostic), diagnostic);
-        require(Gamut::build_output_boundary_table(transform, table), table.diagnostic);
+        require(JuicerGamut::output_transform(static_cast<OutputEncoding::ColorSpace>(space), transform, diagnostic), diagnostic);
+        require(JuicerGamut::output_boundary(transform, table), table.diagnostic);
         return {{"cmax", bits(table.cmax)}, {"hash", table.hash}, {"transform_hash", table.transformHash}, {"contract_hash", table.contractHash}};
     }
     void expect_status(FjStatus status, std::uint32_t category) {
@@ -361,7 +362,7 @@ namespace {
                 auto changed = controls;
                 changed.cameraExposureCompensationEv = 1.0;
                 for (std::uint32_t operation : {FJ_TEST_CAT16_MATRIX, FJ_TEST_CAT16_ADAPT}) {
-                    const std::uint32_t calls = operation == 1 ? 3 : 2;
+                    const std::uint32_t calls = operation == 1 ? 1 : 2;
                     for (std::uint32_t index = 1; index <= calls; ++index) {
                         for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
                             const FaultCase selected{operation, index, fault};

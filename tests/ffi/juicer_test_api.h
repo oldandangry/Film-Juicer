@@ -254,6 +254,19 @@ FjStatus fj_test_gamut_arm_fault(uint32_t facade, uint32_t fault);
 uint32_t fj_test_gamut_fault_consumed(uint32_t facade, uint32_t fault);
 void fj_test_gamut_clear_fault(void);
 
+/* Operation-specific A9 visits: 1 transform, 2 boundary; facade 0/1.
+ * Fault 1 unsupported, 2 panic, 3 allocation transport; transform 4 finite,
+ * 5 identity; boundary 4 transform, 5 c2_outside(3,7), 6 finite_exit, 7 identity. */
+FjStatus fj_test_output_gamut_arm_fault(uint32_t operation, uint32_t facade, uint32_t fault);
+void fj_test_output_gamut_clear_fault(void);
+uint32_t fj_test_output_gamut_fault_consumed(uint32_t operation, uint32_t facade, uint32_t fault);
+uint64_t fj_test_output_gamut_visits(uint32_t operation);
+/* Calling-thread successful cold candidates: count, reserved bytes, copied bytes,
+ * construction nanoseconds, copy nanoseconds; reset 0/1. No product profiling. */
+FjStatus fj_test_output_gamut_copy_metrics(uint64_t out_metrics[5], uint32_t reset);
+FjStatus fj_test_gamut_output_transform(const FjOutputGamutSource* source, FjOutputGamutTransform* out, FjErrorBuffer* error);
+FjStatus fj_test_gamut_output_boundary(const FjOutputBoundarySource* source, float* cmax, size_t count, FjOutputBoundaryIdentity* identity, FjOutputBoundaryFailure* failure, FjErrorBuffer* error);
+
 #ifdef __cplusplus
 }
 #endif

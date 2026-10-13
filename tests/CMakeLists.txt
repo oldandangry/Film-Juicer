@@ -1016,3 +1016,35 @@ add_test(NAME Gamut.Host.InputHull.Math
 set_tests_properties(Gamut.Host.InputHull.Math PROPERTIES LABELS "host" TIMEOUT 120 RESOURCE_LOCK juicer_cargo WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 add_test(NAME Gamut.Host.InputHull.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_input_hull_fixtures.py -v)
 set_tests_properties(Gamut.Host.InputHull.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 30 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
+add_executable(JuicerOutputGamutTests ffi/output_gamut_abi_c.c ffi/output_gamut_test.cpp)
+target_link_libraries(JuicerOutputGamutTests PRIVATE juicer_core)
+set_target_properties(JuicerOutputGamutTests PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerOutputGamutTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+foreach(gamut_case IN ITEMS boundary binding)
+    add_test(NAME Gamut.Host.Output.${gamut_case} COMMAND JuicerOutputGamutTests ${gamut_case}
+        "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/output_gamut/manifest.json" "${JUICER_TEST_PRESET_NAME}")
+    set_tests_properties(Gamut.Host.Output.${gamut_case} PROPERTIES LABELS "host" TIMEOUT 180 RUN_SERIAL TRUE)
+endforeach()
+add_test(NAME Gamut.Host.Output.Math
+    COMMAND "${CMAKE_COMMAND}" -E env "RUSTFLAGS=" "CARGO_BUILD_RUSTFLAGS=" "CARGO_ENCODED_RUSTFLAGS="
+        ${JUICER_RUST_TEST_COMMAND} --features test-support --test output_gamut)
+set_tests_properties(Gamut.Host.Output.Math PROPERTIES LABELS "host" TIMEOUT 120 RESOURCE_LOCK juicer_cargo WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+
+add_library(juicer_output_gamut_test_objects OBJECT ../src/ResourceAssetLibrary.cpp ../src/RustGamutBridge.cpp)
+target_link_libraries(juicer_output_gamut_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_output_gamut_test_objects PRIVATE JUICER_OUTPUT_GAMUT_TEST_HOOK=1)
+add_executable(JuicerOutputGamutCacheTests ffi/output_gamut_cache_test.cpp $<TARGET_OBJECTS:juicer_output_gamut_test_objects>)
+target_link_libraries(JuicerOutputGamutCacheTests PRIVATE juicer_core)
+set_target_properties(JuicerOutputGamutCacheTests PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerOutputGamutCacheTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_dependencies(JuicerOutputGamutCacheTests juicer_test_resources)
+add_test(NAME Gamut.Host.Output.Cache COMMAND JuicerOutputGamutCacheTests "${JUICER_TEST_RESOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/output_gamut/manifest.json" "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Gamut.Host.Output.Cache PROPERTIES LABELS "host" TIMEOUT 180 RUN_SERIAL TRUE)
+add_test(NAME Gamut.Host.Output.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_output_gamut_fixtures.py -v)
+set_tests_properties(Gamut.Host.Output.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 30 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")

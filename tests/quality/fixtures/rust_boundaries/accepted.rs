@@ -58,3 +58,8 @@ use film_juicer_core::spectral::{self, Tables, White};
 pub fn spectral_tables(input: spectral::Input<'_>) -> Tables { spectral::build_tables(input) }
 pub fn spectral_white(observer: spectral::Observer<'_>, illuminant: &[f32;81]) -> Result<White,spectral::WhiteError> { spectral::integrate_white(observer,illuminant) }
 pub fn spectral_values(tables: &Tables, white: &White) -> [f32;9] { let _=(tables.hash(),white.hash(),white.xyz(),tables.lambda_nm());let w=tables.weighted_xyz();spectral::s_inverse([&w[0],&w[1],&w[2]]) }
+
+use film_juicer_core::gamut;
+pub fn output_transform(input: gamut::TransformInput<'_>) -> Result<gamut::OutputTransform,gamut::TransformError> { gamut::output_transform(input) }
+pub fn output_boundary(input: gamut::BoundaryInput<'_>) -> Result<gamut::OutputBoundary,gamut::BoundaryError> { gamut::build_output_boundary(input) }
+pub fn output_values(transform: &gamut::OutputTransform, boundary: &gamut::OutputBoundary) -> [u64;3] { let _=(transform.space(),transform.native_rgb_to_d65_xyz(),transform.d65_xyz_to_native_rgb(),boundary.cmax());[transform.hash(),transform.contract_hash(),boundary.hash()] }

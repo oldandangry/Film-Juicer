@@ -677,3 +677,14 @@ Feature-only spectrum operations preserve the current independent CAT02/input
 color witnesses; they use fixed borrows and never provide a production renderer.
 The four value exports remain temporary native bindings. Normal production
 builds omit the fixture facade and fault storage.
+
+### Output gamut construction and cache
+
+`Gamut.Host.Output.{Math,boundary,binding,Cache,FixtureFormat}` checks the complete
+nine-space native A9 family, exact identities/words, checked optional C diagnostics,
+actual C11 layouts and calls, native failure binding and deterministic cache races.
+The producer owns mathematical policy; the Library owns one nine-slot cache.
+Warm hits retain a hold without foreign construction, copying or rehashing.
+See [the output gamut guide](ffi/README.md#output-gamut-construction) and
+[fixture provenance](ffi/fixtures/output_gamut/README.md). Existing product/GPU
+suites retain distinct route, order, reuse, disabled-work and staging witnesses.

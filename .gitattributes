@@ -84,3 +84,6 @@ tests/ofx/fixtures/exposure/** -text whitespace=cr-at-eol
 
 # Preserve original bytes of provenance-pinned native input-hull captures.
 tests/ffi/fixtures/input_hull/** -text whitespace=cr-at-eol
+
+# Preserve original bytes of provenance-pinned native output-gamut captures.
+tests/ffi/fixtures/output_gamut/** -text whitespace=cr-at-eol

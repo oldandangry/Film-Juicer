@@ -47,6 +47,51 @@ typedef struct FjInputHull {
 } FjInputHull;
 FjStatus fj_legacy_gamut_input_hull(const FjInputHullSource* source, FjInputHull* out, FjErrorBuffer* error);
 
+/* FJ_TEMP_BRIDGE: completed output gamut values; remove S4.E.
+ * Source records are initialized, aligned, addressable and immutable until
+ * synchronous return. Registry literals are borrowed; no source is retained.
+ * Writable records, Cmax, error record/backing are mutually disjoint and disjoint
+ * from inputs; immutable inputs may alias. Address checks do not prove lifetime
+ * or the actual allocation extent. Closed output_space tags match native 0..8.
+ * Cmax is exactly 46080 f32 words, lightness-major [64][720]. Only an aligned,
+ * non-overflowing, isize-bounded exact-count extent authorizes clearing/copying.
+ * Independently valid outputs clear before diagnostic/input/fault rejection.
+ * Failure requirement: 0 none, 1 transform, 2 c2_outside, 3 finite_first_exit,
+ * 4 identity. Only 2 carries lightness/hue indices; failed values are cleared.
+ * Optional error=NULL requests status only. A present live/exclusive error record
+ * must have initialized capacity and writable length. At zero capacity data need
+ * not be initialized and is never accessed. Positive capacity requires initialized
+ * non-null writable data, capacity <= isize::MAX and non-overflowing address extent.
+ * Malformed diagnostics -> UnsupportedInput without borrowing source/visiting
+ * faults; valid outputs still clear, valid record length becomes zero, malformed
+ * backing remains untouched. Valid text truncates with length excluding the NUL.
+ * Computed failures -> PreparationFailure; actual reserve -> AllocationFailure;
+ * panic -> InternalFailure. No partial table or retained foreign owner is returned.
+ * Complete Rust heap construction copies 184320 bytes once on successful return.
+ */
+typedef struct FjOutputGamutSource {
+    uint32_t output_space;
+    float rgb_to_xyz[9], xyz_to_rgb[9], white_xyz[3], d65_white_xyz[3];
+} FjOutputGamutSource;
+typedef struct FjOutputGamutTransform {
+    float native_rgb_to_d65_xyz[9], d65_xyz_to_native_rgb[9];
+    uint32_t output_space;
+    uint64_t hash, contract_hash;
+} FjOutputGamutTransform;
+typedef struct FjOutputBoundarySource {
+    uint32_t output_space;
+    float d65_xyz_to_native_rgb[9];
+    uint64_t transform_hash;
+} FjOutputBoundarySource;
+typedef struct FjOutputBoundaryIdentity {
+    uint64_t transform_hash, contract_hash, hash;
+} FjOutputBoundaryIdentity;
+typedef struct FjOutputBoundaryFailure {
+    uint32_t requirement, lightness_index, hue_index;
+} FjOutputBoundaryFailure;
+FjStatus fj_legacy_gamut_output_transform(const FjOutputGamutSource* source, FjOutputGamutTransform* out, FjErrorBuffer* error);
+FjStatus fj_legacy_gamut_output_boundary(const FjOutputBoundarySource* source, float* cmax, size_t count, FjOutputBoundaryIdentity* identity, FjOutputBoundaryFailure* failure, FjErrorBuffer* error);
+
 /* FJ_TEMP_BRIDGE: spectral value preparation; remove S4.E.
  * Required pointers authorize complete initialized aligned records. Input spans
  * remain immutable and live through synchronous return; outputs/error backing

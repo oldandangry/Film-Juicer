@@ -32,7 +32,6 @@ set(JUICER_HOST_SOURCES
     src/RustGamutBridge.cpp
     src/RustColorBridge.cpp
     src/DiffusionHostBehavior.cpp
-    src/GamutCompression.cpp
     src/RenderRecipe.cpp
     src/FilmEffectsFrameDescriptors.cpp
     src/ResourceAssetLibrary.cpp

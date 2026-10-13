@@ -272,6 +272,8 @@ pub(crate) enum Failure {
     Exposure(film_juicer_core::exposure::Error),
     FilmTc(film_juicer_core::reconstruction::TcError),
     Hull(film_juicer_core::gamut::HullError),
+    OutputTransform(film_juicer_core::gamut::TransformError),
+    OutputBoundary(film_juicer_core::gamut::BoundaryError),
     #[cfg(feature = "test-support")]
     InjectedAllocation,
     #[cfg(feature = "test-support")]
@@ -314,7 +316,11 @@ impl Failure {
             },
             Self::Spectral(_) => FJ_STATUS_PREPARATION_FAILURE,
             Self::Exposure(_) => FJ_STATUS_PREPARATION_FAILURE,
-            Self::Hull(_) => FJ_STATUS_PREPARATION_FAILURE,
+            Self::Hull(_) | Self::OutputTransform(_) => FJ_STATUS_PREPARATION_FAILURE,
+            Self::OutputBoundary(film_juicer_core::gamut::BoundaryError::AllocationFailure) => {
+                FJ_STATUS_ALLOCATION_FAILURE
+            }
+            Self::OutputBoundary(_) => FJ_STATUS_PREPARATION_FAILURE,
             Self::FilmTc(film_juicer_core::reconstruction::TcError::AllocationFailure) => {
                 FJ_STATUS_ALLOCATION_FAILURE
             }
@@ -362,6 +368,8 @@ impl fmt::Display for Failure {
             Self::Exposure(error) => write!(formatter, "{error}"),
             Self::FilmTc(error) => write!(formatter, "{error}"),
             Self::Hull(error) => write!(formatter, "{error}"),
+            Self::OutputTransform(error) => write!(formatter, "{error}"),
+            Self::OutputBoundary(error) => write!(formatter, "{error}"),
             #[cfg(feature = "test-support")]
             Self::InjectedAllocation => {
                 formatter.write_str("injected spectral allocation category")

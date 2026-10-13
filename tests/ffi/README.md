@@ -813,3 +813,30 @@ identities come from frozen-parent GPU replay using the original pinned study
 values. Candidate GPU samples must agree bit for bit before adoption. The old
 processor/identity files and every existing pixel bound remain unchanged. This
 is automated numerical capture; no visual comparison images are generated.
+
+## Output gamut construction
+
+`Gamut.Host.Output.Math` checks all nine transforms and complete 64×720 boundary
+arrays against the four-preset native characterizations, including ordered
+primitives, intermediate cubics, platform libm bits and raw identities.
+`Gamut.Host.Output.boundary` checks both production exports and direct facades,
+actual C11 layouts/calls, D1–D5 optional diagnostics, cleared failures, canaries
+and consume-once transport. `binding` exercises native typed failure mapping.
+
+`Gamut.Host.Output.Cache` executes finite, acknowledged W1–W7 schedules through
+isolated actual Library/binding objects. It checks selection across clear,
+successful stale private returns, matching/conflicting same-generation controls,
+own failure/retry, exhaustion and cleanup precedence, immutable retained arrays,
+A8 hull retention and destruction outside the cache lock. These concurrent owner
+observations qualify the changed cache contract; they are not native parity.
+Library destruction still excludes active host readers. Existing production
+CUDA groups retain their route, disabled-work and asynchronous staging witnesses.
+
+The synchronous value bridges/fixed native carriers retire at S4.E; Library
+forwarding retires at S5.C. Rust privately owns complete immutable mathematical
+values and one fallibly reserved temporary table, copied once per successful
+cold candidate. Warm Library hits introduce no foreign call, table copy or
+rehash. Test-support copy timings are absent from ordinary production builds.
+Injection demonstrates status/panic/zero-identity transport, not real OOM,
+a zero-hash preimage or process-abort recovery. The capacity-overflow test
+exercises the same actual fallible reserve boundary separately.

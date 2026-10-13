@@ -59,6 +59,6 @@ mod reconstruction_bridge;
 
 #[allow(
     unsafe_code,
-    reason = "the input hull edge checks fixed foreign spectra and scopes synchronous borrows"
+    reason = "the gamut edge checks fixed foreign operands, optional diagnostics and synchronous result copies"
 )]
 mod gamut_bridge;
