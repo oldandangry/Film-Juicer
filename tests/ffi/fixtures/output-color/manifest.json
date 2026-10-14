@@ -1,0 +1,30 @@
+{
+  "kind": "Film-Juicer native output-color characterization and continuing independent scanner double oracle",
+  "parent": "6f71f5038625903f6d043d13901e9fe7b7e2d4e8",
+  "semantic_reference": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+  "authority": "Accepted native OutputColor.h; captured before translation; serial hash initialization; all four captures agree in every field. Scanner calls use original native archive.",
+  "layout": "IEEE f32/u64 words, row-major matrices, canonical-zero float subhashes and ordered u64 composition; double oracle inputs/results are IEEE f64 words.",
+  "comparison": "All literal/matrix/hash/scanner fields exact. Oracle nonfinite classification; GPU retains 1e-6 maximum/1e-7 mean plus exact alpha/padding/identity.",
+  "capture_presets": {
+    "linux-debug": {
+      "capture_sha256": "dbaaba60c8605d5f1453ea3dc1b1cc785a3e60045935107d709c448e44fea63f",
+      "math_receipt": "out/validation/linux-debug/s4-a-slice-11-2026-10-14/attempts/math-f2bhgd7x/result.json"
+    },
+    "linux-release": {
+      "capture_sha256": "dbaaba60c8605d5f1453ea3dc1b1cc785a3e60045935107d709c448e44fea63f",
+      "math_receipt": "out/validation/linux-release/s4-a-slice-11-2026-10-14/attempts/math-uuwzh6nr/result.json"
+    },
+    "windows-clang-debug": {
+      "capture_sha256": "dbaaba60c8605d5f1453ea3dc1b1cc785a3e60045935107d709c448e44fea63f",
+      "math_receipt": "out/validation/windows-clang-debug/s4-a-slice-11-2026-10-14/attempts/math-qop8ieas/result.json"
+    },
+    "windows-clang-release": {
+      "capture_sha256": "dbaaba60c8605d5f1453ea3dc1b1cc785a3e60045935107d709c448e44fea63f",
+      "math_receipt": "out/validation/windows-clang-release/s4-a-slice-11-2026-10-14/attempts/math-xgddr1g5/result.json"
+    }
+  },
+  "files": {
+    "native.json": "dbaaba60c8605d5f1453ea3dc1b1cc785a3e60045935107d709c448e44fea63f"
+  },
+  "adoption": "Authorized implementation request; all four exact mathematical gates passed before fixture adoption. Existing A9 and older expectations unchanged."
+}

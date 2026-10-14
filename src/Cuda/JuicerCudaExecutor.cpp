@@ -1777,17 +1777,15 @@ namespace {
         scanStage.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
         scanStage.scanColor.encoding.applyCctfEncoding = bool_to_i32(color.encoding.applyCctfEncoding);
         scanStage.scanColor.encoding.inputIsOutputSpace = bool_to_i32(color.encoding.inputIsOutputSpace);
-        const auto& outputSpace = GeneratedColorSpaces::get(color.encoding.colorSpace);
-        scanStage.scanColor.encoding.cctf.kind = static_cast<int>(outputSpace.cctf.kind);
-        scanStage.scanColor.encoding.cctf.gamma = outputSpace.cctf.gamma;
-        scanStage.scanColor.encoding.cctf.a = outputSpace.cctf.a;
-        scanStage.scanColor.encoding.cctf.b = outputSpace.cctf.b;
-        scanStage.scanColor.encoding.cctf.c = outputSpace.cctf.c;
-        scanStage.scanColor.encoding.cctf.d = outputSpace.cctf.d;
-        scanStage.scanColor.encoding.cctf.linearCutoff = outputSpace.cctf.linearCutoff;
-        const OutputEncoding::Matrix3x3 dwgToOutput =
-            OutputEncoding::dwg_to_output_matrix(color.encoding.colorSpace);
-        copy_float9(scanStage.scanColor.encoding.dwgToOutput, dwgToOutput.m);
+        const auto& encoding = color.preparedEncoding;
+        scanStage.scanColor.encoding.cctf.kind = static_cast<int>(encoding.cctf_kind);
+        scanStage.scanColor.encoding.cctf.gamma = encoding.gamma;
+        scanStage.scanColor.encoding.cctf.a = encoding.a;
+        scanStage.scanColor.encoding.cctf.b = encoding.b;
+        scanStage.scanColor.encoding.cctf.c = encoding.c;
+        scanStage.scanColor.encoding.cctf.d = encoding.d;
+        scanStage.scanColor.encoding.cctf.linearCutoff = encoding.linear_cutoff;
+        copy_float9(scanStage.scanColor.encoding.dwgToOutput, encoding.dwg_to_output);
         scanStage.correctionActive = scannerCorrection.active ? 1 : 0;
         scanStage.correctionSlope = scannerCorrection.xyzSlope;
         scanStage.correctionOffset = scannerCorrection.xyzOffset;

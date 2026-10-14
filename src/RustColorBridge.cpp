@@ -6,6 +6,7 @@
 
 #include "Cuda/JuicerCudaExecutor.h"
 #include "ColorTransforms.h"
+#include "OutputColor.h"
 #include "juicer_legacy_api.h"
 
 namespace JuicerColor {
@@ -51,6 +52,22 @@ namespace JuicerColor {
             }
         }
     } // namespace
+
+    FjOutputColorPreparation output_color(OutputEncoding::ColorSpace space) {
+        FjOutputColorPreparation out{};
+        // The native selector keeps its established sRGB fallback; the raw ABI is strict.
+        const auto selected = OutputEncoding::colorSpaceFromIndex(OutputEncoding::toIndex(space));
+        require_success(fj_legacy_output_color(static_cast<std::uint32_t>(selected), &out), "Output color preparation failed");
+        return out;
+    }
+
+    static_assert(sizeof(FjOutputColorPreparation) == 168 && alignof(FjOutputColorPreparation) == 8);
+    static_assert(offsetof(FjOutputColorPreparation, output_space) == 0);
+    static_assert(offsetof(FjOutputColorPreparation, rgb_to_xyz) == 4);
+    static_assert(offsetof(FjOutputColorPreparation, xyz_to_rgb) == 40);
+    static_assert(offsetof(FjOutputColorPreparation, white_xyz) == 76);
+    static_assert(offsetof(FjOutputColorPreparation, encoding) == 88);
+    static_assert(offsetof(FjOutputColorPreparation, entry_hash) == 160);
 
     static_assert(sizeof(FjInputColorMatrices) == 96 && alignof(FjInputColorMatrices) == 4);
     static_assert(offsetof(FjInputColorMatrices, rgb_to_xyz) == 0 && offsetof(FjInputColorMatrices, nominal_white_xyz) == 36);

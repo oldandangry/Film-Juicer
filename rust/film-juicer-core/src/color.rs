@@ -1,4 +1,38 @@
-//! CAT02/CAT16 host preparation. XYZ operands are unsanitized; whites are Y-relative.
+//! Color preparation. XYZ operands are unsanitized; whites are Y-relative.
+
+mod output;
+pub use output::{Cctf, CctfKind, OutputColor, output_color};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum OutputSpace {
+    Srgb,
+    DciP3,
+    DisplayP3,
+    AdobeRgb,
+    Bt2020,
+    ProPhotoRgb,
+    Aces2065,
+    DaVinciWideGamut,
+    Rec709,
+}
+impl TryFrom<u32> for OutputSpace {
+    type Error = ();
+    fn try_from(tag: u32) -> Result<Self, Self::Error> {
+        match tag {
+            0 => Ok(Self::Srgb),
+            1 => Ok(Self::DciP3),
+            2 => Ok(Self::DisplayP3),
+            3 => Ok(Self::AdobeRgb),
+            4 => Ok(Self::Bt2020),
+            5 => Ok(Self::ProPhotoRgb),
+            6 => Ok(Self::Aces2065),
+            7 => Ok(Self::DaVinciWideGamut),
+            8 => Ok(Self::Rec709),
+            _ => Err(()),
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct Whites {

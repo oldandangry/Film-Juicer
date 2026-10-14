@@ -51,7 +51,7 @@ namespace JuicerCuda {
     };
 
     struct CctfPayload {
-        // Matches GeneratedColorSpaces::CctfKind numeric values.
+        // Matches the closed FJ_CCTF_* values in the native value boundary.
         // 0=Linear, 1=Gamma, 2=SRGB, 3=BT2020, 4=ProPhoto, 5=DaVinciIntermediate.
         int kind = 0;
         float gamma = 1.0f;

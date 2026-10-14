@@ -745,7 +745,7 @@ thread_local! {
 extern "C" fn fj_test_color_arm_facade_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
     COLOR_FACADE_FAULT.set(None);
     COLOR_FACADE_CONSUMED.set(None);
-    let valid = matches!(operation, 4 | 6 | 7 | 9) && index != 0 && (1..=2).contains(&fault);
+    let valid = matches!(operation, 4 | 6 | 7 | 9 | 12) && index != 0 && (1..=2).contains(&fault);
     if valid {
         COLOR_FACADE_FAULT.set(Some((operation, index, fault)));
     }
@@ -1564,3 +1564,40 @@ unsafe extern "C" fn fj_test_exposure_mallett_reference_raw(
         crate::exposure_bridge::mallett_reference_call(input, out, error, exposure_facade_fault)
     }
 }
+
+/// Direct completed core output-color facade.
+/// # Safety
+/// Output authorizes one complete initialized aligned, live/addressable exclusive
+/// record through return; no pointer escapes. Invalid output is not written.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_output_color(
+    output_space: u32,
+    out: *mut crate::legacy_bridge::FjOutputColorPreparation,
+) -> FjStatus {
+    use crate::legacy_bridge::{FjOutputColorPreparation, output_record_valid};
+    let valid = output_record_valid(out);
+    if valid {
+        // SAFETY: Only independently valid exclusively writable output is cleared.
+        unsafe { out.write_bytes(0, 1) };
+    }
+    catch_unwind(|| {
+        if !valid {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        let Ok(space) = film_juicer_core::color::OutputSpace::try_from(output_space) else {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        };
+        if let Err(category) = color_facade_fault(12) {
+            return status(category);
+        }
+        let result = FjOutputColorPreparation::prepare(space);
+        // SAFETY: The facade commits a complete owned value into the checked output.
+        unsafe { out.write(result) };
+        status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(status(FJ_STATUS_INTERNAL_FAILURE))
+}
+const _: unsafe extern "C" fn(
+    u32,
+    *mut crate::legacy_bridge::FjOutputColorPreparation,
+) -> FjStatus = fj_test_output_color;

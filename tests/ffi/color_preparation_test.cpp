@@ -819,7 +819,7 @@ namespace {
                 expect_status(raw_call(operation), fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
                 expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
             }
-            for (const auto& invalid : std::array<std::array<std::uint32_t, 3>, 5>{{{0, 1, 1}, {11, 1, 1}, {99, 1, 1}, {operation, 0, 1}, {operation, 1, 99}}}) {
+            for (const auto& invalid : std::array<std::array<std::uint32_t, 3>, 5>{{{0, 1, 1}, {FJ_TEST_OUTPUT_COLOR_FACADE + 1U, 1, 1}, {99, 1, 1}, {operation, 0, 1}, {operation, 1, 99}}}) {
                 expect_status(arm_color_fault(operation, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
                 expect_status(arm_color_fault(invalid[0], invalid[1], invalid[2]), FJ_STATUS_UNSUPPORTED_INPUT);
                 expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
@@ -1148,6 +1148,48 @@ namespace {
             }
         }
     }
+    void output_color_admission_tests() {
+        for (int route = 0; route < 4; ++route) {
+            auto controls = Cat02Fixtures::snapshot(static_cast<Spektrafilm::ScanRoute>(route), Spektrafilm::RgbToRawMethod::Mallett2019);
+            InstanceState state;
+            pending(state, controls);
+            const auto original = admit_pending_render_state(state);
+            auto changed = controls;
+            changed.outputCctfEncoding = 0;
+            std::uint32_t visits = 0;
+            for (std::uint32_t index = 1; index <= 16; ++index) {
+                FaultScope cleanup;
+                pending(state, changed);
+                const auto counter = state.buildCounterNext.load();
+                expect_status(arm_color_fault(FJ_TEST_OUTPUT_COLOR, index, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+                const auto result = admit_pending_render_state(state);
+                const bool failedPreparation = result.status == PendingRenderAdmissionStatus::RebuildFailed;
+                if (failedPreparation) {
+                    require(!result.directState && !result.printState && result.diagnostic.find("InternalFailure") != std::string::npos, "output failure retains category and empty admission owners");
+                } else {
+                    require(admitted(result, route % 2 == 1), "completed output-color admission");
+                }
+                if (!failedPreparation) {
+                    visits = index - 1;
+                    FjOutputColorPreparation result{};
+                    expect_status(fj_legacy_output_color(0, &result), FJ_STATUS_INTERNAL_FAILURE);
+                    break;
+                }
+                require(state.buildCounterNext.load() == counter, "failed output completion never publishes");
+                require(JuicerAtomic::load_shared_ptr(&state.activeDirectState) == original.directState && JuicerAtomic::load_shared_ptr(&state.activePrintState) == original.printState, "failed output completion retains older immutable publication");
+            }
+            require(visits > 0 && visits < 16, "bounded actual output preparation visit count");
+            std::printf("Output color route=%d rebuild visits=%u\n", route, visits);
+            FaultScope cleanup;
+            const auto admitted = admit_pending_render_state(state);
+            expect_status(arm_color_fault(FJ_TEST_OUTPUT_COLOR, 1, FJ_TEST_COLOR_PANIC), FJ_STATUS_SUCCESS);
+            const auto repeated = admit_pending_render_state(state);
+            require(repeated.directState == admitted.directState && repeated.printState == admitted.printState, "warm output publication reuses owner without preparation");
+            FjOutputColorPreparation result{};
+            expect_status(fj_legacy_output_color(0, &result), FJ_STATUS_INTERNAL_FAILURE);
+        }
+    }
+
     void cat02_preparation_tests(const Json& fixture, const std::filesystem::path& fixturePath) {
         cat02_admission_tests();
         const auto cases = Cat02Fixtures::scenarios();
@@ -1204,6 +1246,7 @@ namespace {
             require(Cat02Fixtures::color_result(color) == row.at("expected"), "invalid scanner illuminant keeps early zero-hash color result");
             expect_status(raw_call(FJ_TEST_CAT02_MATRIX), FJ_STATUS_INTERNAL_FAILURE);
         }
+        output_color_admission_tests();
         cat02_helper_tests(fixture);
         cat02_control_tests();
         std::printf("CAT02 preparation: %zu independent recipes, %zu scanner cases, distinct controls and full retained arrays passed\n", cases.size(), fixture.at("scanner_cases").size());

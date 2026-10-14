@@ -583,7 +583,7 @@ isolates the subsequent blur/delta schedule and does not validate the sampler.
 checks all nine output spaces, CCTF on/off, optional output matrix, transfer
 breakpoint neighbors, negative/HDR/subnormal/nonfinite values, RGB/RGBA, odd
 image extents, and padded rows. The numerical oracle is Film-Juicer's independent
-host double-precision `OutputEncoding::applyEncoding`; this is a product
+host double-precision `ScannerOracle::apply_encoding`; this is a product
 numerical contract, not an external-reference fixture. Clipped RGB must stay
 within `1e-6` maximum and `1e-7` mean absolute error per case, with unchanged
 nonfinite classification and bit-exact alpha/padding. Identity-matrix CCTF-off
@@ -601,8 +601,8 @@ stages. Real prepared film/print resources exercise fused and separate output on
 negative/positive direct/print routes, in sRGB and DaVinci Intermediate, with
 output gamut compression on/off. Spatial DIR, visual grain, halation, and
 camera/enlarger diffusion are disabled in these focused route checks; their
-owning suites cover those contracts. No frozen fixtures or private workbench
-files are required.
+owning suites cover those contracts. Frozen native words and matrices are
+compiled into the owning test library; no private workbench files are required.
 
 ### CUDA ABI declarations
 
@@ -751,3 +751,12 @@ The optional Debug prepared-host ASan/UBSan pilot is documented in
 [the FFI guide](ffi/README.md#prepared-host-sanitizer-pilot). It supplements the
 complete ordinary suite and makes limited native instrumentation claims; Rust,
 remaining core objects and CUDA devices are not covered by its instrumentation.
+
+The output-color characterization in `tests/ffi/fixtures/output-color/` was
+captured independently from the accepted native producer under all four presets
+before translation. Ordinary tests compare its bytes/words and never regenerate
+it. `Ffi.Host.OutputColor` checks fixed values, identities, C11 layout/value calls,
+concurrent initialization, lifetime, clearing and faults. Prepared projection and
+span tests require schema 1 plus a closed CCTF kind for both encoding states.
+`Scanner.Gpu.OutputEncoding` uses the independent frozen double scanner oracle,
+with unchanged maximum/mean error bounds, nonfinite and alpha/padding checks.

@@ -267,6 +267,10 @@ FjStatus fj_test_output_gamut_copy_metrics(uint64_t out_metrics[5], uint32_t res
 FjStatus fj_test_gamut_output_transform(const FjOutputGamutSource* source, FjOutputGamutTransform* out, FjErrorBuffer* error);
 FjStatus fj_test_gamut_output_boundary(const FjOutputBoundarySource* source, float* cmax, size_t count, FjOutputBoundaryIdentity* identity, FjOutputBoundaryFailure* failure, FjErrorBuffer* error);
 
+#define FJ_TEST_OUTPUT_COLOR 11U
+#define FJ_TEST_OUTPUT_COLOR_FACADE 12U
+FjStatus fj_test_output_color(uint32_t output_space, FjOutputColorPreparation* out);
+
 #ifdef __cplusplus
 }
 #endif

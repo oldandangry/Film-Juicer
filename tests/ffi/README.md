@@ -941,3 +941,22 @@ test-only inputs, missing outputs, source/feature/glob propagation and failed
 Cargo retries. Command logs and failing inputs remain under the preset's
 `ffi/rust-build/` validation directory; successful fixture build caches are
 removed. No GPU or reference-generation environment is required.
+
+`Ffi.Host.OutputColor` checks the completed fixed output-color export and its
+independent direct facade. Its frozen native characterization covers all nine
+outputs and the distinct linear DWG source, exact f32 matrix/coefficient words,
+canonical-zero component hashes, scanner fields and original fallback tags.
+C11/C++/Rust assert the coordinated encoding/preparation/enclosing layouts.
+Fresh concurrent first access, independently valid output clearing, canaries,
+strict raw tags, status-only faults and operation-specific consume-once panics
+remain separate witnesses. The catalogue has no fallible allocation contract.
+
+`Ffi.Host.PreparedProjection` and the complete C render fixtures carry schema 1
+encoding records through normal and cold preparation. Missing/unknown schemas
+and kinds outside 0–5 fail even with CCTF disabled. Admission binds caller-owned
+values without Rust calls or coefficient-based readiness. Both routes, both
+encoding flags, complete value round trips and source expiry are covered.
+Cold callers remain responsible for matching tags, prepared values, identities
+and live initialized aligned extents. The scanner double encoder is a continuing
+test-only oracle with frozen native f32 inputs/matrices and its original f64
+arithmetic; candidate setup uses migrated preparation.

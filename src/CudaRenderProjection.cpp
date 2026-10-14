@@ -355,6 +355,7 @@ namespace {
         out.scanner_post.unsharp_amount = source.post.unsharpAmount;
         out.scanner_post.hash = source.post.hash;
         FjOutputColor& color = out.output_color;
+        color.encoding = source.color.preparedEncoding;
         std::copy_n(source.color.cat02, 9, color.cat02);
         std::copy_n(source.color.xyzToRgb, 9, color.xyz_to_rgb);
         std::copy_n(source.color.illuminantXYZ, 3, color.illuminant_xyz);

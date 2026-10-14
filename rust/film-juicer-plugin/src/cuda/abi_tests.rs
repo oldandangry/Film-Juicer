@@ -189,6 +189,17 @@ static FACTS: &[usize] = &[
     offset_of!(FjScannerPostEffects, unsharp_radius),
     offset_of!(FjScannerPostEffects, unsharp_amount),
     offset_of!(FjScannerPostEffects, hash),
+    size_of::<FjOutputEncoding>(),
+    align_of::<FjOutputEncoding>(),
+    offset_of!(FjOutputEncoding, schema),
+    offset_of!(FjOutputEncoding, cctf_kind),
+    offset_of!(FjOutputEncoding, gamma),
+    offset_of!(FjOutputEncoding, a),
+    offset_of!(FjOutputEncoding, b),
+    offset_of!(FjOutputEncoding, c),
+    offset_of!(FjOutputEncoding, d),
+    offset_of!(FjOutputEncoding, linear_cutoff),
+    offset_of!(FjOutputEncoding, dwg_to_output),
     size_of::<FjOutputColor>(),
     align_of::<FjOutputColor>(),
     offset_of!(FjOutputColor, cat02),
@@ -203,6 +214,7 @@ static FACTS: &[usize] = &[
     offset_of!(FjOutputColor, gamut_cmax),
     offset_of!(FjOutputColor, gamut_table_hash),
     offset_of!(FjOutputColor, gamut_recipe_hash),
+    offset_of!(FjOutputColor, encoding),
     size_of::<FjPrint>(),
     align_of::<FjPrint>(),
     offset_of!(FjPrint, film_density_cmy),
@@ -551,6 +563,13 @@ static FACTS: &[usize] = &[
     FJ_OUTPUT_ACES2065_1 as usize,
     FJ_OUTPUT_DWG_INTERMEDIATE as usize,
     FJ_OUTPUT_REC709 as usize,
+    FJ_OUTPUT_ENCODING_SCHEMA as usize,
+    FJ_CCTF_LINEAR as usize,
+    FJ_CCTF_GAMMA as usize,
+    FJ_CCTF_SRGB as usize,
+    FJ_CCTF_BT2020 as usize,
+    FJ_CCTF_PROPHOTO as usize,
+    FJ_CCTF_DWG_INTERMEDIATE as usize,
     FJ_COLOR_ENCODE_CCTF as usize,
     FJ_COLOR_INPUT_IS_OUTPUT_SPACE as usize,
     FJ_COLOR_GAMUT_COMPRESSION as usize,
@@ -635,7 +654,7 @@ mod tests {
     #[test]
     fn facts_cover_generated_records_and_values() {
         // Cardinality changes require reviewing both native and Rust fact lists.
-        assert_eq!(FACTS.len(), 582);
+        assert_eq!(FACTS.len(), 601);
     }
 
     #[test]

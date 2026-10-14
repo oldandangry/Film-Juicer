@@ -64,7 +64,55 @@ RETIRED_NOISE = r"\b(?:StbnNoisePayload|WangNoisePayload|StaticNoisePayloadSet|S
 RETIRED_OUTPUT_GAMUT = r"\b(?:kOutputBoundaryCubeSlack|kOutputBoundaryMaximumChroma|build_output_gamut_transform|output_boundary_contract_hash|build_output_boundary_table|native_rgb_to_oklab|oklab_to_native_rgb|evaluate_cubic|append_interior_derivative_roots|first_channel_exit|build_boundary_cubics|multiply_float_matrix_vector)\b|GamutCompression\.cpp"
 
 
+RETIRED_OUTPUT_COLOR_DEFINITIONS = (
+    r"\b(?:Entry\s+(?:gDWG|gEntries)\b|namespace\s+GeneratedColorSpaces\s*\{)"
+    r"|\b(?:void\s+(?:ensure_hashes|applyEncoding)|std::uint64_t\s+hash_entry|"
+    r"(?:Matrix3x3|Mat3)\s+(?:dwg_to_output_matrix|mat_mul)|"
+    r"const\s+ColorSpaceEntry\s*&\s*(?:get|getDWG)|"
+    r"(?:float|double)\s+(?:encode_channel|encode_channel_double|encode_gamma_signed|encode_gammad_signed|encode_sRGB|encode_sRGBd|encode_BT2020|encode_BT2020d|encode_ProPhoto|encode_ProPhotod|encode_DaVinciIntermediate|encode_DaVinciIntermediated|clamp01|clamp01d))"
+    r"\s*\([^;{}]*\)\s*\{"
+)
+
+
 class NativeBoundary(unittest.TestCase):
+    def test_output_color_authority_is_retired_and_packing_only_binds_values(self):
+        paths = [path for directory in (ROOT / "src", ROOT / "native")
+                 for path in directory.rglob("*")
+                 if path.is_file() and path.suffix.lower() in SOURCE_SUFFIXES]
+        self.assertEqual(forbidden_uses(paths, RETIRED_OUTPUT_COLOR_DEFINITIONS), [])
+        for rejected in (
+            "inline Entry gDWG = {};", "inline Entry gEntries[9] = {};",
+            "namespace GeneratedColorSpaces {", "void ensure_hashes() {}",
+            "std::uint64_t hash_entry(const Entry& e) {}",
+            "const ColorSpaceEntry& getDWG() {}", "const ColorSpaceEntry& get(Tag cs) {}",
+            "Matrix3x3 dwg_to_output_matrix(ColorSpace cs) {}", "Mat3 mat_mul(const float a[9], const float b[9]) {}",
+            "void applyEncoding(const Params& p, double rgb[3]) {}", "void applyEncoding(const Params& p, float rgb[3]) {}",
+            "float encode_channel(const Params& p, float x) {}", "double encode_channel_double(const Params& p, double x) {}",
+            "float clamp01(float x) {}", "double clamp01d(double x) {}",
+        ):
+            self.assertRegex(rejected, RETIRED_OUTPUT_COLOR_DEFINITIONS)
+        for result, name in (("float", "encode_gamma_signed"), ("double", "encode_gammad_signed"),
+                             ("float", "encode_sRGB"), ("double", "encode_sRGBd"),
+                             ("float", "encode_BT2020"), ("double", "encode_BT2020d"),
+                             ("float", "encode_ProPhoto"), ("double", "encode_ProPhotod"),
+                             ("float", "encode_DaVinciIntermediate"), ("double", "encode_DaVinciIntermediated")):
+            self.assertRegex(f"{result} {name}({result} x) {{ return x; }}", RETIRED_OUTPUT_COLOR_DEFINITIONS)
+            self.assertNotRegex(f"{result} {name}({result} x);", RETIRED_OUTPUT_COLOR_DEFINITIONS)
+        for retained in ("enum class ColorSpace : std::uint8_t {};", "struct Params {};",
+                         "constexpr ColorSpace colorSpaceFromIndex(int index) {}", "const char* kColorSpaceLabels[] = {};",
+                         "FjOutputColorPreparation JuicerColor::output_color(ColorSpace space) {}"):
+            self.assertNotRegex(retained, RETIRED_OUTPUT_COLOR_DEFINITIONS)
+        executor = (ROOT / "src/Cuda/JuicerCudaExecutor.cpp").read_text(encoding="utf-8")
+        self.assertNotRegex(executor, r"JuicerColor::output_color|fj_legacy_output_color|dwg_to_output_matrix|GeneratedColorSpaces")
+        self.assertIn("color.preparedEncoding", executor)
+        scanner = (ROOT / "src/Scanner.cpp").read_text(encoding="utf-8")
+        builder = scanner[scanner.index("    ColorRuntime build_color_runtime("):]
+        self.assertLess(builder.index("if (illuminant.hash == 0)"), builder.index("JuicerColor::output_color"))
+        self.assertLess(builder.index("if (outSpace.entry_hash == 0)"), builder.index("JuicerColor::cat02_matrix"))
+        oracle = (ROOT / "tests/scanner/output_encoding_oracle.cpp").read_text(encoding="utf-8")
+        self.assertNotRegex(oracle, r"JuicerColor::|fj_(?:test|legacy)_output_color|GeneratedColorSpaces")
+        self.assertIn('"output_encoding_native.inc"', oracle)
+
     def test_native_output_gamut_math_is_retired(self):
         self.assertFalse((ROOT / "src/GamutCompression.cpp").exists())
         self.assertEqual(forbidden_uses(color_sources(ROOT), RETIRED_OUTPUT_GAMUT), [])

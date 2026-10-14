@@ -770,7 +770,8 @@ set_tests_properties(Grain.Gpu.DeltaFusion PROPERTIES
     LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
 
 add_executable(JuicerScannerOutputTests scanner/output_encoding_test.cpp)
-target_link_libraries(JuicerScannerOutputTests PRIVATE
+target_include_directories(JuicerScannerOutputTests PRIVATE ffi)
+target_link_libraries(JuicerScannerOutputTests PRIVATE juicer_output_encoding_oracle
     juicer_core GTest::gtest CUDA::cuda_driver)
 set_target_properties(JuicerScannerOutputTests PROPERTIES
     LINKER_LANGUAGE CXX
@@ -1074,3 +1075,20 @@ add_test(NAME Gamut.Host.Output.Cache COMMAND JuicerOutputGamutCacheTests "${JUI
 set_tests_properties(Gamut.Host.Output.Cache PROPERTIES LABELS "host" TIMEOUT 180 RUN_SERIAL TRUE)
 add_test(NAME Gamut.Host.Output.FixtureFormat COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_output_gamut_fixtures.py -v)
 set_tests_properties(Gamut.Host.Output.FixtureFormat PROPERTIES LABELS "host" TIMEOUT 30 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
+add_executable(JuicerOutputColorTests ffi/output_color_abi_c.c ffi/output_color_test.cpp)
+target_link_libraries(JuicerOutputColorTests PRIVATE juicer_core)
+set_target_properties(JuicerOutputColorTests PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerOutputColorTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_test(NAME Ffi.Host.OutputColor COMMAND JuicerOutputColorTests
+    "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/output-color/native.json")
+set_tests_properties(Ffi.Host.OutputColor PROPERTIES LABELS "host" TIMEOUT 60)
+
+add_library(juicer_output_encoding_oracle STATIC scanner/output_encoding_oracle.cpp)
+target_include_directories(juicer_output_encoding_oracle PUBLIC scanner "${PROJECT_SOURCE_DIR}/src")
+target_compile_features(juicer_output_encoding_oracle PRIVATE cxx_std_20)
+target_link_libraries(JuicerOutputColorTests PRIVATE juicer_output_encoding_oracle)

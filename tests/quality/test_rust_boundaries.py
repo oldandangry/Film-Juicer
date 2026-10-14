@@ -151,6 +151,26 @@ class RustBoundaryTests(unittest.TestCase):
                 "E0505": ("drop(film_owner)", "drop(print_owner)", "drop(spectra_owner)", "drop(mallett_owner)", "drop(cmf_owner)", "drop(csv_owner)", "drop(noise_owner)"),
             })
 
+    def test_output_color_is_complete_and_immutable(self) -> None:
+        for fixture, expected in (
+            ("output_color_complete", None),
+            ("output_color_private", {"E0616": ("color.hash",)}),
+            ("output_color_default", {"E0599": ("OutputColor::default()",)}),
+            ("output_color_construction", {"E0451": ("OutputColor { ..*output_color",)}),
+            ("output_color_mutation", {"E0594": ("color.rgb_to_xyz()[0] = 1.0",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for support in (False, True):
+                        status, diagnostics = self.check("film-juicer-plugin", release, support)
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_output_gamut_completed_api_is_private_and_borrowed(self) -> None:
         for fixture, expected in (
             ("output_gamut_private", {"E0616": ("transform.hash", "boundary.cmax[0]")}),

@@ -182,3 +182,14 @@ remain at their recorded locations. Standard build/Cargo trees, staged bundles,
 path-bound historical harness binaries and current qualification runtimes retain
 configuration, review or reference consumers and are not deletion candidates.
 Archiving the six helpers retains 15,113 bytes and reclaims zero bytes.
+
+A10 output-color translation retains the accepted A9 raw source/table fixtures,
+D1–D5 diagnostic and W1–W7 cache witnesses. Output-space tags now have one core
+color owner. The native literal/hash registry, lazy hash mutation, getters, DWG
+multiplication and unused float encoder are deleted after caller migration.
+Definition guards include explicit rejected controls. The continuing scanner
+oracle owns frozen native inputs and f64 evaluation in the scanner test domain;
+production uses prepared CCTF/DWG values in both C++ and cold C paths. The new
+encoding schema is a representation requirement, not an identity contributor or
+scientific admission gate. Native value bridges retire at S4.E; existing Library
+forwarding retains S5.C. Family/stage acceptance remains a separate review gate.

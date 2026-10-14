@@ -8,6 +8,7 @@
 
 #include "Hash.h"
 #include "OutputColor.h"
+#include "juicer_cuda_api.h"
 #include "ScanRoute.h"
 #include "SpectralData.h"
 
@@ -43,6 +44,8 @@ namespace Scanner {
         float xyzToRgb[9]{0.0f};
         float illuminantXYZ[3]{0.0f, 0.0f, 0.0f};
         OutputEncoding::Params encoding{};
+        // FJ_TEMP_BRIDGE: immutable prepared encoding carrier; remove S4.E.
+        FjOutputEncoding preparedEncoding{};
         std::uint64_t outputGamutRecipeHash = 0;
         std::uint64_t hash = 0;
     };

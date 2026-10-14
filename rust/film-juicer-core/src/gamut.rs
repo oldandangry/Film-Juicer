@@ -1,5 +1,6 @@
 //! Input hull construction and borrowed TC remapping.
 
+use crate::color::OutputSpace;
 #[cfg(feature = "test-support")]
 pub mod fixtures;
 
@@ -382,38 +383,6 @@ mod tests {
     }
 }
 
-// Output construction shares the native fixed carrier until S4.E; cache policy
-// and CUDA execution remain outside this safe mathematical producer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum OutputSpace {
-    Srgb,
-    DciP3,
-    DisplayP3,
-    AdobeRgb,
-    Bt2020,
-    ProPhotoRgb,
-    Aces2065,
-    DaVinciWideGamut,
-    Rec709,
-}
-impl TryFrom<u32> for OutputSpace {
-    type Error = ();
-    fn try_from(tag: u32) -> Result<Self, Self::Error> {
-        match tag {
-            0 => Ok(Self::Srgb),
-            1 => Ok(Self::DciP3),
-            2 => Ok(Self::DisplayP3),
-            3 => Ok(Self::AdobeRgb),
-            4 => Ok(Self::Bt2020),
-            5 => Ok(Self::ProPhotoRgb),
-            6 => Ok(Self::Aces2065),
-            7 => Ok(Self::DaVinciWideGamut),
-            8 => Ok(Self::Rec709),
-            _ => Err(()),
-        }
-    }
-}
 #[derive(Clone, Copy)]
 pub struct TransformInput<'a> {
     pub space: OutputSpace,

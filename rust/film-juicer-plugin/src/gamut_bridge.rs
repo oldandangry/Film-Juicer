@@ -1,5 +1,6 @@
 //! Synchronous fixed input-hull projection. The native Library owns its cache.
 
+use film_juicer_core::color;
 use film_juicer_core::gamut;
 
 use crate::asset_bridge::Failure;
@@ -336,7 +337,7 @@ unsafe fn output_transform_call(
                 return Err(Failure::Input("invalid output gamut records"));
             }
             let source = &*source;
-            let space = gamut::OutputSpace::try_from(source.output_space)
+            let space = color::OutputSpace::try_from(source.output_space)
                 .map_err(|()| Failure::Input("invalid output gamut space"))?;
             fault()?;
             let transform = gamut::output_transform(gamut::TransformInput {
@@ -424,7 +425,7 @@ unsafe fn output_boundary_call(
                 ));
             }
             let source = &*source;
-            let space = gamut::OutputSpace::try_from(source.output_space)
+            let space = color::OutputSpace::try_from(source.output_space)
                 .map_err(|()| Failure::Input("invalid output boundary space"))?;
             let input = gamut::BoundaryInput {
                 space,
@@ -603,7 +604,7 @@ mod output_fixtures {
             })),
             4 => Err(Failure::OutputBoundary(gamut::BoundaryError::Transform)),
             5 => Err(Failure::OutputBoundary(gamut::BoundaryError::C2Outside {
-                space: gamut::OutputSpace::Srgb,
+                space: color::OutputSpace::Srgb,
                 lightness_index: 3,
                 hue_index: 7,
             })),

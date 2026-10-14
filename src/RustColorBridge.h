@@ -3,6 +3,12 @@
 #include <array>
 #include <cstdint>
 
+#include "juicer_legacy_api.h"
+
+namespace OutputEncoding {
+    enum class ColorSpace : std::uint8_t;
+}
+
 namespace Spectral {
     enum class InputColorSpace : std::uint8_t;
     struct Mat3;
@@ -11,6 +17,7 @@ namespace Spectral {
 
 // FJ_TEMP_BRIDGE: host color preparation; remove S4.E.
 namespace JuicerColor {
+    FjOutputColorPreparation output_color(OutputEncoding::ColorSpace space);
     struct InputMatrices {
         std::array<float, 9> rgbToXyz;
         std::array<float, 3> nominalWhiteXYZ;

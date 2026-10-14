@@ -212,6 +212,22 @@ FjStatus fj_legacy_adapt_cat16(const float xyz[3], const float source_white_xyz[
 
 FjStatus fj_legacy_cat02_matrix(const float source_white_xyz[3], const float destination_white_xyz[3], float out_row_major[9]);
 
+/* FJ_TEMP_BRIDGE: fixed output-color preparation; remove S4.E.
+ * Strict raw FJ_OUTPUT_* tag, distinct from the native selector fallback.
+ * Output authorizes its complete initialized live aligned/addressable exclusive
+ * 168-byte extent through return. Valid output clears before tag/fault handling;
+ * invalid output is never written. No allocation or foreign pointer is retained.
+ * Unsupported tag/extent -> UnsupportedInput; contained panic -> InternalFailure. */
+typedef struct FjOutputColorPreparation {
+    uint32_t output_space;
+    float rgb_to_xyz[9];
+    float xyz_to_rgb[9];
+    float white_xyz[3];
+    FjOutputEncoding encoding;
+    uint64_t entry_hash;
+} FjOutputColorPreparation;
+FjStatus fj_legacy_output_color(uint32_t output_space, FjOutputColorPreparation* out);
+
 /* FJ_TEMP_BRIDGE: input-color host preparation; remove S4.E.
  * Inputs are complete initialized aligned records/arrays, read-only until return;
  * they may share storage. Disabled adaptation is also initialized. Outputs are

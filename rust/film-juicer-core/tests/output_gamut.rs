@@ -1,4 +1,5 @@
 #![cfg(feature = "test-support")]
+use film_juicer_core::color;
 use film_juicer_core::gamut::{self, fixtures};
 use serde_json::Value;
 use std::fs;
@@ -111,7 +112,7 @@ fn native_primitive_intermediate_full_family_bits() {
         let xyz = floats(&source["xyz_to_rgb"]);
         let white = floats(&source["white"]);
         let d65 = floats(&source["d65"]);
-        let space = gamut::OutputSpace::try_from(row["tag"].as_u64().unwrap_or(0) as u32).unwrap();
+        let space = color::OutputSpace::try_from(row["tag"].as_u64().unwrap_or(0) as u32).unwrap();
         let built = gamut::output_transform(gamut::TransformInput {
             space,
             rgb_to_xyz: &rgb,

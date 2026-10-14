@@ -93,7 +93,9 @@ thread_local! {
 #[cfg(feature = "test-support")]
 pub(crate) fn arm_color_fault(operation: u32, call_index: u32, fault: u32) -> FjStatus {
     clear_color_fault();
-    if !matches!(operation, 1 | 2 | 3 | 5 | 8 | 10) || call_index == 0 || !(1..=2).contains(&fault)
+    if !matches!(operation, 1 | 2 | 3 | 5 | 8 | 10 | 11)
+        || call_index == 0
+        || !(1..=2).contains(&fault)
     {
         return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
     }
@@ -512,6 +514,94 @@ const _: unsafe extern "C" fn(
 ) -> FjStatus = fj_legacy_reconstruction_sample_tc_lut;
 const _: unsafe extern "C" fn(*mut crate::reconstruction_bridge::FjOwnedFilmTcLut) -> FjStatus =
     fj_legacy_reconstruction_release_tc_lut;
+
+// FJ_TEMP_BRIDGE: complete output-color values; remove S4.E.
+#[repr(C)]
+pub(crate) struct FjOutputColorPreparation {
+    pub(crate) output_space: u32,
+    pub(crate) rgb_to_xyz: [f32; 9],
+    pub(crate) xyz_to_rgb: [f32; 9],
+    pub(crate) white_xyz: [f32; 3],
+    pub(crate) encoding: crate::cuda::sys::FjOutputEncoding,
+    pub(crate) entry_hash: u64,
+}
+impl FjOutputColorPreparation {
+    pub(crate) fn prepare(space: color::OutputSpace) -> Self {
+        let color = color::output_color(space);
+        let c = color.cctf();
+        Self {
+            output_space: space as u32,
+            rgb_to_xyz: *color.rgb_to_xyz(),
+            xyz_to_rgb: *color.xyz_to_rgb(),
+            white_xyz: *color.white_xyz(),
+            encoding: crate::cuda::sys::FjOutputEncoding {
+                schema: crate::cuda::sys::FJ_OUTPUT_ENCODING_SCHEMA,
+                cctf_kind: c.kind as u32,
+                gamma: c.gamma,
+                a: c.a,
+                b: c.b,
+                c: c.c,
+                d: c.d,
+                linear_cutoff: c.linear_cutoff,
+                dwg_to_output: *color.dwg_to_output(),
+            },
+            entry_hash: color.hash(),
+        }
+    }
+}
+pub(crate) fn output_record_valid(out: *const FjOutputColorPreparation) -> bool {
+    !out.is_null()
+        && (out as usize).is_multiple_of(std::mem::align_of::<FjOutputColorPreparation>())
+        && (out as usize)
+            .checked_add(std::mem::size_of::<FjOutputColorPreparation>())
+            .is_some()
+}
+/// Return complete caller-owned output-color values for a strict raw tag.
+/// # Safety
+/// Nonnull output authorizes its complete initialized aligned, live/addressable,
+/// exclusive record extent through return. No pointer is retained.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_output_color(
+    output_space: u32,
+    out: *mut FjOutputColorPreparation,
+) -> FjStatus {
+    let valid = output_record_valid(out);
+    if valid {
+        // SAFETY: The checked extent is exclusively writable by caller contract.
+        unsafe { out.write_bytes(0, 1) };
+    }
+    std::panic::catch_unwind(|| {
+        if !valid {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        let Ok(space) = color::OutputSpace::try_from(output_space) else {
+            return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
+        };
+        #[cfg(feature = "test-support")]
+        if let Err(category) = color_fault(11) {
+            return color_status(category);
+        }
+        let prepared = FjOutputColorPreparation::prepare(space);
+        // SAFETY: Only the complete local value is copied; storage is not retained.
+        unsafe { out.write(prepared) };
+        color_status(FJ_STATUS_SUCCESS)
+    })
+    .unwrap_or(color_status(FJ_STATUS_INTERNAL_FAILURE))
+}
+const _: () = {
+    use std::mem::{align_of, offset_of, size_of};
+    assert!(
+        size_of::<FjOutputColorPreparation>() == 168 && align_of::<FjOutputColorPreparation>() == 8
+    );
+    assert!(offset_of!(FjOutputColorPreparation, output_space) == 0);
+    assert!(offset_of!(FjOutputColorPreparation, rgb_to_xyz) == 4);
+    assert!(offset_of!(FjOutputColorPreparation, xyz_to_rgb) == 40);
+    assert!(offset_of!(FjOutputColorPreparation, white_xyz) == 76);
+    assert!(offset_of!(FjOutputColorPreparation, encoding) == 88);
+    assert!(offset_of!(FjOutputColorPreparation, entry_hash) == 160);
+};
+const _: unsafe extern "C" fn(u32, *mut FjOutputColorPreparation) -> FjStatus =
+    fj_legacy_output_color;
 
 #[cfg(test)]
 mod tests {

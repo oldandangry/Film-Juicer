@@ -21,6 +21,8 @@
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
+#include "juicer_test_api.h"
+#include "output_encoding_oracle.h"
 
 extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(const JuicerCuda::DirectPipelineRunParams*, void*);
 extern "C" cudaError_t juicer_cuda_print_focused_pipeline(const JuicerCuda::PrintPipelineRunParams*, void*);
@@ -76,10 +78,11 @@ namespace {
         result.outputColorSpaceIndex = OutputEncoding::toIndex(settings.colorSpace);
         result.applyCctfEncoding = settings.applyCctfEncoding ? 1 : 0;
         result.inputIsOutputSpace = settings.inputIsOutputSpace ? 1 : 0;
-        const auto& c = GeneratedColorSpaces::get(settings.colorSpace).cctf;
-        result.cctf = {static_cast<int>(c.kind), c.gamma, c.a, c.b, c.c, c.d, c.linearCutoff};
-        const auto matrix = OutputEncoding::dwg_to_output_matrix(settings.colorSpace);
-        std::copy_n(matrix.m, 9, result.dwgToOutput);
+        FjOutputColorPreparation prepared{};
+        require(fj_test_output_color(static_cast<std::uint32_t>(settings.colorSpace), &prepared).category == FJ_STATUS_SUCCESS, "Complete output-color fixture preparation");
+        const auto& c = prepared.encoding;
+        result.cctf = {static_cast<int>(c.cctf_kind), c.gamma, c.a, c.b, c.c, c.d, c.linear_cutoff};
+        std::copy_n(c.dwg_to_output, 9, result.dwgToOutput);
         return result;
     }
 
@@ -254,7 +257,7 @@ namespace {
                 for (int x = 0; x < width; ++x) {
                     const std::size_t i = static_cast<std::size_t>(y) * width + x;
                     double rgb[3] = {linear[i], linear[count + i], linear[2 * count + i]};
-                    OutputEncoding::applyEncoding(settings, rgb);
+                    ScannerOracle::apply_encoding(settings, rgb);
                     const std::size_t base = static_cast<std::size_t>(y) * stride + static_cast<std::size_t>(x) * components;
                     for (int c = 0; c < 3; ++c) {
                         result[base + c] = static_cast<float>(rgb[c]);

@@ -1,5 +1,7 @@
 #include "RustGamutBridge.h"
 
+#include "RustColorBridge.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -112,14 +114,14 @@ namespace JuicerGamut {
             diagnostic = "ResourceDescriptorMismatch component=output_gamut_transform field=output_color_space";
             return false;
         }
-        const auto& output = GeneratedColorSpaces::get(space);
-        const auto& d65 = GeneratedColorSpaces::get(OutputEncoding::ColorSpace::sRGB);
+        const auto output = JuicerColor::output_color(space);
+        const auto d65 = JuicerColor::output_color(OutputEncoding::ColorSpace::sRGB);
         FjOutputGamutSource source{};
         source.output_space = static_cast<std::uint32_t>(index);
-        std::copy_n(output.rgbToXyz, 9, source.rgb_to_xyz);
-        std::copy_n(output.xyzToRgb, 9, source.xyz_to_rgb);
-        std::copy_n(output.whiteXYZ, 3, source.white_xyz);
-        std::copy_n(d65.whiteXYZ, 3, source.d65_white_xyz);
+        std::copy_n(output.rgb_to_xyz, 9, source.rgb_to_xyz);
+        std::copy_n(output.xyz_to_rgb, 9, source.xyz_to_rgb);
+        std::copy_n(output.white_xyz, 3, source.white_xyz);
+        std::copy_n(d65.white_xyz, 3, source.d65_white_xyz);
         FjOutputGamutTransform result{};
         std::array<char, 512> bytes{};
         FjErrorBuffer error{bytes.data(), bytes.size(), 0};

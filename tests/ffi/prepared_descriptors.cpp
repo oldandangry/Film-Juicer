@@ -1,5 +1,8 @@
 #include "prepared_descriptors.h"
 
+#include <stdexcept>
+#include "juicer_test_api.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -318,6 +321,16 @@ namespace {
 
 namespace JuicerCudaTest {
 
+    FjOutputEncoding prepare_output_encoding(std::uint32_t space) {
+        FjOutputColorPreparation prepared{};
+        const auto status = fj_test_output_color(space, &prepared);
+        if (status.category != FJ_STATUS_SUCCESS) {
+            throw std::runtime_error("Complete output encoding fixture preparation failed");
+        }
+        return prepared.encoding;
+    }
+
+
     void encode_prepared_descriptors(
         const JuicerCuda::PreparedDescriptors& source,
         FjPreparedHostData& out) {
@@ -345,6 +358,7 @@ namespace JuicerCudaTest {
         out.scanner_post.unsharp_amount = source.post.unsharpAmount;
         out.scanner_post.hash = source.post.hash;
         FjOutputColor& color = out.output_color;
+        color.encoding = source.color.preparedEncoding;
         std::copy_n(source.color.cat02, 9, color.cat02);
         std::copy_n(source.color.xyzToRgb, 9, color.xyz_to_rgb);
         std::copy_n(source.color.illuminantXYZ, 3, color.illuminant_xyz);

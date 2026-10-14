@@ -40,14 +40,14 @@ namespace {
         Scanner::ScannerMedium medium,
         const Scanner::ScannerIlluminant& illuminant,
         const OutputEncoding::Params& encoding,
-        const GeneratedColorSpaces::ColorSpaceEntry& outSpace,
+        std::uint64_t entryHash,
         std::uint64_t activeOutputGamutRecipeHash) {
         const std::uint64_t encHash = Hash::hash_uint64_values(
             {static_cast<std::uint64_t>(OutputEncoding::toIndex(encoding.colorSpace)),
              static_cast<std::uint64_t>(encoding.applyCctfEncoding),
              static_cast<std::uint64_t>(encoding.inputIsOutputSpace)});
         return Hash::hash_uint64_values(
-            {outSpace.hash,
+            {entryHash,
              illuminant.hash,
              static_cast<std::uint64_t>(medium),
              encHash,
@@ -497,21 +497,21 @@ namespace Scanner {
             JTRACE("HASH", "FATAL: scanner illuminant hash invalid for color runtime");
             return rt;
         }
-        const GeneratedColorSpaces::ColorSpaceEntry& outSpace =
-            GeneratedColorSpaces::get(outputEncoding.colorSpace);
-        if (outSpace.hash == 0) {
+        const auto outSpace = JuicerColor::output_color(outputEncoding.colorSpace);
+        if (outSpace.entry_hash == 0) {
             JTRACE("HASH", "FATAL: generated color space hash invalid");
             return rt;
         }
         Spectral::ChromaticAdaptationWhites whites{};
         whites.source = illuminant.whiteXYZ;
-        whites.destination = outSpace.whiteXYZ;
+        whites.destination = outSpace.white_xyz;
         const auto adapt = JuicerColor::cat02_matrix(whites);
         std::copy(adapt.begin(), adapt.end(), rt.cat02);
 
         for (int i = 0; i < 9; ++i) {
-            rt.xyzToRgb[i] = outSpace.xyzToRgb[i];
+            rt.xyzToRgb[i] = outSpace.xyz_to_rgb[i];
         }
+        rt.preparedEncoding = outSpace.encoding;
         rt.encoding = outputEncoding;
         rt.encoding.inputIsOutputSpace = true;
         rt.illuminantXYZ[0] = illuminant.whiteXYZ[0];
@@ -522,7 +522,7 @@ namespace Scanner {
             medium,
             illuminant,
             rt.encoding,
-            outSpace,
+            outSpace.entry_hash,
             activeOutputGamutRecipeHash);
         return rt;
     }
