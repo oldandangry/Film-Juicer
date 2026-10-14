@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -283,13 +282,22 @@ class ProbeEvidenceTests(unittest.TestCase):
         environment = {'RUSTUP_TOOLCHAIN': 'pinned', 'CARGO_PROFILE_RELEASE_LTO': 'true',
             'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER': 'lld', 'GITHUB_ENV': 'step-path',
             'JUICER_RUST_PROBE_MANIFEST': 'evidence', 'UNKNOWN_COMPILER_INPUT': 'keep',
-            'VSCONSOLEOUTPUT': '0'}
+            'VSCONSOLEOUTPUT': '0', 'CMAKE_CONFIG_TYPE': 'Debug'}
         for platform in ('posix', 'nt'):
             with self.subTest(platform=platform), patch.object(evidence.os, 'name', platform):
                 result = evidence.execution_environment(environment)
             self.assertEqual(result, {'RUSTUP_TOOLCHAIN': 'pinned', 'CARGO_PROFILE_RELEASE_LTO': 'true',
                 'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER': 'lld', 'UNKNOWN_COMPILER_INPUT': 'keep',
                 'VSCONSOLEOUTPUT': '1' if platform == 'nt' else '0'})
+
+    def test_ctest_profile_label_is_removed_from_actual_compiler_environment(self):
+        compiler = {'CARGO_PROFILE_RELEASE_LTO': 'true', 'UNKNOWN_COMPILER_INPUT': 'keep'}
+        for label in ('', 'Debug', 'Release'):
+            with self.subTest(label=label):
+                environment = evidence.execution_environment({**compiler, 'CMAKE_CONFIG_TYPE': label})
+                self.assertNotIn('CMAKE_CONFIG_TYPE', environment)
+                self.assertEqual(environment['CARGO_PROFILE_RELEASE_LTO'], 'true')
+                self.assertEqual(environment['UNKNOWN_COMPILER_INPUT'], 'keep')
 
 
 class WorkflowEnvironmentTests(unittest.TestCase):
@@ -311,7 +319,8 @@ class WorkflowEnvironmentTests(unittest.TestCase):
         job, steps = job.split('\n    steps:\n', 1)
         steps = re.split(r'^      - name: ', steps, flags=re.MULTILINE)
         quality, = [step for step in steps if 'python -u scripts/check-quality.py' in step]
-        ctest, = [step for step in steps if 'ctest --preset linux-debug -L host' in step]
+        ctests = [step for step in steps if re.search(r'ctest --preset linux-(debug|release) -L host', step)]
+        self.assertEqual(len(ctests), 2)
 
         def environment(section, indent):
             # These workflow env blocks contain literal single-line mappings.
@@ -322,12 +331,72 @@ class WorkflowEnvironmentTests(unittest.TestCase):
         shared = environment(job, '    ')
         producer = evidence.execution_environment(evidence.compiler_environment(
             {**shared, **environment(quality, '        ')}))
-        consumer = evidence.execution_environment(evidence.compiler_environment(
-            {**shared, **environment(ctest, '        ')}))
-        self.assertEqual(producer, consumer, 'quality and CTest must bind the same compiler environment')
+        for ctest in ctests:
+            consumer = evidence.execution_environment(evidence.compiler_environment(
+                {**shared, **environment(ctest, '        ')}))
+            self.assertEqual(producer, consumer, 'quality and CTest must bind the same compiler environment')
         for name, value in (('JUICER_CLANG_FORMAT', 'clang-format-22'),
                             ('JUICER_CLANG_TIDY', 'clang-tidy-22')):
             self.assertEqual(producer[name], value)
+
+    def test_native_jobs_keep_required_statuses_and_one_quality_producer(self):
+        root = Path(__file__).resolve().parents[2]
+        for platform in ('linux', 'windows'):
+            with self.subTest(platform=platform):
+                workflow = (root / f'.github/workflows/tests-{platform}-host.yml').read_text(encoding='utf-8')
+                self.assertIn(f'\n  {platform}-debug-host:\n', workflow)
+                self.assertIn(f'name: {platform.title()} Debug host and Python checks', workflow)
+                self.assertEqual(workflow.count('python -u scripts/check-quality.py'), 1)
+                self.assertEqual(workflow.count('python tests/quality/probe_evidence.py'), 1)
+                self.assertLess(workflow.index('python -u scripts/check-quality.py'),
+                                workflow.index('ctest --preset'))
+
+    def test_both_profiles_have_full_host_selection_and_separate_failure_reports(self):
+        root = Path(__file__).resolve().parents[2]
+        for platform in ('linux', 'windows'):
+            workflow = (root / f'.github/workflows/tests-{platform}-host.yml').read_text(encoding='utf-8')
+            steps = re.split(r'^      - name: ', workflow, flags=re.MULTILINE)
+            for profile in ('debug', 'release'):
+                with self.subTest(platform=platform, profile=profile):
+                    preset = f'linux-{profile}' if platform == 'linux' else f'windows-clang-{profile}'
+                    configure, = [s for s in steps if f'cmake --preset {preset} ' in s]
+                    self.assertIn(f'cmake --preset {preset} -DBUILD_TESTING=ON', configure)
+                    self.assertIn(f'cmake --build --preset {preset}', configure)
+                    selection, = [s for s in steps if f'ctest --preset {preset} -L host' in s]
+                    self.assertIn(f'ctest --preset {preset} -N', selection)
+                    ctest_commands = selection[selection.index(f'ctest --preset {preset} -N'):]
+                    self.assertNotRegex(ctest_commands, r'--exclude|-E\b|-R\b|-LE\b')
+                    self.assertIn('--output-junit', selection)
+                    self.assertIn(f'{preset}', selection)
+                    upload, = [s for s in steps if f'name: {platform}-{profile}-host-junit\n' in s]
+                    self.assertIn('if: always()', upload)
+                    self.assertIn(f'out/validation/{preset}/host-junit.xml', upload)
+            self.assertNotIn('BUILD_TESTING=OFF', workflow)
+            self.assertNotIn('-L gpu', workflow)
+
+    def test_windows_native_failures_stop_each_profile_before_handoff(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / '.github/workflows/tests-windows-host.yml').read_text(encoding='utf-8')
+        for profile in ('debug', 'release'):
+            with self.subTest(profile=profile):
+                preset = f'windows-clang-{profile}'
+                for command, message in ((f'cmake --preset {preset} -DBUILD_TESTING=ON', 'configuration'),
+                                         (f'cmake --build --preset {preset}', 'build'),
+                                         (f'ctest --preset {preset} -N', 'test discovery')):
+                    self.assertIn(command + f'\n          if ($LASTEXITCODE -ne 0) {{ throw "{profile.title()} {message} failed" }}', workflow)
+                self.assertIn(f'throw "{profile.title()} host tests failed"', workflow)
+
+    def test_windows_loads_and_frees_both_modules_with_discovery_exports(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / '.github/workflows/tests-windows-host.yml').read_text(encoding='utf-8')
+        step, = [s for s in re.split(r'^      - name: ', workflow, flags=re.MULTILINE)
+                 if s.startswith('Check module loading and OFX discovery exports\n')]
+        self.assertIn('foreach ($preset in @("windows-clang-debug", "windows-clang-release"))', step)
+        self.assertIn('Resolve-Path "out/build/$preset/juicer.ofx"', step)
+        self.assertIn('@("OfxGetNumberOfPlugins", "OfxGetPlugin")', step)
+        self.assertIn('NativeLibrary]::Load($module)', step)
+        self.assertIn('} finally {', step)
+        self.assertIn('NativeLibrary]::Free($handle)', step)
 
 
 class ContextTests(unittest.TestCase):

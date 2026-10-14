@@ -137,3 +137,48 @@ outside the CUDA 13.2 series.
   payloads/bounds and records its path-sensitive manifest and lock changes;
   regenerating either external cohort remains a separate reviewed action, not
   outstanding migration validation.
+
+## Package 5 bounded retirement — 14 October 2026
+
+The current consumer audit retires six duplicate private policy/helper files, with
+byte-preserved original paths in the existing local archive. Public `scripts/`
+owns native source classification and format/hygiene commands. The private
+whole-`src` selector remains because its scope is distinct. The public quality
+dispatcher is the acceptance default; the private tidy runner, inventory, coverage
+tool and their tests remain for profile comparison, exploratory checks and
+diagnostic/evidence inventories. No public command depends on private tooling.
+
+This is a retirement decision, not promotion or acceptance of the deferred
+families. No CTest process, fixture, numerical bound, FFI contract or CUDA lifetime
+case is removed. The current private-tool tests are selected explicitly; a broad
+discovery of historical DB/RM scripts is not an acceptance command. Historical
+compilers require their original source/tool snapshot to reproduce old evidence.
+
+The case mapping below deliberately retains material for which complete
+replacement has not been proved. Companion `db*.cpp` sources stay with their
+Python drivers. No numerical oracle is regenerated.
+
+| Private origin and exact cases | Disposition |
+| --- | --- |
+| `test_db02e_spatial_scale_and_dir_parity.py`: `test_duplicate_scale_identity_is_absent_from_product_source`, `test_resolved_and_sample_contracts_each_store_one_raw_spatial_scale`, `test_raw_scale_flows_to_radius_and_local_floor_flows_to_components`, `test_single_scale_is_validated_and_hashed_once_per_contract`, `test_existing_film_format_to_dir_scale_path_remains_direct`, `test_scale_matrix_derives_expected_values_and_threshold_sides`, `test_closed_case_matrix_covers_formats_stages_and_artifact_patterns`, `test_validator_emits_six_scale_v2_report_at_existing_tolerance` | Retain privately: scale/radius source checks (first five cases), fixed format/operator reference matrix (next two), and report validation (last case). The 400 mm probe is historical research, beyond current 8–120 mm authored controls; it must not become admission coverage. |
+| `test_db04c_recipe_derivation_shrink.py`: `test_resolved_recipe_identity_and_authoritative_scanner_validation` | Retain the numerical/scanner contract and its native compiler as historical reproduction source. Current recipe/math ownership has moved; no assertion-level replacement or new native acceptance is claimed. |
+| `test_db04d_common_film_foundation.py`: `test_shared_input_builds_direct_and_print_foundations_once` | Retain the shared-foundation/hash oracle as historical numerical evidence; its bespoke native compile is not a current Rust-linked product build. |
+| `test_db04e_focused_render_state.py`: `test_real_publishers_use_one_authoritative_filming_payload`, `test_pending_state_coalesces_only_on_the_full_hash` | Retain focused-publication numerical oracles and pending-state/coalescing assertions. Public scatter admission tests cover current coalescing/recovery, but that alone does not establish equivalence of every frozen hash oracle. |
+| `test_db06b_print_profile_cache.py`: `test_deleted_modules_and_project_entries_are_absent`, `test_validated_profile_owner_is_direct_and_finite`, `test_resource_library_keeps_only_the_small_neutral_snapshot`, `test_ui_snapshot_uses_recipe_owned_types_directly`, `test_authoritative_recipe_consumers_remain`, `test_selected_profile_cache_and_strict_loader`, `test_neutral_calibration_snapshot_and_release` | Retain original source: the five layout cases describe the removed native profile/calibration owners, and the two compiled cases preserve cache/hold/release and old admission oracles. Current Rust asset/profile and FFI tests are authoritative; old authored-content gates must not be restored. |
+| `test_rm06_allocation_retry_cleanup.py`: `test_01_helper_has_exact_action_and_reap_bounds`, `test_02_initial_and_non_capacity_outcomes_return_directly`, `test_03_zero_progress_returns_without_retry`, `test_04_reap_failure_preserves_both_exact_diagnostics`, `test_05_actual_retry_has_one_outcome_and_preserves_first_error`, `test_06_retired_and_misleading_diagnostics_are_absent`, `test_07_only_the_three_owned_consumers_remain` | Retain seven private source/flow assertions: retry/reap bounds, early outcomes, zero progress, original/reap diagnostics, first-error preservation, trace absence/count and consumer count. Public CUDA owner tests do not establish every source/diagnostic assertion as redundant. |
+| `test_rm06_frame_use_event_recycling.py`: `test_completed_frame_use_events_share_the_existing_completion_pool` | Retain the source-level pool/reap/teardown/submission assertion. Existing public asynchronous/frame-owner tests do not by themselves prove identical pool implementation. |
+| `test_rm06_pinned_upload_cleanup.py`: `test_01_deleted_policy_surface_is_absent`, `test_02_block_has_one_real_lifecycle_state`, `test_03_upload_uses_the_resources_owner_identity`, `test_04_completion_errors_have_safe_state_transitions`, `test_05_context_cleanup_has_explicit_disposition` | Retain five source/lifetime investigations: retired surface, block lifecycle, exact owner identity, completion-error transitions and context cleanup. Do not replace these with a grep-to-behavior equivalence claim. |
+
+| Retained investigation family | Case/consumer mapping and retirement decision |
+| --- | --- |
+| `validation/gamma/` | Comparator-only split/fused cases map to public `tests/gamma/`. Retain the rest: `default-paper`/`default-routes` frozen captures, `sampling-dir`, `print-backend`, `state`, `routes`, separate injected/candidate route probes, `lifetime` table update/replacement, queued old/new streams, gamma reuse and abort/preflash retention, and `performance` unchanged/edit distributions. Preserve staging, before/after inventory checks, no-overwrite promotions and reference generation. Only old Release identities exist; two configuration-invalid cases remain explicitly invalid. No current four-preset baseline or complete lifetime replacement is established. |
+| `ExperimentalReleaseValidation*` | Retain half/asset, table, matrix, hull, Hanatos-window, balance, output-host, raw-CUDA, output-CUDA, profile and route investigations. Public host/FFI/reference cohorts overlap several boundaries; the large private spectral/output/route cohorts and their provenance are not proved redundant. |
+| `ExperimentalDirValidation*` | Retain pointwise, receiver, final-development, folded-neutral, spatial-source-failure, reflected-operator and infinity-sentinel probes with their experimental fixtures. Separate public-fixture and numerical-authority review is still required before promotion or retirement. |
+| `tools/diffusion_cuda_harness/` | Retain plan-layout/execution-descriptor checks, spectrum/convolution, camera route/carrier and ledger/resource lifecycle investigations, separately from five-process cuFFT profiling/selection and its accepted executable/provenance. The generated 1.4 GB convolution bundle stays maintenance-only. Public diffusion host/reference and scatter/FFI owner tests are not complete replacements for these inputs. |
+| `tools/dir_filter_harness/` | Retain strict FIR/YVV/tail reference probes and synthetic DIR source/filter/development separately from scanner/print/grain diagnostics and timings. Preserve reference generation/image qualification and rejected/approximate variants (size-aware, segmented/transpose/fused/streamed/parallel YVV, tiled FIR, downsampled tails and rank-2 DIR). Raw-log mode is already hard-blocked as obsolete. Research alternatives are not product parity authority. |
+
+The archive and accepted A7–A9 source, captures, rejection records and receipts
+remain at their recorded locations. Standard build/Cargo trees, staged bundles,
+path-bound historical harness binaries and current qualification runtimes retain
+configuration, review or reference consumers and are not deletion candidates.
+Archiving the six helpers retains 15,113 bytes and reclaims zero bytes.

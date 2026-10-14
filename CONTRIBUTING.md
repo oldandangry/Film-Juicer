@@ -90,6 +90,24 @@ retain this assessment as their G-Names and contextual G-Quality result.
 
 ## Required checks
 
+Supporting-code checks need Python 3.13 and the pinned tools installed explicitly:
+
+```sh
+python -m pip install -r scripts/quality-requirements.txt
+python -m unittest discover -s tests/quality -p test_tooling_lint.py -v
+python scripts/check-tooling.py
+```
+
+The command checks maintained Python and shell under `scripts/` and `tests/`,
+plus GitHub workflows. It includes eligible untracked files and excludes fixture,
+generated, vendor, private and output trees. Ruff uses `E4,E7,E9,F`; ShellCheck
+resolves sourced scripts; actionlint uses the selected ShellCheck with Pyflakes
+disabled. It neither modifies source nor installs tools, and missing/wrong tools,
+lint failures or input changes fail the command. The independent Linux lint job
+requires no CUDA setup. Its unit tests also run as `Quality.ToolingLint` in CTest;
+ordinary CTest does not require the lint executables. Private workbench checks
+are separate and are never inputs to public CI. Lints complement contextual review.
+
 Rust is pinned by `rust-toolchain.toml` to 1.98.1 with its rustfmt and Clippy
 components. Native formatting and tidy use LLVM 22; on Windows the qualified
 tools are under
@@ -112,6 +130,11 @@ tools or compiler/lint failures as incomplete work. Each fresh directory has a
 of that invocation's evidence. Keep the printed run path in a handoff; do not copy
 the shared quality tree or use an older log as evidence of the current pass.
 Historical logs remain untouched. CI uploads the run receipts and command sidecars.
+With `--base`, a valid diff with no owned files still runs the diff and boundary
+checks and completes receipt validation; the receipt records its empty selection
+and exclusion reasons. This includes clean and deletion-only diffs. Empty
+`--files` or `--all-owned` selections remain errors, as do invalid Git references
+and discovered owned files that disappear before selection completes.
 Receipts bind the Git revision, current owned source (including untracked and
 generated inputs), policies, compilation database/build configuration and consumed
 tools, dependency sources and project headers. These identities are checked again
@@ -197,6 +220,8 @@ valid domain names and a narrow foreign-boundary exception. It adds no product
 dependency and leaves the production source and checked-in fixtures untouched.
 
 `Quality.RustBoundaries` checks the current two-crate dependency contract using
+Cargo metadata is parsed from stdout alone; raw stdout/stderr logs are retained
+and bound to the quality receipt, including package-cache lock diagnostics.
 Cargo metadata, including inactive target-specific declarations and resolved
 source overrides. Direct dependency changes, new workspace members and crate
 build/link hooks require an explicit change to the contract in the quality

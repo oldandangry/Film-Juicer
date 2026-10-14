@@ -1,0 +1,7 @@
+target-version = "py313"
+# Public discovery supplies maintained files explicitly; fixtures and generated
+# sources are never lint inputs. The private wrapper supplies its own finite list.
+extend-exclude = ["**/fixtures/**", "**/generated/**", "**/vendor/**", "**/vendored/**", "out", "external", "third_party", ".juicer-local"]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]

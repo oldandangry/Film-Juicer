@@ -41,7 +41,9 @@ def compiler_environment(environment=None) -> dict[str, str]:
 def execution_environment(environment: dict) -> dict:
     # Remove orchestration variables from the compiler's actual environment,
     # not just its fingerprint. Unknown compiler/configuration variables remain.
-    controls = {'QUALITY_BASE', 'SHLVL', '_', 'CTEST_INTERACTIVE_DEBUG_MODE',
+    # CTest injects CMAKE_CONFIG_TYPE even for Ninja. Rust profiles are already
+    # bound by each case and its explicit Cargo --release argument.
+    controls = {'QUALITY_BASE', 'SHLVL', '_', 'CTEST_INTERACTIVE_DEBUG_MODE', 'CMAKE_CONFIG_TYPE',
                 'JUICER_TEST_ARTIFACT_DIR', 'JUICER_RUST_PROBE_DIR', 'JUICER_RUST_PROBE_PROFILE',
                 'JUICER_RUST_PROBE_MANIFEST', 'JUICER_QUALIFICATION_ID', 'JUICER_CARGO',
                 'JUICER_RUST_TARGET'}

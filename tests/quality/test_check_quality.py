@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -28,6 +29,36 @@ SPEC.loader.exec_module(check_quality)
 
 
 class CheckQualityTests(unittest.TestCase):
+    def test_bash_source_policy_accepts_native_windows_crlf_rows(self) -> None:
+        bash = r"C:\Program Files\Git\bin\bash.exe" if os.name == "nt" else "/bin/bash"
+        helper = SCRIPT_PATH.parent / "lib/style_common.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "bin").mkdir()
+            python = root / "bin/python3"
+            python.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'supported\\t.cpp\\r\\nheader\\t.h\\r\\ntranslation\\t.cpp\\r\\n"
+                "ignored\\tdocs/\\r\\ngenerated\\tsrc/generated.cpp\\r\\n'\n",
+                encoding="utf-8",
+            )
+            python.chmod(0o755)
+            result = subprocess.run(
+                [bash, "-c", 'export PATH="$PWD/bin:$PATH"; '
+                 f"source '{helper.as_posix()}'; "
+                 "style_is_supported_source src/example.cpp && "
+                 "style_is_header_like src/example.h && "
+                 "style_is_translation_unit src/example.cpp && "
+                 "style_is_ignored_path docs/example.cpp && "
+                 "style_is_ignored_path src/generated.cpp && "
+                 "style_supported_extension_regex"],
+                cwd=root, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            expression = result.stdout.strip()
+            self.assertIsNotNone(re.fullmatch(expression, "src/example.cpp"))
+            self.assertIsNone(re.fullmatch(expression, "src/example.txt"))
+
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -270,6 +301,82 @@ class CheckQualityTests(unittest.TestCase):
                 check_quality.check_workspace_contract(root)
 
 
+class CommandOutputTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.runner = check_quality.Runner(self.root, self.root / "logs")
+
+    def command(self, stdout: bytes, stderr: bytes, status: int = 0) -> list[str]:
+        return [sys.executable, "-c",
+                f"import os; os.write(2, {stderr!r}); os.write(1, {stdout!r}); raise SystemExit({status})"]
+
+    def test_metadata_stdout_excludes_diagnostics_and_preserves_raw_bytes(self) -> None:
+        stdout = b'{"workspace_members": []}\r\n'
+        stderr = b'Blocking waiting for file lock on package cache\r\n\xff\n'
+        with contextlib.redirect_stdout(io.StringIO()):
+            output = self.runner.run(self.command(stdout, stderr), label="metadata",
+                                     stdout_only=True, display_output=False)
+        self.assertEqual(json.loads(output), {"workspace_members": []})
+        self.assertEqual((self.runner.log_dir / "01-metadata.stdout.log").read_bytes(), stdout)
+        self.assertEqual((self.runner.log_dir / "01-metadata.stderr.log").read_bytes(), stderr)
+        record = json.loads((self.runner.log_dir / "01-metadata.command.json").read_text())
+        for stream in ("stdout", "stderr"):
+            path = self.runner.log_dir / record[stream]["file"]
+            self.assertEqual(record[stream]["sha256"], check_quality.file_digest(path))
+        self.assertEqual(record["returncode"], 0)
+        self.runner.verify_inputs()
+
+    def test_empty_or_malformed_stdout_cannot_use_json_from_stderr(self) -> None:
+        for stdout in (b"", b"not JSON", b'{"ok": true}\ntrailing junk'):
+            with self.subTest(stdout=stdout), contextlib.redirect_stdout(io.StringIO()):
+                output = self.runner.run(self.command(stdout, b'{"ok": true}'),
+                                         label="bad-metadata", stdout_only=True)
+                with self.assertRaises(json.JSONDecodeError):
+                    json.loads(output)
+
+    def test_failed_command_retains_both_streams_and_cannot_return_valid_json(self) -> None:
+        stdout, stderr = b'{"ok": true}\n', b"intentional Cargo failure\n"
+        with contextlib.redirect_stdout(io.StringIO()), \
+                self.assertRaisesRegex(check_quality.QualityError, "exit code 7"):
+            self.runner.run(self.command(stdout, stderr, 7), label="failed-metadata", stdout_only=True)
+        self.assertEqual((self.runner.log_dir / "01-failed-metadata.stdout.log").read_bytes(), stdout)
+        self.assertEqual((self.runner.log_dir / "01-failed-metadata.stderr.log").read_bytes(), stderr)
+        record = json.loads((self.runner.log_dir / "01-failed-metadata.command.json").read_text())
+        self.assertEqual(record["returncode"], 7)
+
+    def test_large_stderr_is_drained_without_corrupting_stdout(self) -> None:
+        stderr = b"package-cache diagnostic\n" * 8192
+        command = [sys.executable, "-c",
+                   'import os; os.write(2, b"package-cache diagnostic\\n" * 8192); os.write(1, b\'{"ok": true}\')']
+        with contextlib.redirect_stdout(io.StringIO()):
+            output = self.runner.run(command,
+                                     label="large-stderr", stdout_only=True)
+        self.assertEqual(json.loads(output), {"ok": True})
+        self.assertEqual((self.runner.log_dir / "01-large-stderr.stderr.log").read_bytes(), stderr)
+
+    def test_raw_stream_mutation_invalidates_consumed_input_identity(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.runner.run(self.command(b'{"ok": true}', b"diagnostic"),
+                            label="metadata", stdout_only=True)
+        for stream in ("stdout", "stderr"):
+            with self.subTest(stream=stream):
+                path = self.runner.log_dir / f"01-metadata.{stream}.log"
+                original = path.read_bytes()
+                path.write_bytes(original + b"changed")
+                with self.assertRaisesRegex(check_quality.QualityError, "input changed"):
+                    self.runner.verify_inputs()
+                path.write_bytes(original)
+        self.runner.verify_inputs()
+
+    def test_default_command_keeps_merged_diagnostic_behavior(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            output = self.runner.run(self.command(b"stdout\n", b"stderr\n"), label="ordinary")
+        self.assertEqual(output, "stderr\nstdout")
+        self.assertEqual(len(list(self.runner.log_dir.glob("*.log"))), 1)
+
+
 class ParallelAnalysisTests(unittest.TestCase):
     def test_cli_requires_a_positive_worker_limit(self) -> None:
         base = [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", "CONTRIBUTING.md"]
@@ -464,6 +571,42 @@ class DependencyContractTests(unittest.TestCase):
         self.metadata["workspace_members"].append("libm")
         with self.assertRaisesRegex(check_quality.QualityError, "only the core and plugin"):
             check_quality.check_dependency_contract(self.root, self.metadata)
+
+    def run_metadata(self) -> Mock:
+        runner = Mock(log_dir=self.root / "logs")
+        for package in self.metadata["packages"]:
+            if package.get("source"):
+                package["manifest_path"] = str(self.root / "absent-registry" / package["name"] / "Cargo.toml")
+        versions = {
+            "cargo-version": "cargo 1.98.1 qualified",
+            "rustc-version": "rustc 1.98.1 qualified",
+            "rustfmt-version": "rustfmt 1.9.0-stable qualified",
+            "clippy-version": "clippy 0.1.98 qualified",
+            "rust-dependency-contract": json.dumps(self.metadata),
+        }
+        runner.run.side_effect = lambda *args, **kwargs: versions.get(kwargs["label"], "")
+        arguments = argparse.Namespace(cargo=sys.executable, rustc=sys.executable, preset="linux-debug")
+        with patch.object(check_quality, "resolve_tool", return_value=sys.executable), \
+                patch.object(check_quality.shutil, "which", return_value=None), \
+                patch.object(check_quality, "check_workspace_contract"):
+            check_quality.check_rust(self.root, runner, arguments, "x86_64-unknown-linux-gnu")
+        return runner
+
+    def test_metadata_consumer_requests_stdout_and_keeps_complete_quality_dispatch(self) -> None:
+        runner = self.run_metadata()
+        calls = {call.kwargs["label"]: call for call in runner.run.call_args_list}
+        self.assertTrue(calls["rust-dependency-contract"].kwargs["stdout_only"])
+        self.assertEqual(calls["rust-dependency-contract"].args[0][1:],
+                         ["metadata", "--locked", "--offline", "--format-version", "1"])
+        for label in ("rustfmt", "rust-naming-enforcement", "rust-boundary-enforcement"):
+            self.assertIn(label, calls)
+        clippy = [label for label in calls if label.startswith("clippy-film-juicer-")]
+        self.assertEqual(len(clippy), 6)
+
+    def test_metadata_consumer_still_rejects_unapproved_dependency(self) -> None:
+        self.core["dependencies"].append({"name": "cuda-sys", "kind": None, "target": "cfg(windows)"})
+        with self.assertRaisesRegex(check_quality.QualityError, "direct dependencies"):
+            self.run_metadata()
 
 
 class CudaQualityTests(unittest.TestCase):
@@ -945,6 +1088,158 @@ class SelectionAndEvidenceTests(unittest.TestCase):
         self.assertEqual(search.quoted, (root / "quoted",))
         self.assertEqual(search.ordinary, tuple(root / name for name in ("one space", "two", "three", "system")))
         self.assertEqual(search.forced, ("forced.h",))
+
+
+class EmptySelectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+        self.policy = check_quality.load_policy(SCRIPT_PATH.parent.parent)
+        files = {
+            ".gitignore": "out/\n__pycache__/\n",
+            "README.md": "Documentation\n",
+            ".gitattributes": "*.py text\n",
+            "Resources/sample.json": "{}\n",
+            "src/owner.cpp": "// Boundary owner\n",
+            "src/removable.cpp": "// Removable source\n",
+            # A small executable guard makes command failure observable without
+            # copying the product boundary or requiring compiler tools.
+            "tests/ffi/test_native_boundary.py": (
+                "import unittest\nfrom pathlib import Path\n"
+                "class BoundaryTests(unittest.TestCase):\n"
+                "    def test_owner_exists(self):\n"
+                "        self.assertTrue(Path('src/owner.cpp').is_file())\n"
+            ),
+        }
+        for name, content in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        self.git("init", "-q")
+        self.git("add", ".")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "-qm", "baseline")
+        self.enterContext(patch.object(check_quality, "__file__", str(self.root / "scripts/check-quality.py")))
+        self.enterContext(patch.object(check_quality, "load_policy", return_value=self.policy))
+        self.enterContext(patch.object(sys, "argv", ["quality", "--preset", "linux-debug", "--base", "HEAD"]))
+        self.output = self.enterContext(contextlib.redirect_stdout(io.StringIO()))
+
+    def git(self, *arguments: str) -> None:
+        subprocess.run(["git", *arguments], cwd=self.root, check=True,
+                       capture_output=True, timeout=30)
+
+    def receipt(self) -> dict:
+        path, = (self.root / "out/validation/linux-debug/quality/runs").glob("*/run.json")
+        record = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(record["selected"], [])
+        self.assertEqual(record["selected_sha256"], {})
+        self.assertIn("git_head", record["inputs"])
+        self.assertTrue(record["consumed_inputs"])
+        self.assertIn("finished_at", record)
+        for name, digest in record["files"].items():
+            self.assertEqual(check_quality.file_digest(path.parent / name), digest)
+        return record
+
+    def test_excluded_only_diff_runs_guards_and_records_exclusions(self) -> None:
+        for name in ("README.md", ".gitattributes", "Resources/sample.json"):
+            with (self.root / name).open("a", encoding="utf-8") as stream:
+                stream.write("Changed\n")
+        with (patch.object(check_quality, "prepare_native_analysis") as native,
+              patch.object(check_quality, "check_rust") as rust):
+            self.assertEqual(check_quality.main(), 0)
+        native.assert_not_called()
+        rust.assert_not_called()
+        record = self.receipt()
+        self.assertEqual(record["status"], "passed")
+        self.assertEqual(record["excluded"], [
+            ".gitattributes: outside owned quality scope",
+            "README.md: outside owned quality scope",
+            "Resources/sample.json: excluded prefix Resources/",
+        ])
+        self.assertTrue(any("git-diff-check" in name for name in record["files"]))
+        self.assertTrue(any("native-boundary-enforcement" in name for name in record["files"]))
+        self.assertIn("No owned files selected", self.output.getvalue())
+
+    def test_clean_base_still_completes_a_receipt(self) -> None:
+        self.assertEqual(check_quality.main(), 0)
+        record = self.receipt()
+        self.assertEqual(record["status"], "passed")
+        self.assertEqual(record["excluded"], [])
+
+    def test_deleted_owned_file_is_recorded_without_native_analysis(self) -> None:
+        (self.root / "src/removable.cpp").unlink()
+        with patch.object(check_quality, "prepare_native_analysis") as native:
+            self.assertEqual(check_quality.main(), 0)
+        native.assert_not_called()
+        record = self.receipt()
+        self.assertEqual(record["status"], "passed")
+        self.assertEqual(record["excluded"], ["deleted: src/removable.cpp"])
+
+    def test_whitespace_failure_in_excluded_file_is_not_a_pass(self) -> None:
+        (self.root / "README.md").write_text("Trailing space \n", encoding="utf-8")
+        with self.assertRaisesRegex(check_quality.QualityError, "git-diff-check"):
+            check_quality.main()
+        self.assertEqual(self.receipt()["status"], "failed")
+        self.assertNotIn("Quality checks passed", self.output.getvalue())
+
+    def test_boundary_failure_after_deletion_is_not_a_pass(self) -> None:
+        (self.root / "src/owner.cpp").unlink()
+        with self.assertRaisesRegex(check_quality.QualityError, "native-boundary-enforcement"):
+            check_quality.main()
+        self.assertEqual(self.receipt()["status"], "failed")
+        self.assertNotIn("Quality checks passed", self.output.getvalue())
+
+    def test_empty_selection_still_rechecks_source_and_consumed_inputs(self) -> None:
+        original = check_quality.run_checks
+        for changed in ("source", "consumed"):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as directory:
+                log_dir = Path(directory)
+
+                def check_then_mutate(root, arguments, policy, selected, excluded, runner):
+                    result = original(root, arguments, policy, selected, excluded, runner)
+                    path = root / "README.md" if changed == "source" else log_dir / "consumed.txt"
+                    if changed == "consumed":
+                        path.write_text("original", encoding="utf-8")
+                        runner.bind_inputs([path])
+                    path.write_text("changed", encoding="utf-8")
+                    return result
+
+                with (patch.object(check_quality, "create_run_directory", return_value=log_dir),
+                      patch.object(check_quality, "run_checks", side_effect=check_then_mutate)):
+                    with self.assertRaisesRegex(check_quality.QualityError, "quality input"):
+                        check_quality.main()
+                record = json.loads((log_dir / "run.json").read_text(encoding="utf-8"))
+                self.assertEqual(record["selected"], [])
+                self.assertEqual(record["status"], "failed")
+                self.assertNotIn("Quality checks passed", self.output.getvalue())
+
+    def test_explicit_and_all_owned_empty_selections_remain_errors(self) -> None:
+        self.git("rm", "-qr", "src", "tests", ".gitignore")
+        for mode in (["--files", "README.md"], ["--files", "src/missing.cpp"], ["--all-owned"]):
+            with self.subTest(mode=mode):
+                arguments = argparse.Namespace(base=None, files=mode[1:] if mode[0] == "--files" else None)
+                with self.assertRaisesRegex(check_quality.QualityError, "selection is empty"):
+                    check_quality.select_paths(self.root, arguments, self.policy)
+
+    def test_invalid_base_and_discovery_errors_remain_errors(self) -> None:
+        arguments = argparse.Namespace(base="refs/heads/does-not-exist", files=None)
+        with self.assertRaises(check_quality.QualityError):
+            check_quality.select_paths(self.root, arguments, self.policy)
+        arguments.base = "HEAD"
+        for payload in (b"M\0", b"M\0../outside.cpp\0", b"M\0src/missing.cpp\0"):
+            with self.subTest(payload=payload), patch.object(check_quality, "run_git", side_effect=[payload, b""]):
+                with self.assertRaises(check_quality.QualityError):
+                    check_quality.select_paths(self.root, arguments, self.policy)
+
+    def test_base_still_selects_mixed_and_untracked_owned_files(self) -> None:
+        (self.root / "README.md").write_text("Changed\n", encoding="utf-8")
+        (self.root / "src/owner.cpp").write_text("// Changed\n", encoding="utf-8")
+        (self.root / "src/new.cpp").write_text("// Untracked\n", encoding="utf-8")
+        selected, excluded = check_quality.select_paths(
+            self.root, argparse.Namespace(base="HEAD", files=None), self.policy)
+        self.assertEqual(selected, ["src/new.cpp", "src/owner.cpp"])
+        self.assertEqual(excluded, ["README.md: outside owned quality scope"])
 
 
 class QualityReceiptTests(unittest.TestCase):

@@ -18,7 +18,7 @@ jobs:
   linux-debug-host:
     name: Linux Debug host and Python checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       CUDACXX: /usr/local/cuda-13.2/bin/nvcc
@@ -95,7 +95,7 @@ jobs:
           set -euo pipefail
           test ! -e /dev/nvidiactl
 
-      - name: Configure and build public tests
+      - name: Configure and build Debug public tests
         shell: bash
         run: |
           set -euo pipefail
@@ -124,7 +124,7 @@ jobs:
             echo "JUICER_QUALIFICATION_ID=$qualification_id" >> "$GITHUB_ENV"
           fi
 
-      - name: List tests and run host selection
+      - name: List tests and run Debug host selection
         shell: bash
         run: |
           set -euo pipefail
@@ -134,12 +134,40 @@ jobs:
             --output-on-failure \
             --output-junit "$GITHUB_WORKSPACE/out/validation/linux-debug/host-junit.xml"
 
+      - name: Configure and build Release public tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --preset linux-release -DBUILD_TESTING=ON
+          cmake --build --preset linux-release
+
+      - name: List tests and run Release host selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/validation/linux-release
+          ctest --preset linux-release -N
+          ctest --preset linux-release -L host \
+            --output-on-failure \
+            --output-junit "$GITHUB_WORKSPACE/out/validation/linux-release/host-junit.xml"
+
       - name: Upload host test report
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: linux-debug-host-junit
           path: out/validation/linux-debug/host-junit.xml
+          if-no-files-found: warn
+
+      - name: Upload Release host test report
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: linux-release-host-junit
+          path: |
+            out/validation/linux-release/host-junit.xml
+            out/build/linux-release/Testing/Temporary/LastTest.log
+            out/build/linux-release/compile_commands.json
           if-no-files-found: warn
 
       - name: Upload quality diagnostics and CUDA commands

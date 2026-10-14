@@ -68,6 +68,13 @@ add_test(NAME Rust.Bridge
 set_tests_properties(Rust.Bridge PROPERTIES
     LABELS "host" TIMEOUT 120 RESOURCE_LOCK juicer_cargo WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 
+add_test(NAME Ffi.Host.RustBuild
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/run_rust_build_contract.py"
+        --cargo "${JUICER_CARGO_EXECUTABLE}" --cmake "${CMAKE_COMMAND}"
+        --ninja "${CMAKE_MAKE_PROGRAM}" --cc "${CMAKE_C_COMPILER}"
+        --artifacts "${JUICER_TEST_ARTIFACT_ROOT}/ffi/rust-build")
+set_tests_properties(Ffi.Host.RustBuild PROPERTIES LABELS "host" TIMEOUT 240)
+
 add_test(NAME Ffi.Host.NativeBoundary
     COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p "test_native_boundary.py" -v)
@@ -295,6 +302,12 @@ set_tests_properties(Quality.Dispatcher PROPERTIES
     TIMEOUT 60
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
+add_test(NAME Quality.ToolingLint
+    COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_CURRENT_SOURCE_DIR}/quality" -p test_tooling_lint.py -v)
+set_tests_properties(Quality.ToolingLint PROPERTIES
+    LABELS "host" TIMEOUT 60 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
 add_test(NAME Quality.ProbeEvidence
     COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s "${CMAKE_CURRENT_SOURCE_DIR}/quality" -p test_probe_evidence.py -v)
@@ -306,6 +319,12 @@ add_test(NAME Ctest.Host.Report
         -s "${CMAKE_CURRENT_SOURCE_DIR}/ctest" -p test_report.py -v)
 set_tests_properties(Ctest.Host.Report PROPERTIES
     LABELS "host" TIMEOUT 30 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
+add_test(NAME Ctest.Host.Repetition
+    COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
+        -s "${CMAKE_CURRENT_SOURCE_DIR}/ctest" -p test_repeat.py -v)
+set_tests_properties(Ctest.Host.Repetition PROPERTIES LABELS "host" TIMEOUT 60
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;JUICER_CTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND};JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/ctest-repetition-controls")
 
 add_test(NAME Quality.RustNaming
     COMMAND "${CMAKE_COMMAND}" -E env
@@ -383,9 +402,10 @@ endif()
 add_test(NAME Resource.Host.ScratchRequest COMMAND JuicerScratchRequestTests)
 set_tests_properties(Resource.Host.ScratchRequest PROPERTIES LABELS "host" TIMEOUT 30)
 
-add_executable(JuicerPreparedProjectionTests
+set(JUICER_PREPARED_TEST_SOURCES
     ffi/prepared_projection_test.cpp ffi/prepared_span_test.cpp
     ffi/prepared_descriptors.cpp)
+add_executable(JuicerPreparedProjectionTests ${JUICER_PREPARED_TEST_SOURCES})
 target_link_libraries(JuicerPreparedProjectionTests PRIVATE juicer_core GTest::gtest_main)
 set_target_properties(JuicerPreparedProjectionTests PROPERTIES
     LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
@@ -394,6 +414,11 @@ if(UNIX)
 endif()
 add_test(NAME Ffi.Host.PreparedProjection COMMAND JuicerPreparedProjectionTests)
 set_tests_properties(Ffi.Host.PreparedProjection PROPERTIES LABELS "host" TIMEOUT 30)
+include(ffi/prepared_sanitizers.cmake)
+add_test(NAME Ffi.Host.SanitizerRunner
+    COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
+        -s "${CMAKE_CURRENT_SOURCE_DIR}/ffi" -p test_prepared_sanitizer_control.py -v)
+set_tests_properties(Ffi.Host.SanitizerRunner PROPERTIES LABELS "host" TIMEOUT 30)
 
 add_executable(JuicerProfileCudaSafetyTests profile/native_cuda_safety_test.cu)
 target_link_libraries(JuicerProfileCudaSafetyTests PRIVATE juicer_core GTest::gtest_main)
@@ -846,7 +871,8 @@ add_test(NAME Color.Host.InputColor COMMAND JuicerColorPreparationTests
 set_tests_properties(Color.Host.InputColor PROPERTIES LABELS "host" TIMEOUT 60)
 add_test(NAME Ffi.Host.InputColorPreparation COMMAND JuicerColorPreparationTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/input-color-${JUICER_TEST_PRESET_NAME}.json" input-preparation)
-set_tests_properties(Ffi.Host.InputColorPreparation PROPERTIES LABELS "host" TIMEOUT 600 RUN_SERIAL TRUE)
+# Admission hooks and asset caches are process-local; bound host contention to two slots.
+set_tests_properties(Ffi.Host.InputColorPreparation PROPERTIES LABELS "host" TIMEOUT 600 PROCESSORS 2)
 
 add_test(NAME Color.Gpu.ScannerReuse COMMAND JuicerColorPreparationTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/${JUICER_TEST_PRESET_NAME}.json" reuse-gpu)

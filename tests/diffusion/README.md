@@ -32,24 +32,63 @@ upstream revision, and source hashes were not regenerated.
 
 ## Reference maintenance
 
-Reference generation is separate from CTest. It requires the pinned
-spektrafilm checkout and environment described by
-`reference/requirements.lock`:
+Committed-fixture integrity checks need only the ordinary Python 3.13 test
+environment and NumPy. They verify the accepted JSON/NPZ byte hashes, array
+hashes, schemas and coverage, and the structure of historical provenance. They
+do not import spektrafilm or require the old capture environment or current Git
+revisions:
 
 ```sh
-bash tests/diffusion/reference/bootstrap_reference_env.sh
-.tmp/diffusion/reference-venv/bin/python \
-  tests/diffusion/reference/generate_reference.py \
-  --output-dir out/validation/diffusion-reference-candidate
+python -B -m unittest tests.diffusion.reference.tests.test_reference_contract -v
+python -B -m unittest tests.diffusion.reference.tests.test_maintenance -v
 ```
 
-The command writes a fresh candidate. It must not overwrite the committed
-cohort. Generator contract checks run only in that reference environment:
+Fresh-capture checks are explicit maintenance operations outside CTest. Use a
+clean spektrafilm checkout and the hashed `reference/requirements.lock` in a
+separate native Python 3.13 environment. A candidate records the actual current
+reference revision; it does not redefine the accepted fixture's revision.
+Generation requires an output directory and rejects the committed fixture tree.
+
+The existing Linux bootstrap remains available for its historical `.tmp/`
+layout. For a new Linux campaign, keep the environment and evidence separate:
 
 ```sh
-.tmp/diffusion/reference-venv/bin/python -m unittest \
-  tests.diffusion.reference.tests.test_reference_contract -v
+DIFFUSION_RUN=out/validation/linux-debug/diffusion-reference-candidate
+mkdir -p "$DIFFUSION_RUN/evidence"
+uv venv --managed-python --python 3.13 "$DIFFUSION_RUN/environment"
+uv pip sync --python "$DIFFUSION_RUN/environment/bin/python" tests/diffusion/reference/requirements.lock
+uv pip install --python "$DIFFUSION_RUN/environment/bin/python" --no-deps -e external/spektrafilm
+uv pip freeze --python "$DIFFUSION_RUN/environment/bin/python" > "$DIFFUSION_RUN/evidence/python-freeze.txt"
+uv --version > "$DIFFUSION_RUN/evidence/uv-version.txt"
+"$DIFFUSION_RUN/environment/bin/python" -B tests/diffusion/reference/generate_reference.py \
+  --environment-dir "$DIFFUSION_RUN/environment" --evidence-dir "$DIFFUSION_RUN/evidence" \
+  --output-dir "$DIFFUSION_RUN/candidate"
+"$DIFFUSION_RUN/environment/bin/python" -B -m tests.diffusion.reference.tests.test_reference_contract \
+  --capture-dir "$DIFFUSION_RUN/candidate" -v
 ```
+
+For native Windows, use PowerShell from the repository root. These commands use
+the same lock with native wheels and keep UTF-8 evidence free of a BOM:
+
+```powershell
+$diffusionRun = "out/validation/windows-clang-debug/diffusion-reference-candidate"
+New-Item -ItemType Directory -Force "$diffusionRun/evidence" | Out-Null
+uv venv --managed-python --python 3.13 "$diffusionRun/environment"
+$diffusionPython = "$diffusionRun/environment/Scripts/python.exe"
+uv pip sync --python $diffusionPython tests/diffusion/reference/requirements.lock
+uv pip install --python $diffusionPython --no-deps -e external/spektrafilm
+$diffusionUtf8 = New-Object System.Text.UTF8Encoding($false)
+[IO.File]::WriteAllText("$PWD/$diffusionRun/evidence/python-freeze.txt", ((uv pip freeze --python $diffusionPython) -join "`n") + "`n", $diffusionUtf8)
+[IO.File]::WriteAllText("$PWD/$diffusionRun/evidence/uv-version.txt", ((uv --version) -join "`n") + "`n", $diffusionUtf8)
+& $diffusionPython -B tests/diffusion/reference/generate_reference.py --environment-dir "$diffusionRun/environment" --evidence-dir "$diffusionRun/evidence" --output-dir "$diffusionRun/candidate"
+& $diffusionPython -B -m tests.diffusion.reference.tests.test_reference_contract --capture-dir "$diffusionRun/candidate" -v
+```
+
+The explicit capture suite checks all fixture contracts plus the current native
+interpreter/platform, environment evidence hashes, repository and clean
+reference revisions, and actual files imported by the public generator. It
+rejects stale evidence. Candidates require separate review before promotion;
+ordinary tests and these commands leave the accepted fixture bytes unchanged.
 
 The CUDA convolution generator remains a maintenance tool. Its 1.4 GB output
 is intentionally not an ordinary repository fixture and is not registered in

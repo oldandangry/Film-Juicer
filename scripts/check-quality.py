@@ -135,6 +135,7 @@ class Runner:
         cwd: Path | None = None,
         label: str,
         display_output: bool = True,
+        stdout_only: bool = False,
     ) -> str:
         safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-")
         with self.output_lock:
@@ -148,16 +149,17 @@ class Runner:
             self.bind_inputs([Path(executable)])
             record["executable_sha256"] = self.inputs[str(Path(executable).resolve())]
         try:
+            output_options = {} if stdout_only else {
+                "text": True, "encoding": "utf-8", "errors": "replace",
+            }
             completed = subprocess.run(
                 command,
                 cwd=cwd or self.root,
                 env=env,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+                stderr=subprocess.PIPE if stdout_only else subprocess.STDOUT,
                 check=False,
+                **output_options,
             )
         except OSError as exc:
             log_path.write_text(f"{label}: could not start command: {exc}\n", encoding="utf-8")
@@ -165,16 +167,29 @@ class Runner:
             log_path.with_suffix(".command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
             raise QualityError(f"{label}: could not start command; see {log_path}") from exc
         record.update(seconds=time.perf_counter() - start, returncode=completed.returncode)
+        if stdout_only:
+            # Keep machine-readable stdout separate and preserve both original byte streams.
+            stdout_path = log_path.with_suffix(".stdout.log")
+            stderr_path = log_path.with_suffix(".stderr.log")
+            stdout_path.write_bytes(completed.stdout)
+            stderr_path.write_bytes(completed.stderr)
+            self.bind_inputs([stdout_path, stderr_path])
+            record["stdout"] = {"file": stdout_path.name, "sha256": file_digest(stdout_path)}
+            record["stderr"] = {"file": stderr_path.name, "sha256": file_digest(stderr_path)}
+            stdout = completed.stdout.decode("utf-8", errors="replace")
+            output = stdout + completed.stderr.decode("utf-8", errors="replace")
+        else:
+            stdout = output = completed.stdout
         log_path.with_suffix(".command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-        log_path.write_text(completed.stdout, encoding="utf-8")
-        if completed.stdout and display_output:
+        log_path.write_text(output, encoding="utf-8")
+        if output and display_output:
             with self.output_lock:
-                print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
+                print(output, end="" if output.endswith("\n") else "\n")
         if completed.returncode != 0:
             raise QualityError(
                 f"{label} failed with exit code {completed.returncode}; see {log_path}"
             )
-        return completed.stdout.strip()
+        return stdout.strip()
 
 
     def run_analysis(self, commands: Sequence[AnalysisCommand]) -> None:
@@ -440,10 +455,12 @@ def select_paths(
             excluded.append(f"{path}: {reason}")
             continue
         if not (root / path).is_file():
+            if arguments.base:
+                raise QualityError(f"discovered owned file is not present: {path}")
             excluded.append(f"{path}: not a present file")
             continue
         selected.add(path)
-    if not selected:
+    if not selected and not arguments.base:
         raise QualityError("the required owned-file selection is empty")
     return sorted(selected), sorted(set(excluded))
 
@@ -578,6 +595,7 @@ def check_rust(
         env=environment,
         label="rust-dependency-contract",
         display_output=False,
+        stdout_only=True,
     )
     packages = json.loads(metadata)
     check_dependency_contract(root, packages)
@@ -1079,6 +1097,8 @@ def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
     log_dir = runner.log_dir
 
     print("Selected files:")
+    if not selected:
+        print("  none (valid base diff)")
     for path in selected:
         detail = " (generated Rust; checked with workspace)" if path in policy.generated_paths else ""
         print(f"  {path}{detail}")
@@ -1157,7 +1177,9 @@ def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
     if native_required:
         runner.run_analysis([item for item in native_commands if item.source not in native_files])
 
-    if not rust_required and not native_required:
+    if not selected:
+        print("No owned files selected: diff/boundary checks and receipt validation still apply.")
+    elif not rust_required and not native_required:
         print("Documentation/configuration-only selection: diff/boundary checks and review apply.")
     return 0
 
@@ -1216,7 +1238,7 @@ def main() -> int:
     runner = Runner(root, log_dir, jobs=arguments.jobs)
     record = {
         "command": [sys.executable, *sys.argv], "directory": str(root),
-        "preset": arguments.preset, "selected": selected,
+        "preset": arguments.preset, "selected": selected, "excluded": excluded,
         "started_at": datetime.now(timezone.utc).isoformat(), "status": "running",
         "selected_sha256": {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
                             for name in selected if (root / name).is_file()},

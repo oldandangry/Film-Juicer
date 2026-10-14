@@ -648,6 +648,15 @@ pending supersession retain owners/hashes/counters; same-thread matching raw cal
 before cleanup witness consumption. Retained products stay exact across asset
 cache release and state replacement. Both retained DWG helpers propagate failure.
 
+Retention comparisons keep independently owned expected bit snapshots and read
+current published arrays directly. Exact lengths, every sample bit (including
+signed zero and NaN payloads), absent-array handling, boundary validity/hashes/
+diagnostics and complete recipe/table JSON remain checked. Only temporary
+current-value bit-vector copies are removed; all 140 product cases, 144 operation
+counts (including zero calls), 208 cold/current failure/recovery cases and 624
+supersession witnesses retain their original constructions and order. Comparator
+controls reject length and individual-bit changes independently of those fixtures.
+
 `fixtures/color/input-color-manifest.json` contains self-contained native-parent,
 compiler, control, representation and reference-role provenance. The owner-adopted
 6 October 2026 inverse mapping uses A from every agreeing completed recipe/config
@@ -840,3 +849,95 @@ rehash. Test-support copy timings are absent from ordinary production builds.
 Injection demonstrates status/panic/zero-identity transport, not real OOM,
 a zero-hash preimage or process-abort recovery. The capacity-overflow test
 exercises the same actual fallible reserve boundary separately.
+
+## Prepared-host sanitizer pilot
+
+The optional Debug-only `JUICER_PREPARED_FFI_SANITIZERS` CMake option defaults to
+OFF. With `BUILD_TESTING=ON`, configure either native Debug preset with
+`-DJUICER_PREPARED_FFI_SANITIZERS=ON`, build the complete preset, then run the
+unfiltered CTest preset. `ctest --preset <preset> -L sanitizer` is a focused
+diagnostic invocation and does not replace that complete qualification.
+
+The pilot compiles all three existing prepared-host test sources and production
+`native/juicer_cuda_prepared.cpp` / `juicer_cuda_descriptors.cpp` with
+`-fsanitize=address,undefined -fno-sanitize-recover=undefined`; Linux also retains
+frame pointers. The original `Ffi.Host.PreparedProjection` target and assertions
+remain unchanged. Four added host processes cover the same prepared-host cases,
+a clean runtime control, production-decoder use-after-free and signed integer
+overflow. Controls require nonzero exit and the specific sanitizer report; an
+arbitrary crash, missing runtime or silent return cannot pass. Raw failure output
+and executable/log hashes are retained under the preset's `prepared-sanitizers/`
+artifact directory in separate fresh run directories.
+
+Windows uses the selected Clang compiler's ASan DLL and symbolizer directories in
+these tests' environment only; configure fails if the required DLL is missing.
+The instrumented decoder/projection archive members are replaced only in pilot
+executables. The ordinary core archive, Rust 1.98.1 static library, GoogleTest,
+CUDA host objects elsewhere and CUDA device kernels remain uninstrumented. In
+particular, `ThreeChannelSamplesView::sample` remains in an uninstrumented
+resource translation unit; its existing behavioral assertions still run, but
+this pilot does not claim complete instrumentation of that path. Leak detection
+is disabled on both platforms (`detect_leaks=0`) and is not qualified. Allocation
+interception is not equivalent to instrumentation of individual Rust loads.
+Windows string/vector/optional annotations are also disabled in the pilot
+objects to match the uninstrumented core's STL definitions. Consequently, reserved
+capacity versus logical-size container overflows and disengaged-optional accesses
+are not qualified, although
+ordinary ASan access checks remain enabled. The linker ODR check is preserved;
+see [Microsoft's annotation requirements](https://learn.microsoft.com/en-us/cpp/sanitizers/error-container-overflow).
+No production rendering, Rust ownership checkpoint or scientific admission rule
+changes. This pilot adds no CI lane.
+
+## Bounded cache and owner repetition
+
+After configuring and building the complete native Debug preset, run this exact
+seven-group host cohort (replace `linux-debug` with `windows-clang-debug` on
+native Windows). Create a fresh campaign directory under the preset's validation
+root and retain the verbose output, log and JUnit from that invocation:
+
+The example uses shell line continuation; join it onto one line in PowerShell
+and change the preset and output paths to `windows-clang-debug`.
+
+```sh
+ctest --preset linux-debug --parallel 1 --no-tests=error --repeat until-fail:20 --stop-on-failure \
+  -R '^(Gamut[.]Host[.]Output[.]Cache|Ffi[.]Host[.]CudaOwner|Ffi[.]Host[.]CudaTerminal[.](serialization|shutdown-progress|host-cache-failure|host-cache-native-precedence)|Ofx[.]Host[.]CudaOwnerUnload)$' \
+  --verbose --output-on-failure \
+  --output-log out/validation/linux-debug/<campaign>/repetition.log \
+  --output-junit out/validation/linux-debug/<campaign>/repetition.xml
+```
+
+Confirm discovery contains exactly these seven groups before execution. Each
+successful invocation runs 140 independent test processes. Repetition launches
+fresh processes rather than looping inside a retained process owner. Existing
+arguments, per-test timeouts and `RUN_SERIAL`/resource-lock properties remain;
+this cohort executes no GPU work or Cargo operation. Keep configuration/build
+writers and other CTest invocations out of the same build tree while it runs.
+Use an outer finite campaign deadline; the qualified 20-repeat workload and
+actual native timings are recorded in the investigation handoff.
+
+The cache test retains its W1–W7 acknowledged gates, matching/conflicting fixed
+operands, all table-word comparisons, fault codes, generation exhaustion,
+cleanup precedence, retained A8 hull and destruction-scope assertions. Owner
+groups retain failed-close, consume-once, shutdown/admission serialization,
+host-cache failure precedence and OFX fatal-unload contracts. These tests use no
+PRNG; fixture bytes and forced schedules are the reproducibility inputs. Do not
+add shuffling, change seeds in another test, widen numeric bounds or regenerate
+fixtures for this investigation.
+
+`until-fail` stops a test at its first failure. Preserve that original log and
+receipt, stop the investigation on any failure/skip/timeout or missing group,
+and diagnose before a separately named retry. A later pass cannot explain away
+an earlier failure; do not substitute `until-pass` or `after-timeout`. JUnit
+records the final result per group rather than every repeat: retain verbose
+output and verify all 20 executions per named group. A clean bounded run proves
+these repetitions, not exhaustive interleaving coverage or future absence of
+flakiness. No required group moves to optional/nightly execution.
+# CMake/Cargo build regression
+
+`Ffi.Host.RustBuild` runs `run_rust_build_contract.py` with the configured native
+Cargo, CMake, Ninja and C compiler. It exercises Debug and Release in miniature
+workspaces isolated from the product Cargo directory: fresh/no-op completion,
+test-only inputs, missing outputs, source/feature/glob propagation and failed
+Cargo retries. Command logs and failing inputs remain under the preset's
+`ffi/rust-build/` validation directory; successful fixture build caches are
+removed. No GPU or reference-generation environment is required.

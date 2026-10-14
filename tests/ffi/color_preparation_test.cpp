@@ -893,6 +893,31 @@ namespace {
         }
         return out;
     }
+    template <typename Range>
+    bool same_retained_bits(const Range& values, const std::vector<std::uint32_t>& expected) {
+        return std::size(values) == expected.size() && std::equal(std::begin(values), std::end(values), expected.begin(), [](float value, std::uint32_t bits) {
+                   return std::bit_cast<std::uint32_t>(value) == bits;
+               });
+    }
+    void retained_comparison_tests() {
+        const std::array<std::uint32_t, 8> authored{0x00000000u, 0x80000000u, 0x3f800000u, 0xbf800000u, 0x7f800000u, 0xff800000u, 0x7fc00001u, 0x7fc00002u};
+        const std::vector<std::uint32_t> expected(authored.begin(), authored.end());
+        std::array<float, 8> values{};
+        std::transform(authored.begin(), authored.end(), values.begin(), [](std::uint32_t bits) {
+            return std::bit_cast<float>(bits);
+        });
+        require(same_retained_bits(values, expected), "retained finite/zero/infinity/NaN payload bits exact");
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            auto changed = values;
+            changed[i] = std::bit_cast<float>(authored[i] ^ 1u);
+            require(!same_retained_bits(changed, expected), "each retained sample bit change rejected");
+        }
+        auto shortExpected = expected;
+        shortExpected.pop_back();
+        require(!same_retained_bits(values, shortExpected), "retained size mismatch rejected");
+        const std::array<float, 0> empty{};
+        require(same_retained_bits(empty, {}) && !same_retained_bits(empty, expected), "absent retained samples compare only with empty snapshots");
+    }
     struct RetainedValues {
         Json complete;
         Json exposureTables;
@@ -923,8 +948,16 @@ namespace {
     }
     template <typename State>
     void require_retained_values(const State& state, const RetainedValues& expected) {
-        const auto actual = retain_values(state);
-        require(actual.complete == expected.complete && actual.exposureTables == expected.exposureTables && actual.tcRgba == expected.tcRgba && actual.printIlluminant == expected.printIlluminant && actual.boundary == expected.boundary && actual.boundaryHashes == expected.boundaryHashes && actual.boundaryDiagnostic == expected.boundaryDiagnostic, "retained complete route/color/tables/TC/boundary values remain exact");
+        const auto complete = Cat02Fixtures::complete_result(state);
+        const auto exposureTables = Cat02Fixtures::tables_result(state.payload.exposureTables);
+        const auto& payload = state.payload;
+        const bool tcExact = payload.filmTcLut ? same_retained_bits(payload.filmTcLut->samples(), expected.tcRgba) : expected.tcRgba.empty();
+        const bool printExact = payload.printMainIlluminant ? same_retained_bits(*payload.printMainIlluminant, expected.printIlluminant) : expected.printIlluminant.empty();
+        require(bool(payload.outputBoundaryTable), "completed state boundary owner");
+        const auto& boundary = *payload.outputBoundaryTable;
+        require(boundary.valid, "retained completed boundary table validity");
+        const std::array<std::uint64_t, 3> boundaryHashes{boundary.transformHash, boundary.contractHash, boundary.hash};
+        require(complete == expected.complete && exposureTables == expected.exposureTables && tcExact && printExact && same_retained_bits(boundary.cmax, expected.boundary) && boundaryHashes == expected.boundaryHashes && boundary.diagnostic == expected.boundaryDiagnostic, "retained complete route/color/tables/TC/boundary values remain exact");
     }
     RetainedValues retain_values(const PendingRenderAdmissionResult& result) {
         if (result.printState) {
@@ -1684,6 +1717,7 @@ namespace {
     }
 
     void input_preparation_tests(const Json& fixture, const std::filesystem::path& fixturePath) {
+        retained_comparison_tests();
         const auto cases = InputFixtures::scenarios();
         require(cases.size() == 140 && cases.size() == fixture.at("recipes").size(), "96 base plus 44 bounded input-color products");
         require(InputFixtures::controls_json(ParamSnapshot{}) == fixture.at("defaults"), "all frozen parent defaults exact");

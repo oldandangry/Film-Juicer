@@ -61,6 +61,8 @@ style_load_source_policy() {
 
     local category value
     while IFS=$'\t' read -r category value; do
+        # Native Windows Python writes CRLF rows even when consumed by Git Bash.
+        value="${value%$'\r'}"
         case "$category" in
             supported)
                 STYLE_SUPPORTED_EXTENSIONS+=("$value")

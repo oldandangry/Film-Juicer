@@ -101,7 +101,7 @@ if rg -n -H '\b(JUICER_TESTS|JUICER_BUILD_VALIDATION)\b' -- "${FILES[@]}"; then
 fi
 
 if rg -n -H "\bstd::endl\b" -- "${FILES[@]}"; then
-    echo "ERROR: std::endl is banned in touched files; use '\\n' instead." >&2
+    printf '%s\n' "ERROR: std::endl is banned in touched files; use '\\n' instead." >&2
     FAIL=1
 fi
 
