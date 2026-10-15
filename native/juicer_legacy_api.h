@@ -416,6 +416,44 @@ FjStatus fj_legacy_film_profile_view(const FjFilmProfile* profile,
                                      FjFilmProfileView* out_view,
                                      FjErrorBuffer* error);
 FjStatus fj_legacy_film_profile_release(FjFilmProfile* profile, FjErrorBuffer* error);
+
+/* SF_TEMP_BRIDGE_FILM_DEVELOPMENT: completed capture-film family; remove S4.E.
+ * The opaque owner retains its completed profile independently of the input
+ * profile handle/cache. Views expire at consuming release; no pointer escapes
+ * synchronous native copying into FilmDevelopRecipe or its async staging.
+ * log_exposure has N elements; authored/normalized CMY are exposure-major 3N;
+ * selected layers have nine N-element [layer][channel][sample] lanes. Omitted
+ * layers are (NULL,0) and layers_hash=0. Route tags are 0..3, polarity/layers 0/1.
+ * Live/aligned/disjoint storage and bounded diagnostic preconditions are the
+ * existing profile API contract. Authorized output slots/semantic fields clear
+ * before fallible work. Release takes the handle exactly once even with malformed
+ * diagnostics or a contained failure; NULL is harmless. Invalid pointers/tags/
+ * controls and route mismatch -> UnsupportedInput; size/zero identity ->
+ * PreparationFailure; explicit normalized reserve -> AllocationFailure; panic ->
+ * InternalFailure. API=None/native_code=0. Incidental Box/Arc/diagnostic allocation
+ * may abort: unwind containment does not promise physical OOM recovery.
+ */
+typedef struct FjFilmDevelopmentOwner FjFilmDevelopmentOwner;
+typedef struct FjFilmDevelopmentView {
+    uint32_t route;
+    uint32_t polarity;
+    uint32_t layers_required;
+    FjFloatSpan log_exposure;
+    FjFloatSpan authored_curves_cmy;
+    FjFloatSpan normalized_curves_cmy;
+    FjFloatSpan density_curves_layers[3][3];
+    float gamma_rgb[3];
+    float minimum_cmy[3];
+    float maximum_cmy[3];
+    uint64_t normalized_curves_hash;
+    uint64_t layers_hash;
+    uint64_t hash;
+} FjFilmDevelopmentView;
+FjStatus fj_legacy_film_development_acquire(const FjFilmProfile* profile, uint32_t requested_route, float gamma_factor, uint32_t layers_required, FjFilmDevelopmentOwner** out_development, FjErrorBuffer* error);
+FjStatus fj_legacy_film_development_view(const FjFilmDevelopmentOwner* development,
+                                         FjFilmDevelopmentView* out_view,
+                                         FjErrorBuffer* error);
+FjStatus fj_legacy_film_development_release(FjFilmDevelopmentOwner* development, FjErrorBuffer* error);
 FjStatus fj_legacy_print_profile_acquire(const FjAssets* assets, FjStringView key, FjPrintProfile** out_profile, FjErrorBuffer* error);
 FjStatus fj_legacy_print_profile_view(const FjPrintProfile* profile,
                                       FjPrintProfileView* out_view,

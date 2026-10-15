@@ -171,6 +171,27 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_film_development_is_complete_private_and_borrowed(self) -> None:
+        for fixture, expected in (
+            ("film_complete", None),
+            ("film_private", {"E0616": ("development.hash", "development.profile")}),
+            ("film_default", {"E0599": ("Development::default()",)}),
+            ("film_construction", {"E0451": ("Development { ..development }",)}),
+            ("film_readonly", {"E0594": ("development.gamma_rgb()[0] = 1.0", "development.normalized_curves_cmy()[0][0] = 0.0")}),
+            ("film_borrowed", {"E0515": ("development.log_exposure()",), "E0505": ("drop(development)",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for support in (False, True):
+                        status, diagnostics = self.check("film-juicer-plugin", release, support)
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_output_gamut_completed_api_is_private_and_borrowed(self) -> None:
         for fixture, expected in (
             ("output_gamut_private", {"E0616": ("transform.hash", "boundary.cmax[0]")}),
@@ -232,6 +253,33 @@ class RustBoundaryTests(unittest.TestCase):
                     self.assert_rejected(status, diagnostics, expected)
             finally:
                 self.doCleanups()
+
+    def test_deleted_film_development_definitions_and_foundation_policy(self) -> None:
+        import re
+        recipe = (ROOT / "src/RenderRecipe.cpp").read_text(encoding="utf-8-sig")
+        def definition(name: str, source: str) -> bool:
+            # Declarations and names in diagnostic strings are not definitions.
+            return re.search(r"\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", source) is not None
+        for name in ("hash_film_develop_recipe", "hash_density_curves_layers", "visual_grain_requires_density_layers"):
+            self.assertFalse(definition(name, recipe), name)
+            self.assertTrue(definition(name, "std::uint64_t " + name + "(const FilmDevelopRecipe& recipe) { return 1; }"))
+            self.assertFalse(definition(name, "std::uint64_t " + name + "(const FilmDevelopRecipe& recipe);"))
+        start = recipe.index("        bool build_film_foundation(")
+        end = recipe.index("    } // namespace", start)
+        foundation = recipe[start:end]
+        for name in ("normalize_density_curves", "hash_nan_preserving_floats", "resolve_scan_route"):
+            call = r"\b" + name + r"\s*\("
+            self.assertNotRegex(foundation, call)
+            self.assertRegex("auto value = " + name + "(source);", call)
+        self.assertIn("recipe.filmDevelop = std::move(input.filmDevelop)", foundation)
+        self.assertTrue(definition("normalize_density_curves", recipe))
+        self.assertTrue(definition("hash_nan_preserving_floats", recipe))
+        # The remaining real print-bounds and DIR consumers still own these helpers.
+        self.assertGreaterEqual(len(re.findall(r"\bnormalize_density_curves\s*\(", recipe)), 2)
+        self.assertGreaterEqual(len(re.findall(r"\bhash_nan_preserving_floats\s*\(", recipe)), 2)
+        state = (ROOT / "src/JuicerState.cpp").read_text(encoding="utf-8-sig")
+        self.assertIn("params.grainControls.active && params.grainControls.sublayersActive", state)
+        self.assertEqual(state.count("film_foundation_input_from_snapshot(params, *selected.filmSource, assets, input.film, outError)"), 2)
 
     def test_deleted_spectral_producers_and_white_loop(self) -> None:
         import re

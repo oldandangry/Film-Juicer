@@ -12,7 +12,8 @@
 
 namespace JuicerAssets {
     class PrintProfileSource;
-}
+    class FilmSource;
+} // namespace JuicerAssets
 
 namespace Profiles {
     struct NamedIlluminant {};
@@ -91,7 +92,7 @@ namespace Profiles {
     };
 
     struct SelectedProfileResult {
-        std::shared_ptr<const FilmProfile> filmProfile;
+        std::shared_ptr<const JuicerAssets::FilmSource> filmSource;
         std::shared_ptr<const JuicerAssets::PrintProfileSource> printSource;
         bool valid = false;
         std::string diagnostic;

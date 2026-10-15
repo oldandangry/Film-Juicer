@@ -406,13 +406,13 @@ namespace {
             peakProfileOwners = 0;
             std::barrier barrier(8);
             publicationBarrier = &barrier;
-            std::array<std::shared_ptr<const Profiles::FilmProfile>, 8> films;
+            std::array<std::shared_ptr<const JuicerAssets::FilmSource>, 8> films;
             std::array<std::shared_ptr<const JuicerAssets::PrintProfileSource>, 8> prints;
             std::array<std::thread, 8> workers;
             for (std::size_t i = 0; i < workers.size(); ++i) {
                 workers[i] = std::thread([&, i] {
                     const auto selected = library.selected_profiles_for_route({"kodak_portra_400", "kodak_portra_endura", print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan});
-                    films[i] = selected.filmProfile;
+                    films[i] = selected.filmSource;
                     prints[i] = selected.printSource;
                 });
             }
@@ -426,8 +426,8 @@ namespace {
             }
             EXPECT_EQ(fj_test_profile_live_owners(), print ? 2u : 1u);
             EXPECT_EQ(peakProfileOwners.load(), print ? 9u : 8u);
-            const auto& data = films[0]->data;
-            std::size_t filmCapacity = sizeof(*films[0]) + data.logExposure.capacity() * sizeof(float) + data.densityCurves.capacity() * sizeof(std::array<float, 3>);
+            const auto& data = films[0]->profile()->data;
+            std::size_t filmCapacity = sizeof(*films[0]->profile()) + data.logExposure.capacity() * sizeof(float) + data.densityCurves.capacity() * sizeof(std::array<float, 3>);
             for (const auto& layer : data.densityCurvesLayers) {
                 for (const auto& channel : layer) {
                     filmCapacity += channel.capacity() * sizeof(float);
@@ -436,7 +436,7 @@ namespace {
             std::printf("Native film fixed+vector capacity=%zu; simultaneous cold sources=%zu; film-only cold-copy overlap=%zu; losers reclaimed to=%zu; metadata strings/control blocks/allocator excluded\n", filmCapacity, peakProfileOwners.load(), print ? filmCapacity : 8 * filmCapacity, fj_test_profile_live_owners());
             for (unsigned i = 0; i < 32; ++i) {
                 const auto selected = library.selected_profiles_for_route({"kodak_portra_400", "kodak_portra_endura", print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan});
-                EXPECT_EQ(selected.filmProfile, films[0]);
+                EXPECT_EQ(selected.filmSource, films[0]);
                 EXPECT_EQ(selected.printSource, prints[0]);
             }
         }
@@ -513,7 +513,7 @@ namespace {
                 std::rethrow_exception(failure);
             }
             ASSERT_TRUE(selected.valid);
-            ASSERT_NE(selected.filmProfile, nullptr);
+            ASSERT_NE(selected.filmSource, nullptr);
             ASSERT_NE(selected.printSource, nullptr);
             const auto density = selected.printSource->sample_density_curves(1.1);
             auto native = selected.printSource->profile();

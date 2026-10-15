@@ -1,0 +1,29 @@
+{
+  "kind": "Film-Juicer characterization",
+  "native_parent": "5a6fbecc47e52decad6608219333e6b20ee6c329",
+  "native_tree": "5cbfe266b1ae19eea36947289ec82926c2c7f1c2",
+  "comparison": "exact defined f32 words and u64 identities; no padding comparisons",
+  "complete_cases_per_preset": 480,
+  "files": {
+    "linux-debug.json": "ac0ce7b772c242e6f3170f41ef40ceb61af2f23d637d9739edb0aca69cdc6375",
+    "linux-debug-primitive.json": "f8685867a96b77e977ae387486a79c5d2206acaf1acef7fada9228fe7e1130e8",
+    "linux-debug-synthetic.json": "0bfcc34d133eb16a9a5620099dd84b11ca9646b7ab6960d9237788b5202830ef",
+    "linux-release.json": "7bae850dfc0891c10847c6b6b63055f56bb0604ec145e765cdc72228a24a51c1",
+    "linux-release-primitive.json": "f8685867a96b77e977ae387486a79c5d2206acaf1acef7fada9228fe7e1130e8",
+    "linux-release-synthetic.json": "0bfcc34d133eb16a9a5620099dd84b11ca9646b7ab6960d9237788b5202830ef",
+    "windows-clang-debug.json": "bcf64cf87e147d1b41d0aaa1de41ad9082d91052552310415257d245493099a3",
+    "windows-clang-debug-primitive.json": "5ee7790af8b367007e2fcc24b4ff69b42457e9a3a8246e3c47f1abf7c5551aa8",
+    "windows-clang-debug-synthetic.json": "c081f956fb552d05fb8b14fb634f29741263437c0c4141a0e4f5a2a56a8e71ec",
+    "windows-clang-release.json": "c1c529da48cf173e57a58e9c4080b64ed1e92eabc0205b0a6d858e4c149b39ff",
+    "windows-clang-release-primitive.json": "5ee7790af8b367007e2fcc24b4ff69b42457e9a3a8246e3c47f1abf7c5551aa8",
+    "windows-clang-release-synthetic.json": "c081f956fb552d05fb8b14fb634f29741263437c0c4141a0e4f5a2a56a8e71ec",
+    "synthetic/singleton/profiles/kodak_portra_400.json": "f90d3b94f7d120e3d8a67175c961529f5899d0b928eceab3f5edc86a74ef84ec",
+    "synthetic/singleton/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/n22/profiles/kodak_portra_400.json": "2568856f85f93045b731ee90868a4671e1eb4dfec6c2b02ec3de886f0e1578f2",
+    "synthetic/n22/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/n21/profiles/kodak_portra_400.json": "796d703aadeb4562ca63daba7c0622de5713398fbf5488377d509b23658d8f23",
+    "synthetic/n21/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+    "synthetic/duplicates/profiles/kodak_portra_400.json": "a6451cf47764bcad8834eb4f23970340c709d7dd7d5dd1966c18aa715e5c79b6",
+    "synthetic/duplicates/profiles/kodak_portra_endura.json": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969"
+  }
+}

@@ -358,18 +358,6 @@ namespace {
         return hash;
     }
 
-    std::uint64_t hash_film_develop_recipe(const FilmDevelopRecipe& recipe) {
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, recipe.polarity);
-        hash_value(hash, recipe.normalizedDensityCurvesHash);
-        hash_value(hash, recipe.densityCurvesLayersRequired);
-        if (recipe.densityCurvesLayersRequired) {
-            hash_value(hash, recipe.densityCurvesLayersHash);
-        }
-        Hash::hash_bytes_update(hash, recipe.densityCurveGamma.data(), sizeof(recipe.densityCurveGamma));
-        return hash;
-    }
-
     bool finite_nonnegative_grain_triplet(const std::array<float, 3>& values) {
         for (float value : values) {
             if (!std::isfinite(value) || value < 0.0f) {
@@ -800,21 +788,6 @@ namespace {
                 : 0;
         out.hash = hash_visual_grain_recipe(out);
         return out.hash != 0;
-    }
-
-    bool visual_grain_requires_density_layers(const VisualGrainControls& controls) {
-        return controls.active && controls.sublayersActive;
-    }
-
-    std::uint64_t hash_density_curves_layers(
-        const std::array<std::array<std::vector<float>, 3>, 3>& layers) {
-        std::uint64_t hash = Hash::kFnvOffset;
-        for (const auto& layer : layers) {
-            for (const auto& channel : layer) {
-                hash_value(hash, hash_nan_preserving_floats(channel.data(), channel.size()));
-            }
-        }
-        return hash;
     }
 
     bool finite_nonnegative(float value) {
@@ -1694,7 +1667,7 @@ namespace Spektrafilm {
         }
 
         bool build_film_foundation(
-            const FilmFoundationBuildInput& input,
+            FilmFoundationBuildInput& input,
             RenderRecipe& recipe,
             std::string& diagnostic) {
             const auto fail = [&diagnostic](const char* message) {
@@ -1719,26 +1692,7 @@ namespace Spektrafilm {
             if (!auto_exposure_method_index_valid(input.cameraMeteringMethod)) {
                 return fail("UnsupportedMode phase=3B field=auto_exposure_method");
             }
-            if (!std::isfinite(input.filmGammaFactor) ||
-                input.filmGammaFactor <
-                    static_cast<float>(kFilmGammaFactorMinimum) ||
-                input.filmGammaFactor >
-                    static_cast<float>(kFilmGammaFactorMaximum)) {
-                return fail(
-                    "InvalidAuthoredControl component=film_development field=film_gamma_factor");
-            }
-
             const Profiles::FilmProfile& profile = *input.filmProfile;
-            ScanRoute resolvedRoute{};
-            if (!resolve_scan_route(
-                    profile.info.type, input.scanRoute, resolvedRoute, diagnostic)) {
-                return false;
-            }
-            if (resolvedRoute != input.scanRoute ||
-                profile.info.support != ProfileSupport::Film ||
-                profile.info.stage != ProfileStage::Filming) {
-                return fail("UnsupportedMode phase=3A selected capture profile route mismatch");
-            }
 
             ProfileRoute& profileRoute = recipe.profileRoute;
             profileRoute.capturePolarity = profile.info.type;
@@ -1881,31 +1835,8 @@ namespace Spektrafilm {
                 return fail("MalformedRequiredProfileData phase=9A field=grain_contract");
             }
 
-            FilmDevelopRecipe& filmDevelop = recipe.filmDevelop;
-            filmDevelop.polarity = profile.info.type;
-            filmDevelop.densityCurveGamma.fill(input.filmGammaFactor);
-            filmDevelop.logExposure = profile.data.logExposure;
-            filmDevelop.authoredDensityCurves = profile.data.densityCurves;
-            const DensityCurveExtrema extrema = normalize_density_curves(
-                filmDevelop.authoredDensityCurves,
-                filmDevelop.normalizedDensityCurves);
-            filmDevelop.authoredMinCmy = extrema.minimum;
-            filmDevelop.authoredMaxCmy = extrema.maximum;
-            filmDevelop.normalizedDensityCurvesHash = hash_nan_preserving_floats(
-                &filmDevelop.normalizedDensityCurves[0][0],
-                filmDevelop.normalizedDensityCurves.size() * 3u);
-            filmDevelop.densityCurvesLayersRequired =
-                visual_grain_requires_density_layers(input.visualGrain);
-            if (filmDevelop.densityCurvesLayersRequired) {
-                filmDevelop.densityCurvesLayers = profile.data.densityCurvesLayers;
-                filmDevelop.densityCurvesLayersHash =
-                    hash_density_curves_layers(filmDevelop.densityCurvesLayers);
-            }
-            filmDevelop.hash = hash_film_develop_recipe(filmDevelop);
-            if (filmDevelop.normalizedDensityCurvesHash == 0 ||
-                filmDevelop.hash == 0) {
-                return fail("MalformedRequiredProfileData phase=3A field=data.density_curves hash");
-            }
+            recipe.filmDevelop = std::move(input.filmDevelop);
+            const FilmDevelopRecipe& filmDevelop = recipe.filmDevelop;
             if (!build_visual_grain_recipe(
                     input.visualGrain,
                     filmDevelop,
@@ -2015,10 +1946,10 @@ namespace Spektrafilm {
 
     } // namespace
 
-    DirectRecipeBuildResult build_direct_render_recipe(const DirectRecipeBuildInput& input) {
+    DirectRecipeBuildResult build_direct_render_recipe(DirectRecipeBuildInput input) {
         DirectRecipeBuildResult result{};
         RenderRecipe& recipe = result.recipe;
-        const FilmFoundationBuildInput& film = input.film;
+        FilmFoundationBuildInput& film = input.film;
         recipe =
             make_render_recipe(film.filmProfileKey, {}, film.scanRoute);
         if (scan_route_is_print(film.scanRoute)) {
@@ -2077,10 +2008,10 @@ namespace Spektrafilm {
         return result;
     }
     PrintRecipeBuildResult build_print_render_recipe(
-        const PrintRecipeBuildInput& input) {
+        PrintRecipeBuildInput input) {
         PrintRecipeBuildResult result{};
         RenderRecipe& recipe = result.recipe;
-        const FilmFoundationBuildInput& film = input.film;
+        FilmFoundationBuildInput& film = input.film;
         recipe = make_render_recipe(
             film.filmProfileKey,
             input.printProfileKey,

@@ -131,6 +131,20 @@ uint32_t fj_test_color_facade_fault_consumed(uint32_t operation, uint32_t fault)
 
 typedef struct FjFilmProfile FjFilmProfile;
 
+/* SF_TEMP_BRIDGE_FILM_DEVELOPMENT: same internal constructor/projection as production;
+ * opaque owner/view lifetime is identical; remove native transport at S4.E.
+ * Fault operation 0 acquire, 1 view, 2 consuming release. Fault 0 clears,
+ * 1 panics, acquire-only 2 rejects normalized reservation, 3/4 reject normalized/
+ * final zero identities, 5 supplies the active-grain zero layer identity seam. */
+FjStatus fj_test_film_development_acquire(const FjFilmProfile* profile, uint32_t requested_route, float gamma_factor, uint32_t layers_required, FjFilmDevelopmentOwner** out_development, FjErrorBuffer* error);
+FjStatus fj_test_film_development_view(const FjFilmDevelopmentOwner* development,
+                                       FjFilmDevelopmentView* out_view,
+                                       FjErrorBuffer* error);
+FjStatus fj_test_film_development_release(FjFilmDevelopmentOwner* development, FjErrorBuffer* error);
+FjStatus fj_test_film_development_fault(uint32_t operation, uint32_t fault);
+size_t fj_test_film_development_live_owners(void);
+const size_t* fj_test_film_development_abi_facts(size_t* count);
+
 #define FJ_PROFILE_USE_STILL UINT32_C(0)
 #define FJ_PROFILE_USE_CINE UINT32_C(1)
 #define FJ_PROFILE_ANTIHALATION_STRONG UINT32_C(0)

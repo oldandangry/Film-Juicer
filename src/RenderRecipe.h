@@ -226,6 +226,18 @@ struct FilmDevelopRecipe {
     std::uint64_t hash = 0;
 };
 
+namespace JuicerAssets {
+    // SF_TEMP_BRIDGE_FILM_DEVELOPMENT: copied complete family; remove S4.E.
+    struct FilmDevelopment {
+        FilmDevelopment(Spektrafilm::ScanRoute resolvedRoute, FilmDevelopRecipe&& completedRecipe)
+            : route(resolvedRoute), recipe(std::move(completedRecipe)) {
+        }
+
+        Spektrafilm::ScanRoute route;
+        FilmDevelopRecipe recipe;
+    };
+} // namespace JuicerAssets
+
 struct DirCouplersControls {
     bool active = true;
     float amount = 1.0f;
@@ -772,7 +784,7 @@ namespace Spektrafilm {
         int cameraMeteringMethod = 0;
         float manualExposureCompensationEv = 0.0f;
         float filmFormatLongEdgeMm = 35.0f;
-        float filmGammaFactor = 1.0f;
+        FilmDevelopRecipe filmDevelop;
         GrainContract grainContract;
         std::array<float, 3> referenceIlluminantWhiteXYZ{};
         std::array<float, 3> projectionWhiteXYZ{};
@@ -871,8 +883,8 @@ namespace Spektrafilm {
         return make_render_recipe(std::move(profileRoute));
     }
 
-    DirectRecipeBuildResult build_direct_render_recipe(const DirectRecipeBuildInput& input);
-    PrintRecipeBuildResult build_print_render_recipe(const PrintRecipeBuildInput& input);
+    DirectRecipeBuildResult build_direct_render_recipe(DirectRecipeBuildInput input);
+    PrintRecipeBuildResult build_print_render_recipe(PrintRecipeBuildInput input);
     float print_exposure_normalizer(
         PrintNormalizationMode mode,
         float factorMidgray,

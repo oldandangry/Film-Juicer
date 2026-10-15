@@ -190,7 +190,7 @@ namespace JuicerAssets {
         ensure_catalogs();
         SelectedProfileResult result;
         try {
-            result.filmProfile = _bridge.film(request.filmProfileKey);
+            result.filmSource = _bridge.film_source(request.filmProfileKey);
             if (Spektrafilm::scan_route_is_print(request.scanRoute)) {
                 result.printSource = _bridge.print(request.printProfileKey);
             }

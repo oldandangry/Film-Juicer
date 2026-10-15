@@ -760,3 +760,33 @@ concurrent initialization, lifetime, clearing and faults. Prepared projection an
 span tests require schema 1 plus a closed CCTF kind for both encoding states.
 `Scanner.Gpu.OutputEncoding` uses the independent frozen double scanner oracle,
 with unchanged maximum/mean error bounds, nonfinite and alpha/padding checks.
+
+
+## Film development and route binding
+
+`Ffi.Host.FilmDevelopment` compares the safe completed development family, raw
+legacy transport, gated fixture facade and native source projection against
+[the native characterization](film/fixtures/manifest.json). It checks coordinated
+C11/C++20/Rust ABI facts, invalid controls/tags, bounded reservation and copy
+failure, contained panics, consuming release and source-cache replacement while
+a selected source remains held. It needs no device at runtime.
+
+`Film.Host.DevelopmentProducts` covers every shipped capture profile on both
+route selections, four film-gamma values and three grain policies. It compares
+snapshot, development, synthetic-reference, scanner and final identities with
+independent per-preset native captures. Admission failures must retain existing
+immutable states and prevent publication of an intermediate identity. Rust core
+tests also cover variable-length completed profiles and separately scoped native
+primitive captures for NaN, infinity, signed-zero and 63/64/65-element hash masks.
+These are Film-Juicer characterizations, not external-reference pixel fixtures.
+
+`Ofx.Gpu.AdapterTrace` observes film-f32, print-f64 and resolved grain values from
+actual current-value OFX capture, including invalid controls and recovery.
+`Grain.Gpu.ScratchReuse` verifies that a required film-gamma host rebuild changes
+development/final identities while reusing unchanged device curve/layer storage
+and preserving every uploaded word. Identical snapshots instead reuse the whole
+published state; equal curve hashes alone do not prove an absence of host work.
+
+The immutable fixture directory is an ordinary test input. Capture generators
+and maintenance environments are excluded from CTest. Generate and review
+candidates under `out/validation/`; do not update expectations to obtain a pass.

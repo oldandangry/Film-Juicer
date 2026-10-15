@@ -159,6 +159,27 @@ target_compile_definitions(juicer_profile_conversion_test_objects PRIVATE JUICER
 add_executable(JuicerProductionProfileOwnerTests ffi/production_profile_abi_c.c ffi/production_profile_owner_test.cpp
     $<TARGET_OBJECTS:juicer_profile_conversion_test_objects>)
 target_link_libraries(JuicerProductionProfileOwnerTests PRIVATE juicer_core GTest::gtest)
+
+add_library(juicer_film_development_test_objects OBJECT ../src/RustAssetBridge.cpp)
+target_link_libraries(juicer_film_development_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_film_development_test_objects PRIVATE JUICER_FILM_DEVELOPMENT_TEST_HOOK=1)
+add_executable(JuicerFilmDevelopmentTests ffi/film_development_abi_c.c ffi/film_development_test.cpp ffi/spectral_allocation_probe.cpp
+    $<TARGET_OBJECTS:juicer_film_development_test_objects>)
+target_link_libraries(JuicerFilmDevelopmentTests PRIVATE juicer_core)
+target_compile_definitions(JuicerFilmDevelopmentTests PRIVATE JUICER_FILM_DEVELOPMENT_TEST_HOOK=1)
+set_target_properties(JuicerFilmDevelopmentTests PROPERTIES
+    LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerFilmDevelopmentTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_dependencies(JuicerFilmDevelopmentTests juicer_test_resources)
+add_test(NAME Ffi.Host.FilmDevelopment COMMAND JuicerFilmDevelopmentTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/fixtures/${JUICER_TEST_PRESET_NAME}.json")
+set_tests_properties(Ffi.Host.FilmDevelopment PROPERTIES LABELS "host" TIMEOUT 120 PROCESSORS 2)
+add_test(NAME Film.Host.DevelopmentProducts COMMAND JuicerFilmDevelopmentTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/fixtures/${JUICER_TEST_PRESET_NAME}.json" products)
+set_tests_properties(Film.Host.DevelopmentProducts PROPERTIES LABELS "host" TIMEOUT 120 PROCESSORS 2)
 target_compile_definitions(JuicerProductionProfileOwnerTests PRIVATE JUICER_PROFILE_CONVERSION_TEST_HOOK=1)
 set_target_properties(JuicerProductionProfileOwnerTests PROPERTIES
     LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF

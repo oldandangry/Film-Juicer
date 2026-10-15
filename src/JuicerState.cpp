@@ -830,16 +830,31 @@ namespace {
         }
     }
 
-    Spektrafilm::FilmFoundationBuildInput film_foundation_input_from_snapshot(
+    bool film_foundation_input_from_snapshot(
         const ParamSnapshot& params,
-        const std::shared_ptr<const Profiles::FilmProfile>& filmProfile,
-        Spektrafilm::ScanRoute route,
-        JuicerAssets::Library& assets) {
-        Spektrafilm::FilmFoundationBuildInput input{};
+        const JuicerAssets::FilmSource& source,
+        JuicerAssets::Library& assets,
+        Spektrafilm::FilmFoundationBuildInput& input,
+        std::string& outDiagnostic) {
         const auto illuminants =
             assets.illuminant_filter_curves();
         input.filmProfileKey = params.filmProfileKey;
-        input.scanRoute = route;
+        const auto& filmProfile = source.profile();
+        try {
+            auto development = source.prepare_development(
+                params.scanRoute,
+                params.filmGammaFactor,
+                params.grainControls.active && params.grainControls.sublayersActive);
+            input.scanRoute = development.route;
+            input.filmDevelop = std::move(development.recipe);
+        } catch (const JuicerCuda::ExecutionFailure& failure) {
+            if (failure.failure.status.category != FJ_STATUS_UNSUPPORTED_INPUT &&
+                failure.failure.status.category != FJ_STATUS_PREPARATION_FAILURE) {
+                throw;
+            }
+            outDiagnostic = failure.failure.diagnostic;
+            return false;
+        }
         input.filmProfile = filmProfile;
         input.visualGrain = params.grainControls;
         input.filmDustAmount = params.filmDustAmount;
@@ -864,13 +879,12 @@ namespace {
             static_cast<float>(params.cameraExposureCompensationEv);
         input.filmFormatLongEdgeMm =
             static_cast<float>(params.cameraFilmFormatLongEdgeMm);
-        input.filmGammaFactor = params.filmGammaFactor;
         input.cameraFilterOverride = params.cameraFilterOverride;
         input.cameraFilterUV = params.cameraFilterUV;
         input.cameraFilterIR = params.cameraFilterIR;
 
         if (!filmProfile) {
-            return input;
+            return true;
         }
         const std::string illuminantKey =
             IlluminantKeys::normalize(
@@ -957,7 +971,7 @@ namespace {
         } else {
             input.inputCompressionActive = false;
         }
-        return input;
+        return true;
     }
 
     bool build_direct_render_state_product_impl(
@@ -978,18 +992,16 @@ namespace {
                     params.filmProfileKey,
                     params.printProfileKey,
                     params.scanRoute});
-        if (!selected.valid || !selected.filmProfile) {
+        if (!selected.valid || !selected.filmSource) {
             outError = selected.diagnostic.empty()
                            ? "MissingRequiredResource route=direct field=selected_profile"
                            : selected.diagnostic;
             return false;
         }
         Spektrafilm::DirectRecipeBuildInput input{};
-        input.film = film_foundation_input_from_snapshot(
-            params,
-            selected.filmProfile,
-            params.scanRoute,
-            assets);
+        if (!film_foundation_input_from_snapshot(params, *selected.filmSource, assets, input.film, outError)) {
+            return false;
+        }
         input.scannerLutResolution =
             static_cast<std::uint32_t>(std::clamp(params.scannerLutResolution, 17, 128));
         input.outputColorSpace = params.outputColorSpace;
@@ -1005,7 +1017,7 @@ namespace {
         input.scannerUnsharpAmount = static_cast<float>(params.scannerUnsharpMask[1]);
 
         Spektrafilm::DirectRecipeBuildResult built =
-            Spektrafilm::build_direct_render_recipe(input);
+            Spektrafilm::build_direct_render_recipe(std::move(input));
         if (!built.valid) {
             outError = built.diagnostic.empty()
                            ? "ResourceDescriptorMismatch phase=3A direct recipe build failed"
@@ -1071,7 +1083,7 @@ namespace {
                     params.filmProfileKey,
                     params.printProfileKey,
                     params.scanRoute});
-        if (!selected.valid || !selected.filmProfile || !selected.printSource) {
+        if (!selected.valid || !selected.filmSource || !selected.printSource) {
             outError = selected.diagnostic.empty()
                            ? "MissingRequiredResource phase=4A field=selected_profile"
                            : selected.diagnostic;
@@ -1079,11 +1091,9 @@ namespace {
         }
 
         Spektrafilm::PrintRecipeBuildInput input{};
-        input.film = film_foundation_input_from_snapshot(
-            params,
-            selected.filmProfile,
-            params.scanRoute,
-            assets);
+        if (!film_foundation_input_from_snapshot(params, *selected.filmSource, assets, input.film, outError)) {
+            return false;
+        }
         input.printProfileKey = params.printProfileKey;
         input.printSource = selected.printSource;
         input.printIlluminantKey = print_illuminant_key_from_choice(params.enlIll);
@@ -1091,7 +1101,7 @@ namespace {
             assets.neutral_print_calibration(
                 selected.printSource->profile()->info.stock,
                 input.printIlluminantKey,
-                selected.filmProfile->info.stock);
+                selected.filmSource->profile()->info.stock);
         if (neutral.status == JuicerAssets::NeutralPrintCalibrationStatus::Malformed) {
             outError = neutral.diagnostic.empty()
                            ? "MalformedNeutralPrintCalibration phase=4A"
@@ -1145,7 +1155,7 @@ namespace {
         input.scannerUnsharpAmount = static_cast<float>(params.scannerUnsharpMask[1]);
 
         Spektrafilm::PrintRecipeBuildResult built =
-            Spektrafilm::build_print_render_recipe(input);
+            Spektrafilm::build_print_render_recipe(std::move(input));
         if (!built.valid) {
             outError = built.diagnostic.empty()
                            ? "ResourceDescriptorMismatch phase=4A print recipe build failed"
