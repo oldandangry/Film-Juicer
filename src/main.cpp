@@ -35,7 +35,6 @@
 #include "JuicerState.h"
 #include "Logging.h"
 #include "OutputColor.h"
-#include "SpectralProcessing.h"
 #include "ColorTransforms.h"
 #include "ParamNames.h"
 #include "ProcessRoot.h"

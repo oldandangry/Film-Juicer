@@ -223,7 +223,7 @@ typedef struct FjFilmExposure {
      * FilmRawRecipe::finalSensitivity -> prepare_focused_route_resources (B/G/R
      * curve split); expires at native-call return. */
     FjFloatSpan sensitivity_rgb;
-    /* float[192*192*4] or empty, FilmTcLut::rgba C-order [tc0][tc1][R,G,B,padding].
+    /* float[192*192*4] or empty, FilmTcLut::samples() C-order [tc0][tc1][R,G,B,padding].
      * FocusedRenderPayload -> film TC-LUT upload; integrated reconstruction
      * values, no physical units; expires at native-call return. */
     FjFloatSpan tc_lut_rgba;
@@ -349,6 +349,29 @@ typedef struct FjScannerPostEffects {
 #define FJ_COLOR_ENCODE_CCTF 1U
 #define FJ_COLOR_INPUT_IS_OUTPUT_SPACE 2U
 #define FJ_COLOR_GAMUT_COMPRESSION 4U
+/* FJ_TEMP_BRIDGE: native C++ preparation/carriers retire at S4.E.
+ * This value record remains the CUDA executor transport contract.
+ * Rebuild preparation supplies schema 1 and a closed CCTF kind, including when
+ * encoding is disabled. Cold callers retain initialized aligned value records
+ * and corresponding selected tag/identity through call return. No pointers. */
+#define FJ_OUTPUT_ENCODING_SCHEMA 1U
+#define FJ_CCTF_LINEAR 0U
+#define FJ_CCTF_GAMMA 1U
+#define FJ_CCTF_SRGB 2U
+#define FJ_CCTF_BT2020 3U
+#define FJ_CCTF_PROPHOTO 4U
+#define FJ_CCTF_DWG_INTERMEDIATE 5U
+typedef struct FjOutputEncoding {
+    uint32_t schema;
+    uint32_t cctf_kind;
+    float gamma;
+    float a;
+    float b;
+    float c;
+    float d;
+    float linear_cutoff;
+    float dwg_to_output[9]; /* row-major, native f32 product */
+} FjOutputEncoding;
 typedef struct FjOutputColor {
     float cat02[9];
     float xyz_to_rgb[9];
@@ -365,6 +388,7 @@ typedef struct FjOutputColor {
     FjFloatSpan gamut_cmax;
     uint64_t gamut_table_hash;
     uint64_t gamut_recipe_hash;
+    FjOutputEncoding encoding;
 } FjOutputColor;
 
 #define FJ_PRINT_PREFLASH 1U

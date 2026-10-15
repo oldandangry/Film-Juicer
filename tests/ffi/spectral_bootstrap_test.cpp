@@ -25,7 +25,6 @@
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "RustAssetBridge.h"
-#include "SpectralProcessing.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "spectral_test_resources.h"
@@ -324,11 +323,11 @@ namespace {
         recipe.finalSensitivity.fill({1.0f, 1.0f, 1.0f});
         std::array<float, 81> illuminant{};
         illuminant.fill(1.0f);
-        Spectral::FilmTcLut result;
+        std::optional<Spectral::FilmTcLut> result;
         std::string diagnostic;
         EXPECT_FALSE(Spectral::build_film_tc_lut(recipe, Spectral::gHanSpectra, illuminant, result, diagnostic));
         EXPECT_NE(diagnostic.find("finite_integrated_samples"), std::string::npos) << diagnostic;
-        EXPECT_TRUE(result.rgba.empty());
+        EXPECT_FALSE(result.has_value());
         FocusedRenderStateBuildProduct product;
         EXPECT_FALSE(build_direct_render_state_product(controls(0), product, diagnostic));
         EXPECT_NE(diagnostic.find("finite_integrated_samples"), std::string::npos) << diagnostic;
@@ -366,14 +365,16 @@ namespace {
             // other decoded bits unchanged; eight authored samples then ones.
             EXPECT_EQ(Spectral::gHanSpectra.assetHash, UINT64_C(0x4e766e5978ce36d8));
             EXPECT_EQ(Spectral::gHanSpectra.assetHash, Spectral::context().arcticSpectra.assetHash);
-            Spectral::SpectralTables tables;
-            tables.K = 81;
-            tables.illum.assign(81, 1.0f);
-            Spectral::Curve sensitivity;
-            sensitivity.linear.assign(81, 1.0f);
-            const float rgb[3]{1.0f, 1.0f, 1.0f};
+            std::array<float, 81> leafIlluminant{};
+            leafIlluminant.fill(1.0f);
+            std::array<std::array<float, 3>, 81> sensitivity{};
+            for (auto& row : sensitivity)
+                row.fill(1.0f);
+            const FjMallettRawInput request{{1.0f, 1.0f, 1.0f}, {Spectral::gMallettBasis.data.data(), 243}, {leafIlluminant.data(), 81}, {sensitivity.front().data(), 243}};
             float exposure[3]{};
-            Spectral::mallett2019_exposures_from_linear_srgb(rgb, tables, sensitivity, sensitivity, sensitivity, exposure);
+            std::array<char, 512> bytes{};
+            FjErrorBuffer error{bytes.data(), bytes.size(), 0};
+            EXPECT_EQ(fj_test_exposure_mallett_raw(&request, exposure, &error).category, FJ_STATUS_SUCCESS);
             // Row zero contributes 1, rows one/two have nonfinite SPD and are
             // skipped by the retained computation; the remaining 78 contribute 3.
             for (float channel : exposure) {
@@ -386,7 +387,7 @@ namespace {
             recipe.finalSensitivity.fill({1.0f, 1.0f, 1.0f});
             std::array<float, 81> illuminant{};
             illuminant.fill(1.0f);
-            Spectral::FilmTcLut integrated;
+            std::optional<Spectral::FilmTcLut> integrated;
             std::string diagnostic;
             EXPECT_FALSE(Spectral::build_film_tc_lut(recipe, Spectral::context().arcticSpectra, illuminant, integrated, diagnostic));
             EXPECT_NE(diagnostic.find("finite_integrated_samples"), std::string::npos) << diagnostic;

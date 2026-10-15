@@ -1,0 +1,138 @@
+{
+  "classification": "Film-Juicer accepted native A9 characterization, not an external reference",
+  "parent": "d033f27cb3d1493adebcbc6c3d032f4bf6cb1666",
+  "historical_a8_native_provenance": "aa0a6d972f4154cddb027c9a53abfffcc5a8fbd5",
+  "layout": "lightness-major [64][720], LE raw f32; all nine spaces plus separately declared synthetic cases",
+  "numerical_contract": "exact per-preset primitive/intermediate/matrix/table words and identities; no A9 numerical exception",
+  "preset_membership": {
+    "linux-debug": {
+      "records": "records-0.json",
+      "tables": "tables-0.bin",
+      "extra": "extra-0.json"
+    },
+    "linux-release": {
+      "records": "records-0.json",
+      "tables": "tables-0.bin",
+      "extra": "extra-0.json"
+    },
+    "windows-clang-debug": {
+      "records": "records-1.json",
+      "tables": "tables-0.bin",
+      "extra": "extra-1.json"
+    },
+    "windows-clang-release": {
+      "records": "records-1.json",
+      "tables": "tables-0.bin",
+      "extra": "extra-1.json"
+    }
+  },
+  "files": {
+    "extra-0.json": {
+      "sha256": "1e640067b848d6e58db255dd221dbe267f3f64d8ddc44b3ef62898a52aac1661",
+      "bytes": 6055
+    },
+    "extra-1.json": {
+      "sha256": "8a6a6be3991d63b46bb1b311880adff6da4d2cf15ccdd5d8d4bedd95d15c5ff1",
+      "bytes": 6056
+    },
+    "records-0.json": {
+      "sha256": "aa333f04191a1be67959cb60e173e1267c30b0059d6b16826b656c6f046d60cb",
+      "bytes": 176820
+    },
+    "records-1.json": {
+      "sha256": "e2137812033b2da78fe06c6d1ba4ce66e608affd4db10df80be7e8cce34f65ad",
+      "bytes": 176821
+    },
+    "tables-0.bin": {
+      "sha256": "aed019c8810227746fe3faa80c587a483beb5ff74cc8287fc6078ae4e86efb7e",
+      "bytes": 2949120
+    }
+  },
+  "capture_method": "verbatim native math extraction with borrowed source operands, checked against linked actual native producer for all nine literal spaces; exact native source/tool/command provenance retained in A9 campaign NATIVE-FREEZE and capture-extraction receipts",
+  "provenance": {
+    "linux-debug": {
+      "native_payloads": {
+        "native-final.json": "aa333f04191a1be67959cb60e173e1267c30b0059d6b16826b656c6f046d60cb",
+        "native-final.tables": "aed019c8810227746fe3faa80c587a483beb5ff74cc8287fc6078ae4e86efb7e",
+        "native-extra.json": "1e640067b848d6e58db255dd221dbe267f3f64d8ddc44b3ef62898a52aac1661",
+        "native-capture": "84f78d17bdcd528b1d1605e78bb4a95035c7bba6caf468ee743fc659dc4fdfb3",
+        "native-capture-compile-context.json": "5806d3ec3285fbdc8158b42eef79e4601b9bd83454cb9f7ebe10a087c738a65c",
+        "tool-inputs.json": "9c91187e9078e654d06bdd3d594dbd4bdf02cb254864e09d8cc3296b455911d4"
+      },
+      "native_compile_entry": {
+        "directory": "/mnt/c/Dev/Codex/out/build/linux-debug",
+        "command": "/usr/bin/g++-13 -DJUICER_ADMISSION_TEST_HOOK=1 -DJUICER_DIAGNOSTICS_COMPILED=1 -DJUICER_PROFILE_CONVERSION_TEST_HOOK=1 -I/mnt/c/Dev/Codex/src -I/mnt/c/Dev/Codex/native -isystem /mnt/c/Dev/Codex/third_party -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include/cccl -isystem /mnt/c/Dev/Codex/third_party/ofxs/OpenFX-1.4/include -isystem /mnt/c/Dev/Codex/third_party/ofxs/Support/include -g -std=c++20 -fPIE -fvisibility=hidden -fvisibility-inlines-hidden -Wall -Wextra -Werror -o tests/CMakeFiles/JuicerColorPreparationTests.dir/ffi/color_preparation_test.cpp.o -c /mnt/c/Dev/Codex/tests/ffi/color_preparation_test.cpp",
+        "file": "/mnt/c/Dev/Codex/tests/ffi/color_preparation_test.cpp",
+        "output": "/mnt/c/Dev/Codex/out/build/linux-debug/tests/CMakeFiles/JuicerColorPreparationTests.dir/ffi/color_preparation_test.cpp.o"
+      },
+      "source": {
+        "source_sha256": "2d4142a398fd18f428d6bcbd3a9a05a17061472eb4f84a5f91650f9b97ffe2aa",
+        "method": "Verbatim native A9 extraction, namespace rename and explicit borrowed source operands only; no arithmetic edit. All nine complete production results compared against linked actual native producer. Synthetic perturbations declared in START before candidate work.",
+        "extraction_sha256": "4752541954ae88c561409f80a47fc06345029e9a6483d82c8b0cc2e7cc7caa78"
+      }
+    },
+    "linux-release": {
+      "native_payloads": {
+        "native-final.json": "aa333f04191a1be67959cb60e173e1267c30b0059d6b16826b656c6f046d60cb",
+        "native-final.tables": "aed019c8810227746fe3faa80c587a483beb5ff74cc8287fc6078ae4e86efb7e",
+        "native-extra.json": "1e640067b848d6e58db255dd221dbe267f3f64d8ddc44b3ef62898a52aac1661",
+        "native-capture": "0d05d4b320f7236eb260ee940699352dda9f4b45ccf7a814275007259c147a21",
+        "native-capture-compile-context.json": "5c4d06230ee6050376cc4b67158f63738a3fce6a725a9ea13b36c8a5534fe0f1",
+        "tool-inputs.json": "ba5c90b545d2d4716ced4e91391901d90c6742cf23119f3ed89b15e2a4bad297"
+      },
+      "native_compile_entry": {
+        "directory": "/mnt/c/Dev/Codex/out/build/linux-release",
+        "command": "/usr/bin/g++-13 -DJUICER_ADMISSION_TEST_HOOK=1 -DJUICER_DIAGNOSTICS_COMPILED=0 -DJUICER_PROFILE_CONVERSION_TEST_HOOK=1 -I/mnt/c/Dev/Codex/src -I/mnt/c/Dev/Codex/native -isystem /mnt/c/Dev/Codex/third_party -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include/cccl -isystem /mnt/c/Dev/Codex/third_party/ofxs/OpenFX-1.4/include -isystem /mnt/c/Dev/Codex/third_party/ofxs/Support/include -O3  -std=c++20 -fPIE -fvisibility=hidden -fvisibility-inlines-hidden -Wall -Wextra -Werror -o tests/CMakeFiles/JuicerColorPreparationTests.dir/ffi/color_preparation_test.cpp.o -c /mnt/c/Dev/Codex/tests/ffi/color_preparation_test.cpp",
+        "file": "/mnt/c/Dev/Codex/tests/ffi/color_preparation_test.cpp",
+        "output": "/mnt/c/Dev/Codex/out/build/linux-release/tests/CMakeFiles/JuicerColorPreparationTests.dir/ffi/color_preparation_test.cpp.o"
+      },
+      "source": {
+        "source_sha256": "2d4142a398fd18f428d6bcbd3a9a05a17061472eb4f84a5f91650f9b97ffe2aa",
+        "method": "Verbatim native A9 extraction, namespace rename and explicit borrowed source operands only; no arithmetic edit. All nine complete production results compared against linked actual native producer. Synthetic perturbations declared in START before candidate work.",
+        "extraction_sha256": "4752541954ae88c561409f80a47fc06345029e9a6483d82c8b0cc2e7cc7caa78"
+      }
+    },
+    "windows-clang-debug": {
+      "native_payloads": {
+        "native-final.json": "e2137812033b2da78fe06c6d1ba4ce66e608affd4db10df80be7e8cce34f65ad",
+        "native-final.tables": "aed019c8810227746fe3faa80c587a483beb5ff74cc8287fc6078ae4e86efb7e",
+        "native-extra.json": "8a6a6be3991d63b46bb1b311880adff6da4d2cf15ccdd5d8d4bedd95d15c5ff1",
+        "native-capture.exe": "85df2c7eedd2848ea353199ae97798fd7bfc5fda00efa5b87f7b15edf9a041b9",
+        "native-capture-compile-context.json": "95ffad63a391045cbfc7f0a4456b513aae3957834ae6d8e9b2b35705657086ca",
+        "tool-inputs.json": "0cd784a1e46e34cb084551f8ab021176ea804c0bf5132878529ecea6c3b6436a"
+      },
+      "native_compile_entry": {
+        "directory": "C:/Dev/Codex/out/build/windows-clang-debug",
+        "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DJUICER_ADMISSION_TEST_HOOK=1 -DJUICER_DIAGNOSTICS_COMPILED=1 -DJUICER_PROFILE_CONVERSION_TEST_HOOK=1 -DNOMINMAX -DUNICODE -DWIN32 -D_CRT_SECURE_NO_WARNINGS -D_UNICODE -D_WINDLL -IC:\\Dev\\Codex\\src -IC:\\Dev\\Codex\\native -imsvcC:\\Dev\\Codex\\third_party -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\" -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\\cccl\" -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\OpenFX-1.4\\include -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\Support\\include /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od -std:c++20 -MD -RTC1 -Z7 /W3 /WX /sdl /permissive- /EHsc /Fotests\\CMakeFiles\\JuicerColorPreparationTests.dir\\ffi\\color_preparation_test.cpp.obj /Fdtests\\CMakeFiles\\JuicerColorPreparationTests.dir\\ -c -- C:\\Dev\\Codex\\tests\\ffi\\color_preparation_test.cpp",
+        "file": "C:/Dev/Codex/tests/ffi/color_preparation_test.cpp",
+        "output": "C:/Dev/Codex/out/build/windows-clang-debug/tests/CMakeFiles/JuicerColorPreparationTests.dir/ffi/color_preparation_test.cpp.obj"
+      },
+      "source": {
+        "source_sha256": "2d4142a398fd18f428d6bcbd3a9a05a17061472eb4f84a5f91650f9b97ffe2aa",
+        "method": "Verbatim native A9 extraction, namespace rename and explicit borrowed source operands only; no arithmetic edit. All nine complete production results compared against linked actual native producer. Synthetic perturbations declared in START before candidate work.",
+        "extraction_sha256": "4752541954ae88c561409f80a47fc06345029e9a6483d82c8b0cc2e7cc7caa78"
+      }
+    },
+    "windows-clang-release": {
+      "native_payloads": {
+        "native-final.json": "e2137812033b2da78fe06c6d1ba4ce66e608affd4db10df80be7e8cce34f65ad",
+        "native-final.tables": "aed019c8810227746fe3faa80c587a483beb5ff74cc8287fc6078ae4e86efb7e",
+        "native-extra.json": "8a6a6be3991d63b46bb1b311880adff6da4d2cf15ccdd5d8d4bedd95d15c5ff1",
+        "native-capture.exe": "d3ee418328ee13084b61538ea2502286b523fb1d4c0000f7dddf56f023097cb8",
+        "native-capture-compile-context.json": "cb0f9aa492faffec12f071695fe02c454c54e402ae9dfaaee2244af82300de79",
+        "tool-inputs.json": "f7eb14b672c48e9ab8bb217117f877a334fdb19b5f143d77121b34794eb93515"
+      },
+      "native_compile_entry": {
+        "directory": "C:/Dev/Codex/out/build/windows-clang-release",
+        "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DJUICER_ADMISSION_TEST_HOOK=1 -DJUICER_DIAGNOSTICS_COMPILED=0 -DJUICER_PROFILE_CONVERSION_TEST_HOOK=1 -DNOMINMAX -DWIN32 -D_CRT_SECURE_NO_WARNINGS -D_MBCS -D_WINDLL -IC:\\Dev\\Codex\\src -IC:\\Dev\\Codex\\native -imsvcC:\\Dev\\Codex\\third_party -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\" -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\\cccl\" -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\OpenFX-1.4\\include -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\Support\\include /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2  -std:c++20 -MD -Z7 /W3 /WX /sdl /permissive- /EHsc /O2 /Oi /Ob2 /Gy /Gw /GF -flto=thin /Fotests\\CMakeFiles\\JuicerColorPreparationTests.dir\\ffi\\color_preparation_test.cpp.obj /Fdtests\\CMakeFiles\\JuicerColorPreparationTests.dir\\ -c -- C:\\Dev\\Codex\\tests\\ffi\\color_preparation_test.cpp",
+        "file": "C:/Dev/Codex/tests/ffi/color_preparation_test.cpp",
+        "output": "C:/Dev/Codex/out/build/windows-clang-release/tests/CMakeFiles/JuicerColorPreparationTests.dir/ffi/color_preparation_test.cpp.obj"
+      },
+      "source": {
+        "source_sha256": "2d4142a398fd18f428d6bcbd3a9a05a17061472eb4f84a5f91650f9b97ffe2aa",
+        "method": "Verbatim native A9 extraction, namespace rename and explicit borrowed source operands only; no arithmetic edit. All nine complete production results compared against linked actual native producer. Synthetic perturbations declared in START before candidate work.",
+        "extraction_sha256": "4752541954ae88c561409f80a47fc06345029e9a6483d82c8b0cc2e7cc7caa78"
+      }
+    }
+  }
+}

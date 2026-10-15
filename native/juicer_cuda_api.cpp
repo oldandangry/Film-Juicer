@@ -515,9 +515,14 @@ FjRenderOutcome JuicerCuda::NativeCall::render(
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{
             {submission->instance_token}, {submission->frame_token}, submission->submission_id, {context->device_id, reinterpret_cast<void*>(context->context)}, {submission->upload_core_hash, submission->dir_hash, submission->scanner_hash, submission->auto_exposure_hash}};
         const auto complete = [&]() {
-            const auto completion = (frame->flags & FJ_FRAME_STREAM_PRESENT) != 0
-                                        ? cudaSuccess
-                                        : cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(frame->stream));
+            auto completion = (frame->flags & FJ_FRAME_STREAM_PRESENT) != 0
+                                  ? cudaSuccess
+                                  : cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(frame->stream));
+#if defined(JUICER_CUDA_RENDER_TEST_HOOK)
+            if ((frame->flags & FJ_FRAME_STREAM_PRESENT) == 0) {
+                completion = static_cast<cudaError_t>(JuicerCuda::RenderTest::completion_status(static_cast<int>(completion)));
+            }
+#endif
             if (completion != cudaSuccess) {
                 const Failure failure{runtime_failure_status(completion), cudaGetErrorString(completion)};
                 if (!recovery.pending && context_loss(failure)) {

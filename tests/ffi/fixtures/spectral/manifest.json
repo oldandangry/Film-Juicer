@@ -1,0 +1,35 @@
+{
+  "authority": "Film-Juicer native parent b91abcf0d92b0c61fa7bfa8c966e01fe48393ebf; frozen before translation. Native migration characterization and exact family/product contracts, not an external spektrafilm reduction oracle.",
+  "capture_manifest_sha256": "35d1ae4ecd725bc692921aa4881f092259264e9921de36d1024b3abe1171ebaf",
+  "comparison": "Exact finite bits, signed zero, family/enclosing identities; nonfinite classification. All existing fixture bounds unchanged.",
+  "presets": {
+    "linux-debug": {
+      "file": "linux-debug.json",
+      "sha256": "d3064ff740e20f22cd6778c5abf1bb18c7cd8d99b0c83008351a1a0a53268bde",
+      "native_capture_sha256": "65e3c5577a73c3c8b6203c3a16ca3f878e91347d9f7caac4b1a68b16aff5f331",
+      "projection": "Only append closed white failure metadata from native captured failure stages/sums; values and identities unchanged. XYZ and dyes carry X/Y/Z and C/M/Y planes; all floats use IEEE word bits.",
+      "derived_dependencies": "Preserve every frozen array/scalar; set the original supplied identity on captured special/dye/base/illuminant/observer cases. Independent Python FNV composition matches every original native table hash before deriving new hashes. No candidate math is an oracle."
+    },
+    "linux-release": {
+      "file": "linux-release.json",
+      "sha256": "d14f35a41fceabba457d08e91d54b646bc7ce7cf39013d20387505860417d294",
+      "native_capture_sha256": "24534fb5bc71df4946c4b68cd48f43d891e7d53a57007978a7414f97c5a2b564",
+      "projection": "Only append closed white failure metadata from native captured failure stages/sums; values and identities unchanged. XYZ and dyes carry X/Y/Z and C/M/Y planes; all floats use IEEE word bits.",
+      "derived_dependencies": "Preserve every frozen array/scalar; set the original supplied identity on captured special/dye/base/illuminant/observer cases. Independent Python FNV composition matches every original native table hash before deriving new hashes. No candidate math is an oracle."
+    },
+    "windows-clang-debug": {
+      "file": "windows-clang-debug.json",
+      "sha256": "c77f720f1b0ae935ca44ddd3a404de70f6a3b8acea138c362cfd53e45b3d9e5f",
+      "native_capture_sha256": "9133a8faf5aa7a95f40ed3e65db4ddbb3bd08a1e0d6a475021b0175b6357f86c",
+      "projection": "Only append closed white failure metadata from native captured failure stages/sums; values and identities unchanged. XYZ and dyes carry X/Y/Z and C/M/Y planes; all floats use IEEE word bits.",
+      "derived_dependencies": "Preserve every frozen array/scalar; set the original supplied identity on captured special/dye/base/illuminant/observer cases. Independent Python FNV composition matches every original native table hash before deriving new hashes. No candidate math is an oracle."
+    },
+    "windows-clang-release": {
+      "file": "windows-clang-release.json",
+      "sha256": "4a2c390d60271311baebbb1460de4c30daa32f048a2f885c4fecedc13e9f915f",
+      "native_capture_sha256": "7a16d0d352a20a05478f566cd4851178877a8f4f81385187d6e75d92b02848c8",
+      "projection": "Only append closed white failure metadata from native captured failure stages/sums; values and identities unchanged. XYZ and dyes carry X/Y/Z and C/M/Y planes; all floats use IEEE word bits.",
+      "derived_dependencies": "Preserve every frozen array/scalar; set the original supplied identity on captured special/dye/base/illuminant/observer cases. Independent Python FNV composition matches every original native table hash before deriving new hashes. No candidate math is an oracle."
+    }
+  }
+}

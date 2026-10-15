@@ -90,6 +90,24 @@ retain this assessment as their G-Names and contextual G-Quality result.
 
 ## Required checks
 
+Supporting-code checks need Python 3.13 and the pinned tools installed explicitly:
+
+```sh
+python -m pip install -r scripts/quality-requirements.txt
+python -m unittest discover -s tests/quality -p test_tooling_lint.py -v
+python scripts/check-tooling.py
+```
+
+The command checks maintained Python and shell under `scripts/` and `tests/`,
+plus GitHub workflows. It includes eligible untracked files and excludes fixture,
+generated, vendor, private and output trees. Ruff uses `E4,E7,E9,F`; ShellCheck
+resolves sourced scripts; actionlint uses the selected ShellCheck with Pyflakes
+disabled. It neither modifies source nor installs tools, and missing/wrong tools,
+lint failures or input changes fail the command. The independent Linux lint job
+requires no CUDA setup. Its unit tests also run as `Quality.ToolingLint` in CTest;
+ordinary CTest does not require the lint executables. Private workbench checks
+are separate and are never inputs to public CI. Lints complement contextual review.
+
 Rust is pinned by `rust-toolchain.toml` to 1.98.1 with its rustfmt and Clippy
 components. Native formatting and tidy use LLVM 22; on Windows the qualified
 tools are under
@@ -106,10 +124,32 @@ ctest --preset linux-debug --output-on-failure
 Use the corresponding Windows or Release preset when that is the affected
 target. `--files <paths...>` is the bounded package form; `--all-owned` is an
 explicit audit. The dispatcher writes logs only under
-`out/validation/<preset>/quality/`, leaves source unchanged, and treats missing
-tools or compiler/lint failures as incomplete work. Formatting and lints do
+`out/validation/<preset>/quality/runs/<run-id>/`, leaves source unchanged, and treats missing
+tools or compiler/lint failures as incomplete work. Each fresh directory has a
+`run.json` with source identities, command, terminal status, elapsed time and hashes
+of that invocation's evidence. Keep the printed run path in a handoff; do not copy
+the shared quality tree or use an older log as evidence of the current pass.
+Historical logs remain untouched. CI uploads the run receipts and command sidecars.
+With `--base`, a valid diff with no owned files still runs the diff and boundary
+checks and completes receipt validation; the receipt records its empty selection
+and exclusion reasons. This includes clean and deletion-only diffs. Empty
+`--files` or `--all-owned` selections remain errors, as do invalid Git references
+and discovered owned files that disappear before selection completes.
+Receipts bind the Git revision, current owned source (including untracked and
+generated inputs), policies, compilation database/build configuration and consumed
+tools, dependency sources and project headers. These identities are checked again
+before success; a changed or missing input fails qualification. Environment values
+are hashed rather than printed. This inventory excludes historical output trees.
+Formatting and lints do
 not replace review of ownership, names, numerical parity, GPU lifetime, or
 installed Resolve behavior.
+
+Reuse the configured checkout path, including its casing, from
+`CMAKE_HOME_DIRECTORY` in the preset's `CMakeCache.txt`. A differently spelled
+filesystem alias can change compiler arguments and invalidate incremental builds
+even when it reaches the same files. Keep configure, build and quality invocations
+on that path; the quality dispatcher rejects a different spelling. Do not edit
+cache paths to hide a relocation.
 
 During development, build the affected test targets and run the smallest owning
 CTest selection that proves the changed behavior. Exercise new compiled tests
@@ -120,12 +160,31 @@ evidence; see [the test guide](tests/README.md). Separate reference
 captures, transition checkpoints and production Release checks retain their
 own requirements.
 
+Complete any approved numerical-policy fixture replay and run its affected GPU
+reference/identity groups before the final unfiltered suite. Use that suite's
+JUnit for final domain evidence instead of repeating passing focused groups.
+
 `--jobs` limits concurrent native and CUDA analysis commands; the default is 2
 and `--jobs 1` provides serial execution. Formatting, toolchain/CUDA preparation
 and Cargo checks remain sequential. Each analysis command retains its compilation
-arguments, working directory and separate log; all command results are observed
-before a failing batch returns. Keep GPU campaigns serialized on a shared device
+arguments, working directory and separate log. After a failure is observed, no
+additional commands are scheduled; already running commands finish and their
+results are observed before the failing batch returns. Keep GPU campaigns serialized on a shared device
 and avoid concurrent Cargo operations using the same target directory.
+
+The dispatcher first verifies that every selected translation unit exists in the
+configured compilation database. After adding test targets, refresh that preset
+before quality checks. Header selection reads each source's literal includes once
+per invocation, then resolves them in each compilation entry's ordered include
+search paths, with separate quote/angle lookup. All conditional branches are
+considered conservatively; distinct CUDA variants are retained. Compiler response
+files must be expanded before selection. The graph
+is discarded after selection, so a subsequent edit cannot reuse stale dependencies.
+The dispatcher checks formatting/configuration and edited native translation
+units before Rust probes and the remaining header consumers. A failed producer
+batch stops the later batches; a successful run retains every consumer and CUDA
+variant. Each command writes a `.command.json` beside its log with arguments,
+working directory, duration and exit status, including launch failures.
 
 CUDA files use Clang's CUDA frontend with the preset's real NVCC compilation
 database entries. Both `.cu` sources and consuming translation units for `.cuh`
@@ -161,6 +220,8 @@ valid domain names and a narrow foreign-boundary exception. It adds no product
 dependency and leaves the production source and checked-in fixtures untouched.
 
 `Quality.RustBoundaries` checks the current two-crate dependency contract using
+Cargo metadata is parsed from stdout alone; raw stdout/stderr logs are retained
+and bound to the quality receipt, including package-cache lock diagnostics.
 Cargo metadata, including inactive target-specific declarations and resolved
 source overrides. Direct dependency changes, new workspace members and crate
 build/link hooks require an explicit change to the contract in the quality
@@ -171,6 +232,32 @@ and local unsafe overrides in the core and safe asset modules. Probes run in
 disposable workspace copies in both profiles and check diagnostic codes and
 locations. Extend them when a new construction or safe orchestration boundary
 lands; do not create speculative production APIs for tests.
+
+CTest compiler probes select the configured Debug or Release profile; complete
+quality gates always exercise both. Probe source workspaces stay disposable,
+while Cargo artifacts reuse `out/build/<preset>/cargo/quality-probes/`. Cargo
+fingerprints and its build lock govern artifact reuse, separately from product
+Rust outputs. Standalone quality and standalone CTest compile every current
+example and check its specific diagnostics.
+
+Within one explicitly named qualification, a complete fresh quality gate can
+supply compiler output to its subsequent Debug and Release CTest groups. Stage
+it with `--probe-manifest <new-path> --qualification-id <new-UUID>`. After the
+quality command and its process tree finish successfully, publish that exact
+request with `python tests/quality/probe_evidence.py --manifest <new-path>
+--qualification-id <same-UUID>`. Pass that published path and identity to CTest
+as `JUICER_RUST_PROBE_MANIFEST` and `JUICER_QUALIFICATION_ID`.
+
+Both groups still execute their original case loops and assertions against the
+original compiler diagnostics. They report `verified existing probe evidence`,
+with the producer path; they do not skip tests or create duplicate compiler logs.
+Source membership/bytes, fixtures, dependency sources, configuration, tools,
+runtime, effective environment, target, profile, features and arguments must
+match. Missing, changed, incomplete or unpublished evidence fails the group.
+Without an explicit manifest CTest compiles fresh. Quality always compiles
+fresh, even if it inherits a manifest. There is no cross-qualification lookup.
+Workspace/dependency metadata and structural guards continue to execute fresh.
+`Quality.ProbeEvidence` checks this handoff's invalidation and failure behavior.
 
 The dispatcher always runs the inexpensive native boundary guards across their
 whole source scope, including new nested headers. They reject host messaging in

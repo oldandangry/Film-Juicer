@@ -25,7 +25,7 @@
 #include "ResourceAssetLibrary.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "Illuminants.h"
 #include "Hash.h"
 #include "Cuda/JuicerCudaResources.h"
@@ -601,11 +601,31 @@ namespace {
             const auto& reference = product.recipe.profileRoute.filmProfile->info.referenceIlluminant;
             ASSERT_TRUE(std::holds_alternative<Profiles::BlackbodyIlluminant>(reference.kind));
             EXPECT_EQ(std::bit_cast<std::uint64_t>(std::get<Profiles::BlackbodyIlluminant>(reference.kind).temperatureKelvin), std::bit_cast<std::uint64_t>(item.second));
-            std::vector<float> expected(81);
-            for (std::size_t i = 0; i < expected.size(); ++i) {
-                expected[i] = Spectral::planck_blackbody({380.0f + 5.0f * static_cast<float>(i), static_cast<float>(item.second)});
+#if defined(_WIN32)
+            const std::string platform = "windows-clang";
+#else
+            const std::string platform = "linux";
+#endif
+#if defined(NDEBUG)
+            const std::string configuration = "release";
+#else
+            const std::string configuration = "debug";
+#endif
+            std::string captureName = "construction-";
+            captureName.append(platform).append("-").append(configuration).append(".json");
+            const auto path = fixtures.parent_path().parent_path() / "ffi/fixtures/illuminants" / captureName;
+            std::ifstream captured(path);
+            const auto expectations = Json::parse(captured);
+            const auto temperature = std::bit_cast<std::uint32_t>(static_cast<float>(item.second));
+            const auto& rows = expectations["leaf"]["blackbody"];
+            const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto& value) {
+                return value["temperature"].template get<std::uint32_t>() == temperature;
+            });
+            ASSERT_NE(row, rows.end());
+            std::vector<float> expected;
+            for (const auto& word : (*row)["normalized"]) {
+                expected.push_back(std::bit_cast<float>(word.template get<std::uint32_t>()));
             }
-            Spectral::mean_power_normalize(expected);
             EXPECT_EQ(product.payload.exposureTables.illum, expected);
             EXPECT_EQ(product.payload.scannerTables.illum, expected);
             EXPECT_NE(product.recipe.scannerOutput.syntheticFilmReference.hash, 0u);

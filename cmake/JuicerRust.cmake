@@ -65,6 +65,7 @@ endif()
 set(JUICER_RUST_TARGET_DIR "${CMAKE_BINARY_DIR}/cargo")
 set(JUICER_RUST_ARCHIVE
     "${JUICER_RUST_TARGET_DIR}/${JUICER_RUST_TARGET}/${JUICER_RUST_CARGO_PROFILE}/${JUICER_RUST_ARCHIVE_NAME}")
+set(JUICER_RUST_BUILD_STAMP "${CMAKE_BINARY_DIR}/cargo-build.stamp")
 
 set(JUICER_RUST_FEATURE_ARGUMENT)
 if(BUILD_TESTING)
@@ -89,7 +90,8 @@ set(JUICER_RUST_BUILD_INPUTS
     ${JUICER_RUST_SOURCES})
 
 add_custom_command(
-    OUTPUT "${JUICER_RUST_ARCHIVE}"
+    OUTPUT "${JUICER_RUST_BUILD_STAMP}"
+    BYPRODUCTS "${JUICER_RUST_ARCHIVE}"
     COMMAND "${CMAKE_COMMAND}" -E env
         "RUSTFLAGS="
         "CARGO_BUILD_RUSTFLAGS="
@@ -102,14 +104,16 @@ add_custom_command(
             --target "${JUICER_RUST_TARGET}"
             --target-dir "${JUICER_RUST_TARGET_DIR}"
             ${JUICER_RUST_PROFILE_ARGUMENT}
-    COMMAND "${CMAKE_COMMAND}" -E touch "${JUICER_RUST_ARCHIVE}"
+    # Cargo may return fresh without rewriting the archive. Record successful
+    # preparation separately so unchanged archives do not relink native consumers.
+    COMMAND "${CMAKE_COMMAND}" -E touch "${JUICER_RUST_BUILD_STAMP}"
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     DEPENDS ${JUICER_RUST_BUILD_INPUTS}
     COMMENT
         "Building Film-Juicer Rust static library (${JUICER_RUST_TARGET}, ${JUICER_RUST_CARGO_PROFILE})"
     VERBATIM
     USES_TERMINAL)
-add_custom_target(juicer_rust_build DEPENDS "${JUICER_RUST_ARCHIVE}")
+add_custom_target(juicer_rust_build DEPENDS "${JUICER_RUST_BUILD_STAMP}")
 
 add_library(film_juicer_rust STATIC IMPORTED GLOBAL)
 set_target_properties(film_juicer_rust PROPERTIES

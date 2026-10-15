@@ -18,7 +18,7 @@
 #include "Cuda/JuicerCudaHostViews.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
@@ -99,9 +99,10 @@ namespace {
         std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
         int width;
         int height;
+        const float pixelSizeUm;
 
         Inputs(int w, int h, Spektrafilm::ScanRoute route, const GrainVariant& variant = {})
-            : width(w), height(h) {
+            : width(w), height(h), pixelSizeUm(variant.pixelSize) {
             ParamSnapshot controls;
             controls.scanRoute = route;
             if (Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Positive) {
@@ -141,14 +142,19 @@ namespace {
             require(Spektrafilm::build_spatial_dir_descriptor(
                         product.recipe.dirCouplers, variant.pixelSize, extent, extent, "grain-scratch-test", dir),
                     "DIR descriptor failed");
+            build_grain_frame(variant.time);
+        }
+
+        void build_grain_frame(double time) {
+            std::string error;
             Spektrafilm::VisualGrainFrameDescriptorInput input;
             input.recipe = &product.recipe.visualGrain;
             input.filmDevelop = &product.recipe.filmDevelop;
             input.capturePolarity = product.recipe.profileRoute.capturePolarity;
-            input.renderExtent = {0, 0, w, h};
+            input.renderExtent = {0, 0, width, height};
             input.fullFrameExtent = input.renderExtent;
-            input.pixelSizeUm = variant.pixelSize;
-            input.frameTime = variant.time;
+            input.pixelSizeUm = pixelSizeUm;
+            input.frameTime = time;
             input.frameRate = 24.0;
             input.sessionSeed = 17;
             input.clipToken = 23;
@@ -354,11 +360,24 @@ namespace {
         for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
             for (bool layers : {false, true}) {
                 for (bool shared : {false, true}) {
+                    // Only frame time changes between passes. Retain one host
+                    // product per debug view; every CUDA frame remains fresh.
+                    std::array<std::optional<Inputs>, 7> inputsByDebug;
                     for (double time : {12.0, 12.375}) {
                         for (int debug = 0; debug <= 6; ++debug) {
                             SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route)
                                                             << " layers=" << layers << " shared=" << shared << " time=" << time << " debug=" << debug);
-                            Inputs inputs(48, 32, route, {.layers = layers, .shared = shared, .debug = debug, .time = time});
+                            auto& retained = inputsByDebug[debug];
+                            if (!retained) {
+                                retained.emplace(48, 32, route, GrainVariant{.layers = layers, .shared = shared, .debug = debug, .time = time});
+                            } else {
+                                retained->build_grain_frame(time);
+                            }
+                            const auto& inputs = *retained;
+                            ASSERT_EQ(inputs.product.recipe.visualGrain.debugView, debug);
+                            ASSERT_EQ(inputs.grain.frame0, 12);
+                            ASSERT_EQ(std::bit_cast<std::uint32_t>(inputs.grain.frameAlpha),
+                                      std::bit_cast<std::uint32_t>(static_cast<float>(time - 12.0)));
                             auto frame = prepare(inputs);
                             const auto work = frame.visual_grain_workspace(frame.workspace_lease());
                             ASSERT_TRUE(work.active);

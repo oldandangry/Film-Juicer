@@ -14,7 +14,7 @@
 #include "Logging.h"
 #include "ProcessRoot.h"
 #include "SpectralData.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "mainProcessing.h"
 #include "juicer_cuda_owner.h"
 

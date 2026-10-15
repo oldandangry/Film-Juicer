@@ -18,10 +18,13 @@ jobs:
   linux-debug-host:
     name: Linux Debug host and Python checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     env:
+      PYTHONDONTWRITEBYTECODE: "1"
       CUDACXX: /usr/local/cuda-13.2/bin/nvcc
       CUDAToolkit_ROOT: /usr/local/cuda-13.2
+      JUICER_CLANG_FORMAT: clang-format-22
+      JUICER_CLANG_TIDY: clang-tidy-22
 
     steps:
       - name: Check out source
@@ -92,7 +95,7 @@ jobs:
           set -euo pipefail
           test ! -e /dev/nvidiactl
 
-      - name: Configure and build public tests
+      - name: Configure and build Debug public tests
         shell: bash
         run: |
           set -euo pipefail
@@ -102,20 +105,26 @@ jobs:
       - name: Run tracked native, CUDA, and Rust quality checks
         shell: bash
         env:
-          JUICER_CLANG_FORMAT: clang-format-22
-          JUICER_CLANG_TIDY: clang-tidy-22
           QUALITY_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
           if [[ -z "$QUALITY_BASE" || "$QUALITY_BASE" =~ ^0+$ ]]; then
             QUALITY_BASE="$(git rev-parse HEAD^)"
           fi
+          qualification_id="$(python -c 'import uuid; print(uuid.uuid4())')"
+          probe_manifest="$GITHUB_WORKSPACE/out/validation/linux-debug/quality/probes-$qualification_id.json"
           python -u scripts/check-quality.py \
+            --probe-manifest "$probe_manifest" --qualification-id "$qualification_id" \
             --base "$QUALITY_BASE" \
             --preset linux-debug \
             --jobs 2
+          if [[ -f "$probe_manifest.pending" ]]; then
+            python tests/quality/probe_evidence.py --manifest "$probe_manifest" --qualification-id "$qualification_id"
+            echo "JUICER_RUST_PROBE_MANIFEST=$probe_manifest" >> "$GITHUB_ENV"
+            echo "JUICER_QUALIFICATION_ID=$qualification_id" >> "$GITHUB_ENV"
+          fi
 
-      - name: List tests and run host selection
+      - name: List tests and run Debug host selection
         shell: bash
         run: |
           set -euo pipefail
@@ -125,12 +134,40 @@ jobs:
             --output-on-failure \
             --output-junit "$GITHUB_WORKSPACE/out/validation/linux-debug/host-junit.xml"
 
+      - name: Configure and build Release public tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --preset linux-release -DBUILD_TESTING=ON
+          cmake --build --preset linux-release
+
+      - name: List tests and run Release host selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/validation/linux-release
+          ctest --preset linux-release -N
+          ctest --preset linux-release -L host \
+            --output-on-failure \
+            --output-junit "$GITHUB_WORKSPACE/out/validation/linux-release/host-junit.xml"
+
       - name: Upload host test report
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: linux-debug-host-junit
           path: out/validation/linux-debug/host-junit.xml
+          if-no-files-found: warn
+
+      - name: Upload Release host test report
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: linux-release-host-junit
+          path: |
+            out/validation/linux-release/host-junit.xml
+            out/build/linux-release/Testing/Temporary/LastTest.log
+            out/build/linux-release/compile_commands.json
           if-no-files-found: warn
 
       - name: Upload quality diagnostics and CUDA commands
@@ -140,6 +177,7 @@ jobs:
           name: linux-debug-quality
           path: |
             out/validation/linux-debug/quality/**/*.log
-            out/validation/linux-debug/quality/cuda-command-*.json
+            out/validation/linux-debug/quality/runs/**/*.json
+            out/validation/linux-debug/quality/probes-*.json*
             out/build/linux-debug/compile_commands.json
           if-no-files-found: warn

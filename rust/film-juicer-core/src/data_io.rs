@@ -8,6 +8,9 @@
 pub mod noise;
 pub mod calibration;
 
+#[cfg(test)]
+mod npy_fuzz;
+
 use std::collections::TryReserveError;
 use std::fmt;
 use std::fs::File;

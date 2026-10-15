@@ -1,0 +1,56 @@
+{
+  "contract": "Owner-authorized A7 focused missing-basis correction, adopted after exact four-target math gates; valid-source expectations remain native bit identity.",
+  "date": "2026-10-10",
+  "native_outcome_manifest_sha256": "5fe2136e3488a6c7f750b68794cf3cc5e20b8f5947ad2c253630587035e1ecf7",
+  "diagnostic": "MissingRequiredResource component=mallett_midgray requirement=81x3_basis",
+  "selected_basis": {
+    "available": true,
+    "rows": 81,
+    "cols": 3,
+    "values": 243
+  },
+  "native_missing_cases": {
+    "basis_only": "ordinary false at later synthetic_reference_raw, or successful S-inverse fallback for intact data with unavailable flag",
+    "earlier_output_color": "same earlier output_gamut_recipe rejection",
+    "earlier_inverse_fault": "same exceptional UnsupportedInput before focused binding"
+  },
+  "corrected_missing_cases": {
+    "basis_only": {
+      "built": false,
+      "category": "ordinary_false",
+      "diagnostic": "MissingRequiredResource component=mallett_midgray requirement=81x3_basis"
+    },
+    "earlier_output_color": {
+      "built": false,
+      "category": "ordinary_false",
+      "diagnostic": "ResourceDescriptorMismatch component=output_gamut_recipe field=output_color_space"
+    },
+    "earlier_inverse_fault": {
+      "built": false,
+      "category": "exceptional_unsupported",
+      "old_publication_retained": true
+    }
+  },
+  "corrected_admission": {
+    "status": "RebuildFailed",
+    "selected_slot": "cleared",
+    "last_hash": "unchanged",
+    "build_counter": "unchanged",
+    "pending": "same valid changed-current snapshot",
+    "admitted_old_hold": "retained and readable",
+    "other_route_slot": "unchanged"
+  },
+  "later_scanner_fault": {
+    "operation": "CAT02 matrix",
+    "call_index": 2,
+    "status": "RebuildFailed",
+    "diagnostic": "MissingRequiredResource component=mallett_midgray requirement=81x3_basis",
+    "fault_consumption": "skipped by focused rejection; next matching call observes still-armed fault before cleanup"
+  },
+  "missing_midgray_fault": {
+    "operation": 3,
+    "fault_consumption": "not consumed; a valid later binding consumes it before cleanup"
+  },
+  "synthetic_reference": "Existing 81x3 shape/data-only contract; no global availability admission.",
+  "scope": "Only focused selection after existing tables/S-inverse/configuration. No mathematical exception or resource-content admission."
+}

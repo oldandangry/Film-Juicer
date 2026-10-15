@@ -913,7 +913,18 @@ namespace JuicerAssets {
         return copy;
     }
 
-    std::vector<std::pair<float, float>> AssetBridge::copy_csv_pairs(CsvSource source) {
+    CsvRows::CsvRows(FjCsvPairs* owner, FjFloatSpan view) noexcept : _owner(owner), _view(view) {}
+    CsvRows::CsvRows(CsvRows&& rows) noexcept : _owner(std::exchange(rows._owner, nullptr)), _view(std::exchange(rows._view, FjFloatSpan{})) {}
+    CsvRows::~CsvRows() {
+        if (_owner) {
+            report_cleanup(fj_legacy_csv_release(_owner, nullptr));
+        }
+    }
+    FjFloatSpan CsvRows::view() const& noexcept {
+        return _view;
+    }
+
+    CsvRows AssetBridge::csv_rows(CsvSource source) {
 #if defined(JUICER_ILLUMINANT_TEST_HOOK)
         IlluminantTest::before_csv_acquisition(source);
 #endif
@@ -921,7 +932,7 @@ namespace JuicerAssets {
         FjErrorBuffer error{diagnostic.data(), diagnostic.size(), 0};
         FjCsvPairs* acquired = nullptr;
         const auto result = fj_legacy_csv_acquire(_assets, csv_tag(source), &acquired, &error);
-        const std::unique_ptr<FjCsvPairs, CsvDeleter> owner(acquired);
+        std::unique_ptr<FjCsvPairs, CsvDeleter> owner(acquired);
         if (result.category != FJ_STATUS_SUCCESS) {
             fail(result, {diagnostic.data(), error.length});
         }
@@ -937,6 +948,12 @@ namespace JuicerAssets {
         if (samples.size() % 2u != 0) {
             invalid_view();
         }
+        return CsvRows(owner.release(), view);
+    }
+
+    std::vector<std::pair<float, float>> AssetBridge::copy_csv_pairs(CsvSource source) {
+        const auto sourceRows = csv_rows(source);
+        const auto samples = float_span(sourceRows.view());
         const auto rows = samples.size() / 2u;
         std::vector<std::pair<float, float>> copy;
         if (rows > copy.max_size()) {

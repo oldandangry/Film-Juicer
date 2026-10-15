@@ -11,7 +11,7 @@
 #include "gtest/gtest.h"
 
 #include "FilmEffectsFrameDescriptors.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"

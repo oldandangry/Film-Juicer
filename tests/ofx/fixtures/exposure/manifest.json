@@ -1,0 +1,36 @@
+{
+  "authority": "Owner-approved A5 pinned erff and associated actual-value recipe/seed consequences; exact independent native GPU replay",
+  "native_parent": "4fe634bd3ba4ff4b4543e6a18846594c0d9203c0",
+  "meaning": "Seven full processor rows; each dat row names the case, scalar count and float32 round-trip decimals. Parameter identity JSON holds ten original case/A-B keys with recipe, filmRaw, printSeedInput and fixedGlareSeed.",
+  "expected_generation": "Frozen parent spectral/recipe/state code, frozen original pinned study executable supplying exact A5 coefficients; repeated fresh processes. Current renderer compared by exact f32 bits before fixture adoption.",
+  "prior_fixtures": "Original processor_rust_pixels and parameter_rust_identities bytes remain unchanged; existing pixel/identity comparison bounds unchanged.",
+  "visual_comparison": "No images; numerical GPU fixture capture only. Owner declined visual A/B campaign.",
+  "files": {
+    "parameter-identities-linux-debug.json": "b728d785fb0a6f687a8b63188e3f8d1632f582d466a771feeab3e7b5c7eb3988",
+    "parameter-identities-linux-release.json": "b728d785fb0a6f687a8b63188e3f8d1632f582d466a771feeab3e7b5c7eb3988",
+    "parameter-identities-windows-clang-debug.json": "24b53c28aad8ad4f627b52f0bc642bb24a3331555446edbf46f4c54e2507cccd",
+    "parameter-identities-windows-clang-release.json": "24b53c28aad8ad4f627b52f0bc642bb24a3331555446edbf46f4c54e2507cccd",
+    "processor-linux-debug.dat": "0e2302de443c9cf531e8f75344b0c53b0d442688902f0300ce8540d1a121053f",
+    "processor-linux-release.dat": "0e2302de443c9cf531e8f75344b0c53b0d442688902f0300ce8540d1a121053f",
+    "processor-windows-clang-debug.dat": "222fa36ad1d8e3073a2f5cb384420195e8c4f7f7d4b29d8f384150ba634b750f",
+    "processor-windows-clang-release.dat": "222fa36ad1d8e3073a2f5cb384420195e8c4f7f7d4b29d8f384150ba634b750f"
+  },
+  "preset_adoption_records": {
+    "linux-debug": {
+      "gpu_fixture_adoption_sha256": "0b57e6318ab476c8aef8636a35a2537ece6c0066fc1e1e1cef5708441776a793",
+      "gpu_exact_current_qualification_sha256": "e04107e71425fdf8241d5884af64441387d35de8a843715b549db69e25156a32"
+    },
+    "linux-release": {
+      "gpu_fixture_adoption_sha256": "0121ddb84564d8a4d5ad98b5714581fb0bbf132323c6e7c7bcec0285d09f9b1b",
+      "gpu_exact_current_qualification_sha256": "882bcbdb7a0b41f3e5ecdae5480311e9570d3b7bb7de544e5bfdc1ee94c36aa0"
+    },
+    "windows-clang-debug": {
+      "gpu_fixture_adoption_sha256": "8cc79d665be33cf83647a69aa53dc666ca2e272e232494e92f16c079b4511cc4",
+      "gpu_exact_current_qualification_sha256": "c854480cd02b20f0156ace7ace8dc8f656e4212f24abf6743e4eb261b6605681"
+    },
+    "windows-clang-release": {
+      "gpu_fixture_adoption_sha256": "85ead773671c1d560b793f0075221c2e2d352b2c3ba22b5a3f08eb4230daeaba",
+      "gpu_exact_current_qualification_sha256": "8c107ef0b94cd366f18e607dfee4eaab151b79c9a8869fe8b62de1a45fdb3dc3"
+    }
+  }
+}

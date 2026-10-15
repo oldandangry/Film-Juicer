@@ -108,6 +108,19 @@ ctest --preset linux-debug
 Windows Debug uses the same sequence with `windows-clang-debug`. Release uses
 `linux-release` or `windows-clang-release`.
 
+The presets use four CTest workers. GPU groups share `juicer_gpu`, the
+product Cargo tests share `juicer_cargo`, and groups with `RUN_SERIAL` still run
+alone. Keep GPU suites from separate Windows/WSL invocations serialized on a
+shared device; CTest resource locks apply within one invocation. Override the
+worker count with `--parallel <count>` when the machine needs a smaller limit.
+
+`Ffi.Host.InputColorPreparation` uses two worker slots. Its admission hooks and
+asset caches belong to its process, and its resources and parity fixtures are
+read-only. It can overlap other eligible groups after the full build completes.
+Use `--parallel 1` to roll back to serial execution when diagnosing contention.
+Configuration and build writers must finish before tests read their build tree;
+Cargo operations using the same target directory must also remain serialized.
+
 The unfiltered CTest command runs every automated correctness group applicable
 to that platform and therefore requires a supported GPU and driver. Selection
 uses standard CTest options:
@@ -125,6 +138,40 @@ ctest --preset linux-debug --rerun-failed --output-on-failure
 On a normal GPU development machine, prefer the single unfiltered command.
 Labels are for CI, machines without a GPU, and focused diagnosis; they are not
 additional passes that must be run after the full suite.
+
+For the bounded output-gamut/owner determinism investigation, use CTest's
+`until-fail` repetition after the complete build. This is an explicit maintenance
+run, supplementary to the unfiltered suite; ordinary CTest still runs every
+group once. The exact cohort and preservation rules are in
+[the FFI guide](ffi/README.md#bounded-cache-and-owner-repetition).
+`Ctest.Host.Repetition` checks real CTest fresh-process repetition, a deliberate
+second-attempt failure with no later retry, and rejection of empty selections.
+Control artifacts are retained under the preset's `ctest-repetition-controls/`.
+
+The bounded Mallett-basis NPY pilot runs inside `Rust.Core` through the test-only
+`data_io::npy_fuzz` module. Four fixed seeds (`4e505901`, `8103`, `deadbeef`,
+`5eedcafe`) produce 512 cases each: unchanged unusual samples, truncation,
+trailing bytes, bit flips, header deletion/insertion, header-length mutation and
+payload mutation. Independent oracles check complete f32 sample bits, short reads
+and extra payload rejection. Additional cases check supported f16/f32/f64 header
+spellings and shape overflow. Every case also checks fragmented reads, typed
+errors and owned results after source mutation. NaN, infinity and signed zero
+remain valid authored content; this pilot adds no scientific admission policy.
+
+For a focused replay, use the standard preset Cargo directory and native target:
+
+```sh
+cargo test --locked -p film-juicer-core --lib --target <native-target> --target-dir out/build/<preset>/cargo data_io::npy_fuzz -- --nocapture
+```
+
+The explicit failing control sets `JUICER_NPY_FUZZ_CONTROL=nonfinite-clamp` for
+that command. It simulates forbidden clamping inside the test and must fail the
+sample oracle at seed `4e505901`, case 0. Keep the original nonzero exit and log;
+clear the variable before ordinary tests. On a panic, the original input is saved
+with seed/case in its filename under `JUICER_TEST_ARTIFACT_DIR` (or
+`out/validation/rust-core/`). Existing failure files are never overwritten.
+This finite corpus provides structural regression evidence; it does not establish
+general fuzz coverage, allocation-failure recovery or Rust sanitizer coverage.
 
 During implementation, build the affected test targets and run only the owning
 cases needed to check the current edit. Run new compiled cases on Linux and
@@ -192,9 +239,11 @@ cmake --build --preset linux-debug
 | `grain/delta_fusion_test.cu` | Grain output against a separate FP32 blur/accumulation/delta oracle, including finite sanitation and final-layer dispatch | `gpu` |
 | `dir/exposure_cache_test.cpp` | Source-pass versus separate-pass log-exposure caches and final capture density through production CUDA operators | `gpu` |
 | `gamma/test_compare.py` | Comparator bounds, applicability, non-finite rejection and CLI failure propagation | `host` |
+| `ffi/input_hull_*`, `ffi/test_input_hull_fixtures.py`, core `input_hull` | Exact ordered hull math, primitive context, shared ray, C11/core/native boundary, cache race/retry/retained ownership, complete caller TC bytes and admission | `host`; `Gamut.Host.InputHull.*` |
 | `quality/test_check_quality.py` | Quality dispatcher selection, CUDA command translation and header owners, source hygiene, and failure propagation | `host` |
 | `ctest/test_report.py` | Focused evidence extraction from full-suite JUnit, including missing, failed, skipped and malformed-input rejection | `host` |
 | `quality/test_rust_naming.py` | Product naming-policy contract: current Rust code, accepted names, individually rejected names, test targets, and reasoned foreign-name exceptions under the actual workspace lints | `host`; pinned Cargo and Clippy required |
+| `quality/test_tooling_lint.py` | Supporting-code runner scope, tool failures, argument boundaries and unchanged-input guarantees | `host`; lint executables are provisioned only for explicit lint runs |
 | `quality/test_rust_boundaries.py` | Dependency/build contract and compiler-enforced profile/CSV privacy, borrowed-view lifetimes and safe-module prohibitions, with valid consumer controls | `host`; pinned Cargo required |
 | `ffi/spectral_owner_test.cpp`, `ffi/spectral_bootstrap_test.cpp` | Production spectral ABI, independent native copies, fail-closed bootstrap, selected computation and measured lifetime/capacity checks | `host` |
 | `ffi/illuminant_calibration_test.cpp` | Closed CSV ABI, independent seven-curve captures, retained snapshots, selected CMY calibration and actual read/probe allocation transport through native recipes | `host` |
@@ -206,8 +255,9 @@ cmake --build --preset linux-debug
 `Quality.RustNaming` uses the current workspace manifests and Clippy configuration
 in temporary copies under `out/validation/<preset>/quality/rust-naming/`.
 The checked-in `quality/fixtures/rust_naming/*.rs` files are product naming-policy
-contracts, not external references. Both crates are checked in development and
-release, including test targets. Expected failures must produce the specific
+contracts, not external references. Both crates are checked in the preset's
+profile, including test targets; the complete quality dispatcher checks both
+development and release profiles. Expected failures must produce the specific
 error code and primary source span for every rejected identifier; a compiler
 setup failure is not a passing negative test. Valid names and a reasoned raw
 binding exception must compile successfully. Cargo runs offline and locked;
@@ -216,8 +266,11 @@ artifact directory after temporary workspace cleanup. Run it with
 `ctest --preset <preset> -R '^Quality.RustNaming$' --output-on-failure`, or use
 the quality dispatcher, which supplies the same tool and artifact environment.
 
-`Quality.RustBoundaries` uses one temporary workspace per run and reuses its Cargo
-cache across compiler probes. It removes that workspace on completion and keeps
+`Quality.RustBoundaries` uses one temporary workspace per run. Both compiler-probe
+groups reuse Cargo artifacts under `out/build/<preset>/cargo/quality-probes/`,
+separately from product artifacts. Cargo's fingerprints and build lock govern
+reuse; standalone runs compile every current probe and check its diagnostics.
+The groups remove temporary source workspaces on completion and keep
 logs under `out/validation/<preset>/quality/rust-boundaries/`. Run
 `ctest --preset <preset> -R '^Quality.RustBoundaries$' --output-on-failure` or the
 quality dispatcher. Cargo is offline and locked; the configured build supplies
@@ -225,8 +278,42 @@ the dependencies. Each negative fixture in `quality/fixtures/rust_boundaries/`
 must fail for its expected compiler code at its own source location, not because
 of missing tooling or an unrelated error. These are product API contracts, not
 external numerical references. Valid use runs with and without `test-support`;
-both development and release profiles are checked. The probes compile without
+CTest selects the preset's profile and complete quality gates check both
+development and release. The probes compile without
 linking or executing native CUDA calls.
+
+A complete quality gate can explicitly share its fresh compiler diagnostics with
+Debug and Release CTest in the same qualification. Supply a new UUID and manifest
+path to `scripts/check-quality.py` using `--qualification-id` and
+`--probe-manifest`; this stages a `.pending` request. Once the command and its
+process tree have completed successfully, publish it with:
+
+```text
+python tests/quality/probe_evidence.py --manifest <same-path> --qualification-id <same-UUID>
+```
+
+Set `JUICER_RUST_PROBE_MANIFEST=<same-path>` and
+`JUICER_QUALIFICATION_ID=<same-UUID>` for the following CTest commands. Both
+compiler groups execute every existing case and diagnostic assertion for the
+preset's profile. They verify source and compiler context before and after the
+run, the exact case set, and the producer's original receipt and log hashes.
+Logs report `verified existing probe evidence` and identify that producer.
+Metadata and structural tests still run fresh. There are no skips or fabricated
+compiler logs. `Quality.ProbeEvidence` covers stale or incomplete evidence,
+wrong contexts, changed inputs/logs, diagnostic failures and positive controls.
+
+Keep `PYTHONDONTWRITEBYTECODE=1` set throughout quality, publication and CTest,
+as both CI jobs do. The quality runner also disables its own bytecode writes so
+its final manifest import cannot create a new runtime input after probe capture.
+Existing bytecode remains part of the verified Python context; changing it
+invalidates the evidence.
+
+An absent manifest means a fresh compile. An explicitly supplied but invalid
+manifest fails; remove it only when deliberately starting a fresh run and retain
+the failure. A quality selection without Rust produces no pending request, so
+CTest compiles fresh. Never reuse a manifest from another qualification or
+publish it while the quality process tree is still active. These rules preserve
+each platform/profile/feature combination and every numerical and product gate.
 
 Add construction/lifetime probes as the corresponding real API lands. Put
 identity, reuse, conversion and failure-transition cases in the owning domain's
@@ -395,8 +482,13 @@ first to `out/validation/`.
 
 - The build still requires CUDA 13.2 even for `-L host`; a toolkit-free C++
   mode is outside this consolidation.
-- Standard public CI runs Linux and Windows Debug host selections plus the
-  tracked native/CUDA/Rust quality and Python checks. Both lanes install and
+- Standard public CI runs Linux and Windows Debug and Release host selections,
+  with one tracked native/CUDA/Rust quality pass per platform. The required job
+  names retain `Debug host and Python checks` for branch-protection continuity.
+  Each profile configures `BUILD_TESTING=ON` and uploads a separate host JUnit
+  report; Release execution does not qualify the migration's distinct
+  testing-OFF production Release gate. Compiler-probe receipts from the quality
+  pass are freshly verified by both profiles before reuse. Both lanes install and
   verify the cuRAND and CCCL headers required by Clang's CUDA frontend. The
   `linux-debug-quality` and `windows-debug-quality` artifacts retain quality
   logs, translated CUDA commands, and the compilation database even on failure.
@@ -427,6 +519,17 @@ the oracle runs the same production grain kernel with independent intermediates,
 requiring finite, bit-for-bit matching output. It covers all four scan routes,
 sublayer/shared-chroma shapes, integer/fractional time, and debug views 0–6.
 It does not establish whole-Resolve render or visual acceptance.
+
+The scratch-equivalence matrix retains 224 fresh frames in the original
+route/layer/shared/time/debug order. Its seven host products per route and
+layer/shared shape are reused only for the second time pass: time changes the
+grain frame descriptor, which is rebuilt and checked exactly before preparation.
+Each of the 112 distinct host configurations still constructs once. Per-frame
+submission identities, dirty scratch, independent oracle allocations and every
+finite/bitwise pixel assertion remain. Capacity failure, dedicated scratch,
+queued abort, stream/context retirement/reset and instance ownership tests keep
+their original independent setup; no host cold-construction or zero-call witness
+is removed from those cases or the FFI admission matrix.
 
 The explicit 6048×4032 maintenance case reports deduplicated CUDA allocation
 capacities and 30 CUDA-event samples after 10 warmups. Events synchronize for
@@ -480,7 +583,7 @@ isolates the subsequent blur/delta schedule and does not validate the sampler.
 checks all nine output spaces, CCTF on/off, optional output matrix, transfer
 breakpoint neighbors, negative/HDR/subnormal/nonfinite values, RGB/RGBA, odd
 image extents, and padded rows. The numerical oracle is Film-Juicer's independent
-host double-precision `OutputEncoding::applyEncoding`; this is a product
+host double-precision `ScannerOracle::apply_encoding`; this is a product
 numerical contract, not an external-reference fixture. Clipped RGB must stay
 within `1e-6` maximum and `1e-7` mean absolute error per case, with unchanged
 nonfinite classification and bit-exact alpha/padding. Identity-matrix CCTF-off
@@ -498,8 +601,8 @@ stages. Real prepared film/print resources exercise fused and separate output on
 negative/positive direct/print routes, in sRGB and DaVinci Intermediate, with
 output gamut compression on/off. Spatial DIR, visual grain, halation, and
 camera/enlarger diffusion are disabled in these focused route checks; their
-owning suites cover those contracts. No frozen fixtures or private workbench
-files are required.
+owning suites cover those contracts. Frozen native words and matrices are
+compiled into the owning test library; no private workbench files are required.
 
 ### CUDA ABI declarations
 
@@ -576,3 +679,84 @@ The prepared-boundary fixture acquires through the same safe Rust source via the
 test facade and asserts that supplied views cause no fallback acquisition.
 These seams exist only in test objects/test-support; normal Release has none.
 Installed Resolve and actual driver/context-loss acceptance remain separate.
+
+`Assets.Host.IlluminantConstruction` qualifies Rust illuminant math and its
+synchronous C/native bindings against four frozen native-parent captures, with
+exact products/identities, scoped source/lens lifetimes, cache and failure
+contracts. The separate negative-print C render contract checks the later native
+preflash unwind/completion terminal. See [the illuminant guide](ffi/README.md#illuminant-construction).
+
+`Spectral.Host.{Tables,White,SInverse,Products,Admission}` and
+`Ffi.Host.SpectralPreparation` qualify fixed spectral math, synchronous C11/native
+bindings and production route preparation against four frozen native-parent
+captures. They preserve exact family/enclosing identities, the distinct white
+precision contracts and the film gate before inverse. See
+[the spectral guide](ffi/README.md#spectral-tables-whites-and-film-s-inverse)
+for provenance, failure, lifetime, allocation and isolation boundaries.
+
+A5 spectral exposure migration is covered by the `Exposure.Host.*` and
+`Ffi.Host.ExposurePreparation` groups. See [the FFI domain guide](ffi/README.md)
+for exact fixture provenance, the scoped pinned-erff decision, immutable earlier
+fixtures and independently qualified completed-product supplements.
+
+### Film TC preparation and allocation ownership
+
+`Reconstruction.Host.TcLut.*` covers complete Hanatos/Arctic tables, Mitchell
+sampling, input remapping, raw C11/C++/Rust ABI, direct-core facade, failures,
+actual route products/admission and final publication release. The TC fixture
+manifest selects independently frozen native expectations by preset. Records
+are shared only when all expanded fields and complete table bytes agree.
+Existing fixture bytes and bounds remain unchanged.
+
+Native-undefined coordinate cases have required ordinary preparation-failure
+categories rather than manufactured native pixels. Defined brightness overflow
+still reaches final sanitation. A completed TC result owns one Rust Vec; the
+native move-only holder exposes readonly spans and releases the original
+pointer/length/capacity once in Rust. Source and hull borrows expire on return.
+The Lifetime group observes actual publication paths without an external old
+state hold and checks release outside both publication and rebuild locks;
+retained-reader and cross-thread cases are separate.
+
+### Mallett exposure preparation
+
+`Exposure.Host.Mallett.*` checks focused BGR mid-gray, separate synthetic RGB
+reference reduction, shared reference-source arithmetic and TC normalization
+against independently frozen native-parent expectations. Its manifest selects
+exact preset records; older color/spectral/exposure fixtures and their assignments
+remain unchanged. `mallett-failure-contract.json` separately records the approved
+earlier focused missing-basis failure and original native outcomes.
+
+The C11/C++/Rust boundary groups cover layouts, values, structural errors,
+cleared outputs, bounded diagnostics and contained panic. Fixed math has no heap
+allocation; fault category injection is not allocator-pressure evidence.
+`products` and `admission` exercise actual publication, skip/consumption,
+recovery, supersession, immutable holds, cache release and same-input reuse.
+Feature-only spectrum operations preserve the current independent CAT02/input
+color witnesses; they use fixed borrows and never provide a production renderer.
+The four value exports remain temporary native bindings. Normal production
+builds omit the fixture facade and fault storage.
+
+### Output gamut construction and cache
+
+`Gamut.Host.Output.{Math,boundary,binding,Cache,FixtureFormat}` checks the complete
+nine-space native A9 family, exact identities/words, checked optional C diagnostics,
+actual C11 layouts and calls, native failure binding and deterministic cache races.
+The producer owns mathematical policy; the Library owns one nine-slot cache.
+Warm hits retain a hold without foreign construction, copying or rehashing.
+See [the output gamut guide](ffi/README.md#output-gamut-construction) and
+[fixture provenance](ffi/fixtures/output_gamut/README.md). Existing product/GPU
+suites retain distinct route, order, reuse, disabled-work and staging witnesses.
+
+The optional Debug prepared-host ASan/UBSan pilot is documented in
+[the FFI guide](ffi/README.md#prepared-host-sanitizer-pilot). It supplements the
+complete ordinary suite and makes limited native instrumentation claims; Rust,
+remaining core objects and CUDA devices are not covered by its instrumentation.
+
+The output-color characterization in `tests/ffi/fixtures/output-color/` was
+captured independently from the accepted native producer under all four presets
+before translation. Ordinary tests compare its bytes/words and never regenerate
+it. `Ffi.Host.OutputColor` checks fixed values, identities, C11 layout/value calls,
+concurrent initialization, lifetime, clearing and faults. Prepared projection and
+span tests require schema 1 plus a closed CCTF kind for both encoding states.
+`Scanner.Gpu.OutputEncoding` uses the independent frozen double scanner oracle,
+with unchanged maximum/mean error bounds, nonfinite and alpha/padding checks.

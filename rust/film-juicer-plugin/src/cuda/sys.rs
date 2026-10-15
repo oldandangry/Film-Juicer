@@ -67,6 +67,13 @@ pub const FJ_OUTPUT_REC709: u32 = 8;
 pub const FJ_COLOR_ENCODE_CCTF: u32 = 1;
 pub const FJ_COLOR_INPUT_IS_OUTPUT_SPACE: u32 = 2;
 pub const FJ_COLOR_GAMUT_COMPRESSION: u32 = 4;
+pub const FJ_OUTPUT_ENCODING_SCHEMA: u32 = 1;
+pub const FJ_CCTF_LINEAR: u32 = 0;
+pub const FJ_CCTF_GAMMA: u32 = 1;
+pub const FJ_CCTF_SRGB: u32 = 2;
+pub const FJ_CCTF_BT2020: u32 = 3;
+pub const FJ_CCTF_PROPHOTO: u32 = 4;
+pub const FJ_CCTF_DWG_INTERMEDIATE: u32 = 5;
 pub const FJ_PRINT_PREFLASH: u32 = 1;
 pub const FJ_DIFFUSION_GLIMMERGLASS: u32 = 0;
 pub const FJ_DIFFUSION_BLACK_PRO_MIST: u32 = 1;
@@ -684,6 +691,42 @@ const _: () = {
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct FjOutputEncoding {
+    pub schema: u32,
+    pub cctf_kind: u32,
+    pub gamma: f32,
+    pub a: f32,
+    pub b: f32,
+    pub c: f32,
+    pub d: f32,
+    pub linear_cutoff: f32,
+    pub dwg_to_output: [f32; 9usize],
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FjOutputEncoding"][::core::mem::size_of::<FjOutputEncoding>() - 68usize];
+    ["Alignment of FjOutputEncoding"][::core::mem::align_of::<FjOutputEncoding>() - 4usize];
+    ["Offset of field: FjOutputEncoding::schema"]
+        [::core::mem::offset_of!(FjOutputEncoding, schema) - 0usize];
+    ["Offset of field: FjOutputEncoding::cctf_kind"]
+        [::core::mem::offset_of!(FjOutputEncoding, cctf_kind) - 4usize];
+    ["Offset of field: FjOutputEncoding::gamma"]
+        [::core::mem::offset_of!(FjOutputEncoding, gamma) - 8usize];
+    ["Offset of field: FjOutputEncoding::a"]
+        [::core::mem::offset_of!(FjOutputEncoding, a) - 12usize];
+    ["Offset of field: FjOutputEncoding::b"]
+        [::core::mem::offset_of!(FjOutputEncoding, b) - 16usize];
+    ["Offset of field: FjOutputEncoding::c"]
+        [::core::mem::offset_of!(FjOutputEncoding, c) - 20usize];
+    ["Offset of field: FjOutputEncoding::d"]
+        [::core::mem::offset_of!(FjOutputEncoding, d) - 24usize];
+    ["Offset of field: FjOutputEncoding::linear_cutoff"]
+        [::core::mem::offset_of!(FjOutputEncoding, linear_cutoff) - 28usize];
+    ["Offset of field: FjOutputEncoding::dwg_to_output"]
+        [::core::mem::offset_of!(FjOutputEncoding, dwg_to_output) - 32usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct FjOutputColor {
     pub cat02: [f32; 9usize],
     pub xyz_to_rgb: [f32; 9usize],
@@ -697,10 +740,11 @@ pub struct FjOutputColor {
     pub gamut_cmax: FjFloatSpan,
     pub gamut_table_hash: u64,
     pub gamut_recipe_hash: u64,
+    pub encoding: FjOutputEncoding,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjOutputColor"][::core::mem::size_of::<FjOutputColor>() - 224usize];
+    ["Size of FjOutputColor"][::core::mem::size_of::<FjOutputColor>() - 296usize];
     ["Alignment of FjOutputColor"][::core::mem::align_of::<FjOutputColor>() - 8usize];
     ["Offset of field: FjOutputColor::cat02"]
         [::core::mem::offset_of!(FjOutputColor, cat02) - 0usize];
@@ -726,6 +770,8 @@ const _: () = {
         [::core::mem::offset_of!(FjOutputColor, gamut_table_hash) - 208usize];
     ["Offset of field: FjOutputColor::gamut_recipe_hash"]
         [::core::mem::offset_of!(FjOutputColor, gamut_recipe_hash) - 216usize];
+    ["Offset of field: FjOutputColor::encoding"]
+        [::core::mem::offset_of!(FjOutputColor, encoding) - 224usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1575,7 +1621,7 @@ pub struct FjPreparedHostData {
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FjPreparedHostData"][::core::mem::size_of::<FjPreparedHostData>() - 6080usize];
+    ["Size of FjPreparedHostData"][::core::mem::size_of::<FjPreparedHostData>() - 6152usize];
     ["Alignment of FjPreparedHostData"][::core::mem::align_of::<FjPreparedHostData>() - 8usize];
     ["Offset of field: FjPreparedHostData::route"]
         [::core::mem::offset_of!(FjPreparedHostData, route) - 0usize];
@@ -1614,17 +1660,17 @@ const _: () = {
     ["Offset of field: FjPreparedHostData::output_color"]
         [::core::mem::offset_of!(FjPreparedHostData, output_color) - 1000usize];
     ["Offset of field: FjPreparedHostData::print"]
-        [::core::mem::offset_of!(FjPreparedHostData, print) - 1224usize];
+        [::core::mem::offset_of!(FjPreparedHostData, print) - 1296usize];
     ["Offset of field: FjPreparedHostData::optics"]
-        [::core::mem::offset_of!(FjPreparedHostData, optics) - 1448usize];
+        [::core::mem::offset_of!(FjPreparedHostData, optics) - 1520usize];
     ["Offset of field: FjPreparedHostData::spatial_dir"]
-        [::core::mem::offset_of!(FjPreparedHostData, spatial_dir) - 3832usize];
+        [::core::mem::offset_of!(FjPreparedHostData, spatial_dir) - 3904usize];
     ["Offset of field: FjPreparedHostData::grain"]
-        [::core::mem::offset_of!(FjPreparedHostData, grain) - 4352usize];
+        [::core::mem::offset_of!(FjPreparedHostData, grain) - 4424usize];
     ["Offset of field: FjPreparedHostData::effects"]
-        [::core::mem::offset_of!(FjPreparedHostData, effects) - 5160usize];
+        [::core::mem::offset_of!(FjPreparedHostData, effects) - 5232usize];
     ["Offset of field: FjPreparedHostData::noise"]
-        [::core::mem::offset_of!(FjPreparedHostData, noise) - 5992usize];
+        [::core::mem::offset_of!(FjPreparedHostData, noise) - 6064usize];
 };
 unsafe extern "C" {
     pub fn fj_cuda_create(

@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+
+from probe_evidence import ProbeEvidence, compiler_environment
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,15 +22,19 @@ class RustNamingTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.cargo = os.environ["JUICER_CARGO"]
         cls.target = os.environ["JUICER_RUST_TARGET"]
+        cls.target_dir = Path(os.environ["JUICER_RUST_PROBE_DIR"]).resolve()
+        cls.profiles = {"debug": (False,), "release": (True,), "both": (False, True)}[
+            os.environ.get("JUICER_RUST_PROBE_PROFILE", "both")
+        ]
         cls.artifacts = Path(os.environ["JUICER_TEST_ARTIFACT_DIR"]).resolve()
         cls.artifacts.mkdir(parents=True, exist_ok=True)
-        cls.environment = os.environ.copy()
-        for name in ("RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"):
-            cls.environment.pop(name, None)
-        # Select the copied configuration even if a developer overrides Clippy locally.
-        cls.environment.pop("CLIPPY_CONF_DIR", None)
+        cls.environment = compiler_environment()
+        cls.evidence = ProbeEvidence(ROOT, "naming", cls.cargo, cls.target,
+                                     cls.profiles, cls.environment, cls.artifacts)
+        cls.addClassCleanup(cls.evidence.finish)
 
     def setUp(self) -> None:
+        self.probes = {}
         directory = tempfile.TemporaryDirectory(prefix="probe-", dir=self.artifacts)
         self.addCleanup(directory.cleanup)
         self.workspace = Path(directory.name)
@@ -38,6 +43,7 @@ class RustNamingTests(unittest.TestCase):
         shutil.copytree(ROOT / "rust", self.workspace / "rust")
 
     def add_probe(self, package: str, fixture: str) -> None:
+        self.probes[package + "/src/lib.rs"] = fixture
         source = self.workspace / "rust" / package / "src"
         shutil.copy2(FIXTURES / f"{fixture}.rs", source / "naming_probe.rs")
         with (source / "lib.rs").open("a", encoding="utf-8") as library:
@@ -48,20 +54,15 @@ class RustNamingTests(unittest.TestCase):
         command = [
             self.cargo, "clippy", "--locked", "--offline", "--package", package,
             "--all-targets", "--target", self.target,
-            "--target-dir", str(self.workspace / "target"), "--message-format=json",
+            "--target-dir", str(self.target_dir), "--message-format=json",
         ]
         if release:
             command.append("--release")
         # Do not add -D warnings here: prove the checked-in manifest denies violations.
-        result = subprocess.run(
-            command, cwd=self.workspace, env=self.environment,
-            capture_output=True, text=True, encoding="utf-8", timeout=60, check=False,
-        )
         log = self.artifacts / f"{self._testMethodName}-{package}-{profile}.log"
-        log.write_text(
-            subprocess.list2cmdline(command) + "\n" + result.stdout + result.stderr,
-            encoding="utf-8",
-        )
+        result = self.evidence.run(
+            {"test": self._testMethodName, "package": package, "profile": profile,
+             "features": [], "fixtures": dict(self.probes)}, command, self.workspace, log)
         diagnostics = []
         for line in result.stdout.splitlines():
             message = json.loads(line)
@@ -73,7 +74,7 @@ class RustNamingTests(unittest.TestCase):
         for package in PACKAGES:
             self.add_probe(package, "accepted")
         for package in PACKAGES:
-            for release in (False, True):
+            for release in self.profiles:
                 with self.subTest(package=package, release=release):
                     status, diagnostics = self.clippy(package, release)
                     self.assertEqual(status, 0, diagnostics)
@@ -95,7 +96,7 @@ class RustNamingTests(unittest.TestCase):
         for package in PACKAGES:
             with self.subTest(package=package):
                 self.add_probe(package, "rejected")
-                for release in (False, True):
+                for release in self.profiles:
                     with self.subTest(release=release):
                         status, diagnostics = self.clippy(package, release)
                         self.assertNotEqual(status, 0)
@@ -119,11 +120,12 @@ class RustNamingTests(unittest.TestCase):
                                     f"missing blocking {lint} for {name}: {diagnostics}",
                                 )
                 # The plug-in's dependency must be clean when testing its own lints.
+                self.probes[package + "/src/lib.rs"] = "accepted"
                 shutil.copy2(FIXTURES / "accepted.rs", self.workspace / "rust" / package / "src/naming_probe.rs")
 
     def test_narrow_foreign_boundary_exception_passes(self) -> None:
         self.add_probe("film-juicer-plugin", "boundary")
-        for release in (False, True):
+        for release in self.profiles:
             with self.subTest(release=release):
                 status, diagnostics = self.clippy("film-juicer-plugin", release)
                 self.assertEqual(status, 0, diagnostics)

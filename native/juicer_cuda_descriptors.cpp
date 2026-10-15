@@ -487,6 +487,11 @@ namespace JuicerCuda {
         if (color.color_space > FJ_OUTPUT_REC709 || (color.flags & ~kColorFlags) != 0) {
             return invalid_descriptor(diagnostic, "output_color.tags");
         }
+        if (color.encoding.schema != FJ_OUTPUT_ENCODING_SCHEMA ||
+            color.encoding.cctf_kind > FJ_CCTF_DWG_INTERMEDIATE) {
+            return invalid_descriptor(diagnostic, "output_color.encoding");
+        }
+        decoded.color.preparedEncoding = color.encoding;
         std::copy_n(color.cat02, 9, decoded.color.cat02);
         std::copy_n(color.xyz_to_rgb, 9, decoded.color.xyzToRgb);
         std::copy_n(color.illuminant_xyz, 3, decoded.color.illuminantXYZ);

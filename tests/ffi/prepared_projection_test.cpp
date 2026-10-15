@@ -1,4 +1,7 @@
 #include <array>
+#include <bit>
+#include <cmath>
+#include <utility>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -7,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include "prepared_descriptors.h"
+#include "juicer_test_api.h"
 
 namespace {
 
@@ -20,6 +24,7 @@ namespace {
         input.scanner_post = {
             FJ_POST_GLARE, 2.5f, 0.375f, 1.25f, 4, 0.75f, 2, 1.5f, 5, 0.625f, 103};
         input.output_color.color_space = FJ_OUTPUT_DISPLAY_P3;
+        input.output_color.encoding = JuicerCudaTest::prepare_output_encoding(FJ_OUTPUT_DISPLAY_P3);
         input.output_color.flags =
             FJ_COLOR_ENCODE_CCTF | FJ_COLOR_INPUT_IS_OUTPUT_SPACE | FJ_COLOR_GAMUT_COMPRESSION;
         input.output_color.cat02[1] = 0.125f;
@@ -201,6 +206,7 @@ namespace {
         for (const auto& item : cases) {
             SCOPED_TRACE(item.route);
             FjPreparedHostData input{};
+            input.output_color.encoding = JuicerCudaTest::prepare_output_encoding(FJ_OUTPUT_SRGB);
             input.route = item.route;
             input.capture_polarity = item.polarity;
             JuicerCuda::PreparedDescriptors actual;
@@ -420,6 +426,7 @@ namespace {
         source.post.glareBlurRadius = 7;
         source.post.hash = 603;
         source.color.encoding = {OutputEncoding::ColorSpace::Rec709, false, true};
+        source.color.preparedEncoding = JuicerCudaTest::prepare_output_encoding(FJ_OUTPUT_REC709);
         source.color.cat02[7] = -0.375f;
         source.color.xyzToRgb[1] = 0.875f;
         source.outputGamut.enabled = true;
@@ -521,6 +528,7 @@ namespace {
 
     TEST(PreparedProjection, EncodeClearsUnselectedFixedFamilies) {
         JuicerCuda::PreparedDescriptors source{};
+        source.color.preparedEncoding = JuicerCudaTest::prepare_output_encoding(FJ_OUTPUT_SRGB);
         source.route = Spektrafilm::ScanRoute::NegativeDirectScan;
         source.capturePolarity = Spektrafilm::ProfilePolarity::Negative;
         FjPreparedHostData actual = make_fixed_input();
@@ -536,12 +544,91 @@ namespace {
         EXPECT_EQ(actual.effects.hash, 0u);
     }
 
+    TEST(PreparedProjection, OutputEncodingRoundTripsBothRoutesAndFlagsWithoutRepreparation) {
+        for (const auto route : {FJ_ROUTE_NEGATIVE_DIRECT, FJ_ROUTE_NEGATIVE_PRINT, FJ_ROUTE_POSITIVE_DIRECT, FJ_ROUTE_POSITIVE_PRINT}) {
+            for (std::uint32_t space = 0; space <= FJ_OUTPUT_REC709; ++space) {
+                for (bool enabled : {false, true}) {
+                    JuicerCuda::PreparedDescriptors retained;
+                    const auto expected = JuicerCudaTest::prepare_output_encoding(space);
+                    {
+                        FjPreparedHostData input{};
+                        input.route = route;
+                        input.capture_polarity = route >= FJ_ROUTE_POSITIVE_DIRECT ? FJ_POLARITY_POSITIVE : FJ_POLARITY_NEGATIVE;
+                        input.output_color.color_space = space;
+                        input.output_color.flags = FJ_COLOR_INPUT_IS_OUTPUT_SPACE | (enabled ? FJ_COLOR_ENCODE_CCTF : 0u);
+                        input.output_color.encoding = expected;
+                        // The cold consumer binds complete values without another Rust operation.
+                        ASSERT_EQ(fj_test_color_arm_fault(FJ_TEST_OUTPUT_COLOR, 1, FJ_TEST_COLOR_PANIC).category, FJ_STATUS_SUCCESS);
+                        std::string diagnostic;
+                        ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, retained, diagnostic)) << diagnostic;
+                        FjOutputColorPreparation result{};
+                        EXPECT_EQ(fj_legacy_output_color(space, &result).category, FJ_STATUS_INTERNAL_FAILURE);
+                        (void)fj_test_color_clear_fault();
+                        input.output_color = {};
+                    }
+                    FjPreparedHostData projected{};
+                    JuicerCudaTest::encode_prepared_descriptors(retained, projected);
+                    EXPECT_EQ(projected.output_color.color_space, space);
+                    EXPECT_EQ(projected.output_color.flags, FJ_COLOR_INPUT_IS_OUTPUT_SPACE | (enabled ? FJ_COLOR_ENCODE_CCTF : 0u));
+                    const auto& actual = projected.output_color.encoding;
+                    EXPECT_EQ(actual.schema, 1u);
+                    EXPECT_EQ(actual.cctf_kind, expected.cctf_kind);
+                    for (const auto& pair : {std::pair{actual.gamma, expected.gamma}, std::pair{actual.a, expected.a}, std::pair{actual.b, expected.b}, std::pair{actual.c, expected.c}, std::pair{actual.d, expected.d}, std::pair{actual.linear_cutoff, expected.linear_cutoff}}) {
+                        EXPECT_EQ(std::bit_cast<std::uint32_t>(pair.first), std::bit_cast<std::uint32_t>(pair.second));
+                    }
+                    for (int i = 0; i < 9; ++i)
+                        EXPECT_EQ(std::bit_cast<std::uint32_t>(actual.dwg_to_output[i]), std::bit_cast<std::uint32_t>(expected.dwg_to_output[i]));
+                }
+            }
+        }
+    }
+
+    TEST(PreparedProjection, OutputEncodingAdmissionUsesSchemaAndKindEvenWhenDisabled) {
+        for (bool enabled : {false, true}) {
+            auto input = make_fixed_input();
+            input.output_color.flags = enabled ? FJ_COLOR_ENCODE_CCTF : 0u;
+            for (const auto schema : {0u, 2u, std::numeric_limits<std::uint32_t>::max()}) {
+                input.output_color.encoding.schema = schema;
+                JuicerCuda::PreparedDescriptors actual;
+                std::string diagnostic;
+                EXPECT_FALSE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic));
+                EXPECT_EQ(actual.color.hash, 0u);
+                EXPECT_NE(diagnostic.find("output_color.encoding"), std::string::npos);
+            }
+            input.output_color.encoding.schema = 1;
+            for (const auto kind : {6u, std::numeric_limits<std::uint32_t>::max()}) {
+                input.output_color.encoding.cctf_kind = kind;
+                JuicerCuda::PreparedDescriptors actual;
+                std::string diagnostic;
+                EXPECT_FALSE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic));
+            }
+            input.output_color.encoding = JuicerCudaTest::prepare_output_encoding(FJ_OUTPUT_DISPLAY_P3);
+            // Authored coefficient content is not a completion/admission test.
+            input.output_color.encoding.gamma = std::numeric_limits<float>::quiet_NaN();
+            input.output_color.encoding.dwg_to_output[0] = -0.0f;
+            JuicerCuda::PreparedDescriptors actual;
+            std::string diagnostic;
+            ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic));
+            EXPECT_TRUE(std::isnan(actual.color.preparedEncoding.gamma));
+            EXPECT_EQ(std::bit_cast<std::uint32_t>(actual.color.preparedEncoding.dwg_to_output[0]), 0x80000000u);
+        }
+    }
+
     TEST(PreparedProjection, MalformedForeignDescriptorsClearPreviousOutput) {
         struct InvalidCase {
             const char* name;
             void (*mutate)(FjPreparedHostData&);
         };
         const InvalidCase cases[] = {
+            {"missing output encoding", [](FjPreparedHostData& value) {
+                 value.output_color.encoding.schema = 0;
+             }},
+            {"unknown output encoding schema", [](FjPreparedHostData& value) {
+                 value.output_color.encoding.schema = 2;
+             }},
+            {"unknown CCTF kind", [](FjPreparedHostData& value) {
+                 value.output_color.encoding.cctf_kind = 6;
+             }},
             {"unknown route", [](FjPreparedHostData& value) {
                  value.route = 4;
              }},

@@ -43,6 +43,24 @@ namespace JuicerAssets {
         Canon24F28Is
     };
 
+    // FJ_TEMP_BRIDGE: scoped CSV source borrow; remove S4.E.
+    class CsvRows final {
+    public:
+        ~CsvRows();
+        CsvRows(CsvRows&& rows) noexcept;
+        CsvRows(const CsvRows&) = delete;
+        CsvRows& operator=(const CsvRows&) = delete;
+        CsvRows& operator=(CsvRows&&) = delete;
+        FjFloatSpan view() const& noexcept;
+        FjFloatSpan view() const&& = delete;
+
+    private:
+        friend class AssetBridge;
+        CsvRows(FjCsvPairs* owner, FjFloatSpan view) noexcept;
+        FjCsvPairs* _owner;
+        FjFloatSpan _view;
+    };
+
 #if defined(JUICER_ILLUMINANT_TEST_HOOK)
     namespace IlluminantTest {
         void before_csv_acquisition(CsvSource source);
@@ -52,6 +70,8 @@ namespace JuicerAssets {
         void calibration_result(FjNeutralCalibrationResult& result);
         void film_reference_samples(const std::array<float, 81>& samples);
         void before_curve_publication(const std::shared_ptr<const IlluminantFilterCurveSet>& candidate);
+        void before_native_render() noexcept;
+        void frame_abort() noexcept;
     } // namespace IlluminantTest
 #endif
 
@@ -164,6 +184,7 @@ namespace JuicerAssets {
         Spectral::MallettBasis copy_mallett_basis();
         Spectral::CMFTriplets copy_cmf_triplets();
         std::vector<std::pair<float, float>> copy_csv_pairs(CsvSource source);
+        CsvRows csv_rows(CsvSource source);
         NeutralPrintCalibrationResult neutral_print_calibration(const std::string& printStock,
                                                                 const std::string& illuminant,
                                                                 const std::string& filmStock);

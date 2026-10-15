@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include "juicer_cuda_prepared.h"
+#include "prepared_descriptors.h"
 #include "Cuda/JuicerCudaHostViews.h"
 
 namespace {
@@ -19,6 +20,7 @@ namespace {
 
     FjPreparedHostData direct_input() {
         FjPreparedHostData source{};
+        source.output_color.encoding = JuicerCudaTest::prepare_output_encoding(FJ_OUTPUT_SRGB);
         source.route = FJ_ROUTE_NEGATIVE_DIRECT;
         source.capture_polarity = FJ_POLARITY_NEGATIVE;
         source.film_exposure.method = FJ_RAW_MALLETT_2019;

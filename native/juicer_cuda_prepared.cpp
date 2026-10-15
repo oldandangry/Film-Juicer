@@ -10,7 +10,6 @@
 #include <string_view>
 
 #include "ColorTransforms.h"
-#include "SpectralProcessing.h"
 #include "Cuda/JuicerCudaHostViews.h"
 
 namespace {

@@ -1,0 +1,1970 @@
+{
+  "original_fixture": "linux-release.json",
+  "original_sha256": "d14f35a41fceabba457d08e91d54b646bc7ce7cf39013d20387505860417d294",
+  "authority": "Owner-approved A5 libm::erff 0.2.15 rounding and actual-value identities; all other contracts unchanged",
+  "parent_commit": "4fe634bd3ba4ff4b4543e6a18846594c0d9203c0",
+  "preset": "linux-release",
+  "independent_native_replay_sha256": "e6d96e8f5fc242f3062333e6e96b51ab9f459e4af7f433824cf2cba9b8fcb409",
+  "patch": [
+    {
+      "op": "test",
+      "path": "/products/0/expected/compensated_raw/2",
+      "value": 1074144911
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/compensated_raw/2",
+      "value": 1074144912
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/final_sensitivity/3/0",
+      "value": 951923940
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/final_sensitivity/3/0",
+      "value": 951923943
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/final_sensitivity/3/1",
+      "value": 1002321443
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/final_sensitivity/3/1",
+      "value": 1002321446
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/final_sensitivity/3/2",
+      "value": 1035020619
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/final_sensitivity/3/2",
+      "value": 1035020623
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/final_sensitivity/15/2",
+      "value": 1057370248
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/final_sensitivity/15/2",
+      "value": 1057370247
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/final_sensitivity/37/2",
+      "value": 955903777
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/final_sensitivity/37/2",
+      "value": 955903776
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/final_sensitivity/63/0",
+      "value": 952371955
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/final_sensitivity/63/0",
+      "value": 952371949
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/final_sensitivity/63/1",
+      "value": 840569739
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/final_sensitivity/63/1",
+      "value": 840569735
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/final_sensitivity/63/2",
+      "value": 881542151
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/final_sensitivity/63/2",
+      "value": 881542147
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/final_sensitivity/70/2",
+      "value": 861382215
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/final_sensitivity/70/2",
+      "value": 861382214
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/final_sensitivity/72/2",
+      "value": 855896942
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/final_sensitivity/72/2",
+      "value": 855896941
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/final_sensitivity_hash",
+      "value": 15437035525053392560
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/final_sensitivity_hash",
+      "value": 15453145215123223312
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/hashes/0",
+      "value": 5426782161489875120
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/hashes/0",
+      "value": 2944236963272302562
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/hashes/1",
+      "value": 9250044732305584335
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/hashes/1",
+      "value": 11547028510032421581
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/hashes/2",
+      "value": 4244000140697128080
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/hashes/2",
+      "value": 14357838506191834327
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/hashes/5",
+      "value": 13023049715658537314
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/hashes/5",
+      "value": 8216447134966674176
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/hashes/7",
+      "value": 17768974219554737197
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/hashes/7",
+      "value": 12077140800720870927
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/hashes/8",
+      "value": 17768974219554737197
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/hashes/8",
+      "value": 12077140800720870927
+    },
+    {
+      "op": "test",
+      "path": "/products/0/expected/raw_midgray/2",
+      "value": 1067420247
+    },
+    {
+      "op": "replace",
+      "path": "/products/0/expected/raw_midgray/2",
+      "value": 1067420249
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/compensated_raw/2",
+      "value": 1074144911
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/compensated_raw/2",
+      "value": 1074144912
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/final_sensitivity/3/0",
+      "value": 951923940
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/final_sensitivity/3/0",
+      "value": 951923943
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/final_sensitivity/3/1",
+      "value": 1002321443
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/final_sensitivity/3/1",
+      "value": 1002321446
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/final_sensitivity/3/2",
+      "value": 1035020619
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/final_sensitivity/3/2",
+      "value": 1035020623
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/final_sensitivity/15/2",
+      "value": 1057370248
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/final_sensitivity/15/2",
+      "value": 1057370247
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/final_sensitivity/37/2",
+      "value": 955903777
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/final_sensitivity/37/2",
+      "value": 955903776
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/final_sensitivity/63/0",
+      "value": 952371955
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/final_sensitivity/63/0",
+      "value": 952371949
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/final_sensitivity/63/1",
+      "value": 840569739
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/final_sensitivity/63/1",
+      "value": 840569735
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/final_sensitivity/63/2",
+      "value": 881542151
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/final_sensitivity/63/2",
+      "value": 881542147
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/final_sensitivity/70/2",
+      "value": 861382215
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/final_sensitivity/70/2",
+      "value": 861382214
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/final_sensitivity/72/2",
+      "value": 855896942
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/final_sensitivity/72/2",
+      "value": 855896941
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/final_sensitivity_hash",
+      "value": 15437035525053392560
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/final_sensitivity_hash",
+      "value": 15453145215123223312
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/hashes/0",
+      "value": 5426782161489875120
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/hashes/0",
+      "value": 2944236963272302562
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/hashes/1",
+      "value": 9250044732305584335
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/hashes/1",
+      "value": 11547028510032421581
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/hashes/2",
+      "value": 4244000140697128080
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/hashes/2",
+      "value": 14357838506191834327
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/hashes/3",
+      "value": 14739034098108655195
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/hashes/3",
+      "value": 2580834837724471989
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/hashes/4",
+      "value": 4266155108224735268
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/hashes/4",
+      "value": 7526440076212882834
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/hashes/5",
+      "value": 3047026914272178122
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/hashes/5",
+      "value": 15199247540400133960
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/hashes/7",
+      "value": 15257056153175226128
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/hashes/7",
+      "value": 6858038295749931770
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/hashes/8",
+      "value": 15257056153175226128
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/hashes/8",
+      "value": 6858038295749931770
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/print_descriptors/0",
+      "value": 3064970158369490081
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/print_descriptors/0",
+      "value": 14620683914364006292
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/print_descriptors/4",
+      "value": 3378964190375057061
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/print_descriptors/4",
+      "value": 7172070692597259609
+    },
+    {
+      "op": "test",
+      "path": "/products/3/expected/raw_midgray/2",
+      "value": 1067420247
+    },
+    {
+      "op": "replace",
+      "path": "/products/3/expected/raw_midgray/2",
+      "value": 1067420249
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/compensated_raw/2",
+      "value": 1071077392
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/compensated_raw/2",
+      "value": 1071077391
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/final_sensitivity/3/0",
+      "value": 952089228
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/final_sensitivity/3/0",
+      "value": 952089231
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/final_sensitivity/3/1",
+      "value": 1002236399
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/final_sensitivity/3/1",
+      "value": 1002236402
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/final_sensitivity/3/2",
+      "value": 1034575744
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/final_sensitivity/3/2",
+      "value": 1034575747
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/final_sensitivity/8/2",
+      "value": 1047552355
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/final_sensitivity/8/2",
+      "value": 1047552354
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/final_sensitivity/58/2",
+      "value": 894245871
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/final_sensitivity/58/2",
+      "value": 894245870
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/final_sensitivity/63/0",
+      "value": 952543215
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/final_sensitivity/63/0",
+      "value": 952543209
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/final_sensitivity/63/1",
+      "value": 840500851
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/final_sensitivity/63/1",
+      "value": 840500846
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/final_sensitivity/63/2",
+      "value": 881192436
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/final_sensitivity/63/2",
+      "value": 881192433
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/final_sensitivity_hash",
+      "value": 5201462864216539330
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/final_sensitivity_hash",
+      "value": 1909891043794940389
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/hashes/0",
+      "value": 12389557650220679336
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/hashes/0",
+      "value": 5403279899458735079
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/hashes/1",
+      "value": 13598277374775541127
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/hashes/1",
+      "value": 12261147894503865165
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/hashes/2",
+      "value": 16852424536830225233
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/hashes/2",
+      "value": 12420372827373912454
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/hashes/5",
+      "value": 3423650723785654056
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/hashes/5",
+      "value": 14853107964815548213
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/hashes/7",
+      "value": 598437514727677317
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/hashes/7",
+      "value": 7687405400340455103
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/hashes/8",
+      "value": 598437514727677317
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/hashes/8",
+      "value": 7687405400340455103
+    },
+    {
+      "op": "test",
+      "path": "/products/6/expected/raw_midgray/2",
+      "value": 1065356517
+    },
+    {
+      "op": "replace",
+      "path": "/products/6/expected/raw_midgray/2",
+      "value": 1065356516
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/compensated_raw/2",
+      "value": 1071077392
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/compensated_raw/2",
+      "value": 1071077391
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/final_sensitivity/3/0",
+      "value": 952089228
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/final_sensitivity/3/0",
+      "value": 952089231
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/final_sensitivity/3/1",
+      "value": 1002236399
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/final_sensitivity/3/1",
+      "value": 1002236402
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/final_sensitivity/3/2",
+      "value": 1034575744
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/final_sensitivity/3/2",
+      "value": 1034575747
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/final_sensitivity/8/2",
+      "value": 1047552355
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/final_sensitivity/8/2",
+      "value": 1047552354
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/final_sensitivity/58/2",
+      "value": 894245871
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/final_sensitivity/58/2",
+      "value": 894245870
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/final_sensitivity/63/0",
+      "value": 952543215
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/final_sensitivity/63/0",
+      "value": 952543209
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/final_sensitivity/63/1",
+      "value": 840500851
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/final_sensitivity/63/1",
+      "value": 840500846
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/final_sensitivity/63/2",
+      "value": 881192436
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/final_sensitivity/63/2",
+      "value": 881192433
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/final_sensitivity_hash",
+      "value": 5201462864216539330
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/final_sensitivity_hash",
+      "value": 1909891043794940389
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/hashes/0",
+      "value": 12389557650220679336
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/hashes/0",
+      "value": 5403279899458735079
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/hashes/1",
+      "value": 13598277374775541127
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/hashes/1",
+      "value": 12261147894503865165
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/hashes/2",
+      "value": 16852424536830225233
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/hashes/2",
+      "value": 12420372827373912454
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/hashes/3",
+      "value": 10798717313650854075
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/hashes/3",
+      "value": 397385894022984266
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/hashes/4",
+      "value": 4064398916141372227
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/hashes/4",
+      "value": 10361176614420568963
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/hashes/5",
+      "value": 13036755780228883184
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/hashes/5",
+      "value": 6549913993060115853
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/hashes/7",
+      "value": 6090016804203411676
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/hashes/7",
+      "value": 7729327092600210499
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/hashes/8",
+      "value": 6090016804203411676
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/hashes/8",
+      "value": 7729327092600210499
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/print_descriptors/0",
+      "value": 7926329679805537901
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/print_descriptors/0",
+      "value": 13459691939447468473
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/print_descriptors/4",
+      "value": 5473123439386064785
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/print_descriptors/4",
+      "value": 15641626832137408210
+    },
+    {
+      "op": "test",
+      "path": "/products/9/expected/raw_midgray/2",
+      "value": 1065356517
+    },
+    {
+      "op": "replace",
+      "path": "/products/9/expected/raw_midgray/2",
+      "value": 1065356516
+    },
+    {
+      "op": "test",
+      "path": "/products/18/expected/final_sensitivity/3/0",
+      "value": 952921019
+    },
+    {
+      "op": "replace",
+      "path": "/products/18/expected/final_sensitivity/3/0",
+      "value": 952921022
+    },
+    {
+      "op": "test",
+      "path": "/products/18/expected/final_sensitivity/3/1",
+      "value": 1002203474
+    },
+    {
+      "op": "replace",
+      "path": "/products/18/expected/final_sensitivity/3/1",
+      "value": 1002203478
+    },
+    {
+      "op": "test",
+      "path": "/products/18/expected/final_sensitivity/3/2",
+      "value": 1033585653
+    },
+    {
+      "op": "replace",
+      "path": "/products/18/expected/final_sensitivity/3/2",
+      "value": 1033585655
+    },
+    {
+      "op": "test",
+      "path": "/products/18/expected/final_sensitivity/63/0",
+      "value": 953405058
+    },
+    {
+      "op": "replace",
+      "path": "/products/18/expected/final_sensitivity/63/0",
+      "value": 953405052
+    },
+    {
+      "op": "test",
+      "path": "/products/18/expected/final_sensitivity/63/1",
+      "value": 840474181
+    },
+    {
+      "op": "replace",
+      "path": "/products/18/expected/final_sensitivity/63/1",
+      "value": 840474177
+    },
+    {
+      "op": "test",
+      "path": "/products/18/expected/final_sensitivity/63/2",
+      "value": 880024419
+    },
+    {
+      "op": "replace",
+      "path": "/products/18/expected/final_sensitivity/63/2",
+      "value": 880024413
+    },
+    {
+      "op": "test",
+      "path": "/products/18/expected/final_sensitivity_hash",
+      "value": 17206809841504405188
+    },
+    {
+      "op": "replace",
+      "path": "/products/18/expected/final_sensitivity_hash",
+      "value": 9039773732471061471
+    },
+    {
+      "op": "test",
+      "path": "/products/18/expected/hashes/0",
+      "value": 16982041878018339368
+    },
+    {
+      "op": "replace",
+      "path": "/products/18/expected/hashes/0",
+      "value": 15308030624502249306
+    },
+    {
+      "op": "test",
+      "path": "/products/18/expected/hashes/1",
+      "value": 1898425316415071920
+    },
+    {
+      "op": "replace",
+      "path": "/products/18/expected/hashes/1",
+      "value": 15366291139974468193
+    },
+    {
+      "op": "test",
+      "path": "/products/18/expected/hashes/7",
+      "value": 515275196585601184
+    },
+    {
+      "op": "replace",
+      "path": "/products/18/expected/hashes/7",
+      "value": 2881542683831529506
+    },
+    {
+      "op": "test",
+      "path": "/products/18/expected/hashes/8",
+      "value": 515275196585601184
+    },
+    {
+      "op": "replace",
+      "path": "/products/18/expected/hashes/8",
+      "value": 2881542683831529506
+    },
+    {
+      "op": "test",
+      "path": "/products/21/expected/final_sensitivity/3/0",
+      "value": 952921019
+    },
+    {
+      "op": "replace",
+      "path": "/products/21/expected/final_sensitivity/3/0",
+      "value": 952921022
+    },
+    {
+      "op": "test",
+      "path": "/products/21/expected/final_sensitivity/3/1",
+      "value": 1002203474
+    },
+    {
+      "op": "replace",
+      "path": "/products/21/expected/final_sensitivity/3/1",
+      "value": 1002203478
+    },
+    {
+      "op": "test",
+      "path": "/products/21/expected/final_sensitivity/3/2",
+      "value": 1033585653
+    },
+    {
+      "op": "replace",
+      "path": "/products/21/expected/final_sensitivity/3/2",
+      "value": 1033585655
+    },
+    {
+      "op": "test",
+      "path": "/products/21/expected/final_sensitivity/63/0",
+      "value": 953405058
+    },
+    {
+      "op": "replace",
+      "path": "/products/21/expected/final_sensitivity/63/0",
+      "value": 953405052
+    },
+    {
+      "op": "test",
+      "path": "/products/21/expected/final_sensitivity/63/1",
+      "value": 840474181
+    },
+    {
+      "op": "replace",
+      "path": "/products/21/expected/final_sensitivity/63/1",
+      "value": 840474177
+    },
+    {
+      "op": "test",
+      "path": "/products/21/expected/final_sensitivity/63/2",
+      "value": 880024419
+    },
+    {
+      "op": "replace",
+      "path": "/products/21/expected/final_sensitivity/63/2",
+      "value": 880024413
+    },
+    {
+      "op": "test",
+      "path": "/products/21/expected/final_sensitivity_hash",
+      "value": 17206809841504405188
+    },
+    {
+      "op": "replace",
+      "path": "/products/21/expected/final_sensitivity_hash",
+      "value": 9039773732471061471
+    },
+    {
+      "op": "test",
+      "path": "/products/21/expected/hashes/0",
+      "value": 16982041878018339368
+    },
+    {
+      "op": "replace",
+      "path": "/products/21/expected/hashes/0",
+      "value": 15308030624502249306
+    },
+    {
+      "op": "test",
+      "path": "/products/21/expected/hashes/1",
+      "value": 1898425316415071920
+    },
+    {
+      "op": "replace",
+      "path": "/products/21/expected/hashes/1",
+      "value": 15366291139974468193
+    },
+    {
+      "op": "test",
+      "path": "/products/21/expected/hashes/7",
+      "value": 12305968993259374979
+    },
+    {
+      "op": "replace",
+      "path": "/products/21/expected/hashes/7",
+      "value": 975585864720058961
+    },
+    {
+      "op": "test",
+      "path": "/products/21/expected/hashes/8",
+      "value": 12305968993259374979
+    },
+    {
+      "op": "replace",
+      "path": "/products/21/expected/hashes/8",
+      "value": 975585864720058961
+    },
+    {
+      "op": "test",
+      "path": "/products/21/expected/print_descriptors/0",
+      "value": 8065686533829110942
+    },
+    {
+      "op": "replace",
+      "path": "/products/21/expected/print_descriptors/0",
+      "value": 13474476279562935223
+    },
+    {
+      "op": "test",
+      "path": "/products/21/expected/print_descriptors/4",
+      "value": 10545628063163965476
+    },
+    {
+      "op": "replace",
+      "path": "/products/21/expected/print_descriptors/4",
+      "value": 1706076385407008962
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/final_sensitivity/11/0",
+      "value": 994389035
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/final_sensitivity/11/0",
+      "value": 994389034
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/final_sensitivity/20/0",
+      "value": 1002692995
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/final_sensitivity/20/0",
+      "value": 1002692994
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/final_sensitivity/49/0",
+      "value": 1052789910
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/final_sensitivity/49/0",
+      "value": 1052789909
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/final_sensitivity/56/0",
+      "value": 1037615685
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/final_sensitivity/56/0",
+      "value": 1037615691
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/final_sensitivity/56/1",
+      "value": 883972570
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/final_sensitivity/56/1",
+      "value": 883972575
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/final_sensitivity/56/2",
+      "value": 867346669
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/final_sensitivity/56/2",
+      "value": 867346674
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/final_sensitivity/61/0",
+      "value": 950557092
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/final_sensitivity/61/0",
+      "value": 950557091
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/final_sensitivity/70/0",
+      "value": 834032612
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/final_sensitivity/70/0",
+      "value": 834032611
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/final_sensitivity/78/0",
+      "value": 747717593
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/final_sensitivity/78/0",
+      "value": 747717592
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/final_sensitivity_hash",
+      "value": 16514644731194559054
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/final_sensitivity_hash",
+      "value": 13254016585967065008
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/hashes/0",
+      "value": 12130019287718634646
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/hashes/0",
+      "value": 14369108358217929265
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/hashes/1",
+      "value": 966316786445366565
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/hashes/1",
+      "value": 1773659642778879314
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/hashes/7",
+      "value": 4481875178448784046
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/hashes/7",
+      "value": 7505714474131749336
+    },
+    {
+      "op": "test",
+      "path": "/products/36/expected/hashes/8",
+      "value": 4481875178448784046
+    },
+    {
+      "op": "replace",
+      "path": "/products/36/expected/hashes/8",
+      "value": 7505714474131749336
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/final_sensitivity/11/0",
+      "value": 994389035
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/final_sensitivity/11/0",
+      "value": 994389034
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/final_sensitivity/20/0",
+      "value": 1002692995
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/final_sensitivity/20/0",
+      "value": 1002692994
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/final_sensitivity/49/0",
+      "value": 1052789910
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/final_sensitivity/49/0",
+      "value": 1052789909
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/final_sensitivity/56/0",
+      "value": 1037615685
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/final_sensitivity/56/0",
+      "value": 1037615691
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/final_sensitivity/56/1",
+      "value": 883972570
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/final_sensitivity/56/1",
+      "value": 883972575
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/final_sensitivity/56/2",
+      "value": 867346669
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/final_sensitivity/56/2",
+      "value": 867346674
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/final_sensitivity/61/0",
+      "value": 950557092
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/final_sensitivity/61/0",
+      "value": 950557091
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/final_sensitivity/70/0",
+      "value": 834032612
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/final_sensitivity/70/0",
+      "value": 834032611
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/final_sensitivity/78/0",
+      "value": 747717593
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/final_sensitivity/78/0",
+      "value": 747717592
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/final_sensitivity_hash",
+      "value": 16514644731194559054
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/final_sensitivity_hash",
+      "value": 13254016585967065008
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/hashes/0",
+      "value": 12130019287718634646
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/hashes/0",
+      "value": 14369108358217929265
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/hashes/1",
+      "value": 966316786445366565
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/hashes/1",
+      "value": 1773659642778879314
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/hashes/7",
+      "value": 17498697184623878040
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/hashes/7",
+      "value": 16885110469279565106
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/hashes/8",
+      "value": 17498697184623878040
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/hashes/8",
+      "value": 16885110469279565106
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/print_descriptors/0",
+      "value": 142806150602058042
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/print_descriptors/0",
+      "value": 10097510985009993998
+    },
+    {
+      "op": "test",
+      "path": "/products/39/expected/print_descriptors/4",
+      "value": 11302814307635083538
+    },
+    {
+      "op": "replace",
+      "path": "/products/39/expected/print_descriptors/4",
+      "value": 3686467562068251260
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/final_sensitivity/21/0",
+      "value": 1004049297
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/final_sensitivity/21/0",
+      "value": 1004049296
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/final_sensitivity/34/0",
+      "value": 1022653260
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/final_sensitivity/34/0",
+      "value": 1022653259
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/final_sensitivity/49/0",
+      "value": 1053050160
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/final_sensitivity/49/0",
+      "value": 1053050159
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/final_sensitivity/51/0",
+      "value": 1055018520
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/final_sensitivity/51/0",
+      "value": 1055018519
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/final_sensitivity/56/0",
+      "value": 1037909038
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/final_sensitivity/56/0",
+      "value": 1037909044
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/final_sensitivity/56/1",
+      "value": 884022716
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/final_sensitivity/56/1",
+      "value": 884022721
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/final_sensitivity/56/2",
+      "value": 867279131
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/final_sensitivity/56/2",
+      "value": 867279136
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/final_sensitivity/60/0",
+      "value": 966903451
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/final_sensitivity/60/0",
+      "value": 966903450
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/final_sensitivity/70/0",
+      "value": 834279367
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/final_sensitivity/70/0",
+      "value": 834279366
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/final_sensitivity_hash",
+      "value": 251100657129711816
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/final_sensitivity_hash",
+      "value": 2099196344217594618
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/hashes/0",
+      "value": 9598215912959896068
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/hashes/0",
+      "value": 364623000904760530
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/hashes/1",
+      "value": 6069418442731433707
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/hashes/1",
+      "value": 9273117019108679986
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/hashes/7",
+      "value": 4653718268746856231
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/hashes/7",
+      "value": 18218171875425636692
+    },
+    {
+      "op": "test",
+      "path": "/products/42/expected/hashes/8",
+      "value": 4653718268746856231
+    },
+    {
+      "op": "replace",
+      "path": "/products/42/expected/hashes/8",
+      "value": 18218171875425636692
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/final_sensitivity/21/0",
+      "value": 1004049297
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/final_sensitivity/21/0",
+      "value": 1004049296
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/final_sensitivity/34/0",
+      "value": 1022653260
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/final_sensitivity/34/0",
+      "value": 1022653259
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/final_sensitivity/49/0",
+      "value": 1053050160
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/final_sensitivity/49/0",
+      "value": 1053050159
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/final_sensitivity/51/0",
+      "value": 1055018520
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/final_sensitivity/51/0",
+      "value": 1055018519
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/final_sensitivity/56/0",
+      "value": 1037909038
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/final_sensitivity/56/0",
+      "value": 1037909044
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/final_sensitivity/56/1",
+      "value": 884022716
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/final_sensitivity/56/1",
+      "value": 884022721
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/final_sensitivity/56/2",
+      "value": 867279131
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/final_sensitivity/56/2",
+      "value": 867279136
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/final_sensitivity/60/0",
+      "value": 966903451
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/final_sensitivity/60/0",
+      "value": 966903450
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/final_sensitivity/70/0",
+      "value": 834279367
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/final_sensitivity/70/0",
+      "value": 834279366
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/final_sensitivity_hash",
+      "value": 251100657129711816
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/final_sensitivity_hash",
+      "value": 2099196344217594618
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/hashes/0",
+      "value": 9598215912959896068
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/hashes/0",
+      "value": 364623000904760530
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/hashes/1",
+      "value": 6069418442731433707
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/hashes/1",
+      "value": 9273117019108679986
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/hashes/7",
+      "value": 2453154803288215504
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/hashes/7",
+      "value": 11808371592201207223
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/hashes/8",
+      "value": 2453154803288215504
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/hashes/8",
+      "value": 11808371592201207223
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/print_descriptors/0",
+      "value": 3924470503238779708
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/print_descriptors/0",
+      "value": 16114501823316296621
+    },
+    {
+      "op": "test",
+      "path": "/products/45/expected/print_descriptors/4",
+      "value": 18430292361928352051
+    },
+    {
+      "op": "replace",
+      "path": "/products/45/expected/print_descriptors/4",
+      "value": 15268662417989454714
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/final_sensitivity/18/0",
+      "value": 1002248210
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/final_sensitivity/18/0",
+      "value": 1002248209
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/final_sensitivity/27/0",
+      "value": 1011996399
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/final_sensitivity/27/0",
+      "value": 1011996398
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/final_sensitivity/32/0",
+      "value": 1019564360
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/final_sensitivity/32/0",
+      "value": 1019564359
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/final_sensitivity/36/0",
+      "value": 1027629114
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/final_sensitivity/36/0",
+      "value": 1027629113
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/final_sensitivity/56/0",
+      "value": 1039383690
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/final_sensitivity/56/0",
+      "value": 1039383697
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/final_sensitivity/56/1",
+      "value": 884274632
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/final_sensitivity/56/1",
+      "value": 884274637
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/final_sensitivity/56/2",
+      "value": 867104323
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/final_sensitivity/56/2",
+      "value": 867104328
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/final_sensitivity/57/0",
+      "value": 1023248302
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/final_sensitivity/57/0",
+      "value": 1023248301
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/final_sensitivity/70/0",
+      "value": 835519777
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/final_sensitivity/70/0",
+      "value": 835519776
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/final_sensitivity/73/0",
+      "value": 802366834
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/final_sensitivity/73/0",
+      "value": 802366833
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/final_sensitivity_hash",
+      "value": 9175676828706180699
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/final_sensitivity_hash",
+      "value": 14139826677343892853
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/hashes/0",
+      "value": 11720852938171679298
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/hashes/0",
+      "value": 15199870130320936405
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/hashes/1",
+      "value": 17006205331499629030
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/hashes/1",
+      "value": 9391658251870003715
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/hashes/7",
+      "value": 4162354079946755084
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/hashes/7",
+      "value": 5650019658679022601
+    },
+    {
+      "op": "test",
+      "path": "/products/54/expected/hashes/8",
+      "value": 4162354079946755084
+    },
+    {
+      "op": "replace",
+      "path": "/products/54/expected/hashes/8",
+      "value": 5650019658679022601
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/final_sensitivity/18/0",
+      "value": 1002248210
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/final_sensitivity/18/0",
+      "value": 1002248209
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/final_sensitivity/27/0",
+      "value": 1011996399
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/final_sensitivity/27/0",
+      "value": 1011996398
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/final_sensitivity/32/0",
+      "value": 1019564360
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/final_sensitivity/32/0",
+      "value": 1019564359
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/final_sensitivity/36/0",
+      "value": 1027629114
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/final_sensitivity/36/0",
+      "value": 1027629113
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/final_sensitivity/56/0",
+      "value": 1039383690
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/final_sensitivity/56/0",
+      "value": 1039383697
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/final_sensitivity/56/1",
+      "value": 884274632
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/final_sensitivity/56/1",
+      "value": 884274637
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/final_sensitivity/56/2",
+      "value": 867104323
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/final_sensitivity/56/2",
+      "value": 867104328
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/final_sensitivity/57/0",
+      "value": 1023248302
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/final_sensitivity/57/0",
+      "value": 1023248301
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/final_sensitivity/70/0",
+      "value": 835519777
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/final_sensitivity/70/0",
+      "value": 835519776
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/final_sensitivity/73/0",
+      "value": 802366834
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/final_sensitivity/73/0",
+      "value": 802366833
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/final_sensitivity_hash",
+      "value": 9175676828706180699
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/final_sensitivity_hash",
+      "value": 14139826677343892853
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/hashes/0",
+      "value": 11720852938171679298
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/hashes/0",
+      "value": 15199870130320936405
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/hashes/1",
+      "value": 17006205331499629030
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/hashes/1",
+      "value": 9391658251870003715
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/hashes/7",
+      "value": 5448113035331736976
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/hashes/7",
+      "value": 14032040225099044613
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/hashes/8",
+      "value": 5448113035331736976
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/hashes/8",
+      "value": 14032040225099044613
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/print_descriptors/0",
+      "value": 3211657797482269709
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/print_descriptors/0",
+      "value": 991151376094692915
+    },
+    {
+      "op": "test",
+      "path": "/products/57/expected/print_descriptors/4",
+      "value": 7611304004184432712
+    },
+    {
+      "op": "replace",
+      "path": "/products/57/expected/print_descriptors/4",
+      "value": 978622301390635063
+    }
+  ]
+}
