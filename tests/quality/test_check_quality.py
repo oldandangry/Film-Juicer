@@ -1090,6 +1090,53 @@ class SelectionAndEvidenceTests(unittest.TestCase):
         self.assertEqual(search.forced, ("forced.h",))
 
 
+class FixtureTransportTests(unittest.TestCase):
+    def test_film_capture_crlf_preserves_bytes_and_rejects_trailing_spaces(self) -> None:
+        source = SCRIPT_PATH.parent.parent
+        fixtures = {
+            path.relative_to(source): path.read_bytes()
+            for path in (source / "tests/film/fixtures").glob("windows-clang-*-*.json")
+        }
+        self.assertTrue(fixtures)
+        self.assertTrue(all(content.endswith(b"\r\n") for content in fixtures.values()))
+        for autocrlf in ("false", "true"):
+            with self.subTest(autocrlf=autocrlf), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+
+                def git(*arguments: str, check: bool = True) -> subprocess.CompletedProcess:
+                    return subprocess.run(
+                        ["git", *arguments], cwd=root, check=check,
+                        capture_output=True, timeout=30,
+                    )
+
+                git("init", "-q")
+                git("config", "core.autocrlf", autocrlf)
+                git("config", "core.whitespace", "blank-at-eol,blank-at-eof,space-before-tab")
+                (root / ".gitattributes").write_bytes((source / ".gitattributes").read_bytes())
+                for path, content in fixtures.items():
+                    target = root / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(content)
+                git("add", ".")
+                result = git("diff", "--cached", "--check", check=False)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                for path, content in fixtures.items():
+                    self.assertEqual(git("show", f":{path.as_posix()}").stdout, content)
+                    (root / path).unlink()
+                git("checkout-index", "--all")
+                for path, content in fixtures.items():
+                    self.assertEqual((root / path).read_bytes(), content)
+
+                path = next(iter(fixtures))
+                for ending in (b" \r\n", b"\t\r\n"):
+                    with self.subTest(ending=ending):
+                        (root / path).write_bytes(b"{}" + ending)
+                        git("add", "--", path.as_posix())
+                        result = git("diff", "--cached", "--check", check=False)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn(b"trailing whitespace", result.stdout)
+
+
 class EmptySelectionTests(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()

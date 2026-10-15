@@ -92,4 +92,4 @@ tests/ffi/fixtures/output_gamut/** -text whitespace=cr-at-eol
 tests/ffi/fixtures/output-color/*.json -text
 
 # Independent S4.B film-development captures preserve exact fixture bytes.
-tests/film/fixtures/** -text
+tests/film/fixtures/** -text whitespace=cr-at-eol
