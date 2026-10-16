@@ -161,13 +161,26 @@ class WindowsJob:
             # App execution aliases may add a redirector even for a base path.
             # Assign the actual gated interpreter too, before releasing stdin.
             deadline = time.monotonic() + 5
-            while not gate_path.is_file():
+            read_error = None
+
+            def check_gate_waiting():
                 if self.process.poll() is not None or time.monotonic() >= deadline:
+                    detail = ": " + str(read_error) if read_error is not None else ""
                     raise RuntimeError(
-                        "gated interpreter did not report its process identity"
-                    )
-                time.sleep(0.01)
-            pid = int(gate_path.read_text())
+                        "gated interpreter did not report a readable process identity "
+                        "before exit or deadline" + detail
+                    ) from read_error
+
+            while True:
+                check_gate_waiting()
+                try:
+                    pid = int(gate_path.read_text())
+                except (FileNotFoundError, PermissionError) as error:
+                    read_error = error
+                    time.sleep(0.01)
+                    continue
+                check_gate_waiting()
+                break
             if pid != self.process.pid:
                 handle = self.api.OpenProcess(0x0101, False, pid)
                 self.check(handle)
@@ -175,6 +188,7 @@ class WindowsJob:
                     self.check(self.api.AssignProcessToJobObject(self.job, handle))
                 finally:
                     self.check(self.api.CloseHandle(handle))
+            check_gate_waiting()
             self.process.stdin.write(b"g")
             self.process.stdin.close()
         except BaseException:

@@ -21,6 +21,8 @@ class SelectionTests(unittest.TestCase):
     def test_unrelated_dirty_payloads_stay_pending_without_content_reads(self):
         import os
         import verify
+        from hashlib import sha256
+        from build_dependencies import file_identities
         from execution import digest
 
         with tempfile.TemporaryDirectory() as folder:
@@ -36,12 +38,23 @@ class SelectionTests(unittest.TestCase):
             prior = {"observed": source_snapshot(root), "pending": []}
             selected = root / names[2]
             stamp = selected.stat()
+            before = file_identities([selected])[str(selected)]["sha256"]
+            selected.write_text("other")
+            os.utime(selected, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            after = file_identities([selected])[str(selected)]["sha256"]
+            self.assertNotEqual(before, after)
+            self.assertEqual(after, sha256(b"other").hexdigest())
+            selected.write_text("first")
+            os.utime(selected, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
 
             def read_relevant(path):
                 self.assertNotIn(path, [root / name for name in names])
                 return digest(path)
 
-            for text in ["other", "third"]:
+            # Git membership must not rely on ctime for a same-size edit: on
+            # Windows it can remain unchanged when mtime is restored. Relevant
+            # content is checked independently above, without that assumption.
+            for text in ["other payload", "third payload text"]:
                 for name in names:
                     (root / name).write_text(text)
                 os.utime(selected, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
@@ -52,7 +65,6 @@ class SelectionTests(unittest.TestCase):
                     current = source_snapshot(root)
                 # Selected fixture content belongs to preparation, independently
                 # of selection-independent global pending observation.
-                from build_dependencies import file_identities
                 self.assertEqual(file_identities([selected])[str(selected)]["sha256"], digest(selected))
                 pending = edit_selection(current, prior)
                 self.assertEqual(pending, sorted(names))

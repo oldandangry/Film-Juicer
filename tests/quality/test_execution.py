@@ -10,13 +10,18 @@ import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SPEC = importlib.util.spec_from_file_location(
     "campaign", Path(__file__).parents[2] / "scripts/execution.py"
 )
 campaign = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(campaign)
+PROCESS_SPEC = importlib.util.spec_from_file_location(
+    "process_tree", Path(campaign.__file__).with_name("process_tree.py")
+)
+process_tree = importlib.util.module_from_spec(PROCESS_SPEC)
+PROCESS_SPEC.loader.exec_module(process_tree)
 
 
 class CampaignTests(unittest.TestCase):
@@ -772,6 +777,111 @@ class SnapshotTests(unittest.TestCase):
             self.assertRaises(ValueError),
         ):
             campaign.snapshot(alias, ["b.txt", "a.txt"])
+
+
+class WindowsJobTests(unittest.TestCase):
+    def setUp(self):
+        self.job = process_tree.WindowsJob.__new__(process_tree.WindowsJob)
+        self.job.job = 9
+        self.job.api = Mock()
+        self.job.api.OpenProcess.return_value = 99
+        self.process = Mock(pid=42, _handle=7)
+        self.process.poll.return_value = None
+        self.popen = self.enterContext(
+            patch.object(process_tree.subprocess, "Popen", return_value=self.process)
+        )
+
+    def test_readable_pid_is_assigned_before_one_gate_release(self):
+        for error in (FileNotFoundError("not published"), PermissionError("not readable")):
+            with self.subTest(error=type(error).__name__):
+                self.popen.reset_mock()
+                self.job.api.reset_mock()
+                self.process.stdin.reset_mock()
+
+                def assigned(*_):
+                    self.assertFalse(self.process.stdin.write.called)
+                    return True
+
+                self.job.api.AssignProcessToJobObject.side_effect = assigned
+                with patch.object(Path, "read_text", side_effect=[error, "43"]) as read, \
+                     patch.object(process_tree.time, "sleep") as sleep:
+                    self.job.start(["command"], Path("gate.json"))
+                self.assertEqual(read.call_count, 2)
+                sleep.assert_called_once_with(0.01)
+                self.popen.assert_called_once()
+                self.job.api.AssignProcessToJobObject.assert_any_call(9, 7)
+                self.job.api.AssignProcessToJobObject.assert_any_call(9, 99)
+                self.assertEqual(self.job.api.AssignProcessToJobObject.call_count, 2)
+                self.job.api.OpenProcess.assert_called_once_with(0x0101, False, 43)
+                self.process.stdin.write.assert_called_once_with(b"g")
+
+    def test_late_pid_or_job_assignment_cannot_release_gate(self):
+        for times in ([0.0, 0.0, 6.0], [0.0, 0.0, 0.0, 6.0]):
+            with self.subTest(times=times):
+                self.popen.reset_mock()
+                self.process.reset_mock()
+                with patch.object(Path, "read_text", return_value="43"), \
+                     patch.object(process_tree.time, "monotonic", side_effect=times), \
+                     self.assertRaisesRegex(RuntimeError, "readable process identity"):
+                    self.job.start(["command"], Path("gate.json"))
+                self.popen.assert_called_once()
+                self.process.stdin.write.assert_not_called()
+                self.process.kill.assert_called_once()
+                self.process.wait.assert_called_once()
+
+    def test_expired_gate_does_not_attempt_another_pid_read(self):
+        with patch.object(Path, "read_text", side_effect=[PermissionError("not ready"), "43"]) as read, \
+             patch.object(process_tree.time, "monotonic", side_effect=[0.0, 0.0, 6.0]), \
+             patch.object(process_tree.time, "sleep"), \
+             self.assertRaisesRegex(RuntimeError, "readable process identity"):
+            self.job.start(["command"], Path("gate.json"))
+        read.assert_called_once()
+        self.popen.assert_called_once()
+        self.process.stdin.write.assert_not_called()
+        self.process.kill.assert_called_once()
+        self.process.wait.assert_called_once()
+
+    def test_exit_during_pid_read_cannot_release_gate(self):
+        self.process.poll.side_effect = [None, 7]
+        with patch.object(Path, "read_text", return_value="43"), \
+             self.assertRaisesRegex(RuntimeError, "readable process identity"):
+            self.job.start(["command"], Path("gate.json"))
+        self.popen.assert_called_once()
+        self.process.stdin.write.assert_not_called()
+        self.process.kill.assert_called_once()
+        self.process.wait.assert_called_once()
+
+    def test_unreadable_pid_expires_without_releasing_or_relaunching(self):
+        with patch.object(Path, "read_text", side_effect=PermissionError("still unreadable")), \
+             patch.object(process_tree.time, "monotonic", side_effect=[0.0, 0.0, 6.0]), \
+             self.assertRaisesRegex(RuntimeError, "readable process identity.*still unreadable"):
+            self.job.start(["command"], Path("gate.json"))
+        self.popen.assert_called_once()
+        self.process.stdin.write.assert_not_called()
+        self.process.kill.assert_called_once()
+        self.process.wait.assert_called_once()
+
+    def test_malformed_pid_fails_without_releasing_or_relaunching(self):
+        with patch.object(Path, "read_text", return_value="invalid"), \
+             patch.object(process_tree.time, "sleep") as sleep, self.assertRaises(ValueError):
+            self.job.start(["command"], Path("gate.json"))
+        self.popen.assert_called_once()
+        self.process.stdin.write.assert_not_called()
+        self.process.kill.assert_called_once()
+        self.process.wait.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_exited_gate_fails_without_releasing_or_relaunching(self):
+        self.process.poll.return_value = 7
+        with patch.object(Path, "read_text", side_effect=FileNotFoundError("not published")), \
+             patch.object(process_tree.time, "sleep") as sleep, \
+             self.assertRaisesRegex(RuntimeError, "readable process identity"):
+            self.job.start(["command"], Path("gate.json"))
+        self.popen.assert_called_once()
+        self.process.stdin.write.assert_not_called()
+        self.process.kill.assert_called_once()
+        self.process.wait.assert_called_once()
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":
