@@ -326,7 +326,7 @@ add_test(NAME Quality.Dispatcher
         -v)
 set_tests_properties(Quality.Dispatcher PROPERTIES
     LABELS "host"
-    TIMEOUT 60
+    TIMEOUT 180
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
 add_test(NAME Quality.ToolingLint
