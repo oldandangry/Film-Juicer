@@ -693,7 +693,10 @@ add_custom_target(juicer_test_module
     DEPENDS juicer juicer_test_resources)
 
 add_executable(JuicerAdapterTraceProbe
-    ofx/adapter_trace_test.cpp route/route_failure_adapter.cpp)
+    ofx/adapter_trace_test.cpp route/route_failure_adapter.cpp ../src/JuicerEffect.cpp)
+# Isolate the fixture replacement while linking the real route metadata/resolver.
+target_compile_definitions(JuicerAdapterTraceProbe PRIVATE
+    resolve_scan_route=resolve_scan_route_with_fault)
 target_include_directories(JuicerAdapterTraceProbe PRIVATE "${PROJECT_SOURCE_DIR}/native")
 target_link_libraries(JuicerAdapterTraceProbe PRIVATE
     juicer_core juicer_ofxs CUDA::cuda_driver)

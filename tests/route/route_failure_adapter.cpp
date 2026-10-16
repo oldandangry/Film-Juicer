@@ -16,7 +16,8 @@ namespace RouteFaultTest {
 
 namespace Spektrafilm {
 
-    // This definition replaces the production adapter only in the OFX fixture.
+    // The OFX fixture's private compile definition gives this adapter its own
+    // symbol; production route metadata and resolution remain linked unchanged.
     bool resolve_scan_route(
         ProfilePolarity capturePolarity,
         ScanRoute selection,
