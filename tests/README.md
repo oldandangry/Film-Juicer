@@ -890,3 +890,16 @@ explicit `--scratch-root` destinations in the selected groups. Each such option
 must occur once and name an absolute destination. Prefer isolated
 per-case roots or the actual named resource lock. Implicit writer paths still
 require review of their owning test; labels alone do not prove isolation.
+
+`Ffi.Host.FilmInput` checks completed film-input construction through the direct
+safe-core facade, synchronous legacy wrapper and a compiled C11 caller. Its
+C11/C++20/Rust facts cover every field type, offset, extent, alignment and the
+signature. `Film.Host.InputProducts` checks actual direct/print construction,
+source/hull holds across cache detachment, selector priority, publication-slot
+return/throw distinctions, supersession and recovery. Both compare the 96 base
+and 44 control cases against independent native compound captures in
+[the film-input fixtures](film/input-fixtures/README.md). The family owns complete
+input color and sensitivity; later focused normalization and whole-state
+publication retain their existing owners. Ordinary tests never regenerate these
+expectations. Both native testing-OFF Release gates also exercise the new C
+export's values and failures and exclude fixture/fault code from final artifacts.

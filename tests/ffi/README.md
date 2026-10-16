@@ -992,3 +992,31 @@ checks each physical payload once, all native memberships and ordered recipe
 inputs. Numerical groups still compare actual outputs with the applicable
 native expectations. Small frozen foreign-value witnesses retain wrong-preset
 rejection without loading three unrelated complete documents on each run.
+
+### Film input and complete input color
+
+`film::input::Recipe::new` constructs resolved film-input controls, a private
+`color::InputColor` containing all three matrices and consumed whites, final
+sensitivity, recipe Mallett scale and existing schema-2 TC/film-input identities.
+Its resources are synchronous fixed-array borrows and existing identities; the
+result retains no profile or resource pointer. Explicit-operand color leaves
+remain separate, including the accepted inverse-B conversion fixtures.
+
+`fj_legacy_film_input_prepare` is temporary fixed-value transport through S4.E.
+The native foundation calls it through its captured `FilmSource` after the
+existing route/resource/selector checks. The direct fixture facade shares the
+safe constructor and fixed projector. Both outputs are required; diagnostics
+are optional. The legacy header documents numeric storage admission, caller
+lifetime/disjointness obligations, inactive defaults, clearing and diagnostic
+bounds. Failure dispatch uses the closed status/origin/reason envelope and
+sensitivity metadata, preserving native return/throw and publication behavior.
+The raw result is complete input preparation, not a completed render state.
+
+`Ffi.Host.FilmInput` and `Film.Host.InputProducts` own ABI/value/failure and actual
+consumer coverage. `Quality.RustBoundaries` rejects default, field, mutation and
+partial construction; source review/guards restrict internal complete-color
+assembly to the recipe constructor. The existing input-color, exposure,
+development and scanner-reuse groups retain their independent expectations.
+The Release production gate compares C11 fixed values with the frozen native
+capture, checks failure/clearing behavior and scans archive/module/PDB artifacts
+for fixture/fault isolation. No per-frame preparation or CPU pixel path is added.

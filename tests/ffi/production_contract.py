@@ -78,9 +78,10 @@ def execute(arguments):
     native = build / ("juicer_core.lib" if windows else "libjuicer_core.a")
     module = build / "juicer.ofx"
     forbidden = re.compile(
-        "fj_test_|::test_support::|film_bridge::faults::|film::test_support::|\\b(?:FAULT|[A-Z_]+_FAULT|FAULT_[A-Z_]+|[A-Z_]+_FAULT_[A-Z_]+)\\b|\\b[A-Z_]+_FACADE(?:_[A-Z_]+)?\\b|ContextDrainTestFailure|TestSupport::|(?:Profile|Catalog|Terminal|ContextDrain|HostAdmission|ExecutorFailure|PinnedUpload|Illuminant|Render|Spectral|TcLut|Color|OutputGamut|Development|Noise)Test::|\\b\\w*Test::|::fixtures::|::output_fixtures::|::faults::|TC_CONSUMED|TC_TRANSFERS|TC_RELEASES|EXPOSURE_CONSUMED|TC_FACADE_CONSUMED|TC_FACADE_RELEASES|ScannerOracle::|pendingCaptureTest|set_pending_capture_test_hook|COPY_METRICS|SCRATCH_CAPACITIES|gamut_bridge::(?:output_)?fixtures::|exposure_bridge::fixtures::|spectral_bridge::(?:inject|arm_fault|clear_fault)"
+        "fj_test_|::test_support::|film_bridge::faults::|film::input::testing::|film_input_bridge::(?:BOUNDARY_FAULT|boundary_fault|arm_boundary_fault)|film::test_support::|\\b(?:FAULT|[A-Z_]+_FAULT|FAULT_[A-Z_]+|[A-Z_]+_FAULT_[A-Z_]+)\\b|\\b[A-Z_]+_FACADE(?:_[A-Z_]+)?\\b|ContextDrainTestFailure|TestSupport::|(?:Profile|Catalog|Terminal|ContextDrain|HostAdmission|ExecutorFailure|PinnedUpload|Illuminant|Render|Spectral|TcLut|Color|OutputGamut|Development|Noise)Test::|\\b\\w*Test::|::fixtures::|::output_fixtures::|::faults::|TC_CONSUMED|TC_TRANSFERS|TC_RELEASES|EXPOSURE_CONSUMED|TC_FACADE_CONSUMED|TC_FACADE_RELEASES|ScannerOracle::|pendingCaptureTest|set_pending_capture_test_hook|COPY_METRICS|SCRATCH_CAPACITIES|gamut_bridge::(?:output_)?fixtures::|exposure_bridge::fixtures::|spectral_bridge::(?:inject|arm_fault|clear_fault)"
     )
     strings = [
+        b"film input boundary fixture panic",
         b"film development acquire fixture panic",
         b"film development view fixture panic",
         b"film development release fixture panic",
@@ -121,6 +122,7 @@ def execute(arguments):
     scan(native, "native-symbols", "llvm-nm", ["--defined-only", "--demangle"])
     symbols = scan(archive, "rust-symbols", "llvm-nm", ["--defined-only", "--demangle"])
     for name in [
+        "fj_legacy_film_input_prepare",
         "fj_legacy_film_development_acquire",
         "fj_legacy_film_development_view",
         "fj_legacy_film_development_release",
@@ -287,6 +289,20 @@ def expected_film_header(out):
         ("HASH", case["development"]["hash"]),
     ]:
         header.append("#define FILM_" + name + " UINT64_C(" + str(value) + ")")
+    input_directory = root / "tests/film/input-fixtures"
+    input_manifest = json.loads((input_directory / "manifest.json").read_text())
+    input_payload = input_manifest["presets"][arguments.preset]
+    input_path = input_directory / input_payload
+    assert digest(input_path) == input_manifest["payloads"][input_payload]["sha256"]
+    input_document = json.loads(input_path.read_text())
+    raw = next(row["raw"] for row in input_document["rows"]
+               if row.get("control") is None and row["route"] == 0
+               and row["space"] == 0 and row["method"] == 1 and row["decode"] == 0)
+    for name in ("rgb_to_xyz", "xyz_adapt", "xyz_to_linear_srgb", "nominal_white", "projection_white", "sensitivity", "mallett_scale"):
+        header.append("static const uint32_t film_input_" + name + "[] = {"
+                      + ",".join(str(word) + "U" for word in flatten(raw[name])) + "};")
+    for name in ("hash", "sensitivity_hash"):
+        header.append("#define FILM_INPUT_" + name.upper() + " UINT64_C(" + str(raw[name]) + ")")
     (out / "production-film-expected.h").write_text("\n".join(header) + "\n")
 
 

@@ -26,6 +26,12 @@ mod asset_profile;
 )]
 mod film_bridge;
 
+#[allow(
+    unsafe_code,
+    reason = "the film-input value boundary checks fixed extents and scopes immutable profile/resource borrows"
+)]
+mod film_input_bridge;
+
 mod asset_spectral;
 
 mod asset_noise;

@@ -228,11 +228,6 @@ unsafe fn sensitivity_input<'a>(
 }
 
 #[cfg(feature = "test-support")]
-thread_local! {
-    static EXPOSURE_FAULT: std::cell::Cell<Option<(u32,u32,u32)>> = const { std::cell::Cell::new(None) };
-    static EXPOSURE_CONSUMED: std::cell::Cell<Option<(u32,u32)>> = const { std::cell::Cell::new(None) };
-}
-#[cfg(feature = "test-support")]
 pub(crate) fn arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
     clear_fault();
     let valid = (1..=6).contains(&operation)
@@ -240,7 +235,7 @@ pub(crate) fn arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
         && (1..=4).contains(&fault)
         && (operation <= 2 || fault != 3);
     if valid {
-        EXPOSURE_FAULT.set(Some((operation, index, fault)));
+        film_juicer_core::film::input::testing::arm_exposure(operation, index, fault);
     }
     FjStatus {
         category: if valid {
@@ -254,25 +249,15 @@ pub(crate) fn arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
 }
 #[cfg(feature = "test-support")]
 pub(crate) fn clear_fault() {
-    EXPOSURE_FAULT.set(None);
-    EXPOSURE_CONSUMED.set(None);
+    film_juicer_core::film::input::testing::clear_exposure();
 }
 #[cfg(feature = "test-support")]
 pub(crate) fn fault_consumed(operation: u32, fault: u32) -> bool {
-    EXPOSURE_CONSUMED.take() == Some((operation, fault))
+    film_juicer_core::film::input::testing::exposure_consumed(operation, fault)
 }
 fn inject(operation: u32) -> Result<(), Failure> {
     #[cfg(feature = "test-support")]
-    if let Some((selected, index, fault)) = EXPOSURE_FAULT.get() {
-        if selected != operation {
-            return Ok(());
-        }
-        if index > 1 {
-            EXPOSURE_FAULT.set(Some((selected, index - 1, fault)));
-            return Ok(());
-        }
-        EXPOSURE_FAULT.set(None);
-        EXPOSURE_CONSUMED.set(Some((operation, fault)));
+    if let Some(fault) = film_juicer_core::film::input::testing::exposure_fault(operation) {
         return match fault {
             1 => Err(Failure::Input("exposure production boundary fault")),
             2 => panic!("exposure production boundary fault"),

@@ -855,7 +855,7 @@ namespace {
             outDiagnostic = failure.failure.diagnostic;
             return false;
         }
-        input.filmProfile = filmProfile;
+        input.filmSource = &source;
         input.visualGrain = params.grainControls;
         input.filmDustAmount = params.filmDustAmount;
         input.filmScratchAmount = params.filmScratchAmount;
@@ -962,14 +962,11 @@ namespace {
             }
             input.tcSourceAssetHash = Spectral::context().arcticSpectra.assetHash;
         }
-        if (params.spectralUpsamplingMode == 0 ||
-            params.spectralUpsamplingMode == 2) {
-            input.inputCompressionActive = params.inputCompressionEnabled != 0;
-            if (input.inputCompressionActive) {
-                input.inputCompressionHull = assets.input_compression_hull();
-            }
-        } else {
-            input.inputCompressionActive = false;
+        input.inputCompressionRequested = params.inputCompressionEnabled != 0;
+        if ((params.spectralUpsamplingMode == 0 ||
+             params.spectralUpsamplingMode == 2) &&
+            input.inputCompressionRequested) {
+            input.inputCompressionHull = assets.input_compression_hull();
         }
         return true;
     }

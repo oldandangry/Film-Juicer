@@ -11,7 +11,7 @@ use crate::cuda::sys::{FJ_API_NONE, FJ_STATUS_SUCCESS, FjErrorBuffer, FjFloatSpa
 use crate::cuda::sys::FJ_STATUS_UNSUPPORTED_INPUT;
 
 #[repr(C)]
-struct FjFilmProfile {
+pub(crate) struct FjFilmProfile {
     _opaque: [u8; 0],
 }
 #[repr(C)]

@@ -7,6 +7,12 @@
 extern "C" {
 #endif
 
+/* Feature-only film-input facade; identical synchronous storage rules and safe constructor/projector. */
+FjStatus fj_test_film_input_prepare(const FjFilmProfile*, const FjFilmInputParams*, const FjFilmInputResources*, FjFilmInput*, FjFilmInputFailure*, FjErrorBuffer*);
+const size_t* fj_test_film_input_abi_facts(size_t* count);
+/* 1 projection, 2 diagnostic formatting, 3 success cleanup; one-shot current-thread panic. */
+void fj_test_film_input_arm_boundary_fault(uint32_t stage);
+
 /* Direct-core exposure facade; same synchronous storage rules as production.
  * Closed raw fault slots: 1 reference, 2 sensitivity, 3 Mallett mid-gray,
  * 4 TC normalization, 5 reference source, 6 Mallett reference; fault 1 unsupported,

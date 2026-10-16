@@ -1,5 +1,7 @@
 //! Completed capture-film development; source tables remain in the retained profile.
 
+pub mod input;
+
 use std::fmt;
 use std::mem::size_of;
 use std::sync::Arc;

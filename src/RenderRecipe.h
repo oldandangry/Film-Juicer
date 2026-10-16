@@ -21,7 +21,7 @@ namespace Spectral {
 // RenderRecipe owner map:
 // - ProfileRoute owns selected profile identity, typed metadata, immutable selected payload
 //   references, asset tokens, and resolved ScanRoute.
-// - FilmRawRecipe owns direct-route input color, RGB-to-raw, sensitivity, and exposure ordering.
+// - FilmRawRecipe carries the completed Rust film::input::Recipe until S4.E.
 // - FilmDevelopRecipe owns direct-route authored/normalized film density development inputs.
 // - DirCouplersRecipe owns development-inhibitor release behavior.
 // - DensityBoundsRecipe owns final route/media scanner and enlarger density bounds.
@@ -183,6 +183,7 @@ namespace Spektrafilm {
 
 } // namespace Spektrafilm
 
+// SF_TEMP_BRIDGE_FILM_INPUT: native fixed-value carrier; remove S4.E after last use.
 struct FilmRawRecipe {
     int inputColorSpace = 0;
     bool inputCctfDecoding = false;
@@ -227,6 +228,7 @@ struct FilmDevelopRecipe {
 };
 
 namespace JuicerAssets {
+    class FilmSource;
     // SF_TEMP_BRIDGE_FILM_DEVELOPMENT: copied complete family; remove S4.E.
     struct FilmDevelopment {
         FilmDevelopment(Spektrafilm::ScanRoute resolvedRoute, FilmDevelopRecipe&& completedRecipe)
@@ -769,7 +771,8 @@ namespace Spektrafilm {
     struct FilmFoundationBuildInput {
         double gateWeaveAmount = 0.0;
         std::uint64_t tcSourceAssetHash = 0;
-        std::shared_ptr<const Profiles::FilmProfile> filmProfile;
+        // The selected source hold in the caller covers synchronous foundation construction.
+        const JuicerAssets::FilmSource* filmSource = nullptr;
         std::shared_ptr<const Gamut::InputCompressionHull> inputCompressionHull;
         std::array<double, 3> cameraFilterUV{{1.0, 410.0, 8.0}};
         std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
@@ -796,7 +799,7 @@ namespace Spektrafilm {
         bool inputCctfDecoding = false;
         bool applyHanatos2025AdaptationWindow = true;
         bool applyHanatos2025AdaptationSurface = false;
-        bool inputCompressionActive = true;
+        bool inputCompressionRequested = true;
         bool cameraAutoExposureEnabled = true;
         bool cameraFilterOverride = false;
         bool referenceIlluminantValid = false;

@@ -160,6 +160,31 @@ add_executable(JuicerProductionProfileOwnerTests ffi/production_profile_abi_c.c 
     $<TARGET_OBJECTS:juicer_profile_conversion_test_objects>)
 target_link_libraries(JuicerProductionProfileOwnerTests PRIVATE juicer_core GTest::gtest)
 
+add_library(juicer_film_input_test_objects OBJECT ../src/RustFilmInputBridge.cpp)
+target_link_libraries(juicer_film_input_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_film_input_test_objects PRIVATE JUICER_FILM_INPUT_TEST_HOOK=1)
+add_executable(JuicerFilmInputTests ffi/film_input_abi_c.c ffi/film_input_test.cpp
+    $<TARGET_OBJECTS:juicer_film_input_test_objects>)
+target_link_libraries(JuicerFilmInputTests PRIVATE juicer_core)
+set_target_properties(JuicerFilmInputTests PROPERTIES
+    LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerFilmInputTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_dependencies(JuicerFilmInputTests juicer_test_resources)
+if(WIN32)
+    set(JUICER_FILM_INPUT_FIXTURE "windows.json")
+else()
+    set(JUICER_FILM_INPUT_FIXTURE "linux.json")
+endif()
+add_test(NAME Ffi.Host.FilmInput COMMAND JuicerFilmInputTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/input-fixtures/${JUICER_FILM_INPUT_FIXTURE}")
+set_tests_properties(Ffi.Host.FilmInput PROPERTIES LABELS "host" TIMEOUT 120)
+add_test(NAME Film.Host.InputProducts COMMAND JuicerFilmInputTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/input-fixtures/${JUICER_FILM_INPUT_FIXTURE}" products)
+set_tests_properties(Film.Host.InputProducts PROPERTIES LABELS "host" TIMEOUT 180)
+
 add_library(juicer_film_development_test_objects OBJECT ../src/RustAssetBridge.cpp)
 target_link_libraries(juicer_film_development_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_film_development_test_objects PRIVATE JUICER_FILM_DEVELOPMENT_TEST_HOOK=1)

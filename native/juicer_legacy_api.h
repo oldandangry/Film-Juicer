@@ -348,6 +348,142 @@ FjStatus fj_legacy_noise_release(FjNoise* owner, FjErrorBuffer* error);
  * Span counts are elements; empty spans are (NULL,0). Release excludes every
  * use/outstanding borrow; acquired owners survive Assets release/destruction. */
 typedef struct FjFilmProfile FjFilmProfile;
+/* SF_TEMP_BRIDGE_FILM_INPUT: synchronous fixed values; remove S4.E.
+ * All records except error are required, complete, initialized and aligned.
+ * profile is a matching retained handle; release/mutation cannot overlap this call.
+ * Inputs and present sample extents remain immutable until return and may alias.
+ * out_input, out_failure, optional error and positive-capacity diagnostic backing
+ * are exclusive, mutually disjoint and disjoint from all inputs/reachable profile
+ * storage. The caller supplies actual extent/lifetime/disjointness; checked numeric
+ * extents do not establish these properties. No input pointer is retained.
+ * reference_illuminant is nonnull/81. Optional whites are NULL/0 or nonnull/3;
+ * reconstructed_reference_white is NULL/0 or nonnull/81. All supplied spans have
+ * canonical counts, checked multiplication, PTRDIFF_MAX bounds and address extent
+ * before borrowing, including inactive spans. No authored-content scan is added.
+ * Independently authorized outputs clear every semantic field to integer/+float
+ * zero before admission; padding is unspecified and is never evidence. Success
+ * commits the entire result, including three row-major matrices and XYZ whites.
+ * error=NULL is supported. Authorized length becomes zero first. Capacity zero
+ * never reads data. Positive backing must be nonnull/addressable, <=PTRDIFF_MAX;
+ * valid text uses capacity-1 bytes plus NUL, length excludes NUL. Invalid backing
+ * is untouched. Diagnostic absence/truncation never changes status or metadata.
+ * Raw rejection order: diagnostics; required outputs/profile/params/resources;
+ * input-space/method/meter tags; declaration-order flags; declaration-order spans.
+ * Raw rejection is UnsupportedInput/RAW with its closed reason. Semantic resource,
+ * sensitivity and identity errors are PreparationFailure; caught panic is
+ * InternalFailure with narrow leaf provenance. All statuses use API_NONE/code=0.
+ * Hash metadata: 0 none/index0, 1 nonfinite/index0..242, 2 zero identity/index0.
+ * Failure fields use origin-scoped closed reason codes below; success has zero
+ * metadata. Failure clears the result while preserving consumed hash metadata.
+ * Test-only category/fault injection is absent from testing-OFF products.
+ */
+#define FJ_FILM_INPUT_ILLUMINANT_PROFILE_REFERENCE UINT32_C(0)
+#define FJ_FILM_INPUT_ILLUMINANT_D65 UINT32_C(1)
+
+#define FJ_FILM_INPUT_ORIGIN_NONE UINT32_C(0)
+#define FJ_FILM_INPUT_ORIGIN_RAW UINT32_C(1)
+#define FJ_FILM_INPUT_ORIGIN_RESOURCE UINT32_C(2)
+#define FJ_FILM_INPUT_ORIGIN_COLOR UINT32_C(3)
+#define FJ_FILM_INPUT_ORIGIN_SENSITIVITY UINT32_C(4)
+#define FJ_FILM_INPUT_ORIGIN_IDENTITY UINT32_C(5)
+#define FJ_FILM_INPUT_ORIGIN_INTERNAL UINT32_C(6)
+
+/* reason is a closed code within origin, not a global enum. */
+#define FJ_FILM_INPUT_REASON_NONE UINT32_C(0)
+#define FJ_FILM_INPUT_RAW_RECORDS UINT32_C(1)
+#define FJ_FILM_INPUT_RAW_DIAGNOSTIC UINT32_C(2)
+#define FJ_FILM_INPUT_RAW_INPUT_SPACE UINT32_C(3)
+#define FJ_FILM_INPUT_RAW_METHOD UINT32_C(4)
+#define FJ_FILM_INPUT_RAW_METER UINT32_C(5)
+#define FJ_FILM_INPUT_RAW_FLAGS UINT32_C(6)
+#define FJ_FILM_INPUT_RAW_SPANS UINT32_C(7)
+#define FJ_FILM_INPUT_RESOURCE_HANATOS_WINDOW UINT32_C(1)
+#define FJ_FILM_INPUT_RESOURCE_HANATOS_SURFACE UINT32_C(2)
+#define FJ_FILM_INPUT_RESOURCE_HANATOS_BLUR UINT32_C(3)
+#define FJ_FILM_INPUT_RESOURCE_PROJECTION_WHITE UINT32_C(4)
+#define FJ_FILM_INPUT_RESOURCE_TC_SOURCE UINT32_C(5)
+#define FJ_FILM_INPUT_RESOURCE_INPUT_HULL UINT32_C(6)
+#define FJ_FILM_INPUT_COLOR_MATRICES UINT32_C(1)
+#define FJ_FILM_INPUT_COLOR_CAT16 UINT32_C(2)
+#define FJ_FILM_INPUT_COLOR_CAT02 UINT32_C(3)
+#define FJ_FILM_INPUT_SENSITIVITY_COMPUTED UINT32_C(1)
+#define FJ_FILM_INPUT_SENSITIVITY_BOUNDARY UINT32_C(2)
+#define FJ_FILM_INPUT_IDENTITY_REQUIRED UINT32_C(1)
+#define FJ_FILM_INPUT_INTERNAL_PANIC UINT32_C(1)
+#define FJ_FILM_INPUT_INTERNAL_INTEGRITY UINT32_C(2)
+#define FJ_FILM_INPUT_INTERNAL_MATRICES_PANIC UINT32_C(3)
+#define FJ_FILM_INPUT_INTERNAL_CAT16_PANIC UINT32_C(4)
+#define FJ_FILM_INPUT_INTERNAL_CAT02_PANIC UINT32_C(5)
+#define FJ_FILM_INPUT_INTERNAL_SENSITIVITY_PANIC UINT32_C(6)
+
+typedef struct FjFilmInputParams {
+    uint32_t input_space;
+    uint32_t decode_cctf;
+    uint32_t method;
+    uint32_t auto_exposure_enabled;
+    uint32_t meter;
+    float manual_exposure_ev;
+    float film_format_long_edge_mm;
+    uint32_t filter_override;
+    double uv[3];
+    double ir[3];
+    uint32_t apply_hanatos_window;
+    uint32_t apply_hanatos_surface;
+    uint32_t input_compression;
+} FjFilmInputParams;
+
+typedef struct FjFilmInputResources {
+    FjFloatSpan reference_illuminant;
+    FjFloatSpan reference_white_xyz;
+    FjFloatSpan integrated_d65_xyz;
+    FjFloatSpan reconstructed_reference_white;
+    uint64_t tc_source_hash;
+    uint64_t input_hull_hash;
+} FjFilmInputResources;
+
+typedef struct FjFilmInput {
+    FjInputColorConversion color;
+    float xyz_to_linear_srgb[9];
+    float nominal_white_xyz[3];
+    float projection_white_xyz[3];
+    uint32_t method;
+    uint32_t auto_exposure_enabled;
+    uint32_t meter;
+    float manual_exposure_ev;
+    float film_format_long_edge_mm;
+    uint32_t band_pass_active;
+    float uv[3];
+    float ir[3];
+    uint32_t apply_hanatos_window;
+    uint32_t apply_hanatos_surface;
+    float hanatos_spectral_blur;
+    float hanatos_window[4];
+    float hanatos_surface_rgb[3][15];
+    uint32_t projection_illuminant;
+    uint32_t input_compression_active;
+    uint64_t input_hull_hash;
+    uint64_t tc_source_hash;
+    float sensitivity_rgb[81][3];
+    uint64_t sensitivity_hash;
+    float recipe_mallett_green_scale;
+    uint64_t tc_hash;
+    uint64_t hash;
+} FjFilmInput;
+
+typedef struct FjFilmInputFailure {
+    uint32_t origin;
+    uint32_t reason;
+    FjSensitivityFailure sensitivity;
+} FjFilmInputFailure;
+
+FjStatus fj_legacy_film_input_prepare(
+    const FjFilmProfile* profile,
+    const FjFilmInputParams* params,
+    const FjFilmInputResources* resources,
+    FjFilmInput* out_input,
+    FjFilmInputFailure* out_failure,
+    FjErrorBuffer* error);
+
 typedef struct FjPrintProfile FjPrintProfile;
 typedef struct FjPrintDensityCurves FjPrintDensityCurves;
 

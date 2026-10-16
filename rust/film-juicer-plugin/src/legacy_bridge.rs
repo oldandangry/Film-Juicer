@@ -78,19 +78,6 @@ fn color_status(category: u32) -> FjStatus {
 }
 
 #[cfg(feature = "test-support")]
-#[derive(Clone, Copy)]
-struct ColorFault {
-    operation: u32,
-    remaining: u32,
-    fault: u32,
-}
-
-#[cfg(feature = "test-support")]
-thread_local! {
-    static COLOR_FAULT: std::cell::Cell<Option<ColorFault>> = const { std::cell::Cell::new(None) };
-}
-
-#[cfg(feature = "test-support")]
 pub(crate) fn arm_color_fault(operation: u32, call_index: u32, fault: u32) -> FjStatus {
     clear_color_fault();
     if !matches!(operation, 1 | 2 | 3 | 5 | 8 | 10 | 11)
@@ -99,38 +86,17 @@ pub(crate) fn arm_color_fault(operation: u32, call_index: u32, fault: u32) -> Fj
     {
         return color_status(FJ_STATUS_UNSUPPORTED_INPUT);
     }
-    COLOR_FAULT.set(Some(ColorFault {
-        operation,
-        remaining: call_index,
-        fault,
-    }));
+    film_juicer_core::film::input::testing::arm_color(operation, call_index, fault);
     color_status(FJ_STATUS_SUCCESS)
 }
-
 #[cfg(feature = "test-support")]
 pub(crate) fn clear_color_fault() -> FjStatus {
-    COLOR_FAULT.set(None);
+    film_juicer_core::film::input::testing::clear_color();
     color_status(FJ_STATUS_SUCCESS)
 }
-
 #[cfg(feature = "test-support")]
 fn color_fault(operation: u32) -> Result<(), u32> {
-    let Some(mut armed) = COLOR_FAULT.get() else {
-        return Ok(());
-    };
-    if armed.operation != operation {
-        return Ok(());
-    }
-    armed.remaining -= 1;
-    if armed.remaining != 0 {
-        COLOR_FAULT.set(Some(armed));
-        return Ok(());
-    }
-    COLOR_FAULT.set(None);
-    if armed.fault == 1 {
-        return Err(FJ_STATUS_UNSUPPORTED_INPUT);
-    }
-    panic!("color production boundary fault");
+    film_juicer_core::film::input::testing::color_fault(operation)
 }
 
 // FJ_TEMP_BRIDGE: CAT16 host preparation; remove S4.E.

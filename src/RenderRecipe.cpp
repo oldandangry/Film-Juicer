@@ -102,37 +102,11 @@ namespace {
         }
     }
 
-    Spektrafilm::AutoExposureMethod auto_exposure_method_from_index(int index) {
-        switch (index) {
-            case 0:
-                return Spektrafilm::AutoExposureMethod::CenterWeighted;
-            case 1:
-                return Spektrafilm::AutoExposureMethod::Average;
-            case 2:
-                return Spektrafilm::AutoExposureMethod::Median;
-            case 3:
-                return Spektrafilm::AutoExposureMethod::Partial;
-            case 4:
-                return Spektrafilm::AutoExposureMethod::Matrix;
-            case 5:
-                return Spektrafilm::AutoExposureMethod::MultiZone;
-            case 6:
-                return Spektrafilm::AutoExposureMethod::HighlightWeighted;
-            default:
-                throw std::logic_error("invalid accepted auto-exposure method index");
-        }
-    }
 
     bool auto_exposure_method_index_valid(int index) {
         return index >= 0 && index <= 6;
     }
 
-    std::array<float, 3> copy_filter_triplet(const std::array<double, 3>& values, bool active) {
-        std::array<float, 3> out{{active ? static_cast<float>(values[0]) : 0.0f,
-                                  static_cast<float>(values[1]),
-                                  static_cast<float>(values[2])}};
-        return out;
-    }
 
     std::uint64_t hash_profile_route(const ProfileRoute& route) {
         std::uint64_t hash = Hash::kFnvOffset;
@@ -147,39 +121,6 @@ namespace {
         return hash;
     }
 
-    std::uint64_t hash_film_raw_recipe(const FilmRawRecipe& recipe) {
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, recipe.inputColorSpace);
-        hash_value(hash, recipe.inputCctfDecoding);
-        hash_value(hash, recipe.rgbToRawMethod);
-        hash_value(hash, recipe.autoExposureEnabled);
-        hash_value(hash, recipe.autoExposureMethod);
-        hash_value(hash, recipe.manualExposureCompensationEv);
-        hash_value(hash, recipe.filmFormatLongEdgeMm);
-        hash_value(hash, recipe.cameraBandPass.active);
-        Hash::hash_bytes_update(hash, recipe.cameraBandPass.uv.data(), sizeof(recipe.cameraBandPass.uv));
-        Hash::hash_bytes_update(hash, recipe.cameraBandPass.ir.data(), sizeof(recipe.cameraBandPass.ir));
-        Hash::hash_bytes_update(hash, recipe.inputRgbToXyz.data(), sizeof(recipe.inputRgbToXyz));
-        Hash::hash_bytes_update(hash, recipe.inputXyzAdapt.data(), sizeof(recipe.inputXyzAdapt));
-        Hash::hash_bytes_update(hash, recipe.xyzToLinearSrgb.data(), sizeof(recipe.xyzToLinearSrgb));
-        Hash::hash_bytes_update(hash, recipe.inputNominalWhiteXYZ.data(), sizeof(recipe.inputNominalWhiteXYZ));
-        Hash::hash_bytes_update(hash, recipe.projectionWhiteXYZ.data(), sizeof(recipe.projectionWhiteXYZ));
-        hash_string(hash, recipe.referenceIlluminant);
-        hash_string(hash, recipe.projectionIlluminant);
-        hash_value(hash, recipe.finalSensitivityHash);
-        if (recipe.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025 ||
-            recipe.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Arctic2026beta04) {
-            hash_value(hash, recipe.tcLutHash);
-            hash_value(hash, recipe.tcSourceAssetHash);
-            hash_value(hash, recipe.inputCompressionActive);
-            if (recipe.inputCompressionActive) {
-                hash_value(hash, recipe.inputCompressionHullHash);
-            }
-        } else {
-            hash_value(hash, recipe.mallettGreenMidgrayScale);
-        }
-        return hash;
-    }
 
     std::uint64_t hash_diffusion_filter_optics(const DiffusionFilterOpticsRecipe& recipe) {
         if (!recipe.resolved.active || recipe.resolved.hash == 0) {
@@ -325,38 +266,6 @@ namespace {
         return curves[lo][channel] + t * (curves[hi][channel] - curves[lo][channel]);
     }
 
-    std::uint64_t hash_tc_lut_recipe(
-        const FilmRawRecipe& recipe,
-        const std::array<float, 81>& referenceIlluminant) {
-        std::uint64_t hash = Hash::kFnvOffset;
-        constexpr std::uint32_t kSchemaVersion = 2u;
-        hash_value(hash, kSchemaVersion);
-        hash_value(hash, recipe.rgbToRawMethod);
-        hash_value(hash, recipe.tcSourceAssetHash);
-        hash_value(hash, recipe.finalSensitivityHash);
-        Hash::hash_bytes_update(
-            hash,
-            referenceIlluminant.data(),
-            sizeof(referenceIlluminant));
-        Hash::hash_bytes_update(
-            hash,
-            recipe.projectionWhiteXYZ.data(),
-            sizeof(recipe.projectionWhiteXYZ));
-        hash_string(hash, recipe.referenceIlluminant);
-        hash_string(hash, recipe.projectionIlluminant);
-        if (recipe.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025) {
-            hash_value(hash, recipe.hanatos.spectralGaussianBlur);
-            hash_value(hash, recipe.hanatos.applySurface);
-            if (recipe.hanatos.applySurface) {
-                Hash::hash_bytes_update(hash, recipe.hanatos.surfaceParams.data(), sizeof(recipe.hanatos.surfaceParams));
-            }
-        }
-        hash_value(hash, recipe.inputCompressionActive);
-        if (recipe.inputCompressionActive) {
-            hash_value(hash, recipe.inputCompressionHullHash);
-        }
-        return hash;
-    }
 
     bool finite_nonnegative_grain_triplet(const std::array<float, 3>& values) {
         for (float value : values) {
@@ -1674,7 +1583,7 @@ namespace Spektrafilm {
                 diagnostic = message;
                 return false;
             };
-            if (!input.filmProfile) {
+            if (!input.filmSource || !input.filmSource->profile()) {
                 return fail("MissingRequiredResource phase=3B field=film_profile");
             }
             if (!input.referenceIlluminantValid) {
@@ -1692,134 +1601,17 @@ namespace Spektrafilm {
             if (!auto_exposure_method_index_valid(input.cameraMeteringMethod)) {
                 return fail("UnsupportedMode phase=3B field=auto_exposure_method");
             }
-            const Profiles::FilmProfile& profile = *input.filmProfile;
+            const Profiles::FilmProfile& profile = *input.filmSource->profile();
 
             ProfileRoute& profileRoute = recipe.profileRoute;
             profileRoute.capturePolarity = profile.info.type;
             profileRoute.filmProfileAssetVersionToken = profile.assetVersionToken;
             profileRoute.printProfileAssetVersionToken = 0;
-            profileRoute.filmProfile = input.filmProfile;
+            profileRoute.filmProfile = input.filmSource->profile();
             profileRoute.printProfile.reset();
 
-            FilmRawRecipe& filmRaw = recipe.filmRaw;
-            filmRaw.inputColorSpace = input.inputColorSpace;
-            filmRaw.inputCctfDecoding = input.inputCctfDecoding;
-            switch (input.spectralUpsamplingMode) {
-                case 0:
-                    filmRaw.rgbToRawMethod = RgbToRawMethod::Hanatos2025;
-                    break;
-                case 1:
-                    filmRaw.rgbToRawMethod = RgbToRawMethod::Mallett2019;
-                    break;
-                case 2:
-                    filmRaw.rgbToRawMethod = RgbToRawMethod::Arctic2026beta04;
-                    break;
-                default:
-                    return fail("UnsupportedMode phase=3B field=spectral_upsampling_method");
-            }
-            filmRaw.autoExposureEnabled = input.cameraAutoExposureEnabled;
-            filmRaw.autoExposureMethod = auto_exposure_method_from_index(input.cameraMeteringMethod);
-            filmRaw.manualExposureCompensationEv = input.manualExposureCompensationEv;
-            filmRaw.filmFormatLongEdgeMm = input.filmFormatLongEdgeMm;
-            filmRaw.cameraBandPass.active = input.cameraFilterOverride;
-            filmRaw.cameraBandPass.uv = copy_filter_triplet(input.cameraFilterUV, input.cameraFilterOverride);
-            filmRaw.cameraBandPass.ir = copy_filter_triplet(input.cameraFilterIR, input.cameraFilterOverride);
-            const Spectral::InputColorSpace inputColorSpace =
-                Spectral::inputColorSpaceFromIndex(input.inputColorSpace);
-            const auto inputMatrices = JuicerColor::input_matrices(inputColorSpace);
-            filmRaw.inputRgbToXyz = inputMatrices.rgbToXyz;
-            filmRaw.inputNominalWhiteXYZ = inputMatrices.nominalWhiteXYZ;
-            filmRaw.xyzToLinearSrgb = inputMatrices.xyzToLinearSrgb;
-            filmRaw.referenceIlluminant =
-                profile.info.referenceIlluminant.value;
-            filmRaw.hanatos = HanatosAdaptationRecipe{};
-            if (filmRaw.rgbToRawMethod == RgbToRawMethod::Hanatos2025) {
-                filmRaw.hanatos.applyWindow =
-                    input.applyHanatos2025AdaptationWindow;
-                filmRaw.hanatos.applySurface =
-                    input.applyHanatos2025AdaptationSurface;
-                filmRaw.hanatos.spectralGaussianBlur =
-                    profile.digest.hanatosSpectralGaussianBlurDefault;
-                filmRaw.hanatos.windowParams =
-                    profile.data.hanatos2025AdaptationWindowParams;
-                filmRaw.hanatos.surfaceParams =
-                    profile.data.hanatos2025AdaptationSurfaceParams;
-                filmRaw.hanatos.referenceIlluminant =
-                    profile.info.referenceIlluminant.value;
-                if (filmRaw.hanatos.applyWindow &&
-                    !profile.data.hasHanatos2025AdaptationWindowParams) {
-                    return fail("MalformedRequiredProfileData phase=3D-2 field=data.hanatos2025_adaptation_window_params");
-                }
-                if (filmRaw.hanatos.applySurface &&
-                    !profile.data.hasHanatos2025AdaptationSurfaceParams) {
-                    return fail("MalformedRequiredProfileData phase=3D-2 field=data.hanatos2025_adaptation_surface_params");
-                }
-                if (!std::isfinite(filmRaw.hanatos.spectralGaussianBlur) ||
-                    filmRaw.hanatos.spectralGaussianBlur < 0.0f) {
-                    return fail("MalformedRequiredProfileData phase=3D-2 field=settings.spectral_gaussian_blur");
-                }
-            }
-            const bool tcMethod =
-                filmRaw.rgbToRawMethod == RgbToRawMethod::Hanatos2025 ||
-                filmRaw.rgbToRawMethod == RgbToRawMethod::Arctic2026beta04;
-            if (tcMethod) {
-                if (!input.projectionWhiteValid) {
-                    return fail(
-                        "MissingRequiredResource component=film_tc_lut requirement=integrated_projection_white");
-                }
-                if (input.tcSourceAssetHash == 0) {
-                    return fail(
-                        filmRaw.rgbToRawMethod == RgbToRawMethod::Arctic2026beta04
-                            ? "MissingRequiredResource resource=arctic2026beta04_reflectance_xy_tc.npy requirement=finite_float16_c_order_192x192x81"
-                            : "MissingRequiredResource resource=hanatos_2025_spectra_lut.npy requirement=finite_192x192x81");
-                }
-                filmRaw.projectionWhiteXYZ = input.projectionWhiteXYZ;
-                filmRaw.projectionIlluminant =
-                    filmRaw.rgbToRawMethod == RgbToRawMethod::Arctic2026beta04
-                        ? "D65"
-                        : filmRaw.referenceIlluminant;
-                const Spectral::ChromaticAdaptationWhites whites{
-                    filmRaw.inputNominalWhiteXYZ.data(),
-                    filmRaw.projectionWhiteXYZ.data()};
-                filmRaw.inputXyzAdapt = JuicerColor::cat16_matrix(whites);
-                filmRaw.tcSourceAssetHash = input.tcSourceAssetHash;
-                filmRaw.inputCompressionActive =
-                    input.inputCompressionActive;
-                filmRaw.inputCompressionHull = input.inputCompressionHull;
-                filmRaw.inputCompressionHullHash =
-                    filmRaw.inputCompressionHull
-                        ? filmRaw.inputCompressionHull->hash
-                        : 0;
-                if (filmRaw.inputCompressionActive &&
-                    (!filmRaw.inputCompressionHull ||
-                     filmRaw.inputCompressionHullHash == 0)) {
-                    return fail(
-                        "MissingRequiredResource component=film_tc_lut requirement=input_compression_hull");
-                }
-            } else {
-                filmRaw.projectionWhiteXYZ = inputMatrices.d65WhiteXYZ;
-                filmRaw.projectionIlluminant = "D65";
-                const Spectral::ChromaticAdaptationWhites whites{
-                    filmRaw.inputNominalWhiteXYZ.data(),
-                    filmRaw.projectionWhiteXYZ.data()};
-                filmRaw.inputXyzAdapt = JuicerColor::cat02_matrix(whites);
-                filmRaw.inputCompressionActive = false;
-                filmRaw.inputCompressionHullHash = 0;
-                filmRaw.inputCompressionHull.reset();
-                filmRaw.tcSourceAssetHash = 0;
-            }
-            if (!JuicerExposure::prepare_sensitivity(
-                    profile.data.linearSensitivity,
-                    filmRaw,
-                    input)) {
-                return fail("MalformedRequiredProfileData phase=3B field=final_sensitivity");
-            }
-            filmRaw.tcLutHash = tcMethod ? hash_tc_lut_recipe(filmRaw, input.referenceIlluminant) : 0;
-            filmRaw.hash = hash_film_raw_recipe(filmRaw);
-            if (filmRaw.finalSensitivityHash == 0 ||
-                (tcMethod && filmRaw.tcLutHash == 0) ||
-                filmRaw.hash == 0) {
-                return fail("MalformedRequiredProfileData phase=3B field=data.log_sensitivity");
+            if (!input.filmSource->prepare_input(input, recipe.filmRaw, diagnostic)) {
+                return false;
             }
 
             if (!build_spatial_optics_recipe(
@@ -1973,7 +1765,7 @@ namespace Spektrafilm {
         ProfileRoute& profileRoute = recipe.profileRoute;
         profileRoute.hash = hash_profile_route(profileRoute);
 
-        const Profiles::FilmProfile& profile = *film.filmProfile;
+        const Profiles::FilmProfile& profile = *film.filmSource->profile();
         ScannerOutputRecipe& scanner = recipe.scannerOutput;
         scanner.route = film.scanRoute;
         scanner.medium = DensityMedium::Film;
@@ -2021,7 +1813,7 @@ namespace Spektrafilm {
                 "UnsupportedMode phase=4A field=scan_route expected=print";
             return result;
         }
-        if (!film.filmProfile || !input.printSource) {
+        if (!film.filmSource || !film.filmSource->profile() || !input.printSource) {
             result.diagnostic =
                 "MissingRequiredResource phase=4A field=selected_profile";
             return result;
@@ -2077,7 +1869,7 @@ namespace Spektrafilm {
         if (!build_print_density_bounds(
                 *input.printSource->profile(),
                 film.scanRoute,
-                film.filmProfile->info.type,
+                film.filmSource->profile()->info.type,
                 recipe.densityBounds)) {
             result.diagnostic =
                 "MalformedRequiredProfileData phase=4C field=print_density_bounds";
@@ -2087,7 +1879,7 @@ namespace Spektrafilm {
         ScannerOutputRecipe& scanner = recipe.scannerOutput;
         scanner.route = film.scanRoute;
         scanner.medium = DensityMedium::Print;
-        scanner.polarity = film.filmProfile->info.type;
+        scanner.polarity = film.filmSource->profile()->info.type;
         scanner.viewingIlluminant =
             input.printSource->profile()->info.viewingIlluminant.value;
         scanner.lutResolution =

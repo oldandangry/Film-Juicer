@@ -27,6 +27,90 @@ static int words(const float* data, const uint32_t* expected, size_t count) {
 static int status(FjStatus value, uint32_t category) {
     return value.category == category && value.api == FJ_API_NONE && value.native_code == 0;
 }
+typedef FjStatus (*FilmInputPrepare)(const FjFilmProfile*, const FjFilmInputParams*, const FjFilmInputResources*, FjFilmInput*, FjFilmInputFailure*, FjErrorBuffer*);
+_Static_assert(_Generic(&fj_legacy_film_input_prepare, FilmInputPrepare: 1, default: 0), "OFF film-input C11 signature");
+_Static_assert(sizeof(((FjFilmInput*)0)->sensitivity_rgb) == 81 * 3 * sizeof(float), "OFF fixed RGB sensitivity extent");
+static int input_zero(const FjFilmInput* value) {
+    const float* spans[] = {value->color.rgb_to_xyz, value->color.xyz_adapt, value->xyz_to_linear_srgb, value->nominal_white_xyz, value->projection_white_xyz, &value->manual_exposure_ev, &value->film_format_long_edge_mm, value->uv, value->ir, &value->hanatos_spectral_blur, value->hanatos_window, &value->recipe_mallett_green_scale};
+    const size_t counts[] = {9, 9, 9, 3, 3, 1, 1, 3, 3, 1, 4, 1};
+    for (size_t span = 0; span < sizeof(counts) / sizeof(counts[0]); ++span) {
+        for (size_t sample = 0; sample < counts[span]; ++sample) {
+            uint32_t bits = 1;
+            memcpy(&bits, spans[span] + sample, sizeof(bits));
+            if (bits != 0)
+                return 0;
+        }
+    }
+    for (size_t row = 0; row < 3; ++row)
+        for (size_t sample = 0; sample < 15; ++sample) {
+            uint32_t bits = 1;
+            memcpy(&bits, &value->hanatos_surface_rgb[row][sample], sizeof(bits));
+            if (bits != 0)
+                return 0;
+        }
+    for (size_t row = 0; row < 81; ++row)
+        for (size_t channel = 0; channel < 3; ++channel) {
+            uint32_t bits = 1;
+            memcpy(&bits, &value->sensitivity_rgb[row][channel], sizeof(bits));
+            if (bits != 0)
+                return 0;
+        }
+    return !value->color.input_space && !value->color.decode_cctf && !value->color.adapt_xyz && !value->method &&
+           !value->auto_exposure_enabled && !value->meter && !value->band_pass_active && !value->apply_hanatos_window &&
+           !value->apply_hanatos_surface && !value->projection_illuminant && !value->input_compression_active &&
+           !value->input_hull_hash && !value->tc_source_hash && !value->sensitivity_hash && !value->tc_hash && !value->hash;
+}
+static int input_values(FjAssets* assets, FjFilmProfile* profile) {
+    char message[5] = {0};
+    FjErrorBuffer error = {message, sizeof(message), 0};
+    FjCsvPairs* csv = NULL;
+    FjFloatSpan rows = {0};
+    FjIlluminant illuminant = {0};
+    CHECK(status(fj_legacy_csv_acquire(assets, FJ_CSV_D55, &csv, &error), FJ_STATUS_SUCCESS));
+    CHECK(status(fj_legacy_csv_view(csv, &rows, &error), FJ_STATUS_SUCCESS));
+    CHECK(status(fj_legacy_illuminant_from_samples(rows, &illuminant, &error), FJ_STATUS_SUCCESS));
+    CHECK(status(fj_legacy_csv_release(csv, &error), FJ_STATUS_SUCCESS));
+    FjFilmInputParams params = {0};
+    params.method = FJ_RAW_MALLETT_2019;
+    params.film_format_long_edge_mm = 35.0f;
+    params.uv[0] = params.ir[0] = 1.0;
+    params.uv[1] = 410.0;
+    params.uv[2] = 8.0;
+    params.ir[1] = 675.0;
+    params.ir[2] = 15.0;
+    params.apply_hanatos_window = 1;
+    FjFilmInputResources resources = {0};
+    resources.reference_illuminant.data = illuminant.samples;
+    resources.reference_illuminant.count = 81;
+    FjFilmInput out = {0};
+    FjFilmInputFailure failure = {0};
+    CHECK(status(fj_legacy_film_input_prepare(profile, &params, &resources, &out, &failure, NULL), FJ_STATUS_SUCCESS));
+    CHECK(out.color.adapt_xyz == 1 && out.method == FJ_RAW_MALLETT_2019 && out.hash == FILM_INPUT_HASH && out.sensitivity_hash == FILM_INPUT_SENSITIVITY_HASH);
+    CHECK(words(out.color.rgb_to_xyz, film_input_rgb_to_xyz, 9) && words(out.color.xyz_adapt, film_input_xyz_adapt, 9) && words(out.xyz_to_linear_srgb, film_input_xyz_to_linear_srgb, 9));
+    CHECK(words(out.nominal_white_xyz, film_input_nominal_white, 3) && words(out.projection_white_xyz, film_input_projection_white, 3));
+    for (size_t row = 0; row < 81; ++row)
+        CHECK(words(out.sensitivity_rgb[row], film_input_sensitivity + row * 3, 3));
+    CHECK(words(&out.recipe_mallett_green_scale, film_input_mallett_scale, 1));
+    CHECK(!failure.origin && !failure.reason && !failure.sensitivity.hash_failure && !failure.sensitivity.hash_sample_index && !out.tc_hash && !out.tc_source_hash && !out.input_hull_hash);
+    params.method = 99;
+    CHECK(status(fj_legacy_film_input_prepare(profile, &params, &resources, &out, &failure, &error), FJ_STATUS_UNSUPPORTED_INPUT) && input_zero(&out));
+    CHECK(failure.origin == FJ_FILM_INPUT_ORIGIN_RAW && failure.reason == FJ_FILM_INPUT_RAW_METHOD && error.length == sizeof(message) - 1 && message[error.length] == 0);
+    params.method = FJ_RAW_HANATOS_2025;
+    CHECK(status(fj_legacy_film_input_prepare(profile, &params, &resources, &out, &failure, NULL), FJ_STATUS_PREPARATION_FAILURE) && input_zero(&out));
+    CHECK(failure.origin == FJ_FILM_INPUT_ORIGIN_RESOURCE && failure.reason == FJ_FILM_INPUT_RESOURCE_PROJECTION_WHITE);
+    params.method = FJ_RAW_MALLETT_2019;
+    illuminant.samples[0] = -1.0f;
+    CHECK(status(fj_legacy_film_input_prepare(profile, &params, &resources, &out, &failure, NULL), FJ_STATUS_PREPARATION_FAILURE) && input_zero(&out));
+    CHECK(failure.origin == FJ_FILM_INPUT_ORIGIN_SENSITIVITY && failure.reason == FJ_FILM_INPUT_SENSITIVITY_COMPUTED);
+    FjErrorBuffer zero;
+    zero.capacity = 0;
+    CHECK(status(fj_legacy_film_input_prepare(NULL, NULL, NULL, &out, &failure, &zero), FJ_STATUS_UNSUPPORTED_INPUT) && zero.length == 0 && input_zero(&out));
+    FjErrorBuffer malformed = {NULL, 1, 99};
+    CHECK(status(fj_legacy_film_input_prepare(NULL, NULL, NULL, &out, &failure, &malformed), FJ_STATUS_UNSUPPORTED_INPUT) && malformed.length == 0);
+    CHECK(failure.origin == FJ_FILM_INPUT_ORIGIN_RAW && failure.reason == FJ_FILM_INPUT_RAW_DIAGNOSTIC);
+    puts("PASS OFF film-input C11 fixed values, independent native identities, all matrices, semantic clearing and failure precedence");
+    return 0;
+}
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -59,6 +143,7 @@ int main(int argc, char** argv) {
     const char key[] = "kodak_portra_400";
     FjStringView selected = {key, sizeof(key) - 1};
     CHECK(status(fj_legacy_film_profile_acquire(assets, selected, &profile, NULL), FJ_STATUS_SUCCESS));
+    CHECK(input_values(assets, profile) == 0);
     for (uint32_t route = 0; route < 2; ++route) {
         CHECK(status(fj_legacy_film_development_acquire(profile, route, 1.0f, 1, &owner, NULL), FJ_STATUS_SUCCESS));
         FjFilmDevelopmentView view = {0};

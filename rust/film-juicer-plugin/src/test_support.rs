@@ -1646,3 +1646,38 @@ const _: unsafe extern "C" fn(
     u32,
     *mut crate::legacy_bridge::FjOutputColorPreparation,
 ) -> FjStatus = fj_test_output_color;
+
+/// # Safety
+/// Count authorizes one exclusive writable size_t; returned immutable facts are static.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_input_abi_facts(count: *mut usize) -> *const usize {
+    if count.is_null() {
+        return std::ptr::null();
+    }
+    // SAFETY: The fixture authorizes this exclusive initialized output.
+    unsafe {
+        count.write(crate::film_input_bridge::ABI_FACTS.len());
+    }
+    crate::film_input_bridge::ABI_FACTS.as_ptr()
+}
+/// # Safety
+/// Same call-local initialized storage, retained profile and disjoint outputs contract as the legacy declaration.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_input_prepare(
+    profile: *const FjFilmProfile,
+    params: *const crate::film_input_bridge::FjFilmInputParams,
+    resources: *const crate::film_input_bridge::FjFilmInputResources,
+    out: *mut crate::film_input_bridge::FjFilmInput,
+    failure: *mut crate::film_input_bridge::FjFilmInputFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls the common safe construction/projector, with the same checked raw contract.
+    unsafe {
+        crate::film_input_bridge::prepare(profile.cast(), params, resources, out, failure, error)
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_film_input_arm_boundary_fault(stage: u32) {
+    crate::film_input_bridge::arm_boundary_fault(stage);
+}
