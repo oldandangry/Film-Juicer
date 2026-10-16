@@ -26,6 +26,7 @@
 #include "CudaRenderProjection.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
+#include "exposure_fixture.h"
 template <typename T>
 concept RvalueCsvView = requires(T&& value) { std::move(value).view(); };
 static_assert(!std::is_default_constructible_v<JuicerAssets::CsvRows> && !std::is_copy_constructible_v<JuicerAssets::CsvRows> && std::is_move_constructible_v<JuicerAssets::CsvRows> && !RvalueCsvView<JuicerAssets::CsvRows>);
@@ -219,7 +220,7 @@ namespace IlluminantConstruction {
         fixtures = fixtureRoot;
         scratch = artifactRoot;
     }
-    Json fixture() {
+    const Json& fixture() {
 #if defined(_WIN32)
         const std::string platform = "windows-clang";
 #else
@@ -230,8 +231,8 @@ namespace IlluminantConstruction {
 #else
         const std::string profile = "debug";
 #endif
-        std::ifstream file(fixtures / ("construction-" + platform + "-" + profile + ".json"));
-        return Json::parse(file);
+        static const Json decoded = load_shared_fixture(fixtures / ("construction-" + platform + "-" + profile + ".json"), "construction-manifest.json");
+        return decoded;
     }
     struct Diagnostic {
         std::array<char, 512> bytes{};
@@ -276,7 +277,7 @@ namespace IlluminantConstruction {
     }
 
     TEST(IlluminantConstruction, RawAbiCoreFacadeAndWrappersMatchFrozenLeaves) {
-        const auto f = fixture();
+        const auto& f = fixture();
         Diagnostic d;
         FjIlluminant curve{}, core{};
         FjIlluminantCoverage c{};
@@ -341,7 +342,7 @@ namespace IlluminantConstruction {
         Diagnostic d;
         FjIlluminant curve{};
         FjIlluminantCoverage c{};
-        const auto f = fixture();
+        const auto& f = fixture();
         for (const auto& row : f["leaf"]["resample"]) {
             const auto input = scalars(row["rows"]);
             (void)fj_test_illuminant_curve(8, span(input), {}, 0, &curve, &c, &d.error);
@@ -494,7 +495,7 @@ namespace IlluminantConstruction {
         fj_test_illuminant_clear_fault();
     }
     TEST(IlluminantConstruction, PublishedCallerProductsMatchFrozenNativeParent) {
-        const auto f = fixture();
+        const auto& f = fixture();
         const auto root = scratch / "construction-products";
         fs::remove_all(root);
         fs::copy(resources, root, fs::copy_options::recursive);

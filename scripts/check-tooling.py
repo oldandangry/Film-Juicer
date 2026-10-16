@@ -37,6 +37,8 @@ def source_files(root: Path) -> dict[str, list[str]]:
             kind = "workflow"
         if kind is None:
             continue
+        if not (root / path).exists() and not (root / path).is_symlink():
+            continue  # Deleted tracked files are outside the current source membership.
         resolved = (root / path).resolve(strict=True)
         if not resolved.is_relative_to(root.resolve()) or not resolved.is_file():
             raise ToolingError(f"lint input is outside the repository or is not a file: {name}")

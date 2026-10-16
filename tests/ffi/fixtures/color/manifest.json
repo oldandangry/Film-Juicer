@@ -95,5 +95,21 @@
     }
   ],
   "print_profile_key": "kodak_portra_endura",
-  "leaf_configuration_policy": "All four native parent captures agree for leaf/inverse/threshold values. Core tests use linux-debug leaf expectations; native complete-consumer tests select their exact preset capture."
+  "leaf_configuration_policy": "All four native parent captures agree for leaf/inverse/threshold values. Core tests use linux-debug leaf expectations; native complete-consumer tests select their exact preset capture.",
+  "payloads": {
+    "linux-debug.json": "linux-debug.json",
+    "linux-release.json": "linux-debug.json",
+    "windows-clang-debug.json": "windows-clang-debug.json",
+    "windows-clang-release.json": "windows-clang-debug.json"
+  },
+  "storage_files": {
+    "linux-debug.json": "b7bdaa3d8e480d1b3c49019676906691f0b04df939353d0458242c722cf709a2",
+    "windows-clang-debug.json": "301f173e7f427311683f9f2cc71bf30a7e618edc5aadd3e83278fa341ba6bab3"
+  },
+  "storage_migration": {
+    "format": "logical capture aliases and shared exact expected arrays v1",
+    "source_manifest_sha256": "2f15e2165a2ddb86b78a2a791396dccb2dcc6234bcace46f664adc53eac47ce8",
+    "capture_hashes": "Original capture/provenance hashes above retain their original representation; storage_files hashes the maintained physical representation.",
+    "proof": "All four raw expansions and effective qualified color documents match retained originals exactly; logical supplement identity and ordered test/replace operations preserved."
+  }
 }

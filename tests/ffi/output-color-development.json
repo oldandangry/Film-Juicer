@@ -1,0 +1,10 @@
+{
+  "sources": [
+    "rust/film-juicer-core/src/color/output.rs"
+  ],
+  "target": "JuicerOutputColorTests",
+  "test": "Ffi.Host.OutputColor",
+  "fixture": "tests/ffi/fixtures/output-color/native.json",
+  "rust_filter": "color::output::",
+  "rust_interface_revision": "e1231fa71c55f8a38f31ceedbe7ffbdc18d71cbc"
+}

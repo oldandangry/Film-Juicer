@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from probe_evidence import ProbeEvidence, compiler_environment
 
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent / "fixtures/rust_naming"
 PACKAGES = ("film-juicer-core", "film-juicer-plugin")
+SPEC = importlib.util.spec_from_file_location("naming_quality", ROOT / "scripts/check-quality.py")
+quality = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = quality
+SPEC.loader.exec_module(quality)
 
 
 class RustNamingTests(unittest.TestCase):
@@ -26,15 +32,12 @@ class RustNamingTests(unittest.TestCase):
         cls.profiles = {"debug": (False,), "release": (True,), "both": (False, True)}[
             os.environ.get("JUICER_RUST_PROBE_PROFILE", "both")
         ]
-        cls.artifacts = Path(os.environ["JUICER_TEST_ARTIFACT_DIR"]).resolve()
-        cls.artifacts.mkdir(parents=True, exist_ok=True)
-        cls.environment = compiler_environment()
-        cls.evidence = ProbeEvidence(ROOT, "naming", cls.cargo, cls.target,
-                                     cls.profiles, cls.environment, cls.artifacts)
-        cls.addClassCleanup(cls.evidence.finish)
+        artifact_root = Path(os.environ["JUICER_TEST_ARTIFACT_DIR"]).resolve()
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        cls.artifacts = Path(tempfile.mkdtemp(prefix="run-", dir=artifact_root))
+        cls.environment = quality.cargo_environment()
 
     def setUp(self) -> None:
-        self.probes = {}
         directory = tempfile.TemporaryDirectory(prefix="probe-", dir=self.artifacts)
         self.addCleanup(directory.cleanup)
         self.workspace = Path(directory.name)
@@ -43,7 +46,6 @@ class RustNamingTests(unittest.TestCase):
         shutil.copytree(ROOT / "rust", self.workspace / "rust")
 
     def add_probe(self, package: str, fixture: str) -> None:
-        self.probes[package + "/src/lib.rs"] = fixture
         source = self.workspace / "rust" / package / "src"
         shutil.copy2(FIXTURES / f"{fixture}.rs", source / "naming_probe.rs")
         with (source / "lib.rs").open("a", encoding="utf-8") as library:
@@ -60,9 +62,11 @@ class RustNamingTests(unittest.TestCase):
             command.append("--release")
         # Do not add -D warnings here: prove the checked-in manifest denies violations.
         log = self.artifacts / f"{self._testMethodName}-{package}-{profile}.log"
-        result = self.evidence.run(
-            {"test": self._testMethodName, "package": package, "profile": profile,
-             "features": [], "fixtures": dict(self.probes)}, command, self.workspace, log)
+        quality.check_probe_configuration(ROOT, self.workspace)
+        result = subprocess.run(command, cwd=self.workspace, env=self.environment,
+                                capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+        log.write_text(subprocess.list2cmdline(command) + "\n" + result.stdout + result.stderr, encoding="utf-8")
+        quality.check_probe_configuration(ROOT, self.workspace)
         diagnostics = []
         for line in result.stdout.splitlines():
             message = json.loads(line)
@@ -120,7 +124,6 @@ class RustNamingTests(unittest.TestCase):
                                     f"missing blocking {lint} for {name}: {diagnostics}",
                                 )
                 # The plug-in's dependency must be clean when testing its own lints.
-                self.probes[package + "/src/lib.rs"] = "accepted"
                 shutil.copy2(FIXTURES / "accepted.rs", self.workspace / "rust" / package / "src/naming_probe.rs")
 
     def test_narrow_foreign_boundary_exception_passes(self) -> None:

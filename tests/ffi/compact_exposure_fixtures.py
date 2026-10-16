@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import subprocess
@@ -15,10 +16,55 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 INPUT_FIELDS = frozenset("id linear illuminant reference window uv ir method apply_window reference_valid active".split())
 EXPECTED_FIELDS = frozenset("built expected scale hash hash_failure_index failure".split())
 REFERENCE_FIELDS = frozenset("source source_index source_value white blur built expected diagnostic".split())
+BLOCK_FIELDS = ("scanner_tables", "exposure_tables", "sensitivity", "final_sensitivity")
 
 
 def encode(value: object) -> bytes:
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def compact_expected_blocks(fixtures: dict[str, dict], blocks_name: str) -> tuple[dict[str, dict], dict]:
+    """Share exact expected arrays within one frozen fixture family."""
+    blocks = {"schema_version": 1, **{field: [] for field in BLOCK_FIELDS}}
+    indices = {field: {} for field in BLOCK_FIELDS}
+    candidates = {}
+    for name, original in fixtures.items():
+        candidate = json.loads(json.dumps(original))
+        for group in ("recipes", "products"):
+            for row in candidate.get(group, []):
+                expected = row.get("expected", {})
+                for field in BLOCK_FIELDS:
+                    if field not in expected:
+                        continue
+                    value = expected.pop(field)
+                    key = encode(value)
+                    if key not in indices[field]:
+                        indices[field][key] = len(blocks[field])
+                        blocks[field].append(value)
+                    expected[field + "_record"] = indices[field][key]
+        candidate["expected_blocks"] = blocks_name
+        candidates[name] = candidate
+        if expand_expected_blocks(candidate, blocks) != original:
+            raise ValueError(f"expected block expansion changed capture: {name}")
+    return candidates, blocks
+
+
+def expand_expected_blocks(fixture: dict, blocks: dict) -> dict:
+    if blocks["schema_version"] != 1:
+        raise ValueError("unsupported shared expected-block schema")
+    expanded = json.loads(json.dumps(fixture))
+    expanded.pop("expected_blocks")
+    for group in ("recipes", "products"):
+        for row in expanded.get(group, []):
+            expected = row.get("expected", {})
+            for field in BLOCK_FIELDS:
+                reference = field + "_record"
+                if reference in expected:
+                    index = expected.pop(reference)
+                    if type(index) is not int or not 0 <= index < len(blocks[field]):
+                        raise ValueError("invalid expected block reference")
+                    expected[field] = copy.deepcopy(blocks[field][index])
+    return expanded
 
 
 def numerical_fixture(fixture: dict) -> dict:

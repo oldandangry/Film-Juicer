@@ -24,6 +24,8 @@ from pathlib import Path, PurePosixPath
 from typing import Sequence
 
 
+EXECUTION_SOURCE = Path(__file__).with_name("execution.py")
+
 RUST_POLICY_FILES = {
     "Cargo.lock",
     "Cargo.toml",
@@ -100,6 +102,35 @@ class AnalysisCommand:
     source: str = ""
 
 
+def supervised_run(command, *, cwd, env, stdout, stderr, check, process_prefix, **options):
+    """Reuse the command owner; return captured bytes only after writers drain."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from execution import OutputLease, run_process_tree
+    tree = {"drained": False}
+    receipt = process_prefix.with_suffix(".process.json")
+    lock = process_prefix.with_suffix(".running.lock")
+    stdout_path = process_prefix.with_suffix(".capture")
+    stderr_path = process_prefix.with_suffix(".error-capture")
+    try:
+        with stdout_path.open("wb") as output, stderr_path.open("wb") as errors:
+            status = run_process_tree(command, cwd, env, output, 3600, receipt, lock, tree,
+                                      errors if stderr == subprocess.PIPE else None)
+        payload = stdout_path.read_bytes()
+        error_payload = stderr_path.read_bytes()
+        if options.get("text"):
+            payload = payload.decode("utf-8", errors="replace").replace("\r\n", "\n")
+            error_payload = error_payload.decode("utf-8", errors="replace").replace("\r\n", "\n")
+        return subprocess.CompletedProcess(command, status, payload, error_payload)
+    finally:
+        if tree["drained"]:
+            lock.unlink(missing_ok=True)
+            stdout_path.unlink(missing_ok=True)
+            stderr_path.unlink(missing_ok=True)
+        else:
+            for lease in OutputLease.held.values():
+                lease.blocked = True
+
+
 class Runner:
     def __init__(self, root: Path, log_dir: Path, jobs: int = 1) -> None:
         if jobs < 1:
@@ -111,6 +142,8 @@ class Runner:
         self.index = 0
         self.output_lock = threading.Lock()
         self.inputs: dict[str, str] = {}
+        self.blocked = False
+        self.bind_inputs([EXECUTION_SOURCE, EXECUTION_SOURCE.with_name("process_tree.py")])
 
     def bind_inputs(self, paths: Sequence[Path]) -> None:
         """Bind external/generated inputs when consumed; reject later changes."""
@@ -145,6 +178,12 @@ class Runner:
         start = time.perf_counter()
         record = {"command": list(command), "directory": str(cwd or self.root), "label": label}
         executable = shutil.which(command[0], path=(env or os.environ).get("PATH", ""))
+        if executable is None:
+            detail = f"{label}: could not start command: executable is unavailable: {command[0]}"
+            log_path.write_text(detail + "\n", encoding="utf-8")
+            record.update(seconds=time.perf_counter() - start, returncode=None, error=detail)
+            log_path.with_suffix(".command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+            raise QualityError(detail)
         if executable:
             self.bind_inputs([Path(executable)])
             record["executable_sha256"] = self.inputs[str(Path(executable).resolve())]
@@ -152,8 +191,9 @@ class Runner:
             output_options = {} if stdout_only else {
                 "text": True, "encoding": "utf-8", "errors": "replace",
             }
-            completed = subprocess.run(
+            completed = supervised_run(
                 command,
+                process_prefix=log_path,
                 cwd=cwd or self.root,
                 env=env,
                 stdout=subprocess.PIPE,
@@ -161,7 +201,9 @@ class Runner:
                 check=False,
                 **output_options,
             )
-        except OSError as exc:
+        except BaseException as exc:
+            process_receipt = log_path.with_suffix(".process.json")
+            self.blocked |= not process_receipt.is_file() or not json.loads(process_receipt.read_text())["drained"]
             log_path.write_text(f"{label}: could not start command: {exc}\n", encoding="utf-8")
             record.update(seconds=time.perf_counter() - start, returncode=None, error=str(exc))
             log_path.with_suffix(".command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
@@ -225,9 +267,12 @@ def parse_arguments() -> argparse.Namespace:
     selection.add_argument(
         "--all-owned", action="store_true", help="audit every tracked owned source"
     )
+    parser.add_argument("--qualification", action="store_true", help="include representative native/CUDA and complete Rust gates")
+    parser.add_argument("--compiler-consumers", nargs="+", help="actual compiler dependency consumers supplied by development verification")
+    parser.add_argument("--rust-packages", nargs="+", choices=("film-juicer-core", "film-juicer-plugin"))
+    parser.add_argument("--rust-test-filters", nargs="+", help="existing package test filters for development")
+    parser.add_argument("--development", action="store_true", help="development checks only; never publishes qualification probes")
     parser.add_argument("--preset", required=True, choices=sorted(PRESET_TARGETS))
-    parser.add_argument("--probe-manifest", type=Path, help="stage fresh compiler evidence for explicit publication after this gate exits")
-    parser.add_argument("--qualification-id", help="UUID shared explicitly with this qualification's CTest launches")
     parser.add_argument("--cargo", help="Cargo executable override")
     parser.add_argument("--rustc", help="rustc executable override")
     parser.add_argument("--clang-format", dest="clang_format")
@@ -235,20 +280,14 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--jobs", type=int, default=2,
                         help="maximum concurrent native/CUDA analysis commands (default: 2)")
     arguments = parser.parse_args()
+    if (arguments.rust_packages or arguments.rust_test_filters) and not arguments.development:
+        parser.error("named Rust checks require development verification")
+    if arguments.compiler_consumers and not arguments.development:
+        parser.error("compiler consumers require development verification")
+    if getattr(arguments, "development", False) and arguments.qualification:
+        parser.error("development and qualification scopes are distinct")
     if arguments.jobs < 1:
         parser.error("--jobs must be at least 1")
-    if bool(arguments.probe_manifest) != bool(arguments.qualification_id):
-        parser.error("--probe-manifest and --qualification-id are required together")
-    if arguments.qualification_id:
-        import uuid
-        try:
-            canonical = str(uuid.UUID(arguments.qualification_id))
-        except ValueError:
-            parser.error("--qualification-id must be a canonical UUID")
-        if canonical != arguments.qualification_id:
-            parser.error("--qualification-id must be a canonical UUID")
-        if arguments.probe_manifest.exists() or arguments.probe_manifest.with_name(arguments.probe_manifest.name + ".pending").exists():
-            parser.error("probe manifest already exists; start a new qualification")
     return arguments
 
 
@@ -489,9 +528,25 @@ def resolve_tool(
 
 def cargo_environment() -> dict[str, str]:
     environment = os.environ.copy()
-    for name in ("RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"):
+    for name in ("RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CLIPPY_CONF_DIR"):
         environment.pop(name, None)
     return environment
+
+
+def check_probe_configuration(root: Path, workspace: Path) -> None:
+    """Disposable probe sources must inherit the repository Cargo configuration."""
+    def configurations(directory):
+        result = []
+        for parent in (directory, *directory.parents):
+            for name in ("config", "config.toml"):
+                path = parent / ".cargo" / name
+                if path.exists() or path.is_symlink():
+                    if not path.is_file():
+                        raise QualityError("Cargo configuration is not a file: " + str(path))
+                    result.append(path.resolve())
+        return result
+    if configurations(workspace) != configurations(root):
+        raise QualityError("probe output directory has different Cargo configuration")
 
 
 def check_workspace_contract(root: Path) -> None:
@@ -562,7 +617,6 @@ def check_rust(
     rustc_candidates = (str(Path(cargo_dir) / ("rustc.exe" if os.name == "nt" else "rustc")), "rustc")
     rustc = resolve_tool(arguments.rustc, "JUICER_RUSTC", rustc_candidates)
     environment = cargo_environment()
-    environment.pop("JUICER_RUST_PROBE_MANIFEST", None)  # Quality always compiles fresh.
     environment["CLIPPY_CONF_DIR"] = str(root)
     rustup = shutil.which("rustup", path=environment.get("PATH", ""))
     if rustup and file_digest(Path(cargo)) == file_digest(Path(rustup)):
@@ -613,21 +667,25 @@ def check_rust(
         "--target-dir",
         str(target_dir),
     ]
-    runner.run([cargo, "fmt", "--all", "--", "--check"], env=environment, label="rustfmt")
-    for package in ("film-juicer-core", "film-juicer-plugin"):
+    development = getattr(arguments, "development", False)
+    selected_packages = getattr(arguments, "rust_packages", None) or ["film-juicer-core", "film-juicer-plugin"]
+    format_packages = [item for package in selected_packages for item in ("--package", package)] if development else ["--all"]
+    runner.run([cargo, "fmt", *format_packages, "--", "--check"], env=environment, label="rustfmt")
+    for package in selected_packages:
         features = ["--features", "test-support"] if package == "film-juicer-plugin" else []
         runner.run(
             [*common, "-p", package, "--all-targets", "--", "-D", "warnings"],
             env=environment,
             label=f"clippy-{package}-dev",
         )
-        runner.run(
-            [*common, "-p", package, "--all-targets", "--release", "--", "-D", "warnings"],
-            env=environment,
-            label=f"clippy-{package}-release",
-        )
+        if not getattr(arguments, 'development', False):
+            runner.run(
+                [*common, "-p", package, "--all-targets", "--release", "--", "-D", "warnings"],
+                env=environment,
+                label=f"clippy-{package}-release",
+            )
         if features:
-            for profile in ([], ["--release"]):
+            for profile in ([[]] if getattr(arguments, "development", False) else [[], ["--release"]]):
                 runner.run(
                     [*common, "-p", package, "--all-targets", *features, *profile,
                      "--", "-D", "warnings"],
@@ -635,34 +693,19 @@ def check_rust(
                     label=f"clippy-{package}-test-support-{'release' if profile else 'dev'}",
                 )
 
-    runner.run(
-        [sys.executable, "-m", "unittest", "discover", "-s", "tests/quality",
-         "-p", "test_rust_naming.py", "-v"],
-        env={
-            **environment,
-            "JUICER_CARGO": cargo,
-            "JUICER_RUST_TARGET": target,
-            "JUICER_TEST_ARTIFACT_DIR": str(runner.log_dir / "rust-naming"),
-            "JUICER_RUST_PROBE_DIR": str(target_dir / "quality-probes/naming"),
-            "JUICER_RUST_PROBE_PROFILE": "both",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        },
-        label="rust-naming-enforcement",
-    )
-    runner.run(
-        [sys.executable, "-m", "unittest", "discover", "-s", "tests/quality",
-         "-p", "test_rust_boundaries.py", "-v"],
-        env={
-            **environment,
-            "JUICER_CARGO": cargo,
-            "JUICER_RUST_TARGET": target,
-            "JUICER_TEST_ARTIFACT_DIR": str(runner.log_dir / "rust-boundaries"),
-            "JUICER_RUST_PROBE_DIR": str(target_dir / "quality-probes/boundaries"),
-            "JUICER_RUST_PROBE_PROFILE": "both",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        },
-        label="rust-boundary-enforcement",
-    )
+    if development:
+        for package in selected_packages:
+            filters = (getattr(arguments, "rust_test_filters", None) or [""]) if package == "film-juicer-core" else [""]
+            for index, test_filter in enumerate(filters):
+                variants = [[], ["--features", "test-support"]] if package == "film-juicer-plugin" else [[]]
+                for features in variants:
+                    output = runner.run([cargo, "test", "--locked", "--package", package,
+                                         "--no-default-features", *features, "--target", target,
+                                         "--target-dir", str(target_dir), "--lib", test_filter],
+                                        env=environment, label=f"test-{package}-{index}-{'test-support' if features else 'production'}")
+                    if not re.search(r"running [1-9][0-9]* tests?", output) or "test result: ok" not in output:
+                        raise QualityError("selected Cargo filter did not execute a nonempty successful result")
+        return
 
 
 def split_compiler_command(command: str) -> tuple[str, ...]:
@@ -724,7 +767,7 @@ class IncludeSearch:
     forced: tuple[str, ...]
 
 
-def include_search(root: Path, entry: CompilationEntry) -> IncludeSearch:
+def include_search(root: Path, entry: CompilationEntry, *, resolve=None) -> IncludeSearch:
     directory = entry.directory if entry.directory.is_absolute() else root / entry.directory
     arguments = list(entry.arguments or split_compiler_command(entry.command))
     quoted, ordinary, system, after, forced = [], [], [], [], []
@@ -754,16 +797,17 @@ def include_search(root: Path, entry: CompilationEntry) -> IncludeSearch:
     system.extend(value for value in os.environ.get("INCLUDE" if os.name == "nt" else "CPLUS_INCLUDE_PATH", "").split(os.pathsep) if value)
 
     def paths(values):
-        return tuple((directory / value).resolve() for value in values)
+        return tuple(resolve(directory / value) if resolve else (directory / value).resolve() for value in values)
 
     return IncludeSearch(paths(quoted), paths([*ordinary, *system, *after]), tuple(forced))
 
 
 def included_paths(root: Path, entry: CompilationEntry,
                    includes: dict[str, tuple[tuple[str, str], ...]],
-                   edges: dict[tuple[str, IncludeSearch], tuple[str, ...]]) -> set[str]:
+                   edges: dict[tuple[str, IncludeSearch], tuple[str, ...]], *,
+                   search=None, resolve=None, is_file=None) -> set[str]:
     """Share parsed text; resolve edges separately for each ordered search context."""
-    search = include_search(root, entry)
+    search = include_search(root, entry) if search is None else search
     pending = [entry.path]
     visited: set[str] = set()
     while pending:
@@ -789,10 +833,10 @@ def included_paths(root: Path, entry: CompilationEntry,
             directories = (*((current_path.parent, *search.quoted) if delimiter == '"' else ()), *search.ordinary)
             candidates = (directory / include for directory in directories)
             for candidate in candidates:
-                if not candidate.is_file():
+                if not (is_file(candidate) if is_file else candidate.is_file()):
                     continue
                 try:
-                    relative = candidate.resolve().relative_to(root).as_posix()
+                    relative = (resolve(candidate) if resolve else candidate.resolve()).relative_to(root).as_posix()
                 except ValueError:
                     break  # The first match shadows later project paths too.
                 children.append(relative)
@@ -1044,7 +1088,9 @@ def prepare_native_analysis(
         label="clang-format",
     )
     runner.run([clang_tidy, "--verify-config"], label="clang-tidy-config")
-    translation_units = tidy_translation_units(root, selected_native, entries, policy)
+    consumers = getattr(arguments, "compiler_consumers", None) or []
+    validate_translation_units(consumers, entries, policy)
+    translation_units = sorted(set(tidy_translation_units(root, selected_native, entries, policy)) | set(consumers))
     if not translation_units:
         raise QualityError("native selection has no translation unit for clang-tidy")
     includes, edges = {}, {}
@@ -1131,7 +1177,8 @@ def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
     )
 
     runner_changed = (
-        any(path.startswith(QUALITY_RUNNER_PREFIXES) for path in selected)
+        getattr(arguments, "qualification", False)
+        or any(path.startswith(QUALITY_RUNNER_PREFIXES) for path in selected)
         or any(path in NATIVE_POLICY_FILES for path in selected)
         or any(path.startswith(".github/workflows/") for path in selected)
     )
@@ -1140,24 +1187,11 @@ def run_checks(root: Path, arguments: argparse.Namespace, policy: SourcePolicy,
         or any(path in RUST_BUILD_FILES for path in selected)
         or any(is_rust(path) for path in selected)
     )
-    native_required = runner_changed or any(
+    native_required = bool(getattr(arguments, "compiler_consumers", None)) or runner_changed or any(
         path in {".clang-format", ".clang-tidy"} or is_native(path, policy)
         for path in selected
     )
 
-    if runner_changed:
-        runner.run(
-            [sys.executable, "-m", "unittest", "discover", "-s", "tests/quality",
-             "-p", "test_check_quality.py", "-v"],
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-            label="quality-dispatcher-tests",
-        )
-        runner.run(
-            [sys.executable, "-m", "unittest", "discover", "-s", "tests/quality",
-             "-p", "test_probe_evidence.py", "-v"],
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-            label="probe-evidence-tests",
-        )
     native_commands: list[AnalysisCommand] = []
     if native_required:
         native_files = [path for path in selected if is_native(path, policy)]
@@ -1195,7 +1229,7 @@ def file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def quality_inputs(root: Path, preset: str, selected: Sequence[str], policy: SourcePolicy) -> dict:
+def quality_inputs(root: Path, preset: str, selected: Sequence[str], policy: SourcePolicy, development=False) -> dict:
     """Bound the current source tree, never previous validation runs or binaries."""
     head = run_git(root, ["rev-parse", "HEAD"]).decode().strip()
     # HEAD binds clean tracked files; hash every dirty file and relevant untracked
@@ -1211,6 +1245,13 @@ def quality_inputs(root: Path, preset: str, selected: Sequence[str], policy: Sou
     # Hash tracked source bytes as well as Git identity to include index flags
     # such as assume-unchanged, and to avoid relying on Git's timestamp cache.
     names.update(run_git(root, ["ls-files", "-z", "--", *roots]).decode().split("\0"))
+    if development:
+        names = set(selected) | NATIVE_POLICY_FILES | RUST_POLICY_FILES
+        names.update(name for name in run_git(root, ["ls-files", "-z", "--", "src/", "native/"]).decode().split("\0") if name)
+        names.add("tests/ffi/test_native_boundary.py")
+        if any(is_rust(name) for name in selected):
+            names.update(path.relative_to(root).as_posix() for path in (root / "rust").rglob("*")
+                         if path.is_file() and "__pycache__" not in path.parts)
     names.update(f"out/build/{preset}/{name}" for name in ("compile_commands.json", "CMakeCache.txt", "build.ninja", "CMakeFiles/rules.ninja"))
     files = {name: file_digest(root / name) if (root / name).is_file() else None
              for name in sorted(names) if name and not (root / name).is_dir()}
@@ -1226,11 +1267,16 @@ def create_run_directory(root: Path, preset: str) -> Path:
 
 
 def main() -> int:
-    # Manifest preparation imports probe_evidence after the compiler probes have
-    # captured their context. Keep that import from adding a cached runtime file.
     sys.dont_write_bytecode = True
     arguments = parse_arguments()
     root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root / "scripts"))
+    from execution import OutputLease
+    with OutputLease(root, root / "out/build" / arguments.preset):
+        return quality_main(root, arguments)
+
+
+def quality_main(root, arguments):
     check_build_path(root, arguments.preset)
     policy = load_policy(root)
     selected, excluded = select_paths(root, arguments, policy)
@@ -1239,6 +1285,7 @@ def main() -> int:
     record = {
         "command": [sys.executable, *sys.argv], "directory": str(root),
         "preset": arguments.preset, "selected": selected, "excluded": excluded,
+        "mode": "development" if getattr(arguments, "development", False) else "qualification",
         "started_at": datetime.now(timezone.utc).isoformat(), "status": "running",
         "selected_sha256": {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
                             for name in selected if (root / name).is_file()},
@@ -1248,12 +1295,12 @@ def main() -> int:
     print(f"Quality run: {log_dir}", flush=True)
     start = time.perf_counter()
     try:
-        record["inputs"] = quality_inputs(root, arguments.preset, selected, policy)
+        record["inputs"] = quality_inputs(root, arguments.preset, selected, policy, getattr(arguments, "development", False))
         receipt.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         result = run_checks(root, arguments, policy, selected, excluded, runner)
         if result != 0:
             raise QualityError(f"quality checks returned {result}")
-        if quality_inputs(root, arguments.preset, selected, policy) != record["inputs"]:
+        if quality_inputs(root, arguments.preset, selected, policy, getattr(arguments, "development", False)) != record["inputs"]:
             raise QualityError("quality inputs changed during checks; run cannot qualify them")
         runner.verify_inputs()
         record["status"] = "passed"
@@ -1265,14 +1312,10 @@ def main() -> int:
     finally:
         record["consumed_inputs"] = runner.inputs if isinstance(runner.inputs, dict) else {}
         record.update(seconds=time.perf_counter() - start, finished_at=datetime.now(timezone.utc).isoformat())
-        record["files"] = {path.relative_to(log_dir).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        record["files"] = {} if runner.blocked else {path.relative_to(log_dir).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
                            for path in sorted(log_dir.rglob("*")) if path.is_file() and path != receipt}
         receipt.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-        if record["status"] == "passed" and arguments.probe_manifest:
-            sys.path.insert(0, str(root / "tests/quality"))
-            from probe_evidence import prepare_manifest
-            if prepare_manifest(receipt, arguments.probe_manifest, arguments.qualification_id):
-                print(f"Pending probe evidence: {arguments.probe_manifest}.pending", flush=True)
+
 
 
 if __name__ == "__main__":

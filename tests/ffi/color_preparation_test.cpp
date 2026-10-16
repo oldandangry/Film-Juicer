@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <stdexcept>
@@ -45,6 +46,67 @@ namespace {
         if (!condition) {
             throw std::runtime_error(diagnostic);
         }
+    }
+    void shared_fixture_loading_tests(const std::filesystem::path& artifacts) {
+        const auto root = artifacts / std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+        const auto color = root / "color";
+        const auto updates = root / "exposure/updates/color";
+        std::filesystem::create_directories(color);
+        std::filesystem::create_directories(updates);
+        const auto write = [](const std::filesystem::path& path, const Json& value) {
+            std::ofstream file(path);
+            file << value;
+        };
+        write(color / "manifest.json", {{"payloads", {{"linux-debug.json", "shared.json"}, {"linux-release.json", "shared.json"}}}});
+        write(color / "shared.json", {{"expected_blocks", "blocks.json"}, {"recipes", {{{"expected", {{"sensitivity_record", 0}}}}, {{"expected", {{"sensitivity_record", 0}}}}}}});
+        write(color / "blocks.json", {{"schema_version", 1}, {"sensitivity", {{0, 0x80000000u, 0x7fc00123u}}}});
+        for (const auto* logical : {"linux-debug.json", "linux-release.json"}) {
+            const auto word = std::string(logical) == "linux-debug.json" ? 11 : 17;
+            write(updates / logical, {{"original_fixture", logical}, {"patch", {{{"op", "test"}, {"path", "/recipes/0/expected/sensitivity/0"}, {"value", 0}}, {{"op", "replace"}, {"path", "/recipes/0/expected/sensitivity/0"}, {"value", word}}, {{"op", "test"}, {"path", "/recipes/1/expected/sensitivity/0"}, {"value", 0}}}}});
+            const auto fixture = load_exposure_qualified_fixture(color / logical);
+            require(fixture.at("recipes").at(0).at("expected").at("sensitivity").at(0) == word, "logical alias selects its own ordered supplement");
+            require(fixture.at("recipes").at(1).at("expected").at("sensitivity") == Json::array({0, 0x80000000u, 0x7fc00123u}), "expanded expected cases retain independent bits and patch state");
+        }
+        bool unknownRejected = false;
+        try {
+            (void)load_shared_fixture(color / "unknown.json", "manifest.json");
+        } catch (const Json::out_of_range&) {
+            unknownRejected = true;
+        }
+        require(unknownRejected, "unregistered logical preset is rejected");
+        for (const auto& index : Json::array({-1, 0.5, std::numeric_limits<std::uint64_t>::max()})) {
+            write(color / "shared.json", {{"expected_blocks", "blocks.json"}, {"recipes", {{{"expected", {{"sensitivity_record", index}}}}}}});
+            bool referenceRejected = false;
+            try {
+                (void)load_shared_fixture(color / "linux-debug.json", "manifest.json");
+            } catch (const std::runtime_error& error) {
+                referenceRejected = std::string(error.what()) == "invalid expected block reference";
+            }
+            require(referenceRejected, "expected block references require a bounded nonnegative integer");
+        }
+        write(color / "shared.json", {{"recipes", Json::array()}});
+        write(updates / "linux-debug.json", {{"original_fixture", "linux-release.json"}, {"patch", Json::array()}});
+        bool identityRejected = false;
+        try {
+            (void)load_exposure_qualified_fixture(color / "linux-debug.json");
+        } catch (const std::runtime_error& error) {
+            identityRejected = std::string(error.what()) == "wrong A5 fixture supplement";
+        }
+        require(identityRejected, "aliased payload never bypasses supplement identity admission");
+    }
+    Json load_preset_witness(const std::filesystem::path& logicalPath, const char* manifestName) {
+        std::ifstream manifestFile(logicalPath.parent_path() / manifestName);
+        const auto manifest = Json::parse(manifestFile);
+        require(manifest.at("payloads").contains(logicalPath.filename().string()), "required logical preset membership");
+        std::ifstream source(logicalPath.parent_path() / manifest.at("preset_witnesses").get<std::string>());
+        const auto witness = Json::parse(source).at(logicalPath.filename().string());
+        require(witness.at("foreign_capture") != logicalPath.filename().string() && manifest.at("payloads").contains(witness.at("foreign_capture").get<std::string>()), "different native logical preset witness membership");
+        return witness;
+    }
+    void check_preset_witness(const Json& actual, const Json& expected, const Json& witness) {
+        const auto pointer = Json::json_pointer(witness.at("pointer").get<std::string>());
+        require(expected.at(pointer) == witness.at("expected"), "selected native value witness is still the qualified expectation");
+        require(actual.at(pointer) == witness.at("expected") && actual.at(pointer) != witness.at("rejected"), "actual native value rejects a different preset baseline");
     }
     template <typename Range>
     Json bits(const Range& values) {
@@ -219,6 +281,41 @@ namespace {
             set_pending_capture_test_hook(nullptr, nullptr);
         }
     };
+    void native_color_fault_tests(std::uint32_t operation, const char* diagnostic) {
+        const auto invoke = [operation] {
+            constexpr std::array<float, 3> source{0.95045593f, 1.0f, 1.08905775f};
+            constexpr std::array<float, 3> destination{0.96429568f, 1.0f, 0.82510460f};
+            constexpr std::array<float, 3> xyz{0.184f, -0.0f, -0.25f};
+            const Spectral::ChromaticAdaptationWhites whites{source.data(), destination.data()};
+            switch (operation) {
+                case FJ_TEST_CAT16_MATRIX:
+                    return bits(JuicerColor::cat16_matrix(whites));
+                case FJ_TEST_CAT16_ADAPT:
+                    return bits(JuicerColor::adapt_cat16(xyz, whites));
+                case FJ_TEST_CAT02_MATRIX:
+                    return bits(JuicerColor::cat02_matrix(whites));
+                default:
+                    throw std::runtime_error("unknown native color fault operation");
+            }
+        };
+        const Json expected = invoke();
+        for (const auto fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
+            FaultScope cleanup;
+            expect_status(arm_color_fault(operation, 2, fault), FJ_STATUS_SUCCESS);
+            require(invoke() == expected, "native bridge consumes exactly one successful call before scheduled fault");
+            bool thrown = false;
+            try {
+                invoke();
+            } catch (const JuicerCuda::ExecutionFailure& error) {
+                expect_status(error.failure.status, fault == FJ_TEST_COLOR_UNSUPPORTED_INPUT ? FJ_STATUS_UNSUPPORTED_INPUT : FJ_STATUS_INTERNAL_FAILURE);
+                require(error.failure.diagnostic == diagnostic && !error.deferredDirError, "native color bridge exact diagnostic and non-deferred failure");
+                thrown = true;
+            }
+            require(thrown, "native color bridge must propagate the scheduled typed failure");
+            require(invoke() == expected, "native color bridge recovers on the next same-thread call with exact bits");
+            require(invoke() == expected, "native color bridge fault is consumed once");
+        }
+    }
     void leaf_tests(const Json& fixture) {
         bool scalarDistinct = false;
         for (const auto& row : fixture.at("leaf")) {
@@ -275,6 +372,8 @@ namespace {
         worker.join();
         expect_status(otherThread, FJ_STATUS_SUCCESS);
         expect_status(raw_call(FJ_TEST_CAT16_MATRIX), FJ_STATUS_UNSUPPORTED_INPUT);
+        native_color_fault_tests(FJ_TEST_CAT16_MATRIX, "CAT16 matrix preparation failed");
+        native_color_fault_tests(FJ_TEST_CAT16_ADAPT, "CAT16 scalar adaptation failed");
         std::puts("CAT16: 933 independent scalar/matrix cases, C ABI, fault and comparator controls passed");
     }
     void pending(InstanceState& state, const ParamSnapshot& controls) {
@@ -882,6 +981,7 @@ namespace {
         require(!same_values(Cat02Fixtures::leaf_result(swapped).at("matrix"), expected), "CAT02 white-direction comparator rejection");
         require(fj_test_cat02_abi_c() == 0, "real C11 CAT02 layout/status/null/clear/canary/alias/nonfinite/panic transport");
         color_fault_tests();
+        native_color_fault_tests(FJ_TEST_CAT02_MATRIX, "CAT02 matrix preparation failed");
         std::printf("CAT02: %zu leaf and %zu strict-threshold cases passed independently through production and facade\n", fixture.at("leaf").size(), fixture.at("threshold").size());
     }
     template <typename Range>
@@ -1194,13 +1294,7 @@ namespace {
         cat02_admission_tests();
         const auto cases = Cat02Fixtures::scenarios();
         require(cases.size() == fixture.at("recipes").size(), "frozen CAT02 recipe case membership");
-        std::vector<Json> otherPresets;
-        for (const auto* preset : {"linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"}) {
-            const auto path = fixturePath.parent_path() / (std::string("cat02-") + preset + ".json");
-            if (path != fixturePath) {
-                otherPresets.push_back(load_exposure_qualified_fixture(path));
-            }
-        }
+        const auto witness = load_preset_witness(fixturePath, "cat02-manifest.json");
         bool wrongPresetRejected = false;
         for (std::size_t i = 0; i < cases.size(); ++i) {
             const auto& [id, controls] = cases[i];
@@ -1211,17 +1305,15 @@ namespace {
             const auto product = Cat02Fixtures::build(controls);
             const auto actual = Cat02Fixtures::complete_result(product);
             require(actual == row.at("expected"), id + " independent complete film/raw-midgray/scanner/tables/descriptors/identities");
-            for (const auto& other : otherPresets) {
-                const auto& wrong = other.at("recipes").at(i);
-                require(wrong.at("id") == row.at("id") && wrong.at("controls") == row.at("controls"), "wrong-preset comparator uses identical inputs");
-                if (wrong.at("expected") != row.at("expected")) {
-                    require(actual != wrong.at("expected"), id + " wrong-preset value/identity comparator rejection");
-                    wrongPresetRejected = true;
-                }
+            if (id == witness.at("recipe_id").get<std::string>()) {
+                check_preset_witness(actual, row.at("expected"), witness);
+                wrongPresetRejected = true;
             }
-            auto changedIdentity = actual;
-            changedIdentity["hashes"][0] = changedIdentity["hashes"][0].get<std::uint64_t>() ^ 1u;
-            require(changedIdentity != row.at("expected"), id + " complete identity comparator rejection");
+            if (i == 0) {
+                auto changedIdentity = actual;
+                changedIdentity["hashes"][0] = changedIdentity["hashes"][0].get<std::uint64_t>() ^ 1u;
+                require(changedIdentity != row.at("expected"), id + " complete identity comparator rejection");
+            }
         }
         require(wrongPresetRejected, "different native-preset value/identity baselines reject incorrect expectation");
         std::array<Scanner::ScannerIlluminant, 4> illuminants;
@@ -1614,6 +1706,43 @@ namespace {
         std::puts("Input color: exact matrices/A, decode, explicit A/B conversions, linear leaves/projection and C11/ten-operation fault/default/facade controls passed");
     }
 
+    struct InputValues {
+        std::vector<std::uint32_t> bits;
+        std::array<std::uint64_t, 13> hashes{};
+        bool operator==(const InputValues&) const = default;
+    };
+    template <typename State>
+    InputValues input_values(const State& state) {
+        InputValues out;
+        const auto& raw = state.recipe.filmRaw;
+        const auto& config = state.payload.filmRawConfig;
+        const auto append = [&](const auto& samples) {
+            for (float value : samples)
+                out.bits.push_back(std::bit_cast<std::uint32_t>(value));
+        };
+        append(raw.inputRgbToXyz);
+        append(raw.inputXyzAdapt);
+        append(raw.xyzToLinearSrgb);
+        append(raw.inputNominalWhiteXYZ);
+        append(raw.projectionWhiteXYZ);
+        append(config.inputRGBToXYZ.m);
+        append(config.inputXYZAdapt.m);
+        append(config.xyzToLinearSrgb.m);
+        append(config.rawMidgray);
+        append(config.midgrayDWG);
+        append(config.inputWhiteXYZ);
+        append(config.workingWhiteXYZ);
+        append(config.refIllumWhiteXYZ);
+        append(std::array{config.midgrayScale, config.rawMidgrayGreen, raw.mallettGreenMidgrayScale, state.recipe.scannerOutput.syntheticFilmReference.baselineMeterScale});
+        for (auto value : {static_cast<std::uint32_t>(config.inputColorSpace), std::uint32_t(config.applyCctfDecoding), static_cast<std::uint32_t>(config.spectralUpsamplingMode), std::uint32_t(config.applyInputChromaticAdapt), std::uint32_t(config.hasRefIllumWhite), std::uint32_t(config.valid), std::uint32_t(raw.inputColorSpace), std::uint32_t(raw.inputCctfDecoding), static_cast<std::uint32_t>(raw.rgbToRawMethod), std::uint32_t(raw.autoExposureEnabled), std::uint32_t(raw.inputCompressionActive)})
+            out.bits.push_back(value);
+        out.hashes = {raw.hash, raw.tcLutHash, state.recipe.scannerOutput.syntheticFilmReference.hash, state.recipe.print.balance.hash, state.recipe.print.hash, state.recipe.scannerOutput.hash, state.recipe.scannerOutput.outputGamut.hash, state.recipe.hash, state.payload.uploadCoreHash, state.payload.scannerHash, raw.finalSensitivityHash, raw.tcSourceAssetHash, state.payload.filmTcLut ? state.payload.filmTcLut->samples().size() : 0};
+        return out;
+    }
+    InputValues input_values(const PendingRenderAdmissionResult& result) {
+        require(bool(result.directState) || bool(result.printState), "retained input-color owner");
+        return result.printState ? input_values(*result.printState) : input_values(*result.directState);
+    }
     void input_admission_tests() {
         std::size_t failures = 0, supersessions = 0, counts = 0;
         for (int route = 0; route < 4; ++route) {
@@ -1624,6 +1753,11 @@ namespace {
                     controls.inputCctfDecoding = 1;
                     auto changed = controls;
                     changed.cameraExposureCompensationEv = 1.0;
+                    InstanceState baseline;
+                    pending(baseline, controls);
+                    const auto publication = admit_pending_render_state(baseline);
+                    require(admitted(publication, route % 2 == 1), "input-color immutable baseline admitted");
+                    const auto oldValues = input_values(publication);
                     const std::array<std::uint32_t, 6> callCounts{method == 1 ? 1u : 3u, 0u, 0u, method == 1 ? 0u : 2u, 0u, method == 1 ? 0u : 1u};
                     for (std::uint32_t operation = 5; operation <= 10; ++operation) {
                         const auto calls = callCounts[operation - 5];
@@ -1648,17 +1782,21 @@ namespace {
                                     expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
                                 }
                                 InstanceState state;
+                                // Fault counters, pending state and recovery stay independent of the baseline.
+                                JuicerAtomic::store_shared_ptr(&state.activeDirectState, publication.directState);
+                                JuicerAtomic::store_shared_ptr(&state.activePrintState, publication.printState);
+                                state.lastHash.store(baseline.lastHash.load());
+                                state.buildCounterNext.store(baseline.buildCounterNext.load());
                                 pending(state, controls);
                                 const auto old = admit_pending_render_state(state);
-                                require(admitted(old, route % 2 == 1), "initial input-color route admitted");
-                                const auto oldValues = retain_values(old);
+                                require(admitted(old, route % 2 == 1) && old.directState == publication.directState && old.printState == publication.printState, "input-color current reuses immutable baseline");
                                 const auto hash = state.lastHash.load(), counter = state.buildCounterNext.load();
                                 pending(state, changed);
                                 expect_status(arm_color_fault(operation, index, fault), FJ_STATUS_SUCCESS);
                                 const auto result = admit_pending_render_state(state);
                                 failed(result, selected, controls.filmProfileKey);
                                 unchanged(state, old, hash, counter);
-                                require_retained_values(old, oldValues);
+                                require(input_values(old) == oldValues, "retained input-color fields/identities remain exact");
                                 // Same matching raw export, original count, admission thread, before cleanup.
                                 for (std::uint32_t call = 0; call < index; ++call) {
                                     expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
@@ -1672,8 +1810,8 @@ namespace {
                                 require(admitted(recovered, route % 2 == 1), "input-color recovery admitted");
                                 require(recovered.directState != old.directState || recovered.printState != old.printState, "recovery replaces route publication");
                                 require(state.lastHash.load() == hash_params(changed) && state.buildCounterNext.load() == counter + 1, "recovery publishes complete hash/counter");
-                                require_retained_values(old, oldValues);
-                                const auto recoveredValues = retain_values(recovered);
+                                require(input_values(old) == oldValues, "retained input-color fields/identities remain exact");
+                                const auto recoveredValues = input_values(recovered);
                                 ++failures;
                                 for (int mode = 0; mode < 3; ++mode) {
                                     Supersession selection{changed, mode, false};
@@ -1689,8 +1827,8 @@ namespace {
                                         require(newer.status == (mode == 1 ? PendingRenderAdmissionStatus::InvalidSnapshotControls : PendingRenderAdmissionStatus::NeedsSnapshotAcquisition) && !newer.directState && !newer.printState, "superseded invalid/uninitialized acquisition");
                                     }
                                     unchanged(state, recovered, liveHash, liveCounter);
-                                    require_retained_values(old, oldValues);
-                                    require_retained_values(recovered, recoveredValues);
+                                    require(input_values(old) == oldValues, "retained input-color fields/identities remain exact");
+                                    require(input_values(recovered) == recoveredValues, "recovered input-color fields/identities remain exact");
                                     for (std::uint32_t call = 0; call < index; ++call) {
                                         expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
                                     }
@@ -1704,6 +1842,7 @@ namespace {
                 }
             }
         }
+        require(counts == 144 && failures == 208 && supersessions == 624, "all input-color operation/route/algorithm/fault witnesses retained");
         std::printf("Input-color admission: %zu exact operation counts; %zu early/late failure/recovery and %zu N2 supersession witnesses on four routes/two decoded spaces passed\n", counts, failures, supersessions);
     }
 
@@ -1764,13 +1903,7 @@ namespace {
         const auto cases = InputFixtures::scenarios();
         require(cases.size() == 140 && cases.size() == fixture.at("recipes").size(), "96 base plus 44 bounded input-color products");
         require(InputFixtures::controls_json(ParamSnapshot{}) == fixture.at("defaults"), "all frozen parent defaults exact");
-        std::vector<Json> otherPresets;
-        for (const auto* preset : {"linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"}) {
-            const auto path = fixturePath.parent_path() / (std::string("input-color-") + preset + ".json");
-            if (path != fixturePath) {
-                otherPresets.push_back(load_exposure_qualified_fixture(path));
-            }
-        }
+        const auto witness = load_preset_witness(fixturePath, "input-color-manifest.json");
         bool wrongPreset = false;
         for (std::size_t i = 0; i < cases.size(); ++i) {
             const auto& [id, controls] = cases[i];
@@ -1781,17 +1914,15 @@ namespace {
             if (actual != row.at("expected")) {
                 throw std::runtime_error(id + " completed product mismatch: " + Json::diff(row.at("expected"), actual).dump());
             }
-            for (const auto& other : otherPresets) {
-                const auto& expected = other.at("recipes").at(i);
-                require(expected.at("id").get<std::string>() == id && expected.at("controls") == row.at("controls"), "wrong-preset comparison keeps exact authored inputs");
-                if (expected.at("expected") != row.at("expected")) {
-                    require(actual != expected.at("expected"), "wrong-preset expected values/identities rejected");
-                    wrongPreset = true;
-                }
+            if (id == witness.at("recipe_id").get<std::string>()) {
+                check_preset_witness(actual, row.at("expected"), witness);
+                wrongPreset = true;
             }
-            auto altered = actual;
-            altered["hashes"][0] = altered["hashes"][0].get<std::uint64_t>() ^ 1u;
-            require(altered != row.at("expected"), "required completed identity negative control");
+            if (i == 0) {
+                auto altered = actual;
+                altered["hashes"][0] = altered["hashes"][0].get<std::uint64_t>() ^ 1u;
+                require(altered != row.at("expected"), "required completed identity negative control");
+            }
         }
         require(wrongPreset, "native preset differences are observable and reject wrong references");
         for (int route = 0; route < 4; ++route) {
@@ -2007,10 +2138,14 @@ int main(int argc, char** argv) {
     JuicerCuda::Owner owner;
     try {
         require(argc == 4, "resources, immutable fixture and group required");
+        const std::string group = argv[3];
+        if (group == "fixture-format") {
+            shared_fixture_loading_tests(argv[1]);
+            return 0;
+        }
         owner.create(argv[1]);
         JuicerProcess::root().ensure_bootstrap();
         const auto fixture = load_exposure_qualified_fixture(argv[2]);
-        const std::string group = argv[3];
         if (group == "leaf") {
             leaf_tests(fixture);
         } else if (group == "preparation") {

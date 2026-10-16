@@ -32,6 +32,7 @@
 #include "juicer_cuda_owner.h"
 #include "RustAssetBridge.h"
 #include "juicer_test_api.h"
+#include "exposure_fixture.h"
 
 extern "C" const std::size_t* fj_test_production_profile_abi_c_facts(std::size_t* count);
 extern "C" const std::size_t* fj_test_production_profile_abi_facts(std::size_t* count);
@@ -614,8 +615,7 @@ namespace {
             std::string captureName = "construction-";
             captureName.append(platform).append("-").append(configuration).append(".json");
             const auto path = fixtures.parent_path().parent_path() / "ffi/fixtures/illuminants" / captureName;
-            std::ifstream captured(path);
-            const auto expectations = Json::parse(captured);
+            const auto expectations = load_shared_fixture(path, "construction-manifest.json");
             const auto temperature = std::bit_cast<std::uint32_t>(static_cast<float>(item.second));
             const auto& rows = expectations["leaf"]["blackbody"];
             const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto& value) {

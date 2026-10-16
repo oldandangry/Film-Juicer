@@ -2,7 +2,6 @@
 import hashlib
 import json
 from pathlib import Path
-import struct
 import unittest
 
 FIXTURES = Path(__file__).parent / "fixtures/input_hull"
@@ -13,12 +12,14 @@ class InputHullFixtures(unittest.TestCase):
         manifest = json.loads((FIXTURES / "manifest.json").read_text())
         self.assertEqual(manifest["parent"], "e9b4abbb8b146ffdd0f4fbc5f8c61e7e87134c2a")
         self.assertEqual(set(manifest["preset_membership"]), {"linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"})
+        payloads = {name: (FIXTURES / name).read_bytes() for name in manifest["sha256"]}
         for name, digest in manifest["sha256"].items():
-            self.assertEqual(hashlib.sha256((FIXTURES / name).read_bytes()).hexdigest(), digest)
+            self.assertEqual(hashlib.sha256(payloads[name]).hexdigest(), digest)
         for preset, member in manifest["preset_membership"].items():
             for kind, name in member.items():
                 self.assertEqual(manifest["sha256"][name], manifest["provenance"][preset][kind]["native_sha256"])
-            records = json.loads((FIXTURES / member["records"]).read_text())
+        for name in {member["records"] for member in manifest["preset_membership"].values()}:
+            records = json.loads(payloads[name])
             self.assertEqual(len(records["math"]), 14)
             self.assertEqual(len(records["products"]), 18)
             self.assertEqual(len(records["weights"]), 1024)
@@ -30,10 +31,13 @@ class InputHullFixtures(unittest.TestCase):
                         self.assertEqual(len(row["trace"][key]), 1024)
                     self.assertEqual(len(row["expected"]["xy"]), 1025)
                     self.assertEqual(row["expected"]["xy"][0], row["expected"]["xy"][-1])
-            data = (FIXTURES / member["tables"]).read_bytes()
+        for name in {member["tables"] for member in manifest["preset_membership"].values()}:
+            data = payloads[name]
             self.assertEqual(len(data), 16 * 147456 * 4)
-            self.assertTrue(all(struct.unpack_from("<I", data, i)[0] == 0 for i in range(12, len(data), 16)))
-            self.assertEqual((FIXTURES / member["primitives"]).stat().st_size, 519536 * 32)
+            self.assertTrue(all(not any(data[offset::16]) for offset in range(12, 16)))
+        for name in {member["primitives"] for member in manifest["preset_membership"].values()}:
+            self.assertEqual(len(payloads[name]), 519536 * 32)
+
 
 
 if __name__ == "__main__":

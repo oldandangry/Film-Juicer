@@ -111,27 +111,17 @@ jobs:
           if [[ -z "$QUALITY_BASE" || "$QUALITY_BASE" =~ ^0+$ ]]; then
             QUALITY_BASE="$(git rev-parse HEAD^)"
           fi
-          qualification_id="$(python -c 'import uuid; print(uuid.uuid4())')"
-          probe_manifest="$GITHUB_WORKSPACE/out/validation/linux-debug/quality/probes-$qualification_id.json"
           python -u scripts/check-quality.py \
-            --probe-manifest "$probe_manifest" --qualification-id "$qualification_id" \
-            --base "$QUALITY_BASE" \
-            --preset linux-debug \
-            --jobs 2
-          if [[ -f "$probe_manifest.pending" ]]; then
-            python tests/quality/probe_evidence.py --manifest "$probe_manifest" --qualification-id "$qualification_id"
-            echo "JUICER_RUST_PROBE_MANIFEST=$probe_manifest" >> "$GITHUB_ENV"
-            echo "JUICER_QUALIFICATION_ID=$qualification_id" >> "$GITHUB_ENV"
-          fi
+            --base "$QUALITY_BASE" --preset linux-debug --jobs 2
 
       - name: List tests and run Debug host selection
         shell: bash
         run: |
           set -euo pipefail
           cmake -E make_directory out/validation/linux-debug
-          ctest --preset linux-debug -N
-          ctest --preset linux-debug -L host \
-            --output-on-failure \
+          ctest --preset linux-debug -N -L "product|boundary|tooling|corpus" -LE gpu
+          ctest --preset linux-debug -L "product|boundary|tooling|corpus" -LE gpu \
+            --no-tests=error --output-on-failure \
             --output-junit "$GITHUB_WORKSPACE/out/validation/linux-debug/host-junit.xml"
 
       - name: Configure and build Release public tests
@@ -146,9 +136,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out/validation/linux-release
-          ctest --preset linux-release -N
-          ctest --preset linux-release -L host \
-            --output-on-failure \
+          ctest --preset linux-release -N -L "product|boundary" -LE gpu
+          ctest --preset linux-release -L "product|boundary" -LE gpu \
+            --no-tests=error --output-on-failure \
             --output-junit "$GITHUB_WORKSPACE/out/validation/linux-release/host-junit.xml"
 
       - name: Upload host test report
@@ -156,7 +146,9 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: linux-debug-host-junit
-          path: out/validation/linux-debug/host-junit.xml
+          path: |
+            out/validation/linux-debug/host-junit.xml
+            out/build/linux-debug/Testing/Temporary/LastTest.log
           if-no-files-found: warn
 
       - name: Upload Release host test report
@@ -168,6 +160,8 @@ jobs:
             out/validation/linux-release/host-junit.xml
             out/build/linux-release/Testing/Temporary/LastTest.log
             out/build/linux-release/compile_commands.json
+            out/validation/linux-release/quality/**/*.log
+            out/validation/linux-release/quality/**/*.json
           if-no-files-found: warn
 
       - name: Upload quality diagnostics and CUDA commands
@@ -177,7 +171,6 @@ jobs:
           name: linux-debug-quality
           path: |
             out/validation/linux-debug/quality/**/*.log
-            out/validation/linux-debug/quality/runs/**/*.json
-            out/validation/linux-debug/quality/probes-*.json*
+            out/validation/linux-debug/quality/**/*.json
             out/build/linux-debug/compile_commands.json
           if-no-files-found: warn

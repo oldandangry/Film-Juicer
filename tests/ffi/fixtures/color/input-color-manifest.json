@@ -159,5 +159,25 @@
       },
       "standalone_inverse_role": "native characterization; preserve original observation"
     }
+  },
+  "payloads": {
+    "input-color-linux-debug.json": "input-color-linux-debug.json",
+    "input-color-linux-release.json": "input-color-linux-debug.json",
+    "input-color-windows-clang-debug.json": "input-color-windows-clang-debug.json",
+    "input-color-windows-clang-release.json": "input-color-windows-clang-release.json"
+  },
+  "preset_witnesses": "input-color-preset-witnesses.json",
+  "storage_files": {
+    "input-color-linux-debug.json": "19ea8ba0751fbb2ec4dd471aaea994dfddd01994e411880d188dadeee839797d",
+    "input-color-windows-clang-debug.json": "1474cec5d5889e1db51b18500f40baa41759bea3bb6e57d6ecd5702f62935384",
+    "input-color-windows-clang-release.json": "d7c2a44027972dcd7292426124f395ccb35431c39992f7be8ad4a57d0530c38d",
+    "input-color-blocks.json": "d3af128605d04bb741dec39a95f1087de29119bc9b2a08be5d0d28a04a0c6ebc",
+    "input-color-preset-witnesses.json": "a99f901d888143cccffe812dbaba56af0371354b5329a14ab876bf7057a04a5c"
+  },
+  "storage_migration": {
+    "format": "logical capture aliases and shared exact expected arrays v1",
+    "source_manifest_sha256": "5de5ab09e2c2b5c1f5f88b7faa160815c2ca2884cd85a4d1d6c3be6893f20058",
+    "capture_hashes": "Original capture/provenance hashes above retain their original representation; storage_files hashes the maintained physical representation.",
+    "proof": "All four raw expansions and effective qualified color documents match retained originals exactly; logical supplement identity and ordered test/replace operations preserved."
   }
 }

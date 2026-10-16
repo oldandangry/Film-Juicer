@@ -1,6 +1,8 @@
 #include <array>
 #include <cstdio>
 #include <cstdint>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 
@@ -35,10 +37,90 @@ namespace {
         return condition;
     }
 
+    bool verify_metadata() {
+        using Spektrafilm::ProfilePolarity;
+        using Spektrafilm::ScanRoute;
+        constexpr std::array<Spektrafilm::ScanRouteMetadata, 4> expected{{{ScanRoute::NegativeDirectScan, ProfilePolarity::Negative, false, "NegativeDirectScan", "Negative direct scan"},
+                                                                          {ScanRoute::NegativePrintScan, ProfilePolarity::Negative, true, "NegativePrintScan", "Negative print scan"},
+                                                                          {ScanRoute::PositiveDirectScan, ProfilePolarity::Positive, false, "PositiveDirectScan", "Positive direct scan"},
+                                                                          {ScanRoute::PositivePrintScan, ProfilePolarity::Positive, true, "PositivePrintScan", "Positive print scan"}}};
+        if (!verify(Spektrafilm::scan_route_option_count() == static_cast<int>(expected.size()), "route option count mismatch")) {
+            return false;
+        }
+        for (int index = 0; index < static_cast<int>(expected.size()); ++index) {
+            const auto& row = expected[static_cast<std::size_t>(index)];
+            const auto& actual = Spektrafilm::scan_route_metadata(row.route);
+            const auto fallback = row.route == ScanRoute::NegativeDirectScan ? ScanRoute::PositivePrintScan : ScanRoute::NegativeDirectScan;
+            if (!verify(
+                    actual.route == row.route && actual.capturePolarity == row.capturePolarity &&
+                        actual.printRoute == row.printRoute && std::string(actual.key) == row.key &&
+                        std::string(actual.label) == row.label && Spektrafilm::scan_route_is_print(row.route) == row.printRoute &&
+                        std::string(Spektrafilm::scan_route_option_key(index)) == row.key &&
+                        std::string(Spektrafilm::scan_route_option_label(index)) == row.label &&
+                        Spektrafilm::scan_route_from_key_or(row.key, fallback) == row.route &&
+                        Spektrafilm::scan_route_from_key_or("", row.route) == row.route &&
+                        Spektrafilm::scan_route_from_key_or("unknown", row.route) == row.route,
+                    "route metadata/key/index/fallback mismatch")) {
+                return false;
+            }
+            if (!verify(
+                    &actual == &Spektrafilm::scan_route_metadata(row.route) &&
+                        actual.key == Spektrafilm::scan_route_key(row.route) &&
+                        actual.label == Spektrafilm::scan_route_label(row.route),
+                    "route metadata reference lifetime mismatch")) {
+                return false;
+            }
+        }
+        for (const int index : {std::numeric_limits<int>::min(), -1, 4, std::numeric_limits<int>::max()}) {
+            if (!verify(std::string(Spektrafilm::scan_route_option_key(index)).empty() &&
+                            std::string(Spektrafilm::scan_route_option_label(index)).empty(),
+                        "invalid route option must be empty")) {
+                return false;
+            }
+        }
+        for (const auto route : {static_cast<ScanRoute>(4), static_cast<ScanRoute>(255)}) {
+            for (int operation = 0; operation < 4; ++operation) {
+                bool rejected = false;
+                try {
+                    switch (operation) {
+                        case 0:
+                            (void)Spektrafilm::scan_route_metadata(route);
+                            break;
+                        case 1:
+                            (void)Spektrafilm::scan_route_key(route);
+                            break;
+                        case 2:
+                            (void)Spektrafilm::scan_route_label(route);
+                            break;
+                        default:
+                            (void)Spektrafilm::scan_route_is_print(route);
+                            break;
+                    }
+                } catch (const std::out_of_range&) {
+                    rejected = true;
+                }
+                if (!verify(rejected, "invalid route metadata must throw out_of_range")) {
+                    return false;
+                }
+            }
+        }
+        const Spektrafilm::ScanRouteMetadata defaults;
+        return verify(
+            defaults.route == ScanRoute::NegativePrintScan && defaults.capturePolarity == ProfilePolarity::Negative &&
+                defaults.printRoute && std::string(defaults.key) == "NegativePrintScan" &&
+                std::string(defaults.label) == "Negative print scan" && Spektrafilm::kDefaultScanRoute == defaults.route &&
+                Spektrafilm::default_scan_route_for_polarity(ProfilePolarity::Unsupported) == defaults.route &&
+                Spektrafilm::default_scan_route_for_polarity(static_cast<ProfilePolarity>(255)) == defaults.route,
+            "route default metadata/polarity fallback mismatch");
+    }
+
 } // namespace
 
 int main() {
     try {
+        if (!verify_metadata()) {
+            return 1;
+        }
         constexpr std::array<std::array<std::uint8_t, 4>, 3> expected{{
             {{0, 1, 0, 1}},
             {{2, 3, 2, 3}},

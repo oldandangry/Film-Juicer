@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import codecs
 import importlib.util
 import json
 import os
@@ -13,7 +12,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from probe_evidence import ProbeEvidence, compiler_environment
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,26 +33,22 @@ class RustBoundaryTests(unittest.TestCase):
         cls.profiles = {"debug": (False,), "release": (True,), "both": (False, True)}[
             os.environ.get("JUICER_RUST_PROBE_PROFILE", "both")
         ]
-        cls.artifacts = Path(os.environ["JUICER_TEST_ARTIFACT_DIR"]).resolve()
-        cls.artifacts.mkdir(parents=True, exist_ok=True)
+        artifact_root = Path(os.environ["JUICER_TEST_ARTIFACT_DIR"]).resolve()
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        cls.artifacts = Path(tempfile.mkdtemp(prefix="run-", dir=artifact_root))
         directory = tempfile.TemporaryDirectory(prefix="probe-", dir=cls.artifacts)
         cls.addClassCleanup(directory.cleanup)
         cls.workspace = Path(directory.name)
         for name in ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml"):
             shutil.copy2(ROOT / name, cls.workspace / name)
         shutil.copytree(ROOT / "rust", cls.workspace / "rust")
-        cls.environment = compiler_environment()
-        # The native-source guard uses this decoder; load it before binding the
-        # interpreter inputs so its lazy import is not mistaken for a change.
-        codecs.lookup("utf-8-sig")
-        cls.evidence = ProbeEvidence(ROOT, "boundaries", cls.cargo, cls.target,
-                                     cls.profiles, cls.environment, cls.artifacts)
-        cls.addClassCleanup(cls.evidence.finish)
+        cls.environment = quality.cargo_environment()
         cls.invocation = 0
 
     def command(self, arguments: list[str], label: str) -> subprocess.CompletedProcess:
         type(self).invocation += 1
         command = [self.cargo, *arguments]
+        quality.check_probe_configuration(ROOT, self.workspace)
         result = subprocess.run(
             command, cwd=self.workspace, env=self.environment,
             capture_output=True, text=True, encoding="utf-8", timeout=60, check=False,
@@ -64,10 +58,10 @@ class RustBoundaryTests(unittest.TestCase):
             subprocess.list2cmdline(command) + "\n" + result.stdout + result.stderr,
             encoding="utf-8",
         )
+        quality.check_probe_configuration(ROOT, self.workspace)
         return result
 
     def attach(self, owner: str, fixture: str) -> None:
-        self.probe_owner, self.probe_fixture = owner, fixture
         source = self.workspace / "rust" / owner
         original = source.read_text(encoding="utf-8")
         self.addCleanup(source.write_text, original, encoding="utf-8")
@@ -94,13 +88,7 @@ class RustBoundaryTests(unittest.TestCase):
         if test_support:
             arguments += ["--features", "test-support"]
         label = f"{package}-{'release' if release else 'dev'}-{'test-support' if test_support else 'default'}"
-        type(self).invocation += 1
-        log = self.artifacts / f"{self.invocation:02d}-{self._testMethodName}-{label}.log"
-        result = self.evidence.run(
-            {"test": self._testMethodName, "package": package,
-             "profile": "release" if release else "dev", "features": ["test-support"] if test_support else [],
-             "fixtures": {self.probe_owner: self.probe_fixture}},
-            [self.cargo, *arguments], self.workspace, log)
+        result = self.command(arguments, label)
         diagnostics = [
             message["message"]
             for line in result.stdout.splitlines()

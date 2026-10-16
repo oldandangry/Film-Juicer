@@ -70,6 +70,13 @@ class ToolingLintTests(unittest.TestCase):
         files = tooling.source_files(self.root)
         self.assertEqual(files, {"python": ["scripts/space name.py", "tests/new.py"], "shell": ["scripts/check.sh"], "workflow": [".github/workflows/check.yaml"]})
 
+    def test_deleted_tracked_file_is_outside_current_membership(self) -> None:
+        path = self.root / "scripts/space name.py"
+        subprocess.run(["git", "add", str(path)], cwd=self.root, check=True)
+        path.unlink()
+        self.assertEqual(tooling.source_files(self.root)["python"], [])
+        self.assertEqual(self.check()["python"], 0)
+
     def test_valid_inputs_pass_unchanged_with_argument_arrays(self) -> None:
         before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
         self.assertEqual(self.check(), {"python": 1, "shell": 1, "workflow": 1})

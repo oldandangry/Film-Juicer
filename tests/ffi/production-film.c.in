@@ -1,0 +1,106 @@
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <wchar.h>
+#include "juicer_legacy_api.h"
+#include "production-film-expected.h"
+#define CHECK(v)                                                               \
+    do {                                                                       \
+        if (!(v)) {                                                            \
+            fprintf(stderr, "production film check failed at %d\n", __LINE__); \
+            return 1;                                                          \
+        }                                                                      \
+    } while (0)
+_Static_assert(_Generic(&fj_legacy_film_development_acquire, FjStatus (*)(const FjFilmProfile*, uint32_t, float, uint32_t, FjFilmDevelopmentOwner**, FjErrorBuffer*): 1, default: 0), "acquire C11 type");
+_Static_assert(_Generic(&fj_legacy_film_development_view, FjStatus (*)(const FjFilmDevelopmentOwner*, FjFilmDevelopmentView*, FjErrorBuffer*): 1, default: 0), "view C11 type");
+_Static_assert(_Generic(&fj_legacy_film_development_release, FjStatus (*)(FjFilmDevelopmentOwner*, FjErrorBuffer*): 1, default: 0), "release C11 type");
+static int words(const float* data, const uint32_t* expected, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t word;
+        memcpy(&word, data + i, sizeof(word));
+        if (word != expected[i])
+            return 0;
+    }
+    return 1;
+}
+static int status(FjStatus value, uint32_t category) {
+    return value.category == category && value.api == FJ_API_NONE && value.native_code == 0;
+}
+#ifdef _WIN32
+int wmain(int argc, wchar_t** argv) {
+    _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
+    CHECK(argc == 2);
+    FjPathView path = {argv[1], wcslen(argv[1]), FJ_PATH_WINDOWS_WIDE};
+#else
+int main(int argc, char** argv) {
+    CHECK(argc == 2);
+    FjPathView path = {argv[1], strlen(argv[1]), FJ_PATH_UNIX_BYTES};
+#endif
+    static const size_t facts[] = {
+#define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
+#define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),
+#define FJ_DEVELOPMENT_EXTENT(f, e) sizeof(((FjFilmDevelopmentView*)0)->f) / sizeof(e),
+#define FJ_DEVELOPMENT_VALUE(v) v,
+#include "film_development_abi_facts.inc"
+#undef FJ_DEVELOPMENT_TYPE
+#undef FJ_DEVELOPMENT_FIELD
+#undef FJ_DEVELOPMENT_EXTENT
+#undef FJ_DEVELOPMENT_VALUE
+    };
+    printf("C11 layout facts:");
+    for (size_t i = 0; i < sizeof(facts) / sizeof(facts[0]); ++i)
+        printf(" %zu", facts[i]);
+    puts("");
+    FjAssets* assets = NULL;
+    FjFilmProfile* profile = NULL;
+    FjFilmDevelopmentOwner* owner = NULL;
+    CHECK(status(fj_legacy_assets_create(path, &assets, NULL), FJ_STATUS_SUCCESS));
+    const char key[] = "kodak_portra_400";
+    FjStringView selected = {key, sizeof(key) - 1};
+    CHECK(status(fj_legacy_film_profile_acquire(assets, selected, &profile, NULL), FJ_STATUS_SUCCESS));
+    for (uint32_t route = 0; route < 2; ++route) {
+        CHECK(status(fj_legacy_film_development_acquire(profile, route, 1.0f, 1, &owner, NULL), FJ_STATUS_SUCCESS));
+        FjFilmDevelopmentView view = {0};
+        CHECK(status(fj_legacy_film_development_view(owner, &view, NULL), FJ_STATUS_SUCCESS));
+        CHECK(view.route == route && view.polarity == 0 && view.layers_required == 1 && view.log_exposure.count == FILM_N && view.authored_curves_cmy.count == 3 * FILM_N && view.normalized_curves_cmy.count == 3 * FILM_N);
+        CHECK(words(view.log_exposure.data, film_axis, FILM_N) && words(view.authored_curves_cmy.data, film_authored, 3 * FILM_N) && words(view.normalized_curves_cmy.data, film_normalized, 3 * FILM_N));
+        CHECK(words(view.gamma_rgb, film_gamma, 3) && words(view.minimum_cmy, film_minimum, 3) && words(view.maximum_cmy, film_maximum, 3));
+        CHECK(view.normalized_curves_hash == FILM_NORMALIZED_HASH && view.layers_hash == FILM_LAYERS_HASH && view.hash == FILM_HASH);
+        for (size_t layer = 0; layer < 3; ++layer)
+            for (size_t channel = 0; channel < 3; ++channel) {
+                CHECK(view.density_curves_layers[layer][channel].count == FILM_N);
+                CHECK(words(view.density_curves_layers[layer][channel].data, film_layers + (layer * 3 + channel) * FILM_N, FILM_N));
+            }
+        CHECK(status(fj_legacy_film_development_release(owner, NULL), FJ_STATUS_SUCCESS));
+        owner = NULL;
+    }
+    char message[5] = {0};
+    FjErrorBuffer error = {message, sizeof(message), 99};
+    CHECK(status(fj_legacy_film_development_acquire(profile, 99, 1, 0, &owner, &error), FJ_STATUS_UNSUPPORTED_INPUT) && !owner && error.length < sizeof(message) && !message[error.length]);
+    CHECK(status(fj_legacy_film_development_acquire(profile, 2, 1, 0, &owner, NULL), FJ_STATUS_UNSUPPORTED_INPUT) && !owner);
+    CHECK(status(fj_legacy_film_development_acquire(profile, 0, 0, 0, &owner, NULL), FJ_STATUS_UNSUPPORTED_INPUT) && !owner);
+    CHECK(status(fj_legacy_film_development_acquire(profile, 0, 1, 99, &owner, NULL), FJ_STATUS_UNSUPPORTED_INPUT) && !owner);
+    CHECK(status(fj_legacy_film_development_acquire(NULL, 0, 1, 0, &owner, NULL), FJ_STATUS_UNSUPPORTED_INPUT) && !owner);
+    FjFilmDevelopmentView cleared = {0};
+    cleared.hash = 99;
+    cleared.route = 99;
+    CHECK(status(fj_legacy_film_development_view(NULL, &cleared, NULL), FJ_STATUS_UNSUPPORTED_INPUT) && cleared.hash == 0 && cleared.route == 0 && cleared.log_exposure.data == NULL && cleared.log_exposure.count == 0);
+    CHECK(status(fj_legacy_film_development_acquire(profile, 0, 1, 0, &owner, NULL), FJ_STATUS_SUCCESS));
+    CHECK(status(fj_legacy_film_profile_release(profile, NULL), FJ_STATUS_SUCCESS));
+    profile = NULL;
+    CHECK(status(fj_legacy_assets_release_cached_payloads(assets, NULL), FJ_STATUS_SUCCESS));
+    FjFilmDevelopmentView retained = {0};
+    CHECK(status(fj_legacy_film_development_view(owner, &retained, NULL), FJ_STATUS_SUCCESS));
+    CHECK(words(retained.normalized_curves_cmy.data, film_normalized, 3 * FILM_N) && retained.layers_hash == 0);
+    for (size_t layer = 0; layer < 3; ++layer)
+        for (size_t channel = 0; channel < 3; ++channel)
+            CHECK(retained.density_curves_layers[layer][channel].data == NULL && retained.density_curves_layers[layer][channel].count == 0);
+    FjErrorBuffer malformed = {NULL, 1, 99};
+    CHECK(status(fj_legacy_film_development_release(owner, &malformed), FJ_STATUS_UNSUPPORTED_INPUT));
+    owner = NULL;
+    CHECK(status(fj_legacy_film_development_release(NULL, NULL), FJ_STATUS_SUCCESS));
+    CHECK(status(fj_legacy_assets_destroy(assets, NULL), FJ_STATUS_SUCCESS));
+    puts("PASS OFF film C11 owners/layout/types/native frozen values/failures/survival/consuming malformed release");
+    return 0;
+}

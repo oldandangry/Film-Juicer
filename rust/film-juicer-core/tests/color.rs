@@ -1,15 +1,22 @@
 use film_juicer_core::color::{self, Whites};
 use serde_json::Value;
 
+fn fixture(logical_name: &str, manifest_name: &str) -> Value {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/ffi/fixtures/color");
+    let manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join(manifest_name)).unwrap()).unwrap();
+    let payload = manifest["payloads"][logical_name].as_str().unwrap();
+    serde_json::from_str(&std::fs::read_to_string(root.join(payload)).unwrap()).unwrap()
+}
+
 fn triplet(value: &Value) -> [f32; 3] {
     std::array::from_fn(|i| f32::from_bits(value[i].as_u64().unwrap() as u32))
 }
 
 #[test]
 fn native_parent_scalar_and_matrix_bits() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/ffi/fixtures/color/linux-debug.json");
-    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let fixture = fixture("linux-debug.json", "manifest.json");
     for row in fixture["leaf"].as_array().unwrap() {
         let whites = Whites {
             source_xyz: triplet(&row["source"]),
@@ -41,10 +48,7 @@ fn cat02_native_parent_scalar_and_matrix_bits() {
         (true, true) => "windows-clang-debug",
         (true, false) => "windows-clang-release",
     };
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "../../tests/ffi/fixtures/color/cat02-{preset}.json"
-    ));
-    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let fixture = fixture(&format!("cat02-{preset}.json"), "cat02-manifest.json");
     for row in fixture["leaf"].as_array().unwrap() {
         let whites = Whites {
             source_xyz: triplet(&row["source"]),
@@ -102,10 +106,10 @@ fn input_color_native_parent_bits() {
         (true, true) => "windows-clang-debug",
         (true, false) => "windows-clang-release",
     };
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "../../tests/ffi/fixtures/color/input-color-{preset}.json"
-    ));
-    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let fixture = fixture(
+        &format!("input-color-{preset}.json"),
+        "input-color-manifest.json",
+    );
     // Owner-adopted 2026-10-06 mapping: the producer uses completed native A;
     // standalone/default observations are characterization. Explicit operands,
     // including Windows Release B conversion matrices, remain unchanged.
