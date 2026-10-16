@@ -20,6 +20,12 @@ mod asset_bridge;
 
 mod asset_profile;
 
+#[allow(
+    unsafe_code,
+    reason = "the temporary film development edge scopes profile borrows and consumes result owners once"
+)]
+mod film_bridge;
+
 mod asset_spectral;
 
 mod asset_noise;

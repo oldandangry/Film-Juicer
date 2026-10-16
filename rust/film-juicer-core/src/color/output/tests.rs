@@ -21,6 +21,29 @@ fn compare(literal: &Literal, row: &Value) {
     assert_eq!(serde_json::json!(subhashes(literal)), row["subhashes"]);
     assert_eq!(entry_hash(literal), row["hash"].as_u64().unwrap());
 }
+fn compare_completed(color: &OutputColor, row: &Value) {
+    assert_eq!(words(color.dwg_to_output()), row["dwg_to_output"]);
+    assert_eq!(color.hash(), row["hash"].as_u64().unwrap());
+    assert_eq!(words(color.rgb_to_xyz()), row["rgb_to_xyz"]);
+    assert_eq!(words(color.xyz_to_rgb()), row["xyz_to_rgb"]);
+    assert_eq!(
+        words(color.white_xyz()),
+        Value::Array(row["base"].as_array().unwrap()[8..].to_vec())
+    );
+    let cctf = color.cctf();
+    assert_eq!(cctf.kind as u64, row["kind"].as_u64().unwrap());
+    assert_eq!(
+        words(&[
+            cctf.gamma,
+            cctf.a,
+            cctf.b,
+            cctf.c,
+            cctf.d,
+            cctf.linear_cutoff,
+        ]),
+        row["cctf"]
+    );
+}
 #[test]
 fn native_literals_matrices_and_identities_are_exact() {
     let fixture = fixture();
@@ -29,16 +52,7 @@ fn native_literals_matrices_and_identities_are_exact() {
         let row = &fixture["entries"][tag];
         compare(literal, row);
         let color = output_color(OutputSpace::try_from(tag as u32).unwrap());
-        assert_eq!(words(color.dwg_to_output()), row["dwg_to_output"]);
-        assert_eq!(color.hash(), row["hash"].as_u64().unwrap());
-        assert_eq!(words(color.rgb_to_xyz()), row["rgb_to_xyz"]);
-        assert_eq!(words(color.xyz_to_rgb()), row["xyz_to_rgb"]);
-        assert_eq!(words(color.white_xyz()), words(&literal.base[8..]));
-        let c = color.cctf();
-        assert_eq!(
-            words(&[c.gamma, c.a, c.b, c.c, c.d, c.linear_cutoff]),
-            row["cctf"]
-        );
+        compare_completed(color, row);
     }
     assert_ne!(
         entry_hash(&SOURCE),
@@ -72,23 +86,65 @@ fn canonical_zero_and_nonfinite_subhash_composition_are_native() {
 }
 #[test]
 fn concurrent_catalogue_initialization_publishes_complete_immutable_entries() {
+    const CHILD: &str = "FILM_JUICER_OUTPUT_CATALOGUE_CHILD";
+    const COMPLETED: &str = "first-use catalogue assertions passed";
+    const TEST: &str = concat!(
+        module_path!(),
+        "::concurrent_catalogue_initialization_publishes_complete_immutable_entries"
+    );
+    if std::env::var_os(CHILD).is_none() {
+        // libtest names omit the crate component supplied by module_path!().
+        let test = TEST.split_once("::").unwrap().1;
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([test, "--exact", "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("fresh output catalogue unit-test process");
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        let stderr = String::from_utf8_lossy(&child.stderr);
+        assert!(
+            child.status.success()
+                && stdout.contains("test result: ok. 1 passed; 0 failed;")
+                && stdout.contains(COMPLETED),
+            "fresh catalogue child {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            child.status
+        );
+        print!("{stdout}");
+        eprint!("{stderr}");
+        return;
+    }
+    assert!(
+        CATALOGUE.get().is_none(),
+        "fresh child must initialize catalogue"
+    );
+    let fixture = fixture();
     let barrier = std::sync::Barrier::new(16);
     std::thread::scope(|scope| {
         let threads: Vec<_> = (0..16)
             .map(|_| {
                 scope.spawn(|| {
                     barrier.wait();
-                    for tag in 0..9 {
-                        let space = OutputSpace::try_from(tag).unwrap();
-                        let first = output_color(space);
-                        assert!(std::ptr::eq(first, output_color(space)));
-                        assert_eq!(first.hash(), entry_hash(&LITERALS[tag as usize]));
-                    }
+                    std::array::from_fn::<_, 9, _>(|tag| {
+                        let space = OutputSpace::try_from(tag as u32).unwrap();
+                        let color = output_color(space);
+                        compare_completed(color, &fixture["entries"][tag]);
+                        assert!(std::ptr::eq(color, output_color(space)));
+                        color
+                    })
                 })
             })
             .collect();
+        let mut published: Option<[&OutputColor; 9]> = None;
         for thread in threads {
-            thread.join().unwrap();
+            let entries = thread.join().unwrap();
+            if let Some(first) = published {
+                for (entry, expected) in entries.iter().zip(first) {
+                    assert!(std::ptr::eq(*entry, expected));
+                }
+            } else {
+                published = Some(entries);
+            }
         }
     });
+    println!("{COMPLETED}");
 }

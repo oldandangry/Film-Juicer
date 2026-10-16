@@ -5,6 +5,36 @@ CTest. C++ tests use ordinary executables and selective GoogleTest discovery;
 Python tests use `unittest`. Reference generation and benchmarks are explicit
 maintenance operations, never hidden parts of a correctness run.
 
+## Testing workflow milestone: 16 October 2026
+
+The focused Linux Debug development path, direct CTest compiler probes, explicit
+checkpoint reuse, fixture sharing, reduced repeated test construction and audited
+parallel scheduling are delivered. Unrelated dirty fixture payloads are no longer
+hashed by local route verification. Both native Release production/export
+isolation gates passed with testing disabled. These are bounded results, not a
+new complete product qualification or a general automatic ownership map.
+
+Fixture storage is 38,478,395 bytes smaller, including 18,331,985 bytes of exact
+copies. Numerical expectations and distinct failure/lifetime checks are retained.
+The 26 audited global serialization flags are removed; actual GPU, Cargo and
+build-tree ownership remains enforced.
+
+Performance acceptance remains open. The completed unchanged-header checks took
+20.028 and 22.177 seconds; the 20-second total and 10-second bookkeeping targets
+are not established. The three maintenance tasks plus shared closeout took
+76 minutes 25 seconds against a 60-minute target. There is no matched historical
+complete-task baseline, so no overall percentage improvement is claimed.
+Future real implementation work can supply complete task costs, including setup,
+repairs, required checks, review and closeout; it is not itself a before/after
+comparison. Full qualification and the remaining latency targets stay separate.
+
+Native CI runs product and boundary groups in Debug and Release, tooling once per
+native platform in Debug, and fixture-corpus checks once on Linux Debug. Discovery
+prints the same selection that executes, empty selections fail, and direct probe
+diagnostics are retained. These hosted host checks do not establish GPU or Resolve
+acceptance. See [the contributor workflow](../CONTRIBUTING.md#required-checks)
+for the supported local inputs and explicit checkpoint commands.
+
 ## Prerequisites
 
 - CMake 4.3 or newer and Ninja.
@@ -80,11 +110,17 @@ VS LLVM directory and CUDA 13.2 available as required by the project presets,
 then run:
 
 ```powershell
+$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = Join-Path `
+  $env:VSINSTALLDIR "VC\Tools\Llvm\x64\bin\lld-link.exe"
 py -3.13 -m venv out/test-venv/windows
 out/test-venv/windows/Scripts/Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r tests/requirements.txt
 ```
+
+Cargo and direct Rust probes use that same VS LLVM linker. Hosted Windows CI
+exports the setting during toolchain setup; set it in an ordinary developer
+shell before running the tooling controls or standalone probes.
 
 GoogleTest 1.18.0 is fetched only when `BUILD_TESTING=ON`; its release archive
 is checksum-pinned in `tests/CMakeLists.txt`. For an offline checkout, use
@@ -172,6 +208,55 @@ with seed/case in its filename under `JUICER_TEST_ARTIFACT_DIR` (or
 `out/validation/rust-core/`). Existing failure files are never overwritten.
 This finite corpus provides structural regression evidence; it does not establish
 general fuzz coverage, allocation-failure recovery or Rust sanitizer coverage.
+
+A1/A2 are accepted only for the four inputs in
+[the contributor workflow](../CONTRIBUTING.md). Timing targets, general ownership
+coverage and full qualification remain unproved. The bounded path selects `src/ScanRoute.cpp`, `src/ScanRoute.h`, Rust core `route.rs` and core
+`color/output.rs` on the configured `linux-debug` tree. For example:
+`python -B scripts/verify.py development --preset linux-debug --files rust/film-juicer-core/src/route.rs`.
+Explicit entries beside CTest registration select the route bridge or output-color
+FFI group and exact fixture; Rust scopes also select direct boundary probes and
+named active-profile Cargo tests/Clippy. Uncertain public-interface changes add
+plugin checks. Header compilation retains all actual configured variants without
+selecting tests merely because they link the same library.
+
+Initialization needs no old preparation/development receipts. Unsupported changes,
+index-only edits and pending failures remain unresolved. A later, overlapping or
+pending preparation invalidates affected prior reuse. A successful selected scope
+can coexist with an incomplete request (exit 2). Unchanged reuse reports that no
+checks executed, and unrelated saved scopes remain separate. Ordinary Rust edits
+use Cargo incrementally; stale-time content edits invalidate only affected active
+packages/reverse consumers. Missing or unresolved header consumers cannot pass.
+Dirty unrelated fixture/resource payloads stay unresolved without global content
+hashing. Selected fixture contents remain preparation inputs; tool, log, JUnit and
+process-proof contents remain reuse inputs. Header discovery and preparation are
+checked again before publishing success, including newly introduced consumers.
+Unchanged reuse performs one fresh admission against the retained pass; it does
+not repeat the same admission when no checks execute. Parsed compilation entries
+and ordered include discovery are shared within one validation boundary, with
+fresh discovery after configure, build, analysis and CTest operations.
+For unchanged latency, count the complete supervised command as bookkeeping;
+receipt phase timings end before publication and do not replace that full cost.
+
+Named checkpoints and aggregate collection are available after A3's focused
+verification; exact baseline recovery and cumulative size proof are recorded in
+the current handoff. Use `scripts/verify.py qualification --preset <preset>
+--reason <reason> --selection <groups...> --runtime <host|all>`; selections are
+`product`, `boundary`, `tooling`, `corpus` or the separate Release/testing-OFF
+`production` gate. Product selection requires `--base`. Exact membership prints
+before execution. Successful stages reuse original records across campaign names;
+failed or incomplete gates remain pending. Legacy sealed-build adapters are
+unsupported. `collect-qualification` accepts only the complete explicit native,
+profile, runtime, corpus and production gate set described in CONTRIBUTING.md.
+Mixed checkpoint selections run their host and GPU parts separately under one
+build-tree owner and one aggregate group result. Only the GPU part holds the
+shared device lease; reuse requires exact membership and completed results from
+every part. Enabling the dispatcher does not establish full product qualification.
+Development verification selects individual existing state, process, native/transitive,
+generated-input, shadow-header and partial-build controls. It does not dispatch the
+entire build-evidence group or change product fixtures. Control artifacts remain
+under the selected preset's validation directory. No full product/platform
+qualification is claimed by this scope.
 
 During implementation, build the affected test targets and run only the owning
 cases needed to check the current edit. Run new compiled cases on Linux and
@@ -263,8 +348,7 @@ setup failure is not a passing negative test. Valid names and a reasoned raw
 binding exception must compile successfully. Cargo runs offline and locked;
 the normal configured build supplies cached dependencies. Logs remain in the
 artifact directory after temporary workspace cleanup. Run it with
-`ctest --preset <preset> -R '^Quality.RustNaming$' --output-on-failure`, or use
-the quality dispatcher, which supplies the same tool and artifact environment.
+`ctest --preset <preset> -R '^Quality.RustNaming$' --output-on-failure`, or run its standalone harness with the configured tool and artifact environment.
 
 `Quality.RustBoundaries` uses one temporary workspace per run. Both compiler-probe
 groups reuse Cargo artifacts under `out/build/<preset>/cargo/quality-probes/`,
@@ -272,48 +356,28 @@ separately from product artifacts. Cargo's fingerprints and build lock govern
 reuse; standalone runs compile every current probe and check its diagnostics.
 The groups remove temporary source workspaces on completion and keep
 logs under `out/validation/<preset>/quality/rust-boundaries/`. Run
-`ctest --preset <preset> -R '^Quality.RustBoundaries$' --output-on-failure` or the
-quality dispatcher. Cargo is offline and locked; the configured build supplies
+`ctest --preset <preset> -R '^Quality.RustBoundaries$' --output-on-failure` or its standalone harness. Cargo is offline and locked; the configured build supplies
 the dependencies. Each negative fixture in `quality/fixtures/rust_boundaries/`
 must fail for its expected compiler code at its own source location, not because
 of missing tooling or an unrelated error. These are product API contracts, not
 external numerical references. Valid use runs with and without `test-support`;
-CTest selects the preset's profile and complete quality gates check both
-development and release. The probes compile without
+CTest selects the preset's profile; native CI/checkpoints retain both
+development and release contracts. The probes compile without
 linking or executing native CUDA calls.
 
-A complete quality gate can explicitly share its fresh compiler diagnostics with
-Debug and Release CTest in the same qualification. Supply a new UUID and manifest
-path to `scripts/check-quality.py` using `--qualification-id` and
-`--probe-manifest`; this stages a `.pending` request. Once the command and its
-process tree have completed successfully, publish it with:
+CTest directly owns compiler execution for both probe groups. Ordinary quality
+checks retain formatting, Clippy and native/CUDA analysis; they do not dispatch
+these probes. No publisher, manifest, alias receipt or recursive runtime seal is
+involved. Compiler commands have finite timeouts and keep separate diagnostics
+for every run. Probe-workspace Cargo configuration must match repository ancestry.
 
-```text
-python tests/quality/probe_evidence.py --manifest <same-path> --qualification-id <same-UUID>
-```
-
-Set `JUICER_RUST_PROBE_MANIFEST=<same-path>` and
-`JUICER_QUALIFICATION_ID=<same-UUID>` for the following CTest commands. Both
-compiler groups execute every existing case and diagnostic assertion for the
-preset's profile. They verify source and compiler context before and after the
-run, the exact case set, and the producer's original receipt and log hashes.
-Logs report `verified existing probe evidence` and identify that producer.
-Metadata and structural tests still run fresh. There are no skips or fabricated
-compiler logs. `Quality.ProbeEvidence` covers stale or incomplete evidence,
-wrong contexts, changed inputs/logs, diagnostic failures and positive controls.
-
-Keep `PYTHONDONTWRITEBYTECODE=1` set throughout quality, publication and CTest,
-as both CI jobs do. The quality runner also disables its own bytecode writes so
-its final manifest import cannot create a new runtime input after probe capture.
-Existing bytecode remains part of the verified Python context; changing it
-invalidates the evidence.
-
-An absent manifest means a fresh compile. An explicitly supplied but invalid
-manifest fails; remove it only when deliberately starting a fresh run and retain
-the failure. A quality selection without Rust produces no pending request, so
-CTest compiles fresh. Never reuse a manifest from another qualification or
-publish it while the quality process tree is still active. These rules preserve
-each platform/profile/feature combination and every numerical and product gate.
+Relevance labels form one disjoint partition: `product`, `boundary`, `tooling`,
+`corpus`; `host`/`gpu` are independent prerequisites. Both native CI jobs execute
+product and boundary groups for Debug and Release. Tooling executes once per native
+platform in Debug; corpus executes once in Linux Debug. The focused checkpoint
+controls cover exact execution membership, input/configuration invalidation,
+cross-campaign reuse, retained failures and inspected final-artifact binding.
+`Quality.Checkpoint` replaces retired publication/sealing protocol controls.
 
 Add construction/lifetime probes as the corresponding real API lands. Put
 identity, reuse, conversion and failure-transition cases in the owning domain's
@@ -444,6 +508,11 @@ underlying command and paths are needed. GPU diagnostics retain case, route,
 fixture and CUDA failure detail. A missing driver/device is a failure for a
 selected `gpu` test, not a skip.
 
+The real parallel analyzer control retains its complete failure directory under
+`out/validation/<preset>/quality/parallel-controls/` and prints its location.
+Standalone controls use the native Debug preset. Successful controls clean their
+scratch directory; CI uploads retained command logs and raw process diagnostics.
+
 CTest can write JUnit output without a project-specific report layer:
 
 ```sh
@@ -487,8 +556,8 @@ first to `out/validation/`.
   names retain `Debug host and Python checks` for branch-protection continuity.
   Each profile configures `BUILD_TESTING=ON` and uploads a separate host JUnit
   report; Release execution does not qualify the migration's distinct
-  testing-OFF production Release gate. Compiler-probe receipts from the quality
-  pass are freshly verified by both profiles before reuse. Both lanes install and
+  testing-OFF production Release gate. Both profiles execute their direct compiler
+  probes; the quality pass retains ordinary Rust/native/CUDA analysis. Both lanes install and
   verify the cuRAND and CCCL headers required by Clang's CUDA frontend. The
   `linux-debug-quality` and `windows-debug-quality` artifacts retain quality
   logs, translated CUDA commands, and the compilation database even on failure.
@@ -760,3 +829,64 @@ concurrent initialization, lifetime, clearing and faults. Prepared projection an
 span tests require schema 1 plus a closed CCTF kind for both encoding states.
 `Scanner.Gpu.OutputEncoding` uses the independent frozen double scanner oracle,
 with unchanged maximum/mean error bounds, nonfinite and alpha/padding checks.
+
+
+## Film development and route binding
+
+`Ffi.Host.FilmDevelopment` compares the safe completed development family, raw
+legacy transport, gated fixture facade and native source projection against
+[the native characterization](film/fixtures/manifest.json). It checks coordinated
+C11/C++20/Rust ABI facts, invalid controls/tags, bounded reservation and copy
+failure, contained panics, consuming release and source-cache replacement while
+a selected source remains held. It needs no device at runtime.
+
+`Film.Host.DevelopmentProducts` covers every shipped capture profile on both
+route selections, four film-gamma values and three grain policies. It compares
+snapshot, development, synthetic-reference, scanner and final identities with
+independent per-preset native captures. Admission failures must retain existing
+immutable states and prevent publication of an intermediate identity. Rust core
+tests also cover variable-length completed profiles and separately scoped native
+primitive captures for NaN, infinity, signed-zero and 63/64/65-element hash masks.
+These are Film-Juicer characterizations, not external-reference pixel fixtures.
+
+`Ofx.Gpu.AdapterTrace` observes film-f32, print-f64 and resolved grain values from
+actual current-value OFX capture, including invalid controls and recovery.
+`Grain.Gpu.ScratchReuse` verifies that a required film-gamma host rebuild changes
+development/final identities while reusing unchanged device curve/layer storage
+and preserving every uploaded word. Identical snapshots instead reuse the whole
+published state; equal curve hashes alone do not prove an absence of host work.
+
+The immutable fixture directory is an ordinary test input. Capture generators
+and maintenance environments are excluded from CTest. Generate and review
+candidates under `out/validation/`; do not update expectations to obtain a pass.
+
+
+Color/illuminant capture storage uses logical preset aliases and per-family
+shared expected arrays. See the shared capture storage section in `ffi/README.md`.
+Capture provenance and native numerical distinctions remain unchanged; logical
+color identity still selects its qualified exposure supplement. The corpus
+selection validates unique physical payloads, while each native numerical group
+uses its own logical expectations. `Ffi.Host.SharedFixtureLoading` proves loader
+admission and patch independence using owned scratch; ordinary fixtures stay
+immutable.
+
+
+Checkpoint CTest selections execute their exact host and GPU memberships in
+separate supervised invocations under one build-tree owner. Host work runs
+outside the shared GPU lease; GPU work holds it. Both invocations form one
+relevance-group result: failure, missing cases or an incomplete process prevents
+reuse of the whole group. Unchanged reuse validates every raw result and JUnit
+report without acquiring the GPU lease. Ordinary CMake/CTest use is unchanged.
+
+The audited host fixture/admission groups use process-local hooks and distinct
+per-preset mutation roots; they have no global `RUN_SERIAL` requirement. Named
+Cargo/GPU locks and build-tree ownership remain required. Read-only exposure and
+spectral admission tests consume the staged immutable resources directly.
+Input-color and TC fault matrices reuse only a prior immutable publication; each
+fault, cold admission and recovery retains independent mutable state/counters.
+
+Checkpoint registration admission rejects global serialization and duplicate
+explicit `--scratch-root` destinations in the selected groups. Each such option
+must occur once and name an absolute destination. Prefer isolated
+per-case roots or the actual named resource lock. Implicit writer paths still
+require review of their owning test; labels alone do not prove isolation.

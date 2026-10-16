@@ -230,17 +230,32 @@ namespace {
             return std::nullopt;
         }
     }
-    Json held(const PendingRenderAdmissionResult& result) {
+    struct HeldValues {
+        Json complete;
+        Json exposureTables;
+        std::vector<std::uint32_t> tcRgba, printLight, boundary;
+        bool operator==(const HeldValues&) const = default;
+    };
+    template <typename Range>
+    std::vector<std::uint32_t> retained_bits(const Range& samples) {
+        std::vector<std::uint32_t> out;
+        out.reserve(samples.size());
+        for (float value : samples)
+            out.push_back(std::bit_cast<std::uint32_t>(value));
+        return out;
+    }
+    HeldValues held(const PendingRenderAdmissionResult& result) {
         require(bool(result.directState) || bool(result.printState), "retained admitted state");
-        Json out = result.printState ? complete_result(*result.printState) : complete_result(*result.directState);
+        HeldValues out;
+        out.complete = result.printState ? complete_result(*result.printState) : complete_result(*result.directState);
         const auto& p = result.printState ? result.printState->payload : result.directState->payload;
-        out["exposure_tables"] = tables_result(p.exposureTables);
+        out.exposureTables = tables_result(p.exposureTables);
         if (p.filmTcLut)
-            out["tc_rgba"] = bits(p.filmTcLut->samples());
+            out.tcRgba = retained_bits(p.filmTcLut->samples());
         if (p.printMainIlluminant)
-            out["print_light"] = bits(*p.printMainIlluminant);
+            out.printLight = retained_bits(*p.printMainIlluminant);
         if (p.outputBoundaryTable)
-            out["boundary"] = bits(p.outputBoundaryTable->cmax);
+            out.boundary = retained_bits(p.outputBoundaryTable->cmax);
         return out;
     }
     void products(const Json& fixture, const fs::path& root) {
@@ -561,10 +576,12 @@ namespace {
     }
 } // namespace
 void fj_test_spectral_products(const nlohmann::json& fixture, const std::filesystem::path& resource, const std::filesystem::path& scratch, bool faults, void (*nativeAllocationCheck)(const nlohmann::json&)) {
-    std::filesystem::create_directories(scratch);
-    std::filesystem::copy(resource, scratch, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+    if (!faults) {
+        std::filesystem::create_directories(scratch);
+        std::filesystem::copy(resource, scratch, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+    }
     JuicerCuda::Owner owner;
-    owner.create(scratch);
+    owner.create(faults ? resource : scratch);
     JuicerProcess::root().ensure_bootstrap();
     if (faults) {
         require(nativeAllocationCheck != nullptr, "spectral admission requires its owning allocation check");
@@ -575,11 +592,9 @@ void fj_test_spectral_products(const nlohmann::json& fixture, const std::filesys
     require(owner.close().category == FJ_STATUS_SUCCESS, "spectral fixture owner close");
 }
 
-void fj_test_exposure_admission(const std::filesystem::path& resource, const std::filesystem::path& scratch) {
-    std::filesystem::create_directories(scratch);
-    std::filesystem::copy(resource, scratch, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+void fj_test_exposure_admission(const std::filesystem::path& resource) {
     JuicerCuda::Owner owner;
-    owner.create(scratch);
+    owner.create(resource);
     JuicerProcess::root().ensure_bootstrap();
     exposure_admission();
     require(owner.close().category == FJ_STATUS_SUCCESS, "A5 admission owner close");
@@ -631,6 +646,10 @@ void fj_test_tc_lut_admission() {
     for (int route = 0; route < 4; ++route)
         for (int method : {0, 2}) {
             auto p = snapshot(static_cast<Spektrafilm::ScanRoute>(route), static_cast<Spektrafilm::RgbToRawMethod>(method));
+            InstanceState baseline;
+            pending(baseline, p);
+            const auto publication = admit_pending_render_state(baseline);
+            require(admitted(publication), "TC immutable baseline admitted");
             for (std::uint32_t operation = 1; operation <= 2; ++operation)
                 for (std::uint32_t index = 1; index <= (operation == 1 ? 1u : 3u); ++index)
                     for (std::uint32_t fault = 1; fault <= 4; ++fault) {
@@ -638,9 +657,14 @@ void fj_test_tc_lut_admission() {
                             InstanceState state;
                             std::optional<PendingRenderAdmissionResult> old;
                             if (current) {
+                                // Only the prior immutable publication is shared; fault/recovery construction is fresh.
+                                JuicerAtomic::store_shared_ptr(&state.activeDirectState, publication.directState);
+                                JuicerAtomic::store_shared_ptr(&state.activePrintState, publication.printState);
+                                state.lastHash.store(baseline.lastHash.load());
+                                state.buildCounterNext.store(baseline.buildCounterNext.load());
                                 pending(state, p);
                                 old = admit_pending_render_state(state);
-                                require(admitted(*old), "TC current admitted");
+                                require(admitted(*old) && old->directState == publication.directState && old->printState == publication.printState, "TC current reuses immutable baseline");
                             }
                             const auto hash = state.lastHash.load(), counter = state.buildCounterNext.load();
                             auto changed = p;
@@ -684,6 +708,7 @@ void fj_test_tc_lut_admission() {
                 fj_test_tc_lut_clear_fault();
             }
         }
+    require(count == 256, "all TC route/algorithm/call-position/fault/cold/current witnesses retained");
     std::printf("PASS %zu TC actual-caller cold/current/failure/retention/recovery witnesses\n", count);
 }
 

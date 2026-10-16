@@ -10,39 +10,6 @@
 #include "juicer_legacy_api.h"
 
 namespace JuicerColor {
-    std::array<float, 9> cat16_matrix(const Spectral::ChromaticAdaptationWhites& whites) {
-        std::array<float, 9> result{};
-        const FjStatus status = fj_legacy_cat16_matrix(whites.source, whites.destination, result.data());
-        if (status.category != FJ_STATUS_SUCCESS) {
-            JuicerCuda::Failure failure;
-            JuicerCuda::set_failure(failure, status, "CAT16 matrix preparation failed");
-            throw JuicerCuda::ExecutionFailure{std::move(failure)};
-        }
-        return result;
-    }
-
-    std::array<float, 3> adapt_cat16(const std::array<float, 3>& xyz, const Spectral::ChromaticAdaptationWhites& whites) {
-        std::array<float, 3> result{};
-        const FjStatus status = fj_legacy_adapt_cat16(xyz.data(), whites.source, whites.destination, result.data());
-        if (status.category != FJ_STATUS_SUCCESS) {
-            JuicerCuda::Failure failure;
-            JuicerCuda::set_failure(failure, status, "CAT16 scalar adaptation failed");
-            throw JuicerCuda::ExecutionFailure{std::move(failure)};
-        }
-        return result;
-    }
-
-    std::array<float, 9> cat02_matrix(const Spectral::ChromaticAdaptationWhites& whites) {
-        std::array<float, 9> result{};
-        const FjStatus status = fj_legacy_cat02_matrix(whites.source, whites.destination, result.data());
-        if (status.category != FJ_STATUS_SUCCESS) {
-            JuicerCuda::Failure failure;
-            JuicerCuda::set_failure(failure, status, "CAT02 matrix preparation failed");
-            throw JuicerCuda::ExecutionFailure{std::move(failure)};
-        }
-        return result;
-    }
-
     namespace {
         void require_success(FjStatus status, const char* diagnostic) {
             if (status.category != FJ_STATUS_SUCCESS) {
@@ -52,6 +19,24 @@ namespace JuicerColor {
             }
         }
     } // namespace
+
+    std::array<float, 9> cat16_matrix(const Spectral::ChromaticAdaptationWhites& whites) {
+        std::array<float, 9> result{};
+        require_success(fj_legacy_cat16_matrix(whites.source, whites.destination, result.data()), "CAT16 matrix preparation failed");
+        return result;
+    }
+
+    std::array<float, 3> adapt_cat16(const std::array<float, 3>& xyz, const Spectral::ChromaticAdaptationWhites& whites) {
+        std::array<float, 3> result{};
+        require_success(fj_legacy_adapt_cat16(xyz.data(), whites.source, whites.destination, result.data()), "CAT16 scalar adaptation failed");
+        return result;
+    }
+
+    std::array<float, 9> cat02_matrix(const Spectral::ChromaticAdaptationWhites& whites) {
+        std::array<float, 9> result{};
+        require_success(fj_legacy_cat02_matrix(whites.source, whites.destination, result.data()), "CAT02 matrix preparation failed");
+        return result;
+    }
 
     FjOutputColorPreparation output_color(OutputEncoding::ColorSpace space) {
         FjOutputColorPreparation out{};

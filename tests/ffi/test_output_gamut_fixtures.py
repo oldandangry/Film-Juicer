@@ -20,13 +20,15 @@ class OutputGamutFixtures(unittest.TestCase):
         manifest = json.loads((FIXTURES / "manifest.json").read_text())
         self.assertEqual(manifest["parent"], "d033f27cb3d1493adebcbc6c3d032f4bf6cb1666")
         self.assertEqual(set(manifest["preset_membership"]), {"linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"})
+        payloads = {name: (FIXTURES / name).read_bytes() for name in manifest["files"]}
         for name, entry in manifest["files"].items():
-            data = (FIXTURES / name).read_bytes()
+            data = payloads[name]
             self.assertEqual(len(data), entry["bytes"])
             self.assertEqual(hashlib.sha256(data).hexdigest(), entry["sha256"])
-        for member in manifest["preset_membership"].values():
-            records = json.loads((FIXTURES / member["records"]).read_text())
-            table = (FIXTURES / member["tables"]).read_bytes()
+        memberships = {(member["records"], member["tables"], member["extra"]) for member in manifest["preset_membership"].values()}
+        for records_name, tables_name, extra_name in memberships:
+            records = json.loads(payloads[records_name])
+            table = payloads[tables_name]
             self.assertEqual({row["tag"] for row in records["rows"] if row["variant"] == 0}, set(range(9)))
             self.assertEqual(len(records["directions"]), 720)
             self.assertEqual(len(records["oklab"]), 4)
@@ -41,7 +43,7 @@ class OutputGamutFixtures(unittest.TestCase):
                 if row["boundary_ok"]:
                     start = row["table_offset"]
                     self.assertEqual(fnv(struct.pack("<Q", row["transform"]["contract_hash"]) + table[start:start + 184320]), row["boundary_hash"])
-            extra = json.loads((FIXTURES / member["extra"]).read_text())
+            extra = json.loads(payloads[extra_name])
             self.assertEqual(len(extra["primitives"]), 5)
             self.assertEqual(len(extra["cube"]), 8)
             self.assertEqual(len(extra["rows"]), 6)

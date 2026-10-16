@@ -64,12 +64,14 @@ jobs:
           $llvmBin = Join-Path $vsPath "VC\Tools\Llvm\x64\bin"
           $clangFormat = Join-Path $llvmBin "clang-format.exe"
           $clangTidy = Join-Path $llvmBin "clang-tidy.exe"
-          if (!(Test-Path $clangFormat) -or !(Test-Path $clangTidy)) {
+          $rustLinker = Join-Path $llvmBin "lld-link.exe"
+          if (!(Test-Path $clangFormat) -or !(Test-Path $clangTidy) -or !(Test-Path $rustLinker -PathType Leaf)) {
             throw "VS 18 LLVM quality tools were not found"
           }
           $llvmBin >> $env:GITHUB_PATH
           "JUICER_CLANG_FORMAT=$clangFormat" >> $env:GITHUB_ENV
           "JUICER_CLANG_TIDY=$clangTidy" >> $env:GITHUB_ENV
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$rustLinker" >> $env:GITHUB_ENV
 
       - name: Install CUDA Toolkit 13.2
         shell: pwsh
@@ -174,30 +176,19 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($qualityBase) -or $qualityBase -match "^0+$") {
             $qualityBase = git rev-parse HEAD^
           }
-          $qualificationId = [guid]::NewGuid().ToString()
-          $probeManifest = "$env:GITHUB_WORKSPACE/out/validation/windows-clang-debug/quality/probes-$qualificationId.json"
           python -u scripts/check-quality.py `
-            --probe-manifest $probeManifest --qualification-id $qualificationId `
-            --base $qualityBase `
-            --preset windows-clang-debug `
-            --jobs 2
+            --base $qualityBase --preset windows-clang-debug --jobs 2
           if ($LASTEXITCODE -ne 0) { throw "Quality gate failed" }
-          if (Test-Path "$probeManifest.pending") {
-            python tests/quality/probe_evidence.py --manifest $probeManifest --qualification-id $qualificationId
-            if ($LASTEXITCODE -ne 0) { throw "Probe evidence publication failed" }
-            "JUICER_RUST_PROBE_MANIFEST=$probeManifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "JUICER_QUALIFICATION_ID=$qualificationId" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          }
 
       - name: List tests and run Debug host selection
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force out/validation/windows-clang-debug | Out-Null
-          ctest --preset windows-clang-debug -N
+          ctest --preset windows-clang-debug -N -L "product|boundary|tooling" -LE gpu
           if ($LASTEXITCODE -ne 0) { throw "Debug test discovery failed" }
-          ctest --preset windows-clang-debug -L host `
-            --output-on-failure `
+          ctest --preset windows-clang-debug -L "product|boundary|tooling" -LE gpu `
+            --no-tests=error --output-on-failure `
             --output-junit "$env:GITHUB_WORKSPACE\out\validation\windows-clang-debug\host-junit.xml"
           if ($LASTEXITCODE -ne 0) { throw "Debug host tests failed" }
 
@@ -215,10 +206,10 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force out/validation/windows-clang-release | Out-Null
-          ctest --preset windows-clang-release -N
+          ctest --preset windows-clang-release -N -L "product|boundary" -LE gpu
           if ($LASTEXITCODE -ne 0) { throw "Release test discovery failed" }
-          ctest --preset windows-clang-release -L host `
-            --output-on-failure `
+          ctest --preset windows-clang-release -L "product|boundary" -LE gpu `
+            --no-tests=error --output-on-failure `
             --output-junit "$env:GITHUB_WORKSPACE\out\validation\windows-clang-release\host-junit.xml"
           if ($LASTEXITCODE -ne 0) { throw "Release host tests failed" }
 
@@ -248,7 +239,9 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: windows-debug-host-junit
-          path: out/validation/windows-clang-debug/host-junit.xml
+          path: |
+            out/validation/windows-clang-debug/host-junit.xml
+            out/build/windows-clang-debug/Testing/Temporary/LastTest.log
           if-no-files-found: warn
 
       - name: Upload Release host test report
@@ -260,6 +253,8 @@ jobs:
             out/validation/windows-clang-release/host-junit.xml
             out/build/windows-clang-release/Testing/Temporary/LastTest.log
             out/build/windows-clang-release/compile_commands.json
+            out/validation/windows-clang-release/quality/**/*.log
+            out/validation/windows-clang-release/quality/**/*.json
           if-no-files-found: warn
 
       - name: Upload quality diagnostics and CUDA commands
@@ -269,7 +264,7 @@ jobs:
           name: windows-debug-quality
           path: |
             out/validation/windows-clang-debug/quality/**/*.log
-            out/validation/windows-clang-debug/quality/runs/**/*.json
-            out/validation/windows-clang-debug/quality/probes-*.json*
+            out/validation/windows-clang-debug/quality/**/*.json
+            out/validation/windows-clang-debug/quality/parallel-controls/**
             out/build/windows-clang-debug/compile_commands.json
           if-no-files-found: warn

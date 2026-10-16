@@ -315,5 +315,24 @@
       4659256389003116544,
       4663869115159543808
     ]
+  },
+  "payloads": {
+    "construction-linux-debug.json": "construction-linux-debug.json",
+    "construction-linux-release.json": "construction-linux-release.json",
+    "construction-windows-clang-debug.json": "construction-windows-clang-debug.json",
+    "construction-windows-clang-release.json": "construction-windows-clang-release.json"
+  },
+  "storage_files": {
+    "construction-linux-debug.json": "86e4a740f578c87b48357b0fab2d23678b9d37679309ef9c2d01311548535571",
+    "construction-linux-release.json": "59fc890ba3e9ddcee877963f922073201539284835eccfc53a150875efdbd080",
+    "construction-windows-clang-debug.json": "d51f1acce264e903103bc393574d8bae5711edf81c34c69994e304061145d2e7",
+    "construction-windows-clang-release.json": "4717098b33c8057262756b012186a8a7144d8d4a6f7807e524bb73a2de04266a",
+    "construction-blocks.json": "c68833e3cc4bd8289c6f33a340529de19adbaeb64c49736d018005069e5c4e14"
+  },
+  "storage_migration": {
+    "format": "logical capture aliases and shared exact expected arrays v1",
+    "source_manifest_sha256": "d71833e236082eddf918943fc46c0428bf573d18698e1e975715f83c29bb75d7",
+    "capture_hashes": "Original capture/provenance hashes above retain their original representation; storage_files hashes the maintained physical representation.",
+    "proof": "All four raw expansions and effective qualified color documents match retained originals exactly; logical supplement identity and ordered test/replace operations preserved."
   }
 }

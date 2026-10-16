@@ -262,6 +262,7 @@ fn text(value: &str) -> FjStringView {
 
 pub(crate) enum Failure {
     Input(&'static str),
+    Film(film_juicer_core::film::Error),
     Asset(AssetError),
     #[cfg(any(test, feature = "test-support"))]
     Capacity(TryReserveError),
@@ -284,6 +285,13 @@ pub(crate) enum Failure {
 impl Failure {
     fn category(&self) -> u32 {
         match self {
+            Self::Film(error) => match error {
+                film_juicer_core::film::Error::InvalidGamma
+                | film_juicer_core::film::Error::RouteMismatch => FJ_STATUS_UNSUPPORTED_INPUT,
+                film_juicer_core::film::Error::Allocation => FJ_STATUS_ALLOCATION_FAILURE,
+                film_juicer_core::film::Error::Size
+                | film_juicer_core::film::Error::ZeroIdentity => FJ_STATUS_PREPARATION_FAILURE,
+            },
             #[cfg(feature = "test-support")]
             Self::InjectedPreparation(_) => FJ_STATUS_PREPARATION_FAILURE,
             Self::Input(_) => FJ_STATUS_UNSUPPORTED_INPUT,
@@ -355,6 +363,7 @@ impl Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Film(error) => write!(formatter, "{error}"),
             Self::Input(message) => formatter.write_str(message),
             #[cfg(any(test, feature = "test-support"))]
             Self::Internal(message) => formatter.write_str(message),

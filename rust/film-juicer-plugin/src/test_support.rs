@@ -132,6 +132,51 @@ struct FjFilmProfile {
     _opaque: [u8; 0],
 }
 
+/// # Safety
+/// Matching live profile; initialized, aligned, exclusive and disjoint outputs/diagnostics.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_development_acquire(
+    profile: *const FjFilmProfile,
+    requested_route: u32,
+    gamma_factor: f32,
+    layers_required: u32,
+    out: *mut *mut crate::film_bridge::FjFilmDevelopmentOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Same internal constructor and raw lifetime contract, without calling legacy exports.
+    unsafe {
+        crate::film_bridge::acquire(
+            profile.cast(),
+            requested_route,
+            gamma_factor,
+            layers_required,
+            out,
+            error,
+        )
+    }
+}
+/// # Safety
+/// Matching live owner; initialized, aligned and disjoint output/diagnostics; views expire on release.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_development_view(
+    owner: *const crate::film_bridge::FjFilmDevelopmentOwner,
+    out: *mut crate::film_bridge::FjFilmDevelopmentView,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Same internal borrow projection; no legacy-export dependency.
+    unsafe { crate::film_bridge::view(owner, out, error) }
+}
+/// # Safety
+/// NULL or a matching owner consumed once; release excludes all views; disjoint diagnostics.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_development_release(
+    owner: *mut crate::film_bridge::FjFilmDevelopmentOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Same internal consume-once release, including failure/expiry behavior.
+    unsafe { crate::film_bridge::release(owner, error) }
+}
+
 const FJ_PROFILE_USE_STILL: u32 = 0;
 const FJ_PROFILE_USE_CINE: u32 = 1;
 const FJ_PROFILE_ANTIHALATION_STRONG: u32 = 0;

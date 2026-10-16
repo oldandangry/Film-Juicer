@@ -66,6 +66,9 @@ namespace JuicerTestSupport {
             bool pendingPrintRoute = false;
             Spektrafilm::ScanRoute pendingRoute = Spektrafilm::kDefaultScanRoute;
             double pendingExposureEv = 0.0;
+            float pendingFilmGamma = 0.0f;
+            double pendingPrintGamma = 0.0;
+            Spektrafilm::VisualGrainControls pendingGrain;
             std::uint64_t pendingFullHash = 0;
             std::uint64_t buildCounter = 0;
             std::uint64_t recipeHash = 0;
@@ -86,6 +89,9 @@ namespace JuicerTestSupport {
                     result.pendingValid = true;
                     result.pendingExposureEv =
                         valid->params.cameraExposureCompensationEv;
+                    result.pendingFilmGamma = valid->params.filmGammaFactor;
+                    result.pendingPrintGamma = valid->params.printGammaFactor;
+                    result.pendingGrain = valid->params.grainControls;
                     result.pendingFullHash = valid->fullHash;
                     result.pendingPrintRoute =
                         Spektrafilm::scan_route_is_print(
@@ -2639,11 +2645,17 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                 routeDiagnostic.find("route mismatch") != std::string::npos,
             "mismatched positive profile route was not rejected");
         RouteFaultTest::fail_on_call(1);
+        routeSnapshot.scanRoute = Spektrafilm::ScanRoute::PositiveDirectScan;
         routeDiagnostic.clear();
-        require(
-            !build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic) &&
-                routeDiagnostic.find("RouteResolutionFailure") != std::string::npos,
-            "recipe route bridge failure was not propagated");
+        require(build_direct_render_state_product(routeSnapshot, routeProduct, routeDiagnostic),
+                "completed film family unexpectedly used the scalar route bridge");
+        Spektrafilm::ScanRoute unusedRoute{};
+        require(!Spektrafilm::resolve_scan_route(Spektrafilm::ProfilePolarity::Positive,
+                                                 routeSnapshot.scanRoute,
+                                                 unusedRoute,
+                                                 routeDiagnostic) &&
+                    routeDiagnostic.find("RouteResolutionFailure") != std::string::npos,
+                "remaining scalar route fault was consumed by the migrated builder");
         DeviceFrame frame;
         for (int failedCall : {1, 2}) {
             const std::size_t traceStart = host.trace_size();
@@ -2992,6 +3004,14 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                     !host.nested_event_failed() &&
                     !host.nested_contract_failed() &&
                     !presetState.paramEventsSuppressed &&
+                    presetState.pendingValid &&
+                    presetState.pendingGrain.amplitude == static_cast<float>(std::exp2(-0.57)) &&
+                    presetState.pendingGrain.chromaMix == 0.50f &&
+                    presetState.pendingGrain.chromaSharedWeight == std::sqrt(0.50f) &&
+                    presetState.pendingGrain.chromaIndependentWeight == std::sqrt(0.50f) &&
+                    presetState.pendingGrain.particleAreaUm2 == 0.33f &&
+                    presetState.pendingGrain.correlationSigmaPx == 0.56f &&
+                    presetState.pendingGrain.sizeMixScale == 16.0f &&
                     double_matches(
                         host.double_value(JuicerParams::kGrainAmplitude),
                         -0.57) &&
@@ -3121,6 +3141,72 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                         recovered.state.recipeHash == redo.state.recipeHash &&
                         recovered.outputSignature == redo.outputSignature,
                     "valid controls did not recover the prior effective contract");
+
+            // Observe real OFX capture, including the one film narrowing and
+            // already resolved grain controls before development construction.
+            for (bool print : {false, true}) {
+                host.set_str_choice_value(JuicerParams::kParamScanRoute,
+                                          Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan
+                                                                            : Spektrafilm::ScanRoute::NegativeDirectScan));
+                for (double filmGamma : {0.05, 1.234567890123, 4.0}) {
+                    for (double printGamma : {0.5, 1.234567890123, 2.0}) {
+                        host.set_double_value(JuicerParams::kFilmGammaFactor, filmGamma);
+                        host.set_double_value(JuicerParams::kPrintGammaFactor, printGamma);
+                        host.dispatch_event(effect, JuicerParams::kFilmGammaFactor, OFX::eChangeUserEdit);
+                        const auto observed = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+                        require(observed.pendingValid &&
+                                    std::bit_cast<std::uint32_t>(observed.pendingFilmGamma) ==
+                                        std::bit_cast<std::uint32_t>(static_cast<float>(filmGamma)) &&
+                                    std::bit_cast<std::uint64_t>(observed.pendingPrintGamma) ==
+                                        std::bit_cast<std::uint64_t>(printGamma),
+                                "OFX film-f32/print-f64 capture bits changed");
+                    }
+                }
+                host.set_double_value(JuicerParams::kFilmGammaFactor, 1.0);
+                host.set_double_value(JuicerParams::kPrintGammaFactor, 0.25);
+                host.dispatch_event(effect, JuicerParams::kPrintGammaFactor, OFX::eChangeUserEdit);
+                const auto printInvalid = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+                require(print ? printInvalid.pendingInvalid : printInvalid.pendingValid,
+                        "OFX print gamma validation lost its print-only range");
+                host.set_double_value(JuicerParams::kPrintGammaFactor, 1.0);
+                host.dispatch_event(effect, JuicerParams::kPrintGammaFactor, OFX::eChangeUserEdit);
+                const auto retained = JuicerTestSupport::EffectTraceObserver::admit(effect);
+                require(print ? bool(retained.printState) : bool(retained.directState),
+                        "gamma recovery failed to admit a complete state");
+                for (double invalid : {std::nextafter(0.05, 0.0), std::nextafter(4.0, 5.0), std::numeric_limits<double>::quiet_NaN()}) {
+                    host.set_double_value(JuicerParams::kFilmGammaFactor, invalid);
+                    host.dispatch_event(effect, JuicerParams::kFilmGammaFactor, OFX::eChangeUserEdit);
+                    require(JuicerTestSupport::EffectTraceObserver::snapshot(effect).pendingInvalid &&
+                                JuicerTestSupport::EffectTraceObserver::admit(effect).status ==
+                                    PendingRenderAdmissionStatus::InvalidSnapshotControls,
+                            "invalid authored film gamma admitted an older publication");
+                }
+                host.set_double_value(JuicerParams::kFilmGammaFactor, 1.0);
+                for (int policy : {0, 1, 2}) {
+                    host.set_int_value(JuicerParams::kGrainActive, policy != 0);
+                    host.set_int_value(JuicerParams::kGrainSublayersActive, policy != 1);
+                    host.set_double_value(JuicerParams::kGrainAmplitude, -1.25);
+                    host.set_double_value(JuicerParams::kGrainChroma, 0.375);
+                    host.dispatch_event(effect, JuicerParams::kGrainActive, OFX::eChangeUserEdit);
+                    const auto observed = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+                    const auto& grain = observed.pendingGrain;
+                    require(observed.pendingValid && grain.active == (policy != 0) &&
+                                grain.sublayersActive == (policy != 1) &&
+                                grain.amplitude == static_cast<float>(std::exp2(-1.25)) &&
+                                grain.chromaMix == 0.375f &&
+                                grain.chromaSharedWeight == std::sqrt(0.625f) &&
+                                grain.chromaIndependentWeight == std::sqrt(0.375f),
+                            "OFX grain policy or resolved amount/chroma capture changed");
+                    const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
+                    require(print ? bool(admitted.printState) : bool(admitted.directState),
+                            "grain capture did not admit a complete state");
+                    const auto* recipe = print ? &admitted.printState->recipe : &admitted.directState->recipe;
+                    require(recipe->filmDevelop.densityCurvesLayersRequired == (policy == 2) &&
+                                (policy == 0 || recipe->visualGrain.amplitude == grain.amplitude),
+                            "development repeated or changed resolved grain policy");
+                }
+            }
+            std::cout << "PASS adapter/film-f32-print-f64-grain-capture-and-recovery\n";
 
             require(host.current_get_count() != 0 &&
                         host.at_time_get_count() == 0,

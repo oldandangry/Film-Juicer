@@ -25,3 +25,8 @@ Shared records indicate proven equality, not looser bounds or a candidate
 oracle. These are Film-Juicer characterization and exact migration contracts;
 they are not new spektrafilm Python or CUDA algorithms. Reference maintenance
 is an explicit operation; CTest never regenerates expectations.
+
+
+Both native record cohorts reference `records-0-tables.bin`: the former second
+table was byte-identical. The manifest retains each preset's provenance and its
+historical filename alias; complete table bits and all record cases are unchanged.

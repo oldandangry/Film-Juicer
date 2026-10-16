@@ -35,6 +35,13 @@ impl FilmOwner {
         Self { profile }
     }
 
+    pub(crate) fn development(
+        &self,
+        params: film_juicer_core::film::Params,
+    ) -> Result<film_juicer_core::film::Development, film_juicer_core::film::Error> {
+        film_juicer_core::film::Development::new(Arc::clone(&self.profile), params)
+    }
+
     #[cfg(feature = "test-support")]
     pub(crate) fn fixture_view(&self) -> FilmFixtureView<'_> {
         let tables = self.profile.tables();

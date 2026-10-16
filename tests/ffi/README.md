@@ -648,22 +648,29 @@ pending supersession retain owners/hashes/counters; same-thread matching raw cal
 before cleanup witness consumption. Retained products stay exact across asset
 cache release and state replacement. Both retained DWG helpers propagate failure.
 
-Retention comparisons keep independently owned expected bit snapshots and read
-current published arrays directly. Exact lengths, every sample bit (including
-signed zero and NaN payloads), absent-array handling, boundary validity/hashes/
-diagnostics and complete recipe/table JSON remain checked. Only temporary
-current-value bit-vector copies are removed; all 140 product cases, 144 operation
-counts (including zero calls), 208 cold/current failure/recovery cases and 624
-supersession witnesses retain their original constructions and order. Comparator
-controls reject length and individual-bit changes independently of those fixtures.
+Whole-product retention comparisons keep independently owned expected bit
+snapshots and read current published arrays directly. Exact lengths, every sample
+bit (including signed zero and NaN payloads), absent-array handling, boundary
+validity/hashes/diagnostics and complete recipe/table JSON remain checked there.
+Input-color admission compares the affected input fields and contributing
+identities directly, leaving unrelated full-state JSON and TC arrays to those
+whole-product and lifetime owners. All 140 product cases, 144 operation counts
+(including zero calls), 208 cold/current failure/recovery cases and 624
+supersession witnesses retain their variants and operation order. Only the prior
+immutable publication is shared once per 24 route/method/decoded-space baselines;
+each fault's mutable state, counters, cold construction and recovery remain fresh.
+Comparator controls reject length and individual-bit changes independently of
+those fixtures.
 
 `fixtures/color/input-color-manifest.json` contains self-contained native-parent,
 compiler, control, representation and reference-role provenance. The owner-adopted
 6 October 2026 inverse mapping uses A from every agreeing completed recipe/config
 as the new matrix producer's exact reference. Original standalone/default inverse
 observations remain native characterization; Windows Release B is retained there.
-All four capture payloads are unchanged. Conversion tests consume their explicitly
-supplied inverse, including B, without replacing it through the matrix producer.
+All four expanded logical capture expectations and supplied inverse operands are
+unchanged; physical payloads use the shared storage described below. Conversion
+tests consume their supplied inverse, including B, without replacing it through
+the matrix producer.
 Every other numerical/identity obligation and existing fixture/limit is unchanged.
 Ordinary tests read only public fixtures and never generate expectations.
 
@@ -960,3 +967,28 @@ Cold callers remain responsible for matching tags, prepared values, identities
 and live initialized aligned extents. The scanner double encoder is a continuing
 test-only oracle with frozen native f32 inputs/matrices and its original f64
 arithmetic; candidate setup uses migrated preparation.
+
+
+### Shared capture storage
+
+Color and illuminant construction manifests retain the original native capture
+identities and provenance. Their `payloads` entries map each logical capture name
+to its physical JSON file; `storage_files` hashes the maintained representation.
+The capture hashes still describe the original captured representation. Identical
+Linux Debug/Release and applicable Windows color payloads share storage, while
+the two distinct Windows input-color captures remain separate. TC preset
+membership similarly shares the one byte-identical complete table file.
+
+`exposure_fixture.h` expands per-family `expected_blocks` before applying the
+qualified color supplement. The logical filename selects that supplement and
+must still match `original_fixture`; its ordered `test`/`replace` operations are
+unchanged. Raw Rust leaf/explicit-conversion and Mallett helper readers retain
+their raw capture semantics. Ordinary tests never rewrite or recapture values.
+
+`Ffi.Host.SharedFixtureLoading` exercises actual C++ alias/patch independence and
+rejects unknown logical captures, invalid block indices and wrong supplement
+identity. `Ffi.Host.SharedFixtureFormat` belongs to the corpus selection: it
+checks each physical payload once, all native memberships and ordered recipe
+inputs. Numerical groups still compare actual outputs with the applicable
+native expectations. Small frozen foreign-value witnesses retain wrong-preset
+rejection without loading three unrelated complete documents on each run.

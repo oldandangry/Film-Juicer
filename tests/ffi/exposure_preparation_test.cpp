@@ -32,7 +32,7 @@
 extern "C" int fj_test_exposure_abi_c(const FjReferenceWhiteInput*, FjReferenceWhite*, const FjSensitivityInput*, FjSensitivity*, FjSensitivityFailure*, FjErrorBuffer*);
 void fj_test_spectral_products(const nlohmann::json&, const std::filesystem::path&, const std::filesystem::path&, bool, void (*)(const nlohmann::json&));
 
-void fj_test_exposure_admission(const std::filesystem::path&, const std::filesystem::path&);
+void fj_test_exposure_admission(const std::filesystem::path&);
 
 namespace {
     using Json = nlohmann::json;
@@ -336,8 +336,8 @@ int main(int argc, char** argv) {
         require(argc >= 2, "exposure group required");
         const std::string group = argv[1];
         if (group == "admission") {
-            require(argc == 4, "exposure admission requires resource and scratch");
-            fj_test_exposure_admission(argv[2], argv[3]);
+            require(argc == 3, "exposure admission requires resources");
+            fj_test_exposure_admission(argv[2]);
             std::puts("PASS exposure admission contract");
             return 0;
         }

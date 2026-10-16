@@ -1,7 +1,6 @@
 import hashlib
 import json
 from pathlib import Path
-import struct
 import unittest
 
 
@@ -14,15 +13,17 @@ class TcLutFixtures(unittest.TestCase):
         self.assertEqual(manifest["parent"], "5b134fb1cb731e16db85159e37c70eda38122874")
         presets = {"linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"}
         self.assertEqual(set(manifest["preset_membership"]), presets)
+        payloads = {name: (FIXTURES / name).read_bytes() for name in manifest["sha256"]}
         for name, expected in manifest["sha256"].items():
-            self.assertEqual(hashlib.sha256((FIXTURES / name).read_bytes()).hexdigest(), expected)
+            self.assertEqual(hashlib.sha256(payloads[name]).hexdigest(), expected)
         for preset, membership in manifest["preset_membership"].items():
-            records = json.loads((FIXTURES / membership["records"]).read_text())
-            data = (FIXTURES / membership["tables"]).read_bytes()
+            self.assertEqual(manifest["sha256"][membership["tables"]], manifest["provenance"][preset]["table_sha256"])
+        for name in {member["tables"] for member in manifest["preset_membership"].values()}:
+            data = payloads[name]
             self.assertEqual(len(data), 9 * 147456 * 4)
-            self.assertEqual(hashlib.sha256(data).hexdigest(), manifest["provenance"][preset]["table_sha256"])
-            words = [value[0] for value in struct.iter_unpack("<I", data)]
-            self.assertTrue(all(value == 0 for value in words[3::4]))
+            self.assertTrue(all(not any(data[offset::16]) for offset in range(12, 16)))
+        for name in {member["records"] for member in manifest["preset_membership"].values()}:
+            records = json.loads(payloads[name])
             self.assertEqual(len(records["leaves"]["cases"]), 23)
             self.assertEqual(len(records["products"]), 36)
             self.assertEqual({(row["polarity"], row["route"], row["method"], row["variant"]) for row in records["products"]},

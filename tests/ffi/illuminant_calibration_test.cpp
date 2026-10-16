@@ -642,7 +642,7 @@ namespace {
         ASSERT_TRUE(build_print_render_state_product(params, product, diagnostic)) << diagnostic;
         const auto selectedProfiles = assets.selected_profiles_for_route({params.filmProfileKey, params.printProfileKey, params.scanRoute});
         ASSERT_TRUE(selectedProfiles.valid);
-        EXPECT_NE(selectedProfiles.filmProfile->info.stock, params.filmProfileKey);
+        EXPECT_NE(selectedProfiles.filmSource->profile()->info.stock, params.filmProfileKey);
         EXPECT_NE(selectedProfiles.printSource->profile()->info.stock, params.printProfileKey);
         const auto& cc = product.recipe.print.filters.mainCmyCc;
         EXPECT_EQ(cc.c, 11);

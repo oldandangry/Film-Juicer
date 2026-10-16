@@ -1,0 +1,82 @@
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "juicer_legacy_api.h"
+
+
+_Static_assert(sizeof(FjOutputEncoding) == 68 && _Alignof(FjOutputEncoding) == 4, "encoding layout");
+_Static_assert(offsetof(FjOutputEncoding, schema) == 0 && offsetof(FjOutputEncoding, cctf_kind) == 4, "encoding tags");
+_Static_assert(offsetof(FjOutputEncoding, gamma) == 8 && offsetof(FjOutputEncoding, a) == 12, "encoding gamma/a");
+_Static_assert(offsetof(FjOutputEncoding, b) == 16 && offsetof(FjOutputEncoding, c) == 20, "encoding b/c");
+_Static_assert(offsetof(FjOutputEncoding, d) == 24 && offsetof(FjOutputEncoding, linear_cutoff) == 28, "encoding d/cutoff");
+_Static_assert(offsetof(FjOutputEncoding, dwg_to_output) == 32, "encoding matrix");
+_Static_assert(sizeof(FjOutputColorPreparation) == 168 && _Alignof(FjOutputColorPreparation) == 8, "output preparation layout");
+_Static_assert(offsetof(FjOutputColorPreparation, output_space) == 0, "output tag");
+_Static_assert(offsetof(FjOutputColorPreparation, rgb_to_xyz) == 4, "output forward");
+_Static_assert(offsetof(FjOutputColorPreparation, xyz_to_rgb) == 40, "output inverse");
+_Static_assert(offsetof(FjOutputColorPreparation, white_xyz) == 76, "output white");
+_Static_assert(offsetof(FjOutputColorPreparation, encoding) == 88, "output encoding");
+_Static_assert(offsetof(FjOutputColorPreparation, entry_hash) == 160, "output identity");
+_Static_assert(_Generic(&fj_legacy_output_color, FjStatus (*)(uint32_t, FjOutputColorPreparation*): 1, default: 0), "output signature");
+
+
+#define FJ_ABI_TYPE(t, s, a) _Static_assert(sizeof(t) == s && _Alignof(t) == a, #t);
+#define FJ_ABI_FIELD(t, f, o) _Static_assert(offsetof(t, f) == o, #t "." #f);
+#define FJ_ABI_VALUE(t, v) _Static_assert(t == v, #t);
+#include "cuda_abi_facts.inc"
+static const uint32_t expected[9][36] = {
+    {1054025240U, 1052186457U, 1043911934U, 1046066128U, 1060575065U, 1033100696U, 1016994569U, 1039408929U, 1064522744U, 1078945278U, 3217343224U, 3204401280U, 3212315093U, 1072699959U, 1026161639U, 1029973423U, 3192972640U, 1065831367U, 1064522004U, 1065353216U, 1066100287U, 1075419546U, 0U, 0U, 0U, 0U, 0U, 1072889582U, 3209348421U, 3185186520U, 3190606953U, 1069454308U, 3198409817U, 3187201185U, 3198263822U, 1069021246U},
+    {1055124812U, 1049486480U, 1043360478U, 1045857533U, 1060682359U, 1032659532U, 2147483648U, 1027654291U, 1063798897U, 1076784347U, 3212987884U, 3202440466U, 3209400354U, 1071139108U, 1018791578U, 1026092354U, 3182656534U, 1066199873U, 1063584677U, 1065353216U, 1064588443U, 1053092943U, 0U, 0U, 0U, 0U, 0U, 1071006956U, 3201871056U, 3189871152U, 3183801129U, 1068329325U, 3197737000U, 3184863159U, 3194196807U, 1069353377U},
+    {1056514004U, 1049101720U, 1045100921U, 1047165007U, 1060181447U, 1034051885U, 2147483648U, 1027131599U, 1065721848U, 1075811700U, 3211685672U, 3201183771U, 3209976164U, 1071750906U, 1019316369U, 1024643860U, 3181117509U, 1064629858U, 1064522004U, 1065353216U, 1066100287U, 1075419546U, 0U, 0U, 0U, 0U, 0U, 1069812128U, 3200662812U, 3188970182U, 3184358237U, 1068819848U, 3198171466U, 3183035421U, 3192245420U, 1067732439U},
+    {1058250917U, 1044251505U, 1044430685U, 1050164467U, 1059101354U, 1033515429U, 1021144581U, 1032898027U, 1065207925U, 1073916265U, 3205538943U, 3199238259U, 3212320797U, 1072701385U, 1026177746U, 1012675442U, 3186779834U, 1065480471U, 1064522004U, 1065353216U, 1066100287U, 1055444825U, 0U, 0U, 0U, 0U, 0U, 1067950492U, 3188834503U, 3190508540U, 3190620208U, 1069455058U, 3198409144U, 3187468704U, 3195481890U, 1068414017U},
+    {1059262383U, 1041503860U, 1043132195U, 1049002148U, 1059950920U, 1030940252U, 0U, 1021704371U, 1065864796U, 1071364922U, 3199605371U, 3196172602U, 3207244755U, 1070524635U, 1015098636U, 1016103288U, 3173986364U, 1064381868U, 1064522004U, 1065353216U, 1066100287U, 1065353216U, 1066186178U, 1016325611U, 0U, 0U, 0U, 1066446270U, 3165064932U, 3185645604U, 3167832076U, 1067960809U, 3197244195U, 3183322199U, 3190332110U, 1067511199U},
+    {1061959185U, 1040871902U, 1023423598U, 1049851068U, 1060519700U, 953267991U, 0U, 0U, 1062415525U, 1068255674U, 3196247553U, 3176222268U, 3205196520U, 1069616307U, 1017638814U, 0U, 0U, 1067134117U, 1064754197U, 1065353216U, 1062418958U, 1057896676U, 0U, 0U, 0U, 0U, 989855744U, 1063306898U, 3162708141U, 1037642051U, 1022652045U, 1067314155U, 3196082884U, 3186996291U, 3190501054U, 1070448522U},
+    {1064557177U, 0U, 952399377U, 1051728991U, 1060792600U, 3180575291U, 0U, 0U, 1065427247U, 1065771061U, 0U, 3100405293U, 3204310784U, 1068484793U, 1036595731U, 0U, 0U, 1065206449U, 1064558749U, 1065353216U, 1065427247U, 1065353216U, 0U, 0U, 0U, 0U, 0U, 1060916158U, 1042281114U, 1037632330U, 1016987948U, 1066296476U, 3187371042U, 3184060205U, 3188455477U, 1067989897U},
+    {1060330493U, 1041782893U, 1036974048U, 1049385283U, 1063233111U, 3189197794U, 3184176401U, 3188536431U, 1068087197U, 1069687375U, 3197115876U, 3189144994U, 3203271069U, 1067462312U, 1043535092U, 1033581915U, 1034249880U, 1061332468U, 1064521989U, 1065353216U, 1066100289U, 1065353216U, 1005961871U, 1088421888U, 1033247326U, 1093082041U, 992737517U, 1065353215U, 830472192U, 855638016U, 858783744U, 1065353216U, 0U, 3073523712U, 3166473604U, 1065385758U},
+    {1054027132U, 1052185655U, 1043907740U, 1046071021U, 1060574263U, 1033097341U, 1017012769U, 1039407855U, 1064519457U, 1078944666U, 3217342708U, 3204398978U, 3212321233U, 1072701727U, 1026176672U, 1029958229U, 3192974378U, 1065833256U, 1064521989U, 1065353216U, 1066100289U, 1054168405U, 0U, 0U, 0U, 0U, 0U, 1072888809U, 3209348044U, 3185177512U, 3190620653U, 1069455330U, 3198409612U, 3187210452U, 3198265906U, 1069023735U},
+};
+static const uint64_t identities[9] = {UINT64_C(4046186183453127388), UINT64_C(671384475029644653), UINT64_C(12731739782311859738), UINT64_C(15290209877088587462), UINT64_C(4193164692924065125), UINT64_C(13270131069994659966), UINT64_C(13506520838887636573), UINT64_C(7008467876276780910), UINT64_C(7479873490961326168)};
+static const uint32_t kinds[9] = {2, 1, 2, 1, 3, 4, 0, 5, 1};
+static int same_words(const float* values, const uint32_t* words, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t word;
+        memcpy(&word, values + i, 4);
+        if (word != words[i])
+            return 0;
+    }
+    return 1;
+}
+int main(void) {
+    struct {
+        uint64_t before;
+        FjOutputColorPreparation out;
+        uint64_t after;
+    } guarded;
+    FjOutputColorPreparation retained[9];
+    for (uint32_t tag = 0; tag < 9; ++tag) {
+        guarded.before = UINT64_C(0x1122334455667788);
+        guarded.after = UINT64_C(0x8877665544332211);
+        FjStatus status = fj_legacy_output_color(tag, &guarded.out);
+        if (status.category || status.api || status.native_code || guarded.before != UINT64_C(0x1122334455667788) || guarded.after != UINT64_C(0x8877665544332211))
+            return 1;
+        FjOutputColorPreparation* v = &guarded.out;
+        float coefs[6] = {v->encoding.gamma, v->encoding.a, v->encoding.b, v->encoding.c, v->encoding.d, v->encoding.linear_cutoff};
+        if (v->output_space != tag || v->entry_hash != identities[tag] || v->encoding.schema != 1 || v->encoding.cctf_kind != kinds[tag] || !same_words(v->rgb_to_xyz, expected[tag], 9) || !same_words(v->xyz_to_rgb, expected[tag] + 9, 9) || !same_words(v->white_xyz, expected[tag] + 18, 3) || !same_words(coefs, expected[tag] + 21, 6) || !same_words(v->encoding.dwg_to_output, expected[tag] + 27, 9))
+            return 2;
+        retained[tag] = *v;
+    }
+    unsigned char zero[sizeof(FjOutputColorPreparation)] = {0};
+    const uint32_t invalid[] = {9, 255, UINT32_MAX};
+    for (size_t i = 0; i < 3; ++i) {
+        memset(&guarded.out, 0xa5, sizeof guarded.out);
+        if (fj_legacy_output_color(invalid[i], &guarded.out).category != FJ_STATUS_UNSUPPORTED_INPUT || memcmp(&guarded.out, zero, sizeof guarded.out))
+            return 3;
+    }
+    if (fj_legacy_output_color(0, NULL).category != FJ_STATUS_UNSUPPORTED_INPUT || fj_legacy_output_color(0, (FjOutputColorPreparation*)(uintptr_t)(UINTPTR_MAX - 7)).category != FJ_STATUS_UNSUPPORTED_INPUT)
+        return 4;
+    for (size_t i = 0; i < 9; ++i)
+        if (retained[i].entry_hash != identities[i] || !same_words(retained[i].encoding.dwg_to_output, expected[i] + 27, 9))
+            return 5;
+    return 0;
+}

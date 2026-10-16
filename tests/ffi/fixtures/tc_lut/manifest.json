@@ -16,11 +16,11 @@
     },
     "windows-clang-debug": {
       "records": "records-1.json",
-      "tables": "records-1-tables.bin"
+      "tables": "records-0-tables.bin"
     },
     "windows-clang-release": {
       "records": "records-1.json",
-      "tables": "records-1-tables.bin"
+      "tables": "records-0-tables.bin"
     }
   },
   "provenance": {
@@ -352,7 +352,9 @@
   "sha256": {
     "records-0-tables.bin": "d06c89f8713da8af7f2fec4a27fd7002a077854517145eb211ec48f51aae8376",
     "records-0.json": "35ae442a93a49353c757fff44a8d98b6fa725da7af6c283755a9f69f16f07dd7",
-    "records-1-tables.bin": "d06c89f8713da8af7f2fec4a27fd7002a077854517145eb211ec48f51aae8376",
     "records-1.json": "86e2d5dc8609bf5871b3e70a12dbddd0cdc181818d3b3b94ae5cb3060b851d4e"
+  },
+  "storage_aliases": {
+    "records-1-tables.bin": "records-0-tables.bin"
   }
 }

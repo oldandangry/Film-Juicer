@@ -89,6 +89,7 @@ namespace {
         double time = 12.0;
         float pixelSize = 6.0f;
         bool cameraDiffusion = false;
+        float filmGamma = 1.0f;
     };
 
     struct Inputs {
@@ -105,6 +106,7 @@ namespace {
             : width(w), height(h), pixelSizeUm(variant.pixelSize) {
             ParamSnapshot controls;
             controls.scanRoute = route;
+            controls.filmGammaFactor = variant.filmGamma;
             if (Spektrafilm::scan_route_metadata(route).capturePolarity == Spektrafilm::ProfilePolarity::Positive) {
                 controls.filmProfileKey = "fujifilm_provia_100f";
             }
@@ -342,6 +344,78 @@ namespace {
             EXPECT_NE(grain.layerWork, optics.rgbG);
             EXPECT_NE(grain.sharedDelta, optics.rgbB);
             finish(frame);
+        }
+    }
+
+    TEST_F(GrainScratch, FilmGammaRebuildReusesExactCurveAndLayerDeviceStorage) {
+        for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+            for (bool layers : {false, true}) {
+                GrainVariant variant;
+                variant.layers = layers;
+                Inputs before(64, 48, route, variant);
+                variant.filmGamma = 1.1f;
+                Inputs changed(64, 48, route, variant);
+                const auto& a = before.product.recipe.filmDevelop;
+                const auto& b = changed.product.recipe.filmDevelop;
+                EXPECT_NE(a.hash, b.hash);
+                EXPECT_NE(before.product.recipe.hash, changed.product.recipe.hash);
+                EXPECT_EQ(a.normalizedDensityCurvesHash, b.normalizedDensityCurvesHash);
+                EXPECT_EQ(a.densityCurvesLayersHash, b.densityCurvesLayersHash);
+                auto first = prepare(before, false);
+                require_cuda(cudaStreamSynchronize(stream));
+                const auto film = first.focused_resources().film;
+                const auto layerView = first.visual_grain_resources().densityLayers;
+                const auto capture = [](const float* data, std::size_t count) {
+                    std::vector<std::uint32_t> bits(count);
+                    require_cuda(cudaMemcpy(bits.data(), data, count * sizeof(float), cudaMemcpyDeviceToHost));
+                    return bits;
+                };
+                const std::array<JuicerCuda::DeviceCurveView, 3> curves{{film.normalizedDensR, film.normalizedDensG, film.normalizedDensB}};
+                std::array<std::vector<std::uint32_t>, 3> axisBits;
+                std::array<std::vector<std::uint32_t>, 3> curveBits;
+                std::array<std::array<std::vector<std::uint32_t>, 3>, 3> layerBits;
+                for (std::size_t channel = 0; channel < 3; ++channel) {
+                    ASSERT_EQ(curves[channel].n, static_cast<int>(a.logExposure.size()));
+                    axisBits[channel] = capture(curves[channel].x, a.logExposure.size());
+                    curveBits[channel] = capture(curves[channel].y, a.logExposure.size());
+                    for (std::size_t row = 0; row < a.logExposure.size(); ++row) {
+                        EXPECT_EQ(axisBits[channel][row], std::bit_cast<std::uint32_t>(a.logExposure[row]));
+                        EXPECT_EQ(curveBits[channel][row], std::bit_cast<std::uint32_t>(a.normalizedDensityCurves[row][channel]));
+                    }
+                    if (layers) {
+                        for (std::size_t layer = 0; layer < 3; ++layer) {
+                            layerBits[layer][channel] = capture(layerView.curves[layer][channel], a.logExposure.size());
+                            for (std::size_t row = 0; row < a.logExposure.size(); ++row) {
+                                EXPECT_EQ(layerBits[layer][channel][row], std::bit_cast<std::uint32_t>(a.densityCurvesLayers[layer][channel][row]));
+                            }
+                        }
+                    }
+                }
+                finish(first);
+                auto second = prepare(changed, false);
+                require_cuda(cudaStreamSynchronize(stream));
+                const auto next = second.focused_resources().film;
+                const auto nextLayers = second.visual_grain_resources().densityLayers;
+                const std::array<JuicerCuda::DeviceCurveView, 3> nextCurves{{next.normalizedDensR, next.normalizedDensG, next.normalizedDensB}};
+                for (std::size_t channel = 0; channel < 3; ++channel) {
+                    EXPECT_EQ(curves[channel].x, nextCurves[channel].x);
+                    EXPECT_EQ(curves[channel].y, nextCurves[channel].y);
+                    EXPECT_EQ(axisBits[channel], capture(nextCurves[channel].x, a.logExposure.size()));
+                    EXPECT_EQ(curveBits[channel], capture(nextCurves[channel].y, a.logExposure.size()));
+                    if (layers) {
+                        EXPECT_EQ(layerView.baseCurvesCmy[channel].x, nextLayers.baseCurvesCmy[channel].x);
+                        EXPECT_EQ(layerView.baseCurvesCmy[channel].y, nextLayers.baseCurvesCmy[channel].y);
+                        for (std::size_t layer = 0; layer < 3; ++layer) {
+                            EXPECT_EQ(layerView.curves[layer][channel], nextLayers.curves[layer][channel]);
+                            EXPECT_EQ(layerBits[layer][channel], capture(nextLayers.curves[layer][channel], a.logExposure.size()));
+                        }
+                    }
+                }
+                EXPECT_EQ(layerView.active, layers);
+                EXPECT_EQ(nextLayers.active, layers);
+                EXPECT_EQ(layerView.hash, nextLayers.hash);
+                finish(second);
+            }
         }
     }
 

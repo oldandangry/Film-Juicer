@@ -2948,8 +2948,9 @@ namespace {
         const ScatterHalationControls controls = convert_or_throw(
             ScatterHalationRawControls{true, 1.0, 1.0, 1.0, 1.0});
         const Spektrafilm::DiffusionFilterAuthoredControls noDiffusion{};
-        for (const Spektrafilm::ScanRouteMetadata& metadata :
-             Spektrafilm::kScanRouteMatrix) {
+        for (int index = 0; index < Spektrafilm::scan_route_option_count(); ++index) {
+            const auto& metadata = Spektrafilm::scan_route_metadata(
+                static_cast<Spektrafilm::ScanRoute>(index));
             PreparedInputs inputs;
             diagnostic = {};
             const bool initialized = initialize_route_inputs(

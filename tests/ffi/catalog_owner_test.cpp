@@ -285,7 +285,7 @@ namespace {
                 "production OFX option accessors did not consume Rust publication");
         require(library.selected_film_profile_for_key("kodak_portra_400") != nullptr, "Rust selected film opener failed exact path");
         auto selected = library.selected_profiles_for_route({"kodak_portra_400", "kodak_portra_endura", Spektrafilm::ScanRoute::NegativePrintScan});
-        require(selected.valid && selected.filmProfile && selected.printSource, "Rust selected print opener failed exact path");
+        require(selected.valid && selected.filmSource && selected.printSource, "Rust selected print opener failed exact path");
         std::printf("PASS native root and Rust film/print opens: %s\n", JuicerAssets::path_diagnostic(root).c_str());
         require(fj_cuda_shutdown(JuicerCuda::borrowed_owner(), nullptr).category == FJ_STATUS_SUCCESS && fj_test_assets_live_owners() == 1 && fj_test_catalog_live_owners() == 1, "borrowed shutdown consumed host/catalog");
         require(catalog.filmProfiles.front().key == "kodak_portra_400", "borrowed shutdown expired options");

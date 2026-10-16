@@ -1,0 +1,12 @@
+{
+  "source": "src/ScanRoute.cpp",
+  "target": "JuicerRouteBridgeTests",
+  "test": "Route.Host.Bridge",
+  "sources": [
+    "src/ScanRoute.cpp",
+    "src/ScanRoute.h",
+    "rust/film-juicer-core/src/route.rs"
+  ],
+  "rust_filter": "route::",
+  "rust_interface_revision": "e1231fa71c55f8a38f31ceedbe7ffbdc18d71cbc"
+}

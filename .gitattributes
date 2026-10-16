@@ -90,3 +90,6 @@ tests/ffi/fixtures/output_gamut/** -text whitespace=cr-at-eol
 
 # A10 native words and oracle provenance must survive both native Git transports.
 tests/ffi/fixtures/output-color/*.json -text
+
+# Independent S4.B film-development captures preserve exact fixture bytes.
+tests/film/fixtures/** -text whitespace=cr-at-eol

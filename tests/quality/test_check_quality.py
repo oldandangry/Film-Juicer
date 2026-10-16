@@ -28,7 +28,27 @@ sys.modules[SPEC.name] = check_quality
 SPEC.loader.exec_module(check_quality)
 
 
-class CheckQualityTests(unittest.TestCase):
+class IsolatedOwnerTests(unittest.TestCase):
+    """Dispatcher units own temporary output state; process tests cover admission."""
+
+    def setUp(self):
+        sys.path.insert(0, str(SCRIPT_PATH.parent))
+        import execution
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        lease_root = Path(directory.name).resolve()
+        owner = execution.OutputLease
+
+        class FixtureOutputLease(owner):
+            def __init__(self, root, build=None, **arguments):
+                super().__init__(lease_root, lease_root / "build" if build is not None else None, **arguments)
+
+        replacement = patch.object(execution, "OutputLease", FixtureOutputLease)
+        replacement.start()
+        self.addCleanup(replacement.stop)
+
+
+class CheckQualityTests(IsolatedOwnerTests):
     def test_bash_source_policy_accepts_native_windows_crlf_rows(self) -> None:
         bash = r"C:\Program Files\Git\bin\bash.exe" if os.name == "nt" else "/bin/bash"
         helper = SCRIPT_PATH.parent / "lib/style_common.sh"
@@ -60,6 +80,7 @@ class CheckQualityTests(unittest.TestCase):
             self.assertIsNone(re.fullmatch(expression, "src/example.txt"))
 
     def setUp(self) -> None:
+        super().setUp()
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.enterContext(patch.object(check_quality, "create_run_directory", return_value=Path(directory.name)))
@@ -163,7 +184,7 @@ class CheckQualityTests(unittest.TestCase):
                 self.assertNotIn("Quality checks passed", output.getvalue())
 
     def test_policy_changes_cannot_skip_required_checks(self) -> None:
-        for path in ("Cargo.toml", "rust/film-juicer-core/Cargo.toml", "tests/quality/test_rust_boundaries.py", "tests/quality/probe_evidence.py", "scripts/check-quality.py"):
+        for path in ("Cargo.toml", "rust/film-juicer-core/Cargo.toml", "tests/quality/test_rust_boundaries.py", "scripts/check-quality.py"):
             with (
                 self.subTest(path=path),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", path]),
@@ -230,6 +251,19 @@ class CheckQualityTests(unittest.TestCase):
             self.assertEqual(check_quality.main(), 0)
         self.assertEqual(events, [[producer], "rust", consumers])
 
+    def test_explicit_qualification_keeps_complete_native_and_rust_gates(self):
+        with (
+            patch.object(sys, 'argv', [str(SCRIPT_PATH), '--preset', 'linux-debug', '--qualification', '--files', 'CONTRIBUTING.md']),
+            patch.object(check_quality, 'Runner'), patch.object(check_quality, 'check_build_path'),
+            patch.object(check_quality, 'check_source_hygiene'),
+            patch.object(check_quality, 'check_rust') as rust,
+            patch.object(check_quality, 'prepare_native_analysis', return_value=[]) as native,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(check_quality.main(), 0)
+            rust.assert_called_once()
+            self.assertEqual(set(native.call_args.args[3]), set(check_quality.REPRESENTATIVE_NATIVE_FILES))
+
     def test_rust_probe_profiles_select_the_preset_or_complete_matrix(self) -> None:
         for module_name in ("test_rust_naming", "test_rust_boundaries"):
             module = __import__(module_name)
@@ -239,7 +273,7 @@ class CheckQualityTests(unittest.TestCase):
                     "JUICER_RUST_PROBE_DIR": directory + "/cache", "JUICER_TEST_ARTIFACT_DIR": directory + "/logs"}
                 for profile, expected in (("debug", (False,)), ("release", (True,)), ("both", (False, True))):
                     with self.subTest(module=module_name, profile=profile), patch.dict(os.environ,
-                        {**settings, "JUICER_RUST_PROBE_PROFILE": profile}), patch.object(module, "ProbeEvidence"):
+                        {**settings, "JUICER_RUST_PROBE_PROFILE": profile}):
                         try:
                             suite.setUpClass()
                             self.assertEqual(suite.profiles, expected)
@@ -377,6 +411,22 @@ class CommandOutputTests(unittest.TestCase):
         self.assertEqual(len(list(self.runner.log_dir.glob("*.log"))), 1)
 
 
+class CompletionTests(unittest.TestCase):
+    def test_failed_parent_cancels_delayed_writer_before_quality_returns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            writer = root / "late.txt"
+            program = "import subprocess,sys; subprocess.Popen([sys.executable,'-c'," + repr("import time; from pathlib import Path; time.sleep(30); Path(" + repr(str(writer)) + ").write_text('late')") + "]); raise SystemExit(7)"
+            runner = check_quality.Runner(root, root / "logs")
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(check_quality.QualityError, "exit code 7"):
+                runner.run([sys.executable, "-B", "-c", program], label="failed-parent")
+            process = json.loads(next((root / "logs").glob("*.process.json")).read_text())
+            self.assertTrue(process["drained"])
+            self.assertEqual(process["returncode"], 7)
+            self.assertFalse(writer.exists())
+            self.assertFalse(list((root / "logs").glob("*.running.lock")))
+
+
 class ParallelAnalysisTests(unittest.TestCase):
     def test_cli_requires_a_positive_worker_limit(self) -> None:
         base = [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", "CONTRIBUTING.md"]
@@ -391,28 +441,21 @@ class ParallelAnalysisTests(unittest.TestCase):
                 check_quality.parse_arguments()
             self.assertEqual(failure.exception.code, 2)
 
-    def test_probe_handoff_requires_new_path_and_matching_identity_arguments(self) -> None:
-        base = [str(SCRIPT_PATH), "--preset", "linux-debug", "--files", "CONTRIBUTING.md"]
-        identity = "01234567-89ab-4def-8012-3456789abcde"
-        with tempfile.TemporaryDirectory() as directory:
-            manifest = Path(directory) / "probes.json"
-            for extra in (["--probe-manifest", str(manifest)], ["--qualification-id", identity],
-                          ["--probe-manifest", str(manifest), "--qualification-id", "bad-id"]):
-                with self.subTest(extra=extra), patch.object(sys, "argv", [*base, *extra]), \
-                        contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                    check_quality.parse_arguments()
-            arguments = [*base, "--probe-manifest", str(manifest), "--qualification-id", identity]
-            with patch.object(sys, "argv", arguments):
-                self.assertEqual(check_quality.parse_arguments().qualification_id, identity)
-            for path in (manifest, manifest.with_name(manifest.name + ".pending")):
-                path.write_text("existing")
-                with patch.object(sys, "argv", arguments), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                    check_quality.parse_arguments()
-                path.unlink()
+    def test_development_cannot_stage_probe_or_complete_qualification_receipts(self):
+        base = [str(SCRIPT_PATH), '--preset', 'linux-debug', '--files', 'src/ScanRoute.cpp', '--development']
+        for extra in [['--qualification'], ['--probe-manifest', 'unused.json', '--qualification-id', '01234567-89ab-4def-8012-3456789abcde']]:
+            with self.subTest(extra=extra), patch.object(sys, 'argv', [*base, *extra]), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                check_quality.parse_arguments()
+
 
     def test_serial_and_parallel_commands_keep_arguments_directories_and_logs(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+        preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+        parent = Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR",
+            str(SCRIPT_PATH.parent.parent / "out/validation" / preset / "quality/parallel-controls")))
+        parent.mkdir(parents=True, exist_ok=True)
+        directory = tempfile.TemporaryDirectory(dir=parent, delete=False)
+        root = Path(directory.name).resolve()
+        try:
             for jobs in (1, 2, 4):
                 logs = root / str(jobs)
                 runner = check_quality.Runner(root, logs, jobs)
@@ -426,6 +469,53 @@ class ParallelAnalysisTests(unittest.TestCase):
                 self.assertEqual(len(outputs), 4)
                 self.assertEqual({output[1] for output in outputs}, {item.command[-1] for item in commands})
                 self.assertTrue(all(Path(output[0]).resolve() == root.resolve() for output in outputs))
+        except BaseException:
+            print("Retained parallel analysis control:", root, file=sys.stderr)
+            raise
+        else:
+            directory.cleanup()
+
+    def test_supervisor_failure_reports_cause_and_keeps_blocked_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = check_quality.Runner(root, root / "logs", 1)
+            commands = [check_quality.AnalysisCommand([sys.executable], root, "launch")]
+            with patch.object(check_quality, "supervised_run", side_effect=RuntimeError("supervisor witness")), \
+                 contextlib.redirect_stdout(io.StringIO()), \
+                 self.assertRaisesRegex(check_quality.QualityError, "supervisor witness"):
+                runner.run_analysis(commands)
+            self.assertTrue(runner.blocked)
+            self.assertIn("supervisor witness", (runner.log_dir / "01-launch.log").read_text())
+
+    def test_parallel_control_preserves_failure_diagnostics_and_cleans_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+
+            def analysis(runner, commands):
+                for index, item in enumerate(commands):
+                    (runner.log_dir / f"{index}.log").write_text(str(item.directory) + "\n" + item.command[-1] + "\n")
+
+            def failed(runner, commands):
+                (runner.log_dir / "failure.log").write_text("failure witness")
+                (runner.log_dir / "failure.process.json").write_text('{"drained": false}')
+                raise check_quality.QualityError("retention witness")
+
+            control = ParallelAnalysisTests("test_serial_and_parallel_commands_keep_arguments_directories_and_logs")
+            with patch.dict(os.environ, JUICER_TEST_ARTIFACT_DIR=str(parent)), \
+                 patch.object(check_quality.Runner, "run_analysis", analysis):
+                control.test_serial_and_parallel_commands_keep_arguments_directories_and_logs()
+            self.assertEqual(list(parent.iterdir()), [])
+            error = io.StringIO()
+            with patch.dict(os.environ, JUICER_TEST_ARTIFACT_DIR=str(parent)), \
+                 patch.object(check_quality.Runner, "run_analysis", failed), \
+                 contextlib.redirect_stderr(error), \
+                 self.assertRaisesRegex(check_quality.QualityError, "retention witness"):
+                control.test_serial_and_parallel_commands_keep_arguments_directories_and_logs()
+            retained = list(parent.iterdir())
+            self.assertEqual(len(retained), 1)
+            self.assertEqual((retained[0] / "1/failure.log").read_text(), "failure witness")
+            self.assertEqual(json.loads((retained[0] / "1/failure.process.json").read_text()), {"drained": False})
+            self.assertIn(str(retained[0].resolve()), error.getvalue())
 
     def test_worker_limit_allows_overlap_without_exceeding_the_bound(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -447,8 +537,8 @@ class ParallelAnalysisTests(unittest.TestCase):
                     with lock:
                         active -= 1
 
-            commands = [check_quality.AnalysisCommand(["tool", str(i)], root, f"analysis-{i}") for i in range(4)]
-            with patch.object(check_quality.subprocess, "run", side_effect=command), \
+            commands = [check_quality.AnalysisCommand([sys.executable, str(i)], root, f"analysis-{i}") for i in range(4)]
+            with patch.object(check_quality, "supervised_run", side_effect=command), \
                  contextlib.redirect_stdout(io.StringIO()):
                 runner.run_analysis(commands)
             self.assertEqual(peak, 2)
@@ -467,8 +557,8 @@ class ParallelAnalysisTests(unittest.TestCase):
                     barrier.wait()
                 return subprocess.CompletedProcess(arguments, status, stdout=f"status {status}\n")
 
-            commands = [check_quality.AnalysisCommand(["tool", str(i)], root, f"analysis-{i}") for i in (7, 9, 0)]
-            with patch.object(check_quality.subprocess, "run", side_effect=command), \
+            commands = [check_quality.AnalysisCommand([sys.executable, str(i)], root, f"analysis-{i}") for i in (7, 9, 0)]
+            with patch.object(check_quality, "supervised_run", side_effect=command), \
                  contextlib.redirect_stdout(io.StringIO()), self.assertRaises(check_quality.QualityError) as failure:
                 runner.run_analysis(commands)
             self.assertIn("exit code 7", str(failure.exception))
@@ -479,7 +569,7 @@ class ParallelAnalysisTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             runner = check_quality.Runner(root, root / "logs", 1)
-            commands = [check_quality.AnalysisCommand(["tool", str(i)], root, f"analysis-{i}") for i in range(4)]
+            commands = [check_quality.AnalysisCommand([sys.executable, str(i)], root, f"analysis-{i}") for i in range(4)]
             with patch.object(runner, "run", side_effect=check_quality.QualityError("failed")) as run:
                 with self.assertRaisesRegex(check_quality.QualityError, "failed"):
                     runner.run_analysis(commands)
@@ -598,10 +688,40 @@ class DependencyContractTests(unittest.TestCase):
         self.assertTrue(calls["rust-dependency-contract"].kwargs["stdout_only"])
         self.assertEqual(calls["rust-dependency-contract"].args[0][1:],
                          ["metadata", "--locked", "--offline", "--format-version", "1"])
-        for label in ("rustfmt", "rust-naming-enforcement", "rust-boundary-enforcement"):
-            self.assertIn(label, calls)
+        self.assertIn("rustfmt", calls)
+        self.assertNotIn("rust-naming-enforcement", calls)
+        self.assertNotIn("rust-boundary-enforcement", calls)
         clippy = [label for label in calls if label.startswith("clippy-film-juicer-")]
         self.assertEqual(len(clippy), 6)
+
+    def test_development_core_checks_name_package_and_filter(self) -> None:
+        original = check_quality.check_rust
+        def development(root, runner, arguments, target):
+            arguments.development = True
+            arguments.rust_packages = ["film-juicer-core"]
+            arguments.rust_test_filters = ["route::"]
+            run = runner.run.side_effect
+            runner.run.side_effect = lambda *args, **kwargs: "running 1 test\ntest result: ok" if kwargs["label"].startswith("test-") else run(*args, **kwargs)
+            return original(root, runner, arguments, target)
+        with patch.object(check_quality, "check_rust", side_effect=development):
+            runner = self.run_metadata()
+        commands = [call.args[0] for call in runner.run.call_args_list]
+        self.assertFalse(any("film-juicer-plugin" in command or "--release" in command for command in commands))
+        tests = [command for command in commands if len(command) > 1 and command[1] == "test"]
+        self.assertEqual(len(tests), 1)
+        self.assertEqual(tests[0][-1], "route::")
+
+    def test_development_rejects_zero_tests_from_selected_filter(self) -> None:
+        original = check_quality.check_rust
+        def development(root, runner, arguments, target):
+            arguments.development = True
+            arguments.rust_packages = ["film-juicer-core"]
+            arguments.rust_test_filters = ["missing::"]
+            run = runner.run.side_effect
+            runner.run.side_effect = lambda *args, **kwargs: "running 0 tests\ntest result: ok" if kwargs["label"].startswith("test-") else run(*args, **kwargs)
+            return original(root, runner, arguments, target)
+        with patch.object(check_quality, "check_rust", side_effect=development), self.assertRaisesRegex(check_quality.QualityError, "nonempty"):
+            self.run_metadata()
 
     def test_metadata_consumer_still_rejects_unapproved_dependency(self) -> None:
         self.core["dependencies"].append({"name": "cuda-sys", "kind": None, "target": "cfg(windows)"})
@@ -880,6 +1000,8 @@ class SourceHygieneTests(unittest.TestCase):
         scripts = self.root / "scripts"
         scripts.mkdir()
         shutil.copy2(SCRIPT_PATH, scripts / SCRIPT_PATH.name)
+        for name in ('execution.py', 'process_tree.py'):
+            shutil.copy2(SCRIPT_PATH.parent / name, scripts)
         shutil.copy2(SCRIPT_PATH.parent / "source_file_policy.json", scripts)
         path = "native/a file.cuh"
         self.write_source(path, "#pragma once\n")
@@ -915,43 +1037,6 @@ class SourceHygieneTests(unittest.TestCase):
 
 
 class SelectionAndEvidenceTests(unittest.TestCase):
-    def test_manifest_preparation_preserves_an_empty_bytecode_cache(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            scripts = root / "scripts"
-            quality = root / "tests/quality"
-            scripts.mkdir()
-            quality.mkdir(parents=True)
-            shutil.copy2(SCRIPT_PATH, scripts)
-            shutil.copy2(SCRIPT_PATH.parent / "source_file_policy.json", scripts)
-            shutil.copy2(SCRIPT_PATH.parent.parent / "tests/quality/probe_evidence.py", quality)
-            # Exercise the real terminal receipt and late manifest import. The
-            # compiler work is irrelevant to whether that import creates a cache.
-            bootstrap = (
-                "import importlib.util, sys; from unittest.mock import patch; "
-                "spec = importlib.util.spec_from_file_location('check_quality', sys.argv[1]); "
-                "module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; "
-                "spec.loader.exec_module(module); sys.argv = sys.argv[1:]; "
-                "patch.object(module, 'select_paths', return_value=([], [])).start(); "
-                "patch.object(module, 'quality_inputs', return_value={}).start(); "
-                "patch.object(module, 'run_checks', return_value=0).start(); "
-                "raise SystemExit(module.main())"
-            )
-            environment = dict(os.environ)
-            environment.pop("PYTHONDONTWRITEBYTECODE", None)
-            environment.pop("PYTHONPYCACHEPREFIX", None)
-            result = subprocess.run(
-                [sys.executable, "-c", bootstrap, str(scripts / SCRIPT_PATH.name),
-                 "--preset", "linux-debug", "--files", "CONTRIBUTING.md",
-                 "--probe-manifest", str(root / "probes.json"),
-                 "--qualification-id", "01234567-89ab-4def-8012-3456789abcde"],
-                cwd=root, env=environment, capture_output=True, text=True, timeout=30,
-            )
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            receipt, = (root / "out/validation/linux-debug/quality/runs").glob("*/run.json")
-            self.assertEqual(json.loads(receipt.read_text(encoding="utf-8"))["status"], "passed")
-            self.assertEqual(list(quality.rglob("*.pyc")), [],
-                             "manifest preparation must not change the captured Python context")
 
     def test_run_directories_are_unique_and_never_include_old_logs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1088,6 +1173,53 @@ class SelectionAndEvidenceTests(unittest.TestCase):
         self.assertEqual(search.quoted, (root / "quoted",))
         self.assertEqual(search.ordinary, tuple(root / name for name in ("one space", "two", "three", "system")))
         self.assertEqual(search.forced, ("forced.h",))
+
+
+class FixtureTransportTests(unittest.TestCase):
+    def test_film_capture_crlf_preserves_bytes_and_rejects_trailing_spaces(self) -> None:
+        source = SCRIPT_PATH.parent.parent
+        fixtures = {
+            path.relative_to(source): path.read_bytes()
+            for path in (source / "tests/film/fixtures").glob("windows-clang-*-*.json")
+        }
+        self.assertTrue(fixtures)
+        self.assertTrue(all(content.endswith(b"\r\n") for content in fixtures.values()))
+        for autocrlf in ("false", "true"):
+            with self.subTest(autocrlf=autocrlf), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+
+                def git(*arguments: str, check: bool = True) -> subprocess.CompletedProcess:
+                    return subprocess.run(
+                        ["git", *arguments], cwd=root, check=check,
+                        capture_output=True, timeout=30,
+                    )
+
+                git("init", "-q")
+                git("config", "core.autocrlf", autocrlf)
+                git("config", "core.whitespace", "blank-at-eol,blank-at-eof,space-before-tab")
+                (root / ".gitattributes").write_bytes((source / ".gitattributes").read_bytes())
+                for path, content in fixtures.items():
+                    target = root / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(content)
+                git("add", ".")
+                result = git("diff", "--cached", "--check", check=False)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                for path, content in fixtures.items():
+                    self.assertEqual(git("show", f":{path.as_posix()}").stdout, content)
+                    (root / path).unlink()
+                git("checkout-index", "--all")
+                for path, content in fixtures.items():
+                    self.assertEqual((root / path).read_bytes(), content)
+
+                path = next(iter(fixtures))
+                for ending in (b" \r\n", b"\t\r\n"):
+                    with self.subTest(ending=ending):
+                        (root / path).write_bytes(b"{}" + ending)
+                        git("add", "--", path.as_posix())
+                        result = git("diff", "--cached", "--check", check=False)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn(b"trailing whitespace", result.stdout)
 
 
 class EmptySelectionTests(unittest.TestCase):
@@ -1242,7 +1374,7 @@ class EmptySelectionTests(unittest.TestCase):
         self.assertEqual(excluded, ["README.md: outside owned quality scope"])
 
 
-class QualityReceiptTests(unittest.TestCase):
+class QualityReceiptTests(IsolatedOwnerTests):
     def test_generated_cuda_inputs_must_remain_stable_until_receipt_completion(self) -> None:
         headers = ("openrand/util.h", "texture_fetch_functions.h")
         cases = [(None, None), *((name, action) for name in headers for action in ("modify", "delete"))]
@@ -1277,6 +1409,7 @@ class QualityReceiptTests(unittest.TestCase):
                         with self.assertRaisesRegex(check_quality.QualityError, "quality input"):
                             check_quality.main()
                 record = json.loads((log_dir / "run.json").read_text(encoding="utf-8"))
+                expected.update({str(path.resolve()): check_quality.file_digest(path) for path in (check_quality.EXECUTION_SOURCE, check_quality.EXECUTION_SOURCE.with_name("process_tree.py"))})
                 self.assertEqual(record["consumed_inputs"], expected)
                 self.assertEqual(record["status"], "passed" if action is None else "failed")
                 self.assertEqual("Quality checks passed" in output.getvalue(), action is None)

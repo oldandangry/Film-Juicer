@@ -22555,5 +22555,24 @@
       }
     }
   ],
-  "history": "Initial row0 \u00b116 probe did not cross the strict threshold and was preserved as threshold-v1; final expanded inputs were frozen before all four final captures. Comparator initially classified arbitrary numeric fields and was corrected before final controls. Initial build-substitution scripts/logs are retained; final commands consume standalone harness source/object."
+  "history": "Initial row0 \u00b116 probe did not cross the strict threshold and was preserved as threshold-v1; final expanded inputs were frozen before all four final captures. Comparator initially classified arbitrary numeric fields and was corrected before final controls. Initial build-substitution scripts/logs are retained; final commands consume standalone harness source/object.",
+  "payloads": {
+    "cat02-linux-debug.json": "cat02-linux-debug.json",
+    "cat02-linux-release.json": "cat02-linux-debug.json",
+    "cat02-windows-clang-debug.json": "cat02-windows-clang-debug.json",
+    "cat02-windows-clang-release.json": "cat02-windows-clang-debug.json"
+  },
+  "preset_witnesses": "cat02-preset-witnesses.json",
+  "storage_files": {
+    "cat02-linux-debug.json": "a2ed3b1064a0e7283b6393ea2bec8c38ecc3bc4315d74e757a5d6a22c5ee9f5e",
+    "cat02-windows-clang-debug.json": "0f723cdc321b2a5ccbc4affbbb9d53ef22e5f6d02be59d0b3ec662f3a0e44880",
+    "cat02-blocks.json": "c33311bf948b53cd28351bc7ead29291a6970d19a6900ef92278142845ab2788",
+    "cat02-preset-witnesses.json": "9411d869e63538b45acc1b606a9d248858d4a3ba217c8b1969154dcb16b1ee21"
+  },
+  "storage_migration": {
+    "format": "logical capture aliases and shared exact expected arrays v1",
+    "source_manifest_sha256": "a19457e3bb76ce0833f88b713dfe645f25bb51058d5f9d995c635fd2db4baa28",
+    "capture_hashes": "Original capture/provenance hashes above retain their original representation; storage_files hashes the maintained physical representation.",
+    "proof": "All four raw expansions and effective qualified color documents match retained originals exactly; logical supplement identity and ordered test/replace operations preserved."
+  }
 }

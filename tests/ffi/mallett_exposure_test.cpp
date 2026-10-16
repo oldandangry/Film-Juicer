@@ -21,6 +21,7 @@
 #include "RustExposureBridge.h"
 #include "RustAssetBridge.h"
 #include "juicer_test_api.h"
+#include "exposure_fixture.h"
 
 #define FJ_MALLETT_SIZE(type, size, alignment) static_assert(sizeof(type) == size && alignof(type) == alignment);
 #define FJ_MALLETT_FIELD(type, field, offset) static_assert(offsetof(type, field) == offset);
@@ -447,8 +448,7 @@ int main(int argc, char** argv) {
             numerical(fixture);
         else if (std::string(argv[3]) == "spectra" && argc == 7) {
             for (int i : {5, 6}) {
-                std::ifstream stream(argv[i]);
-                const auto captured = Json::parse(stream);
+                const auto captured = load_shared_fixture(argv[i], i == 5 ? "cat02-manifest.json" : "input-color-manifest.json");
                 spectra(captured, argv[4]);
             }
         } else if (std::string(argv[3]) == "boundary")

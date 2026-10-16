@@ -14,6 +14,7 @@
 #include "Cuda/JuicerCudaFailure.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Logging.h"
+#include "RenderRecipe.h"
 
 namespace JuicerAssets {
     namespace {
@@ -224,17 +225,6 @@ namespace JuicerAssets {
             }
         }
 
-        struct FilmSource final {
-            FjFilmProfile* owner = nullptr;
-            std::shared_ptr<const Profiles::FilmProfile> profile;
-            ~FilmSource() {
-                report_cleanup(close());
-            }
-            FjStatus close(FjErrorBuffer* error = nullptr) noexcept {
-                return owner ? fj_legacy_film_profile_release(std::exchange(owner, nullptr), error) : FjStatus{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
-            }
-        };
-
         void escaped_unit(unsigned unit, std::string& out, char prefix) {
             static constexpr char kHex[] = "0123456789abcdef";
             out += '\\';
@@ -263,6 +253,110 @@ namespace JuicerAssets {
             }
         }
     } // namespace
+
+    FilmSource::FilmSource(FjFilmProfile* owner, std::shared_ptr<const Profiles::FilmProfile> profile)
+        : _owner(owner), _profile(std::move(profile)) {
+    }
+
+    FilmSource::~FilmSource() {
+        report_cleanup(close());
+    }
+
+    FjStatus FilmSource::close(FjErrorBuffer* error) const noexcept {
+        return _owner ? fj_legacy_film_profile_release(std::exchange(_owner, nullptr), error) : FjStatus{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+    }
+
+    const std::shared_ptr<const Profiles::FilmProfile>& FilmSource::profile() const noexcept {
+        return _profile;
+    }
+
+    FilmDevelopment FilmSource::prepare_development(Spektrafilm::ScanRoute route, float gamma, bool layersRequired) const {
+        struct Deleter {
+            void operator()(FjFilmDevelopmentOwner* owner) const noexcept {
+                report_cleanup(fj_legacy_film_development_release(owner, nullptr));
+            }
+        };
+        std::array<char, 1024> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        FjFilmDevelopmentOwner* acquired = nullptr;
+        auto result = fj_legacy_film_development_acquire(_owner, static_cast<std::uint32_t>(route), gamma, layersRequired ? 1u : 0u, &acquired, &error);
+        std::unique_ptr<FjFilmDevelopmentOwner, Deleter> owner(acquired);
+        if (result.category != FJ_STATUS_SUCCESS) {
+            fail(result, {message.data(), error.length});
+        }
+        FjFilmDevelopmentView view{};
+        result = fj_legacy_film_development_view(owner.get(), &view, &error);
+        if (result.category != FJ_STATUS_SUCCESS) {
+            fail(result, {message.data(), error.length});
+        }
+#if defined(JUICER_FILM_DEVELOPMENT_TEST_HOOK)
+        DevelopmentTest::view(view);
+#endif
+        const auto checked_span = [](FjFloatSpan source) {
+            const auto address = reinterpret_cast<std::uintptr_t>(source.data);
+            if (source.count > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) / sizeof(float) ||
+                source.count * sizeof(float) > std::numeric_limits<std::uintptr_t>::max() - address) {
+                invalid_view();
+            }
+            return float_span(source);
+        };
+        const auto axis = checked_span(view.log_exposure);
+        FilmDevelopRecipe recipe;
+        const auto n = axis.size();
+        if (n == 0 || n > recipe.logExposure.max_size() ||
+            n > recipe.authoredDensityCurves.max_size() || n > recipe.normalizedDensityCurves.max_size() ||
+            n > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) / (3u * sizeof(float)) ||
+            view.route > 3 || view.route != static_cast<std::uint32_t>(route) ||
+            view.polarity > 1 || view.layers_required > 1 || view.layers_required != (layersRequired ? 1u : 0u) ||
+            view.normalized_curves_hash == 0 || view.hash == 0 || (!layersRequired && view.layers_hash != 0)) {
+            invalid_view();
+        }
+        const auto authored = checked_span(view.authored_curves_cmy);
+        const auto normalized = checked_span(view.normalized_curves_cmy);
+        if (authored.size() != 3u * n || normalized.size() != 3u * n) {
+            invalid_view();
+        }
+        std::array<std::array<std::span<const float>, 3>, 3> layers;
+        for (std::size_t layer = 0; layer < 3; ++layer) {
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                layers[layer][channel] = checked_span(view.density_curves_layers[layer][channel]);
+                if (layers[layer][channel].size() != (layersRequired ? n : 0) ||
+                    layers[layer][channel].size() > recipe.densityCurvesLayers[layer][channel].max_size()) {
+                    invalid_view();
+                }
+            }
+        }
+        recipe.polarity = view.polarity == 0 ? Spektrafilm::ProfilePolarity::Negative : Spektrafilm::ProfilePolarity::Positive;
+        if (recipe.polarity != _profile->info.type) {
+            invalid_view();
+        }
+        recipe.logExposure.assign(axis.begin(), axis.end());
+        recipe.authoredDensityCurves.resize(n);
+        recipe.normalizedDensityCurves.resize(n);
+        for (std::size_t row = 0; row < n; ++row) {
+            std::copy_n(authored.data() + 3u * row, 3, recipe.authoredDensityCurves[row].begin());
+            std::copy_n(normalized.data() + 3u * row, 3, recipe.normalizedDensityCurves[row].begin());
+        }
+        if (layersRequired) {
+            for (std::size_t layer = 0; layer < 3; ++layer) {
+                for (std::size_t channel = 0; channel < 3; ++channel) {
+                    recipe.densityCurvesLayers[layer][channel].assign(layers[layer][channel].begin(), layers[layer][channel].end());
+                }
+            }
+        }
+        recipe.densityCurvesLayersRequired = layersRequired;
+        std::copy_n(view.gamma_rgb, 3, recipe.densityCurveGamma.begin());
+        std::copy_n(view.minimum_cmy, 3, recipe.authoredMinCmy.begin());
+        std::copy_n(view.maximum_cmy, 3, recipe.authoredMaxCmy.begin());
+        recipe.normalizedDensityCurvesHash = view.normalized_curves_hash;
+        recipe.densityCurvesLayersHash = view.layers_hash;
+        recipe.hash = view.hash;
+        result = fj_legacy_film_development_release(owner.release(), &error);
+        if (result.category != FJ_STATUS_SUCCESS) {
+            fail(result, {message.data(), error.length});
+        }
+        return {static_cast<Spektrafilm::ScanRoute>(view.route), std::move(recipe)};
+    }
 
     NoiseSource::NoiseSource(FjNoise* owner, const FjStaticNoise& view) noexcept
         : _owner(owner), _view(view) {
@@ -440,7 +534,7 @@ namespace JuicerAssets {
         std::mutex mutex;
         std::vector<std::string> filmKeys;
         std::vector<std::string> printKeys;
-        std::vector<std::shared_ptr<FilmSource>> films;
+        std::vector<std::shared_ptr<const FilmSource>> films;
         std::vector<std::shared_ptr<const PrintProfileSource>> prints;
     };
 
@@ -487,6 +581,10 @@ namespace JuicerAssets {
     }
 
     std::shared_ptr<const Profiles::FilmProfile> AssetBridge::film(const std::string& key) {
+        return film_source(key)->profile();
+    }
+
+    std::shared_ptr<const FilmSource> AssetBridge::film_source(const std::string& key) {
         if (!_slots) {
             fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "film catalog unavailable");
         }
@@ -495,15 +593,15 @@ namespace JuicerAssets {
             fail({FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "missing selected film profile key");
         }
         const auto index = static_cast<std::size_t>(found - _slots->filmKeys.begin());
-        std::shared_ptr<FilmSource> winner;
+        std::shared_ptr<const FilmSource> winner;
         {
             std::lock_guard<std::mutex> lock(_slots->mutex);
             winner = _slots->films[index];
         }
         if (winner) {
-            return winner->profile;
+            return winner;
         }
-        std::shared_ptr<FilmSource> candidate;
+        std::shared_ptr<const FilmSource> candidate;
         try {
             std::array<char, 1024> message{};
             FjErrorBuffer error{message.data(), message.size(), 0};
@@ -578,9 +676,7 @@ namespace JuicerAssets {
             std::copy_n(view.digest.halation_primary_amount, 3, digest.halationPrimaryAmount.begin());
             digest.hanatosSpectralGaussianBlurDefault = view.digest.hanatos_spectral_gaussian_blur_default;
             profile->assetVersionToken = view.asset_token;
-            candidate = std::make_shared<FilmSource>();
-            candidate->profile = std::move(profile);
-            candidate->owner = owner.release();
+            candidate = std::shared_ptr<const FilmSource>(new FilmSource(owner.release(), std::move(profile)));
 #if defined(JUICER_PROFILE_CONVERSION_TEST_HOOK)
             ProfileTest::before_publication();
 #endif
@@ -590,7 +686,7 @@ namespace JuicerAssets {
                 winner = _slots->films[index];
             }
             if (winner) {
-                return winner->profile;
+                return winner;
             }
             throw;
         }
@@ -601,7 +697,7 @@ namespace JuicerAssets {
             }
             winner = _slots->films[index];
         }
-        return winner->profile;
+        return winner;
     }
 
     std::shared_ptr<const PrintProfileSource> AssetBridge::print(const std::string& key) {
@@ -685,7 +781,7 @@ namespace JuicerAssets {
             }
             // Published slots remain fixed until terminal close excludes readers.
             if (slots) {
-                std::vector<std::shared_ptr<FilmSource>> films(slots->films.size());
+                std::vector<std::shared_ptr<const FilmSource>> films(slots->films.size());
                 std::vector<std::shared_ptr<const PrintProfileSource>> prints(slots->prints.size());
                 {
                     std::lock_guard<std::mutex> lock(slots->mutex);

@@ -18,6 +18,29 @@ namespace JuicerCuda {
 
 namespace JuicerAssets {
     struct IlluminantFilterCurveSet;
+    struct FilmDevelopment;
+#if defined(JUICER_FILM_DEVELOPMENT_TEST_HOOK)
+    namespace DevelopmentTest {
+        void view(FjFilmDevelopmentView& view);
+    }
+#endif
+
+    // SF_TEMP_BRIDGE_FILM_DEVELOPMENT: retain the existing selected source; remove S4.E.
+    class FilmSource final {
+    public:
+        ~FilmSource();
+        FilmSource(const FilmSource&) = delete;
+        FilmSource& operator=(const FilmSource&) = delete;
+        const std::shared_ptr<const Profiles::FilmProfile>& profile() const noexcept;
+        FilmDevelopment prepare_development(Spektrafilm::ScanRoute route, float gamma, bool layersRequired) const;
+
+    private:
+        friend class AssetBridge;
+        FilmSource(FjFilmProfile* owner, std::shared_ptr<const Profiles::FilmProfile> profile);
+        FjStatus close(FjErrorBuffer* error = nullptr) const noexcept;
+        mutable FjFilmProfile* _owner = nullptr;
+        std::shared_ptr<const Profiles::FilmProfile> _profile;
+    };
 
     enum class NeutralPrintCalibrationStatus : unsigned char {
         MissingFile,
@@ -190,6 +213,7 @@ namespace JuicerAssets {
                                                                 const std::string& filmStock);
         Spektrafilm::ProfileCatalog load_catalog();
         std::shared_ptr<const Profiles::FilmProfile> film(const std::string& key);
+        std::shared_ptr<const FilmSource> film_source(const std::string& key);
         std::shared_ptr<const PrintProfileSource> print(const std::string& key);
         FjStatus release_cached_payloads(FjErrorBuffer* error = nullptr) noexcept;
         FjStatus close(FjErrorBuffer* error = nullptr) noexcept;
