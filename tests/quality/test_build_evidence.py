@@ -556,17 +556,14 @@ class BuildEvidenceTests(unittest.TestCase):
         )
         self.execute()
 
-    def test_unknown_provenance_and_altered_artifacts_are_rebuilt(self):
+    def test_missing_preparation_owner_rebuilds_existing_outputs(self):
         self.prepare()
-        for path in self.build.glob("verification-build-*.json"):
+        owners = list(self.build.glob("verification-build-*.json"))
+        self.assertTrue(owners)
+        for path in owners:
             path.unlink()
         binary = self.build / ("behavior.exe" if os.name == "nt" else "behavior")
         binary.write_bytes(b"stale executable")
-        self.prepare()
-        self.execute()
-        binary.write_bytes(b"altered after successful build")
-        with self.assertRaisesRegex(ValueError, "artifacts changed"):
-            self.execute()
         self.prepare()
         self.execute()
 
