@@ -242,9 +242,10 @@ before execution. Successful stages reuse original records across campaign names
 failed or incomplete gates remain pending. Legacy sealed-build adapters are
 unsupported. `collect-qualification` accepts only the complete explicit native,
 profile, runtime, corpus and production gate set described in CONTRIBUTING.md.
-Selections containing GPU cases hold the existing shared device lease throughout
-the selected invocation. Enabling the dispatcher does not establish full product
-qualification.
+Mixed checkpoint selections run their host and GPU parts separately under one
+build-tree owner and one aggregate group result. Only the GPU part holds the
+shared device lease; reuse requires exact membership and completed results from
+every part. Enabling the dispatcher does not establish full product qualification.
 Development verification selects individual existing state, process, native/transitive,
 generated-input, shadow-header and partial-build controls. It does not dispatch the
 entire build-evidence group or change product fixtures. Control artifacts remain
