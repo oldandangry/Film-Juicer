@@ -449,8 +449,13 @@ class ParallelAnalysisTests(unittest.TestCase):
 
 
     def test_serial_and_parallel_commands_keep_arguments_directories_and_logs(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+        preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
+        parent = Path(os.environ.get("JUICER_TEST_ARTIFACT_DIR",
+            str(SCRIPT_PATH.parent.parent / "out/validation" / preset / "quality/parallel-controls")))
+        parent.mkdir(parents=True, exist_ok=True)
+        directory = tempfile.TemporaryDirectory(dir=parent, delete=False)
+        root = Path(directory.name).resolve()
+        try:
             for jobs in (1, 2, 4):
                 logs = root / str(jobs)
                 runner = check_quality.Runner(root, logs, jobs)
@@ -464,6 +469,53 @@ class ParallelAnalysisTests(unittest.TestCase):
                 self.assertEqual(len(outputs), 4)
                 self.assertEqual({output[1] for output in outputs}, {item.command[-1] for item in commands})
                 self.assertTrue(all(Path(output[0]).resolve() == root.resolve() for output in outputs))
+        except BaseException:
+            print("Retained parallel analysis control:", root, file=sys.stderr)
+            raise
+        else:
+            directory.cleanup()
+
+    def test_supervisor_failure_reports_cause_and_keeps_blocked_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = check_quality.Runner(root, root / "logs", 1)
+            commands = [check_quality.AnalysisCommand([sys.executable], root, "launch")]
+            with patch.object(check_quality, "supervised_run", side_effect=RuntimeError("supervisor witness")), \
+                 contextlib.redirect_stdout(io.StringIO()), \
+                 self.assertRaisesRegex(check_quality.QualityError, "supervisor witness"):
+                runner.run_analysis(commands)
+            self.assertTrue(runner.blocked)
+            self.assertIn("supervisor witness", (runner.log_dir / "01-launch.log").read_text())
+
+    def test_parallel_control_preserves_failure_diagnostics_and_cleans_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+
+            def analysis(runner, commands):
+                for index, item in enumerate(commands):
+                    (runner.log_dir / f"{index}.log").write_text(str(item.directory) + "\n" + item.command[-1] + "\n")
+
+            def failed(runner, commands):
+                (runner.log_dir / "failure.log").write_text("failure witness")
+                (runner.log_dir / "failure.process.json").write_text('{"drained": false}')
+                raise check_quality.QualityError("retention witness")
+
+            control = ParallelAnalysisTests("test_serial_and_parallel_commands_keep_arguments_directories_and_logs")
+            with patch.dict(os.environ, JUICER_TEST_ARTIFACT_DIR=str(parent)), \
+                 patch.object(check_quality.Runner, "run_analysis", analysis):
+                control.test_serial_and_parallel_commands_keep_arguments_directories_and_logs()
+            self.assertEqual(list(parent.iterdir()), [])
+            error = io.StringIO()
+            with patch.dict(os.environ, JUICER_TEST_ARTIFACT_DIR=str(parent)), \
+                 patch.object(check_quality.Runner, "run_analysis", failed), \
+                 contextlib.redirect_stderr(error), \
+                 self.assertRaisesRegex(check_quality.QualityError, "retention witness"):
+                control.test_serial_and_parallel_commands_keep_arguments_directories_and_logs()
+            retained = list(parent.iterdir())
+            self.assertEqual(len(retained), 1)
+            self.assertEqual((retained[0] / "1/failure.log").read_text(), "failure witness")
+            self.assertEqual(json.loads((retained[0] / "1/failure.process.json").read_text()), {"drained": False})
+            self.assertIn(str(retained[0].resolve()), error.getvalue())
 
     def test_worker_limit_allows_overlap_without_exceeding_the_bound(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

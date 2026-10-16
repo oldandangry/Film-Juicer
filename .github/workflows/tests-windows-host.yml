@@ -64,12 +64,14 @@ jobs:
           $llvmBin = Join-Path $vsPath "VC\Tools\Llvm\x64\bin"
           $clangFormat = Join-Path $llvmBin "clang-format.exe"
           $clangTidy = Join-Path $llvmBin "clang-tidy.exe"
-          if (!(Test-Path $clangFormat) -or !(Test-Path $clangTidy)) {
+          $rustLinker = Join-Path $llvmBin "lld-link.exe"
+          if (!(Test-Path $clangFormat) -or !(Test-Path $clangTidy) -or !(Test-Path $rustLinker -PathType Leaf)) {
             throw "VS 18 LLVM quality tools were not found"
           }
           $llvmBin >> $env:GITHUB_PATH
           "JUICER_CLANG_FORMAT=$clangFormat" >> $env:GITHUB_ENV
           "JUICER_CLANG_TIDY=$clangTidy" >> $env:GITHUB_ENV
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$rustLinker" >> $env:GITHUB_ENV
 
       - name: Install CUDA Toolkit 13.2
         shell: pwsh
@@ -263,5 +265,6 @@ jobs:
           path: |
             out/validation/windows-clang-debug/quality/**/*.log
             out/validation/windows-clang-debug/quality/**/*.json
+            out/validation/windows-clang-debug/quality/parallel-controls/**
             out/build/windows-clang-debug/compile_commands.json
           if-no-files-found: warn

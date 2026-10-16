@@ -172,5 +172,6 @@ jobs:
           path: |
             out/validation/linux-debug/quality/**/*.log
             out/validation/linux-debug/quality/**/*.json
+            out/validation/linux-debug/quality/parallel-controls/**
             out/build/linux-debug/compile_commands.json
           if-no-files-found: warn

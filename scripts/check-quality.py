@@ -207,7 +207,7 @@ class Runner:
             log_path.write_text(f"{label}: could not start command: {exc}\n", encoding="utf-8")
             record.update(seconds=time.perf_counter() - start, returncode=None, error=str(exc))
             log_path.with_suffix(".command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-            raise QualityError(f"{label}: could not start command; see {log_path}") from exc
+            raise QualityError(f"{label}: could not start command: {exc}; see {log_path}") from exc
         record.update(seconds=time.perf_counter() - start, returncode=completed.returncode)
         if stdout_only:
             # Keep machine-readable stdout separate and preserve both original byte streams.

@@ -602,7 +602,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.prepare()
         self.execute()
 
-    def test_warm_failed_build_resumes_without_recompiling_native(self):
+    def test_selected_utility_failure_requires_fresh_preparation(self):
         script = self.source / "fail_once.py"
         script.write_text(
             "from pathlib import Path\nimport sys\np=Path(sys.argv[1])\nif not p.exists():\n p.write_text('failed')\n raise SystemExit(7)\n"
@@ -616,26 +616,46 @@ class BuildEvidenceTests(unittest.TestCase):
         self.build.mkdir()
         marker = self.build / "failed-once"
         marker.write_text("warm setup")
-        self.prepare()
+        targets = ["fail_once"]
+        self.prepare(targets=targets)
         record = json.loads(self.prepared.read_text())
         outputs = {
             Path(name): (digest(Path(name)), Path(name).stat().st_mtime_ns)
             for name in record["scoped_preparation"]["outputs"]
         }
+        self.assertTrue(outputs)
+        baseline = next(self.build.glob("verification-build-*.json"))
+        saved = baseline.read_bytes()
+        pending = baseline.with_suffix(".pending.json")
         marker.unlink()
         with self.assertRaises(subprocess.CalledProcessError):
-            self.prepare()
+            self.prepare(targets=targets)
+        self.assertEqual(marker.read_text(), "failed")
+        self.assertEqual(
+            outputs, {path: (digest(path), path.stat().st_mtime_ns) for path in outputs}
+        )
+        self.assertEqual(baseline.read_bytes(), saved)
+        pending_contents = pending.read_bytes()
         failure = self.campaign.attempts("prepare")[-1]
+        self.assertEqual(failure["status"], "failed")
+        self.assertTrue(failure["process_tree"]["drained"])
         failed = self.root / Path(failure["output"]).with_name("result.json")
         retained = {
             path: path.read_bytes()
             for path in failed.parent.iterdir()
             if path.is_file()
         }
-        self.prepare(resume=failed)
-        self.assertEqual(
-            outputs, {path: (digest(path), path.stat().st_mtime_ns) for path in outputs}
-        )
+        attempts = len(self.campaign.attempts("prepare"))
+        with self.assertRaisesRegex(ValueError, "legacy sealed-build"):
+            self.prepare(targets=targets, resume=failed)
+        self.assertEqual(len(self.campaign.attempts("prepare")), attempts)
+        self.assertEqual(baseline.read_bytes(), saved)
+        self.assertEqual(pending.read_bytes(), pending_contents)
+        with self.assertRaisesRegex(ValueError, "pending preparation"):
+            self.execute()
+        self.prepare(targets=targets)
+        self.assertFalse(pending.exists())
+        self.assertNotEqual(baseline.read_bytes(), saved)
         self.assertTrue(
             all(path.read_bytes() == value for path, value in retained.items())
         )

@@ -110,11 +110,17 @@ VS LLVM directory and CUDA 13.2 available as required by the project presets,
 then run:
 
 ```powershell
+$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = Join-Path `
+  $env:VSINSTALLDIR "VC\Tools\Llvm\x64\bin\lld-link.exe"
 py -3.13 -m venv out/test-venv/windows
 out/test-venv/windows/Scripts/Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r tests/requirements.txt
 ```
+
+Cargo and direct Rust probes use that same VS LLVM linker. Hosted Windows CI
+exports the setting during toolchain setup; set it in an ordinary developer
+shell before running the tooling controls or standalone probes.
 
 GoogleTest 1.18.0 is fetched only when `BUILD_TESTING=ON`; its release archive
 is checksum-pinned in `tests/CMakeLists.txt`. For an offline checkout, use
@@ -501,6 +507,11 @@ Run the named domain with `-R` and `--output-on-failure`; add `-V` when the
 underlying command and paths are needed. GPU diagnostics retain case, route,
 fixture and CUDA failure detail. A missing driver/device is a failure for a
 selected `gpu` test, not a skip.
+
+The real parallel analyzer control retains its complete failure directory under
+`out/validation/<preset>/quality/parallel-controls/` and prints its location.
+Standalone controls use the native Debug preset. Successful controls clean their
+scratch directory; CI uploads retained command logs and raw process diagnostics.
 
 CTest can write JUnit output without a project-specific report layer:
 
