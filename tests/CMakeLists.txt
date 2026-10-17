@@ -42,12 +42,21 @@ set(JUICER_RUST_TEST_COMMAND
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     list(APPEND JUICER_RUST_TEST_COMMAND --release)
 endif()
-add_test(NAME Rust.Core
-    COMMAND "${CMAKE_COMMAND}" -E env
-        "RUSTFLAGS="
-        "CARGO_BUILD_RUSTFLAGS="
-        "CARGO_ENCODED_RUSTFLAGS="
-        ${JUICER_RUST_TEST_COMMAND})
+set(JUICER_RUST_CORE_TEST_COMMAND
+    "${CMAKE_COMMAND}" -E env
+    "RUSTFLAGS="
+    "CARGO_BUILD_RUSTFLAGS="
+    "CARGO_ENCODED_RUSTFLAGS="
+    ${JUICER_RUST_TEST_COMMAND})
+# Keep cold test compilation in the build phase, outside the CTest runtime budget.
+# Cargo owns test-source and include-file freshness on incremental builds.
+add_custom_target(juicer_rust_core_tests ALL
+    COMMAND ${JUICER_RUST_CORE_TEST_COMMAND} --no-run
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    COMMENT "Preparing core Rust test executables (${JUICER_RUST_CARGO_PROFILE})"
+    VERBATIM
+    USES_TERMINAL)
+add_test(NAME Rust.Core COMMAND ${JUICER_RUST_CORE_TEST_COMMAND})
 set_tests_properties(Rust.Core PROPERTIES
     LABELS "host"
     TIMEOUT 120

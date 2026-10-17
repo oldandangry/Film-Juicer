@@ -144,6 +144,13 @@ ctest --preset linux-debug
 Windows Debug uses the same sequence with `windows-clang-debug`. Release uses
 `linux-release` or `windows-clang-release`.
 
+With `BUILD_TESTING=ON`, the default build prepares the `Rust.Core` test
+executables through `juicer_rust_core_tests` using the same Cargo command and
+profile as CTest, with `--no-run`. Cargo checks source and included-fixture
+freshness on each build. This keeps cold compilation outside the 120-second
+CTest runtime budget. For a focused core-only rebuild, select
+`cmake --build --preset <preset> --target juicer_rust_core_tests` before CTest.
+
 The presets use four CTest workers. GPU groups share `juicer_gpu`, the
 product Cargo tests share `juicer_cargo`, and groups with `RUN_SERIAL` still run
 alone. Keep GPU suites from separate Windows/WSL invocations serialized on a
