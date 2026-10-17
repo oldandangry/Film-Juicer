@@ -1,0 +1,2 @@
+use film_juicer_core::{color::InputColor, film::input::{Recipe, Params, Resources}, profile::FilmProfile};
+fn consume(profile: &FilmProfile, params: Params, resources: Resources<'_>) { let recipe = Recipe::new(profile, params, resources).unwrap(); let color: &InputColor = recipe.color(); let _ = (color.rgb_to_xyz(), color.xyz_adapt(), color.xyz_to_linear_srgb(), color.nominal_white_xyz(), color.projection_white_xyz(), color.to_conversion(), recipe.sensitivity()); }

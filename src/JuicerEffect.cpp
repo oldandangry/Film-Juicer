@@ -1097,6 +1097,7 @@ namespace {
 
 } // namespace
 
+// S6.B/C transfers these resolved EV/chroma/default calculations; current OFX getter/edit mechanics stay native.
 Spektrafilm::VisualGrainControls JuicerEffect::gatherGrainUi() const {
     Spektrafilm::VisualGrainControls grain{};
 

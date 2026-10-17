@@ -1,0 +1,26 @@
+{
+  "authority": "Film-Juicer native compound characterization at 00d75a4d8c4d727e1c4e7961f557994c581cc3b0; accepted safe leaves unchanged",
+  "cases": {
+    "base": 96,
+    "controls": 44
+  },
+  "presets": {
+    "linux-debug": "linux.json",
+    "linux-release": "linux.json",
+    "windows-clang-debug": "windows.json",
+    "windows-clang-release": "windows.json"
+  },
+  "payloads": {
+    "linux.json": {
+      "sha256": "d8295221c9050d507dd265869b6bbe3a2bddd62ffa3fc6583259621f40c7e4ed",
+      "provenance": "independent native capture before producer translation; original per-preset logs retained in s4-b-slice-2-2026-10-16 campaign"
+    },
+    "windows.json": {
+      "sha256": "da5b17f3dc4f75919786067465085a4db2019513eeabfcdcbc05589d6255ac7b",
+      "provenance": "independent native capture before producer translation; original per-preset logs retained in s4-b-slice-2-2026-10-16 campaign"
+    }
+  },
+  "producer_commit": "00d75a4d8c4d727e1c4e7961f557994c581cc3b0",
+  "producer_tree": "269b0cfa49188364c05051d142cbabf6412c59a2",
+  "kind": "Film-Juicer native compound characterization with accepted safe mathematical leaves"
+}

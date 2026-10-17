@@ -992,3 +992,62 @@ checks each physical payload once, all native memberships and ordered recipe
 inputs. Numerical groups still compare actual outputs with the applicable
 native expectations. Small frozen foreign-value witnesses retain wrong-preset
 rejection without loading three unrelated complete documents on each run.
+
+### Film input and complete input color
+
+`film::input::Recipe::new` constructs resolved film-input controls, a private
+`color::InputColor` containing all three matrices and consumed whites, final
+sensitivity, recipe Mallett scale and existing schema-2 TC/film-input identities.
+Its resources are synchronous fixed-array borrows and existing identities; the
+result retains no profile or resource pointer. Explicit-operand color leaves
+remain separate, including the accepted inverse-B conversion fixtures.
+
+`fj_legacy_film_input_prepare` is temporary fixed-value transport through S4.E.
+The native foundation calls it through its captured `FilmSource` after the
+existing route/resource/selector checks. The direct fixture facade shares the
+safe constructor and fixed projector. Both outputs are required; diagnostics
+are optional. The legacy header documents numeric storage admission, caller
+lifetime/disjointness obligations, inactive defaults, clearing and diagnostic
+bounds. Failure dispatch uses the closed status/origin/reason envelope and
+sensitivity metadata, preserving native return/throw and publication behavior.
+The raw result is complete input preparation, not a completed render state.
+
+`Ffi.Host.FilmInput` and `Film.Host.InputProducts` own ABI/value/failure and actual
+consumer coverage. `Quality.RustBoundaries` rejects default, field, mutation and
+partial construction; source review/guards restrict internal complete-color
+assembly to the recipe constructor. The existing input-color, exposure,
+development and scanner-reuse groups retain their independent expectations.
+The Release production gate compares C11 fixed values with the frozen native
+capture, checks failure/clearing behavior and scans archive/module/PDB artifacts
+for fixture/fault isolation. No per-frame preparation or CPU pixel path is added.
+
+## Capture-film DIR and density bounds
+
+The temporary `SF_TEMP_BRIDGE_FILM_DIR_DENSITY` boundary retains one additional
+shared development hold for synchronous foundation preparation. Retain returns
+the same address with a separate consuming obligation. The original explicit
+release still precedes return from development preparation; move-only native
+holds end after route construction. DIR owns only derived fixed values and three
+RGB axes; native publications/staging copy and own later CUDA inputs. The temporary
+hold, value carriers and exports retain their S4.E last-use removal obligation.
+
+Minimum, DIR and film bounds retain their distinct construction positions and
+failure priority. The safe bounds constructor borrows a completed minimum; its
+raw adapter reconstructs it from the unchanged original request. This minimum
+remains independent of Film-Juicer visual particle density. Print-medium bounds
+and spatial-DIR geometry/operators/workspaces retain their native owners.
+
+Raw prepare/acquire/view results and failure records are independently cleared.
+Success commits `{NONE,3,UINT64_MAX}`. `LOG_EXPOSURE=16` is legal only for DIR
+acquire with PreparationFailure, API_NONE, native code zero, channel 3 and the
+first failing sample in `[1,N)`. Native translation returns the exact ordinary
+strictly-increasing exposure diagnostic; impossible envelopes become integrity
+failures. Pointer checks do not establish actual lifetime, extent or disjointness:
+callers authorize initialized live storage, and views expire on consuming release.
+
+See [immutable native characterization](../film/dir-fixtures/README.md).
+`Ffi.Host.FilmRecipes` covers the raw/facade/native owner boundary and
+`Film.Host.DirDensityProducts` covers complete callers/admission. Construction
+compiler controls reject Default, partial field assembly, private storage access
+and mutation. Both normal Release production probes cover the new symbols,
+C11 values/failures and absence of test fault/facade code in final artifacts.

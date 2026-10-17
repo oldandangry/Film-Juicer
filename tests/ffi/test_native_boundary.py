@@ -74,7 +74,41 @@ RETIRED_OUTPUT_COLOR_DEFINITIONS = (
 )
 
 
+RETIRED_FILM_INPUT_DEFINITIONS = (
+    r"\b(?:std::uint64_t\s+(?:hash_film_raw_recipe|hash_tc_lut_recipe)|"
+    r"std::array<float,\s*3>\s+copy_filter_triplet|"
+    r"Spektrafilm::AutoExposureMethod\s+auto_exposure_method_from_index)"
+    r"\s*\([^;{}]*\)\s*\{"
+)
+
+
 class NativeBoundary(unittest.TestCase):
+    def test_film_input_construction_and_hash_definitions_stay_deleted(self):
+        paths = [path for directory in (ROOT / "src", ROOT / "native")
+                 for path in directory.rglob("*")
+                 if path.is_file() and path.suffix.lower() in SOURCE_SUFFIXES]
+        self.assertEqual(forbidden_uses(paths, RETIRED_FILM_INPUT_DEFINITIONS), [])
+        for rejected in (
+            "std::uint64_t hash_film_raw_recipe(const FilmRawRecipe& recipe) {}",
+            "std::uint64_t hash_tc_lut_recipe(const FilmRawRecipe& recipe) {}",
+            "std::array<float, 3> copy_filter_triplet(const std::array<double, 3>& values, bool active) {}",
+            "Spektrafilm::AutoExposureMethod auto_exposure_method_from_index(int index) {}",
+        ):
+            self.assertRegex(rejected, RETIRED_FILM_INPUT_DEFINITIONS)
+            self.assertNotRegex(rejected.replace(" {}", ";"), RETIRED_FILM_INPUT_DEFINITIONS)
+        self.assertNotRegex("bool auto_exposure_method_index_valid(int index) {}", RETIRED_FILM_INPUT_DEFINITIONS)
+        recipe = (ROOT / "src/RenderRecipe.cpp").read_text()
+        foundation = recipe.split("bool build_film_foundation(", 1)[1].split("DirectRecipeBuildResult build_direct_render_recipe(", 1)[0]
+        self.assertNotRegex(foundation, r"JuicerColor::(?:input_matrices|cat16_matrix|cat02_matrix)\s*\(")
+        self.assertNotIn("JuicerExposure::prepare_sensitivity(", foundation)
+        self.assertIn("input.filmSource->prepare_input(input, recipe.filmRaw, diagnostic)", foundation)
+        calls = []
+        for path in (ROOT / "rust/film-juicer-core/src").rglob("*.rs"):
+            production = path.read_text().split("#[cfg(test)]", 1)[0]
+            if "InputColor::from_matrices(" in production:
+                calls.append(path.relative_to(ROOT).as_posix())
+        self.assertEqual(calls, ["rust/film-juicer-core/src/film/input.rs"])
+
     def test_output_color_authority_is_retired_and_packing_only_binds_values(self):
         paths = [path for directory in (ROOT / "src", ROOT / "native")
                  for path in directory.rglob("*")
@@ -169,8 +203,10 @@ class NativeBoundary(unittest.TestCase):
                          "JuicerExposure::reference_white(x, y, z, out, diagnostic);"):
             self.assertNotRegex(survivor, RETIRED_EXPOSURE_DEFINITIONS)
         recipe = (ROOT / "src/RenderRecipe.cpp").read_text(encoding="utf-8")
-        self.assertEqual(recipe.count("std::uint64_t hash_tc_lut_recipe("), 1)
-        self.assertEqual(recipe.count("JuicerExposure::prepare_sensitivity("), 1)
+        self.assertEqual(recipe.count("std::uint64_t hash_tc_lut_recipe("), 0)
+        self.assertEqual(recipe.count("JuicerExposure::prepare_sensitivity("), 0)
+        family = (ROOT / "rust/film-juicer-core/src/film/input.rs").read_text(encoding="utf-8")
+        self.assertIn("exposure::prepare_sensitivity(", family)
         self.assertEqual((ROOT / "src/JuicerState.cpp").read_text(encoding="utf-8").count("JuicerExposure::reference_white("), 1)
 
     def test_native_illuminant_math_is_retired(self):

@@ -270,6 +270,27 @@ namespace JuicerAssets {
         return _profile;
     }
 
+    DevelopmentHold::DevelopmentHold(FjFilmDevelopmentOwner* owner) noexcept : _owner(owner) {
+    }
+
+    DevelopmentHold::~DevelopmentHold() {
+        if (_owner)
+            report_cleanup(fj_legacy_film_development_release(_owner, nullptr));
+    }
+
+    DevelopmentHold::DevelopmentHold(DevelopmentHold&& source) noexcept
+        : _owner(std::exchange(source._owner, nullptr)) {
+    }
+
+    DevelopmentHold& DevelopmentHold::operator=(DevelopmentHold&& source) noexcept {
+        if (this != &source) {
+            if (_owner)
+                report_cleanup(fj_legacy_film_development_release(_owner, nullptr));
+            _owner = std::exchange(source._owner, nullptr);
+        }
+        return *this;
+    }
+
     FilmDevelopment FilmSource::prepare_development(Spektrafilm::ScanRoute route, float gamma, bool layersRequired) const {
         struct Deleter {
             void operator()(FjFilmDevelopmentOwner* owner) const noexcept {
@@ -351,11 +372,19 @@ namespace JuicerAssets {
         recipe.normalizedDensityCurvesHash = view.normalized_curves_hash;
         recipe.densityCurvesLayersHash = view.layers_hash;
         recipe.hash = view.hash;
+        FjFilmDevelopmentOwner* retained = nullptr;
+        result = fj_legacy_film_development_retain(owner.get(), &retained, &error);
+        DevelopmentHold hold(retained);
+        if (result.category != FJ_STATUS_SUCCESS) {
+            fail(result, {message.data(), error.length});
+        }
+        if (!retained)
+            invalid_view();
         result = fj_legacy_film_development_release(owner.release(), &error);
         if (result.category != FJ_STATUS_SUCCESS) {
             fail(result, {message.data(), error.length});
         }
-        return {static_cast<Spektrafilm::ScanRoute>(view.route), std::move(recipe)};
+        return {static_cast<Spektrafilm::ScanRoute>(view.route), std::move(recipe), std::move(hold)};
     }
 
     NoiseSource::NoiseSource(FjNoise* owner, const FjStaticNoise& view) noexcept

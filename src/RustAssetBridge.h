@@ -12,6 +12,11 @@
 #include "SpectralData.h"
 #include "juicer_legacy_api.h"
 
+struct FilmRawRecipe;
+namespace Spektrafilm {
+    struct FilmFoundationBuildInput;
+}
+
 namespace JuicerCuda {
     struct StaticNoiseInput;
 }
@@ -32,6 +37,8 @@ namespace JuicerAssets {
         FilmSource(const FilmSource&) = delete;
         FilmSource& operator=(const FilmSource&) = delete;
         const std::shared_ptr<const Profiles::FilmProfile>& profile() const noexcept;
+        // SF_TEMP_BRIDGE_FILM_INPUT: same selected source; fixed values; remove S4.E.
+        bool prepare_input(const Spektrafilm::FilmFoundationBuildInput& input, FilmRawRecipe& out, std::string& diagnostic) const;
         FilmDevelopment prepare_development(Spektrafilm::ScanRoute route, float gamma, bool layersRequired) const;
 
     private:

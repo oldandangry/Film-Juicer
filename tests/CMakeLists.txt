@@ -42,12 +42,21 @@ set(JUICER_RUST_TEST_COMMAND
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     list(APPEND JUICER_RUST_TEST_COMMAND --release)
 endif()
-add_test(NAME Rust.Core
-    COMMAND "${CMAKE_COMMAND}" -E env
-        "RUSTFLAGS="
-        "CARGO_BUILD_RUSTFLAGS="
-        "CARGO_ENCODED_RUSTFLAGS="
-        ${JUICER_RUST_TEST_COMMAND})
+set(JUICER_RUST_CORE_TEST_COMMAND
+    "${CMAKE_COMMAND}" -E env
+    "RUSTFLAGS="
+    "CARGO_BUILD_RUSTFLAGS="
+    "CARGO_ENCODED_RUSTFLAGS="
+    ${JUICER_RUST_TEST_COMMAND})
+# Keep cold test compilation in the build phase, outside the CTest runtime budget.
+# Cargo owns test-source and include-file freshness on incremental builds.
+add_custom_target(juicer_rust_core_tests ALL
+    COMMAND ${JUICER_RUST_CORE_TEST_COMMAND} --no-run
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    COMMENT "Preparing core Rust test executables (${JUICER_RUST_CARGO_PROFILE})"
+    VERBATIM
+    USES_TERMINAL)
+add_test(NAME Rust.Core COMMAND ${JUICER_RUST_CORE_TEST_COMMAND})
 set_tests_properties(Rust.Core PROPERTIES
     LABELS "host"
     TIMEOUT 120
@@ -160,7 +169,66 @@ add_executable(JuicerProductionProfileOwnerTests ffi/production_profile_abi_c.c 
     $<TARGET_OBJECTS:juicer_profile_conversion_test_objects>)
 target_link_libraries(JuicerProductionProfileOwnerTests PRIVATE juicer_core GTest::gtest)
 
+add_library(juicer_film_input_test_objects OBJECT ../src/RustFilmInputBridge.cpp)
+target_link_libraries(juicer_film_input_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_film_input_test_objects PRIVATE JUICER_FILM_INPUT_TEST_HOOK=1)
+add_executable(JuicerFilmInputTests ffi/film_input_abi_c.c ffi/film_input_test.cpp
+    $<TARGET_OBJECTS:juicer_film_input_test_objects>)
+target_link_libraries(JuicerFilmInputTests PRIVATE juicer_core)
+set_target_properties(JuicerFilmInputTests PROPERTIES
+    LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerFilmInputTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_dependencies(JuicerFilmInputTests juicer_test_resources)
+if(WIN32)
+    set(JUICER_FILM_INPUT_FIXTURE "windows.json")
+else()
+    set(JUICER_FILM_INPUT_FIXTURE "linux.json")
+endif()
+add_test(NAME Ffi.Host.FilmInput COMMAND JuicerFilmInputTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/input-fixtures/${JUICER_FILM_INPUT_FIXTURE}")
+set_tests_properties(Ffi.Host.FilmInput PROPERTIES LABELS "host" TIMEOUT 120)
+add_test(NAME Film.Host.InputProducts COMMAND JuicerFilmInputTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/input-fixtures/${JUICER_FILM_INPUT_FIXTURE}" products)
+set_tests_properties(Film.Host.InputProducts PROPERTIES LABELS "host" TIMEOUT 180)
+
 add_library(juicer_film_development_test_objects OBJECT ../src/RustAssetBridge.cpp)
+add_library(juicer_film_recipe_test_objects OBJECT ../src/RustFilmRecipeBridge.cpp)
+add_library(juicer_film_recipe_state_test_objects OBJECT ../src/ResourceAssetLibrary.cpp)
+target_link_libraries(juicer_film_recipe_state_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_film_recipe_state_test_objects PRIVATE JUICER_FILM_RECIPE_STATE_TEST_HOOK=1)
+target_link_libraries(juicer_film_recipe_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_film_recipe_test_objects PRIVATE JUICER_FILM_RECIPE_TEST_HOOK=1)
+add_executable(JuicerFilmRecipeTests ffi/film_recipe_abi_c.c ffi/film_recipe_test.cpp ffi/spectral_allocation_probe.cpp
+    $<TARGET_OBJECTS:juicer_film_recipe_test_objects>
+    $<TARGET_OBJECTS:juicer_film_recipe_state_test_objects>)
+target_link_libraries(JuicerFilmRecipeTests PRIVATE juicer_core)
+set_target_properties(JuicerFilmRecipeTests PROPERTIES
+    LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerFilmRecipeTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_dependencies(JuicerFilmRecipeTests juicer_test_resources)
+if(WIN32)
+    set(JUICER_FILM_DIR_FIXTURE windows)
+else()
+    set(JUICER_FILM_DIR_FIXTURE linux)
+endif()
+add_test(NAME Ffi.Host.FilmRecipes COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/dir-fixtures/${JUICER_FILM_DIR_FIXTURE}.json")
+set_tests_properties(Ffi.Host.FilmRecipes PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Film.Host.DirDensityProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/dir-fixtures/${JUICER_FILM_DIR_FIXTURE}.json" products)
+set_tests_properties(Film.Host.DirDensityProducts PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Ffi.Host.VisualGrain COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/grain-fixtures/manifest.json" grain "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Ffi.Host.VisualGrain PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Film.Host.VisualGrainProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/grain-fixtures/manifest.json" grain-products "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Film.Host.VisualGrainProducts PROPERTIES LABELS "host" TIMEOUT 180)
 target_link_libraries(juicer_film_development_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_film_development_test_objects PRIVATE JUICER_FILM_DEVELOPMENT_TEST_HOOK=1)
 add_executable(JuicerFilmDevelopmentTests ffi/film_development_abi_c.c ffi/film_development_test.cpp ffi/spectral_allocation_probe.cpp
@@ -711,7 +779,8 @@ endif()
 add_test(NAME Ofx.Gpu.AdapterTrace
     COMMAND JuicerAdapterTraceProbe
         --trace-output
-        "${JUICER_TEST_ARTIFACT_ROOT}/ofx/adapter_trace.txt")
+        "${JUICER_TEST_ARTIFACT_ROOT}/ofx/adapter_trace.txt"
+        --grain-fixtures "${CMAKE_CURRENT_SOURCE_DIR}/film/grain-fixtures/manifest.json" "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ofx.Gpu.AdapterTrace PROPERTIES
     LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 
@@ -1165,7 +1234,8 @@ target_link_libraries(JuicerOutputColorTests PRIVATE juicer_output_encoding_orac
 set(juicer_tooling_tests Quality.Dispatcher Quality.ToolingLint Quality.Execution
     Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint
     Ctest.Host.Report Ctest.Host.Repetition Ffi.Host.RustBuild)
-set(juicer_boundary_tests Quality.RustNaming Quality.RustBoundaries)
+set(juicer_boundary_tests
+    Ffi.Host.VisualGrain Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat
     Gamut.Host.Output.FixtureFormat)

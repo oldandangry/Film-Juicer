@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ctypes
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,6 +45,14 @@ class CampaignTests(unittest.TestCase):
             else sys.executable
         )
         return [python, "-c", code]
+
+    def vctip_fixture(self, directory=None):
+        source = Path(os.environ["SystemRoot"]) / "System32/ping.exe"
+        target_dir = self.root if directory is None else directory
+        target_dir.mkdir(exist_ok=True)
+        target = target_dir / "VCTIP.EXE"
+        shutil.copy2(source, target)
+        return target
 
     def execute(self, code, **kwargs):
         return self.campaign.run(
@@ -256,6 +266,169 @@ class CampaignTests(unittest.TestCase):
             "last descendant output", (receipt.parent / "output.log").read_text()
         )
         self.assertTrue(json.loads(receipt.read_text())["process_tree"]["drained"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job policy")
+    def test_vctip_alone_finishes_without_reaching_drain_cap(self):
+        vctip = self.vctip_fixture()
+        code = f"import subprocess;subprocess.Popen([{str(vctip)!r},'-n','30','127.0.0.1'])"
+        receipt = self.campaign.run(
+            "quality", self.command(code), inputs=["source.txt"],
+            timeout=3, vctip_executable=str(vctip), vctip_grace_seconds=0.1,
+        )
+        result = json.loads(receipt.read_text())
+        tree = result["process_tree"]
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(tree["drained"])
+        self.assertEqual(len(tree["vctip_terminated"]), 1)
+        self.assertLess(tree["drain_seconds"], 2)
+        self.assertEqual(tree["vctip_cleanup"]["drain_cap_seconds"], 300)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job policy")
+    def test_vctip_cleanup_is_scoped_and_waits_for_other_child(self):
+        vctip = self.vctip_fixture()
+        other = "import time;time.sleep(1.0);print('other child done',flush=True)"
+        code = (
+            "import subprocess,sys;"
+            f"subprocess.Popen([{str(vctip)!r},'-n','30','127.0.0.1']);"
+            f"subprocess.Popen([sys.executable,'-c',{other!r}])"
+        )
+        receipt = self.campaign.run(
+            "quality", self.command(code), inputs=["source.txt"],
+            timeout=5, vctip_executable=str(vctip), vctip_grace_seconds=0.1,
+        )
+        result = json.loads(receipt.read_text())
+        tree = result["process_tree"]
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(tree["status"], "completed")
+        self.assertTrue(tree["drained"])
+        self.assertEqual(len(tree["vctip_terminated"]), 1)
+        self.assertEqual(Path(tree["vctip_terminated"][0]["path"]), vctip)
+        self.assertGreater(tree["drain_seconds"], 0.7)
+        self.assertIn("other child done", (receipt.parent / "output.log").read_text())
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job policy")
+    def test_vctip_cleanup_rejects_same_name_at_other_path(self):
+        expected = self.vctip_fixture()
+        other = self.vctip_fixture(self.root / "other")
+        code = f"import subprocess;subprocess.Popen([{str(other)!r},'-n','30','127.0.0.1'])"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.campaign.run(
+                "quality", self.command(code), inputs=["source.txt"],
+                timeout=0.6, vctip_executable=str(expected),
+                vctip_grace_seconds=0.1,
+            )
+        result = self.campaign.attempts("quality")[-1]
+        self.assertEqual(result["process_tree"]["vctip_terminated"], [])
+        self.assertEqual(result["process_tree"]["status"], "timeout")
+        self.assertTrue(result["process_tree"]["drained"])
+        self.assertFalse((self.campaign.directory / "running.lock").exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job policy")
+    def test_vctip_cleanup_caps_other_child_drain_after_parent(self):
+        vctip = self.vctip_fixture()
+        code = "import subprocess,sys;subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.campaign.run(
+                "quality", self.command(code), inputs=["source.txt"],
+                timeout=5, vctip_executable=str(vctip),
+                vctip_grace_seconds=0.1, vctip_drain_cap_seconds=0.6,
+            )
+        result = self.campaign.attempts("quality")[-1]
+        tree = result["process_tree"]
+        self.assertEqual(tree["status"], "timeout")
+        self.assertTrue(tree["drained"])
+        self.assertEqual(tree["vctip_terminated"], [])
+        self.assertLess(result["seconds"], 3)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job policy")
+    def test_vctip_cleanup_retries_successful_partial_process_list(self):
+        job = process_tree.WindowsJob.__new__(process_tree.WindowsJob)
+        job.job = 1
+        job.api = Mock()
+        capacities = []
+
+        def query(_job, _kind, buffer, size, _returned):
+            capacity = (size - 8) // ctypes.sizeof(ctypes.c_size_t)
+            capacities.append(capacity)
+            first = len(capacities) == 1
+            ctypes.c_uint32.from_buffer(buffer, 0).value = 17 if first else 0
+            ctypes.c_uint32.from_buffer(buffer, 4).value = 16 if first else 0
+            if first:
+                pids = (ctypes.c_size_t * 16).from_buffer(buffer, 8)
+                pids[:] = range(1, 17)
+            return True
+
+        job.api.QueryInformationJobObject.side_effect = query
+        recorded = []
+        job.stop_vctip(str(self.root / "VCTIP.EXE"), recorded.append)
+        self.assertEqual(capacities, [16, 32])
+        self.assertEqual(recorded, [])
+        job.api.OpenProcess.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job policy")
+    def test_vctip_termination_is_recorded_before_later_process_error(self):
+        from ctypes import wintypes
+
+        vctip = self.vctip_fixture()
+        job = process_tree.WindowsJob.__new__(process_tree.WindowsJob)
+        job.job = 1
+        job.api = Mock()
+
+        def query(_job, _kind, buffer, _size, _returned):
+            ctypes.c_uint32.from_buffer(buffer, 0).value = 2
+            ctypes.c_uint32.from_buffer(buffer, 4).value = 2
+            pids = (ctypes.c_size_t * 2).from_buffer(buffer, 8)
+            pids[:] = (111, 222)
+            return True
+
+        def open_process(_access, _inherit, pid):
+            if pid == 111:
+                return 101
+            ctypes.set_last_error(5)
+            return 0
+
+        def is_in_job(_handle, _job, result):
+            ctypes.cast(result, ctypes.POINTER(wintypes.BOOL))[0] = 1
+            return True
+
+        def image(_handle, _flags, buffer, length):
+            buffer.value = str(vctip)
+            ctypes.cast(length, ctypes.POINTER(wintypes.DWORD))[0] = len(str(vctip))
+            return True
+
+        job.api.QueryInformationJobObject.side_effect = query
+        job.api.OpenProcess.side_effect = open_process
+        job.api.IsProcessInJob.side_effect = is_in_job
+        job.api.WaitForSingleObject.return_value = 0x102
+        job.api.QueryFullProcessImageNameW.side_effect = image
+        job.api.TerminateProcess.return_value = True
+        job.api.CloseHandle.return_value = True
+        recorded = []
+        with self.assertRaises(OSError):
+            job.stop_vctip(str(vctip), recorded.append)
+        self.assertEqual(recorded, [{"pid": 111, "path": str(vctip)}])
+        job.api.TerminateProcess.assert_called_once_with(101, 125)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job policy")
+    def test_failed_parent_never_cleans_vctip_as_a_pass(self):
+        vctip = self.vctip_fixture()
+        code = (
+            "import subprocess,sys;"
+            f"subprocess.Popen([{str(vctip)!r},'-n','30','127.0.0.1']);"
+            "sys.exit(7)"
+        )
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.campaign.run(
+                "quality", self.command(code), inputs=["source.txt"],
+                timeout=5, vctip_executable=str(vctip),
+                vctip_grace_seconds=0.1,
+            )
+        result = self.campaign.attempts("quality")[-1]
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["process_tree"]["status"], "failed-parent")
+        self.assertEqual(result["process_tree"]["vctip_terminated"], [])
+        self.assertTrue(result["process_tree"]["drained"])
+        self.assertFalse((self.campaign.directory / "running.lock").exists())
 
     def test_unknown_completion_retains_blocked_lock_without_final_hash(self):
         def unknown(command, root, environment, output, timeout, receipt, lock, tree):
