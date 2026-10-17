@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import importlib.util
 import json
 import os
@@ -338,6 +339,75 @@ class CampaignTests(unittest.TestCase):
         self.assertTrue(tree["drained"])
         self.assertEqual(tree["vctip_terminated"], [])
         self.assertLess(result["seconds"], 3)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job policy")
+    def test_vctip_cleanup_retries_successful_partial_process_list(self):
+        job = process_tree.WindowsJob.__new__(process_tree.WindowsJob)
+        job.job = 1
+        job.api = Mock()
+        capacities = []
+
+        def query(_job, _kind, buffer, size, _returned):
+            capacity = (size - 8) // ctypes.sizeof(ctypes.c_size_t)
+            capacities.append(capacity)
+            first = len(capacities) == 1
+            ctypes.c_uint32.from_buffer(buffer, 0).value = 17 if first else 0
+            ctypes.c_uint32.from_buffer(buffer, 4).value = 16 if first else 0
+            if first:
+                pids = (ctypes.c_size_t * 16).from_buffer(buffer, 8)
+                pids[:] = range(1, 17)
+            return True
+
+        job.api.QueryInformationJobObject.side_effect = query
+        recorded = []
+        job.stop_vctip(str(self.root / "VCTIP.EXE"), recorded.append)
+        self.assertEqual(capacities, [16, 32])
+        self.assertEqual(recorded, [])
+        job.api.OpenProcess.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job policy")
+    def test_vctip_termination_is_recorded_before_later_process_error(self):
+        from ctypes import wintypes
+
+        vctip = self.vctip_fixture()
+        job = process_tree.WindowsJob.__new__(process_tree.WindowsJob)
+        job.job = 1
+        job.api = Mock()
+
+        def query(_job, _kind, buffer, _size, _returned):
+            ctypes.c_uint32.from_buffer(buffer, 0).value = 2
+            ctypes.c_uint32.from_buffer(buffer, 4).value = 2
+            pids = (ctypes.c_size_t * 2).from_buffer(buffer, 8)
+            pids[:] = (111, 222)
+            return True
+
+        def open_process(_access, _inherit, pid):
+            if pid == 111:
+                return 101
+            ctypes.set_last_error(5)
+            return 0
+
+        def is_in_job(_handle, _job, result):
+            ctypes.cast(result, ctypes.POINTER(wintypes.BOOL))[0] = 1
+            return True
+
+        def image(_handle, _flags, buffer, length):
+            buffer.value = str(vctip)
+            ctypes.cast(length, ctypes.POINTER(wintypes.DWORD))[0] = len(str(vctip))
+            return True
+
+        job.api.QueryInformationJobObject.side_effect = query
+        job.api.OpenProcess.side_effect = open_process
+        job.api.IsProcessInJob.side_effect = is_in_job
+        job.api.WaitForSingleObject.return_value = 0x102
+        job.api.QueryFullProcessImageNameW.side_effect = image
+        job.api.TerminateProcess.return_value = True
+        job.api.CloseHandle.return_value = True
+        recorded = []
+        with self.assertRaises(OSError):
+            job.stop_vctip(str(vctip), recorded.append)
+        self.assertEqual(recorded, [{"pid": 111, "path": str(vctip)}])
+        job.api.TerminateProcess.assert_called_once_with(101, 125)
 
     @unittest.skipUnless(os.name == "nt", "Windows Job policy")
     def test_failed_parent_never_cleans_vctip_as_a_pass(self):

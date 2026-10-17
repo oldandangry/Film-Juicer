@@ -221,25 +221,31 @@ class WindowsJob:
     def stop(self):
         self.check(self.api.TerminateJobObject(self.job, 125))
 
-    def stop_vctip(self, expected_path):
+    def stop_vctip(self, expected_path, record_termination):
         from ctypes import wintypes
 
         expected = os.path.normcase(os.path.realpath(expected_path))
         capacity = 16
-        while True:
+        for _ in range(16):
             buffer = ctypes.create_string_buffer(8 + capacity * ctypes.sizeof(ctypes.c_size_t))
             if self.api.QueryInformationJobObject(
                 self.job, 3, buffer, ctypes.sizeof(buffer), None
             ):
-                break
-            if ctypes.get_last_error() != 234:  # ERROR_MORE_DATA
-                raise ctypes.WinError(ctypes.get_last_error())
-            capacity *= 2
-        count = ctypes.c_uint32.from_buffer(buffer, 4).value
-        if count > capacity:
-            raise RuntimeError("job process list exceeded its returned capacity")
+                assigned = ctypes.c_uint32.from_buffer(buffer, 0).value
+                count = ctypes.c_uint32.from_buffer(buffer, 4).value
+                if count > capacity:
+                    raise RuntimeError("job process list exceeded its returned capacity")
+                # A successful query can still return only part of the PID list.
+                if count >= assigned:
+                    break
+                capacity = max(capacity * 2, assigned)
+            else:
+                if ctypes.get_last_error() != 234:  # ERROR_MORE_DATA
+                    raise ctypes.WinError(ctypes.get_last_error())
+                capacity *= 2
+        else:
+            raise RuntimeError("job process list did not stabilize")
         pids = list((ctypes.c_size_t * count).from_buffer(buffer, 8))
-        stopped = []
         for pid in pids:
             # QUERY_LIMITED_INFORMATION | TERMINATE | SYNCHRONIZE: the wait
             # must be authorized so an exit between enumeration and inspection
@@ -272,10 +278,9 @@ class WindowsJob:
                     if self.api.WaitForSingleObject(handle, 0) == 0:
                         continue  # Exited after the image check.
                     raise ctypes.WinError(error)
-                stopped.append({"pid": pid, "path": path})
+                record_termination({"pid": pid, "path": path})
             finally:
                 self.check(self.api.CloseHandle(handle))
-        return stopped
 
     def close(self):
         self.check(self.api.CloseHandle(self.job))
@@ -357,11 +362,13 @@ def main():
                 and now >= next_vctip_check and now < deadline
                 and not interrupted.is_set()
             ):
-                for child in owner.stop_vctip(cleanup["executable"]):
+                def record_termination(child):
                     record["vctip_terminated"].append({
-                        **child, "seconds_after_parent": now - command_end,
+                        **child, "seconds_after_parent": time.monotonic() - command_end,
                     })
                     save()
+
+                owner.stop_vctip(cleanup["executable"], record_termination)
                 next_vctip_check = now + 0.5
             if stopping is None and (
                 interrupted.is_set()

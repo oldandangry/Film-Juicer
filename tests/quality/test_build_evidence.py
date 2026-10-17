@@ -775,20 +775,24 @@ class BuildEvidenceTests(unittest.TestCase):
         self.execute()
 
     def test_generated_build_header_survives_reconfiguration(self):
-        (self.source / "step.h").write_text("#pragma once\n")
+        (self.source / "step-source.h").write_text("#pragma once\n")
         main = self.source / "main.cpp"
         main.write_text('#include "step.h"\n' + main.read_text())
         cmake = self.source / "CMakeLists.txt"
         cmake.write_text(cmake.read_text() +
             'add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/generated/step.h" '
             'COMMAND "${CMAKE_COMMAND}" -E copy_if_different '
-            '"${CMAKE_CURRENT_SOURCE_DIR}/step.h" "${CMAKE_BINARY_DIR}/generated/step.h" '
-            'DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/step.h")\n'
+            '"${CMAKE_CURRENT_SOURCE_DIR}/step-source.h" "${CMAKE_BINARY_DIR}/generated/step.h" '
+            'DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/step-source.h")\n'
             'add_custom_target(step-header DEPENDS "${CMAKE_BINARY_DIR}/generated/step.h")\n'
             'add_dependencies(behavior step-header)\n')
         self.prepare()
         generated = self.build / "generated/step.h"
         self.assertTrue(generated.is_file())
+        graph = build_evidence.NinjaGraph(self.build, ["behavior"])
+        consumed = {name for dependencies in graph.compiler_inputs.values()
+                    for name in dependencies}
+        self.assertIn(str(generated), consumed)
         self.args.append("-DRECONFIGURE_CHECK=ON")
         self.prepare()
         proof = json.loads(self.prepared.read_text())["scoped_preparation"]
