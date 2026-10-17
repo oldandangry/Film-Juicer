@@ -277,6 +277,14 @@ analysis and test consumption. Unproved descendant drainage retains a blocked
 owner; inspect its process evidence before manual recovery. Do not remove a lock
 because its immediate parent exited.
 
+On Windows, supervised CMake configuration and builds identify `VCTIP.EXE` from
+the active `VCToolsInstallDir`. After a successful parent exit, the Job waits 30
+seconds for natural drainage, then may terminate only that exact Job-owned
+executable. Other children retain the stage deadline, capped at five minutes
+after parent exit, and must drain before success. Parent failure or interruption
+keeps the ordinary failure and whole-Job drainage behavior. The process receipt
+records the selected executable, policy and any termination.
+
 During development, build the affected test targets and run the smallest owning
 CTest selection that proves the changed behavior. Exercise new compiled tests
 on both native platforms early, and check edited native sources before starting

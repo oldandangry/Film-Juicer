@@ -283,6 +283,7 @@ def include_membership(build, graph, source_root, compilation=None):
         search = compilation.search(compilation.entry(row))
         directories.update([*search.quoted, *search.ordinary, path.parent])
     result = {}
+    outputs = {Path(name) for name in graph.outputs}
     for directory in sorted(directories):
         # Observe mutable project/generated namespaces, not compiler installations.
         if not directory.is_relative_to(source_root) and not directory.is_relative_to(build):
@@ -292,6 +293,8 @@ def include_membership(build, graph, source_root, compilation=None):
                 "unresolved include scope contains mutable build outputs: "
                 + str(directory)
             )
+        # Declared outputs can disappear during invalidation. Keep watching
+        # their include directory for new, unowned shadow headers.
         members, visited = [], set()
         for parent, children, files in os.walk(directory, followlinks=True):
             children[:] = sorted(
@@ -307,7 +310,7 @@ def include_membership(build, graph, source_root, compilation=None):
             members.append([str(Path(parent).relative_to(directory)), str(resolved)])
             members.extend(
                 [str((Path(parent) / name).relative_to(directory)), None]
-                for name in sorted(files)
+                for name in sorted(files) if Path(parent) / name not in outputs
             )
         result[str(directory)] = sorted(members, key=lambda item: item[0])
     return result

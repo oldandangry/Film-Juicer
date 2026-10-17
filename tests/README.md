@@ -264,6 +264,10 @@ generated-input, shadow-header and partial-build controls. It does not dispatch 
 entire build-evidence group or change product fixtures. Control artifacts remain
 under the selected preset's validation directory. No full product/platform
 qualification is claimed by this scope.
+Windows `Quality.Execution` covers the exact-path, Job-owned VCTIP cleanup,
+natural-drain grace, other-child wait and cap, and failed-parent behavior;
+`Quality.BuildEvidence` covers generated-header reconfiguration and unowned
+shadow headers. Both run in the normal Debug tooling selection in Windows CI.
 
 During implementation, build the affected test targets and run only the owning
 cases needed to check the current edit. Run new compiled cases on Linux and
