@@ -4,6 +4,8 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <cmath>
+#include <span>
 #include <limits>
 #include <memory>
 #include <new>
@@ -20,6 +22,7 @@ namespace JuicerAssets {
     namespace RecipeTest {
         void after_call(unsigned operation, FjStatus& status, FjFilmRecipeFailure& failure);
         void view(FjFilmDirView& view);
+        void grain(FjVisualGrainRecipe& recipe);
     } // namespace RecipeTest
 #endif
     namespace {
@@ -27,7 +30,8 @@ namespace JuicerAssets {
             Minimum,
             Acquire,
             View,
-            Bounds
+            Bounds,
+            Grain
         };
 
         [[noreturn]] void integrity(std::string_view operation) {
@@ -37,6 +41,8 @@ namespace JuicerAssets {
             throw JuicerCuda::ExecutionFailure{std::move(failure)};
         }
         const char* operation_name(Operation operation) {
+            if (operation == Operation::Grain)
+                return "Visual grain preparation";
             return operation == Operation::Minimum ? "Film density minimum preparation" : operation == Operation::Bounds ? "Film density bounds preparation"
                                                                                                                          : "Film DIR preparation";
         }
@@ -64,10 +70,13 @@ namespace JuicerAssets {
             if (status.category != FJ_STATUS_PREPARATION_FAILURE)
                 return false;
             switch (failure.reason) {
+                case FJ_FILM_RECIPE_GRAIN_CONTROLS:
+                case FJ_FILM_RECIPE_GRAIN_LAYERS:
+                    return operation == Operation::Grain && noChannel && noSample;
                 case FJ_FILM_RECIPE_MINIMUM:
                     return (bounds || operation == Operation::Minimum) && noChannel && noSample;
                 case FJ_FILM_RECIPE_IDENTITY:
-                    return (acquire || bounds) && noChannel && noSample;
+                    return (acquire || bounds || operation == Operation::Grain) && noChannel && noSample;
                 case FJ_FILM_RECIPE_BOUNDS_SPAN:
                     return bounds && failure.channel < 3 && noSample;
                 case FJ_FILM_RECIPE_MATRIX:
@@ -103,6 +112,10 @@ namespace JuicerAssets {
                 throw JuicerCuda::ExecutionFailure{std::move(error)};
             }
             diagnostic.clear();
+            if (operation == Operation::Grain) {
+                diagnostic = "MalformedRequiredProfileData phase=9A field=visual_grain";
+                return false;
+            }
             if (operation == Operation::Minimum) {
                 diagnostic = "MalformedRequiredProfileData phase=9A field=grain_contract";
                 return false;
@@ -166,6 +179,52 @@ namespace JuicerAssets {
                 integrity(operation_name(operation));
             return translate(operation, status, failure, profile, route, samples, diagnostic);
         }
+        bool valid_grain_projection(const FjVisualGrainRecipe& value, const VisualGrainControls& controls) {
+            if (value.active > 1 || value.sublayers_active > 1 || value.active != (controls.active ? 1u : 0u) ||
+                value.sublayers_active != (controls.active && controls.sublayersActive ? 1u : 0u))
+                return false;
+            const auto zero = [](float v) {
+                return std::bit_cast<std::uint32_t>(v) == 0;
+            };
+            const auto coefficients = std::array{
+                std::span<const float>{&value.particle_area_um2, 1},
+                std::span<const float>{value.particle_scale_cmy},
+                std::span<const float>{value.particle_scale_layers},
+                std::span<const float>{value.particle_density_min_cmy},
+                std::span<const float>{value.uniformity_cmy},
+                std::span<const float>{&value.correlation_sigma_px, 1},
+                std::span<const float>{&value.dye_cloud_blur_um, 1},
+                std::span<const float>{value.micro_structure},
+                std::span<const float>{&value.amplitude, 1},
+                std::span<const float>{&value.chroma_mix, 1},
+                std::span<const float>{&value.chroma_shared_weight, 1},
+                std::span<const float>{&value.chroma_independent_weight, 1},
+                std::span<const float>{&value.coarse_weight, 1},
+                std::span<const float>{&value.mid_weight, 1},
+                std::span<const float>{&value.clump_temporal_mix, 1},
+                std::span<const float>{&value.clump_morph_period_sec, 1},
+                std::span<const float>{&value.fine_weight, 1}};
+            // Check wire alternatives/representation; Rust owns derivation and identity.
+            for (const auto lane : coefficients) {
+                if (!std::all_of(lane.begin(), lane.end(), [&](float v) {
+                        return value.active ? std::isfinite(v) : zero(v);
+                    }))
+                    return false;
+            }
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                if (value.axis_finite_cmy[channel] > 1 || (!value.sublayers_active && value.axis_finite_cmy[channel] != 0))
+                    return false;
+                for (float v : value.axis_block_prefix_max_cmy[channel]) {
+                    if (!std::isfinite(v) || (!value.sublayers_active && !zero(v)))
+                        return false;
+                }
+            }
+            if (!value.active)
+                return value.sublayer_count == 0 && value.debug_view == 0 && value.layers_hash == 0 && value.hash == 0 && std::bit_cast<std::uint32_t>(value.size_mix_scale) == std::bit_cast<std::uint32_t>(1.0f);
+            return value.hash != 0 && value.sublayer_count > 0 && value.debug_view >= 0 && value.debug_view <= 6 &&
+                   value.particle_area_um2 > 0.0f && std::isfinite(value.size_mix_scale) && value.size_mix_scale >= 1.0f &&
+                   (value.sublayers_active ? value.layers_hash != 0 : value.layers_hash == 0);
+        }
         void dir_cleanup(FjStatus status) noexcept {
             if (status.category != FJ_STATUS_SUCCESS) {
                 try {
@@ -181,6 +240,80 @@ namespace JuicerAssets {
             }
         };
     } // namespace
+
+    bool prepare_visual_grain(const DevelopmentHold& development, const VisualGrainControls& controls, VisualGrainRecipe& out, std::string& diagnostic) {
+        out = VisualGrainRecipe{};
+        diagnostic.clear();
+        const FjVisualGrainParams params{
+            controls.active ? 1u : 0u,
+            controls.sublayersActive ? 1u : 0u,
+            controls.particleAreaUm2,
+            {controls.particleScaleCmy[0], controls.particleScaleCmy[1], controls.particleScaleCmy[2]},
+            {controls.particleScaleLayers[0], controls.particleScaleLayers[1], controls.particleScaleLayers[2]},
+            {controls.visualParticleDensityMinCmy[0], controls.visualParticleDensityMinCmy[1], controls.visualParticleDensityMinCmy[2]},
+            {controls.uniformityCmy[0], controls.uniformityCmy[1], controls.uniformityCmy[2]},
+            controls.correlationSigmaPx,
+            controls.dyeCloudBlurUm,
+            {controls.microStructure[0], controls.microStructure[1]},
+            controls.nSubLayers,
+            controls.amplitude,
+            controls.chromaMix,
+            controls.chromaSharedWeight,
+            controls.chromaIndependentWeight,
+            controls.coarseWeight,
+            controls.midWeight,
+            controls.sizeMixScale,
+            controls.clumpTemporalMix,
+            controls.clumpMorphPeriodSec,
+            controls.debugView};
+        FjVisualGrainRecipe prepared{};
+        FjFilmRecipeFailure failure{};
+        std::array<char, 1024> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        auto status = fj_legacy_visual_grain_prepare(development.get(), &params, &prepared, &failure, &error);
+#if defined(JUICER_FILM_RECIPE_TEST_HOOK)
+        RecipeTest::after_call(static_cast<unsigned>(Operation::Grain), status, failure);
+        RecipeTest::grain(prepared);
+#endif
+        if ((!controls.active && status.category == FJ_STATUS_PREPARATION_FAILURE) ||
+            (!controls.sublayersActive && failure.reason == FJ_FILM_RECIPE_GRAIN_LAYERS))
+            integrity("Visual grain preparation");
+        if (!admit(Operation::Grain, status, failure, error, nullptr, Spektrafilm::kDefaultScanRoute, 0, diagnostic))
+            return false;
+        if (!valid_grain_projection(prepared, controls))
+            integrity("Visual grain preparation");
+        VisualGrainRecipe result;
+        result.active = prepared.active != 0;
+        result.sublayersActive = prepared.sublayers_active != 0;
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            result.grainLayerAxisFinite[channel] = prepared.axis_finite_cmy[channel] != 0;
+            std::copy_n(prepared.axis_block_prefix_max_cmy[channel], 16, result.grainLayerAxisBlockPrefixMax[channel].begin());
+        }
+        result.particleAreaUm2 = prepared.particle_area_um2;
+        std::copy_n(prepared.particle_scale_cmy, 3, result.particleScaleCmy.begin());
+        std::copy_n(prepared.particle_scale_layers, 3, result.particleScaleLayers.begin());
+        std::copy_n(prepared.particle_density_min_cmy, 3, result.visualParticleDensityMinCmy.begin());
+        std::copy_n(prepared.uniformity_cmy, 3, result.uniformityCmy.begin());
+        result.correlationSigmaPx = prepared.correlation_sigma_px;
+        result.dyeCloudBlurUm = prepared.dye_cloud_blur_um;
+        std::copy_n(prepared.micro_structure, 2, result.microStructure.begin());
+        result.nSubLayers = prepared.sublayer_count;
+        result.amplitude = prepared.amplitude;
+        result.chromaMix = prepared.chroma_mix;
+        result.chromaSharedWeight = prepared.chroma_shared_weight;
+        result.chromaIndependentWeight = prepared.chroma_independent_weight;
+        result.coarseWeight = prepared.coarse_weight;
+        result.midWeight = prepared.mid_weight;
+        result.sizeMixScale = prepared.size_mix_scale;
+        result.clumpTemporalMix = prepared.clump_temporal_mix;
+        result.clumpMorphPeriodSec = prepared.clump_morph_period_sec;
+        result.debugView = prepared.debug_view;
+        result.fineWeight = prepared.fine_weight;
+        result.densityCurvesLayersHash = prepared.layers_hash;
+        result.hash = prepared.hash;
+        out = result;
+        return true;
+    }
 
     bool prepare_film_density_minimum(const GrainContract& requested, GrainContract& out, std::string& diagnostic) {
         const FjFilmDensityMinimum input{{requested.densityMinCmy[0], requested.densityMinCmy[1], requested.densityMinCmy[2]}};

@@ -457,6 +457,7 @@ struct SpatialDirDescriptor {
     std::uint64_t hash = 0;
 };
 
+// Captured resolved controls; mapping/default conversion transfers to S6.B/C, boundary removed S6.D.
 struct VisualGrainControls {
     bool active = false;
     bool sublayersActive = true;
@@ -481,6 +482,7 @@ struct VisualGrainControls {
     int debugView = 0;
 };
 
+// SF_TEMP_BRIDGE_VISUAL_GRAIN: copied completed Rust value; remove S4.E.
 struct VisualGrainRecipe {
     bool active = false;
     bool sublayersActive = false;

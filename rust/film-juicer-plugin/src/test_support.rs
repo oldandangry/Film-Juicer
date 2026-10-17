@@ -1760,3 +1760,33 @@ unsafe extern "C" fn fj_test_film_density_bounds_prepare(
         crate::film_recipe_bridge::bounds(development, requested, out_bounds, out_failure, error)
     }
 }
+
+/// # Safety
+/// Matching live completed Development; initialized aligned readable params and
+/// exclusive writable output/failure/diagnostic extents, all mutually disjoint.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_visual_grain_prepare(
+    development: *const crate::film_bridge::FjFilmDevelopmentOwner,
+    params: *const crate::film_recipe_bridge::FjVisualGrainParams,
+    out_recipe: *mut crate::film_recipe_bridge::FjVisualGrainRecipe,
+    out_failure: *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade shares the checked constructor/projector, never the legacy export.
+    unsafe {
+        crate::film_recipe_bridge::prepare_grain(
+            development,
+            params,
+            out_recipe,
+            out_failure,
+            error,
+        )
+    }
+}
+const _: unsafe extern "C" fn(
+    *const crate::film_bridge::FjFilmDevelopmentOwner,
+    *const crate::film_recipe_bridge::FjVisualGrainParams,
+    *mut crate::film_recipe_bridge::FjVisualGrainRecipe,
+    *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_visual_grain_prepare;

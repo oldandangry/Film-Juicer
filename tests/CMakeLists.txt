@@ -223,6 +223,12 @@ set_tests_properties(Ffi.Host.FilmRecipes PROPERTIES LABELS "host" TIMEOUT 180)
 add_test(NAME Film.Host.DirDensityProducts COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/dir-fixtures/${JUICER_FILM_DIR_FIXTURE}.json" products)
 set_tests_properties(Film.Host.DirDensityProducts PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Ffi.Host.VisualGrain COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/grain-fixtures/manifest.json" grain "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Ffi.Host.VisualGrain PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Film.Host.VisualGrainProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/grain-fixtures/manifest.json" grain-products "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Film.Host.VisualGrainProducts PROPERTIES LABELS "host" TIMEOUT 180)
 target_link_libraries(juicer_film_development_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_film_development_test_objects PRIVATE JUICER_FILM_DEVELOPMENT_TEST_HOOK=1)
 add_executable(JuicerFilmDevelopmentTests ffi/film_development_abi_c.c ffi/film_development_test.cpp ffi/spectral_allocation_probe.cpp
@@ -773,7 +779,8 @@ endif()
 add_test(NAME Ofx.Gpu.AdapterTrace
     COMMAND JuicerAdapterTraceProbe
         --trace-output
-        "${JUICER_TEST_ARTIFACT_ROOT}/ofx/adapter_trace.txt")
+        "${JUICER_TEST_ARTIFACT_ROOT}/ofx/adapter_trace.txt"
+        --grain-fixtures "${CMAKE_CURRENT_SOURCE_DIR}/film/grain-fixtures/manifest.json" "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ofx.Gpu.AdapterTrace PROPERTIES
     LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 
@@ -1227,7 +1234,8 @@ target_link_libraries(JuicerOutputColorTests PRIVATE juicer_output_encoding_orac
 set(juicer_tooling_tests Quality.Dispatcher Quality.ToolingLint Quality.Execution
     Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint
     Ctest.Host.Report Ctest.Host.Repetition Ffi.Host.RustBuild)
-set(juicer_boundary_tests Quality.RustNaming Quality.RustBoundaries)
+set(juicer_boundary_tests
+    Ffi.Host.VisualGrain Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat
     Gamut.Host.Output.FixtureFormat)

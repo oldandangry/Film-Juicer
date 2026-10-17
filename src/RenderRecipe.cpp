@@ -58,45 +58,6 @@ namespace {
         return extrema;
     }
 
-    void derive_grain_layer_axis_search_metadata(
-        const Spektrafilm::FilmDevelopRecipe& filmDevelop,
-        std::array<bool, 3>& outFinite,
-        std::array<std::array<float, 16>, 3>& outBlockPrefixMax) {
-        outFinite.fill(false);
-        outBlockPrefixMax = {};
-        if (filmDevelop.normalizedDensityCurves.size() != 256 ||
-            (filmDevelop.polarity != Spektrafilm::ProfilePolarity::Negative &&
-             filmDevelop.polarity != Spektrafilm::ProfilePolarity::Positive)) {
-            return;
-        }
-
-        const bool positiveFilm =
-            filmDevelop.polarity == Spektrafilm::ProfilePolarity::Positive;
-        for (std::size_t channel = 0; channel < outFinite.size(); ++channel) {
-            float prefixMaximum = -std::numeric_limits<float>::infinity();
-            bool finite = true;
-            for (std::size_t sample = 0;
-                 sample < filmDevelop.normalizedDensityCurves.size();
-                 ++sample) {
-                float axisValue =
-                    filmDevelop.normalizedDensityCurves[sample][channel];
-                if (positiveFilm) {
-                    axisValue = -axisValue;
-                }
-                if (!std::isfinite(axisValue)) {
-                    finite = false;
-                    break;
-                }
-                prefixMaximum = std::max(prefixMaximum, axisValue);
-                if ((sample % 16) == 15) {
-                    outBlockPrefixMax[channel][sample / 16] =
-                        prefixMaximum;
-                }
-            }
-            outFinite[channel] = finite;
-        }
-    }
-
 
     bool auto_exposure_method_index_valid(int index) {
         return index >= 0 && index <= 6;
@@ -261,70 +222,6 @@ namespace {
         return curves[lo][channel] + t * (curves[hi][channel] - curves[lo][channel]);
     }
 
-
-    bool finite_nonnegative_grain_triplet(const std::array<float, 3>& values) {
-        for (float value : values) {
-            if (!std::isfinite(value) || value < 0.0f) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    bool finite_positive_triplet(const std::array<float, 3>& values) {
-        for (float value : values) {
-            if (!std::isfinite(value) || value <= 0.0f) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    bool finite_nonnegative_pair(const std::array<float, 2>& values) {
-        for (float value : values) {
-            if (!std::isfinite(value) || value < 0.0f) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    std::uint64_t hash_visual_grain_recipe(const VisualGrainRecipe& recipe) {
-        if (!recipe.active) {
-            return 0;
-        }
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, recipe.active);
-        hash_value(hash, recipe.sublayersActive);
-        hash_value(hash, recipe.particleAreaUm2);
-        Hash::hash_bytes_update(hash, recipe.particleScaleCmy.data(), sizeof(recipe.particleScaleCmy));
-        Hash::hash_bytes_update(
-            hash,
-            recipe.particleScaleLayers.data(),
-            sizeof(recipe.particleScaleLayers));
-        Hash::hash_bytes_update(
-            hash,
-            recipe.visualParticleDensityMinCmy.data(),
-            sizeof(recipe.visualParticleDensityMinCmy));
-        Hash::hash_bytes_update(hash, recipe.uniformityCmy.data(), sizeof(recipe.uniformityCmy));
-        hash_value(hash, recipe.correlationSigmaPx);
-        hash_value(hash, recipe.dyeCloudBlurUm);
-        Hash::hash_bytes_update(hash, recipe.microStructure.data(), sizeof(recipe.microStructure));
-        hash_value(hash, recipe.nSubLayers);
-        hash_value(hash, recipe.amplitude);
-        hash_value(hash, recipe.chromaMix);
-        hash_value(hash, recipe.chromaSharedWeight);
-        hash_value(hash, recipe.chromaIndependentWeight);
-        hash_value(hash, recipe.fineWeight);
-        hash_value(hash, recipe.midWeight);
-        hash_value(hash, recipe.coarseWeight);
-        hash_value(hash, recipe.sizeMixScale);
-        hash_value(hash, recipe.clumpTemporalMix);
-        hash_value(hash, recipe.clumpMorphPeriodSec);
-        hash_value(hash, recipe.debugView);
-        hash_value(hash, recipe.densityCurvesLayersHash);
-        return hash;
-    }
 
     float normalize_effect_amount(float value) {
         return std::isfinite(value)
@@ -597,91 +494,6 @@ namespace {
         return true;
     }
 
-    bool build_visual_grain_recipe(
-        const VisualGrainControls& input,
-        const FilmDevelopRecipe& filmDevelop,
-        VisualGrainRecipe& out) {
-        out = VisualGrainRecipe{};
-        if (!input.active) {
-            out.hash = 0;
-            return true;
-        }
-        if (!std::isfinite(input.particleAreaUm2) || input.particleAreaUm2 <= 0.0f ||
-            !finite_positive_triplet(input.particleScaleCmy) ||
-            !finite_positive_triplet(input.particleScaleLayers) ||
-            !finite_nonnegative_grain_triplet(input.visualParticleDensityMinCmy) ||
-            !finite_nonnegative_grain_triplet(input.uniformityCmy) ||
-            !std::isfinite(input.correlationSigmaPx) || input.correlationSigmaPx < 0.0f ||
-            !std::isfinite(input.dyeCloudBlurUm) || input.dyeCloudBlurUm < 0.0f ||
-            !finite_nonnegative_pair(input.microStructure) ||
-            input.nSubLayers <= 0 ||
-            !std::isfinite(input.amplitude) || input.amplitude < 0.0f ||
-            !std::isfinite(input.chromaMix) ||
-            !std::isfinite(input.chromaSharedWeight) || input.chromaSharedWeight < 0.0f ||
-            !std::isfinite(input.chromaIndependentWeight) ||
-            input.chromaIndependentWeight < 0.0f ||
-            !std::isfinite(input.coarseWeight) || input.coarseWeight < 0.0f ||
-            !std::isfinite(input.midWeight) || input.midWeight < 0.0f ||
-            !std::isfinite(input.sizeMixScale) || input.sizeMixScale < 1.0f ||
-            !std::isfinite(input.clumpTemporalMix) || input.clumpTemporalMix < 0.0f ||
-            !std::isfinite(input.clumpMorphPeriodSec) || input.clumpMorphPeriodSec < 0.0f ||
-            (input.sublayersActive &&
-             filmDevelop.densityCurvesLayersHash == 0)) {
-            return false;
-        }
-
-        out.active = true;
-        out.sublayersActive = input.sublayersActive;
-        if (out.sublayersActive) {
-            derive_grain_layer_axis_search_metadata(
-                filmDevelop,
-                out.grainLayerAxisFinite,
-                out.grainLayerAxisBlockPrefixMax);
-        }
-        out.particleAreaUm2 = input.particleAreaUm2;
-        out.particleScaleCmy = input.particleScaleCmy;
-        out.particleScaleLayers = input.particleScaleLayers;
-        out.visualParticleDensityMinCmy = input.visualParticleDensityMinCmy;
-        out.uniformityCmy = input.uniformityCmy;
-        for (float& value : out.visualParticleDensityMinCmy) {
-            value = std::clamp(value, 0.0f, 1.0f);
-        }
-        for (float& value : out.uniformityCmy) {
-            value = std::clamp(value, 0.0f, 1.0f);
-        }
-        out.correlationSigmaPx = input.correlationSigmaPx;
-        out.dyeCloudBlurUm = input.dyeCloudBlurUm;
-        out.microStructure = input.microStructure;
-        out.nSubLayers = input.nSubLayers;
-        out.amplitude = input.amplitude;
-        out.chromaMix = std::clamp(input.chromaMix, 0.0f, 1.0f);
-        out.chromaSharedWeight = std::clamp(input.chromaSharedWeight, 0.0f, 1.0f);
-        out.chromaIndependentWeight =
-            std::clamp(input.chromaIndependentWeight, 0.0f, 1.0f);
-
-        out.midWeight = std::clamp(input.midWeight, 0.0f, 1.0f);
-        out.coarseWeight = std::clamp(input.coarseWeight, 0.0f, 1.0f);
-        out.fineWeight = std::max(0.0f, 1.0f - out.midWeight - out.coarseWeight);
-        const float weightSum = out.fineWeight + out.midWeight + out.coarseWeight;
-        if (!(weightSum > 0.0f) || !std::isfinite(weightSum)) {
-            return false;
-        }
-        const float inverseWeightSum = 1.0f / weightSum;
-        out.fineWeight *= inverseWeightSum;
-        out.midWeight *= inverseWeightSum;
-        out.coarseWeight *= inverseWeightSum;
-
-        out.sizeMixScale = input.sizeMixScale;
-        out.clumpTemporalMix = std::clamp(input.clumpTemporalMix, 0.0f, 0.30f);
-        out.clumpMorphPeriodSec = std::clamp(input.clumpMorphPeriodSec, 5.0f, 60.0f);
-        out.debugView = std::clamp(input.debugView, 0, 6);
-        out.densityCurvesLayersHash =
-            out.sublayersActive
-                ? filmDevelop.densityCurvesLayersHash
-                : 0;
-        out.hash = hash_visual_grain_recipe(out);
-        return out.hash != 0;
-    }
 
     bool finite_nonnegative(float value) {
         return std::isfinite(value) && value >= 0.0f;
@@ -1346,11 +1158,12 @@ namespace Spektrafilm {
 
             recipe.filmDevelop = std::move(input.filmDevelop);
             const FilmDevelopRecipe& filmDevelop = recipe.filmDevelop;
-            if (!build_visual_grain_recipe(
+            if (!JuicerAssets::prepare_visual_grain(
+                    input.developmentHold,
                     input.visualGrain,
-                    filmDevelop,
-                    recipe.visualGrain)) {
-                return fail("MalformedRequiredProfileData phase=9A field=visual_grain");
+                    recipe.visualGrain,
+                    diagnostic)) {
+                return false;
             }
             if (!build_film_juicer_effects_recipe(input, recipe.visualGrain, recipe.filmJuicerEffects)) {
                 return fail("ResourceDescriptorMismatch phase=effects_recipe field=physical_policy");

@@ -10,6 +10,8 @@ struct GrainContract;
 struct DirCouplersControls;
 struct DirCouplersRecipe;
 struct DensityBoundsRecipe;
+struct VisualGrainControls;
+struct VisualGrainRecipe;
 namespace Profiles {
     struct FilmProfile;
 }
@@ -35,6 +37,8 @@ namespace JuicerAssets {
         FjFilmDevelopmentOwner* _owner = nullptr;
     };
 
+    // SF_TEMP_BRIDGE_VISUAL_GRAIN: copy one completed fixed Rust value; remove S4.E.
+    bool prepare_visual_grain(const DevelopmentHold& development, const VisualGrainControls& controls, VisualGrainRecipe& out, std::string& diagnostic);
     bool prepare_film_density_minimum(const GrainContract& requested, GrainContract& out, std::string& diagnostic);
     bool prepare_film_dir(const DevelopmentHold& development, const DirCouplersControls& controls, const Profiles::FilmProfile& profile, Spektrafilm::ScanRoute route, std::size_t samples, DirCouplersRecipe& out, std::string& diagnostic);
     bool prepare_film_density_bounds(const DevelopmentHold& development, const GrainContract& requested, const Profiles::FilmProfile& profile, Spektrafilm::ScanRoute route, DensityBoundsRecipe& out, std::string& diagnostic);

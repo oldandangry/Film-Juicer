@@ -284,6 +284,53 @@ class CheckQualityTests(IsolatedOwnerTests):
                     with self.assertRaises(KeyError):
                         suite.setUpClass()
 
+    def test_boundary_feature_checks_keep_both_compiler_commands_isolated(self) -> None:
+        module = __import__("test_rust_boundaries")
+        probe = module.RustBoundaryTests("test_valid_profile_consumers_compile")
+        with tempfile.TemporaryDirectory() as directory:
+            probe.target_dir = Path(directory)
+            probe.target = "x86_64-unknown-linux-gnu"
+            with patch.object(probe, "command", return_value=subprocess.CompletedProcess([], 0, "", "")) as command:
+                self.assertEqual(probe.check_features("film-juicer-plugin", True), [(0, []), (0, [])])
+            arguments = [call.args[0] for call in command.call_args_list]
+            self.assertEqual(len(arguments), 2)
+            outputs = {}
+            for args in arguments:
+                self.assertIn("--all-targets", args)
+                self.assertIn("--locked", args)
+                self.assertIn("--offline", args)
+                self.assertIn("--release", args)
+                self.assertEqual(args[args.index("--target") + 1], probe.target)
+                output = Path(args[args.index("--target-dir") + 1])
+                self.assertEqual(output.parent, probe.target_dir)
+                outputs[output.name] = args
+            self.assertEqual(set(outputs), {"default", "test-support"})
+            self.assertNotIn("--features", outputs["default"])
+            self.assertEqual(outputs["test-support"][-2:], ["--features", "test-support"])
+
+    def test_boundary_feature_failure_waits_for_the_other_command(self) -> None:
+        module = __import__("test_rust_boundaries")
+        probe = module.RustBoundaryTests("test_valid_profile_consumers_compile")
+        started = threading.Barrier(2, timeout=5)
+        failed = threading.Event()
+        finished = threading.Event()
+
+        def check(package, release, support):
+            self.assertEqual((package, release), ("film-juicer-plugin", False))
+            started.wait()
+            if not support:
+                failed.set()
+                raise subprocess.TimeoutExpired("compiler", 60)
+            self.assertTrue(failed.wait(timeout=5))
+            finished.set()
+            return 0, []
+
+        with patch.object(probe, "check", side_effect=check) as command:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                probe.check_features("film-juicer-plugin", False)
+        self.assertTrue(finished.is_set())
+        self.assertEqual(sorted(call.args[2] for call in command.call_args_list), [False, True])
+
     def test_cuda_header_selects_real_c_and_cpp_consumers(self) -> None:
         root = SCRIPT_PATH.parent.parent
         policy = check_quality.load_policy(root)

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -44,16 +46,19 @@ class RustBoundaryTests(unittest.TestCase):
         shutil.copytree(ROOT / "rust", cls.workspace / "rust")
         cls.environment = quality.cargo_environment()
         cls.invocation = 0
+        cls.invocation_lock = threading.Lock()
 
     def command(self, arguments: list[str], label: str) -> subprocess.CompletedProcess:
-        type(self).invocation += 1
+        with self.invocation_lock:
+            type(self).invocation += 1
+            invocation = self.invocation
         command = [self.cargo, *arguments]
         quality.check_probe_configuration(ROOT, self.workspace)
         result = subprocess.run(
             command, cwd=self.workspace, env=self.environment,
             capture_output=True, text=True, encoding="utf-8", timeout=60, check=False,
         )
-        log = self.artifacts / f"{self.invocation:02d}-{self._testMethodName}-{label}.log"
+        log = self.artifacts / f"{invocation:02d}-{self._testMethodName}-{label}.log"
         log.write_text(
             subprocess.list2cmdline(command) + "\n" + result.stdout + result.stderr,
             encoding="utf-8",
@@ -80,7 +85,8 @@ class RustBoundaryTests(unittest.TestCase):
     def check(self, package: str, release: bool, test_support: bool = False) -> tuple[int, list[dict]]:
         arguments = [
             "check", "--locked", "--offline", "--package", package, "--all-targets",
-            "--target", self.target, "--target-dir", str(self.target_dir),
+            "--target", self.target, "--target-dir",
+            str(self.target_dir / ("test-support" if test_support else "default")),
             "--message-format=json",
         ]
         if release:
@@ -95,6 +101,17 @@ class RustBoundaryTests(unittest.TestCase):
             if (message := json.loads(line)).get("reason") == "compiler-message"
         ]
         return result.returncode, diagnostics
+
+    def check_features(self, package: str, release: bool) -> list[tuple[int, list[dict]]]:
+        # Both commands read one fixed fixture, with separate Cargo output owners.
+        # Join both before assertions or cleanup, including when either command fails.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(self.check, package, release, support) for support in (False, True)]
+            errors = [future.exception() for future in futures]
+            for error in errors:
+                if error is not None:
+                    raise error
+            return [future.result() for future in futures]
 
     def assert_rejected(self, status: int, diagnostics: list[dict], expected: dict[str, tuple[str, ...]]) -> None:
         self.assertNotEqual(status, 0, "prohibited consumer compiled successfully")
@@ -125,9 +142,8 @@ class RustBoundaryTests(unittest.TestCase):
     def test_valid_profile_consumers_compile(self) -> None:
         self.attach("film-juicer-plugin/src/lib.rs", "accepted")
         for release in self.profiles:
-            for test_support in (False, True):
-                with self.subTest(release=release, test_support=test_support):
-                    status, diagnostics = self.check("film-juicer-plugin", release, test_support)
+            for support, (status, diagnostics) in zip((False, True), self.check_features("film-juicer-plugin", release), strict=True):
+                with self.subTest(release=release, test_support=support):
                     self.assertEqual(status, 0, diagnostics)
 
     def test_profile_views_cannot_outlive_their_owners(self) -> None:
@@ -151,8 +167,7 @@ class RustBoundaryTests(unittest.TestCase):
             self.attach("film-juicer-plugin/src/lib.rs", fixture)
             try:
                 for release in self.profiles:
-                    for support in (False, True):
-                        status, diagnostics = self.check("film-juicer-plugin", release, support)
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
                         if expected is None:
                             self.assertEqual(status, 0, diagnostics)
                         else:
@@ -171,8 +186,7 @@ class RustBoundaryTests(unittest.TestCase):
             self.attach("film-juicer-plugin/src/lib.rs", fixture)
             try:
                 for release in self.profiles:
-                    for support in (False, True):
-                        status, diagnostics = self.check("film-juicer-plugin", release, support)
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
                         if expected is None:
                             self.assertEqual(status, 0, diagnostics)
                         else:
@@ -192,8 +206,7 @@ class RustBoundaryTests(unittest.TestCase):
             self.attach("film-juicer-plugin/src/lib.rs", fixture)
             try:
                 for release in self.profiles:
-                    for support in (False, True):
-                        status, diagnostics = self.check("film-juicer-plugin", release, support)
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
                         if expected is None:
                             self.assertEqual(status, 0, diagnostics)
                         else:
@@ -216,6 +229,26 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_film_grain_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("film_grain_complete", None),
+            ("film_grain_default", {"E0599": ("grain::Recipe::default()",)}),
+            ("film_grain_private", {"E0616": ("recipe.particle_density_min_cmy", "recipe.axis_block_prefix_max_cmy")}),
+            ("film_grain_construction", {"E0451": ("grain::Recipe { ..recipe }",)}),
+            ("film_grain_readonly", {"E0594": ("recipe.particle_scale_cmy()[0] = 0.0", "recipe.axis_block_prefix_max_cmy()[0][0] = 0.0")}),
+            ("film_grain_owned", None),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_film_dir_density_is_complete_private_and_readonly(self) -> None:
         for fixture, expected in (
             ("film_dir_complete", None),
@@ -227,8 +260,7 @@ class RustBoundaryTests(unittest.TestCase):
             self.attach("film-juicer-plugin/src/lib.rs", fixture)
             try:
                 for release in self.profiles:
-                    for support in (False, True):
-                        status, diagnostics = self.check("film-juicer-plugin", release, support)
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
                         if expected is None:
                             self.assertEqual(status, 0, diagnostics)
                         else:
@@ -315,18 +347,21 @@ class RustBoundaryTests(unittest.TestCase):
         def definition(name: str, source: str) -> bool:
             return re.search(r"\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", source) is not None
         for name in ("build_grain_contract", "build_dir_couplers_recipe", "evaluate_dir_langmuir",
-                     "hash_dir_couplers_recipe", "build_film_density_bounds", "hash_nan_preserving_floats"):
+                     "hash_dir_couplers_recipe", "build_film_density_bounds", "hash_nan_preserving_floats",
+                     "build_visual_grain_recipe", "hash_visual_grain_recipe",
+                     "derive_grain_layer_axis_search_metadata", "finite_nonnegative_grain_triplet",
+                     "finite_positive_triplet", "finite_nonnegative_pair"):
             self.assertFalse(definition(name, recipe), name)
             self.assertTrue(definition(name, "bool " + name + "(const Recipe& recipe) { return true; }"))
             self.assertFalse(definition(name, "bool " + name + "(const Recipe& recipe);"))
-        for name in ("finite_nonnegative_grain_triplet", "hash_density_bounds_recipe", "build_print_density_bounds"):
+        for name in ("hash_density_bounds_recipe", "build_print_density_bounds"):
             self.assertTrue(definition(name, recipe), name)
             self.assertGreaterEqual(len(re.findall(r"\b" + name + r"\s*\(", recipe)), 2)
         start = recipe.index("        bool build_film_foundation(")
         end = recipe.index("    } // namespace", start)
         foundation = recipe[start:end]
         stages = [foundation.index(name) for name in ("build_spatial_optics_recipe(",
-                  "prepare_film_density_minimum(", "build_visual_grain_recipe(",
+                  "prepare_film_density_minimum(", "prepare_visual_grain(",
                   "build_film_juicer_effects_recipe(", "prepare_film_dir(", "prepare_film_density_bounds(")]
         self.assertEqual(stages, sorted(stages))
         self.assertIn("input.grainContract, recipe.grainContract", foundation)
@@ -391,8 +426,7 @@ class RustBoundaryTests(unittest.TestCase):
             self.attach("film-juicer-plugin/src/lib.rs", fixture)
             try:
                 for release in self.profiles:
-                    for test_support in (False, True):
-                        status, diagnostics = self.check("film-juicer-plugin", release, test_support)
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
                         self.assert_rejected(status, diagnostics, expected)
             finally:
                 self.doCleanups()
@@ -426,8 +460,7 @@ class RustBoundaryTests(unittest.TestCase):
             self.attach("film-juicer-plugin/src/lib.rs", fixture)
             try:
                 for release in self.profiles:
-                    for test_support in (False, True):
-                        status, diagnostics = self.check("film-juicer-plugin", release, test_support)
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
                         self.assert_rejected(status, diagnostics, expected)
             finally:
                 self.doCleanups()
@@ -449,15 +482,13 @@ class RustBoundaryTests(unittest.TestCase):
             self.attach("film-juicer-plugin/src/lib.rs", fixture)
             try:
                 for release in self.profiles:
-                    for test_support in (False, True):
-                        status, diagnostics = self.check("film-juicer-plugin", release, test_support)
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
                         self.assert_rejected(status, diagnostics, expected)
             finally:
                 self.doCleanups()
         self.attach("film-juicer-plugin/src/lib.rs", "mallett_complete")
         for release in self.profiles:
-            for test_support in (False, True):
-                status, diagnostics = self.check("film-juicer-plugin", release, test_support)
+            for status, diagnostics in self.check_features("film-juicer-plugin", release):
                 self.assertEqual(status, 0, diagnostics)
 
     def test_complete_tc_lut_privacy_and_borrowing(self) -> None:

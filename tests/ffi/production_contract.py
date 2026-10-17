@@ -86,6 +86,7 @@ def execute(arguments):
         b"film development view fixture panic",
         b"film development release fixture panic",
         b"film development retain fixture panic",
+        b"visual grain fixture panic",
         b"film DIR acquire fixture panic",
         b"film DIR view fixture panic",
         b"film DIR release fixture panic",
@@ -108,6 +109,21 @@ def execute(arguments):
         b"TC production boundary fault",
         b"TC fixture-only fault",
     ]
+    consumed_paths = [root / "native/juicer_legacy_api.h", fixtures / "production-film.c.in",
+                      fixtures / "production-output-color.c.in", Path(__file__),
+                      out / "production-film-expected.h"]
+    for directory in [root / "Resources", root / "tests/film/fixtures",
+                      root / "tests/film/input-fixtures", root / "tests/film/dir-fixtures"]:
+        consumed_paths.extend(path for path in directory.rglob("*") if path.is_file())
+    grain_directory = root / "tests/film/grain-fixtures"
+    grain_manifest = grain_directory / "manifest.json"
+    grain_payload = grain_directory / json.loads(grain_manifest.read_text())["presets"][arguments.preset]["values"]
+    consumed_paths.extend([grain_manifest, grain_payload])
+    consumed = {str(path): digest(path) for path in sorted(set(consumed_paths))}
+
+    def check_consumed():
+        assert {path: digest(Path(path)) for path in consumed} == consumed, "production input changed"
+
     scanned = []
 
     def scan(path, name, tool, flags):
@@ -138,6 +154,7 @@ def execute(arguments):
         "fj_legacy_film_dir_view",
         "fj_legacy_film_dir_release",
         "fj_legacy_film_density_bounds_prepare",
+        "fj_legacy_visual_grain_prepare",
         "fj_legacy_output_color",
         "fj_legacy_film_profile_acquire",
         "fj_legacy_print_profile_acquire",
@@ -164,6 +181,8 @@ def execute(arguments):
         ("film", fixtures / "production-film.c.in"),
         ("accepted-output-color", fixtures / "production-output-color.c.in"),
     ]
+    probe_records = []
+    grain_results = []
     for name, source in probes:
         executable = out / (name + suffix)
         target_source = out / (name + ".c")
@@ -216,12 +235,43 @@ def execute(arguments):
                 "-o",
                 str(executable),
             ]
+        check_consumed()
         run(name + "-compile", command, 300)
-        run(
+        linked = digest(executable)
+        assert digest(archive) == next(row["sha256"] for row in scanned if row["file"] == str(archive))
+        check_consumed()
+        before = digest(executable)
+        assert before == linked
+        output = run(
             name + "-values",
             [str(executable), *([str(root / "Resources"), str(root / "tests/film/fixtures/synthetic/duplicates")] if name == "film" else [])],
             120,
         )
+        after = digest(executable)
+        assert after == before
+        check_consumed()
+        probe_records.append({"name": name, "executable": str(executable),
+                              "linked_sha256": linked, "before_run_sha256": before,
+                              "after_run_sha256": after, "source": str(source),
+                              "source_sha256": digest(source), "archive": str(archive),
+                              "archive_sha256": digest(archive)})
+        if name == "film":
+            pattern = r"^GRAIN_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) channel=(\d+) sample=(\d+) fields=pass$"
+            expected = [("grain-active-layers", 0, 0), ("grain-inactive", 0, 0),
+                        ("grain-raw-boolean", 2, 1), ("grain-raw-owner", 2, 1),
+                        ("grain-controls-area", 3, 17), ("grain-missing-layers", 3, 18)]
+            lines = [line for line in output.splitlines() if line.startswith("GRAIN_CASE")]
+            assert len(lines) == len(expected), lines
+            for line, (case, category, reason) in zip(lines, expected):
+                match = re.fullmatch(pattern, line)
+                assert match is not None, line
+                actual = [int(value) for value in match.groups()[1:]]
+                assert match[1] == case and actual == [category, 0, 0, reason, 3, 2**64 - 1], line
+                grain_results.append({"case": case, "category": actual[0], "api": actual[1],
+                                      "native_code": actual[2], "reason": actual[3],
+                                      "channel": actual[4], "sample": actual[5], "fields": "pass"})
+    for artifact in scanned:
+        assert digest(Path(artifact["file"])) == artifact["sha256"], artifact
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     if windows:
         cuda = Path(os.environ["CUDA_PATH_V13_2"])
@@ -235,6 +285,9 @@ def execute(arguments):
     loaded.OfxGetPlugin.argtypes = [ctypes.c_int]
     loaded.OfxGetPlugin.restype = ctypes.c_void_p
     assert loaded.OfxGetNumberOfPlugins() == 1 and loaded.OfxGetPlugin(0)
+    check_consumed()
+    for artifact in scanned:
+        assert digest(Path(artifact["file"])) == artifact["sha256"], artifact
     (out / "production.json").write_text(
         json.dumps(
             {
@@ -242,6 +295,15 @@ def execute(arguments):
                 "build_testing": "OFF",
                 "test_support": "OFF",
                 "scanned": scanned,
+                "consumed_inputs": consumed,
+                "grain_fixture": {"manifest": str(grain_manifest), "payload": str(grain_payload),
+                                  "logical_preset": arguments.preset},
+                "probes": probe_records,
+                "grain_results": grain_results,
+                "commands": {"file": str(out / "commands.json"), "sha256": digest(out / "commands.json")},
+                "command_outputs": {str(out / (row["name"] + suffix)): digest(out / (row["name"] + suffix))
+                                    for row in commands for suffix in [".stdout", ".stderr"]},
+                "loaded_module": {"file": str(module), "sha256": digest(module)},
                 "exports": sorted(names),
                 "hidden_device_load": True,
                 "limitation": "CUDA_VISIBLE_DEVICES=-1 checks hidden discovery; an absent installed driver is not established.",
@@ -339,6 +401,29 @@ def expected_film_header(out):
                  + ",".join("UINT64_C(" + str(row["bounds"]["hash"]) + ")" for row in rows) + "};")
     with (out / "production-film-expected.h").open("a") as stream:
         stream.write("\n".join(extra) + "\n")
+
+    grain_directory = root / "tests/film/grain-fixtures"
+    grain_manifest = json.loads((grain_directory / "manifest.json").read_text())
+    grain_payload = grain_directory / grain_manifest["presets"][arguments.preset]["values"]
+    assert digest(grain_payload) == grain_manifest["payload_sha256"][grain_payload.name]
+    grain_document = json.loads(grain_payload.read_text())
+    selected = [row for row in grain_document["products"]
+                if row["key"] == "kodak_portra_400" and row["route"] == 0
+                and row["gamma"] == [1065353216] and row["controls"]["active"]
+                and row["controls"]["sublayers_active"]]
+    assert len(selected) == 1
+    grain = selected[0]
+    # Constants come solely from the independent native capture; no grain producer runs here.
+    with (out / "production-film-expected.h").open("a") as stream:
+        for prefix, record in [("grain_params", grain["controls"]), ("grain_recipe", grain["grain"])]:
+            for name, value in record.items():
+                if name in {"hash", "layers_hash"}:
+                    stream.write("#define " + prefix.upper() + "_" + name.upper() + " UINT64_C(" + str(value) + ")\n")
+                elif isinstance(value, list):
+                    stream.write("static const uint32_t " + prefix + "_" + name + "[] = {"
+                                 + ",".join(str(int(word)) + "U" for word in flatten(value)) + "};\n")
+                else:
+                    stream.write("#define " + prefix.upper() + "_" + name.upper() + " " + str(int(value)) + "\n")
 
 
 if __name__ == "__main__":

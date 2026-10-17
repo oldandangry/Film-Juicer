@@ -623,6 +623,8 @@ FjStatus fj_legacy_film_development_release(FjFilmDevelopmentOwner* development,
 #define FJ_FILM_RECIPE_PANIC UINT32_C(14)
 #define FJ_FILM_RECIPE_INTEGRITY UINT32_C(15)
 #define FJ_FILM_RECIPE_LOG_EXPOSURE UINT32_C(16)
+#define FJ_FILM_RECIPE_GRAIN_CONTROLS UINT32_C(17)
+#define FJ_FILM_RECIPE_GRAIN_LAYERS UINT32_C(18)
 
 typedef struct FjFilmRecipeFailure {
     uint32_t reason;
@@ -682,6 +684,72 @@ typedef struct FjFilmDensityBounds {
     uint64_t hash;
 } FjFilmDensityBounds;
 
+/* SF_TEMP_BRIDGE_VISUAL_GRAIN: fixed completed grain projection; remove S4.E.
+ * The matching live Development is borrowed only through return, without a hold.
+ * Initialized aligned readable params and exclusive writable result/failure and
+ * optional diagnostics are live and mutually disjoint from every input/owner.
+ * Booleans are exactly 0/1. Extent checks do not prove pointer/owner provenance.
+ * Failure clears every admitted result field to zero; inactive success has scale 1.
+ */
+typedef struct FjVisualGrainParams {
+    uint32_t active;
+    uint32_t sublayers_active;
+    float particle_area_um2;
+    float particle_scale_cmy[3];
+    float particle_scale_layers[3];
+    float particle_density_min_cmy[3];
+    float uniformity_cmy[3];
+    float correlation_sigma_px;
+    float dye_cloud_blur_um;
+    float micro_structure[2];
+    int32_t sublayer_count;
+    float amplitude;
+    float chroma_mix;
+    float chroma_shared_weight;
+    float chroma_independent_weight;
+    float coarse_weight;
+    float mid_weight;
+    float size_mix_scale;
+    float clump_temporal_mix;
+    float clump_morph_period_sec;
+    int32_t debug_view;
+} FjVisualGrainParams;
+
+typedef struct FjVisualGrainRecipe {
+    uint32_t active;
+    uint32_t sublayers_active;
+    uint32_t axis_finite_cmy[3];
+    float axis_block_prefix_max_cmy[3][16];
+    float particle_area_um2;
+    float particle_scale_cmy[3];
+    float particle_scale_layers[3];
+    float particle_density_min_cmy[3];
+    float uniformity_cmy[3];
+    float correlation_sigma_px;
+    float dye_cloud_blur_um;
+    float micro_structure[2];
+    int32_t sublayer_count;
+    float amplitude;
+    float chroma_mix;
+    float chroma_shared_weight;
+    float chroma_independent_weight;
+    float fine_weight;
+    float mid_weight;
+    float coarse_weight;
+    float size_mix_scale;
+    float clump_temporal_mix;
+    float clump_morph_period_sec;
+    int32_t debug_view;
+    uint64_t layers_hash;
+    uint64_t hash;
+} FjVisualGrainRecipe;
+
+FjStatus fj_legacy_visual_grain_prepare(
+    const FjFilmDevelopmentOwner* development,
+    const FjVisualGrainParams* params,
+    FjVisualGrainRecipe* out_recipe,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
 FjStatus fj_legacy_film_development_retain(
     const FjFilmDevelopmentOwner* development,
     FjFilmDevelopmentOwner** out_development,

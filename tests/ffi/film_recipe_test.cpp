@@ -1,5 +1,8 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cmath>
+#include <thread>
 #include <bit>
 #include <cstdint>
 #include <cstdio>
@@ -263,7 +266,24 @@ namespace {
     }
 } // namespace
 #include "film_recipe_native_test.inc"
+#include "visual_grain_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "grain" || std::string_view(argv[3]) == "grain-products")) {
+        const auto manifest = read(argv[2]);
+        const std::filesystem::path directory = std::filesystem::path(argv[2]).parent_path();
+        const auto selected = manifest.at("presets").at(argv[4]);
+        const auto captured = read(directory / selected.at("values").get<std::string>());
+        if (std::string_view(argv[3]) == "grain-products")
+            grain_products(argv[1], captured);
+        else {
+            layouts();
+            grain_values(argv[1], captured, read(directory / selected.at("synthetic").get<std::string>()), directory);
+            grain_failures(argv[1], captured);
+            grain_native_bridge(argv[1], captured, read(directory / selected.at("synthetic").get<std::string>()), directory);
+        }
+        std::puts("PASS visual grain complete value/ABI/facade/failure/lifetime cohort");
+        return 0;
+    }
     require(argc == 3 || (argc == 4 && std::string_view(argv[3]) == "products"), "resource root and capture required");
     const auto captured = read(argv[2]);
     if (argc == 4)

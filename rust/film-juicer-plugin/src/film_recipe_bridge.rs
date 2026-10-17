@@ -3,7 +3,7 @@
 use std::fmt::{self, Write};
 use std::mem::{align_of, size_of};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use film_juicer_core::film::{Development, density, dir};
+use film_juicer_core::film::{Development, density, dir, grain};
 use film_juicer_core::profile::Polarity;
 use film_juicer_core::route::ScanRoute;
 use crate::film_bridge::FjFilmDevelopmentOwner;
@@ -52,6 +52,9 @@ pub(crate) const FJ_FILM_RECIPE_PANIC: u32 = 14;
 pub(crate) const FJ_FILM_RECIPE_INTEGRITY: u32 = 15;
 
 pub(crate) const FJ_FILM_RECIPE_LOG_EXPOSURE: u32 = 16;
+
+pub(crate) const FJ_FILM_RECIPE_GRAIN_CONTROLS: u32 = 17;
+pub(crate) const FJ_FILM_RECIPE_GRAIN_LAYERS: u32 = 18;
 
 #[repr(C)]
 pub(crate) struct FjFilmRecipeFailure {
@@ -118,6 +121,62 @@ pub(crate) struct FjFilmDensityBounds {
 #[repr(C)]
 pub(crate) struct FjFilmDirOwner {
     _opaque: [u8; 0],
+}
+
+// SF_TEMP_BRIDGE_VISUAL_GRAIN: fixed completed grain transport; remove S4.E.
+#[repr(C)]
+pub(crate) struct FjVisualGrainParams {
+    pub(crate) active: u32,
+    pub(crate) sublayers_active: u32,
+    pub(crate) particle_area_um2: f32,
+    pub(crate) particle_scale_cmy: [f32; 3],
+    pub(crate) particle_scale_layers: [f32; 3],
+    pub(crate) particle_density_min_cmy: [f32; 3],
+    pub(crate) uniformity_cmy: [f32; 3],
+    pub(crate) correlation_sigma_px: f32,
+    pub(crate) dye_cloud_blur_um: f32,
+    pub(crate) micro_structure: [f32; 2],
+    pub(crate) sublayer_count: i32,
+    pub(crate) amplitude: f32,
+    pub(crate) chroma_mix: f32,
+    pub(crate) chroma_shared_weight: f32,
+    pub(crate) chroma_independent_weight: f32,
+    pub(crate) coarse_weight: f32,
+    pub(crate) mid_weight: f32,
+    pub(crate) size_mix_scale: f32,
+    pub(crate) clump_temporal_mix: f32,
+    pub(crate) clump_morph_period_sec: f32,
+    pub(crate) debug_view: i32,
+}
+
+#[repr(C)]
+pub(crate) struct FjVisualGrainRecipe {
+    pub(crate) active: u32,
+    pub(crate) sublayers_active: u32,
+    pub(crate) axis_finite_cmy: [u32; 3],
+    pub(crate) axis_block_prefix_max_cmy: [[f32; 16]; 3],
+    pub(crate) particle_area_um2: f32,
+    pub(crate) particle_scale_cmy: [f32; 3],
+    pub(crate) particle_scale_layers: [f32; 3],
+    pub(crate) particle_density_min_cmy: [f32; 3],
+    pub(crate) uniformity_cmy: [f32; 3],
+    pub(crate) correlation_sigma_px: f32,
+    pub(crate) dye_cloud_blur_um: f32,
+    pub(crate) micro_structure: [f32; 2],
+    pub(crate) sublayer_count: i32,
+    pub(crate) amplitude: f32,
+    pub(crate) chroma_mix: f32,
+    pub(crate) chroma_shared_weight: f32,
+    pub(crate) chroma_independent_weight: f32,
+    pub(crate) fine_weight: f32,
+    pub(crate) mid_weight: f32,
+    pub(crate) coarse_weight: f32,
+    pub(crate) size_mix_scale: f32,
+    pub(crate) clump_temporal_mix: f32,
+    pub(crate) clump_morph_period_sec: f32,
+    pub(crate) debug_view: i32,
+    pub(crate) layers_hash: u64,
+    pub(crate) hash: u64,
 }
 
 fn status(category: u32) -> FjStatus {
@@ -288,6 +347,16 @@ impl Failure {
             },
         }
     }
+    fn grain(error: grain::Error) -> Self {
+        Self::new(
+            FJ_STATUS_PREPARATION_FAILURE,
+            match error {
+                grain::Error::Controls => FJ_FILM_RECIPE_GRAIN_CONTROLS,
+                grain::Error::MissingLayers => FJ_FILM_RECIPE_GRAIN_LAYERS,
+                grain::Error::ZeroIdentity => FJ_FILM_RECIPE_IDENTITY,
+            },
+        )
+    }
     fn density(error: density::Error) -> Self {
         let mut failure = Self::new(
             FJ_STATUS_PREPARATION_FAILURE,
@@ -323,7 +392,11 @@ unsafe fn execute<T>(
                 out.write_bytes(0, 1);
             }
             if valid_failure {
-                failure.write(Failure::raw().record);
+                failure.write(FjFilmRecipeFailure {
+                    reason: FJ_FILM_RECIPE_REASON_NONE,
+                    channel: 3,
+                    sample: u64::MAX,
+                });
             }
         }
         // SAFETY: Same exclusive diagnostic contract, admitted before semantic input.
@@ -384,6 +457,135 @@ unsafe fn execute<T>(
         status(FJ_STATUS_INTERNAL_FAILURE)
     })
 }
+
+impl FjVisualGrainParams {
+    fn params(&self) -> Result<grain::Params, Failure> {
+        if self.active > 1 || self.sublayers_active > 1 {
+            return Err(Failure::raw());
+        }
+        Ok(grain::Params {
+            active: self.active != 0,
+            sublayers_active: self.sublayers_active != 0,
+            particle_area_um2: self.particle_area_um2,
+            particle_scale_cmy: self.particle_scale_cmy,
+            particle_scale_layers: self.particle_scale_layers,
+            particle_density_min_cmy: self.particle_density_min_cmy,
+            uniformity_cmy: self.uniformity_cmy,
+            correlation_sigma_px: self.correlation_sigma_px,
+            dye_cloud_blur_um: self.dye_cloud_blur_um,
+            micro_structure: self.micro_structure,
+            sublayer_count: self.sublayer_count,
+            amplitude: self.amplitude,
+            chroma_mix: self.chroma_mix,
+            chroma_shared_weight: self.chroma_shared_weight,
+            chroma_independent_weight: self.chroma_independent_weight,
+            coarse_weight: self.coarse_weight,
+            mid_weight: self.mid_weight,
+            size_mix_scale: self.size_mix_scale,
+            clump_temporal_mix: self.clump_temporal_mix,
+            clump_morph_period_sec: self.clump_morph_period_sec,
+            debug_view: self.debug_view,
+        })
+    }
+}
+impl FjVisualGrainRecipe {
+    fn new(recipe: &grain::Recipe) -> Self {
+        Self {
+            active: u32::from(recipe.active()),
+            sublayers_active: u32::from(recipe.sublayers_active()),
+            axis_finite_cmy: (*recipe.axis_finite_cmy()).map(u32::from),
+            axis_block_prefix_max_cmy: *recipe.axis_block_prefix_max_cmy(),
+            particle_area_um2: recipe.particle_area_um2(),
+            particle_scale_cmy: *recipe.particle_scale_cmy(),
+            particle_scale_layers: *recipe.particle_scale_layers(),
+            particle_density_min_cmy: *recipe.particle_density_min_cmy(),
+            uniformity_cmy: *recipe.uniformity_cmy(),
+            correlation_sigma_px: recipe.correlation_sigma_px(),
+            dye_cloud_blur_um: recipe.dye_cloud_blur_um(),
+            micro_structure: *recipe.micro_structure(),
+            sublayer_count: recipe.sublayer_count(),
+            amplitude: recipe.amplitude(),
+            chroma_mix: recipe.chroma_mix(),
+            chroma_shared_weight: recipe.chroma_shared_weight(),
+            chroma_independent_weight: recipe.chroma_independent_weight(),
+            fine_weight: recipe.fine_weight(),
+            mid_weight: recipe.mid_weight(),
+            coarse_weight: recipe.coarse_weight(),
+            size_mix_scale: recipe.size_mix_scale(),
+            clump_temporal_mix: recipe.clump_temporal_mix(),
+            clump_morph_period_sec: recipe.clump_morph_period_sec(),
+            debug_view: recipe.debug_view(),
+            layers_hash: recipe.layers_hash(),
+            hash: recipe.hash(),
+        }
+    }
+}
+
+/// # Safety
+/// One matching immutable live Development hold, borrowed only through return.
+/// Initialized aligned readable params and exclusive writable outputs/diagnostics
+/// have checked extents, are disjoint, and exclude concurrent owner release.
+pub(crate) unsafe fn prepare_grain(
+    development: *const FjFilmDevelopmentOwner,
+    params: *const FjVisualGrainParams,
+    out: *mut FjVisualGrainRecipe,
+    failure: *mut FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // This const-initialized Cell has no destructor; consume the test-only fault
+    // once at entry, including calls rejected during result/diagnostic admission.
+    #[cfg(feature = "test-support")]
+    let fault = faults::take(7);
+    // SAFETY: execute admits each result independently before any input borrow.
+    unsafe {
+        execute(out, failure, error, || {
+            let development = development.cast::<Development>();
+            if !valid_extent(development, 1) || !valid_extent(params, 1) {
+                return Err(Failure::raw());
+            }
+            let params = (*params).params()?;
+            #[cfg(feature = "test-support")]
+            if fault == 1 {
+                panic!("visual grain fixture panic");
+            }
+            #[cfg(feature = "test-support")]
+            if fault == 2 {
+                grain::test_support::zero_next_identity();
+            }
+            let recipe = grain::Recipe::new(&*development, params).map_err(Failure::grain)?;
+            Ok(FjVisualGrainRecipe::new(&recipe))
+        })
+    }
+}
+
+/// # Safety
+/// Matching live Development and initialized aligned disjoint call-local records.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_visual_grain_prepare(
+    development: *const FjFilmDevelopmentOwner,
+    params: *const FjVisualGrainParams,
+    out_recipe: *mut FjVisualGrainRecipe,
+    out_failure: *mut FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Forward the identical synchronous raw contract without retaining a borrow.
+    unsafe { prepare_grain(development, params, out_recipe, out_failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const FjFilmDevelopmentOwner,
+    *const FjVisualGrainParams,
+    *mut FjVisualGrainRecipe,
+    *mut FjFilmRecipeFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_legacy_visual_grain_prepare;
+const _: () =
+    assert!(size_of::<FjVisualGrainParams>() == 120 && align_of::<FjVisualGrainParams>() == 4);
+const _: () = assert!(
+    size_of::<FjVisualGrainRecipe>() == 344
+        && align_of::<FjVisualGrainRecipe>() == 8
+        && std::mem::offset_of!(FjVisualGrainRecipe, layers_hash) == 328
+        && std::mem::offset_of!(FjVisualGrainRecipe, hash) == 336
+);
 
 impl FjFilmDirParams {
     fn params(&self) -> Result<dir::Params, Failure> {
@@ -637,6 +839,10 @@ extern "C" fn fj_test_film_recipe_fault(stage: u32, fault: u32) -> FjStatus {
         dir::test_support::reject_next(fault);
         return status(FJ_STATUS_SUCCESS);
     }
+    if stage == 7 && fault <= 2 {
+        faults::NEXT.set((stage, fault));
+        return status(FJ_STATUS_SUCCESS);
+    }
     if stage == 6 && fault == 1 {
         density::test_support::zero_next_identity();
         return status(FJ_STATUS_SUCCESS);
@@ -819,6 +1025,72 @@ unsafe extern "C" fn fj_test_film_recipe_abi_facts(count: *mut usize) -> *const 
         FJ_FILM_RECIPE_PANIC as usize,
         FJ_FILM_RECIPE_INTEGRITY as usize,
         FJ_FILM_RECIPE_LOG_EXPOSURE as usize,
+        size_of::<FjVisualGrainParams>(),
+        align_of::<FjVisualGrainParams>(),
+        std::mem::offset_of!(FjVisualGrainParams, active),
+        std::mem::offset_of!(FjVisualGrainParams, sublayers_active),
+        std::mem::offset_of!(FjVisualGrainParams, particle_area_um2),
+        std::mem::offset_of!(FjVisualGrainParams, particle_scale_cmy),
+        size_of::<[f32; 3]>() / size_of::<f32>(),
+        std::mem::offset_of!(FjVisualGrainParams, particle_scale_layers),
+        size_of::<[f32; 3]>() / size_of::<f32>(),
+        std::mem::offset_of!(FjVisualGrainParams, particle_density_min_cmy),
+        size_of::<[f32; 3]>() / size_of::<f32>(),
+        std::mem::offset_of!(FjVisualGrainParams, uniformity_cmy),
+        size_of::<[f32; 3]>() / size_of::<f32>(),
+        std::mem::offset_of!(FjVisualGrainParams, correlation_sigma_px),
+        std::mem::offset_of!(FjVisualGrainParams, dye_cloud_blur_um),
+        std::mem::offset_of!(FjVisualGrainParams, micro_structure),
+        size_of::<[f32; 2]>() / size_of::<f32>(),
+        std::mem::offset_of!(FjVisualGrainParams, sublayer_count),
+        std::mem::offset_of!(FjVisualGrainParams, amplitude),
+        std::mem::offset_of!(FjVisualGrainParams, chroma_mix),
+        std::mem::offset_of!(FjVisualGrainParams, chroma_shared_weight),
+        std::mem::offset_of!(FjVisualGrainParams, chroma_independent_weight),
+        std::mem::offset_of!(FjVisualGrainParams, coarse_weight),
+        std::mem::offset_of!(FjVisualGrainParams, mid_weight),
+        std::mem::offset_of!(FjVisualGrainParams, size_mix_scale),
+        std::mem::offset_of!(FjVisualGrainParams, clump_temporal_mix),
+        std::mem::offset_of!(FjVisualGrainParams, clump_morph_period_sec),
+        std::mem::offset_of!(FjVisualGrainParams, debug_view),
+        size_of::<FjVisualGrainRecipe>(),
+        align_of::<FjVisualGrainRecipe>(),
+        std::mem::offset_of!(FjVisualGrainRecipe, active),
+        std::mem::offset_of!(FjVisualGrainRecipe, sublayers_active),
+        std::mem::offset_of!(FjVisualGrainRecipe, axis_finite_cmy),
+        size_of::<[u32; 3]>() / size_of::<u32>(),
+        std::mem::offset_of!(FjVisualGrainRecipe, axis_block_prefix_max_cmy),
+        size_of::<[[f32; 16]; 3]>() / size_of::<[f32; 16]>(),
+        size_of::<[f32; 16]>() / size_of::<f32>(),
+        std::mem::offset_of!(FjVisualGrainRecipe, particle_area_um2),
+        std::mem::offset_of!(FjVisualGrainRecipe, particle_scale_cmy),
+        size_of::<[f32; 3]>() / size_of::<f32>(),
+        std::mem::offset_of!(FjVisualGrainRecipe, particle_scale_layers),
+        size_of::<[f32; 3]>() / size_of::<f32>(),
+        std::mem::offset_of!(FjVisualGrainRecipe, particle_density_min_cmy),
+        size_of::<[f32; 3]>() / size_of::<f32>(),
+        std::mem::offset_of!(FjVisualGrainRecipe, uniformity_cmy),
+        size_of::<[f32; 3]>() / size_of::<f32>(),
+        std::mem::offset_of!(FjVisualGrainRecipe, correlation_sigma_px),
+        std::mem::offset_of!(FjVisualGrainRecipe, dye_cloud_blur_um),
+        std::mem::offset_of!(FjVisualGrainRecipe, micro_structure),
+        size_of::<[f32; 2]>() / size_of::<f32>(),
+        std::mem::offset_of!(FjVisualGrainRecipe, sublayer_count),
+        std::mem::offset_of!(FjVisualGrainRecipe, amplitude),
+        std::mem::offset_of!(FjVisualGrainRecipe, chroma_mix),
+        std::mem::offset_of!(FjVisualGrainRecipe, chroma_shared_weight),
+        std::mem::offset_of!(FjVisualGrainRecipe, chroma_independent_weight),
+        std::mem::offset_of!(FjVisualGrainRecipe, fine_weight),
+        std::mem::offset_of!(FjVisualGrainRecipe, mid_weight),
+        std::mem::offset_of!(FjVisualGrainRecipe, coarse_weight),
+        std::mem::offset_of!(FjVisualGrainRecipe, size_mix_scale),
+        std::mem::offset_of!(FjVisualGrainRecipe, clump_temporal_mix),
+        std::mem::offset_of!(FjVisualGrainRecipe, clump_morph_period_sec),
+        std::mem::offset_of!(FjVisualGrainRecipe, debug_view),
+        std::mem::offset_of!(FjVisualGrainRecipe, layers_hash),
+        std::mem::offset_of!(FjVisualGrainRecipe, hash),
+        FJ_FILM_RECIPE_GRAIN_CONTROLS as usize,
+        FJ_FILM_RECIPE_GRAIN_LAYERS as usize,
     ];
     if !count.is_null() {
         // SAFETY: Facade caller authorizes the exclusive count output.
