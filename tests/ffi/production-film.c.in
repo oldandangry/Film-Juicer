@@ -27,6 +27,39 @@ static int words(const float* data, const uint32_t* expected, size_t count) {
 static int status(FjStatus value, uint32_t category) {
     return value.category == category && value.api == FJ_API_NONE && value.native_code == 0;
 }
+static int film_recipes(FjFilmDevelopmentOwner* owner, uint32_t route) {
+    FjFilmDevelopmentOwner* held = NULL;
+    CHECK(status(fj_legacy_film_development_retain(owner, &held, NULL), FJ_STATUS_SUCCESS));
+    CHECK(held == owner);
+    FjFilmRecipeFailure failure = {0};
+    const FjFilmDensityMinimum requested = {{0.07f,0.08f,0.12f}};
+    FjFilmDensityMinimum minimum = {{0}};
+    CHECK(status(fj_legacy_film_density_minimum_prepare(&requested, &minimum, &failure, NULL), FJ_STATUS_SUCCESS));
+    CHECK(failure.reason == FJ_FILM_RECIPE_REASON_NONE && failure.channel == 3 && failure.sample == UINT64_MAX);
+    CHECK(memcmp(minimum.cmy, requested.cmy, sizeof(minimum.cmy)) == 0);
+    FjFilmDirParams params = {0};
+    params.active = 1; params.amount = 1; params.inhibition_same_layer = 1; params.inhibition_interlayer = 1;
+    params.diffusion_size_um = 20; params.diffusion_tail_um = 200; params.diffusion_tail_weight = 0.03f; params.gamma_use_stock = 1;
+    for (size_t i = 0; i < 3; ++i) { params.langmuir_donor_k_rgb[i] = 1; params.langmuir_receiver_k_rgb[i] = 1; }
+    FjFilmDirOwner* dir = NULL;
+    CHECK(status(fj_legacy_film_dir_acquire(held, &params, &dir, &failure, NULL), FJ_STATUS_SUCCESS));
+    FjFilmDirView view = {0};
+    CHECK(status(fj_legacy_film_dir_view(dir, &view, &failure, NULL), FJ_STATUS_SUCCESS));
+    CHECK(view.mode == FJ_FILM_DIR_NEGATIVE_DONOR_LANGMUIR && view.polarity == 0 && view.hash == FILM_DIR_HASH && view.compensated_axes_hash == FILM_DIR_AXES_HASH);
+    CHECK(words(view.matrix_rgb, film_dir_matrix, 9));
+    for (size_t i = 0; i < 3; ++i) CHECK(view.compensated_axes_rgb[i].count == FILM_N && words(view.compensated_axes_rgb[i].data, film_dir_axes + i * FILM_N, FILM_N));
+    CHECK(status(fj_legacy_film_dir_release(dir, NULL), FJ_STATUS_SUCCESS));
+    FjFilmDensityBounds bounds = {0};
+    CHECK(status(fj_legacy_film_density_bounds_prepare(held, &requested, &bounds, &failure, NULL), FJ_STATUS_SUCCESS));
+    CHECK(bounds.route == route && bounds.medium == 0 && bounds.polarity == 0 && bounds.source == route && bounds.hash == film_bounds_hash[route]);
+    CHECK(words(bounds.minimum_cmy, film_bounds_minimum, 3) && words(bounds.maximum_cmy, film_bounds_maximum, 3) && words(bounds.inv_span_cmy, film_bounds_inverse, 3));
+    params.active = 2;
+    dir = (FjFilmDirOwner*)(uintptr_t)1;
+    CHECK(status(fj_legacy_film_dir_acquire(held, &params, &dir, &failure, NULL), FJ_STATUS_UNSUPPORTED_INPUT) && !dir);
+    CHECK(failure.reason == FJ_FILM_RECIPE_RAW && failure.channel == 3 && failure.sample == UINT64_MAX);
+    CHECK(status(fj_legacy_film_development_release(held, NULL), FJ_STATUS_SUCCESS));
+    return 0;
+}
 typedef FjStatus (*FilmInputPrepare)(const FjFilmProfile*, const FjFilmInputParams*, const FjFilmInputResources*, FjFilmInput*, FjFilmInputFailure*, FjErrorBuffer*);
 _Static_assert(_Generic(&fj_legacy_film_input_prepare, FilmInputPrepare: 1, default: 0), "OFF film-input C11 signature");
 _Static_assert(sizeof(((FjFilmInput*)0)->sensitivity_rgb) == 81 * 3 * sizeof(float), "OFF fixed RGB sensitivity extent");
@@ -114,12 +147,14 @@ static int input_values(FjAssets* assets, FjFilmProfile* profile) {
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
-    CHECK(argc == 2);
+    CHECK(argc == 3);
     FjPathView path = {argv[1], wcslen(argv[1]), FJ_PATH_WINDOWS_WIDE};
+    FjPathView duplicate_path = {argv[2], wcslen(argv[2]), FJ_PATH_WINDOWS_WIDE};
 #else
 int main(int argc, char** argv) {
-    CHECK(argc == 2);
+    CHECK(argc == 3);
     FjPathView path = {argv[1], strlen(argv[1]), FJ_PATH_UNIX_BYTES};
+    FjPathView duplicate_path = {argv[2], strlen(argv[2]), FJ_PATH_UNIX_BYTES};
 #endif
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
@@ -152,6 +187,7 @@ int main(int argc, char** argv) {
         CHECK(words(view.log_exposure.data, film_axis, FILM_N) && words(view.authored_curves_cmy.data, film_authored, 3 * FILM_N) && words(view.normalized_curves_cmy.data, film_normalized, 3 * FILM_N));
         CHECK(words(view.gamma_rgb, film_gamma, 3) && words(view.minimum_cmy, film_minimum, 3) && words(view.maximum_cmy, film_maximum, 3));
         CHECK(view.normalized_curves_hash == FILM_NORMALIZED_HASH && view.layers_hash == FILM_LAYERS_HASH && view.hash == FILM_HASH);
+        CHECK(film_recipes(owner, route) == 0);
         for (size_t layer = 0; layer < 3; ++layer)
             for (size_t channel = 0; channel < 3; ++channel) {
                 CHECK(view.density_curves_layers[layer][channel].count == FILM_N);
@@ -185,6 +221,30 @@ int main(int argc, char** argv) {
     CHECK(status(fj_legacy_film_development_release(owner, &malformed), FJ_STATUS_UNSUPPORTED_INPUT));
     owner = NULL;
     CHECK(status(fj_legacy_film_development_release(NULL, NULL), FJ_STATUS_SUCCESS));
+    CHECK(status(fj_legacy_assets_destroy(assets, NULL), FJ_STATUS_SUCCESS));
+    assets = NULL;
+    CHECK(status(fj_legacy_assets_create(duplicate_path, &assets, NULL), FJ_STATUS_SUCCESS));
+    CHECK(status(fj_legacy_film_profile_acquire(assets, selected, &profile, NULL), FJ_STATUS_SUCCESS));
+    CHECK(status(fj_legacy_film_development_acquire(profile, 0, 1, 0, &owner, NULL), FJ_STATUS_SUCCESS));
+    FjFilmDirParams duplicate_params = {0};
+    duplicate_params.active = 1; duplicate_params.amount = 1;
+    duplicate_params.inhibition_same_layer = 1; duplicate_params.inhibition_interlayer = 1;
+    duplicate_params.gamma_use_stock = 1;
+    FjFilmRecipeFailure duplicate_failure = {0};
+    FjFilmDirOwner* duplicate_dir = (FjFilmDirOwner*)(uintptr_t)1;
+    CHECK(status(fj_legacy_film_dir_acquire(owner, &duplicate_params, &duplicate_dir, &duplicate_failure, NULL), FJ_STATUS_PREPARATION_FAILURE) && !duplicate_dir);
+    CHECK(duplicate_failure.reason == FJ_FILM_RECIPE_LOG_EXPOSURE && duplicate_failure.channel == 3 && duplicate_failure.sample == 1);
+    duplicate_params.active = 0;
+    CHECK(status(fj_legacy_film_dir_acquire(owner, &duplicate_params, &duplicate_dir, &duplicate_failure, NULL), FJ_STATUS_SUCCESS));
+    CHECK(status(fj_legacy_film_dir_release(duplicate_dir, NULL), FJ_STATUS_SUCCESS));
+    duplicate_params.active = 1; duplicate_params.inhibition_same_layer = 0; duplicate_params.inhibition_interlayer = 0;
+    CHECK(status(fj_legacy_film_dir_acquire(owner, &duplicate_params, &duplicate_dir, &duplicate_failure, NULL), FJ_STATUS_SUCCESS));
+    FjFilmDirView duplicate_view = {0};
+    CHECK(status(fj_legacy_film_dir_view(duplicate_dir, &duplicate_view, &duplicate_failure, NULL), FJ_STATUS_SUCCESS));
+    CHECK(duplicate_view.mode == FJ_FILM_DIR_INACTIVE && duplicate_view.polarity == 2 && duplicate_view.hash == 0);
+    CHECK(status(fj_legacy_film_dir_release(duplicate_dir, NULL), FJ_STATUS_SUCCESS));
+    CHECK(status(fj_legacy_film_development_release(owner, NULL), FJ_STATUS_SUCCESS));
+    CHECK(status(fj_legacy_film_profile_release(profile, NULL), FJ_STATUS_SUCCESS));
     CHECK(status(fj_legacy_assets_destroy(assets, NULL), FJ_STATUS_SUCCESS));
     puts("PASS OFF film C11 owners/layout/types/native frozen values/failures/survival/consuming malformed release");
     return 0;

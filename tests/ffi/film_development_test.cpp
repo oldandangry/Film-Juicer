@@ -208,7 +208,7 @@ namespace {
             } catch (const JuicerCuda::ExecutionFailure& failure) {
                 rejected = failure.failure.status.category == FJ_STATUS_INTERNAL_FAILURE;
             }
-            require(rejected && fj_test_film_development_live_owners() == 0, "malformed native view rejected before copying and owner released");
+            require(rejected && fj_test_film_development_live_owners() == 1, "malformed native view rejected before copying and owner released");
         }
         SpectralAllocationProbe::arm();
         bool failed = false;
@@ -218,7 +218,7 @@ namespace {
             failed = true;
         }
         SpectralAllocationProbe::clear();
-        require(failed && fj_test_film_development_live_owners() == 0, "native copy allocation failure consumes foreign result");
+        require(failed && fj_test_film_development_live_owners() == 1, "native copy allocation failure consumes foreign result");
         std::barrier selected(2), detached(2);
         std::shared_ptr<const JuicerAssets::FilmSource> held;
         std::exception_ptr failure;

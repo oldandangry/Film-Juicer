@@ -96,3 +96,6 @@ tests/film/fixtures/** -text whitespace=cr-at-eol
 
 # Independent S4.B film-input compound captures preserve native bytes.
 tests/film/input-fixtures/*.json -text whitespace=cr-at-eol
+
+# Independent S4.B DIR/density captures preserve reviewed native bytes.
+tests/film/dir-fixtures/*.json -text whitespace=cr-at-eol

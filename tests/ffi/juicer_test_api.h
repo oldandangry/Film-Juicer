@@ -291,6 +291,35 @@ FjStatus fj_test_gamut_output_boundary(const FjOutputBoundarySource* source, flo
 #define FJ_TEST_OUTPUT_COLOR_FACADE 12U
 FjStatus fj_test_output_color(uint32_t output_space, FjOutputColorPreparation* out);
 
+
+FjStatus fj_test_film_density_minimum_prepare(
+    const FjFilmDensityMinimum* requested,
+    FjFilmDensityMinimum* out_minimum,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_test_film_dir_acquire(
+    const FjFilmDevelopmentOwner* development,
+    const FjFilmDirParams* params,
+    FjFilmDirOwner** out_dir,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_test_film_dir_view(
+    const FjFilmDirOwner* dir,
+    FjFilmDirView* out_view,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_test_film_dir_release(
+    FjFilmDirOwner* dir, FjErrorBuffer* error);
+FjStatus fj_test_film_density_bounds_prepare(
+    const FjFilmDevelopmentOwner* development,
+    const FjFilmDensityMinimum* requested,
+    FjFilmDensityBounds* out_bounds,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_test_film_development_retain(const FjFilmDevelopmentOwner*, FjFilmDevelopmentOwner**, FjErrorBuffer*);
+FjStatus fj_test_film_recipe_fault(uint32_t stage, uint32_t fault);
+size_t fj_test_film_dir_live_owners(void);
+const size_t* fj_test_film_recipe_abi_facts(size_t* count);
 #ifdef __cplusplus
 }
 #endif

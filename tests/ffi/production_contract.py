@@ -85,6 +85,12 @@ def execute(arguments):
         b"film development acquire fixture panic",
         b"film development view fixture panic",
         b"film development release fixture panic",
+        b"film development retain fixture panic",
+        b"film DIR acquire fixture panic",
+        b"film DIR view fixture panic",
+        b"film DIR release fixture panic",
+        b"film density bounds fixture panic",
+        b"film recipe diagnostic fixture panic",
         b"output gamut boundary fault",
         b"closed operation-specific output gamut fault",
         b"input hull boundary fault",
@@ -126,6 +132,12 @@ def execute(arguments):
         "fj_legacy_film_development_acquire",
         "fj_legacy_film_development_view",
         "fj_legacy_film_development_release",
+        "fj_legacy_film_development_retain",
+        "fj_legacy_film_density_minimum_prepare",
+        "fj_legacy_film_dir_acquire",
+        "fj_legacy_film_dir_view",
+        "fj_legacy_film_dir_release",
+        "fj_legacy_film_density_bounds_prepare",
         "fj_legacy_output_color",
         "fj_legacy_film_profile_acquire",
         "fj_legacy_print_profile_acquire",
@@ -207,7 +219,7 @@ def execute(arguments):
         run(name + "-compile", command, 300)
         run(
             name + "-values",
-            [str(executable), *([str(root / "Resources")] if name == "film" else [])],
+            [str(executable), *([str(root / "Resources"), str(root / "tests/film/fixtures/synthetic/duplicates")] if name == "film" else [])],
             120,
         )
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -304,6 +316,29 @@ def expected_film_header(out):
     for name in ("hash", "sensitivity_hash"):
         header.append("#define FILM_INPUT_" + name.upper() + " UINT64_C(" + str(raw[name]) + ")")
     (out / "production-film-expected.h").write_text("\n".join(header) + "\n")
+    directory = root / "tests/film/dir-fixtures"
+    manifest = json.loads((directory / "manifest.json").read_text())
+    payload = directory / manifest["presets"][arguments.preset]["values"]
+    assert digest(payload) == manifest["payload_sha256"][payload.name]
+    cases = json.loads(payload.read_text())["cases"]
+    rows = [next(row for row in cases if row["key"] == "kodak_portra_400"
+                 and row["route"] == route and row["kind"] == 2
+                 and row["gamma"] == [1065353216]) for route in (0, 1)]
+    extra = []
+    for name, value in [("dir_matrix", rows[0]["dir"]["matrix"]),
+                        ("dir_axes", rows[0]["dir"]["axes"]),
+                        ("bounds_minimum", rows[0]["bounds"]["minimum"]),
+                        ("bounds_maximum", rows[0]["bounds"]["maximum"]),
+                        ("bounds_inverse", rows[0]["bounds"]["inverse"])]:
+        extra.append("static const uint32_t film_" + name + "[] = {"
+                     + ",".join(str(word) + "U" for word in flatten(value)) + "};")
+    for name, value in [("DIR_HASH", rows[0]["dir"]["hash"]),
+                        ("DIR_AXES_HASH", rows[0]["dir"]["axes_hash"])]:
+        extra.append("#define FILM_" + name + " UINT64_C(" + str(value) + ")")
+    extra.append("static const uint64_t film_bounds_hash[] = {"
+                 + ",".join("UINT64_C(" + str(row["bounds"]["hash"]) + ")" for row in rows) + "};")
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write("\n".join(extra) + "\n")
 
 
 if __name__ == "__main__":

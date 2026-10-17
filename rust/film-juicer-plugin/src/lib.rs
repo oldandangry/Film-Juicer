@@ -28,6 +28,12 @@ mod film_bridge;
 
 #[allow(
     unsafe_code,
+    reason = "temporary film recipe transport admits foreign records and scopes consuming owners"
+)]
+mod film_recipe_bridge;
+
+#[allow(
+    unsafe_code,
     reason = "the film-input value boundary checks fixed extents and scopes immutable profile/resource borrows"
 )]
 mod film_input_bridge;

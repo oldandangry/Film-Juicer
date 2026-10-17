@@ -186,6 +186,34 @@ add_test(NAME Film.Host.InputProducts COMMAND JuicerFilmInputTests
 set_tests_properties(Film.Host.InputProducts PROPERTIES LABELS "host" TIMEOUT 180)
 
 add_library(juicer_film_development_test_objects OBJECT ../src/RustAssetBridge.cpp)
+add_library(juicer_film_recipe_test_objects OBJECT ../src/RustFilmRecipeBridge.cpp)
+add_library(juicer_film_recipe_state_test_objects OBJECT ../src/ResourceAssetLibrary.cpp)
+target_link_libraries(juicer_film_recipe_state_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_film_recipe_state_test_objects PRIVATE JUICER_FILM_RECIPE_STATE_TEST_HOOK=1)
+target_link_libraries(juicer_film_recipe_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_film_recipe_test_objects PRIVATE JUICER_FILM_RECIPE_TEST_HOOK=1)
+add_executable(JuicerFilmRecipeTests ffi/film_recipe_abi_c.c ffi/film_recipe_test.cpp ffi/spectral_allocation_probe.cpp
+    $<TARGET_OBJECTS:juicer_film_recipe_test_objects>
+    $<TARGET_OBJECTS:juicer_film_recipe_state_test_objects>)
+target_link_libraries(JuicerFilmRecipeTests PRIVATE juicer_core)
+set_target_properties(JuicerFilmRecipeTests PROPERTIES
+    LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
+if(UNIX)
+    set_property(TARGET JuicerFilmRecipeTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
+add_dependencies(JuicerFilmRecipeTests juicer_test_resources)
+if(WIN32)
+    set(JUICER_FILM_DIR_FIXTURE windows)
+else()
+    set(JUICER_FILM_DIR_FIXTURE linux)
+endif()
+add_test(NAME Ffi.Host.FilmRecipes COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/dir-fixtures/${JUICER_FILM_DIR_FIXTURE}.json")
+set_tests_properties(Ffi.Host.FilmRecipes PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Film.Host.DirDensityProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/dir-fixtures/${JUICER_FILM_DIR_FIXTURE}.json" products)
+set_tests_properties(Film.Host.DirDensityProducts PROPERTIES LABELS "host" TIMEOUT 180)
 target_link_libraries(juicer_film_development_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_film_development_test_objects PRIVATE JUICER_FILM_DEVELOPMENT_TEST_HOOK=1)
 add_executable(JuicerFilmDevelopmentTests ffi/film_development_abi_c.c ffi/film_development_test.cpp ffi/spectral_allocation_probe.cpp

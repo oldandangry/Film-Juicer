@@ -177,6 +177,18 @@ unsafe extern "C" fn fj_test_film_development_release(
     unsafe { crate::film_bridge::release(owner, error) }
 }
 
+/// # Safety
+/// Live completed development; initialized/disjoint output and diagnostics.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_development_retain(
+    owner: *const crate::film_bridge::FjFilmDevelopmentOwner,
+    out: *mut *mut crate::film_bridge::FjFilmDevelopmentOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade invokes the same internal owner operation, not an export.
+    unsafe { crate::film_bridge::retain(owner, out, error) }
+}
+
 const FJ_PROFILE_USE_STILL: u32 = 0;
 const FJ_PROFILE_USE_CINE: u32 = 1;
 const FJ_PROFILE_ANTIHALATION_STRONG: u32 = 0;
@@ -1680,4 +1692,71 @@ unsafe extern "C" fn fj_test_film_input_prepare(
 #[unsafe(no_mangle)]
 extern "C" fn fj_test_film_input_arm_boundary_fault(stage: u32) {
     crate::film_input_bridge::arm_boundary_fault(stage);
+}
+
+/// # Safety
+/// Matching live owners and the production call's initialized/disjoint record and span obligations.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_density_minimum_prepare(
+    requested: *const crate::film_recipe_bridge::FjFilmDensityMinimum,
+    out_minimum: *mut crate::film_recipe_bridge::FjFilmDensityMinimum,
+    out_failure: *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls the shared constructor/projector, never a legacy export.
+    unsafe { crate::film_recipe_bridge::minimum(requested, out_minimum, out_failure, error) }
+}
+
+/// # Safety
+/// Matching live owners and the production call's initialized/disjoint record and span obligations.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_dir_acquire(
+    development: *const crate::film_bridge::FjFilmDevelopmentOwner,
+    params: *const crate::film_recipe_bridge::FjFilmDirParams,
+    out_dir: *mut *mut crate::film_recipe_bridge::FjFilmDirOwner,
+    out_failure: *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls the shared constructor/projector, never a legacy export.
+    unsafe { crate::film_recipe_bridge::acquire(development, params, out_dir, out_failure, error) }
+}
+
+/// # Safety
+/// Matching live owners and the production call's initialized/disjoint record and span obligations.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_dir_view(
+    dir: *const crate::film_recipe_bridge::FjFilmDirOwner,
+    out_view: *mut crate::film_recipe_bridge::FjFilmDirView,
+    out_failure: *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls the shared constructor/projector, never a legacy export.
+    unsafe { crate::film_recipe_bridge::view(dir, out_view, out_failure, error) }
+}
+
+/// # Safety
+/// Matching live owners and the production call's initialized/disjoint record and span obligations.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_dir_release(
+    dir: *mut crate::film_recipe_bridge::FjFilmDirOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls the shared constructor/projector, never a legacy export.
+    unsafe { crate::film_recipe_bridge::release(dir, error) }
+}
+
+/// # Safety
+/// Matching live owners and the production call's initialized/disjoint record and span obligations.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_density_bounds_prepare(
+    development: *const crate::film_bridge::FjFilmDevelopmentOwner,
+    requested: *const crate::film_recipe_bridge::FjFilmDensityMinimum,
+    out_bounds: *mut crate::film_recipe_bridge::FjFilmDensityBounds,
+    out_failure: *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls the shared constructor/projector, never a legacy export.
+    unsafe {
+        crate::film_recipe_bridge::bounds(development, requested, out_bounds, out_failure, error)
+    }
 }

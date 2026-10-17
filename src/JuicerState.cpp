@@ -847,6 +847,7 @@ namespace {
                 params.grainControls.active && params.grainControls.sublayersActive);
             input.scanRoute = development.route;
             input.filmDevelop = std::move(development.recipe);
+            input.developmentHold = std::move(development.hold);
         } catch (const JuicerCuda::ExecutionFailure& failure) {
             if (failure.failure.status.category != FJ_STATUS_UNSUPPORTED_INPUT &&
                 failure.failure.status.category != FJ_STATUS_PREPARATION_FAILURE) {

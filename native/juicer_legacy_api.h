@@ -590,6 +590,126 @@ FjStatus fj_legacy_film_development_view(const FjFilmDevelopmentOwner* developme
                                          FjFilmDevelopmentView* out_view,
                                          FjErrorBuffer* error);
 FjStatus fj_legacy_film_development_release(FjFilmDevelopmentOwner* development, FjErrorBuffer* error);
+
+/* SF_TEMP_BRIDGE_FILM_DIR_DENSITY: synchronous film construction; remove S4.E.
+ * Required result/failure storage is initialized, aligned, live and disjoint
+ * from inputs, owners and optional diagnostics. Numeric extent checks do not
+ * establish allocation lifetime, object initialization or non-overlap.
+ * Diagnostic capacity zero never reads data. Every admitted result is cleared
+ * independently before rejection; failure starts {RAW,3,UINT64_MAX}.
+ * Success commits {NONE,3,UINT64_MAX}. DIR views expire on consuming release.
+ * Development retain returns the same address with an independent release
+ * obligation; every release consumes its hold even on diagnostic failure.
+ * Original requests to minimum and bounds must be identical; the safe core
+ * borrows a completed Minimum while this foreign boundary reconstructs it.
+ */
+#define FJ_FILM_DIR_INACTIVE UINT32_C(0)
+#define FJ_FILM_DIR_NEGATIVE_DONOR_LANGMUIR UINT32_C(1)
+#define FJ_FILM_DIR_POSITIVE_RECEIVER_LANGMUIR UINT32_C(2)
+#define FJ_FILM_RECIPE_REASON_NONE UINT32_C(0)
+#define FJ_FILM_RECIPE_RAW UINT32_C(1)
+#define FJ_FILM_RECIPE_MINIMUM UINT32_C(2)
+#define FJ_FILM_RECIPE_MATRIX UINT32_C(3)
+#define FJ_FILM_RECIPE_DENSITY_MAX UINT32_C(4)
+#define FJ_FILM_RECIPE_RECEIVER_K UINT32_C(5)
+#define FJ_FILM_RECIPE_DONOR_K UINT32_C(6)
+#define FJ_FILM_RECIPE_DONOR_LANGMUIR UINT32_C(7)
+#define FJ_FILM_RECIPE_RECEIVER_LANGMUIR UINT32_C(8)
+#define FJ_FILM_RECIPE_COMPENSATED_AXIS UINT32_C(9)
+#define FJ_FILM_RECIPE_IDENTITY UINT32_C(10)
+#define FJ_FILM_RECIPE_BOUNDS_SPAN UINT32_C(11)
+#define FJ_FILM_RECIPE_SIZE UINT32_C(12)
+#define FJ_FILM_RECIPE_ALLOCATION UINT32_C(13)
+#define FJ_FILM_RECIPE_PANIC UINT32_C(14)
+#define FJ_FILM_RECIPE_INTEGRITY UINT32_C(15)
+#define FJ_FILM_RECIPE_LOG_EXPOSURE UINT32_C(16)
+
+typedef struct FjFilmRecipeFailure {
+    uint32_t reason;
+    uint32_t channel;
+    uint64_t sample;
+} FjFilmRecipeFailure;
+
+typedef struct FjFilmDensityMinimum {
+    float cmy[3];
+} FjFilmDensityMinimum;
+
+typedef struct FjFilmDirParams {
+    uint32_t active;
+    float amount;
+    float inhibition_same_layer;
+    float inhibition_interlayer;
+    float diffusion_size_um;
+    float diffusion_tail_um;
+    float diffusion_tail_weight;
+    uint32_t gamma_use_stock;
+    float gamma_same_layer_rgb[3];
+    float gamma_interlayer_r_to_gb[2];
+    float gamma_interlayer_g_to_rb[2];
+    float gamma_interlayer_b_to_rg[2];
+    float langmuir_donor_k_rgb[3];
+    float langmuir_receiver_k_rgb[3];
+} FjFilmDirParams;
+
+typedef struct FjFilmDirOwner FjFilmDirOwner;
+typedef struct FjFilmDirView {
+    uint32_t polarity;
+    uint32_t mode;
+    float matrix_rgb[9];
+    float diffusion_size_um;
+    float diffusion_tail_um;
+    float diffusion_tail_weight;
+    float density_max_rgb[3];
+    float density_ref_rgb[3];
+    float donor_k_rgb[3];
+    float receiver_c_ref_rgb[3];
+    float receiver_kr_rgb[3];
+    FjFloatSpan compensated_axes_rgb[3];
+    uint64_t compensated_axes_hash;
+    uint64_t hash;
+} FjFilmDirView;
+
+typedef struct FjFilmDensityBounds {
+    uint32_t route;
+    uint32_t medium;
+    uint32_t polarity;
+    uint32_t source;
+    float minimum_cmy[3];
+    float maximum_cmy[3];
+    float inv_span_cmy[3];
+    float authored_minimum_cmy[3];
+    float authored_maximum_cmy[3];
+    uint64_t hash;
+} FjFilmDensityBounds;
+
+FjStatus fj_legacy_film_development_retain(
+    const FjFilmDevelopmentOwner* development,
+    FjFilmDevelopmentOwner** out_development,
+    FjErrorBuffer* error);
+FjStatus fj_legacy_film_density_minimum_prepare(
+    const FjFilmDensityMinimum* requested,
+    FjFilmDensityMinimum* out_minimum,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_legacy_film_dir_acquire(
+    const FjFilmDevelopmentOwner* development,
+    const FjFilmDirParams* params,
+    FjFilmDirOwner** out_dir,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_legacy_film_dir_view(
+    const FjFilmDirOwner* dir,
+    FjFilmDirView* out_view,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_legacy_film_dir_release(
+    FjFilmDirOwner* dir, FjErrorBuffer* error);
+FjStatus fj_legacy_film_density_bounds_prepare(
+    const FjFilmDevelopmentOwner* development,
+    const FjFilmDensityMinimum* requested,
+    FjFilmDensityBounds* out_bounds,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
 FjStatus fj_legacy_print_profile_acquire(const FjAssets* assets, FjStringView key, FjPrintProfile** out_profile, FjErrorBuffer* error);
 FjStatus fj_legacy_print_profile_view(const FjPrintProfile* profile,
                                       FjPrintProfileView* out_view,

@@ -33,11 +33,6 @@ namespace {
         Hash::hash_bytes_update(hash, value.data(), value.size());
     }
 
-    std::uint64_t hash_nan_preserving_floats(const float* values, std::size_t count) {
-        const Hash::FloatSpanHash hashes = Hash::hash_float_span_with_nan_mask(values, count);
-        return Hash::hash_uint64_values({hashes.valueHash, hashes.nanMaskHash});
-    }
-
     struct DensityCurveExtrema {
         std::array<float, 3> minimum{};
         std::array<float, 3> maximum{};
@@ -290,17 +285,6 @@ namespace {
             if (!std::isfinite(value) || value < 0.0f) {
                 return false;
             }
-        }
-        return true;
-    }
-
-    bool build_grain_contract(const GrainContract& input, GrainContract& out) {
-        out = input;
-        if (!finite_nonnegative_grain_triplet(out.densityMinCmy)) {
-            return false;
-        }
-        for (float& value : out.densityMinCmy) {
-            value = std::clamp(value, 0.0f, 1.0f);
         }
         return true;
     }
@@ -953,246 +937,6 @@ namespace {
         }
     }
 
-    bool evaluate_dir_langmuir(
-        double value,
-        double knee,
-        double reference,
-        double& result) {
-        const double denominator = knee + value;
-        result = value * (knee + reference) / denominator;
-        return denominator != 0.0 && std::isfinite(result);
-    }
-
-    std::uint64_t hash_dir_couplers_recipe(const DirCouplersRecipe& recipe) {
-        if (!recipe.active) {
-            return 0;
-        }
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, std::uint64_t{3});
-        hash_value(hash, recipe.polarity);
-        hash_value(hash, recipe.nonlinearMode);
-        for (const auto& row : recipe.matrixRgb) {
-            Hash::hash_bytes_update(hash, row.data(), sizeof(float) * row.size());
-        }
-        Hash::hash_bytes_update(hash, recipe.densityMaxRgb.data(), sizeof(recipe.densityMaxRgb));
-        Hash::hash_bytes_update(hash, recipe.densityRefRgb.data(), sizeof(recipe.densityRefRgb));
-        Hash::hash_bytes_update(hash, recipe.donorKRgb.data(), sizeof(recipe.donorKRgb));
-        Hash::hash_bytes_update(hash, recipe.receiverCRefRgb.data(), sizeof(recipe.receiverCRefRgb));
-        Hash::hash_bytes_update(hash, recipe.receiverKrRgb.data(), sizeof(recipe.receiverKrRgb));
-        hash_value(hash, recipe.compensatedDensityCurveAxesHash);
-        if (recipe.diffusionSizeUm > 0.0f) {
-            hash_value(hash, recipe.diffusionSizeUm);
-            hash_value(hash, recipe.diffusionTailWeight);
-            if (recipe.diffusionTailWeight > 0.0f) {
-                hash_value(hash, recipe.diffusionTailUm);
-            }
-        }
-        return hash;
-    }
-
-    bool build_dir_couplers_recipe(
-        const Profiles::FilmProfile& profile,
-        const FilmDevelopRecipe& develop,
-        const DirCouplersControls& controls,
-        Spektrafilm::ScanRoute route,
-        DirCouplersRecipe& out,
-        std::string& diagnostic) {
-        out = DirCouplersRecipe{};
-        diagnostic.clear();
-        const auto fail = [&](const std::string& field,
-                              const std::string& requirement,
-                              std::size_t channel = 3u,
-                              std::size_t sample = std::numeric_limits<std::size_t>::max()) {
-            std::ostringstream stream;
-            stream << "component=dir route=" << Spektrafilm::scan_route_key(route)
-                   << " profile=" << profile.info.stock
-                   << " field=" << field;
-            if (channel < 3u) {
-                stream << " channel=" << channel;
-            }
-            if (sample != std::numeric_limits<std::size_t>::max()) {
-                stream << " sample=" << sample;
-            }
-            stream << " requirement=" << requirement;
-            diagnostic = stream.str();
-            return false;
-        };
-        const std::array<float, 3>& gammaSameLayerRgb =
-            controls.gammaUseStock ? profile.digest.gammaSamelayerRgb : controls.gammaSameLayerRgb;
-        const std::array<float, 2>& gammaInterlayerRToGb =
-            controls.gammaUseStock ? profile.digest.gammaInterlayerRToGb : controls.gammaInterlayerRToGb;
-        const std::array<float, 2>& gammaInterlayerGToRb =
-            controls.gammaUseStock ? profile.digest.gammaInterlayerGToRb : controls.gammaInterlayerGToRb;
-        const std::array<float, 2>& gammaInterlayerBToRg =
-            controls.gammaUseStock ? profile.digest.gammaInterlayerBToRg : controls.gammaInterlayerBToRg;
-        out.polarity = profile.info.type;
-        out.active = controls.active && controls.amount > 0.0f;
-        if (!out.active) {
-            return true;
-        }
-        out.diffusionSizeUm = controls.diffusionSizeUm;
-        if (out.diffusionSizeUm > 0.0f) {
-            out.diffusionTailWeight = controls.diffusionTailWeight;
-            if (out.diffusionTailWeight > 0.0f) {
-                out.diffusionTailUm = controls.diffusionTailUm;
-            }
-        }
-
-        std::array<std::array<float, 3>, 3> unitMatrix{};
-        unitMatrix[0][0] = gammaSameLayerRgb[0] * controls.inhibitionSameLayer;
-        unitMatrix[1][1] = gammaSameLayerRgb[1] * controls.inhibitionSameLayer;
-        unitMatrix[2][2] = gammaSameLayerRgb[2] * controls.inhibitionSameLayer;
-        unitMatrix[0][1] = gammaInterlayerRToGb[0] * controls.inhibitionInterlayer;
-        unitMatrix[0][2] = gammaInterlayerRToGb[1] * controls.inhibitionInterlayer;
-        unitMatrix[1][0] = gammaInterlayerGToRb[0] * controls.inhibitionInterlayer;
-        unitMatrix[1][2] = gammaInterlayerGToRb[1] * controls.inhibitionInterlayer;
-        unitMatrix[2][0] = gammaInterlayerBToRg[0] * controls.inhibitionInterlayer;
-        unitMatrix[2][1] = gammaInterlayerBToRg[1] * controls.inhibitionInterlayer;
-        out.matrixRgb = unitMatrix;
-        for (auto& row : out.matrixRgb) {
-            for (float& value : row) {
-                value *= controls.amount;
-                if (!std::isfinite(value)) {
-                    return fail("matrix", "finite");
-                }
-            }
-        }
-        const bool anyCoupling = std::any_of(
-            out.matrixRgb.begin(),
-            out.matrixRgb.end(),
-            [](const auto& row) {
-                return std::any_of(row.begin(), row.end(), [](float value) {
-                    return value != 0.0f;
-                });
-            });
-        if (!anyCoupling) {
-            out = DirCouplersRecipe{};
-            return true;
-        }
-
-        if (develop.logExposure.empty() ||
-            develop.logExposure.size() != develop.normalizedDensityCurves.size()) {
-            return fail("density_curves", "matching_nonempty_axis");
-        }
-        for (std::size_t sample = 1u;
-             sample < develop.logExposure.size();
-             ++sample) {
-            const double exposureSpan =
-                static_cast<double>(develop.logExposure[sample]) -
-                static_cast<double>(develop.logExposure[sample - 1u]);
-            if (!(std::isfinite(exposureSpan) && exposureSpan > 0.0)) {
-                return fail("log_exposure", "strictly_increasing", 3u, sample);
-            }
-        }
-        out.densityMaxRgb.fill(-std::numeric_limits<float>::infinity());
-        for (const auto& row : develop.normalizedDensityCurves) {
-            for (std::size_t channel = 0; channel < 3; ++channel) {
-                if (std::isfinite(row[channel])) {
-                    out.densityMaxRgb[channel] = std::max(out.densityMaxRgb[channel], row[channel]);
-                }
-            }
-        }
-        if (!std::all_of(out.densityMaxRgb.begin(), out.densityMaxRgb.end(), [](float value) {
-                return std::isfinite(value) && value > 0.0f;
-            })) {
-            return fail("density_max", "finite_positive");
-        }
-        for (std::size_t channel = 0; channel < 3u; ++channel) {
-            out.densityRefRgb[channel] = 0.5f * out.densityMaxRgb[channel];
-        }
-
-        const bool positive = out.polarity == Spektrafilm::ProfilePolarity::Positive;
-        out.nonlinearMode = positive
-                                ? DirNonlinearMode::PositiveReceiverLangmuir
-                                : DirNonlinearMode::NegativeDonorLangmuir;
-        if (positive) {
-            for (std::size_t receiver = 0; receiver < 3u; ++receiver) {
-                double reference = 0.0;
-                for (std::size_t donor = 0; donor < 3u; ++donor) {
-                    reference += static_cast<double>(out.densityRefRgb[donor]) *
-                                 static_cast<double>(unitMatrix[donor][receiver]);
-                }
-                out.receiverCRefRgb[receiver] = static_cast<float>(reference);
-                out.receiverKrRgb[receiver] =
-                    controls.langmuirReceiverKRgb[receiver] *
-                    (2.0f * out.receiverCRefRgb[receiver]);
-                if (!std::isfinite(out.receiverCRefRgb[receiver]) ||
-                    !std::isfinite(out.receiverKrRgb[receiver]) ||
-                    (out.receiverCRefRgb[receiver] > 0.0f &&
-                     !(out.receiverKrRgb[receiver] > 0.0f))) {
-                    return fail("receiver_k", "finite_positive_when_coupled", receiver);
-                }
-            }
-        } else {
-            for (std::size_t donor = 0; donor < 3u; ++donor) {
-                out.donorKRgb[donor] =
-                    controls.langmuirDonorKRgb[donor] * out.densityMaxRgb[donor];
-                if (!(out.donorKRgb[donor] > 0.0f) ||
-                    !std::isfinite(out.donorKRgb[donor])) {
-                    return fail("donor_k", "finite_positive", donor);
-                }
-            }
-        }
-
-        for (auto& axis : out.compensatedDensityCurveAxesRgb) {
-            axis.resize(develop.logExposure.size());
-        }
-        for (std::size_t sample = 0; sample < develop.logExposure.size(); ++sample) {
-            std::array<double, 3> donors{};
-            for (std::size_t donor = 0; donor < 3u; ++donor) {
-                const double density = develop.normalizedDensityCurves[sample][donor];
-                if (positive) {
-                    donors[donor] = static_cast<double>(out.densityMaxRgb[donor]) - density;
-                } else if (!evaluate_dir_langmuir(
-                               density,
-                               out.donorKRgb[donor],
-                               out.densityRefRgb[donor],
-                               donors[donor])) {
-                    return fail("donor_langmuir", "finite_defined", donor, sample);
-                }
-            }
-            for (std::size_t receiver = 0; receiver < 3; ++receiver) {
-                double correction = 0.0;
-                for (std::size_t donor = 0; donor < 3; ++donor) {
-                    correction += donors[donor] *
-                                  static_cast<double>(out.matrixRgb[donor][receiver]);
-                }
-                if (positive) {
-                    if (out.receiverCRefRgb[receiver] == 0.0f) {
-                        correction = 0.0;
-                    } else if (!evaluate_dir_langmuir(
-                                   correction,
-                                   out.receiverKrRgb[receiver],
-                                   out.receiverCRefRgb[receiver],
-                                   correction)) {
-                        return fail("receiver_langmuir", "finite_defined", receiver, sample);
-                    }
-                }
-                const double compensatedCoordinate =
-                    static_cast<double>(develop.logExposure[sample]) - correction;
-                if (!std::isfinite(compensatedCoordinate) ||
-                    compensatedCoordinate < -static_cast<double>(std::numeric_limits<float>::max()) ||
-                    compensatedCoordinate > static_cast<double>(std::numeric_limits<float>::max())) {
-                    return fail("compensated_axis", "finite_float_representable", receiver, sample);
-                }
-                out.compensatedDensityCurveAxesRgb[receiver][sample] =
-                    static_cast<float>(compensatedCoordinate);
-            }
-        }
-
-        std::uint64_t axesHash = Hash::kFnvOffset;
-        hash_value(axesHash, std::uint64_t{1});
-        hash_value(axesHash, develop.normalizedDensityCurvesHash);
-        for (const auto& axis : out.compensatedDensityCurveAxesRgb) {
-            hash_value(
-                axesHash,
-                hash_nan_preserving_floats(axis.data(), axis.size()));
-        }
-        out.compensatedDensityCurveAxesHash = axesHash;
-        out.hash = hash_dir_couplers_recipe(out);
-        return out.compensatedDensityCurveAxesHash != 0 && out.hash != 0;
-    }
-
     std::uint64_t hash_density_bounds_recipe(const DensityBoundsRecipe& recipe) {
         std::uint64_t hash = Hash::kFnvOffset;
         hash_value(hash, recipe.route);
@@ -1271,33 +1015,6 @@ namespace {
         hash_value(hash, out.outputColorSpace);
         hash_value(hash, out.transformTableVersionHash);
         out.hash = hash;
-        return out.hash != 0;
-    }
-
-    bool build_film_density_bounds(
-        const Profiles::FilmProfile& profile,
-        const FilmDevelopRecipe& develop,
-        const GrainContract& grain,
-        Spektrafilm::ScanRoute route,
-        Spektrafilm::DensityBoundsSource source,
-        DensityBoundsRecipe& out) {
-        out = DensityBoundsRecipe{};
-        out.route = route;
-        out.medium = Spektrafilm::DensityMedium::Film;
-        out.polarity = profile.info.type;
-        out.source = source;
-        out.authoredMinCmy = develop.authoredMinCmy;
-        out.authoredMaxCmy = develop.authoredMaxCmy;
-        for (std::size_t channel = 0; channel < out.dataMinCmy.size(); ++channel) {
-            out.dataMinCmy[channel] = -grain.densityMinCmy[channel];
-            out.dataMaxCmy[channel] = develop.authoredMaxCmy[channel];
-            const float span = out.dataMaxCmy[channel] - out.dataMinCmy[channel];
-            if (!(std::isfinite(span) && span > 0.0f)) {
-                return false;
-            }
-            out.invSpanCmy[channel] = 1.0f / span;
-        }
-        out.hash = hash_density_bounds_recipe(out);
         return out.hash != 0;
     }
 
@@ -1623,8 +1340,8 @@ namespace Spektrafilm {
                 return false;
             }
 
-            if (!build_grain_contract(input.grainContract, recipe.grainContract)) {
-                return fail("MalformedRequiredProfileData phase=9A field=grain_contract");
+            if (!JuicerAssets::prepare_film_density_minimum(input.grainContract, recipe.grainContract, diagnostic)) {
+                return false;
             }
 
             recipe.filmDevelop = std::move(input.filmDevelop);
@@ -1639,11 +1356,12 @@ namespace Spektrafilm {
                 return fail("ResourceDescriptorMismatch phase=effects_recipe field=physical_policy");
             }
 
-            if (!build_dir_couplers_recipe(
-                    profile,
-                    filmDevelop,
+            if (!JuicerAssets::prepare_film_dir(
+                    input.developmentHold,
                     input.dirCouplers,
+                    profile,
                     input.scanRoute,
+                    filmDevelop.logExposure.size(),
                     recipe.dirCouplers,
                     diagnostic)) {
                 if (diagnostic.empty()) {
@@ -1655,17 +1373,14 @@ namespace Spektrafilm {
             const bool printRoute = scan_route_is_print(input.scanRoute);
             DensityBoundsRecipe& filmBounds =
                 printRoute ? recipe.enlargerFilmBounds : recipe.densityBounds;
-            const DensityBoundsSource source = printRoute
-                                                   ? DensityBoundsSource::EnlargerFilmGrainContractAndAuthoredCurves
-                                                   : DensityBoundsSource::DirectFilmGrainContractAndAuthoredCurves;
-            if (!build_film_density_bounds(
+            if (!JuicerAssets::prepare_film_density_bounds(
+                    input.developmentHold,
+                    input.grainContract,
                     profile,
-                    filmDevelop,
-                    recipe.grainContract,
                     input.scanRoute,
-                    source,
-                    filmBounds)) {
-                return fail("MalformedRequiredProfileData phase=3A field=density_bounds");
+                    filmBounds,
+                    diagnostic)) {
+                return false;
             }
             return true;
         }

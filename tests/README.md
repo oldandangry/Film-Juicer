@@ -903,3 +903,14 @@ input color and sensitivity; later focused normalization and whole-state
 publication retain their existing owners. Ordinary tests never regenerate these
 expectations. Both native testing-OFF Release gates also exercise the new C
 export's values and failures and exclude fixture/fault code from final artifacts.
+
+`Ffi.Host.FilmRecipes` checks the completed DIR/minimum/film-bounds boundary,
+C11/C++20/Rust field/layout/signature facts, independent development holds,
+borrow expiry, native move/copy/unwind, typed failures and exact F1 diagnostics.
+`Film.Host.DirDensityProducts` compares 64 complete products per configuration
+with [independent native captures](film/dir-fixtures/README.md), including all RGB
+axes, CMY bounds and snapshot/family/final identities, then exercises four-route
+admission, recovery and unchanged reuse. Core tests also consume the frozen F1 and
+focused captures. `Ofx.Gpu.AdapterTrace` observes actual conditional DIR capture,
+single f64-to-f32 narrowing, polarity-selected K and invalid/valid recovery.
+These focused groups do not establish installed Resolve or aggregate acceptance.

@@ -69,6 +69,7 @@ namespace JuicerTestSupport {
             float pendingFilmGamma = 0.0f;
             double pendingPrintGamma = 0.0;
             Spektrafilm::VisualGrainControls pendingGrain;
+            DirCouplersControls pendingDir;
             std::uint64_t pendingFullHash = 0;
             std::uint64_t buildCounter = 0;
             std::uint64_t recipeHash = 0;
@@ -92,6 +93,7 @@ namespace JuicerTestSupport {
                     result.pendingFilmGamma = valid->params.filmGammaFactor;
                     result.pendingPrintGamma = valid->params.printGammaFactor;
                     result.pendingGrain = valid->params.grainControls;
+                    result.pendingDir = valid->params.dirCouplers;
                     result.pendingFullHash = valid->fullHash;
                     result.pendingPrintRoute =
                         Spektrafilm::scan_route_is_print(
@@ -779,6 +781,15 @@ namespace {
         void set_str_choice_value(const char* name, std::string value) {
             NativeParam& param = require_param(name, ParamKind::StrChoice);
             param.value.string = std::move(value);
+        }
+
+        void set_double3_value(const char* name, const std::array<double, 3>& value) {
+            require_param(name, ParamKind::Double3).value.numbers = value;
+        }
+
+        void set_double2_value(const char* name, const std::array<double, 2>& value) {
+            auto& numbers = require_param(name, ParamKind::Double2).value.numbers;
+            std::copy(value.begin(), value.end(), numbers.begin());
         }
 
         double double_value(const char* name) {
@@ -3207,6 +3218,85 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                 }
             }
             std::cout << "PASS adapter/film-f32-print-f64-grain-capture-and-recovery\n";
+
+            for (bool positive : {false, true})
+                for (bool print : {false, true}) {
+                    host.set_str_choice_value(JuicerParams::kFilmProfileKey, positive ? "fujifilm_provia_100f" : "kodak_portra_400");
+                    host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
+                    host.set_int_value(JuicerParams::kGrainActive, 0);
+                    const auto gets = [&](std::size_t start, const char* name) {
+                        const std::string prefix = "GET_CURRENT name=" + std::string(name) + " ";
+                        const auto begin = host.trace().begin() + static_cast<std::ptrdiff_t>(start);
+                        const std::string stock = "GET_CURRENT name=" + std::string(JuicerParams::kDirCouplersGammaUseStock) + " ";
+                        const auto marker = std::find_if(begin, host.trace().end(), [&](const std::string& row) {
+                            return row.starts_with(stock);
+                        });
+                        require(marker != host.trace().end() && marker != begin && (marker - 1)->starts_with("GET_CURRENT name=" + std::string(JuicerParams::kDirCouplersActive) + " "), "DIR capture begins with active then stock gamma");
+                        // UI enablement reads core/tail before snapshot capture.
+                        return std::count_if(marker - 1, host.trace().end(), [&](const std::string& row) {
+                            return row.starts_with(prefix);
+                        });
+                    };
+                    const auto capture = [&]() {
+                        host.dispatch_event(effect, JuicerParams::kDirCouplersActive, OFX::eChangeUserEdit);
+                        return JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+                    };
+                    host.set_int_value(JuicerParams::kDirCouplersActive, 0);
+                    host.set_int_value(JuicerParams::kDirCouplersGammaUseStock, 1);
+                    host.set_double_value(JuicerParams::kDirCouplersAmount, std::numeric_limits<double>::quiet_NaN());
+                    auto start = host.trace_size();
+                    auto observed = capture();
+                    require(observed.pendingValid && !observed.pendingDir.active && gets(start, JuicerParams::kDirCouplersAmount) == 0, "disabled OFX DIR skips amount capture");
+                    host.set_int_value(JuicerParams::kDirCouplersActive, 1);
+                    host.set_double_value(JuicerParams::kDirCouplersAmount, 0);
+                    start = host.trace_size();
+                    observed = capture();
+                    require(observed.pendingValid && gets(start, JuicerParams::kDirCouplersInhibitionSameLayer) == 0 && gets(start, JuicerParams::kDirCouplersLangmuirDonorKRgb) == 0 && gets(start, JuicerParams::kDirCouplersLangmuirReceiverKRgb) == 0, "zero-amount OFX DIR skips chemistry");
+                    const double authored = 1.234567890123;
+                    host.set_double_value(JuicerParams::kDirCouplersAmount, authored);
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionSizeUm, 0);
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionTailWeight, std::numeric_limits<double>::quiet_NaN());
+                    host.set_double3_value(JuicerParams::kDirCouplersGammaSameLayerRgb, {std::numeric_limits<double>::quiet_NaN(), 0, 0});
+                    const char* consumed = positive ? JuicerParams::kDirCouplersLangmuirReceiverKRgb : JuicerParams::kDirCouplersLangmuirDonorKRgb;
+                    const char* unused = positive ? JuicerParams::kDirCouplersLangmuirDonorKRgb : JuicerParams::kDirCouplersLangmuirReceiverKRgb;
+                    host.set_double3_value(consumed, {authored, authored, authored});
+                    host.set_double3_value(unused, {std::numeric_limits<double>::quiet_NaN(), 0, 0});
+                    start = host.trace_size();
+                    observed = capture();
+                    require(observed.pendingValid, "stock DIR capture invalid: " + observed.pendingDiagnostic);
+                    require(observed.pendingDir.amount == static_cast<float>(authored), "stock DIR amount narrowing");
+                    require(gets(start, consumed) == 1, "consumed DIR K getter count=" + std::to_string(gets(start, consumed)));
+                    require(gets(start, unused) == 0, "unused DIR K getter count=" + std::to_string(gets(start, unused)));
+                    require(gets(start, JuicerParams::kDirCouplersGammaSameLayerRgb) == 0, "stock DIR gamma bypass");
+                    require(gets(start, JuicerParams::kDirCouplersDiffusionTailWeight) == 0, "core-zero DIR tail bypass");
+                    host.set_int_value(JuicerParams::kDirCouplersGammaUseStock, 0);
+                    host.set_double3_value(JuicerParams::kDirCouplersGammaSameLayerRgb, {authored, authored, authored});
+                    host.set_double2_value(JuicerParams::kDirCouplersGammaInterlayerRToGb, {0.123456789012, 0.234567890123});
+                    host.set_double2_value(JuicerParams::kDirCouplersGammaInterlayerGToRb, {0.345678901234, 0.456789012345});
+                    host.set_double2_value(JuicerParams::kDirCouplersGammaInterlayerBToRg, {0.567890123456, 0.678901234567});
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionSizeUm, 20);
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionTailWeight, 0);
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionTailUm, std::numeric_limits<double>::quiet_NaN());
+                    start = host.trace_size();
+                    observed = capture();
+                    const auto& dir = observed.pendingDir;
+                    require(observed.pendingValid && dir.gammaSameLayerRgb[0] == static_cast<float>(authored) && dir.gammaInterlayerRToGb[1] == static_cast<float>(0.234567890123) && gets(start, JuicerParams::kDirCouplersDiffusionTailUm) == 0, "custom RGB f64-to-f32 narrowing and zero-tail bypass");
+                    host.set_double3_value(consumed, {0.09, 1, 1});
+                    observed = capture();
+                    require(observed.pendingInvalid, "invalid consumed K blocks current snapshot");
+                    host.set_double3_value(consumed, {authored, authored, authored});
+                    observed = capture();
+                    require(observed.pendingValid, "OFX DIR controls recover");
+                    const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
+                    require(print ? bool(admitted.printState) : bool(admitted.directState), "captured DIR controls admit complete route");
+                    host.set_int_value(JuicerParams::kDirCouplersActive, 0);
+                    host.set_int_value(JuicerParams::kDirCouplersGammaUseStock, 1);
+                    host.set_double3_value(JuicerParams::kDirCouplersLangmuirDonorKRgb, {1, 1, 1});
+                    host.set_double3_value(JuicerParams::kDirCouplersLangmuirReceiverKRgb, {1, 1, 1});
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionTailWeight, 0.03);
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionTailUm, 200);
+                }
+            std::cout << "PASS adapter/DIR-conditional-capture-narrowing-polarity-and-recovery\n";
 
             require(host.current_get_count() != 0 &&
                         host.at_time_get_count() == 0,

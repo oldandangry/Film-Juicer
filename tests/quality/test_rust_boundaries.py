@@ -216,6 +216,26 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_film_dir_density_is_complete_private_and_readonly(self) -> None:
+        for fixture, expected in (
+            ("film_dir_complete", None),
+            ("film_dir_default", {"E0599": ("Recipe::default()", "Minimum::default()", "Bounds::default()")}),
+            ("film_dir_private", {"E0616": ("recipe.compensated_axes_rgb", "minimum.cmy", "bounds.hash")}),
+            ("film_dir_construction", {"E0451": ("Recipe { ..recipe }", "Minimum { ..minimum }", "Bounds { ..bounds }")}),
+            ("film_dir_readonly", {"E0594": ("recipe.matrix_rgb()[0][0] = 0.0", "minimum.cmy()[0] = 0.0", "bounds.minimum_cmy()[0] = 0.0")}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for support in (False, True):
+                        status, diagnostics = self.check("film-juicer-plugin", release, support)
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_completed_profile_storage_is_private_to_its_owner(self) -> None:
         # The plugin is a real external consumer of the core, and a sibling of
         # asset_profile; inserting the probe inside the owner would bypass privacy.
@@ -282,13 +302,37 @@ class RustBoundaryTests(unittest.TestCase):
             self.assertRegex("auto value = " + name + "(source);", call)
         self.assertIn("recipe.filmDevelop = std::move(input.filmDevelop)", foundation)
         self.assertTrue(definition("normalize_density_curves", recipe))
-        self.assertTrue(definition("hash_nan_preserving_floats", recipe))
-        # The remaining real print-bounds and DIR consumers still own these helpers.
+        self.assertFalse(definition("hash_nan_preserving_floats", recipe))
+        # Print-medium bounds retain native normalization; DIR span hashing has moved.
         self.assertGreaterEqual(len(re.findall(r"\bnormalize_density_curves\s*\(", recipe)), 2)
-        self.assertGreaterEqual(len(re.findall(r"\bhash_nan_preserving_floats\s*\(", recipe)), 2)
         state = (ROOT / "src/JuicerState.cpp").read_text(encoding="utf-8-sig")
         self.assertIn("params.grainControls.active && params.grainControls.sublayersActive", state)
         self.assertEqual(state.count("film_foundation_input_from_snapshot(params, *selected.filmSource, assets, input.film, outError)"), 2)
+
+    def test_deleted_dir_density_producers_and_stage_order(self) -> None:
+        import re
+        recipe = (ROOT / "src/RenderRecipe.cpp").read_text(encoding="utf-8-sig")
+        def definition(name: str, source: str) -> bool:
+            return re.search(r"\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", source) is not None
+        for name in ("build_grain_contract", "build_dir_couplers_recipe", "evaluate_dir_langmuir",
+                     "hash_dir_couplers_recipe", "build_film_density_bounds", "hash_nan_preserving_floats"):
+            self.assertFalse(definition(name, recipe), name)
+            self.assertTrue(definition(name, "bool " + name + "(const Recipe& recipe) { return true; }"))
+            self.assertFalse(definition(name, "bool " + name + "(const Recipe& recipe);"))
+        for name in ("finite_nonnegative_grain_triplet", "hash_density_bounds_recipe", "build_print_density_bounds"):
+            self.assertTrue(definition(name, recipe), name)
+            self.assertGreaterEqual(len(re.findall(r"\b" + name + r"\s*\(", recipe)), 2)
+        start = recipe.index("        bool build_film_foundation(")
+        end = recipe.index("    } // namespace", start)
+        foundation = recipe[start:end]
+        stages = [foundation.index(name) for name in ("build_spatial_optics_recipe(",
+                  "prepare_film_density_minimum(", "build_visual_grain_recipe(",
+                  "build_film_juicer_effects_recipe(", "prepare_film_dir(", "prepare_film_density_bounds(")]
+        self.assertEqual(stages, sorted(stages))
+        self.assertIn("input.grainContract, recipe.grainContract", foundation)
+        bounds = foundation[stages[-1]:]
+        self.assertIn("input.grainContract", bounds)
+        self.assertNotIn("recipe.grainContract", bounds)
 
     def test_deleted_spectral_producers_and_white_loop(self) -> None:
         import re
