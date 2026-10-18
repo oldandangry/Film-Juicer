@@ -8,20 +8,15 @@
 #include <cstdint>
 #include <limits>
 #include <string_view>
-#include <utility>
 
 namespace {
 
     constexpr std::uint64_t kFnvOffset = 0xcbf29ce484222325ULL;
     constexpr std::uint64_t kFnvPrime = 0x100000001b3ULL;
     constexpr double kMinimumScale = 1.0e-6;
-    constexpr double kMaximumScatterFraction = 0.99;
     constexpr std::array<double, 3> kHaloWarmthAxis{{1.30, 0.15, -1.45}};
-    constexpr std::array<double, 5> kStrengthBreakpoints{{0.125, 0.25, 0.5, 1.0, 2.0}};
-    constexpr std::array<double, 5> kStrengthFractions{{0.10, 0.20, 0.35, 0.55, 0.75}};
 
     struct GroupConfig {
-        double centerLambdaUm = 0.0;
         double spread = 1.0;
         std::size_t componentCount = 1;
         double alpha = 3.0;
@@ -31,39 +26,12 @@ namespace {
         GroupConfig core;
         GroupConfig halo;
         GroupConfig bloom;
-        std::array<double, 3> groupWeights{};
-        double haloWarmthBase = 0.0;
-        double scatterGain = 1.0;
     };
 
-    constexpr std::array<FamilyConfig, 4> kFamilyConfigs{{FamilyConfig{
-                                                              GroupConfig{10.0, 1.5, 2, 3.0},
-                                                              GroupConfig{50.0, 2.0, 3, 3.0},
-                                                              GroupConfig{260.0, 2.5, 4, 3.2},
-                                                              {0.60, 0.30, 0.10},
-                                                              0.0,
-                                                              0.65},
-                                                          FamilyConfig{
-                                                              GroupConfig{16.0, 1.5, 2, 3.0},
-                                                              GroupConfig{95.0, 2.0, 3, 3.0},
-                                                              GroupConfig{380.0, 2.5, 4, 3.5},
-                                                              {0.40, 0.47, 0.13},
-                                                              0.65,
-                                                              0.75},
-                                                          FamilyConfig{
-                                                              GroupConfig{14.0, 1.5, 2, 3.0},
-                                                              GroupConfig{150.0, 2.0, 3, 3.0},
-                                                              GroupConfig{650.0, 2.5, 4, 2.9},
-                                                              {0.28, 0.42, 0.30},
-                                                              0.40,
-                                                              1.05},
-                                                          FamilyConfig{
-                                                              GroupConfig{20.0, 1.5, 2, 3.0},
-                                                              GroupConfig{200.0, 2.0, 3, 3.0},
-                                                              GroupConfig{1000.0, 2.5, 4, 2.5},
-                                                              {0.22, 0.30, 0.48},
-                                                              0.85,
-                                                              1.00}}};
+    constexpr std::array<FamilyConfig, 4> kFamilyConfigs{{{GroupConfig{1.5, 2, 3.0}, GroupConfig{2.0, 3, 3.0}, GroupConfig{2.5, 4, 3.2}},
+                                                          {GroupConfig{1.5, 2, 3.0}, GroupConfig{2.0, 3, 3.0}, GroupConfig{2.5, 4, 3.5}},
+                                                          {GroupConfig{1.5, 2, 3.0}, GroupConfig{2.0, 3, 3.0}, GroupConfig{2.5, 4, 2.9}},
+                                                          {GroupConfig{1.5, 2, 3.0}, GroupConfig{2.0, 3, 3.0}, GroupConfig{2.5, 4, 2.5}}}};
 
     struct ExpandedGroup {
         std::array<double, 4> lambdasUm{};
@@ -142,23 +110,6 @@ namespace {
         }
     }
 
-    std::uint64_t resolved_hash(
-        const Spektrafilm::DiffusionFilterResolvedParameters& resolved) {
-        if (!resolved.active) {
-            return 0;
-        }
-        std::uint64_t hash = kFnvOffset;
-        hash_tag(hash, "diffusion-resolved");
-        hash_schema(hash);
-        hash_family(hash, resolved.family);
-        hash_double(hash, resolved.scatterFraction);
-        hash_double_array(hash, resolved.groupWeightsCoreHaloBloom);
-        hash_double_array(hash, resolved.groupCenterLambdaUm);
-        hash_double(hash, resolved.effectiveWarmth);
-        hash_double(hash, resolved.spatialScale);
-        return hash;
-    }
-
     std::uint64_t sample_descriptor_hash(
         const Spektrafilm::DiffusionPsfSampleDescriptor& descriptor) {
         std::uint64_t hash = kFnvOffset;
@@ -172,27 +123,6 @@ namespace {
         hash_double(hash, descriptor.pixelSizeUm);
         hash_u32_le(hash, static_cast<std::uint32_t>(descriptor.radiusPixels));
         return hash;
-    }
-
-    bool validate_authored_finite(
-        const Spektrafilm::DiffusionFilterAuthoredControls& authored,
-        std::string& diagnostic) {
-        const std::array<std::pair<double, std::string_view>, 9> values{{{authored.strength, "strength"},
-                                                                         {authored.spatialScale, "spatial_scale"},
-                                                                         {authored.haloWarmth, "halo_warmth"},
-                                                                         {authored.coreIntensity, "core_intensity"},
-                                                                         {authored.coreSize, "core_size"},
-                                                                         {authored.haloIntensity, "halo_intensity"},
-                                                                         {authored.haloSize, "halo_size"},
-                                                                         {authored.bloomIntensity, "bloom_intensity"},
-                                                                         {authored.bloomSize, "bloom_size"}}};
-        for (const auto& [value, field] : values) {
-            if (!std::isfinite(value)) {
-                fail(diagnostic, field);
-                return false;
-            }
-        }
-        return true;
     }
 
     bool validate_sample_descriptor(
@@ -246,32 +176,6 @@ namespace {
             return false;
         }
         return true;
-    }
-
-    double strength_to_scatter(double strength, const FamilyConfig& family) {
-        if (strength <= 0.0) {
-            return 0.0;
-        }
-        const double logStrength = std::log2(std::max(strength, kMinimumScale));
-        const double firstBreak = std::log2(kStrengthBreakpoints.front());
-        const double lastBreak = std::log2(kStrengthBreakpoints.back());
-        double baseFraction = kStrengthFractions.front();
-        if (logStrength >= lastBreak) {
-            baseFraction = kStrengthFractions.back();
-        } else if (logStrength > firstBreak) {
-            for (std::size_t index = 0; index + 1 < kStrengthBreakpoints.size(); ++index) {
-                const double lower = std::log2(kStrengthBreakpoints[index]);
-                const double upper = std::log2(kStrengthBreakpoints[index + 1]);
-                if (logStrength <= upper) {
-                    const double t = (logStrength - lower) / (upper - lower);
-                    baseFraction = kStrengthFractions[index] +
-                                   t * (kStrengthFractions[index + 1] -
-                                        kStrengthFractions[index]);
-                    break;
-                }
-            }
-        }
-        return std::clamp(baseFraction * family.scatterGain, 0.0, kMaximumScatterFraction);
     }
 
     bool expand_group(
@@ -418,86 +322,6 @@ namespace Spektrafilm {
         hash_double(hash, controls.bloomIntensity);
         hash_double(hash, controls.bloomSize);
         return hash;
-    }
-
-    bool resolve_diffusion_filter(
-        const DiffusionFilterAuthoredControls& authored,
-        DiffusionFilterResolvedParameters& out,
-        std::string& diagnostic) {
-        out = DiffusionFilterResolvedParameters{};
-        diagnostic.clear();
-
-        const FamilyConfig* config = family_config(authored.family);
-        if (!config) {
-            fail(diagnostic, "family");
-            return false;
-        }
-        if (!validate_authored_finite(authored, diagnostic)) {
-            return false;
-        }
-        if (!authored.active || authored.strength <= 0.0 || authored.spatialScale <= 0.0) {
-            return true;
-        }
-
-        out.active = true;
-        out.family = authored.family;
-        out.scatterFraction = strength_to_scatter(authored.strength, *config);
-        if (!(std::isfinite(out.scatterFraction) && out.scatterFraction > 0.0)) {
-            fail(diagnostic, "scatter_fraction");
-            out = DiffusionFilterResolvedParameters{};
-            return false;
-        }
-
-        const std::array<double, 3> intensityMultipliers{{std::max(authored.coreIntensity, 0.0),
-                                                          std::max(authored.haloIntensity, 0.0),
-                                                          std::max(authored.bloomIntensity, 0.0)}};
-        std::array<double, 3> weightedGroups{};
-        double weightedTotal = 0.0;
-        for (std::size_t group = 0; group < weightedGroups.size(); ++group) {
-            weightedGroups[group] = config->groupWeights[group] * intensityMultipliers[group];
-            weightedTotal += weightedGroups[group];
-        }
-
-        if (weightedTotal <= 0.0) {
-            out.groupWeightsCoreHaloBloom = config->groupWeights;
-            out.groupCenterLambdaUm = {
-                config->core.centerLambdaUm,
-                config->halo.centerLambdaUm,
-                config->bloom.centerLambdaUm};
-        } else {
-            if (!std::isfinite(weightedTotal)) {
-                fail(diagnostic, "group_weights");
-                out = DiffusionFilterResolvedParameters{};
-                return false;
-            }
-            for (std::size_t group = 0; group < weightedGroups.size(); ++group) {
-                out.groupWeightsCoreHaloBloom[group] = weightedGroups[group] / weightedTotal;
-            }
-            out.groupCenterLambdaUm = {
-                config->core.centerLambdaUm * std::max(authored.coreSize, kMinimumScale),
-                config->halo.centerLambdaUm * std::max(authored.haloSize, kMinimumScale),
-                config->bloom.centerLambdaUm * std::max(authored.bloomSize, kMinimumScale)};
-        }
-
-        for (const double center : out.groupCenterLambdaUm) {
-            if (!(std::isfinite(center) && center > 0.0)) {
-                fail(diagnostic, "group_centers_um");
-                out = DiffusionFilterResolvedParameters{};
-                return false;
-            }
-        }
-        out.effectiveWarmth = std::clamp(
-            config->haloWarmthBase + authored.haloWarmth,
-            -1.5,
-            1.5);
-        out.spatialScale = authored.spatialScale;
-        out.hash = resolved_hash(out);
-        if (out.hash == 0) {
-            fail(diagnostic, "resolved_hash");
-            out = DiffusionFilterResolvedParameters{};
-            return false;
-        }
-        return true;
     }
 
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)

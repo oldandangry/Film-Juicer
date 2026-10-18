@@ -17,6 +17,7 @@
 #include "juicer_cuda_owner.h"
 #include "ProfileCatalog.h"
 #include "ScatterHalation.h"
+#include "spatial_optics_fixture.h"
 #include "SpectralData.h"
 
 namespace {
@@ -51,7 +52,7 @@ namespace {
         const Profiles::ProfileDigest& digest) {
         ScatterHalationOpticsRecipe recipe;
         std::string diagnostic;
-        EXPECT_TRUE(Spektrafilm::resolve_scatter_halation_recipe(
+        EXPECT_TRUE(JuicerTestSupport::prepare_scatter_halation(
             controls,
             digest,
             recipe,

@@ -1051,3 +1051,20 @@ See [immutable native characterization](../film/dir-fixtures/README.md).
 compiler controls reject Default, partial field assembly, private storage access
 and mutation. Both normal Release production probes cover the new symbols,
 C11 values/failures and absence of test fault/facade code in final artifacts.
+
+The spatial-optics owner is `film_juicer_core::optics::Recipe`: a complete fixed
+value with private storage and named read-only getters. Its synchronous
+`fj_legacy_spatial_optics_prepare` transport copies authored f64 diffusion,
+already captured f32 halation/lens values, completed-profile defaults and print
+selection. It commits all fields or clears independently admitted outputs;
+`FjSpatialOpticsFailure` preserves typed component/field/channel failures. The
+native adapter translates those tags and projects named fields without recipe
+math. The transport retires at S4.E. `fj_test_spatial_optics_prepare` forwards to
+the identical checked operation for existing native fixture preparation.
+Stage 9 adds a one-shot panic and a zero substitution at the real resolved-hash
+guard; all controls and strings remain testing-only. Raw cleared family/domain
+zero differs from a successful inactive recipe's BlackProMist/film defaults.
+See `Ffi.Host.SpatialOptics`, `Film.Host.SpatialOpticsProducts` and the immutable
+[optics characterization](../film/optics-fixtures/README.md). Both native Release
+OFF gates retain the earlier film/output, six grain and nine effects cases and
+add all 15 optics cases, archive/module/PDB isolation and hidden-device loading.

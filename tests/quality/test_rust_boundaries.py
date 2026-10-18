@@ -229,6 +229,29 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_optics_are_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("optics_complete", None),
+            ("optics_default", {"E0599": ("optics::Recipe::default()", "optics::Diffusion::default()", "optics::LensBlur::default()", "optics::Halation::default()")}),
+            ("optics_private", {
+                "E0616": ("recipe.camera_diffusion", "recipe.camera_lens_blur().sigma_um", "recipe.scatter_halation().first_sigma_um"),
+                "E0624": ("optics::Diffusion::inactive()", "optics::LensBlur::new", "optics::Halation::new"),
+            }),
+            ("optics_construction", {"E0451": ("optics::Recipe { ..recipe }", "optics::Diffusion { ..diffusion }", "optics::LensBlur { ..lens }", "optics::Halation { ..halation }")}),
+            ("optics_readonly", {"E0594": ("*recipe.camera_diffusion() = diffusion", "*recipe.camera_lens_blur() = lens", "*recipe.scatter_halation() = halation")}),
+            ("optics_owned", None),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_effects_are_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("effects_complete", None),
@@ -385,7 +408,7 @@ class RustBoundaryTests(unittest.TestCase):
         start = recipe.index("        bool build_film_foundation(")
         end = recipe.index("    } // namespace", start)
         foundation = recipe[start:end]
-        stages = [foundation.index(name) for name in ("build_spatial_optics_recipe(",
+        stages = [foundation.index(name) for name in ("prepare_spatial_optics(",
                   "prepare_film_density_minimum(", "prepare_visual_grain(",
                   "prepare_physical_effects(", "prepare_film_dir(", "prepare_film_density_bounds(")]
         self.assertEqual(stages, sorted(stages))
@@ -395,6 +418,47 @@ class RustBoundaryTests(unittest.TestCase):
         bounds = foundation[stages[-1]:]
         self.assertIn("input.grainContract", bounds)
         self.assertNotIn("recipe.grainContract", bounds)
+
+    def test_deleted_spatial_optics_producers_and_retained_consumers(self) -> None:
+        import re
+        sources = {name: (ROOT / ("src/" + name)).read_text(encoding="utf-8-sig")
+                   for name in ["RenderRecipe.cpp", "DiffusionHostBehavior.cpp", "ScatterHalation.cpp"]}
+        def definition(name: str, text: str) -> bool:
+            return re.search(r"\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", text) is not None
+        for file, names in [("RenderRecipe.cpp", ["build_spatial_optics_recipe", "hash_diffusion_filter_optics", "hash_camera_lens_blur_optics"]),
+                            ("DiffusionHostBehavior.cpp", ["resolve_diffusion_filter", "resolved_hash", "strength_to_scatter", "validate_authored_finite"]),
+                            ("ScatterHalation.cpp", ["resolve_scatter_halation_recipe", "hash_scatter_halation_recipe", "any_positive"])]:
+            for name in names:
+                self.assertFalse(definition(name, sources[file]), name)
+                self.assertTrue(definition(name, "bool " + name + "(const Params& params) { return true; }"))
+                self.assertFalse(definition(name, "bool " + name + "(const Params& params);"))
+        for name in ["hash_diffusion_authored_controls", "build_diffusion_psf_sample_descriptor", "expand_diffusion_psf_components"]:
+            self.assertTrue(definition(name, sources["DiffusionHostBehavior.cpp"]), name)
+        for name in ["build_scatter_halation_controls", "build_scatter_halation_frame_descriptor", "build_gaussian_descriptor"]:
+            self.assertTrue(definition(name, sources["ScatterHalation.cpp"]), name)
+        recipe = sources["RenderRecipe.cpp"]
+        self.assertEqual(recipe.count("JuicerAssets::prepare_spatial_optics("), 1)
+        header = (ROOT / "src/RenderRecipe.h").read_text(encoding="utf-8-sig")
+        self.assertRegex(
+            header,
+            r'\bkExactOpticsNotImplementedForPhase6\[\]\s*=\s*"ExactOpticsNotImplementedForPhase6";',
+        )
+        preflight = recipe[recipe.index("    bool preflight_camera_lens_blur("):]
+        self.assertRegex(
+            preflight,
+            r'outDiagnostic\s*=\s*std::string\(kExactOpticsNotImplementedForPhase6\)'
+            r'\s*\+\s*" component=camera_lens_blur";',
+        )
+        foundation = recipe[recipe.index("        bool build_film_foundation("):]
+        self.assertLess(foundation.index("prepare_input("), foundation.index("prepare_spatial_optics("))
+        self.assertLess(foundation.index("prepare_spatial_optics("), foundation.index("prepare_film_density_minimum("))
+        for file in ["diffusion/host_reference_test.cpp", "scatter_halation/recipe_descriptor_test.cpp", "scatter_halation/integration_test.cpp", "scatter_halation/integration_test_cases.cpp"]:
+            text = (ROOT / "tests" / file).read_text(encoding="utf-8-sig")
+            self.assertNotRegex(text, r"\bresolve_(?:diffusion_filter|scatter_halation_recipe)\s*\(")
+        fixture = (ROOT / "tests/ffi/spatial_optics_fixture.cpp").read_text(encoding="utf-8-sig")
+        self.assertIn("fj_test_spatial_optics_prepare(", fixture)
+        self.assertNotIn("fj_legacy_spatial_optics_prepare(", fixture)
+        self.assertNotRegex(fixture, r"\b(?:log2|clamp|hash_value|strength_to_scatter)\s*\(")
 
     def test_deleted_spectral_producers_and_white_loop(self) -> None:
         import re

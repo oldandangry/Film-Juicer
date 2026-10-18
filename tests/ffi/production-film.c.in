@@ -744,6 +744,175 @@ static int effects_values(void) {
 }
 
 
+typedef FjStatus (*SpatialOpticsPrepare)(const FjSpatialOpticsParams*, FjSpatialOpticsRecipe*, FjSpatialOpticsFailure*, FjErrorBuffer*);
+_Static_assert(_Generic(&fj_legacy_spatial_optics_prepare, SpatialOpticsPrepare: 1, default: 0), "OFF spatial-optics C11 signature");
+_Static_assert(sizeof(FjDiffusionParams) == 80 && _Alignof(FjDiffusionParams) == 8, "OFF FjDiffusionParams layout");
+_Static_assert(offsetof(FjDiffusionParams, active) == 0, "OFF FjDiffusionParams.active");
+_Static_assert(offsetof(FjDiffusionParams, family) == 4, "OFF FjDiffusionParams.family");
+_Static_assert(offsetof(FjDiffusionParams, strength) == 8, "OFF FjDiffusionParams.strength");
+_Static_assert(offsetof(FjDiffusionParams, spatial_scale) == 16, "OFF FjDiffusionParams.spatial_scale");
+_Static_assert(offsetof(FjDiffusionParams, halo_warmth) == 24, "OFF FjDiffusionParams.halo_warmth");
+_Static_assert(offsetof(FjDiffusionParams, core_intensity) == 32, "OFF FjDiffusionParams.core_intensity");
+_Static_assert(offsetof(FjDiffusionParams, core_size) == 40, "OFF FjDiffusionParams.core_size");
+_Static_assert(offsetof(FjDiffusionParams, halo_intensity) == 48, "OFF FjDiffusionParams.halo_intensity");
+_Static_assert(offsetof(FjDiffusionParams, halo_size) == 56, "OFF FjDiffusionParams.halo_size");
+_Static_assert(offsetof(FjDiffusionParams, bloom_intensity) == 64, "OFF FjDiffusionParams.bloom_intensity");
+_Static_assert(offsetof(FjDiffusionParams, bloom_size) == 72, "OFF FjDiffusionParams.bloom_size");
+_Static_assert(sizeof(FjHalationParams) == 44 && _Alignof(FjHalationParams) == 4, "OFF FjHalationParams layout");
+_Static_assert(offsetof(FjHalationParams, active) == 0, "OFF FjHalationParams.active");
+_Static_assert(offsetof(FjHalationParams, scatter_amount) == 4, "OFF FjHalationParams.scatter_amount");
+_Static_assert(offsetof(FjHalationParams, scatter_spatial_scale) == 8, "OFF FjHalationParams.scatter_spatial_scale");
+_Static_assert(offsetof(FjHalationParams, halation_amount) == 12, "OFF FjHalationParams.halation_amount");
+_Static_assert(offsetof(FjHalationParams, halation_spatial_scale) == 16, "OFF FjHalationParams.halation_spatial_scale");
+_Static_assert(offsetof(FjHalationParams, first_sigma_um) == 20, "OFF FjHalationParams.first_sigma_um");
+_Static_assert(sizeof(((FjHalationParams*)0)->first_sigma_um) / sizeof(float) == 3, "OFF FjHalationParams.first_sigma_um extent");
+_Static_assert(offsetof(FjHalationParams, primary_amount) == 32, "OFF FjHalationParams.primary_amount");
+_Static_assert(sizeof(((FjHalationParams*)0)->primary_amount) / sizeof(float) == 3, "OFF FjHalationParams.primary_amount extent");
+_Static_assert(sizeof(FjSpatialOpticsParams) == 216 && _Alignof(FjSpatialOpticsParams) == 8, "OFF FjSpatialOpticsParams layout");
+_Static_assert(offsetof(FjSpatialOpticsParams, camera_diffusion) == 0, "OFF FjSpatialOpticsParams.camera_diffusion");
+_Static_assert(offsetof(FjSpatialOpticsParams, camera_lens_blur_um) == 80, "OFF FjSpatialOpticsParams.camera_lens_blur_um");
+_Static_assert(offsetof(FjSpatialOpticsParams, scatter_halation) == 84, "OFF FjSpatialOpticsParams.scatter_halation");
+_Static_assert(offsetof(FjSpatialOpticsParams, enlarger_diffusion) == 128, "OFF FjSpatialOpticsParams.enlarger_diffusion");
+_Static_assert(offsetof(FjSpatialOpticsParams, print_domain) == 208, "OFF FjSpatialOpticsParams.print_domain");
+_Static_assert(sizeof(FjDiffusionRecipe) == 104 && _Alignof(FjDiffusionRecipe) == 8, "OFF FjDiffusionRecipe layout");
+_Static_assert(offsetof(FjDiffusionRecipe, domain) == 0, "OFF FjDiffusionRecipe.domain");
+_Static_assert(offsetof(FjDiffusionRecipe, active) == 4, "OFF FjDiffusionRecipe.active");
+_Static_assert(offsetof(FjDiffusionRecipe, family) == 8, "OFF FjDiffusionRecipe.family");
+_Static_assert(offsetof(FjDiffusionRecipe, scatter_fraction) == 16, "OFF FjDiffusionRecipe.scatter_fraction");
+_Static_assert(offsetof(FjDiffusionRecipe, group_weights) == 24, "OFF FjDiffusionRecipe.group_weights");
+_Static_assert(sizeof(((FjDiffusionRecipe*)0)->group_weights) / sizeof(double) == 3, "OFF FjDiffusionRecipe.group_weights extent");
+_Static_assert(offsetof(FjDiffusionRecipe, group_lambda_um) == 48, "OFF FjDiffusionRecipe.group_lambda_um");
+_Static_assert(sizeof(((FjDiffusionRecipe*)0)->group_lambda_um) / sizeof(double) == 3, "OFF FjDiffusionRecipe.group_lambda_um extent");
+_Static_assert(offsetof(FjDiffusionRecipe, warmth) == 72, "OFF FjDiffusionRecipe.warmth");
+_Static_assert(offsetof(FjDiffusionRecipe, spatial_scale) == 80, "OFF FjDiffusionRecipe.spatial_scale");
+_Static_assert(offsetof(FjDiffusionRecipe, resolved_hash) == 88, "OFF FjDiffusionRecipe.resolved_hash");
+_Static_assert(offsetof(FjDiffusionRecipe, hash) == 96, "OFF FjDiffusionRecipe.hash");
+_Static_assert(sizeof(FjLensBlurRecipe) == 16 && _Alignof(FjLensBlurRecipe) == 8, "OFF FjLensBlurRecipe layout");
+_Static_assert(offsetof(FjLensBlurRecipe, sigma_um) == 0, "OFF FjLensBlurRecipe.sigma_um");
+_Static_assert(offsetof(FjLensBlurRecipe, hash) == 8, "OFF FjLensBlurRecipe.hash");
+_Static_assert(sizeof(FjHalationRecipe) == 56 && _Alignof(FjHalationRecipe) == 8, "OFF FjHalationRecipe layout");
+_Static_assert(offsetof(FjHalationRecipe, scatter_active) == 0, "OFF FjHalationRecipe.scatter_active");
+_Static_assert(offsetof(FjHalationRecipe, back_reflection_active) == 4, "OFF FjHalationRecipe.back_reflection_active");
+_Static_assert(offsetof(FjHalationRecipe, scatter_amount) == 8, "OFF FjHalationRecipe.scatter_amount");
+_Static_assert(offsetof(FjHalationRecipe, scatter_spatial_scale) == 12, "OFF FjHalationRecipe.scatter_spatial_scale");
+_Static_assert(offsetof(FjHalationRecipe, halation_spatial_scale) == 16, "OFF FjHalationRecipe.halation_spatial_scale");
+_Static_assert(offsetof(FjHalationRecipe, first_sigma_um) == 20, "OFF FjHalationRecipe.first_sigma_um");
+_Static_assert(sizeof(((FjHalationRecipe*)0)->first_sigma_um) / sizeof(float) == 3, "OFF FjHalationRecipe.first_sigma_um extent");
+_Static_assert(offsetof(FjHalationRecipe, total_strength) == 32, "OFF FjHalationRecipe.total_strength");
+_Static_assert(sizeof(((FjHalationRecipe*)0)->total_strength) / sizeof(float) == 3, "OFF FjHalationRecipe.total_strength extent");
+_Static_assert(offsetof(FjHalationRecipe, hash) == 48, "OFF FjHalationRecipe.hash");
+_Static_assert(sizeof(FjSpatialOpticsRecipe) == 288 && _Alignof(FjSpatialOpticsRecipe) == 8, "OFF FjSpatialOpticsRecipe layout");
+_Static_assert(offsetof(FjSpatialOpticsRecipe, camera_diffusion) == 0, "OFF FjSpatialOpticsRecipe.camera_diffusion");
+_Static_assert(offsetof(FjSpatialOpticsRecipe, camera_lens_blur) == 104, "OFF FjSpatialOpticsRecipe.camera_lens_blur");
+_Static_assert(offsetof(FjSpatialOpticsRecipe, scatter_halation) == 120, "OFF FjSpatialOpticsRecipe.scatter_halation");
+_Static_assert(offsetof(FjSpatialOpticsRecipe, enlarger_diffusion) == 176, "OFF FjSpatialOpticsRecipe.enlarger_diffusion");
+_Static_assert(offsetof(FjSpatialOpticsRecipe, hash) == 280, "OFF FjSpatialOpticsRecipe.hash");
+_Static_assert(sizeof(FjSpatialOpticsFailure) == 16 && _Alignof(FjSpatialOpticsFailure) == 4, "OFF FjSpatialOpticsFailure layout");
+_Static_assert(offsetof(FjSpatialOpticsFailure, reason) == 0, "OFF FjSpatialOpticsFailure.reason");
+_Static_assert(offsetof(FjSpatialOpticsFailure, component) == 4, "OFF FjSpatialOpticsFailure.component");
+_Static_assert(offsetof(FjSpatialOpticsFailure, field) == 8, "OFF FjSpatialOpticsFailure.field");
+_Static_assert(offsetof(FjSpatialOpticsFailure, channel) == 12, "OFF FjSpatialOpticsFailure.channel");
+_Static_assert(FJ_OPTICS_REASON_NONE == 0, "OFF FJ_OPTICS_REASON_NONE");
+_Static_assert(FJ_OPTICS_REASON_RAW == 1, "OFF FJ_OPTICS_REASON_RAW");
+_Static_assert(FJ_OPTICS_REASON_DIFFUSION == 2, "OFF FJ_OPTICS_REASON_DIFFUSION");
+_Static_assert(FJ_OPTICS_REASON_LENS_BLUR == 3, "OFF FJ_OPTICS_REASON_LENS_BLUR");
+_Static_assert(FJ_OPTICS_REASON_HALATION == 4, "OFF FJ_OPTICS_REASON_HALATION");
+_Static_assert(FJ_OPTICS_REASON_PANIC == 5, "OFF FJ_OPTICS_REASON_PANIC");
+_Static_assert(FJ_OPTICS_COMPONENT_NONE == 0, "OFF FJ_OPTICS_COMPONENT_NONE");
+_Static_assert(FJ_OPTICS_COMPONENT_CAMERA_DIFFUSION == 1, "OFF FJ_OPTICS_COMPONENT_CAMERA_DIFFUSION");
+_Static_assert(FJ_OPTICS_COMPONENT_CAMERA_LENS_BLUR == 2, "OFF FJ_OPTICS_COMPONENT_CAMERA_LENS_BLUR");
+_Static_assert(FJ_OPTICS_COMPONENT_SCATTER_HALATION == 3, "OFF FJ_OPTICS_COMPONENT_SCATTER_HALATION");
+_Static_assert(FJ_OPTICS_COMPONENT_ENLARGER_DIFFUSION == 4, "OFF FJ_OPTICS_COMPONENT_ENLARGER_DIFFUSION");
+_Static_assert(FJ_OPTICS_FIELD_NONE == 0, "OFF FJ_OPTICS_FIELD_NONE");
+_Static_assert(FJ_OPTICS_FIELD_FAMILY == 1, "OFF FJ_OPTICS_FIELD_FAMILY");
+_Static_assert(FJ_OPTICS_FIELD_STRENGTH == 2, "OFF FJ_OPTICS_FIELD_STRENGTH");
+_Static_assert(FJ_OPTICS_FIELD_SPATIAL_SCALE == 3, "OFF FJ_OPTICS_FIELD_SPATIAL_SCALE");
+_Static_assert(FJ_OPTICS_FIELD_HALO_WARMTH == 4, "OFF FJ_OPTICS_FIELD_HALO_WARMTH");
+_Static_assert(FJ_OPTICS_FIELD_CORE_INTENSITY == 5, "OFF FJ_OPTICS_FIELD_CORE_INTENSITY");
+_Static_assert(FJ_OPTICS_FIELD_CORE_SIZE == 6, "OFF FJ_OPTICS_FIELD_CORE_SIZE");
+_Static_assert(FJ_OPTICS_FIELD_HALO_INTENSITY == 7, "OFF FJ_OPTICS_FIELD_HALO_INTENSITY");
+_Static_assert(FJ_OPTICS_FIELD_HALO_SIZE == 8, "OFF FJ_OPTICS_FIELD_HALO_SIZE");
+_Static_assert(FJ_OPTICS_FIELD_BLOOM_INTENSITY == 9, "OFF FJ_OPTICS_FIELD_BLOOM_INTENSITY");
+_Static_assert(FJ_OPTICS_FIELD_BLOOM_SIZE == 10, "OFF FJ_OPTICS_FIELD_BLOOM_SIZE");
+_Static_assert(FJ_OPTICS_FIELD_SCATTER_FRACTION == 11, "OFF FJ_OPTICS_FIELD_SCATTER_FRACTION");
+_Static_assert(FJ_OPTICS_FIELD_GROUP_WEIGHTS == 12, "OFF FJ_OPTICS_FIELD_GROUP_WEIGHTS");
+_Static_assert(FJ_OPTICS_FIELD_GROUP_CENTERS == 13, "OFF FJ_OPTICS_FIELD_GROUP_CENTERS");
+_Static_assert(FJ_OPTICS_FIELD_RESOLVED_HASH == 14, "OFF FJ_OPTICS_FIELD_RESOLVED_HASH");
+_Static_assert(FJ_OPTICS_FIELD_SIGMA_UM == 15, "OFF FJ_OPTICS_FIELD_SIGMA_UM");
+_Static_assert(FJ_OPTICS_FIELD_TOTAL_STRENGTH == 16, "OFF FJ_OPTICS_FIELD_TOTAL_STRENGTH");
+static FjDiffusionParams optics_diffusion_input(size_t index, size_t base, size_t flag) {
+    FjDiffusionParams out = {0};
+    double* fields[] = {&out.strength, &out.spatial_scale, &out.halo_warmth, &out.core_intensity,
+        &out.core_size, &out.halo_intensity, &out.halo_size, &out.bloom_intensity, &out.bloom_size};
+    out.active = optics_input_flags[index][flag];
+    out.family = optics_input_flags[index][flag + 1];
+    for (size_t i = 0; i < 9; ++i) memcpy(fields[i], &optics_input_doubles[index][base + i], sizeof(double));
+    return out;
+}
+static int optics_fields(const FjSpatialOpticsRecipe* out, size_t index) {
+    const FjDiffusionRecipe* recipes[] = {&out->camera_diffusion, &out->enlarger_diffusion};
+    for (size_t component = 0; component < 2; ++component) {
+        const FjDiffusionRecipe* r = recipes[component];
+        const double values[] = {r->scatter_fraction, r->group_weights[0], r->group_weights[1],
+            r->group_weights[2], r->group_lambda_um[0], r->group_lambda_um[1], r->group_lambda_um[2],
+            r->warmth, r->spatial_scale};
+        for (size_t i = 0; i < 9; ++i) {
+            uint64_t word;
+            memcpy(&word, &values[i], sizeof(word));
+            if (word != optics_doubles[index][component * 9 + i]) return 0;
+        }
+    }
+    const FjHalationRecipe* h = &out->scatter_halation;
+    const float values[] = {out->camera_lens_blur.sigma_um, h->scatter_amount, h->scatter_spatial_scale,
+        h->halation_spatial_scale, h->first_sigma_um[0], h->first_sigma_um[1], h->first_sigma_um[2],
+        h->total_strength[0], h->total_strength[1], h->total_strength[2]};
+    const uint32_t flags[] = {out->camera_diffusion.domain, out->camera_diffusion.active, out->camera_diffusion.family,
+        out->enlarger_diffusion.domain, out->enlarger_diffusion.active, out->enlarger_diffusion.family,
+        h->scatter_active, h->back_reflection_active};
+    const uint64_t hashes[] = {out->camera_diffusion.resolved_hash, out->camera_diffusion.hash,
+        out->enlarger_diffusion.resolved_hash, out->enlarger_diffusion.hash, out->camera_lens_blur.hash, h->hash, out->hash};
+    if (!words(values, optics_floats[index], 10)) return 0;
+    for (size_t i = 0; i < 8; ++i) if (flags[i] != optics_flags[index][i]) return 0;
+    for (size_t i = 0; i < 7; ++i) if (hashes[i] != optics_hashes[index][i]) return 0;
+    return 1;
+}
+static int optics_values(void) {
+    SpatialOpticsPrepare prepare = fj_legacy_spatial_optics_prepare;
+    const uint32_t expected[15][5] = {{0,0,0,0,3},{0,0,0,0,3},{0,0,0,0,3},{0,0,0,0,3},{0,0,0,0,3},{0,0,0,0,3},
+        {3,2,1,2,3},{3,2,1,1,3},{3,2,4,1,3},{3,2,1,2,3},{3,3,2,15,3},{3,4,3,16,0},{3,2,1,13,3},{2,1,0,0,3},{2,1,0,0,3}};
+    for (size_t index = 0; index < 15; ++index) {
+        FjSpatialOpticsParams input = {0};
+        input.camera_diffusion = optics_diffusion_input(index, 0, 0);
+        input.enlarger_diffusion = optics_diffusion_input(index, 9, 2);
+        input.scatter_halation.active = optics_input_flags[index][4];
+        input.print_domain = optics_input_flags[index][5];
+        float* fields[] = {&input.camera_lens_blur_um, &input.scatter_halation.scatter_amount,
+            &input.scatter_halation.scatter_spatial_scale, &input.scatter_halation.halation_amount,
+            &input.scatter_halation.halation_spatial_scale, &input.scatter_halation.first_sigma_um[0],
+            &input.scatter_halation.first_sigma_um[1], &input.scatter_halation.first_sigma_um[2],
+            &input.scatter_halation.primary_amount[0], &input.scatter_halation.primary_amount[1], &input.scatter_halation.primary_amount[2]};
+        for (size_t i = 0; i < 11; ++i) memcpy(fields[i], &optics_input_floats[index][i], sizeof(float));
+        if (index == 13) {
+            CHECK(strcmp(optics_names[index], "optics-raw-boolean") == 0);
+            CHECK(input.camera_diffusion.active == 2);
+            CHECK(input.enlarger_diffusion.active <= 1 && input.scatter_halation.active <= 1
+                && input.print_domain <= 1);
+        }
+        FjSpatialOpticsRecipe out;
+        memset(&out, 0x55, sizeof(out));
+        FjSpatialOpticsFailure failure = {99,98,97,96};
+        FjStatus value = prepare(index == 14 ? NULL : &input, &out, &failure, NULL);
+        CHECK(status(value, expected[index][0]));
+        CHECK(failure.reason == expected[index][1] && failure.component == expected[index][2]
+            && failure.field == expected[index][3] && failure.channel == expected[index][4]);
+        CHECK(optics_fields(&out, index));
+        printf("OPTICS_CASE %s category=%u api=%u native_code=%lld reason=%u component=%u field=%u channel=%u fields=pass\n",
+            optics_names[index], value.category, value.api, (long long)value.native_code,
+            failure.reason, failure.component, failure.field, failure.channel);
+    }
+    return 0;
+}
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -758,6 +927,7 @@ int main(int argc, char** argv) {
     FjPathView duplicate_path = {argv[2], strlen(argv[2]), FJ_PATH_UNIX_BYTES};
 #endif
     CHECK(effects_values() == 0);
+    CHECK(optics_values() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

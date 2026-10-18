@@ -1009,12 +1009,12 @@ pub(crate) unsafe fn bounds(
 }
 
 #[cfg(feature = "test-support")]
-mod faults {
+pub(crate) mod faults {
     use std::cell::Cell;
     use std::sync::atomic::AtomicUsize;
     thread_local! {pub(super) static NEXT:Cell<(u32,u32)>=const{Cell::new((0,0))};}
     pub(super) static LIVE: AtomicUsize = AtomicUsize::new(0);
-    pub(super) fn take(stage: u32) -> u32 {
+    pub(crate) fn take(stage: u32) -> u32 {
         let (selected, fault) = NEXT.get();
         if selected == stage {
             NEXT.set((0, 0));
@@ -1030,6 +1030,10 @@ mod faults {
 extern "C" fn fj_test_film_recipe_fault(stage: u32, fault: u32) -> FjStatus {
     if stage == 5 && fault <= 3 {
         dir::test_support::reject_next(fault);
+        return status(FJ_STATUS_SUCCESS);
+    }
+    if stage == 9 && fault <= 2 {
+        faults::NEXT.set((stage, fault));
         return status(FJ_STATUS_SUCCESS);
     }
     if stage == 8 && fault <= 4 {
@@ -1389,6 +1393,147 @@ unsafe extern "C" fn fj_test_film_recipe_abi_facts(count: *mut usize) -> *const 
         std::mem::offset_of!(FjScratch, strength_min),
         std::mem::offset_of!(FjScratch, strength_max),
         FJ_FILM_RECIPE_EFFECTS_PROBABILITY as usize,
+        size_of::<crate::optics_bridge::FjDiffusionParams>(),
+        align_of::<crate::optics_bridge::FjDiffusionParams>(),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionParams, active),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionParams, family),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionParams, strength),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionParams, spatial_scale),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionParams, halo_warmth),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionParams, core_intensity),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionParams, core_size),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionParams, halo_intensity),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionParams, halo_size),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionParams, bloom_intensity),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionParams, bloom_size),
+        size_of::<crate::optics_bridge::FjHalationParams>(),
+        align_of::<crate::optics_bridge::FjHalationParams>(),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationParams, active),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationParams, scatter_amount),
+        std::mem::offset_of!(
+            crate::optics_bridge::FjHalationParams,
+            scatter_spatial_scale
+        ),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationParams, halation_amount),
+        std::mem::offset_of!(
+            crate::optics_bridge::FjHalationParams,
+            halation_spatial_scale
+        ),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationParams, first_sigma_um),
+        size_of::<[f32; 3]>() / size_of::<f32>(),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationParams, primary_amount),
+        size_of::<[f32; 3]>() / size_of::<f32>(),
+        size_of::<crate::optics_bridge::FjSpatialOpticsParams>(),
+        align_of::<crate::optics_bridge::FjSpatialOpticsParams>(),
+        std::mem::offset_of!(
+            crate::optics_bridge::FjSpatialOpticsParams,
+            camera_diffusion
+        ),
+        std::mem::offset_of!(
+            crate::optics_bridge::FjSpatialOpticsParams,
+            camera_lens_blur_um
+        ),
+        std::mem::offset_of!(
+            crate::optics_bridge::FjSpatialOpticsParams,
+            scatter_halation
+        ),
+        std::mem::offset_of!(
+            crate::optics_bridge::FjSpatialOpticsParams,
+            enlarger_diffusion
+        ),
+        std::mem::offset_of!(crate::optics_bridge::FjSpatialOpticsParams, print_domain),
+        size_of::<crate::optics_bridge::FjDiffusionRecipe>(),
+        align_of::<crate::optics_bridge::FjDiffusionRecipe>(),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionRecipe, domain),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionRecipe, active),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionRecipe, family),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionRecipe, scatter_fraction),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionRecipe, group_weights),
+        size_of::<[f64; 3]>() / size_of::<f64>(),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionRecipe, group_lambda_um),
+        size_of::<[f64; 3]>() / size_of::<f64>(),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionRecipe, warmth),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionRecipe, spatial_scale),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionRecipe, resolved_hash),
+        std::mem::offset_of!(crate::optics_bridge::FjDiffusionRecipe, hash),
+        size_of::<crate::optics_bridge::FjLensBlurRecipe>(),
+        align_of::<crate::optics_bridge::FjLensBlurRecipe>(),
+        std::mem::offset_of!(crate::optics_bridge::FjLensBlurRecipe, sigma_um),
+        std::mem::offset_of!(crate::optics_bridge::FjLensBlurRecipe, hash),
+        size_of::<crate::optics_bridge::FjHalationRecipe>(),
+        align_of::<crate::optics_bridge::FjHalationRecipe>(),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationRecipe, scatter_active),
+        std::mem::offset_of!(
+            crate::optics_bridge::FjHalationRecipe,
+            back_reflection_active
+        ),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationRecipe, scatter_amount),
+        std::mem::offset_of!(
+            crate::optics_bridge::FjHalationRecipe,
+            scatter_spatial_scale
+        ),
+        std::mem::offset_of!(
+            crate::optics_bridge::FjHalationRecipe,
+            halation_spatial_scale
+        ),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationRecipe, first_sigma_um),
+        size_of::<[f32; 3]>() / size_of::<f32>(),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationRecipe, total_strength),
+        size_of::<[f32; 3]>() / size_of::<f32>(),
+        std::mem::offset_of!(crate::optics_bridge::FjHalationRecipe, hash),
+        size_of::<crate::optics_bridge::FjSpatialOpticsRecipe>(),
+        align_of::<crate::optics_bridge::FjSpatialOpticsRecipe>(),
+        std::mem::offset_of!(
+            crate::optics_bridge::FjSpatialOpticsRecipe,
+            camera_diffusion
+        ),
+        std::mem::offset_of!(
+            crate::optics_bridge::FjSpatialOpticsRecipe,
+            camera_lens_blur
+        ),
+        std::mem::offset_of!(
+            crate::optics_bridge::FjSpatialOpticsRecipe,
+            scatter_halation
+        ),
+        std::mem::offset_of!(
+            crate::optics_bridge::FjSpatialOpticsRecipe,
+            enlarger_diffusion
+        ),
+        std::mem::offset_of!(crate::optics_bridge::FjSpatialOpticsRecipe, hash),
+        size_of::<crate::optics_bridge::FjSpatialOpticsFailure>(),
+        align_of::<crate::optics_bridge::FjSpatialOpticsFailure>(),
+        std::mem::offset_of!(crate::optics_bridge::FjSpatialOpticsFailure, reason),
+        std::mem::offset_of!(crate::optics_bridge::FjSpatialOpticsFailure, component),
+        std::mem::offset_of!(crate::optics_bridge::FjSpatialOpticsFailure, field),
+        std::mem::offset_of!(crate::optics_bridge::FjSpatialOpticsFailure, channel),
+        crate::optics_bridge::FJ_OPTICS_REASON_NONE as usize,
+        crate::optics_bridge::FJ_OPTICS_REASON_RAW as usize,
+        crate::optics_bridge::FJ_OPTICS_REASON_DIFFUSION as usize,
+        crate::optics_bridge::FJ_OPTICS_REASON_LENS_BLUR as usize,
+        crate::optics_bridge::FJ_OPTICS_REASON_HALATION as usize,
+        crate::optics_bridge::FJ_OPTICS_REASON_PANIC as usize,
+        crate::optics_bridge::FJ_OPTICS_COMPONENT_NONE as usize,
+        crate::optics_bridge::FJ_OPTICS_COMPONENT_CAMERA_DIFFUSION as usize,
+        crate::optics_bridge::FJ_OPTICS_COMPONENT_CAMERA_LENS_BLUR as usize,
+        crate::optics_bridge::FJ_OPTICS_COMPONENT_SCATTER_HALATION as usize,
+        crate::optics_bridge::FJ_OPTICS_COMPONENT_ENLARGER_DIFFUSION as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_NONE as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_FAMILY as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_STRENGTH as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_SPATIAL_SCALE as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_HALO_WARMTH as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_CORE_INTENSITY as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_CORE_SIZE as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_HALO_INTENSITY as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_HALO_SIZE as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_BLOOM_INTENSITY as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_BLOOM_SIZE as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_SCATTER_FRACTION as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_GROUP_WEIGHTS as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_GROUP_CENTERS as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_RESOLVED_HASH as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_SIGMA_UM as usize,
+        crate::optics_bridge::FJ_OPTICS_FIELD_TOTAL_STRENGTH as usize,
     ];
     if !count.is_null() {
         // SAFETY: Facade caller authorizes the exclusive count output.

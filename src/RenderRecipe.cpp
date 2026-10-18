@@ -78,124 +78,6 @@ namespace {
     }
 
 
-    std::uint64_t hash_diffusion_filter_optics(const DiffusionFilterOpticsRecipe& recipe) {
-        if (!recipe.resolved.active || recipe.resolved.hash == 0) {
-            return 0;
-        }
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, recipe.domain);
-        hash_value(hash, recipe.resolved.hash);
-        return hash;
-    }
-
-    std::uint64_t hash_camera_lens_blur_optics(const CameraLensBlurOpticsRecipe& recipe) {
-        if (!(recipe.sigmaUm > 0.0f)) {
-            return 0;
-        }
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, recipe.sigmaUm);
-        return hash;
-    }
-
-    bool build_spatial_optics_recipe(
-        const Profiles::FilmProfile& profile,
-        const Spektrafilm::SpatialOpticsControls& controls,
-        bool includePrintDomain,
-        SpatialOptics& out,
-        std::string& diagnostic) {
-        out = SpatialOptics{};
-        diagnostic.clear();
-
-        const auto set_diffusion_diagnostic = [&](const char* component,
-                                                  const std::string& resolvedDiagnostic) {
-            constexpr const char kFieldMarker[] = "field=";
-            const std::size_t fieldOffset = resolvedDiagnostic.find(kFieldMarker);
-            const std::string field =
-                fieldOffset == std::string::npos
-                    ? "unknown"
-                    : resolvedDiagnostic.substr(fieldOffset + sizeof(kFieldMarker) - 1);
-            diagnostic = std::string("ResourceDescriptorMismatch phase=6A component=") +
-                         component + " field=" + field;
-        };
-
-        DiffusionFilterOpticsRecipe& cameraDiffusion = out.cameraDiffusion;
-        std::string resolvedDiagnostic;
-        if (!Spektrafilm::resolve_diffusion_filter(
-                controls.cameraDiffusion,
-                cameraDiffusion.resolved,
-                resolvedDiagnostic)) {
-            set_diffusion_diagnostic("camera_diffusion", resolvedDiagnostic);
-            return false;
-        }
-        if (cameraDiffusion.resolved.active) {
-            cameraDiffusion.domain =
-                Spektrafilm::SpatialOpticsDomain::FilmLinearExposure;
-            cameraDiffusion.hash = hash_diffusion_filter_optics(cameraDiffusion);
-        }
-
-        CameraLensBlurOpticsRecipe& lensBlur = out.cameraLensBlur;
-        if (!std::isfinite(controls.cameraLensBlurUm)) {
-            diagnostic =
-                "ResourceDescriptorMismatch phase=6A component=camera_lens_blur field=sigma_um";
-            return false;
-        }
-        lensBlur.sigmaUm = std::max(controls.cameraLensBlurUm, 0.0f);
-        if (lensBlur.sigmaUm > 0.0f) {
-            lensBlur.hash = hash_camera_lens_blur_optics(lensBlur);
-        }
-
-        ScatterHalationOpticsRecipe& scatterHalation = out.scatterHalation;
-        if (!Spektrafilm::resolve_scatter_halation_recipe(
-                controls.scatterHalation,
-                profile.digest,
-                scatterHalation,
-                diagnostic)) {
-            return false;
-        }
-
-        DiffusionFilterOpticsRecipe& enlargerDiffusion = out.enlargerDiffusion;
-        if (includePrintDomain) {
-            if (!Spektrafilm::resolve_diffusion_filter(
-                    controls.enlargerDiffusion,
-                    enlargerDiffusion.resolved,
-                    resolvedDiagnostic)) {
-                set_diffusion_diagnostic("enlarger_diffusion", resolvedDiagnostic);
-                return false;
-            }
-            if (enlargerDiffusion.resolved.active) {
-                enlargerDiffusion.domain =
-                    Spektrafilm::SpatialOpticsDomain::PrintLinearExposure;
-                enlargerDiffusion.hash = hash_diffusion_filter_optics(enlargerDiffusion);
-            }
-        }
-
-        std::uint64_t enabledHash = Hash::kFnvOffset;
-        bool anyEnabled = false;
-        const auto mix_component = [&](Spektrafilm::SpatialOpticsComponent component,
-                                       std::uint64_t componentHash) {
-            if (componentHash == 0) {
-                return;
-            }
-            hash_value(enabledHash, component);
-            hash_value(enabledHash, componentHash);
-            anyEnabled = true;
-        };
-        mix_component(
-            Spektrafilm::SpatialOpticsComponent::CameraDiffusion,
-            cameraDiffusion.hash);
-        mix_component(
-            Spektrafilm::SpatialOpticsComponent::CameraLensBlur,
-            lensBlur.hash);
-        mix_component(
-            Spektrafilm::SpatialOpticsComponent::InEmulsionScatterHalation,
-            scatterHalation.hash);
-        mix_component(
-            Spektrafilm::SpatialOpticsComponent::EnlargerDiffusion,
-            enlargerDiffusion.hash);
-        out.hash = anyEnabled ? enabledHash : 0;
-        return true;
-    }
-
     std::optional<float> sample_synthetic_density(
         float query,
         const std::vector<float>& axis,
@@ -871,9 +753,9 @@ namespace Spektrafilm {
                 return false;
             }
 
-            if (!build_spatial_optics_recipe(
-                    profile,
+            if (!JuicerAssets::prepare_spatial_optics(
                     input.spatialOptics,
+                    profile.digest,
                     scan_route_is_print(input.scanRoute),
                     recipe.spatialOptics,
                     diagnostic)) {

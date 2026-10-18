@@ -5,6 +5,8 @@
 #include <thread>
 #include <bit>
 #include <cstdint>
+#include <cstddef>
+#include <mutex>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -12,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <cstring>
 
 #include <nlohmann/json.hpp>
 
@@ -268,7 +271,32 @@ namespace {
 #include "film_recipe_native_test.inc"
 #include "visual_grain_test.inc"
 #include "physical_effects_test.inc"
+#include "spatial_optics_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && std::string_view(argv[3]) == "optics-products") {
+        const auto manifest = read(argv[2]);
+        const auto selected = manifest.at("presets").at(argv[4]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const OpticsTest::ProductFixtures fixtures{
+            .products = read(directory / selected.at("products").get<std::string>()),
+            .literals = read(directory / selected.at("literal").get<std::string>()),
+            .ofx = read(directory / selected.at("ofx").get<std::string>())};
+        OpticsTest::products(argv[1], fixtures);
+        return 0;
+    }
+    if (argc == 5 && std::string_view(argv[3]) == "optics") {
+        const auto manifest = read(argv[2]);
+        const auto selected = manifest.at("presets").at(argv[4]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const auto captured = read(directory / selected.at("literal").get<std::string>());
+        layouts();
+        OpticsTest::values(captured);
+        OpticsTest::raw_and_faults(captured);
+        OpticsTest::native(captured);
+        std::puts("PASS spatial optics exact values, compiled ABI, facade, failures and native projection");
+        return 0;
+    }
+
     if (argc == 5 && (std::string_view(argv[3]) == "effects" || std::string_view(argv[3]) == "effects-products")) {
         const auto manifest = read(argv[2]);
         const auto selected = manifest.at("presets").at(argv[4]);
