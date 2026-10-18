@@ -942,3 +942,20 @@ capture and each CUDA family, all-off behavior, completed-grain debug suppressio
 and alpha preservation. Both Release testing-OFF production gates compile, link
 and run all nine effects cases against their final native archive. These scoped
 checks do not establish installed Resolve, visual or aggregate acceptance.
+
+`Ffi.Host.SpatialOptics` checks all 553 frozen native literal recipes through the
+production and test facade entries, C11/C++20/Rust layouts and signatures,
+independent raw output admission/clearing, closed failure metadata, diagnostics,
+call-bounded stage-9 panic and actual resolved-hash guard, and complete native
+projection. `Film.Host.SpatialOpticsProducts` checks 32 genuine products and
+four-route publication, first-failure ordering, held states, recovery and authored
+versus resolved identity. The [optics fixtures](film/optics-fixtures/README.md)
+retain separate logical native configurations and immutable raw IEEE words.
+Existing diffusion and scatter/halation fixtures prepare their recipes through
+`fj_test_spatial_optics_prepare`; PSF/frame/operator expectations are unchanged.
+The OFX adapter group compares all 96 captured getter/publication rows. Both
+Release testing-OFF production gates execute 15 optics cases against the actual
+archive, including complete seeded semantic clearing. Compiler privacy retains
+the existing 60-second individual and 240-second boundary deadlines and two
+isolated workers. These checks do not establish installed Resolve or visual
+acceptance.

@@ -1809,3 +1809,22 @@ const _: unsafe extern "C" fn(
     *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_physical_effects_prepare;
+
+/// # Safety
+/// Identical fixed spatial-optics record/diagnostic lifetime and disjointness contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_spatial_optics_prepare(
+    params: *const crate::optics_bridge::FjSpatialOpticsParams,
+    out: *mut crate::optics_bridge::FjSpatialOpticsRecipe,
+    failure: *mut crate::optics_bridge::FjSpatialOpticsFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade forwards to the same checked operation, never a legacy export.
+    unsafe { crate::optics_bridge::prepare(params, out, failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const crate::optics_bridge::FjSpatialOpticsParams,
+    *mut crate::optics_bridge::FjSpatialOpticsRecipe,
+    *mut crate::optics_bridge::FjSpatialOpticsFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_spatial_optics_prepare;

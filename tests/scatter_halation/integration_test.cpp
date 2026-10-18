@@ -39,6 +39,7 @@
 #include "../ffi/juicer_test_api.h"
 #include "ProfileAssets.h"
 #include "ScatterHalation.h"
+#include "spatial_optics_fixture.h"
 #include "Cuda/Film/JuicerCudaScatterHalation.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "nlohmann/json.hpp"
@@ -280,7 +281,7 @@ namespace {
         const Profiles::ProfileDigest& profile) {
         ScatterHalationOpticsRecipe recipe;
         std::string diagnostic;
-        if (!Spektrafilm::resolve_scatter_halation_recipe(
+        if (!JuicerTestSupport::prepare_scatter_halation(
                 controls,
                 profile,
                 recipe,

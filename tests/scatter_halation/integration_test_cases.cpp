@@ -33,6 +33,7 @@
 #include "ProfileAssets.h"
 #include "Scanner.h"
 #include "ScatterHalation.h"
+#include "spatial_optics_fixture.h"
 #include "nlohmann/json.hpp"
 
 extern "C" cudaError_t
@@ -357,7 +358,7 @@ namespace {
             row.profile.halationPrimaryAmount[channel] = parse_float(
                 profile.at("halationPrimaryAmountFloat32Bits").at(channel));
         }
-        if (!Spektrafilm::resolve_scatter_halation_recipe(
+        if (!JuicerTestSupport::prepare_scatter_halation(
                 row.controls, row.profile, row.recipe, diagnostic)) {
             throw std::runtime_error(diagnostic);
         }
@@ -775,7 +776,7 @@ namespace {
         profile.halationFirstSigmaUm = {65.0f, 65.0f, 65.0f};
         profile.halationPrimaryAmount = {0.08f, 0.02f, 0.0f};
         ScatterHalationOpticsRecipe recipe;
-        if (!Spektrafilm::resolve_scatter_halation_recipe(
+        if (!JuicerTestSupport::prepare_scatter_halation(
                 controls, profile, recipe, diagnostic)) {
             throw std::runtime_error(diagnostic);
         }

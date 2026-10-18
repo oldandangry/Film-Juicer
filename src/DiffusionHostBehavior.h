@@ -63,10 +63,6 @@ namespace Spektrafilm {
 
     std::uint64_t hash_diffusion_authored_controls(
         const DiffusionFilterAuthoredControls& controls);
-    bool resolve_diffusion_filter(
-        const DiffusionFilterAuthoredControls& authored,
-        DiffusionFilterResolvedParameters& out,
-        std::string& diagnostic);
     bool build_diffusion_psf_sample_descriptor(
         const DiffusionFilterResolvedParameters& resolved,
         double pixelSizeUm,

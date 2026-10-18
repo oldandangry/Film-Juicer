@@ -105,3 +105,6 @@ tests/film/grain-fixtures/** -text whitespace=cr-at-eol
 
 # Physical-effects native characterization preserves exact words and provenance bytes.
 tests/film/effects-fixtures/** -text whitespace=cr-at-eol
+
+# Spatial-optics native characterization preserves exact words and provenance bytes.
+tests/film/optics-fixtures/** -text whitespace=cr-at-eol

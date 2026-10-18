@@ -68,6 +68,7 @@ namespace JuicerTestSupport {
             bool pendingPrintRoute = false;
             Spektrafilm::ScanRoute pendingRoute = Spektrafilm::kDefaultScanRoute;
             double pendingExposureEv = 0.0;
+            Spektrafilm::SpatialOpticsControls pendingOptics;
             PhysicalEffectsControls pendingEffects;
             float pendingFilmGamma = 0.0f;
             double pendingPrintGamma = 0.0;
@@ -91,6 +92,9 @@ namespace JuicerTestSupport {
                 if (const auto* valid =
                         std::get_if<PendingParamsState::Valid>(&state.pending.value)) {
                     result.pendingValid = true;
+                    result.pendingOptics.cameraDiffusion = valid->params.cameraDiffusion;
+                    result.pendingOptics.enlargerDiffusion = valid->params.enlargerDiffusion;
+                    result.pendingOptics.scatterHalation = valid->params.scatterHalationControls;
                     result.pendingExposureEv =
                         valid->params.cameraExposureCompensationEv;
                     result.pendingFilmGamma = valid->params.filmGammaFactor;
@@ -2701,6 +2705,111 @@ namespace {
                                       std::bit_cast<std::uint32_t>(value.strengthMin),
                                       std::bit_cast<std::uint32_t>(value.strengthMax)});
     }
+    using Json = nlohmann::json;
+    template <class T>
+    Json optics_words(const T& a) {
+        Json out = Json::array();
+        for (auto v : a) {
+            if constexpr (sizeof(v) == 4)
+                out.push_back(std::bit_cast<std::uint32_t>(v));
+            else
+                out.push_back(std::bit_cast<std::uint64_t>(v));
+        }
+        return out;
+    }
+    using OpticsAuthored = Spektrafilm::DiffusionFilterAuthoredControls;
+    std::array<double OpticsAuthored::*, 9> optics_lanes() {
+        return {&OpticsAuthored::strength, &OpticsAuthored::spatialScale, &OpticsAuthored::haloWarmth, &OpticsAuthored::coreIntensity, &OpticsAuthored::coreSize, &OpticsAuthored::haloIntensity, &OpticsAuthored::haloSize, &OpticsAuthored::bloomIntensity, &OpticsAuthored::bloomSize};
+    }
+    Json optics_project(const OpticsAuthored& a) {
+        std::array<double, 9> v{};
+        auto fields = optics_lanes();
+        for (std::size_t i = 0; i < v.size(); ++i)
+            v[i] = a.*fields[i];
+        return {{"active", a.active}, {"family", static_cast<unsigned>(a.family)}, {"f64", optics_words(v)}};
+    }
+    Json optics_project(const DiffusionFilterOpticsRecipe& a) {
+        const auto& r = a.resolved;
+        return {{"domain", static_cast<unsigned>(a.domain)}, {"active", r.active}, {"family", static_cast<unsigned>(r.family)}, {"f64", optics_words(std::array<double, 9>{r.scatterFraction, r.groupWeightsCoreHaloBloom[0], r.groupWeightsCoreHaloBloom[1], r.groupWeightsCoreHaloBloom[2], r.groupCenterLambdaUm[0], r.groupCenterLambdaUm[1], r.groupCenterLambdaUm[2], r.effectiveWarmth, r.spatialScale})}, {"resolved_hash", r.hash}, {"hash", a.hash}};
+    }
+    Json optics_project(const SpatialOptics& a) {
+        const auto& h = a.scatterHalation;
+        return {{"camera", optics_project(a.cameraDiffusion)}, {"lens_f32", std::bit_cast<std::uint32_t>(a.cameraLensBlur.sigmaUm)}, {"lens_hash", a.cameraLensBlur.hash}, {"halation", {{"scatter_active", h.scatterActive}, {"back_reflection_active", h.backReflectionActive}, {"f32", optics_words(std::array<float, 9>{h.scatterAmount, h.scatterSpatialScale, h.halationSpatialScale, h.halationFirstSigmaUm[0], h.halationFirstSigmaUm[1], h.halationFirstSigmaUm[2], h.totalStrength[0], h.totalStrength[1], h.totalStrength[2]})}, {"hash", h.hash}}}, {"enlarger", optics_project(a.enlargerDiffusion)}, {"hash", a.hash}};
+    }
+    struct OpticsCase {
+        Spektrafilm::SpatialOpticsControls controls;
+        Profiles::ProfileDigest digest;
+        bool print = false;
+    };
+    Json optics_inputs(const OpticsCase& c) {
+        const auto& h = c.controls.scatterHalation;
+        return {{"camera", optics_project(c.controls.cameraDiffusion)}, {"lens_f32", std::bit_cast<std::uint32_t>(c.controls.cameraLensBlurUm)}, {"halation_active", h.active}, {"halation_f32", optics_words(std::array<float, 4>{h.scatterAmount, h.scatterSpatialScale, h.halationAmount, h.halationSpatialScale})}, {"first_sigma_f32", optics_words(c.digest.halationFirstSigmaUm)}, {"primary_f32", optics_words(c.digest.halationPrimaryAmount)}, {"enlarger", optics_project(c.controls.enlargerDiffusion)}, {"print", c.print}};
+    }
+
+    void check_optics_capture(const std::filesystem::path& grainManifest, const char* preset) {
+        const auto path = grainManifest.parent_path().parent_path() / "optics-fixtures/manifest.json";
+        std::ifstream manifestStream(path);
+        require(bool(manifestStream), "optics manifest open");
+        const auto manifest = Json::parse(manifestStream);
+        std::ifstream stream(path.parent_path() / manifest.at("presets").at(preset).at("ofx").get<std::string>());
+        require(bool(stream), "optics capture payload open");
+        const auto frozen = Json::parse(stream).at("ofx");
+        require(frozen.size() == 96, "complete frozen optics capture membership");
+        for (unsigned route = 0; route < 4; ++route) {
+            NativeHost host;
+            JuicerEffect effect(host.effect_handle());
+            host.bind_effect(effect);
+            host.set_time(0);
+            host.set_str_choice_value(JuicerParams::kFilmProfileKey, route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f");
+            host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(route % 2 ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
+            const std::array<const char*, 9> camera{JuicerParams::kCameraDiffusionStrength, JuicerParams::kCameraDiffusionSpatialScale, JuicerParams::kCameraDiffusionHaloWarmth, JuicerParams::kCameraDiffusionCoreIntensity, JuicerParams::kCameraDiffusionCoreSize, JuicerParams::kCameraDiffusionHaloIntensity, JuicerParams::kCameraDiffusionHaloSize, JuicerParams::kCameraDiffusionBloomIntensity, JuicerParams::kCameraDiffusionBloomSize};
+            const std::array<const char*, 9> enlarger{JuicerParams::kPrintDiffusionStrength, JuicerParams::kPrintDiffusionSpatialScale, JuicerParams::kPrintDiffusionHaloWarmth, JuicerParams::kPrintDiffusionCoreIntensity, JuicerParams::kPrintDiffusionCoreSize, JuicerParams::kPrintDiffusionHaloIntensity, JuicerParams::kPrintDiffusionHaloSize, JuicerParams::kPrintDiffusionBloomIntensity, JuicerParams::kPrintDiffusionBloomSize};
+            const std::array<const char*, 4> halation{JuicerParams::kHalationScatterAmount, JuicerParams::kHalationScatterSpatialScale, JuicerParams::kHalationAmount, JuicerParams::kHalationSpatialScale};
+            for (int n = 0; n < 24; ++n) {
+                bool enabled = n % 3 != 0;
+                host.set_int_value(JuicerParams::kHalationActive, enabled);
+                host.set_int_value(JuicerParams::kCameraDiffusionEnabled, n % 2);
+                host.set_int_value(JuicerParams::kPrintDiffusionEnabled, n % 2);
+                host.set_int_value(JuicerParams::kCameraDiffusionFamily, n == 20 ? -4 : n == 21 ? 9
+                                                                                                : n % 4);
+                host.set_int_value(JuicerParams::kPrintDiffusionFamily, (n + 1) % 4);
+                for (std::size_t i = 0; i < 9; ++i) {
+                    host.set_double_value(camera[i], i == 2 ? 0.1234567890123 : i == 0 ? 0.731234567890123
+                                                                                       : 1.0);
+                    host.set_double_value(enlarger[i], i == 2 ? 0.0 : i == 0 ? 0.81234567890123
+                                                                             : 1.0);
+                }
+                if (n == 22)
+                    host.set_double_value(JuicerParams::kCameraDiffusionStrength, std::numeric_limits<double>::quiet_NaN());
+                for (const auto* field : halation)
+                    host.set_double_value(field, enabled ? 1.234567890123 : std::numeric_limits<double>::quiet_NaN());
+                if (n == 19)
+                    host.set_double_value(JuicerParams::kHalationAmount, 2.0000000000000004);
+                auto timed = host.at_time_get_count();
+                auto start = host.trace_size();
+                host.dispatch_event(effect, JuicerParams::kGrainActive, OFX::eChangeTime);
+                auto observed = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+                require(host.at_time_get_count() == timed, "current getters");
+                Json getters = Json::array();
+                for (std::size_t i = start; i < host.trace_size(); ++i)
+                    if (host.trace()[i].starts_with("GET_CURRENT"))
+                        getters.push_back(host.trace()[i]);
+                auto admission = JuicerTestSupport::EffectTraceObserver::admit(effect);
+                const RenderRecipe* recipe = admission.printState ? &admission.printState->recipe : admission.directState ? &admission.directState->recipe
+                                                                                                                          : nullptr;
+                OpticsCase captured;
+                captured.controls.cameraDiffusion = observed.pendingOptics.cameraDiffusion;
+                captured.controls.enlargerDiffusion = observed.pendingOptics.enlargerDiffusion;
+                captured.controls.scatterHalation = observed.pendingOptics.scatterHalation;
+                captured.print = route % 2;
+                const auto& expected = frozen.at(route * 24 + n);
+                const Json actual{{"route", route}, {"index", n}, {"pending_valid", observed.pendingValid}, {"pending_invalid", observed.pendingInvalid}, {"pending_diagnostic", observed.pendingDiagnostic}, {"snapshot_hash", observed.pendingFullHash}, {"admitted", recipe != nullptr}, {"input", optics_inputs(captured)}, {"recipe", recipe ? optics_project(recipe->spatialOptics) : Json()}, {"final_hash", recipe ? recipe->hash : 0}, {"getters", getters}};
+                require(actual == expected, "all frozen OFX optics capture/getter/publication fields route=" + std::to_string(route) + " index=" + std::to_string(n));
+            }
+            host.unbind_effect();
+        }
+        std::cout << "PASS adapter/96-frozen-optics-capture-publications-four-routes\n";
+    }
     void check_physical_capture(NativeHost& host, const std::filesystem::path& grainManifest, const char* preset) {
         const auto manifestPath = grainManifest.parent_path().parent_path() / "effects-fixtures/manifest.json";
         std::ifstream manifestStream(manifestPath);
@@ -2780,11 +2889,13 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
         }
         const std::filesystem::path tracePath = argv[2];
         cudaOwner.create(JuicerProcess::data_directory());
-        NativeHost host;
         if (cudaSetDevice(0) != cudaSuccess || cudaFree(nullptr) != cudaSuccess) {
             throw std::runtime_error("CUDA initialization failed");
         }
         JuicerProcess::root().ensure_bootstrap();
+        if (argc == 6)
+            check_optics_capture(argv[4], argv[5]);
+        NativeHost host;
         if (argc == 6)
             check_physical_capture(host, argv[4], argv[5]);
         ParamSnapshot routeSnapshot;

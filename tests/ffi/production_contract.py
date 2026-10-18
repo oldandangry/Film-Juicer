@@ -88,6 +88,7 @@ def execute(arguments):
         b"film development retain fixture panic",
         b"visual grain fixture panic",
         b"physical effects fixture panic",
+        b"spatial optics fixture panic",
         b"film DIR acquire fixture panic",
         b"film DIR view fixture panic",
         b"film DIR release fixture panic",
@@ -126,6 +127,12 @@ def execute(arguments):
     effects_payload = effects_directory / effects_spec["presets"][arguments.preset]["literal"]
     assert digest(effects_payload) == effects_spec["payload_sha256"][effects_payload.name]
     consumed_paths.extend([effects_manifest, effects_payload])
+    optics_directory = root / "tests/film/optics-fixtures"
+    optics_manifest = optics_directory / "manifest.json"
+    optics_spec = json.loads(optics_manifest.read_text())
+    optics_payload = optics_directory / optics_spec["presets"][arguments.preset]["literal"]
+    assert digest(optics_payload) == optics_spec["payload_sha256"][optics_payload.name]
+    consumed_paths.extend([optics_manifest, optics_payload])
     consumed = {str(path): digest(path) for path in sorted(set(consumed_paths))}
 
     def check_consumed():
@@ -163,6 +170,7 @@ def execute(arguments):
         "fj_legacy_film_density_bounds_prepare",
         "fj_legacy_visual_grain_prepare",
         "fj_legacy_physical_effects_prepare",
+        "fj_legacy_spatial_optics_prepare",
         "fj_legacy_output_color",
         "fj_legacy_film_profile_acquire",
         "fj_legacy_print_profile_acquire",
@@ -171,7 +179,7 @@ def execute(arguments):
         assert re.search("\\b" + name + "\\b", symbols), name
     if windows:
         exports = scan(module, "module-exports", "llvm-readobj", ["--coff-exports"])
-        names = re.findall("^\\s*Name: (.+)$", exports, re.M)
+        module_export_names = re.findall("^\\s*Name: (.+)$", exports, re.M)
         scan(
             build / "juicer.pdb",
             "pdb-symbols",
@@ -182,9 +190,9 @@ def execute(arguments):
         exports = scan(
             module, "module-exports", "llvm-nm", ["--dynamic", "--defined-only"]
         )
-        names = [line.split()[-1] for line in exports.splitlines() if line.strip()]
+        module_export_names = [line.split()[-1] for line in exports.splitlines() if line.strip()]
         scan(module, "module-symbols", "llvm-nm", ["--defined-only", "--demangle"])
-    assert sorted(names) == ["OfxGetNumberOfPlugins", "OfxGetPlugin"], names
+    assert sorted(module_export_names) == ["OfxGetNumberOfPlugins", "OfxGetPlugin"], module_export_names
     probes = [
         ("film", fixtures / "production-film.c.in"),
         ("accepted-output-color", fixtures / "production-output-color.c.in"),
@@ -192,6 +200,7 @@ def execute(arguments):
     probe_records = []
     grain_results = []
     effects_results = []
+    optics_results = []
     for name, source in probes:
         executable = out / (name + suffix)
         target_source = out / (name + ".c")
@@ -293,6 +302,27 @@ def execute(arguments):
                 effects_results.append({"case": case, "category": actual[0], "api": actual[1],
                                         "native_code": actual[2], "reason": actual[3],
                                         "channel": actual[4], "sample": actual[5], "fields": "156-pass"})
+            optics_pattern = r"^OPTICS_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) component=(\d+) field=(\d+) channel=(\d+) fields=pass$"
+            optics_case_names = ["optics-active-print", "optics-active-direct", "optics-inactive",
+                     "optics-inactive-negative-zero", "optics-lens-only", "optics-direct-ignored-enlarger",
+                     "optics-off-invalid-camera", "optics-family-before-disabled", "optics-print-invalid-enlarger",
+                     "optics-camera-before-lens", "optics-lens-before-halation", "optics-halation-total-strength",
+                     "optics-diffusion-centers", "optics-raw-boolean", "optics-raw-params"]
+            envelopes = [[0, 0, 0, 0, 0, 0, 3]] * 6 + [
+                [3, 0, 0, 2, 1, 2, 3], [3, 0, 0, 2, 1, 1, 3], [3, 0, 0, 2, 4, 1, 3],
+                [3, 0, 0, 2, 1, 2, 3], [3, 0, 0, 3, 2, 15, 3], [3, 0, 0, 4, 3, 16, 0],
+                [3, 0, 0, 2, 1, 13, 3], [2, 0, 0, 1, 0, 0, 3], [2, 0, 0, 1, 0, 0, 3]]
+            lines = [line for line in output.splitlines() if line.startswith("OPTICS_CASE")]
+            assert len(lines) == 15, lines
+            for line, case, expected_envelope in zip(lines, optics_case_names, envelopes):
+                match = re.fullmatch(optics_pattern, line)
+                assert match is not None and match[1] == case, line
+                actual = [int(value) for value in match.groups()[1:]]
+                assert actual == expected_envelope, line
+                optics_results.append({"case": case, "category": actual[0], "api": actual[1],
+                                       "native_code": actual[2], "reason": actual[3],
+                                       "component": actual[4], "field": actual[5], "channel": actual[6],
+                                       "fields": "pass"})
     for artifact in scanned:
         assert digest(Path(artifact["file"])) == artifact["sha256"], artifact
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -324,13 +354,16 @@ def execute(arguments):
                 "probes": probe_records,
                 "grain_results": grain_results,
                 "effects_results": effects_results,
+                "optics_results": optics_results,
+                "optics_fixture": {"manifest": str(optics_manifest), "payload": str(optics_payload),
+                                   "logical_preset": arguments.preset},
                 "effects_fixture": {"manifest": str(effects_manifest), "payload": str(effects_payload),
                                     "logical_preset": arguments.preset},
                 "commands": {"file": str(out / "commands.json"), "sha256": digest(out / "commands.json")},
                 "command_outputs": {str(out / (row["name"] + suffix)): digest(out / (row["name"] + suffix))
                                     for row in commands for suffix in [".stdout", ".stderr"]},
                 "loaded_module": {"file": str(module), "sha256": digest(module)},
-                "exports": sorted(names),
+                "exports": sorted(module_export_names),
                 "hidden_device_load": True,
                 "limitation": "CUDA_VISIBLE_DEVICES=-1 checks hidden discovery; an absent installed driver is not established.",
             },
@@ -475,6 +508,53 @@ def expected_film_header(out):
             ("effects_hash", [row["recipe"]["hash"] for row in rows], "uint64_t")]:
             stream.write("static const " + ctype + " " + prefix + "[9] = {" + ",".join(("UINT64_C(" + str(word) + ")") if ctype == "uint64_t" else str(word) for word in values) + "};\n")
         stream.write("static const uint32_t effects_coefficients[9][156] = {" + ",".join("{" + ",".join(str(word) + "U" for family in ["film_dust", "film_scratch", "gate_dust", "gate_scratch"] for word in row["recipe"][family]) + "}" for row in rows) + "};\n")
+
+
+    optics_directory = root / "tests/film/optics-fixtures"
+    optics_manifest = json.loads((optics_directory / "manifest.json").read_text())
+    optics_payload = optics_directory / optics_manifest["presets"][arguments.preset]["literal"]
+    assert digest(optics_payload) == optics_manifest["payload_sha256"][optics_payload.name]
+    captured = json.loads(optics_payload.read_text())["cases"]
+    names = ["optics-active-print", "optics-active-direct", "optics-inactive",
+             "optics-inactive-negative-zero", "optics-lens-only", "optics-direct-ignored-enlarger",
+             "optics-off-invalid-camera", "optics-family-before-disabled", "optics-print-invalid-enlarger",
+             "optics-camera-before-lens", "optics-lens-before-halation", "optics-halation-total-strength",
+             "optics-diffusion-centers", "optics-raw-boolean", "optics-raw-params"]
+    rows = [next(row for row in captured if row["id"] == name) for name in names[:13]]
+    # Raw admission clearing is the normative ABI contract; no old partial native failure output is used.
+    rows += [{**rows[0], "input": {**rows[0]["input"],
+                                 "camera": {**rows[0]["input"]["camera"], "active": 2}}, "success": False},
+             {**rows[0], "success": False}]
+    arrays = {name: [] for name in ["input_doubles", "input_floats", "input_flags",
+                                  "doubles", "floats", "flags", "hashes"]}
+    for row in rows:
+        v = row["input"]
+        arrays["input_doubles"].append(v["camera"]["f64"] + v["enlarger"]["f64"])
+        arrays["input_floats"].append([v["lens_f32"]] + v["halation_f32"] + v["first_sigma_f32"] + v["primary_f32"])
+        arrays["input_flags"].append([int(v["camera"]["active"]), v["camera"]["family"],
+                                     int(v["enlarger"]["active"]), v["enlarger"]["family"],
+                                     int(v["halation_active"]), int(v["print"])])
+        if row["success"]:
+            recipe = row["recipe"]
+            c = recipe["camera"]
+            e = recipe["enlarger"]
+            h = recipe["halation"]
+            arrays["doubles"].append(c["f64"] + e["f64"])
+            arrays["floats"].append([recipe["lens_f32"]] + h["f32"])
+            arrays["flags"].append([c["domain"], int(c["active"]), c["family"], e["domain"],
+                                    int(e["active"]), e["family"], int(h["scatter_active"]), int(h["back_reflection_active"])])
+            arrays["hashes"].append([c["resolved_hash"], c["hash"], e["resolved_hash"], e["hash"], recipe["lens_hash"], h["hash"], recipe["hash"]])
+        else:
+            for key, count in [("doubles", 18), ("floats", 10), ("flags", 8), ("hashes", 7)]:
+                arrays[key].append([0] * count)
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write("static const char* optics_names[15] = {" + ",".join(json.dumps(name) for name in names) + "};\n")
+        for name, data in arrays.items():
+            wide = name in {"input_doubles", "doubles", "hashes"}
+            def literal(word):
+                return "UINT64_C(" + str(word) + ")" if wide else str(word) + "U"
+            stream.write("static const " + ("uint64_t" if wide else "uint32_t") + " optics_" + name
+                         + "[15][" + str(len(data[0])) + "] = {" + ",".join("{" + ",".join(literal(word) for word in row) + "}" for row in data) + "};\n")
 
 
 if __name__ == "__main__":

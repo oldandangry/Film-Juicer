@@ -5,7 +5,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 
 #include "Hash.h"
 
@@ -47,12 +46,6 @@ namespace {
     constexpr double kMinimumActiveSigmaPixels = 1.0e-6;
     constexpr double kFirDispatchSigmaPixels = 3.0;
 
-    bool any_positive(const std::array<float, 3>& values) {
-        return std::any_of(values.begin(), values.end(), [](float value) {
-            return value > 0.0f;
-        });
-    }
-
     float canonical_float(float value) {
         return value == 0.0f ? 0.0f : value;
     }
@@ -60,32 +53,6 @@ namespace {
     template <typename T>
     void hash_value(std::uint64_t& hash, const T& value) {
         Hash::hash_bytes_update(hash, &value, sizeof(value));
-    }
-
-    std::uint64_t hash_scatter_halation_recipe(
-        const ScatterHalationOpticsRecipe& recipe) {
-        if (!recipe.scatterActive && !recipe.backReflectionActive) {
-            return 0;
-        }
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, recipe.scatterActive);
-        if (recipe.scatterActive) {
-            hash_value(hash, recipe.scatterAmount);
-            hash_value(hash, recipe.scatterSpatialScale);
-        }
-        hash_value(hash, recipe.backReflectionActive);
-        if (recipe.backReflectionActive) {
-            hash_value(hash, recipe.halationSpatialScale);
-            Hash::hash_bytes_update(
-                hash,
-                recipe.halationFirstSigmaUm.data(),
-                sizeof(recipe.halationFirstSigmaUm));
-            Hash::hash_bytes_update(
-                hash,
-                recipe.totalStrength.data(),
-                sizeof(recipe.totalStrength));
-        }
-        return hash == 0 ? 1 : hash;
     }
 
     bool fail_descriptor(
@@ -224,76 +191,6 @@ namespace Spektrafilm {
         }
 
         out = converted;
-        return true;
-    }
-
-    bool resolve_scatter_halation_recipe(
-        const ScatterHalationControls& controls,
-        const Profiles::ProfileDigest& profileDigest,
-        ScatterHalationOpticsRecipe& out,
-        std::string& outDiagnostic) {
-        out = ScatterHalationOpticsRecipe{};
-        outDiagnostic.clear();
-        if (!controls.active) {
-            return true;
-        }
-
-        const bool fixedScatterSupport =
-            std::any_of(kScatterCoreUm.begin(), kScatterCoreUm.end(), [](double value) {
-                return value > 0.0;
-            }) ||
-            std::any_of(kScatterTailUm.begin(), kScatterTailUm.end(), [](double value) {
-                return value > 0.0;
-            });
-        out.scatterActive = controls.scatterAmount > 0.0f &&
-                            controls.scatterSpatialScale > 0.0f &&
-                            fixedScatterSupport;
-        if (out.scatterActive) {
-            out.scatterAmount = canonical_float(controls.scatterAmount);
-            out.scatterSpatialScale = canonical_float(controls.scatterSpatialScale);
-        }
-
-        out.backReflectionActive = controls.halationAmount > 0.0f &&
-                                   controls.halationSpatialScale > 0.0f &&
-                                   any_positive(profileDigest.halationPrimaryAmount) &&
-                                   any_positive(profileDigest.halationFirstSigmaUm);
-        if (out.backReflectionActive) {
-            out.halationSpatialScale =
-                canonical_float(controls.halationSpatialScale);
-            out.halationFirstSigmaUm = profileDigest.halationFirstSigmaUm;
-            for (std::size_t channel = 0; channel < out.totalStrength.size(); ++channel) {
-                const double strength =
-                    static_cast<double>(profileDigest.halationPrimaryAmount[channel]) *
-                    static_cast<double>(controls.halationAmount);
-                if (!std::isfinite(strength) || strength < 0.0 ||
-                    strength > static_cast<double>(std::numeric_limits<float>::max())) {
-                    out = ScatterHalationOpticsRecipe{};
-                    outDiagnostic =
-                        "ResourceDescriptorMismatch component=scatter_halation "
-                        "field=total_strength channel=" +
-                        std::to_string(channel);
-                    return false;
-                }
-                const float narrowed = static_cast<float>(strength);
-                if (!std::isfinite(narrowed) || narrowed < 0.0f) {
-                    out = ScatterHalationOpticsRecipe{};
-                    outDiagnostic =
-                        "ResourceDescriptorMismatch component=scatter_halation "
-                        "field=total_strength channel=" +
-                        std::to_string(channel);
-                    return false;
-                }
-                out.totalStrength[channel] = canonical_float(narrowed);
-            }
-            if (!any_positive(out.totalStrength)) {
-                out.backReflectionActive = false;
-                out.halationSpatialScale = 0.0f;
-                out.halationFirstSigmaUm = {};
-                out.totalStrength = {};
-            }
-        }
-
-        out.hash = hash_scatter_halation_recipe(out);
         return true;
     }
 

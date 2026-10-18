@@ -235,6 +235,12 @@ set_tests_properties(Ffi.Host.PhysicalEffects PROPERTIES LABELS "host" TIMEOUT 1
 add_test(NAME Film.Host.PhysicalEffectsProducts COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/effects-fixtures/manifest.json" effects-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Film.Host.PhysicalEffectsProducts PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Ffi.Host.SpatialOptics COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/optics-fixtures/manifest.json" optics "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Ffi.Host.SpatialOptics PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Film.Host.SpatialOpticsProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/optics-fixtures/manifest.json" optics-products "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Film.Host.SpatialOpticsProducts PROPERTIES LABELS "host" TIMEOUT 180)
 target_link_libraries(juicer_film_development_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_film_development_test_objects PRIVATE JUICER_FILM_DEVELOPMENT_TEST_HOOK=1)
 add_executable(JuicerFilmDevelopmentTests ffi/film_development_abi_c.c ffi/film_development_test.cpp ffi/spectral_allocation_probe.cpp
@@ -496,6 +502,8 @@ add_dependencies(JuicerCudaTerminalTests juicer_test_resources)
 
 add_executable(JuicerScatterHalationHostTests
     scatter_halation/recipe_descriptor_test.cpp)
+target_sources(JuicerScatterHalationHostTests PRIVATE ffi/spatial_optics_fixture.cpp)
+target_include_directories(JuicerScatterHalationHostTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ffi")
 target_link_libraries(JuicerScatterHalationHostTests PRIVATE
     juicer_core GTest::gtest)
 set_target_properties(JuicerScatterHalationHostTests PROPERTIES
@@ -612,6 +620,8 @@ add_executable(JuicerDiffusionHostReferenceTest
     "${DIFFUSION_GENERATED_HEADER}")
 target_include_directories(JuicerDiffusionHostReferenceTest PRIVATE
     "${DIFFUSION_GENERATED_DIR}")
+target_sources(JuicerDiffusionHostReferenceTest PRIVATE ffi/spatial_optics_fixture.cpp)
+target_include_directories(JuicerDiffusionHostReferenceTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ffi")
 target_link_libraries(JuicerDiffusionHostReferenceTest PRIVATE juicer_core)
 set_target_properties(JuicerDiffusionHostReferenceTest PROPERTIES
     LINKER_LANGUAGE CXX
@@ -816,6 +826,8 @@ target_include_directories(JuicerScatterHalationGpuTests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/scatter_halation")
 target_compile_definitions(JuicerScatterHalationGpuTests PRIVATE
     JUICER_PARAMETER_IDENTITY_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ofx/fixtures/exposure/parameter-identities-${JUICER_TEST_PRESET_NAME}.json")
+target_sources(JuicerScatterHalationGpuTests PRIVATE ffi/spatial_optics_fixture.cpp)
+target_include_directories(JuicerScatterHalationGpuTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ffi")
 target_link_libraries(JuicerScatterHalationGpuTests PRIVATE
     juicer_core CUDA::cuda_driver)
 set_target_properties(JuicerScatterHalationGpuTests PROPERTIES

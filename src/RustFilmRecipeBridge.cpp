@@ -24,6 +24,7 @@ namespace JuicerAssets {
         void view(FjFilmDirView& view);
         void grain(FjVisualGrainRecipe& recipe);
         void effects(FjPhysicalEffectsRecipe& recipe);
+        void optics(FjStatus& status, FjSpatialOpticsFailure& failure, FjSpatialOpticsRecipe& recipe, FjErrorBuffer& error);
     } // namespace RecipeTest
 #endif
     namespace {
@@ -657,4 +658,139 @@ namespace JuicerAssets {
         out = result;
         return true;
     }
+    namespace {
+        FjDiffusionParams bind_optics_diffusion(const Spektrafilm::DiffusionFilterAuthoredControls& v) {
+            return {v.active ? 1u : 0u, static_cast<std::uint32_t>(v.family), v.strength, v.spatialScale, v.haloWarmth, v.coreIntensity, v.coreSize, v.haloIntensity, v.haloSize, v.bloomIntensity, v.bloomSize};
+        }
+        bool optics_failure_valid(FjStatus status, const FjSpatialOpticsFailure& failure) {
+            if (status.api != FJ_API_NONE || status.native_code != 0)
+                return false;
+            const bool empty = failure.component == FJ_OPTICS_COMPONENT_NONE && failure.field == FJ_OPTICS_FIELD_NONE && failure.channel == 3;
+            if (failure.reason == FJ_OPTICS_REASON_NONE)
+                return status.category == FJ_STATUS_SUCCESS && empty;
+            if (failure.reason == FJ_OPTICS_REASON_RAW)
+                return status.category == FJ_STATUS_UNSUPPORTED_INPUT && empty;
+            if (failure.reason == FJ_OPTICS_REASON_PANIC)
+                return status.category == FJ_STATUS_INTERNAL_FAILURE && empty;
+            if (status.category != FJ_STATUS_PREPARATION_FAILURE)
+                return false;
+            if (failure.reason == FJ_OPTICS_REASON_DIFFUSION) {
+                return (failure.component == FJ_OPTICS_COMPONENT_CAMERA_DIFFUSION || failure.component == FJ_OPTICS_COMPONENT_ENLARGER_DIFFUSION) && failure.field >= FJ_OPTICS_FIELD_FAMILY && failure.field <= FJ_OPTICS_FIELD_RESOLVED_HASH && failure.channel == 3;
+            }
+            if (failure.reason == FJ_OPTICS_REASON_LENS_BLUR) {
+                return failure.component == FJ_OPTICS_COMPONENT_CAMERA_LENS_BLUR && failure.field == FJ_OPTICS_FIELD_SIGMA_UM && failure.channel == 3;
+            }
+            return failure.reason == FJ_OPTICS_REASON_HALATION && failure.component == FJ_OPTICS_COMPONENT_SCATTER_HALATION && failure.field == FJ_OPTICS_FIELD_TOTAL_STRENGTH && failure.channel < 3;
+        }
+        const char* optics_field_name(std::uint32_t field) {
+            constexpr std::array<const char*, 17> fields{"none", "family", "strength", "spatial_scale", "halo_warmth", "core_intensity", "core_size", "halo_intensity", "halo_size", "bloom_intensity", "bloom_size", "scatter_fraction", "group_weights", "group_centers_um", "resolved_hash", "sigma_um", "total_strength"};
+            return fields[field];
+        }
+        bool project_optics_diffusion(const FjDiffusionRecipe& wire, DiffusionFilterOpticsRecipe& out) {
+            if (wire.active > 1)
+                return false;
+            switch (wire.domain) {
+                case 0:
+                    out.domain = Spektrafilm::SpatialOpticsDomain::FilmLinearExposure;
+                    break;
+                case 1:
+                    out.domain = Spektrafilm::SpatialOpticsDomain::PrintLinearExposure;
+                    break;
+                default:
+                    return false;
+            }
+            switch (wire.family) {
+                case 0:
+                    out.resolved.family = Spektrafilm::DiffusionFilterFamily::Glimmerglass;
+                    break;
+                case 1:
+                    out.resolved.family = Spektrafilm::DiffusionFilterFamily::BlackProMist;
+                    break;
+                case 2:
+                    out.resolved.family = Spektrafilm::DiffusionFilterFamily::ProMist;
+                    break;
+                case 3:
+                    out.resolved.family = Spektrafilm::DiffusionFilterFamily::Cinebloom;
+                    break;
+                default:
+                    return false;
+            }
+            out.resolved.active = wire.active != 0;
+            out.resolved.scatterFraction = wire.scatter_fraction;
+            std::copy_n(wire.group_weights, 3, out.resolved.groupWeightsCoreHaloBloom.begin());
+            std::copy_n(wire.group_lambda_um, 3, out.resolved.groupCenterLambdaUm.begin());
+            out.resolved.effectiveWarmth = wire.warmth;
+            out.resolved.spatialScale = wire.spatial_scale;
+            out.resolved.hash = wire.resolved_hash;
+            out.hash = wire.hash;
+            return true;
+        }
+    } // namespace
+
+    // SF_TEMP_BRIDGE_SPATIAL_OPTICS: fixed named-field projection; remove S4.E.
+    bool prepare_spatial_optics(const Spektrafilm::SpatialOpticsControls& controls,
+                                const Profiles::ProfileDigest& digest,
+                                bool printDomain,
+                                SpatialOptics& out,
+                                std::string& diagnostic) {
+        out = SpatialOptics{};
+        diagnostic.clear();
+        FjSpatialOpticsParams params{};
+        params.camera_diffusion = bind_optics_diffusion(controls.cameraDiffusion);
+        params.camera_lens_blur_um = controls.cameraLensBlurUm;
+        const auto& h = controls.scatterHalation;
+        params.scatter_halation.active = h.active ? 1u : 0u;
+        params.scatter_halation.scatter_amount = h.scatterAmount;
+        params.scatter_halation.scatter_spatial_scale = h.scatterSpatialScale;
+        params.scatter_halation.halation_amount = h.halationAmount;
+        params.scatter_halation.halation_spatial_scale = h.halationSpatialScale;
+        std::copy_n(digest.halationFirstSigmaUm.begin(), 3, params.scatter_halation.first_sigma_um);
+        std::copy_n(digest.halationPrimaryAmount.begin(), 3, params.scatter_halation.primary_amount);
+        params.enlarger_diffusion = bind_optics_diffusion(controls.enlargerDiffusion);
+        params.print_domain = printDomain ? 1u : 0u;
+        FjSpatialOpticsRecipe wire{};
+        FjSpatialOpticsFailure failure{};
+        std::array<char, 512> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        FjStatus status = fj_legacy_spatial_optics_prepare(&params, &wire, &failure, &error);
+#if defined(JUICER_FILM_RECIPE_TEST_HOOK)
+        RecipeTest::optics(status, failure, wire, error);
+#endif
+        if (error.data != text.data() || error.capacity != text.size() || error.length >= error.capacity || text[error.length] != '\0' || !optics_failure_valid(status, failure))
+            integrity("Spatial optics preparation");
+        if (status.category != FJ_STATUS_SUCCESS) {
+            if (status.category != FJ_STATUS_PREPARATION_FAILURE) {
+                JuicerCuda::Failure rejected;
+                JuicerCuda::set_failure(rejected, status, "Spatial optics preparation");
+                throw JuicerCuda::ExecutionFailure{std::move(rejected)};
+            }
+            if (failure.reason == FJ_OPTICS_REASON_HALATION) {
+                diagnostic = "ResourceDescriptorMismatch component=scatter_halation field=total_strength channel=" + std::to_string(failure.channel);
+            } else {
+                const char* component = failure.component == FJ_OPTICS_COMPONENT_CAMERA_DIFFUSION     ? "camera_diffusion"
+                                        : failure.component == FJ_OPTICS_COMPONENT_ENLARGER_DIFFUSION ? "enlarger_diffusion"
+                                                                                                      : "camera_lens_blur";
+                diagnostic = std::string("ResourceDescriptorMismatch phase=6A component=") + component + " field=" + optics_field_name(failure.field);
+            }
+            return false;
+        }
+        SpatialOptics projected;
+        if (!project_optics_diffusion(wire.camera_diffusion, projected.cameraDiffusion) || !project_optics_diffusion(wire.enlarger_diffusion, projected.enlargerDiffusion) || wire.scatter_halation.scatter_active > 1 || wire.scatter_halation.back_reflection_active > 1)
+            integrity("Spatial optics preparation");
+        projected.cameraLensBlur.sigmaUm = wire.camera_lens_blur.sigma_um;
+        projected.cameraLensBlur.hash = wire.camera_lens_blur.hash;
+        auto& halation = projected.scatterHalation;
+        halation.scatterActive = wire.scatter_halation.scatter_active != 0;
+        halation.backReflectionActive = wire.scatter_halation.back_reflection_active != 0;
+        halation.scatterAmount = wire.scatter_halation.scatter_amount;
+        halation.scatterSpatialScale = wire.scatter_halation.scatter_spatial_scale;
+        halation.halationSpatialScale = wire.scatter_halation.halation_spatial_scale;
+        std::copy_n(wire.scatter_halation.first_sigma_um, 3, halation.halationFirstSigmaUm.begin());
+        std::copy_n(wire.scatter_halation.total_strength, 3, halation.totalStrength.begin());
+        halation.hash = wire.scatter_halation.hash;
+        projected.hash = wire.hash;
+        out = projected;
+        return true;
+    }
+
 } // namespace JuicerAssets

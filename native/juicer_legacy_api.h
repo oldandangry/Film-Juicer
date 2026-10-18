@@ -634,6 +634,137 @@ typedef struct FjFilmRecipeFailure {
 } FjFilmRecipeFailure;
 
 
+/* SF_TEMP_BRIDGE_SPATIAL_OPTICS: complete fixed recipe transport; remove S4.E.
+ * Required records are initialized/live/aligned; every writable output, optional
+ * diagnostic record and positive-capacity backing is exclusive, mutually disjoint
+ * and disjoint from input storage until synchronous return. No pointer is retained.
+ * Checked size/address/PTRDIFF_MAX/alignment admission does not prove actual
+ * allocation validity, initialization or disjointness. Rejected numeric pointer
+ * representations are never dereferenced. Every independently admitted result
+ * clears every semantic field to integer/+float zero before other admission;
+ * padding is unspecified. Admitted failure starts NONE/NONE/NONE/channel=3.
+ * error=NULL is supported; admitted length initializes to zero. Capacity zero
+ * never reads backing. Positive capacity requires bounded valid backing and emits
+ * at most capacity-1 bytes plus NUL; length excludes NUL. Absent/truncated text
+ * changes neither status nor typed failure. All statuses use API_NONE/code=0.
+ * Admission order: independent output clearing; diagnostics/required records;
+ * declaration-order input booleans (all four are 0/1); owning recipe stages.
+ * Family/numeric semantics are constructor-owned, including direct-route omission
+ * of enlarger content. Wire uint32 flags/tags are NOT the native one-byte hash
+ * inputs. Inactive successful diffusion retains family=1/domain=0; raw clearing
+ * uses family=0. A successful inactive lens may retain negative zero.
+ * Success: SUCCESS/NONE/NONE/NONE/3. Raw: UNSUPPORTED_INPUT/RAW/NONE/NONE/3.
+ * Construction failure: PREPARATION_FAILURE with closed component/field metadata.
+ * Panic: INTERNAL_FAILURE/PANIC/NONE/NONE/3. Only TOTAL_STRENGTH has RGB channel
+ * 0..2; all other fields use 3. Fixed construction has no allocation status.
+ */
+#define FJ_OPTICS_REASON_NONE UINT32_C(0)
+#define FJ_OPTICS_REASON_RAW UINT32_C(1)
+#define FJ_OPTICS_REASON_DIFFUSION UINT32_C(2)
+#define FJ_OPTICS_REASON_LENS_BLUR UINT32_C(3)
+#define FJ_OPTICS_REASON_HALATION UINT32_C(4)
+#define FJ_OPTICS_REASON_PANIC UINT32_C(5)
+#define FJ_OPTICS_COMPONENT_NONE UINT32_C(0)
+#define FJ_OPTICS_COMPONENT_CAMERA_DIFFUSION UINT32_C(1)
+#define FJ_OPTICS_COMPONENT_CAMERA_LENS_BLUR UINT32_C(2)
+#define FJ_OPTICS_COMPONENT_SCATTER_HALATION UINT32_C(3)
+#define FJ_OPTICS_COMPONENT_ENLARGER_DIFFUSION UINT32_C(4)
+#define FJ_OPTICS_FIELD_NONE UINT32_C(0)
+#define FJ_OPTICS_FIELD_FAMILY UINT32_C(1)
+#define FJ_OPTICS_FIELD_STRENGTH UINT32_C(2)
+#define FJ_OPTICS_FIELD_SPATIAL_SCALE UINT32_C(3)
+#define FJ_OPTICS_FIELD_HALO_WARMTH UINT32_C(4)
+#define FJ_OPTICS_FIELD_CORE_INTENSITY UINT32_C(5)
+#define FJ_OPTICS_FIELD_CORE_SIZE UINT32_C(6)
+#define FJ_OPTICS_FIELD_HALO_INTENSITY UINT32_C(7)
+#define FJ_OPTICS_FIELD_HALO_SIZE UINT32_C(8)
+#define FJ_OPTICS_FIELD_BLOOM_INTENSITY UINT32_C(9)
+#define FJ_OPTICS_FIELD_BLOOM_SIZE UINT32_C(10)
+#define FJ_OPTICS_FIELD_SCATTER_FRACTION UINT32_C(11)
+#define FJ_OPTICS_FIELD_GROUP_WEIGHTS UINT32_C(12)
+#define FJ_OPTICS_FIELD_GROUP_CENTERS UINT32_C(13)
+#define FJ_OPTICS_FIELD_RESOLVED_HASH UINT32_C(14)
+#define FJ_OPTICS_FIELD_SIGMA_UM UINT32_C(15)
+#define FJ_OPTICS_FIELD_TOTAL_STRENGTH UINT32_C(16)
+
+typedef struct FjDiffusionParams {
+    uint32_t active;
+    uint32_t family;
+    double strength;
+    double spatial_scale;
+    double halo_warmth;
+    double core_intensity;
+    double core_size;
+    double halo_intensity;
+    double halo_size;
+    double bloom_intensity;
+    double bloom_size;
+} FjDiffusionParams;
+
+typedef struct FjHalationParams {
+    uint32_t active;
+    float scatter_amount;
+    float scatter_spatial_scale;
+    float halation_amount;
+    float halation_spatial_scale;
+    float first_sigma_um[3];
+    float primary_amount[3];
+} FjHalationParams;
+
+typedef struct FjSpatialOpticsParams {
+    FjDiffusionParams camera_diffusion;
+    float camera_lens_blur_um;
+    FjHalationParams scatter_halation;
+    FjDiffusionParams enlarger_diffusion;
+    uint32_t print_domain;
+} FjSpatialOpticsParams;
+
+typedef struct FjDiffusionRecipe {
+    uint32_t domain;
+    uint32_t active;
+    uint32_t family;
+    double scatter_fraction;
+    double group_weights[3];
+    double group_lambda_um[3];
+    double warmth;
+    double spatial_scale;
+    uint64_t resolved_hash;
+    uint64_t hash;
+} FjDiffusionRecipe;
+
+typedef struct FjLensBlurRecipe {
+    float sigma_um;
+    uint64_t hash;
+} FjLensBlurRecipe;
+
+typedef struct FjHalationRecipe {
+    uint32_t scatter_active;
+    uint32_t back_reflection_active;
+    float scatter_amount;
+    float scatter_spatial_scale;
+    float halation_spatial_scale;
+    float first_sigma_um[3];
+    float total_strength[3];
+    uint64_t hash;
+} FjHalationRecipe;
+
+typedef struct FjSpatialOpticsRecipe {
+    FjDiffusionRecipe camera_diffusion;
+    FjLensBlurRecipe camera_lens_blur;
+    FjHalationRecipe scatter_halation;
+    FjDiffusionRecipe enlarger_diffusion;
+    uint64_t hash;
+} FjSpatialOpticsRecipe;
+
+typedef struct FjSpatialOpticsFailure {
+    uint32_t reason;
+    uint32_t component;
+    uint32_t field;
+    uint32_t channel;
+} FjSpatialOpticsFailure;
+
+FjStatus fj_legacy_spatial_optics_prepare(const FjSpatialOpticsParams* params, FjSpatialOpticsRecipe* out_recipe, FjSpatialOpticsFailure* out_failure, FjErrorBuffer* error);
+
 /* SF_TEMP_BRIDGE_PHYSICAL_EFFECTS: completed fixed recipe transport; remove S4.E.
  * Call records/backing must be initialized, live, aligned, mutually disjoint and
  * exclusive where writable. Extent admission cannot prove allocation or lifetime.

@@ -80,3 +80,9 @@ mod reconstruction_bridge;
     reason = "the gamut edge checks fixed foreign operands, optional diagnostics and synchronous result copies"
 )]
 mod gamut_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "fixed optics transport admits foreign extents and commits complete synchronous stack values"
+)]
+mod optics_bridge;

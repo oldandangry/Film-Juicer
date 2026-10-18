@@ -87,11 +87,6 @@ namespace Spektrafilm {
         ScatterHalationControls& out,
         std::string& outDiagnostic);
 
-    bool resolve_scatter_halation_recipe(
-        const ScatterHalationControls& controls,
-        const Profiles::ProfileDigest& profileDigest,
-        ScatterHalationOpticsRecipe& out,
-        std::string& outDiagnostic);
 
     bool build_scatter_halation_frame_descriptor(
         const ScatterHalationOpticsRecipe& recipe,

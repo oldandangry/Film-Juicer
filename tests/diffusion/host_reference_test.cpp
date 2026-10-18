@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <exception>
 #include <iostream>
 #include <limits>
 #include <numbers>
@@ -12,6 +14,7 @@
 #include <vector>
 
 #include "DiffusionHostBehavior.h"
+#include "spatial_optics_fixture.h"
 #include "reference_cases.h"
 
 namespace {
@@ -125,7 +128,7 @@ namespace {
         Spektrafilm::DiffusionFilterResolvedParameters& resolved,
         std::string_view name) {
         std::string diagnostic;
-        if (!Spektrafilm::resolve_diffusion_filter(authored, resolved, diagnostic)) {
+        if (!JuicerTestSupport::prepare_diffusion_filter(authored, resolved, diagnostic)) {
             fail_text(name, "resolve", diagnostic.empty() ? "no diagnostic" : diagnostic);
             return false;
         }
@@ -782,7 +785,7 @@ namespace {
         Spektrafilm::DiffusionFilterResolvedParameters resolved{};
         std::string diagnostic;
         check_false(
-            Spektrafilm::resolve_diffusion_filter(authored, resolved, diagnostic),
+            JuicerTestSupport::prepare_diffusion_filter(authored, resolved, diagnostic),
             "invalid:family",
             "resolve");
 
@@ -804,7 +807,7 @@ namespace {
                 authored.*fields[field] = invalidValues[value];
                 diagnostic.clear();
                 check_false(
-                    Spektrafilm::resolve_diffusion_filter(authored, resolved, diagnostic),
+                    JuicerTestSupport::prepare_diffusion_filter(authored, resolved, diagnostic),
                     "invalid:numeric",
                     std::string("field=") + std::to_string(field) +
                         " value=" + std::to_string(value));
@@ -886,7 +889,7 @@ namespace {
 
 } // namespace
 
-int main() {
+int main() try {
     test_strength_cases();
     test_family_cases();
     test_warmth_cases();
@@ -912,4 +915,10 @@ int main() {
               << " psf=" << DiffusionHostReference::kPsfCases.size()
               << '\n';
     return 0;
+} catch (const std::exception& error) {
+    std::fprintf(stderr, "HOST_BEHAVIOR_CONTRACT=FAIL exception=%s\n", error.what());
+    return 1;
+} catch (...) {
+    std::fputs("HOST_BEHAVIOR_CONTRACT=FAIL unknown_exception\n", stderr);
+    return 1;
 }

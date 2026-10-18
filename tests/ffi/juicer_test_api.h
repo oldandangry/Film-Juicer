@@ -310,6 +310,8 @@ FjStatus fj_test_film_dir_view(
     FjErrorBuffer* error);
 FjStatus fj_test_film_dir_release(
     FjFilmDirOwner* dir, FjErrorBuffer* error);
+/* Identical fixed spatial-optics contract; forwards to the checked producer. */
+FjStatus fj_test_spatial_optics_prepare(const FjSpatialOpticsParams* params, FjSpatialOpticsRecipe* out_recipe, FjSpatialOpticsFailure* out_failure, FjErrorBuffer* error);
 FjStatus fj_test_physical_effects_prepare(
     const FjPhysicalEffectsParams* params,
     FjPhysicalEffectsRecipe* out_recipe,
