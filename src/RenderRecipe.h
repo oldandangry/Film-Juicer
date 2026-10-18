@@ -596,6 +596,15 @@ struct DefectScratchRecipe final {
     float strengthMax = 0.0f;
 };
 
+// SF_TEMP_BRIDGE_PHYSICAL_EFFECTS: captured controls only; remove S4.E.
+struct PhysicalEffectsControls final {
+    float filmDustAmount = 0.0f;
+    float filmScratchAmount = 0.0f;
+    float gateDustAmount = 0.0f;
+    float gateScratchAmount = 0.0f;
+    double gateWeaveAmount = 0.0;
+};
+
 struct FilmJuicerEffectsRecipe final {
     DefectDustRecipe filmDust{};
     DefectScratchRecipe filmScratch{};

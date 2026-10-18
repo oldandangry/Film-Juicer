@@ -229,6 +229,29 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_effects_are_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("effects_complete", None),
+            ("effects_default", {"E0599": ("effects::Recipe::default()", "effects::Dust::default()", "effects::Scratch::default()")}),
+            ("effects_private", {
+                "E0616": ("recipe.film_dust", "dust.cell_width_mm", "scratch.length_min_mm"),
+                "E0624": ("effects::Recipe::zero()", "effects::Dust::new", "effects::Scratch::new"),
+            }),
+            ("effects_construction", {"E0451": ("effects::Recipe { ..recipe }", "effects::Dust { ..dust }", "effects::Scratch { ..scratch }")}),
+            ("effects_readonly", {"E0594": ("*recipe.film_dust() = dust", "*recipe.gate_scratch() = scratch")}),
+            ("effects_owned", None),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_film_grain_is_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("film_grain_complete", None),
@@ -350,7 +373,9 @@ class RustBoundaryTests(unittest.TestCase):
                      "hash_dir_couplers_recipe", "build_film_density_bounds", "hash_nan_preserving_floats",
                      "build_visual_grain_recipe", "hash_visual_grain_recipe",
                      "derive_grain_layer_axis_search_metadata", "finite_nonnegative_grain_triplet",
-                     "finite_positive_triplet", "finite_nonnegative_pair"):
+                     "finite_positive_triplet", "finite_nonnegative_pair",
+                     "normalize_effect_amount", "hash_defect_policy",
+                     "hash_film_juicer_effects_recipe", "build_film_juicer_effects_recipe"):
             self.assertFalse(definition(name, recipe), name)
             self.assertTrue(definition(name, "bool " + name + "(const Recipe& recipe) { return true; }"))
             self.assertFalse(definition(name, "bool " + name + "(const Recipe& recipe);"))
@@ -362,8 +387,10 @@ class RustBoundaryTests(unittest.TestCase):
         foundation = recipe[start:end]
         stages = [foundation.index(name) for name in ("build_spatial_optics_recipe(",
                   "prepare_film_density_minimum(", "prepare_visual_grain(",
-                  "build_film_juicer_effects_recipe(", "prepare_film_dir(", "prepare_film_density_bounds(")]
+                  "prepare_physical_effects(", "prepare_film_dir(", "prepare_film_density_bounds(")]
         self.assertEqual(stages, sorted(stages))
+        self.assertEqual(recipe.count("JuicerAssets::prepare_physical_effects("), 1)
+        self.assertLess(foundation.index("recipe.filmDevelop = std::move(input.filmDevelop)"), foundation.index("prepare_visual_grain("))
         self.assertIn("input.grainContract, recipe.grainContract", foundation)
         bounds = foundation[stages[-1]:]
         self.assertIn("input.grainContract", bounds)

@@ -267,7 +267,24 @@ namespace {
 } // namespace
 #include "film_recipe_native_test.inc"
 #include "visual_grain_test.inc"
+#include "physical_effects_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "effects" || std::string_view(argv[3]) == "effects-products")) {
+        const auto manifest = read(argv[2]);
+        const auto selected = manifest.at("presets").at(argv[4]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        if (std::string_view(argv[3]) == "effects-products")
+            effects_products(argv[1], read(directory / selected.at("products").get<std::string>()));
+        else {
+            const auto captured = read(directory / selected.at("literal").get<std::string>());
+            layouts();
+            effects_values(captured);
+            effects_failures(captured.at("cases")[0].at("recipe"));
+            effects_native(captured);
+        }
+        std::puts("PASS physical effects exact value/ABI/facade/failure/projection cohort");
+        return 0;
+    }
     if (argc == 5 && (std::string_view(argv[3]) == "grain" || std::string_view(argv[3]) == "grain-products")) {
         const auto manifest = read(argv[2]);
         const std::filesystem::path directory = std::filesystem::path(argv[2]).parent_path();

@@ -23,6 +23,7 @@ namespace JuicerAssets {
         void after_call(unsigned operation, FjStatus& status, FjFilmRecipeFailure& failure);
         void view(FjFilmDirView& view);
         void grain(FjVisualGrainRecipe& recipe);
+        void effects(FjPhysicalEffectsRecipe& recipe);
     } // namespace RecipeTest
 #endif
     namespace {
@@ -31,7 +32,8 @@ namespace JuicerAssets {
             Acquire,
             View,
             Bounds,
-            Grain
+            Grain,
+            Effects
         };
 
         [[noreturn]] void integrity(std::string_view operation) {
@@ -179,6 +181,178 @@ namespace JuicerAssets {
                 integrity(operation_name(operation));
             return translate(operation, status, failure, profile, route, samples, diagnostic);
         }
+        bool project_policy(const FjDust& source, DefectDustRecipe& out) {
+            const std::array coefficients{
+                source.cell_width_mm,
+                source.cell_height_mm,
+                source.slot_probability,
+                source.softness_min_mm,
+                source.softness_max_mm,
+                source.softness_size_cap_fraction,
+                source.support_x_mm,
+                source.support_y_mm,
+                source.fiber_fraction,
+                source.fiber_drift_fraction,
+                source.fiber_first_knot_min,
+                source.fiber_first_knot_max,
+                source.fiber_second_knot_min,
+                source.fiber_second_knot_max,
+                source.fiber_interior_width_min_fraction,
+                source.fiber_interior_width_max_fraction,
+                source.diameter_min_mm,
+                source.diameter_bulk_max_mm,
+                source.diameter_max_mm,
+                source.diameter_tail_fraction,
+                source.fiber_length_min_mm,
+                source.fiber_length_max_mm,
+                source.fiber_width_min_mm,
+                source.fiber_width_max_mm,
+                source.opacity_faint_cumulative,
+                source.opacity_intermediate_cumulative,
+                source.compact_opacity_min,
+                source.compact_opacity_faint_end,
+                source.compact_opacity_intermediate_end,
+                source.compact_opacity_max,
+                source.fiber_opacity_min,
+                source.fiber_opacity_faint_end,
+                source.fiber_opacity_intermediate_end,
+                source.fiber_opacity_max,
+                source.compact_dominant_aspect_min,
+                source.compact_dominant_aspect_max,
+                source.compact_subsidiary_scale_min,
+                source.compact_subsidiary_scale_max,
+                source.compact_subsidiary_aspect_min,
+                source.compact_subsidiary_aspect_max,
+                source.compact_subsidiary_offset_max,
+                source.compact_subsidiary_angle_max_radians};
+            if (!std::all_of(coefficients.begin(), coefficients.end(), [](float coefficient) {
+                    return std::isfinite(coefficient);
+                }))
+                return false;
+            out.cellWidthMm = source.cell_width_mm;
+            out.cellHeightMm = source.cell_height_mm;
+            out.slotProbability = source.slot_probability;
+            out.softnessMinMm = source.softness_min_mm;
+            out.softnessMaxMm = source.softness_max_mm;
+            out.softnessSizeCapFraction = source.softness_size_cap_fraction;
+            out.supportXMm = source.support_x_mm;
+            out.supportYMm = source.support_y_mm;
+            out.fiberFraction = source.fiber_fraction;
+            out.fiberDriftFraction = source.fiber_drift_fraction;
+            out.fiberFirstKnotMin = source.fiber_first_knot_min;
+            out.fiberFirstKnotMax = source.fiber_first_knot_max;
+            out.fiberSecondKnotMin = source.fiber_second_knot_min;
+            out.fiberSecondKnotMax = source.fiber_second_knot_max;
+            out.fiberInteriorWidthMinFraction = source.fiber_interior_width_min_fraction;
+            out.fiberInteriorWidthMaxFraction = source.fiber_interior_width_max_fraction;
+            out.diameterMinMm = source.diameter_min_mm;
+            out.diameterBulkMaxMm = source.diameter_bulk_max_mm;
+            out.diameterMaxMm = source.diameter_max_mm;
+            out.diameterTailFraction = source.diameter_tail_fraction;
+            out.fiberLengthMinMm = source.fiber_length_min_mm;
+            out.fiberLengthMaxMm = source.fiber_length_max_mm;
+            out.fiberWidthMinMm = source.fiber_width_min_mm;
+            out.fiberWidthMaxMm = source.fiber_width_max_mm;
+            out.opacityFaintCumulative = source.opacity_faint_cumulative;
+            out.opacityIntermediateCumulative = source.opacity_intermediate_cumulative;
+            out.compactOpacityMin = source.compact_opacity_min;
+            out.compactOpacityFaintEnd = source.compact_opacity_faint_end;
+            out.compactOpacityIntermediateEnd = source.compact_opacity_intermediate_end;
+            out.compactOpacityMax = source.compact_opacity_max;
+            out.fiberOpacityMin = source.fiber_opacity_min;
+            out.fiberOpacityFaintEnd = source.fiber_opacity_faint_end;
+            out.fiberOpacityIntermediateEnd = source.fiber_opacity_intermediate_end;
+            out.fiberOpacityMax = source.fiber_opacity_max;
+            out.compactDominantAspectMin = source.compact_dominant_aspect_min;
+            out.compactDominantAspectMax = source.compact_dominant_aspect_max;
+            out.compactSubsidiaryScaleMin = source.compact_subsidiary_scale_min;
+            out.compactSubsidiaryScaleMax = source.compact_subsidiary_scale_max;
+            out.compactSubsidiaryAspectMin = source.compact_subsidiary_aspect_min;
+            out.compactSubsidiaryAspectMax = source.compact_subsidiary_aspect_max;
+            out.compactSubsidiaryOffsetMax = source.compact_subsidiary_offset_max;
+            out.compactSubsidiaryAngleMaxRadians = source.compact_subsidiary_angle_max_radians;
+            return true;
+        }
+        bool project_policy(const FjScratch& source, DefectScratchRecipe& out) {
+            const std::array coefficients{
+                source.cell_width_mm,
+                source.cell_height_mm,
+                source.slot_probability,
+                source.softness_min_mm,
+                source.softness_max_mm,
+                source.softness_size_cap_fraction,
+                source.support_x_mm,
+                source.support_y_mm,
+                source.length_min_mm,
+                source.length_bulk_max_mm,
+                source.length_max_mm,
+                source.length_tail_fraction,
+                source.width_min_mm,
+                source.width_bulk_max_mm,
+                source.width_max_mm,
+                source.width_tail_fraction,
+                source.drift_fraction,
+                source.first_knot_min,
+                source.first_knot_max,
+                source.second_knot_min,
+                source.second_knot_max,
+                source.interior_width_min_fraction,
+                source.interior_width_max_fraction,
+                source.interior_depth_min_fraction,
+                source.interior_depth_max_fraction,
+                source.endpoint_abrupt_probability,
+                source.interruption_probability,
+                source.gap_center_min,
+                source.gap_center_max,
+                source.gap_span_min,
+                source.gap_span_max,
+                source.scuff_probability,
+                source.scuff_length_max_mm,
+                source.scuff_angle_max_radians,
+                source.strength_min,
+                source.strength_max};
+            if (!std::all_of(coefficients.begin(), coefficients.end(), [](float coefficient) {
+                    return std::isfinite(coefficient);
+                }))
+                return false;
+            out.cellWidthMm = source.cell_width_mm;
+            out.cellHeightMm = source.cell_height_mm;
+            out.slotProbability = source.slot_probability;
+            out.softnessMinMm = source.softness_min_mm;
+            out.softnessMaxMm = source.softness_max_mm;
+            out.softnessSizeCapFraction = source.softness_size_cap_fraction;
+            out.supportXMm = source.support_x_mm;
+            out.supportYMm = source.support_y_mm;
+            out.lengthMinMm = source.length_min_mm;
+            out.lengthBulkMaxMm = source.length_bulk_max_mm;
+            out.lengthMaxMm = source.length_max_mm;
+            out.lengthTailFraction = source.length_tail_fraction;
+            out.widthMinMm = source.width_min_mm;
+            out.widthBulkMaxMm = source.width_bulk_max_mm;
+            out.widthMaxMm = source.width_max_mm;
+            out.widthTailFraction = source.width_tail_fraction;
+            out.driftFraction = source.drift_fraction;
+            out.firstKnotMin = source.first_knot_min;
+            out.firstKnotMax = source.first_knot_max;
+            out.secondKnotMin = source.second_knot_min;
+            out.secondKnotMax = source.second_knot_max;
+            out.interiorWidthMinFraction = source.interior_width_min_fraction;
+            out.interiorWidthMaxFraction = source.interior_width_max_fraction;
+            out.interiorDepthMinFraction = source.interior_depth_min_fraction;
+            out.interiorDepthMaxFraction = source.interior_depth_max_fraction;
+            out.endpointAbruptProbability = source.endpoint_abrupt_probability;
+            out.interruptionProbability = source.interruption_probability;
+            out.gapCenterMin = source.gap_center_min;
+            out.gapCenterMax = source.gap_center_max;
+            out.gapSpanMin = source.gap_span_min;
+            out.gapSpanMax = source.gap_span_max;
+            out.scuffProbability = source.scuff_probability;
+            out.scuffLengthMaxMm = source.scuff_length_max_mm;
+            out.scuffAngleMaxRadians = source.scuff_angle_max_radians;
+            out.strengthMin = source.strength_min;
+            out.strengthMax = source.strength_max;
+            return true;
+        }
         bool valid_grain_projection(const FjVisualGrainRecipe& value, const VisualGrainControls& controls) {
             if (value.active > 1 || value.sublayers_active > 1 || value.active != (controls.active ? 1u : 0u) ||
                 value.sublayers_active != (controls.active && controls.sublayersActive ? 1u : 0u))
@@ -310,6 +484,48 @@ namespace JuicerAssets {
         result.debugView = prepared.debug_view;
         result.fineWeight = prepared.fine_weight;
         result.densityCurvesLayersHash = prepared.layers_hash;
+        result.hash = prepared.hash;
+        out = result;
+        return true;
+    }
+
+    bool prepare_physical_effects(const PhysicalEffectsControls& controls, const VisualGrainRecipe& grain, FilmJuicerEffectsRecipe& out, std::string& diagnostic) {
+        out = FilmJuicerEffectsRecipe{};
+        diagnostic.clear();
+        const FjPhysicalEffectsParams params{controls.filmDustAmount, controls.filmScratchAmount, controls.gateDustAmount, controls.gateScratchAmount, controls.gateWeaveAmount, grain.active ? 1u : 0u, grain.debugView};
+        FjPhysicalEffectsRecipe prepared{};
+        FjFilmRecipeFailure failure{};
+        std::array<char, 1024> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        auto status = fj_legacy_physical_effects_prepare(&params, &prepared, &failure, &error);
+#if defined(JUICER_FILM_RECIPE_TEST_HOOK)
+        RecipeTest::after_call(static_cast<unsigned>(Operation::Effects), status, failure);
+        RecipeTest::effects(prepared);
+#endif
+        const bool envelope = status.api == FJ_API_NONE && status.native_code == 0 && failure.channel == 3 && failure.sample == UINT64_MAX &&
+                              ((status.category == FJ_STATUS_SUCCESS && failure.reason == FJ_FILM_RECIPE_REASON_NONE) ||
+                               (status.category == FJ_STATUS_UNSUPPORTED_INPUT && failure.reason == FJ_FILM_RECIPE_RAW) ||
+                               (status.category == FJ_STATUS_PREPARATION_FAILURE && failure.reason == FJ_FILM_RECIPE_EFFECTS_PROBABILITY) ||
+                               (status.category == FJ_STATUS_INTERNAL_FAILURE && failure.reason == FJ_FILM_RECIPE_PANIC));
+        if (!envelope || error.length >= error.capacity)
+            integrity("Physical effects preparation");
+        if (status.category == FJ_STATUS_PREPARATION_FAILURE) {
+            diagnostic = "ResourceDescriptorMismatch phase=effects_recipe field=physical_policy";
+            return false;
+        }
+        if (status.category != FJ_STATUS_SUCCESS) {
+            JuicerCuda::Failure rejected;
+            JuicerCuda::set_failure(rejected, status, "Physical effects preparation");
+            throw JuicerCuda::ExecutionFailure{std::move(rejected)};
+        }
+        if (prepared.active > 1 || !std::isfinite(prepared.gate_weave_amount))
+            integrity("Physical effects preparation");
+        FilmJuicerEffectsRecipe result;
+        if (!project_policy(prepared.film_dust, result.filmDust) || !project_policy(prepared.film_scratch, result.filmScratch) ||
+            !project_policy(prepared.gate_dust, result.gateDust) || !project_policy(prepared.gate_scratch, result.gateScratch))
+            integrity("Physical effects preparation");
+        result.gateWeaveAmount = prepared.gate_weave_amount;
+        result.active = prepared.active != 0;
         result.hash = prepared.hash;
         out = result;
         return true;

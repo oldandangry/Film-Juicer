@@ -310,6 +310,12 @@ FjStatus fj_test_film_dir_view(
     FjErrorBuffer* error);
 FjStatus fj_test_film_dir_release(
     FjFilmDirOwner* dir, FjErrorBuffer* error);
+FjStatus fj_test_physical_effects_prepare(
+    const FjPhysicalEffectsParams* params,
+    FjPhysicalEffectsRecipe* out_recipe,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+
 FjStatus fj_test_visual_grain_prepare(
     const FjFilmDevelopmentOwner* development,
     const FjVisualGrainParams* params,

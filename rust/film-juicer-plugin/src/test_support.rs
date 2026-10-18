@@ -1790,3 +1790,22 @@ const _: unsafe extern "C" fn(
     *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_visual_grain_prepare;
+
+/// # Safety
+/// Same initialized, live, aligned, disjoint records as the production call.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_physical_effects_prepare(
+    params: *const crate::film_recipe_bridge::FjPhysicalEffectsParams,
+    out_recipe: *mut crate::film_recipe_bridge::FjPhysicalEffectsRecipe,
+    out_failure: *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade shares the checked operation and its caller obligations.
+    unsafe { crate::film_recipe_bridge::prepare_effects(params, out_recipe, out_failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const crate::film_recipe_bridge::FjPhysicalEffectsParams,
+    *mut crate::film_recipe_bridge::FjPhysicalEffectsRecipe,
+    *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_physical_effects_prepare;

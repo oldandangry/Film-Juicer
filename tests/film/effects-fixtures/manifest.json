@@ -1,0 +1,294 @@
+{
+  "classification": "Film-Juicer native characterization, exact raw words and per-configuration identities; no numerical tolerance",
+  "authority": {
+    "head": "0f3954feabfe852c32ab2f257c0c62d364cd9fc5",
+    "native_producer_sha256": "e9950fe08188ef93c39e5259bdc9cecabfdef52ec6c017154a537f1c53955fe2",
+    "handoff_sha256": "35e4bc10d2916bac33b18abe2485313d7d1053dafb25efe354c16926444a1fd8"
+  },
+  "field_order": {
+    "FjDust": {
+      "native": [
+        "cellWidthMm",
+        "cellHeightMm",
+        "slotProbability",
+        "softnessMinMm",
+        "softnessMaxMm",
+        "softnessSizeCapFraction",
+        "supportXMm",
+        "supportYMm",
+        "fiberFraction",
+        "fiberDriftFraction",
+        "fiberFirstKnotMin",
+        "fiberFirstKnotMax",
+        "fiberSecondKnotMin",
+        "fiberSecondKnotMax",
+        "fiberInteriorWidthMinFraction",
+        "fiberInteriorWidthMaxFraction",
+        "diameterMinMm",
+        "diameterBulkMaxMm",
+        "diameterMaxMm",
+        "diameterTailFraction",
+        "fiberLengthMinMm",
+        "fiberLengthMaxMm",
+        "fiberWidthMinMm",
+        "fiberWidthMaxMm",
+        "opacityFaintCumulative",
+        "opacityIntermediateCumulative",
+        "compactOpacityMin",
+        "compactOpacityFaintEnd",
+        "compactOpacityIntermediateEnd",
+        "compactOpacityMax",
+        "fiberOpacityMin",
+        "fiberOpacityFaintEnd",
+        "fiberOpacityIntermediateEnd",
+        "fiberOpacityMax",
+        "compactDominantAspectMin",
+        "compactDominantAspectMax",
+        "compactSubsidiaryScaleMin",
+        "compactSubsidiaryScaleMax",
+        "compactSubsidiaryAspectMin",
+        "compactSubsidiaryAspectMax",
+        "compactSubsidiaryOffsetMax",
+        "compactSubsidiaryAngleMaxRadians"
+      ],
+      "wire": [
+        "cell_width_mm",
+        "cell_height_mm",
+        "slot_probability",
+        "softness_min_mm",
+        "softness_max_mm",
+        "softness_size_cap_fraction",
+        "support_x_mm",
+        "support_y_mm",
+        "fiber_fraction",
+        "fiber_drift_fraction",
+        "fiber_first_knot_min",
+        "fiber_first_knot_max",
+        "fiber_second_knot_min",
+        "fiber_second_knot_max",
+        "fiber_interior_width_min_fraction",
+        "fiber_interior_width_max_fraction",
+        "diameter_min_mm",
+        "diameter_bulk_max_mm",
+        "diameter_max_mm",
+        "diameter_tail_fraction",
+        "fiber_length_min_mm",
+        "fiber_length_max_mm",
+        "fiber_width_min_mm",
+        "fiber_width_max_mm",
+        "opacity_faint_cumulative",
+        "opacity_intermediate_cumulative",
+        "compact_opacity_min",
+        "compact_opacity_faint_end",
+        "compact_opacity_intermediate_end",
+        "compact_opacity_max",
+        "fiber_opacity_min",
+        "fiber_opacity_faint_end",
+        "fiber_opacity_intermediate_end",
+        "fiber_opacity_max",
+        "compact_dominant_aspect_min",
+        "compact_dominant_aspect_max",
+        "compact_subsidiary_scale_min",
+        "compact_subsidiary_scale_max",
+        "compact_subsidiary_aspect_min",
+        "compact_subsidiary_aspect_max",
+        "compact_subsidiary_offset_max",
+        "compact_subsidiary_angle_max_radians"
+      ]
+    },
+    "FjScratch": {
+      "native": [
+        "cellWidthMm",
+        "cellHeightMm",
+        "slotProbability",
+        "softnessMinMm",
+        "softnessMaxMm",
+        "softnessSizeCapFraction",
+        "supportXMm",
+        "supportYMm",
+        "lengthMinMm",
+        "lengthBulkMaxMm",
+        "lengthMaxMm",
+        "lengthTailFraction",
+        "widthMinMm",
+        "widthBulkMaxMm",
+        "widthMaxMm",
+        "widthTailFraction",
+        "driftFraction",
+        "firstKnotMin",
+        "firstKnotMax",
+        "secondKnotMin",
+        "secondKnotMax",
+        "interiorWidthMinFraction",
+        "interiorWidthMaxFraction",
+        "interiorDepthMinFraction",
+        "interiorDepthMaxFraction",
+        "endpointAbruptProbability",
+        "interruptionProbability",
+        "gapCenterMin",
+        "gapCenterMax",
+        "gapSpanMin",
+        "gapSpanMax",
+        "scuffProbability",
+        "scuffLengthMaxMm",
+        "scuffAngleMaxRadians",
+        "strengthMin",
+        "strengthMax"
+      ],
+      "wire": [
+        "cell_width_mm",
+        "cell_height_mm",
+        "slot_probability",
+        "softness_min_mm",
+        "softness_max_mm",
+        "softness_size_cap_fraction",
+        "support_x_mm",
+        "support_y_mm",
+        "length_min_mm",
+        "length_bulk_max_mm",
+        "length_max_mm",
+        "length_tail_fraction",
+        "width_min_mm",
+        "width_bulk_max_mm",
+        "width_max_mm",
+        "width_tail_fraction",
+        "drift_fraction",
+        "first_knot_min",
+        "first_knot_max",
+        "second_knot_min",
+        "second_knot_max",
+        "interior_width_min_fraction",
+        "interior_width_max_fraction",
+        "interior_depth_min_fraction",
+        "interior_depth_max_fraction",
+        "endpoint_abrupt_probability",
+        "interruption_probability",
+        "gap_center_min",
+        "gap_center_max",
+        "gap_span_min",
+        "gap_span_max",
+        "scuff_probability",
+        "scuff_length_max_mm",
+        "scuff_angle_max_radians",
+        "strength_min",
+        "strength_max"
+      ]
+    }
+  },
+  "presets": {
+    "linux-debug": {
+      "literal": "linux-debug-literal.json",
+      "products": "linux-debug-products.json",
+      "ofx": "linux-debug-ofx.json"
+    },
+    "linux-release": {
+      "literal": "linux-debug-literal.json",
+      "products": "linux-debug-products.json",
+      "ofx": "linux-release-ofx.json"
+    },
+    "windows-clang-debug": {
+      "literal": "windows-clang-debug-literal.json",
+      "products": "windows-clang-debug-products.json",
+      "ofx": "windows-clang-debug-ofx.json"
+    },
+    "windows-clang-release": {
+      "literal": "windows-clang-release-literal.json",
+      "products": "windows-clang-release-products.json",
+      "ofx": "windows-clang-release-ofx.json"
+    }
+  },
+  "payload_sha256": {
+    "linux-debug-literal.json": "f0f5eb84f195fa393def97084f1a56c883192b58d015ce49f6ee5b9f3e9f99f2",
+    "linux-debug-products.json": "c860ac12a03aecf81c45976b226b4234283aedaa47f5a80890d9431a14c08dc9",
+    "linux-debug-ofx.json": "235510443fecea4cd44d7c8999a7fccdb21226a61b3bc5f62d690493c35388b6",
+    "linux-release-ofx.json": "276300d8fb507566d396e4d70a27758f4b33216f71030b6f8923c6f272c6ef35",
+    "windows-clang-debug-literal.json": "ae230f3af124ad191b42ca3187033482b2cc05de3e62eebecfb4b58121000bfb",
+    "windows-clang-debug-products.json": "e14f4e09ad65483ce7304039a42f24c861dc4a1a7c85b695277e172e007b2914",
+    "windows-clang-debug-ofx.json": "88e92891a9290f79dfabe4ef6a8647f7373ebac63e388f7e8f9d654ad7b607d2",
+    "windows-clang-release-literal.json": "ccc2cffdd6bba9bca7166715c75d444ac1b700ea08fd3b93b07a715c121312a4",
+    "windows-clang-release-products.json": "12cd111eb29a0a01df3ded0dcc131c0be1add318b5c8d8057c036974700fdbbc",
+    "windows-clang-release-ofx.json": "9a5bcafc76c459687b737335cc0b26d4f991001cc0429fa83a702c68eb1d3b5e"
+  },
+  "capture_provenance": {
+    "linux-debug": {
+      "literal": {
+        "path": "out/validation/linux-debug/s4-b-slice-5-native-baseline-2026-10-18/capture/literal.json",
+        "sha256": "f0f5eb84f195fa393def97084f1a56c883192b58d015ce49f6ee5b9f3e9f99f2",
+        "bytes": 660150,
+        "count": 220
+      },
+      "products": {
+        "path": "out/validation/linux-debug/s4-b-slice-5-native-baseline-2026-10-18/capture/products.json",
+        "sha256": "c860ac12a03aecf81c45976b226b4234283aedaa47f5a80890d9431a14c08dc9",
+        "bytes": 290447,
+        "count": 92
+      },
+      "ofx": {
+        "path": "out/validation/linux-debug/s4-b-slice-5-native-baseline-2026-10-18/capture/ofx.json",
+        "sha256": "235510443fecea4cd44d7c8999a7fccdb21226a61b3bc5f62d690493c35388b6",
+        "bytes": 6099071,
+        "count": 608
+      }
+    },
+    "linux-release": {
+      "literal": {
+        "path": "out/validation/linux-release/s4-b-slice-5-native-baseline-2026-10-18/capture/literal.json",
+        "sha256": "f0f5eb84f195fa393def97084f1a56c883192b58d015ce49f6ee5b9f3e9f99f2",
+        "bytes": 660150,
+        "count": 220
+      },
+      "products": {
+        "path": "out/validation/linux-release/s4-b-slice-5-native-baseline-2026-10-18/capture/products.json",
+        "sha256": "c860ac12a03aecf81c45976b226b4234283aedaa47f5a80890d9431a14c08dc9",
+        "bytes": 290447,
+        "count": 92
+      },
+      "ofx": {
+        "path": "out/validation/linux-release/s4-b-slice-5-native-baseline-2026-10-18/capture/ofx.json",
+        "sha256": "276300d8fb507566d396e4d70a27758f4b33216f71030b6f8923c6f272c6ef35",
+        "bytes": 6097060,
+        "count": 608
+      }
+    },
+    "windows-clang-debug": {
+      "literal": {
+        "path": "out/validation/windows-clang-debug/s4-b-slice-5-native-baseline-2026-10-18/capture/literal.json",
+        "sha256": "ae230f3af124ad191b42ca3187033482b2cc05de3e62eebecfb4b58121000bfb",
+        "bytes": 700644,
+        "count": 220
+      },
+      "products": {
+        "path": "out/validation/windows-clang-debug/s4-b-slice-5-native-baseline-2026-10-18/capture/products.json",
+        "sha256": "e14f4e09ad65483ce7304039a42f24c861dc4a1a7c85b695277e172e007b2914",
+        "bytes": 308030,
+        "count": 92
+      },
+      "ofx": {
+        "path": "out/validation/windows-clang-debug/s4-b-slice-5-native-baseline-2026-10-18/capture/ofx.json",
+        "sha256": "88e92891a9290f79dfabe4ef6a8647f7373ebac63e388f7e8f9d654ad7b607d2",
+        "bytes": 6281544,
+        "count": 608
+      }
+    },
+    "windows-clang-release": {
+      "literal": {
+        "path": "out/validation/windows-clang-release/s4-b-slice-5-native-baseline-2026-10-18/capture/literal.json",
+        "sha256": "ccc2cffdd6bba9bca7166715c75d444ac1b700ea08fd3b93b07a715c121312a4",
+        "bytes": 700639,
+        "count": 220
+      },
+      "products": {
+        "path": "out/validation/windows-clang-release/s4-b-slice-5-native-baseline-2026-10-18/capture/products.json",
+        "sha256": "12cd111eb29a0a01df3ded0dcc131c0be1add318b5c8d8057c036974700fdbbc",
+        "bytes": 308027,
+        "count": 92
+      },
+      "ofx": {
+        "path": "out/validation/windows-clang-release/s4-b-slice-5-native-baseline-2026-10-18/capture/ofx.json",
+        "sha256": "9a5bcafc76c459687b737335cc0b26d4f991001cc0429fa83a702c68eb1d3b5e",
+        "bytes": 6280849,
+        "count": 608
+      }
+    }
+  }
+}

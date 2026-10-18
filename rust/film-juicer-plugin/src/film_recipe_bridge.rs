@@ -3,12 +3,13 @@
 use std::fmt::{self, Write};
 use std::mem::{align_of, size_of};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use film_juicer_core::effects;
 use film_juicer_core::film::{Development, density, dir, grain};
 use film_juicer_core::profile::Polarity;
 use film_juicer_core::route::ScanRoute;
 use crate::film_bridge::FjFilmDevelopmentOwner;
 use crate::cuda::sys::{
-    FjErrorBuffer, FjFloatSpan, FjStatus, FJ_API_NONE, FJ_STATUS_SUCCESS,
+    FjDust, FjScratch, FjErrorBuffer, FjFloatSpan, FjStatus, FJ_API_NONE, FJ_STATUS_SUCCESS,
     FJ_STATUS_UNSUPPORTED_INPUT, FJ_STATUS_PREPARATION_FAILURE, FJ_STATUS_ALLOCATION_FAILURE,
     FJ_STATUS_INTERNAL_FAILURE,
 };
@@ -55,6 +56,7 @@ pub(crate) const FJ_FILM_RECIPE_LOG_EXPOSURE: u32 = 16;
 
 pub(crate) const FJ_FILM_RECIPE_GRAIN_CONTROLS: u32 = 17;
 pub(crate) const FJ_FILM_RECIPE_GRAIN_LAYERS: u32 = 18;
+pub(crate) const FJ_FILM_RECIPE_EFFECTS_PROBABILITY: u32 = 19;
 
 #[repr(C)]
 pub(crate) struct FjFilmRecipeFailure {
@@ -178,6 +180,197 @@ pub(crate) struct FjVisualGrainRecipe {
     pub(crate) layers_hash: u64,
     pub(crate) hash: u64,
 }
+
+// SF_TEMP_BRIDGE_PHYSICAL_EFFECTS: fixed owned result projection; remove S4.E.
+#[repr(C)]
+pub(crate) struct FjPhysicalEffectsParams {
+    pub(crate) film_dust_amount: f32,
+    pub(crate) film_scratch_amount: f32,
+    pub(crate) gate_dust_amount: f32,
+    pub(crate) gate_scratch_amount: f32,
+    pub(crate) gate_weave_amount: f64,
+    pub(crate) grain_active: u32,
+    pub(crate) grain_debug_view: i32,
+}
+
+#[repr(C)]
+pub(crate) struct FjPhysicalEffectsRecipe {
+    pub(crate) film_dust: FjDust,
+    pub(crate) film_scratch: FjScratch,
+    pub(crate) gate_dust: FjDust,
+    pub(crate) gate_scratch: FjScratch,
+    pub(crate) gate_weave_amount: f64,
+    pub(crate) active: u32,
+    pub(crate) hash: u64,
+}
+
+fn project_dust(policy: &effects::Dust) -> FjDust {
+    FjDust {
+        cell_width_mm: policy.cell_width_mm(),
+        cell_height_mm: policy.cell_height_mm(),
+        slot_probability: policy.slot_probability(),
+        softness_min_mm: policy.softness_min_mm(),
+        softness_max_mm: policy.softness_max_mm(),
+        softness_size_cap_fraction: policy.softness_size_cap_fraction(),
+        support_x_mm: policy.support_x_mm(),
+        support_y_mm: policy.support_y_mm(),
+        fiber_fraction: policy.fiber_fraction(),
+        fiber_drift_fraction: policy.fiber_drift_fraction(),
+        fiber_first_knot_min: policy.fiber_first_knot_min(),
+        fiber_first_knot_max: policy.fiber_first_knot_max(),
+        fiber_second_knot_min: policy.fiber_second_knot_min(),
+        fiber_second_knot_max: policy.fiber_second_knot_max(),
+        fiber_interior_width_min_fraction: policy.fiber_interior_width_min_fraction(),
+        fiber_interior_width_max_fraction: policy.fiber_interior_width_max_fraction(),
+        diameter_min_mm: policy.diameter_min_mm(),
+        diameter_bulk_max_mm: policy.diameter_bulk_max_mm(),
+        diameter_max_mm: policy.diameter_max_mm(),
+        diameter_tail_fraction: policy.diameter_tail_fraction(),
+        fiber_length_min_mm: policy.fiber_length_min_mm(),
+        fiber_length_max_mm: policy.fiber_length_max_mm(),
+        fiber_width_min_mm: policy.fiber_width_min_mm(),
+        fiber_width_max_mm: policy.fiber_width_max_mm(),
+        opacity_faint_cumulative: policy.opacity_faint_cumulative(),
+        opacity_intermediate_cumulative: policy.opacity_intermediate_cumulative(),
+        compact_opacity_min: policy.compact_opacity_min(),
+        compact_opacity_faint_end: policy.compact_opacity_faint_end(),
+        compact_opacity_intermediate_end: policy.compact_opacity_intermediate_end(),
+        compact_opacity_max: policy.compact_opacity_max(),
+        fiber_opacity_min: policy.fiber_opacity_min(),
+        fiber_opacity_faint_end: policy.fiber_opacity_faint_end(),
+        fiber_opacity_intermediate_end: policy.fiber_opacity_intermediate_end(),
+        fiber_opacity_max: policy.fiber_opacity_max(),
+        compact_dominant_aspect_min: policy.compact_dominant_aspect_min(),
+        compact_dominant_aspect_max: policy.compact_dominant_aspect_max(),
+        compact_subsidiary_scale_min: policy.compact_subsidiary_scale_min(),
+        compact_subsidiary_scale_max: policy.compact_subsidiary_scale_max(),
+        compact_subsidiary_aspect_min: policy.compact_subsidiary_aspect_min(),
+        compact_subsidiary_aspect_max: policy.compact_subsidiary_aspect_max(),
+        compact_subsidiary_offset_max: policy.compact_subsidiary_offset_max(),
+        compact_subsidiary_angle_max_radians: policy.compact_subsidiary_angle_max_radians(),
+    }
+}
+
+fn project_scratch(policy: &effects::Scratch) -> FjScratch {
+    FjScratch {
+        cell_width_mm: policy.cell_width_mm(),
+        cell_height_mm: policy.cell_height_mm(),
+        slot_probability: policy.slot_probability(),
+        softness_min_mm: policy.softness_min_mm(),
+        softness_max_mm: policy.softness_max_mm(),
+        softness_size_cap_fraction: policy.softness_size_cap_fraction(),
+        support_x_mm: policy.support_x_mm(),
+        support_y_mm: policy.support_y_mm(),
+        length_min_mm: policy.length_min_mm(),
+        length_bulk_max_mm: policy.length_bulk_max_mm(),
+        length_max_mm: policy.length_max_mm(),
+        length_tail_fraction: policy.length_tail_fraction(),
+        width_min_mm: policy.width_min_mm(),
+        width_bulk_max_mm: policy.width_bulk_max_mm(),
+        width_max_mm: policy.width_max_mm(),
+        width_tail_fraction: policy.width_tail_fraction(),
+        drift_fraction: policy.drift_fraction(),
+        first_knot_min: policy.first_knot_min(),
+        first_knot_max: policy.first_knot_max(),
+        second_knot_min: policy.second_knot_min(),
+        second_knot_max: policy.second_knot_max(),
+        interior_width_min_fraction: policy.interior_width_min_fraction(),
+        interior_width_max_fraction: policy.interior_width_max_fraction(),
+        interior_depth_min_fraction: policy.interior_depth_min_fraction(),
+        interior_depth_max_fraction: policy.interior_depth_max_fraction(),
+        endpoint_abrupt_probability: policy.endpoint_abrupt_probability(),
+        interruption_probability: policy.interruption_probability(),
+        gap_center_min: policy.gap_center_min(),
+        gap_center_max: policy.gap_center_max(),
+        gap_span_min: policy.gap_span_min(),
+        gap_span_max: policy.gap_span_max(),
+        scuff_probability: policy.scuff_probability(),
+        scuff_length_max_mm: policy.scuff_length_max_mm(),
+        scuff_angle_max_radians: policy.scuff_angle_max_radians(),
+        strength_min: policy.strength_min(),
+        strength_max: policy.strength_max(),
+    }
+}
+
+/// # Safety
+/// Initialized live aligned params and exclusive output/failure/diagnostic
+/// extents are mutually disjoint through synchronous return. No borrow escapes.
+pub(crate) unsafe fn prepare_effects(
+    params: *const FjPhysicalEffectsParams,
+    out: *mut FjPhysicalEffectsRecipe,
+    failure: *mut FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // Consume at raw entry, including independently rejected output storage.
+    #[cfg(feature = "test-support")]
+    let fault = faults::take(8);
+    // SAFETY: execute independently admits outputs before borrowing input.
+    unsafe {
+        execute(out, failure, error, || {
+            if !valid_extent(params, 1) || (*params).grain_active > 1 {
+                return Err(Failure::raw());
+            }
+            let input = &*params;
+            let params = effects::Params {
+                film_dust_amount: input.film_dust_amount,
+                film_scratch_amount: input.film_scratch_amount,
+                gate_dust_amount: input.gate_dust_amount,
+                gate_scratch_amount: input.gate_scratch_amount,
+                gate_weave_amount: input.gate_weave_amount,
+                grain_active: input.grain_active != 0,
+                grain_debug_view: input.grain_debug_view,
+            };
+            #[cfg(feature = "test-support")]
+            match fault {
+                1 => panic!("physical effects fixture panic"),
+                2 => effects::test_support::substitute_next_probability(f32::NAN),
+                3 => effects::test_support::substitute_next_probability(-1.0),
+                4 => effects::test_support::substitute_next_probability(0.25),
+                _ => {}
+            }
+            let recipe = effects::Recipe::new(params).map_err(|effects::Error::Probability| {
+                Failure::new(
+                    FJ_STATUS_PREPARATION_FAILURE,
+                    FJ_FILM_RECIPE_EFFECTS_PROBABILITY,
+                )
+            })?;
+            Ok(FjPhysicalEffectsRecipe {
+                film_dust: project_dust(recipe.film_dust()),
+                film_scratch: project_scratch(recipe.film_scratch()),
+                gate_dust: project_dust(recipe.gate_dust()),
+                gate_scratch: project_scratch(recipe.gate_scratch()),
+                gate_weave_amount: recipe.gate_weave_amount(),
+                active: u32::from(recipe.active()),
+                hash: recipe.hash(),
+            })
+        })
+    }
+}
+
+/// # Safety
+/// The checked operation's live, initialized, aligned, disjoint record contract.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_physical_effects_prepare(
+    params: *const FjPhysicalEffectsParams,
+    out_recipe: *mut FjPhysicalEffectsRecipe,
+    out_failure: *mut FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Forward the identical synchronous raw contract.
+    unsafe { prepare_effects(params, out_recipe, out_failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const FjPhysicalEffectsParams,
+    *mut FjPhysicalEffectsRecipe,
+    *mut FjFilmRecipeFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_legacy_physical_effects_prepare;
+const _: () = assert!(
+    size_of::<FjPhysicalEffectsParams>() == 32 && align_of::<FjPhysicalEffectsParams>() == 8
+);
+const _: () = assert!(
+    size_of::<FjPhysicalEffectsRecipe>() == 648 && align_of::<FjPhysicalEffectsRecipe>() == 8
+);
 
 fn status(category: u32) -> FjStatus {
     FjStatus {
@@ -839,6 +1032,10 @@ extern "C" fn fj_test_film_recipe_fault(stage: u32, fault: u32) -> FjStatus {
         dir::test_support::reject_next(fault);
         return status(FJ_STATUS_SUCCESS);
     }
+    if stage == 8 && fault <= 4 {
+        faults::NEXT.set((stage, fault));
+        return status(FJ_STATUS_SUCCESS);
+    }
     if stage == 7 && fault <= 2 {
         faults::NEXT.set((stage, fault));
         return status(FJ_STATUS_SUCCESS);
@@ -1091,6 +1288,107 @@ unsafe extern "C" fn fj_test_film_recipe_abi_facts(count: *mut usize) -> *const 
         std::mem::offset_of!(FjVisualGrainRecipe, hash),
         FJ_FILM_RECIPE_GRAIN_CONTROLS as usize,
         FJ_FILM_RECIPE_GRAIN_LAYERS as usize,
+        size_of::<FjPhysicalEffectsParams>(),
+        align_of::<FjPhysicalEffectsParams>(),
+        std::mem::offset_of!(FjPhysicalEffectsParams, film_dust_amount),
+        std::mem::offset_of!(FjPhysicalEffectsParams, film_scratch_amount),
+        std::mem::offset_of!(FjPhysicalEffectsParams, gate_dust_amount),
+        std::mem::offset_of!(FjPhysicalEffectsParams, gate_scratch_amount),
+        std::mem::offset_of!(FjPhysicalEffectsParams, gate_weave_amount),
+        std::mem::offset_of!(FjPhysicalEffectsParams, grain_active),
+        std::mem::offset_of!(FjPhysicalEffectsParams, grain_debug_view),
+        size_of::<FjPhysicalEffectsRecipe>(),
+        align_of::<FjPhysicalEffectsRecipe>(),
+        std::mem::offset_of!(FjPhysicalEffectsRecipe, film_dust),
+        std::mem::offset_of!(FjPhysicalEffectsRecipe, film_scratch),
+        std::mem::offset_of!(FjPhysicalEffectsRecipe, gate_dust),
+        std::mem::offset_of!(FjPhysicalEffectsRecipe, gate_scratch),
+        std::mem::offset_of!(FjPhysicalEffectsRecipe, gate_weave_amount),
+        std::mem::offset_of!(FjPhysicalEffectsRecipe, active),
+        std::mem::offset_of!(FjPhysicalEffectsRecipe, hash),
+        size_of::<FjDust>(),
+        align_of::<FjDust>(),
+        std::mem::offset_of!(FjDust, cell_width_mm),
+        std::mem::offset_of!(FjDust, cell_height_mm),
+        std::mem::offset_of!(FjDust, slot_probability),
+        std::mem::offset_of!(FjDust, softness_min_mm),
+        std::mem::offset_of!(FjDust, softness_max_mm),
+        std::mem::offset_of!(FjDust, softness_size_cap_fraction),
+        std::mem::offset_of!(FjDust, support_x_mm),
+        std::mem::offset_of!(FjDust, support_y_mm),
+        std::mem::offset_of!(FjDust, fiber_fraction),
+        std::mem::offset_of!(FjDust, fiber_drift_fraction),
+        std::mem::offset_of!(FjDust, fiber_first_knot_min),
+        std::mem::offset_of!(FjDust, fiber_first_knot_max),
+        std::mem::offset_of!(FjDust, fiber_second_knot_min),
+        std::mem::offset_of!(FjDust, fiber_second_knot_max),
+        std::mem::offset_of!(FjDust, fiber_interior_width_min_fraction),
+        std::mem::offset_of!(FjDust, fiber_interior_width_max_fraction),
+        std::mem::offset_of!(FjDust, diameter_min_mm),
+        std::mem::offset_of!(FjDust, diameter_bulk_max_mm),
+        std::mem::offset_of!(FjDust, diameter_max_mm),
+        std::mem::offset_of!(FjDust, diameter_tail_fraction),
+        std::mem::offset_of!(FjDust, fiber_length_min_mm),
+        std::mem::offset_of!(FjDust, fiber_length_max_mm),
+        std::mem::offset_of!(FjDust, fiber_width_min_mm),
+        std::mem::offset_of!(FjDust, fiber_width_max_mm),
+        std::mem::offset_of!(FjDust, opacity_faint_cumulative),
+        std::mem::offset_of!(FjDust, opacity_intermediate_cumulative),
+        std::mem::offset_of!(FjDust, compact_opacity_min),
+        std::mem::offset_of!(FjDust, compact_opacity_faint_end),
+        std::mem::offset_of!(FjDust, compact_opacity_intermediate_end),
+        std::mem::offset_of!(FjDust, compact_opacity_max),
+        std::mem::offset_of!(FjDust, fiber_opacity_min),
+        std::mem::offset_of!(FjDust, fiber_opacity_faint_end),
+        std::mem::offset_of!(FjDust, fiber_opacity_intermediate_end),
+        std::mem::offset_of!(FjDust, fiber_opacity_max),
+        std::mem::offset_of!(FjDust, compact_dominant_aspect_min),
+        std::mem::offset_of!(FjDust, compact_dominant_aspect_max),
+        std::mem::offset_of!(FjDust, compact_subsidiary_scale_min),
+        std::mem::offset_of!(FjDust, compact_subsidiary_scale_max),
+        std::mem::offset_of!(FjDust, compact_subsidiary_aspect_min),
+        std::mem::offset_of!(FjDust, compact_subsidiary_aspect_max),
+        std::mem::offset_of!(FjDust, compact_subsidiary_offset_max),
+        std::mem::offset_of!(FjDust, compact_subsidiary_angle_max_radians),
+        size_of::<FjScratch>(),
+        align_of::<FjScratch>(),
+        std::mem::offset_of!(FjScratch, cell_width_mm),
+        std::mem::offset_of!(FjScratch, cell_height_mm),
+        std::mem::offset_of!(FjScratch, slot_probability),
+        std::mem::offset_of!(FjScratch, softness_min_mm),
+        std::mem::offset_of!(FjScratch, softness_max_mm),
+        std::mem::offset_of!(FjScratch, softness_size_cap_fraction),
+        std::mem::offset_of!(FjScratch, support_x_mm),
+        std::mem::offset_of!(FjScratch, support_y_mm),
+        std::mem::offset_of!(FjScratch, length_min_mm),
+        std::mem::offset_of!(FjScratch, length_bulk_max_mm),
+        std::mem::offset_of!(FjScratch, length_max_mm),
+        std::mem::offset_of!(FjScratch, length_tail_fraction),
+        std::mem::offset_of!(FjScratch, width_min_mm),
+        std::mem::offset_of!(FjScratch, width_bulk_max_mm),
+        std::mem::offset_of!(FjScratch, width_max_mm),
+        std::mem::offset_of!(FjScratch, width_tail_fraction),
+        std::mem::offset_of!(FjScratch, drift_fraction),
+        std::mem::offset_of!(FjScratch, first_knot_min),
+        std::mem::offset_of!(FjScratch, first_knot_max),
+        std::mem::offset_of!(FjScratch, second_knot_min),
+        std::mem::offset_of!(FjScratch, second_knot_max),
+        std::mem::offset_of!(FjScratch, interior_width_min_fraction),
+        std::mem::offset_of!(FjScratch, interior_width_max_fraction),
+        std::mem::offset_of!(FjScratch, interior_depth_min_fraction),
+        std::mem::offset_of!(FjScratch, interior_depth_max_fraction),
+        std::mem::offset_of!(FjScratch, endpoint_abrupt_probability),
+        std::mem::offset_of!(FjScratch, interruption_probability),
+        std::mem::offset_of!(FjScratch, gap_center_min),
+        std::mem::offset_of!(FjScratch, gap_center_max),
+        std::mem::offset_of!(FjScratch, gap_span_min),
+        std::mem::offset_of!(FjScratch, gap_span_max),
+        std::mem::offset_of!(FjScratch, scuff_probability),
+        std::mem::offset_of!(FjScratch, scuff_length_max_mm),
+        std::mem::offset_of!(FjScratch, scuff_angle_max_radians),
+        std::mem::offset_of!(FjScratch, strength_min),
+        std::mem::offset_of!(FjScratch, strength_max),
+        FJ_FILM_RECIPE_EFFECTS_PROBABILITY as usize,
     ];
     if !count.is_null() {
         // SAFETY: Facade caller authorizes the exclusive count output.

@@ -625,12 +625,45 @@ FjStatus fj_legacy_film_development_release(FjFilmDevelopmentOwner* development,
 #define FJ_FILM_RECIPE_LOG_EXPOSURE UINT32_C(16)
 #define FJ_FILM_RECIPE_GRAIN_CONTROLS UINT32_C(17)
 #define FJ_FILM_RECIPE_GRAIN_LAYERS UINT32_C(18)
+#define FJ_FILM_RECIPE_EFFECTS_PROBABILITY UINT32_C(19)
 
 typedef struct FjFilmRecipeFailure {
     uint32_t reason;
     uint32_t channel;
     uint64_t sample;
 } FjFilmRecipeFailure;
+
+
+/* SF_TEMP_BRIDGE_PHYSICAL_EFFECTS: completed fixed recipe transport; remove S4.E.
+ * Call records/backing must be initialized, live, aligned, mutually disjoint and
+ * exclusive where writable. Extent admission cannot prove allocation or lifetime.
+ * Every independently admitted output clears before input/diagnostic rejection.
+ * Numeric controls are sanitized by the safe constructor; grain_active is 0/1. */
+typedef struct FjPhysicalEffectsParams {
+    float film_dust_amount;
+    float film_scratch_amount;
+    float gate_dust_amount;
+    float gate_scratch_amount;
+    double gate_weave_amount;
+    uint32_t grain_active;
+    int32_t grain_debug_view;
+} FjPhysicalEffectsParams;
+
+typedef struct FjPhysicalEffectsRecipe {
+    FjDust film_dust;
+    FjScratch film_scratch;
+    FjDust gate_dust;
+    FjScratch gate_scratch;
+    double gate_weave_amount;
+    uint32_t active;
+    uint64_t hash;
+} FjPhysicalEffectsRecipe;
+
+FjStatus fj_legacy_physical_effects_prepare(
+    const FjPhysicalEffectsParams* params,
+    FjPhysicalEffectsRecipe* out_recipe,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
 
 typedef struct FjFilmDensityMinimum {
     float cmy[3];

@@ -925,3 +925,20 @@ admission, recovery and unchanged reuse. Core tests also consume the frozen F1 a
 focused captures. `Ofx.Gpu.AdapterTrace` observes actual conditional DIR capture,
 single f64-to-f32 narrowing, polarity-selected K and invalid/valid recovery.
 These focused groups do not establish installed Resolve or aggregate acceptance.
+
+
+`Ffi.Host.PhysicalEffects` checks the stateless completed physical-effects recipe:
+220 exact native cases through production/facade entries, all-field C11/C++20/Rust
+ABI facts, independent output clearing, closed failures, diagnostic bounds, the
+real computed-probability guard and panic/thread isolation, plus named native
+projection. `Film.Host.PhysicalEffectsProducts` checks 92 genuine four-route
+products, snapshot/grain/development/final identities and publication failure,
+ordering, recovery and retained holds. Their immutable
+[effects fixtures](film/effects-fixtures/README.md) retain all four native
+configuration identities. Windows Release scratch expected length preserves its
+native FMA contraction; other configurations preserve separate f32 rounding.
+The existing adapter and cutover GPU groups also check actual physical-control
+capture and each CUDA family, all-off behavior, completed-grain debug suppression
+and alpha preservation. Both Release testing-OFF production gates compile, link
+and run all nine effects cases against their final native archive. These scoped
+checks do not establish installed Resolve, visual or aggregate acceptance.

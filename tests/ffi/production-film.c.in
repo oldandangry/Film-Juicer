@@ -298,6 +298,452 @@ static int input_values(FjAssets* assets, FjFilmProfile* profile) {
     puts("PASS OFF film-input C11 fixed values, independent native identities, all matrices, semantic clearing and failure precedence");
     return 0;
 }
+typedef FjStatus (*PhysicalEffectsPrepare)(const FjPhysicalEffectsParams*, FjPhysicalEffectsRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*);
+_Static_assert(_Generic(&fj_legacy_physical_effects_prepare, PhysicalEffectsPrepare: 1, default: 0), "OFF physical effects C11 signature");
+_Static_assert(sizeof(float) == 4 && sizeof(double) == 8 && sizeof(_Bool) == 1, "OFF physical scalar widths");
+_Static_assert(sizeof(FjPhysicalEffectsParams) == 32 && _Alignof(FjPhysicalEffectsParams) == 8, "OFF FjPhysicalEffectsParams layout");
+_Static_assert(_Generic(((FjPhysicalEffectsParams*)0)->film_dust_amount, float: 1, default: 0) && offsetof(FjPhysicalEffectsParams, film_dust_amount) == 0, "OFF FjPhysicalEffectsParams.film_dust_amount");
+_Static_assert(_Generic(((FjPhysicalEffectsParams*)0)->film_scratch_amount, float: 1, default: 0) && offsetof(FjPhysicalEffectsParams, film_scratch_amount) == 4, "OFF FjPhysicalEffectsParams.film_scratch_amount");
+_Static_assert(_Generic(((FjPhysicalEffectsParams*)0)->gate_dust_amount, float: 1, default: 0) && offsetof(FjPhysicalEffectsParams, gate_dust_amount) == 8, "OFF FjPhysicalEffectsParams.gate_dust_amount");
+_Static_assert(_Generic(((FjPhysicalEffectsParams*)0)->gate_scratch_amount, float: 1, default: 0) && offsetof(FjPhysicalEffectsParams, gate_scratch_amount) == 12, "OFF FjPhysicalEffectsParams.gate_scratch_amount");
+_Static_assert(_Generic(((FjPhysicalEffectsParams*)0)->gate_weave_amount, double: 1, default: 0) && offsetof(FjPhysicalEffectsParams, gate_weave_amount) == 16, "OFF FjPhysicalEffectsParams.gate_weave_amount");
+_Static_assert(_Generic(((FjPhysicalEffectsParams*)0)->grain_active, uint32_t: 1, default: 0) && offsetof(FjPhysicalEffectsParams, grain_active) == 24, "OFF FjPhysicalEffectsParams.grain_active");
+_Static_assert(_Generic(((FjPhysicalEffectsParams*)0)->grain_debug_view, int32_t: 1, default: 0) && offsetof(FjPhysicalEffectsParams, grain_debug_view) == 28, "OFF FjPhysicalEffectsParams.grain_debug_view");
+_Static_assert(sizeof(FjPhysicalEffectsRecipe) == 648 && _Alignof(FjPhysicalEffectsRecipe) == 8, "OFF FjPhysicalEffectsRecipe layout");
+_Static_assert(_Generic(((FjPhysicalEffectsRecipe*)0)->film_dust, FjDust: 1, default: 0) && offsetof(FjPhysicalEffectsRecipe, film_dust) == 0, "OFF FjPhysicalEffectsRecipe.film_dust");
+_Static_assert(_Generic(((FjPhysicalEffectsRecipe*)0)->film_scratch, FjScratch: 1, default: 0) && offsetof(FjPhysicalEffectsRecipe, film_scratch) == 168, "OFF FjPhysicalEffectsRecipe.film_scratch");
+_Static_assert(_Generic(((FjPhysicalEffectsRecipe*)0)->gate_dust, FjDust: 1, default: 0) && offsetof(FjPhysicalEffectsRecipe, gate_dust) == 312, "OFF FjPhysicalEffectsRecipe.gate_dust");
+_Static_assert(_Generic(((FjPhysicalEffectsRecipe*)0)->gate_scratch, FjScratch: 1, default: 0) && offsetof(FjPhysicalEffectsRecipe, gate_scratch) == 480, "OFF FjPhysicalEffectsRecipe.gate_scratch");
+_Static_assert(_Generic(((FjPhysicalEffectsRecipe*)0)->gate_weave_amount, double: 1, default: 0) && offsetof(FjPhysicalEffectsRecipe, gate_weave_amount) == 624, "OFF FjPhysicalEffectsRecipe.gate_weave_amount");
+_Static_assert(_Generic(((FjPhysicalEffectsRecipe*)0)->active, uint32_t: 1, default: 0) && offsetof(FjPhysicalEffectsRecipe, active) == 632, "OFF FjPhysicalEffectsRecipe.active");
+_Static_assert(_Generic(((FjPhysicalEffectsRecipe*)0)->hash, uint64_t: 1, default: 0) && offsetof(FjPhysicalEffectsRecipe, hash) == 640, "OFF FjPhysicalEffectsRecipe.hash");
+_Static_assert(sizeof(FjDust) == 168 && _Alignof(FjDust) == 4, "OFF FjDust layout");
+_Static_assert(_Generic(((FjDust*)0)->cell_width_mm, float: 1, default: 0) && offsetof(FjDust, cell_width_mm) == 0, "OFF FjDust.cell_width_mm");
+_Static_assert(_Generic(((FjDust*)0)->cell_height_mm, float: 1, default: 0) && offsetof(FjDust, cell_height_mm) == 4, "OFF FjDust.cell_height_mm");
+_Static_assert(_Generic(((FjDust*)0)->slot_probability, float: 1, default: 0) && offsetof(FjDust, slot_probability) == 8, "OFF FjDust.slot_probability");
+_Static_assert(_Generic(((FjDust*)0)->softness_min_mm, float: 1, default: 0) && offsetof(FjDust, softness_min_mm) == 12, "OFF FjDust.softness_min_mm");
+_Static_assert(_Generic(((FjDust*)0)->softness_max_mm, float: 1, default: 0) && offsetof(FjDust, softness_max_mm) == 16, "OFF FjDust.softness_max_mm");
+_Static_assert(_Generic(((FjDust*)0)->softness_size_cap_fraction, float: 1, default: 0) && offsetof(FjDust, softness_size_cap_fraction) == 20, "OFF FjDust.softness_size_cap_fraction");
+_Static_assert(_Generic(((FjDust*)0)->support_x_mm, float: 1, default: 0) && offsetof(FjDust, support_x_mm) == 24, "OFF FjDust.support_x_mm");
+_Static_assert(_Generic(((FjDust*)0)->support_y_mm, float: 1, default: 0) && offsetof(FjDust, support_y_mm) == 28, "OFF FjDust.support_y_mm");
+_Static_assert(_Generic(((FjDust*)0)->fiber_fraction, float: 1, default: 0) && offsetof(FjDust, fiber_fraction) == 32, "OFF FjDust.fiber_fraction");
+_Static_assert(_Generic(((FjDust*)0)->fiber_drift_fraction, float: 1, default: 0) && offsetof(FjDust, fiber_drift_fraction) == 36, "OFF FjDust.fiber_drift_fraction");
+_Static_assert(_Generic(((FjDust*)0)->fiber_first_knot_min, float: 1, default: 0) && offsetof(FjDust, fiber_first_knot_min) == 40, "OFF FjDust.fiber_first_knot_min");
+_Static_assert(_Generic(((FjDust*)0)->fiber_first_knot_max, float: 1, default: 0) && offsetof(FjDust, fiber_first_knot_max) == 44, "OFF FjDust.fiber_first_knot_max");
+_Static_assert(_Generic(((FjDust*)0)->fiber_second_knot_min, float: 1, default: 0) && offsetof(FjDust, fiber_second_knot_min) == 48, "OFF FjDust.fiber_second_knot_min");
+_Static_assert(_Generic(((FjDust*)0)->fiber_second_knot_max, float: 1, default: 0) && offsetof(FjDust, fiber_second_knot_max) == 52, "OFF FjDust.fiber_second_knot_max");
+_Static_assert(_Generic(((FjDust*)0)->fiber_interior_width_min_fraction, float: 1, default: 0) && offsetof(FjDust, fiber_interior_width_min_fraction) == 56, "OFF FjDust.fiber_interior_width_min_fraction");
+_Static_assert(_Generic(((FjDust*)0)->fiber_interior_width_max_fraction, float: 1, default: 0) && offsetof(FjDust, fiber_interior_width_max_fraction) == 60, "OFF FjDust.fiber_interior_width_max_fraction");
+_Static_assert(_Generic(((FjDust*)0)->diameter_min_mm, float: 1, default: 0) && offsetof(FjDust, diameter_min_mm) == 64, "OFF FjDust.diameter_min_mm");
+_Static_assert(_Generic(((FjDust*)0)->diameter_bulk_max_mm, float: 1, default: 0) && offsetof(FjDust, diameter_bulk_max_mm) == 68, "OFF FjDust.diameter_bulk_max_mm");
+_Static_assert(_Generic(((FjDust*)0)->diameter_max_mm, float: 1, default: 0) && offsetof(FjDust, diameter_max_mm) == 72, "OFF FjDust.diameter_max_mm");
+_Static_assert(_Generic(((FjDust*)0)->diameter_tail_fraction, float: 1, default: 0) && offsetof(FjDust, diameter_tail_fraction) == 76, "OFF FjDust.diameter_tail_fraction");
+_Static_assert(_Generic(((FjDust*)0)->fiber_length_min_mm, float: 1, default: 0) && offsetof(FjDust, fiber_length_min_mm) == 80, "OFF FjDust.fiber_length_min_mm");
+_Static_assert(_Generic(((FjDust*)0)->fiber_length_max_mm, float: 1, default: 0) && offsetof(FjDust, fiber_length_max_mm) == 84, "OFF FjDust.fiber_length_max_mm");
+_Static_assert(_Generic(((FjDust*)0)->fiber_width_min_mm, float: 1, default: 0) && offsetof(FjDust, fiber_width_min_mm) == 88, "OFF FjDust.fiber_width_min_mm");
+_Static_assert(_Generic(((FjDust*)0)->fiber_width_max_mm, float: 1, default: 0) && offsetof(FjDust, fiber_width_max_mm) == 92, "OFF FjDust.fiber_width_max_mm");
+_Static_assert(_Generic(((FjDust*)0)->opacity_faint_cumulative, float: 1, default: 0) && offsetof(FjDust, opacity_faint_cumulative) == 96, "OFF FjDust.opacity_faint_cumulative");
+_Static_assert(_Generic(((FjDust*)0)->opacity_intermediate_cumulative, float: 1, default: 0) && offsetof(FjDust, opacity_intermediate_cumulative) == 100, "OFF FjDust.opacity_intermediate_cumulative");
+_Static_assert(_Generic(((FjDust*)0)->compact_opacity_min, float: 1, default: 0) && offsetof(FjDust, compact_opacity_min) == 104, "OFF FjDust.compact_opacity_min");
+_Static_assert(_Generic(((FjDust*)0)->compact_opacity_faint_end, float: 1, default: 0) && offsetof(FjDust, compact_opacity_faint_end) == 108, "OFF FjDust.compact_opacity_faint_end");
+_Static_assert(_Generic(((FjDust*)0)->compact_opacity_intermediate_end, float: 1, default: 0) && offsetof(FjDust, compact_opacity_intermediate_end) == 112, "OFF FjDust.compact_opacity_intermediate_end");
+_Static_assert(_Generic(((FjDust*)0)->compact_opacity_max, float: 1, default: 0) && offsetof(FjDust, compact_opacity_max) == 116, "OFF FjDust.compact_opacity_max");
+_Static_assert(_Generic(((FjDust*)0)->fiber_opacity_min, float: 1, default: 0) && offsetof(FjDust, fiber_opacity_min) == 120, "OFF FjDust.fiber_opacity_min");
+_Static_assert(_Generic(((FjDust*)0)->fiber_opacity_faint_end, float: 1, default: 0) && offsetof(FjDust, fiber_opacity_faint_end) == 124, "OFF FjDust.fiber_opacity_faint_end");
+_Static_assert(_Generic(((FjDust*)0)->fiber_opacity_intermediate_end, float: 1, default: 0) && offsetof(FjDust, fiber_opacity_intermediate_end) == 128, "OFF FjDust.fiber_opacity_intermediate_end");
+_Static_assert(_Generic(((FjDust*)0)->fiber_opacity_max, float: 1, default: 0) && offsetof(FjDust, fiber_opacity_max) == 132, "OFF FjDust.fiber_opacity_max");
+_Static_assert(_Generic(((FjDust*)0)->compact_dominant_aspect_min, float: 1, default: 0) && offsetof(FjDust, compact_dominant_aspect_min) == 136, "OFF FjDust.compact_dominant_aspect_min");
+_Static_assert(_Generic(((FjDust*)0)->compact_dominant_aspect_max, float: 1, default: 0) && offsetof(FjDust, compact_dominant_aspect_max) == 140, "OFF FjDust.compact_dominant_aspect_max");
+_Static_assert(_Generic(((FjDust*)0)->compact_subsidiary_scale_min, float: 1, default: 0) && offsetof(FjDust, compact_subsidiary_scale_min) == 144, "OFF FjDust.compact_subsidiary_scale_min");
+_Static_assert(_Generic(((FjDust*)0)->compact_subsidiary_scale_max, float: 1, default: 0) && offsetof(FjDust, compact_subsidiary_scale_max) == 148, "OFF FjDust.compact_subsidiary_scale_max");
+_Static_assert(_Generic(((FjDust*)0)->compact_subsidiary_aspect_min, float: 1, default: 0) && offsetof(FjDust, compact_subsidiary_aspect_min) == 152, "OFF FjDust.compact_subsidiary_aspect_min");
+_Static_assert(_Generic(((FjDust*)0)->compact_subsidiary_aspect_max, float: 1, default: 0) && offsetof(FjDust, compact_subsidiary_aspect_max) == 156, "OFF FjDust.compact_subsidiary_aspect_max");
+_Static_assert(_Generic(((FjDust*)0)->compact_subsidiary_offset_max, float: 1, default: 0) && offsetof(FjDust, compact_subsidiary_offset_max) == 160, "OFF FjDust.compact_subsidiary_offset_max");
+_Static_assert(_Generic(((FjDust*)0)->compact_subsidiary_angle_max_radians, float: 1, default: 0) && offsetof(FjDust, compact_subsidiary_angle_max_radians) == 164, "OFF FjDust.compact_subsidiary_angle_max_radians");
+_Static_assert(sizeof(FjScratch) == 144 && _Alignof(FjScratch) == 4, "OFF FjScratch layout");
+_Static_assert(_Generic(((FjScratch*)0)->cell_width_mm, float: 1, default: 0) && offsetof(FjScratch, cell_width_mm) == 0, "OFF FjScratch.cell_width_mm");
+_Static_assert(_Generic(((FjScratch*)0)->cell_height_mm, float: 1, default: 0) && offsetof(FjScratch, cell_height_mm) == 4, "OFF FjScratch.cell_height_mm");
+_Static_assert(_Generic(((FjScratch*)0)->slot_probability, float: 1, default: 0) && offsetof(FjScratch, slot_probability) == 8, "OFF FjScratch.slot_probability");
+_Static_assert(_Generic(((FjScratch*)0)->softness_min_mm, float: 1, default: 0) && offsetof(FjScratch, softness_min_mm) == 12, "OFF FjScratch.softness_min_mm");
+_Static_assert(_Generic(((FjScratch*)0)->softness_max_mm, float: 1, default: 0) && offsetof(FjScratch, softness_max_mm) == 16, "OFF FjScratch.softness_max_mm");
+_Static_assert(_Generic(((FjScratch*)0)->softness_size_cap_fraction, float: 1, default: 0) && offsetof(FjScratch, softness_size_cap_fraction) == 20, "OFF FjScratch.softness_size_cap_fraction");
+_Static_assert(_Generic(((FjScratch*)0)->support_x_mm, float: 1, default: 0) && offsetof(FjScratch, support_x_mm) == 24, "OFF FjScratch.support_x_mm");
+_Static_assert(_Generic(((FjScratch*)0)->support_y_mm, float: 1, default: 0) && offsetof(FjScratch, support_y_mm) == 28, "OFF FjScratch.support_y_mm");
+_Static_assert(_Generic(((FjScratch*)0)->length_min_mm, float: 1, default: 0) && offsetof(FjScratch, length_min_mm) == 32, "OFF FjScratch.length_min_mm");
+_Static_assert(_Generic(((FjScratch*)0)->length_bulk_max_mm, float: 1, default: 0) && offsetof(FjScratch, length_bulk_max_mm) == 36, "OFF FjScratch.length_bulk_max_mm");
+_Static_assert(_Generic(((FjScratch*)0)->length_max_mm, float: 1, default: 0) && offsetof(FjScratch, length_max_mm) == 40, "OFF FjScratch.length_max_mm");
+_Static_assert(_Generic(((FjScratch*)0)->length_tail_fraction, float: 1, default: 0) && offsetof(FjScratch, length_tail_fraction) == 44, "OFF FjScratch.length_tail_fraction");
+_Static_assert(_Generic(((FjScratch*)0)->width_min_mm, float: 1, default: 0) && offsetof(FjScratch, width_min_mm) == 48, "OFF FjScratch.width_min_mm");
+_Static_assert(_Generic(((FjScratch*)0)->width_bulk_max_mm, float: 1, default: 0) && offsetof(FjScratch, width_bulk_max_mm) == 52, "OFF FjScratch.width_bulk_max_mm");
+_Static_assert(_Generic(((FjScratch*)0)->width_max_mm, float: 1, default: 0) && offsetof(FjScratch, width_max_mm) == 56, "OFF FjScratch.width_max_mm");
+_Static_assert(_Generic(((FjScratch*)0)->width_tail_fraction, float: 1, default: 0) && offsetof(FjScratch, width_tail_fraction) == 60, "OFF FjScratch.width_tail_fraction");
+_Static_assert(_Generic(((FjScratch*)0)->drift_fraction, float: 1, default: 0) && offsetof(FjScratch, drift_fraction) == 64, "OFF FjScratch.drift_fraction");
+_Static_assert(_Generic(((FjScratch*)0)->first_knot_min, float: 1, default: 0) && offsetof(FjScratch, first_knot_min) == 68, "OFF FjScratch.first_knot_min");
+_Static_assert(_Generic(((FjScratch*)0)->first_knot_max, float: 1, default: 0) && offsetof(FjScratch, first_knot_max) == 72, "OFF FjScratch.first_knot_max");
+_Static_assert(_Generic(((FjScratch*)0)->second_knot_min, float: 1, default: 0) && offsetof(FjScratch, second_knot_min) == 76, "OFF FjScratch.second_knot_min");
+_Static_assert(_Generic(((FjScratch*)0)->second_knot_max, float: 1, default: 0) && offsetof(FjScratch, second_knot_max) == 80, "OFF FjScratch.second_knot_max");
+_Static_assert(_Generic(((FjScratch*)0)->interior_width_min_fraction, float: 1, default: 0) && offsetof(FjScratch, interior_width_min_fraction) == 84, "OFF FjScratch.interior_width_min_fraction");
+_Static_assert(_Generic(((FjScratch*)0)->interior_width_max_fraction, float: 1, default: 0) && offsetof(FjScratch, interior_width_max_fraction) == 88, "OFF FjScratch.interior_width_max_fraction");
+_Static_assert(_Generic(((FjScratch*)0)->interior_depth_min_fraction, float: 1, default: 0) && offsetof(FjScratch, interior_depth_min_fraction) == 92, "OFF FjScratch.interior_depth_min_fraction");
+_Static_assert(_Generic(((FjScratch*)0)->interior_depth_max_fraction, float: 1, default: 0) && offsetof(FjScratch, interior_depth_max_fraction) == 96, "OFF FjScratch.interior_depth_max_fraction");
+_Static_assert(_Generic(((FjScratch*)0)->endpoint_abrupt_probability, float: 1, default: 0) && offsetof(FjScratch, endpoint_abrupt_probability) == 100, "OFF FjScratch.endpoint_abrupt_probability");
+_Static_assert(_Generic(((FjScratch*)0)->interruption_probability, float: 1, default: 0) && offsetof(FjScratch, interruption_probability) == 104, "OFF FjScratch.interruption_probability");
+_Static_assert(_Generic(((FjScratch*)0)->gap_center_min, float: 1, default: 0) && offsetof(FjScratch, gap_center_min) == 108, "OFF FjScratch.gap_center_min");
+_Static_assert(_Generic(((FjScratch*)0)->gap_center_max, float: 1, default: 0) && offsetof(FjScratch, gap_center_max) == 112, "OFF FjScratch.gap_center_max");
+_Static_assert(_Generic(((FjScratch*)0)->gap_span_min, float: 1, default: 0) && offsetof(FjScratch, gap_span_min) == 116, "OFF FjScratch.gap_span_min");
+_Static_assert(_Generic(((FjScratch*)0)->gap_span_max, float: 1, default: 0) && offsetof(FjScratch, gap_span_max) == 120, "OFF FjScratch.gap_span_max");
+_Static_assert(_Generic(((FjScratch*)0)->scuff_probability, float: 1, default: 0) && offsetof(FjScratch, scuff_probability) == 124, "OFF FjScratch.scuff_probability");
+_Static_assert(_Generic(((FjScratch*)0)->scuff_length_max_mm, float: 1, default: 0) && offsetof(FjScratch, scuff_length_max_mm) == 128, "OFF FjScratch.scuff_length_max_mm");
+_Static_assert(_Generic(((FjScratch*)0)->scuff_angle_max_radians, float: 1, default: 0) && offsetof(FjScratch, scuff_angle_max_radians) == 132, "OFF FjScratch.scuff_angle_max_radians");
+_Static_assert(_Generic(((FjScratch*)0)->strength_min, float: 1, default: 0) && offsetof(FjScratch, strength_min) == 136, "OFF FjScratch.strength_min");
+_Static_assert(_Generic(((FjScratch*)0)->strength_max, float: 1, default: 0) && offsetof(FjScratch, strength_max) == 140, "OFF FjScratch.strength_max");
+static void effects_seed(FjPhysicalEffectsRecipe* out) {
+    out->film_dust.cell_width_mm = 1.25f;
+    out->film_dust.cell_height_mm = 1.25f;
+    out->film_dust.slot_probability = 1.25f;
+    out->film_dust.softness_min_mm = 1.25f;
+    out->film_dust.softness_max_mm = 1.25f;
+    out->film_dust.softness_size_cap_fraction = 1.25f;
+    out->film_dust.support_x_mm = 1.25f;
+    out->film_dust.support_y_mm = 1.25f;
+    out->film_dust.fiber_fraction = 1.25f;
+    out->film_dust.fiber_drift_fraction = 1.25f;
+    out->film_dust.fiber_first_knot_min = 1.25f;
+    out->film_dust.fiber_first_knot_max = 1.25f;
+    out->film_dust.fiber_second_knot_min = 1.25f;
+    out->film_dust.fiber_second_knot_max = 1.25f;
+    out->film_dust.fiber_interior_width_min_fraction = 1.25f;
+    out->film_dust.fiber_interior_width_max_fraction = 1.25f;
+    out->film_dust.diameter_min_mm = 1.25f;
+    out->film_dust.diameter_bulk_max_mm = 1.25f;
+    out->film_dust.diameter_max_mm = 1.25f;
+    out->film_dust.diameter_tail_fraction = 1.25f;
+    out->film_dust.fiber_length_min_mm = 1.25f;
+    out->film_dust.fiber_length_max_mm = 1.25f;
+    out->film_dust.fiber_width_min_mm = 1.25f;
+    out->film_dust.fiber_width_max_mm = 1.25f;
+    out->film_dust.opacity_faint_cumulative = 1.25f;
+    out->film_dust.opacity_intermediate_cumulative = 1.25f;
+    out->film_dust.compact_opacity_min = 1.25f;
+    out->film_dust.compact_opacity_faint_end = 1.25f;
+    out->film_dust.compact_opacity_intermediate_end = 1.25f;
+    out->film_dust.compact_opacity_max = 1.25f;
+    out->film_dust.fiber_opacity_min = 1.25f;
+    out->film_dust.fiber_opacity_faint_end = 1.25f;
+    out->film_dust.fiber_opacity_intermediate_end = 1.25f;
+    out->film_dust.fiber_opacity_max = 1.25f;
+    out->film_dust.compact_dominant_aspect_min = 1.25f;
+    out->film_dust.compact_dominant_aspect_max = 1.25f;
+    out->film_dust.compact_subsidiary_scale_min = 1.25f;
+    out->film_dust.compact_subsidiary_scale_max = 1.25f;
+    out->film_dust.compact_subsidiary_aspect_min = 1.25f;
+    out->film_dust.compact_subsidiary_aspect_max = 1.25f;
+    out->film_dust.compact_subsidiary_offset_max = 1.25f;
+    out->film_dust.compact_subsidiary_angle_max_radians = 1.25f;
+    out->film_scratch.cell_width_mm = 1.25f;
+    out->film_scratch.cell_height_mm = 1.25f;
+    out->film_scratch.slot_probability = 1.25f;
+    out->film_scratch.softness_min_mm = 1.25f;
+    out->film_scratch.softness_max_mm = 1.25f;
+    out->film_scratch.softness_size_cap_fraction = 1.25f;
+    out->film_scratch.support_x_mm = 1.25f;
+    out->film_scratch.support_y_mm = 1.25f;
+    out->film_scratch.length_min_mm = 1.25f;
+    out->film_scratch.length_bulk_max_mm = 1.25f;
+    out->film_scratch.length_max_mm = 1.25f;
+    out->film_scratch.length_tail_fraction = 1.25f;
+    out->film_scratch.width_min_mm = 1.25f;
+    out->film_scratch.width_bulk_max_mm = 1.25f;
+    out->film_scratch.width_max_mm = 1.25f;
+    out->film_scratch.width_tail_fraction = 1.25f;
+    out->film_scratch.drift_fraction = 1.25f;
+    out->film_scratch.first_knot_min = 1.25f;
+    out->film_scratch.first_knot_max = 1.25f;
+    out->film_scratch.second_knot_min = 1.25f;
+    out->film_scratch.second_knot_max = 1.25f;
+    out->film_scratch.interior_width_min_fraction = 1.25f;
+    out->film_scratch.interior_width_max_fraction = 1.25f;
+    out->film_scratch.interior_depth_min_fraction = 1.25f;
+    out->film_scratch.interior_depth_max_fraction = 1.25f;
+    out->film_scratch.endpoint_abrupt_probability = 1.25f;
+    out->film_scratch.interruption_probability = 1.25f;
+    out->film_scratch.gap_center_min = 1.25f;
+    out->film_scratch.gap_center_max = 1.25f;
+    out->film_scratch.gap_span_min = 1.25f;
+    out->film_scratch.gap_span_max = 1.25f;
+    out->film_scratch.scuff_probability = 1.25f;
+    out->film_scratch.scuff_length_max_mm = 1.25f;
+    out->film_scratch.scuff_angle_max_radians = 1.25f;
+    out->film_scratch.strength_min = 1.25f;
+    out->film_scratch.strength_max = 1.25f;
+    out->gate_dust.cell_width_mm = 1.25f;
+    out->gate_dust.cell_height_mm = 1.25f;
+    out->gate_dust.slot_probability = 1.25f;
+    out->gate_dust.softness_min_mm = 1.25f;
+    out->gate_dust.softness_max_mm = 1.25f;
+    out->gate_dust.softness_size_cap_fraction = 1.25f;
+    out->gate_dust.support_x_mm = 1.25f;
+    out->gate_dust.support_y_mm = 1.25f;
+    out->gate_dust.fiber_fraction = 1.25f;
+    out->gate_dust.fiber_drift_fraction = 1.25f;
+    out->gate_dust.fiber_first_knot_min = 1.25f;
+    out->gate_dust.fiber_first_knot_max = 1.25f;
+    out->gate_dust.fiber_second_knot_min = 1.25f;
+    out->gate_dust.fiber_second_knot_max = 1.25f;
+    out->gate_dust.fiber_interior_width_min_fraction = 1.25f;
+    out->gate_dust.fiber_interior_width_max_fraction = 1.25f;
+    out->gate_dust.diameter_min_mm = 1.25f;
+    out->gate_dust.diameter_bulk_max_mm = 1.25f;
+    out->gate_dust.diameter_max_mm = 1.25f;
+    out->gate_dust.diameter_tail_fraction = 1.25f;
+    out->gate_dust.fiber_length_min_mm = 1.25f;
+    out->gate_dust.fiber_length_max_mm = 1.25f;
+    out->gate_dust.fiber_width_min_mm = 1.25f;
+    out->gate_dust.fiber_width_max_mm = 1.25f;
+    out->gate_dust.opacity_faint_cumulative = 1.25f;
+    out->gate_dust.opacity_intermediate_cumulative = 1.25f;
+    out->gate_dust.compact_opacity_min = 1.25f;
+    out->gate_dust.compact_opacity_faint_end = 1.25f;
+    out->gate_dust.compact_opacity_intermediate_end = 1.25f;
+    out->gate_dust.compact_opacity_max = 1.25f;
+    out->gate_dust.fiber_opacity_min = 1.25f;
+    out->gate_dust.fiber_opacity_faint_end = 1.25f;
+    out->gate_dust.fiber_opacity_intermediate_end = 1.25f;
+    out->gate_dust.fiber_opacity_max = 1.25f;
+    out->gate_dust.compact_dominant_aspect_min = 1.25f;
+    out->gate_dust.compact_dominant_aspect_max = 1.25f;
+    out->gate_dust.compact_subsidiary_scale_min = 1.25f;
+    out->gate_dust.compact_subsidiary_scale_max = 1.25f;
+    out->gate_dust.compact_subsidiary_aspect_min = 1.25f;
+    out->gate_dust.compact_subsidiary_aspect_max = 1.25f;
+    out->gate_dust.compact_subsidiary_offset_max = 1.25f;
+    out->gate_dust.compact_subsidiary_angle_max_radians = 1.25f;
+    out->gate_scratch.cell_width_mm = 1.25f;
+    out->gate_scratch.cell_height_mm = 1.25f;
+    out->gate_scratch.slot_probability = 1.25f;
+    out->gate_scratch.softness_min_mm = 1.25f;
+    out->gate_scratch.softness_max_mm = 1.25f;
+    out->gate_scratch.softness_size_cap_fraction = 1.25f;
+    out->gate_scratch.support_x_mm = 1.25f;
+    out->gate_scratch.support_y_mm = 1.25f;
+    out->gate_scratch.length_min_mm = 1.25f;
+    out->gate_scratch.length_bulk_max_mm = 1.25f;
+    out->gate_scratch.length_max_mm = 1.25f;
+    out->gate_scratch.length_tail_fraction = 1.25f;
+    out->gate_scratch.width_min_mm = 1.25f;
+    out->gate_scratch.width_bulk_max_mm = 1.25f;
+    out->gate_scratch.width_max_mm = 1.25f;
+    out->gate_scratch.width_tail_fraction = 1.25f;
+    out->gate_scratch.drift_fraction = 1.25f;
+    out->gate_scratch.first_knot_min = 1.25f;
+    out->gate_scratch.first_knot_max = 1.25f;
+    out->gate_scratch.second_knot_min = 1.25f;
+    out->gate_scratch.second_knot_max = 1.25f;
+    out->gate_scratch.interior_width_min_fraction = 1.25f;
+    out->gate_scratch.interior_width_max_fraction = 1.25f;
+    out->gate_scratch.interior_depth_min_fraction = 1.25f;
+    out->gate_scratch.interior_depth_max_fraction = 1.25f;
+    out->gate_scratch.endpoint_abrupt_probability = 1.25f;
+    out->gate_scratch.interruption_probability = 1.25f;
+    out->gate_scratch.gap_center_min = 1.25f;
+    out->gate_scratch.gap_center_max = 1.25f;
+    out->gate_scratch.gap_span_min = 1.25f;
+    out->gate_scratch.gap_span_max = 1.25f;
+    out->gate_scratch.scuff_probability = 1.25f;
+    out->gate_scratch.scuff_length_max_mm = 1.25f;
+    out->gate_scratch.scuff_angle_max_radians = 1.25f;
+    out->gate_scratch.strength_min = 1.25f;
+    out->gate_scratch.strength_max = 1.25f;
+    out->gate_weave_amount = 2.5;
+    out->active = 99;
+    out->hash = UINT64_C(99);
+}
+static int effects_fields(const FjPhysicalEffectsRecipe* out, size_t index) {
+    const float coefficients[] = {
+        out->film_dust.cell_width_mm,
+        out->film_dust.cell_height_mm,
+        out->film_dust.slot_probability,
+        out->film_dust.softness_min_mm,
+        out->film_dust.softness_max_mm,
+        out->film_dust.softness_size_cap_fraction,
+        out->film_dust.support_x_mm,
+        out->film_dust.support_y_mm,
+        out->film_dust.fiber_fraction,
+        out->film_dust.fiber_drift_fraction,
+        out->film_dust.fiber_first_knot_min,
+        out->film_dust.fiber_first_knot_max,
+        out->film_dust.fiber_second_knot_min,
+        out->film_dust.fiber_second_knot_max,
+        out->film_dust.fiber_interior_width_min_fraction,
+        out->film_dust.fiber_interior_width_max_fraction,
+        out->film_dust.diameter_min_mm,
+        out->film_dust.diameter_bulk_max_mm,
+        out->film_dust.diameter_max_mm,
+        out->film_dust.diameter_tail_fraction,
+        out->film_dust.fiber_length_min_mm,
+        out->film_dust.fiber_length_max_mm,
+        out->film_dust.fiber_width_min_mm,
+        out->film_dust.fiber_width_max_mm,
+        out->film_dust.opacity_faint_cumulative,
+        out->film_dust.opacity_intermediate_cumulative,
+        out->film_dust.compact_opacity_min,
+        out->film_dust.compact_opacity_faint_end,
+        out->film_dust.compact_opacity_intermediate_end,
+        out->film_dust.compact_opacity_max,
+        out->film_dust.fiber_opacity_min,
+        out->film_dust.fiber_opacity_faint_end,
+        out->film_dust.fiber_opacity_intermediate_end,
+        out->film_dust.fiber_opacity_max,
+        out->film_dust.compact_dominant_aspect_min,
+        out->film_dust.compact_dominant_aspect_max,
+        out->film_dust.compact_subsidiary_scale_min,
+        out->film_dust.compact_subsidiary_scale_max,
+        out->film_dust.compact_subsidiary_aspect_min,
+        out->film_dust.compact_subsidiary_aspect_max,
+        out->film_dust.compact_subsidiary_offset_max,
+        out->film_dust.compact_subsidiary_angle_max_radians,
+        out->film_scratch.cell_width_mm,
+        out->film_scratch.cell_height_mm,
+        out->film_scratch.slot_probability,
+        out->film_scratch.softness_min_mm,
+        out->film_scratch.softness_max_mm,
+        out->film_scratch.softness_size_cap_fraction,
+        out->film_scratch.support_x_mm,
+        out->film_scratch.support_y_mm,
+        out->film_scratch.length_min_mm,
+        out->film_scratch.length_bulk_max_mm,
+        out->film_scratch.length_max_mm,
+        out->film_scratch.length_tail_fraction,
+        out->film_scratch.width_min_mm,
+        out->film_scratch.width_bulk_max_mm,
+        out->film_scratch.width_max_mm,
+        out->film_scratch.width_tail_fraction,
+        out->film_scratch.drift_fraction,
+        out->film_scratch.first_knot_min,
+        out->film_scratch.first_knot_max,
+        out->film_scratch.second_knot_min,
+        out->film_scratch.second_knot_max,
+        out->film_scratch.interior_width_min_fraction,
+        out->film_scratch.interior_width_max_fraction,
+        out->film_scratch.interior_depth_min_fraction,
+        out->film_scratch.interior_depth_max_fraction,
+        out->film_scratch.endpoint_abrupt_probability,
+        out->film_scratch.interruption_probability,
+        out->film_scratch.gap_center_min,
+        out->film_scratch.gap_center_max,
+        out->film_scratch.gap_span_min,
+        out->film_scratch.gap_span_max,
+        out->film_scratch.scuff_probability,
+        out->film_scratch.scuff_length_max_mm,
+        out->film_scratch.scuff_angle_max_radians,
+        out->film_scratch.strength_min,
+        out->film_scratch.strength_max,
+        out->gate_dust.cell_width_mm,
+        out->gate_dust.cell_height_mm,
+        out->gate_dust.slot_probability,
+        out->gate_dust.softness_min_mm,
+        out->gate_dust.softness_max_mm,
+        out->gate_dust.softness_size_cap_fraction,
+        out->gate_dust.support_x_mm,
+        out->gate_dust.support_y_mm,
+        out->gate_dust.fiber_fraction,
+        out->gate_dust.fiber_drift_fraction,
+        out->gate_dust.fiber_first_knot_min,
+        out->gate_dust.fiber_first_knot_max,
+        out->gate_dust.fiber_second_knot_min,
+        out->gate_dust.fiber_second_knot_max,
+        out->gate_dust.fiber_interior_width_min_fraction,
+        out->gate_dust.fiber_interior_width_max_fraction,
+        out->gate_dust.diameter_min_mm,
+        out->gate_dust.diameter_bulk_max_mm,
+        out->gate_dust.diameter_max_mm,
+        out->gate_dust.diameter_tail_fraction,
+        out->gate_dust.fiber_length_min_mm,
+        out->gate_dust.fiber_length_max_mm,
+        out->gate_dust.fiber_width_min_mm,
+        out->gate_dust.fiber_width_max_mm,
+        out->gate_dust.opacity_faint_cumulative,
+        out->gate_dust.opacity_intermediate_cumulative,
+        out->gate_dust.compact_opacity_min,
+        out->gate_dust.compact_opacity_faint_end,
+        out->gate_dust.compact_opacity_intermediate_end,
+        out->gate_dust.compact_opacity_max,
+        out->gate_dust.fiber_opacity_min,
+        out->gate_dust.fiber_opacity_faint_end,
+        out->gate_dust.fiber_opacity_intermediate_end,
+        out->gate_dust.fiber_opacity_max,
+        out->gate_dust.compact_dominant_aspect_min,
+        out->gate_dust.compact_dominant_aspect_max,
+        out->gate_dust.compact_subsidiary_scale_min,
+        out->gate_dust.compact_subsidiary_scale_max,
+        out->gate_dust.compact_subsidiary_aspect_min,
+        out->gate_dust.compact_subsidiary_aspect_max,
+        out->gate_dust.compact_subsidiary_offset_max,
+        out->gate_dust.compact_subsidiary_angle_max_radians,
+        out->gate_scratch.cell_width_mm,
+        out->gate_scratch.cell_height_mm,
+        out->gate_scratch.slot_probability,
+        out->gate_scratch.softness_min_mm,
+        out->gate_scratch.softness_max_mm,
+        out->gate_scratch.softness_size_cap_fraction,
+        out->gate_scratch.support_x_mm,
+        out->gate_scratch.support_y_mm,
+        out->gate_scratch.length_min_mm,
+        out->gate_scratch.length_bulk_max_mm,
+        out->gate_scratch.length_max_mm,
+        out->gate_scratch.length_tail_fraction,
+        out->gate_scratch.width_min_mm,
+        out->gate_scratch.width_bulk_max_mm,
+        out->gate_scratch.width_max_mm,
+        out->gate_scratch.width_tail_fraction,
+        out->gate_scratch.drift_fraction,
+        out->gate_scratch.first_knot_min,
+        out->gate_scratch.first_knot_max,
+        out->gate_scratch.second_knot_min,
+        out->gate_scratch.second_knot_max,
+        out->gate_scratch.interior_width_min_fraction,
+        out->gate_scratch.interior_width_max_fraction,
+        out->gate_scratch.interior_depth_min_fraction,
+        out->gate_scratch.interior_depth_max_fraction,
+        out->gate_scratch.endpoint_abrupt_probability,
+        out->gate_scratch.interruption_probability,
+        out->gate_scratch.gap_center_min,
+        out->gate_scratch.gap_center_max,
+        out->gate_scratch.gap_span_min,
+        out->gate_scratch.gap_span_max,
+        out->gate_scratch.scuff_probability,
+        out->gate_scratch.scuff_length_max_mm,
+        out->gate_scratch.scuff_angle_max_radians,
+        out->gate_scratch.strength_min,
+        out->gate_scratch.strength_max};
+    uint64_t weave;
+    memcpy(&weave, &out->gate_weave_amount, sizeof(weave));
+    return words(coefficients, effects_coefficients[index], 156) && weave == effects_weave[index] && out->active == effects_active[index] && out->hash == effects_hash[index];
+}
+static int effects_values(void) {
+    PhysicalEffectsPrepare prepare = fj_legacy_physical_effects_prepare;
+    for (size_t index = 0; index < 9; ++index) {
+        FjPhysicalEffectsParams params = {0};
+        memcpy(&params.film_dust_amount, &effects_amounts[index][0], sizeof(float));
+        memcpy(&params.film_scratch_amount, &effects_amounts[index][1], sizeof(float));
+        memcpy(&params.gate_dust_amount, &effects_amounts[index][2], sizeof(float));
+        memcpy(&params.gate_scratch_amount, &effects_amounts[index][3], sizeof(float));
+        memcpy(&params.gate_weave_amount, &effects_weave_input[index], sizeof(double));
+        params.grain_active = effects_grain_active[index];
+        params.grain_debug_view = effects_debug[index];
+        FjPhysicalEffectsRecipe out = {0};
+        effects_seed(&out);
+        FjFilmRecipeFailure failure = {99, 99, 99};
+        FjStatus value = prepare(index == 8 ? NULL : &params, &out, &failure, NULL);
+        CHECK(status(value, index < 7 ? FJ_STATUS_SUCCESS : FJ_STATUS_UNSUPPORTED_INPUT));
+        CHECK(failure.reason == (index < 7 ? FJ_FILM_RECIPE_REASON_NONE : FJ_FILM_RECIPE_RAW) && failure.channel == 3 && failure.sample == UINT64_MAX);
+        CHECK(effects_fields(&out, index));
+        printf("EFFECTS_CASE %s category=%u api=%u native_code=%lld reason=%u channel=%u sample=%llu fields=156-pass\n", effects_names[index], value.category, value.api, (long long)value.native_code, failure.reason, failure.channel, (unsigned long long)failure.sample);
+    }
+    return 0;
+}
+
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -305,11 +751,13 @@ int wmain(int argc, wchar_t** argv) {
     FjPathView path = {argv[1], wcslen(argv[1]), FJ_PATH_WINDOWS_WIDE};
     FjPathView duplicate_path = {argv[2], wcslen(argv[2]), FJ_PATH_WINDOWS_WIDE};
 #else
+
 int main(int argc, char** argv) {
     CHECK(argc == 3);
     FjPathView path = {argv[1], strlen(argv[1]), FJ_PATH_UNIX_BYTES};
     FjPathView duplicate_path = {argv[2], strlen(argv[2]), FJ_PATH_UNIX_BYTES};
 #endif
+    CHECK(effects_values() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

@@ -87,6 +87,7 @@ def execute(arguments):
         b"film development release fixture panic",
         b"film development retain fixture panic",
         b"visual grain fixture panic",
+        b"physical effects fixture panic",
         b"film DIR acquire fixture panic",
         b"film DIR view fixture panic",
         b"film DIR release fixture panic",
@@ -119,6 +120,12 @@ def execute(arguments):
     grain_manifest = grain_directory / "manifest.json"
     grain_payload = grain_directory / json.loads(grain_manifest.read_text())["presets"][arguments.preset]["values"]
     consumed_paths.extend([grain_manifest, grain_payload])
+    effects_directory = root / "tests/film/effects-fixtures"
+    effects_manifest = effects_directory / "manifest.json"
+    effects_spec = json.loads(effects_manifest.read_text())
+    effects_payload = effects_directory / effects_spec["presets"][arguments.preset]["literal"]
+    assert digest(effects_payload) == effects_spec["payload_sha256"][effects_payload.name]
+    consumed_paths.extend([effects_manifest, effects_payload])
     consumed = {str(path): digest(path) for path in sorted(set(consumed_paths))}
 
     def check_consumed():
@@ -155,6 +162,7 @@ def execute(arguments):
         "fj_legacy_film_dir_release",
         "fj_legacy_film_density_bounds_prepare",
         "fj_legacy_visual_grain_prepare",
+        "fj_legacy_physical_effects_prepare",
         "fj_legacy_output_color",
         "fj_legacy_film_profile_acquire",
         "fj_legacy_print_profile_acquire",
@@ -183,6 +191,7 @@ def execute(arguments):
     ]
     probe_records = []
     grain_results = []
+    effects_results = []
     for name, source in probes:
         executable = out / (name + suffix)
         target_source = out / (name + ".c")
@@ -270,6 +279,20 @@ def execute(arguments):
                 grain_results.append({"case": case, "category": actual[0], "api": actual[1],
                                       "native_code": actual[2], "reason": actual[3],
                                       "channel": actual[4], "sample": actual[5], "fields": "pass"})
+            effects_pattern = r"^EFFECTS_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) channel=(\d+) sample=(\d+) fields=156-pass$"
+            case_names = ["effects-active", "effects-inactive", "effects-debug-suppressed",
+                     "effects-grain-off-debug", "effects-sanitized", "effects-weave-negative-zero",
+                     "effects-weave-subfloat", "effects-raw-boolean", "effects-raw-params"]
+            lines = [line for line in output.splitlines() if line.startswith("EFFECTS_CASE")]
+            assert len(lines) == 9, lines
+            for index, (line, case) in enumerate(zip(lines, case_names)):
+                match = re.fullmatch(effects_pattern, line)
+                assert match is not None and match[1] == case, line
+                actual = [int(value) for value in match.groups()[1:]]
+                assert actual == ([0, 0, 0, 0, 3, 2**64 - 1] if index < 7 else [2, 0, 0, 1, 3, 2**64 - 1]), line
+                effects_results.append({"case": case, "category": actual[0], "api": actual[1],
+                                        "native_code": actual[2], "reason": actual[3],
+                                        "channel": actual[4], "sample": actual[5], "fields": "156-pass"})
     for artifact in scanned:
         assert digest(Path(artifact["file"])) == artifact["sha256"], artifact
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -300,6 +323,9 @@ def execute(arguments):
                                   "logical_preset": arguments.preset},
                 "probes": probe_records,
                 "grain_results": grain_results,
+                "effects_results": effects_results,
+                "effects_fixture": {"manifest": str(effects_manifest), "payload": str(effects_payload),
+                                    "logical_preset": arguments.preset},
                 "commands": {"file": str(out / "commands.json"), "sha256": digest(out / "commands.json")},
                 "command_outputs": {str(out / (row["name"] + suffix)): digest(out / (row["name"] + suffix))
                                     for row in commands for suffix in [".stdout", ".stderr"]},
@@ -424,6 +450,31 @@ def expected_film_header(out):
                                  + ",".join(str(int(word)) + "U" for word in flatten(value)) + "};\n")
                 else:
                     stream.write("#define " + prefix.upper() + "_" + name.upper() + " " + str(int(value)) + "\n")
+
+    effects_directory = root / "tests/film/effects-fixtures"
+    effects_manifest = json.loads((effects_directory / "manifest.json").read_text())
+    effects_payload = effects_directory / effects_manifest["presets"][arguments.preset]["literal"]
+    assert digest(effects_payload) == effects_manifest["payload_sha256"][effects_payload.name]
+    effects = json.loads(effects_payload.read_text())["cases"]
+    names = ["effects-active", "effects-inactive", "effects-debug-suppressed",
+             "effects-grain-off-debug", "effects-sanitized", "effects-weave-negative-zero",
+             "effects-weave-subfloat", "effects-raw-boolean", "effects-raw-params"]
+    rows = [next(row for row in effects if row["id"] == name) for name in names[:7]]
+    rows += [{**rows[0], "controls": {**rows[0]["controls"], "grain_active": 2}, "recipe": rows[1]["recipe"]},
+             {**rows[0], "recipe": rows[1]["recipe"]}]
+    assert len({name for name in names}) == 9 and len(rows) == 9
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write("static const char* effects_names[9] = {" + ",".join(json.dumps(name) for name in names) + "};\n")
+        stream.write("static const uint32_t effects_amounts[9][4] = {" + ",".join("{" + ",".join(str(word) + "U" for word in row["controls"]["amounts"]) + "}" for row in rows) + "};\n")
+        for prefix, values, ctype in [
+            ("effects_weave_input", [row["controls"]["weave"] for row in rows], "uint64_t"),
+            ("effects_grain_active", [int(row["controls"]["grain_active"]) for row in rows], "uint32_t"),
+            ("effects_debug", [row["controls"]["grain_debug_view"] for row in rows], "int32_t"),
+            ("effects_active", [int(row["recipe"]["active"]) for row in rows], "uint32_t"),
+            ("effects_weave", [row["recipe"]["weave"] for row in rows], "uint64_t"),
+            ("effects_hash", [row["recipe"]["hash"] for row in rows], "uint64_t")]:
+            stream.write("static const " + ctype + " " + prefix + "[9] = {" + ",".join(("UINT64_C(" + str(word) + ")") if ctype == "uint64_t" else str(word) for word in values) + "};\n")
+        stream.write("static const uint32_t effects_coefficients[9][156] = {" + ",".join("{" + ",".join(str(word) + "U" for family in ["film_dust", "film_scratch", "gate_dust", "gate_scratch"] for word in row["recipe"][family]) + "}" for row in rows) + "};\n")
 
 
 if __name__ == "__main__":

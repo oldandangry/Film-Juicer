@@ -68,6 +68,7 @@ namespace JuicerTestSupport {
             bool pendingPrintRoute = false;
             Spektrafilm::ScanRoute pendingRoute = Spektrafilm::kDefaultScanRoute;
             double pendingExposureEv = 0.0;
+            PhysicalEffectsControls pendingEffects;
             float pendingFilmGamma = 0.0f;
             double pendingPrintGamma = 0.0;
             Spektrafilm::VisualGrainControls pendingGrain;
@@ -93,6 +94,7 @@ namespace JuicerTestSupport {
                     result.pendingExposureEv =
                         valid->params.cameraExposureCompensationEv;
                     result.pendingFilmGamma = valid->params.filmGammaFactor;
+                    result.pendingEffects = {valid->params.filmDustAmount, valid->params.filmScratchAmount, valid->params.gateDustAmount, valid->params.gateScratchAmount, valid->params.gateWeaveAmount};
                     result.pendingPrintGamma = valid->params.printGammaFactor;
                     result.pendingGrain = valid->params.grainControls;
                     result.pendingDir = valid->params.dirCouplers;
@@ -754,6 +756,10 @@ namespace {
 
         void bind_effect(JuicerEffect& effect) noexcept {
             _effect = &effect;
+        }
+
+        void unbind_effect() noexcept {
+            _effect = nullptr;
         }
 
         void set_time(double time) noexcept {
@@ -2612,6 +2618,152 @@ namespace {
     }
 } // namespace
 
+namespace {
+    nlohmann::json physical_words(const DefectDustRecipe& value) {
+        return nlohmann::json::array({std::bit_cast<std::uint32_t>(value.cellWidthMm),
+                                      std::bit_cast<std::uint32_t>(value.cellHeightMm),
+                                      std::bit_cast<std::uint32_t>(value.slotProbability),
+                                      std::bit_cast<std::uint32_t>(value.softnessMinMm),
+                                      std::bit_cast<std::uint32_t>(value.softnessMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.softnessSizeCapFraction),
+                                      std::bit_cast<std::uint32_t>(value.supportXMm),
+                                      std::bit_cast<std::uint32_t>(value.supportYMm),
+                                      std::bit_cast<std::uint32_t>(value.fiberFraction),
+                                      std::bit_cast<std::uint32_t>(value.fiberDriftFraction),
+                                      std::bit_cast<std::uint32_t>(value.fiberFirstKnotMin),
+                                      std::bit_cast<std::uint32_t>(value.fiberFirstKnotMax),
+                                      std::bit_cast<std::uint32_t>(value.fiberSecondKnotMin),
+                                      std::bit_cast<std::uint32_t>(value.fiberSecondKnotMax),
+                                      std::bit_cast<std::uint32_t>(value.fiberInteriorWidthMinFraction),
+                                      std::bit_cast<std::uint32_t>(value.fiberInteriorWidthMaxFraction),
+                                      std::bit_cast<std::uint32_t>(value.diameterMinMm),
+                                      std::bit_cast<std::uint32_t>(value.diameterBulkMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.diameterMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.diameterTailFraction),
+                                      std::bit_cast<std::uint32_t>(value.fiberLengthMinMm),
+                                      std::bit_cast<std::uint32_t>(value.fiberLengthMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.fiberWidthMinMm),
+                                      std::bit_cast<std::uint32_t>(value.fiberWidthMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.opacityFaintCumulative),
+                                      std::bit_cast<std::uint32_t>(value.opacityIntermediateCumulative),
+                                      std::bit_cast<std::uint32_t>(value.compactOpacityMin),
+                                      std::bit_cast<std::uint32_t>(value.compactOpacityFaintEnd),
+                                      std::bit_cast<std::uint32_t>(value.compactOpacityIntermediateEnd),
+                                      std::bit_cast<std::uint32_t>(value.compactOpacityMax),
+                                      std::bit_cast<std::uint32_t>(value.fiberOpacityMin),
+                                      std::bit_cast<std::uint32_t>(value.fiberOpacityFaintEnd),
+                                      std::bit_cast<std::uint32_t>(value.fiberOpacityIntermediateEnd),
+                                      std::bit_cast<std::uint32_t>(value.fiberOpacityMax),
+                                      std::bit_cast<std::uint32_t>(value.compactDominantAspectMin),
+                                      std::bit_cast<std::uint32_t>(value.compactDominantAspectMax),
+                                      std::bit_cast<std::uint32_t>(value.compactSubsidiaryScaleMin),
+                                      std::bit_cast<std::uint32_t>(value.compactSubsidiaryScaleMax),
+                                      std::bit_cast<std::uint32_t>(value.compactSubsidiaryAspectMin),
+                                      std::bit_cast<std::uint32_t>(value.compactSubsidiaryAspectMax),
+                                      std::bit_cast<std::uint32_t>(value.compactSubsidiaryOffsetMax),
+                                      std::bit_cast<std::uint32_t>(value.compactSubsidiaryAngleMaxRadians)});
+    }
+    nlohmann::json physical_words(const DefectScratchRecipe& value) {
+        return nlohmann::json::array({std::bit_cast<std::uint32_t>(value.cellWidthMm),
+                                      std::bit_cast<std::uint32_t>(value.cellHeightMm),
+                                      std::bit_cast<std::uint32_t>(value.slotProbability),
+                                      std::bit_cast<std::uint32_t>(value.softnessMinMm),
+                                      std::bit_cast<std::uint32_t>(value.softnessMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.softnessSizeCapFraction),
+                                      std::bit_cast<std::uint32_t>(value.supportXMm),
+                                      std::bit_cast<std::uint32_t>(value.supportYMm),
+                                      std::bit_cast<std::uint32_t>(value.lengthMinMm),
+                                      std::bit_cast<std::uint32_t>(value.lengthBulkMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.lengthMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.lengthTailFraction),
+                                      std::bit_cast<std::uint32_t>(value.widthMinMm),
+                                      std::bit_cast<std::uint32_t>(value.widthBulkMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.widthMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.widthTailFraction),
+                                      std::bit_cast<std::uint32_t>(value.driftFraction),
+                                      std::bit_cast<std::uint32_t>(value.firstKnotMin),
+                                      std::bit_cast<std::uint32_t>(value.firstKnotMax),
+                                      std::bit_cast<std::uint32_t>(value.secondKnotMin),
+                                      std::bit_cast<std::uint32_t>(value.secondKnotMax),
+                                      std::bit_cast<std::uint32_t>(value.interiorWidthMinFraction),
+                                      std::bit_cast<std::uint32_t>(value.interiorWidthMaxFraction),
+                                      std::bit_cast<std::uint32_t>(value.interiorDepthMinFraction),
+                                      std::bit_cast<std::uint32_t>(value.interiorDepthMaxFraction),
+                                      std::bit_cast<std::uint32_t>(value.endpointAbruptProbability),
+                                      std::bit_cast<std::uint32_t>(value.interruptionProbability),
+                                      std::bit_cast<std::uint32_t>(value.gapCenterMin),
+                                      std::bit_cast<std::uint32_t>(value.gapCenterMax),
+                                      std::bit_cast<std::uint32_t>(value.gapSpanMin),
+                                      std::bit_cast<std::uint32_t>(value.gapSpanMax),
+                                      std::bit_cast<std::uint32_t>(value.scuffProbability),
+                                      std::bit_cast<std::uint32_t>(value.scuffLengthMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.scuffAngleMaxRadians),
+                                      std::bit_cast<std::uint32_t>(value.strengthMin),
+                                      std::bit_cast<std::uint32_t>(value.strengthMax)});
+    }
+    void check_physical_capture(NativeHost& host, const std::filesystem::path& grainManifest, const char* preset) {
+        const auto manifestPath = grainManifest.parent_path().parent_path() / "effects-fixtures/manifest.json";
+        std::ifstream manifestStream(manifestPath);
+        require(bool(manifestStream), "effects capture manifest open");
+        const auto manifest = nlohmann::json::parse(manifestStream);
+        std::ifstream stream(manifestPath.parent_path() / manifest.at("presets").at(preset).at("ofx").get<std::string>());
+        require(bool(stream), "effects capture fixture open");
+        const auto captured = nlohmann::json::parse(stream);
+        require(captured.at("ofx").size() == 608, "complete frozen effects capture membership");
+        JuicerEffect effect(host.effect_handle());
+        host.bind_effect(effect);
+        host.set_time(0);
+        const std::array<const char*, 5> getters{JuicerParams::kFilmDustAmount, JuicerParams::kGateDustAmount, JuicerParams::kFilmScratchAmount, JuicerParams::kGateScratchAmount, JuicerParams::kGateWeaveAmount};
+        unsigned count = 0;
+        for (const auto& row : captured.at("ofx")) {
+            const unsigned policy = row.at("policy");
+            const unsigned index = row.at("index");
+            if (!((index == 5 && (policy == 0 || policy == 1 || policy == 4 || policy == 7)) || (index == 15 && policy == 0)))
+                continue;
+            const unsigned route = row.at("route");
+            const bool print = route % 2;
+            host.set_str_choice_value(JuicerParams::kFilmProfileKey, route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f");
+            host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
+            host.set_int_value(JuicerParams::kGrainActive, policy != 0);
+            host.set_int_value(JuicerParams::kGrainDebugView, policy > 1 ? static_cast<int>(policy - 1) : 0);
+            for (std::size_t i = 0; i < getters.size(); ++i)
+                host.set_double_value(getters[i], std::bit_cast<double>(row.at("authored_getter_order_f64")[i].get<std::uint64_t>()));
+            const auto start = host.trace_size();
+            const auto timed = host.at_time_get_count();
+            host.dispatch_event(effect, JuicerParams::kGrainActive, OFX::eChangeTime);
+            const auto observed = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+            require(observed.pendingValid && host.at_time_get_count() == timed, "physical capture uses current getters even during disabled/debug grain");
+            bool ordered = false;
+            for (std::size_t i = start; i < host.trace_size(); ++i) {
+                std::size_t j = 0;
+                while (j < getters.size() && i + j < host.trace_size() && host.trace()[i + j].starts_with("GET_CURRENT name=" + std::string(getters[j]) + " "))
+                    ++j;
+                ordered = ordered || j == getters.size();
+            }
+            require(ordered, "physical getter order film dust/gate dust/film scratch/gate scratch/weave");
+            const auto& controls = observed.pendingEffects;
+            const auto words = nlohmann::json::array({std::bit_cast<std::uint32_t>(controls.filmDustAmount), std::bit_cast<std::uint32_t>(controls.filmScratchAmount), std::bit_cast<std::uint32_t>(controls.gateDustAmount), std::bit_cast<std::uint32_t>(controls.gateScratchAmount)});
+            require(words == row.at("controls").at("amounts") && std::bit_cast<std::uint64_t>(controls.gateWeaveAmount) == row.at("controls").at("weave") && observed.pendingFullHash == row.at("snapshot_hash"), "frozen native captured f32/f64 controls and snapshot identity");
+            const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
+            require(print ? bool(admitted.printState) : bool(admitted.directState), "physical capture completes actual route publication");
+            const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
+            const auto& effects = recipe.filmJuicerEffects;
+            const nlohmann::json projection{{"film_dust", physical_words(effects.filmDust)}, {"film_scratch", physical_words(effects.filmScratch)}, {"gate_dust", physical_words(effects.gateDust)}, {"gate_scratch", physical_words(effects.gateScratch)}, {"weave", std::bit_cast<std::uint64_t>(effects.gateWeaveAmount)}, {"active", effects.active}, {"hash", effects.hash}};
+            require(projection == row.at("recipe") && recipe.visualGrain.hash == row.at("grain_hash") && recipe.hash == row.at("final_hash"), "actual OFX snapshot to completed grain to exact Rust effects and final publication");
+            ++count;
+        }
+        require(count == 20, "bounded physical OFX witness membership");
+        for (const auto* getter : getters)
+            host.set_double_value(getter, 0);
+        host.set_str_choice_value(JuicerParams::kFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
+        host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(Spektrafilm::kDefaultScanRoute));
+        host.set_int_value(JuicerParams::kGrainActive, 0);
+        host.set_int_value(JuicerParams::kGrainDebugView, 0);
+        host.unbind_effect();
+        std::cout << "PASS adapter/20-frozen-physical-capture-publications-four-routes\n";
+    }
+} // namespace
+
 int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-level catches map all fixture failures.
     JuicerCuda::Owner cudaOwner;
     try {
@@ -2633,6 +2785,8 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
             throw std::runtime_error("CUDA initialization failed");
         }
         JuicerProcess::root().ensure_bootstrap();
+        if (argc == 6)
+            check_physical_capture(host, argv[4], argv[5]);
         ParamSnapshot routeSnapshot;
         routeSnapshot.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
         FocusedRenderStateBuildProduct routeProduct;
