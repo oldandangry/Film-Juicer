@@ -170,6 +170,65 @@ pub struct InputMatrices {
     pub d65_white_xyz: [f32; 3],
 }
 
+/// A complete immutable input transform, assembled by the film-input constructor.
+pub struct InputColor {
+    space: InputSpace,
+    decode_cctf: bool,
+    rgb_to_xyz: [f32; 9],
+    xyz_adapt: [f32; 9],
+    xyz_to_linear_srgb: [f32; 9],
+    nominal_white_xyz: [f32; 3],
+    projection_white_xyz: [f32; 3],
+}
+impl InputColor {
+    pub(crate) fn from_matrices(
+        space: InputSpace,
+        decode_cctf: bool,
+        matrices: InputMatrices,
+        xyz_adapt: [f32; 9],
+        projection_white_xyz: [f32; 3],
+    ) -> Self {
+        Self {
+            space,
+            decode_cctf,
+            rgb_to_xyz: matrices.rgb_to_xyz,
+            xyz_adapt,
+            xyz_to_linear_srgb: matrices.xyz_to_linear_srgb,
+            nominal_white_xyz: matrices.nominal_white_xyz,
+            projection_white_xyz,
+        }
+    }
+    pub fn space(&self) -> InputSpace {
+        self.space
+    }
+    pub fn decode_cctf(&self) -> bool {
+        self.decode_cctf
+    }
+    pub fn rgb_to_xyz(&self) -> &[f32; 9] {
+        &self.rgb_to_xyz
+    }
+    pub fn xyz_adapt(&self) -> &[f32; 9] {
+        &self.xyz_adapt
+    }
+    pub fn xyz_to_linear_srgb(&self) -> &[f32; 9] {
+        &self.xyz_to_linear_srgb
+    }
+    pub fn nominal_white_xyz(&self) -> &[f32; 3] {
+        &self.nominal_white_xyz
+    }
+    pub fn projection_white_xyz(&self) -> &[f32; 3] {
+        &self.projection_white_xyz
+    }
+    pub fn to_conversion(&self) -> InputConversion {
+        InputConversion {
+            space: self.space,
+            decode_cctf: self.decode_cctf,
+            rgb_to_xyz: self.rgb_to_xyz,
+            xyz_adaptation: Some(self.xyz_adapt),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct InputConversion {
     pub space: InputSpace,

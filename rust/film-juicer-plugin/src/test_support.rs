@@ -177,6 +177,18 @@ unsafe extern "C" fn fj_test_film_development_release(
     unsafe { crate::film_bridge::release(owner, error) }
 }
 
+/// # Safety
+/// Live completed development; initialized/disjoint output and diagnostics.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_development_retain(
+    owner: *const crate::film_bridge::FjFilmDevelopmentOwner,
+    out: *mut *mut crate::film_bridge::FjFilmDevelopmentOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade invokes the same internal owner operation, not an export.
+    unsafe { crate::film_bridge::retain(owner, out, error) }
+}
+
 const FJ_PROFILE_USE_STILL: u32 = 0;
 const FJ_PROFILE_USE_CINE: u32 = 1;
 const FJ_PROFILE_ANTIHALATION_STRONG: u32 = 0;
@@ -1646,3 +1658,154 @@ const _: unsafe extern "C" fn(
     u32,
     *mut crate::legacy_bridge::FjOutputColorPreparation,
 ) -> FjStatus = fj_test_output_color;
+
+/// # Safety
+/// Count authorizes one exclusive writable size_t; returned immutable facts are static.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_input_abi_facts(count: *mut usize) -> *const usize {
+    if count.is_null() {
+        return std::ptr::null();
+    }
+    // SAFETY: The fixture authorizes this exclusive initialized output.
+    unsafe {
+        count.write(crate::film_input_bridge::ABI_FACTS.len());
+    }
+    crate::film_input_bridge::ABI_FACTS.as_ptr()
+}
+/// # Safety
+/// Same call-local initialized storage, retained profile and disjoint outputs contract as the legacy declaration.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_input_prepare(
+    profile: *const FjFilmProfile,
+    params: *const crate::film_input_bridge::FjFilmInputParams,
+    resources: *const crate::film_input_bridge::FjFilmInputResources,
+    out: *mut crate::film_input_bridge::FjFilmInput,
+    failure: *mut crate::film_input_bridge::FjFilmInputFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls the common safe construction/projector, with the same checked raw contract.
+    unsafe {
+        crate::film_input_bridge::prepare(profile.cast(), params, resources, out, failure, error)
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_film_input_arm_boundary_fault(stage: u32) {
+    crate::film_input_bridge::arm_boundary_fault(stage);
+}
+
+/// # Safety
+/// Matching live owners and the production call's initialized/disjoint record and span obligations.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_density_minimum_prepare(
+    requested: *const crate::film_recipe_bridge::FjFilmDensityMinimum,
+    out_minimum: *mut crate::film_recipe_bridge::FjFilmDensityMinimum,
+    out_failure: *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls the shared constructor/projector, never a legacy export.
+    unsafe { crate::film_recipe_bridge::minimum(requested, out_minimum, out_failure, error) }
+}
+
+/// # Safety
+/// Matching live owners and the production call's initialized/disjoint record and span obligations.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_dir_acquire(
+    development: *const crate::film_bridge::FjFilmDevelopmentOwner,
+    params: *const crate::film_recipe_bridge::FjFilmDirParams,
+    out_dir: *mut *mut crate::film_recipe_bridge::FjFilmDirOwner,
+    out_failure: *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls the shared constructor/projector, never a legacy export.
+    unsafe { crate::film_recipe_bridge::acquire(development, params, out_dir, out_failure, error) }
+}
+
+/// # Safety
+/// Matching live owners and the production call's initialized/disjoint record and span obligations.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_dir_view(
+    dir: *const crate::film_recipe_bridge::FjFilmDirOwner,
+    out_view: *mut crate::film_recipe_bridge::FjFilmDirView,
+    out_failure: *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls the shared constructor/projector, never a legacy export.
+    unsafe { crate::film_recipe_bridge::view(dir, out_view, out_failure, error) }
+}
+
+/// # Safety
+/// Matching live owners and the production call's initialized/disjoint record and span obligations.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_dir_release(
+    dir: *mut crate::film_recipe_bridge::FjFilmDirOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls the shared constructor/projector, never a legacy export.
+    unsafe { crate::film_recipe_bridge::release(dir, error) }
+}
+
+/// # Safety
+/// Matching live owners and the production call's initialized/disjoint record and span obligations.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_density_bounds_prepare(
+    development: *const crate::film_bridge::FjFilmDevelopmentOwner,
+    requested: *const crate::film_recipe_bridge::FjFilmDensityMinimum,
+    out_bounds: *mut crate::film_recipe_bridge::FjFilmDensityBounds,
+    out_failure: *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade calls the shared constructor/projector, never a legacy export.
+    unsafe {
+        crate::film_recipe_bridge::bounds(development, requested, out_bounds, out_failure, error)
+    }
+}
+
+/// # Safety
+/// Matching live completed Development; initialized aligned readable params and
+/// exclusive writable output/failure/diagnostic extents, all mutually disjoint.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_visual_grain_prepare(
+    development: *const crate::film_bridge::FjFilmDevelopmentOwner,
+    params: *const crate::film_recipe_bridge::FjVisualGrainParams,
+    out_recipe: *mut crate::film_recipe_bridge::FjVisualGrainRecipe,
+    out_failure: *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade shares the checked constructor/projector, never the legacy export.
+    unsafe {
+        crate::film_recipe_bridge::prepare_grain(
+            development,
+            params,
+            out_recipe,
+            out_failure,
+            error,
+        )
+    }
+}
+const _: unsafe extern "C" fn(
+    *const crate::film_bridge::FjFilmDevelopmentOwner,
+    *const crate::film_recipe_bridge::FjVisualGrainParams,
+    *mut crate::film_recipe_bridge::FjVisualGrainRecipe,
+    *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_visual_grain_prepare;
+
+/// # Safety
+/// Same initialized, live, aligned, disjoint records as the production call.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_physical_effects_prepare(
+    params: *const crate::film_recipe_bridge::FjPhysicalEffectsParams,
+    out_recipe: *mut crate::film_recipe_bridge::FjPhysicalEffectsRecipe,
+    out_failure: *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade shares the checked operation and its caller obligations.
+    unsafe { crate::film_recipe_bridge::prepare_effects(params, out_recipe, out_failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const crate::film_recipe_bridge::FjPhysicalEffectsParams,
+    *mut crate::film_recipe_bridge::FjPhysicalEffectsRecipe,
+    *mut crate::film_recipe_bridge::FjFilmRecipeFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_physical_effects_prepare;

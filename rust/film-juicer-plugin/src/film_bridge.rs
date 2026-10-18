@@ -3,6 +3,7 @@
 use film_juicer_core::film::{Development, Params};
 use film_juicer_core::profile::Polarity;
 use film_juicer_core::route::ScanRoute;
+use std::sync::Arc;
 
 use crate::asset_bridge::{Failure, run};
 use crate::asset_profile::FilmOwner;
@@ -11,7 +12,7 @@ use crate::cuda::sys::{FJ_API_NONE, FJ_STATUS_SUCCESS, FjErrorBuffer, FjFloatSpa
 use crate::cuda::sys::FJ_STATUS_UNSUPPORTED_INPUT;
 
 #[repr(C)]
-struct FjFilmProfile {
+pub(crate) struct FjFilmProfile {
     _opaque: [u8; 0],
 }
 #[repr(C)]
@@ -140,10 +141,58 @@ pub(crate) unsafe fn acquire(
             if fault == 1 {
                 panic!("film development acquire fixture panic");
             }
-            let owner = Box::new(development);
+            let owner = Arc::new(development);
             #[cfg(feature = "test-support")]
             faults::LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            out.write(Box::into_raw(owner).cast());
+            out.write(Arc::into_raw(owner).cast_mut().cast());
+            Ok(())
+        })
+    }
+    .map_or_else(|failure| failure, |()| status(FJ_STATUS_SUCCESS))
+}
+
+/// # Safety
+/// Owner is a live Arc raw hold of completed Development. Output is initialized,
+/// aligned and exclusively writable, disjoint from owner and optional diagnostics.
+/// The returned equal address has a separate consuming release obligation.
+pub(crate) unsafe fn retain(
+    owner: *const FjFilmDevelopmentOwner,
+    out: *mut *mut FjFilmDevelopmentOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let valid_out = !out.is_null()
+        && (out as usize).is_multiple_of(std::mem::align_of::<*mut FjFilmDevelopmentOwner>())
+        && (out as usize)
+            .checked_add(std::mem::size_of::<*mut FjFilmDevelopmentOwner>())
+            .is_some();
+    if valid_out {
+        // SAFETY: The caller authorizes this independently admitted exclusive slot.
+        unsafe { out.write(std::ptr::null_mut()) };
+    }
+    // SAFETY: The owner remains live, and diagnostic storage follows the owner-family contract.
+    unsafe {
+        run(error, || {
+            if !valid_out
+                || owner.is_null()
+                || !(owner as usize).is_multiple_of(std::mem::align_of::<Development>())
+                || (owner as usize)
+                    .checked_add(std::mem::size_of::<Development>())
+                    .is_none()
+            {
+                return Err(Failure::Input(
+                    "NULL or malformed film development retain owner/output",
+                ));
+            }
+            Arc::increment_strong_count(owner.cast::<Development>());
+            // Guard the provisional hold through all remaining fallible work.
+            let retained = Arc::from_raw(owner.cast::<Development>());
+            #[cfg(feature = "test-support")]
+            if faults::take(3) == 1 {
+                panic!("film development retain fixture panic");
+            }
+            #[cfg(feature = "test-support")]
+            faults::LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out.write(Arc::into_raw(retained).cast_mut().cast());
             Ok(())
         })
     }
@@ -192,7 +241,7 @@ pub(crate) unsafe fn release(
         #[cfg(feature = "test-support")]
         faults::LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         // SAFETY: Take the matching allocation before diagnostics can reject the call.
-        Some(unsafe { Box::from_raw(owner.cast::<Development>()) })
+        Some(unsafe { Arc::from_raw(owner.cast::<Development>()) })
     };
     // SAFETY: Consumed storage is dropped inside containment, including malformed diagnostics.
     unsafe {
@@ -253,6 +302,18 @@ unsafe extern "C" fn fj_legacy_film_development_release(
     unsafe { release(owner, error) }
 }
 
+/// # Safety
+/// Live shared owner; authorized initialized/disjoint output and diagnostics.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_film_development_retain(
+    owner: *const FjFilmDevelopmentOwner,
+    out: *mut *mut FjFilmDevelopmentOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The export forwards the same shared-hold contract.
+    unsafe { retain(owner, out, error) }
+}
+
 #[cfg(feature = "test-support")]
 mod faults {
     use std::cell::Cell;
@@ -272,7 +333,7 @@ mod faults {
 #[cfg(feature = "test-support")]
 #[unsafe(no_mangle)]
 extern "C" fn fj_test_film_development_fault(operation: u32, fault: u32) -> FjStatus {
-    if operation > 2 || fault > 5 || (operation != 0 && fault > 1) {
+    if operation > 3 || fault > 5 || (operation != 0 && fault > 1) {
         return status(FJ_STATUS_UNSUPPORTED_INPUT);
     }
     faults::NEXT.set((operation, fault));

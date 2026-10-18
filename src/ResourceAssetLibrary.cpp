@@ -15,6 +15,11 @@
 #include "RustGamutBridge.h"
 
 namespace JuicerAssets {
+#if defined(JUICER_FILM_RECIPE_STATE_TEST_HOOK)
+    namespace RecipeStateTest {
+        void selected_source(std::shared_ptr<const FilmSource>& source);
+    }
+#endif
 #if defined(JUICER_OUTPUT_GAMUT_TEST_HOOK)
     namespace OutputGamutTest {
         void enter_lock() noexcept;
@@ -191,6 +196,9 @@ namespace JuicerAssets {
         SelectedProfileResult result;
         try {
             result.filmSource = _bridge.film_source(request.filmProfileKey);
+#if defined(JUICER_FILM_RECIPE_STATE_TEST_HOOK)
+            RecipeStateTest::selected_source(result.filmSource);
+#endif
             if (Spektrafilm::scan_route_is_print(request.scanRoute)) {
                 result.printSource = _bridge.print(request.printProfileKey);
             }

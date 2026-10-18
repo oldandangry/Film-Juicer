@@ -119,6 +119,18 @@ class WindowsJob:
                 [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD],
                 wintypes.HANDLE,
             ),
+            (
+                "IsProcessInJob",
+                [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)],
+                wintypes.BOOL,
+            ),
+            (
+                "QueryFullProcessImageNameW",
+                [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)],
+                wintypes.BOOL,
+            ),
+            ("TerminateProcess", [wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+            ("WaitForSingleObject", [wintypes.HANDLE, wintypes.DWORD], wintypes.DWORD),
         ):
             function = getattr(self.api, name)
             function.argtypes, function.restype = arguments, result
@@ -209,6 +221,67 @@ class WindowsJob:
     def stop(self):
         self.check(self.api.TerminateJobObject(self.job, 125))
 
+    def stop_vctip(self, expected_path, record_termination):
+        from ctypes import wintypes
+
+        expected = os.path.normcase(os.path.realpath(expected_path))
+        capacity = 16
+        for _ in range(16):
+            buffer = ctypes.create_string_buffer(8 + capacity * ctypes.sizeof(ctypes.c_size_t))
+            if self.api.QueryInformationJobObject(
+                self.job, 3, buffer, ctypes.sizeof(buffer), None
+            ):
+                assigned = ctypes.c_uint32.from_buffer(buffer, 0).value
+                count = ctypes.c_uint32.from_buffer(buffer, 4).value
+                if count > capacity:
+                    raise RuntimeError("job process list exceeded its returned capacity")
+                # A successful query can still return only part of the PID list.
+                if count >= assigned:
+                    break
+                capacity = max(capacity * 2, assigned)
+            else:
+                if ctypes.get_last_error() != 234:  # ERROR_MORE_DATA
+                    raise ctypes.WinError(ctypes.get_last_error())
+                capacity *= 2
+        else:
+            raise RuntimeError("job process list did not stabilize")
+        pids = list((ctypes.c_size_t * count).from_buffer(buffer, 8))
+        for pid in pids:
+            # QUERY_LIMITED_INFORMATION | TERMINATE | SYNCHRONIZE: the wait
+            # must be authorized so an exit between enumeration and inspection
+            # can be distinguished from an invalid handle.
+            handle = self.api.OpenProcess(0x101001, False, pid)
+            if not handle:
+                if ctypes.get_last_error() == 87:  # Process exited after enumeration.
+                    continue
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                in_job = wintypes.BOOL()
+                self.check(self.api.IsProcessInJob(handle, self.job, ctypes.byref(in_job)))
+                if not in_job.value:
+                    continue
+                wait = self.api.WaitForSingleObject(handle, 0)
+                if wait == 0:  # WAIT_OBJECT_0
+                    continue
+                if wait != 0x102:  # WAIT_TIMEOUT
+                    raise ctypes.WinError(ctypes.get_last_error())
+                image = ctypes.create_unicode_buffer(32768)
+                length = wintypes.DWORD(len(image))
+                self.check(self.api.QueryFullProcessImageNameW(
+                    handle, 0, image, ctypes.byref(length)
+                ))
+                path = image.value[:length.value]
+                if os.path.normcase(os.path.realpath(path)) != expected:
+                    continue
+                if not self.api.TerminateProcess(handle, 125):
+                    error = ctypes.get_last_error()
+                    if self.api.WaitForSingleObject(handle, 0) == 0:
+                        continue  # Exited after the image check.
+                    raise ctypes.WinError(error)
+                record_termination({"pid": pid, "path": path})
+            finally:
+                self.check(self.api.CloseHandle(handle))
+
     def close(self):
         self.check(self.api.CloseHandle(self.job))
 
@@ -216,7 +289,8 @@ class WindowsJob:
 def main():
     receipt = Path(sys.argv[1])
     timeout = float(sys.argv[2])
-    command = sys.argv[3:]
+    cleanup = json.loads(sys.argv[4]) if sys.argv[3] == "--vctip-cleanup" else None
+    command = sys.argv[5:] if cleanup else sys.argv[3:]
     interrupted = threading.Event()
 
     def watch_owner():
@@ -249,6 +323,8 @@ def main():
         "status": "running",
         "drained": False,
     }
+    if cleanup:
+        record.update(vctip_cleanup=cleanup, vctip_terminated=[])
 
     def save():
         temporary = receipt.with_suffix(".tmp")
@@ -265,6 +341,7 @@ def main():
         stopping = None
         command_end = None
         failed_parent = None
+        next_vctip_check = None
         while True:
             active = owner.active()
             if command_end is None and owner.process.poll() is not None:
@@ -274,13 +351,30 @@ def main():
                     record["first_returncode"] = owner.process.returncode
                     record["failure_descendants"] = True
                     save()
+                elif cleanup:
+                    next_vctip_check = command_end + cleanup["grace_seconds"]
+                    deadline = min(deadline, command_end + cleanup["drain_cap_seconds"])
             if not active:
                 break
+            now = time.monotonic()
+            if (
+                cleanup and next_vctip_check is not None
+                and now >= next_vctip_check and now < deadline
+                and not interrupted.is_set()
+            ):
+                def record_termination(child):
+                    record["vctip_terminated"].append({
+                        **child, "seconds_after_parent": time.monotonic() - command_end,
+                    })
+                    save()
+
+                owner.stop_vctip(cleanup["executable"], record_termination)
+                next_vctip_check = now + 0.5
             if stopping is None and (
                 interrupted.is_set()
-                or time.monotonic() >= deadline
+                or now >= deadline
                 or failed_parent is not None
-                and time.monotonic() >= failed_parent
+                and now >= failed_parent
             ):
                 record["status"] = (
                     "interrupted"
@@ -289,7 +383,7 @@ def main():
                     if failed_parent is not None
                     else "timeout"
                 )
-                stopping = time.monotonic() + 10
+                stopping = now + 10
                 save()
             if stopping is not None:
                 owner.stop()

@@ -129,12 +129,14 @@ def tool_snapshot(paths: Sequence[str], *, allow_missing=False) -> dict[str, str
 
 
 def run_process_tree(
-    command, root, environment, output, timeout, receipt, lock, tree, stderr_output=None
+    command, root, environment, output, timeout, receipt, lock, tree,
+    stderr_output=None, vctip_cleanup=None,
 ):
     OutputLease.check_held()
     supervisor = Path(__file__).with_name("process_tree.py")
+    policy = ["--vctip-cleanup", json.dumps(vctip_cleanup)] if vctip_cleanup else []
     process = subprocess.Popen(
-        [sys.executable, "-B", str(supervisor), str(receipt), str(timeout), *command],
+        [sys.executable, "-B", str(supervisor), str(receipt), str(timeout), *policy, *command],
         cwd=root,
         env=environment,
         stdin=subprocess.PIPE,
@@ -222,6 +224,9 @@ class Campaign:
         tools: Sequence[str] = (),
         expected_inputs: Mapping[str, str] | None = None,
         expected_tools: Mapping[str, str] | None = None,
+        vctip_executable: str | None = None,
+        vctip_grace_seconds: float = 30,
+        vctip_drain_cap_seconds: float = 300,
     ) -> Path:
         OutputLease.check_held()
         name_component(stage)
@@ -243,17 +248,41 @@ class Campaign:
             raise ValueError(f"command is unavailable: {command[0]}")
         if os.name == "nt":
             check_windows_launcher(Path(executable))
+        vctip_cleanup = None
+        if vctip_executable is not None:
+            if (
+                os.name != "nt"
+                or Path(vctip_executable).name.lower() != "vctip.exe"
+                or not math.isfinite(vctip_grace_seconds)
+                or vctip_grace_seconds < 0
+                or not math.isfinite(vctip_drain_cap_seconds)
+                or vctip_drain_cap_seconds <= vctip_grace_seconds
+            ):
+                raise ValueError(
+                    "VCTIP cleanup requires Windows, VCTIP.EXE and finite drain cap greater than grace"
+                )
+            vctip_path = Path(vctip_executable).resolve(strict=True)
+            vctip_cleanup = {
+                "executable": str(vctip_path),
+                "grace_seconds": vctip_grace_seconds,
+                "drain_cap_seconds": vctip_drain_cap_seconds,
+            }
+        elif vctip_grace_seconds != 30 or vctip_drain_cap_seconds != 300:
+            raise ValueError("VCTIP drain policy requires a VCTIP executable")
         preparation_start = time.perf_counter()
+        selected_tools = [*tools, *([str(vctip_path)] if vctip_cleanup else [])]
         identity = {
             "command": list(command),
             "inputs": snapshot(self.root, inputs),
-            "tools": tool_snapshot(tools),
+            "tools": tool_snapshot(selected_tools),
             "supervisor_sha256": digest(Path(__file__).with_name("process_tree.py")),
             "executable_sha256": digest(Path(executable)),
             "environment_sha256": hashlib.sha256(
                 json.dumps(environment, sort_keys=True).encode()
             ).hexdigest(),
         }
+        if vctip_cleanup:
+            identity["vctip_cleanup"] = vctip_cleanup
         preparation_seconds = time.perf_counter() - preparation_start
         if any(
             identity["inputs"].get(name) != value
@@ -306,23 +335,23 @@ class Campaign:
             start = time.perf_counter()
             try:
                 with (directory / "output.log").open("xb") as output:
-                    record["returncode"] = run_process_tree(
-                        list(command),
-                        self.root,
-                        environment,
-                        output,
-                        timeout,
-                        directory / "process.json",
-                        lock,
-                        tree,
-                    )
+                    arguments = [
+                        list(command), self.root, environment, output, timeout,
+                        directory / "process.json", lock, tree,
+                    ]
+                    if vctip_cleanup:
+                        record["returncode"] = run_process_tree(
+                            *arguments, vctip_cleanup=vctip_cleanup,
+                        )
+                    else:
+                        record["returncode"] = run_process_tree(*arguments)
                 if record["returncode"]:
                     raise subprocess.CalledProcessError(record["returncode"], command)
                 OutputLease.check_held()
                 verification_start = time.perf_counter()
                 unchanged = (
                     snapshot(self.root, inputs) == identity["inputs"]
-                    and tool_snapshot(tools) == identity["tools"]
+                    and tool_snapshot(selected_tools) == identity["tools"]
                 )
                 record["timings"]["final_input_hash_seconds"] = (
                     time.perf_counter() - verification_start

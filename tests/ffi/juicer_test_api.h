@@ -7,6 +7,12 @@
 extern "C" {
 #endif
 
+/* Feature-only film-input facade; identical synchronous storage rules and safe constructor/projector. */
+FjStatus fj_test_film_input_prepare(const FjFilmProfile*, const FjFilmInputParams*, const FjFilmInputResources*, FjFilmInput*, FjFilmInputFailure*, FjErrorBuffer*);
+const size_t* fj_test_film_input_abi_facts(size_t* count);
+/* 1 projection, 2 diagnostic formatting, 3 success cleanup; one-shot current-thread panic. */
+void fj_test_film_input_arm_boundary_fault(uint32_t stage);
+
 /* Direct-core exposure facade; same synchronous storage rules as production.
  * Closed raw fault slots: 1 reference, 2 sensitivity, 3 Mallett mid-gray,
  * 4 TC normalization, 5 reference source, 6 Mallett reference; fault 1 unsupported,
@@ -285,6 +291,47 @@ FjStatus fj_test_gamut_output_boundary(const FjOutputBoundarySource* source, flo
 #define FJ_TEST_OUTPUT_COLOR_FACADE 12U
 FjStatus fj_test_output_color(uint32_t output_space, FjOutputColorPreparation* out);
 
+
+FjStatus fj_test_film_density_minimum_prepare(
+    const FjFilmDensityMinimum* requested,
+    FjFilmDensityMinimum* out_minimum,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_test_film_dir_acquire(
+    const FjFilmDevelopmentOwner* development,
+    const FjFilmDirParams* params,
+    FjFilmDirOwner** out_dir,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_test_film_dir_view(
+    const FjFilmDirOwner* dir,
+    FjFilmDirView* out_view,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_test_film_dir_release(
+    FjFilmDirOwner* dir, FjErrorBuffer* error);
+FjStatus fj_test_physical_effects_prepare(
+    const FjPhysicalEffectsParams* params,
+    FjPhysicalEffectsRecipe* out_recipe,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+
+FjStatus fj_test_visual_grain_prepare(
+    const FjFilmDevelopmentOwner* development,
+    const FjVisualGrainParams* params,
+    FjVisualGrainRecipe* out_recipe,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_test_film_density_bounds_prepare(
+    const FjFilmDevelopmentOwner* development,
+    const FjFilmDensityMinimum* requested,
+    FjFilmDensityBounds* out_bounds,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_test_film_development_retain(const FjFilmDevelopmentOwner*, FjFilmDevelopmentOwner**, FjErrorBuffer*);
+FjStatus fj_test_film_recipe_fault(uint32_t stage, uint32_t fault);
+size_t fj_test_film_dir_live_owners(void);
+const size_t* fj_test_film_recipe_abi_facts(size_t* count);
 #ifdef __cplusplus
 }
 #endif

@@ -144,6 +144,13 @@ ctest --preset linux-debug
 Windows Debug uses the same sequence with `windows-clang-debug`. Release uses
 `linux-release` or `windows-clang-release`.
 
+With `BUILD_TESTING=ON`, the default build prepares the `Rust.Core` test
+executables through `juicer_rust_core_tests` using the same Cargo command and
+profile as CTest, with `--no-run`. Cargo checks source and included-fixture
+freshness on each build. This keeps cold compilation outside the 120-second
+CTest runtime budget. For a focused core-only rebuild, select
+`cmake --build --preset <preset> --target juicer_rust_core_tests` before CTest.
+
 The presets use four CTest workers. GPU groups share `juicer_gpu`, the
 product Cargo tests share `juicer_cargo`, and groups with `RUN_SERIAL` still run
 alone. Keep GPU suites from separate Windows/WSL invocations serialized on a
@@ -257,6 +264,10 @@ generated-input, shadow-header and partial-build controls. It does not dispatch 
 entire build-evidence group or change product fixtures. Control artifacts remain
 under the selected preset's validation directory. No full product/platform
 qualification is claimed by this scope.
+Windows `Quality.Execution` covers the exact-path, Job-owned VCTIP cleanup,
+natural-drain grace, other-child wait and cap, and failed-parent behavior;
+`Quality.BuildEvidence` covers generated-header reconfiguration and unowned
+shadow headers. Both run in the normal Debug tooling selection in Windows CI.
 
 During implementation, build the affected test targets and run only the owning
 cases needed to check the current edit. Run new compiled cases on Linux and
@@ -890,3 +901,44 @@ explicit `--scratch-root` destinations in the selected groups. Each such option
 must occur once and name an absolute destination. Prefer isolated
 per-case roots or the actual named resource lock. Implicit writer paths still
 require review of their owning test; labels alone do not prove isolation.
+
+`Ffi.Host.FilmInput` checks completed film-input construction through the direct
+safe-core facade, synchronous legacy wrapper and a compiled C11 caller. Its
+C11/C++20/Rust facts cover every field type, offset, extent, alignment and the
+signature. `Film.Host.InputProducts` checks actual direct/print construction,
+source/hull holds across cache detachment, selector priority, publication-slot
+return/throw distinctions, supersession and recovery. Both compare the 96 base
+and 44 control cases against independent native compound captures in
+[the film-input fixtures](film/input-fixtures/README.md). The family owns complete
+input color and sensitivity; later focused normalization and whole-state
+publication retain their existing owners. Ordinary tests never regenerate these
+expectations. Both native testing-OFF Release gates also exercise the new C
+export's values and failures and exclude fixture/fault code from final artifacts.
+
+`Ffi.Host.FilmRecipes` checks the completed DIR/minimum/film-bounds boundary,
+C11/C++20/Rust field/layout/signature facts, independent development holds,
+borrow expiry, native move/copy/unwind, typed failures and exact F1 diagnostics.
+`Film.Host.DirDensityProducts` compares 64 complete products per configuration
+with [independent native captures](film/dir-fixtures/README.md), including all RGB
+axes, CMY bounds and snapshot/family/final identities, then exercises four-route
+admission, recovery and unchanged reuse. Core tests also consume the frozen F1 and
+focused captures. `Ofx.Gpu.AdapterTrace` observes actual conditional DIR capture,
+single f64-to-f32 narrowing, polarity-selected K and invalid/valid recovery.
+These focused groups do not establish installed Resolve or aggregate acceptance.
+
+
+`Ffi.Host.PhysicalEffects` checks the stateless completed physical-effects recipe:
+220 exact native cases through production/facade entries, all-field C11/C++20/Rust
+ABI facts, independent output clearing, closed failures, diagnostic bounds, the
+real computed-probability guard and panic/thread isolation, plus named native
+projection. `Film.Host.PhysicalEffectsProducts` checks 92 genuine four-route
+products, snapshot/grain/development/final identities and publication failure,
+ordering, recovery and retained holds. Their immutable
+[effects fixtures](film/effects-fixtures/README.md) retain all four native
+configuration identities. Windows Release scratch expected length preserves its
+native FMA contraction; other configurations preserve separate f32 rounding.
+The existing adapter and cutover GPU groups also check actual physical-control
+capture and each CUDA family, all-off behavior, completed-grain debug suppression
+and alpha preservation. Both Release testing-OFF production gates compile, link
+and run all nine effects cases against their final native archive. These scoped
+checks do not establish installed Resolve, visual or aggregate acceptance.

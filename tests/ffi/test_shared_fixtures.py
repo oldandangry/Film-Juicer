@@ -54,6 +54,32 @@ class SharedFixtureTests(unittest.TestCase):
                 hashes.append(actual)
             self.assertEqual(len(hashes), len(set(hashes)), "duplicate new payloads need logical aliases")
 
+    def test_film_input_compound_capture_integrity_and_membership(self):
+        root = Path(__file__).parents[1] / "film/input-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        self.assertEqual(manifest["cases"], {"base": 96, "controls": 44})
+        self.assertEqual(set(manifest["presets"].values()), set(manifest["payloads"]))
+        for name, record in manifest["payloads"].items():
+            data = (root / name).read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(), record["sha256"])
+            rows = json.loads(data)["rows"]
+            self.assertEqual(len(rows), 140)
+            base = {(row["route"], row["space"], row["method"], row["decode"]) for row in rows[:96]}
+            self.assertEqual(base, {(route, space, method, decode) for route in range(4)
+                                   for space in range(4) for method in range(3) for decode in range(2)})
+            self.assertEqual([row["control"] for row in rows[96:]], list(range(44)))
+            for row in rows:
+                raw = row["raw"]
+                self.assertEqual([len(raw[field]) for field in ("rgb_to_xyz", "xyz_adapt", "xyz_to_linear_srgb")], [9, 9, 9])
+                self.assertEqual(len(raw["sensitivity"]), 81)
+                self.assertTrue(all(len(sample) == 3 for sample in raw["sensitivity"]))
+                self.assertEqual(len(raw["surface"]), 3)
+                self.assertTrue(all(len(channel) == 15 for channel in raw["surface"]))
+                self.assertNotEqual(raw["hash"], 0)
+                self.assertNotEqual(raw["sensitivity_hash"], 0)
+                self.assertEqual(raw["tc_hash"] == 0, row["method"] == 1)
+
     def test_expanded_cases_are_independent_and_preserve_exact_words(self):
         words = [0, 0x80000000, 0x7FC00123, 0xFFFFFFFF]
         original = {"recipes": [{"expected": {"sensitivity": words}}, {"expected": {"sensitivity": words}}]}

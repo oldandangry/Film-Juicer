@@ -13,6 +13,7 @@
 #include "ProfileAssets.h"
 #include "ScanRoute.h"
 #include "ScatterHalation.h"
+#include "RustFilmRecipeBridge.h"
 
 namespace Spectral {
     struct FilmTcLut;
@@ -21,15 +22,15 @@ namespace Spectral {
 // RenderRecipe owner map:
 // - ProfileRoute owns selected profile identity, typed metadata, immutable selected payload
 //   references, asset tokens, and resolved ScanRoute.
-// - FilmRawRecipe owns direct-route input color, RGB-to-raw, sensitivity, and exposure ordering.
+// - FilmRawRecipe carries the completed Rust film::input::Recipe until S4.E.
 // - FilmDevelopRecipe owns direct-route authored/normalized film density development inputs.
-// - DirCouplersRecipe owns development-inhibitor release behavior.
-// - DensityBoundsRecipe owns final route/media scanner and enlarger density bounds.
+// - DirCouplersRecipe carries completed Rust film::dir chemistry/axes for native consumers.
+// - DensityBoundsRecipe carries Rust film bounds; print-medium bounds remain native.
 // - PrintRecipe owns print filters, neutral calibration, exposure ordering, illuminant identity,
 //   and print-medium handoff identity. Print preparation and launch remain downstream owners.
 // - ScannerOutputRecipe owns scanner/output policy; scanner LUT resources own their descriptor.
 // - OpticsRecipe owns lens, halation, scattering, and diffusion behavior when Phase 6 introduces it.
-// - GrainContract owns Spektrafilm density_min; VisualGrainRecipe owns Film-Juicer grain behavior.
+// - GrainContract carries Rust film::density::Minimum; VisualGrainRecipe owns Film-Juicer grain behavior.
 //   The visual particle density minimum is independent of scanner/enlarger density bounds.
 // - DirectFrameRequest and PrintFrameRequest own frame-local extent, pixel size, and temporal tokens.
 // - PreparedCudaFrame/context resource internals own durable GPU handles, scratch, staging, and views.
@@ -183,6 +184,7 @@ namespace Spektrafilm {
 
 } // namespace Spektrafilm
 
+// SF_TEMP_BRIDGE_FILM_INPUT: native fixed-value carrier; remove S4.E after last use.
 struct FilmRawRecipe {
     int inputColorSpace = 0;
     bool inputCctfDecoding = false;
@@ -227,14 +229,16 @@ struct FilmDevelopRecipe {
 };
 
 namespace JuicerAssets {
+    class FilmSource;
     // SF_TEMP_BRIDGE_FILM_DEVELOPMENT: copied complete family; remove S4.E.
     struct FilmDevelopment {
-        FilmDevelopment(Spektrafilm::ScanRoute resolvedRoute, FilmDevelopRecipe&& completedRecipe)
-            : route(resolvedRoute), recipe(std::move(completedRecipe)) {
+        FilmDevelopment(Spektrafilm::ScanRoute resolvedRoute, FilmDevelopRecipe&& completedRecipe, DevelopmentHold&& retained)
+            : route(resolvedRoute), recipe(std::move(completedRecipe)), hold(std::move(retained)) {
         }
 
         Spektrafilm::ScanRoute route;
         FilmDevelopRecipe recipe;
+        DevelopmentHold hold;
     };
 } // namespace JuicerAssets
 
@@ -261,6 +265,7 @@ enum class DirNonlinearMode : std::uint8_t {
     PositiveReceiverLangmuir
 };
 
+// SF_TEMP_BRIDGE_FILM_DIR_DENSITY: completed native value transport; remove S4.E.
 struct DirCouplersRecipe {
     Spektrafilm::ProfilePolarity polarity = Spektrafilm::ProfilePolarity::Unsupported;
     bool active = false;
@@ -452,6 +457,7 @@ struct SpatialDirDescriptor {
     std::uint64_t hash = 0;
 };
 
+// Captured resolved controls; mapping/default conversion transfers to S6.B/C, boundary removed S6.D.
 struct VisualGrainControls {
     bool active = false;
     bool sublayersActive = true;
@@ -476,6 +482,7 @@ struct VisualGrainControls {
     int debugView = 0;
 };
 
+// SF_TEMP_BRIDGE_VISUAL_GRAIN: copied completed Rust value; remove S4.E.
 struct VisualGrainRecipe {
     bool active = false;
     bool sublayersActive = false;
@@ -589,6 +596,15 @@ struct DefectScratchRecipe final {
     float strengthMax = 0.0f;
 };
 
+// SF_TEMP_BRIDGE_PHYSICAL_EFFECTS: captured controls only; remove S4.E.
+struct PhysicalEffectsControls final {
+    float filmDustAmount = 0.0f;
+    float filmScratchAmount = 0.0f;
+    float gateDustAmount = 0.0f;
+    float gateScratchAmount = 0.0f;
+    double gateWeaveAmount = 0.0;
+};
+
 struct FilmJuicerEffectsRecipe final {
     DefectDustRecipe filmDust{};
     DefectScratchRecipe filmScratch{};
@@ -599,10 +615,12 @@ struct FilmJuicerEffectsRecipe final {
     std::uint64_t hash = 0;
 };
 
+// SF_TEMP_BRIDGE_FILM_DIR_DENSITY: completed minimum projection; remove S4.E.
 struct GrainContract {
     std::array<float, 3> densityMinCmy{{0.07f, 0.08f, 0.12f}};
 };
 
+// SF_TEMP_BRIDGE_FILM_DIR_DENSITY: film bounds projection; print bounds stay native. Remove S4.E.
 struct DensityBoundsRecipe {
     Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
     Spektrafilm::DensityMedium medium = Spektrafilm::DensityMedium::Film;
@@ -769,7 +787,8 @@ namespace Spektrafilm {
     struct FilmFoundationBuildInput {
         double gateWeaveAmount = 0.0;
         std::uint64_t tcSourceAssetHash = 0;
-        std::shared_ptr<const Profiles::FilmProfile> filmProfile;
+        // The selected source hold in the caller covers synchronous foundation construction.
+        const JuicerAssets::FilmSource* filmSource = nullptr;
         std::shared_ptr<const Gamut::InputCompressionHull> inputCompressionHull;
         std::array<double, 3> cameraFilterUV{{1.0, 410.0, 8.0}};
         std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
@@ -785,6 +804,7 @@ namespace Spektrafilm {
         float manualExposureCompensationEv = 0.0f;
         float filmFormatLongEdgeMm = 35.0f;
         FilmDevelopRecipe filmDevelop;
+        JuicerAssets::DevelopmentHold developmentHold;
         GrainContract grainContract;
         std::array<float, 3> referenceIlluminantWhiteXYZ{};
         std::array<float, 3> projectionWhiteXYZ{};
@@ -796,7 +816,7 @@ namespace Spektrafilm {
         bool inputCctfDecoding = false;
         bool applyHanatos2025AdaptationWindow = true;
         bool applyHanatos2025AdaptationSurface = false;
-        bool inputCompressionActive = true;
+        bool inputCompressionRequested = true;
         bool cameraAutoExposureEnabled = true;
         bool cameraFilterOverride = false;
         bool referenceIlluminantValid = false;

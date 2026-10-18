@@ -35,6 +35,10 @@ impl FilmOwner {
         Self { profile }
     }
 
+    pub(crate) fn profile(&self) -> &FilmProfile {
+        &self.profile
+    }
+
     pub(crate) fn development(
         &self,
         params: film_juicer_core::film::Params,

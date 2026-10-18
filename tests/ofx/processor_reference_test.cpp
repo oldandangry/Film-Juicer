@@ -1129,6 +1129,67 @@ namespace {
     }
 } // namespace
 
+namespace {
+    [[maybe_unused]] void check_physical_effects_pixels(const Case& original) {
+        Case test = original;
+        test.components = 4;
+        // A fresh fixture state restarts snapshot IDs; retire the preceding instance first.
+        const std::uint64_t instanceToken = 0x641207 + static_cast<int>(test.route) + (test.combined ? 4 : 0);
+        if (fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), instanceToken, nullptr).category != FJ_STATUS_SUCCESS)
+            throw std::runtime_error("retire instance before physical fixture");
+        InstanceState state;
+        auto off = parameters_for(test);
+        off.grainControls.active = false;
+        off.filmDustAmount = 0;
+        off.filmScratchAmount = 0;
+        off.gateDustAmount = 0;
+        off.gateScratchAmount = 0;
+        off.gateWeaveAmount = 0;
+        const auto same_bits = [](const std::vector<float>& left, const std::vector<float>& right) {
+            return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(), [](float a, float b) {
+                       return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+                   });
+        };
+        const auto baseline = render_case(test, off, state);
+        if (!same_bits(render_case(test, off, state), baseline))
+            throw std::runtime_error("all-off physical effects is not deterministic identity");
+        for (unsigned family = 0; family < 5; ++family) {
+            auto enabled = off;
+            if (family == 0)
+                enabled.filmDustAmount = 10;
+            if (family == 1)
+                enabled.filmScratchAmount = 10;
+            if (family == 2)
+                enabled.gateDustAmount = 10;
+            if (family == 3)
+                enabled.gateScratchAmount = 10;
+            if (family == 4)
+                enabled.gateWeaveAmount = 10;
+            const auto pixels = render_case(test, enabled, state);
+            if (same_bits(pixels, baseline))
+                throw std::runtime_error("physical effects family did not reach CUDA output: " + std::to_string(family));
+            enabled.grainControls.debugView = 3;
+            if (!same_bits(render_case(test, enabled, state), pixels))
+                throw std::runtime_error("inactive grain debug incorrectly suppresses physical effects");
+        }
+        auto debug = off;
+        debug.grainControls.active = true;
+        debug.grainControls.debugView = 3;
+        const auto debugOff = render_case(test, debug, state);
+        debug.filmDustAmount = 10;
+        debug.filmScratchAmount = 10;
+        debug.gateDustAmount = 10;
+        debug.gateScratchAmount = 10;
+        debug.gateWeaveAmount = 10;
+        if (!same_bits(render_case(test, debug, state), debugOff))
+            throw std::runtime_error("completed grain debug did not suppress physical effects");
+        if (fj_cuda_retire_instance(JuicerCuda::borrowed_owner(), instanceToken, nullptr).category != FJ_STATUS_SUCCESS)
+            throw std::runtime_error("retire instance after physical fixture");
+        std::cout << test.name << " physical families/off/debug/alpha CUDA paths passed\n";
+    }
+
+} // namespace
+
 #if defined(JUICER_EXECUTOR_FAILURE_TEST_HOOK)
 namespace {
     void check_failure_order(const Case& test,
@@ -1758,6 +1819,8 @@ int main(int argc, char** argv) {
                 if (cutoverContract && (std::string_view(test.name) == "negative-direct" || std::string_view(test.name) == "negative-print")) {
                     check_cutover_callbacks(test, expected);
                 }
+                if (cutoverContract && !test.signedZeroGlare)
+                    check_physical_effects_pixels(test);
                 if (sequentialOwners && std::string_view(test.name) == "negative-direct") {
                     Case uniform = test;
                     uniform.uniform = true;

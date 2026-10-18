@@ -39,6 +39,8 @@
 
 #include <cuda_runtime.h>
 
+#include <nlohmann/json.hpp>
+
 #include "JuicerEffect.h"
 #include "JuicerState.h"
 #include "ParamNames.h"
@@ -66,9 +68,11 @@ namespace JuicerTestSupport {
             bool pendingPrintRoute = false;
             Spektrafilm::ScanRoute pendingRoute = Spektrafilm::kDefaultScanRoute;
             double pendingExposureEv = 0.0;
+            PhysicalEffectsControls pendingEffects;
             float pendingFilmGamma = 0.0f;
             double pendingPrintGamma = 0.0;
             Spektrafilm::VisualGrainControls pendingGrain;
+            DirCouplersControls pendingDir;
             std::uint64_t pendingFullHash = 0;
             std::uint64_t buildCounter = 0;
             std::uint64_t recipeHash = 0;
@@ -90,8 +94,10 @@ namespace JuicerTestSupport {
                     result.pendingExposureEv =
                         valid->params.cameraExposureCompensationEv;
                     result.pendingFilmGamma = valid->params.filmGammaFactor;
+                    result.pendingEffects = {valid->params.filmDustAmount, valid->params.filmScratchAmount, valid->params.gateDustAmount, valid->params.gateScratchAmount, valid->params.gateWeaveAmount};
                     result.pendingPrintGamma = valid->params.printGammaFactor;
                     result.pendingGrain = valid->params.grainControls;
+                    result.pendingDir = valid->params.dirCouplers;
                     result.pendingFullHash = valid->fullHash;
                     result.pendingPrintRoute =
                         Spektrafilm::scan_route_is_print(
@@ -752,6 +758,10 @@ namespace {
             _effect = &effect;
         }
 
+        void unbind_effect() noexcept {
+            _effect = nullptr;
+        }
+
         void set_time(double time) noexcept {
             _time = time;
         }
@@ -779,6 +789,15 @@ namespace {
         void set_str_choice_value(const char* name, std::string value) {
             NativeParam& param = require_param(name, ParamKind::StrChoice);
             param.value.string = std::move(value);
+        }
+
+        void set_double3_value(const char* name, const std::array<double, 3>& value) {
+            require_param(name, ParamKind::Double3).value.numbers = value;
+        }
+
+        void set_double2_value(const char* name, const std::array<double, 2>& value) {
+            auto& numbers = require_param(name, ParamKind::Double2).value.numbers;
+            std::copy(value.begin(), value.end(), numbers.begin());
         }
 
         double double_value(const char* name) {
@@ -2599,6 +2618,152 @@ namespace {
     }
 } // namespace
 
+namespace {
+    nlohmann::json physical_words(const DefectDustRecipe& value) {
+        return nlohmann::json::array({std::bit_cast<std::uint32_t>(value.cellWidthMm),
+                                      std::bit_cast<std::uint32_t>(value.cellHeightMm),
+                                      std::bit_cast<std::uint32_t>(value.slotProbability),
+                                      std::bit_cast<std::uint32_t>(value.softnessMinMm),
+                                      std::bit_cast<std::uint32_t>(value.softnessMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.softnessSizeCapFraction),
+                                      std::bit_cast<std::uint32_t>(value.supportXMm),
+                                      std::bit_cast<std::uint32_t>(value.supportYMm),
+                                      std::bit_cast<std::uint32_t>(value.fiberFraction),
+                                      std::bit_cast<std::uint32_t>(value.fiberDriftFraction),
+                                      std::bit_cast<std::uint32_t>(value.fiberFirstKnotMin),
+                                      std::bit_cast<std::uint32_t>(value.fiberFirstKnotMax),
+                                      std::bit_cast<std::uint32_t>(value.fiberSecondKnotMin),
+                                      std::bit_cast<std::uint32_t>(value.fiberSecondKnotMax),
+                                      std::bit_cast<std::uint32_t>(value.fiberInteriorWidthMinFraction),
+                                      std::bit_cast<std::uint32_t>(value.fiberInteriorWidthMaxFraction),
+                                      std::bit_cast<std::uint32_t>(value.diameterMinMm),
+                                      std::bit_cast<std::uint32_t>(value.diameterBulkMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.diameterMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.diameterTailFraction),
+                                      std::bit_cast<std::uint32_t>(value.fiberLengthMinMm),
+                                      std::bit_cast<std::uint32_t>(value.fiberLengthMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.fiberWidthMinMm),
+                                      std::bit_cast<std::uint32_t>(value.fiberWidthMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.opacityFaintCumulative),
+                                      std::bit_cast<std::uint32_t>(value.opacityIntermediateCumulative),
+                                      std::bit_cast<std::uint32_t>(value.compactOpacityMin),
+                                      std::bit_cast<std::uint32_t>(value.compactOpacityFaintEnd),
+                                      std::bit_cast<std::uint32_t>(value.compactOpacityIntermediateEnd),
+                                      std::bit_cast<std::uint32_t>(value.compactOpacityMax),
+                                      std::bit_cast<std::uint32_t>(value.fiberOpacityMin),
+                                      std::bit_cast<std::uint32_t>(value.fiberOpacityFaintEnd),
+                                      std::bit_cast<std::uint32_t>(value.fiberOpacityIntermediateEnd),
+                                      std::bit_cast<std::uint32_t>(value.fiberOpacityMax),
+                                      std::bit_cast<std::uint32_t>(value.compactDominantAspectMin),
+                                      std::bit_cast<std::uint32_t>(value.compactDominantAspectMax),
+                                      std::bit_cast<std::uint32_t>(value.compactSubsidiaryScaleMin),
+                                      std::bit_cast<std::uint32_t>(value.compactSubsidiaryScaleMax),
+                                      std::bit_cast<std::uint32_t>(value.compactSubsidiaryAspectMin),
+                                      std::bit_cast<std::uint32_t>(value.compactSubsidiaryAspectMax),
+                                      std::bit_cast<std::uint32_t>(value.compactSubsidiaryOffsetMax),
+                                      std::bit_cast<std::uint32_t>(value.compactSubsidiaryAngleMaxRadians)});
+    }
+    nlohmann::json physical_words(const DefectScratchRecipe& value) {
+        return nlohmann::json::array({std::bit_cast<std::uint32_t>(value.cellWidthMm),
+                                      std::bit_cast<std::uint32_t>(value.cellHeightMm),
+                                      std::bit_cast<std::uint32_t>(value.slotProbability),
+                                      std::bit_cast<std::uint32_t>(value.softnessMinMm),
+                                      std::bit_cast<std::uint32_t>(value.softnessMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.softnessSizeCapFraction),
+                                      std::bit_cast<std::uint32_t>(value.supportXMm),
+                                      std::bit_cast<std::uint32_t>(value.supportYMm),
+                                      std::bit_cast<std::uint32_t>(value.lengthMinMm),
+                                      std::bit_cast<std::uint32_t>(value.lengthBulkMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.lengthMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.lengthTailFraction),
+                                      std::bit_cast<std::uint32_t>(value.widthMinMm),
+                                      std::bit_cast<std::uint32_t>(value.widthBulkMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.widthMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.widthTailFraction),
+                                      std::bit_cast<std::uint32_t>(value.driftFraction),
+                                      std::bit_cast<std::uint32_t>(value.firstKnotMin),
+                                      std::bit_cast<std::uint32_t>(value.firstKnotMax),
+                                      std::bit_cast<std::uint32_t>(value.secondKnotMin),
+                                      std::bit_cast<std::uint32_t>(value.secondKnotMax),
+                                      std::bit_cast<std::uint32_t>(value.interiorWidthMinFraction),
+                                      std::bit_cast<std::uint32_t>(value.interiorWidthMaxFraction),
+                                      std::bit_cast<std::uint32_t>(value.interiorDepthMinFraction),
+                                      std::bit_cast<std::uint32_t>(value.interiorDepthMaxFraction),
+                                      std::bit_cast<std::uint32_t>(value.endpointAbruptProbability),
+                                      std::bit_cast<std::uint32_t>(value.interruptionProbability),
+                                      std::bit_cast<std::uint32_t>(value.gapCenterMin),
+                                      std::bit_cast<std::uint32_t>(value.gapCenterMax),
+                                      std::bit_cast<std::uint32_t>(value.gapSpanMin),
+                                      std::bit_cast<std::uint32_t>(value.gapSpanMax),
+                                      std::bit_cast<std::uint32_t>(value.scuffProbability),
+                                      std::bit_cast<std::uint32_t>(value.scuffLengthMaxMm),
+                                      std::bit_cast<std::uint32_t>(value.scuffAngleMaxRadians),
+                                      std::bit_cast<std::uint32_t>(value.strengthMin),
+                                      std::bit_cast<std::uint32_t>(value.strengthMax)});
+    }
+    void check_physical_capture(NativeHost& host, const std::filesystem::path& grainManifest, const char* preset) {
+        const auto manifestPath = grainManifest.parent_path().parent_path() / "effects-fixtures/manifest.json";
+        std::ifstream manifestStream(manifestPath);
+        require(bool(manifestStream), "effects capture manifest open");
+        const auto manifest = nlohmann::json::parse(manifestStream);
+        std::ifstream stream(manifestPath.parent_path() / manifest.at("presets").at(preset).at("ofx").get<std::string>());
+        require(bool(stream), "effects capture fixture open");
+        const auto captured = nlohmann::json::parse(stream);
+        require(captured.at("ofx").size() == 608, "complete frozen effects capture membership");
+        JuicerEffect effect(host.effect_handle());
+        host.bind_effect(effect);
+        host.set_time(0);
+        const std::array<const char*, 5> getters{JuicerParams::kFilmDustAmount, JuicerParams::kGateDustAmount, JuicerParams::kFilmScratchAmount, JuicerParams::kGateScratchAmount, JuicerParams::kGateWeaveAmount};
+        unsigned count = 0;
+        for (const auto& row : captured.at("ofx")) {
+            const unsigned policy = row.at("policy");
+            const unsigned index = row.at("index");
+            if (!((index == 5 && (policy == 0 || policy == 1 || policy == 4 || policy == 7)) || (index == 15 && policy == 0)))
+                continue;
+            const unsigned route = row.at("route");
+            const bool print = route % 2;
+            host.set_str_choice_value(JuicerParams::kFilmProfileKey, route < 2 ? "kodak_portra_400" : "fujifilm_provia_100f");
+            host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
+            host.set_int_value(JuicerParams::kGrainActive, policy != 0);
+            host.set_int_value(JuicerParams::kGrainDebugView, policy > 1 ? static_cast<int>(policy - 1) : 0);
+            for (std::size_t i = 0; i < getters.size(); ++i)
+                host.set_double_value(getters[i], std::bit_cast<double>(row.at("authored_getter_order_f64")[i].get<std::uint64_t>()));
+            const auto start = host.trace_size();
+            const auto timed = host.at_time_get_count();
+            host.dispatch_event(effect, JuicerParams::kGrainActive, OFX::eChangeTime);
+            const auto observed = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+            require(observed.pendingValid && host.at_time_get_count() == timed, "physical capture uses current getters even during disabled/debug grain");
+            bool ordered = false;
+            for (std::size_t i = start; i < host.trace_size(); ++i) {
+                std::size_t j = 0;
+                while (j < getters.size() && i + j < host.trace_size() && host.trace()[i + j].starts_with("GET_CURRENT name=" + std::string(getters[j]) + " "))
+                    ++j;
+                ordered = ordered || j == getters.size();
+            }
+            require(ordered, "physical getter order film dust/gate dust/film scratch/gate scratch/weave");
+            const auto& controls = observed.pendingEffects;
+            const auto words = nlohmann::json::array({std::bit_cast<std::uint32_t>(controls.filmDustAmount), std::bit_cast<std::uint32_t>(controls.filmScratchAmount), std::bit_cast<std::uint32_t>(controls.gateDustAmount), std::bit_cast<std::uint32_t>(controls.gateScratchAmount)});
+            require(words == row.at("controls").at("amounts") && std::bit_cast<std::uint64_t>(controls.gateWeaveAmount) == row.at("controls").at("weave") && observed.pendingFullHash == row.at("snapshot_hash"), "frozen native captured f32/f64 controls and snapshot identity");
+            const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
+            require(print ? bool(admitted.printState) : bool(admitted.directState), "physical capture completes actual route publication");
+            const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
+            const auto& effects = recipe.filmJuicerEffects;
+            const nlohmann::json projection{{"film_dust", physical_words(effects.filmDust)}, {"film_scratch", physical_words(effects.filmScratch)}, {"gate_dust", physical_words(effects.gateDust)}, {"gate_scratch", physical_words(effects.gateScratch)}, {"weave", std::bit_cast<std::uint64_t>(effects.gateWeaveAmount)}, {"active", effects.active}, {"hash", effects.hash}};
+            require(projection == row.at("recipe") && recipe.visualGrain.hash == row.at("grain_hash") && recipe.hash == row.at("final_hash"), "actual OFX snapshot to completed grain to exact Rust effects and final publication");
+            ++count;
+        }
+        require(count == 20, "bounded physical OFX witness membership");
+        for (const auto* getter : getters)
+            host.set_double_value(getter, 0);
+        host.set_str_choice_value(JuicerParams::kFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
+        host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(Spektrafilm::kDefaultScanRoute));
+        host.set_int_value(JuicerParams::kGrainActive, 0);
+        host.set_int_value(JuicerParams::kGrainDebugView, 0);
+        host.unbind_effect();
+        std::cout << "PASS adapter/20-frozen-physical-capture-publications-four-routes\n";
+    }
+} // namespace
+
 int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-level catches map all fixture failures.
     JuicerCuda::Owner cudaOwner;
     try {
@@ -2608,7 +2773,7 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
             run_loaded_module_callback(host, argv[2], argv[4], std::string_view(argv[1]) == "--stream-contract");
             return 0;
         }
-        if (argc != 3 || std::string_view(argv[1]) != "--trace-output") {
+        if ((argc != 3 && !(argc == 6 && std::string_view(argv[3]) == "--grain-fixtures")) || std::string_view(argv[1]) != "--trace-output") {
             throw std::runtime_error(
                 "usage: JuicerAdapterTraceProbe --trace-output PATH or "
                 "--loaded-module MODULE --trace-output PATH");
@@ -2620,6 +2785,8 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
             throw std::runtime_error("CUDA initialization failed");
         }
         JuicerProcess::root().ensure_bootstrap();
+        if (argc == 6)
+            check_physical_capture(host, argv[4], argv[5]);
         ParamSnapshot routeSnapshot;
         routeSnapshot.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
         FocusedRenderStateBuildProduct routeProduct;
@@ -3207,6 +3374,289 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                 }
             }
             std::cout << "PASS adapter/film-f32-print-f64-grain-capture-and-recovery\n";
+            std::ostringstream grainCapture;
+
+            // Current OFX getters own these resolved controls until S6.B/C.
+            for (bool print : {false, true}) {
+                host.set_str_choice_value(JuicerParams::kParamScanRoute,
+                                          Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
+                for (int presetIndex : {0, 1, 2}) {
+                    const std::array<double, 3> presetEv{-1.396, -1.20, -0.57};
+                    const std::array<double, 3> presetChroma{0.0, 0.3, 0.5};
+                    host.set_int_value(JuicerParams::kGrainPreset, presetIndex);
+                    const auto nested = host.nested_event_count();
+                    host.dispatch_event(effect, JuicerParams::kGrainPreset, OFX::eChangeUserEdit);
+                    require(host.nested_event_count() - nested == 22, "each preset suppresses its 22 nested callbacks");
+                    for (int policy : {0, 1, 2}) {
+                        const std::array<double, 11> amounts{-3.0, 0.0, 3.0, -1.25, 1.234567890123, -9.0, 9.0, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(), std::nextafter(1.234567890123, 2.0)};
+                        const double threshold = static_cast<double>(0.999f);
+                        const std::array<double, 11> chromas{0.0, 0.375, 1.0, std::nextafter(threshold, 0.0), std::nextafter(threshold, 1.0), static_cast<double>(std::nextafter(0.999f, 0.0f)), static_cast<double>(std::nextafter(0.999f, 1.0f)), std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(), -1.0, 2.0};
+                        for (std::size_t index = 0; index < amounts.size(); ++index) {
+                            host.set_int_value(JuicerParams::kGrainActive, policy != 0);
+                            host.set_int_value(JuicerParams::kGrainSublayersActive, policy != 1);
+                            host.set_double_value(JuicerParams::kGrainAmplitude, amounts[index]);
+                            host.set_double_value(JuicerParams::kGrainChroma, chromas[index]);
+                            const auto start = host.trace_size();
+                            const auto timed = host.at_time_get_count();
+                            host.dispatch_event(effect, JuicerParams::kGrainActive, OFX::eChangeTime);
+                            const auto observed = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+                            const auto& g = observed.pendingGrain;
+                            const double ev = std::isfinite(amounts[index]) ? std::clamp(amounts[index], -3.0, 3.0) : presetEv[presetIndex];
+                            const float chroma = static_cast<float>(std::isfinite(chromas[index]) ? std::clamp(chromas[index], 0.0, 1.0) : presetChroma[presetIndex]);
+                            require(observed.pendingValid && host.at_time_get_count() == timed &&
+                                        g.amplitude == static_cast<float>(std::exp2(ev)) && g.chromaMix == chroma &&
+                                        g.chromaSharedWeight == std::sqrt(std::max(0.0f, 1.0f - chroma)) &&
+                                        g.chromaIndependentWeight == std::sqrt(std::max(0.0f, chroma)),
+                                    "actual resolved grain capture words");
+                            const std::array<const char*, 22> getters{
+                                JuicerParams::kGrainActive, JuicerParams::kGrainPreset, JuicerParams::kGrainSublayersActive, JuicerParams::kGrainAmplitude, JuicerParams::kGrainBlur, JuicerParams::kGrainSharpness, JuicerParams::kGrainChroma, JuicerParams::kGrainTexture, JuicerParams::kGrainParticleAreaUm2, JuicerParams::kGrainSizeMixScale, JuicerParams::kGrainSizeMixWeight, JuicerParams::kGrainSizeMixWeightMid, JuicerParams::kGrainBlurDyeCloudsUm, JuicerParams::kGrainParticleScale, JuicerParams::kGrainParticleScaleLayers, JuicerParams::kGrainDensityMin, JuicerParams::kGrainUniformity, JuicerParams::kGrainClumpTemporalMix, JuicerParams::kGrainClumpMorphPeriodSec, JuicerParams::kGrainMicroStructure, JuicerParams::kGrainDebugView, nullptr};
+                            bool ordered = false;
+                            for (std::size_t i = start; i < host.trace().size(); ++i) {
+                                std::size_t j = 0;
+                                while (j + 1 < getters.size() && i + j < host.trace().size() &&
+                                       host.trace()[i + j].starts_with("GET_CURRENT name=" + std::string(getters[j]) + " "))
+                                    ++j;
+                                ordered = ordered || j + 1 == getters.size();
+                            }
+                            require(ordered, "all grain current getters retain exact order even disabled");
+                            const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
+                            require(print ? bool(admitted.printState) : bool(admitted.directState), "grain capture completes route");
+                            const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
+                            require(recipe.filmDevelop.densityCurvesLayersRequired == (policy == 2) &&
+                                        (policy == 0 || (recipe.visualGrain.amplitude == g.amplitude && recipe.visualGrain.chromaSharedWeight == g.chromaSharedWeight &&
+                                                         recipe.visualGrain.chromaIndependentWeight == g.chromaIndependentWeight)),
+                                    "resolved grain is consumed once");
+                            grainCapture << "GRAIN_CAPTURE " << print << ' ' << presetIndex << ' ' << policy << ' ' << index
+                                         << ' ' << std::bit_cast<std::uint64_t>(amounts[index]) << ' ' << std::bit_cast<std::uint64_t>(chromas[index]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleAreaUm2);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleScaleCmy[0]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleScaleCmy[1]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleScaleCmy[2]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleScaleLayers[0]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleScaleLayers[1]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleScaleLayers[2]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.visualParticleDensityMinCmy[0]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.visualParticleDensityMinCmy[1]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.visualParticleDensityMinCmy[2]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.uniformityCmy[0]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.uniformityCmy[1]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.uniformityCmy[2]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.correlationSigmaPx);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.dyeCloudBlurUm);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.microStructure[0]);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.microStructure[1]);
+                            grainCapture << ' ' << g.nSubLayers;
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.amplitude);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.chromaMix);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.chromaSharedWeight);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.chromaIndependentWeight);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.coarseWeight);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.midWeight);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.sizeMixScale);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.clumpTemporalMix);
+                            grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.clumpMorphPeriodSec);
+                            grainCapture << ' ' << g.debugView;
+                            grainCapture << ' ' << recipe.visualGrain.hash << ' ' << recipe.visualGrain.densityCurvesLayersHash << ' ' << recipe.hash << '\n';
+                        }
+                    }
+                }
+            }
+            host.set_int_value(JuicerParams::kGrainActive, 0);
+            host.set_double_value(JuicerParams::kGrainAmplitude, -1.25);
+            host.set_double_value(JuicerParams::kGrainChroma, 0.375);
+
+
+            for (bool print : {false, true}) {
+                host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
+                host.set_int_value(JuicerParams::kGrainActive, 1);
+                host.set_int_value(JuicerParams::kGrainSublayersActive, 1);
+                const auto record = [&](std::string_view label) {
+                    const auto observed = JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+                    require(observed.pendingValid, "grain edit capture valid");
+                    const auto& g = observed.pendingGrain;
+                    const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
+                    require(print ? bool(admitted.printState) : bool(admitted.directState), "grain edit completes publication");
+                    const auto& recipe = print ? admitted.printState->recipe : admitted.directState->recipe;
+                    grainCapture << "GRAIN_EDIT_CAPTURE " << print << ' ' << label;
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleAreaUm2);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleScaleCmy[0]);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleScaleCmy[1]);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleScaleCmy[2]);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleScaleLayers[0]);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleScaleLayers[1]);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.particleScaleLayers[2]);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.visualParticleDensityMinCmy[0]);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.visualParticleDensityMinCmy[1]);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.visualParticleDensityMinCmy[2]);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.uniformityCmy[0]);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.uniformityCmy[1]);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.uniformityCmy[2]);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.correlationSigmaPx);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.dyeCloudBlurUm);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.microStructure[0]);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.microStructure[1]);
+                    grainCapture << ' ' << g.nSubLayers;
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.amplitude);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.chromaMix);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.chromaSharedWeight);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.chromaIndependentWeight);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.coarseWeight);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.midWeight);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.sizeMixScale);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.clumpTemporalMix);
+                    grainCapture << ' ' << std::bit_cast<std::uint32_t>(g.clumpMorphPeriodSec);
+                    grainCapture << ' ' << g.debugView;
+                    grainCapture << ' ' << recipe.visualGrain.hash << ' ' << recipe.visualGrain.densityCurvesLayersHash << ' ' << recipe.hash << '\n';
+                    const auto repeated = JuicerTestSupport::EffectTraceObserver::admit(effect);
+                    require(print ? repeated.printState == admitted.printState : repeated.directState == admitted.directState, "same-time capture repeats reuse immutable publication");
+                };
+                for (int choice : {-8, 0, 1, 2, 8}) {
+                    host.set_int_value(JuicerParams::kGrainPreset, choice);
+                    const auto before = host.nested_event_count();
+                    host.dispatch_event(effect, JuicerParams::kGrainPreset, OFX::eChangeUserEdit);
+                    require(host.nested_event_count() - before == 22, "invalid choice clamps before preset edits");
+                    record("preset-" + std::to_string(choice));
+                    const auto unchanged = host.nested_event_count();
+                    host.dispatch_event(effect, JuicerParams::kGrainPreset, OFX::eChangeTime);
+                    host.dispatch_event(effect, JuicerParams::kGrainPreset, OFX::eChangePluginEdit);
+                    require(host.nested_event_count() == unchanged, "non-user preset events do not repeat setters");
+                    const double nan = std::numeric_limits<double>::quiet_NaN();
+                    for (const char* name : {JuicerParams::kGrainAmplitude, JuicerParams::kGrainBlur, JuicerParams::kGrainSharpness, JuicerParams::kGrainChroma, JuicerParams::kGrainTexture, JuicerParams::kGrainParticleAreaUm2, JuicerParams::kGrainSizeMixScale, JuicerParams::kGrainSizeMixWeight, JuicerParams::kGrainSizeMixWeightMid, JuicerParams::kGrainBlurDyeCloudsUm, JuicerParams::kGrainClumpTemporalMix, JuicerParams::kGrainClumpMorphPeriodSec})
+                        host.set_double_value(name, nan);
+                    for (const char* name : {JuicerParams::kGrainParticleScale, JuicerParams::kGrainParticleScaleLayers, JuicerParams::kGrainDensityMin, JuicerParams::kGrainUniformity})
+                        host.set_double3_value(name, {nan, nan, nan});
+                    host.set_double2_value(JuicerParams::kGrainMicroStructure, {nan, nan});
+                    host.set_int_value(JuicerParams::kGrainDebugView, choice);
+                    host.dispatch_event(effect, JuicerParams::kGrainActive, OFX::eChangeTime);
+                    const auto fallback = JuicerTestSupport::EffectTraceObserver::snapshot(effect).pendingGrain;
+                    require(fallback.particleScaleCmy == std::array<float, 3>{1.48f, 1.48f, 1.48f}, "triplet fallback repeats preset master without ratios");
+                    record("fallback-" + std::to_string(choice));
+                }
+                host.set_int_value(JuicerParams::kGrainPreset, 1);
+                host.dispatch_event(effect, JuicerParams::kGrainPreset, OFX::eChangeUserEdit);
+                host.set_double3_value(JuicerParams::kGrainParticleScale, {0.5, 1.0, 1.5});
+                host.set_double_value(JuicerParams::kGrainParticleScaleMaster, 1.25);
+                host.dispatch_event(effect, JuicerParams::kGrainParticleScaleMaster, OFX::eChangeUserEdit);
+                require(JuicerTestSupport::EffectTraceObserver::snapshot(effect).pendingGrain.particleScaleCmy == std::array<float, 3>{0.625f, 1.25f, 1.875f}, "master edit writes normalized current ratios once");
+                record("master-ratios");
+                host.set_double3_value(JuicerParams::kGrainParticleScale, {2.0, 3.0, 4.0});
+                host.dispatch_event(effect, JuicerParams::kGrainParticleScale, OFX::eChangeUserEdit);
+                require(JuicerTestSupport::EffectTraceObserver::snapshot(effect).pendingGrain.particleScaleCmy == std::array<float, 3>{2.0f, 3.0f, 4.0f}, "manual triplets are captured without multiplying master");
+                record("manual-custom");
+                host.set_double_value(JuicerParams::kGrainSharpness, 0.25);
+                host.dispatch_event(effect, JuicerParams::kGrainSharpness, OFX::eChangeUserEdit);
+                host.set_double_value(JuicerParams::kGrainTexture, 0.75);
+                host.dispatch_event(effect, JuicerParams::kGrainTexture, OFX::eChangeUserEdit);
+                record("linked-sharpness-texture");
+                host.dispatch_event(effect, JuicerParams::kGrainResetAdvanced, OFX::eChangeUserEdit);
+                record("reset-advanced");
+                host.set_int_value(JuicerParams::kGrainActive, 0);
+                for (double time : {2.0, 0.0, 2.0, 2.0}) {
+                    host.set_time(time);
+                    host.dispatch_event(effect, JuicerParams::kGrainActive, OFX::eChangeTime);
+                    record(time == 0.0 ? "disabled-backward" : "disabled-repeat");
+                }
+            }
+            host.set_int_value(JuicerParams::kGrainActive, 0);
+            host.set_double_value(JuicerParams::kGrainAmplitude, -1.25);
+            host.set_double_value(JuicerParams::kGrainChroma, 0.375);
+
+            const auto grainWords = grainCapture.str();
+            require(std::count(grainWords.begin(), grainWords.end(), '\n') == 234, "complete 198 capture and 36 edit native witnesses");
+            if (argc == 6) {
+                const std::filesystem::path manifestPath = argv[4];
+                std::ifstream manifestStream(manifestPath);
+                require(bool(manifestStream), "grain capture manifest open");
+                const auto manifest = nlohmann::json::parse(manifestStream);
+                const auto expectedPath = manifestPath.parent_path() / manifest.at("presets").at(argv[5]).at("ofx").get<std::string>();
+                std::ifstream expected(expectedPath);
+                require(bool(expected), "independent native OFX grain words open");
+                std::istringstream actual(grainWords);
+                std::string expectedWord, actualWord;
+                while (expected >> expectedWord)
+                    require(bool(actual >> actualWord) && expectedWord == actualWord, "exact native authored/captured/recipe/final grain words");
+                require(!(actual >> actualWord), "no extra grain capture records");
+            }
+            std::cout << grainWords;
+
+            for (bool positive : {false, true})
+                for (bool print : {false, true}) {
+                    host.set_str_choice_value(JuicerParams::kFilmProfileKey, positive ? "fujifilm_provia_100f" : "kodak_portra_400");
+                    host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
+                    host.set_int_value(JuicerParams::kGrainActive, 0);
+                    const auto gets = [&](std::size_t start, const char* name) {
+                        const std::string prefix = "GET_CURRENT name=" + std::string(name) + " ";
+                        const auto begin = host.trace().begin() + static_cast<std::ptrdiff_t>(start);
+                        const std::string stock = "GET_CURRENT name=" + std::string(JuicerParams::kDirCouplersGammaUseStock) + " ";
+                        const auto marker = std::find_if(begin, host.trace().end(), [&](const std::string& row) {
+                            return row.starts_with(stock);
+                        });
+                        require(marker != host.trace().end() && marker != begin && (marker - 1)->starts_with("GET_CURRENT name=" + std::string(JuicerParams::kDirCouplersActive) + " "), "DIR capture begins with active then stock gamma");
+                        // UI enablement reads core/tail before snapshot capture.
+                        return std::count_if(marker - 1, host.trace().end(), [&](const std::string& row) {
+                            return row.starts_with(prefix);
+                        });
+                    };
+                    const auto capture = [&]() {
+                        host.dispatch_event(effect, JuicerParams::kDirCouplersActive, OFX::eChangeUserEdit);
+                        return JuicerTestSupport::EffectTraceObserver::snapshot(effect);
+                    };
+                    host.set_int_value(JuicerParams::kDirCouplersActive, 0);
+                    host.set_int_value(JuicerParams::kDirCouplersGammaUseStock, 1);
+                    host.set_double_value(JuicerParams::kDirCouplersAmount, std::numeric_limits<double>::quiet_NaN());
+                    auto start = host.trace_size();
+                    auto observed = capture();
+                    require(observed.pendingValid && !observed.pendingDir.active && gets(start, JuicerParams::kDirCouplersAmount) == 0, "disabled OFX DIR skips amount capture");
+                    host.set_int_value(JuicerParams::kDirCouplersActive, 1);
+                    host.set_double_value(JuicerParams::kDirCouplersAmount, 0);
+                    start = host.trace_size();
+                    observed = capture();
+                    require(observed.pendingValid && gets(start, JuicerParams::kDirCouplersInhibitionSameLayer) == 0 && gets(start, JuicerParams::kDirCouplersLangmuirDonorKRgb) == 0 && gets(start, JuicerParams::kDirCouplersLangmuirReceiverKRgb) == 0, "zero-amount OFX DIR skips chemistry");
+                    const double authored = 1.234567890123;
+                    host.set_double_value(JuicerParams::kDirCouplersAmount, authored);
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionSizeUm, 0);
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionTailWeight, std::numeric_limits<double>::quiet_NaN());
+                    host.set_double3_value(JuicerParams::kDirCouplersGammaSameLayerRgb, {std::numeric_limits<double>::quiet_NaN(), 0, 0});
+                    const char* consumed = positive ? JuicerParams::kDirCouplersLangmuirReceiverKRgb : JuicerParams::kDirCouplersLangmuirDonorKRgb;
+                    const char* unused = positive ? JuicerParams::kDirCouplersLangmuirDonorKRgb : JuicerParams::kDirCouplersLangmuirReceiverKRgb;
+                    host.set_double3_value(consumed, {authored, authored, authored});
+                    host.set_double3_value(unused, {std::numeric_limits<double>::quiet_NaN(), 0, 0});
+                    start = host.trace_size();
+                    observed = capture();
+                    require(observed.pendingValid, "stock DIR capture invalid: " + observed.pendingDiagnostic);
+                    require(observed.pendingDir.amount == static_cast<float>(authored), "stock DIR amount narrowing");
+                    require(gets(start, consumed) == 1, "consumed DIR K getter count=" + std::to_string(gets(start, consumed)));
+                    require(gets(start, unused) == 0, "unused DIR K getter count=" + std::to_string(gets(start, unused)));
+                    require(gets(start, JuicerParams::kDirCouplersGammaSameLayerRgb) == 0, "stock DIR gamma bypass");
+                    require(gets(start, JuicerParams::kDirCouplersDiffusionTailWeight) == 0, "core-zero DIR tail bypass");
+                    host.set_int_value(JuicerParams::kDirCouplersGammaUseStock, 0);
+                    host.set_double3_value(JuicerParams::kDirCouplersGammaSameLayerRgb, {authored, authored, authored});
+                    host.set_double2_value(JuicerParams::kDirCouplersGammaInterlayerRToGb, {0.123456789012, 0.234567890123});
+                    host.set_double2_value(JuicerParams::kDirCouplersGammaInterlayerGToRb, {0.345678901234, 0.456789012345});
+                    host.set_double2_value(JuicerParams::kDirCouplersGammaInterlayerBToRg, {0.567890123456, 0.678901234567});
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionSizeUm, 20);
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionTailWeight, 0);
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionTailUm, std::numeric_limits<double>::quiet_NaN());
+                    start = host.trace_size();
+                    observed = capture();
+                    const auto& dir = observed.pendingDir;
+                    require(observed.pendingValid && dir.gammaSameLayerRgb[0] == static_cast<float>(authored) && dir.gammaInterlayerRToGb[1] == static_cast<float>(0.234567890123) && gets(start, JuicerParams::kDirCouplersDiffusionTailUm) == 0, "custom RGB f64-to-f32 narrowing and zero-tail bypass");
+                    host.set_double3_value(consumed, {0.09, 1, 1});
+                    observed = capture();
+                    require(observed.pendingInvalid, "invalid consumed K blocks current snapshot");
+                    host.set_double3_value(consumed, {authored, authored, authored});
+                    observed = capture();
+                    require(observed.pendingValid, "OFX DIR controls recover");
+                    const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
+                    require(print ? bool(admitted.printState) : bool(admitted.directState), "captured DIR controls admit complete route");
+                    host.set_int_value(JuicerParams::kDirCouplersActive, 0);
+                    host.set_int_value(JuicerParams::kDirCouplersGammaUseStock, 1);
+                    host.set_double3_value(JuicerParams::kDirCouplersLangmuirDonorKRgb, {1, 1, 1});
+                    host.set_double3_value(JuicerParams::kDirCouplersLangmuirReceiverKRgb, {1, 1, 1});
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionTailWeight, 0.03);
+                    host.set_double_value(JuicerParams::kDirCouplersDiffusionTailUm, 200);
+                }
+            std::cout << "PASS adapter/DIR-conditional-capture-narrowing-polarity-and-recovery\n";
 
             require(host.current_get_count() != 0 &&
                         host.at_time_get_count() == 0,

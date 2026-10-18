@@ -80,6 +80,18 @@ def split_inputs(root: Path, paths) -> tuple[list[str], list[str]]:
     return sorted(local), sorted(external)
 
 
+def windows_vctip(environment) -> str | None:
+    if os.name != "nt":
+        return None
+    tools = next(
+        (value for key, value in environment.items() if key.upper() == "VCTOOLSINSTALLDIR"),
+        None,
+    )
+    if not tools:
+        raise ValueError("Windows build needs the selected VCToolsInstallDir")
+    return str(Path(tools) / "bin/Hostx64/x64/VCTIP.EXE")
+
+
 def ctest_command(root: Path, build: Path) -> list[str]:
     if build.parent == root / "out/build":
         return ["ctest", "--preset", build.name]
@@ -227,6 +239,7 @@ def configure_with_evidence(
             env=environment,
             timeout=timeout,
             repeat_reason="configuration changed or has no content proof",
+            vctip_executable=windows_vctip(environment),
         )
     except BaseException as error:
         primary_error = error
@@ -354,7 +367,9 @@ def scoped_context(root, source, build, graph, inputs, environment, compilation=
                 and path.suffix.lower() in {".h", ".hpp", ".inc"}
                 and path not in generated and str(path) not in graph.outputs):
             raise ValueError("unresolved generated build input: " + str(path))
-    paths = {path for path in paths if path.suffix.lower() not in {".a", ".lib", ".o", ".obj", ".so"} and ".so." not in path.name}
+    paths = {path for path in paths if str(path) not in graph.outputs
+             and path.suffix.lower() not in {".a", ".lib", ".o", ".obj", ".so"}
+             and ".so." not in path.name}
     return {
         "configuration": configuration,
         "files": file_identities(paths),
@@ -590,7 +605,8 @@ def _prepare_build_owned(campaign, stage, *, source, build, inputs, timeout,
         for attempt in range(2):
             local, external = split_inputs(campaign.root, [Path(name) for name in before["files"]])
             built = campaign.run(stage, command, inputs=local, tools=[*tools, *external], env=environment,
-                                 timeout=timeout, repeat_reason="build only explicit owning targets and dependencies")
+                                 timeout=timeout, repeat_reason="build only explicit owning targets and dependencies",
+                                 vctip_executable=windows_vctip(environment))
             fresh_graph = NinjaGraph(build, targets, environment)
             after = scoped_context(campaign.root, source, build, fresh_graph, inputs, environment)
             if file_identities([Path(name) for name in before["files"]]) != before["files"]:

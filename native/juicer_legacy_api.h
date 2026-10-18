@@ -348,6 +348,142 @@ FjStatus fj_legacy_noise_release(FjNoise* owner, FjErrorBuffer* error);
  * Span counts are elements; empty spans are (NULL,0). Release excludes every
  * use/outstanding borrow; acquired owners survive Assets release/destruction. */
 typedef struct FjFilmProfile FjFilmProfile;
+/* SF_TEMP_BRIDGE_FILM_INPUT: synchronous fixed values; remove S4.E.
+ * All records except error are required, complete, initialized and aligned.
+ * profile is a matching retained handle; release/mutation cannot overlap this call.
+ * Inputs and present sample extents remain immutable until return and may alias.
+ * out_input, out_failure, optional error and positive-capacity diagnostic backing
+ * are exclusive, mutually disjoint and disjoint from all inputs/reachable profile
+ * storage. The caller supplies actual extent/lifetime/disjointness; checked numeric
+ * extents do not establish these properties. No input pointer is retained.
+ * reference_illuminant is nonnull/81. Optional whites are NULL/0 or nonnull/3;
+ * reconstructed_reference_white is NULL/0 or nonnull/81. All supplied spans have
+ * canonical counts, checked multiplication, PTRDIFF_MAX bounds and address extent
+ * before borrowing, including inactive spans. No authored-content scan is added.
+ * Independently authorized outputs clear every semantic field to integer/+float
+ * zero before admission; padding is unspecified and is never evidence. Success
+ * commits the entire result, including three row-major matrices and XYZ whites.
+ * error=NULL is supported. Authorized length becomes zero first. Capacity zero
+ * never reads data. Positive backing must be nonnull/addressable, <=PTRDIFF_MAX;
+ * valid text uses capacity-1 bytes plus NUL, length excludes NUL. Invalid backing
+ * is untouched. Diagnostic absence/truncation never changes status or metadata.
+ * Raw rejection order: diagnostics; required outputs/profile/params/resources;
+ * input-space/method/meter tags; declaration-order flags; declaration-order spans.
+ * Raw rejection is UnsupportedInput/RAW with its closed reason. Semantic resource,
+ * sensitivity and identity errors are PreparationFailure; caught panic is
+ * InternalFailure with narrow leaf provenance. All statuses use API_NONE/code=0.
+ * Hash metadata: 0 none/index0, 1 nonfinite/index0..242, 2 zero identity/index0.
+ * Failure fields use origin-scoped closed reason codes below; success has zero
+ * metadata. Failure clears the result while preserving consumed hash metadata.
+ * Test-only category/fault injection is absent from testing-OFF products.
+ */
+#define FJ_FILM_INPUT_ILLUMINANT_PROFILE_REFERENCE UINT32_C(0)
+#define FJ_FILM_INPUT_ILLUMINANT_D65 UINT32_C(1)
+
+#define FJ_FILM_INPUT_ORIGIN_NONE UINT32_C(0)
+#define FJ_FILM_INPUT_ORIGIN_RAW UINT32_C(1)
+#define FJ_FILM_INPUT_ORIGIN_RESOURCE UINT32_C(2)
+#define FJ_FILM_INPUT_ORIGIN_COLOR UINT32_C(3)
+#define FJ_FILM_INPUT_ORIGIN_SENSITIVITY UINT32_C(4)
+#define FJ_FILM_INPUT_ORIGIN_IDENTITY UINT32_C(5)
+#define FJ_FILM_INPUT_ORIGIN_INTERNAL UINT32_C(6)
+
+/* reason is a closed code within origin, not a global enum. */
+#define FJ_FILM_INPUT_REASON_NONE UINT32_C(0)
+#define FJ_FILM_INPUT_RAW_RECORDS UINT32_C(1)
+#define FJ_FILM_INPUT_RAW_DIAGNOSTIC UINT32_C(2)
+#define FJ_FILM_INPUT_RAW_INPUT_SPACE UINT32_C(3)
+#define FJ_FILM_INPUT_RAW_METHOD UINT32_C(4)
+#define FJ_FILM_INPUT_RAW_METER UINT32_C(5)
+#define FJ_FILM_INPUT_RAW_FLAGS UINT32_C(6)
+#define FJ_FILM_INPUT_RAW_SPANS UINT32_C(7)
+#define FJ_FILM_INPUT_RESOURCE_HANATOS_WINDOW UINT32_C(1)
+#define FJ_FILM_INPUT_RESOURCE_HANATOS_SURFACE UINT32_C(2)
+#define FJ_FILM_INPUT_RESOURCE_HANATOS_BLUR UINT32_C(3)
+#define FJ_FILM_INPUT_RESOURCE_PROJECTION_WHITE UINT32_C(4)
+#define FJ_FILM_INPUT_RESOURCE_TC_SOURCE UINT32_C(5)
+#define FJ_FILM_INPUT_RESOURCE_INPUT_HULL UINT32_C(6)
+#define FJ_FILM_INPUT_COLOR_MATRICES UINT32_C(1)
+#define FJ_FILM_INPUT_COLOR_CAT16 UINT32_C(2)
+#define FJ_FILM_INPUT_COLOR_CAT02 UINT32_C(3)
+#define FJ_FILM_INPUT_SENSITIVITY_COMPUTED UINT32_C(1)
+#define FJ_FILM_INPUT_SENSITIVITY_BOUNDARY UINT32_C(2)
+#define FJ_FILM_INPUT_IDENTITY_REQUIRED UINT32_C(1)
+#define FJ_FILM_INPUT_INTERNAL_PANIC UINT32_C(1)
+#define FJ_FILM_INPUT_INTERNAL_INTEGRITY UINT32_C(2)
+#define FJ_FILM_INPUT_INTERNAL_MATRICES_PANIC UINT32_C(3)
+#define FJ_FILM_INPUT_INTERNAL_CAT16_PANIC UINT32_C(4)
+#define FJ_FILM_INPUT_INTERNAL_CAT02_PANIC UINT32_C(5)
+#define FJ_FILM_INPUT_INTERNAL_SENSITIVITY_PANIC UINT32_C(6)
+
+typedef struct FjFilmInputParams {
+    uint32_t input_space;
+    uint32_t decode_cctf;
+    uint32_t method;
+    uint32_t auto_exposure_enabled;
+    uint32_t meter;
+    float manual_exposure_ev;
+    float film_format_long_edge_mm;
+    uint32_t filter_override;
+    double uv[3];
+    double ir[3];
+    uint32_t apply_hanatos_window;
+    uint32_t apply_hanatos_surface;
+    uint32_t input_compression;
+} FjFilmInputParams;
+
+typedef struct FjFilmInputResources {
+    FjFloatSpan reference_illuminant;
+    FjFloatSpan reference_white_xyz;
+    FjFloatSpan integrated_d65_xyz;
+    FjFloatSpan reconstructed_reference_white;
+    uint64_t tc_source_hash;
+    uint64_t input_hull_hash;
+} FjFilmInputResources;
+
+typedef struct FjFilmInput {
+    FjInputColorConversion color;
+    float xyz_to_linear_srgb[9];
+    float nominal_white_xyz[3];
+    float projection_white_xyz[3];
+    uint32_t method;
+    uint32_t auto_exposure_enabled;
+    uint32_t meter;
+    float manual_exposure_ev;
+    float film_format_long_edge_mm;
+    uint32_t band_pass_active;
+    float uv[3];
+    float ir[3];
+    uint32_t apply_hanatos_window;
+    uint32_t apply_hanatos_surface;
+    float hanatos_spectral_blur;
+    float hanatos_window[4];
+    float hanatos_surface_rgb[3][15];
+    uint32_t projection_illuminant;
+    uint32_t input_compression_active;
+    uint64_t input_hull_hash;
+    uint64_t tc_source_hash;
+    float sensitivity_rgb[81][3];
+    uint64_t sensitivity_hash;
+    float recipe_mallett_green_scale;
+    uint64_t tc_hash;
+    uint64_t hash;
+} FjFilmInput;
+
+typedef struct FjFilmInputFailure {
+    uint32_t origin;
+    uint32_t reason;
+    FjSensitivityFailure sensitivity;
+} FjFilmInputFailure;
+
+FjStatus fj_legacy_film_input_prepare(
+    const FjFilmProfile* profile,
+    const FjFilmInputParams* params,
+    const FjFilmInputResources* resources,
+    FjFilmInput* out_input,
+    FjFilmInputFailure* out_failure,
+    FjErrorBuffer* error);
+
 typedef struct FjPrintProfile FjPrintProfile;
 typedef struct FjPrintDensityCurves FjPrintDensityCurves;
 
@@ -454,6 +590,227 @@ FjStatus fj_legacy_film_development_view(const FjFilmDevelopmentOwner* developme
                                          FjFilmDevelopmentView* out_view,
                                          FjErrorBuffer* error);
 FjStatus fj_legacy_film_development_release(FjFilmDevelopmentOwner* development, FjErrorBuffer* error);
+
+/* SF_TEMP_BRIDGE_FILM_DIR_DENSITY: synchronous film construction; remove S4.E.
+ * Required result/failure storage is initialized, aligned, live and disjoint
+ * from inputs, owners and optional diagnostics. Numeric extent checks do not
+ * establish allocation lifetime, object initialization or non-overlap.
+ * Diagnostic capacity zero never reads data. Every admitted result is cleared
+ * independently before rejection; failure starts {RAW,3,UINT64_MAX}.
+ * Success commits {NONE,3,UINT64_MAX}. DIR views expire on consuming release.
+ * Development retain returns the same address with an independent release
+ * obligation; every release consumes its hold even on diagnostic failure.
+ * Original requests to minimum and bounds must be identical; the safe core
+ * borrows a completed Minimum while this foreign boundary reconstructs it.
+ */
+#define FJ_FILM_DIR_INACTIVE UINT32_C(0)
+#define FJ_FILM_DIR_NEGATIVE_DONOR_LANGMUIR UINT32_C(1)
+#define FJ_FILM_DIR_POSITIVE_RECEIVER_LANGMUIR UINT32_C(2)
+#define FJ_FILM_RECIPE_REASON_NONE UINT32_C(0)
+#define FJ_FILM_RECIPE_RAW UINT32_C(1)
+#define FJ_FILM_RECIPE_MINIMUM UINT32_C(2)
+#define FJ_FILM_RECIPE_MATRIX UINT32_C(3)
+#define FJ_FILM_RECIPE_DENSITY_MAX UINT32_C(4)
+#define FJ_FILM_RECIPE_RECEIVER_K UINT32_C(5)
+#define FJ_FILM_RECIPE_DONOR_K UINT32_C(6)
+#define FJ_FILM_RECIPE_DONOR_LANGMUIR UINT32_C(7)
+#define FJ_FILM_RECIPE_RECEIVER_LANGMUIR UINT32_C(8)
+#define FJ_FILM_RECIPE_COMPENSATED_AXIS UINT32_C(9)
+#define FJ_FILM_RECIPE_IDENTITY UINT32_C(10)
+#define FJ_FILM_RECIPE_BOUNDS_SPAN UINT32_C(11)
+#define FJ_FILM_RECIPE_SIZE UINT32_C(12)
+#define FJ_FILM_RECIPE_ALLOCATION UINT32_C(13)
+#define FJ_FILM_RECIPE_PANIC UINT32_C(14)
+#define FJ_FILM_RECIPE_INTEGRITY UINT32_C(15)
+#define FJ_FILM_RECIPE_LOG_EXPOSURE UINT32_C(16)
+#define FJ_FILM_RECIPE_GRAIN_CONTROLS UINT32_C(17)
+#define FJ_FILM_RECIPE_GRAIN_LAYERS UINT32_C(18)
+#define FJ_FILM_RECIPE_EFFECTS_PROBABILITY UINT32_C(19)
+
+typedef struct FjFilmRecipeFailure {
+    uint32_t reason;
+    uint32_t channel;
+    uint64_t sample;
+} FjFilmRecipeFailure;
+
+
+/* SF_TEMP_BRIDGE_PHYSICAL_EFFECTS: completed fixed recipe transport; remove S4.E.
+ * Call records/backing must be initialized, live, aligned, mutually disjoint and
+ * exclusive where writable. Extent admission cannot prove allocation or lifetime.
+ * Every independently admitted output clears before input/diagnostic rejection.
+ * Numeric controls are sanitized by the safe constructor; grain_active is 0/1. */
+typedef struct FjPhysicalEffectsParams {
+    float film_dust_amount;
+    float film_scratch_amount;
+    float gate_dust_amount;
+    float gate_scratch_amount;
+    double gate_weave_amount;
+    uint32_t grain_active;
+    int32_t grain_debug_view;
+} FjPhysicalEffectsParams;
+
+typedef struct FjPhysicalEffectsRecipe {
+    FjDust film_dust;
+    FjScratch film_scratch;
+    FjDust gate_dust;
+    FjScratch gate_scratch;
+    double gate_weave_amount;
+    uint32_t active;
+    uint64_t hash;
+} FjPhysicalEffectsRecipe;
+
+FjStatus fj_legacy_physical_effects_prepare(
+    const FjPhysicalEffectsParams* params,
+    FjPhysicalEffectsRecipe* out_recipe,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+
+typedef struct FjFilmDensityMinimum {
+    float cmy[3];
+} FjFilmDensityMinimum;
+
+typedef struct FjFilmDirParams {
+    uint32_t active;
+    float amount;
+    float inhibition_same_layer;
+    float inhibition_interlayer;
+    float diffusion_size_um;
+    float diffusion_tail_um;
+    float diffusion_tail_weight;
+    uint32_t gamma_use_stock;
+    float gamma_same_layer_rgb[3];
+    float gamma_interlayer_r_to_gb[2];
+    float gamma_interlayer_g_to_rb[2];
+    float gamma_interlayer_b_to_rg[2];
+    float langmuir_donor_k_rgb[3];
+    float langmuir_receiver_k_rgb[3];
+} FjFilmDirParams;
+
+typedef struct FjFilmDirOwner FjFilmDirOwner;
+typedef struct FjFilmDirView {
+    uint32_t polarity;
+    uint32_t mode;
+    float matrix_rgb[9];
+    float diffusion_size_um;
+    float diffusion_tail_um;
+    float diffusion_tail_weight;
+    float density_max_rgb[3];
+    float density_ref_rgb[3];
+    float donor_k_rgb[3];
+    float receiver_c_ref_rgb[3];
+    float receiver_kr_rgb[3];
+    FjFloatSpan compensated_axes_rgb[3];
+    uint64_t compensated_axes_hash;
+    uint64_t hash;
+} FjFilmDirView;
+
+typedef struct FjFilmDensityBounds {
+    uint32_t route;
+    uint32_t medium;
+    uint32_t polarity;
+    uint32_t source;
+    float minimum_cmy[3];
+    float maximum_cmy[3];
+    float inv_span_cmy[3];
+    float authored_minimum_cmy[3];
+    float authored_maximum_cmy[3];
+    uint64_t hash;
+} FjFilmDensityBounds;
+
+/* SF_TEMP_BRIDGE_VISUAL_GRAIN: fixed completed grain projection; remove S4.E.
+ * The matching live Development is borrowed only through return, without a hold.
+ * Initialized aligned readable params and exclusive writable result/failure and
+ * optional diagnostics are live and mutually disjoint from every input/owner.
+ * Booleans are exactly 0/1. Extent checks do not prove pointer/owner provenance.
+ * Failure clears every admitted result field to zero; inactive success has scale 1.
+ */
+typedef struct FjVisualGrainParams {
+    uint32_t active;
+    uint32_t sublayers_active;
+    float particle_area_um2;
+    float particle_scale_cmy[3];
+    float particle_scale_layers[3];
+    float particle_density_min_cmy[3];
+    float uniformity_cmy[3];
+    float correlation_sigma_px;
+    float dye_cloud_blur_um;
+    float micro_structure[2];
+    int32_t sublayer_count;
+    float amplitude;
+    float chroma_mix;
+    float chroma_shared_weight;
+    float chroma_independent_weight;
+    float coarse_weight;
+    float mid_weight;
+    float size_mix_scale;
+    float clump_temporal_mix;
+    float clump_morph_period_sec;
+    int32_t debug_view;
+} FjVisualGrainParams;
+
+typedef struct FjVisualGrainRecipe {
+    uint32_t active;
+    uint32_t sublayers_active;
+    uint32_t axis_finite_cmy[3];
+    float axis_block_prefix_max_cmy[3][16];
+    float particle_area_um2;
+    float particle_scale_cmy[3];
+    float particle_scale_layers[3];
+    float particle_density_min_cmy[3];
+    float uniformity_cmy[3];
+    float correlation_sigma_px;
+    float dye_cloud_blur_um;
+    float micro_structure[2];
+    int32_t sublayer_count;
+    float amplitude;
+    float chroma_mix;
+    float chroma_shared_weight;
+    float chroma_independent_weight;
+    float fine_weight;
+    float mid_weight;
+    float coarse_weight;
+    float size_mix_scale;
+    float clump_temporal_mix;
+    float clump_morph_period_sec;
+    int32_t debug_view;
+    uint64_t layers_hash;
+    uint64_t hash;
+} FjVisualGrainRecipe;
+
+FjStatus fj_legacy_visual_grain_prepare(
+    const FjFilmDevelopmentOwner* development,
+    const FjVisualGrainParams* params,
+    FjVisualGrainRecipe* out_recipe,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_legacy_film_development_retain(
+    const FjFilmDevelopmentOwner* development,
+    FjFilmDevelopmentOwner** out_development,
+    FjErrorBuffer* error);
+FjStatus fj_legacy_film_density_minimum_prepare(
+    const FjFilmDensityMinimum* requested,
+    FjFilmDensityMinimum* out_minimum,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_legacy_film_dir_acquire(
+    const FjFilmDevelopmentOwner* development,
+    const FjFilmDirParams* params,
+    FjFilmDirOwner** out_dir,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_legacy_film_dir_view(
+    const FjFilmDirOwner* dir,
+    FjFilmDirView* out_view,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
+FjStatus fj_legacy_film_dir_release(
+    FjFilmDirOwner* dir, FjErrorBuffer* error);
+FjStatus fj_legacy_film_density_bounds_prepare(
+    const FjFilmDevelopmentOwner* development,
+    const FjFilmDensityMinimum* requested,
+    FjFilmDensityBounds* out_bounds,
+    FjFilmRecipeFailure* out_failure,
+    FjErrorBuffer* error);
 FjStatus fj_legacy_print_profile_acquire(const FjAssets* assets, FjStringView key, FjPrintProfile** out_profile, FjErrorBuffer* error);
 FjStatus fj_legacy_print_profile_view(const FjPrintProfile* profile,
                                       FjPrintProfileView* out_view,

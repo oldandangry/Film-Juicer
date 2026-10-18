@@ -16,3 +16,5 @@ pub mod reconstruction;
 pub mod exposure;
 
 pub mod gamut;
+
+pub mod effects;

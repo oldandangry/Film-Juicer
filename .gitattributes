@@ -93,3 +93,15 @@ tests/ffi/fixtures/output-color/*.json -text
 
 # Independent S4.B film-development captures preserve exact fixture bytes.
 tests/film/fixtures/** -text whitespace=cr-at-eol
+
+# Independent S4.B film-input compound captures preserve native bytes.
+tests/film/input-fixtures/*.json -text whitespace=cr-at-eol
+
+# Independent S4.B DIR/density captures preserve reviewed native bytes.
+tests/film/dir-fixtures/*.json -text whitespace=cr-at-eol
+
+# Independent S4.B visual-grain captures preserve exact native bytes.
+tests/film/grain-fixtures/** -text whitespace=cr-at-eol
+
+# Physical-effects native characterization preserves exact words and provenance bytes.
+tests/film/effects-fixtures/** -text whitespace=cr-at-eol
