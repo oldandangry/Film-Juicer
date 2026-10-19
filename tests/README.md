@@ -389,6 +389,13 @@ platform in Debug; corpus executes once in Linux Debug. The focused checkpoint
 controls cover exact execution membership, input/configuration invalidation,
 cross-campaign reuse, retained failures and inspected final-artifact binding.
 `Quality.Checkpoint` replaces retired publication/sealing protocol controls.
+Its control module keeps its 600-second limit. `Quality.PreparationRenewal` owns
+the complete native miniature repair/checkpoint/collection replay separately,
+with a 600-second limit on Linux/WSL and a 300-second limit on Windows.
+Both are required host/tooling tests in Debug. The
+miniature replay does not establish real product, GPU or OFX qualification.
+With `JUICER_TEST_ARTIFACT_DIR` supplied by CTest, checkpoint fixtures and their
+receipts remain under the native preset's `checkpoint-controls` directory.
 
 Add construction/lifetime probes as the corresponding real API lands. Put
 identity, reuse, conversion and failure-transition cases in the owning domain's

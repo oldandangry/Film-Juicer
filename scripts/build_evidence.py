@@ -391,8 +391,10 @@ def preparation_paths(build, targets):
     return baseline, baseline.with_suffix(".pending.json")
 
 
-def check_scoped_preparation(campaign, build, prepared, env=None, *, compilation=None):
-    record = json.loads(Path(prepared).read_text(encoding="utf-8"))
+def check_preparation_owner(build, prepared, *, resolve=Path):
+    """Check the current producer, including when collecting another native lane."""
+    prepared = resolve(str(prepared))
+    record = json.loads(prepared.read_text(encoding="utf-8"))
     proof = record.get("scoped_preparation")
     if not proof or proof.get("protocol") != SCOPED_PROTOCOL:
         raise ValueError(LEGACY_ADMISSION_UNSUPPORTED)
@@ -403,9 +405,60 @@ def check_scoped_preparation(campaign, build, prepared, env=None, *, compilation
         current = json.loads(baseline.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise ValueError("latest completed preparation is unavailable; repeat preparation") from error
-    if proof.get("producer") != str(Path(prepared).resolve()) or current != proof:
+    if not proof.get("producer") or resolve(proof["producer"]).resolve() != prepared.resolve() or current != proof:
         raise ValueError("scoped pass does not own the latest completed preparation")
+    if resolve(proof["build"]).resolve() != build.resolve():
+        raise ValueError("scoped preparation belongs to another build tree")
+    return record
+
+
+def check_scoped_preparation(campaign, build, prepared, env=None, *, compilation=None):
+    check_preparation_owner(build, prepared)
     return _check_preparation_result(campaign, build, prepared, env, compilation=compilation)
+
+
+def check_preparation_inputs(build, proof, *, resolve=Path):
+    """Recheck recorded native facts without executing another lane's tools."""
+    source = resolve(proof["source"])
+    context = proof["context"]
+    configuration = context["configuration"]
+    for files in (context["files"], context["rust_configuration"]):
+        expected = {str(resolve(name)): {**identity, "resolved": str(resolve(identity["resolved"]))}
+                    for name, identity in files.items()}
+        if file_identities([resolve(name) for name in files]) != expected:
+            raise ValueError("preparation dependency contents or paths changed")
+    if snapshot(source, list(configuration["inputs"])) != configuration["inputs"]:
+        raise ValueError("preparation configuration inputs changed")
+    expected_tools = {str(resolve(name).resolve()): checksum for name, checksum in configuration["tools"].items()}
+    if tool_snapshot([str(resolve(name)) for name in configuration["tools"]]) != expected_tools:
+        raise ValueError("preparation configuration tools changed")
+    if any(resolve(name).stat().st_mtime_ns != stamp for name, stamp in configuration["regeneration_mtimes"].items()):
+        raise ValueError("preparation regeneration inputs changed")
+    registrations = {str(resolve(name)): checksum for name, checksum in configuration["registrations"].items()}
+    if {str(p): digest(p) for p in registration_files(build)} != registrations:
+        raise ValueError("preparation test registration changed")
+    if any(p.relative_to(source).as_posix() not in configuration["inputs"] for p in configuration_files(build)):
+        raise ValueError("preparation configuration membership changed")
+    # The producer already resolved the ordered include scopes. Recheck those
+    # namespaces, including new shadow files, without parsing foreign commands.
+    outputs = {resolve(name) for name in proof["outputs"]}
+    for name, rows in context["include_membership"].items():
+        directory = resolve(name)
+        expected = {relative.replace("\\", "/"): str(resolve(target)) if target is not None else None
+                    for relative, target in rows}
+        members, visited = {}, set()
+        for parent, children, files in os.walk(directory, followlinks=True):
+            children[:] = sorted(n for n in children if n not in {"__pycache__", ".git", ".ruff_cache"})
+            parent = Path(parent)
+            resolved = parent.resolve()
+            if resolved in visited:
+                children[:] = []
+                continue
+            visited.add(resolved)
+            members[parent.relative_to(directory).as_posix()] = str(resolved)
+            members.update({(parent / n).relative_to(directory).as_posix(): None for n in files if parent / n not in outputs})
+        if members != expected:
+            raise ValueError("preparation include membership changed")
 
 
 def _check_preparation_result(campaign, build, prepared, env=None, *, compilation=None, fresh_context=None):

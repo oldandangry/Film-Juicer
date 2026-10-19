@@ -14,7 +14,7 @@ import time
 import tomllib
 import uuid
 
-from build_evidence import check_scoped_preparation, prepare_build, registration_files
+from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, prepare_build, registration_files
 from execution import Campaign, OutputLease, digest, snapshot, tool_snapshot, write_json
 
 PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release")
@@ -202,7 +202,7 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
         raise
 
 
-def checkpoint_inputs(root, build, group):
+def checkpoint_inputs(root, build, group, *, source_files=None):
     paths = {root / name for name in ("CMakeLists.txt", "CMakePresets.json", "tests/CMakeLists.txt",
              "scripts/qualification.py", "scripts/execution.py", "scripts/process_tree.py")}
     paths.add(build / "CMakeCache.txt")
@@ -225,7 +225,7 @@ def checkpoint_inputs(root, build, group):
             paths.add(root / "tests/ffi/run_rust_build_contract.py")
     else:
         from verify import source_snapshot
-        paths.update(root / name for name in source_snapshot(root))
+        paths.update(root / name for name in (source_files if source_files is not None else source_snapshot(root)))
         for directory in ("Resources", "tests"):
             paths.update(p for p in (root / directory).rglob("*") if p.is_file() and "__pycache__" not in p.parts)
     return sorted(p.relative_to(root).as_posix() for p in paths if p.is_file())
@@ -299,6 +299,75 @@ def qualify(root, args):
         return _qualify_owned(root, build, args)
 
 
+def prepare_checkpoint(campaign, build, state_path, state, environment, *, repeat_reason="", timeout=1800, source_files=None):
+    """Preparation repair and ordinary admission share the same producer and artifacts."""
+    inputs = checkpoint_inputs(campaign.root, build, "product", source_files=source_files)
+    outputs = []
+    previous = state.get("prepare")
+    def prepare():
+        if previous and previous.get("payloads"):
+            try:
+                path = Path(previous["receipt"])
+                if digest(path) != previous["sha256"]:
+                    raise ValueError("checkpoint preparation receipt changed")
+                try:
+                    check_preparation_owner(build, path)
+                except ValueError:
+                    pass  # A superseded/missing owner still needs ordinary preparation.
+                else:
+                    from verify import check_receipt_payloads
+                    check_receipt_payloads(campaign.root, path)
+                    try:
+                        check_scoped_preparation(campaign, build, path, environment)
+                    except ValueError:
+                        # Changed inputs or missing outputs require the real producer.
+                        pass
+                    else:
+                        if any(digest(Path(p)) != checksum for p, checksum in previous["payloads"].items()):
+                            raise ValueError("checkpoint preparation artifacts changed under the completed producer")
+            except BaseException:
+                # Keep the original artifact facts attached to failed admission.
+                state["prepare"] = previous.copy()
+                raise
+        return prepare_build(campaign, "prepare", source=campaign.root, build=build,
+            inputs=[p for p in inputs if not p.startswith("out/build/")], timeout=timeout,
+            targets=["all"], configure_args=["-DBUILD_TESTING=ON"], env=environment, checkpoint=True)[1]
+    def validate(path):
+        record = check_scoped_preparation(campaign, build, path, environment)
+        outputs[:] = record["scoped_preparation"]["outputs"]
+    return run_stage(campaign, state_path, state, "prepare", ["cmake", "--build", str(build)],
+        inputs=inputs, tools=checkpoint_tools(build, environment, "product"), environment=environment,
+        timeout=timeout, repeat_reason=repeat_reason,
+        action=prepare,
+        refresh_inputs=lambda: checkpoint_inputs(campaign.root, build, "product", source_files=source_files),
+        validate=validate, payloads=outputs)
+
+
+def preparation_identity(build, stage, *, resolve=Path):
+    """Bind admitted artifact facts; producer provenance remains in the original receipt.
+
+    Callers validate raw command/process evidence through run_stage or collection.
+    The artifact owner and exact output bytes must still match at consumption.
+    """
+    path = resolve(stage["receipt"])
+    if digest(path) != stage["sha256"]:
+        raise ValueError("checkpoint preparation receipt changed")
+    record = check_preparation_owner(build, path, resolve=resolve)
+    if record.get("status") != "passed" or record.get("returncode") != 0 or not record.get("process_tree", {}).get("drained"):
+        raise ValueError("checkpoint preparation lacks successful process completion")
+    proof = record["scoped_preparation"]
+    check_preparation_inputs(build, proof, resolve=resolve)
+    artifacts = stage.get("payloads", {})
+    if not artifacts or set(artifacts) != set(proof["outputs"]):
+        raise ValueError("checkpoint preparation lacks exact artifact identities; repeat preparation")
+    if any(digest(resolve(p)) != checksum for p, checksum in artifacts.items()):
+        raise ValueError("checkpoint preparation artifact bytes changed")
+    facts = {name: value for name, value in proof.items()
+             if name not in {"producer", "invalidated", "rust_invalidated_packages"}}
+    return hashlib.sha256(json.dumps({"preparation": facts, "checkpoint": stage["identity"],
+                                     "artifacts": artifacts}, sort_keys=True).encode()).hexdigest()
+
+
 def _qualify_owned(root, build, args):
     from verify import source_snapshot
     cache = (build / "CMakeCache.txt").read_text()
@@ -325,24 +394,24 @@ def _qualify_owned(root, build, args):
         raise ValueError("checkpoint attempt already exists; retain it and use a new attempt name")
     started = time.monotonic()
     environment = dict(os.environ)
-    def run(name, command, inputs, **kwargs):
-        tools = checkpoint_tools(build, environment, name if name in GROUPS else "product")
+    def run(name, command, inputs, *, tools=None, **kwargs):
+        if tools is None:
+            tools = checkpoint_tools(build, environment, name if name in GROUPS else "product")
         result = run_stage(campaign, state_path, state, name, command, inputs=inputs, tools=tools,
                        environment=environment, timeout=1800, repeat_reason=args.repeat_reason, **kwargs)
         record["stages"][name] = result
         return result
     try:
         built = None
+        prepared_identity = None
         if "product" in groups:
-            inputs = checkpoint_inputs(root, build, "product")
-            built = run("prepare", ["cmake", "--build", str(build)], inputs,
-                action=lambda: prepare_build(campaign, "prepare", source=root, build=build,
-                    inputs=[p for p in inputs if not p.startswith("out/build/")], timeout=1800, targets=["all"], configure_args=["-DBUILD_TESTING=ON"], checkpoint=True)[1],
-                refresh_inputs=lambda: checkpoint_inputs(root, build, "product"),
-                validate=lambda path: check_scoped_preparation(campaign, build, path))
-            inputs = checkpoint_inputs(root, build, "product")
+            built = prepare_checkpoint(campaign, build, state_path, state, environment,
+                                       repeat_reason=args.repeat_reason, source_files=current)
+            record["stages"]["prepare"] = built
+            prepared_identity = preparation_identity(build, built)
+            inputs = checkpoint_inputs(root, build, "product", source_files=current)
             run("quality", [sys.executable, "-B", "scripts/check-quality.py", "--preset", args.preset,
-                "--qualification", "--base", args.base], inputs, dependencies=[built["sha256"]])
+                "--qualification", "--base", args.base], inputs, dependencies=[prepared_identity])
         if groups != {"production"}:
             query = subprocess.check_output(["ctest", "--test-dir", str(build), "--show-only=json-v1"], cwd=root, env=environment, text=True, timeout=30)
             inventory = json.loads(query)
@@ -370,14 +439,14 @@ def _qualify_owned(root, build, args):
                     validate_ctest_stage(paths, parts, names, identities)
                     if group == "product":
                         check_scoped_preparation(campaign, build, Path(built["receipt"]))
-                inputs = checkpoint_inputs(root, build, group)
+                inputs = checkpoint_inputs(root, build, group, source_files=current)
                 tools = checkpoint_tools(build, environment, group)
-                run(group, commands[0], inputs, semantic_command=identities,
+                run(group, commands[0], inputs, tools=tools, semantic_command=identities,
                     action=lambda group=group, commands=commands, parts=parts, inputs=inputs, tools=tools:
                         run_ctest_parts(campaign, group, commands, parts, inputs=inputs, tools=tools,
                             environment=environment, timeout=1800, repeat_reason=args.repeat_reason),
                     validate=validate, payloads=reports,
-                    dependencies=[built["sha256"]] if built and group == "product" else [])
+                    dependencies=[prepared_identity] if built and group == "product" else [])
         else:
             cache = (build / "CMakeCache.txt").read_text()
             if not re.search(r"^BUILD_TESTING:BOOL=OFF$", cache, re.M):
@@ -393,9 +462,17 @@ def _qualify_owned(root, build, args):
             if not artifacts:
                 raise ValueError("final production artifacts are missing")
             out = campaign.directory / "production"
-            inputs = checkpoint_inputs(root, build, "production") + [p.relative_to(root).as_posix() for p in artifacts]
+            inputs = checkpoint_inputs(root, build, "production", source_files=current) + [p.relative_to(root).as_posix() for p in artifacts]
             command = [sys.executable, "-B", "tests/ffi/production_contract.py", "--preset", args.preset, "--artifacts", str(out)]
             run("production", command, inputs, semantic_command=[*command[:-1], "<artifacts>"], payloads=[out / "production.json"])
+        if built:
+            try:
+                if preparation_identity(build, built) != prepared_identity:
+                    raise ValueError("checkpoint preparation changed during consumption")
+            except BaseException as error:
+                state["prepare"] = {**built, "status": "failed", "error": str(error)}
+                write_json(state_path, state)
+                raise
         if source_snapshot(root) != current:
             raise ValueError("checkpoint source changed during execution")
         record["scope_status"] = "passed"
@@ -435,6 +512,28 @@ def _collect_owned(root, paths):
     records = [json.loads(Path(p).read_text()) for p in paths]
     for record in records:
         require_checkpoint(record)
+    from verify import source_snapshot
+    observed_source = source_snapshot(root) if all("source" in record for record in records) else None
+    if observed_source is not None and any(record["source"] != observed_source for record in records):
+        raise ValueError("checkpoint records do not bind one current candidate")
+    stages = [stage for record in records for stage in record["stages"].values()]
+    source_paths = sorted({p for stage in stages for p in stage["identity"]["inputs"]
+                           if not p.startswith("out/build/")})
+    tool_paths = sorted({str(local(p)) for stage in stages
+                         for p in [*stage["identity"]["tool_paths"], *stage["identity"]["tools"]]})
+    def observe_tools():
+        bindings = {p: str(Path(p).resolve()) for p in tool_paths}
+        values = tool_snapshot(tool_paths, allow_missing=True)
+        if (set(values) != set(bindings.values())
+                or bindings != {p: str(Path(p).resolve()) for p in tool_paths}):
+            raise ValueError("checkpoint tool paths changed during collection")
+        return bindings, values
+    # One read-only operation shares reads, never facts from an earlier attempt.
+    # The terminal scan seals content and lexical-to-resolved path bindings.
+    bindings, tools = observe_tools()
+    inputs = snapshot(root, source_paths)
+    members = {}
+    for record in records:
         owner = root / "out/build" / record["preset"] / "verification-checkpoint.json"
         state = json.loads(owner.read_text())
         if any(value.get("status") != "passed" for value in state.values()):
@@ -462,22 +561,47 @@ def _collect_owned(root, paths):
                     record["membership"][name], result["identity"]["command"], local)
             declared = result["identity"]["inputs"]
             source_inputs = {path: checksum for path, checksum in declared.items() if not path.startswith("out/build/")}
-            if snapshot(root, list(source_inputs)) != source_inputs:
+            if {p: inputs[p] for p in source_inputs} != source_inputs:
                 raise ValueError("checkpoint declared source/data inputs changed")
             group = name if name in GROUPS else "product"
             expected_members = {path for path in declared if not path.startswith("out/build/")}
-            actual_members = {path for path in checkpoint_inputs(root, root / "out/build" / record["preset"], group)
-                              if not path.startswith("out/build/")}
+            key = record["preset"], group
+            if key not in members:
+                members[key] = {path for path in checkpoint_inputs(root, root / "out/build" / record["preset"], group,
+                                                                  source_files=observed_source)
+                                if not path.startswith("out/build/")}
+            actual_members = members[key]
             if expected_members != actual_members:
                 raise ValueError("checkpoint source/data membership changed")
-            expected_tools = {str(local(path).resolve()): value for path, value in result["identity"]["tools"].items()}
-            if tool_snapshot([str(local(p)) for p in result["identity"]["tool_paths"]], allow_missing=True) != expected_tools:
+            expected_tools = {bindings[str(local(path))]: value for path, value in result["identity"]["tools"].items()}
+            actual_tools = {bindings[str(local(p))]: tools[bindings[str(local(p))]]
+                            for p in result["identity"]["tool_paths"]}
+            if actual_tools != expected_tools:
                 raise ValueError("checkpoint toolchain/configuration changed")
             if name == "production":
                 artifacts = {path: checksum for path, checksum in result["identity"]["inputs"].items()
                              if Path(path).suffix.lower() in {".a", ".lib", ".ofx", ".pdb"}}
                 if not artifacts or any(digest(root / path) != checksum for path, checksum in artifacts.items()):
                     raise ValueError("final inspected production artifacts changed")
+        if "product" in record["selection"]:
+            identity = preparation_identity(root / "out/build" / record["preset"], record["stages"]["prepare"], resolve=local)
+            if any(record["stages"][name]["identity"]["dependencies"] != [identity] for name in ("quality", "product")):
+                raise ValueError("checkpoint stages do not bind the current preparation artifacts")
+    if observe_tools() != (bindings, tools):
+        raise ValueError("checkpoint toolchain/configuration changed during collection")
+    if snapshot(root, source_paths) != inputs:
+        raise ValueError("checkpoint declared source/data inputs changed during collection")
+    current = source_snapshot(root) if observed_source is not None else None
+    if observed_source is not None and current != observed_source:
+        raise ValueError("checkpoint source/data membership changed during collection")
+    # Git selection omits ignored test/resource inputs that checkpoint_inputs owns.
+    # Seal each shared membership observation independently of that selection.
+    for (preset, group), expected in members.items():
+        actual_members = {path for path in checkpoint_inputs(root, root / "out/build" / preset, group,
+                                                            source_files=current)
+                          if not path.startswith("out/build/")}
+        if actual_members != expected:
+            raise ValueError("checkpoint source/data membership changed during collection")
     required = {(p, group) for p in PRESETS for group in ("product", "boundary")}
     required |= {(p, "tooling") for p in ("linux-debug", "windows-clang-debug")}
     required |= {(p, "production") for p in ("linux-release", "windows-clang-release")}
@@ -486,8 +610,8 @@ def _collect_owned(root, paths):
         raise ValueError("full checkpoint membership is incomplete or duplicated")
     if any(r["runtime"] != "all" for r in records if "product" in r["selection"]):
         raise ValueError("host-only product checks do not establish full qualification")
-    from verify import source_snapshot
-    current = source_snapshot(root)
+    if current is None:
+        current = source_snapshot(root)
     if any(r["source"] != current for r in records):
         raise ValueError("checkpoint records do not bind one current candidate")
     return {"mode": "qualification", "status": "passed", "source": current,

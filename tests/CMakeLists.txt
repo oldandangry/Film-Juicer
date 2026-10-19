@@ -419,13 +419,15 @@ set_tests_properties(Quality.ToolingLint PROPERTIES
 # Development verification controls need native compilers, but no driver/device.
 # The first delivery supports the two Debug development presets.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    foreach(verification_group IN ITEMS Execution BuildEvidence BuildRegistration Verify Checkpoint)
+    foreach(verification_group IN ITEMS Execution BuildEvidence BuildRegistration Verify Checkpoint PreparationRenewal)
         if(verification_group STREQUAL "BuildEvidence")
             set(verification_pattern "test_build_evidence.py")
         elseif(verification_group STREQUAL "BuildRegistration")
             set(verification_pattern "test_build_registration.py")
         elseif(verification_group STREQUAL "Checkpoint")
             set(verification_pattern "test_checkpoint.py")
+        elseif(verification_group STREQUAL "PreparationRenewal")
+            set(verification_pattern "test_preparation_renewal.py")
         elseif(verification_group STREQUAL "Execution")
             set(verification_pattern "test_execution.py")
         else()
@@ -436,6 +438,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
                 -s "${CMAKE_CURRENT_SOURCE_DIR}/quality" -p "${verification_pattern}" -f -v)
         if(verification_group STREQUAL "BuildEvidence")
             set(verification_timeout 1800)
+        elseif(verification_group STREQUAL "PreparationRenewal" AND CMAKE_HOST_WIN32)
+            set(verification_timeout 300)
         else()
             set(verification_timeout 600)
         endif()
@@ -1250,7 +1254,7 @@ target_link_libraries(JuicerOutputColorTests PRIVATE juicer_output_encoding_orac
 
 # Relevance and runtime prerequisites are independent. Every group has one owner.
 set(juicer_tooling_tests Quality.Dispatcher Quality.ToolingLint Quality.Execution
-    Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint
+    Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint Quality.PreparationRenewal
     Ctest.Host.Report Ctest.Host.Repetition Ffi.Host.RustBuild)
 set(juicer_boundary_tests
     Ffi.Host.VisualGrain Quality.RustNaming Quality.RustBoundaries)
