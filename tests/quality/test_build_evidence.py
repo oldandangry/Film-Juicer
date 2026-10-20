@@ -263,9 +263,10 @@ class BuildEvidenceTests(unittest.TestCase):
             os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         attempts = len(self.campaign.attempts("tests"))
         with OutputLease(self.root, self.build):
-            with self.assertRaisesRegex(ValueError, "latest completed preparation"):
+            # The current baseline binds the replacement producer's raw receipt.
+            with self.assertRaisesRegex(ValueError, "command receipt changed"):
                 build_evidence.check_scoped_preparation(self.campaign, self.build, first)
-            with self.assertRaisesRegex(ValueError, "latest completed preparation"):
+            with self.assertRaisesRegex(ValueError, "command receipt changed"):
                 build_evidence.run_ctest(self.campaign, "tests", build=self.build, prepared=first,
                                          inputs=self.inputs(), timeout=30, tests=["behavior"])
         self.assertEqual(len(self.campaign.attempts("tests")), attempts)
@@ -566,6 +567,556 @@ class BuildEvidenceTests(unittest.TestCase):
         binary.write_bytes(b"stale executable")
         self.prepare()
         self.execute()
+
+    def assert_renewal_rejects_restored_artifact(self, artifact_kind, *, unbound=False, new_scope=False):
+        rust = artifact_kind == "archive"
+        cmake = self.source / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() +
+            "add_custom_target(overlap DEPENDS behavior)\nadd_test(NAME selected COMMAND behavior 10)\n")
+        if rust:
+            self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+        producer = self.prepare()
+        self.execute(junit=self.campaign.directory / "warm.xml")
+        baseline, pending = build_evidence.preparation_paths(self.build, ["behavior"])
+        original_owner = baseline.read_bytes()
+        (self.campaign.directory / "prior-baseline.json").write_bytes(original_owner)
+        proof = json.loads(producer.read_text())["scoped_preparation"]
+        originals = {Path(name): (Path(name).read_bytes(), Path(name).stat()) for name in proof["outputs"]}
+        binary = self.build / ("behavior.exe" if os.name == "nt" else "behavior")
+        if artifact_kind == "executable":
+            artifact = binary
+        elif rust:
+            artifact = next(path for path in originals if path.name in {"libfilm_juicer_plugin.a", "film_juicer_plugin.lib"})
+        else:
+            artifact = next(path for path in originals if path.name in {"native.cpp.o", "native.cpp.obj"})
+        source = self.source / ("rust/film-juicer-core/src/lib.rs" if rust else "native.cpp")
+        content, stamp = source.read_bytes(), source.stat()
+        source.write_bytes(content.replace(b"{3}", b"{8}") if rust else content.replace(b"return 1", b"return 8"))
+        with OutputLease(self.root, self.build):
+            external = self.campaign.run("prepare", ["cmake", "--build", str(self.build), "--parallel", "2", "--target", "behavior"],
+                inputs=self.inputs(), timeout=120, repeat_reason="fixture-local intervening artifact mutation",
+                vctip_executable=build_evidence.windows_vctip(os.environ))
+        expected = "15" if rust else "17"
+        witness = subprocess.check_output([str(binary), expected], text=True, timeout=10).strip()
+        self.assertEqual(witness, "value=" + expected)
+        source.write_bytes(content)
+        os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        for path, (data, previous) in originals.items():
+            if path != artifact:
+                path.write_bytes(data)
+            os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+        self.assertNotEqual(digest(artifact), proof["output_identities"][str(artifact)]["sha256"])
+        build_evidence.write_json(self.campaign.directory / "restored-artifact.json", {
+            "producer": str(producer), "intervening_build": str(external), "artifact": str(artifact),
+            "expected": proof["output_identities"][str(artifact)], "mutated_sha256": digest(artifact),
+            "restored_mtime_ns": artifact.stat().st_mtime_ns, "intervening_witness": witness})
+        if unbound:
+            legacy = json.loads(original_owner)
+            legacy.pop("producer_sha256")
+            build_evidence.write_json(baseline, legacy)
+            self.prepare(targets=["overlap"] if new_scope else ["behavior"])
+            repaired = json.loads(self.prepared.read_text())["scoped_preparation"]
+            self.assertEqual(repaired["rust_invalidated_packages"], ["film-juicer-core", "film-juicer-plugin"])
+            with OutputLease(self.root, self.build):
+                build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
+            self.execute(tests=["selected"] if new_scope else ["behavior"], junit=self.campaign.directory / "repaired.xml")
+            return
+        attempts = len(self.campaign.attempts("prepare"))
+        with self.assertRaisesRegex(ValueError, "artifact bytes changed"):
+            self.prepare()
+        self.assertEqual(len(self.campaign.attempts("prepare")), attempts)
+        self.assertEqual(baseline.read_bytes(), original_owner)
+        self.assertFalse(pending.exists())
+        selected, _ = build_evidence.preparation_paths(self.build, ["overlap"])
+        self.assertFalse(selected.exists())
+        with self.assertRaisesRegex(ValueError, "artifact bytes changed"):
+            self.prepare(targets=["overlap"])
+        self.assertFalse(selected.exists())
+        self.assertEqual(baseline.read_bytes(), original_owner)
+
+    def test_same_scope_renewal_rejects_restored_time_executable(self):
+        self.assert_renewal_rejects_restored_artifact("executable")
+
+    def test_same_scope_renewal_rejects_restored_time_object(self):
+        self.assert_renewal_rejects_restored_artifact("object")
+
+    def test_same_scope_renewal_rejects_restored_time_rust_archive(self):
+        self.assert_renewal_rejects_restored_artifact("archive")
+
+    def test_same_scope_unbound_owner_rebuilds_stale_rust_archive(self):
+        self.assert_renewal_rejects_restored_artifact("archive", unbound=True)
+
+    def test_new_scope_unbound_owner_rebuilds_stale_rust_archive(self):
+        self.assert_renewal_rejects_restored_artifact("archive", unbound=True, new_scope=True)
+
+    def test_same_scope_renewal_rejects_artifact_mutation_during_build(self):
+        producer = self.prepare()
+        baseline, pending = build_evidence.preparation_paths(self.build, ["behavior"])
+        original_owner = baseline.read_bytes()
+        proof = json.loads(producer.read_text())["scoped_preparation"]
+        artifact = next(Path(name) for name in proof["outputs"] if name.endswith((".o", ".obj")))
+        run = self.campaign.run
+
+        def mutate(stage, command, **kwargs):
+            result = run(stage, command, **kwargs)
+            if "--build" in command:
+                artifact.write_bytes(artifact.read_bytes() + b"mutated output")
+            return result
+
+        with patch.object(self.campaign, "run", side_effect=mutate), self.assertRaisesRegex(ValueError, "retained artifact bytes changed"):
+            self.prepare()
+        self.assertEqual(baseline.read_bytes(), original_owner)
+        self.assertTrue(pending.exists())
+        self.assertEqual(self.campaign.attempts("prepare")[-1]["status"], "failed")
+
+    def test_missing_scope_rejects_incomplete_process_payload(self):
+        cmake = self.source / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
+        producer = self.prepare()
+        record = json.loads(producer.read_text())
+        process = Path(record["process_tree"]["receipt"])
+        original, stamp = process.read_bytes(), process.stat()
+        complete = json.loads(original)
+        payloads = [{}, {"drained": True}, {"status": "completed"},
+                    {key: value for key, value in complete.items() if key != "creation"},
+                    {**complete, "unexpected": True}]
+        selected, _ = build_evidence.preparation_paths(self.build, ["overlap"])
+        for payload in payloads:
+            with self.subTest(keys=sorted(payload)), OutputLease(self.root, self.build):
+                try:
+                    build_evidence.write_json(process, payload)
+                    with self.assertRaisesRegex(ValueError, "command evidence changed"):
+                        build_evidence.check_scoped_preparation(self.campaign, self.build, producer)
+                    self.assertIsNone(build_evidence._admit_missing_scope(self.campaign, self.source, self.build,
+                        selected, ["overlap"], self.inputs(), self.args, dict(os.environ)))
+                finally:
+                    process.write_bytes(original)
+                    os.utime(process, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.execute(junit=self.campaign.directory / "restored-process.xml")
+
+    def assert_producer_payload_mutation_is_rejected(self, payload_kind, *, renew=False):
+        cmake = self.source / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
+        producer = self.prepare()
+        baseline, _ = build_evidence.preparation_paths(self.build, ["behavior"])
+        original_owner = baseline.read_bytes()
+        record = json.loads(producer.read_text())
+        payload = Path(record["process_tree"]["receipt"]) if payload_kind == "process" else self.root / record["output"]
+        run = self.campaign.run
+
+        def mutate(stage, command, **kwargs):
+            result = run(stage, command, **kwargs)
+            if "--build" in command:
+                if payload_kind == "process":
+                    build_evidence.write_json(payload, {})
+                else:
+                    payload.write_bytes(payload.read_bytes() + b"mutated producer log\n")
+            return result
+
+        targets = ["behavior"] if renew else ["overlap"]
+        with patch.object(self.campaign, "run", side_effect=mutate), self.assertRaisesRegex(ValueError, "command evidence changed"):
+            self.prepare(targets=targets)
+        selected, pending = build_evidence.preparation_paths(self.build, targets)
+        if renew:
+            self.assertEqual(selected.read_bytes(), original_owner)
+        else:
+            self.assertFalse(selected.exists())
+        self.assertTrue(pending.exists())
+        self.assertEqual(baseline.read_bytes(), original_owner)
+        self.assertEqual(self.campaign.attempts("prepare")[-1]["status"], "failed")
+
+    def test_admission_publication_rejects_producer_process_mutation(self):
+        self.assert_producer_payload_mutation_is_rejected("process")
+
+    def test_admission_publication_rejects_producer_log_mutation(self):
+        self.assert_producer_payload_mutation_is_rejected("log")
+
+    def test_renewal_publication_rejects_producer_process_mutation(self):
+        self.assert_producer_payload_mutation_is_rejected("process", renew=True)
+
+    def test_renewal_publication_rejects_producer_log_mutation(self):
+        self.assert_producer_payload_mutation_is_rejected("log", renew=True)
+
+    def assert_shared_rust_fallback(self, fault=None, *, missing_stamp=False):
+        self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+        cmake = self.source / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() +
+            "add_custom_target(overlap DEPENDS behavior)\nadd_test(NAME selected COMMAND behavior 17)\n")
+        producer = self.prepare()
+        self.execute(junit=self.campaign.directory / "warm.xml")
+        record = json.loads(producer.read_text())
+        proof = record["scoped_preparation"]
+        baseline, old_pending = build_evidence.preparation_paths(self.build, ["behavior"])
+        original_owner = baseline.read_bytes()
+        (self.campaign.directory / "prior-baseline.json").write_bytes(original_owner)
+        archive = next(Path(name) for name in proof["outputs"]
+                       if Path(name).name in {"libfilm_juicer_plugin.a", "film_juicer_plugin.lib"})
+        stamp = self.build / "cargo-build.stamp"
+        if missing_stamp:
+            stamp.unlink()
+        retained = (archive,) if missing_stamp else (archive, stamp)
+        preserved = {str(path): (digest(path), path.stat().st_mtime_ns) for path in retained}
+        binary = self.build / ("behavior.exe" if os.name == "nt" else "behavior")
+        native = self.source / "native.cpp"
+        previous_time = native.stat()
+        native.write_bytes(native.read_bytes().replace(b"return 1", b"return 8"))
+        os.utime(native, ns=(previous_time.st_atime_ns, previous_time.st_mtime_ns))
+        selected, pending = build_evidence.preparation_paths(self.build, ["overlap"])
+        self.assertFalse(selected.exists())
+        self.assertFalse(pending.exists())
+        run, admit = self.campaign.run, build_evidence._admit_missing_scope
+        admissions, builds = [], []
+
+        def observe_admission(*args, **kwargs):
+            result = admit(*args, **kwargs)
+            self.assertIsNone(result)  # The native input changed; whole-scope adoption is invalid.
+            admissions.append(result)
+            return result
+
+        def mutate(stage, command, **kwargs):
+            result = run(stage, command, **kwargs)
+            if "--build" in command:
+                self.assertEqual(preserved, {str(path): (digest(path), path.stat().st_mtime_ns) for path in retained})
+                self.assertTrue(stamp.is_file())
+                self.assertFalse(baseline.exists())  # This writer legitimately superseded the native owner.
+                witness = subprocess.check_output([str(binary), "17"], text=True, timeout=10).strip()
+                self.assertEqual(witness, "value=17")
+                builds.append(str(result))
+                payload = None
+                if fault in {"archive", "stamp"}:
+                    payload = archive if fault == "archive" else stamp
+                    previous = payload.stat()
+                    payload.write_bytes(payload.read_bytes() + b"mutated shared output")
+                    os.utime(payload, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+                elif fault == "process":
+                    payload = Path(record["process_tree"]["receipt"])
+                    build_evidence.write_json(payload, {})
+                elif fault == "log":
+                    payload = self.root / record["output"]
+                    payload.write_bytes(payload.read_bytes() + b"mutated shared producer log\n")
+                elif fault == "receipt":
+                    payload = producer
+                    build_evidence.write_json(payload, {**record, "seconds": record["seconds"] + 1})
+                elif fault == "owner":
+                    payload = baseline
+                    baseline.write_bytes(original_owner)
+                build_evidence.write_json(self.campaign.directory / "shared-fallback.json", {
+                    "producer": str(producer), "original_owner": str(baseline), "build": str(result),
+                    "preserved": preserved, "witness": witness, "fault": fault, "missing_stamp": missing_stamp,
+                    "payload": str(payload) if payload else None, "payload_sha256": digest(payload) if payload else None})
+            return result
+
+        with patch.object(build_evidence, "_admit_missing_scope", side_effect=observe_admission), patch.object(self.campaign, "run", side_effect=mutate):
+            if fault:
+                message = {"archive": "shared Rust artifact bytes changed", "stamp": "shared Rust artifact bytes changed", "process": "command evidence changed",
+                           "log": "command evidence changed", "receipt": "shared Rust preparation receipt changed",
+                           "owner": "shared Rust preparation owner changed"}[fault]
+                with self.assertRaisesRegex(ValueError, message):
+                    self.prepare(targets=["overlap"])
+            else:
+                self.prepare(targets=["overlap"])
+        self.assertEqual(admissions, [None])
+        self.assertEqual(len(builds), 1)
+        self.assertFalse(old_pending.exists())
+        if fault:
+            self.assertFalse(selected.exists())
+            self.assertTrue(pending.exists())
+            self.assertEqual(self.campaign.attempts("prepare")[-1]["status"], "failed")
+            return
+        current = json.loads(self.prepared.read_text())
+        self.assertEqual(current["preparation_admission"]["artifact_owners"], {})
+        self.assertEqual(current["preparation_admission"]["archive_owners"], {str(producer): digest(producer)})
+        self.assertEqual(current["scoped_preparation"]["rust_invalidated_packages"], [])
+        self.assertTrue(current["scoped_preparation"]["invalidated"])
+        self.assertFalse(baseline.exists())
+        self.assertFalse(pending.exists())
+        with OutputLease(self.root, self.build):
+            build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
+        self.execute(tests=["selected"], junit=self.campaign.directory / "selected.xml")
+
+    def test_shared_rust_fallback_rejects_archive_mutation_during_build(self):
+        self.assert_shared_rust_fallback("archive")
+
+    def test_shared_rust_fallback_rejects_stamp_mutation_during_build(self):
+        self.assert_shared_rust_fallback("stamp")
+
+    def test_shared_rust_fallback_rejects_producer_process_mutation(self):
+        self.assert_shared_rust_fallback("process")
+
+    def test_shared_rust_fallback_rejects_producer_log_mutation(self):
+        self.assert_shared_rust_fallback("log")
+
+    def test_shared_rust_fallback_rejects_producer_receipt_mutation(self):
+        self.assert_shared_rust_fallback("receipt")
+
+    def test_shared_rust_fallback_rejects_producer_owner_mutation(self):
+        self.assert_shared_rust_fallback("owner")
+
+    def test_shared_rust_fallback_preserves_archive_and_executes_new_native_behavior(self):
+        self.assert_shared_rust_fallback()
+
+    def test_shared_rust_fallback_preserves_archive_with_missing_stamp(self):
+        self.assert_shared_rust_fallback(missing_stamp=True)
+
+    def assert_fresh_scope_entry(self, *, rust):
+        cmake = self.source / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() +
+            "add_library(unrelated OBJECT native.cpp)\n" + "".join(
+                f"add_custom_target(scope_{i} DEPENDS behavior)\n"
+                f"add_test(NAME selected_{i} COMMAND behavior 10)\n" for i in range(3)))
+        if rust:
+            self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+        warm = self.prepare(targets=["behavior", "unrelated"])
+        self.execute()
+        warm_baseline, _ = build_evidence.preparation_paths(self.build, ["behavior", "unrelated"])
+        warm_owner = warm_baseline.read_bytes()
+        proof = json.loads(warm.read_text())["scoped_preparation"]
+        artifacts = {name: (digest(Path(name)), Path(name).stat().st_mtime_ns) for name in proof["outputs"]}
+        self.assertEqual(set(proof["output_identities"]), set(artifacts))
+        for i in range(3):
+            targets = [f"scope_{i}"]
+            baseline, pending = build_evidence.preparation_paths(self.build, targets)
+            self.assertFalse(baseline.exists())
+            self.assertFalse(pending.exists())
+            start = len(self.campaign.attempts("prepare"))
+            self.prepare(targets=targets)
+            record = json.loads(self.prepared.read_text())
+            selected = record["scoped_preparation"]
+            self.assertTrue(record["preparation_admission"]["artifact_owners"])
+            self.assertEqual(selected["targets"], targets)
+            current = json.loads(baseline.read_text())
+            self.assertEqual(current.pop("producer_sha256"), digest(self.prepared))
+            self.assertEqual(current, selected)
+            self.assertFalse(pending.exists())
+            self.assertEqual(selected["invalidated"], [])
+            self.assertEqual(selected["rust_invalidated_packages"], [])
+            attempts = self.campaign.attempts("prepare")[start:]
+            self.assertEqual(len(attempts), 1)
+            self.assertIn("--build", attempts[0]["identity"]["command"])
+            output = (self.root / attempts[0]["output"]).read_text()
+            self.assertIn("no work to do", output)
+            self.assertEqual(artifacts, {name: (digest(Path(name)), Path(name).stat().st_mtime_ns) for name in artifacts})
+            self.assertEqual(warm_baseline.read_bytes(), warm_owner)
+            with OutputLease(self.root, self.build):
+                build_evidence.check_scoped_preparation(self.campaign, self.build, warm)
+                build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
+            self.execute(tests=[f"selected_{i}"], junit=self.campaign.directory / f"selected-{i}.xml")
+
+    def test_new_native_scopes_preserve_fresh_broader_outputs_and_execute_tests(self):
+        self.assert_fresh_scope_entry(rust=False)
+
+    def test_new_rust_scopes_preserve_fresh_archive_stamp_and_execute_tests(self):
+        self.assert_fresh_scope_entry(rust=True)
+
+    def test_missing_scope_admission_rejects_changed_or_incomplete_owner_facts(self):
+        cmake = self.source / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
+        self.prepare()
+        baseline, pending = build_evidence.preparation_paths(self.build, ["behavior"])
+        selected, _ = build_evidence.preparation_paths(self.build, ["overlap"])
+        record = json.loads(self.prepared.read_text())
+        proof = record["scoped_preparation"]
+        process = Path(record["process_tree"]["receipt"])
+        log = self.root / record["output"]
+        binary = self.build / ("behavior.exe" if os.name == "nt" else "behavior")
+        obj = next(Path(name) for name in proof["outputs"] if name.endswith((".o", ".obj")))
+        paths = [baseline, self.prepared, process, log, binary, obj,
+                 self.source / "native.cpp", self.build / "generated/binding.h",
+                 self.build / "compile_commands.json"]
+        originals = {p: (p.read_bytes(), p.stat()) for p in paths}
+
+        def admit(environment=None):
+            return build_evidence._admit_missing_scope(self.campaign, self.source, self.build,
+                selected, ["overlap"], self.inputs(), self.args, dict(os.environ) if environment is None else environment)
+
+        with OutputLease(self.root, self.build):
+            self.assertIsNotNone(admit())
+            for fault in ("legacy", "partial", "foreign", "arguments", "proof", "raw_receipt", "raw_timing", "conflict",
+                          "process", "log", "pending", "object", "missing_object", "executable",
+                          "restored_source", "generated", "include_order", "membership", "environment"):
+                with self.subTest(fault=fault):
+                    try:
+                        changed = json.loads(json.dumps(proof))
+                        if fault in {"legacy", "partial", "foreign", "arguments", "proof"}:
+                            if fault == "legacy":
+                                changed.pop("output_identities")
+                            elif fault == "partial":
+                                changed["output_identities"].pop(str(binary))
+                            elif fault == "foreign":
+                                changed["source"] = str(self.root)
+                            elif fault == "arguments":
+                                changed["configure_args"].append("-DOTHER_ABI=1")
+                            else:
+                                changed["producer"] = "superseded"
+                            build_evidence.write_json(baseline, changed)
+                        elif fault in {"raw_receipt", "raw_timing"}:
+                            modified = json.loads(self.prepared.read_text())
+                            if fault == "raw_receipt":
+                                name = next(iter(modified["identity"]["inputs"]))
+                                modified["identity"]["inputs"][name] = "mutated raw input receipt"
+                            else:
+                                modified["seconds"] += 1
+                            build_evidence.write_json(self.prepared, modified)
+                        elif fault == "conflict":
+                            conflict, _ = build_evidence.preparation_paths(self.build, ["behavior", "overlap"])
+                            changed["targets"] = ["behavior", "overlap"]
+                            build_evidence.write_json(conflict, {**changed, "producer_sha256": digest(self.prepared)})
+                        elif fault == "process":
+                            build_evidence.write_json(process, {"drained": False})
+                        elif fault == "pending":
+                            pending.write_text("unfinished writer")
+                        elif fault == "missing_object":
+                            obj.unlink()
+                        elif fault == "membership":
+                            (self.source / "new-shadow.h").write_text("// new namespace member\n")
+                        elif fault == "environment":
+                            self.assertIsNone(admit({**os.environ, "JUICER_SCOPE_SENTINEL": "changed"}))
+                            continue
+                        else:
+                            path = {"log": log, "object": obj, "executable": binary,
+                                    "restored_source": self.source / "native.cpp",
+                                    "generated": self.build / "generated/binding.h",
+                                    "include_order": self.build / "compile_commands.json"}[fault]
+                            content, stamp = originals[path]
+                            if fault == "restored_source":
+                                path.write_bytes(content.replace(b"return 1", b"return 8"))
+                            elif fault == "generated":
+                                path.write_bytes(content.replace(b"BINDING 4", b"BINDING 8"))
+                            else:
+                                path.write_bytes(content[:-1] + bytes([content[-1] ^ 1]))
+                            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                        try:
+                            self.assertIsNone(admit())
+                        except (ValueError, subprocess.CalledProcessError):
+                            pass  # Rejection of corrupt configuration is conservative too.
+                    finally:
+                        for path, (content, stamp) in originals.items():
+                            path.write_bytes(content)
+                            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                        pending.unlink(missing_ok=True)
+                        (self.source / "new-shadow.h").unlink(missing_ok=True)
+                        conflict, _ = build_evidence.preparation_paths(self.build, ["behavior", "overlap"])
+                        conflict.unlink(missing_ok=True)
+            self.assertIsNotNone(admit())
+        self.execute()
+
+    def test_new_scope_rejects_artifact_mutation_during_incremental_preparation(self):
+        cmake = self.source / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
+        self.prepare()
+        baseline, _ = build_evidence.preparation_paths(self.build, ["behavior"])
+        original = baseline.read_bytes()
+        run = self.campaign.run
+
+        def mutate(stage, command, **kwargs):
+            receipt = run(stage, command, **kwargs)
+            if "--build" in command:
+                proof = json.loads(original)
+                obj = next(Path(name) for name in proof["outputs"] if name.endswith((".o", ".obj")))
+                content = obj.read_bytes()
+                obj.write_bytes(content[:-1] + bytes([content[-1] ^ 1]))
+            return receipt
+
+        with patch.object(self.campaign, "run", side_effect=mutate), self.assertRaisesRegex(ValueError, "admitted artifacts changed"):
+            self.prepare(targets=["overlap"])
+        selected, pending = build_evidence.preparation_paths(self.build, ["overlap"])
+        self.assertFalse(selected.exists())
+        self.assertTrue(pending.exists())
+        self.assertEqual(baseline.read_bytes(), original)
+
+    def test_new_scope_rejects_mutated_rust_archive_and_stamp(self):
+        self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+        cmake = self.source / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
+        self.prepare()
+        proof = json.loads(self.prepared.read_text())["scoped_preparation"]
+        artifacts = [Path(name) for name in proof["outputs"]
+                     if Path(name).name in {"cargo-build.stamp", "libfilm_juicer_plugin.a", "film_juicer_plugin.lib"}]
+        self.assertEqual(len(artifacts), 2)
+        selected, _ = build_evidence.preparation_paths(self.build, ["overlap"])
+        for artifact in artifacts:
+            with self.subTest(artifact=artifact.name):
+                content, stamp = artifact.read_bytes(), artifact.stat()
+                try:
+                    artifact.write_bytes(content + b"mutated output")
+                    os.utime(artifact, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                    with OutputLease(self.root, self.build), self.assertRaisesRegex(ValueError, "artifact bytes changed"):
+                        build_evidence._admit_missing_scope(self.campaign, self.source, self.build,
+                            selected, ["overlap"], self.inputs(), self.args, dict(os.environ))
+                finally:
+                    artifact.write_bytes(content)
+                    os.utime(artifact, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.execute()
+        archive = next(path for path in artifacts if path.name != "cargo-build.stamp")
+        archive.write_bytes(archive.read_bytes() + b"mutated archive")
+        with self.assertRaisesRegex(ValueError, "artifact bytes changed"):
+            self.prepare(targets=["overlap"])
+        self.assertFalse(selected.exists())
+        self.assertTrue(selected.with_suffix(".pending.json").exists())
+
+    def test_new_scope_rejects_producer_receipt_mutation_during_admission(self):
+        cmake = self.source / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
+        producer = self.prepare()
+        run = self.campaign.run
+
+        def mutate(stage, command, **kwargs):
+            result = run(stage, command, **kwargs)
+            if "--build" in command:
+                record = json.loads(producer.read_text())
+                record["seconds"] += 1
+                build_evidence.write_json(producer, record)
+            return result
+
+        with patch.object(self.campaign, "run", side_effect=mutate), self.assertRaisesRegex(ValueError, "admitted preparation command receipt changed"):
+            self.prepare(targets=["overlap"])
+        selected, pending = build_evidence.preparation_paths(self.build, ["overlap"])
+        self.assertFalse(selected.exists())
+        self.assertTrue(pending.exists())
+
+    def test_missing_scope_checks_cmake_in_supplied_environment(self):
+        import shutil
+        import shlex
+
+        cmake = self.source / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
+        real_cmake = shutil.which("cmake")
+        self.assertIsNotNone(real_cmake)
+        directories = [self.root / name for name in ("supplied-tools", "agent-tools")]
+        for directory in directories:
+            directory.mkdir()
+        first = directories[0] / ("cmake.exe" if os.name == "nt" else "cmake")
+        second = directories[1] / first.name
+        if os.name == "nt":
+            wrapper = self.root / "cmake-wrapper.c"
+            wrapper.write_text('#include <process.h>\nint main(int argc, char **argv) { (void)argc; '
+                'return (int)_spawnv(_P_WAIT, ' + json.dumps(real_cmake) + ', (const char *const *)argv); }\n')
+            with OutputLease(self.root, self.build):
+                self.campaign.run("prepare", ["clang-cl.exe", "/nologo", "/TC", "/std:c11", "-fuse-ld=lld",
+                    str(wrapper), "/Fe" + str(first), "/Fo" + str(self.root / "cmake-wrapper.obj")],
+                    inputs=[wrapper.relative_to(self.root).as_posix()], timeout=30,
+                    vctip_executable=build_evidence.windows_vctip(os.environ))
+        else:
+            first.write_text("#!/bin/sh\nexec " + shlex.quote(real_cmake) + ' "$@"\n')
+            first.chmod(0o755)
+        shutil.copyfile(first, second)
+        second.chmod(first.stat().st_mode)
+        original = first.read_bytes()
+        base_path = os.environ["PATH"]
+        environment = {**os.environ, "PATH": str(directories[0]) + os.pathsep + base_path}
+        selected, _ = build_evidence.preparation_paths(self.build, ["overlap"])
+        with patch.dict(os.environ, {"PATH": str(directories[1]) + os.pathsep + base_path}):
+            self.prepare(env=environment)
+            with OutputLease(self.root, self.build):
+                self.assertIsNotNone(build_evidence._admit_missing_scope(self.campaign, self.source, self.build,
+                    selected, ["overlap"], self.inputs(), self.args, environment))
+                try:
+                    first.write_bytes(original + b"\n")
+                    self.assertIsNone(build_evidence._admit_missing_scope(self.campaign, self.source, self.build,
+                        selected, ["overlap"], self.inputs(), self.args, environment))
+                finally:
+                    first.write_bytes(original)
+            self.execute(env=environment)
 
     def test_complete_proof_preserves_unrelated_objects_for_selected_target(self):
         self.prepare()
