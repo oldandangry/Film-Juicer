@@ -7,7 +7,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import time
 
 from execution import OutputLease, digest, snapshot, tool_snapshot, write_json
 from build_dependencies import (
@@ -405,6 +407,9 @@ def check_preparation_owner(build, prepared, *, resolve=Path):
         current = json.loads(baseline.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise ValueError("latest completed preparation is unavailable; repeat preparation") from error
+    producer_sha256 = current.pop("producer_sha256", None)
+    if producer_sha256 is not None and digest(prepared) != producer_sha256:
+        raise ValueError("scoped preparation command receipt changed")
     if not proof.get("producer") or resolve(proof["producer"]).resolve() != prepared.resolve() or current != proof:
         raise ValueError("scoped pass does not own the latest completed preparation")
     if resolve(proof["build"]).resolve() != build.resolve():
@@ -461,7 +466,7 @@ def check_preparation_inputs(build, proof, *, resolve=Path):
             raise ValueError("preparation include membership changed")
 
 
-def _check_preparation_result(campaign, build, prepared, env=None, *, compilation=None, fresh_context=None):
+def _check_preparation_command(campaign, build, prepared):
     record = json.loads(Path(prepared).read_text(encoding="utf-8"))
     proof = record.get("scoped_preparation")
     if not proof or proof.get("protocol") != SCOPED_PROTOCOL:
@@ -469,13 +474,20 @@ def _check_preparation_result(campaign, build, prepared, env=None, *, compilatio
     if record.get("status") != "passed" or record.get("returncode") != 0 or not record.get("process_tree", {}).get("drained"):
         raise ValueError("scoped preparation did not pass with proved process completion")
     process = json.loads(Path(record["process_tree"]["receipt"]).read_text(encoding="utf-8"))
-    if any(record["process_tree"].get(key) != value for key, value in process.items()) or digest(campaign.root / record["output"]) != record["output_sha256"]:
+    expected_process = {key: value for key, value in record["process_tree"].items() if key != "receipt"}
+    if process != expected_process or digest(campaign.root / record["output"]) != record["output_sha256"]:
         raise ValueError("scoped preparation command evidence changed")
     if proof["build"] != str(build.resolve()):
         raise ValueError("scoped preparation belongs to another build tree")
     expected_command = ["cmake", "--build", str(build.resolve()), "--parallel", "2", "--target", *proof["targets"]]
     if record["identity"]["command"] != expected_command:
         raise ValueError("scoped preparation command/targets changed")
+    return record
+
+
+def _check_preparation_result(campaign, build, prepared, env=None, *, compilation=None, fresh_context=None):
+    record = _check_preparation_command(campaign, build, prepared)
+    proof = record["scoped_preparation"]
     try:
         if fresh_context is None:
             graph = NinjaGraph(build, proof["targets"], env)
@@ -578,6 +590,73 @@ def rust_changes(current, previous):
     return changed
 
 
+def _admit_missing_scope(campaign, source, build, baseline, targets, inputs, configure_args, environment):
+    """A completed overlapping producer can prove artifacts, never test success."""
+    owners = []
+    for path in sorted(build.glob("verification-build-*.json")):
+        if path == baseline or path == baseline.with_suffix(".pending.json"):
+            continue
+        if path.name.endswith(".pending.json"):
+            return None  # Pending writers remain outside missing-scope admission.
+        try:
+            proof = json.loads(path.read_text(encoding="utf-8"))
+            owners.append((path, proof, proof.pop("producer_sha256", None)))
+        except (OSError, ValueError):
+            return None
+    if not owners or not any(owner.get("output_identities") and checksum for _, owner, checksum in owners):
+        return None  # Older proofs did not bind output bytes.
+    graph = NinjaGraph(build, targets, environment)
+    before = scoped_context(campaign.root, source, build, graph, inputs, environment)
+    admitted = {}
+    output_identities = None
+    for path, proof, producer_sha256 in owners:
+        if not graph.outputs & set(proof.get("outputs", ())):
+            continue
+        if (proof.get("protocol") != SCOPED_PROTOCOL or proof.get("source") != str(source)
+                or proof.get("build") != str(build) or proof.get("configure_args") != list(configure_args)
+                or not producer_sha256 or not graph.outputs <= set(proof.get("output_identities", ()))
+                or path != preparation_paths(build, proof.get("targets", ()))[0]):
+            return None
+        selected_outputs = {name: proof["output_identities"][name] for name in graph.outputs}
+        if output_identities is not None and output_identities != selected_outputs:
+            return None
+        output_identities = selected_outputs
+        try:
+            producer = Path(proof["producer"])
+            if check_preparation_owner(build, producer)["scoped_preparation"] != proof:
+                return None
+            # The same output closure needs only the selected scope's discovery.
+            # A broader closure must rediscover all of its own consumed facts.
+            if set(proof["outputs"]) == graph.outputs and proof["context"] == before:
+                context = before
+            else:
+                owner_graph = NinjaGraph(build, proof["targets"], environment)
+                if not graph.outputs <= owner_graph.outputs or any(
+                        graph.inputs[name] != owner_graph.inputs.get(name) for name in graph.outputs):
+                    return None
+                context = scoped_context(campaign.root, source, build, owner_graph, proof["inputs"], environment)
+            record = _check_preparation_result(campaign, build, producer, environment, fresh_context=context)
+            executable = shutil.which(record["identity"]["command"][0], path=environment.get("PATH", ""))
+            if executable is None or digest(Path(executable)) != record["identity"]["executable_sha256"]:
+                return None
+            if (snapshot(campaign.root, list(record["identity"]["inputs"])) != record["identity"]["inputs"]
+                    or tool_snapshot(list(record["identity"]["tools"])) != record["identity"]["tools"]):
+                return None
+            if any(before[name] != context[name] for name in ("configuration", "environment_sha256", "rust_configuration")):
+                return None
+            if any(any(context[name].get(key) != value for key, value in before[name].items())
+                   for name in ("files", "include_membership", "rust_timestamps")):
+                return None
+            if not set(before["commands"].splitlines()) <= set(context["commands"].splitlines()):
+                return None
+        except (OSError, ValueError, KeyError):
+            return None
+        if file_identities([Path(name) for name in proof["outputs"]]) != proof["output_identities"]:
+            raise ValueError("completed preparation artifact bytes changed; refusing scope adoption")
+        admitted[str(producer)] = producer_sha256
+    return (graph, before, admitted, output_identities) if admitted else None
+
+
 def _prepare_build_owned(campaign, stage, *, source, build, inputs, timeout,
                          configure_args=(), targets=(), env=None, tools=(), resume=None, checkpoint=False):
     if not targets or resume is not None:
@@ -601,10 +680,26 @@ def _prepare_build_owned(campaign, stage, *, source, build, inputs, timeout,
             candidate = json.loads(baseline.read_text(encoding="utf-8"))
             if candidate.get("protocol") == SCOPED_PROTOCOL:
                 old = candidate
+        previous_outputs = {}
+        unbound = bool(old and (not old.get("producer_sha256")
+                               or not old.get("output_identities")
+                               or set(old["output_identities"]) != set(old["outputs"])))
+        if old and not interrupted and not unbound:
+            check_preparation_owner(build, Path(old["producer"]))
+            _check_preparation_command(campaign, build, old["producer"])
+            previous_outputs = file_identities([Path(name) for name in old["outputs"]])
+            if any(old["output_identities"].get(name) != identity for name, identity in previous_outputs.items()):
+                raise ValueError("completed preparation artifact bytes changed; refusing renewal")
         build.mkdir(parents=True, exist_ok=True)
         write_json(pending_path, {"protocol": SCOPED_PROTOCOL, "targets": targets})
         cache = build / "CMakeCache.txt"
-        configure = not cache.is_file() or old is None or old.get("configure_args") != list(configure_args)
+        admission_start = time.perf_counter()
+        admission = (_admit_missing_scope(campaign, source, build, baseline, targets, inputs, configure_args, environment)
+                     if old is None and not interrupted and cache.is_file() else None)
+        admission_seconds = time.perf_counter() - admission_start
+        configure = not cache.is_file() or (old is None and admission is None)
+        if old and old.get("configure_args") != list(configure_args):
+            configure = True
         if cache.is_file():
             inventory = preparation_inventory(source, build, environment)
             if old and old["context"]["configuration"] != inventory:
@@ -615,18 +710,26 @@ def _prepare_build_owned(campaign, stage, *, source, build, inputs, timeout,
                        else ["cmake", "-S", str(source), "-B", str(build), *configure_args])
             build.mkdir(parents=True, exist_ok=True)
             configured = configure_with_evidence(campaign, stage, command, source, build, inputs, tools, environment, timeout)
-        graph = NinjaGraph(build, targets, environment)
-        before = scoped_context(campaign.root, source, build, graph, inputs, environment)
+        if admission:
+            graph, before, _, admitted_outputs = admission
+        else:
+            graph = NinjaGraph(build, targets, environment)
+            before = scoped_context(campaign.root, source, build, graph, inputs, environment)
         changed = set()
         if old:
             previous, actual = old["context"]["files"], before["files"]
             changed = {name for name in previous.keys() | actual.keys() if previous.get(name) != actual.get(name)}
-        broad = old is None or interrupted or any(old["context"].get(name) != before.get(name) for name in ("configuration", "include_membership", "commands", "environment_sha256", "rust_configuration"))
+        broad = interrupted or unbound or (old is None and admission is None)
+        if old and any(old["context"].get(name) != before.get(name) for name in ("configuration", "include_membership", "commands", "environment_sha256", "rust_configuration")):
+            broad = True
         rust_files = {name: identity for name, identity in before["files"].items() if name.endswith(".rs") and Path(name).is_relative_to(source / "rust")}
+        if unbound:
+            changed.update(rust_files)
         current_rust = rust_context(source, build, before)
         if old:
             changed.update(rust_changes(current_rust, rust_context(source, build, old["context"])))
-        if old is None or interrupted:
+        archive_owners = []
+        if (old is None or interrupted) and admission is None:
             archive_names = {name for name in graph.outputs if Path(name).name in {"libfilm_juicer_plugin.a", "film_juicer_plugin.lib"}}
             shared = []
             for owner in build.glob("verification-build-*.json"):
@@ -638,11 +741,24 @@ def _prepare_build_owned(campaign, stage, *, source, build, inputs, timeout,
                     continue
                 owner_pending = owner.with_suffix(".pending.json")
                 if proof.get("protocol") == SCOPED_PROTOCOL and proof.get("source") == str(source) and proof.get("build") == str(build) and archive_names & set(proof["outputs"]) and not owner_pending.exists():
-                    shared.append(rust_context(source, build, proof["context"]))
+                    archives = archive_names & set(proof["outputs"])
+                    retained = archives | {name for name in proof["outputs"]
+                                           if Path(name).name == "cargo-build.stamp" and Path(name).is_file()}
+                    if not proof.get("producer_sha256") or not retained <= set(proof.get("output_identities", ())):
+                        continue
+                    check_preparation_owner(build, Path(proof["producer"]))
+                    _check_preparation_command(campaign, build, proof["producer"])
+                    identities = {name: proof["output_identities"][name] for name in retained}
+                    if file_identities([Path(name) for name in retained]) != identities:
+                        raise ValueError("completed preparation artifact bytes changed; refusing archive reuse")
+                    shared.append((owner, proof, identities))
             # All valid overlapping owners must describe the same archive inputs.
             # No owner (or an interrupted write) is unknown, even for clean HEAD.
-            if not interrupted and shared and all(value == shared[0] for value in shared):
-                changed.update(rust_changes(current_rust, shared[0]))
+            contexts = [rust_context(source, build, proof["context"]) for _, proof, _ in shared]
+            if not interrupted and contexts and all(value == contexts[0] for value in contexts):
+                changed.update(rust_changes(current_rust, contexts[0]))
+                if current_rust == contexts[0]:
+                    archive_owners = shared
             elif any(Path(name).is_file() for name in archive_names):
                 changed.update(rust_files)
         mutable = {name for name in graph.outputs if Path(name).suffix.lower() not in {".a", ".lib"} and Path(name).name != "cargo-build.stamp"}
@@ -650,6 +766,8 @@ def _prepare_build_owned(campaign, stage, *, source, build, inputs, timeout,
         potential = set(affected) | {name for name in graph.outputs if not Path(name).is_file()}
         if any(name.endswith(".rs") for name in changed):
             potential.update(graph.affected(changed))
+        retained_names = previous_outputs.keys() & graph.outputs - graph.affected(potential | changed)
+        retained_outputs = {name: previous_outputs[name] for name in retained_names}
         invalidate_preparation_owners(build, baseline, potential)
         rust_invalidated = invalidate_rust(campaign, stage, source, build, changed, old, environment, timeout)
         invalidated = graph.invalidate(affected)
@@ -669,18 +787,57 @@ def _prepare_build_owned(campaign, stage, *, source, build, inputs, timeout,
             if attempt or any(before[name] != after[name] for name in before if name != "files"):
                 raise ValueError("unresolved dependency/configuration change during preparation")
             discovered = set(after["files"]) ^ before["files"].keys()
-            invalidated += fresh_graph.invalidate(fresh_graph.affected(discovered) & mutable)
+            discovered_outputs = fresh_graph.affected(discovered)
+            retained_outputs = {name: identity for name, identity in retained_outputs.items() if name not in discovered_outputs}
+            invalidated += fresh_graph.invalidate(discovered_outputs & mutable)
             before, graph = after, fresh_graph
+        output_identities = file_identities([Path(name) for name in fresh_graph.outputs])
+        if any(output_identities.get(name) != identity for name, identity in retained_outputs.items()):
+            raise ValueError("retained artifact bytes changed during preparation")
+        if retained_outputs:
+            if (digest(Path(old["producer"])) != old["producer_sha256"]
+                    or json.loads(baseline.read_text(encoding="utf-8")) != old):
+                raise ValueError("retained preparation owner changed during renewal")
+            _check_preparation_command(campaign, build, old["producer"])
+        if admission and output_identities != admitted_outputs:
+            raise ValueError("admitted artifacts changed during missing-scope preparation")
+        if admission:
+            for producer, checksum in admission[2].items():
+                if digest(Path(producer)) != checksum:
+                    raise ValueError("admitted preparation command receipt changed")
+                check_preparation_owner(build, producer)
+                _check_preparation_command(campaign, build, producer)
+        for owner, previous, identities in archive_owners:
+            if any(output_identities.get(name) != identity for name, identity in identities.items()):
+                raise ValueError("retained shared Rust artifact bytes changed during preparation")
+            if digest(Path(previous["producer"])) != previous["producer_sha256"]:
+                raise ValueError("retained shared Rust preparation receipt changed")
+            owner_pending = owner.with_suffix(".pending.json")
+            if owner_pending.exists() or owner_pending.is_symlink():
+                raise ValueError("retained shared Rust preparation owner changed")
+            # This writer may supersede the native owner while retaining its archive.
+            if potential & set(previous["outputs"]):
+                if owner.exists() or owner.is_symlink():
+                    raise ValueError("retained shared Rust preparation owner changed")
+            elif not owner.is_file() or json.loads(owner.read_text(encoding="utf-8")) != previous:
+                raise ValueError("retained shared Rust preparation owner changed")
+            _check_preparation_command(campaign, build, previous["producer"])
         proof = {"protocol": SCOPED_PROTOCOL, "producer": str(built.resolve()), "source": str(source), "build": str(build),
                  "targets": targets, "inputs": inputs, "configure_args": list(configure_args), "context": after,
+                 "output_identities": output_identities,
                  "outputs": sorted(fresh_graph.outputs), "invalidated": invalidated, "rust_invalidated_packages": rust_invalidated}
         record = json.loads(built.read_text(encoding="utf-8"))
+        record["preparation_admission"] = {"scope_missing": old is None, "artifact_owners": admission[2] if admission else {},
+                                           "archive_owners": {proof["producer"]: proof["producer_sha256"] for _, proof, _ in archive_owners},
+                                           "configured": configured is not None, "seconds": admission_seconds}
         record["scoped_preparation"] = proof
         write_json(built, record)
         # The writer just established this post-build context. Only its owned
         # result was written since; independent readers always rediscover it.
         _check_preparation_result(campaign, build, built, environment, fresh_context=after)
-        write_json(baseline, proof)
+        # Receipt provenance stays outside the stable preparation facts consumed
+        # by checkpoint identity; the current owner still binds the exact bytes.
+        write_json(baseline, {**proof, "producer_sha256": digest(built)})
         pending_path.unlink()
         return configured, built
 
