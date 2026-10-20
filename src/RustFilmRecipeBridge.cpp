@@ -660,7 +660,18 @@ namespace JuicerAssets {
     }
     namespace {
         FjDiffusionParams bind_optics_diffusion(const Spektrafilm::DiffusionFilterAuthoredControls& v) {
-            return {v.active ? 1u : 0u, static_cast<std::uint32_t>(v.family), v.strength, v.spatialScale, v.haloWarmth, v.coreIntensity, v.coreSize, v.haloIntensity, v.haloSize, v.bloomIntensity, v.bloomSize};
+            return {
+                .active = v.active ? 1u : 0u,
+                .family = static_cast<std::uint32_t>(v.family),
+                .strength = v.strength,
+                .spatial_scale = v.spatialScale,
+                .halo_warmth = v.haloWarmth,
+                .core_intensity = v.coreIntensity,
+                .core_size = v.coreSize,
+                .halo_intensity = v.haloIntensity,
+                .halo_size = v.haloSize,
+                .bloom_intensity = v.bloomIntensity,
+                .bloom_size = v.bloomSize};
         }
         bool optics_failure_valid(FjStatus status, const FjSpatialOpticsFailure& failure) {
             if (status.api != FJ_API_NONE || status.native_code != 0)

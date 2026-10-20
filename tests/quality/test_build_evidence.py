@@ -134,17 +134,7 @@ class BuildEvidenceTests(unittest.TestCase):
             "middle.h": '#include "detail.h"\n',
             "detail.h": '#include "binding.h"\ninline int header(){return 2+BINDING;}\n',
             "binding.h.in": "#define BINDING 4\n",
-            "Cargo.toml": '[workspace]\nmembers=["rust/film-juicer-core","rust/film-juicer-plugin"]\nresolver="3"\n',
-            "rust/film-juicer-core/Cargo.toml": '[package]\nname="film-juicer-core"\nversion="0.1.0"\nedition="2024"\n',
-            "rust/film-juicer-core/src/lib.rs": "pub fn value()->i32{3}\n",
-            "rust/film-juicer-plugin/Cargo.toml": '[package]\nname="film-juicer-plugin"\nversion="0.1.0"\nedition="2024"\n'
-            '[lib]\ncrate-type=["staticlib"]\n[dependencies]\nfilm-juicer-core={path="../film-juicer-core"}\n'
-            "[features]\ntest-support=[]\n",
-            "rust/film-juicer-plugin/src/lib.rs": '#[unsafe(no_mangle)]\npub extern "C" fn rust_value()->i32{film_juicer_core::value()}\n',
             "abi.c": 'extern int rust_value(void);\n_Static_assert(_Generic(&rust_value,int(*)(void):1,default:0),"C11 witness");\n',
-            "rust-toolchain.toml": '[toolchain]\nchannel="1.98.1"\n',
-            "rustfmt.toml": "",
-            "clippy.toml": "",
         }
         (self.source / "cmake").mkdir()
         (self.source / "cmake/JuicerRust.cmake").write_bytes(
@@ -154,16 +144,6 @@ class BuildEvidenceTests(unittest.TestCase):
             path = self.source / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
-        subprocess.run(
-            [
-                "cargo",
-                "generate-lockfile",
-                "--manifest-path",
-                str(self.source / "Cargo.toml"),
-            ],
-            check=True,
-            capture_output=True,
-        )
         self.args = [
             "-G",
             "Ninja",
@@ -183,12 +163,113 @@ class BuildEvidenceTests(unittest.TestCase):
                 "-DCMAKE_CXX_COMPILER=/usr/bin/g++-13",
             ]
 
+    def enable_rust(self):
+        self.assertIn("-DENABLE_RUST=OFF", self.args)
+        self.assertFalse((self.source / "Cargo.toml").exists())
+        # Construct once before authored mutations; preparation must not repair
+        # Rust inputs that a test later edits or deletes.
+        files = {
+            "Cargo.toml": '[workspace]\nmembers=["rust/film-juicer-core","rust/film-juicer-plugin"]\nresolver="3"\n',
+            "rust/film-juicer-core/Cargo.toml": '[package]\nname="film-juicer-core"\nversion="0.1.0"\nedition="2024"\n',
+            "rust/film-juicer-core/src/lib.rs": "pub fn value()->i32{3}\n",
+            "rust/film-juicer-plugin/Cargo.toml": '[package]\nname="film-juicer-plugin"\nversion="0.1.0"\nedition="2024"\n'
+            '[lib]\ncrate-type=["staticlib"]\n[dependencies]\nfilm-juicer-core={path="../film-juicer-core"}\n'
+            "[features]\ntest-support=[]\n",
+            "rust/film-juicer-plugin/src/lib.rs": '#[unsafe(no_mangle)]\npub extern "C" fn rust_value()->i32{film_juicer_core::value()}\n',
+            "rust-toolchain.toml": '[toolchain]\nchannel="1.98.1"\n',
+            "rustfmt.toml": "",
+            "clippy.toml": "",
+        }
+        for name, content in files.items():
+            path = self.source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        subprocess.run(
+            [
+                "cargo",
+                "generate-lockfile",
+                "--manifest-path",
+                str(self.source / "Cargo.toml"),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+
     def inputs(self):
         return [
             path.relative_to(self.root).as_posix()
             for path in self.source.rglob("*")
             if path.is_file()
         ]
+
+    def prepare_restorable_baseline(self):
+        run = self.campaign.run
+
+        def seed_configuration_times(stage, command, **kwargs):
+            result = run(stage, command, **kwargs)
+            if command[0] == "cmake" and "-S" in command:
+                inventory = build_evidence.preparation_inventory(self.source, self.build, dict(os.environ))
+                for name in inventory["regeneration_mtimes"]:
+                    path = Path(name)
+                    if path.is_relative_to(self.root):
+                        stamp = path.stat()
+                        mtime = stamp.st_mtime_ns // 1_000_000_000 * 1_000_000_000
+                        os.utime(path, ns=(stamp.st_atime_ns, mtime))
+                        self.assertEqual(path.stat().st_mtime_ns, mtime)
+            return result
+
+        # Seed representable configuration times before the real producer binds
+        # them, rather than modifying a completed preparation's bound context.
+        with patch.object(self.campaign, "run", side_effect=seed_configuration_times):
+            return self.prepare()
+
+    def snapshot_preparation(self, targets):
+        # Save only this fixture's owned inputs, artifacts and provenance at its
+        # configured path. Each fault still traverses real build publication.
+        producer = self.prepared
+        record = json.loads(producer.read_text())
+        proof = record["scoped_preparation"]
+        paths = {producer, Path(record["process_tree"]["receipt"]), self.root / record["output"]}
+        paths.update(Path(name) for name in proof["outputs"])
+        configuration = proof["context"]["configuration"]
+        paths.update(self.source / name for name in configuration["inputs"])
+        paths.update(Path(name) for name in configuration["tools"] if Path(name).is_relative_to(self.root))
+        paths.update(Path(name) for name in configuration["registrations"])
+        paths.update(Path(name) for name in proof["context"]["files"] if Path(name).is_relative_to(self.root))
+        paths.update(build_evidence.preparation_paths(self.build, proof["targets"]))
+        paths.update(build_evidence.preparation_paths(self.build, targets))
+        self.assertTrue(all(path.is_relative_to(self.root) for path in paths))
+        # Seed saved files with exactly restorable times, including on mounted
+        # filesystems that truncate explicit timestamp updates to whole seconds.
+        # Never alter timestamps that are part of the producer's bound context.
+        bound_times = configuration["regeneration_mtimes"].keys() | proof["context"]["rust_timestamps"].keys()
+        with OutputLease(self.root, self.build):
+            for path in paths:
+                if path.is_file() and str(path) not in bound_times:
+                    stamp = path.stat()
+                    mtime = stamp.st_mtime_ns // 1_000_000_000 * 1_000_000_000
+                    os.utime(path, ns=(stamp.st_atime_ns, mtime))
+                    self.assertEqual(path.stat().st_mtime_ns, mtime)
+            build_evidence.check_scoped_preparation(self.campaign, self.build, producer)
+            return producer, {path: (path.read_bytes(), path.stat()) if path.is_file() else None for path in paths}
+
+    def restore_preparation(self, snapshot):
+        producer, files = snapshot
+        with OutputLease(self.root, self.build):
+            for path, saved in files.items():
+                if saved is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    content, stamp = saved
+                    if not path.is_file() or path.read_bytes() != content:
+                        path.write_bytes(content)
+                    if path.stat().st_mtime_ns != stamp.st_mtime_ns:
+                        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                    self.assertEqual(path.read_bytes(), content, str(path))
+                    self.assertEqual(path.stat().st_mtime_ns, stamp.st_mtime_ns, str(path))
+            self.prepared = producer
+            build_evidence.check_scoped_preparation(self.campaign, self.build, producer)
 
     def prepare(self, **kwargs):
         if "-DENABLE_RUST=ON" in self.args:
@@ -223,7 +304,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.assertIn("100% tests passed", output)
         return receipt
 
-    def test_native_transitive_rust_generated_and_configuration_edits_execute_new_behavior(
+    def test_native_transitive_generated_and_configuration_edits_execute_new_behavior(
         self,
     ):
         self.prepare()
@@ -297,7 +378,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.execute()
 
     def test_restored_timestamp_rust_body_is_observed_through_native_executable(self):
-        self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+        self.enable_rust()
         self.prepare()
         self.execute()
         path = self.source / "rust/film-juicer-core/src/lib.rs"
@@ -338,7 +419,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.execute()
 
     def test_new_scope_restored_clean_rust_uses_shared_archive_inputs(self):
-        self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+        self.enable_rust()
         cmake = self.source / "CMakeLists.txt"
         cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
         self.prepare()
@@ -389,54 +470,6 @@ class BuildEvidenceTests(unittest.TestCase):
         self.assertGreater(len(after), len(before))
         self.assertEqual((self.source / "detail.h").read_bytes(), header)
 
-    def test_identity_reads_reject_symlink_retarget_and_restored_time_content(self):
-        from build_dependencies import file_identities
-
-        first, second, alias = [self.root / name for name in ("first", "second", "alias")]
-        for directory, text in [(first, "first"), (second, "other")]:
-            directory.mkdir()
-            (directory / "input.txt").write_text(text)
-
-        def link_to(target):
-            if os.name == "nt":
-                subprocess.run(["cmd.exe", "/c", "mklink", "/J", str(alias), str(target)], check=True, capture_output=True, timeout=10)
-            else:
-                alias.symlink_to(os.path.relpath(target, alias.parent), target_is_directory=True)
-
-        def unlink():
-            os.rmdir(alias) if os.name == "nt" else alias.unlink()
-
-        link_to(first)
-        self.addCleanup(unlink)
-        path = alias / "input.txt"
-        baseline = file_identities([path])
-        traversal = alias / ".." / "first" / "input.txt"
-        self.assertEqual(file_identities([traversal])[str(traversal)]["resolved"], str((first / "input.txt").resolve()))
-        self.assertEqual(file_identities([self.root / "absent"]), {})
-        if os.name != "nt":
-            leaf = self.root / "leaf.txt"
-            leaf.symlink_to("first/input.txt")
-            self.assertEqual(file_identities([leaf])[str(leaf)]["resolved"], str((first / "input.txt").resolve()))
-            dangling = self.root / "dangling.txt"
-            dangling.symlink_to("absent")
-            self.assertEqual(file_identities([dangling]), {})
-        stamp = path.stat()
-        path.write_text("third")
-        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
-        self.assertNotEqual(file_identities([path]), baseline)
-        original = build_evidence.digest
-        (second / "input.txt").write_text("third")
-
-        def retarget(value):
-            checksum = original(value)
-            unlink()
-            link_to(second)
-            return checksum
-
-        with patch("build_dependencies.digest", side_effect=retarget), self.assertRaisesRegex(ValueError, "input path changed"):
-            file_identities([path])
-        self.assertEqual(file_identities([path])[str(path)]["resolved"], str((second / "input.txt").resolve()))
-
     def test_selected_probe_fixture_change_invalidates_pass_without_cleaning_rust(self):
         path = self.source / "probes/reject.rs"
         path.parent.mkdir()
@@ -450,7 +483,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.execute()
 
     def test_cargo_configuration_change_invalidates_reuse_and_active_packages(self):
-        self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+        self.enable_rust()
         first = self.prepare()
         config = self.source / ".cargo/config.toml"
         config.parent.mkdir()
@@ -486,7 +519,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.assertEqual(header_consumers(self.source, self.build, ["new.h"])[1], ["main.cpp"])
 
     def test_new_scope_cargo_configuration_invalidates_active_packages(self):
-        self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+        self.enable_rust()
         cmake = self.source / "CMakeLists.txt"
         cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
         self.prepare()
@@ -498,7 +531,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.execute()
 
     def test_rust_tool_identity_change_invalidates_active_packages(self):
-        self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+        self.enable_rust()
         self.prepare()
         inventory = build_evidence.preparation_inventory
         def changed_tools(*args):
@@ -513,7 +546,7 @@ class BuildEvidenceTests(unittest.TestCase):
             self.execute()
 
     def test_normal_timestamp_rust_edit_uses_incremental_cargo(self):
-        self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+        self.enable_rust()
         self.prepare()
         path = self.source / "rust/film-juicer-core/src/lib.rs"
         original = path.read_bytes()
@@ -527,7 +560,7 @@ class BuildEvidenceTests(unittest.TestCase):
         self.execute()
 
     def test_unchanged_repeat_reuses_objects_and_archive_without_touching(self):
-        self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+        self.enable_rust()
         self.prepare()
         record = json.loads(self.prepared.read_text())
         paths = [Path(name) for name in record["scoped_preparation"]["outputs"]]
@@ -574,15 +607,15 @@ class BuildEvidenceTests(unittest.TestCase):
         cmake.write_text(cmake.read_text() +
             "add_custom_target(overlap DEPENDS behavior)\nadd_test(NAME selected COMMAND behavior 10)\n")
         if rust:
-            self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+            self.enable_rust()
         producer = self.prepare()
-        self.execute(junit=self.campaign.directory / "warm.xml")
+        binary = self.build / ("behavior.exe" if os.name == "nt" else "behavior")
+        self.assertEqual(subprocess.check_output([str(binary), "10"], text=True, timeout=10).strip(), "value=10")
         baseline, pending = build_evidence.preparation_paths(self.build, ["behavior"])
         original_owner = baseline.read_bytes()
         (self.campaign.directory / "prior-baseline.json").write_bytes(original_owner)
         proof = json.loads(producer.read_text())["scoped_preparation"]
         originals = {Path(name): (Path(name).read_bytes(), Path(name).stat()) for name in proof["outputs"]}
-        binary = self.build / ("behavior.exe" if os.name == "nt" else "behavior")
         if artifact_kind == "executable":
             artifact = binary
         elif rust:
@@ -649,26 +682,6 @@ class BuildEvidenceTests(unittest.TestCase):
     def test_new_scope_unbound_owner_rebuilds_stale_rust_archive(self):
         self.assert_renewal_rejects_restored_artifact("archive", unbound=True, new_scope=True)
 
-    def test_same_scope_renewal_rejects_artifact_mutation_during_build(self):
-        producer = self.prepare()
-        baseline, pending = build_evidence.preparation_paths(self.build, ["behavior"])
-        original_owner = baseline.read_bytes()
-        proof = json.loads(producer.read_text())["scoped_preparation"]
-        artifact = next(Path(name) for name in proof["outputs"] if name.endswith((".o", ".obj")))
-        run = self.campaign.run
-
-        def mutate(stage, command, **kwargs):
-            result = run(stage, command, **kwargs)
-            if "--build" in command:
-                artifact.write_bytes(artifact.read_bytes() + b"mutated output")
-            return result
-
-        with patch.object(self.campaign, "run", side_effect=mutate), self.assertRaisesRegex(ValueError, "retained artifact bytes changed"):
-            self.prepare()
-        self.assertEqual(baseline.read_bytes(), original_owner)
-        self.assertTrue(pending.exists())
-        self.assertEqual(self.campaign.attempts("prepare")[-1]["status"], "failed")
-
     def test_missing_scope_rejects_incomplete_process_payload(self):
         cmake = self.source / "CMakeLists.txt"
         cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
@@ -694,163 +707,171 @@ class BuildEvidenceTests(unittest.TestCase):
                     os.utime(process, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         self.execute(junit=self.campaign.directory / "restored-process.xml")
 
-    def assert_producer_payload_mutation_is_rejected(self, payload_kind, *, renew=False):
+    def assert_publication_mutation_is_rejected(self, *, renew=False):
         cmake = self.source / "CMakeLists.txt"
         cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
-        producer = self.prepare()
+        producer = self.prepare_restorable_baseline()
         baseline, _ = build_evidence.preparation_paths(self.build, ["behavior"])
         original_owner = baseline.read_bytes()
-        record = json.loads(producer.read_text())
-        payload = Path(record["process_tree"]["receipt"]) if payload_kind == "process" else self.root / record["output"]
-        run = self.campaign.run
-
-        def mutate(stage, command, **kwargs):
-            result = run(stage, command, **kwargs)
-            if "--build" in command:
-                if payload_kind == "process":
-                    build_evidence.write_json(payload, {})
-                else:
-                    payload.write_bytes(payload.read_bytes() + b"mutated producer log\n")
-            return result
-
         targets = ["behavior"] if renew else ["overlap"]
-        with patch.object(self.campaign, "run", side_effect=mutate), self.assertRaisesRegex(ValueError, "command evidence changed"):
-            self.prepare(targets=targets)
-        selected, pending = build_evidence.preparation_paths(self.build, targets)
-        if renew:
-            self.assertEqual(selected.read_bytes(), original_owner)
-        else:
-            self.assertFalse(selected.exists())
-        self.assertTrue(pending.exists())
-        self.assertEqual(baseline.read_bytes(), original_owner)
-        self.assertEqual(self.campaign.attempts("prepare")[-1]["status"], "failed")
+        snapshot = self.snapshot_preparation(targets)
+        faults = ("log", "process", "object") if renew else ("log", "process", "object", "receipt")
+        for index, fault in enumerate(faults):
+            with self.subTest(fault=fault):
+                if index:
+                    self.restore_preparation(snapshot)
+                record = json.loads(producer.read_text())
+                if fault == "process":
+                    payload = Path(record["process_tree"]["receipt"])
+                elif fault == "log":
+                    payload = self.root / record["output"]
+                elif fault == "object":
+                    payload = next(Path(name) for name in record["scoped_preparation"]["outputs"] if name.endswith((".o", ".obj")))
+                else:
+                    payload = producer
+                run = self.campaign.run
 
-    def test_admission_publication_rejects_producer_process_mutation(self):
-        self.assert_producer_payload_mutation_is_rejected("process")
+                def mutate(stage, command, **kwargs):
+                    result = run(stage, command, **kwargs)
+                    if "--build" in command:
+                        if fault == "process":
+                            build_evidence.write_json(payload, {})
+                        elif fault == "log":
+                            payload.write_bytes(payload.read_bytes() + b"mutated producer log\n")
+                        elif fault == "object":
+                            content = payload.read_bytes()
+                            payload.write_bytes(content + b"mutated output" if renew else content[:-1] + bytes([content[-1] ^ 1]))
+                        else:
+                            build_evidence.write_json(payload, {**record, "seconds": record["seconds"] + 1})
+                    return result
 
-    def test_admission_publication_rejects_producer_log_mutation(self):
-        self.assert_producer_payload_mutation_is_rejected("log")
+                if fault == "object":
+                    message = "retained artifact bytes changed" if renew else "admitted artifacts changed"
+                elif fault == "receipt":
+                    message = "admitted preparation command receipt changed"
+                else:
+                    message = "command evidence changed"
+                with patch.object(self.campaign, "run", side_effect=mutate), self.assertRaisesRegex(ValueError, message):
+                    self.prepare(targets=targets)
+                selected, pending = build_evidence.preparation_paths(self.build, targets)
+                if renew:
+                    self.assertEqual(selected.read_bytes(), original_owner)
+                else:
+                    self.assertFalse(selected.exists())
+                self.assertTrue(pending.exists())
+                self.assertEqual(baseline.read_bytes(), original_owner)
+                self.assertEqual(self.campaign.attempts("prepare")[-1]["status"], "failed")
 
-    def test_renewal_publication_rejects_producer_process_mutation(self):
-        self.assert_producer_payload_mutation_is_rejected("process", renew=True)
+    def test_admission_publication_rejects_mutation(self):
+        self.assert_publication_mutation_is_rejected()
 
-    def test_renewal_publication_rejects_producer_log_mutation(self):
-        self.assert_producer_payload_mutation_is_rejected("log", renew=True)
+    def test_renewal_publication_rejects_mutation(self):
+        self.assert_publication_mutation_is_rejected(renew=True)
 
-    def assert_shared_rust_fallback(self, fault=None, *, missing_stamp=False):
-        self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+    def assert_shared_rust_fallback(self, faults=(None,), *, missing_stamp=False):
+        self.enable_rust()
         cmake = self.source / "CMakeLists.txt"
         cmake.write_text(cmake.read_text() +
             "add_custom_target(overlap DEPENDS behavior)\nadd_test(NAME selected COMMAND behavior 17)\n")
-        producer = self.prepare()
-        self.execute(junit=self.campaign.directory / "warm.xml")
-        record = json.loads(producer.read_text())
-        proof = record["scoped_preparation"]
-        baseline, old_pending = build_evidence.preparation_paths(self.build, ["behavior"])
-        original_owner = baseline.read_bytes()
-        (self.campaign.directory / "prior-baseline.json").write_bytes(original_owner)
-        archive = next(Path(name) for name in proof["outputs"]
-                       if Path(name).name in {"libfilm_juicer_plugin.a", "film_juicer_plugin.lib"})
-        stamp = self.build / "cargo-build.stamp"
-        if missing_stamp:
-            stamp.unlink()
-        retained = (archive,) if missing_stamp else (archive, stamp)
-        preserved = {str(path): (digest(path), path.stat().st_mtime_ns) for path in retained}
+        producer = self.prepare_restorable_baseline() if len(faults) > 1 else self.prepare()
         binary = self.build / ("behavior.exe" if os.name == "nt" else "behavior")
-        native = self.source / "native.cpp"
-        previous_time = native.stat()
-        native.write_bytes(native.read_bytes().replace(b"return 1", b"return 8"))
-        os.utime(native, ns=(previous_time.st_atime_ns, previous_time.st_mtime_ns))
-        selected, pending = build_evidence.preparation_paths(self.build, ["overlap"])
-        self.assertFalse(selected.exists())
-        self.assertFalse(pending.exists())
-        run, admit = self.campaign.run, build_evidence._admit_missing_scope
-        admissions, builds = [], []
+        self.assertEqual(subprocess.check_output([str(binary), "10"], text=True, timeout=10).strip(), "value=10")
+        snapshot = self.snapshot_preparation(["overlap"]) if len(faults) > 1 else None
+        for index, fault in enumerate(faults):
+            with self.subTest(fault=fault):
+                if index:
+                    self.restore_preparation(snapshot)
+                record = json.loads(producer.read_text())
+                proof = record["scoped_preparation"]
+                baseline, old_pending = build_evidence.preparation_paths(self.build, ["behavior"])
+                original_owner = baseline.read_bytes()
+                (self.campaign.directory / "prior-baseline.json").write_bytes(original_owner)
+                archive = next(Path(name) for name in proof["outputs"]
+                               if Path(name).name in {"libfilm_juicer_plugin.a", "film_juicer_plugin.lib"})
+                stamp = self.build / "cargo-build.stamp"
+                if missing_stamp:
+                    stamp.unlink()
+                retained = (archive,) if missing_stamp else (archive, stamp)
+                preserved = {str(path): (digest(path), path.stat().st_mtime_ns) for path in retained}
+                native = self.source / "native.cpp"
+                previous_time = native.stat()
+                native.write_bytes(native.read_bytes().replace(b"return 1", b"return 8"))
+                os.utime(native, ns=(previous_time.st_atime_ns, previous_time.st_mtime_ns))
+                selected, pending = build_evidence.preparation_paths(self.build, ["overlap"])
+                self.assertFalse(selected.exists())
+                self.assertFalse(pending.exists())
+                run, admit = self.campaign.run, build_evidence._admit_missing_scope
+                admissions, builds = [], []
 
-        def observe_admission(*args, **kwargs):
-            result = admit(*args, **kwargs)
-            self.assertIsNone(result)  # The native input changed; whole-scope adoption is invalid.
-            admissions.append(result)
-            return result
+                def observe_admission(*args, **kwargs):
+                    result = admit(*args, **kwargs)
+                    self.assertIsNone(result)  # The native input changed; whole-scope adoption is invalid.
+                    admissions.append(result)
+                    return result
 
-        def mutate(stage, command, **kwargs):
-            result = run(stage, command, **kwargs)
-            if "--build" in command:
-                self.assertEqual(preserved, {str(path): (digest(path), path.stat().st_mtime_ns) for path in retained})
-                self.assertTrue(stamp.is_file())
-                self.assertFalse(baseline.exists())  # This writer legitimately superseded the native owner.
-                witness = subprocess.check_output([str(binary), "17"], text=True, timeout=10).strip()
-                self.assertEqual(witness, "value=17")
-                builds.append(str(result))
-                payload = None
-                if fault in {"archive", "stamp"}:
-                    payload = archive if fault == "archive" else stamp
-                    previous = payload.stat()
-                    payload.write_bytes(payload.read_bytes() + b"mutated shared output")
-                    os.utime(payload, ns=(previous.st_atime_ns, previous.st_mtime_ns))
-                elif fault == "process":
-                    payload = Path(record["process_tree"]["receipt"])
-                    build_evidence.write_json(payload, {})
-                elif fault == "log":
-                    payload = self.root / record["output"]
-                    payload.write_bytes(payload.read_bytes() + b"mutated shared producer log\n")
-                elif fault == "receipt":
-                    payload = producer
-                    build_evidence.write_json(payload, {**record, "seconds": record["seconds"] + 1})
-                elif fault == "owner":
-                    payload = baseline
-                    baseline.write_bytes(original_owner)
-                build_evidence.write_json(self.campaign.directory / "shared-fallback.json", {
-                    "producer": str(producer), "original_owner": str(baseline), "build": str(result),
-                    "preserved": preserved, "witness": witness, "fault": fault, "missing_stamp": missing_stamp,
-                    "payload": str(payload) if payload else None, "payload_sha256": digest(payload) if payload else None})
-            return result
+                def mutate(stage, command, **kwargs):
+                    result = run(stage, command, **kwargs)
+                    if "--build" in command:
+                        self.assertEqual(preserved, {str(path): (digest(path), path.stat().st_mtime_ns) for path in retained})
+                        self.assertTrue(stamp.is_file())
+                        self.assertFalse(baseline.exists())  # This writer legitimately superseded the native owner.
+                        witness = subprocess.check_output([str(binary), "17"], text=True, timeout=10).strip()
+                        self.assertEqual(witness, "value=17")
+                        builds.append(str(result))
+                        payload = None
+                        if fault in {"archive", "stamp"}:
+                            payload = archive if fault == "archive" else stamp
+                            previous = payload.stat()
+                            payload.write_bytes(payload.read_bytes() + b"mutated shared output")
+                            os.utime(payload, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+                        elif fault == "process":
+                            payload = Path(record["process_tree"]["receipt"])
+                            build_evidence.write_json(payload, {})
+                        elif fault == "log":
+                            payload = self.root / record["output"]
+                            payload.write_bytes(payload.read_bytes() + b"mutated shared producer log\n")
+                        elif fault == "receipt":
+                            payload = producer
+                            build_evidence.write_json(payload, {**record, "seconds": record["seconds"] + 1})
+                        elif fault == "owner":
+                            payload = baseline
+                            baseline.write_bytes(original_owner)
+                        build_evidence.write_json(self.campaign.directory / "shared-fallback.json", {
+                            "producer": str(producer), "original_owner": str(baseline), "build": str(result),
+                            "preserved": preserved, "witness": witness, "fault": fault, "missing_stamp": missing_stamp,
+                            "payload": str(payload) if payload else None, "payload_sha256": digest(payload) if payload else None})
+                    return result
 
-        with patch.object(build_evidence, "_admit_missing_scope", side_effect=observe_admission), patch.object(self.campaign, "run", side_effect=mutate):
-            if fault:
-                message = {"archive": "shared Rust artifact bytes changed", "stamp": "shared Rust artifact bytes changed", "process": "command evidence changed",
-                           "log": "command evidence changed", "receipt": "shared Rust preparation receipt changed",
-                           "owner": "shared Rust preparation owner changed"}[fault]
-                with self.assertRaisesRegex(ValueError, message):
-                    self.prepare(targets=["overlap"])
-            else:
-                self.prepare(targets=["overlap"])
-        self.assertEqual(admissions, [None])
-        self.assertEqual(len(builds), 1)
-        self.assertFalse(old_pending.exists())
-        if fault:
-            self.assertFalse(selected.exists())
-            self.assertTrue(pending.exists())
-            self.assertEqual(self.campaign.attempts("prepare")[-1]["status"], "failed")
-            return
-        current = json.loads(self.prepared.read_text())
-        self.assertEqual(current["preparation_admission"]["artifact_owners"], {})
-        self.assertEqual(current["preparation_admission"]["archive_owners"], {str(producer): digest(producer)})
-        self.assertEqual(current["scoped_preparation"]["rust_invalidated_packages"], [])
-        self.assertTrue(current["scoped_preparation"]["invalidated"])
-        self.assertFalse(baseline.exists())
-        self.assertFalse(pending.exists())
-        with OutputLease(self.root, self.build):
-            build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
-        self.execute(tests=["selected"], junit=self.campaign.directory / "selected.xml")
+                with patch.object(build_evidence, "_admit_missing_scope", side_effect=observe_admission), patch.object(self.campaign, "run", side_effect=mutate):
+                    if fault:
+                        message = {"archive": "shared Rust artifact bytes changed", "stamp": "shared Rust artifact bytes changed", "process": "command evidence changed",
+                                   "log": "command evidence changed", "receipt": "shared Rust preparation receipt changed",
+                                   "owner": "shared Rust preparation owner changed"}[fault]
+                        with self.assertRaisesRegex(ValueError, message):
+                            self.prepare(targets=["overlap"])
+                    else:
+                        self.prepare(targets=["overlap"])
+                self.assertEqual(admissions, [None])
+                self.assertEqual(len(builds), 1)
+                self.assertFalse(old_pending.exists())
+                if fault:
+                    self.assertFalse(selected.exists())
+                    self.assertTrue(pending.exists())
+                    self.assertEqual(self.campaign.attempts("prepare")[-1]["status"], "failed")
+                    continue
+                current = json.loads(self.prepared.read_text())
+                self.assertEqual(current["preparation_admission"]["artifact_owners"], {})
+                self.assertEqual(current["preparation_admission"]["archive_owners"], {str(producer): digest(producer)})
+                self.assertEqual(current["scoped_preparation"]["rust_invalidated_packages"], [])
+                self.assertTrue(current["scoped_preparation"]["invalidated"])
+                self.assertFalse(baseline.exists())
+                self.assertFalse(pending.exists())
+                with OutputLease(self.root, self.build):
+                    build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
+                self.execute(tests=["selected"], junit=self.campaign.directory / "selected.xml")
 
-    def test_shared_rust_fallback_rejects_archive_mutation_during_build(self):
-        self.assert_shared_rust_fallback("archive")
-
-    def test_shared_rust_fallback_rejects_stamp_mutation_during_build(self):
-        self.assert_shared_rust_fallback("stamp")
-
-    def test_shared_rust_fallback_rejects_producer_process_mutation(self):
-        self.assert_shared_rust_fallback("process")
-
-    def test_shared_rust_fallback_rejects_producer_log_mutation(self):
-        self.assert_shared_rust_fallback("log")
-
-    def test_shared_rust_fallback_rejects_producer_receipt_mutation(self):
-        self.assert_shared_rust_fallback("receipt")
-
-    def test_shared_rust_fallback_rejects_producer_owner_mutation(self):
-        self.assert_shared_rust_fallback("owner")
+    def test_shared_rust_fallback_rejects_mutated_producer_and_outputs(self):
+        self.assert_shared_rust_fallback(("archive", "log", "owner", "process", "receipt", "stamp"))
 
     def test_shared_rust_fallback_preserves_archive_and_executes_new_native_behavior(self):
         self.assert_shared_rust_fallback()
@@ -865,9 +886,10 @@ class BuildEvidenceTests(unittest.TestCase):
                 f"add_custom_target(scope_{i} DEPENDS behavior)\n"
                 f"add_test(NAME selected_{i} COMMAND behavior 10)\n" for i in range(3)))
         if rust:
-            self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+            self.enable_rust()
         warm = self.prepare(targets=["behavior", "unrelated"])
-        self.execute()
+        binary = self.build / ("behavior.exe" if os.name == "nt" else "behavior")
+        self.assertEqual(subprocess.check_output([str(binary), "10"], text=True, timeout=10).strip(), "value=10")
         warm_baseline, _ = build_evidence.preparation_paths(self.build, ["behavior", "unrelated"])
         warm_owner = warm_baseline.read_bytes()
         proof = json.loads(warm.read_text())["scoped_preparation"]
@@ -1000,32 +1022,8 @@ class BuildEvidenceTests(unittest.TestCase):
             self.assertIsNotNone(admit())
         self.execute()
 
-    def test_new_scope_rejects_artifact_mutation_during_incremental_preparation(self):
-        cmake = self.source / "CMakeLists.txt"
-        cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
-        self.prepare()
-        baseline, _ = build_evidence.preparation_paths(self.build, ["behavior"])
-        original = baseline.read_bytes()
-        run = self.campaign.run
-
-        def mutate(stage, command, **kwargs):
-            receipt = run(stage, command, **kwargs)
-            if "--build" in command:
-                proof = json.loads(original)
-                obj = next(Path(name) for name in proof["outputs"] if name.endswith((".o", ".obj")))
-                content = obj.read_bytes()
-                obj.write_bytes(content[:-1] + bytes([content[-1] ^ 1]))
-            return receipt
-
-        with patch.object(self.campaign, "run", side_effect=mutate), self.assertRaisesRegex(ValueError, "admitted artifacts changed"):
-            self.prepare(targets=["overlap"])
-        selected, pending = build_evidence.preparation_paths(self.build, ["overlap"])
-        self.assertFalse(selected.exists())
-        self.assertTrue(pending.exists())
-        self.assertEqual(baseline.read_bytes(), original)
-
     def test_new_scope_rejects_mutated_rust_archive_and_stamp(self):
-        self.args[self.args.index("-DENABLE_RUST=OFF")] = "-DENABLE_RUST=ON"
+        self.enable_rust()
         cmake = self.source / "CMakeLists.txt"
         cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
         self.prepare()
@@ -1053,26 +1051,6 @@ class BuildEvidenceTests(unittest.TestCase):
             self.prepare(targets=["overlap"])
         self.assertFalse(selected.exists())
         self.assertTrue(selected.with_suffix(".pending.json").exists())
-
-    def test_new_scope_rejects_producer_receipt_mutation_during_admission(self):
-        cmake = self.source / "CMakeLists.txt"
-        cmake.write_text(cmake.read_text() + "add_custom_target(overlap DEPENDS behavior)\n")
-        producer = self.prepare()
-        run = self.campaign.run
-
-        def mutate(stage, command, **kwargs):
-            result = run(stage, command, **kwargs)
-            if "--build" in command:
-                record = json.loads(producer.read_text())
-                record["seconds"] += 1
-                build_evidence.write_json(producer, record)
-            return result
-
-        with patch.object(self.campaign, "run", side_effect=mutate), self.assertRaisesRegex(ValueError, "admitted preparation command receipt changed"):
-            self.prepare(targets=["overlap"])
-        selected, pending = build_evidence.preparation_paths(self.build, ["overlap"])
-        self.assertFalse(selected.exists())
-        self.assertTrue(pending.exists())
 
     def test_missing_scope_checks_cmake_in_supplied_environment(self):
         import shutil
@@ -1376,6 +1354,62 @@ class BuildEvidenceTests(unittest.TestCase):
         self.prepare(targets=["behavior"])
         with self.assertRaisesRegex(ValueError, "legacy sealed-build"):
             self.execute(tests=[])
+
+
+class FileEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.build = self.root / "build"
+
+    def test_identity_reads_reject_symlink_retarget_and_restored_time_content(self):
+        from build_dependencies import file_identities
+
+        first, second, alias = [self.root / name for name in ("first", "second", "alias")]
+        for directory, text in [(first, "first"), (second, "other")]:
+            directory.mkdir()
+            (directory / "input.txt").write_text(text)
+
+        def link_to(target):
+            if os.name == "nt":
+                subprocess.run(["cmd.exe", "/c", "mklink", "/J", str(alias), str(target)], check=True, capture_output=True, timeout=10)
+            else:
+                alias.symlink_to(os.path.relpath(target, alias.parent), target_is_directory=True)
+
+        def unlink():
+            os.rmdir(alias) if os.name == "nt" else alias.unlink()
+
+        link_to(first)
+        self.addCleanup(unlink)
+        path = alias / "input.txt"
+        baseline = file_identities([path])
+        traversal = alias / ".." / "first" / "input.txt"
+        self.assertEqual(file_identities([traversal])[str(traversal)]["resolved"], str((first / "input.txt").resolve()))
+        self.assertEqual(file_identities([self.root / "absent"]), {})
+        if os.name != "nt":
+            leaf = self.root / "leaf.txt"
+            leaf.symlink_to("first/input.txt")
+            self.assertEqual(file_identities([leaf])[str(leaf)]["resolved"], str((first / "input.txt").resolve()))
+            dangling = self.root / "dangling.txt"
+            dangling.symlink_to("absent")
+            self.assertEqual(file_identities([dangling]), {})
+        stamp = path.stat()
+        path.write_text("third")
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.assertNotEqual(file_identities([path]), baseline)
+        original = build_evidence.digest
+        (second / "input.txt").write_text("third")
+
+        def retarget(value):
+            checksum = original(value)
+            unlink()
+            link_to(second)
+            return checksum
+
+        with patch("build_dependencies.digest", side_effect=retarget), self.assertRaisesRegex(ValueError, "input path changed"):
+            file_identities([path])
+        self.assertEqual(file_identities([path])[str(path)]["resolved"], str((second / "input.txt").resolve()))
 
     def test_output_lease_spans_readers_and_conflicting_callers(self):
         with OutputLease(self.root, self.build):

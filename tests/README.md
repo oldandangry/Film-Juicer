@@ -269,6 +269,23 @@ natural-drain grace, other-child wait and cap, and failed-parent behavior;
 `Quality.BuildEvidence` covers generated-header reconfiguration and unowned
 shadow headers. Both run in the normal Debug tooling selection in Windows CI.
 
+Build-evidence fault variants that start from the same prepared state share a
+fixture within one test method and report each fault as a named subtest. Between
+variants, the test restores its owned inputs, artifacts and provenance at the
+original configured path, then checks preparation again before the next fault.
+Each variant still runs the real build/publication path and checks rejection,
+pending state and owner preservation. Cold preparation, renewal, missing-scope
+admission and recovery remain separate scenarios. File-identity and lease tests
+use lightweight fixtures without Cargo setup. Production freshness checks and
+CTest deadlines are unchanged.
+
+Native build fixtures start with the C stub. Rust cases explicitly construct
+their two-crate workspace once when enabling Rust, before any source mutation;
+later preparation does not recreate edited or missing inputs. Initial sanity
+checks in artifact/fallback/fresh-scope cases execute the native value witness
+directly. Their selected/final CTest runs and failure/recovery executions still
+exercise the real verification path.
+
 During implementation, build the affected test targets and run only the owning
 cases needed to check the current edit. Run new compiled cases on Linux and
 Windows early so platform-specific compilation, lifetime or diagnostic issues

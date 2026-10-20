@@ -2,6 +2,11 @@
 
 use crate::hash;
 
+// Matches the frozen native v1 resolved-hash contract. Native authored-control
+// and PSF-sample hashes are distinct identities; their schema is
+// kDiffusionHostBehaviorSchemaVersion in DiffusionHostBehavior.h.
+const DIFFUSION_RESOLVED_HASH_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Clone, Copy, Debug)]
 pub struct DiffusionParams {
     pub active: bool,
@@ -319,7 +324,10 @@ impl Diffusion {
         let spatial_scale = params.spatial_scale;
         let mut resolved_hash = hash::FNV_OFFSET;
         hash::update_bytes(&mut resolved_hash, b"diffusion-resolved\0");
-        hash::update_bytes(&mut resolved_hash, &1_u32.to_le_bytes());
+        hash::update_bytes(
+            &mut resolved_hash,
+            &DIFFUSION_RESOLVED_HASH_SCHEMA_VERSION.to_le_bytes(),
+        );
         hash::update_bytes(&mut resolved_hash, &[family.hash_tag()]);
         for value in [
             scatter_fraction,
