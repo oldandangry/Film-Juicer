@@ -887,8 +887,31 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         self.assertEqual(qualification.collect_qualification(self.root, paths)["status"], "passed")
         return outcomes
 
+    def test_collection_rejects_prepare_without_scoped_proof(self):
+        self.retain = True
+        self.native_project()
+        from verify import source_snapshot
+        required = ["prepare", "quality", "product"]
+        campaign = Campaign(self.root, self.preset, "unproved-preparation", required)
+        stages = {name: qualification.run_stage(campaign, self.state_path, self.state, name,
+            [self.python, "-c", "print('ordinary command without preparation proof')"],
+            inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10)
+            for name in required}
+        record = {"mode": "checkpoint", "status": "passed", "scope_status": "passed",
+                  "reason": "ordinary command cannot supply scoped preparation", "preset": self.preset,
+                  "runtime": "all", "selection": ["product"], "required": required,
+                  "stages": stages, "source": source_snapshot(self.root)}
+        path = campaign.directory / "qualification.json"
+        write_json(path, record)
+        protected = {p: p.read_bytes() for p in
+                     [path, self.state_path, *(Path(stage["receipt"]) for stage in stages.values())]}
+        with patch.object(Campaign, "run", side_effect=AssertionError("collection dispatched")):
+            with self.assertRaisesRegex(ValueError, "legacy sealed-build preparation"):
+                qualification.collect_qualification(self.root, [path])
+        self.assertEqual(protected, {p: p.read_bytes() for p in protected})
+
     def test_production_retained_execution_payloads(self):
-        """Real OFF owners; unrelated product lanes use explicit unit scaffolds."""
+        """Real OFF owners and preparations; unrelated execution uses unit scaffolds."""
         self.retain = True
         started = time.monotonic()
         files = self.compiled_project()
@@ -918,18 +941,12 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                 if preset == ("windows-clang-release" if os.name == "nt" else "linux-release"):
                     outcomes += self.assert_production_reuse_controls(path,
                         lambda name, repeat_reason="": checkpoint(preset, name, repeat_reason), commands)
-            # Collection requires other relevance lanes. Their policy is outside
-            # this control: retain real drained command records and source/tool
-            # bytes, but mock only their unrelated prepared-product identity.
-            # The production dispatcher, retained validation and collector execute
-            # normally; no production validator or artifact check is mocked.
-            dependency = "synthetic-unrelated-preparation"
+            # Real miniature preparations supply the collector's context and
+            # artifact identity. Only unrelated relevance execution is scaffolded;
+            # no preparation or production validation is mocked.
             for preset in qualification.PRESETS:
                 build = self.root / "out/build" / preset
-                build.mkdir(exist_ok=True)
-                cache = build / "CMakeCache.txt"
-                if not cache.exists():
-                    cache.write_text(f"CMAKE_HOME_DIRECTORY:INTERNAL={self.root.as_posix()}\n")
+                self.configure_fixture(preset, True, "retained-prerequisite-on", timeout=60)
                 state_path = build / "verification-checkpoint.json"
                 state = json.loads(state_path.read_text()) if state_path.exists() else {}
                 groups = ["boundary", "product"]
@@ -939,8 +956,10 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                     groups.append("corpus")
                 required = ["prepare", "quality", *groups]
                 campaign = Campaign(self.root, preset, "retained-unrelated-scaffold", required)
-                stages = {}
-                for name in required:
+                stages = {"prepare": qualification.prepare_checkpoint(campaign, build, state_path, state,
+                    self.environment, timeout=60)}
+                dependency = qualification.preparation_identity(build, stages["prepare"])
+                for name in required[1:]:
                     stages[name] = qualification.run_stage(campaign, state_path, state, name,
                         [self.python, "-c", "print('unrelated collection prerequisite scaffold')"],
                         inputs=qualification.checkpoint_inputs(self.root, build, name if name in qualification.GROUPS else "product"),
@@ -953,9 +972,8 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                 path = campaign.directory / "qualification.json"
                 write_json(path, record)
                 paths.append(path)
-            with patch.object(qualification, "preparation_identity", return_value=dependency):
-                self.assertEqual(qualification.collect_qualification(self.root, paths)["status"], "passed")
-                outcomes += self.assert_production_collection_controls(paths)
+            self.assertEqual(qualification.collect_qualification(self.root, paths)["status"], "passed")
+            outcomes += self.assert_production_collection_controls(paths)
         destination = self.root / "out/validation" / self.preset / "retained-production-controls.json"
         write_json(destination, {"scope": "real production checkpoint/reuse/collector controls with explicit unrelated product scaffolds; no product qualification",
             "native": os.name, "controls": outcomes, "commands": commands,
