@@ -1828,3 +1828,24 @@ const _: unsafe extern "C" fn(
     *mut crate::optics_bridge::FjSpatialOpticsFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_spatial_optics_prepare;
+
+/// # Safety
+/// Same initialized, aligned, live and disjoint records/source as the checked operation.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_print_illuminant_prepare(
+    params: *const crate::print_bridge::FjPrintIlluminantParams,
+    source: FjFloatSpan,
+    out: *mut crate::asset_illuminant::FjIlluminant,
+    failure: *mut crate::print_bridge::FjPrintIlluminantFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade uses the common checked implementation, not its legacy export.
+    unsafe { crate::print_bridge::prepare(params, source, out, failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const crate::print_bridge::FjPrintIlluminantParams,
+    FjFloatSpan,
+    *mut crate::asset_illuminant::FjIlluminant,
+    *mut crate::print_bridge::FjPrintIlluminantFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_print_illuminant_prepare;

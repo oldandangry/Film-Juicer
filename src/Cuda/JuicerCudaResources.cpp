@@ -14,6 +14,7 @@
 #include "ColorTransforms.h"
 #include "GamutCompression.h"
 #include "Scanner.h"
+#include "RustFilmRecipeBridge.h"
 
 #include "Logging.h"
 #include "Hash.h"
@@ -4591,8 +4592,8 @@ namespace JuicerCuda {
                         request.recipe->print.illuminant.key,
                         sourceIlluminant,
                         error) ||
-                    !Spektrafilm::build_filtered_print_illuminant(
-                        request.recipe->print,
+                    !JuicerAssets::prepare_print_illuminant(
+                        request.recipe->print.filters.dichroic,
                         sourceIlluminant,
                         request.recipe->print.filters.preflashCmyCc,
                         preflashIlluminant,

@@ -174,7 +174,9 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(first["receipt"], reused["reused_from"])
 
     def test_boundary_inputs_bind_native_membership_and_foreign_fixture(self):
-        for name in ("src/RenderRecipe.cpp", "src/JuicerState.cpp", "tests/ffi/color_preparation_test.cpp"):
+        for name in ("src/RenderRecipe.cpp", "src/JuicerState.cpp", "tests/ffi/color_preparation_test.cpp",
+                     "tests/ffi/print_illuminant_test.inc", "tests/ffi/print_illuminant_fixture.h",
+                     "tests/print/illuminant-fixtures/rust-manifest.json"):
             p = self.root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("source")
@@ -183,10 +185,18 @@ class CheckpointTests(unittest.TestCase):
         first = qualification.checkpoint_inputs(self.root, self.build, "boundary")
         self.assertIn("src/RenderRecipe.cpp", first)
         self.assertIn("tests/ffi/color_preparation_test.cpp", first)
+        self.assertIn("tests/ffi/print_illuminant_test.inc", first)
+        self.assertIn("tests/ffi/print_illuminant_fixture.h", first)
+        self.assertIn("tests/print/illuminant-fixtures/rust-manifest.json", first)
         added = self.root / "src/SpectralProcessing.h"
         added.write_text("new member")
         self.assertIn("src/SpectralProcessing.h", qualification.checkpoint_inputs(self.root, self.build, "boundary"))
         self.assertNotIn("src/SpectralProcessing.h", first)
+        fixture = self.root / "tests/print/illuminant-fixtures/product-updates.json"
+        fixture.write_text("new selected expectation member")
+        self.assertIn(str(fixture.relative_to(self.root)).replace("\\", "/"),
+                      qualification.checkpoint_inputs(self.root, self.build, "boundary"))
+        self.assertNotIn("tests/print/illuminant-fixtures/product-updates.json", first)
 
     def test_cargo_configuration_content_and_membership_are_tool_inputs(self):
         (self.build / "CMakeCache.txt").write_text("")
@@ -239,6 +249,260 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(second["stages"]["boundary"]["reused_from"], first["stages"]["boundary"]["receipt"])
         self.assertFalse((self.root / "out/validation" / self.preset / "caller-two/attempts").exists())
 
+    def production_fixture(self):
+        """Native tiny probes exercise retained proof, not product mathematics."""
+        return r'''
+import json, sys, subprocess, hashlib, shutil
+preset=sys.argv[sys.argv.index("--preset")+1]
+out=out.resolve()
+def checksum(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+commands=[]
+def execute(name, command):
+    result=subprocess.run(command,capture_output=True,timeout=30,check=False)
+    for extension,data in [('stdout',result.stdout),('stderr',result.stderr)]:
+        (out/(name+'.'+extension)).write_bytes(data)
+    commands.append({'name':name,'command':command,'returncode':result.returncode,
+                     'stdout_sha256':checksum(out/(name+'.stdout')),
+                     'stderr_sha256':checksum(out/(name+'.stderr'))})
+    result.check_returncode()
+header=out/'production-film-expected.h'
+header.write_text('#define EXPECTED 10\n')
+consumed={str(header):checksum(header)}
+probes=[]
+for name in ['film','accepted-output-color']:
+    source=out/(name+'.c')
+    source.write_text('#include "production-film-expected.h"\n#include <stdio.h>\n'
+                      'typedef struct Pair {int first; int second;} Pair;\n'
+                      '_Static_assert(sizeof(Pair)==8,"ABI");\n'
+                      'int main(void){printf("value=%d abi=%zu\\n",EXPECTED,sizeof(Pair));return EXPECTED!=10;}\n')
+    executable=out/(name+('.exe' if sys.platform=='win32' else ''))
+    if sys.platform=='win32':
+        command=[shutil.which('clang-cl.exe'),'/nologo','/TC','/std:c11','/MD','/W4','/WX',
+                 '/clang:-fuse-ld=lld',str(source),'/Fe:'+str(executable),'/Fo:'+str(out/(name+'.obj'))]
+    else:
+        command=['gcc-13','-std=c11','-Wall','-Wextra','-Werror',str(source),'-o',str(executable)]
+    source_hash=checksum(source)
+    execute(name+'-compile',command)
+    linked=checksum(executable)
+    before=checksum(executable)
+    execute(name+'-values',[str(executable)])
+    after=checksum(executable)
+    assert linked==before==after and checksum(source)==source_hash
+    probes.append({'name':name,'executable':str(executable),'linked_sha256':linked,
+                   'before_run_sha256':before,'after_run_sha256':after,
+                   'source':str(source),'source_sha256':source_hash})
+for name,value in consumed.items():assert checksum(Path(name))==value
+record=out/'commands.json'
+record.write_text(json.dumps(commands))
+(out/'production.json').write_text(json.dumps({'scope':'native miniature retained-payload protocol only',
+    'preset':preset,'probes':probes,'consumed_inputs':consumed,
+    'commands':{'file':str(record),'sha256':checksum(record)},
+    'command_outputs':{str(out/(row['name']+'.'+extension)):row[extension+'_sha256']
+                       for row in commands for extension in ['stdout','stderr']}}))
+print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
+'''
+
+    def production_protected(self, stage):
+        receipt = Path(stage["receipt"])
+        command = json.loads(receipt.read_text())
+        manifest = qualification.production_manifest_identity(receipt, root=self.root)[0]
+        paths = [receipt, self.root / command["output"], Path(command["process_tree"]["receipt"]), manifest]
+        paths += [self.root / name for name in stage["identity"]["inputs"]
+                  if Path(name).suffix.lower() in {".a", ".lib", ".ofx", ".pdb"}]
+        return {str(path): digest(path) for path in paths}
+
+    def production_mutations(self, stage):
+        manifest = qualification.production_manifest_identity(stage["receipt"], root=self.root)[0]
+        document = json.loads(manifest.read_text())
+        return [Path(row["executable"]) for row in document["probes"]] + [
+            manifest.parent / "production-film-expected.h", manifest.parent / "film-values.stdout"]
+
+    def assert_production_reuse_controls(self, path, checkpoint, calls):
+        record = json.loads(path.read_text())
+        stage = record["stages"]["production"]
+        owner = self.root / "out/build" / record["preset"] / "verification-checkpoint.json"
+        owner_bytes = owner.read_bytes()
+        protected = self.production_protected(stage)
+        before = len(calls)
+        reused = json.loads(checkpoint("retained-unchanged").read_text())["stages"]["production"]
+        self.assertEqual(reused["reused_from"], stage["receipt"])
+        self.assertEqual(len(calls), before, "unchanged retained evidence executed probes again")
+        outcomes = [{"operation": "reuse", "case": "unchanged", "status": "passed", "commands": 0}]
+        for target in self.production_mutations(stage):
+            data, stamp = target.read_bytes(), target.stat()
+            for mutation in ("replace", "remove"):
+                with self.subTest(operation="reuse", file=target.name, mutation=mutation):
+                    try:
+                        target.write_bytes(b"changed after execution") if mutation == "replace" else target.unlink()
+                        with self.assertRaisesRegex(ValueError, "production execution payload missing or changed"):
+                            checkpoint("retained-" + target.name.replace(".", "-") + "-" + mutation)
+                        self.assertEqual(json.loads(owner.read_text())["production"]["status"], "failed")
+                        self.assertEqual(len(calls), before, "rejected reuse executed probes")
+                        self.assertEqual(protected, {name: digest(Path(name)) for name in protected})
+                        outcomes.append({"operation": "reuse", "case": target.name, "mutation": mutation,
+                                         "rejected": "production execution payload missing or changed"})
+                    finally:
+                        target.write_bytes(data)
+                        os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                        owner.write_bytes(owner_bytes)
+        try:
+            state = json.loads(owner_bytes)
+            header = next(name for name in stage["payloads"] if Path(name).name == "production-film-expected.h")
+            state["production"]["payloads"].pop(header)
+            write_json(owner, state)
+            with self.assertRaisesRegex(ValueError, "production retained payload membership"):
+                checkpoint("retained-omitted-member")
+            self.assertEqual(len(calls), before)
+            outcomes.append({"operation": "reuse", "case": "omitted-member", "rejected": "production retained payload membership"})
+        finally:
+            owner.write_bytes(owner_bytes)
+        for target_kind, cause in [("probe", "production execution payload missing or changed"),
+                                   ("manifest", "production manifest execution identity changed")]:
+            prior = Campaign.run
+            def drift(campaign, name, command, **kwargs):
+                receipt = prior(campaign, name, command, **kwargs)
+                if name == "production":
+                    raw = json.loads(receipt.read_text())
+                    self.assertTrue(raw["process_tree"]["drained"])
+                    manifest = qualification.production_manifest_identity(receipt, root=self.root)[0]
+                    document = json.loads(manifest.read_text())
+                    if target_kind == "probe":
+                        Path(document["probes"][0]["executable"]).write_bytes(b"drift after drained execution")
+                    else:
+                        document["scope"] = "manifest replaced after drained execution"
+                        manifest.write_text(json.dumps(document))
+                return receipt
+            try:
+                with patch.object(Campaign, "run", new=drift):
+                    with self.assertRaisesRegex(ValueError, cause):
+                        checkpoint("retained-registration-drift-" + target_kind,
+                                   "intentional post-execution retained-payload drift control")
+                self.assertEqual(json.loads(owner.read_text())["production"]["status"], "failed")
+                self.assertEqual(protected, {name: digest(Path(name)) for name in protected})
+                outcomes.append({"operation": "registration", "case": "post-drain-drift-" + target_kind,
+                                 "rejected": cause})
+            finally:
+                owner.write_bytes(owner_bytes)
+        return outcomes
+
+    def assert_production_collection_controls(self, paths):
+        preset = "windows-clang-release" if os.name == "nt" else "linux-release"
+        path = next(path for path in paths if json.loads(path.read_text())["preset"] == preset
+                    and json.loads(path.read_text())["selection"] == ["production"])
+        record = json.loads(path.read_text())
+        stage = record["stages"]["production"]
+        owner = self.root / "out/build" / preset / "verification-checkpoint.json"
+        owner_bytes = owner.read_bytes()
+        protected = self.production_protected(stage)
+        protected[str(path)] = digest(path)
+        outcomes = [{"operation": "collection", "case": "unchanged", "status": "passed"}]
+        for target in self.production_mutations(stage):
+            data, stamp = target.read_bytes(), target.stat()
+            for mutation in ("replace", "remove"):
+                with self.subTest(operation="collection", file=target.name, mutation=mutation):
+                    try:
+                        target.write_bytes(b"changed after execution") if mutation == "replace" else target.unlink()
+                        with self.assertRaisesRegex(ValueError, "production execution payload missing or changed"):
+                            qualification.collect_qualification(self.root, paths)
+                        self.assertEqual(protected, {name: digest(Path(name)) for name in protected})
+                        outcomes.append({"operation": "collection", "case": target.name, "mutation": mutation,
+                                         "rejected": "production execution payload missing or changed"})
+                    finally:
+                        target.write_bytes(data)
+                        os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        try:
+            header = next(name for name in stage["payloads"] if Path(name).name == "production-film-expected.h")
+            state = json.loads(owner_bytes)
+            state["production"]["payloads"].pop(header)
+            record["stages"]["production"]["payloads"].pop(header)
+            write_json(owner, state)
+            omitted = path.parent / "omitted-membership.json"
+            write_json(omitted, record)
+            with self.assertRaisesRegex(ValueError, "production retained payload membership"):
+                qualification.collect_qualification(self.root, [omitted if other == path else other for other in paths])
+            self.assertEqual(protected, {name: digest(Path(name)) for name in protected})
+            outcomes.append({"operation": "collection", "case": "omitted-member",
+                             "rejected": "production retained payload membership"})
+        finally:
+            owner.write_bytes(owner_bytes)
+        self.assertEqual(qualification.collect_qualification(self.root, paths)["status"], "passed")
+        return outcomes
+
+    def test_production_retained_execution_payloads(self):
+        """Real OFF owners; unrelated product lanes use explicit unit scaffolds."""
+        self.retain = True
+        started = time.monotonic()
+        files = self.compiled_project()
+        from verify import source_snapshot
+        paths, outcomes, commands = [], [], []
+        actual_run = Campaign.run
+        def counted(campaign, stage, command, **kwargs):
+            commands.append({"stage": stage, "command": list(command)})
+            return actual_run(campaign, stage, command, **kwargs)
+        def checkpoint(preset, name, repeat_reason=""):
+            args = SimpleNamespace(reason="native retained OFF payload controls", selection=["production"],
+                                   preset=preset, runtime="all", campaign=name,
+                                   repeat_reason=repeat_reason, base=None)
+            if preset == ("windows-clang-release" if os.name == "nt" else "linux-release"):
+                return qualification.qualify(self.root, args)
+            with OutputLease(self.root, self.root / "out/build" / preset):
+                return qualification._qualify_owned(self.root, self.root / "out/build" / preset, args)
+        with patch.object(Campaign, "run", autospec=True, side_effect=counted):
+            for preset in ("linux-release", "windows-clang-release"):
+                build = self.root / "out/build" / preset
+                campaign = Campaign(self.root, preset, "retained-off-prepare", ["prepare"])
+                qualification.prepare_build(campaign, "prepare", source=self.root, build=build,
+                    inputs=list(files), timeout=60, targets=["all"],
+                    configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
+                path = checkpoint(preset, "retained-off")
+                paths.append(path)
+                if preset == ("windows-clang-release" if os.name == "nt" else "linux-release"):
+                    outcomes += self.assert_production_reuse_controls(path,
+                        lambda name, repeat_reason="": checkpoint(preset, name, repeat_reason), commands)
+            # Collection requires other relevance lanes. Their policy is outside
+            # this control: retain real drained command records and source/tool
+            # bytes, but mock only their unrelated prepared-product identity.
+            # The production dispatcher, retained validation and collector execute
+            # normally; no production validator or artifact check is mocked.
+            dependency = "synthetic-unrelated-preparation"
+            for preset in qualification.PRESETS:
+                build = self.root / "out/build" / preset
+                build.mkdir(exist_ok=True)
+                cache = build / "CMakeCache.txt"
+                if not cache.exists():
+                    cache.write_text(f"CMAKE_HOME_DIRECTORY:INTERNAL={self.root.as_posix()}\n")
+                state_path = build / "verification-checkpoint.json"
+                state = json.loads(state_path.read_text()) if state_path.exists() else {}
+                groups = ["boundary", "product"]
+                if preset.endswith("debug"):
+                    groups.append("tooling")
+                if preset == "linux-debug":
+                    groups.append("corpus")
+                required = ["prepare", "quality", *groups]
+                campaign = Campaign(self.root, preset, "retained-unrelated-scaffold", required)
+                stages = {}
+                for name in required:
+                    stages[name] = qualification.run_stage(campaign, state_path, state, name,
+                        [self.python, "-c", "print('unrelated collection prerequisite scaffold')"],
+                        inputs=qualification.checkpoint_inputs(self.root, build, name if name in qualification.GROUPS else "product"),
+                        tools=[self.python], environment=self.environment, timeout=10,
+                        dependencies=[dependency] if name in {"quality", "product"} else [])
+                record = {"mode": "checkpoint", "status": "passed", "scope_status": "passed",
+                          "reason": "synthetic unrelated prerequisites for isolated production collector controls",
+                          "preset": preset, "runtime": "all", "selection": groups, "required": required,
+                          "stages": stages, "source": source_snapshot(self.root)}
+                path = campaign.directory / "qualification.json"
+                write_json(path, record)
+                paths.append(path)
+            with patch.object(qualification, "preparation_identity", return_value=dependency):
+                self.assertEqual(qualification.collect_qualification(self.root, paths)["status"], "passed")
+                outcomes += self.assert_production_collection_controls(paths)
+        destination = self.root / "out/validation" / self.preset / "retained-production-controls.json"
+        write_json(destination, {"scope": "real production checkpoint/reuse/collector controls with explicit unrelated product scaffolds; no product qualification",
+            "native": os.name, "controls": outcomes, "commands": commands,
+            "seconds": time.monotonic() - started})
+
     def compiled_project(self):
         self.native_project()
         files = {
@@ -271,7 +535,7 @@ class CheckpointTests(unittest.TestCase):
                 'build=Path("out/build")/preset\nexe=build/("behavior.exe" if sys.platform=="win32" else "behavior")\n'
                 'value=subprocess.check_output([str(exe.resolve()),"10"],text=True,timeout=10)\n'
                 'assert "value=10 abi=8 offset=4" in value\nout.mkdir(parents=True)\n'
-                '(out/"production.json").write_text(json.dumps({"scope":"miniature protocol only","behavior":value}))\n',
+                + self.production_fixture(),
         }
         for name, content in files.items():
             path = self.root / name
@@ -824,7 +1088,7 @@ class CheckpointTests(unittest.TestCase):
             "count=root/'out/production-count.txt'\n"
             "count.write_text(str(int(count.read_text())+1) if count.exists() else '1')\n"
             "assert (root/'out/build'/a.preset/'juicer.pdb').is_file()\n"
-            "(out/'production.json').write_text('{}')\n")
+            + self.production_fixture())
         args = SimpleNamespace(reason="production PDB identity regression", selection=["production"],
                                preset=self.preset, runtime="host", campaign="first", repeat_reason="", base=None)
         count = self.root / "out/production-count.txt"

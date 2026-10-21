@@ -1,3 +1,4 @@
+#include "../ffi/print_illuminant_fixture.h"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -1813,6 +1814,15 @@ int main(int argc, char** argv) {
                     if (!fixture) {
                         throw std::runtime_error(std::string(test.name) + ": incomplete fixture row");
                     }
+                    nlohmann::json originalWords = nlohmann::json::array();
+                    for (float value : expected)
+                        originalWords.push_back(std::bit_cast<std::uint32_t>(value));
+                    const auto selectedWords = PrintIlluminantFixtures::apply(
+                        std::string(JUICER_PROCESSOR_REFERENCE_PATH) + "." + test.name, originalWords);
+                    if (selectedWords.size() != expected.size())
+                        throw std::runtime_error(std::string(test.name) + ": selected fixture shape mismatch");
+                    for (std::size_t i = 0; i < expected.size(); ++i)
+                        expected[i] = std::bit_cast<float>(selectedWords.at(i).get<std::uint32_t>());
                     compare_pixels(test.name, pixels, expected);
                 }
 #if !defined(JUICER_PREPARED_BOUNDARY_TEST)

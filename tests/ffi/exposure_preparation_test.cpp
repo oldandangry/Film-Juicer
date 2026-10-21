@@ -28,6 +28,7 @@
 #undef FJ_EXPOSURE_FIELD
 
 #include "exposure_fixture.h"
+#include "print_illuminant_fixture.h"
 
 extern "C" int fj_test_exposure_abi_c(const FjReferenceWhiteInput*, FjReferenceWhite*, const FjSensitivityInput*, FjSensitivity*, FjSensitivityFailure*, FjErrorBuffer*);
 void fj_test_spectral_products(const nlohmann::json&, const std::filesystem::path&, const std::filesystem::path&, bool, void (*)(const nlohmann::json&));
@@ -343,7 +344,7 @@ int main(int argc, char** argv) {
         }
         require(argc == 3 || argc == 5, "exposure fixture, optional resource/scratch required");
         std::ifstream file(argv[2]);
-        const auto fixture = group == "products" ? load_exposure_product_fixture(argv[2]) : Json::parse(file);
+        const auto fixture = PrintIlluminantFixtures::apply(argv[2], group == "products" ? load_exposure_product_fixture(argv[2]) : Json::parse(file));
         if (group == "reference") {
             require(argc == 5, "reference resources and scratch required");
             reference(fixture, argv[3]);

@@ -909,12 +909,6 @@ namespace Spektrafilm {
         PrintNormalizationMode mode,
         float factorMidgray,
         float factorMidgrayComp);
-    bool build_filtered_print_illuminant(
-        const PrintRecipe& recipe,
-        const std::array<float, 81>& sourceIlluminant,
-        const CmyCcTriplet& cmyCc,
-        std::array<float, 81>& out,
-        std::string& diagnostic);
     bool finish_synthetic_reference_recipes(
         RenderRecipe& recipe,
         const Spectral::FilmTcLut* filmTcLut,

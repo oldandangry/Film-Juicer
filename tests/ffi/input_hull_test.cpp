@@ -26,6 +26,7 @@
 #include "SpectralData.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
+#include "print_illuminant_fixture.h"
 #include "spectral_allocation_probe.h"
 
 #define FJ_HULL_SIZE(type, size, alignment) static_assert(sizeof(type) == size && alignof(type) == alignment);
@@ -376,6 +377,7 @@ int main(int argc, char** argv) {
         std::ifstream file(directory / member["records"].get<std::string>());
         Json fixture;
         file >> fixture;
+        fixture = PrintIlluminantFixtures::apply(directory / member["records"].get<std::string>(), fixture);
         const std::string mode = argv[1];
         if (mode == "boundary")
             boundary(fixture);

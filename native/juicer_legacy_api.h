@@ -1049,6 +1049,42 @@ FjStatus fj_legacy_neutral_calibration_lookup(const FjAssets* assets, FjStringVi
 typedef struct FjIlluminant {
     float samples[81];
 } FjIlluminant;
+
+/* SF_TEMP_BRIDGE_PRINT_ILLUMINANT: complete fixed samples; remove S4.E.
+ * Edges are Y/M-lower/M-upper/C and transitions are in nm; cmy_cc is C/M/Y
+ * Kodak CC. Params, failure and present error records are initialized/live;
+ * source is exactly 81 initialized f32 elements. Records/source are aligned,
+ * and byte extents must not overflow PTRDIFF_MAX or address arithmetic.
+ * Writable outputs/error backing are exclusive and mutually disjoint from
+ * each other and all inputs; immutable input aliases are allowed. No pointer
+ * escapes synchronous return. Numerical address checks do not establish those
+ * allocation, lifetime or initialization obligations.
+ * Every independently writable result clears to +0 on failure. Sample errors
+ * identify the first index; all other outcomes use UINT32_MAX. Optional error
+ * NULL is status-only; capacity zero ignores backing; positive backing receives
+ * bounded text/NUL and length excluding NUL. Malformed diagnostics yield RAW.
+ */
+typedef struct FjPrintIlluminantParams {
+    float edges_nm[4];
+    float transitions_nm[4];
+    float cmy_cc[3];
+} FjPrintIlluminantParams;
+typedef struct FjPrintIlluminantFailure {
+    uint32_t reason;
+    uint32_t sample;
+} FjPrintIlluminantFailure;
+#define FJ_PRINT_ILLUMINANT_REASON_NONE UINT32_C(0)
+#define FJ_PRINT_ILLUMINANT_REASON_RAW UINT32_C(1)
+#define FJ_PRINT_ILLUMINANT_REASON_SAMPLE UINT32_C(2)
+#define FJ_PRINT_ILLUMINANT_REASON_ENERGY UINT32_C(3)
+#define FJ_PRINT_ILLUMINANT_REASON_PANIC UINT32_C(4)
+FjStatus fj_legacy_print_illuminant_prepare(
+    const FjPrintIlluminantParams* params,
+    FjFloatSpan source,
+    FjIlluminant* out_illuminant,
+    FjPrintIlluminantFailure* out_failure,
+    FjErrorBuffer* error);
+
 typedef struct FjIlluminantCoverage {
     uint32_t warnings;
     float min_nm;

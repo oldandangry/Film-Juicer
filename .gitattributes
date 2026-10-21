@@ -108,3 +108,6 @@ tests/film/effects-fixtures/** -text whitespace=cr-at-eol
 
 # Spatial-optics native characterization preserves exact words and provenance bytes.
 tests/film/optics-fixtures/** -text whitespace=cr-at-eol
+
+# Filtered print illuminant characterization preserves exact native capture bytes.
+tests/print/illuminant-fixtures/** -text whitespace=cr-at-eol

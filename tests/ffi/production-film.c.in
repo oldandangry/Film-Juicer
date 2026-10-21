@@ -913,6 +913,38 @@ static int optics_values(void) {
     return 0;
 }
 
+typedef FjStatus (*PrintIlluminantPrepare)(const FjPrintIlluminantParams*, FjFloatSpan, FjIlluminant*, FjPrintIlluminantFailure*, FjErrorBuffer*);
+_Static_assert(_Generic(&fj_legacy_print_illuminant_prepare, PrintIlluminantPrepare: 1, default: 0), "OFF print illuminant C11 signature");
+_Static_assert(sizeof(FjPrintIlluminantParams) == 44 && _Alignof(FjPrintIlluminantParams) == 4, "OFF print params layout");
+_Static_assert(_Generic(((FjPrintIlluminantParams*)0)->edges_nm, float*: 1, default: 0) && offsetof(FjPrintIlluminantParams, edges_nm) == 0 && sizeof(((FjPrintIlluminantParams*)0)->edges_nm) == 4 * sizeof(float), "OFF print edges type/offset/count");
+_Static_assert(_Generic(((FjPrintIlluminantParams*)0)->transitions_nm, float*: 1, default: 0) && offsetof(FjPrintIlluminantParams, transitions_nm) == 16 && sizeof(((FjPrintIlluminantParams*)0)->transitions_nm) == 4 * sizeof(float), "OFF print transitions type/offset/count");
+_Static_assert(_Generic(((FjPrintIlluminantParams*)0)->cmy_cc, float*: 1, default: 0) && offsetof(FjPrintIlluminantParams, cmy_cc) == 32 && sizeof(((FjPrintIlluminantParams*)0)->cmy_cc) == 3 * sizeof(float), "OFF print CMY type/offset/count");
+_Static_assert(sizeof(FjPrintIlluminantFailure) == 8 && _Alignof(FjPrintIlluminantFailure) == 4 && offsetof(FjPrintIlluminantFailure, reason) == 0 && offsetof(FjPrintIlluminantFailure, sample) == 4, "OFF print failure layout");
+_Static_assert(_Generic(((FjPrintIlluminantFailure*)0)->reason, uint32_t: 1, default: 0) && _Generic(((FjPrintIlluminantFailure*)0)->sample, uint32_t: 1, default: 0), "OFF print failure types");
+_Static_assert(sizeof(FjIlluminant) == 324 && _Alignof(FjIlluminant) == 4 && offsetof(FjIlluminant, samples) == 0 && sizeof(((FjIlluminant*)0)->samples) == 81 * sizeof(float) && _Generic(((FjIlluminant*)0)->samples, float*: 1, default: 0), "OFF reused illuminant layout/type/count");
+_Static_assert(sizeof(FjFloatSpan) == 16 && _Alignof(FjFloatSpan) == 8 && offsetof(FjFloatSpan, data) == 0 && offsetof(FjFloatSpan, count) == 8 && _Generic(((FjFloatSpan*)0)->data, const float*: 1, default: 0) && _Generic(((FjFloatSpan*)0)->count, size_t: 1, default: 0), "OFF reused source span layout/types");
+static int print_illuminant_values(void) {
+    for (size_t i = 0; i < 12; ++i) {
+        FjPrintIlluminantParams params = {0};
+        float source[81];
+        memcpy(params.edges_nm, print_illuminant_edges[i], sizeof(params.edges_nm));
+        memcpy(params.transitions_nm, print_illuminant_transitions[i], sizeof(params.transitions_nm));
+        memcpy(params.cmy_cc, print_illuminant_cmy[i], sizeof(params.cmy_cc));
+        memcpy(source, print_illuminant_source[i], sizeof(source));
+        FjIlluminant out;
+        grain_fill(out.samples, 81, UINT32_C(0xc1500000));
+        FjPrintIlluminantFailure failure = {99, 98};
+        const FjPrintIlluminantParams* bound = i == 10 ? NULL : &params;
+        const FjFloatSpan span = {source, i == 11 ? 80 : 81};
+        FjStatus actual = fj_legacy_print_illuminant_prepare(bound, span, &out, &failure, NULL);
+        CHECK(status(actual, print_illuminant_envelopes[i][0]));
+        CHECK(failure.reason == print_illuminant_envelopes[i][1] && failure.sample == print_illuminant_envelopes[i][2]);
+        CHECK(words(out.samples, print_illuminant_samples[i], 81));
+        printf("PRINT_ILLUMINANT_CASE %s category=%u api=%u native_code=%d reason=%u sample=%u fields=81-pass\n", print_illuminant_names[i], actual.category, actual.api, actual.native_code, failure.reason, failure.sample);
+    }
+    return 0;
+}
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -928,6 +960,7 @@ int main(int argc, char** argv) {
 #endif
     CHECK(effects_values() == 0);
     CHECK(optics_values() == 0);
+    CHECK(print_illuminant_values() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

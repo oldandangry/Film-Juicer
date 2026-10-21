@@ -23,6 +23,7 @@
 #include "ColorTransforms.h"
 #include "RustSpectralBridge.h"
 #include "RustExposureBridge.h"
+#include "RustFilmRecipeBridge.h"
 
 namespace {
 
@@ -790,8 +791,8 @@ namespace {
             return false;
         }
         payload.printMainIlluminant.emplace();
-        if (!Spektrafilm::build_filtered_print_illuminant(
-                recipe.print,
+        if (!JuicerAssets::prepare_print_illuminant(
+                recipe.print.filters.dichroic,
                 sourcePrintIlluminant,
                 recipe.print.filters.mainCmyCc,
                 *payload.printMainIlluminant,

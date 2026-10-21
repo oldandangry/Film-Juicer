@@ -18,6 +18,7 @@
 #include "SpectralData.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
+#include "print_illuminant_fixture.h"
 
 #define FJ_TC_SIZE(type, size, alignment) static_assert(sizeof(type) == size && alignof(type) == alignment);
 #define FJ_TC_FIELD(type, field, offset) static_assert(offsetof(type, field) == offset);
@@ -235,7 +236,7 @@ int main(int argc, char** argv) {
             const auto manifest = Json::parse(manifestFile);
             const auto& membership = manifest["preset_membership"][argv[4]];
             std::ifstream input(manifestPath.parent_path() / membership["records"].get<std::string>());
-            const auto fixture = Json::parse(input);
+            const auto fixture = PrintIlluminantFixtures::apply(manifestPath.parent_path() / membership["records"].get<std::string>(), Json::parse(input));
             if (std::string(argv[1]) == "products")
                 fj_test_tc_lut_products(fixture);
             else if (std::string(argv[1]) == "admission")

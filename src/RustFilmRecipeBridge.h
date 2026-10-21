@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <string>
 
@@ -15,6 +16,8 @@ struct VisualGrainRecipe;
 struct FilmJuicerEffectsRecipe;
 struct PhysicalEffectsControls;
 struct SpatialOptics;
+struct DichroicFilterRecipe;
+struct CmyCcTriplet;
 namespace Spektrafilm {
     struct SpatialOpticsControls;
 }
@@ -24,6 +27,8 @@ namespace Profiles {
 } // namespace Profiles
 
 namespace JuicerAssets {
+    // SF_TEMP_BRIDGE_PRINT_ILLUMINANT: complete synchronous copy; remove S4.E.
+    bool prepare_print_illuminant(const DichroicFilterRecipe& filters, const std::array<float, 81>& source, const CmyCcTriplet& cmy, std::array<float, 81>& out, std::string& diagnostic);
     // SF_TEMP_BRIDGE_FILM_DIR_DENSITY: synchronous additional hold; remove S4.E.
     // Moves transfer the consuming obligation and leave the source handle null.
     class DevelopmentHold final {

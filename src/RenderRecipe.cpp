@@ -1133,60 +1133,6 @@ namespace Spektrafilm {
         }
     }
 
-    bool build_filtered_print_illuminant(
-        const PrintRecipe& recipe,
-        const std::array<float, 81>& sourceIlluminant,
-        const CmyCcTriplet& cmyCc,
-        std::array<float, 81>& out,
-        std::string& diagnostic) {
-        diagnostic.clear();
-        std::array<std::array<float, 81>, 3> filters{};
-        for (std::size_t sample = 0; sample < out.size(); ++sample) {
-            const float wavelength = 380.0f + 5.0f * static_cast<float>(sample);
-            const float y =
-                0.5f * std::erf((wavelength - recipe.filters.dichroic.customEdgesNm[0]) /
-                                recipe.filters.dichroic.customTransitionsNm[0]) +
-                0.5f;
-            const float mErf =
-                wavelength <= 550.0f
-                    ? -std::erf((wavelength - recipe.filters.dichroic.customEdgesNm[1]) /
-                                recipe.filters.dichroic.customTransitionsNm[1])
-                    : std::erf((wavelength - recipe.filters.dichroic.customEdgesNm[2]) /
-                               recipe.filters.dichroic.customTransitionsNm[2]);
-            const float c =
-                -0.5f * std::erf((wavelength - recipe.filters.dichroic.customEdgesNm[3]) /
-                                 recipe.filters.dichroic.customTransitionsNm[3]) +
-                0.5f;
-            filters[0][sample] = c;
-            filters[1][sample] = 0.5f * mErf + 0.5f;
-            filters[2][sample] = y;
-        }
-        const std::array<float, 3> transmittance{{std::pow(10.0f, -cmyCc.c / 100.0f),
-                                                  std::pow(10.0f, -cmyCc.m / 100.0f),
-                                                  std::pow(10.0f, -cmyCc.y / 100.0f)}};
-        float energy = 0.0f;
-        for (std::size_t sample = 0; sample < out.size(); ++sample) {
-            float total = sourceIlluminant[sample];
-            for (std::size_t channel = 0; channel < filters.size(); ++channel) {
-                total *= 1.0f - (1.0f - filters[channel][sample]) *
-                                    (1.0f - transmittance[channel]);
-            }
-            if (!(std::isfinite(total) && total >= 0.0f)) {
-                diagnostic =
-                    "MalformedRequiredResource phase=4B field=filtered_print_illuminant";
-                return false;
-            }
-            out[sample] = total;
-            energy += total;
-        }
-        if (!(std::isfinite(energy) && energy > 0.0f)) {
-            diagnostic =
-                "MalformedRequiredResource phase=4B field=filtered_print_illuminant";
-            return false;
-        }
-        return true;
-    }
-
     bool finish_synthetic_reference_recipes(
         RenderRecipe& recipe,
         const Spectral::FilmTcLut* filmTcLut,

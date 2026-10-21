@@ -1,3 +1,4 @@
+#include "../ffi/print_illuminant_fixture.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -2751,9 +2752,10 @@ namespace {
         std::ifstream manifestStream(path);
         require(bool(manifestStream), "optics manifest open");
         const auto manifest = Json::parse(manifestStream);
-        std::ifstream stream(path.parent_path() / manifest.at("presets").at(preset).at("ofx").get<std::string>());
+        const auto capturePath = path.parent_path() / manifest.at("presets").at(preset).at("ofx").get<std::string>();
+        std::ifstream stream(capturePath);
         require(bool(stream), "optics capture payload open");
-        const auto frozen = Json::parse(stream).at("ofx");
+        const auto frozen = PrintIlluminantFixtures::apply(capturePath, Json::parse(stream)).at("ofx");
         require(frozen.size() == 96, "complete frozen optics capture membership");
         for (unsigned route = 0; route < 4; ++route) {
             NativeHost host;
@@ -2815,9 +2817,10 @@ namespace {
         std::ifstream manifestStream(manifestPath);
         require(bool(manifestStream), "effects capture manifest open");
         const auto manifest = nlohmann::json::parse(manifestStream);
-        std::ifstream stream(manifestPath.parent_path() / manifest.at("presets").at(preset).at("ofx").get<std::string>());
+        const auto capturePath = manifestPath.parent_path() / manifest.at("presets").at(preset).at("ofx").get<std::string>();
+        std::ifstream stream(capturePath);
         require(bool(stream), "effects capture fixture open");
-        const auto captured = nlohmann::json::parse(stream);
+        const auto captured = PrintIlluminantFixtures::apply(capturePath, nlohmann::json::parse(stream));
         require(captured.at("ofx").size() == 608, "complete frozen effects capture membership");
         JuicerEffect effect(host.effect_handle());
         host.bind_effect(effect);
@@ -3683,9 +3686,13 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                 std::ifstream expected(expectedPath);
                 require(bool(expected), "independent native OFX grain words open");
                 std::istringstream actual(grainWords);
-                std::string expectedWord, actualWord;
-                while (expected >> expectedWord)
-                    require(bool(actual >> actualWord) && expectedWord == actualWord, "exact native authored/captured/recipe/final grain words");
+                std::vector<std::string> originalWords;
+                for (std::string word; expected >> word;)
+                    originalWords.push_back(word);
+                const auto selectedWords = PrintIlluminantFixtures::apply(expectedPath, originalWords);
+                std::string actualWord;
+                for (const auto& word : selectedWords)
+                    require(bool(actual >> actualWord) && word.get<std::string>() == actualWord, "exact native authored/captured/recipe/final grain words");
                 require(!(actual >> actualWord), "no extra grain capture records");
             }
             std::cout << grainWords;

@@ -983,3 +983,37 @@ archive, including complete seeded semantic clearing. Compiler privacy retains
 the existing 60-second individual and 240-second boundary deadlines and two
 isolated workers. These checks do not establish installed Resolve or visual
 acceptance.
+
+
+`Ffi.Host.PrintIlluminant` checks the fixed print illumination constructor through
+production and facade entries, compiled C11/C++20/Rust facts, exact approved sample
+words, actual Sample/Energy failures, independent clearing, optional diagnostics,
+stage-10 panic recovery/thread isolation, owned lifetime and native projection.
+It has explicit boundary relevance. `Print.Host.IlluminantProducts` checks 72
+actual route/reconstruction/control products against immutable
+[print illuminant fixtures](print/illuminant-fixtures/README.md), including direct
+omission, main/preflash samples and consumed descriptor/balance/final identities.
+Both are host groups with a 180-second deadline and an exact preset argument.
+The six `print_illuminant_*` compiler fixtures enforce construction, privacy,
+read-only access and source-independent ownership under existing deadlines.
+The Release production probe includes twelve print illuminant calls, with frozen
+approved pinned-erff words and exact typed failure envelopes; successful OFF execution on each
+platform is required separately. Test registration does not establish a pass or
+numerical/caller/installed-host acceptance.
+
+The owner-approved 20 October print numerical exception selects the existing
+`libm::erff` 0.2.15 evaluator and accepts its characterized small native differences
+and honest downstream content identities. Native captures and original failed
+exact comparisons remain preserved; separate approved-Rust fixtures supply exact
+expectations. No general floating-point tolerance or wider numerical exception is
+used. This policy does not claim a new visual/scopes comparison for this slice.
+Existing product fixtures retain their bytes; exact ordered supplements in the
+print fixture directory align their dependent recipe/upload identities with the
+selected evaluator. Unrelated product fields remain exact. Existing glare seed
+composition follows the actual recipe hash, so identical pixels are not claimed.
+
+The same supplement layer aligns older OFX, parameter-identity and processor
+pixel expectations affected by the existing glare seed dependency. Original
+fixtures and pixel bounds remain unchanged. See the print fixture README for
+logical pixel-row aliases and measured changes; spectral ULP maxima must not be
+used as image-pixel bounds.

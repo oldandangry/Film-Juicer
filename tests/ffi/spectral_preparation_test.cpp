@@ -23,6 +23,7 @@
 #include "ProcessRoot.h"
 #include "ColorTransforms.h"
 #include "juicer_test_api.h"
+#include "print_illuminant_fixture.h"
 #include "exposure_fixture.h"
 #include "juicer_cuda_owner.h"
 
@@ -311,7 +312,7 @@ namespace {
 int main(int argc, char** argv) {
     try {
         require(argc == 3 || argc == 5, "group, preset fixture and optional product resource/scratch required");
-        const Json fixture = load_exposure_qualified_fixture(argv[2]);
+        const Json fixture = PrintIlluminantFixtures::apply(argv[2], load_exposure_qualified_fixture(argv[2]));
         const std::string group = argv[1];
         if (group == "tables")
             tables(fixture);

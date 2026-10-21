@@ -229,6 +229,26 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_print_illuminant_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("print_illuminant_complete", None),
+            ("print_illuminant_construction", {"E0451": ("print::Illuminant { ..illuminant }",)}),
+            ("print_illuminant_default", {"E0599": ("print::Illuminant::default()",)}),
+            ("print_illuminant_private", {"E0616": ("illuminant.samples",)}),
+            ("print_illuminant_readonly", {"E0594": ("illuminant.samples()[0] = 0.0",)}),
+            ("print_illuminant_owned", None),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_optics_are_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("optics_complete", None),

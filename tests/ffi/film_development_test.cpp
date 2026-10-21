@@ -20,6 +20,7 @@
 #include "RenderRecipe.h"
 #include "RustAssetBridge.h"
 #include "juicer_test_api.h"
+#include "print_illuminant_fixture.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
 
@@ -356,7 +357,7 @@ namespace {
 int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all fixture failures become nonzero exits.
     require(argc == 3 || (argc == 4 && std::string_view(argv[3]) == "products"), "resources and immutable native capture required");
     std::ifstream input{std::filesystem::path(argv[2])};
-    const auto fixture = Json::parse(input);
+    const auto fixture = PrintIlluminantFixtures::apply(argv[2], Json::parse(input));
     if (argc == 4) {
         products(argv[1], fixture);
     } else {

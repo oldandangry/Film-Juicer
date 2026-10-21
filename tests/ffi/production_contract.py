@@ -89,6 +89,7 @@ def execute(arguments):
         b"visual grain fixture panic",
         b"physical effects fixture panic",
         b"spatial optics fixture panic",
+        b"print illuminant fixture panic",
         b"film DIR acquire fixture panic",
         b"film DIR view fixture panic",
         b"film DIR release fixture panic",
@@ -133,6 +134,14 @@ def execute(arguments):
     optics_payload = optics_directory / optics_spec["presets"][arguments.preset]["literal"]
     assert digest(optics_payload) == optics_spec["payload_sha256"][optics_payload.name]
     consumed_paths.extend([optics_manifest, optics_payload])
+    print_directory = root / "tests/print/illuminant-fixtures"
+    print_manifest = print_directory / "rust-manifest.json"
+    print_spec = json.loads(print_manifest.read_text())
+    print_payload = print_directory / print_spec["presets"][arguments.preset]["literal"]
+    assert digest(print_payload) == print_spec["files"][print_payload.name]["sha256"]
+    native_print_manifest = print_directory / print_spec["native_manifest"]["path"]
+    assert digest(native_print_manifest) == print_spec["native_manifest"]["sha256"]
+    consumed_paths.extend([print_manifest, print_payload, native_print_manifest])
     consumed = {str(path): digest(path) for path in sorted(set(consumed_paths))}
 
     def check_consumed():
@@ -171,6 +180,7 @@ def execute(arguments):
         "fj_legacy_visual_grain_prepare",
         "fj_legacy_physical_effects_prepare",
         "fj_legacy_spatial_optics_prepare",
+        "fj_legacy_print_illuminant_prepare",
         "fj_legacy_output_color",
         "fj_legacy_film_profile_acquire",
         "fj_legacy_print_profile_acquire",
@@ -201,11 +211,13 @@ def execute(arguments):
     grain_results = []
     effects_results = []
     optics_results = []
+    print_illuminant_results = []
     for name, source in probes:
         executable = out / (name + suffix)
         target_source = out / (name + ".c")
         target_source.write_bytes(source.read_bytes())
         source = target_source
+        source_sha256 = digest(source)
         if windows:
             command = [
                 str(llvm / "clang-cl.exe"),
@@ -267,11 +279,12 @@ def execute(arguments):
         )
         after = digest(executable)
         assert after == before
+        assert digest(source) == source_sha256, "generated probe source changed during execution"
         check_consumed()
         probe_records.append({"name": name, "executable": str(executable),
                               "linked_sha256": linked, "before_run_sha256": before,
                               "after_run_sha256": after, "source": str(source),
-                              "source_sha256": digest(source), "archive": str(archive),
+                              "source_sha256": source_sha256, "archive": str(archive),
                               "archive_sha256": digest(archive)})
         if name == "film":
             pattern = r"^GRAIN_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) channel=(\d+) sample=(\d+) fields=pass$"
@@ -323,6 +336,25 @@ def execute(arguments):
                                        "native_code": actual[2], "reason": actual[3],
                                        "component": actual[4], "field": actual[5], "channel": actual[6],
                                        "fields": "pass"})
+            print_pattern = r"^PRINT_ILLUMINANT_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) sample=(\d+) fields=81-pass$"
+            names = ["print-illum-neutral", "print-illum-main", "print-illum-preflash",
+                     "print-illum-negative-zero", "print-illum-sample-negative", "print-illum-sample-nan",
+                     "print-illum-sample-infinite", "print-illum-computed-sample", "print-illum-energy-zero",
+                     "print-illum-energy-overflow", "print-illum-raw-params", "print-illum-raw-span"]
+            envelopes = [[0, 0, 0, 0, 4294967295]] * 4 + [
+                [3, 0, 0, 2, 0], [3, 0, 0, 2, 37], [3, 0, 0, 2, 80],
+                [3, 0, 0, 2, 24], [3, 0, 0, 3, 4294967295], [3, 0, 0, 3, 4294967295],
+                [2, 0, 0, 1, 4294967295], [2, 0, 0, 1, 4294967295]]
+            lines = [line for line in output.splitlines() if line.startswith("PRINT_ILLUMINANT_CASE")]
+            assert len(lines) == 12, lines
+            for line, case, envelope in zip(lines, names, envelopes, strict=True):
+                match = re.fullmatch(print_pattern, line)
+                assert match is not None and match[1] == case, line
+                actual = [int(value) for value in match.groups()[1:]]
+                assert actual == envelope, line
+                print_illuminant_results.append({"case": case, "category": actual[0], "api": actual[1],
+                                                  "native_code": actual[2], "reason": actual[3],
+                                                  "sample": actual[4], "fields": "81-pass"})
     for artifact in scanned:
         assert digest(Path(artifact["file"])) == artifact["sha256"], artifact
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -355,6 +387,9 @@ def execute(arguments):
                 "grain_results": grain_results,
                 "effects_results": effects_results,
                 "optics_results": optics_results,
+                "print_illuminant_results": print_illuminant_results,
+                "print_illuminant_fixture": {"manifest": str(print_manifest), "payload": str(print_payload),
+                                             "logical_preset": arguments.preset},
                 "optics_fixture": {"manifest": str(optics_manifest), "payload": str(optics_payload),
                                    "logical_preset": arguments.preset},
                 "effects_fixture": {"manifest": str(effects_manifest), "payload": str(effects_payload),
@@ -371,6 +406,7 @@ def execute(arguments):
         )
         + "\n"
     )
+    print("PRODUCTION_MANIFEST_SHA256", digest(out / "production.json"), flush=True)
     print(
         "PASS complete OFF film and retained output-color gate, archive/module/PDB isolation, two exports and hidden-device loading",
         flush=True,
@@ -555,6 +591,36 @@ def expected_film_header(out):
                 return "UINT64_C(" + str(word) + ")" if wide else str(word) + "U"
             stream.write("static const " + ("uint64_t" if wide else "uint32_t") + " optics_" + name
                          + "[15][" + str(len(data[0])) + "] = {" + ",".join("{" + ",".join(literal(word) for word in row) + "}" for row in data) + "};\n")
+
+    print_directory = root / "tests/print/illuminant-fixtures"
+    print_manifest = json.loads((print_directory / "rust-manifest.json").read_text())
+    print_payload = print_directory / print_manifest["presets"][arguments.preset]["literal"]
+    assert digest(print_payload) == print_manifest["files"][print_payload.name]["sha256"]
+    literals = json.loads(print_payload.read_text())["cases"]
+    names = ["print-illum-neutral", "print-illum-main", "print-illum-preflash",
+             "print-illum-negative-zero", "print-illum-sample-negative", "print-illum-sample-nan",
+             "print-illum-sample-infinite", "print-illum-computed-sample", "print-illum-energy-zero",
+             "print-illum-energy-overflow", "print-illum-raw-params", "print-illum-raw-span"]
+    rows = []
+    for name in names[:10]:
+        matched = [row for row in literals if row["id"] == name]
+        assert len(matched) == 1, name
+        rows.append(matched[0])
+    rows += [rows[0], rows[0]]
+    # Owner-approved pinned-erff words are frozen separately from native evidence.
+    # Header generation evaluates neither Rust nor native mathematics.
+    envelopes = [[0, 0, 4294967295]] * 4 + [[3, 2, 0], [3, 2, 37], [3, 2, 80],
+                  [3, 2, 24], [3, 3, 4294967295], [3, 3, 4294967295],
+                  [2, 1, 4294967295], [2, 1, 4294967295]]
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write("static const char* print_illuminant_names[12] = {" + ",".join(json.dumps(name) for name in names) + "};\n")
+        for name, data in [("edges", [row["edges_nm"] for row in rows]),
+                           ("transitions", [row["transitions_nm"] for row in rows]),
+                           ("cmy", [row["cmy_cc"] for row in rows]),
+                           ("source", [row["source"] for row in rows]),
+                           ("samples", [row["samples"] if i < 4 else [0] * 81 for i, row in enumerate(rows)]),
+                           ("envelopes", envelopes)]:
+            stream.write("static const uint32_t print_illuminant_" + name + "[12][" + str(len(data[0])) + "] = {" + ",".join("{" + ",".join(str(word) + "U" for word in row) + "}" for row in data) + "};\n")
 
 
 if __name__ == "__main__":

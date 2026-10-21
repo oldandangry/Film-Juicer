@@ -20,3 +20,5 @@ pub mod gamut;
 pub mod effects;
 
 pub mod optics;
+
+pub mod print;

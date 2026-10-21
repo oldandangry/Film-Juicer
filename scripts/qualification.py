@@ -137,6 +137,87 @@ def run_ctest_parts(campaign, group, commands, roles, *, inputs, tools, environm
     return paths
 
 
+def production_manifest_identity(receipt, *, root, resolve=Path):
+    """Read the identity emitted by the successful production process."""
+    record = json.loads(resolve(str(receipt)).read_text())
+    command = record["identity"]["command"]
+    if command.count("--artifacts") != 1:
+        raise ValueError("production command does not declare retained execution evidence")
+    output = resolve(str(root / record["output"]))
+    identities = re.findall(r"^PRODUCTION_MANIFEST_SHA256 ([0-9a-f]{64})$", output.read_text(), re.M)
+    if len(identities) != 1:
+        raise ValueError("production manifest lacks its execution-time identity; fresh execution required")
+    return resolve(command[command.index("--artifacts") + 1]) / "production.json", identities[0]
+
+
+def production_payloads(manifest, expected_manifest_sha256, *, resolve=Path, retained=None):
+    """Recheck the named OFF execution files, never backfill manifest-only proof."""
+    manifest = resolve(str(manifest))
+    if not manifest.is_file() or digest(manifest) != expected_manifest_sha256:
+        raise ValueError("production manifest execution identity changed")
+    document = json.loads(manifest.read_text())
+    probes = document.get("probes", [])
+    expected_names = {"film", "accepted-output-color"}
+    if len(probes) != 2 or {row["name"] for row in probes} != expected_names:
+        raise ValueError("production retained probe membership is incomplete or duplicated")
+    suffix = ".exe" if resolve(probes[0]["executable"]).suffix == ".exe" else ""
+    expected = {str(manifest): expected_manifest_sha256}
+
+    def admit(name, checksum):
+        path = resolve(name)
+        key = str(path)
+        if key in expected and expected[key] != checksum:
+            raise ValueError("production execution identities disagree: " + key)
+        if not path.is_file() or digest(path) != checksum:
+            raise ValueError("production execution payload missing or changed: " + key)
+        expected[key] = checksum
+
+    for row in probes:
+        name = row["name"]
+        executable = resolve(row["executable"])
+        source = resolve(row["source"])
+        if (executable != manifest.parent / (name + suffix)
+                or source != manifest.parent / (name + ".c")
+                or len({row["linked_sha256"], row["before_run_sha256"], row["after_run_sha256"]}) != 1):
+            raise ValueError("production probe execution identities disagree: " + name)
+        admit(row["executable"], row["after_run_sha256"])
+        admit(row["source"], row["source_sha256"])
+    consumed = document.get("consumed_inputs", {})
+    headers = {name: checksum for name, checksum in consumed.items()
+               if resolve(name).parent == manifest.parent and resolve(name).suffix == ".h"}
+    if str(manifest.parent / "production-film-expected.h") not in {str(resolve(name)) for name in headers}:
+        raise ValueError("production retained expectation header membership is incomplete")
+    for name, checksum in headers.items():
+        admit(name, checksum)
+    command_record = document["commands"]
+    if resolve(command_record["file"]) != manifest.parent / "commands.json":
+        raise ValueError("production retained command record is not the declared run")
+    admit(command_record["file"], command_record["sha256"])
+    commands = json.loads(resolve(command_record["file"]).read_text())
+    names = [row["name"] for row in commands]
+    if len(names) != len(set(names)) or not {name + role for name in expected_names for role in ("-compile", "-values")} <= set(names):
+        raise ValueError("production retained command membership is incomplete or duplicated")
+    outputs = {}
+    for row in commands:
+        if row["returncode"] != 0:
+            raise ValueError("production retained command did not succeed")
+        for extension in ("stdout", "stderr"):
+            name = str(manifest.parent / (row["name"] + "." + extension))
+            outputs[name] = row[extension + "_sha256"]
+        if row["name"] in {name + "-values" for name in expected_names}:
+            name = row["name"].removesuffix("-values")
+            if resolve(row["command"][0]) != manifest.parent / (name + suffix):
+                raise ValueError("production command did not execute the linked probe")
+    recorded_outputs = {str(resolve(name)): checksum for name, checksum in document.get("command_outputs", {}).items()}
+    if recorded_outputs != outputs:
+        raise ValueError("production retained detailed output membership is incomplete")
+    for name, checksum in outputs.items():
+        admit(name, checksum)
+    if retained is not None and {str(resolve(name)): checksum for name, checksum in retained.items()} != expected:
+        raise ValueError("production retained payload membership or execution identities disagree; fresh execution required")
+    return expected
+
+
 def run_stage(campaign, state_path, state, name, command, *, inputs, tools, environment,
           timeout, semantic_command=None, action=None, validate=None, payloads=(),
           dependencies=(), repeat_reason="", refresh_inputs=None):
@@ -158,6 +239,8 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
                     raise ValueError("checkpoint command receipt changed")
                 check_receipt_payloads(campaign.root, path)
             path = paths[0]
+            if name == "production" and payloads:
+                production_payloads(*production_manifest_identity(path, root=campaign.root), retained=previous.get("payloads", {}))
             if any(digest(Path(p)) != value for p, value in previous.get("payloads", {}).items()):
                 raise ValueError("checkpoint result payload changed")
             if validate:
@@ -190,9 +273,11 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
                 or tool_snapshot(tools, allow_missing=True) != identity["tools"]):
             raise ValueError("checkpoint relevant inputs changed")
         identity["inputs"] = snapshot(campaign.root, refresh_inputs()) if refresh_inputs else actual
+        retained = (production_payloads(*production_manifest_identity(paths[0], root=campaign.root))
+                    if name == "production" and payloads else {str(p): digest(Path(p)) for p in payloads})
         result = {"status": "passed", "identity": identity, "receipt": str(paths[0]),
                   "sha256": digest(paths[0]),
-                  "additional_receipts": {str(p): digest(p) for p in paths[1:]}, "payloads": {str(p): digest(Path(p)) for p in payloads}}
+                  "additional_receipts": {str(p): digest(p) for p in paths[1:]}, "payloads": retained}
         state[name] = result
         write_json(state_path, state)
         return result
@@ -217,6 +302,10 @@ def checkpoint_inputs(root, build, group, *, source_files=None):
             for directory in ("src", "native"):
                 paths.update(p for p in (root / directory).rglob("*") if p.is_file() and p.suffix in {".h", ".cpp", ".cu", ".cuh"})
             paths.add(root / "tests/ffi/color_preparation_test.cpp")
+            paths.update(root / "tests/ffi" / name for name in (
+                "film_recipe_test.cpp", "film_recipe_abi_c.c", "film_recipe_abi_cpp.inc",
+                "film_recipe_abi_facts.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h"))
+            paths.update((root / "tests/print/illuminant-fixtures").glob("*.json"))
             paths.update((root / "tests/quality").glob("test_rust_*.py"))
             paths.update(p for p in (root / "tests/quality/fixtures").rglob("*.rs"))
         else:
@@ -553,6 +642,13 @@ def _collect_owned(root, paths):
                         or not process.get("drained") or any(command["process_tree"].get(k) != v for k, v in process.items())
                         or digest(root / command["output"]) != command["output_sha256"]):
                     raise ValueError("checkpoint terminal evidence is invalid")
+            if name == "production":
+                artifacts = {path: checksum for path, checksum in result["identity"]["inputs"].items()
+                             if Path(path).suffix.lower() in {".a", ".lib", ".ofx", ".pdb"}}
+                if not artifacts or any(digest(root / path) != checksum for path, checksum in artifacts.items()):
+                    raise ValueError("final inspected production artifacts changed")
+                production_payloads(*production_manifest_identity(raw_paths[0], root=root, resolve=local),
+                                    resolve=local, retained=result.get("payloads", {}))
             for path, expected in result.get("payloads", {}).items():
                 if digest(local(path)) != expected:
                     raise ValueError("checkpoint result payload changed")
@@ -578,11 +674,7 @@ def _collect_owned(root, paths):
                             for p in result["identity"]["tool_paths"]}
             if actual_tools != expected_tools:
                 raise ValueError("checkpoint toolchain/configuration changed")
-            if name == "production":
-                artifacts = {path: checksum for path, checksum in result["identity"]["inputs"].items()
-                             if Path(path).suffix.lower() in {".a", ".lib", ".ofx", ".pdb"}}
-                if not artifacts or any(digest(root / path) != checksum for path, checksum in artifacts.items()):
-                    raise ValueError("final inspected production artifacts changed")
+
         if "product" in record["selection"]:
             identity = preparation_identity(root / "out/build" / record["preset"], record["stages"]["prepare"], resolve=local)
             if any(record["stages"][name]["identity"]["dependencies"] != [identity] for name in ("quality", "product")):

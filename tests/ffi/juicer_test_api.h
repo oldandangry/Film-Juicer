@@ -331,6 +331,12 @@ FjStatus fj_test_film_density_bounds_prepare(
     FjFilmRecipeFailure* out_failure,
     FjErrorBuffer* error);
 FjStatus fj_test_film_development_retain(const FjFilmDevelopmentOwner*, FjFilmDevelopmentOwner**, FjErrorBuffer*);
+FjStatus fj_test_print_illuminant_prepare(
+    const FjPrintIlluminantParams* params,
+    FjFloatSpan source,
+    FjIlluminant* out_illuminant,
+    FjPrintIlluminantFailure* out_failure,
+    FjErrorBuffer* error);
 FjStatus fj_test_film_recipe_fault(uint32_t stage, uint32_t fault);
 size_t fj_test_film_dir_live_owners(void);
 const size_t* fj_test_film_recipe_abi_facts(size_t* count);

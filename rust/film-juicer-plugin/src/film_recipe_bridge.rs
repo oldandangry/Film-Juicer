@@ -1032,6 +1032,10 @@ extern "C" fn fj_test_film_recipe_fault(stage: u32, fault: u32) -> FjStatus {
         dir::test_support::reject_next(fault);
         return status(FJ_STATUS_SUCCESS);
     }
+    if stage == 10 && fault <= 1 {
+        faults::NEXT.set((stage, fault));
+        return status(FJ_STATUS_SUCCESS);
+    }
     if stage == 9 && fault <= 2 {
         faults::NEXT.set((stage, fault));
         return status(FJ_STATUS_SUCCESS);
@@ -1534,6 +1538,31 @@ unsafe extern "C" fn fj_test_film_recipe_abi_facts(count: *mut usize) -> *const 
         crate::optics_bridge::FJ_OPTICS_FIELD_RESOLVED_HASH as usize,
         crate::optics_bridge::FJ_OPTICS_FIELD_SIGMA_UM as usize,
         crate::optics_bridge::FJ_OPTICS_FIELD_TOTAL_STRENGTH as usize,
+        size_of::<crate::print_bridge::FjPrintIlluminantParams>(),
+        align_of::<crate::print_bridge::FjPrintIlluminantParams>(),
+        std::mem::offset_of!(crate::print_bridge::FjPrintIlluminantParams, edges_nm),
+        4,
+        std::mem::offset_of!(crate::print_bridge::FjPrintIlluminantParams, transitions_nm),
+        4,
+        std::mem::offset_of!(crate::print_bridge::FjPrintIlluminantParams, cmy_cc),
+        3,
+        size_of::<crate::print_bridge::FjPrintIlluminantFailure>(),
+        align_of::<crate::print_bridge::FjPrintIlluminantFailure>(),
+        std::mem::offset_of!(crate::print_bridge::FjPrintIlluminantFailure, reason),
+        std::mem::offset_of!(crate::print_bridge::FjPrintIlluminantFailure, sample),
+        size_of::<crate::asset_illuminant::FjIlluminant>(),
+        align_of::<crate::asset_illuminant::FjIlluminant>(),
+        std::mem::offset_of!(crate::asset_illuminant::FjIlluminant, samples),
+        81,
+        size_of::<FjFloatSpan>(),
+        align_of::<FjFloatSpan>(),
+        std::mem::offset_of!(FjFloatSpan, data),
+        std::mem::offset_of!(FjFloatSpan, count),
+        crate::print_bridge::FJ_PRINT_ILLUMINANT_REASON_NONE as usize,
+        crate::print_bridge::FJ_PRINT_ILLUMINANT_REASON_RAW as usize,
+        crate::print_bridge::FJ_PRINT_ILLUMINANT_REASON_SAMPLE as usize,
+        crate::print_bridge::FJ_PRINT_ILLUMINANT_REASON_ENERGY as usize,
+        crate::print_bridge::FJ_PRINT_ILLUMINANT_REASON_PANIC as usize,
     ];
     if !count.is_null() {
         // SAFETY: Facade caller authorizes the exclusive count output.

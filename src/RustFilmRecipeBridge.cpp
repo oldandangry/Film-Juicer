@@ -25,6 +25,7 @@ namespace JuicerAssets {
         void grain(FjVisualGrainRecipe& recipe);
         void effects(FjPhysicalEffectsRecipe& recipe);
         void optics(FjStatus& status, FjSpatialOpticsFailure& failure, FjSpatialOpticsRecipe& recipe, FjErrorBuffer& error);
+        void print_illuminant(FjStatus& status, FjPrintIlluminantFailure& failure, FjIlluminant& illuminant, FjErrorBuffer& error);
     } // namespace RecipeTest
 #endif
     namespace {
@@ -801,6 +802,65 @@ namespace JuicerAssets {
         halation.hash = wire.scatter_halation.hash;
         projected.hash = wire.hash;
         out = projected;
+        return true;
+    }
+
+    // SF_TEMP_BRIDGE_PRINT_ILLUMINANT: bind resolved values without policy; remove S4.E.
+    bool prepare_print_illuminant(const DichroicFilterRecipe& filters,
+                                  const std::array<float, 81>& source,
+                                  const CmyCcTriplet& cmy,
+                                  std::array<float, 81>& out,
+                                  std::string& diagnostic) {
+        out.fill(0.0f);
+        diagnostic.clear();
+        FjPrintIlluminantParams params{};
+        std::copy(filters.customEdgesNm.begin(), filters.customEdgesNm.end(), params.edges_nm);
+        std::copy(filters.customTransitionsNm.begin(), filters.customTransitionsNm.end(), params.transitions_nm);
+        params.cmy_cc[0] = cmy.c;
+        params.cmy_cc[1] = cmy.m;
+        params.cmy_cc[2] = cmy.y;
+        FjIlluminant wire{};
+        FjPrintIlluminantFailure failure{};
+        std::array<char, 512> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        FjStatus status = fj_legacy_print_illuminant_prepare(&params, {source.data(), source.size()}, &wire, &failure, &error);
+#if defined(JUICER_FILM_RECIPE_TEST_HOOK)
+        RecipeTest::print_illuminant(status, failure, wire, error);
+#endif
+        const bool noSample = failure.sample == UINT32_MAX;
+        bool valid = status.api == FJ_API_NONE && status.native_code == 0;
+        switch (failure.reason) {
+            case FJ_PRINT_ILLUMINANT_REASON_NONE:
+                valid = valid && status.category == FJ_STATUS_SUCCESS && noSample;
+                break;
+            case FJ_PRINT_ILLUMINANT_REASON_RAW:
+                valid = valid && status.category == FJ_STATUS_UNSUPPORTED_INPUT && noSample;
+                break;
+            case FJ_PRINT_ILLUMINANT_REASON_SAMPLE:
+                valid = valid && status.category == FJ_STATUS_PREPARATION_FAILURE && failure.sample < 81;
+                break;
+            case FJ_PRINT_ILLUMINANT_REASON_ENERGY:
+                valid = valid && status.category == FJ_STATUS_PREPARATION_FAILURE && noSample;
+                break;
+            case FJ_PRINT_ILLUMINANT_REASON_PANIC:
+                valid = valid && status.category == FJ_STATUS_INTERNAL_FAILURE && noSample;
+                break;
+            default:
+                valid = false;
+                break;
+        }
+        if (error.data != text.data() || error.capacity != text.size() || error.length >= error.capacity || text[error.length] != '\0' || !valid)
+            integrity("Print illuminant preparation");
+        if (status.category != FJ_STATUS_SUCCESS) {
+            if (status.category == FJ_STATUS_PREPARATION_FAILURE) {
+                diagnostic = "MalformedRequiredResource phase=4B field=filtered_print_illuminant";
+                return false;
+            }
+            JuicerCuda::Failure rejected;
+            JuicerCuda::set_failure(rejected, status, "Print illuminant preparation");
+            throw JuicerCuda::ExecutionFailure{std::move(rejected)};
+        }
+        std::copy_n(wire.samples, out.size(), out.begin());
         return true;
     }
 
