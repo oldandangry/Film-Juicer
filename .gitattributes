@@ -111,3 +111,6 @@ tests/film/optics-fixtures/** -text whitespace=cr-at-eol
 
 # Filtered print illuminant characterization preserves exact native capture bytes.
 tests/print/illuminant-fixtures/** -text whitespace=cr-at-eol
+
+# Preflash native characterization preserves exact input/output and provenance bytes.
+tests/print/preflash-fixtures/** -text whitespace=cr-at-eol

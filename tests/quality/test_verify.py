@@ -18,6 +18,31 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class SelectionTests(unittest.TestCase):
+    def test_target_preparation_cli_dispatches_no_qualification(self):
+        import verify
+        for preset in ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release"):
+            with self.subTest(preset=preset), patch.object(sys, "argv", ["verify.py", "prepare", "--preset", preset,
+                    "--targets", "JuicerFilmRecipeTests"]), patch.object(verify, "prepare_targets", return_value="receipt") as prepare, \
+                    patch("qualification.qualify", side_effect=AssertionError("runtime qualification dispatched")):
+                self.assertEqual(verify.main(), 0)
+                prepare.assert_called_once_with(verify.ROOT, preset, ["JuicerFilmRecipeTests"], "ON")
+
+    def test_target_preparation_rejects_unsupported_requests_before_ownership(self):
+        import build_evidence
+        import os
+        native = "windows-clang" if os.name == "nt" else "linux"
+        foreign = "linux" if os.name == "nt" else "windows-clang"
+        requests = [(foreign + "-debug", ["juicer"], "ON"), ("unknown", ["juicer"], "ON"),
+                    (native + "-debug", [], "ON"), (native + "-debug", ["test"], "ON"),
+                    (native + "-debug", ["clean"], "ON"), (native + "-debug", ["--help"], "ON"),
+                    (native + "-debug", ["all", "juicer"], "ON"), (native + "-debug", ["juicer"], "OFF"),
+                    (native + "-release", ["JuicerFilmRecipeTests"], "OFF"), (native + "-release", ["juicer"], "invalid")]
+        for preset, targets, testing in requests:
+            with self.subTest(preset=preset, targets=targets, testing=testing), \
+                    patch.object(build_evidence, "OutputLease", side_effect=AssertionError("invalid request took ownership")), \
+                    self.assertRaises(ValueError):
+                build_evidence.prepare_targets(ROOT, preset, targets, testing)
+
     def test_documentation_changes_preserve_observation_and_initial_pending(self):
         from execution import snapshot
         from verify import dirty_paths, load_development_state
@@ -492,7 +517,7 @@ class SelectionTests(unittest.TestCase):
             saved = state.read_bytes()
             built = root / "built.json"
             built.write_text("{}")
-            args = SimpleNamespace(mode="prepare", preset=build.name, files=["src/ScanRoute.cpp"])
+            args = SimpleNamespace(mode="prepare", preset=build.name, files=["src/ScanRoute.cpp"], targets=None, testing="ON")
             with (
                 patch.object(verify, "ROOT", root),
                 patch.object(verify, "source_snapshot", return_value={}),

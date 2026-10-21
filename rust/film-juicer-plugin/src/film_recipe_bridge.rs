@@ -1032,7 +1032,7 @@ extern "C" fn fj_test_film_recipe_fault(stage: u32, fault: u32) -> FjStatus {
         dir::test_support::reject_next(fault);
         return status(FJ_STATUS_SUCCESS);
     }
-    if stage == 10 && fault <= 1 {
+    if (stage == 10 || stage == 11) && fault <= 1 {
         faults::NEXT.set((stage, fault));
         return status(FJ_STATUS_SUCCESS);
     }
@@ -1563,6 +1563,29 @@ unsafe extern "C" fn fj_test_film_recipe_abi_facts(count: *mut usize) -> *const 
         crate::print_bridge::FJ_PRINT_ILLUMINANT_REASON_SAMPLE as usize,
         crate::print_bridge::FJ_PRINT_ILLUMINANT_REASON_ENERGY as usize,
         crate::print_bridge::FJ_PRINT_ILLUMINANT_REASON_PANIC as usize,
+        size_of::<crate::print_bridge::FjPrintPreflashInput>(),
+        align_of::<crate::print_bridge::FjPrintPreflashInput>(),
+        std::mem::offset_of!(crate::print_bridge::FjPrintPreflashInput, film_base_density),
+        std::mem::offset_of!(
+            crate::print_bridge::FjPrintPreflashInput,
+            filtered_illuminant
+        ),
+        std::mem::offset_of!(
+            crate::print_bridge::FjPrintPreflashInput,
+            print_sensitivity_cmy
+        ),
+        size_of::<crate::print_bridge::FjPrintPreflashRaw>(),
+        align_of::<crate::print_bridge::FjPrintPreflashRaw>(),
+        std::mem::offset_of!(crate::print_bridge::FjPrintPreflashRaw, cmy),
+        3,
+        size_of::<crate::print_bridge::FjPrintPreflashFailure>(),
+        align_of::<crate::print_bridge::FjPrintPreflashFailure>(),
+        std::mem::offset_of!(crate::print_bridge::FjPrintPreflashFailure, reason),
+        std::mem::offset_of!(crate::print_bridge::FjPrintPreflashFailure, channel),
+        crate::print_bridge::FJ_PRINT_PREFLASH_REASON_NONE as usize,
+        crate::print_bridge::FJ_PRINT_PREFLASH_REASON_RAW as usize,
+        crate::print_bridge::FJ_PRINT_PREFLASH_REASON_CHANNEL as usize,
+        crate::print_bridge::FJ_PRINT_PREFLASH_REASON_PANIC as usize,
     ];
     if !count.is_null() {
         // SAFETY: Facade caller authorizes the exclusive count output.

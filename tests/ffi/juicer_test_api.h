@@ -331,6 +331,12 @@ FjStatus fj_test_film_density_bounds_prepare(
     FjFilmRecipeFailure* out_failure,
     FjErrorBuffer* error);
 FjStatus fj_test_film_development_retain(const FjFilmDevelopmentOwner*, FjFilmDevelopmentOwner**, FjErrorBuffer*);
+/* Bounded scalar witnesses in the native domain primitive mode. out is five
+ * exclusive doubles (power, transmitted, NaN-adjusted light, product, sum),
+ * narrowed is one exclusive float. All storage lives through synchronous return. */
+void fj_test_print_preflash_primitive(double density, double illuminant, double sensitivity, double accumulator, double* out, float* narrowed);
+FjStatus fj_test_print_preflash_prepare(
+    const FjPrintPreflashInput* input, FjPrintPreflashRaw* out_raw, FjPrintPreflashFailure* out_failure, FjErrorBuffer* error);
 FjStatus fj_test_print_illuminant_prepare(
     const FjPrintIlluminantParams* params,
     FjFloatSpan source,

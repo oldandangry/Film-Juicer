@@ -20,6 +20,8 @@ from build_evidence import (
     SCOPED_PROTOCOL,
     check_scoped_preparation,
     prepare_build,
+    prepare_targets,
+    retire_s4c1_pending,
     run_ctest,
 )
 from execution import Campaign, OutputLease, UnresolvedScope, digest, write_json
@@ -393,7 +395,12 @@ def main():
     modes = parser.add_subparsers(dest="mode", required=True)
     preparation = modes.add_parser("prepare", help="prepare explicit owning targets and dependencies only")
     preparation.add_argument("--preset", required=True)
-    preparation.add_argument("--files", nargs="+", required=True)
+    preparation_scope = preparation.add_mutually_exclusive_group(required=True)
+    preparation_scope.add_argument("--files", nargs="+")
+    preparation_scope.add_argument("--targets", nargs="+")
+    preparation.add_argument("--testing", choices=("ON", "OFF"), default="ON")
+    retirement = modes.add_parser("retire-s4c1-pending", help="one-time disposition of the two owner-authorized Linux legacy markers")
+    retirement.add_argument("--preset", required=True, choices=("linux-debug", "linux-release"))
     dev = modes.add_parser("development")
     dev.add_argument("--preset", required=True)
     choice = dev.add_mutually_exclusive_group(required=True)
@@ -412,6 +419,9 @@ def main():
     collection.add_argument("--receipts", nargs="+", type=Path, required=True)
     collection.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.mode == "retire-s4c1-pending":
+        print("Legacy retirement only; fresh preparation still required:", retire_s4c1_pending(ROOT, args.preset))
+        return 0
     if args.mode == "collect-qualification":
         from qualification import collect_qualification
         result = collect_qualification(ROOT, args.receipts)
@@ -425,6 +435,12 @@ def main():
         result = qualify(ROOT, args)
         return 2 if json.loads(result.read_text())["status"] == "incomplete" else 0
     if args.mode == "prepare":
+        if args.targets:
+            print("Target preparation only; no runtime qualification:",
+                  prepare_targets(ROOT, args.preset, args.targets, args.testing))
+            return 0
+        if args.testing != "ON":
+            raise ValueError("file-selected development preparation requires testing ON")
         if args.preset != "linux-debug":
             raise ValueError("preparation supports linux-debug only")
         build = ROOT / "out/build" / args.preset

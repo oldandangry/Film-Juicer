@@ -268,3 +268,170 @@ const _: unsafe extern "C" fn(
     *mut FjPrintIlluminantFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_legacy_print_illuminant_prepare;
+
+// SF_TEMP_BRIDGE_PRINT_PREFLASH: fixed synchronous integral; remove S4.E.
+pub(crate) const FJ_PRINT_PREFLASH_REASON_NONE: u32 = 0;
+pub(crate) const FJ_PRINT_PREFLASH_REASON_RAW: u32 = 1;
+pub(crate) const FJ_PRINT_PREFLASH_REASON_CHANNEL: u32 = 2;
+pub(crate) const FJ_PRINT_PREFLASH_REASON_PANIC: u32 = 3;
+
+#[repr(C)]
+pub(crate) struct FjPrintPreflashInput {
+    pub(crate) film_base_density: FjFloatSpan,
+    pub(crate) filtered_illuminant: FjFloatSpan,
+    pub(crate) print_sensitivity_cmy: FjFloatSpan,
+}
+#[repr(C)]
+pub(crate) struct FjPrintPreflashRaw {
+    pub(crate) cmy: [f32; 3],
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjPrintPreflashFailure {
+    pub(crate) reason: u32,
+    pub(crate) channel: u32,
+}
+
+fn preflash_details(reason: u32) -> FjPrintPreflashFailure {
+    FjPrintPreflashFailure {
+        reason,
+        channel: u32::MAX,
+    }
+}
+
+struct PreflashFailure {
+    category: u32,
+    details: FjPrintPreflashFailure,
+}
+impl PreflashFailure {
+    fn raw() -> Self {
+        Self {
+            category: FJ_STATUS_UNSUPPORTED_INPUT,
+            details: preflash_details(FJ_PRINT_PREFLASH_REASON_RAW),
+        }
+    }
+    fn panic() -> Self {
+        Self {
+            category: FJ_STATUS_INTERNAL_FAILURE,
+            details: preflash_details(FJ_PRINT_PREFLASH_REASON_PANIC),
+        }
+    }
+    fn core(error: print::PreflashError) -> Self {
+        let print::PreflashError::Channel { channel } = error;
+        Self {
+            category: FJ_STATUS_PREPARATION_FAILURE,
+            details: FjPrintPreflashFailure {
+                reason: FJ_PRINT_PREFLASH_REASON_CHANNEL,
+                channel: channel as u32,
+            },
+        }
+    }
+}
+
+/// # Safety
+/// Initialized, aligned live input record and backing contain exactly 81/81/243
+/// f32 elements, the last sample-major C/M/Y. Immutable inputs may alias.
+/// Writable outputs and optional diagnostic record/backing are live, exclusive,
+/// mutually disjoint and disjoint from inputs through synchronous return.
+/// Address/count admission does not establish allocation, initialization or lifetime.
+pub(crate) unsafe fn prepare_preflash(
+    input: *const FjPrintPreflashInput,
+    out: *mut FjPrintPreflashRaw,
+    failure: *mut FjPrintPreflashFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    #[cfg(feature = "test-support")]
+    let fault = crate::film_recipe_bridge::faults::take(11);
+    let valid_out = valid_extent(out, 1);
+    let valid_failure = valid_extent(failure, 1);
+    // SAFETY: Independently admitted output records are writable even if a peer
+    // or a later input fails admission. No source reference has been formed.
+    unsafe {
+        if valid_out {
+            out.write(FjPrintPreflashRaw { cmy: [0.0; 3] });
+        }
+        if valid_failure {
+            failure.write(preflash_details(FJ_PRINT_PREFLASH_REASON_NONE));
+        }
+    }
+    // SAFETY: The caller authorizes the optional disjoint diagnostic storage.
+    let diagnostic = unsafe { Diagnostic::admit(error) };
+    let diagnostic_valid = diagnostic.is_ok();
+    let mut diagnostic = diagnostic.ok();
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if !valid_out || !valid_failure || !diagnostic_valid || !valid_extent(input, 1) {
+            return Err(PreflashFailure::raw());
+        }
+        // SAFETY: The initialized record is structurally admitted before access.
+        let input = unsafe { &*input };
+        if input.film_base_density.count != 81
+            || input.filtered_illuminant.count != 81
+            || input.print_sensitivity_cmy.count != 243
+            || !valid_extent(input.film_base_density.data, 81)
+            || !valid_extent(input.filtered_illuminant.data, 81)
+            || !valid_extent(input.print_sensitivity_cmy.data, 243)
+        {
+            return Err(PreflashFailure::raw());
+        }
+        #[cfg(feature = "test-support")]
+        if fault == 1 {
+            panic!("print preflash fixture panic");
+        }
+        // SAFETY: Exact, checked extents precede references to the live immutable
+        // fixed arrays. Nested Rust arrays have the same contiguous f32 layout.
+        // These borrows expire before return, including the permitted input aliases.
+        let (base, light, sensitivity) = unsafe {
+            (
+                &*input.film_base_density.data.cast::<[f32; 81]>(),
+                &*input.filtered_illuminant.data.cast::<[f32; 81]>(),
+                &*input.print_sensitivity_cmy.data.cast::<[[f32; 3]; 81]>(),
+            )
+        };
+        print::PreflashRaw::new(base, light, sensitivity).map_err(PreflashFailure::core)
+    }))
+    .unwrap_or_else(|_| Err(PreflashFailure::panic()));
+    match result {
+        Ok(value) => {
+            // SAFETY: Both complete writable outputs were admitted; commit only
+            // the finished triplet, including permitted f32 narrowing infinity.
+            unsafe {
+                out.write(FjPrintPreflashRaw { cmy: *value.cmy() });
+                failure.write(preflash_details(FJ_PRINT_PREFLASH_REASON_NONE));
+            }
+            status(FJ_STATUS_SUCCESS)
+        }
+        Err(rejection) => {
+            if let Some(writer) = &mut diagnostic {
+                let _ = write!(
+                    writer,
+                    "print preflash reason={} channel={}",
+                    rejection.details.reason, rejection.details.channel
+                );
+            }
+            if valid_failure {
+                // SAFETY: This independently admitted record remains writable.
+                unsafe { failure.write(rejection.details) };
+            }
+            status(rejection.category)
+        }
+    }
+}
+
+/// # Safety
+/// The same initialized, live, aligned and disjoint synchronous contract as prepare_preflash.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_print_preflash_prepare(
+    input: *const FjPrintPreflashInput,
+    out: *mut FjPrintPreflashRaw,
+    failure: *mut FjPrintPreflashFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The checked operation retains no pointer and admits each output independently.
+    unsafe { prepare_preflash(input, out, failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const FjPrintPreflashInput,
+    *mut FjPrintPreflashRaw,
+    *mut FjPrintPreflashFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_legacy_print_preflash_prepare;

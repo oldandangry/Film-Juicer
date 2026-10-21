@@ -77,6 +77,13 @@ handoff scope without manufacturing an aggregate pass. Use the existing wrappers
 and domain capture modes; do not add per-change launchers, retry variants, matrix
 drivers or collectors, including equivalent long inline scripts.
 
+For preparation without a runtime selection, `scripts/verify.py prepare --preset
+<preset> --targets <maintained-targets...> --testing ON|OFF` supports the four
+standard native trees. See [target preparation](../CONTRIBUTING.md#required-checks)
+for the bounded target list and Release OFF restrictions. This uses the existing
+preparation/freshness and process owners; it does not supply product or boundary
+test evidence. Retained interruption proof is still required for normal recovery.
+
 This cadence does not change the current CLI or its admission rules. The separately
 implemented Clippy correction checks only the preset's matching profile, with both
 packages and plugin production/test-support forms retained across all four presets.
@@ -925,6 +932,19 @@ synchronous C/native bindings against four frozen native-parent captures, with
 exact products/identities, scoped source/lens lifetimes, cache and failure
 contracts. The separate negative-print C render contract checks the later native
 preflash unwind/completion terminal. See [the illuminant guide](ffi/README.md#illuminant-construction).
+
+`Ffi.Host.PrintPreflash` checks the fixed preflash integral, compiled C11/C++20/Rust
+ABI, raw/facade/native agreement, independent failure clearing, diagnostics and
+stage-11 recovery. `Print.Host.PreflashProducts` checks frozen native caller
+products for both capture polarities and all three reconstruction methods, direct/
+disabled omission, the unconditional builder and later executable-payload admission.
+`Print.Gpu.PreflashCache` checks actual request/input preparation, full/partial hits,
+descriptor dependencies, fault nonconsumption, failed commits and resource release.
+The immutable `print/preflash-fixtures/manifest.json` binds native provenance and
+exact words; ordinary tests never regenerate them. Finite double totals may narrow
+successfully to float infinity here; the later active-preflash payload guard rejects
+it. Both Release testing-OFF witnesses execute twelve explicit preflash C11 cases
+alongside every older production probe.
 
 `Spectral.Host.{Tables,White,SInverse,Products,Admission}` and
 `Ffi.Host.SpectralPreparation` qualify fixed spectral math, synchronous C11/native

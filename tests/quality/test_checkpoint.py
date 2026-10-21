@@ -244,7 +244,8 @@ class CheckpointTests(unittest.TestCase):
     def test_boundary_inputs_bind_native_membership_and_foreign_fixture(self):
         for name in ("src/RenderRecipe.cpp", "src/JuicerState.cpp", "tests/ffi/color_preparation_test.cpp",
                      "tests/ffi/print_illuminant_test.inc", "tests/ffi/print_illuminant_fixture.h",
-                     "tests/print/illuminant-fixtures/rust-manifest.json"):
+                     "tests/print/illuminant-fixtures/rust-manifest.json", "tests/ffi/print_preflash_test.inc",
+                     "tests/print/preflash-fixtures/manifest.json", "tests/print/preflash-fixtures/linux-debug.json"):
             p = self.root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("source")
@@ -256,6 +257,9 @@ class CheckpointTests(unittest.TestCase):
         self.assertIn("tests/ffi/print_illuminant_test.inc", first)
         self.assertIn("tests/ffi/print_illuminant_fixture.h", first)
         self.assertIn("tests/print/illuminant-fixtures/rust-manifest.json", first)
+        self.assertIn("tests/ffi/print_preflash_test.inc", first)
+        self.assertIn("tests/print/preflash-fixtures/manifest.json", first)
+        self.assertIn("tests/print/preflash-fixtures/linux-debug.json", first)
         added = self.root / "src/SpectralProcessing.h"
         added.write_text("new member")
         self.assertIn("src/SpectralProcessing.h", qualification.checkpoint_inputs(self.root, self.build, "boundary"))

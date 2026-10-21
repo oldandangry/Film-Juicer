@@ -4139,39 +4139,6 @@ namespace JuicerCuda {
             return valid;
         }
 
-        double density_to_light_sample_spektrafilm(double density, double illuminant) {
-            const double transmitted = std::pow(10.0, -density) * illuminant;
-            return std::isnan(transmitted) ? 0.0 : transmitted;
-        }
-
-        bool derive_preflash_raw(
-            const Profiles::FilmProfile& film,
-            const Profiles::PrintProfile& print,
-            const std::array<float, Spectral::kNumSamples>& preflashIlluminant,
-            std::array<float, 3>& out,
-            std::string& diagnostic) {
-            std::array<double, 3> raw{};
-            for (std::size_t sample = 0; sample < preflashIlluminant.size(); ++sample) {
-                const double light = density_to_light_sample_spektrafilm(
-                    static_cast<double>(film.data.baseDensity[sample]),
-                    static_cast<double>(preflashIlluminant[sample]));
-                for (std::size_t channel = 0; channel < raw.size(); ++channel) {
-                    const float sensitivity = print.data.linearSensitivity[sample][channel];
-                    if (std::isfinite(sensitivity)) {
-                        raw[channel] += light * static_cast<double>(sensitivity);
-                    }
-                }
-            }
-            for (std::size_t channel = 0; channel < raw.size(); ++channel) {
-                if (!std::isfinite(raw[channel]) || raw[channel] < 0.0) {
-                    diagnostic = "MalformedRequiredResource phase=4B field=preflash_raw";
-                    return false;
-                }
-                out[channel] = static_cast<float>(raw[channel]);
-            }
-            return true;
-        }
-
     } // namespace
 
     bool build_print_resource_descriptors(
@@ -4603,10 +4570,11 @@ namespace JuicerCuda {
             }
             input.preflashIlluminant = preflashIlluminant;
             return !descriptors.preflashActive || preflashRawHit ||
-                   derive_preflash_raw(film, print, preflashIlluminant, input.preflashRawCmy, error);
+                   JuicerAssets::prepare_print_preflash(film.data.baseDensity, preflashIlluminant, print.data.linearSensitivity, input.preflashRawCmy, error);
         }
 
     } // namespace
+
 
     bool build_print_resource_input(
         const PrintResourcePreparation& request,

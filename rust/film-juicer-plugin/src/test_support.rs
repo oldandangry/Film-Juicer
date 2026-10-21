@@ -1849,3 +1849,53 @@ const _: unsafe extern "C" fn(
     *mut crate::print_bridge::FjPrintIlluminantFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_print_illuminant_prepare;
+
+/// Scalar primitive witness for the owning preflash domain comparison.
+/// # Safety
+/// out contains five exclusive writable doubles; narrowed contains one exclusive
+/// writable float. Both are aligned, live and disjoint through return.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_print_preflash_primitive(
+    density: f64,
+    illuminant: f64,
+    sensitivity: f64,
+    accumulator: f64,
+    out: *mut f64,
+    narrowed: *mut f32,
+) {
+    let power = 10.0_f64.powf(-density);
+    let transmitted = power * illuminant;
+    let light = if transmitted.is_nan() {
+        0.0
+    } else {
+        transmitted
+    };
+    let product = light * sensitivity;
+    let sum = accumulator + product;
+    // SAFETY: The fixture authorizes the complete fixed, disjoint outputs.
+    unsafe {
+        std::ptr::copy_nonoverlapping([power, transmitted, light, product, sum].as_ptr(), out, 5);
+        narrowed.write(sum as f32);
+    }
+}
+
+/// Checked preflash fixture facade shares construction without invoking the legacy export.
+/// # Safety
+/// The same live, initialized, aligned and disjoint synchronous raw contract as
+/// print_bridge::prepare_preflash; inputs contain exactly 81/81/243 f32 elements.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_print_preflash_prepare(
+    input: *const crate::print_bridge::FjPrintPreflashInput,
+    out: *mut crate::print_bridge::FjPrintPreflashRaw,
+    failure: *mut crate::print_bridge::FjPrintPreflashFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Identical checked operation, not a call through the legacy export.
+    unsafe { crate::print_bridge::prepare_preflash(input, out, failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const crate::print_bridge::FjPrintPreflashInput,
+    *mut crate::print_bridge::FjPrintPreflashRaw,
+    *mut crate::print_bridge::FjPrintPreflashFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_print_preflash_prepare;

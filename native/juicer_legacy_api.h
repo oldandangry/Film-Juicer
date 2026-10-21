@@ -1085,6 +1085,42 @@ FjStatus fj_legacy_print_illuminant_prepare(
     FjPrintIlluminantFailure* out_failure,
     FjErrorBuffer* error);
 
+/* SF_TEMP_BRIDGE_PRINT_PREFLASH; remove S4.E. Synchronous borrowed f32 inputs:
+ * 81 film base-density samples, 81 already filtered light samples and 243 print
+ * sensitivities, sample-major C/M/Y. Rust print::PreflashRaw produces the owned
+ * triplet consumed by native print resource preparation before exposure scaling.
+ * Counts, alignment and address arithmetic are checked before access. Callers
+ * provide initialized live backing; immutable inputs may alias. All writable
+ * result/failure/error records and diagnostic backing are exclusive, mutually
+ * disjoint and disjoint from inputs. No pointer survives return.
+ * Independently writable output triplets clear to +0 on every failure. Channel
+ * is UINT32_MAX except CHANNEL (first failing f64 total, 0..2). Finite f64 totals
+ * may successfully narrow to f32 infinity; native payload admission is later.
+ * Error NULL is status-only; zero capacity ignores backing; positive backing
+ * receives bounded text/NUL with length excluding NUL. Invalid diagnostics are RAW.
+ */
+typedef struct FjPrintPreflashInput {
+    FjFloatSpan film_base_density;
+    FjFloatSpan filtered_illuminant;
+    FjFloatSpan print_sensitivity_cmy;
+} FjPrintPreflashInput;
+typedef struct FjPrintPreflashRaw {
+    float cmy[3];
+} FjPrintPreflashRaw;
+typedef struct FjPrintPreflashFailure {
+    uint32_t reason;
+    uint32_t channel;
+} FjPrintPreflashFailure;
+#define FJ_PRINT_PREFLASH_REASON_NONE UINT32_C(0)
+#define FJ_PRINT_PREFLASH_REASON_RAW UINT32_C(1)
+#define FJ_PRINT_PREFLASH_REASON_CHANNEL UINT32_C(2)
+#define FJ_PRINT_PREFLASH_REASON_PANIC UINT32_C(3)
+FjStatus fj_legacy_print_preflash_prepare(
+    const FjPrintPreflashInput* input,
+    FjPrintPreflashRaw* out_raw,
+    FjPrintPreflashFailure* out_failure,
+    FjErrorBuffer* error);
+
 typedef struct FjIlluminantCoverage {
     uint32_t warnings;
     float min_nm;

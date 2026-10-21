@@ -15,11 +15,15 @@
 #include <string>
 #include <type_traits>
 #include <cstring>
+#include <vector>
+#include <utility>
 
 #include <nlohmann/json.hpp>
+#include <cuda_runtime.h>
 
 #include "juicer_test_api.h"
 #include "Cuda/JuicerCudaExecutor.h"
+#include "Cuda/JuicerCudaDriver.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
@@ -275,7 +279,35 @@ namespace {
 #include "physical_effects_test.inc"
 #include "spatial_optics_test.inc"
 #include "print_illuminant_test.inc"
+#include "print_preflash_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "print-preflash" || std::string_view(argv[3]) == "print-preflash-products")) {
+        const auto manifest = read(argv[2]);
+        const auto path = std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>();
+        const auto captured = read(path);
+        if (std::string_view(argv[3]) == "print-preflash-products")
+            PrintPreflashTest::products(argv[1], captured);
+        else {
+            layouts();
+            PrintPreflashTest::values(captured, argv[2]);
+            PrintPreflashTest::transport(captured);
+            PrintPreflashTest::native(captured);
+        }
+        std::puts("PASS preflash exact adopted values, closed transport, native projection and selected caller contracts");
+        return 0;
+    }
+    if (argc == 5 && std::string_view(argv[3]) == "print-preflash-cache") {
+        const auto manifest = read(argv[2]);
+        const auto captured = read(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        PrintPreflashTest::cache(argv[1], captured);
+        std::puts("PASS actual request/input preflash cache, fault nonconsumption, failure commit and recovery");
+        return 0;
+    }
+    if (argc == 6 && std::string_view(argv[3]) == "preflash-primitives") {
+        PrintPreflashTest::save(argv[5], {{"preset", argv[4]}, {"cases", PrintPreflashTest::primitives(argv[1])}});
+        std::puts("PASS preflash primitive observations recorded; independent analysis required");
+        return 0;
+    }
     if (argc == 5 && std::string_view(argv[3]) == "print-illuminant-products") {
         const auto manifest = read(argv[2]);
         const auto selected = manifest.at("presets").at(argv[4]);

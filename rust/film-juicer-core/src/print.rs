@@ -1,4 +1,54 @@
-//! Complete filtered print illumination on the fixed computational spectral axis.
+//! Complete print illumination and raw preflash exposure on the fixed spectral axis.
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PreflashError {
+    Channel { channel: usize },
+}
+
+/// The completed integral before exposure scaling and executable f32 admission.
+#[derive(Debug)]
+pub struct PreflashRaw {
+    cmy: [f32; 3],
+}
+
+impl PreflashRaw {
+    pub fn new(
+        film_base_density: &[f32; 81],
+        filtered_illuminant: &[f32; 81],
+        print_sensitivity_cmy: &[[f32; 3]; 81],
+    ) -> Result<Self, PreflashError> {
+        let mut raw = [0.0_f64; 3];
+        for sample in 0..81 {
+            let density = f64::from(film_base_density[sample]);
+            let illuminant = f64::from(filtered_illuminant[sample]);
+            let transmitted = 10.0_f64.powf(-density) * illuminant;
+            let light = if transmitted.is_nan() {
+                0.0
+            } else {
+                transmitted
+            };
+            for (channel, total) in raw.iter_mut().enumerate() {
+                let sensitivity = print_sensitivity_cmy[sample][channel];
+                if sensitivity.is_finite() {
+                    *total += light * f64::from(sensitivity);
+                }
+            }
+        }
+        let mut cmy = [0.0_f32; 3];
+        for channel in 0..3 {
+            if !raw[channel].is_finite() || raw[channel] < 0.0 {
+                return Err(PreflashError::Channel { channel });
+            }
+            // Finite f64 totals may narrow to infinity; payload admission is later.
+            cmy[channel] = raw[channel] as f32;
+        }
+        Ok(Self { cmy })
+    }
+
+    pub fn cmy(&self) -> &[f32; 3] {
+        &self.cmy
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct FilterParams {
@@ -139,6 +189,105 @@ mod tests {
             differences.is_empty(),
             "exact owner-approved print policy gate failed:\n{}",
             differences.join("\n")
+        );
+    }
+}
+
+#[cfg(test)]
+mod preflash_tests {
+    use super::{PreflashError, PreflashRaw};
+    use serde_json::Value;
+
+    #[cfg(all(target_os = "linux", debug_assertions))]
+    const PRESET: &str = "linux-debug";
+    #[cfg(all(target_os = "linux", not(debug_assertions)))]
+    const PRESET: &str = "linux-release";
+    #[cfg(all(target_os = "windows", debug_assertions))]
+    const PRESET: &str = "windows-clang-debug";
+    #[cfg(all(target_os = "windows", not(debug_assertions)))]
+    const PRESET: &str = "windows-clang-release";
+
+    fn floats<const N: usize>(value: &Value) -> [f32; N] {
+        let words = value.as_array().unwrap();
+        assert_eq!(words.len(), N);
+        std::array::from_fn(|i| f32::from_bits(words[i].as_u64().unwrap() as u32))
+    }
+
+    #[test]
+    fn exact_native_literals_and_actual_caller_inputs() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/print/preflash-fixtures");
+        let manifest: Value = serde_json::from_str(
+            &std::fs::read_to_string(directory.join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let captured: Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                directory.join(manifest["presets"][PRESET]["native"].as_str().unwrap()),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(captured["cases"].as_array().unwrap().len(), 19);
+        assert_eq!(captured["products"].as_array().unwrap().len(), 72);
+        for row in captured["cases"].as_array().unwrap() {
+            let base = floats(&row["film_base_density"]);
+            let light = floats(&row["filtered_illuminant"]);
+            let flat = floats::<243>(&row["print_sensitivity_cmy"]);
+            let sensitivity = std::array::from_fn(|i| std::array::from_fn(|c| flat[i * 3 + c]));
+            let result = PreflashRaw::new(&base, &light, &sensitivity);
+            let id = row["id"].as_str().unwrap();
+            if row["success"].as_bool().unwrap() {
+                assert_eq!(
+                    result.unwrap().cmy().map(f32::to_bits),
+                    floats::<3>(&row["raw"]).map(f32::to_bits),
+                    "{id}"
+                );
+            } else {
+                let channel = manifest["failure_channels"][id].as_u64().unwrap() as usize;
+                assert_eq!(
+                    result.err(),
+                    Some(PreflashError::Channel { channel }),
+                    "{id}"
+                );
+            }
+        }
+        for row in captured["products"].as_array().unwrap() {
+            if row["raw"].is_null() {
+                continue;
+            }
+            let base = floats(&row["film_base_density"]);
+            let light = floats(&row["light"]);
+            let flat = floats::<243>(&row["print_sensitivity_cmy"]);
+            let sensitivity = std::array::from_fn(|i| std::array::from_fn(|c| flat[i * 3 + c]));
+            assert_eq!(
+                PreflashRaw::new(&base, &light, &sensitivity)
+                    .unwrap()
+                    .cmy()
+                    .map(f32::to_bits),
+                floats::<3>(&row["raw"]).map(f32::to_bits)
+            );
+        }
+    }
+
+    #[test]
+    fn owns_result_and_preserves_computed_failure_boundary() {
+        let raw = {
+            let base = [0.0; 81];
+            let light = [1.0; 81];
+            let sensitivity = [[f32::MAX; 3]; 81];
+            PreflashRaw::new(&base, &light, &sensitivity).unwrap()
+        };
+        assert_eq!(raw.cmy().map(f32::to_bits), [f32::INFINITY.to_bits(); 3]);
+        let mut base = [0.0; 81];
+        base[0] = -309.0;
+        let mut sensitivity = [[1.0; 3]; 81];
+        sensitivity[0] = [f32::NAN, f32::INFINITY, 0.0];
+        // Only transmitted-light NaNs are replaced; infinity times a finite
+        // zero sensitivity still participates and fails the final double guard.
+        assert_eq!(
+            PreflashRaw::new(&base, &[1.0; 81], &sensitivity).err(),
+            Some(PreflashError::Channel { channel: 2 })
         );
     }
 }

@@ -236,6 +236,38 @@ scopes remain in the existing development record and can be reused independently
 when their inputs and current preparation still match; prior runtime selections
 are not unioned into a new run. Preparation is not test success.
 
+Explicit target preparation is also available on all four standard native
+Debug/Release trees, independently of the bounded development file selector:
+
+```sh
+python -B scripts/verify.py prepare --preset linux-debug --targets JuicerFilmRecipeTests
+python -B scripts/verify.py prepare --preset linux-release --targets juicer --testing OFF
+python -B scripts/verify.py prepare --preset linux-release --targets JuicerFilmRecipeTests --testing ON
+```
+
+Run through the qualified native environment at the configured source path.
+Maintained targets are `juicer`, `JuicerFilmRecipeTests`, `JuicerRouteBridgeTests`,
+`JuicerOutputColorTests`, and an explicit `all` alone. Testing defaults to ON;
+OFF requires a Release preset and `juicer` or `all`. Each invocation reconfigures
+the requested testing state and builds only those targets and their dependencies
+under the existing build-tree lease, supervisor, deadlines and freshness owner.
+It dispatches no quality or runtime-test selection. It preserves development
+pending state and never supplies product, boundary or production qualification.
+Other pending target scopes must first be resolved by their preparation owner;
+normal same-scope interruption recovery still requires sealed drainage proof.
+
+The one-time `retire-s4c1-pending --preset linux-debug|linux-release` command
+implements the owner's 21 October 2026 amendment for exactly two retained legacy
+markers. It requires the exact source/build paths, marker bytes, pinned retained
+command/log/process evidence, complete preparation-attempt membership and a
+healthy normal lease. Debug additionally requires the verified later Linux boot.
+It retains original markers and any superseded completed owner, records
+`retired-unqualified`, and removes only those active records. Fresh preparation
+is a separate command. It does not change historical results or authorize other
+legacy recovery; changed, unknown, undrained or active records and blocked or
+hard-death leases remain rejected. Remove this exceptional entry after the two
+dispositions have been reviewed and retained; it is not a force switch.
+
 Normal Rust edits use Cargo incrementally. A content edit with restored/stale
 timestamps uses supported Cargo cleaning only for affected packages, reverse
 consumers and the active target/profile; necessary host build-script/proc-macro

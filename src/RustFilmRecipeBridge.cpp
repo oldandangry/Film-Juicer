@@ -26,6 +26,7 @@ namespace JuicerAssets {
         void effects(FjPhysicalEffectsRecipe& recipe);
         void optics(FjStatus& status, FjSpatialOpticsFailure& failure, FjSpatialOpticsRecipe& recipe, FjErrorBuffer& error);
         void print_illuminant(FjStatus& status, FjPrintIlluminantFailure& failure, FjIlluminant& illuminant, FjErrorBuffer& error);
+        void print_preflash(FjStatus& status, FjPrintPreflashFailure& failure, FjPrintPreflashRaw& raw, FjErrorBuffer& error);
     } // namespace RecipeTest
 #endif
     namespace {
@@ -864,4 +865,62 @@ namespace JuicerAssets {
         return true;
     }
 
+    // SF_TEMP_BRIDGE_PRINT_PREFLASH: bind fixed inputs, no photographic policy; remove S4.E.
+    bool prepare_print_preflash(const std::array<float, 81>& filmBaseDensity,
+                                const std::array<float, 81>& filteredIlluminant,
+                                const std::array<std::array<float, 3>, 81>& printSensitivityCmy,
+                                std::array<float, 3>& out,
+                                std::string& diagnostic) {
+        out.fill(0.0f);
+        diagnostic.clear();
+        // Each C++ nested array is a distinct subobject; bind one flat local allocation.
+        std::array<float, 243> sensitivity{};
+        for (std::size_t sample = 0; sample < 81; ++sample)
+            for (std::size_t channel = 0; channel < 3; ++channel)
+                sensitivity[sample * 3 + channel] = printSensitivityCmy[sample][channel];
+        const FjPrintPreflashInput input{{filmBaseDensity.data(), filmBaseDensity.size()},
+                                         {filteredIlluminant.data(), filteredIlluminant.size()},
+                                         {sensitivity.data(), sensitivity.size()}};
+        FjPrintPreflashRaw wire{};
+        FjPrintPreflashFailure failure{};
+        std::array<char, 512> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        FjStatus status = fj_legacy_print_preflash_prepare(&input, &wire, &failure, &error);
+#if defined(JUICER_FILM_RECIPE_TEST_HOOK)
+        RecipeTest::print_preflash(status, failure, wire, error);
+#endif
+        const bool noChannel = failure.channel == UINT32_MAX;
+        bool valid = status.api == FJ_API_NONE && status.native_code == 0;
+        switch (failure.reason) {
+            case FJ_PRINT_PREFLASH_REASON_NONE:
+                valid = valid && status.category == FJ_STATUS_SUCCESS && noChannel;
+                break;
+            case FJ_PRINT_PREFLASH_REASON_RAW:
+                valid = valid && status.category == FJ_STATUS_UNSUPPORTED_INPUT && noChannel;
+                break;
+            case FJ_PRINT_PREFLASH_REASON_CHANNEL:
+                valid = valid && status.category == FJ_STATUS_PREPARATION_FAILURE && failure.channel < 3;
+                break;
+            case FJ_PRINT_PREFLASH_REASON_PANIC:
+                valid = valid && status.category == FJ_STATUS_INTERNAL_FAILURE && noChannel;
+                break;
+            default:
+                valid = false;
+                break;
+        }
+        if (error.data != text.data() || error.capacity != text.size() ||
+            error.length >= error.capacity || text[error.length] != '\0' || !valid)
+            integrity("Print preflash preparation");
+        if (status.category != FJ_STATUS_SUCCESS) {
+            if (status.category == FJ_STATUS_PREPARATION_FAILURE) {
+                diagnostic = "MalformedRequiredResource phase=4B field=preflash_raw";
+                return false;
+            }
+            JuicerCuda::Failure rejected;
+            JuicerCuda::set_failure(rejected, status, "Print preflash preparation");
+            throw JuicerCuda::ExecutionFailure{std::move(rejected)};
+        }
+        std::copy_n(wire.cmy, out.size(), out.begin());
+        return true;
+    }
 } // namespace JuicerAssets

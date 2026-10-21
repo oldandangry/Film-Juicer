@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import build_evidence
-from execution import Campaign, OutputLease, digest
+from execution import Campaign, OutputLease, digest, write_json
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -292,6 +292,145 @@ class BuildEvidenceTests(unittest.TestCase):
             **{"targets": ["behavior"], **kwargs},
         )
         return self.prepared
+
+    def test_target_preparation_transitions_without_running_runtime_tests(self):
+        preset = "windows-clang-release" if os.name == "nt" else "linux-release"
+        root = self.source
+        (root / "src").mkdir()
+        for path in list(root.iterdir()):
+            if path.suffix in {".cpp", ".c", ".h"}:
+                path.rename(root / "src" / path.name)
+        cmake = root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text().replace("main.cpp native.cpp abi.c", "src/main.cpp src/native.cpp src/abi.c")
+                         .replace("rust_stub.c", "src/rust_stub.c"), encoding="utf-8")
+        for name in ("verify.py", "build_evidence.py"):
+            path = root / "scripts" / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes((ROOT / "scripts" / name).read_bytes())
+        with (root / "CMakeLists.txt").open("a") as stream:
+            stream.write('\nadd_custom_target(juicer DEPENDS behavior)\n'
+                         'add_test(NAME must-not-run COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/runtime-ran")\n')
+        variables = {arg[2:].split("=", 1)[0]: arg.split("=", 1)[1] for arg in self.args if arg.startswith("-D")}
+        variables["CMAKE_BUILD_TYPE"] = "Release"
+        (root / "CMakePresets.json").write_text(json.dumps({"version": 6, "configurePresets": [{
+            "name": preset, "generator": "Ninja", "binaryDir": "${sourceDir}/out/build/" + preset,
+            "cacheVariables": variables}]}), encoding="utf-8")
+        build = root / "out/build" / preset
+        development = build / "verification-development.json"
+        build.mkdir(parents=True)
+        development.write_text('{"pending":["preserve-me"]}\n', encoding="utf-8")
+        saved = development.read_bytes()
+        for testing in ("ON", "OFF", "ON"):
+            prepared = build_evidence.prepare_targets(root, preset, ["juicer"], testing)
+            record = json.loads(prepared.read_text())
+            self.assertEqual(record["scoped_preparation"]["targets"], ["juicer"])
+            self.assertEqual(record["scoped_preparation"]["configure_args"], ["-DBUILD_TESTING=" + testing])
+            self.assertTrue(record["process_tree"]["drained"])
+            self.assertFalse((build / "runtime-ran").exists())
+            self.assertEqual(development.read_bytes(), saved)
+            self.assertTrue(all(json.loads(p.read_text())["stage"] == "prepare"
+                                for p in prepared.parents[2].glob("attempts/*/result.json")))
+        campaign = Campaign(root, preset, "freshness-reader", ["prepare"])
+        build_evidence.check_scoped_preparation(campaign, build, prepared)
+        (root / "src/native.cpp").write_text("int native(){return 9;}\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "dependency contents"):
+            build_evidence.check_scoped_preparation(campaign, build, prepared)
+        pending = build_evidence.preparation_paths(build, ["all"])[1]
+        pending.write_text('{"protocol":"legacy"}\n', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "another pending"):
+            build_evidence.prepare_targets(root, preset, ["juicer"])
+        self.assertEqual(pending.read_text(), '{"protocol":"legacy"}\n')
+
+    @unittest.skipIf(os.name == "nt", "the exact legacy exception is Linux-only")
+    def test_legacy_disposition_is_exact_drained_and_separate_from_preparation(self):
+        self.prepare()
+        preset = "linux-release"
+        build = self.root / "out/build" / preset
+        build.mkdir(parents=True)
+        marker = build / "verification-build-authorized.pending.json"
+        marker.write_bytes(b'{"protocol":"legacy","targets":["all"]}\n')
+        original = marker.read_bytes()
+        baseline = marker.with_name("verification-build-authorized.json")
+        baseline.write_bytes(b'{"old":"unqualified"}\n')
+        previous = baseline.read_bytes()
+        directory = self.campaign.directory
+        evidence = {str(p.relative_to(directory)): digest(p) for p in
+                    [directory / "campaign.json", *directory.glob("attempts/prepare-*/*")]
+                    if p.name in {"campaign.json", "result.json", "process.json", "output.log"}}
+        expected = {"source": str(self.root), "marker": marker.name, "sha256": digest(marker),
+                    "campaign": str(directory.relative_to(self.root)), "evidence": evidence}
+        protected = {directory / name: (directory / name).read_bytes() for name in evidence}
+        attempt = next(directory.glob("attempts/prepare-*/process.json"))
+        for fault in ("changed-marker", "malformed-marker", "missing-evidence", "changed-evidence", "undrained",
+                      "running-command", "new-attempt", "additional-marker", "active-supervisor"):
+            with self.subTest(fault=fault):
+                binding = json.loads(json.dumps(expected))
+                extras = []
+                if fault in {"changed-marker", "malformed-marker"}:
+                    marker.write_bytes(original + b" " if fault == "changed-marker" else b"{")
+                elif fault == "missing-evidence":
+                    attempt.unlink()
+                elif fault == "changed-evidence":
+                    attempt.write_bytes(protected[attempt] + b" ")
+                elif fault in {"undrained", "active-supervisor"}:
+                    tree = json.loads(attempt.read_text())
+                    if fault == "undrained":
+                        tree["drained"] = False
+                    else:
+                        tree["supervisor_pid"] = os.getpid()
+                        tree["creation"]["linux_start_ticks"] = Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()[19]
+                    write_json(attempt, tree)
+                    result = attempt.with_name("result.json")
+                    record = json.loads(result.read_text())
+                    record["process_tree"] = {**tree, "receipt": str(attempt)}
+                    write_json(result, record)
+                    for path in (attempt, result):
+                        binding["evidence"][str(path.relative_to(directory))] = digest(path)
+                else:
+                    extra = (directory / "running.lock" if fault == "running-command" else
+                             directory / "attempts/prepare-unproved" if fault == "new-attempt" else
+                             build / "unknown.pending.json")
+                    extra.write_text("unknown")
+                    extras.append(extra)
+                try:
+                    presented = marker.read_bytes()
+                    with patch.object(build_evidence, "S4C1_PENDING", {preset: binding}), self.assertRaises(ValueError):
+                        build_evidence.retire_s4c1_pending(self.root, preset)
+                    self.assertEqual(marker.read_bytes(), presented)
+                    self.assertEqual(baseline.read_bytes(), previous)
+                finally:
+                    marker.write_bytes(original)
+                    for path, content in protected.items():
+                        path.write_bytes(content)
+                    for path in extras:
+                        path.unlink()
+        lease = OutputLease(self.root, build, timeout=.02)
+        for status in ("owned", "blocked"):
+            lease.path.mkdir(parents=True)
+            owner = lease.path / "owner.json"
+            write_json(owner, {"owner_pid": 999999999, "status": status, "token": "unproved"})
+            saved = owner.read_bytes()
+            try:
+                with patch.object(build_evidence, "S4C1_PENDING", {preset: expected}), \
+                        patch.object(build_evidence, "OutputLease", return_value=lease), self.assertRaises(TimeoutError):
+                    build_evidence.retire_s4c1_pending(self.root, preset)
+                self.assertEqual(owner.read_bytes(), saved)
+                self.assertEqual(marker.read_bytes(), original)
+            finally:
+                owner.unlink()
+                lease.path.rmdir()
+        with patch.object(build_evidence, "S4C1_PENDING", {preset: expected}):
+            retired = build_evidence.retire_s4c1_pending(self.root, preset)
+            self.assertFalse(marker.exists())
+            self.assertFalse(baseline.exists())
+            record = json.loads(retired.read_text())
+            self.assertEqual(record["disposition"], "retired-unqualified")
+            self.assertTrue(record["fresh_preparation_required"])
+            self.assertEqual(Path(record["original"]["file"]).read_bytes(), original)
+            self.assertEqual(Path(record["baseline"]["file"]).read_bytes(), previous)
+            self.assertTrue(all(path.read_bytes() == content for path, content in protected.items()))
+            with self.assertRaisesRegex(ValueError, "already retired"):
+                build_evidence.retire_s4c1_pending(self.root, preset)
 
     def execute(self, **kwargs):
         receipt = build_evidence.run_ctest(

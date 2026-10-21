@@ -13,6 +13,38 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_preflash_native_integrity_inputs_and_caller_membership(self):
+        root = Path(__file__).parents[1] / "print/preflash-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        inputs = json.loads((root / "cases.json").read_bytes())["cases"]
+        self.assertEqual(len(inputs), 19)
+        for name, record in manifest["files"].items():
+            data = (root / name).read_bytes()
+            self.assertEqual(len(data), record["bytes"])
+            self.assertEqual(hashlib.sha256(data).hexdigest(), record["sha256"], name)
+        for preset in PRESETS:
+            capture = json.loads((root / manifest["presets"][preset]["native"]).read_bytes())
+            self.assertEqual(capture["preset"], preset)
+            self.assertEqual(len(capture["cases"]), 19)
+            self.assertEqual(len(capture["products"]), 72)
+            for source, row in zip(inputs, capture["cases"], strict=True):
+                self.assertEqual({key: row[key] for key in source}, source)
+                for key, extent in (("film_base_density", 81), ("filtered_illuminant", 81), ("print_sensitivity_cmy", 243), ("raw", 3)):
+                    self.assertEqual(len(row[key]), extent)
+                    self.assertTrue(all(type(word) is int and 0 <= word <= 0xffffffff for word in row[key]))
+                self.assertEqual(row["success"], row["id"] not in manifest["failure_channels"])
+                self.assertEqual(row["diagnostic"], "" if row["success"] else "MalformedRequiredResource phase=4B field=preflash_raw")
+            self.assertEqual({(r["route"], r["mode"], r["variant"]) for r in capture["products"]},
+                             {(route, mode, variant) for route in range(4) for mode in range(3) for variant in range(6)})
+            for row in capture["products"]:
+                if row["route"] % 2:
+                    self.assertEqual(len(row["descriptors"]), 5)
+                    self.assertEqual(len(row["raw"]), 3)
+                    self.assertEqual(row["descriptors"][3] == 0, row["variant"] == 0)
+                else:
+                    self.assertNotIn("raw", row)
+
     def test_unique_payload_integrity_and_native_membership(self):
         families = (("color", "", "manifest.json", "recipes", 15),
                     ("color", "cat02-", "cat02-manifest.json", "recipes", 56),

@@ -945,6 +945,32 @@ static int print_illuminant_values(void) {
     return 0;
 }
 
+_Static_assert(_Generic(&fj_legacy_print_preflash_prepare, FjStatus (*)(const FjPrintPreflashInput*, FjPrintPreflashRaw*, FjPrintPreflashFailure*, FjErrorBuffer*): 1, default: 0), "OFF preflash C11 signature");
+_Static_assert(sizeof(FjPrintPreflashInput) == 48 && _Alignof(FjPrintPreflashInput) == 8 && offsetof(FjPrintPreflashInput, film_base_density) == 0 && offsetof(FjPrintPreflashInput, filtered_illuminant) == 16 && offsetof(FjPrintPreflashInput, print_sensitivity_cmy) == 32, "OFF preflash input layout");
+_Static_assert(sizeof(FjPrintPreflashRaw) == 12 && _Alignof(FjPrintPreflashRaw) == 4 && offsetof(FjPrintPreflashRaw, cmy) == 0 && sizeof(((FjPrintPreflashRaw*)0)->cmy)/sizeof(float) == 3, "OFF preflash raw layout");
+_Static_assert(sizeof(FjPrintPreflashFailure) == 8 && _Alignof(FjPrintPreflashFailure) == 4 && offsetof(FjPrintPreflashFailure, reason) == 0 && offsetof(FjPrintPreflashFailure, channel) == 4, "OFF preflash failure layout");
+static int preflash_values(void) {
+    for (size_t i = 0; i < 12; ++i) {
+        float base[81], light[81], sensitivity[243];
+        memcpy(base, preflash_base[i], sizeof(base));
+        memcpy(light, preflash_light[i], sizeof(light));
+        memcpy(sensitivity, preflash_sensitivity[i], sizeof(sensitivity));
+        FjPrintPreflashInput input = {{base, 81}, {light, 81}, {sensitivity, 243}};
+        FjPrintPreflashRaw out;
+        grain_fill(out.cmy, 3, UINT32_C(0xc1500000));
+        FjPrintPreflashFailure failure = {99, 98};
+        const FjPrintPreflashInput* bound = i == 9 ? NULL : &input;
+        if (i == 10) input.print_sensitivity_cmy.count = 242;
+        if (i == 11) input.filtered_illuminant.data = NULL;
+        FjStatus actual = fj_legacy_print_preflash_prepare(bound, &out, &failure, NULL);
+        CHECK(status(actual, preflash_envelopes[i][0]));
+        CHECK(failure.reason == preflash_envelopes[i][1] && failure.channel == preflash_envelopes[i][2]);
+        CHECK(words(out.cmy, preflash_raw[i], 3));
+        printf("PRINT_PREFLASH_CASE %s category=%u api=%u native_code=%d reason=%u channel=%u fields=3-pass\n", preflash_names[i], actual.category, actual.api, actual.native_code, failure.reason, failure.channel);
+    }
+    return 0;
+}
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -961,6 +987,7 @@ int main(int argc, char** argv) {
     CHECK(effects_values() == 0);
     CHECK(optics_values() == 0);
     CHECK(print_illuminant_values() == 0);
+    CHECK(preflash_values() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

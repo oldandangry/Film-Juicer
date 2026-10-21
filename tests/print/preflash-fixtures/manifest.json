@@ -1,0 +1,498 @@
+{
+  "schema": 1,
+  "authority": "Film-Juicer unchanged-native characterization; exact integral/caller contract, not an external-reference pixel fixture",
+  "source_revision": "1eaa28060ae632de6c9eac557f3341a67f04fde0",
+  "source_tree": "058a239e44c595303dead7560d0149c0bcca050f",
+  "native_producer": {
+    "path": "src/Cuda/JuicerCudaResources.cpp",
+    "symbol": "derive_preflash_raw",
+    "characterization_hook": "JuicerCuda::TestSupport::capture_print_preflash",
+    "sha256": "4eb823564dee14903d903badba4b2c08a398b8686ce1360504f4f0ec424dc5d6",
+    "bytes": 314406
+  },
+  "reference_checkout": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+  "sample_layout": "81 positional f32 densities and filtered light; 243 sample-major f32 sensitivities in C/M/Y order. Sequential f64 sample/channel integration, final f64 guards before single f32 narrowing. No exposure multiplier.",
+  "comparison": "Exact successful triplet words, boolean and native diagnostic. Native failure output is partial unpublished characterization. Checked transport clears all words; first-channel metadata below is normative. No numerical exception.",
+  "failure_channels": {
+    "preflash-negative-m": 1,
+    "preflash-nonfinite-y": 2,
+    "preflash-negative-c": 0,
+    "preflash-negative-y": 2,
+    "preflash-negative-light": 0,
+    "preflash-power-overflow": 0
+  },
+  "files": {
+    "cases.json": {
+      "sha256": "589e4a46b871be97efd463a4c9beb740853754381a26cab52fe7d5f4b254890d",
+      "bytes": 145452
+    },
+    "linux-debug.json": {
+      "sha256": "99af4f2232514b6c06fa655b889745e8b95cbcc097a9cf862fbed4a2413225f5",
+      "bytes": 460277
+    },
+    "linux-release.json": {
+      "sha256": "a189773dd6df54716e4e431454351b855704d9371e4cb7d2a2409af3daf07adb",
+      "bytes": 460279
+    },
+    "windows-clang-debug.json": {
+      "sha256": "68fce39ae84eca29c137f40f433a94feb26f1a7cd842df5e6a6f6b3776df5fa3",
+      "bytes": 484147
+    },
+    "windows-clang-release.json": {
+      "sha256": "ac041648a6dde62cde406f8180b155c2a8ef36f176176f4d222ae23600af0809",
+      "bytes": 484149
+    }
+  },
+  "presets": {
+    "linux-debug": {
+      "native": "linux-debug.json"
+    },
+    "linux-release": {
+      "native": "linux-release.json"
+    },
+    "windows-clang-debug": {
+      "native": "windows-clang-debug.json"
+    },
+    "windows-clang-release": {
+      "native": "windows-clang-release.json"
+    }
+  },
+  "capture_contexts": {
+    "linux-debug": {
+      "executable": {
+        "path": "out/build/linux-debug/tests/bin/JuicerFilmRecipeTests",
+        "sha256": "e3239f03572f662165f66469e4ea1f034b08eada1a7bde65f363b0797e958afb",
+        "bytes": 339067272
+      },
+      "rust_archive": {
+        "path": "out/build/linux-debug/cargo/x86_64-unknown-linux-gnu/debug/libfilm_juicer_plugin.a",
+        "sha256": "7c9507614561f0e14ba09792d591a3f4d4f1bb73459d8265469ea50804992855",
+        "bytes": 59836102
+      },
+      "preparation_owner": {
+        "path": "out/build/linux-debug/verification-build-c66bf9eb37bf00181609f6d6.json",
+        "sha256": "307c359cfdc4bc51a4add866f3f1bd60b42ded46b1dd5742e9c7287dc56e0319",
+        "bytes": 293836,
+        "producer": "/mnt/c/Dev/Codex/out/validation/linux-debug/preparation-7e4468bdd6c84d939d80cabe3e0b2317/attempts/prepare-l2rk941p/result.json",
+        "producer_sha256": "8d1e8d5e1de98c44fef7d7bffaf7fca1a293033d2778ad8c43ba677a8673f1da"
+      },
+      "compiler_context": {
+        "native_commands": [
+          {
+            "directory": "/mnt/c/Dev/Codex/out/build/linux-debug",
+            "command": "/usr/bin/g++-13 -DJUICER_DIAGNOSTICS_COMPILED=1 -DJUICER_PRINT_PREFLASH_TEST_HOOK=1 -I/mnt/c/Dev/Codex/src -I/mnt/c/Dev/Codex/native -isystem /mnt/c/Dev/Codex/third_party -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include/cccl -g -std=c++20 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -Wall -Wextra -Werror -o tests/CMakeFiles/juicer_preflash_capture_test_objects.dir/__/src/Cuda/JuicerCudaResources.cpp.o -c /mnt/c/Dev/Codex/src/Cuda/JuicerCudaResources.cpp",
+            "file": "/mnt/c/Dev/Codex/src/Cuda/JuicerCudaResources.cpp",
+            "output": "/mnt/c/Dev/Codex/out/build/linux-debug/tests/CMakeFiles/juicer_preflash_capture_test_objects.dir/__/src/Cuda/JuicerCudaResources.cpp.o"
+          },
+          {
+            "directory": "/mnt/c/Dev/Codex/out/build/linux-debug",
+            "command": "/usr/bin/g++-13 -DJUICER_DIAGNOSTICS_COMPILED=1 -DJUICER_PRINT_PREFLASH_TEST_HOOK=1 -I/mnt/c/Dev/Codex/src -I/mnt/c/Dev/Codex/native -isystem /mnt/c/Dev/Codex/third_party -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include/cccl -isystem /mnt/c/Dev/Codex/third_party/ofxs/OpenFX-1.4/include -isystem /mnt/c/Dev/Codex/third_party/ofxs/Support/include -g -std=c++20 -fPIE -fvisibility=hidden -fvisibility-inlines-hidden -Wall -Wextra -Werror -o tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_test.cpp.o -c /mnt/c/Dev/Codex/tests/ffi/film_recipe_test.cpp",
+            "file": "/mnt/c/Dev/Codex/tests/ffi/film_recipe_test.cpp",
+            "output": "/mnt/c/Dev/Codex/out/build/linux-debug/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_test.cpp.o"
+          }
+        ],
+        "cargo_command": [
+          "COMMAND = cd /mnt/c/Dev/Codex && /home/alexi/.local/opt/cmake-4.3.1-linux-x86_64/bin/cmake -E env RUSTFLAGS= CARGO_BUILD_RUSTFLAGS= CARGO_ENCODED_RUSTFLAGS= /mnt/c/Dev/Codex/.tmp/rust-linux/cargo/bin/cargo build --locked --package film-juicer-plugin --no-default-features --features test-support --target x86_64-unknown-linux-gnu --target-dir /mnt/c/Dev/Codex/out/build/linux-debug/cargo && /home/alexi/.local/opt/cmake-4.3.1-linux-x86_64/bin/cmake -E touch /mnt/c/Dev/Codex/out/build/linux-debug/cargo-build.stamp"
+        ],
+        "cargo_features": "test-support=ON\n",
+        "configuration_sha256": {
+          "CMakeCache.txt": "a7f286592ed67758e7283396d1f517b0387ea8d66a81fdb3a6ae8f9f4002cac2",
+          "compile_commands.json": "d7deb80656d63edcc47ef15d453fc80fa54816ce469a3f6272927a472634f949",
+          "cargo-features.txt": "46bea939415006deecb5ef9c679f7653396a6cec027c810d7496582aeb0fa2e1"
+        }
+      },
+      "staged_resources": {
+        "profiles/kodak_portra_400.json": {
+          "sha256": "eb8b733fd8f79223b93ee389f1f32774378ea1905364ed658e4ce1d46ec1c069",
+          "bytes": 161683
+        },
+        "profiles/fujifilm_provia_100f.json": {
+          "sha256": "fed3f45ae581996b2a5b826b8b5d19ccd1a6f7854fff475aa64d2755940b9c20",
+          "bytes": 159325
+        },
+        "profiles/kodak_portra_endura.json": {
+          "sha256": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+          "bytes": 158722
+        },
+        "filters/neutral_print_filters.json": {
+          "sha256": "f18bb2cc44a97a8b27c3d592d7bcf2d2658a6e81b6aaf16ff6a81da763f57bdf",
+          "bytes": 19597
+        },
+        "cie1931_2deg.csv": {
+          "sha256": "3b65a413ec998011608dbbe87ebcb180d93b38d533c80f1ceabff7de71178cbf",
+          "bytes": 4374
+        },
+        "illuminants/D50.csv": {
+          "sha256": "e73612a79beb3fb4eb985f14032e68b077ae4d03cadee0ac8a2d7651f09ab378",
+          "bytes": 1620
+        },
+        "illuminants/D55.csv": {
+          "sha256": "8d914ed6d9a522aca8c1ced434e6d4b3e7ee63a40f200b60f8ef3f7efad74875",
+          "bytes": 1620
+        },
+        "illuminants/D65.csv": {
+          "sha256": "9ed98cf4eba0fafa77ca04f5e927f05b29a76f2b91b420153000ca0ef10ca022",
+          "bytes": 1620
+        },
+        "illuminants/T.csv": {
+          "sha256": "03486278730d6154d289d43cd940a328a080de316e3b07d4548f2d9dd1e1d9e2",
+          "bytes": 1620
+        },
+        "illuminants/K75P.csv": {
+          "sha256": "f1fc4d42463fc021d894ecf158fcd1b64d03c6e998c5fc9b2db2527b03748652",
+          "bytes": 1620
+        },
+        "luts/spectral_upsampling/irradiance_xy_tc.npy": {
+          "sha256": "52f90c724811f5fab80769f8548bf24d08a521eb09e65ab6e016893258d2a783",
+          "bytes": 5972096
+        },
+        "luts/spectral_upsampling/arctic2026beta04_reflectance_xy_tc.npy": {
+          "sha256": "cf5b3dafad6470cdd3981038149374c967820654b94142332808681d364083a6",
+          "bytes": 5972096
+        },
+        "luts/spectral_upsampling/mallett2019_basis.npy": {
+          "sha256": "433903731e217538251266f67c9d8e8c6026b6b957d11eee35a29ae7adc2eba7",
+          "bytes": 1100
+        }
+      },
+      "capture_argv": [
+        "out/build/linux-debug/tests/bin/JuicerFilmRecipeTests",
+        "out/build/linux-debug/tests/Resources",
+        "tests/print/preflash-fixtures/cases.json",
+        "capture-preflash-native",
+        "linux-debug",
+        "out/validation/linux-debug/s4-c-slice-2-preflash-resume-2026-10-21/native.json"
+      ],
+      "capture_exit": 0,
+      "native_literal_rows": 19,
+      "actual_caller_rows": 72
+    },
+    "linux-release": {
+      "executable": {
+        "path": "out/build/linux-release/tests/bin/JuicerFilmRecipeTests",
+        "sha256": "012712421749bb124d28cc647ae5752195704bc03595b0dd10e040ca5d5867da",
+        "bytes": 319325232
+      },
+      "rust_archive": {
+        "path": "out/build/linux-release/cargo/x86_64-unknown-linux-gnu/release/libfilm_juicer_plugin.a",
+        "sha256": "6739232d50bdbbb870c5fd5a0b1af60a3996c967072e24425f025f837242e2ca",
+        "bytes": 50917824
+      },
+      "preparation_owner": {
+        "path": "out/build/linux-release/verification-build-c66bf9eb37bf00181609f6d6.json",
+        "sha256": "80528cb17cbda11cf09c572614d3542de5268b248ff11cdbc160f1f8a9ff16c9",
+        "bytes": 297449,
+        "producer": "/mnt/c/Dev/Codex/out/validation/linux-release/preparation-443fdf8034a84f15b8aa856796a9b4f7/attempts/prepare-ofncs_td/result.json",
+        "producer_sha256": "0b914ebbecd18a6e158fbb246df576824d0bf5206e8f7a637b094ac46d53245d"
+      },
+      "compiler_context": {
+        "native_commands": [
+          {
+            "directory": "/mnt/c/Dev/Codex/out/build/linux-release",
+            "command": "/usr/bin/g++-13 -DJUICER_DIAGNOSTICS_COMPILED=0 -DJUICER_PRINT_PREFLASH_TEST_HOOK=1 -I/mnt/c/Dev/Codex/src -I/mnt/c/Dev/Codex/native -isystem /mnt/c/Dev/Codex/third_party -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include/cccl -O3  -std=c++20 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -Wall -Wextra -Werror -o tests/CMakeFiles/juicer_preflash_capture_test_objects.dir/__/src/Cuda/JuicerCudaResources.cpp.o -c /mnt/c/Dev/Codex/src/Cuda/JuicerCudaResources.cpp",
+            "file": "/mnt/c/Dev/Codex/src/Cuda/JuicerCudaResources.cpp",
+            "output": "/mnt/c/Dev/Codex/out/build/linux-release/tests/CMakeFiles/juicer_preflash_capture_test_objects.dir/__/src/Cuda/JuicerCudaResources.cpp.o"
+          },
+          {
+            "directory": "/mnt/c/Dev/Codex/out/build/linux-release",
+            "command": "/usr/bin/g++-13 -DJUICER_DIAGNOSTICS_COMPILED=0 -DJUICER_PRINT_PREFLASH_TEST_HOOK=1 -I/mnt/c/Dev/Codex/src -I/mnt/c/Dev/Codex/native -isystem /mnt/c/Dev/Codex/third_party -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include -isystem /usr/local/cuda-13.2/targets/x86_64-linux/include/cccl -isystem /mnt/c/Dev/Codex/third_party/ofxs/OpenFX-1.4/include -isystem /mnt/c/Dev/Codex/third_party/ofxs/Support/include -O3  -std=c++20 -fPIE -fvisibility=hidden -fvisibility-inlines-hidden -Wall -Wextra -Werror -o tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_test.cpp.o -c /mnt/c/Dev/Codex/tests/ffi/film_recipe_test.cpp",
+            "file": "/mnt/c/Dev/Codex/tests/ffi/film_recipe_test.cpp",
+            "output": "/mnt/c/Dev/Codex/out/build/linux-release/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_test.cpp.o"
+          }
+        ],
+        "cargo_command": [
+          "COMMAND = cd /mnt/c/Dev/Codex && /home/alexi/.local/opt/cmake-4.3.1-linux-x86_64/bin/cmake -E env RUSTFLAGS= CARGO_BUILD_RUSTFLAGS= CARGO_ENCODED_RUSTFLAGS= /mnt/c/Dev/Codex/.tmp/rust-linux/cargo/bin/cargo build --locked --package film-juicer-plugin --no-default-features --features test-support --target x86_64-unknown-linux-gnu --target-dir /mnt/c/Dev/Codex/out/build/linux-release/cargo --release && /home/alexi/.local/opt/cmake-4.3.1-linux-x86_64/bin/cmake -E touch /mnt/c/Dev/Codex/out/build/linux-release/cargo-build.stamp"
+        ],
+        "cargo_features": "test-support=ON\n",
+        "configuration_sha256": {
+          "CMakeCache.txt": "a43e98af3f5ef05cb6c125aae6393a2b215e816b1d60b57273176a432794bdd2",
+          "compile_commands.json": "cf801df4e69b9bdf05c269f199869caecdfd904e474761e56fb0907a5747586e",
+          "cargo-features.txt": "46bea939415006deecb5ef9c679f7653396a6cec027c810d7496582aeb0fa2e1"
+        }
+      },
+      "staged_resources": {
+        "profiles/kodak_portra_400.json": {
+          "sha256": "eb8b733fd8f79223b93ee389f1f32774378ea1905364ed658e4ce1d46ec1c069",
+          "bytes": 161683
+        },
+        "profiles/fujifilm_provia_100f.json": {
+          "sha256": "fed3f45ae581996b2a5b826b8b5d19ccd1a6f7854fff475aa64d2755940b9c20",
+          "bytes": 159325
+        },
+        "profiles/kodak_portra_endura.json": {
+          "sha256": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+          "bytes": 158722
+        },
+        "filters/neutral_print_filters.json": {
+          "sha256": "f18bb2cc44a97a8b27c3d592d7bcf2d2658a6e81b6aaf16ff6a81da763f57bdf",
+          "bytes": 19597
+        },
+        "cie1931_2deg.csv": {
+          "sha256": "3b65a413ec998011608dbbe87ebcb180d93b38d533c80f1ceabff7de71178cbf",
+          "bytes": 4374
+        },
+        "illuminants/D50.csv": {
+          "sha256": "e73612a79beb3fb4eb985f14032e68b077ae4d03cadee0ac8a2d7651f09ab378",
+          "bytes": 1620
+        },
+        "illuminants/D55.csv": {
+          "sha256": "8d914ed6d9a522aca8c1ced434e6d4b3e7ee63a40f200b60f8ef3f7efad74875",
+          "bytes": 1620
+        },
+        "illuminants/D65.csv": {
+          "sha256": "9ed98cf4eba0fafa77ca04f5e927f05b29a76f2b91b420153000ca0ef10ca022",
+          "bytes": 1620
+        },
+        "illuminants/T.csv": {
+          "sha256": "03486278730d6154d289d43cd940a328a080de316e3b07d4548f2d9dd1e1d9e2",
+          "bytes": 1620
+        },
+        "illuminants/K75P.csv": {
+          "sha256": "f1fc4d42463fc021d894ecf158fcd1b64d03c6e998c5fc9b2db2527b03748652",
+          "bytes": 1620
+        },
+        "luts/spectral_upsampling/irradiance_xy_tc.npy": {
+          "sha256": "52f90c724811f5fab80769f8548bf24d08a521eb09e65ab6e016893258d2a783",
+          "bytes": 5972096
+        },
+        "luts/spectral_upsampling/arctic2026beta04_reflectance_xy_tc.npy": {
+          "sha256": "cf5b3dafad6470cdd3981038149374c967820654b94142332808681d364083a6",
+          "bytes": 5972096
+        },
+        "luts/spectral_upsampling/mallett2019_basis.npy": {
+          "sha256": "433903731e217538251266f67c9d8e8c6026b6b957d11eee35a29ae7adc2eba7",
+          "bytes": 1100
+        }
+      },
+      "capture_argv": [
+        "out/build/linux-release/tests/bin/JuicerFilmRecipeTests",
+        "out/build/linux-release/tests/Resources",
+        "tests/print/preflash-fixtures/cases.json",
+        "capture-preflash-native",
+        "linux-release",
+        "out/validation/linux-release/s4-c-slice-2-preflash-resume-2026-10-21/native.json"
+      ],
+      "capture_exit": 0,
+      "native_literal_rows": 19,
+      "actual_caller_rows": 72
+    },
+    "windows-clang-debug": {
+      "executable": {
+        "path": "out/build/windows-clang-debug/tests/bin/JuicerFilmRecipeTests.exe",
+        "sha256": "fde342a8717ce554669041dcdbf34b3f725120b4debfbede5c830b13bf1aec35",
+        "bytes": 10505728
+      },
+      "rust_archive": {
+        "path": "out/build/windows-clang-debug/cargo/x86_64-pc-windows-msvc/debug/film_juicer_plugin.lib",
+        "sha256": "49691ff6048b8db80c0aafd8e80f26bfa6067a183d74ccdf1fa790f471433421",
+        "bytes": 67234704
+      },
+      "preparation_owner": {
+        "path": "out/build/windows-clang-debug/verification-build-c66bf9eb37bf00181609f6d6.json",
+        "sha256": "0c67ed6836d179844004b17ccab0219c73e5d7bf9de8ab655edb3f0c9bf42a8a",
+        "bytes": 399295,
+        "producer": "C:\\Dev\\Codex\\out\\validation\\windows-clang-debug\\preparation-d10793a0d4b54115b01de9eec8637384\\attempts\\prepare-7mybobqp\\result.json",
+        "producer_sha256": "c10e30eebe52243dc002b4afcbe3d15a1f25c389b8b6faf08a1d59a1291bca34"
+      },
+      "compiler_context": {
+        "native_commands": [
+          {
+            "directory": "C:/Dev/Codex/out/build/windows-clang-debug",
+            "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DJUICER_DIAGNOSTICS_COMPILED=1 -DJUICER_PRINT_PREFLASH_TEST_HOOK=1 -DNOMINMAX -DUNICODE -DWIN32 -D_CRT_SECURE_NO_WARNINGS -D_UNICODE -D_WINDLL -IC:\\Dev\\Codex\\src -IC:\\Dev\\Codex\\native -imsvcC:\\Dev\\Codex\\third_party -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\" -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\\cccl\" /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od -std:c++20 -MD -RTC1 -Z7 /W3 /WX /sdl /permissive- /EHsc /Fotests\\CMakeFiles\\juicer_preflash_capture_test_objects.dir\\__\\src\\Cuda\\JuicerCudaResources.cpp.obj /Fdtests\\CMakeFiles\\juicer_preflash_capture_test_objects.dir\\ -c -- C:\\Dev\\Codex\\src\\Cuda\\JuicerCudaResources.cpp",
+            "file": "C:/Dev/Codex/src/Cuda/JuicerCudaResources.cpp",
+            "output": "C:/Dev/Codex/out/build/windows-clang-debug/tests/CMakeFiles/juicer_preflash_capture_test_objects.dir/__/src/Cuda/JuicerCudaResources.cpp.obj"
+          },
+          {
+            "directory": "C:/Dev/Codex/out/build/windows-clang-debug",
+            "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DJUICER_DIAGNOSTICS_COMPILED=1 -DJUICER_PRINT_PREFLASH_TEST_HOOK=1 -DNOMINMAX -DUNICODE -DWIN32 -D_CRT_SECURE_NO_WARNINGS -D_UNICODE -D_WINDLL -IC:\\Dev\\Codex\\src -IC:\\Dev\\Codex\\native -imsvcC:\\Dev\\Codex\\third_party -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\" -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\\cccl\" -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\OpenFX-1.4\\include -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\Support\\include /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od -std:c++20 -MD -RTC1 -Z7 /W3 /WX /sdl /permissive- /EHsc /Fotests\\CMakeFiles\\JuicerFilmRecipeTests.dir\\ffi\\film_recipe_test.cpp.obj /Fdtests\\CMakeFiles\\JuicerFilmRecipeTests.dir\\ -c -- C:\\Dev\\Codex\\tests\\ffi\\film_recipe_test.cpp",
+            "file": "C:/Dev/Codex/tests/ffi/film_recipe_test.cpp",
+            "output": "C:/Dev/Codex/out/build/windows-clang-debug/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_test.cpp.obj"
+          }
+        ],
+        "cargo_command": [
+          "COMMAND = C:\\Windows\\system32\\cmd.exe /C \"cd /D C:\\Dev\\Codex && \"C:\\Program Files\\CMake\\bin\\cmake.exe\" -E env RUSTFLAGS= CARGO_BUILD_RUSTFLAGS= CARGO_ENCODED_RUSTFLAGS= C:/Users/Alexi/.cargo/bin/cargo.exe build --locked --package film-juicer-plugin --no-default-features --features test-support --target x86_64-pc-windows-msvc --target-dir C:/Dev/Codex/out/build/windows-clang-debug/cargo && \"C:\\Program Files\\CMake\\bin\\cmake.exe\" -E touch C:/Dev/Codex/out/build/windows-clang-debug/cargo-build.stamp\""
+        ],
+        "cargo_features": "test-support=ON\n",
+        "configuration_sha256": {
+          "CMakeCache.txt": "39fb7f1f2b4f91e77cad8cc2d98aa60019da5b9f51a2e99cfc80656df8786ea1",
+          "compile_commands.json": "2f0662f5379eab7cc1989a79a14801a130925083871fb65669ae696a7eba0942",
+          "cargo-features.txt": "43bcd48ff056b3b63d4038632148c3146283c730556611fb6a87ef92cd677a7b"
+        }
+      },
+      "staged_resources": {
+        "profiles/kodak_portra_400.json": {
+          "sha256": "eb8b733fd8f79223b93ee389f1f32774378ea1905364ed658e4ce1d46ec1c069",
+          "bytes": 161683
+        },
+        "profiles/fujifilm_provia_100f.json": {
+          "sha256": "fed3f45ae581996b2a5b826b8b5d19ccd1a6f7854fff475aa64d2755940b9c20",
+          "bytes": 159325
+        },
+        "profiles/kodak_portra_endura.json": {
+          "sha256": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+          "bytes": 158722
+        },
+        "filters/neutral_print_filters.json": {
+          "sha256": "f18bb2cc44a97a8b27c3d592d7bcf2d2658a6e81b6aaf16ff6a81da763f57bdf",
+          "bytes": 19597
+        },
+        "cie1931_2deg.csv": {
+          "sha256": "3b65a413ec998011608dbbe87ebcb180d93b38d533c80f1ceabff7de71178cbf",
+          "bytes": 4374
+        },
+        "illuminants/D50.csv": {
+          "sha256": "e73612a79beb3fb4eb985f14032e68b077ae4d03cadee0ac8a2d7651f09ab378",
+          "bytes": 1620
+        },
+        "illuminants/D55.csv": {
+          "sha256": "8d914ed6d9a522aca8c1ced434e6d4b3e7ee63a40f200b60f8ef3f7efad74875",
+          "bytes": 1620
+        },
+        "illuminants/D65.csv": {
+          "sha256": "9ed98cf4eba0fafa77ca04f5e927f05b29a76f2b91b420153000ca0ef10ca022",
+          "bytes": 1620
+        },
+        "illuminants/T.csv": {
+          "sha256": "03486278730d6154d289d43cd940a328a080de316e3b07d4548f2d9dd1e1d9e2",
+          "bytes": 1620
+        },
+        "illuminants/K75P.csv": {
+          "sha256": "f1fc4d42463fc021d894ecf158fcd1b64d03c6e998c5fc9b2db2527b03748652",
+          "bytes": 1620
+        },
+        "luts/spectral_upsampling/irradiance_xy_tc.npy": {
+          "sha256": "52f90c724811f5fab80769f8548bf24d08a521eb09e65ab6e016893258d2a783",
+          "bytes": 5972096
+        },
+        "luts/spectral_upsampling/arctic2026beta04_reflectance_xy_tc.npy": {
+          "sha256": "cf5b3dafad6470cdd3981038149374c967820654b94142332808681d364083a6",
+          "bytes": 5972096
+        },
+        "luts/spectral_upsampling/mallett2019_basis.npy": {
+          "sha256": "433903731e217538251266f67c9d8e8c6026b6b957d11eee35a29ae7adc2eba7",
+          "bytes": 1100
+        }
+      },
+      "capture_argv": [
+        "out/build/windows-clang-debug/tests/bin/JuicerFilmRecipeTests.exe",
+        "out/build/windows-clang-debug/tests/Resources",
+        "tests/print/preflash-fixtures/cases.json",
+        "capture-preflash-native",
+        "windows-clang-debug",
+        "out/validation/windows-clang-debug/s4-c-slice-2-preflash-resume-2026-10-21/native.json"
+      ],
+      "capture_exit": 0,
+      "native_literal_rows": 19,
+      "actual_caller_rows": 72
+    },
+    "windows-clang-release": {
+      "executable": {
+        "path": "out/build/windows-clang-release/tests/bin/JuicerFilmRecipeTests.exe",
+        "sha256": "23446ee05709d0b37d511b76ad3f678b751b4740bbf8208502fc5def2c1455be",
+        "bytes": 6313472
+      },
+      "rust_archive": {
+        "path": "out/build/windows-clang-release/cargo/x86_64-pc-windows-msvc/release/film_juicer_plugin.lib",
+        "sha256": "f67cc96a2acfe3f1c034b4526d7eaee58172a45b1bc50bf2978eef2ea8ee443b",
+        "bytes": 36949752
+      },
+      "preparation_owner": {
+        "path": "out/build/windows-clang-release/verification-build-c66bf9eb37bf00181609f6d6.json",
+        "sha256": "85a20b9afe770cb23eedaab879ce88bd4709108e67f887ce23be56b2006daf00",
+        "bytes": 400771,
+        "producer": "C:\\Dev\\Codex\\out\\validation\\windows-clang-release\\preparation-0a39814295754e969fc499299e343f7c\\attempts\\prepare-dcx5oq5j\\result.json",
+        "producer_sha256": "462ee7c693858c4dcb3a5f59b1b6c7582ddf8e2c0f0113c3d935bbe091193932"
+      },
+      "compiler_context": {
+        "native_commands": [
+          {
+            "directory": "C:/Dev/Codex/out/build/windows-clang-release",
+            "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DJUICER_DIAGNOSTICS_COMPILED=0 -DJUICER_PRINT_PREFLASH_TEST_HOOK=1 -DNOMINMAX -DWIN32 -D_CRT_SECURE_NO_WARNINGS -D_MBCS -D_WINDLL -IC:\\Dev\\Codex\\src -IC:\\Dev\\Codex\\native -imsvcC:\\Dev\\Codex\\third_party -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\" -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\\cccl\" /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2  -std:c++20 -MD -Z7 /W3 /WX /sdl /permissive- /EHsc /O2 /Oi /Ob2 /Gy /Gw /GF -flto=thin /Fotests\\CMakeFiles\\juicer_preflash_capture_test_objects.dir\\__\\src\\Cuda\\JuicerCudaResources.cpp.obj /Fdtests\\CMakeFiles\\juicer_preflash_capture_test_objects.dir\\ -c -- C:\\Dev\\Codex\\src\\Cuda\\JuicerCudaResources.cpp",
+            "file": "C:/Dev/Codex/src/Cuda/JuicerCudaResources.cpp",
+            "output": "C:/Dev/Codex/out/build/windows-clang-release/tests/CMakeFiles/juicer_preflash_capture_test_objects.dir/__/src/Cuda/JuicerCudaResources.cpp.obj"
+          },
+          {
+            "directory": "C:/Dev/Codex/out/build/windows-clang-release",
+            "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DJUICER_DIAGNOSTICS_COMPILED=0 -DJUICER_PRINT_PREFLASH_TEST_HOOK=1 -DNOMINMAX -DWIN32 -D_CRT_SECURE_NO_WARNINGS -D_MBCS -D_WINDLL -IC:\\Dev\\Codex\\src -IC:\\Dev\\Codex\\native -imsvcC:\\Dev\\Codex\\third_party -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\" -imsvc\"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\include\\cccl\" -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\OpenFX-1.4\\include -imsvcC:\\Dev\\Codex\\third_party\\ofxs\\Support\\include /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2  -std:c++20 -MD -Z7 /W3 /WX /sdl /permissive- /EHsc /O2 /Oi /Ob2 /Gy /Gw /GF -flto=thin /Fotests\\CMakeFiles\\JuicerFilmRecipeTests.dir\\ffi\\film_recipe_test.cpp.obj /Fdtests\\CMakeFiles\\JuicerFilmRecipeTests.dir\\ -c -- C:\\Dev\\Codex\\tests\\ffi\\film_recipe_test.cpp",
+            "file": "C:/Dev/Codex/tests/ffi/film_recipe_test.cpp",
+            "output": "C:/Dev/Codex/out/build/windows-clang-release/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_test.cpp.obj"
+          }
+        ],
+        "cargo_command": [
+          "COMMAND = C:\\Windows\\system32\\cmd.exe /C \"cd /D C:\\Dev\\Codex && \"C:\\Program Files\\CMake\\bin\\cmake.exe\" -E env RUSTFLAGS= CARGO_BUILD_RUSTFLAGS= CARGO_ENCODED_RUSTFLAGS= C:/Users/Alexi/.cargo/bin/cargo.exe build --locked --package film-juicer-plugin --no-default-features --features test-support --target x86_64-pc-windows-msvc --target-dir C:/Dev/Codex/out/build/windows-clang-release/cargo --release && \"C:\\Program Files\\CMake\\bin\\cmake.exe\" -E touch C:/Dev/Codex/out/build/windows-clang-release/cargo-build.stamp\""
+        ],
+        "cargo_features": "test-support=ON\n",
+        "configuration_sha256": {
+          "CMakeCache.txt": "bc0dd3f7ab3f396268a1708b3cb5d7e1339b53e53f9563928af947c5b5a309bc",
+          "compile_commands.json": "71ec30c1ac75afcfe314c19e4b3bc6a7a656e30c705fd41e28c172d7ea02c587",
+          "cargo-features.txt": "43bcd48ff056b3b63d4038632148c3146283c730556611fb6a87ef92cd677a7b"
+        }
+      },
+      "staged_resources": {
+        "profiles/kodak_portra_400.json": {
+          "sha256": "eb8b733fd8f79223b93ee389f1f32774378ea1905364ed658e4ce1d46ec1c069",
+          "bytes": 161683
+        },
+        "profiles/fujifilm_provia_100f.json": {
+          "sha256": "fed3f45ae581996b2a5b826b8b5d19ccd1a6f7854fff475aa64d2755940b9c20",
+          "bytes": 159325
+        },
+        "profiles/kodak_portra_endura.json": {
+          "sha256": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969",
+          "bytes": 158722
+        },
+        "filters/neutral_print_filters.json": {
+          "sha256": "f18bb2cc44a97a8b27c3d592d7bcf2d2658a6e81b6aaf16ff6a81da763f57bdf",
+          "bytes": 19597
+        },
+        "cie1931_2deg.csv": {
+          "sha256": "3b65a413ec998011608dbbe87ebcb180d93b38d533c80f1ceabff7de71178cbf",
+          "bytes": 4374
+        },
+        "illuminants/D50.csv": {
+          "sha256": "e73612a79beb3fb4eb985f14032e68b077ae4d03cadee0ac8a2d7651f09ab378",
+          "bytes": 1620
+        },
+        "illuminants/D55.csv": {
+          "sha256": "8d914ed6d9a522aca8c1ced434e6d4b3e7ee63a40f200b60f8ef3f7efad74875",
+          "bytes": 1620
+        },
+        "illuminants/D65.csv": {
+          "sha256": "9ed98cf4eba0fafa77ca04f5e927f05b29a76f2b91b420153000ca0ef10ca022",
+          "bytes": 1620
+        },
+        "illuminants/T.csv": {
+          "sha256": "03486278730d6154d289d43cd940a328a080de316e3b07d4548f2d9dd1e1d9e2",
+          "bytes": 1620
+        },
+        "illuminants/K75P.csv": {
+          "sha256": "f1fc4d42463fc021d894ecf158fcd1b64d03c6e998c5fc9b2db2527b03748652",
+          "bytes": 1620
+        },
+        "luts/spectral_upsampling/irradiance_xy_tc.npy": {
+          "sha256": "52f90c724811f5fab80769f8548bf24d08a521eb09e65ab6e016893258d2a783",
+          "bytes": 5972096
+        },
+        "luts/spectral_upsampling/arctic2026beta04_reflectance_xy_tc.npy": {
+          "sha256": "cf5b3dafad6470cdd3981038149374c967820654b94142332808681d364083a6",
+          "bytes": 5972096
+        },
+        "luts/spectral_upsampling/mallett2019_basis.npy": {
+          "sha256": "433903731e217538251266f67c9d8e8c6026b6b957d11eee35a29ae7adc2eba7",
+          "bytes": 1100
+        }
+      },
+      "capture_argv": [
+        "out/build/windows-clang-release/tests/bin/JuicerFilmRecipeTests.exe",
+        "out/build/windows-clang-release/tests/Resources",
+        "tests/print/preflash-fixtures/cases.json",
+        "capture-preflash-native",
+        "windows-clang-release",
+        "out/validation/windows-clang-release/s4-c-slice-2-preflash-resume-2026-10-21/native.json"
+      ],
+      "capture_exit": 0,
+      "native_literal_rows": 19,
+      "actual_caller_rows": 72
+    }
+  }
+}

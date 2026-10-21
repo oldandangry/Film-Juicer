@@ -104,6 +104,7 @@ def execute(arguments):
         b"physical effects fixture panic",
         b"spatial optics fixture panic",
         b"print illuminant fixture panic",
+        b"print preflash fixture panic",
         b"film DIR acquire fixture panic",
         b"film DIR view fixture panic",
         b"film DIR release fixture panic",
@@ -156,6 +157,8 @@ def execute(arguments):
     native_print_manifest = print_directory / print_spec["native_manifest"]["path"]
     assert digest(native_print_manifest) == print_spec["native_manifest"]["sha256"]
     consumed_paths.extend([print_manifest, print_payload, native_print_manifest])
+    preflash_manifest, preflash_payload, _, _, _ = preflash_fixture(arguments.preset)
+    consumed_paths.extend([preflash_manifest, preflash_payload])
     consumed = {str(path): digest(path) for path in sorted(set(consumed_paths))}
 
     def check_consumed():
@@ -196,6 +199,7 @@ def execute(arguments):
         "fj_legacy_physical_effects_prepare",
         "fj_legacy_spatial_optics_prepare",
         "fj_legacy_print_illuminant_prepare",
+        "fj_legacy_print_preflash_prepare",
         "fj_legacy_output_color",
         "fj_legacy_film_profile_acquire",
         "fj_legacy_print_profile_acquire",
@@ -227,6 +231,7 @@ def execute(arguments):
     effects_results = []
     optics_results = []
     print_illuminant_results = []
+    preflash_results = []
     for name, source in probes:
         executable = out / (name + suffix)
         target_source = out / (name + ".c")
@@ -370,6 +375,17 @@ def execute(arguments):
                 print_illuminant_results.append({"case": case, "category": actual[0], "api": actual[1],
                                                   "native_code": actual[2], "reason": actual[3],
                                                   "sample": actual[4], "fields": "81-pass"})
+            _, _, names, _, envelopes = preflash_fixture(arguments.preset)
+            lines = [line for line in output.splitlines() if line.startswith("PRINT_PREFLASH_CASE")]
+            assert len(lines) == 12, lines
+            for line, case, envelope in zip(lines, names, envelopes, strict=True):
+                match = re.fullmatch(r"PRINT_PREFLASH_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) channel=(\d+) fields=3-pass", line)
+                assert match is not None and match[1] == case, line
+                actual = [int(value) for value in match.groups()[1:]]
+                assert actual == [envelope[0], 0, 0, envelope[1], envelope[2]], line
+                preflash_results.append({"case": case, "category": actual[0], "api": actual[1],
+                                        "native_code": actual[2], "reason": actual[3],
+                                        "channel": actual[4], "fields": "3-pass"})
     check_build_inputs()
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     if windows:
@@ -412,6 +428,9 @@ def execute(arguments):
                 "effects_results": effects_results,
                 "optics_results": optics_results,
                 "print_illuminant_results": print_illuminant_results,
+                "preflash_results": preflash_results,
+                "preflash_fixture": {"manifest": str(preflash_manifest), "payload": str(preflash_payload),
+                                     "logical_preset": arguments.preset},
                 "print_illuminant_fixture": {"manifest": str(print_manifest), "payload": str(print_payload),
                                              "logical_preset": arguments.preset},
                 "optics_fixture": {"manifest": str(optics_manifest), "payload": str(optics_payload),
@@ -647,7 +666,41 @@ def expected_film_header(out):
             stream.write("static const uint32_t print_illuminant_" + name + "[12][" + str(len(data[0])) + "] = {" + ",".join("{" + ",".join(str(word) + "U" for word in row) + "}" for row in data) + "};\n")
 
 
+def preflash_fixture(preset):
+    directory = root / "tests/print/preflash-fixtures"
+    manifest = directory / "manifest.json"
+    spec = json.loads(manifest.read_text())
+    payload = directory / spec["presets"][preset]["native"]
+    assert digest(payload) == spec["files"][payload.name]["sha256"]
+    literals = json.loads(payload.read_text())["cases"]
+    names = ["preflash-unit", "preflash-channels", "preflash-pattern", "preflash-zero",
+             "preflash-light-nan", "preflash-sensitivity-skip", "preflash-narrow-overflow",
+             "preflash-negative-m", "preflash-nonfinite-y", "preflash-raw-input",
+             "preflash-raw-count", "preflash-raw-pointer"]
+    rows = []
+    for name in names[:9]:
+        selected = [row for row in literals if row["id"] == name]
+        assert len(selected) == 1, name
+        rows.append(selected[0])
+    rows += [rows[0]] * 3
+    envelopes = [[0, 0, 4294967295] for _ in range(7)] + [[3, 2, 1], [3, 2, 2]] + [[2, 1, 4294967295] for _ in range(3)]
+    return manifest, payload, names, rows, envelopes
+
+
+def expected_preflash_header(out):
+    _, _, names, rows, envelopes = preflash_fixture(arguments.preset)
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write("static const char* preflash_names[12] = {" + ",".join(json.dumps(name) for name in names) + "};\n")
+        for name, data in [("base", [row["film_base_density"] for row in rows]),
+                           ("light", [row["filtered_illuminant"] for row in rows]),
+                           ("sensitivity", [row["print_sensitivity_cmy"] for row in rows]),
+                           ("raw", [row["raw"] if i < 7 else [0] * 3 for i, row in enumerate(rows)]),
+                           ("envelopes", envelopes)]:
+            stream.write("static const uint32_t preflash_" + name + "[12][" + str(len(data[0])) + "] = {" + ",".join("{" + ",".join(str(word) + "U" for word in row) + "}" for row in data) + "};\n")
+
+
 if __name__ == "__main__":
     arguments.artifacts.mkdir(parents=True, exist_ok=True)
     expected_film_header(arguments.artifacts)
+    expected_preflash_header(arguments.artifacts)
     execute(arguments)

@@ -249,6 +249,26 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_print_preflash_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("print_preflash_complete", None),
+            ("print_preflash_construction", {"E0451": ("print::PreflashRaw { ..raw }",)}),
+            ("print_preflash_default", {"E0599": ("print::PreflashRaw::default()",)}),
+            ("print_preflash_private", {"E0616": ("raw.cmy",)}),
+            ("print_preflash_readonly", {"E0594": ("raw.cmy()[0] = 0.0",)}),
+            ("print_preflash_owned", None),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_optics_are_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("optics_complete", None),

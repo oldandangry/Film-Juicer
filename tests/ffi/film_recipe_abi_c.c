@@ -454,3 +454,26 @@ _Static_assert(FJ_PRINT_ILLUMINANT_REASON_ENERGY == 3, "FJ_PRINT_ILLUMINANT_REAS
 _Static_assert(FJ_PRINT_ILLUMINANT_REASON_PANIC == 4, "FJ_PRINT_ILLUMINANT_REASON_PANIC value");
 _Static_assert(_Generic(&fj_legacy_print_illuminant_prepare, FjStatus (*)(const FjPrintIlluminantParams*, FjFloatSpan, FjIlluminant*, FjPrintIlluminantFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_print_illuminant_prepare signature");
 _Static_assert(_Generic(&fj_test_print_illuminant_prepare, FjStatus (*)(const FjPrintIlluminantParams*, FjFloatSpan, FjIlluminant*, FjPrintIlluminantFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_print_illuminant_prepare signature");
+
+_Static_assert(sizeof(FjPrintPreflashInput) == 48 && _Alignof(FjPrintPreflashInput) == 8, "FjPrintPreflashInput layout");
+_Static_assert(_Generic(((FjPrintPreflashInput*)0)->film_base_density, FjFloatSpan: 1, default: 0), "FjPrintPreflashInput.film_base_density type");
+_Static_assert(offsetof(FjPrintPreflashInput, film_base_density) == 0, "FjPrintPreflashInput.film_base_density offset");
+_Static_assert(_Generic(((FjPrintPreflashInput*)0)->filtered_illuminant, FjFloatSpan: 1, default: 0), "FjPrintPreflashInput.filtered_illuminant type");
+_Static_assert(offsetof(FjPrintPreflashInput, filtered_illuminant) == 16, "FjPrintPreflashInput.filtered_illuminant offset");
+_Static_assert(_Generic(((FjPrintPreflashInput*)0)->print_sensitivity_cmy, FjFloatSpan: 1, default: 0), "FjPrintPreflashInput.print_sensitivity_cmy type");
+_Static_assert(offsetof(FjPrintPreflashInput, print_sensitivity_cmy) == 32, "FjPrintPreflashInput.print_sensitivity_cmy offset");
+_Static_assert(sizeof(FjPrintPreflashRaw) == 12 && _Alignof(FjPrintPreflashRaw) == 4, "FjPrintPreflashRaw layout");
+_Static_assert(_Generic(((FjPrintPreflashRaw*)0)->cmy, float*: 1, default: 0), "FjPrintPreflashRaw.cmy type");
+_Static_assert(offsetof(FjPrintPreflashRaw, cmy) == 0, "FjPrintPreflashRaw.cmy offset");
+_Static_assert(sizeof(((FjPrintPreflashRaw*)0)->cmy) / sizeof(float) == 3, "FjPrintPreflashRaw.cmy extent");
+_Static_assert(sizeof(FjPrintPreflashFailure) == 8 && _Alignof(FjPrintPreflashFailure) == 4, "FjPrintPreflashFailure layout");
+_Static_assert(_Generic(((FjPrintPreflashFailure*)0)->reason, uint32_t: 1, default: 0), "FjPrintPreflashFailure.reason type");
+_Static_assert(offsetof(FjPrintPreflashFailure, reason) == 0, "FjPrintPreflashFailure.reason offset");
+_Static_assert(_Generic(((FjPrintPreflashFailure*)0)->channel, uint32_t: 1, default: 0), "FjPrintPreflashFailure.channel type");
+_Static_assert(offsetof(FjPrintPreflashFailure, channel) == 4, "FjPrintPreflashFailure.channel offset");
+_Static_assert(FJ_PRINT_PREFLASH_REASON_NONE == 0, "FJ_PRINT_PREFLASH_REASON_NONE value");
+_Static_assert(FJ_PRINT_PREFLASH_REASON_RAW == 1, "FJ_PRINT_PREFLASH_REASON_RAW value");
+_Static_assert(FJ_PRINT_PREFLASH_REASON_CHANNEL == 2, "FJ_PRINT_PREFLASH_REASON_CHANNEL value");
+_Static_assert(FJ_PRINT_PREFLASH_REASON_PANIC == 3, "FJ_PRINT_PREFLASH_REASON_PANIC value");
+_Static_assert(_Generic(&fj_legacy_print_preflash_prepare, FjStatus (*)(const FjPrintPreflashInput*, FjPrintPreflashRaw*, FjPrintPreflashFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_print_preflash_prepare signature");
+_Static_assert(_Generic(&fj_test_print_preflash_prepare, FjStatus (*)(const FjPrintPreflashInput*, FjPrintPreflashRaw*, FjPrintPreflashFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_print_preflash_prepare signature");

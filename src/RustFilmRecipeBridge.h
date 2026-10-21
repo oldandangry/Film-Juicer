@@ -27,6 +27,8 @@ namespace Profiles {
 } // namespace Profiles
 
 namespace JuicerAssets {
+    // SF_TEMP_BRIDGE_PRINT_PREFLASH: synchronous completed C/M/Y copy; remove S4.E.
+    bool prepare_print_preflash(const std::array<float, 81>& filmBaseDensity, const std::array<float, 81>& filteredIlluminant, const std::array<std::array<float, 3>, 81>& printSensitivityCmy, std::array<float, 3>& out, std::string& diagnostic);
     // SF_TEMP_BRIDGE_PRINT_ILLUMINANT: complete synchronous copy; remove S4.E.
     bool prepare_print_illuminant(const DichroicFilterRecipe& filters, const std::array<float, 81>& source, const CmyCcTriplet& cmy, std::array<float, 81>& out, std::string& diagnostic);
     // SF_TEMP_BRIDGE_FILM_DIR_DENSITY: synchronous additional hold; remove S4.E.
