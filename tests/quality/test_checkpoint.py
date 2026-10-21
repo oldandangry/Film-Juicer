@@ -383,6 +383,294 @@ class CheckpointTests(unittest.TestCase):
                 self.assertEqual(prepared["payloads"], {name: digest(Path(name)) for name in prepared["payloads"]})
                 self.assertEqual(stage["payloads"], {name: digest(Path(name)) for name in stage["payloads"]})
 
+    def runtime_project(self):
+        self.native_project()
+        fixture = self.root / "tests/fixtures/runtime.json"
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text('{"value": 1}\n')
+        loader = self.root / "tests/runtime_loader.py"
+        loader.write_text("import json, pathlib, sys\n"
+                          "value = json.loads(pathlib.Path(sys.argv[1]).read_text())['value']\n"
+                          "pathlib.Path(sys.argv[2]).write_text(str(value))\n"
+                          "assert value > 0\n")
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() +
+            f'add_test(NAME runtime COMMAND "{Path(self.python).as_posix()}" '
+            '"${CMAKE_SOURCE_DIR}/tests/runtime_loader.py" "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json" '
+            '"${CMAKE_BINARY_DIR}/observed.txt")\n'
+            'set_tests_properties(runtime PROPERTIES LABELS "host;corpus")\n')
+        self.configure_fixture(self.preset, True, "runtime-on")
+        return fixture, loader
+
+    def test_runtime_edit_reuses_preparation_but_executes_changed_test_input(self):
+        import build_evidence
+        self.retain = True
+        fixture, loader = self.runtime_project()
+        first = qualification.prepare_checkpoint(self.campaign("runtime-prepare"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        args = SimpleNamespace(reason="runtime preparation boundary", selection=["corpus"], preset=self.preset,
+                               runtime="host", campaign="runtime-first", repeat_reason="", base=None)
+        original = json.loads(qualification.qualify(self.root, args).read_text())["stages"]["corpus"]
+        protected = {p: p.read_bytes() for p in (
+            Path(first["receipt"]), *build_evidence.preparation_paths(self.build, ["all"])[:1],
+            *(Path(name) for name in first["payloads"]))}
+        for index, path in enumerate((fixture, loader), start=2):
+            with self.subTest(path=path.name):
+                if path == fixture:
+                    path.write_text('{"value": 2}\n')
+                else:
+                    path.write_text(path.read_text().replace("str(value)", "str(value + 1)"))
+                with patch.object(qualification, "prepare_build", side_effect=AssertionError("preparation redispatched")), \
+                        patch.object(Campaign, "run", side_effect=AssertionError("configure/build/clean dispatched")):
+                    reused = qualification.prepare_checkpoint(self.campaign("runtime-reuse-" + str(index)), self.build,
+                        self.state_path, json.loads(self.state_path.read_text()), self.environment, timeout=60)
+                self.assertEqual(reused["reused_from"], first["receipt"])
+                self.assertTrue(all(p.read_bytes() == value for p, value in protected.items()))
+                args.campaign = "runtime-changed-" + str(index)
+                record_path = qualification.qualify(self.root, args)
+                current = json.loads(record_path.read_text())["stages"]["corpus"]
+                self.assertNotIn("reused_from", current)
+                self.assertNotEqual(current["receipt"], original["receipt"])
+                self.assertEqual((self.build / "observed.txt").read_text(), str(index))
+                original = current
+
+    def test_runtime_variable_configure_copy_requires_fresh_preparation(self):
+        self.assert_configure_copy_reprepared(
+            'set(stem runtime)\n'
+            'execute_process(COMMAND "${CMAKE_COMMAND}" -E copy '
+            '"${CMAKE_SOURCE_DIR}/tests/fixtures/${stem}.json" "${CMAKE_BINARY_DIR}/configured.json" '
+            'COMMAND_ERROR_IS_FATAL ANY)\n')
+
+    def test_runtime_variable_file_read_requires_fresh_preparation(self):
+        self.assert_configure_copy_reprepared(
+            'set(operation READ)\nset(stem runtime)\n'
+            'file(${operation} "${CMAKE_SOURCE_DIR}/tests/fixtures/${stem}.json" payload)\n'
+            'file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/configured.json" CONTENT "${payload}")\n')
+
+    def test_runtime_literal_file_read_requires_fresh_preparation(self):
+        self.assert_configure_copy_reprepared(
+            'file(READ "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json" payload)\n'
+            'file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/configured.json" CONTENT "${payload}")\n')
+
+    def assert_configure_copy_reprepared(self, configure_commands):
+        self.retain = True
+        fixture, _ = self.runtime_project()
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() + configure_commands +
+            'add_custom_target(staged ALL COMMAND "${CMAKE_COMMAND}" -E copy_if_different '
+            '"${CMAKE_BINARY_DIR}/configured.json" "${CMAKE_BINARY_DIR}/staged.json" '
+            'DEPENDS "${CMAKE_BINARY_DIR}/configured.json" BYPRODUCTS "${CMAKE_BINARY_DIR}/staged.json")\n')
+        first = qualification.prepare_checkpoint(self.campaign("variable-copy-first"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        producer = Path(first["receipt"])
+        original_receipt = producer.read_bytes()
+        configured, staged = (self.build / name for name in ("configured.json", "staged.json"))
+        self.assertEqual(json.loads(staged.read_text())["value"], 1)
+        self.assertIn(str(staged), first["payloads"])
+        (producer.parent / "original-staged.json").write_bytes(staged.read_bytes())
+        with patch.object(qualification, "prepare_build", side_effect=AssertionError("unchanged opaque scope redispatched")), \
+                patch.object(Campaign, "run", side_effect=AssertionError("unchanged opaque scope executed")):
+            unchanged = qualification.prepare_checkpoint(self.campaign("variable-copy-unchanged"), self.build,
+                self.state_path, self.state, self.environment, timeout=60)
+        self.assertEqual(unchanged["reused_from"], first["receipt"])
+        fixture.write_text('{"value": 2}\n')
+        commands = []
+        run = Campaign.run
+
+        def observe(campaign, stage, command, **kwargs):
+            commands.append(list(command))
+            return run(campaign, stage, command, **kwargs)
+
+        with patch.object(Campaign, "run", new=observe):
+            second = qualification.prepare_checkpoint(self.campaign("variable-copy-changed"), self.build,
+                self.state_path, self.state, self.environment, timeout=60)
+        write_json(self.build / "variable-copy-control.json", {
+            "first_receipt": first["receipt"], "second_receipt": second["receipt"],
+            "commands": commands, "runtime": json.loads(fixture.read_text()),
+            "configured": json.loads(configured.read_text()), "staged": json.loads(staged.read_text())})
+        self.assertEqual(json.loads(configured.read_text())["value"], 2)
+        self.assertEqual(json.loads(staged.read_text())["value"], 2)
+        self.assertNotIn("reused_from", second)
+        self.assertNotEqual(second["receipt"], first["receipt"])
+        self.assertIn("tests/fixtures/runtime.json", second["identity"]["inputs"])
+        self.assertTrue(any("--preset" in command or "-S" in command for command in commands))
+        self.assertEqual(producer.read_bytes(), original_receipt)
+
+    def test_runtime_preparation_keeps_build_consumers_and_unknown_inputs(self):
+        import build_evidence
+        self.retain = True
+        fixture, loader = self.runtime_project()
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() +
+            'configure_file(tests/fixtures/runtime.json generated.json COPYONLY)\n'
+            'add_custom_target(staged ALL COMMAND "${CMAKE_COMMAND}" -E copy '
+            '"${CMAKE_SOURCE_DIR}/tests/runtime_loader.py" "${CMAKE_BINARY_DIR}/staged.py" '
+            'DEPENDS "${CMAKE_SOURCE_DIR}/tests/runtime_loader.py" BYPRODUCTS "${CMAKE_BINARY_DIR}/staged.py")\n')
+        unknown = self.root / "tests/fixtures/unknown.json"
+        unknown.write_text("unknown dependency")
+        resources = self.root / "Resources/source.json"
+        resources.parent.mkdir()
+        resources.write_text("resource")
+        tool = self.root / "generator.py"
+        tool.write_text("# build generator\n")
+        cmake.write_text(cmake.read_text() +
+            'add_custom_target(generator ALL COMMAND "${CMAKE_COMMAND}" -E true '
+            'DEPENDS "${CMAKE_SOURCE_DIR}/generator.py")\n')
+        first = qualification.prepare_checkpoint(self.campaign("build-consumers"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        preparation = qualification.checkpoint_inputs(self.root, self.build, "prepare")
+        for path in (fixture, loader, unknown, resources, cmake, tool):
+            self.assertIn(path.relative_to(self.root).as_posix(), preparation)
+            before = path.read_bytes()
+            path.write_bytes(before + b" ")
+            self.assertNotEqual(snapshot(self.root, preparation), first["identity"]["inputs"])
+            with self.assertRaises(ValueError):
+                build_evidence.check_scoped_preparation(self.campaign("build-consumers"), self.build, first["receipt"])
+            path.write_bytes(before)
+
+    def test_runtime_preparation_retains_configure_copies_and_opaque_cargo_inputs(self):
+        self.retain = True
+        fixture, _ = self.runtime_project()
+        cmake = self.root / "CMakeLists.txt"
+        original = cmake.read_text()
+        for operation in (
+            'file(COPY "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json" DESTINATION "${CMAKE_BINARY_DIR}/copied")\n',
+            'file(READ "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json" fixture_text)\n',
+            'set(fixture "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json")\nfile(READ "${fixture}" fixture_text)\n',
+            'execute_process(COMMAND "${CMAKE_COMMAND}" -E cat "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json")\n',
+            'set(operation execute_process)\ncmake_language(CALL ${operation} COMMAND "${CMAKE_COMMAND}" -E true)\n',
+        ):
+            with self.subTest(operation=operation):
+                cmake.write_text(original + operation)
+                self.assertIn("tests/fixtures/runtime.json", qualification.checkpoint_inputs(self.root, self.build, "prepare"))
+        cmake.write_text(original)
+        cmake.write_text(original +
+            'add_custom_target(copy_directory ALL COMMAND "${CMAKE_COMMAND}" -E copy_directory '
+            '"${CMAKE_SOURCE_DIR}/tests/fixtures" "${CMAKE_BINARY_DIR}/staged-fixtures")\n')
+        self.configure_fixture(self.preset, True, "runtime-directory-copy")
+        self.assertIn("tests/fixtures/runtime.json", qualification.checkpoint_inputs(self.root, self.build, "prepare"))
+        cmake.write_text(original)
+        self.configure_fixture(self.preset, True, "runtime-directory-copy-restored")
+        for name, content in (("rust/src/lib.rs", 'const DATA: &str = include_str!("data.json");\n'),
+                              ("rust/src/lib.rs", 'const DATA: &[u8] = include_bytes!("data.json");\n'),
+                              ("rust/src/lib.rs", 'include!("data.json");\n'),
+                              ("Cargo.toml", '[package]\nbuild = "custom_build.rs"\n'),
+                              ("rust/build.rs", "fn main() {}\n")):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            self.assertIn(fixture.relative_to(self.root).as_posix(),
+                          qualification.checkpoint_inputs(self.root, self.build, "prepare"))
+            path.unlink()
+
+    def test_runtime_preparation_preserves_explicit_and_older_broad_requirements(self):
+        import build_evidence
+        self.retain = True
+        fixture, _ = self.runtime_project()
+        with patch.object(qualification, "preparation_inputs", side_effect=lambda root, build, paths, **kwargs: paths):
+            first = qualification.prepare_checkpoint(self.campaign("broad"), self.build,
+                self.state_path, self.state, self.environment, timeout=60)
+        receipt = Path(first["receipt"])
+        original = receipt.read_bytes()
+        fixture.write_text('{"value": 2}\n')
+        with self.assertRaisesRegex(ValueError, "dependency contents or membership changed"):
+            build_evidence.check_scoped_preparation(self.campaign("broad"), self.build, receipt)
+        renewed = qualification.prepare_checkpoint(self.campaign("narrow"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        self.assertNotEqual(renewed["receipt"], first["receipt"])
+        self.assertEqual(receipt.read_bytes(), original)
+        # Direct prepare_build inputs remain authoritative even for a file the
+        # checkpoint can prove is runtime-only.
+        explicit = build_evidence.prepare_build(self.campaign("explicit"), "prepare", source=self.root,
+            build=self.build, inputs=["input.txt", "tests/fixtures/runtime.json"], timeout=60,
+            targets=["all"], configure_args=["-DBUILD_TESTING=ON"], checkpoint=True)[1]
+        original_explicit = explicit.read_bytes()
+        fixture.write_text('{"value": 3}\n')
+        with self.assertRaisesRegex(ValueError, "dependency contents or membership changed"):
+            build_evidence.check_scoped_preparation(self.campaign("explicit"), self.build, explicit)
+        self.assertEqual(explicit.read_bytes(), original_explicit)
+
+    def test_runtime_preparation_does_not_admit_tampered_or_unproved_owners(self):
+        import build_evidence
+        self.retain = True
+        fixture, _ = self.runtime_project()
+        first = qualification.prepare_checkpoint(self.campaign("owned"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        baseline, pending = build_evidence.preparation_paths(self.build, ["all"])
+        original_owner = baseline.read_bytes()
+        original_receipt = Path(first["receipt"]).read_bytes()
+        artifact = next(Path(name) for name in first["payloads"] if Path(name).name == "material.txt")
+        original_artifact = artifact.read_bytes()
+        fixture.write_text('{"value": 2}\n')
+        for fault in ("artifact", "pending", "unproved"):
+            with self.subTest(fault=fault):
+                if fault == "artifact":
+                    artifact.write_bytes(b"tampered")
+                elif fault == "pending":
+                    pending.write_text('{"status": "unproved"}')
+                else:
+                    baseline.unlink()
+                with patch.object(Campaign, "run", side_effect=AssertionError("unsafe owner dispatched")):
+                    with self.assertRaises((ValueError, FileNotFoundError)):
+                        qualification.prepare_checkpoint(self.campaign("rejected-" + fault), self.build,
+                            self.state_path, json.loads(self.state_path.read_text()), self.environment, timeout=60)
+                self.assertEqual(Path(first["receipt"]).read_bytes(), original_receipt)
+                # Faults are isolated in this miniature, never shared owners.
+                artifact.write_bytes(original_artifact)
+                if pending.exists():
+                    pending.rename(self.build / "unproved-pending-retained.json")
+                if not baseline.exists():
+                    baseline.write_bytes(original_owner)
+                write_json(self.state_path, {"prepare": first})
+
+    def test_runtime_preparation_collection_uses_its_own_membership(self):
+        self.retain = True
+        fixture, _ = self.runtime_project()
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text().replace('"host;corpus"', '"host;product"'))
+        quality = self.root / "scripts/check-quality.py"
+        quality.parent.mkdir()
+        quality.write_text("print('miniature quality scheduling witness')\n")
+        args = SimpleNamespace(reason="miniature preparation collection", selection=["product"], preset=self.preset,
+                               runtime="all", campaign="collection-first", repeat_reason="", base="fixture")
+        path = qualification.qualify(self.root, args)
+        record = json.loads(path.read_text())
+        self.assertNotIn("tests/fixtures/runtime.json", record["stages"]["prepare"]["identity"]["inputs"])
+        self.assertIn("tests/fixtures/runtime.json", record["stages"]["product"]["identity"]["inputs"])
+        original = path.read_bytes()
+        with patch.object(Campaign, "run", side_effect=AssertionError("collector dispatched")):
+            with self.assertRaisesRegex(ValueError, "full checkpoint membership is incomplete"):
+                qualification.collect_qualification(self.root, [path])
+        fixture.write_text('{"value": 2}\n')
+        args.campaign = "collection-changed"
+        refreshed = qualification.qualify(self.root, args)
+        result = json.loads(refreshed.read_text())
+        self.assertEqual(result["stages"]["prepare"]["reused_from"], record["stages"]["prepare"]["receipt"])
+        self.assertNotIn("reused_from", result["stages"]["product"])
+        with self.assertRaisesRegex(ValueError, "full checkpoint membership is incomplete"):
+            qualification.collect_qualification(self.root, [refreshed])
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_runtime_preparation_cold_discovery_preserves_producer_requirements(self):
+        self.retain = True
+        self.native_project()
+        self.assertFalse((self.build / "CTestTestfile.cmake").exists())
+        fixture = self.root / "tests/runtime.txt"
+        fixture.parent.mkdir()
+        fixture.write_text("runtime input")
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() +
+            'add_test(NAME runtime COMMAND "${CMAKE_COMMAND}" -E cat "${CMAKE_SOURCE_DIR}/tests/runtime.txt")\n')
+        first = qualification.prepare_checkpoint(self.campaign("cold-discovery"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        proof = json.loads(Path(first["receipt"]).read_text())["scoped_preparation"]
+        declared = {name for name in first["identity"]["inputs"] if not name.startswith("out/build/")}
+        self.assertEqual(declared, set(proof["inputs"]))
+        self.assertIn("tests/runtime.txt", declared)
+        self.assertIn("tests/runtime.txt", qualification.checkpoint_inputs(self.root, self.build, "prepare",
+            preparation=proof["context"]))
+        self.assertNotIn("tests/runtime.txt", qualification.checkpoint_inputs(self.root, self.build, "prepare"))
+
     def test_explicitly_consumed_markdown_remains_a_freshness_input(self):
         self.retain = True
         name = "docs/runtime-contract.md"

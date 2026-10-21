@@ -809,7 +809,7 @@ def _pending_preparation(campaign, stage, source, build, targets, pending_path, 
 
 
 def prepare_build(campaign, stage, *, source, build, inputs, timeout,
-                  configure_args=(), targets=(), env=None, tools=(), resume=None, checkpoint=False):
+                  configure_args=(), targets=(), env=None, tools=(), resume=None, checkpoint=False, reconfigure=False):
     if not targets or resume is not None:
         raise ValueError(LEGACY_ADMISSION_UNSUPPORTED)
     source, build = source.resolve(), build.resolve()
@@ -849,9 +849,9 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
         cache = build / "CMakeCache.txt"
         admission_start = time.perf_counter()
         admission = (_admit_missing_scope(campaign, source, build, baseline, targets, inputs, configure_args, environment)
-                     if old is None and not interrupted and cache.is_file() else None)
+                     if old is None and not interrupted and cache.is_file() and not reconfigure else None)
         admission_seconds = time.perf_counter() - admission_start
-        configure = not cache.is_file() or (old is None and admission is None)
+        configure = reconfigure or not cache.is_file() or (old is None and admission is None)
         if old and old.get("configure_args") != list(configure_args):
             configure = True
         if cache.is_file():

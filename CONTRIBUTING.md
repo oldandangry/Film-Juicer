@@ -270,7 +270,19 @@ repository prose defined in the [validation cadence](tests/README.md#validation-
 so those documentation-only edits preserve reusable build and test evidence.
 Explicitly consumed files, packaged documents and quality checks retain their
 freshness requirements. Other declarations can still be broader than a repair's
-actual consumers; general input-closure separation is not yet implemented.
+actual consumers. Checkpoint preparation now omits only explicit registered runtime
+test files outside its proven build/configuration closure, as defined in the
+[validation cadence](tests/README.md#validation-cadence). Direct preparation inputs,
+compiled/embedded/generated/copied/staged dependencies and artifact/owner checks
+remain authoritative. Runtime changes still require fresh affected test execution;
+quality and product declarations are unchanged. Admission, refresh and collection
+share this scope while honoring every original receipt requirement. An older broad
+or cold-discovery receipt may need one fresh preparation; never rewrite it.
+General input-closure separation beyond this boundary is not yet implemented.
+Opaque configure file operations, subprocesses and dynamic evaluation retain broad
+input scope and require a real reconfigure when preparation dispatches;
+variable-built input paths or file-operation subcommands cannot be declared
+runtime-only from literal matching.
 Do not bypass that admission limit. A diagnosed rerun uses `--repeat-reason`.
 Checkpoint output prints exact membership and preserves outstanding failures.
 Each relevance group runs its exact host and GPU memberships in separate

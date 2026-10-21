@@ -93,8 +93,34 @@ Quality runs still check and bind their selected prose; build/test reuse does no
 qualify changed documentation. Older receipts retain their original recorded inputs
 and may require fresh evidence; they are never rewritten or projected into this policy.
 
-General compilation/analysis/runtime input-closure separation remains future work,
-and collection still requires its current owners and artifacts. Do not claim those
+Checkpoint preparation now separates a bounded set of proven runtime-only test
+files from build inputs. Exact, absolute file operands under `tests/` in generated
+CTest registrations are candidates; directories, manifest children and Python
+imports are not inferred. The existing Ninja/compiler and ordered-include closure,
+configuration inputs and build-command operands take precedence. Configure-time
+copies, unresolved file reads and Cargo build scripts/embeddings retain conservative
+scope. Compiled/embedded fixtures, generated inputs, copied/staged resources, tools
+and artifact freshness remain preparation obligations. No directory or extension
+is broadly excluded. Direct `prepare_build` explicit inputs remain authoritative.
+
+Opaque configure file operations (`file`), subprocesses (`execute_process`) and
+dynamic evaluation (`cmake_language`) keep preparation discovery broad. When that
+scope needs fresh preparation, the checkpoint requests reconfiguration through the existing
+producer and lease, so variable-built configure inputs refresh copied/staged output.
+Literal filenames or subcommands are not proof of these operations' input closure.
+Projects without these unresolved consumers retain runtime-only preparation reuse.
+
+The same discovery serves preparation admission, refreshed membership and
+collection. Refresh and collection honor the producer's original dependencies;
+older broad receipts and cold preparation without test registration may need one
+fresh preparation to establish the narrower scope. Original receipts are never
+rewritten or projected. Product, quality and runtime selections still bind runtime
+files and require fresh execution after changes; complete aggregate membership,
+pending-owner rejection and process drainage are unchanged. Avoid claiming native
+recompilation merely because preparation redispatched or invalidated evidence.
+
+General compilation/analysis/runtime separation beyond this boundary remains future
+work, and collection still requires its current owners and artifacts. Do not claim those
 remaining fixes are delivered or bypass rejection,
 pending state or artifact checks. A prose edit requires only the prose checks above,
 but does not make an older rejected receipt current. Record that limitation without

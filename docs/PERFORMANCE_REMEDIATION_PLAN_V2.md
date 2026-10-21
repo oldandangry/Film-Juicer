@@ -6,8 +6,8 @@ at every slice handoff. The canonical rule is
 [Validation cadence](../tests/README.md#validation-cadence). The initial correction
 changed documentation and execution policy only. Separately authorized harness
 fixes implemented request admission and OFF evidence retention on 20 October,
-then matching-profile Clippy, documentation discovery and bounded preparation
-recovery on 21 October. Their focused validation is recorded
+then matching-profile Clippy, documentation discovery, bounded preparation
+recovery and runtime-only preparation discovery on 21 October. Their focused validation is recorded
 below; no product code changes, product builds or evidence disposal accompany them.
 
 Preserve [the original plan](PERFORMANCE_REMEDIATION_PLAN.md) and the
@@ -115,6 +115,7 @@ regression fixtures when each change is authorized.
 | 2 — bounded preparation recovery | Implemented: require the original attempt's sealed proof that every started command drained before replacing its pending owner under a healthy normal build-tree lease. | Preserve original pending bytes and failed receipts, then run fresh preparation. Missing, damaged and legacy proof remains blocked. Hard owner death and blocked leases are outside this fix; no lease takeover or PID-only inference. |
 | 2 — evidence scope and OFF collection | Implemented: retain inspected OFF build artifacts/configuration during execution and collect those original receipts after ON restoration or repair of unrelated pending work. Dependency-closure separation remains deferred. | Retained copies bind execution-time hashes; source, tool, payload and latest-owner checks remain mandatory. A passed scope with an incomplete aggregate remains eligible, while current pending work still blocks aggregate completion. Old manifests without retained build inputs require fresh OFF execution. |
 | 2 — documentation discovery | Implemented: omit known repository prose from broad candidate/checkpoint discovery and initial development pending paths. | Prose edits, additions, deletions and commits preserve build/test reuse. Explicit inputs, build dependencies, packaged documents, runtime fixture payloads and quality checks remain fresh. Older receipts keep their original inputs; no retroactive projection or evidence rewrite. General dependency-closure separation remains deferred. |
+| 2 — runtime-only preparation discovery | Implemented: omit explicit registered runtime test files only when existing build/configuration ownership proves they are outside preparation. | Direct preparation inputs remain authoritative. Build, include, generated, Cargo, tool, copied/staged and artifact requirements stay fresh; unknown dependencies remain conservative. Runtime edits require fresh affected execution. Admission, refresh and collection share preparation-specific membership; original receipts retain their requirements. |
 | 3 — matching-profile Clippy | Implemented: run the matching profile once per preset while retaining both platforms, packages and plug-in feature forms across the aggregate. Both native CI lanes now explicitly select Release Rust after the Release build. | Four full preset invocations dispatch 12 Clippy analyses instead of 24: core, plugin production and plugin test-support in each matching context. Existing CI previously obtained both profiles through Debug-only calls; its complete Rust coverage remains 12 analyses across the two native lanes. Elapsed savings remain unmeasured. Boundary/privacy probes remain distinct. |
 | 3 — necessary domain batching | Batch adjacent cases only within an already-needed domain extension, or after demonstrating payback from named remaining consumers. | Preserve complete inputs, individual results, process isolation where needed, membership and drainage. A standalone 0.5–1.5-day H1 patch for roughly two minutes per cohort is no longer the first code project. |
 | 4 — ordinary closeout | Retire eligible scratch and obsolete helpers under section 7. | Storage/navigation benefit only; no compiler-speed claim. No disposal accompanies this update. |
@@ -237,7 +238,67 @@ Ruff and whitespace checks passed. Logs and build-evidence fixtures remain under
 content hashes are unchanged; no product build, full qualification or evidence
 cleanup ran. These checks establish bounded harness behavior, not elapsed savings.
 
-General compilation/analysis/runtime identity separation remains **planned and unimplemented**.
+Checkpoint preparation now starts with the existing broad discovery and omits only
+exact absolute file operands under `tests/` in generated CTest commands that are
+outside the existing Ninja/compiler, ordered-include and configuration closure.
+Build-command operands remain inputs even without a declared dependency edge.
+Configure-time copies, unresolved file reads and Cargo build scripts/embeddings
+keep conservative scope. Directory contents, imported Python modules and manifest
+children are not inferred runtime-only. Direct `prepare_build` inputs retain their
+meaning; no broad tests/Resources/JSON/Python exclusion was introduced.
+
+Admission, refresh and collection use the same preparation discovery. Refresh and
+collection validate the producer's original dependency context, including broad
+requirements recorded before this change or before test registration existed.
+Such scopes can require one fresh preparation to establish narrower membership;
+historical receipts are never rewritten or reinterpreted. Product, quality, runtime
+and complete-aggregate requirements remain unchanged. A runtime edit must execute
+the affected tests again. Redispatch, evidence invalidation and actual native
+compilation are separate observations; this fix makes no recompilation or elapsed
+savings claim.
+
+Sixteen distinct focused controls passed on each native platform using the existing
+toolchain wrappers and Python 3.13. Seven new compiler-free cases cover runtime
+fixture/loader execution, preparation reuse with dispatch forbidden, build/configure/
+copy/staging/Cargo guards, original broad and explicit inputs, owner/artifact faults,
+cold registration and preparation-specific collection. Retained controls cover the
+earlier admission, OFF, prose, Clippy and drainage fixes plus compiled/transitive/
+generated dependencies. Ruff and whitespace checks pass. The
+[review record](../out/validation/linux-debug/runtime-preparation-2026-10-21/README.md)
+links both native logs, retained fixtures, original failing reproduction and test
+repairs. Contextual naming/ownership review found no remaining issues; independent
+review is separate. No product build, broad product matrix or benchmark ran.
+
+Independent review subsequently found P1: a configure-time `execute_process`
+could assemble a fixture path through variables, bypass literal matching and reuse
+stale copied/staged output. The original request-changes review, both reproductions
+and every earlier receipt remain preserved. The bounded correction treats
+generic `file` operations, `execute_process` and dynamic `cmake_language` evaluation
+as unresolved consumers: their projects retain broad preparation scope, and fresh checkpoint preparation
+explicitly requests actual reconfiguration through the existing producer/lease.
+Known runtime-only projects without those opaque consumers retain their reuse path.
+Current Film-Juicer toolchain probes use `execute_process`, so that project remains
+conservative; this repair does not claim to resolve those probes' input closure.
+The [first re-review](../out/validation/linux-debug/runtime-preparation-2026-10-21/independent-review/p1-re-review/README.md)
+found the same P1 in variable `file()` operations and literal READ freshness.
+The partial file-operation parser is now removed; all generic file operations keep
+broad scope and require actual reconfiguration on fresh preparation. The
+[current P1 correction record](../out/validation/linux-debug/runtime-preparation-2026-10-21/p1-correction/file-operations/README.md)
+retains paired native failures/passes and the subsequent independent re-review.
+That review returned **APPROVE, P1 resolved**, after four independent compiler-free
+Linux controls passed; native Windows author evidence was inspected. The final
+11-case focused cohort passed on each native platform using Python 3.13, including
+variable-path subprocess/file operations, actual configured/staged output refresh,
+runtime-only preparation reuse with fresh affected execution, and collection's
+incomplete-aggregate rejection. Contextual naming/design/ownership review found no
+remaining issues. The owner accepted this bounded fix on **21 October 2026** and
+authorized commit/publication in existing [draft PR #73](https://github.com/oldandangry/Film-Juicer/pull/73).
+Original evidence remains unchanged. This accepts the harness boundary only;
+current product probes stay conservative and existing product qualification and
+migration-stage limitations remain. Acceptance prose uses whitespace/link and
+contextual checks without restarting native suites or product builds.
+
+General compilation/analysis/runtime identity separation beyond this boundary remains **planned and unimplemented**.
 Current owners may conservatively reject reuse or require rebuilding. Preserve
 that disposition, state the missing proof and use the required owning path.
 For prose-only edits, report stale or rejected receipts without launching broad

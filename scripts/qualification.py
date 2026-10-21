@@ -311,7 +311,7 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
         raise
 
 
-def checkpoint_inputs(root, build, group, *, source_files=None):
+def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None, resolve=Path):
     from verify import is_documentation, source_snapshot
 
     paths = {root / name for name in ("CMakeLists.txt", "CMakePresets.json", "tests/CMakeLists.txt",
@@ -346,7 +346,70 @@ def checkpoint_inputs(root, build, group, *, source_files=None):
             paths.update(p for p in (root / directory).rglob("*")
                          if p.is_file() and "__pycache__" not in p.parts
                          and not is_documentation(p.relative_to(root).as_posix()))
+    if group == "prepare":
+        paths = preparation_inputs(root, build, {p for p in paths if p.is_file()}, context=preparation, resolve=resolve)
     return sorted(p.relative_to(root).as_posix() for p in paths if p.is_file())
+
+
+def has_opaque_configure_commands(paths):
+    """File operations, processes and dynamic evaluation have no declared closure."""
+    return any(re.search(r"\b(?:file|execute_process|cmake_language)\s*\(", path.read_text(encoding="utf-8"), re.I)
+               for path in paths if path.name == "CMakeLists.txt" or path.suffix == ".cmake")
+
+
+def preparation_inputs(root, build, paths, *, context=None, resolve=Path):
+    """Exclude only registered runtime files outside the owning build closure.
+
+    Collection uses the producer's sealed closure after validating its original
+    requirements. It never runs a foreign native tool or projects an old receipt.
+    """
+    from build_dependencies import NinjaGraph
+    from build_evidence import scoped_context
+
+    if not (build / "CTestTestfile.cmake").is_file():
+        return paths
+    runtime = set()
+    for registration in registration_files(build):
+        for line in registration.read_text(encoding="utf-8").splitlines():
+            # Generated CTest command operands are explicit runtime owners. Do
+            # not infer directory contents, manifest payloads or Python imports.
+            if not line.startswith("add_test("):
+                continue
+            for operand in re.findall(r'"([^"\\$;]+)"', line):
+                path = resolve(operand)
+                if path.is_absolute() and path.is_file() and path.is_relative_to(root / "tests"):
+                    runtime.add(path)
+    if not runtime or has_opaque_configure_commands(paths):
+        return paths
+    if context is None:
+        graph = NinjaGraph(build, ["all"])
+        context = scoped_context(root, root, build, graph, [], dict(os.environ))
+    # A custom build command may consume a script/file without a DEPENDS
+    # edge. Such operands are not proven runtime-only.
+    commands = context["commands"].replace("\\", "/").casefold()
+    runtime = {p for p in runtime if p.name.casefold() not in commands
+               and not any(re.search(re.escape(parent.as_posix().casefold()) + r'(?=["\s;]|$)', commands)
+                           for parent in p.parents if parent.is_relative_to(root / "tests"))}
+    protected = {resolve(name).resolve() for name in context["files"]}
+    protected.update((root / name).resolve() for name in context["configuration"]["inputs"])
+    # Cargo test embeddings/build scripts and configure-time file operations
+    # can escape Ninja's dependency graph. Unresolved consumers keep broad scope.
+    for path in paths:
+        if path.suffix == ".rs":
+            if path.name == "build.rs" or re.search(r"\binclude(?:_str|_bytes)?\s*!", path.read_text(encoding="utf-8")):
+                return paths
+            runtime.discard(path)
+        if path.name == "Cargo.toml":
+            if tomllib.loads(path.read_text(encoding="utf-8")).get("package", {}).get("build"):
+                return paths
+        if path.name != "CMakeLists.txt" and path.suffix != ".cmake":
+            continue
+        content = path.read_text(encoding="utf-8")
+        # A source-side configure/tool operand may be absent from Ninja. Only
+        # recognize ordinary add_test syntax; anything else stays conservative.
+        consumers = re.sub(r'\badd_test\s*\((?:"(?:[^"\\]|\\.)*"|[^()"])*\)', "", content, flags=re.I)
+        runtime = {p for p in runtime if p.name.casefold() not in consumers.casefold()}
+    return {p for p in paths if p not in runtime or p.resolve() in protected}
 
 
 def checkpoint_tools(build, environment, group=None):
@@ -419,8 +482,9 @@ def qualify(root, args):
 
 def prepare_checkpoint(campaign, build, state_path, state, environment, *, repeat_reason="", timeout=1800, source_files=None):
     """Preparation repair and ordinary admission share the same producer and artifacts."""
-    inputs = checkpoint_inputs(campaign.root, build, "product", source_files=source_files)
+    inputs = checkpoint_inputs(campaign.root, build, "prepare", source_files=source_files)
     outputs = []
+    prepared_context = None
     previous = state.get("prepare")
     def prepare():
         if previous and previous.get("payloads"):
@@ -449,15 +513,19 @@ def prepare_checkpoint(campaign, build, state_path, state, environment, *, repea
                 raise
         return prepare_build(campaign, "prepare", source=campaign.root, build=build,
             inputs=[p for p in inputs if not p.startswith("out/build/")], timeout=timeout,
-            targets=["all"], configure_args=["-DBUILD_TESTING=ON"], env=environment, checkpoint=True)[1]
+            targets=["all"], configure_args=["-DBUILD_TESTING=ON"], env=environment, checkpoint=True,
+            reconfigure=has_opaque_configure_commands(campaign.root / name for name in inputs))[1]
     def validate(path):
+        nonlocal prepared_context
         record = check_scoped_preparation(campaign, build, path, environment)
         outputs[:] = record["scoped_preparation"]["outputs"]
+        prepared_context = record["scoped_preparation"]["context"]
     return run_stage(campaign, state_path, state, "prepare", ["cmake", "--build", str(build)],
         inputs=inputs, tools=checkpoint_tools(build, environment, "product"), environment=environment,
         timeout=timeout, repeat_reason=repeat_reason,
         action=prepare,
-        refresh_inputs=lambda: checkpoint_inputs(campaign.root, build, "product", source_files=source_files),
+        refresh_inputs=lambda: checkpoint_inputs(campaign.root, build, "prepare", source_files=source_files,
+                                                 preparation=prepared_context),
         validate=validate, payloads=outputs)
 
 
@@ -650,7 +718,7 @@ def _collect_owned(root, paths):
     # The terminal scan seals content and lexical-to-resolved path bindings.
     bindings, tools = observe_tools()
     inputs = snapshot(root, source_paths)
-    members = {}
+    members, preparations = {}, {}
     for record in records:
         owner = root / "out/build" / record["preset"] / "verification-checkpoint.json"
         state = json.loads(owner.read_text())
@@ -685,12 +753,18 @@ def _collect_owned(root, paths):
             source_inputs = {path: checksum for path, checksum in declared.items() if not path.startswith("out/build/")}
             if {p: inputs[p] for p in source_inputs} != source_inputs:
                 raise ValueError("checkpoint declared source/data inputs changed")
-            group = name if name in GROUPS else "product"
+            group = name if name in GROUPS | {"prepare"} else "product"
+            if name == "prepare":
+                preparation_identity(root / "out/build" / record["preset"], result, resolve=local)
+                preparations[record["preset"]] = json.loads(raw_paths[0].read_text())["scoped_preparation"]["context"]
             expected_members = {path for path in declared if not path.startswith("out/build/")}
             key = record["preset"], group
             if key not in members:
+                discovery = {"source_files": observed_source}
+                if group == "prepare":
+                    discovery.update(preparation=preparations[record["preset"]], resolve=local)
                 members[key] = {path for path in checkpoint_inputs(root, root / "out/build" / record["preset"], group,
-                                                                  source_files=observed_source)
+                                                                  **discovery)
                                 if not path.startswith("out/build/")}
             actual_members = members[key]
             if expected_members != actual_members:
@@ -715,8 +789,11 @@ def _collect_owned(root, paths):
     # Git selection omits ignored test/resource inputs that checkpoint_inputs owns.
     # Seal each shared membership observation independently of that selection.
     for (preset, group), expected in members.items():
+        discovery = {"source_files": current}
+        if group == "prepare":
+            discovery.update(preparation=preparations[preset], resolve=local)
         actual_members = {path for path in checkpoint_inputs(root, root / "out/build" / preset, group,
-                                                            source_files=current)
+                                                            **discovery)
                           if not path.startswith("out/build/")}
         if actual_members != expected:
             raise ValueError("checkpoint source/data membership changed during collection")
