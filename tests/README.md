@@ -1173,3 +1173,15 @@ pixel expectations affected by the existing glare seed dependency. Original
 fixtures and pixel bounds remain unchanged. See the print fixture README for
 logical pixel-row aliases and measured changes; spectral ULP maxima must not be
 used as image-pixel bounds.
+
+`Ffi.Host.PrintBalance` compares all nine completed values and both identities
+against independently adopted native words in all four presets. It checks raw
+structure/diagnostics, first-failure order, u8 mode behavior, one-shot stage-12
+panic consumption, thread isolation, native transport integrity and ownership.
+`Print.Host.BalanceProducts` retains actual route/mode/dependency and immutable
+publication/recovery cases. `Print.Gpu.BalanceCache` checks resolved binding,
+source/normalization dependencies, unchanged-family residency/accounting and
+absence of balance construction during resource preparation. These are bounded
+Film-Juicer characterization/product contracts; ordinary tests never capture or
+modify their frozen fixtures. Both Release OFF C11 probes retain sixteen frozen
+balance cases and all earlier boundary/feature-isolation checks.

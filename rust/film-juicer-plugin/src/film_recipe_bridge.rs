@@ -1032,7 +1032,7 @@ extern "C" fn fj_test_film_recipe_fault(stage: u32, fault: u32) -> FjStatus {
         dir::test_support::reject_next(fault);
         return status(FJ_STATUS_SUCCESS);
     }
-    if (stage == 10 || stage == 11) && fault <= 1 {
+    if (10..=12).contains(&stage) && fault <= 1 {
         faults::NEXT.set((stage, fault));
         return status(FJ_STATUS_SUCCESS);
     }
@@ -1586,6 +1586,57 @@ unsafe extern "C" fn fj_test_film_recipe_abi_facts(count: *mut usize) -> *const 
         crate::print_bridge::FJ_PRINT_PREFLASH_REASON_RAW as usize,
         crate::print_bridge::FJ_PRINT_PREFLASH_REASON_CHANNEL as usize,
         crate::print_bridge::FJ_PRINT_PREFLASH_REASON_PANIC as usize,
+        size_of::<crate::print_bridge::FjPrintBalanceInput>(),
+        align_of::<crate::print_bridge::FjPrintBalanceInput>(),
+        std::mem::offset_of!(crate::print_bridge::FjPrintBalanceInput, film_base_density),
+        std::mem::offset_of!(
+            crate::print_bridge::FjPrintBalanceInput,
+            film_channel_density_cmy
+        ),
+        std::mem::offset_of!(
+            crate::print_bridge::FjPrintBalanceInput,
+            print_sensitivity_rgb
+        ),
+        std::mem::offset_of!(
+            crate::print_bridge::FjPrintBalanceInput,
+            filtered_main_illuminant
+        ),
+        std::mem::offset_of!(
+            crate::print_bridge::FjPrintBalanceInput,
+            baseline_density_cmy
+        ),
+        3,
+        std::mem::offset_of!(
+            crate::print_bridge::FjPrintBalanceInput,
+            compensated_density_cmy
+        ),
+        3,
+        std::mem::offset_of!(crate::print_bridge::FjPrintBalanceInput, reference_hash),
+        std::mem::offset_of!(crate::print_bridge::FjPrintBalanceInput, normalization_mode),
+        size_of::<crate::print_bridge::FjPrintBalance>(),
+        align_of::<crate::print_bridge::FjPrintBalance>(),
+        std::mem::offset_of!(crate::print_bridge::FjPrintBalance, baseline_raw_rgb),
+        3,
+        std::mem::offset_of!(crate::print_bridge::FjPrintBalance, compensated_raw_rgb),
+        3,
+        std::mem::offset_of!(crate::print_bridge::FjPrintBalance, factor_midgray),
+        std::mem::offset_of!(crate::print_bridge::FjPrintBalance, factor_midgray_comp),
+        std::mem::offset_of!(crate::print_bridge::FjPrintBalance, normalizer),
+        std::mem::offset_of!(
+            crate::print_bridge::FjPrintBalance,
+            filtered_main_illuminant_hash
+        ),
+        std::mem::offset_of!(crate::print_bridge::FjPrintBalance, hash),
+        size_of::<crate::print_bridge::FjPrintBalanceFailure>(),
+        align_of::<crate::print_bridge::FjPrintBalanceFailure>(),
+        std::mem::offset_of!(crate::print_bridge::FjPrintBalanceFailure, reason),
+        std::mem::offset_of!(crate::print_bridge::FjPrintBalanceFailure, channel),
+        crate::print_bridge::FJ_PRINT_BALANCE_REASON_NONE as usize,
+        crate::print_bridge::FJ_PRINT_BALANCE_REASON_RAW as usize,
+        crate::print_bridge::FJ_PRINT_BALANCE_REASON_BASELINE_RAW as usize,
+        crate::print_bridge::FJ_PRINT_BALANCE_REASON_COMPENSATED_RAW as usize,
+        crate::print_bridge::FJ_PRINT_BALANCE_REASON_BALANCE as usize,
+        crate::print_bridge::FJ_PRINT_BALANCE_REASON_PANIC as usize,
     ];
     if !count.is_null() {
         // SAFETY: Facade caller authorizes the exclusive count output.

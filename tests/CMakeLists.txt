@@ -253,6 +253,15 @@ set_tests_properties(Ffi.Host.PrintPreflash PROPERTIES LABELS "host" TIMEOUT 180
 add_test(NAME Print.Host.PreflashProducts COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/print/preflash-fixtures/manifest.json" print-preflash-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Print.Host.PreflashProducts PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Ffi.Host.PrintBalance COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/print/balance-fixtures/manifest.json" print-balance "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Ffi.Host.PrintBalance PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Print.Host.BalanceProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/print/balance-fixtures/manifest.json" print-balance-products "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Print.Host.BalanceProducts PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Print.Gpu.BalanceCache COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/print/balance-fixtures/manifest.json" print-balance-cache "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Print.Gpu.BalanceCache PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
 add_test(NAME Print.Gpu.PreflashCache COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/print/preflash-fixtures/manifest.json" print-preflash-cache "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Print.Gpu.PreflashCache PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
@@ -1272,7 +1281,7 @@ set(juicer_tooling_tests Quality.Dispatcher Quality.ToolingLint Quality.Executio
     Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint Quality.PreparationRenewal
     Ctest.Host.Report Ctest.Host.Repetition Ffi.Host.RustBuild)
 set(juicer_boundary_tests
-    Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Quality.RustNaming Quality.RustBoundaries)
+    Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat
     Gamut.Host.Output.FixtureFormat)

@@ -280,7 +280,32 @@ namespace {
 #include "spatial_optics_test.inc"
 #include "print_illuminant_test.inc"
 #include "print_preflash_test.inc"
+#include "print_balance_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && std::string_view(argv[3]) == "print-balance-cache") {
+        PrintBalanceTest::cache(argv[1]);
+        std::puts("PASS balance cache keys, resolved bindings, residency/accounting and no per-frame derivation");
+        return 0;
+    }
+    if (argc == 5 && (std::string_view(argv[3]) == "print-balance" || std::string_view(argv[3]) == "print-balance-products")) {
+        const auto manifest = read(argv[2]);
+        const auto captured = read(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        if (std::string_view(argv[3]) == "print-balance-products")
+            PrintBalanceTest::products(argv[1], captured);
+        else {
+            layouts();
+            PrintBalanceTest::values(captured, argv[2]);
+            PrintBalanceTest::transport(captured);
+        }
+        std::puts("PASS balance complete values, closed boundary, integrity and actual caller");
+        return 0;
+    }
+    if (argc == 6 && std::string_view(argv[3]) == "balance-primitives") {
+        PrintPreflashTest::save(argv[5], {{"preset", argv[4]}, {"cases", PrintBalanceTest::primitives()}});
+        return 0;
+    }
+
+
     if (argc == 5 && (std::string_view(argv[3]) == "print-preflash" || std::string_view(argv[3]) == "print-preflash-products")) {
         const auto manifest = read(argv[2]);
         const auto path = std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>();

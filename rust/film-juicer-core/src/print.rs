@@ -1,4 +1,146 @@
-//! Complete print illumination and raw preflash exposure on the fixed spectral axis.
+//! Complete print illumination, balance and raw preflash exposure on the fixed spectral axis.
+
+use crate::hash;
+
+#[derive(Clone, Copy, Debug)]
+pub struct BalanceParams {
+    pub baseline_density_cmy: [f32; 3],
+    pub compensated_density_cmy: [f32; 3],
+    pub reference_hash: u64,
+    pub normalization_mode: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BalanceError {
+    Baseline { channel: usize },
+    Compensated { channel: usize },
+    Invalid,
+}
+
+/// A completed print balance; reference/scanner/whole-state completion is separate.
+#[derive(Debug)]
+pub struct Balance {
+    baseline_raw_rgb: [f32; 3],
+    compensated_raw_rgb: [f32; 3],
+    factor_midgray: f32,
+    factor_midgray_comp: f32,
+    normalizer: f32,
+    filtered_main_illuminant_hash: u64,
+    hash: u64,
+}
+
+impl Balance {
+    pub fn new(
+        params: BalanceParams,
+        film_base_density: &[f32; 81],
+        film_channel_density_cmy: &[[f32; 3]; 81],
+        print_sensitivity_rgb: &[[f32; 3]; 81],
+        filtered_main_illuminant: &[f32; 81],
+    ) -> Result<Self, BalanceError> {
+        let integrate = |density_cmy: &[f32; 3]| -> Result<[f32; 3], usize> {
+            let mut accumulated = [0.0_f64; 3];
+            for sample in 0..81 {
+                let mut density = f64::from(film_base_density[sample]);
+                for (channel, reference) in density_cmy.iter().enumerate() {
+                    density += f64::from(*reference)
+                        * f64::from(film_channel_density_cmy[sample][channel]);
+                }
+                let light = 10.0_f64.powf(-density) * f64::from(filtered_main_illuminant[sample]);
+                if light.is_nan() {
+                    continue;
+                }
+                for (channel, total) in accumulated.iter_mut().enumerate() {
+                    let sensitivity = print_sensitivity_rgb[sample][channel];
+                    if sensitivity.is_finite() {
+                        *total += light * f64::from(sensitivity);
+                    }
+                }
+            }
+            let mut raw = [0.0_f32; 3];
+            for channel in 0..3 {
+                // Balance admits the narrowed value, including negative f64 -> -0.
+                raw[channel] = accumulated[channel] as f32;
+                if !raw[channel].is_finite() || raw[channel] < 0.0 {
+                    return Err(channel);
+                }
+            }
+            Ok(raw)
+        };
+        let baseline_raw_rgb = integrate(&params.baseline_density_cmy)
+            .map_err(|channel| BalanceError::Baseline { channel })?;
+        let compensated_raw_rgb = integrate(&params.compensated_density_cmy)
+            .map_err(|channel| BalanceError::Compensated { channel })?;
+        let factor = |raw: &[f32; 3]| {
+            let mut mean_log = 0.0_f64;
+            for value in raw {
+                mean_log += f64::from(*value).max(1.0e-10).ln();
+            }
+            (-mean_log / 3.0).exp() as f32
+        };
+        let factor_midgray = factor(&baseline_raw_rgb);
+        let factor_midgray_comp = factor(&compensated_raw_rgb);
+        let normalizer = match params.normalization_mode {
+            0 => 1.0,
+            1 => factor_midgray_comp / factor_midgray,
+            2 => factor_midgray,
+            3 => factor_midgray_comp,
+            _ => f32::NAN,
+        };
+        let filtered_main_illuminant_hash =
+            hash::finite_f32s(filtered_main_illuminant).unwrap_or(0);
+        let hash = hash::u64s(&[
+            params.reference_hash,
+            filtered_main_illuminant_hash,
+            hash::finite_f32s(&baseline_raw_rgb).unwrap_or(0),
+            hash::finite_f32s(&compensated_raw_rgb).unwrap_or(0),
+            u64::from(factor_midgray.to_bits()),
+            u64::from(factor_midgray_comp.to_bits()),
+            u64::from(normalizer.to_bits()),
+        ]);
+        if !factor_midgray.is_finite()
+            || factor_midgray <= 0.0
+            || !factor_midgray_comp.is_finite()
+            || factor_midgray_comp <= 0.0
+            || !normalizer.is_finite()
+            || normalizer <= 0.0
+            || filtered_main_illuminant_hash == 0
+            || hash == 0
+        {
+            return Err(BalanceError::Invalid);
+        }
+        Ok(Self {
+            baseline_raw_rgb,
+            compensated_raw_rgb,
+            factor_midgray,
+            factor_midgray_comp,
+            normalizer,
+            filtered_main_illuminant_hash,
+            hash,
+        })
+    }
+
+    pub fn baseline_raw_rgb(&self) -> &[f32; 3] {
+        &self.baseline_raw_rgb
+    }
+    pub fn compensated_raw_rgb(&self) -> &[f32; 3] {
+        &self.compensated_raw_rgb
+    }
+    pub fn factor_midgray(&self) -> f32 {
+        self.factor_midgray
+    }
+    pub fn factor_midgray_comp(&self) -> f32 {
+        self.factor_midgray_comp
+    }
+    pub fn normalizer(&self) -> f32 {
+        self.normalizer
+    }
+    pub fn filtered_main_illuminant_hash(&self) -> u64 {
+        self.filtered_main_illuminant_hash
+    }
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PreflashError {
@@ -289,5 +431,117 @@ mod preflash_tests {
             PreflashRaw::new(&base, &[1.0; 81], &sensitivity).err(),
             Some(PreflashError::Channel { channel: 2 })
         );
+    }
+}
+
+#[cfg(test)]
+mod balance_tests {
+    use super::{Balance, BalanceError, BalanceParams};
+
+    fn params(mode: u8) -> BalanceParams {
+        BalanceParams {
+            baseline_density_cmy: [0.0; 3],
+            compensated_density_cmy: [1.0, 0.0, 0.0],
+            reference_hash: 0x0123_4567_89ab_cdef,
+            normalization_mode: mode,
+        }
+    }
+
+    #[test]
+    fn complete_native_words_and_seven_lane_identity() {
+        let balance = Balance::new(
+            params(0),
+            &[0.0; 81],
+            &[[1.0, 0.0, 0.0]; 81],
+            &[[1.0, 2.0, 3.0]; 81],
+            &[1.0; 81],
+        )
+        .unwrap();
+        // Independently adopted unchanged native defaults, all four profiles.
+        assert_eq!(
+            balance.baseline_raw_rgb().map(f32::to_bits),
+            [1117913088, 1126301696, 1131610112]
+        );
+        assert_eq!(
+            balance.compensated_raw_rgb().map(f32::to_bits),
+            [1090623898, 1099012506, 1103259238]
+        );
+        assert_eq!(
+            [
+                balance.factor_midgray().to_bits(),
+                balance.factor_midgray_comp().to_bits(),
+                balance.normalizer().to_bits()
+            ],
+            [1004445939, 1032529048, 1065353216]
+        );
+        assert_eq!(
+            balance.filtered_main_illuminant_hash(),
+            10702640014580087064
+        );
+        assert_eq!(balance.hash(), 2940845408508787789);
+    }
+
+    #[test]
+    fn narrowed_raw_and_baseline_failure_precede_mode_failure() {
+        let p = params(255);
+        assert!(matches!(
+            Balance::new(
+                p,
+                &[0.0; 81],
+                &[[1.0, 0.0, 0.0]; 81],
+                &[[1.0, -1.0, 1.0]; 81],
+                &[1.0; 81]
+            ),
+            Err(BalanceError::Baseline { channel: 1 })
+        ));
+        assert!(matches!(
+            Balance::new(
+                p,
+                &[0.0; 81],
+                &[[1.0, 0.0, 0.0]; 81],
+                &[[1.0; 3]; 81],
+                &[1.0; 81]
+            ),
+            Err(BalanceError::Invalid)
+        ));
+        assert!(matches!(
+            Balance::new(
+                params(0),
+                &[0.0; 81],
+                &[[1.0, 0.0, 0.0]; 81],
+                &[[f32::MAX; 3]; 81],
+                &[1.0; 81]
+            ),
+            Err(BalanceError::Baseline { channel: 0 })
+        ));
+        let underflow = Balance::new(
+            params(0),
+            &[100.0; 81],
+            &[[1.0, 0.0, 0.0]; 81],
+            &[[-1.0; 3]; 81],
+            &[1.0; 81],
+        )
+        .unwrap();
+        assert_eq!(
+            underflow.baseline_raw_rgb().map(f32::to_bits),
+            [0x8000_0000; 3]
+        );
+    }
+
+    #[test]
+    fn zero_reference_hash_is_opaque_and_inputs_are_not_retained() {
+        let balance;
+        {
+            let mut p = params(3);
+            p.reference_hash = 0;
+            let mut base = [0.0; 81];
+            let mut light = [1.0; 81];
+            balance =
+                Balance::new(p, &base, &[[1.0, 0.0, 0.0]; 81], &[[1.0; 3]; 81], &light).unwrap();
+            base.fill(100.0);
+            light.fill(0.0);
+        }
+        assert_eq!(*balance.baseline_raw_rgb(), [81.0; 3]);
+        assert_ne!(balance.hash(), 0);
     }
 }

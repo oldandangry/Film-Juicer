@@ -905,10 +905,6 @@ namespace Spektrafilm {
 
     DirectRecipeBuildResult build_direct_render_recipe(DirectRecipeBuildInput input);
     PrintRecipeBuildResult build_print_render_recipe(PrintRecipeBuildInput input);
-    float print_exposure_normalizer(
-        PrintNormalizationMode mode,
-        float factorMidgray,
-        float factorMidgrayComp);
     bool finish_synthetic_reference_recipes(
         RenderRecipe& recipe,
         const Spectral::FilmTcLut* filmTcLut,

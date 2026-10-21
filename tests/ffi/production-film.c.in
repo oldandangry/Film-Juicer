@@ -971,6 +971,40 @@ static int preflash_values(void) {
     return 0;
 }
 
+_Static_assert(_Generic(&fj_legacy_print_balance_prepare, FjStatus (*)(const FjPrintBalanceInput*, FjPrintBalance*, FjPrintBalanceFailure*, FjErrorBuffer*): 1, default: 0), "OFF balance C11 signature");
+_Static_assert(sizeof(FjPrintBalanceInput) == 104 && _Alignof(FjPrintBalanceInput) == 8 && offsetof(FjPrintBalanceInput, film_base_density) == 0 && offsetof(FjPrintBalanceInput, film_channel_density_cmy) == 16 && offsetof(FjPrintBalanceInput, print_sensitivity_rgb) == 32 && offsetof(FjPrintBalanceInput, filtered_main_illuminant) == 48 && offsetof(FjPrintBalanceInput, baseline_density_cmy) == 64 && offsetof(FjPrintBalanceInput, compensated_density_cmy) == 76 && offsetof(FjPrintBalanceInput, reference_hash) == 88 && offsetof(FjPrintBalanceInput, normalization_mode) == 96, "OFF balance input layout");
+_Static_assert(sizeof(FjPrintBalance) == 56 && _Alignof(FjPrintBalance) == 8 && offsetof(FjPrintBalance, baseline_raw_rgb) == 0 && offsetof(FjPrintBalance, compensated_raw_rgb) == 12 && offsetof(FjPrintBalance, factor_midgray) == 24 && offsetof(FjPrintBalance, factor_midgray_comp) == 28 && offsetof(FjPrintBalance, normalizer) == 32 && offsetof(FjPrintBalance, filtered_main_illuminant_hash) == 40 && offsetof(FjPrintBalance, hash) == 48, "OFF balance result layout");
+_Static_assert(sizeof(FjPrintBalanceFailure) == 8 && _Alignof(FjPrintBalanceFailure) == 4 && offsetof(FjPrintBalanceFailure, reason) == 0 && offsetof(FjPrintBalanceFailure, channel) == 4, "OFF balance failure layout");
+static int balance_values(void) {
+    for (size_t i = 0; i < 16; ++i) {
+        float base[81], dye[243], sensitivity[243], light[81];
+        memcpy(base, balance_base[i], sizeof(base));
+        memcpy(dye, balance_dye[i], sizeof(dye));
+        memcpy(sensitivity, balance_sensitivity[i], sizeof(sensitivity));
+        memcpy(light, balance_light[i], sizeof(light));
+        FjPrintBalanceInput input = {{base, 81}, {dye, 243}, {sensitivity, 243}, {light, 81}, {0}, {0}, 0, 0};
+        memcpy(input.baseline_density_cmy, balance_baseline[i], sizeof(input.baseline_density_cmy));
+        memcpy(input.compensated_density_cmy, balance_compensated[i], sizeof(input.compensated_density_cmy));
+        input.reference_hash = balance_reference[i][0];
+        input.normalization_mode = balance_modes[i];
+        FjPrintBalance out = {{-13,-13,-13}, {-13,-13,-13}, -13,-13,-13, UINT64_C(99), UINT64_C(99)};
+        FjPrintBalanceFailure failure = {99, 98};
+        const FjPrintBalanceInput* bound = i == 13 ? NULL : &input;
+        if (i == 14) input.film_channel_density_cmy.count = 242;
+        if (i == 15) input.normalization_mode = 256;
+        FjStatus actual = fj_legacy_print_balance_prepare(bound, &out, &failure, NULL);
+        CHECK(status(actual, balance_envelopes[i][0]));
+        CHECK(failure.reason == balance_envelopes[i][1] && failure.channel == balance_envelopes[i][2]);
+        CHECK(words(out.baseline_raw_rgb, balance_words[i], 3));
+        CHECK(words(out.compensated_raw_rgb, balance_words[i] + 3, 3));
+        const float scalars[3] = {out.factor_midgray, out.factor_midgray_comp, out.normalizer};
+        CHECK(words(scalars, balance_words[i] + 6, 3));
+        CHECK(out.filtered_main_illuminant_hash == balance_hashes[i][0] && out.hash == balance_hashes[i][1]);
+        printf("PRINT_BALANCE_CASE %s category=%u api=%u native_code=%d reason=%u channel=%u fields=11-pass\n", balance_names[i], actual.category, actual.api, actual.native_code, failure.reason, failure.channel);
+    }
+    return 0;
+}
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -978,7 +1012,6 @@ int wmain(int argc, wchar_t** argv) {
     FjPathView path = {argv[1], wcslen(argv[1]), FJ_PATH_WINDOWS_WIDE};
     FjPathView duplicate_path = {argv[2], wcslen(argv[2]), FJ_PATH_WINDOWS_WIDE};
 #else
-
 int main(int argc, char** argv) {
     CHECK(argc == 3);
     FjPathView path = {argv[1], strlen(argv[1]), FJ_PATH_UNIX_BYTES};
@@ -988,6 +1021,7 @@ int main(int argc, char** argv) {
     CHECK(optics_values() == 0);
     CHECK(print_illuminant_values() == 0);
     CHECK(preflash_values() == 0);
+    CHECK(balance_values() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

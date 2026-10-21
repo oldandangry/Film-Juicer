@@ -258,7 +258,7 @@ namespace PrintPreflashTest {
             status(fj_test_film_recipe_fault(11, 0));
             status(call(&input, &out, &failure));
             status(fj_test_film_recipe_fault(11, 2), FJ_STATUS_UNSUPPORTED_INPUT);
-            status(fj_test_film_recipe_fault(12, 1), FJ_STATUS_UNSUPPORTED_INPUT);
+            status(fj_test_film_recipe_fault(13, 1), FJ_STATUS_UNSUPPORTED_INPUT);
             status(fj_test_film_recipe_fault(11, 1));
             FjStatus other{};
             FjPrintPreflashRaw otherOut{};

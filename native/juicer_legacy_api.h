@@ -1121,6 +1121,53 @@ FjStatus fj_legacy_print_preflash_prepare(
     FjPrintPreflashFailure* out_failure,
     FjErrorBuffer* error);
 
+/* SF_TEMP_BRIDGE_PRINT_BALANCE, retirement S4.E. Synchronous safe-core producer;
+ * native recipe completion consumes the finished copy. Four immutable spans of
+ * 81/243/243/81 f32 elements: film base density, sample-major C/M/Y dye density,
+ * sample-major RGB print sensitivity and filtered main light. Source allocations
+ * are initialized/aligned/live through return and may alias each other. No
+ * scientific admission scan; reference_hash is opaque, including zero.
+ * Mode wire 0..255 preserves native u8 behavior; wider values are malformed.
+ * Output/failure/error record and positive-capacity diagnostic backing are live,
+ * exclusive, mutually disjoint and disjoint from all input storage. Raw admission
+ * checks extents/alignment/arithmetic, not allocation/initialization/lifetime.
+ * Every independently writable result field clears to +0/0 on failure. Channel
+ * is UINT32_MAX except the first failed baseline/compensated raw channel 0..2.
+ * Optional error NULL is status-only; capacity zero never accesses backing;
+ * positive capacities write bounded NUL-terminated text, length excludes NUL.
+ */
+typedef struct FjPrintBalanceInput {
+    FjFloatSpan film_base_density;
+    FjFloatSpan film_channel_density_cmy;
+    FjFloatSpan print_sensitivity_rgb;
+    FjFloatSpan filtered_main_illuminant;
+    float baseline_density_cmy[3];
+    float compensated_density_cmy[3];
+    uint64_t reference_hash;
+    uint32_t normalization_mode;
+} FjPrintBalanceInput;
+typedef struct FjPrintBalance {
+    float baseline_raw_rgb[3];
+    float compensated_raw_rgb[3];
+    float factor_midgray;
+    float factor_midgray_comp;
+    float normalizer;
+    uint64_t filtered_main_illuminant_hash;
+    uint64_t hash;
+} FjPrintBalance;
+typedef struct FjPrintBalanceFailure {
+    uint32_t reason;
+    uint32_t channel;
+} FjPrintBalanceFailure;
+#define FJ_PRINT_BALANCE_REASON_NONE UINT32_C(0)
+#define FJ_PRINT_BALANCE_REASON_RAW UINT32_C(1)
+#define FJ_PRINT_BALANCE_REASON_BASELINE_RAW UINT32_C(2)
+#define FJ_PRINT_BALANCE_REASON_COMPENSATED_RAW UINT32_C(3)
+#define FJ_PRINT_BALANCE_REASON_BALANCE UINT32_C(4)
+#define FJ_PRINT_BALANCE_REASON_PANIC UINT32_C(5)
+FjStatus fj_legacy_print_balance_prepare(
+    const FjPrintBalanceInput* input, FjPrintBalance* out_balance, FjPrintBalanceFailure* out_failure, FjErrorBuffer* error);
+
 typedef struct FjIlluminantCoverage {
     uint32_t warnings;
     float min_nm;

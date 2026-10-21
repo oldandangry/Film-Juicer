@@ -26,6 +26,7 @@ namespace JuicerAssets {
         void effects(FjPhysicalEffectsRecipe& recipe);
         void optics(FjStatus& status, FjSpatialOpticsFailure& failure, FjSpatialOpticsRecipe& recipe, FjErrorBuffer& error);
         void print_illuminant(FjStatus& status, FjPrintIlluminantFailure& failure, FjIlluminant& illuminant, FjErrorBuffer& error);
+        void print_balance(FjStatus& status, FjPrintBalanceFailure& failure, FjPrintBalance& balance, FjErrorBuffer& error);
         void print_preflash(FjStatus& status, FjPrintPreflashFailure& failure, FjPrintPreflashRaw& raw, FjErrorBuffer& error);
     } // namespace RecipeTest
 #endif
@@ -921,6 +922,97 @@ namespace JuicerAssets {
             throw JuicerCuda::ExecutionFailure{std::move(rejected)};
         }
         std::copy_n(wire.cmy, out.size(), out.begin());
+        return true;
+    }
+    bool prepare_print_balance(
+        const Profiles::FilmProfileSamples& film,
+        const Profiles::PrintProfileSamples& print,
+        const std::array<float, 81>& filteredMainIlluminant,
+        const SyntheticFilmReferenceRecipe& reference,
+        Spektrafilm::PrintNormalizationMode mode,
+        PrintBalanceRecipe& out,
+        std::string& diagnostic) {
+        out = PrintBalanceRecipe{};
+        diagnostic.clear();
+        // Each nested array is a separate C++ subobject; bind flat local allocations.
+        std::array<float, 243> dye{}, sensitivity{};
+        for (std::size_t sample = 0; sample < 81; ++sample)
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                dye[3 * sample + channel] = film.channelDensity[sample][channel];
+                sensitivity[3 * sample + channel] = print.linearSensitivity[sample][channel];
+            }
+        FjPrintBalanceInput input{{film.baseDensity.data(), film.baseDensity.size()},
+                                  {dye.data(), dye.size()},
+                                  {sensitivity.data(), sensitivity.size()},
+                                  {filteredMainIlluminant.data(), filteredMainIlluminant.size()},
+                                  {},
+                                  {},
+                                  reference.hash,
+                                  static_cast<std::uint32_t>(mode)};
+        std::copy(reference.baselineDensityCmy.begin(), reference.baselineDensityCmy.end(), input.baseline_density_cmy);
+        std::copy(reference.compensatedDensityCmy.begin(), reference.compensatedDensityCmy.end(), input.compensated_density_cmy);
+        FjPrintBalance wire{};
+        FjPrintBalanceFailure failure{};
+        std::array<char, 512> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        FjStatus status = fj_legacy_print_balance_prepare(&input, &wire, &failure, &error);
+#if defined(JUICER_FILM_RECIPE_TEST_HOOK)
+        RecipeTest::print_balance(status, failure, wire, error);
+#endif
+        const bool noChannel = failure.channel == UINT32_MAX;
+        bool valid = status.api == FJ_API_NONE && status.native_code == 0;
+        switch (failure.reason) {
+            case FJ_PRINT_BALANCE_REASON_NONE:
+                valid = valid && status.category == FJ_STATUS_SUCCESS && noChannel;
+                break;
+            case FJ_PRINT_BALANCE_REASON_RAW:
+                valid = valid && status.category == FJ_STATUS_UNSUPPORTED_INPUT && noChannel;
+                break;
+            case FJ_PRINT_BALANCE_REASON_BASELINE_RAW:
+            case FJ_PRINT_BALANCE_REASON_COMPENSATED_RAW:
+                valid = valid && status.category == FJ_STATUS_PREPARATION_FAILURE && failure.channel < 3;
+                break;
+            case FJ_PRINT_BALANCE_REASON_BALANCE:
+                valid = valid && status.category == FJ_STATUS_PREPARATION_FAILURE && noChannel;
+                break;
+            case FJ_PRINT_BALANCE_REASON_PANIC:
+                valid = valid && status.category == FJ_STATUS_INTERNAL_FAILURE && noChannel;
+                break;
+            default:
+                valid = false;
+                break;
+        }
+        if (error.data != text.data() || error.capacity != text.size() || error.length >= error.capacity || text[error.length] != '\0' || !valid)
+            integrity("Print balance preparation");
+        if (status.category != FJ_STATUS_SUCCESS) {
+            if (status.category == FJ_STATUS_PREPARATION_FAILURE) {
+                diagnostic = failure.reason == FJ_PRINT_BALANCE_REASON_BALANCE
+                                 ? "MalformedRequiredResource phase=4A field=print_balance"
+                                 : "MalformedRequiredResource phase=4A field=print_balance_raw";
+                return false;
+            }
+            JuicerCuda::Failure rejected;
+            JuicerCuda::set_failure(rejected, status, "Print balance preparation");
+            throw JuicerCuda::ExecutionFailure{std::move(rejected)};
+        }
+        for (std::size_t channel = 0; channel < 3; ++channel)
+            if (!std::isfinite(wire.baseline_raw_rgb[channel]) || wire.baseline_raw_rgb[channel] < 0.0f ||
+                !std::isfinite(wire.compensated_raw_rgb[channel]) || wire.compensated_raw_rgb[channel] < 0.0f)
+                integrity("Print balance preparation");
+        if (!std::isfinite(wire.factor_midgray) || !(wire.factor_midgray > 0.0f) ||
+            !std::isfinite(wire.factor_midgray_comp) || !(wire.factor_midgray_comp > 0.0f) ||
+            !std::isfinite(wire.normalizer) || !(wire.normalizer > 0.0f) ||
+            wire.filtered_main_illuminant_hash == 0 || wire.hash == 0)
+            integrity("Print balance preparation");
+        PrintBalanceRecipe balance{};
+        std::copy_n(wire.baseline_raw_rgb, 3, balance.baselinePrintRawRgb.begin());
+        std::copy_n(wire.compensated_raw_rgb, 3, balance.compensatedPrintRawRgb.begin());
+        balance.factorMidgray = wire.factor_midgray;
+        balance.factorMidgrayComp = wire.factor_midgray_comp;
+        balance.normalizer = wire.normalizer;
+        balance.filteredMainIlluminantHash = wire.filtered_main_illuminant_hash;
+        balance.hash = wire.hash;
+        out = balance;
         return true;
     }
 } // namespace JuicerAssets

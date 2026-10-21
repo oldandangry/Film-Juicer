@@ -1899,3 +1899,65 @@ const _: unsafe extern "C" fn(
     *mut crate::print_bridge::FjPrintPreflashFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_print_preflash_prepare;
+
+/// Primitive-only witness for early balance feasibility; no balance construction.
+/// # Safety
+/// density/raw contain seven/three initialized floats. out/narrowed contain
+/// twelve/two exclusive writable elements, disjoint from all input storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_print_balance_primitive(
+    density: *const f32,
+    raw: *const f32,
+    denominator: f32,
+    out: *mut f64,
+    narrowed: *mut f32,
+) {
+    // SAFETY: The domain fixture provides the documented fixed live extents.
+    let (density, raw) = unsafe {
+        (
+            std::slice::from_raw_parts(density, 7),
+            std::slice::from_raw_parts(raw, 3),
+        )
+    };
+    let mut observed = [0.0_f64; 12];
+    let mut d = f64::from(density[0]);
+    for c in 0..3 {
+        d += f64::from(density[c + 1]) * f64::from(density[c + 4]);
+        observed[c] = d;
+    }
+    observed[3] = 10.0_f64.powf(-d);
+    let mut mean_log = 0.0_f64;
+    for c in 0..3 {
+        observed[4 + c] = f64::from(raw[c]).max(1.0e-10).ln();
+        mean_log += observed[4 + c];
+        observed[7 + c] = mean_log;
+    }
+    observed[10] = -mean_log / 3.0;
+    observed[11] = observed[10].exp();
+    let factor = observed[11] as f32;
+    // SAFETY: Caller supplies fixed writable extents, exclusive through return.
+    unsafe {
+        std::ptr::copy_nonoverlapping(observed.as_ptr(), out, 12);
+        std::ptr::copy_nonoverlapping([factor, factor / denominator].as_ptr(), narrowed, 2);
+    }
+}
+
+/// Checked balance fixture facade shares construction without calling the export.
+/// # Safety
+/// The same fixed live input/output and disjoint synchronous contract as prepare_balance.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_print_balance_prepare(
+    input: *const crate::print_bridge::FjPrintBalanceInput,
+    out: *mut crate::print_bridge::FjPrintBalance,
+    failure: *mut crate::print_bridge::FjPrintBalanceFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Identical checked operation with independent output admission.
+    unsafe { crate::print_bridge::prepare_balance(input, out, failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const crate::print_bridge::FjPrintBalanceInput,
+    *mut crate::print_bridge::FjPrintBalance,
+    *mut crate::print_bridge::FjPrintBalanceFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_print_balance_prepare;

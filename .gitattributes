@@ -114,3 +114,6 @@ tests/print/illuminant-fixtures/** -text whitespace=cr-at-eol
 
 # Preflash native characterization preserves exact input/output and provenance bytes.
 tests/print/preflash-fixtures/** -text whitespace=cr-at-eol
+
+# Print balance characterization preserves exact native capture bytes.
+tests/print/balance-fixtures/** -text whitespace=cr-at-eol

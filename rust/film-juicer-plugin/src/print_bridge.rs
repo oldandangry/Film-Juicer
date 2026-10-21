@@ -435,3 +435,241 @@ const _: unsafe extern "C" fn(
     *mut FjPrintPreflashFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_legacy_print_preflash_prepare;
+
+// SF_TEMP_BRIDGE_PRINT_BALANCE: complete fixed balance; retire at S4.E.
+pub(crate) const FJ_PRINT_BALANCE_REASON_NONE: u32 = 0;
+pub(crate) const FJ_PRINT_BALANCE_REASON_RAW: u32 = 1;
+pub(crate) const FJ_PRINT_BALANCE_REASON_BASELINE_RAW: u32 = 2;
+pub(crate) const FJ_PRINT_BALANCE_REASON_COMPENSATED_RAW: u32 = 3;
+pub(crate) const FJ_PRINT_BALANCE_REASON_BALANCE: u32 = 4;
+pub(crate) const FJ_PRINT_BALANCE_REASON_PANIC: u32 = 5;
+
+#[repr(C)]
+pub(crate) struct FjPrintBalanceInput {
+    pub(crate) film_base_density: FjFloatSpan,
+    pub(crate) film_channel_density_cmy: FjFloatSpan,
+    pub(crate) print_sensitivity_rgb: FjFloatSpan,
+    pub(crate) filtered_main_illuminant: FjFloatSpan,
+    pub(crate) baseline_density_cmy: [f32; 3],
+    pub(crate) compensated_density_cmy: [f32; 3],
+    pub(crate) reference_hash: u64,
+    pub(crate) normalization_mode: u32,
+}
+#[repr(C)]
+pub(crate) struct FjPrintBalance {
+    pub(crate) baseline_raw_rgb: [f32; 3],
+    pub(crate) compensated_raw_rgb: [f32; 3],
+    pub(crate) factor_midgray: f32,
+    pub(crate) factor_midgray_comp: f32,
+    pub(crate) normalizer: f32,
+    pub(crate) filtered_main_illuminant_hash: u64,
+    pub(crate) hash: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjPrintBalanceFailure {
+    pub(crate) reason: u32,
+    pub(crate) channel: u32,
+}
+
+fn balance_details(reason: u32) -> FjPrintBalanceFailure {
+    FjPrintBalanceFailure {
+        reason,
+        channel: u32::MAX,
+    }
+}
+struct BalanceFailure {
+    category: u32,
+    details: FjPrintBalanceFailure,
+}
+impl BalanceFailure {
+    fn raw() -> Self {
+        Self {
+            category: FJ_STATUS_UNSUPPORTED_INPUT,
+            details: balance_details(FJ_PRINT_BALANCE_REASON_RAW),
+        }
+    }
+    fn panic() -> Self {
+        Self {
+            category: FJ_STATUS_INTERNAL_FAILURE,
+            details: balance_details(FJ_PRINT_BALANCE_REASON_PANIC),
+        }
+    }
+    fn core(error: print::BalanceError) -> Self {
+        let (reason, channel) = match error {
+            print::BalanceError::Baseline { channel } => {
+                (FJ_PRINT_BALANCE_REASON_BASELINE_RAW, channel as u32)
+            }
+            print::BalanceError::Compensated { channel } => {
+                (FJ_PRINT_BALANCE_REASON_COMPENSATED_RAW, channel as u32)
+            }
+            print::BalanceError::Invalid => (FJ_PRINT_BALANCE_REASON_BALANCE, u32::MAX),
+        };
+        Self {
+            category: FJ_STATUS_PREPARATION_FAILURE,
+            details: FjPrintBalanceFailure { reason, channel },
+        }
+    }
+}
+
+/// # Safety
+/// Initialized, aligned live input record and spans contain exactly 81/243/243/81
+/// f32 elements; triples are sample-major C/M/Y dyes and RGB sensitivities.
+/// Immutable spans may alias. Writable result/failure and optional diagnostic
+/// record/backing are live, exclusive, mutually disjoint and disjoint from inputs.
+/// All borrows expire at synchronous return. Extent checks do not prove allocation,
+/// initialization or lifetime; the caller supplies those obligations.
+pub(crate) unsafe fn prepare_balance(
+    input: *const FjPrintBalanceInput,
+    out: *mut FjPrintBalance,
+    failure: *mut FjPrintBalanceFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    #[cfg(feature = "test-support")]
+    let fault = crate::film_recipe_bridge::faults::take(12);
+    let valid_out = valid_extent(out, 1);
+    let valid_failure = valid_extent(failure, 1);
+    // SAFETY: Outputs are admitted independently before any source reference.
+    unsafe {
+        if valid_out {
+            out.write(FjPrintBalance {
+                baseline_raw_rgb: [0.0; 3],
+                compensated_raw_rgb: [0.0; 3],
+                factor_midgray: 0.0,
+                factor_midgray_comp: 0.0,
+                normalizer: 0.0,
+                filtered_main_illuminant_hash: 0,
+                hash: 0,
+            });
+        }
+        if valid_failure {
+            failure.write(balance_details(FJ_PRINT_BALANCE_REASON_NONE));
+        }
+    }
+    // SAFETY: Caller supplies the optional live, disjoint diagnostic storage.
+    let diagnostic = unsafe { Diagnostic::admit(error) };
+    let diagnostic_valid = diagnostic.is_ok();
+    let mut diagnostic = diagnostic.ok();
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if !valid_out || !valid_failure || !diagnostic_valid || !valid_extent(input, 1) {
+            return Err(BalanceFailure::raw());
+        }
+        // SAFETY: The initialized record was admitted before dereferencing it.
+        let input = unsafe { &*input };
+        if input.normalization_mode > u32::from(u8::MAX)
+            || input.film_base_density.count != 81
+            || input.film_channel_density_cmy.count != 243
+            || input.print_sensitivity_rgb.count != 243
+            || input.filtered_main_illuminant.count != 81
+            || !valid_extent(input.film_base_density.data, 81)
+            || !valid_extent(input.film_channel_density_cmy.data, 243)
+            || !valid_extent(input.print_sensitivity_rgb.data, 243)
+            || !valid_extent(input.filtered_main_illuminant.data, 81)
+        {
+            return Err(BalanceFailure::raw());
+        }
+        #[cfg(feature = "test-support")]
+        if fault == 1 {
+            panic!("print balance fixture panic");
+        }
+        // SAFETY: Checked exact contiguous spans precede these fixed immutable
+        // borrows. Rust nested arrays have contiguous f32 elements. The caller
+        // guarantees allocation/initialization/lifetime and permits input aliases.
+        let (base, dye, sensitivity, light) = unsafe {
+            (
+                &*input.film_base_density.data.cast::<[f32; 81]>(),
+                &*input.film_channel_density_cmy.data.cast::<[[f32; 3]; 81]>(),
+                &*input.print_sensitivity_rgb.data.cast::<[[f32; 3]; 81]>(),
+                &*input.filtered_main_illuminant.data.cast::<[f32; 81]>(),
+            )
+        };
+        print::Balance::new(
+            print::BalanceParams {
+                baseline_density_cmy: input.baseline_density_cmy,
+                compensated_density_cmy: input.compensated_density_cmy,
+                reference_hash: input.reference_hash,
+                normalization_mode: input.normalization_mode as u8,
+            },
+            base,
+            dye,
+            sensitivity,
+            light,
+        )
+        .map_err(BalanceFailure::core)
+    }))
+    .unwrap_or_else(|_| Err(BalanceFailure::panic()));
+    match result {
+        Ok(balance) => {
+            // SAFETY: Commit only the complete safe result into admitted outputs.
+            unsafe {
+                out.write(FjPrintBalance {
+                    baseline_raw_rgb: *balance.baseline_raw_rgb(),
+                    compensated_raw_rgb: *balance.compensated_raw_rgb(),
+                    factor_midgray: balance.factor_midgray(),
+                    factor_midgray_comp: balance.factor_midgray_comp(),
+                    normalizer: balance.normalizer(),
+                    filtered_main_illuminant_hash: balance.filtered_main_illuminant_hash(),
+                    hash: balance.hash(),
+                });
+                failure.write(balance_details(FJ_PRINT_BALANCE_REASON_NONE));
+            }
+            status(FJ_STATUS_SUCCESS)
+        }
+        Err(rejection) => {
+            if let Some(writer) = &mut diagnostic {
+                let _ = write!(
+                    writer,
+                    "print balance reason={} channel={}",
+                    rejection.details.reason, rejection.details.channel
+                );
+            }
+            if valid_failure {
+                // SAFETY: This independently admitted output remains writable.
+                unsafe { failure.write(rejection.details) };
+            }
+            status(rejection.category)
+        }
+    }
+}
+
+/// # Safety
+/// The same initialized, live, aligned, disjoint synchronous contract as prepare_balance.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_print_balance_prepare(
+    input: *const FjPrintBalanceInput,
+    out: *mut FjPrintBalance,
+    failure: *mut FjPrintBalanceFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Checked admission owns clearing and retains no input pointer.
+    unsafe { prepare_balance(input, out, failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const FjPrintBalanceInput,
+    *mut FjPrintBalance,
+    *mut FjPrintBalanceFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_legacy_print_balance_prepare;
+
+const _: () =
+    assert!(size_of::<FjPrintBalanceInput>() == 104 && align_of::<FjPrintBalanceInput>() == 8);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, film_base_density) == 0);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, film_channel_density_cmy) == 16);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, print_sensitivity_rgb) == 32);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, filtered_main_illuminant) == 48);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, baseline_density_cmy) == 64);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, compensated_density_cmy) == 76);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, reference_hash) == 88);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalanceInput, normalization_mode) == 96);
+const _: () = assert!(size_of::<FjPrintBalance>() == 56 && align_of::<FjPrintBalance>() == 8);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalance, baseline_raw_rgb) == 0);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalance, compensated_raw_rgb) == 12);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalance, factor_midgray) == 24);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalance, factor_midgray_comp) == 28);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalance, normalizer) == 32);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalance, filtered_main_illuminant_hash) == 40);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalance, hash) == 48);
+const _: () =
+    assert!(size_of::<FjPrintBalanceFailure>() == 8 && align_of::<FjPrintBalanceFailure>() == 4);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalanceFailure, reason) == 0);
+const _: () = assert!(std::mem::offset_of!(FjPrintBalanceFailure, channel) == 4);

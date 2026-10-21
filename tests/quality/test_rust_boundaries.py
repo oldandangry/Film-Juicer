@@ -269,6 +269,26 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_print_balance_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("print_balance_complete", None),
+            ("print_balance_construction", {"E0451": ("print::Balance { ..balance }",)}),
+            ("print_balance_default", {"E0599": ("print::Balance::default()",)}),
+            ("print_balance_private", {"E0616": ("balance.baseline_raw_rgb",)}),
+            ("print_balance_readonly", {"E0594": ("balance.baseline_raw_rgb()[0] = 0.0",)}),
+            ("print_balance_owned", None),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_optics_are_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("optics_complete", None),

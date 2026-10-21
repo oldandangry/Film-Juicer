@@ -105,6 +105,7 @@ def execute(arguments):
         b"spatial optics fixture panic",
         b"print illuminant fixture panic",
         b"print preflash fixture panic",
+        b"print balance fixture panic",
         b"film DIR acquire fixture panic",
         b"film DIR view fixture panic",
         b"film DIR release fixture panic",
@@ -159,6 +160,8 @@ def execute(arguments):
     consumed_paths.extend([print_manifest, print_payload, native_print_manifest])
     preflash_manifest, preflash_payload, _, _, _ = preflash_fixture(arguments.preset)
     consumed_paths.extend([preflash_manifest, preflash_payload])
+    balance_manifest, balance_payload, _, _, _ = balance_fixture(arguments.preset)
+    consumed_paths.extend([balance_manifest, balance_payload])
     consumed = {str(path): digest(path) for path in sorted(set(consumed_paths))}
 
     def check_consumed():
@@ -200,6 +203,7 @@ def execute(arguments):
         "fj_legacy_spatial_optics_prepare",
         "fj_legacy_print_illuminant_prepare",
         "fj_legacy_print_preflash_prepare",
+        "fj_legacy_print_balance_prepare",
         "fj_legacy_output_color",
         "fj_legacy_film_profile_acquire",
         "fj_legacy_print_profile_acquire",
@@ -232,6 +236,7 @@ def execute(arguments):
     optics_results = []
     print_illuminant_results = []
     preflash_results = []
+    balance_results = []
     for name, source in probes:
         executable = out / (name + suffix)
         target_source = out / (name + ".c")
@@ -386,6 +391,17 @@ def execute(arguments):
                 preflash_results.append({"case": case, "category": actual[0], "api": actual[1],
                                         "native_code": actual[2], "reason": actual[3],
                                         "channel": actual[4], "fields": "3-pass"})
+            _, _, names, _, envelopes = balance_fixture(arguments.preset)
+            lines = [line for line in output.splitlines() if line.startswith("PRINT_BALANCE_CASE")]
+            assert len(lines) == 16, lines
+            for line, case, envelope in zip(lines, names, envelopes, strict=True):
+                match = re.fullmatch(r"PRINT_BALANCE_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) channel=(\d+) fields=11-pass", line)
+                assert match is not None and match[1] == case, line
+                actual = [int(value) for value in match.groups()[1:]]
+                assert actual == [envelope[0], 0, 0, envelope[1], envelope[2]], line
+                balance_results.append({"case": case, "category": actual[0], "api": actual[1],
+                                        "native_code": actual[2], "reason": actual[3],
+                                        "channel": actual[4], "fields": "11-pass"})
     check_build_inputs()
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     if windows:
@@ -429,6 +445,8 @@ def execute(arguments):
                 "optics_results": optics_results,
                 "print_illuminant_results": print_illuminant_results,
                 "preflash_results": preflash_results,
+                "balance_results": balance_results,
+                "balance_fixture": {"manifest": str(balance_manifest), "payload": str(balance_payload), "logical_preset": arguments.preset},
                 "preflash_fixture": {"manifest": str(preflash_manifest), "payload": str(preflash_payload),
                                      "logical_preset": arguments.preset},
                 "print_illuminant_fixture": {"manifest": str(print_manifest), "payload": str(print_payload),
@@ -699,8 +717,59 @@ def expected_preflash_header(out):
             stream.write("static const uint32_t preflash_" + name + "[12][" + str(len(data[0])) + "] = {" + ",".join("{" + ",".join(str(word) + "U" for word in row) + "}" for row in data) + "};\n")
 
 
+def balance_fixture(preset):
+    directory = root / "tests/print/balance-fixtures"
+    manifest = directory / "manifest.json"
+    spec = json.loads(manifest.read_text())
+    selected = spec["presets"][preset]
+    payload = directory / selected["native"]
+    assert digest(payload) == selected["sha256"]
+    literals = json.loads(payload.read_text())["cases"]
+    names = ["balance-none", "balance-compensation", "balance-normalize", "balance-both",
+             "balance-zero", "balance-signed-zero", "balance-sensitivity-skip",
+             "balance-baseline-failure", "balance-compensated-overflow", "balance-unknown-mode",
+             "balance-main-hash-failure", "balance-normalizer-overflow", "balance-normalizer-underflow",
+             "balance-raw-input", "balance-raw-span", "balance-raw-mode-width"]
+    rows = []
+    envelopes = []
+    for name in names[:13]:
+        selected_rows = [row for row in literals if row["id"] == name]
+        assert len(selected_rows) == 1, name
+        row = selected_rows[0]
+        outcome = spec["outcomes"][name]
+        assert row["success"] == (outcome["category"] == 0)
+        rows.append(row)
+        envelopes.append([outcome[key] for key in ("category", "reason", "channel")])
+    rows += [rows[0]] * 3
+    envelopes += [[2, 1, 4294967295] for _ in range(3)]
+    return manifest, payload, names, rows, envelopes
+
+
+def expected_balance_header(out):
+    _, _, names, rows, envelopes = balance_fixture(arguments.preset)
+    # Only frozen native words/identities and normative failure clearing enter this header.
+    results = [row["balance"]["baseline_raw_rgb"] + row["balance"]["compensated_raw_rgb"] + row["balance"]["scalars"]
+               if i < 13 and row["success"] else [0] * 9 for i, row in enumerate(rows)]
+    hashes = [[row["balance"]["filtered_main_illuminant_hash"], row["balance"]["hash"]]
+              if i < 13 and row["success"] else [0, 0] for i, row in enumerate(rows)]
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write("static const char* balance_names[16] = {" + ",".join(json.dumps(name) for name in names) + "};\n")
+        for name, data in [("base", [row["film_base_density"] for row in rows]),
+                           ("dye", [row["film_channel_density_cmy"] for row in rows]),
+                           ("sensitivity", [row["print_sensitivity_rgb"] for row in rows]),
+                           ("light", [row["filtered_main_illuminant"] for row in rows]),
+                           ("baseline", [row["baseline_density_cmy"] for row in rows]),
+                           ("compensated", [row["compensated_density_cmy"] for row in rows]),
+                           ("words", results), ("envelopes", envelopes)]:
+            stream.write("static const uint32_t balance_" + name + "[16][" + str(len(data[0])) + "] = {" + ",".join("{" + ",".join(str(word) + "U" for word in row) + "}" for row in data) + "};\n")
+        for name, data in [("hashes", hashes), ("reference", [[row["reference_hash"]] for row in rows])]:
+            stream.write("static const uint64_t balance_" + name + "[16][" + str(len(data[0])) + "] = {" + ",".join("{" + ",".join("UINT64_C(" + str(word) + ")" for word in row) + "}" for row in data) + "};\n")
+        stream.write("static const uint32_t balance_modes[16] = {" + ",".join(str(row["normalization_mode"]) + "U" for row in rows) + "};\n")
+
+
 if __name__ == "__main__":
     arguments.artifacts.mkdir(parents=True, exist_ok=True)
     expected_film_header(arguments.artifacts)
     expected_preflash_header(arguments.artifacts)
+    expected_balance_header(arguments.artifacts)
     execute(arguments)

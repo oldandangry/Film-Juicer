@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 #include "ScanRoute.h"
@@ -17,16 +18,30 @@ struct FilmJuicerEffectsRecipe;
 struct PhysicalEffectsControls;
 struct SpatialOptics;
 struct DichroicFilterRecipe;
+struct SyntheticFilmReferenceRecipe;
+struct PrintBalanceRecipe;
 struct CmyCcTriplet;
 namespace Spektrafilm {
     struct SpatialOpticsControls;
-}
+    enum class PrintNormalizationMode : std::uint8_t;
+} // namespace Spektrafilm
 namespace Profiles {
     struct FilmProfile;
     struct ProfileDigest;
+    struct FilmProfileSamples;
+    struct PrintProfileSamples;
 } // namespace Profiles
 
 namespace JuicerAssets {
+    // SF_TEMP_BRIDGE_PRINT_BALANCE: complete synchronous balance copy; remove S4.E.
+    bool prepare_print_balance(
+        const Profiles::FilmProfileSamples& film,
+        const Profiles::PrintProfileSamples& print,
+        const std::array<float, 81>& filteredMainIlluminant,
+        const SyntheticFilmReferenceRecipe& reference,
+        Spektrafilm::PrintNormalizationMode mode,
+        PrintBalanceRecipe& out,
+        std::string& diagnostic);
     // SF_TEMP_BRIDGE_PRINT_PREFLASH: synchronous completed C/M/Y copy; remove S4.E.
     bool prepare_print_preflash(const std::array<float, 81>& filmBaseDensity, const std::array<float, 81>& filteredIlluminant, const std::array<std::array<float, 3>, 81>& printSensitivityCmy, std::array<float, 3>& out, std::string& diagnostic);
     // SF_TEMP_BRIDGE_PRINT_ILLUMINANT: complete synchronous copy; remove S4.E.
