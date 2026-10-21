@@ -6,6 +6,7 @@ import ctypes
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -31,7 +32,7 @@ llvm = (
 
 
 def execute(arguments):
-    out = arguments.artifacts
+    out = arguments.artifacts.resolve()
     out.mkdir(parents=True, exist_ok=True)
     commands = []
 
@@ -52,6 +53,14 @@ def execute(arguments):
         result.check_returncode()
         return result.stdout.decode("utf-8", errors="replace")
 
+    build_hashes = {
+        str(build / name): digest(build / name)
+        for name in ["CMakeCache.txt", "build.ninja", "compile_commands.json", "cargo-features.txt"]
+    }
+
+    def check_build_inputs():
+        assert {path: digest(Path(path)) for path in build_hashes} == build_hashes, "production build input changed"
+
     assert "BUILD_TESTING:BOOL=OFF" in (build / "CMakeCache.txt").read_text()
     assert (build / "cargo-features.txt").read_text().strip() == "test-support=OFF"
     compdb = json.loads((build / "compile_commands.json").read_text())
@@ -66,6 +75,7 @@ def execute(arguments):
     assert cargo and all(
         ("--no-default-features" in line and "--features" not in line for line in cargo)
     )
+    check_build_inputs()
     archive = (
         build
         / "cargo"
@@ -77,6 +87,10 @@ def execute(arguments):
     )
     native = build / ("juicer_core.lib" if windows else "libjuicer_core.a")
     module = build / "juicer.ofx"
+    build_hashes.update({
+        str(path): digest(path)
+        for path in [native, archive, module, *([build / "juicer.pdb"] if windows else [])]
+    })
     forbidden = re.compile(
         "fj_test_|::test_support::|film_bridge::faults::|film::input::testing::|film_input_bridge::(?:BOUNDARY_FAULT|boundary_fault|arm_boundary_fault)|film::test_support::|\\b(?:FAULT|[A-Z_]+_FAULT|FAULT_[A-Z_]+|[A-Z_]+_FAULT_[A-Z_]+)\\b|\\b[A-Z_]+_FACADE(?:_[A-Z_]+)?\\b|ContextDrainTestFailure|TestSupport::|(?:Profile|Catalog|Terminal|ContextDrain|HostAdmission|ExecutorFailure|PinnedUpload|Illuminant|Render|Spectral|TcLut|Color|OutputGamut|Development|Noise)Test::|\\b\\w*Test::|::fixtures::|::output_fixtures::|::faults::|TC_CONSUMED|TC_TRANSFERS|TC_RELEASES|EXPOSURE_CONSUMED|TC_FACADE_CONSUMED|TC_FACADE_RELEASES|ScannerOracle::|pendingCaptureTest|set_pending_capture_test_hook|COPY_METRICS|SCRATCH_CAPACITIES|gamut_bridge::(?:output_)?fixtures::|exposure_bridge::fixtures::|spectral_bridge::(?:inject|arm_fault|clear_fault)"
     )
@@ -155,10 +169,11 @@ def execute(arguments):
         assert match is None, (name, match.group(0) if match else None)
         raw = path.read_bytes()
         assert not any((value in raw for value in strings)), name
+        assert digest(path) == build_hashes[str(path)], "production build input changed during scan"
         scanned.append(
             {
                 "file": str(path),
-                "sha256": digest(path),
+                "sha256": build_hashes[str(path)],
                 "symbols_and_fault_strings_absent": True,
             }
         )
@@ -355,8 +370,7 @@ def execute(arguments):
                 print_illuminant_results.append({"case": case, "category": actual[0], "api": actual[1],
                                                   "native_code": actual[2], "reason": actual[3],
                                                   "sample": actual[4], "fields": "81-pass"})
-    for artifact in scanned:
-        assert digest(Path(artifact["file"])) == artifact["sha256"], artifact
+    check_build_inputs()
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     if windows:
         cuda = Path(os.environ["CUDA_PATH_V13_2"])
@@ -371,8 +385,17 @@ def execute(arguments):
     loaded.OfxGetPlugin.restype = ctypes.c_void_p
     assert loaded.OfxGetNumberOfPlugins() == 1 and loaded.OfxGetPlugin(0)
     check_consumed()
-    for artifact in scanned:
-        assert digest(Path(artifact["file"])) == artifact["sha256"], artifact
+    retained_build_inputs = {}
+    for original, expected in build_hashes.items():
+        path = Path(original)
+        retained = out / "build" / path.relative_to(build)
+        retained.parent.mkdir(parents=True, exist_ok=True)
+        assert digest(path) == expected, "production build input changed before retention"
+        shutil.copyfile(path, retained)
+        assert digest(retained) == expected, "production build input changed during retention"
+        retained_build_inputs[original] = {"file": str(retained), "sha256": expected}
+    check_consumed()
+    check_build_inputs()
     (out / "production.json").write_text(
         json.dumps(
             {
@@ -380,6 +403,7 @@ def execute(arguments):
                 "build_testing": "OFF",
                 "test_support": "OFF",
                 "scanned": scanned,
+                "build_inputs": retained_build_inputs,
                 "consumed_inputs": consumed,
                 "grain_fixture": {"manifest": str(grain_manifest), "payload": str(grain_payload),
                                   "logical_preset": arguments.preset},
@@ -397,7 +421,7 @@ def execute(arguments):
                 "commands": {"file": str(out / "commands.json"), "sha256": digest(out / "commands.json")},
                 "command_outputs": {str(out / (row["name"] + suffix)): digest(out / (row["name"] + suffix))
                                     for row in commands for suffix in [".stdout", ".stderr"]},
-                "loaded_module": {"file": str(module), "sha256": digest(module)},
+                "loaded_module": {"file": str(module), "sha256": build_hashes[str(module)]},
                 "exports": sorted(module_export_names),
                 "hidden_device_load": True,
                 "limitation": "CUDA_VISIBLE_DEVICES=-1 checks hidden discovery; an absent installed driver is not established.",

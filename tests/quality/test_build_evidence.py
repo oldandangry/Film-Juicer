@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -89,7 +90,9 @@ class CompilationInputsTests(unittest.TestCase):
 class BuildEvidenceTests(unittest.TestCase):
     def setUp(self):
         preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
-        parent = ROOT / "out/validation" / preset / "build-evidence-controls"
+        artifact_root = os.environ.get("JUICER_TEST_ARTIFACT_DIR")
+        parent = ((Path(artifact_root) if artifact_root else ROOT / "out/validation" / preset)
+                  / "build-evidence-controls")
         parent.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(dir=parent, delete=False)
         self.root = Path(self.temporary.name).resolve()
@@ -101,9 +104,9 @@ class BuildEvidenceTests(unittest.TestCase):
                 for test, _ in [*result.errors, *result.failures]
             )
             blocked = list(self.root.glob("out/verification-locks/*/owner.json"))
-            if failed or blocked:
+            if failed or blocked or artifact_root:
                 # Keep configured paths and unproved owners in place for diagnosis.
-                retained = self.root / "retained-failure.json"
+                retained = self.root / ("retained-failure.json" if failed or blocked else "retained-fixture.json")
                 retained.write_text(json.dumps({"test": self.id(), "fixture": str(self.root), "blocked_owners": [str(path) for path in blocked]}, indent=2) + "\n")
                 print(f"Retained build-evidence fixture: {retained}", file=sys.stderr)
             else:
@@ -353,6 +356,60 @@ class BuildEvidenceTests(unittest.TestCase):
         self.assertEqual(len(self.campaign.attempts("tests")), attempts)
         self.prepare()
         self.execute()
+
+    def test_undeclared_preparation_preserves_reusable_results(self):
+        first = self.prepare()
+        baseline, pending = build_evidence.preparation_paths(self.build, ["behavior"])
+        record = json.loads(first.read_text())
+        paths = {
+            baseline, first, Path(record["process_tree"]["receipt"]),
+            self.root / record["output"],
+            *(Path(name) for name in record["scoped_preparation"]["outputs"]),
+        }
+        saved = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in paths}
+        caller = Campaign(self.root, self.campaign.directory.parent.name, "invalid-stage", ["quality"])
+        with patch.object(caller, "run", wraps=caller.run) as run:
+            with self.assertRaisesRegex(ValueError, "declared stage"):
+                build_evidence.prepare_build(
+                    caller, "prepare", source=self.source, build=self.build,
+                    inputs=self.inputs(), configure_args=self.args,
+                    targets=["behavior"], timeout=120,
+                )
+            self.assertFalse(pending.exists())
+            run.assert_not_called()
+        self.assertFalse((caller.directory / "attempts").exists())
+        self.assertEqual(
+            saved, {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in paths}
+        )
+        with OutputLease(self.root, self.build):
+            build_evidence.check_scoped_preparation(self.campaign, self.build, first)
+        self.execute()
+
+    def test_invalid_preparation_request_preserves_absent_or_pending_owner(self):
+        baseline, pending = build_evidence.preparation_paths(self.build, ["behavior"])
+        requests = [{"inputs": []}, *({"timeout": value} for value in (0, -1, float("nan"), float("inf"), -float("inf")))]
+        for existing in (False, True):
+            if existing:
+                self.build.mkdir()
+                pending.write_text("unfinished preparation\n")
+                saved = pending.read_bytes(), pending.stat().st_mtime_ns
+            for invalid in requests:
+                with self.subTest(existing=existing, invalid=invalid):
+                    arguments = dict(inputs=self.inputs(), timeout=120)
+                    arguments.update(invalid)
+                    with patch.object(self.campaign, "run", wraps=self.campaign.run) as run:
+                        with self.assertRaisesRegex(ValueError, "declared stage"):
+                            build_evidence.prepare_build(
+                                self.campaign, "prepare", source=self.source, build=self.build,
+                                configure_args=self.args, targets=["behavior"], **arguments,
+                            )
+                        run.assert_not_called()
+                    self.assertFalse(baseline.exists())
+                    if existing:
+                        self.assertEqual(saved, (pending.read_bytes(), pending.stat().st_mtime_ns))
+                    else:
+                        self.assertFalse(self.build.exists())
+        self.assertFalse((self.campaign.directory / "attempts").exists())
 
     def test_pending_or_missing_preparation_owner_rejects_prior_pass(self):
         first = self.prepare()
@@ -1131,6 +1188,185 @@ class BuildEvidenceTests(unittest.TestCase):
         self.prepare()
         self.execute()
 
+    def write_interruptible_preparation(self):
+        self.args = ["-G", "Ninja"]
+        (self.source / "payload.txt").write_text("prepared payload\n", encoding="utf-8")
+        child = (
+            "import os,sys,time\nfrom pathlib import Path\n"
+            "progress=Path(sys.argv[2])\n"
+            "progress.write_bytes(b'preparation child writer started\\n')\n"
+            "Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+            "for _ in range(1500):\n"
+            " with progress.open('ab') as stream:stream.write(b'preparation child writer\\n')\n"
+            " time.sleep(.02)\n"
+        )
+        (self.source / "prepare.py").write_text(
+            "import os,subprocess,sys\nfrom pathlib import Path\n"
+            "payload,build=map(Path,sys.argv[1:])\n"
+            "mode=build/'interrupt-mode'\n"
+            "if mode.is_file() and mode.read_text()=='interrupt':\n"
+            f" child={child!r}\n"
+            " process=subprocess.Popen([sys.executable,'-c',child,str(build/'writer-ready'),str(build/'writer-progress.log')],start_new_session=os.name!='nt')\n"
+            " process.wait()\n"
+            "(build/'material.txt').write_bytes(payload.read_bytes())\n",
+            encoding="utf-8",
+        )
+        python = str(Path(sys.base_prefix) / "python.exe") if os.name == "nt" else sys.executable
+        (self.source / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.24)\nproject(PreparationRecovery NONE)\nenable_testing()\n"
+            'add_custom_target(behavior ALL COMMAND "' + python.replace("\\", "/")
+            + '" "${CMAKE_SOURCE_DIR}/prepare.py" "${CMAKE_SOURCE_DIR}/payload.txt" "${CMAKE_BINARY_DIR}"\n'
+            ' DEPENDS "${CMAKE_SOURCE_DIR}/prepare.py" "${CMAKE_SOURCE_DIR}/payload.txt"\n'
+            ' BYPRODUCTS "${CMAKE_BINARY_DIR}/material.txt")\n'
+            'add_test(NAME behavior COMMAND "${CMAKE_COMMAND}" -E compare_files '
+            '"${CMAKE_SOURCE_DIR}/payload.txt" "${CMAKE_BINARY_DIR}/material.txt")\n',
+            encoding="utf-8",
+        )
+
+    def test_interrupted_preparation_recovers_only_after_real_descendant_drainage(self):
+        self.write_interruptible_preparation()
+        self.prepare()
+        self.execute()
+        baseline, pending = build_evidence.preparation_paths(self.build, ["behavior"])
+        original_baseline = baseline.read_bytes()
+        retained = {path: path.read_bytes() for path in self.campaign.directory.glob("attempts/*/*") if path.is_file()}
+        (self.build / "interrupt-mode").write_text("interrupt")
+        wait = subprocess.Popen.wait
+        interrupted = False
+
+        def interrupt_build(process, *args, **kwargs):
+            nonlocal interrupted
+            if not interrupted and "--build" in process.args and any("process_tree.py" in str(part) for part in process.args):
+                deadline = time.monotonic() + 10
+                while not (self.build / "writer-ready").is_file() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue((self.build / "writer-ready").is_file(), "real descendant did not start")
+                interrupted = True
+                raise KeyboardInterrupt
+            return wait(process, *args, **kwargs)
+
+        with patch.object(subprocess.Popen, "wait", interrupt_build), self.assertRaises(KeyboardInterrupt):
+            self.prepare()
+        self.assertTrue(interrupted)
+        failure = self.campaign.attempts("prepare")[-1]
+        self.assertEqual(failure["status"], "failed")
+        self.assertTrue(failure["process_tree"]["drained"])
+        self.assertEqual(failure["process_tree"]["status"], "interrupted")
+        progress = self.build / "writer-progress.log"
+        progress_bytes = progress.read_bytes()
+        self.assertIn(b"preparation child writer started\n", progress_bytes)
+        time.sleep(.1)
+        self.assertEqual(progress.read_bytes(), progress_bytes)
+        self.assertFalse((self.campaign.directory / "running.lock").exists())
+        self.assertFalse(OutputLease(self.root, self.build).path.exists())
+        self.assertEqual(baseline.read_bytes(), original_baseline)
+        original_pending = pending.read_bytes()
+        self.assertTrue(all(path.read_bytes() == content for path, content in retained.items()))
+        retained.update({path: path.read_bytes() for path in self.campaign.directory.glob("attempts/*/*") if path.is_file()})
+        with self.assertRaisesRegex(ValueError, "pending preparation"):
+            self.execute()
+        (self.build / "interrupt-mode").write_text("recovered")
+        self.prepare()
+        self.assertFalse(pending.exists())
+        self.assertNotEqual(baseline.read_bytes(), original_baseline)
+        recovery = json.loads(self.prepared.read_text())["preparation_admission"]["recovered_pending"]
+        self.assertEqual(Path(recovery["file"]).read_bytes(), original_pending)
+        self.assertEqual(digest(Path(recovery["file"])), recovery["sha256"])
+        self.assertTrue(all(path.read_bytes() == content for path, content in retained.items()))
+        self.execute()
+        self.assertEqual(progress.read_bytes(), progress_bytes)
+
+    def test_pending_recovery_requires_complete_unchanged_invocation_proof(self):
+        self.write_interruptible_preparation()
+        self.prepare()
+        baseline, pending = build_evidence.preparation_paths(self.build, ["behavior"])
+        attempts_before = len(self.campaign.attempts("prepare"))
+        with patch.object(build_evidence, "preparation_inventory", side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt):
+            self.prepare()
+        no_command = pending.read_bytes()
+        no_command_record = json.loads(no_command)
+        proof = json.loads(Path(no_command_record["failure_proof"]["file"]).read_text())
+        self.assertEqual(proof["completion"], "no-command-started")
+        self.assertEqual(proof["attempts"], [])
+        self.assertEqual(len(self.campaign.attempts("prepare")), attempts_before)
+        self.prepare()
+        recovered = json.loads(self.prepared.read_text())["preparation_admission"]["recovered_pending"]
+        self.assertEqual(Path(recovered["file"]).read_bytes(), no_command)
+        self.assertEqual(digest(Path(recovered["file"])), recovered["sha256"])
+        earlier = json.loads(self.prepared.read_text())
+        earlier_process = Path(earlier["process_tree"]["receipt"]).read_bytes()
+        baseline_before = baseline.read_bytes()
+        self.args.append("-DRECOVERY_PROBE=ON")
+        with patch.object(build_evidence, "_check_preparation_result", side_effect=ValueError("controlled publication failure")), \
+                self.assertRaisesRegex(ValueError, "controlled publication failure"):
+            self.prepare()
+        marker = json.loads(pending.read_text())
+        proof_path = Path(marker["failure_proof"]["file"])
+        proof = json.loads(proof_path.read_text())
+        self.assertEqual(proof["completion"], "commands-drained")
+        self.assertEqual(len(proof["attempts"]), 2)
+        configure_attempt, build_attempt = [Path(item["directory"]) for item in proof["attempts"]]
+        self.assertIn("-S", json.loads((configure_attempt / "result.json").read_text())["identity"]["command"])
+        self.assertIn("--build", json.loads((build_attempt / "result.json").read_text())["identity"]["command"])
+        configure_process = (configure_attempt / "process.json").read_bytes()
+        attempt = build_attempt
+        process = attempt / "process.json"
+        self.assertEqual(json.loads(process.read_text())["status"], "completed")
+        protected = [baseline, self.build / "material.txt", *self.campaign.directory.glob("attempts/*/*")]
+        protected = {path: path.read_bytes() for path in protected if path.is_file()}
+        originals = {path: path.read_bytes() for path in (pending, proof_path, process)}
+        attempts_before = len(self.campaign.attempts("prepare"))
+        for fault in ("legacy", "running", "missing-proof", "changed-proof", "substituted-proof",
+                      "unknown-drainage", "substituted-process", "substituted-configure"):
+            with self.subTest(fault=fault):
+                candidate = json.loads(originals[pending])
+                if fault == "legacy":
+                    candidate = {"protocol": build_evidence.SCOPED_PROTOCOL, "targets": ["behavior"]}
+                elif fault == "running":
+                    candidate["state"] = "running"
+                elif fault == "missing-proof":
+                    candidate.pop("failure_proof")
+                elif fault == "changed-proof":
+                    proof_path.write_bytes(originals[proof_path] + b"\n")
+                elif fault == "substituted-proof":
+                    candidate["failure_proof"] = no_command_record["failure_proof"]
+                elif fault == "unknown-drainage":
+                    tree = json.loads(originals[process])
+                    tree["drained"] = False
+                    process.write_text(json.dumps(tree), encoding="utf-8")
+                elif fault == "substituted-process":
+                    process.write_bytes(earlier_process)
+                else:
+                    process.write_bytes(configure_process)
+                pending.write_text(json.dumps(candidate), encoding="utf-8")
+                presented = {path: path.read_bytes() for path in originals}
+                try:
+                    with patch.object(self.campaign, "run", side_effect=AssertionError("invalid recovery dispatched a command")), \
+                            self.assertRaisesRegex(ValueError, "recover pending preparation"):
+                        self.prepare()
+                    self.assertEqual({path: path.read_bytes() for path in originals}, presented)
+                    self.assertEqual(len(self.campaign.attempts("prepare")), attempts_before)
+                    self.assertEqual(baseline.read_bytes(), baseline_before)
+                    self.assertTrue(all(path.read_bytes() == content for path, content in protected.items() if path != process))
+                finally:
+                    for path, content in originals.items():
+                        path.write_bytes(content)
+        self.assertTrue(all(path.read_bytes() == content for path, content in protected.items()))
+        # A later started attempt has no terminal proof. An earlier completed
+        # command cannot establish drainage for this additional writer.
+        later = self.campaign.directory / "attempts/prepare-unproved"
+        later.mkdir()
+        record = json.loads((attempt / "result.json").read_text())
+        record.update(status="running", attempt_number=record["attempt_number"] + 1)
+        (later / "result.json").write_text(json.dumps(record), encoding="utf-8")
+        with patch.object(self.campaign, "run", side_effect=AssertionError("later unproved attempt launched recovery")), \
+                self.assertRaisesRegex(ValueError, "recover pending preparation"):
+            self.prepare()
+        self.assertEqual(pending.read_bytes(), originals[pending])
+        self.assertEqual(baseline.read_bytes(), baseline_before)
+        self.assertTrue(all(path.read_bytes() == content for path, content in protected.items()))
+
     def test_selected_utility_failure_requires_fresh_preparation(self):
         script = self.source / "fail_once.py"
         script.write_text(
@@ -1233,28 +1469,65 @@ class BuildEvidenceTests(unittest.TestCase):
         self.assertEqual(baseline.read_bytes(), original)
 
     def test_preparation_publication_rejects_changed_process_proof_or_missing_output(self):
+        self.write_interruptible_preparation()
         write = build_evidence.write_json
         for fault in ("process", "output"):
             with self.subTest(fault=fault):
                 self.prepare()
                 baseline = next(path for path in self.build.glob("verification-build-*.json") if not path.name.endswith(".pending.json"))
                 original = baseline.read_bytes()
+                process_before = {}
 
                 def corrupt(path, document):
                     write(path, document)
                     if "scoped_preparation" in document and document.get("status") == "passed":
                         if fault == "process":
-                            write(Path(document["process_tree"]["receipt"]), {"drained": False})
+                            process = Path(document["process_tree"]["receipt"])
+                            process_before[process] = process.read_bytes()
+                            raise ValueError("controlled failure before preparation publication")
                         else:
-                            output = next(Path(name) for name in document["scoped_preparation"]["outputs"] if name.endswith((".o", ".obj")))
-                            output.unlink()
+                            (self.build / "material.txt").unlink()
 
                 with patch.object(build_evidence, "write_json", side_effect=corrupt), self.assertRaises(ValueError):
                     self.prepare()
                 self.assertEqual(baseline.read_bytes(), original)
                 self.assertTrue(list(self.build.glob("verification-build-*.pending.json")))
+                if fault == "process":
+                    pending = baseline.with_suffix(".pending.json")
+                    pending_before = pending.read_bytes()
+                    attempts = len(self.campaign.attempts("prepare"))
+                    for process in process_before:
+                        write(process, {"drained": False})
+                    with patch.object(self.campaign, "run", side_effect=AssertionError("unproved process launched a retry")), \
+                            self.assertRaises(ValueError):
+                        self.prepare()
+                    self.assertEqual(baseline.read_bytes(), original)
+                    self.assertEqual(pending.read_bytes(), pending_before)
+                    self.assertEqual(len(self.campaign.attempts("prepare")), attempts)
+                    for process, content in process_before.items():
+                        process.write_bytes(content)
         self.prepare()
         self.execute()
+        baseline, pending = build_evidence.preparation_paths(self.build, ["behavior"])
+        baseline_before = baseline.read_bytes()
+
+        def unproved_publication(path, document):
+            write(path, document)
+            if "scoped_preparation" in document and document.get("status") == "passed":
+                write(Path(document["process_tree"]["receipt"]), {"drained": False})
+
+        with patch.object(build_evidence, "write_json", side_effect=unproved_publication), self.assertRaises(ValueError):
+            self.prepare()
+        self.assertEqual(baseline.read_bytes(), baseline_before)
+        self.assertEqual(json.loads(pending.read_text())["state"], "running")
+        pending_before = pending.read_bytes()
+        attempts = len(self.campaign.attempts("prepare"))
+        with patch.object(self.campaign, "run", side_effect=AssertionError("unproved publication launched a retry")), \
+                self.assertRaises(ValueError):
+            self.prepare()
+        self.assertEqual(baseline.read_bytes(), baseline_before)
+        self.assertEqual(pending.read_bytes(), pending_before)
+        self.assertEqual(len(self.campaign.attempts("prepare")), attempts)
 
     def test_symbolic_utility_preserves_real_output_checks(self):
         cmake = self.source / "CMakeLists.txt"

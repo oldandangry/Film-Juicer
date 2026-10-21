@@ -212,6 +212,22 @@ class Campaign:
             key=lambda record: (record.get("attempt_number", 0), record["started_at"]),
         )
 
+    def check_run_request(
+        self, stage: str, command: Sequence[str], *, inputs: Sequence[str], timeout: float
+    ) -> None:
+        """Reject invalid requests before callers create pending ownership or reuse results."""
+        name_component(stage)
+        if (
+            stage not in self.required
+            or not command
+            or not inputs
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise ValueError(
+                "a declared stage, command, input files and finite positive timeout are required"
+            )
+
     def run(
         self,
         stage: str,
@@ -229,17 +245,7 @@ class Campaign:
         vctip_drain_cap_seconds: float = 300,
     ) -> Path:
         OutputLease.check_held()
-        name_component(stage)
-        if (
-            stage not in self.required
-            or not command
-            or not inputs
-            or not math.isfinite(timeout)
-            or timeout <= 0
-        ):
-            raise ValueError(
-                "a declared stage, command, input files and finite positive timeout are required"
-            )
+        self.check_run_request(stage, command, inputs=inputs, timeout=timeout)
         environment = dict(os.environ if env is None else env)
         if "JUICER_OUTPUT_LEASES" in os.environ:
             environment["JUICER_OUTPUT_LEASES"] = os.environ["JUICER_OUTPUT_LEASES"]

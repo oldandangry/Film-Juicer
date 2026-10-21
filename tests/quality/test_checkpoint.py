@@ -86,6 +86,74 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(result["sha256"], digest(Path(first["receipt"])))
         self.assertFalse((self.campaign("renamed").directory / "attempts").exists())
 
+    def test_invalid_request_preserves_pass_before_reuse_or_input_change(self):
+        first = self.run_stage("boundary")
+        original_state = self.state_path.read_bytes()
+        producer = Path(first["receipt"])
+        evidence = {path: path.read_bytes() for path in producer.parent.iterdir() if path.is_file()}
+        original_source = self.source.read_bytes()
+        command = [self.python, "-c", "print('checked')"]
+        cases = [
+            ("undeclared", "boundary", command, ["input.txt"], 10, ["tooling"], "declared stage"),
+            ("unsafe", "../boundary", command, ["input.txt"], 10, ["boundary"], "lowercase directory name"),
+            ("command", "boundary", [], ["input.txt"], 10, ["boundary"], "command"),
+            ("inputs", "boundary", command, [], 10, ["boundary"], "input files"),
+            *[(f"timeout-{index}", "boundary", command, ["input.txt"], timeout, ["boundary"], "finite positive timeout")
+              for index, timeout in enumerate((0, -1, float("nan"), float("inf"), -float("inf")))],
+        ]
+        for changed in (False, True):
+            self.source.write_bytes(b"changed" if changed else original_source)
+            for case, stage, selected_command, inputs, timeout, required, message in cases:
+                with self.subTest(changed=changed, case=case):
+                    campaign = Campaign(self.root, self.preset, f"rejected-{int(changed)}-{case}", required)
+                    with patch.object(campaign, "run", side_effect=AssertionError("invalid request dispatched")) as run:
+                        with self.assertRaisesRegex(ValueError, message):
+                            qualification.run_stage(campaign, self.state_path, self.state, stage, selected_command,
+                                inputs=inputs, tools=[self.python], environment=self.environment, timeout=timeout,
+                                semantic_command=command, action=lambda: self.fail("invalid request invoked action"))
+                        run.assert_not_called()
+                    self.assertEqual(self.state_path.read_bytes(), original_state)
+                    self.assertEqual(self.state, json.loads(original_state))
+                    self.assertFalse((campaign.directory / "attempts").exists())
+                    self.assertTrue(all(path.read_bytes() == content for path, content in evidence.items()))
+        self.source.write_bytes(original_source)
+        campaign = self.campaign("valid-after-rejection")
+        with patch.object(campaign, "run", side_effect=AssertionError("reusable pass dispatched")):
+            reused = qualification.run_stage(campaign, self.state_path, self.state, "boundary", command,
+                inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10,
+                action=lambda: self.fail("reusable pass invoked action"))
+        self.assertEqual(reused["reused_from"], first["receipt"])
+        self.assertEqual(self.state_path.read_bytes(), original_state)
+        self.assertTrue(all(path.read_bytes() == content for path, content in evidence.items()))
+
+    def test_invalid_request_preserves_cold_and_failed_checkpoint(self):
+        command = [self.python, "-c", "raise SystemExit(7)"]
+        rejected = Campaign(self.root, self.preset, "undeclared", ["tooling"])
+        with self.assertRaisesRegex(ValueError, "declared stage"):
+            qualification.run_stage(rejected, self.state_path, self.state, "boundary", command,
+                inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10,
+                action=lambda: self.fail("cold invalid request invoked action"))
+        self.assertEqual(self.state, {})
+        self.assertFalse(self.state_path.exists())
+        self.assertFalse((rejected.directory / "attempts").exists())
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_stage("boundary", command=command)
+        original_state = self.state_path.read_bytes()
+        self.assertEqual(self.state["boundary"]["status"], "failed")
+        attempts = self.campaign("first").directory / "attempts"
+        evidence = {path: path.read_bytes() for path in attempts.rglob("*") if path.is_file()}
+        with self.assertRaisesRegex(ValueError, "declared stage"):
+            qualification.run_stage(rejected, self.state_path, self.state, "boundary", command,
+                inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10,
+                action=lambda: self.fail("invalid request replaced failed gate"))
+        self.assertEqual(self.state_path.read_bytes(), original_state)
+        self.assertEqual(self.state, json.loads(original_state))
+        self.assertFalse((rejected.directory / "attempts").exists())
+        self.assertTrue(all(path.read_bytes() == content for path, content in evidence.items()))
+        with self.assertRaisesRegex(ValueError, "pending checkpoint"):
+            self.run_stage("boundary", campaign="valid-still-pending", command=command)
+
     def test_known_output_destinations_do_not_change_gate_identity(self):
         first = self.run_stage("boundary", semantic_command=[self.python, "same", "<junit>"])
         result = self.run_stage("boundary", campaign="renamed", command=[self.python, "unused-output-path"],
@@ -249,6 +317,89 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(second["stages"]["boundary"]["reused_from"], first["stages"]["boundary"]["receipt"])
         self.assertFalse((self.root / "out/validation" / self.preset / "caller-two/attempts").exists())
 
+    def test_documentation_changes_reuse_preparation_and_ctest_after_commit(self):
+        from verify import source_snapshot
+        self.retain = True
+        self.native_project()
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text().replace('"host;boundary"', '"host;corpus"'))
+        documents = [self.root / name for name in (
+            "README.md", "CONTRIBUTING.md", "docs/workflow.md", "tests/README.md",
+            "tests/film/fixtures/README.md")]
+        for path in documents:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("Initial documentation.\n")
+
+        def commit(message):
+            subprocess.run(["git", "add", "--all"], cwd=self.root, check=True, capture_output=True, timeout=10)
+            subprocess.run(["git", "-c", "user.name=Checkpoint fixture", "-c", "user.email=checkpoint@example.invalid",
+                            "-c", "commit.gpgsign=false", "commit", "-qm", message],
+                           cwd=self.root, check=True, capture_output=True, timeout=10)
+
+        commit("Initial miniature source and documentation")
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, timeout=10)
+        prepared = qualification.prepare_checkpoint(self.campaign("documentation-preparation"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        args = SimpleNamespace(reason="documentation discovery and retained native evidence", selection=["corpus"],
+                               preset=self.preset, runtime="host", campaign="documentation-baseline", repeat_reason="", base=None)
+        baseline = qualification.qualify(self.root, args)
+        record = json.loads(baseline.read_text())
+        stage = record["stages"]["corpus"]
+        self.assertEqual(record["membership"], {"corpus": ["boundary"]})
+        protected = {path: digest(path) for path in (baseline, Path(prepared["receipt"]), Path(stage["receipt"]))}
+        state_bytes = self.state_path.read_bytes()
+        source = source_snapshot(self.root)
+
+        for operation in ("edit", "add", "delete", "commit"):
+            with self.subTest(operation=operation):
+                if operation == "edit":
+                    for path in documents:
+                        path.write_text("Revised documentation.\n")
+                elif operation == "add":
+                    for name in ("docs/new-guide.md", "tests/new-domain/README.md"):
+                        path = self.root / name
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text("New documentation.\n")
+                elif operation == "delete":
+                    for path in documents:
+                        path.unlink()
+                else:
+                    commit("Documentation only")
+                    self.assertNotEqual(subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, timeout=10), head)
+                self.assertEqual(source_snapshot(self.root), source)
+                with patch.object(Campaign, "run", side_effect=AssertionError("documentation reran a gate")), \
+                        patch.object(qualification, "prepare_build", side_effect=AssertionError("documentation rebuilt the fixture")):
+                    current_state = json.loads(self.state_path.read_text())
+                    reused = qualification.prepare_checkpoint(self.campaign("documentation-prepare-" + operation),
+                        self.build, self.state_path, current_state, self.environment, timeout=60)
+                    self.assertEqual(reused["reused_from"], prepared["receipt"])
+                    args.campaign = "documentation-" + operation
+                    current = json.loads(qualification.qualify(self.root, args).read_text())
+                    self.assertEqual(current["stages"]["corpus"]["reused_from"], stage["receipt"])
+                    with self.assertRaisesRegex(ValueError, "full checkpoint membership is incomplete"):
+                        qualification.collect_qualification(self.root, [baseline])
+                self.assertEqual(self.state_path.read_bytes(), state_bytes)
+                self.assertEqual(protected, {path: digest(path) for path in protected})
+                self.assertEqual(prepared["payloads"], {name: digest(Path(name)) for name in prepared["payloads"]})
+                self.assertEqual(stage["payloads"], {name: digest(Path(name)) for name in stage["payloads"]})
+
+    def test_explicitly_consumed_markdown_remains_a_freshness_input(self):
+        self.retain = True
+        name = "docs/runtime-contract.md"
+        document = self.root / name
+        document.parent.mkdir(parents=True)
+        document.write_text("first")
+        self.assertIn(name, qualification.checkpoint_inputs(self.root, self.build, "corpus", source_files=[name]))
+        command = [self.python, "-c", "from pathlib import Path; assert Path('docs/runtime-contract.md').read_text() == 'first'"]
+        first = self.run_stage("boundary", command=command, inputs=[name])
+        receipt = Path(first["receipt"])
+        original = receipt.read_bytes()
+        document.write_text("changed consumed content")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_stage("boundary", campaign="changed-markdown", command=command, inputs=[name])
+        self.assertEqual(self.state["boundary"]["status"], "failed")
+        self.assertEqual(receipt.read_bytes(), original)
+
     def production_fixture(self):
         """Native tiny probes exercise retained proof, not product mathematics."""
         return r'''
@@ -257,6 +408,18 @@ preset=sys.argv[sys.argv.index("--preset")+1]
 out=out.resolve()
 def checksum(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+build=(Path('out/build')/preset).resolve()
+build_sources=[build/name for name in ('CMakeCache.txt','build.ninja','compile_commands.json','cargo-features.txt',
+                                     'libjuicer.a','juicer.lib','juicer.ofx','juicer.pdb') if (build/name).is_file()]
+assert 'BUILD_TESTING:BOOL=OFF' in (build/'CMakeCache.txt').read_text().splitlines()
+build_inputs={}
+for source in build_sources:
+    before=checksum(source)
+    target=out/'build'/source.relative_to(build)
+    target.parent.mkdir(parents=True,exist_ok=True)
+    shutil.copy2(source,target)
+    assert checksum(source)==checksum(target)==before
+    build_inputs[str(source)]={'file':str(target),'sha256':before}
 commands=[]
 def execute(name, command):
     result=subprocess.run(command,capture_output=True,timeout=30,check=False)
@@ -293,10 +456,11 @@ for name in ['film','accepted-output-color']:
                    'before_run_sha256':before,'after_run_sha256':after,
                    'source':str(source),'source_sha256':source_hash})
 for name,value in consumed.items():assert checksum(Path(name))==value
+for name,row in build_inputs.items():assert checksum(Path(name))==checksum(Path(row['file']))==row['sha256']
 record=out/'commands.json'
 record.write_text(json.dumps(commands))
 (out/'production.json').write_text(json.dumps({'scope':'native miniature retained-payload protocol only',
-    'preset':preset,'probes':probes,'consumed_inputs':consumed,
+    'preset':preset,'build_testing':'OFF','build_inputs':build_inputs,'probes':probes,'consumed_inputs':consumed,
     'commands':{'file':str(record),'sha256':checksum(record)},
     'command_outputs':{str(out/(row['name']+'.'+extension)):row[extension+'_sha256']
                        for row in commands for extension in ['stdout','stderr']}}))
@@ -315,8 +479,10 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
     def production_mutations(self, stage):
         manifest = qualification.production_manifest_identity(stage["receipt"], root=self.root)[0]
         document = json.loads(manifest.read_text())
+        artifact = next(Path(row["file"]) for name, row in document["build_inputs"].items()
+                        if Path(name).suffix.lower() in {".a", ".lib", ".ofx"})
         return [Path(row["executable"]) for row in document["probes"]] + [
-            manifest.parent / "production-film-expected.h", manifest.parent / "film-values.stdout"]
+            manifest.parent / "production-film-expected.h", manifest.parent / "film-values.stdout", artifact]
 
     def assert_production_reuse_controls(self, path, checkpoint, calls):
         record = json.loads(path.read_text())
@@ -502,6 +668,96 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         write_json(destination, {"scope": "real production checkpoint/reuse/collector controls with explicit unrelated product scaffolds; no product qualification",
             "native": os.name, "controls": outcomes, "commands": commands,
             "seconds": time.monotonic() - started})
+
+    def test_production_evidence_survives_on_restoration_and_unrelated_failure(self):
+        self.retain = True
+        files = self.compiled_project()
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() +
+                         "target_compile_definitions(juicer PRIVATE MINI_TESTING=$<BOOL:${BUILD_TESTING}>)\n")
+        native = self.root / "src/native.cpp"
+        native.write_text(native.read_text() + "int testing_feature(){return MINI_TESTING;}\n")
+        preset = "windows-clang-release" if os.name == "nt" else "linux-release"
+        build = self.root / "out/build" / preset
+        state_path = build / "verification-checkpoint.json"
+        campaign = Campaign(self.root, preset, "off-preparation", ["prepare"])
+        qualification.prepare_build(campaign, "prepare", source=self.root, build=build,
+            inputs=list(files), timeout=60, targets=["all"], configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
+        state = {}
+        with OutputLease(self.root, build):
+            with self.assertRaises(subprocess.CalledProcessError):
+                qualification.run_stage(Campaign(self.root, preset, "unrelated-failure", ["boundary"]),
+                    state_path, state, "boundary", [self.python, "-c", "raise SystemExit(7)"],
+                    inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10)
+        args = SimpleNamespace(reason="retained OFF evidence across ON restoration", selection=["production"],
+                               preset=preset, runtime="all", campaign="original-off", repeat_reason="", base=None)
+        path = qualification.qualify(self.root, args)
+        original_record = path.read_bytes()
+        record = json.loads(original_record)
+        self.assertEqual(record["status"], "incomplete")
+        self.assertEqual(record["scope_status"], "passed")
+        self.assertEqual(record["pending"], ["boundary"])
+        stage = record["stages"]["production"]
+        manifest = qualification.production_manifest_identity(stage["receipt"], root=self.root)[0]
+        document = json.loads(manifest.read_text())
+        artifact = build / ("juicer.lib" if os.name == "nt" else "libjuicer.a")
+        retained = Path(document["build_inputs"][str(artifact)]["file"])
+        off_hash = stage["identity"]["inputs"][artifact.relative_to(self.root).as_posix()]
+        self.assertEqual(digest(artifact), off_hash)
+        self.assertEqual(digest(retained), off_hash)
+        evidence = {name: checksum for name, checksum in self.production_protected(stage).items()
+                    if not Path(name).is_relative_to(build)}
+        payloads = {name: digest(Path(name)) for name in stage["payloads"]}
+        legacy = manifest.with_name("without-retained-build-inputs.json")
+        write_json(legacy, {key: value for key, value in document.items() if key != "build_inputs"})
+        with self.assertRaisesRegex(ValueError, "fresh OFF execution required"):
+            qualification.production_payloads(legacy, digest(legacy), root=self.root,
+                inputs=stage["identity"]["inputs"])
+
+        qualification.prepare_build(Campaign(self.root, preset, "restore-on", ["prepare"]), "prepare",
+            source=self.root, build=build, inputs=list(files), timeout=60, targets=["all"],
+            configure_args=["-DBUILD_TESTING=ON"], checkpoint=True)
+        self.assertIn("BUILD_TESTING:BOOL=ON", (build / "CMakeCache.txt").read_text())
+        self.assertNotEqual(digest(artifact), off_hash)
+        self.assertEqual(payloads, {name: digest(Path(name)) for name in payloads})
+
+        def rejected_collection(message):
+            with patch.object(Campaign, "run", side_effect=AssertionError("collection executed a command")):
+                with self.assertRaisesRegex(ValueError, message):
+                    qualification.collect_qualification(self.root, [path])
+
+        rejected_collection("pending checkpoint work")
+        state = json.loads(state_path.read_text())
+        with OutputLease(self.root, build):
+            qualification.run_stage(Campaign(self.root, preset, "unrelated-repair", ["boundary"]),
+                state_path, state, "boundary", [self.python, "-c", "print('repaired')"],
+                inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10)
+        rejected_collection("full checkpoint membership is incomplete")
+        data, stamp = retained.read_bytes(), retained.stat()
+        on_hash = digest(artifact)
+        for mutation in ("replace", "remove"):
+            with self.subTest(retained_artifact=mutation):
+                try:
+                    retained.write_bytes(b"changed retained OFF archive") if mutation == "replace" else retained.unlink()
+                    rejected_collection("production execution payload missing or changed")
+                    self.assertEqual(digest(artifact), on_hash)
+                finally:
+                    retained.write_bytes(data)
+                    os.utime(retained, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        rejected_collection("full checkpoint membership is incomplete")
+        self.assertEqual(path.read_bytes(), original_record)
+        self.assertEqual(evidence, {name: digest(Path(name)) for name in evidence})
+        self.assertEqual(payloads, {name: digest(Path(name)) for name in payloads})
+
+        with OutputLease(self.root, build):
+            with self.assertRaises(subprocess.CalledProcessError):
+                qualification.run_stage(Campaign(self.root, preset, "later-production-failure", ["production"]),
+                    state_path, state, "production", [self.python, "-c", "raise SystemExit(9)"],
+                    inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10)
+        rejected_collection("pending checkpoint work")
+        self.assertEqual(json.loads(state_path.read_text())["production"]["status"], "failed")
+        self.assertEqual(path.read_bytes(), original_record)
+        self.assertEqual(evidence, {name: digest(Path(name)) for name in evidence})
 
     def compiled_project(self):
         self.native_project()
@@ -1341,7 +1597,7 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                    "scope": "real collector; incomplete lane membership remains rejected",
                    "original_receipts": originals, "tool_reads_per_collection": 2})
 
-    def test_collection_binds_actual_final_production_artifact(self):
+    def test_collection_rejects_production_without_execution_bound_manifest(self):
         artifact = self.build / "plugin.a"
         artifact.write_bytes(b"inspected final artifact")
         inputs = ["input.txt", artifact.relative_to(self.root).as_posix()]
@@ -1351,9 +1607,8 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                   "stages": {"production": stage}}
         path = self.root / "production-checkpoint.json"
         path.write_text(json.dumps(record))
-        artifact.write_bytes(b"different final artifact")
         with patch.object(qualification, "checkpoint_inputs", return_value=inputs):
-            with self.assertRaisesRegex(ValueError, "final inspected production artifacts changed"):
+            with self.assertRaisesRegex(ValueError, "production command does not declare retained execution evidence"):
                 qualification.collect_qualification(self.root, [path])
 
     def test_probe_artifact_ancestor_configuration_invalidates_checkpoint(self):
@@ -1507,6 +1762,25 @@ class MembershipTests(unittest.TestCase):
             self.assertIn('product|boundary" -LE gpu', text)
             self.assertIn(f"out/validation/{family}-release/quality/**/*.log", text)
         self.assertIn('product|boundary|tooling|corpus', (ROOT / ".github/workflows/tests-linux-host.yml").read_text())
+
+    def test_both_native_ci_callers_run_matching_debug_and_release_quality(self):
+        for family in ("linux", "windows-clang"):
+            with self.subTest(family=family):
+                path = ROOT / ".github/workflows" / ("tests-linux-host.yml" if family == "linux" else "tests-windows-host.yml")
+                text = path.read_text().replace("\\\n", " ").replace("`\n", " ")
+                lines = [" ".join(line.split()) for line in text.splitlines()]
+                commands = [line for line in lines if line.startswith("python -u scripts/check-quality.py ")]
+                self.assertEqual(len(commands), 2)
+                debug, release = commands
+                self.assertIn("--base ", debug)
+                self.assertIn(f"--preset {family}-debug", debug)
+                self.assertNotIn("--files", debug)
+                self.assertEqual(release,
+                                 f"python -u scripts/check-quality.py --files Cargo.toml --preset {family}-release --jobs 2")
+                for profile, command in (("debug", debug), ("release", release)):
+                    build = f"cmake --build --preset {family}-{profile}"
+                    self.assertIn(build, lines)
+                    self.assertLess(lines.index(build), lines.index(command))
 
     def test_malformed_checkpoint_selection_and_empty_collection_schedule_no_work(self):
         import verify

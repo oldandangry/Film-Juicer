@@ -90,6 +90,13 @@ retain this assessment as their G-Names and contextual G-Quality result.
 
 ## Required checks
 
+The test guide's [validation cadence](tests/README.md#validation-cadence) is the
+common rule for selecting checks during editing, family cutover and broader
+integration/release checkpoints. Documentation-only work needs whitespace,
+link/reference checks and contextual review. A focused handoff does not require
+complete aggregate qualification. The commands below describe available checks;
+they are not a list to run for every change.
+
 Supporting-code checks need Python 3.13 and the pinned tools installed explicitly:
 
 ```sh
@@ -113,8 +120,10 @@ components. Native formatting and tidy use LLVM 22; on Windows the qualified
 tools are under
 `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin`.
 The commands below expose individual checks. Use the `scripts/verify.py` workflow
-below for source freshness, output ownership and receipt-backed development or
-qualification. Manual setup explicitly enables tests before CTest:
+below within its supported development or checkpoint scope. Other focused work
+uses explicit owning CMake targets, named CTest groups, native quality selections
+and Cargo package/profile/feature commands. This complete-preset example is for a
+designated broad checkpoint; setup explicitly enables tests before CTest:
 
 ```sh
 cmake --preset linux-debug -DBUILD_TESTING=ON
@@ -255,9 +264,14 @@ already prepared testing-OFF Release tree. It binds the inspected final artifact
 The legacy sealed-build adapters remain unsupported.
 
 Checkpoint stages reuse original successful command records across campaign
-names when relevant inputs, configuration, tools and commands match. Renaming a
-campaign cannot clear a failed gate. Relevant repairs invalidate affected stages;
-unrelated successes remain reusable. A diagnosed rerun uses `--repeat-reason`.
+names when their current declared inputs, configuration, tools and commands match.
+Renaming a campaign cannot clear a failed gate. Broad discovery excludes the
+repository prose defined in the [validation cadence](tests/README.md#validation-cadence),
+so those documentation-only edits preserve reusable build and test evidence.
+Explicitly consumed files, packaged documents and quality checks retain their
+freshness requirements. Other declarations can still be broader than a repair's
+actual consumers; general input-closure separation is not yet implemented.
+Do not bypass that admission limit. A diagnosed rerun uses `--repeat-reason`.
 Checkpoint output prints exact membership and preserves outstanding failures.
 Each relevance group runs its exact host and GPU memberships in separate
 supervised CTest invocations under one build-tree lease and one common deadline.
@@ -273,9 +287,13 @@ Resolve and release acceptance remain separately required and are not establishe
 by this dispatcher implementation.
 
 The existing `execution.py` supervisor and build-tree lease cover preparation,
-analysis and test consumption. Unproved descendant drainage retains a blocked
-owner; inspect its process evidence before manual recovery. Do not remove a lock
-because its immediate parent exited.
+analysis and test consumption. A fresh preparation may recover a pending owner
+only under a healthy build-tree lease and with intact proof that every command
+from that attempt has drained. Recovery preserves the old pending marker and
+command receipts, then runs normal fresh preparation; it does not turn the
+interrupted attempt into a pass. Missing, damaged or legacy proof remains blocked,
+as do hard owner death and blocked leases. Do not remove a lock because its
+immediate parent exited.
 
 On Windows, supervised CMake configuration and builds identify `VCTIP.EXE` from
 the active `VCToolsInstallDir`. After a successful parent exit, the Job waits 30
@@ -285,18 +303,15 @@ after parent exit, and must drain before success. Parent failure or interruption
 keeps the ordinary failure and whole-Job drainage behavior. The process receipt
 records the selected executable, policy and any termination.
 
-During development, build the affected test targets and run the smallest owning
-CTest selection that proves the changed behavior. Exercise new compiled tests
-on both native platforms early, and check edited native sources before starting
-broader qualification. At final qualification, run each applicable unfiltered
-suite once for the stable candidate. Its JUnit report also supplies focused-domain
-evidence; see [the test guide](tests/README.md). Separate reference
-captures, transition checkpoints and production Release checks retain their
-own requirements.
-
-Complete any approved numerical-policy fixture replay and run its affected GPU
-reference/identity groups before the final unfiltered suite. Use that suite's
-JUnit for final domain evidence instead of repeating passing focused groups.
+Follow the [validation cadence](tests/README.md#validation-cadence) for the current
+change: owning checks while editing, prescribed affected family checks at cutover,
+and the complete matrix only at its designated integration/release checkpoint.
+Complete approved numerical-policy adoption and exercise every affected expectation
+reader, caller and GPU identity group before freezing for that checkpoint. Its
+JUnit reports supply final domain evidence; do not repeat passing groups solely
+for another receipt. Reference captures and new ABI/owner OFF gates retain their
+transition requirements. Collection remains subject to the current CLI's artifact
+and pending-owner checks; a focused result is not an aggregate pass.
 
 `--jobs` limits concurrent native and CUDA analysis commands; the default is 2
 and `--jobs 1` provides serial execution. Formatting, toolchain/CUDA preparation
@@ -344,9 +359,14 @@ checks and warnings-as-errors remain enabled.
 Changes to the runner or its tests also run the dispatcher regression tests
 and representative host, CUDA, and Rust checks.
 
-Any selected Rust change runs rustfmt and Clippy over both complete crates, with
-all targets in development and release profiles, followed by the Rust naming
-enforcement tests. The runner selects the repository's Clippy configuration.
+Outside the bounded development mode, selected Rust or qualification work runs
+workspace rustfmt and three Clippy checks in the preset's matching profile: core,
+plugin production and plugin `test-support`, each with all targets. Debug presets
+use the development profile; Release presets use `--release`. The four-preset
+matrix retains all 12 native platform/profile/package/feature combinations. Each
+native CI lane keeps its Debug quality selection and explicitly checks Release Rust
+with `--files Cargo.toml` after its Release build, including on documentation-only
+changes. The runner selects the repository's Clippy configuration.
 `Quality.RustNaming` also runs through CTest without a GPU; it compiles temporary
 workspace copies using the actual manifests and policy, verifies individual
 rejected identifiers by compiler diagnostic code and location, and exercises

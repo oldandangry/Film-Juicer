@@ -22,9 +22,11 @@ GROUPS = {"product", "boundary", "tooling", "corpus", "production"}
 
 
 def require_checkpoint(record):
+    # A completed selection can coexist with unrelated pending work. The collector
+    # checks current owners before admitting a complete aggregate.
     selected = set(record.get("selection", ()))
     expected = selected | ({"prepare", "quality"} if "product" in selected else set())
-    if (record.get("mode") != "checkpoint" or record.get("status") != "passed"
+    if (record.get("mode") != "checkpoint" or record.get("status") not in {"passed", "incomplete"}
             or record.get("scope_status") != "passed" or not record.get("reason")
             or not selected or selected - GROUPS or set(record.get("required", ())) != expected
             or set(record.get("stages", {})) != expected
@@ -150,8 +152,8 @@ def production_manifest_identity(receipt, *, root, resolve=Path):
     return resolve(command[command.index("--artifacts") + 1]) / "production.json", identities[0]
 
 
-def production_payloads(manifest, expected_manifest_sha256, *, resolve=Path, retained=None):
-    """Recheck the named OFF execution files, never backfill manifest-only proof."""
+def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, resolve=Path, retained=None):
+    """Recheck retained OFF execution files independently of the current ON tree."""
     manifest = resolve(str(manifest))
     if not manifest.is_file() or digest(manifest) != expected_manifest_sha256:
         raise ValueError("production manifest execution identity changed")
@@ -171,6 +173,24 @@ def production_payloads(manifest, expected_manifest_sha256, *, resolve=Path, ret
         if not path.is_file() or digest(path) != checksum:
             raise ValueError("production execution payload missing or changed: " + key)
         expected[key] = checksum
+
+    build = root / "out/build" / document["preset"]
+    declared = {str(resolve(str(root / name))): checksum for name, checksum in inputs.items()
+                if name.startswith("out/build/")}
+    copies = {str(resolve(name)): row for name, row in document.get("build_inputs", {}).items()}
+    if (not declared or set(copies) != set(declared)
+            or str(build / "CMakeCache.txt") not in declared
+            or not any(Path(name).suffix.lower() in {".a", ".lib", ".ofx", ".pdb"} for name in declared)):
+        raise ValueError("production retained build-input membership is incomplete; fresh OFF execution required")
+    for name, checksum in declared.items():
+        row = copies[name]
+        destination = manifest.parent / "build" / Path(name).relative_to(build)
+        if resolve(row["file"]) != destination or row["sha256"] != checksum:
+            raise ValueError("production retained build-input execution identities disagree")
+        admit(row["file"], checksum)
+    cache = manifest.parent / "build/CMakeCache.txt"
+    if document.get("build_testing") != "OFF" or not re.search(r"^BUILD_TESTING:BOOL=OFF$", cache.read_text(), re.M):
+        raise ValueError("production retained configuration is not testing-OFF")
 
     for row in probes:
         name = row["name"]
@@ -222,6 +242,7 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
           timeout, semantic_command=None, action=None, validate=None, payloads=(),
           dependencies=(), repeat_reason="", refresh_inputs=None):
     """Reuse the latest gate across attempt names; pending work is never a pass."""
+    campaign.check_run_request(name, command, inputs=inputs, timeout=timeout)
     identity = {"command": list(semantic_command or command),
                 "inputs": snapshot(campaign.root, inputs), "tools": tool_snapshot(tools, allow_missing=True), "tool_paths": list(tools),
                 "environment": hashlib.sha256(json.dumps({k: v for k, v in environment.items()
@@ -240,7 +261,9 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
                 check_receipt_payloads(campaign.root, path)
             path = paths[0]
             if name == "production" and payloads:
-                production_payloads(*production_manifest_identity(path, root=campaign.root), retained=previous.get("payloads", {}))
+                production_payloads(*production_manifest_identity(path, root=campaign.root),
+                                    root=campaign.root, inputs=previous["identity"]["inputs"],
+                                    retained=previous.get("payloads", {}))
             if any(digest(Path(p)) != value for p, value in previous.get("payloads", {}).items()):
                 raise ValueError("checkpoint result payload changed")
             if validate:
@@ -273,7 +296,8 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
                 or tool_snapshot(tools, allow_missing=True) != identity["tools"]):
             raise ValueError("checkpoint relevant inputs changed")
         identity["inputs"] = snapshot(campaign.root, refresh_inputs()) if refresh_inputs else actual
-        retained = (production_payloads(*production_manifest_identity(paths[0], root=campaign.root))
+        retained = (production_payloads(*production_manifest_identity(paths[0], root=campaign.root),
+                                       root=campaign.root, inputs=identity["inputs"])
                     if name == "production" and payloads else {str(p): digest(Path(p)) for p in payloads})
         result = {"status": "passed", "identity": identity, "receipt": str(paths[0]),
                   "sha256": digest(paths[0]),
@@ -288,10 +312,14 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
 
 
 def checkpoint_inputs(root, build, group, *, source_files=None):
+    from verify import is_documentation, source_snapshot
+
     paths = {root / name for name in ("CMakeLists.txt", "CMakePresets.json", "tests/CMakeLists.txt",
              "scripts/qualification.py", "scripts/execution.py", "scripts/process_tree.py")}
     paths.add(build / "CMakeCache.txt")
-    if group != "production":
+    if group == "production":
+        paths.update(build / name for name in ("build.ninja", "compile_commands.json", "cargo-features.txt"))
+    else:
         paths.update(registration_files(build, allow_missing=True))
     if group in {"boundary", "tooling"}:
         paths.update(root / name for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "clippy.toml", "rustfmt.toml", "cmake/JuicerRust.cmake"))
@@ -313,10 +341,11 @@ def checkpoint_inputs(root, build, group, *, source_files=None):
                 paths.update(p for p in (root / directory).rglob("*.py") if "__pycache__" not in p.parts)
             paths.add(root / "tests/ffi/run_rust_build_contract.py")
     else:
-        from verify import source_snapshot
         paths.update(root / name for name in (source_files if source_files is not None else source_snapshot(root)))
         for directory in ("Resources", "tests"):
-            paths.update(p for p in (root / directory).rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+            paths.update(p for p in (root / directory).rglob("*")
+                         if p.is_file() and "__pycache__" not in p.parts
+                         and not is_documentation(p.relative_to(root).as_posix()))
     return sorted(p.relative_to(root).as_posix() for p in paths if p.is_file())
 
 
@@ -643,11 +672,8 @@ def _collect_owned(root, paths):
                         or digest(root / command["output"]) != command["output_sha256"]):
                     raise ValueError("checkpoint terminal evidence is invalid")
             if name == "production":
-                artifacts = {path: checksum for path, checksum in result["identity"]["inputs"].items()
-                             if Path(path).suffix.lower() in {".a", ".lib", ".ofx", ".pdb"}}
-                if not artifacts or any(digest(root / path) != checksum for path, checksum in artifacts.items()):
-                    raise ValueError("final inspected production artifacts changed")
                 production_payloads(*production_manifest_identity(raw_paths[0], root=root, resolve=local),
+                                    root=root, inputs=result["identity"]["inputs"],
                                     resolve=local, retained=result.get("payloads", {}))
             for path, expected in result.get("payloads", {}).items():
                 if digest(local(path)) != expected:

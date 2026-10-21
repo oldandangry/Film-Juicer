@@ -18,6 +18,117 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class SelectionTests(unittest.TestCase):
+    def test_documentation_changes_preserve_observation_and_initial_pending(self):
+        from execution import snapshot
+        from verify import dirty_paths, load_development_state
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            documents = [
+                "README.md", "CONTRIBUTING.md", "docs/guide.md", "docs/nested/notes.md",
+                "tests/README.md", "tests/route/guide.md", "tests/ffi/fixtures/README.md",
+                "tests/ffi/fixtures/native-README.md", "tests/print/illuminant-fixtures/README.md",
+                "tests/print/illuminant-fixtures/nested/capture-README.md",
+            ]
+            for name in [*documents, "src/ScanRoute.cpp"]:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("original\n", encoding="utf-8")
+            (root / ".gitignore").write_text("out/\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            commit = ["git", "-C", str(root), "-c", "user.name=Control",
+                      "-c", "user.email=control@example.invalid", "-c", "commit.gpgsign=false",
+                      "commit", "-qm"]
+            subprocess.run([*commit, "initial"], check=True)
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"])
+            before = source_snapshot(root)
+            self.assertTrue(set(documents).isdisjoint(before))
+            consumed = snapshot(root, ["README.md"])
+            for name in documents:
+                (root / name).write_text("changed prose\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "CONTRIBUTING.md"], check=True)
+            (root / "CONTRIBUTING.md").write_text("original\n", encoding="utf-8")
+            (root / "docs/guide.md").unlink()
+            (root / "tests/ffi/fixtures/README.md").unlink()
+            for name in ("docs/new.md", "tests/route/new.md", "tests/ffi/fixtures/new-README.md"):
+                (root / name).write_text("new prose\n", encoding="utf-8")
+            self.assertIn("CONTRIBUTING.md", dirty_paths(root))
+            self.assertNotEqual(snapshot(root, ["README.md"]), consumed)
+            self.assertEqual(source_snapshot(root), before)
+            self.assertEqual(edit_selection(source_snapshot(root), {"observed": before, "pending": []}), [])
+
+            build = root / "out/build/linux-debug"
+            initial = load_development_state(root, build, None, ["src/ScanRoute.cpp"])
+            self.assertEqual(initial["pending"], [])
+            self.assertEqual(initial["observed"], before)
+            self.assertNotIn("scope_status", initial)
+            legacy = root / "out/legacy.json"
+            legacy.parent.mkdir()
+            old_pending = ["docs/prior-failure.md", "src/unresolved.h"]
+            legacy.write_text(json.dumps({"mode": "development", "preset": build.name,
+                                          "protocol": "legacy", "pending": old_pending}), encoding="utf-8")
+            resumed = load_development_state(root, build, legacy, ["src/ScanRoute.cpp"])
+            self.assertEqual(resumed["pending"], old_pending)
+            self.assertEqual(resumed["observed"], before)
+            self.assertNotIn("scope_status", resumed)
+
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run([*commit, "documentation only"], check=True)
+            self.assertNotEqual(subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"]), head)
+            self.assertEqual(source_snapshot(root), before)
+            self.assertEqual(load_development_state(root, build, None, ["src/ScanRoute.cpp"])["pending"], [])
+
+    def test_existing_observation_drops_prose_without_clearing_pending_failures(self):
+        from build_evidence import SCOPED_PROTOCOL
+
+        previous = {
+            "protocol": SCOPED_PROTOCOL,
+            "observed": {"README.md": "old prose", "docs/guide.md": "old prose",
+                         "src/ScanRoute.cpp": "unchanged"},
+            "pending": [],
+        }
+        current = {"src/ScanRoute.cpp": "unchanged"}
+        self.assertEqual(edit_selection(current, previous), [])
+        changed = {"src/ScanRoute.cpp": "edited"}
+        self.assertEqual(edit_selection(changed, previous), ["src/ScanRoute.cpp"])
+        previous["pending"] = ["README.md", "docs/guide.md", "src/unresolved.h"]
+        self.assertEqual(edit_selection(current, previous), previous["pending"])
+        self.assertEqual(edit_selection(changed, previous),
+                         ["README.md", "docs/guide.md", "src/ScanRoute.cpp", "src/unresolved.h"])
+
+    def test_source_configuration_runtime_and_fixture_markdown_remain_observed(self):
+        from verify import load_development_state
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            names = [
+                "src/ScanRoute.cpp", "src/README.md", "rust/film-juicer-core/README.md",
+                "Resources/runtime.bin", "Resources/README.md", "third_party/README.md",
+                "config/README.md", "unknown.md", "CMakeLists.txt", "Cargo.toml",
+                "tests/ffi/fixtures/expected.md", "tests/print/illuminant-fixtures/expected.md",
+                "tests/print/illuminant-fixtures/nested/contract.md",
+            ]
+            for name in names:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("original\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Control",
+                            "-c", "user.email=control@example.invalid", "-c", "commit.gpgsign=false",
+                            "commit", "-qm", "initial"], check=True)
+            before = source_snapshot(root)
+            for name in names:
+                with self.subTest(path=name):
+                    path = root / name
+                    path.write_text("changed relevant input\n", encoding="utf-8")
+                    current = source_snapshot(root)
+                    self.assertEqual(edit_selection(current, {"observed": before, "pending": []}), [name])
+                    initial = load_development_state(root, root / "out/build/linux-debug", None, [])
+                    self.assertEqual(initial["pending"], [name])
+                    path.write_text("original\n", encoding="utf-8")
+
     def test_unrelated_dirty_payloads_stay_pending_without_content_reads(self):
         import os
         import verify
@@ -449,8 +560,8 @@ class SelectionTests(unittest.TestCase):
         with patch.object(build_evidence, "development_selection") as selection, patch.object(build_evidence, "preparation_inventory") as inventory:
             for preset, targets in [("linux-debug", ["FilmJuicer", "JuicerRouteBridgeTests"]), ("linux-release", ["JuicerRouteBridgeTests"])]:
                 with self.assertRaisesRegex(ValueError, "legacy sealed-build"):
-                    build_evidence._prepare_build_owned(campaign, "prepare", source=ROOT, build=ROOT / "out/build" / preset,
-                                                      inputs=["src/ScanRoute.h"], timeout=1, targets=targets)
+                    build_evidence.prepare_build(campaign, "prepare", source=ROOT, build=ROOT / "out/build" / preset,
+                                                 inputs=["src/ScanRoute.h"], timeout=1, targets=targets)
             with self.assertRaisesRegex(ValueError, "legacy sealed-build"):
                 build_evidence.run_ctest(campaign, "tests", build=ROOT / "out/build/linux-debug", prepared=Path("unused"),
                                          inputs=["src/ScanRoute.h"], timeout=1, tests=["Route.Host.Bridge", "Ffi.Host.InputColorPreparation"])

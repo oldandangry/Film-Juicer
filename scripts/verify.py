@@ -46,6 +46,21 @@ def dirty_paths(root, staged=None):
     return set(staged) | {name for command in commands for name in subprocess.check_output(command, cwd=root).decode().split("\0") if name}
 
 
+def is_documentation(name):
+    """Identify repository prose for broad discovery, never declared inputs."""
+    path = Path(name)
+    if path.suffix != ".md":
+        return False
+    if len(path.parts) == 1:
+        return name in {"README.md", "CONTRIBUTING.md"}
+    if path.parts[0] == "docs":
+        return True
+    if path.parts[0] != "tests":
+        return False
+    fixture = any(part == "fixtures" or part.endswith("-fixtures") for part in path.parts[:-1])
+    return not fixture or path.name == "README.md" or path.name.endswith("-README.md")
+
+
 def source_snapshot(root):
     """Observe owned source/configuration content without reading the fixture corpus."""
     names = subprocess.check_output(
@@ -56,7 +71,8 @@ def source_snapshot(root):
     names += ["rust/film-juicer-plugin/src/cuda/sys.rs", "src/GeneratedColorSpaces.cpp", "src/GeneratedColorSpaces.h"]
     observed = {}
     for name in sorted(set(names) | dirty):
-        if not name or name.startswith((".juicer-local/", "out/")) or "__pycache__" in Path(name).parts:
+        if (not name or name.startswith((".juicer-local/", "out/"))
+                or "__pycache__" in Path(name).parts or is_documentation(name)):
             continue
         path = root / name
         payload = (name.startswith(("Resources/", "external/")) or "/fixtures/" in name
@@ -77,7 +93,9 @@ def source_snapshot(root):
 
 def edit_selection(current, previous, explicit=()):
     old = previous["observed"]
-    changed = {name for name in old.keys() | current.keys() if old.get(name) != current.get(name) or (name in old) != (name in current)}
+    changed = {name for name in old.keys() | current.keys()
+               if not is_documentation(name)
+               and (old.get(name) != current.get(name) or (name in old) != (name in current))}
     return sorted(set(previous.get("pending", ())) | changed)
 
 
@@ -180,14 +198,17 @@ def load_development_state(root, build, previous_path, explicit):
     if not previous_path:
         current = source_snapshot(root)
         # Observation alone is never a successful verification baseline.
-        return {"observed": current, "pending": sorted(dirty_paths(root)), "established": True}
+        return {"observed": current,
+                "pending": sorted(name for name in dirty_paths(root) if not is_documentation(name)),
+                "established": True}
     previous = json.loads(Path(previous_path).read_text(encoding="utf-8"))
     if previous.get("preset") != build.name or previous.get("mode") not in {"development", "preparation", "qualification"}:
         raise ValueError("previous receipt must be development evidence for this preset")
     if previous.get("protocol") != SCOPED_PROTOCOL:
         current = source_snapshot(root)
         # Retain failures, but never import a legacy preparation/qualification pass.
-        return {"observed": current, "pending": sorted(set(previous.get("pending", ())) | dirty_paths(root)), "established": True}
+        pending = set(previous.get("pending", ())) | {name for name in dirty_paths(root) if not is_documentation(name)}
+        return {"observed": current, "pending": sorted(pending), "established": True}
     return previous
 
 
