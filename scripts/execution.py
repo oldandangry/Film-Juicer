@@ -114,7 +114,7 @@ def rustc_command(
 
 
 def tool_snapshot(paths: Sequence[str], *, allow_missing=False) -> dict[str, str | None]:
-    """Explicit tools/configuration files; checkpoints can bind absent configs."""
+    """Hash each resolved file once per call; checkpoints can bind absent configs."""
     result = {}
     for name in sorted(set(paths)):
         path = Path(name).resolve(strict=not allow_missing)
@@ -122,7 +122,7 @@ def tool_snapshot(paths: Sequence[str], *, allow_missing=False) -> dict[str, str
             result[str(path)] = None
         elif not path.is_file():
             raise ValueError("tool/configuration input is not a file: " + str(path))
-        else:
+        elif result.get(str(path)) is None:
             result[str(path)] = digest(path)
     return result
 

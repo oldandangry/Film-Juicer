@@ -121,6 +121,7 @@ regression fixtures when each change is authorized.
 | 2 — runtime-only preparation discovery | Implemented: omit explicit registered runtime test files only when existing build/configuration ownership proves they are outside preparation. | Direct preparation inputs remain authoritative. Build, include, generated, Cargo, tool, copied/staged and artifact requirements stay fresh; unknown dependencies remain conservative. Runtime edits require fresh affected execution. Admission, refresh and collection share preparation-specific membership; original receipts retain their requirements. |
 | 2 — included configure inputs | Implemented, independently reviewed and owner-authorized for publication: scan effective regeneration inputs regardless of suffix, limit bootstrap exceptions to exact reviewed paths/bytes, and check newly admitted inputs against pre-preparation observations. | Compiler-free stale-reuse reproductions are fixed; 22 focused controls pass on each native and four final independent Linux controls pass. Original receipt/explicit-input requirements and genuine runtime-only reuse remain intact. No demonstrated Film-Juicer product regression, broader qualification or speedup claim. |
 | 3 — matching-profile Clippy | Implemented: run the matching profile once per preset while retaining both platforms, packages and plug-in feature forms across the aggregate. Both native CI lanes now explicitly select Release Rust after the Release build. | Four full preset invocations dispatch 12 Clippy analyses instead of 24: core, plugin production and plugin test-support in each matching context. Existing CI previously obtained both profiles through Debug-only calls; its complete Rust coverage remains 12 analyses across the two native lanes. Elapsed savings remain unmeasured. Boundary/privacy probes remain distinct. |
+| 3 — resolved tool hashes within one observation | Implemented, independently reviewed and owner-accepted for publication in draft PR #74: `tool_snapshot` reuses a resolved output key's first successful hash within that call. | Both native diagnostics demonstrate removable duplication. Every spelling still resolves and passes file checks; admission, pre/post-command and terminal collection reads remain separate. Focused freshness controls pass; single-pair timings below do not establish whole-task savings. |
 | 3 — necessary domain batching | Batch adjacent cases only within an already-needed domain extension, or after demonstrating payback from named remaining consumers. | Preserve complete inputs, individual results, process isolation where needed, membership and drainage. A standalone 0.5–1.5-day H1 patch for roughly two minutes per cohort is no longer the first code project. |
 | 4 — ordinary closeout | Retire eligible scratch and obsolete helpers under section 7. | Storage/navigation benefit only; no compiler-speed claim. No disposal accompanies this update. |
 
@@ -435,6 +436,65 @@ The owner accepted this bounded scheduling change on **22 October 2026** and
 authorized publication in existing [draft PR #73](https://github.com/oldandangry/Film-Juicer/pull/73).
 Acceptance preserves the historical failures and evidence requirements; it does
 not establish a hosted pass or broader product qualification.
+
+The separately authorized **22 October tool-hashing follow-up** measured the same
+two retained-production/runtime-collection methods recovered from the original
+profile. In the current Windows baseline, 19 collection observations repeated
+171 hashes of already-resolved keys (6.55 GB, 5.192 seconds). Lexical case variants
+such as `cmake.EXE`/`cmake.exe` resolved to the same existing output key. Linux
+also repeated resolved symlink targets within individual observations. The existing
+`tool_snapshot` result now supplies reuse only within that invocation; each spelling
+still resolves and passes absence/file checks, and an absent configuration is not
+a cached hash. Distinct hardlink paths retain separate reads. No call site, receipt
+schema, digest algorithm, freshness boundary or original requirement changes.
+
+| Same two-case diagnostic | Windows before → after | Linux before → after |
+| --- | --- | --- |
+| Observation count | 254 → 254 | 254 → 254 |
+| Tool digest calls | 5,154 → 4,983 | 5,524 → 5,112 |
+| Repeated resolved keys within an observation | 171 → 0 | 412 → 0 |
+| Tool digest seconds | 37.383 → 33.044 | 37.732 → 30.175 |
+| Whole diagnostic elapsed seconds | 99.961 → 98.078 | 212.979 → 210.333 |
+
+Windows collection digest time alone fell from 12.614 to 7.900 seconds; its 19
+observations remain intact. These are single instrumented pairs with warm native
+tools and fresh miniature fixtures; native runs overlapped in both phases and
+their exact overlap was not controlled. Component savings and the smaller observed
+elapsed reductions do not establish repeatable whole-task improvement.
+
+Six deterministic controls were added through existing execution-test helpers;
+the alias control fails on the original code on both natives. Final focused
+freshness selections pass **15/15 Windows (10.671 s)** and **14/14 Linux (18.840 s)**,
+zero failures/skips, plus 2/2 per native in each comparison phase. Ruff 0.15.22 and
+contextual naming/design/ownership review pass. The [bounded record](../.juicer-local/evidence/tool-hashing-2026-10-22/README.md)
+links exact selections, per-file attribution, source hashes and unchanged-boundary
+evidence. Product builds, broad matrices and additional optimization are outside
+this follow-up. Existing migration/product acceptance limits remain intact.
+
+The user-requested **GPT-6.1 Sol xHigh independent review** returned **APPROVE,
+with no actionable findings** on freshness, regression coverage, contextual naming,
+design and ownership. Its separate checks passed 14/14 Linux in 18.337 s and
+15/15 Windows in 10.015 s, plus within-call mutation and attribution/source-identity
+checks. The [review report](../.juicer-local/reviews/Tool-Hashing-Independent-Implementation-Review-2026-10-22.md)
+documents first-successful-hash reuse within a non-atomic observation and fresh
+reads across separate boundaries. On **22 October 2026**, the owner accepted this
+bounded change and authorized docs/status, commit and publication in existing
+[draft PR #74](https://github.com/oldandangry/Film-Juicer/pull/74), without merge or
+scope expansion. The [acceptance/publication record](../.juicer-local/evidence/tool-hashing-2026-10-22/owner-acceptance/README.md)
+binds that instruction, reviewed source identities and Git/PR readback. Only
+acceptance prose changes after review; code/test bytes and original evidence stay
+unchanged. This accepts the bounded harness change, not broader qualification or
+repeatable whole-task savings. Publication prose uses whitespace/link/contextual
+checks without repeating native suites. New-head hosted results remain separate.
+
+At author readback, hosted checks referred to published `dfed9e5`:
+supporting lint passed, Linux host checks were still running, and
+[Windows host checks failed](https://github.com/oldandangry/Film-Juicer/actions/runs/39830515682/job/120005113481)
+in `Quality.PreparationRenewal`'s unchanged-artifact assertion at
+`test_checkpoint.py:1415` (147/148 groups passed; `Quality.Checkpoint` passed).
+Both host workflows at that prior head subsequently failed; supporting lint
+passed. Those historical results are preserved, including the unresolved Windows
+failure above. Neither failure is repaired or retried by this publication.
 
 General compilation/analysis/runtime identity separation beyond this boundary remains **planned and unimplemented**.
 Current owners may conservatively reject reuse or require rebuilding. Preserve
