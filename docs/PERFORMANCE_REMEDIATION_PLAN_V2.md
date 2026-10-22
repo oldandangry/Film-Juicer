@@ -496,6 +496,60 @@ Both host workflows at that prior head subsequently failed; supporting lint
 passed. Those historical results are preserved, including the unresolved Windows
 failure above. Neither failure is repaired or retried by this publication.
 
+**Bounded preparation-renewal correction, owner-accepted — 22 October 2026.**
+Both native failures were reproduced before implementation changes. A required
+configure refresh rewrote `verification-config-outputs.json` with new receipt and
+trace paths despite identical generated-output declarations and raw trace facts.
+That sole configuration difference caused broad invalidation. In Windows the
+unnecessary repair-0 relink changed the bound `behavior.exe`; in Linux three
+compiles, one archive and one link reproduced identical bytes but violated the
+no-build-work guarantee. Neither failure was a timeout or a cleanup effect.
+
+The configure owner now keeps a registry's exact bytes only when fresh output/trace
+facts match and its original raw evidence validates. Fresh configure evidence
+remains separate; changed configuration, newly discovered inputs and unproved
+registry evidence retain their owning paths. The replay's former one-command
+premise conflicts with required opaque compiler-module refresh: it now requires
+exactly configure plus a no-op owning build, retaining byte stability, zero
+invalidation, original receipts, distinct OFF evidence and no downstream reruns.
+
+The initial candidate's native replays passed in Windows 143.61/300 s and
+Linux/WSL 470.08/600 s, with three new and 12 nearest controls per native across
+focused selections. Independent review then found one P2: empty or incomplete
+original process receipts could pass a subset comparison, while non-object
+receipts raised after successful configure and left preparation pending.
+
+The correction requires object-shaped original evidence, the sealed producer's
+complete process facts, successful command completion and drained process
+completion. Invalid evidence receives the existing validation failure, allowing
+the completed fresh configure to publish its own registry. Four maintained tests
+cover empty, drained-only subset, omitted creation identity and non-object
+receipts; all reproduce the old failure on both natives. The corrected candidate
+passes nine focused checks per native, plus full `Quality.PreparationRenewal`
+replays in Windows **145.53/300 s** and Linux/WSL **443.74/600 s**. All three warm
+trials retain exact artifact bytes, zero invalidation and no downstream reruns.
+
+The requested **GPT-6.1 Sol xHigh independent re-review** returns **APPROVE, with
+no remaining correctness, regression, naming/design or ownership findings**.
+Separate additional-fault controls and final intact no-work renewal pass on both
+natives. The [re-review report](../.juicer-local/reviews/Preparation-Renewal-Process-Proof-Correction-Independent-ReReview-2026-10-22.md)
+binds the frozen six-file candidate and distinguishes independent execution from
+audited author results. The original REQUEST CHANGES report remains unchanged.
+The [diagnosis and evidence record](../.juicer-local/evidence/preparation-renewal-2026-10-22/README.md)
+preserves original failures and the diagnosed cold-discovery test correction.
+
+On **22 October 2026**, the owner accepted the reviewed fix and authorized
+docs/status, commit and publication in existing
+[draft PR #74](https://github.com/oldandangry/Film-Juicer/pull/74), without merge or
+scope expansion. The [acceptance/publication record](../.juicer-local/evidence/preparation-renewal-2026-10-22/owner-acceptance/README.md)
+binds that instruction and exact source/Git/PR identities. Only publication prose
+changes after re-review; implementation/test bytes and original evidence remain
+unchanged. Whitespace, documentation-link and contextual prose checks cover that
+delta without repeating native suites. Prior-head `1bd336d` host CI fails the same
+replay assertions and supporting lint passes; those historical results remain
+separate from new-head hosted results. No product build or broad qualification
+accompanies publication. Existing migration dispositions are unchanged.
+
 General compilation/analysis/runtime identity separation beyond this boundary remains **planned and unimplemented**.
 Current owners may conservatively reject reuse or require rebuilding. Preserve
 that disposition, state the missing proof and use the required owning path.

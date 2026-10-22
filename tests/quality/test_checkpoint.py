@@ -1435,8 +1435,14 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                        "rust_recovery": "not applicable; no Rust fixture", "cold_and_warm_commands": calls}
             for trial in warm:
                 self.assertFalse(trial["deleted"])
-                self.assertEqual([c["stage"] for c in trial["commands"]], ["prepare"],
+                # Compiler/linker modules keep configure opaque. Require that
+                # refresh plus one no-op build, with no downstream work.
+                self.assertEqual([c["stage"] for c in trial["commands"]], ["prepare", "prepare"],
                                  "proof renewal repeated unchanged quality/product work")
+                configure, build = [c["command"] for c in trial["commands"]]
+                self.assertEqual(configure[:4], ["cmake", "--preset", self.preset, "-DBUILD_TESTING=ON"])
+                self.assertIn("--trace-expand", configure[4:])
+                self.assertEqual(build, ["cmake", "--build", str(self.build), "--parallel", "2", "--target", "all"])
             write_json(self.root / "out/validation" / self.preset / "replay.json", summary)
             progress.update(complete=True, seconds=time.monotonic() - started)
             write_json(progress_path, progress)

@@ -126,6 +126,16 @@ locations or CMake roots keep the conservative scan; source-discovered CMake
 files and original raw-byte receipt requirements retain their existing treatment.
 Projects without these unresolved consumers retain runtime-only preparation reuse.
 
+Every required configure refresh retains fresh command, trace and process evidence.
+When its generated-output declarations and exact redacted-trace hash match the
+existing registry, the producer validates the original registry evidence and keeps
+its raw bytes. Changed declarations, changed trace facts or unproved evidence
+receive a fresh registry. Receipt-path changes alone therefore do not invalidate
+unchanged artifacts; other configuration and dependency changes remain bound.
+The miniature renewal replay requires exactly one configure refresh and one no-op
+build per warm repair because its compiler/linker modules are opaque. It still
+requires exact artifact bytes, zero invalidation and no repeated downstream work.
+
 The same discovery serves preparation admission, refreshed membership and
 collection. Fresh preparation observes initially excluded candidates before
 commands and checks any newly admitted source input against that observation
