@@ -56,10 +56,11 @@ add_custom_target(juicer_rust_core_tests ALL
     COMMENT "Preparing core Rust test executables (${JUICER_RUST_CARGO_PROFILE})"
     VERBATIM
     USES_TERMINAL)
-add_test(NAME Rust.Core COMMAND ${JUICER_RUST_CORE_TEST_COMMAND})
+add_test(NAME Rust.Core COMMAND ${JUICER_RUST_CORE_TEST_COMMAND} -- --test-threads=2)
 set_tests_properties(Rust.Core PROPERTIES
     LABELS "host"
     TIMEOUT 120
+    PROCESSORS 2
     RESOURCE_LOCK juicer_cargo
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 
@@ -472,7 +473,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         endif()
         add_test(NAME "Quality.${verification_group}"
             COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
-                -s "${CMAKE_CURRENT_SOURCE_DIR}/quality" -p "${verification_pattern}" -f -v)
+                -s "${CMAKE_CURRENT_SOURCE_DIR}/quality" -p "${verification_pattern}" -f -v --durations 10)
         if(verification_group STREQUAL "BuildEvidence")
             set(verification_timeout 1800)
         elseif(verification_group STREQUAL "PreparationRenewal" AND CMAKE_HOST_WIN32)
@@ -482,6 +483,10 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         endif()
         set_tests_properties("Quality.${verification_group}" PROPERTIES LABELS "host" TIMEOUT ${verification_timeout}
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/verification-controls")
+        if(verification_group STREQUAL "Checkpoint" AND CMAKE_HOST_WIN32)
+            # Full tool-byte validation is I/O heavy; avoid overlap at the four-worker preset limit.
+            set_tests_properties(Quality.Checkpoint PROPERTIES PROCESSORS 4)
+        endif()
     endforeach()
 endif()
 

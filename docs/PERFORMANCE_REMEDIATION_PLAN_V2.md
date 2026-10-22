@@ -298,6 +298,24 @@ current product probes stay conservative and existing product qualification and
 migration-stage limitations remain. Acceptance prose uses whitespace/link and
 contextual checks without restarting native suites or product builds.
 
+The 22 October Windows host follow-up changes CTest scheduling only. Two native
+checkpoint cases spent 38.7 of 91.7 profiled seconds hashing inputs/tools; these
+fresh reads remain required. Windows `Quality.Checkpoint` reserves four worker
+slots, avoiding overlap at the default four-slot preset limit without increasing
+its 600-second deadline. `Rust.Core` reserves two slots and limits independent
+libtest cases to two workers; tests' internal threads and 15-second race waits
+are unchanged. Verification controls report their ten slowest cases. The earlier
+checkpoint timeout and the newer noise-cache channel timeouts remain separate
+failures; a later pass alone is not proof of an exclusive timing cause. The
+[follow-up record](../out/validation/linux-debug/checkpoint-budget-2026-10-22/README.md)
+retains complete native checkpoint-family results and both-profile Rust.Core
+results on both natives. Hosted verification of the candidate remains pending.
+
+The owner accepted this bounded scheduling change on **22 October 2026** and
+authorized publication in existing [draft PR #73](https://github.com/oldandangry/Film-Juicer/pull/73).
+Acceptance preserves the historical failures and evidence requirements; it does
+not establish a hosted pass or broader product qualification.
+
 General compilation/analysis/runtime identity separation beyond this boundary remains **planned and unimplemented**.
 Current owners may conservatively reject reuse or require rebuilding. Preserve
 that disposition, state the missing proof and use the required owning path.

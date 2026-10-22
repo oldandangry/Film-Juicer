@@ -265,6 +265,14 @@ alone. Keep GPU suites from separate Windows/WSL invocations serialized on a
 shared device; CTest resource locks apply within one invocation. Override the
 worker count with `--parallel <count>` when the machine needs a smaller limit.
 
+`Rust.Core` uses two libtest workers and reserves two CTest slots. Tests that
+spawn threads still exercise their internal concurrent publication and lifetime
+witnesses. On Windows, `Quality.Checkpoint` reserves four slots so its repeated
+tool-byte validation runs alone at the preset's four-worker limit. A larger
+explicit worker count can allow overlap again. Verification control logs include
+the ten slowest unittest cases. These scheduling choices preserve complete test
+membership, tool/input checks and the existing deadlines.
+
 `Ffi.Host.InputColorPreparation` uses two worker slots. Its admission hooks and
 asset caches belong to its process, and its resources and parity fixtures are
 read-only. It can overlap other eligible groups after the full build completes.

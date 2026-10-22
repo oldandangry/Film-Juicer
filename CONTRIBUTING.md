@@ -133,7 +133,13 @@ ctest --preset linux-debug --output-on-failure
 ```
 
 Use the corresponding Windows or Release preset when that is the affected
-target. `--files <paths...>` is the bounded package form; `--all-owned` is an
+target. Keep the [CTest worker accounting](tests/README.md#build-and-run) when
+reproducing CI timing failures: the default is four slots, `Rust.Core` reserves
+two and uses two libtest workers, and Windows `Quality.Checkpoint` reserves four.
+Internal race witnesses and all freshness checks remain active. Preserve the
+first failed log and use the reported slow-case timings before changing setup or
+scheduling; do not raise a deadline to hide contention.
+`--files <paths...>` is the bounded package form; `--all-owned` is an
 explicit audit. The dispatcher writes logs only under
 `out/validation/<preset>/quality/runs/<run-id>/`, leaves source unchanged, and treats missing
 tools or compiler/lint failures as incomplete work. Each fresh directory has a
