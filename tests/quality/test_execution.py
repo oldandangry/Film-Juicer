@@ -125,6 +125,35 @@ class CampaignTests(unittest.TestCase):
             )
         self.assertEqual(self.campaign.report()["stages"]["quality"], "failed")
 
+    def test_tool_mutation_during_a_command_cannot_pass(self):
+        tool = self.root / "tool.txt"
+        tool.write_text("first", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "inputs changed"):
+            self.execute(
+                "import os; from pathlib import Path; p=Path('tool.txt'); "
+                "s=p.stat(); p.write_text('other', encoding='utf-8'); "
+                "os.utime(p, ns=(s.st_atime_ns, s.st_mtime_ns))",
+                tools=[str(tool), str(self.root) + "/./tool.txt"],
+            )
+        self.assertEqual(self.campaign.report()["stages"]["quality"], "failed")
+
+    def test_changed_prepared_tool_is_rejected_before_launch(self):
+        tool = self.root / "tool.txt"
+        tool.write_text("first", encoding="utf-8")
+        tools = [str(tool), str(self.root) + "/./tool.txt"]
+        prepared = campaign.tool_snapshot(tools)
+        stamp = tool.stat()
+        tool.write_text("other", encoding="utf-8")
+        os.utime(tool, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, "prepared tools changed before launch"):
+            self.execute(
+                "from pathlib import Path; Path('launched').touch()",
+                tools=tools,
+                expected_tools=prepared,
+            )
+        self.assertFalse((self.root / "launched").exists())
+        self.assertFalse(self.campaign.attempts("quality"))
+
     def test_modified_output_does_not_remain_passing_evidence(self):
         receipt = self.execute("print('pass')")
         (receipt.parent / "output.log").write_text("changed", encoding="utf-8")
@@ -869,6 +898,68 @@ class SnapshotTests(unittest.TestCase):
         self.root.mkdir()
         (self.root / "a.txt").write_text("first", encoding="utf-8")
         (self.root / "b.txt").write_text("second", encoding="utf-8")
+
+    def test_tool_snapshot_hashes_each_resolved_file_once_per_call(self):
+        alias = self.base / "alias"
+        link_directory(alias, self.root)
+        self.addCleanup(unlink_directory, alias)
+        first, second = self.root / "a.txt", self.root / "b.txt"
+        expected = {str(path): campaign.digest(path) for path in (first, second)}
+        names = [str(first), str(alias / "a.txt"), str(second)]
+        for allow_missing in (False, True):
+            with self.subTest(allow_missing=allow_missing), patch.object(
+                campaign, "digest", wraps=campaign.digest
+            ) as reads:
+                self.assertEqual(
+                    campaign.tool_snapshot(names, allow_missing=allow_missing), expected
+                )
+                self.assertCountEqual(
+                    [call.args[0] for call in reads.call_args_list], [first, second]
+                )
+
+    def test_tool_snapshot_rehashes_edits_and_observes_removal_across_calls(self):
+        tool = self.root / "a.txt"
+        names = [str(tool), str(self.root) + "/./a.txt"]
+        before = campaign.tool_snapshot(names)
+        stamp = tool.stat()
+        tool.write_text("other", encoding="utf-8")
+        os.utime(tool, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.assertEqual(tool.stat().st_size, stamp.st_size)
+        self.assertEqual(tool.stat().st_mtime_ns, stamp.st_mtime_ns)
+        self.assertNotEqual(campaign.tool_snapshot(names), before)
+        tool.unlink()
+        self.assertEqual(campaign.tool_snapshot(names, allow_missing=True), {str(tool): None})
+        with self.assertRaises(FileNotFoundError):
+            campaign.tool_snapshot(names)
+        tool.mkdir()
+        with self.assertRaisesRegex(ValueError, "not a file"):
+            campaign.tool_snapshot(names, allow_missing=True)
+
+    def test_tool_snapshot_resolves_aliases_again_after_retargeting(self):
+        other = self.base / "other"
+        other.mkdir()
+        (other / "a.txt").write_text("first", encoding="utf-8")
+        alias = self.base / "alias"
+        link_directory(alias, self.root)
+        self.addCleanup(unlink_directory, alias)
+        first = campaign.tool_snapshot([str(alias / "a.txt")])
+        unlink_directory(alias)
+        link_directory(alias, other)
+        second = campaign.tool_snapshot([str(alias / "a.txt")])
+        self.assertEqual(list(first.values()), list(second.values()))
+        self.assertEqual(list(first), [str(self.root / "a.txt")])
+        self.assertEqual(list(second), [str(other / "a.txt")])
+
+    def test_tool_snapshot_keeps_distinct_hardlink_paths(self):
+        first = self.root / "a.txt"
+        second = self.root / "hardlink.txt"
+        os.link(first, second)
+        expected = {str(path): campaign.digest(path) for path in (first, second)}
+        with patch.object(campaign, "digest", wraps=campaign.digest) as reads:
+            self.assertEqual(campaign.tool_snapshot(list(expected)), expected)
+            self.assertCountEqual(
+                [call.args[0] for call in reads.call_args_list], [first, second]
+            )
 
     def test_declared_keys_stay_sorted_unique_and_unmodified(self):
         absolute = str(self.root / "a.txt")

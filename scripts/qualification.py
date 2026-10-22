@@ -14,11 +14,30 @@ import time
 import tomllib
 import uuid
 
-from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, prepare_build, registration_files
+from build_evidence import check_preparation_inputs, check_preparation_owner, check_scoped_preparation, preparation_inventory, prepare_build, registration_files
 from execution import Campaign, OutputLease, digest, snapshot, tool_snapshot, write_json
 
 PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang-release")
 GROUPS = {"product", "boundary", "tooling", "corpus", "production"}
+
+# CMake 4.3.1 LF/CRLF distributions: these bootstrap file() calls only convert
+# environment paths or create CTest directories. The script template is data for
+# configure_file, with an unsubstituted VERSION that prevents direct execution.
+# Unknown bytes keep the ordinary conservative scan; receipts always hash raw bytes.
+CMAKE_BOOTSTRAP_INPUTS = {
+    "Modules/CMakeGenericSystem.cmake": {
+        "51d5fba7b8e3492a6246ba29d192f8bb66888541ef987d1e41dff37213c2d2e9",
+        "996f5d82cf4776db17d5399c1475fd4e09f8b76aa15975d96ca9115ca45bcb15"},
+    "Modules/CTestTargets.cmake": {
+        "2a870c04ff090e2cbd1bd181bbc8d8cd82d393115bb71f6798b5dc602b95a9dc",
+        "b7d94b4ef08f50468cbafa0df58c5c0a0f9146c4c1afeca6c78c2df0f167f4d2"},
+    "Modules/Platform/WindowsPaths.cmake": {
+        "8228d73394f0945e64c966ebd8936a80d7ed76d066a6846a97b84c89c1981255",
+        "2bd1111c39c43d858dd108c12bd1c735cc69066a90bf611336b852a6f6578f7d"},
+    "Templates/CTestScript.cmake.in": {
+        "3ccc0724081d7df661ad80f1d2ac6427d3e5aef7473687f926b7a08155b16cb7",
+        "998a14031c9a14418d0a390d6328bdf5392ac3391a16132c30ffbe2da77146d6"},
+}
 
 
 def require_checkpoint(record):
@@ -240,7 +259,7 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
 
 def run_stage(campaign, state_path, state, name, command, *, inputs, tools, environment,
           timeout, semantic_command=None, action=None, validate=None, payloads=(),
-          dependencies=(), repeat_reason="", refresh_inputs=None):
+          dependencies=(), repeat_reason="", refresh_inputs=None, admission_observations=None):
     """Reuse the latest gate across attempt names; pending work is never a pass."""
     campaign.check_run_request(name, command, inputs=inputs, timeout=timeout)
     identity = {"command": list(semantic_command or command),
@@ -295,7 +314,14 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
         if (any(actual.get(p) != value for p, value in identity["inputs"].items() if p not in generated)
                 or tool_snapshot(tools, allow_missing=True) != identity["tools"]):
             raise ValueError("checkpoint relevant inputs changed")
-        identity["inputs"] = snapshot(campaign.root, refresh_inputs()) if refresh_inputs else actual
+        refreshed = snapshot(campaign.root, refresh_inputs()) if refresh_inputs else actual
+        if name == "prepare" and action:
+            generated.update(p for p in refreshed if (campaign.root / p).is_relative_to(build))
+        if admission_observations is not None and any(
+                value != admission_observations.get(p) for p, value in refreshed.items()
+                if p not in identity["inputs"] and p not in generated):
+            raise ValueError("checkpoint newly discovered preparation inputs changed")
+        identity["inputs"] = refreshed
         retained = (production_payloads(*production_manifest_identity(paths[0], root=campaign.root),
                                        root=campaign.root, inputs=identity["inputs"])
                     if name == "production" and payloads else {str(p): digest(Path(p)) for p in payloads})
@@ -354,10 +380,30 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
     return sorted(p.relative_to(root).as_posix() for p in paths if p.is_file())
 
 
-def has_opaque_configure_commands(paths):
+def has_opaque_configure_commands(paths, *, build=None, configuration=None, resolve=Path):
     """File operations, processes and dynamic evaluation have no declared closure."""
-    return any(re.search(r"\b(?:file|execute_process|cmake_language)\s*\(", path.read_text(encoding="utf-8"), re.I)
-               for path in paths if path.name == "CMakeLists.txt" or path.suffix == ".cmake")
+    sources = {path for path in paths if path.name == "CMakeLists.txt" or path.suffix == ".cmake"}
+    paths, bootstrap = set(sources), {}
+    if configuration is not None:
+        cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+        match = re.search(r"^CMAKE_ROOT:INTERNAL=(.+)$", cache, re.M)
+        if match:
+            cmake_root = resolve(match[1].strip()).resolve()
+            bootstrap = {cmake_root / name: checksums for name, checksums in CMAKE_BOOTSTRAP_INPUTS.items()}
+        # include() accepts arbitrary filenames. Regeneration data that cannot
+        # be read safely as CMake text also keeps the preparation scope broad.
+        paths.update(resolve(name) for name in configuration["regeneration_mtimes"])
+    for path in paths:
+        content = path.read_bytes()
+        if path not in sources and hashlib.sha256(content).hexdigest() in bootstrap.get(path, ()):
+            continue
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            return True
+        if re.search(r"\b(?:file|execute_process|cmake_language)\s*\(", text, re.I):
+            return True
+    return False
 
 
 def preparation_inputs(root, build, paths, *, context=None, resolve=Path):
@@ -387,6 +433,8 @@ def preparation_inputs(root, build, paths, *, context=None, resolve=Path):
     if context is None:
         graph = NinjaGraph(build, ["all"])
         context = scoped_context(root, root, build, graph, [], dict(os.environ))
+    if has_opaque_configure_commands(paths, build=build, configuration=context["configuration"], resolve=resolve):
+        return paths
     # A custom build command may consume a script/file without a DEPENDS
     # edge. Such operands are not proven runtime-only.
     commands = context["commands"].replace("\\", "/").casefold()
@@ -488,6 +536,7 @@ def prepare_checkpoint(campaign, build, state_path, state, environment, *, repea
     inputs = checkpoint_inputs(campaign.root, build, "prepare", source_files=source_files)
     outputs = []
     prepared_context = None
+    admission_observations = {}
     previous = state.get("prepare")
     def prepare():
         if previous and previous.get("payloads"):
@@ -514,10 +563,16 @@ def prepare_checkpoint(campaign, build, state_path, state, environment, *, repea
                 # Keep the original artifact facts attached to failed admission.
                 state["prepare"] = previous.copy()
                 raise
+        # A reconfigure can reveal a previously unseen consumer. Observe omitted
+        # candidates before commands, but bind them only if refresh admits them.
+        candidates = set(checkpoint_inputs(campaign.root, build, "product", source_files=source_files)) - set(inputs)
+        admission_observations.update(snapshot(campaign.root, sorted(candidates)))
+        configuration = preparation_inventory(campaign.root, build, environment) if (build / "CMakeCache.txt").is_file() else None
         return prepare_build(campaign, "prepare", source=campaign.root, build=build,
             inputs=[p for p in inputs if not p.startswith("out/build/")], timeout=timeout,
             targets=["all"], configure_args=["-DBUILD_TESTING=ON"], env=environment, checkpoint=True,
-            reconfigure=has_opaque_configure_commands(campaign.root / name for name in inputs))[1]
+            reconfigure=has_opaque_configure_commands((campaign.root / name for name in inputs), build=build,
+                configuration=configuration))[1]
     def validate(path):
         nonlocal prepared_context
         record = check_scoped_preparation(campaign, build, path, environment)
@@ -527,6 +582,7 @@ def prepare_checkpoint(campaign, build, state_path, state, environment, *, repea
         inputs=inputs, tools=checkpoint_tools(build, environment, "product"), environment=environment,
         timeout=timeout, repeat_reason=repeat_reason,
         action=prepare,
+        admission_observations=admission_observations,
         refresh_inputs=lambda: checkpoint_inputs(campaign.root, build, "prepare", source_files=source_files,
                                                  preparation=prepared_context),
         validate=validate, payloads=outputs)

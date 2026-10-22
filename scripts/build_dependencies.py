@@ -338,27 +338,35 @@ def configuration_outputs(build, environment=None):
     manifest = build / "verification-config-outputs.json"
     if manifest.is_file():
         document = json.loads(manifest.read_text(encoding="utf-8"))
+        if not isinstance(document, dict):
+            raise ValueError("configuration producer evidence changed; configure again")
         if document.get("protocol") != "scoped-development-v1":
             return sorted(outputs)
         producer = Path(document["producer"])
         record = json.loads(producer.read_text(encoding="utf-8"))
+        if not isinstance(record, dict) or digest(producer) != document["producer_sha256"]:
+            raise ValueError("configuration producer evidence changed; configure again")
+        tree = record.get("process_tree")
+        if not isinstance(tree, dict) or not isinstance(tree.get("receipt"), str):
+            raise ValueError("configuration producer evidence changed; configure again")
         evidence = record.get("configuration_evidence")
         expected = {key: document[key] for key in ("outputs", "trace", "trace_sha256")}
         process = json.loads(
-            Path(record["process_tree"]["receipt"]).read_text(encoding="utf-8")
+            Path(tree["receipt"]).read_text(encoding="utf-8")
         )
         if (
-            digest(producer) != document["producer_sha256"]
-            or evidence != expected
-            or record["status"] != "passed"
-            or not record["process_tree"]["drained"]
+            evidence != expected
+            or record.get("status") != "passed"
+            or record.get("returncode") != 0
+            or tree.get("drained") is not True
+            or tree.get("status") != "completed"
+            or tree.get("returncode") != 0
+            or not isinstance(process, dict)
+            or process.get("drained") is not True
+            or process != {key: value for key, value in tree.items() if key != "receipt"}
             or digest(Path(document["trace"])) != document["trace_sha256"]
             or digest(Path(record["directory"]) / record["output"])
             != record["output_sha256"]
-            or any(
-                record["process_tree"].get(key) != value
-                for key, value in process.items()
-            )
         ):
             raise ValueError("configuration producer evidence changed; configure again")
         outputs.update(Path(name) for name in document["outputs"])

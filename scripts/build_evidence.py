@@ -275,8 +275,23 @@ def configure_with_evidence(
         "trace_sha256": digest(redacted),
     }
     write_json(configured, record)
+    registry = build / "verification-config-outputs.json"
+    if registry.is_file():
+        try:
+            previous = json.loads(registry.read_text(encoding="utf-8"))
+            if (isinstance(previous, dict)
+                    and previous.get("protocol") == SCOPED_PROTOCOL
+                    and previous.get("outputs") == record["configuration_evidence"]["outputs"]
+                    and previous.get("trace_sha256") == record["configuration_evidence"]["trace_sha256"]):
+                # Fresh configure evidence remains in its own receipt. Retain the
+                # validated registry when only producer/trace paths would change.
+                configuration_outputs(build, environment)
+                return configured
+        except (OSError, ValueError, KeyError, TypeError):
+            # The completed configure can replace evidence that cannot be retained.
+            pass
     write_json(
-        build / "verification-config-outputs.json",
+        registry,
         {
             "protocol": SCOPED_PROTOCOL,
             "producer": str(configured),

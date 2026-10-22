@@ -293,6 +293,121 @@ class BuildEvidenceTests(unittest.TestCase):
         )
         return self.prepared
 
+    def test_unchanged_reconfigure_preserves_registry_and_artifacts(self):
+        self.prepare()
+        # The first refresh retires CMake's cold compiler-detection inputs.
+        # Establish the post-discovery configuration before proof-only renewal.
+        first = self.prepare(reconfigure=True)
+        proof = json.loads(first.read_text())["scoped_preparation"]
+        registry = self.build / "verification-config-outputs.json"
+        original = registry.read_bytes()
+        self.prepare(reconfigure=True)
+        renewed = json.loads(self.prepared.read_text())
+        self.assertEqual(registry.read_bytes(), original)
+        self.assertEqual(renewed["scoped_preparation"]["context"], proof["context"])
+        self.assertEqual(renewed["scoped_preparation"]["output_identities"], proof["output_identities"])
+        self.assertEqual(renewed["scoped_preparation"]["invalidated"], [])
+        self.assertTrue(renewed["preparation_admission"]["configured"])
+        self.assertIn("no work to do", (self.root / renewed["output"]).read_text())
+        configurations = [row for row in self.campaign.attempts("prepare") if "configuration_evidence" in row]
+        self.assertEqual(len(configurations), 3)
+        self.assertNotEqual(configurations[-2]["configuration_evidence"]["trace"],
+                            configurations[-1]["configuration_evidence"]["trace"])
+        self.assertEqual(configurations[-2]["configuration_evidence"]["trace_sha256"],
+                         configurations[-1]["configuration_evidence"]["trace_sha256"])
+        self.assertEqual(renewed["scoped_preparation"]["outputs"], proof["outputs"])
+        self.assertIn(self.build / "generated/binding.h", build_evidence.configuration_outputs(self.build))
+
+    def test_reconfigure_replaces_unproved_registry(self):
+        self.prepare()
+        registry = self.build / "verification-config-outputs.json"
+        previous = json.loads(registry.read_text())
+        trace = Path(previous["trace"])
+        trace.write_bytes(trace.read_bytes() + b"\n")
+        with self.assertRaisesRegex(ValueError, "configuration producer evidence changed"):
+            build_evidence.configuration_outputs(self.build)
+        self.prepare(reconfigure=True)
+        current = json.loads(registry.read_text())
+        self.assertNotEqual(current["producer"], previous["producer"])
+        self.assertEqual(current["outputs"], previous["outputs"])
+        self.assertIn(self.build / "generated/binding.h", build_evidence.configuration_outputs(self.build))
+
+    def test_reconfigure_replaces_registry_with_empty_process_receipt(self):
+        self.assert_registry_replaced(lambda process: {})
+
+    def test_reconfigure_replaces_registry_with_subset_process_receipt(self):
+        self.assert_registry_replaced(lambda process: {"drained": True})
+
+    def test_reconfigure_replaces_registry_with_incomplete_process_receipt(self):
+        self.assert_registry_replaced(lambda process: {
+            key: value for key, value in process.items() if key != "creation"
+        })
+
+    def test_reconfigure_replaces_registry_with_nonobject_process_receipt(self):
+        self.assert_registry_replaced(lambda process: [])
+
+    def assert_registry_replaced(self, mutate_process):
+        self.prepare()
+        self.prepare(reconfigure=True)
+        registry = self.build / "verification-config-outputs.json"
+        previous = json.loads(registry.read_text())
+        producer = Path(previous["producer"])
+        original_producer = producer.read_bytes()
+        process = Path(json.loads(original_producer)["process_tree"]["receipt"])
+        original_process = process.read_bytes()
+        process.with_suffix(".before.json").write_bytes(original_process)
+        build_evidence.write_json(process, mutate_process(json.loads(original_process)))
+        invalid_process = process.read_bytes()
+        with self.assertRaisesRegex(ValueError, "configuration producer evidence changed"):
+            build_evidence.configuration_outputs(self.build)
+
+        self.prepare(reconfigure=True)
+        current = json.loads(registry.read_text())
+        self.assertNotEqual(current["producer"], previous["producer"])
+        self.assertEqual(current["outputs"], previous["outputs"])
+        self.assertEqual(current["trace_sha256"], previous["trace_sha256"])
+        self.assertEqual(producer.read_bytes(), original_producer)
+        self.assertEqual(process.read_bytes(), invalid_process)
+        build_evidence.check_scoped_preparation(self.campaign, self.build, self.prepared)
+        _, pending = build_evidence.preparation_paths(self.build, ["behavior"])
+        self.assertFalse(pending.exists())
+        self.assertIn(self.build / "generated/binding.h", build_evidence.configuration_outputs(self.build))
+
+        # Intact replacement evidence must support the ordinary no-work renewal.
+        original_registry = registry.read_bytes()
+        proof = json.loads(self.prepared.read_text())["scoped_preparation"]
+        self.prepare(reconfigure=True)
+        renewed = json.loads(self.prepared.read_text())
+        self.assertEqual(registry.read_bytes(), original_registry)
+        self.assertEqual(renewed["scoped_preparation"]["output_identities"], proof["output_identities"])
+        self.assertEqual(renewed["scoped_preparation"]["invalidated"], [])
+        self.assertIn("no work to do", (self.root / renewed["output"]).read_text())
+
+    def test_reconfigure_replaces_registry_for_changed_trace_or_outputs(self):
+        self.prepare()
+        registry = self.build / "verification-config-outputs.json"
+        cmake = self.source / "CMakeLists.txt"
+        for change in ("trace", "outputs"):
+            with self.subTest(change=change):
+                previous = json.loads(registry.read_text())
+                if change == "trace":
+                    cmake.write_text(cmake.read_text().replace("COPYONLY", "@ONLY"))
+                else:
+                    cmake.write_text(cmake.read_text() +
+                        "configure_file(binding.h.in generated/second.h COPYONLY)\n")
+                self.prepare(reconfigure=True)
+                current = json.loads(registry.read_text())
+                self.assertNotEqual(current["producer"], previous["producer"])
+                self.assertNotEqual(current["trace_sha256"], previous["trace_sha256"])
+                if change == "trace":
+                    self.assertEqual(current["outputs"], previous["outputs"])
+                else:
+                    self.assertEqual(set(current["outputs"]),
+                                     {*previous["outputs"], str(self.build / "generated/second.h")})
+                self.assertEqual((self.build / "generated/binding.h").read_bytes(),
+                                 (self.source / "binding.h.in").read_bytes())
+                self.assertIn(self.build / "generated/binding.h", build_evidence.configuration_outputs(self.build))
+
     def test_target_preparation_transitions_without_running_runtime_tests(self):
         preset = "windows-clang-release" if os.name == "nt" else "linux-release"
         root = self.source

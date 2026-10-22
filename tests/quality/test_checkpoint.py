@@ -467,18 +467,139 @@ class CheckpointTests(unittest.TestCase):
             'file(READ "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json" payload)\n'
             'file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/configured.json" CONTENT "${payload}")\n')
 
-    def assert_configure_copy_reprepared(self, configure_commands):
+    def test_runtime_build_tree_module_read_requires_fresh_preparation(self):
+        self.assert_configure_copy_reprepared(
+            'set(stem runtime)\n'
+            'file(READ "${CMAKE_SOURCE_DIR}/tests/fixtures/${stem}.json" payload)\n'
+            'file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/configured.json" CONTENT "${payload}")\n',
+            module=self.build / "consumer.cmake")
+
+    def test_runtime_external_module_copy_requires_fresh_preparation(self):
+        self.assert_configure_copy_reprepared(
+            'set(stem runtime)\n'
+            'execute_process(COMMAND "${CMAKE_COMMAND}" -E copy '
+            '"${CMAKE_SOURCE_DIR}/tests/fixtures/${stem}.json" "${CMAKE_BINARY_DIR}/configured.json" '
+            'COMMAND_ERROR_IS_FATAL ANY)\n',
+            module=self.root.parent / (self.root.name + "-external") / "consumer.cmake")
+
+    def test_runtime_bundled_module_copy_requires_fresh_preparation(self):
+        self.assert_configure_copy_reprepared(
+            'include(CPackIFWConfigureFile)\nset(stem runtime)\n'
+            'cpack_ifw_configure_file("${CMAKE_SOURCE_DIR}/tests/fixtures/${stem}.json" '
+            '"${CMAKE_BINARY_DIR}/configured.json")\n',
+            bundled_module="CPackIFWConfigureFile.cmake")
+
+    def test_runtime_included_listfile_requires_fresh_preparation(self):
+        self.assert_configure_copy_reprepared(
+            'set(stem runtime)\n'
+            'file(READ "${CMAKE_SOURCE_DIR}/tests/fixtures/${stem}.json" payload)\n'
+            'file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/configured.json" CONTENT "${payload}")\n',
+            module=self.build / "consumer.inc")
+
+    def test_bootstrap_exceptions_require_exact_location_and_bytes(self):
+        self.retain = True
+        self.native_project()
+        cache = self.build / "CMakeCache.txt"
+        cmake_root = Path(next(line.partition("=")[2] for line in cache.read_text().splitlines()
+                              if line.startswith("CMAKE_ROOT:INTERNAL=")))
+        tool_root = self.root / "tool"
+        bootstrap = tool_root / "Modules/CTestTargets.cmake"
+        bootstrap.parent.mkdir(parents=True)
+        content = (cmake_root / "Modules/CTestTargets.cmake").read_bytes()
+        bootstrap.write_bytes(content)
+        cache.write_text(f"CMAKE_ROOT:INTERNAL={tool_root.as_posix()}\n")
+
+        def opaque(path):
+            return qualification.has_opaque_configure_commands([], build=self.build,
+                configuration={"regeneration_mtimes": {str(path): path.stat().st_mtime_ns}})
+
+        self.assertFalse(opaque(bootstrap))
+        self.assertTrue(qualification.has_opaque_configure_commands([bootstrap], build=self.build,
+            configuration={"regeneration_mtimes": {str(bootstrap): bootstrap.stat().st_mtime_ns}}))
+        # A known name/location alone never establishes the exception.
+        bootstrap.write_bytes(content + b"\n# changed installation\n")
+        self.assertTrue(opaque(bootstrap))
+        shadow = self.build / "bootstrap.inc"
+        shadow.write_bytes(content)
+        self.assertTrue(opaque(shadow))
+        shadow.write_bytes(b"\xff")
+        self.assertTrue(opaque(shadow))
+
+    def test_runtime_new_configure_membership_rejects_mid_preparation_edit(self):
+        import build_evidence
+        self.retain = True
+        fixture, _ = self.runtime_project()
+        module = self.build / "consumer.inc"
+        module.write_text('set(stem runtime)\n'
+            'file(READ "${CMAKE_SOURCE_DIR}/tests/fixtures/${stem}.json" payload)\n'
+            'file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/configured.json" CONTENT "${payload}")\n')
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() + f'include("{module.as_posix()}")\n'
+            'add_custom_target(staged ALL COMMAND "${CMAKE_COMMAND}" -E copy_if_different '
+            '"${CMAKE_BINARY_DIR}/configured.json" "${CMAKE_BINARY_DIR}/staged.json" '
+            'DEPENDS "${CMAKE_BINARY_DIR}/configured.json" BYPRODUCTS "${CMAKE_BINARY_DIR}/staged.json")\n')
+        self.assertNotIn("tests/fixtures/runtime.json", qualification.checkpoint_inputs(self.root, self.build, "prepare"))
+        run = Campaign.run
+        edited = False
+
+        def edit_after_configure(campaign, stage, command, **kwargs):
+            nonlocal edited
+            result = run(campaign, stage, command, **kwargs)
+            if not edited and ("--preset" in command or "-S" in command):
+                fixture.write_text('{"value": 2}\n')
+                edited = True
+            return result
+
+        campaign = self.campaign("new-membership-edit")
+        with patch.object(Campaign, "run", new=edit_after_configure):
+            with self.assertRaisesRegex(ValueError, "newly discovered preparation inputs changed"):
+                qualification.prepare_checkpoint(campaign, self.build, self.state_path, self.state, self.environment, timeout=60)
+        self.assertTrue(edited)
+        self.assertEqual(self.state["prepare"]["status"], "failed")
+        write_json(campaign.directory / "failed-checkpoint.json", self.state)
+        for name in ("configured.json", "staged.json"):
+            self.assertEqual(json.loads((self.build / name).read_text())["value"], 1)
+        baseline = build_evidence.preparation_paths(self.build, ["all"])[0]
+        original = Path(json.loads(baseline.read_text())["producer"])
+        original_receipt = original.read_bytes()
+        renewed = qualification.prepare_checkpoint(self.campaign("new-membership-repaired"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        self.assertNotIn("reused_from", renewed)
+        for name in ("configured.json", "staged.json"):
+            self.assertEqual(json.loads((self.build / name).read_text())["value"], 2)
+        self.assertEqual(original.read_bytes(), original_receipt)
+
+    def assert_configure_copy_reprepared(self, configure_commands, *, module=None, bundled_module=None):
         self.retain = True
         fixture, _ = self.runtime_project()
         cmake = self.root / "CMakeLists.txt"
+        if module:
+            module.parent.mkdir(parents=True, exist_ok=True)
+            module.write_text(configure_commands)
+            configure_commands = f'include("{module.as_posix()}")\n'
         cmake.write_text(cmake.read_text() + configure_commands +
             'add_custom_target(staged ALL COMMAND "${CMAKE_COMMAND}" -E copy_if_different '
             '"${CMAKE_BINARY_DIR}/configured.json" "${CMAKE_BINARY_DIR}/staged.json" '
             'DEPENDS "${CMAKE_BINARY_DIR}/configured.json" BYPRODUCTS "${CMAKE_BINARY_DIR}/staged.json")\n')
+        if module or bundled_module:
+            from verify import source_snapshot
+            self.assertFalse(qualification.has_opaque_configure_commands(self.root / name for name in source_snapshot(self.root)))
         first = qualification.prepare_checkpoint(self.campaign("variable-copy-first"), self.build,
             self.state_path, self.state, self.environment, timeout=60)
         producer = Path(first["receipt"])
         original_receipt = producer.read_bytes()
+        if bundled_module:
+            configuration = json.loads(original_receipt)["scoped_preparation"]["context"]["configuration"]
+            module = next(Path(name) for name in configuration["regeneration_mtimes"] if Path(name).name == bundled_module)
+        if module:
+            configuration = json.loads(original_receipt)["scoped_preparation"]["context"]["configuration"]
+            self.assertIn(str(module), configuration["regeneration_mtimes"])
+            identities = configuration["inputs"] if module.is_relative_to(self.root) else configuration["tools"]
+            name = module.relative_to(self.root).as_posix() if module.is_relative_to(self.root) else str(module)
+            self.assertEqual(identities[name], digest(module))
+            self.assertNotIn(str(fixture), configuration["regeneration_mtimes"])
+            original_module = module.read_bytes()
+        self.assertIn("tests/fixtures/runtime.json", first["identity"]["inputs"])
         configured, staged = (self.build / name for name in ("configured.json", "staged.json"))
         self.assertEqual(json.loads(staged.read_text())["value"], 1)
         self.assertIn(str(staged), first["payloads"])
@@ -505,6 +626,8 @@ class CheckpointTests(unittest.TestCase):
             "configured": json.loads(configured.read_text()), "staged": json.loads(staged.read_text())})
         self.assertEqual(json.loads(configured.read_text())["value"], 2)
         self.assertEqual(json.loads(staged.read_text())["value"], 2)
+        if module:
+            self.assertEqual(module.read_bytes(), original_module)
         self.assertNotIn("reused_from", second)
         self.assertNotEqual(second["receipt"], first["receipt"])
         self.assertIn("tests/fixtures/runtime.json", second["identity"]["inputs"])
@@ -639,10 +762,21 @@ class CheckpointTests(unittest.TestCase):
                 write_json(self.state_path, {"prepare": first})
 
     def test_runtime_preparation_collection_uses_its_own_membership(self):
+        self.assert_runtime_preparation_collection()
+
+    def test_runtime_module_preparation_collection_keeps_configure_inputs(self):
+        self.assert_runtime_preparation_collection(module=self.build / "consumer.cmake")
+
+    def assert_runtime_preparation_collection(self, *, module=None):
         self.retain = True
         fixture, _ = self.runtime_project()
         cmake = self.root / "CMakeLists.txt"
         cmake.write_text(cmake.read_text().replace('"host;corpus"', '"host;product"'))
+        if module:
+            module.write_text('set(stem runtime)\n'
+                'file(READ "${CMAKE_SOURCE_DIR}/tests/fixtures/${stem}.json" payload)\n'
+                'file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/configured.json" CONTENT "${payload}")\n')
+            cmake.write_text(cmake.read_text() + f'include("{module.as_posix()}")\n')
         quality = self.root / "scripts/check-quality.py"
         quality.parent.mkdir()
         quality.write_text("print('miniature quality scheduling witness')\n")
@@ -650,17 +784,25 @@ class CheckpointTests(unittest.TestCase):
                                runtime="all", campaign="collection-first", repeat_reason="", base="fixture")
         path = qualification.qualify(self.root, args)
         record = json.loads(path.read_text())
-        self.assertNotIn("tests/fixtures/runtime.json", record["stages"]["prepare"]["identity"]["inputs"])
+        self.assertEqual("tests/fixtures/runtime.json" in record["stages"]["prepare"]["identity"]["inputs"], bool(module))
         self.assertIn("tests/fixtures/runtime.json", record["stages"]["product"]["identity"]["inputs"])
         original = path.read_bytes()
         with patch.object(Campaign, "run", side_effect=AssertionError("collector dispatched")):
             with self.assertRaisesRegex(ValueError, "full checkpoint membership is incomplete"):
                 qualification.collect_qualification(self.root, [path])
         fixture.write_text('{"value": 2}\n')
+        if module:
+            with patch.object(Campaign, "run", side_effect=AssertionError("collector dispatched")):
+                with self.assertRaisesRegex(ValueError, "checkpoint declared source/data inputs changed"):
+                    qualification.collect_qualification(self.root, [path])
         args.campaign = "collection-changed"
         refreshed = qualification.qualify(self.root, args)
         result = json.loads(refreshed.read_text())
-        self.assertEqual(result["stages"]["prepare"]["reused_from"], record["stages"]["prepare"]["receipt"])
+        if module:
+            self.assertNotIn("reused_from", result["stages"]["prepare"])
+            self.assertEqual(json.loads((self.build / "configured.json").read_text())["value"], 2)
+        else:
+            self.assertEqual(result["stages"]["prepare"]["reused_from"], record["stages"]["prepare"]["receipt"])
         self.assertNotIn("reused_from", result["stages"]["product"])
         with self.assertRaisesRegex(ValueError, "full checkpoint membership is incomplete"):
             qualification.collect_qualification(self.root, [refreshed])
@@ -1293,8 +1435,14 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
                        "rust_recovery": "not applicable; no Rust fixture", "cold_and_warm_commands": calls}
             for trial in warm:
                 self.assertFalse(trial["deleted"])
-                self.assertEqual([c["stage"] for c in trial["commands"]], ["prepare"],
+                # Compiler/linker modules keep configure opaque. Require that
+                # refresh plus one no-op build, with no downstream work.
+                self.assertEqual([c["stage"] for c in trial["commands"]], ["prepare", "prepare"],
                                  "proof renewal repeated unchanged quality/product work")
+                configure, build = [c["command"] for c in trial["commands"]]
+                self.assertEqual(configure[:4], ["cmake", "--preset", self.preset, "-DBUILD_TESTING=ON"])
+                self.assertIn("--trace-expand", configure[4:])
+                self.assertEqual(build, ["cmake", "--build", str(self.build), "--parallel", "2", "--target", "all"])
             write_json(self.root / "out/validation" / self.preset / "replay.json", summary)
             progress.update(complete=True, seconds=time.monotonic() - started)
             write_json(progress_path, progress)
