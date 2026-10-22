@@ -115,10 +115,24 @@ dynamic evaluation (`cmake_language`) keep preparation discovery broad. When tha
 scope needs fresh preparation, the checkpoint requests reconfiguration through the existing
 producer and lease, so variable-built configure inputs refresh copied/staged output.
 Literal filenames or subcommands are not proof of these operations' input closure.
+Detection scans every recorded regeneration input regardless of filename suffix,
+including build-tree, external and bundled modules. Non-UTF-8 input stays
+conservative. Four exact `CMAKE_ROOT`-relative paths have reviewed CMake 4.3.1
+LF/CRLF byte identities: `Modules/CMakeGenericSystem.cmake`,
+`Modules/CTestTargets.cmake`, `Modules/Platform/WindowsPaths.cmake`, and the data
+template `Templates/CTestScript.cmake.in`. These exceptions cover only known
+bootstrap path conversions/directory creation and template data. Unknown bytes,
+locations or CMake roots keep the conservative scan; source-discovered CMake
+files and original raw-byte receipt requirements retain their existing treatment.
 Projects without these unresolved consumers retain runtime-only preparation reuse.
 
 The same discovery serves preparation admission, refreshed membership and
-collection. Refresh and collection honor the producer's original dependencies;
+collection. Fresh preparation observes initially excluded candidates before
+commands and checks any newly admitted source input against that observation
+before sealing refreshed identity. A fixture edit during reconfiguration cannot
+be first admitted using its post-command contents. Candidates that remain
+runtime-only stay excluded, and ordinary reuse takes no new admission observation.
+Refresh and collection honor the producer's original dependencies;
 older broad receipts and cold preparation without test registration may need one
 fresh preparation to establish the narrower scope. Original receipts are never
 rewritten or projected. Product, quality and runtime selections still bind runtime

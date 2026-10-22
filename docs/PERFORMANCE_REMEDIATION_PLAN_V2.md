@@ -15,8 +15,9 @@ Preserve [the original plan](PERFORMANCE_REMEDIATION_PLAN.md) and the
 Historical timings retain their original scope and qualification limits; they do
 not establish whole-task savings.
 
-Evidence links under `out/` in this plan and the original investigation refer to
-retained local checkout files, which are not published with the repository. The
+Evidence links under `out/` or `.juicer-local/` in this plan and the original
+investigation refer to retained local checkout files, which are not published
+with the repository. The
 original plan is historical context; the current execution policy is defined here
 and in the linked public validation cadence.
 
@@ -103,7 +104,9 @@ Parallel execution must respect build/Cargo targets and shared GPU ownership.
 
 The request-admission and OFF evidence-retention fixes below were separately
 authorized and implemented in the working tree on 20 October 2026; matching-profile
-Clippy, documentation discovery and bounded preparation recovery followed on 21 October. Other code
+Clippy, documentation discovery and bounded preparation recovery followed on 21 October.
+The included-configure-input repair below was independently reviewed and authorized
+for publication on 22 October. Other code
 changes remain **planned, not delivered or authorized for execution by this update**.
 Use existing owners and focused
 regression fixtures when each change is authorized.
@@ -116,6 +119,7 @@ regression fixtures when each change is authorized.
 | 2 — evidence scope and OFF collection | Implemented: retain inspected OFF build artifacts/configuration during execution and collect those original receipts after ON restoration or repair of unrelated pending work. Dependency-closure separation remains deferred. | Retained copies bind execution-time hashes; source, tool, payload and latest-owner checks remain mandatory. A passed scope with an incomplete aggregate remains eligible, while current pending work still blocks aggregate completion. Old manifests without retained build inputs require fresh OFF execution. |
 | 2 — documentation discovery | Implemented: omit known repository prose from broad candidate/checkpoint discovery and initial development pending paths. | Prose edits, additions, deletions and commits preserve build/test reuse. Explicit inputs, build dependencies, packaged documents, runtime fixture payloads and quality checks remain fresh. Older receipts keep their original inputs; no retroactive projection or evidence rewrite. General dependency-closure separation remains deferred. |
 | 2 — runtime-only preparation discovery | Implemented: omit explicit registered runtime test files only when existing build/configuration ownership proves they are outside preparation. | Direct preparation inputs remain authoritative. Build, include, generated, Cargo, tool, copied/staged and artifact requirements stay fresh; unknown dependencies remain conservative. Runtime edits require fresh affected execution. Admission, refresh and collection share preparation-specific membership; original receipts retain their requirements. |
+| 2 — included configure inputs | Implemented, independently reviewed and owner-authorized for publication: scan effective regeneration inputs regardless of suffix, limit bootstrap exceptions to exact reviewed paths/bytes, and check newly admitted inputs against pre-preparation observations. | Compiler-free stale-reuse reproductions are fixed; 22 focused controls pass on each native and four final independent Linux controls pass. Original receipt/explicit-input requirements and genuine runtime-only reuse remain intact. No demonstrated Film-Juicer product regression, broader qualification or speedup claim. |
 | 3 — matching-profile Clippy | Implemented: run the matching profile once per preset while retaining both platforms, packages and plug-in feature forms across the aggregate. Both native CI lanes now explicitly select Release Rust after the Release build. | Four full preset invocations dispatch 12 Clippy analyses instead of 24: core, plugin production and plugin test-support in each matching context. Existing CI previously obtained both profiles through Debug-only calls; its complete Rust coverage remains 12 analyses across the two native lanes. Elapsed savings remain unmeasured. Boundary/privacy probes remain distinct. |
 | 3 — necessary domain batching | Batch adjacent cases only within an already-needed domain extension, or after demonstrating payback from named remaining consumers. | Preserve complete inputs, individual results, process isolation where needed, membership and drainage. A standalone 0.5–1.5-day H1 patch for roughly two minutes per cohort is no longer the first code project. |
 | 4 — ordinary closeout | Retire eligible scratch and obsolete helpers under section 7. | Storage/navigation benefit only; no compiler-speed claim. No disposal accompanies this update. |
@@ -297,6 +301,122 @@ Original evidence remains unchanged. This accepts the harness boundary only;
 current product probes stay conservative and existing product qualification and
 migration-stage limitations remain. Acceptance prose uses whitespace/link and
 contextual checks without restarting native suites or product builds.
+
+The bounded included-module follow-up on **22 October 2026** reproduced stale
+preparation reuse in compiler-free fixtures: an unchanged build-tree or external
+CMake module consumed a variable-path runtime input, but changing that input from
+1 to 2 dispatched no preparation commands and left configured/staged output at 1.
+Both modules were present in configuration evidence; the consumed fixture was not
+a regeneration dependency. This is a harness reproduction, not a demonstrated
+Film-Juicer product regression; the actual project's source-visible opaque
+commands already retain broad scope. The [original two failing controls](../out/validation/linux-debug/included-module-reproduction.log)
+and their fixture receipts/output observations remain unchanged.
+
+Opaque-command detection also consumes the existing regeneration dependency
+inventory at admission, refresh, collection and reconfiguration. The initial
+candidate's blanket `CMAKE_ROOT/Modules` exemption and suffix filter were corrected
+after the independent review described below. Every regeneration dependency now
+enters the scan regardless of filename suffix; non-UTF-8 content stays
+conservative. Four exact root-relative paths have reviewed raw SHA-256 pairs for
+CMake 4.3.1's LF/CRLF distributions: `Modules/CMakeGenericSystem.cmake`,
+`Modules/CTestTargets.cmake`, `Modules/Platform/WindowsPaths.cmake`, and
+`Templates/CTestScript.cmake.in`. Their opaque commands only convert environment
+paths/create CTest directories, or belong to non-executable template data.
+Unknown bytes, paths or roots stay conservative. Source-discovered CMake files
+retain their original scan even when their bytes match an exception. Receipt
+hashes remain raw and unchanged. No dependency parser, receipt projection or hash
+cache was introduced. Runtime-only reuse, explicit preparation inputs and original
+receipt freshness remain required.
+
+Initial author Python 3.13 results before independent review (zero failures or
+skips; these cohorts retain their original candidate scope):
+
+| Selection | Linux | Windows |
+| --- | --- | --- |
+| `python -B -m unittest tests.quality.test_checkpoint -k runtime -v` | [14 passed, 285.906 s](../out/validation/linux-debug/included-module-focused.log) | [14 passed, 126.085 s](../out/validation/windows-clang-debug/included-module-focused.log) |
+| Final touched-path selection: both module refresh cases, module collection, runtime-only execution and three existing configure consumers | [7 passed within the combined 10-case run, 268.618 s](../out/validation/linux-debug/included-module-final.log) | [7 passed, 75.230 s](../out/validation/windows-clang-debug/included-module-final.log) |
+| Invalid admission, documentation-only reuse and retained OFF evidence across ON restoration/unrelated failure | Included in the final 10-case run above | [3 passed, 40.599 s](../out/validation/windows-clang-debug/included-module-preservation.log) |
+| Matching-profile Clippy dispatch and interrupted-owner drainage controls | [2 passed, 14.886 s](../out/validation/linux-debug/included-module-owner-controls.log) | [2 passed, 4.926 s](../out/validation/windows-clang-debug/included-module-owner-controls.log) |
+
+The final selection follows retention of the existing source-visible early return;
+the earlier 14-case cohorts retain their own source/execution scope. The new
+controls verify module evidence, unchanged module bytes, configured/staged output
+refresh, refreshed preparation membership and conservative collection. Existing
+positive controls retain preparation reuse while requiring fresh affected test
+execution. Ruff 0.15.22 and whitespace/link checks pass. Author contextual review
+covered changed definitions and admission/refresh/reconfiguration/collection
+consumers. These initial author results did not detect the two subsequent
+independent findings and are not promoted to corrected-candidate qualification.
+
+The user-requested **GPT-6.1 Sol xHigh independent review** reproduced two P2
+findings: stock `CPackIFWConfigureFile.cmake` can read an unregistered runtime
+fixture, and `include()` can execute a `.inc` listfile skipped by the suffix
+filter. Both reused the original receipt without commands, leaving output at 1
+after the fixture changed to 2. The
+[independent report and correction record](../.juicer-local/reviews/Included-Module-Preparation-Independent-Review-2026-10-22.md)
+preserve the original findings and
+[counterexamples](../out/validation/linux-debug/included-module-independent-counterexamples.log).
+The corrected behavior is specified above. New regressions exercise both failures
+through the existing compiler-free helper, plus exact exception identity,
+location, source-discovery precedence and unreadable-content boundaries.
+
+The first re-review confirmed both corrections but found a separate P2 freshness
+gap: adding a previously unseen module can make refresh admit a runtime fixture
+omitted from initial discovery. An edit after configure then bound value 2 to a
+passed checkpoint while configured/staged output remained 1, with repeated reuse.
+The [original counterexample](../out/validation/linux-debug/included-module-independent-new-membership.log)
+is preserved. Fresh preparation now observes only initially omitted candidates
+before commands; the exact refreshed snapshot used for identity must match those
+observations for newly added source inputs. Unknown new inputs fail conservatively;
+build-generated inputs stay with the preparation owner. No original receipt is
+reinterpreted and no additional runtime requirement is persisted when a candidate
+stays excluded. Pure preparation reuse bypasses this fresh-attempt observation.
+
+The new deterministic regression edits the fixture immediately after real
+configuration, requires a failed checkpoint, then verifies actual renewal/output
+refresh and the unchanged original receipt. Together with the positive runtime
+reuse control it passed [2/2 on Linux in 47.476 s](../out/validation/linux-debug/included-module-refresh-repair.log)
+and [2/2 on Windows in 18.521 s](../out/validation/windows-clang-debug/included-module-refresh-repair.log).
+
+The final independent re-review reports **no remaining findings; all three P2
+findings addressed**. Its separate Linux run passed
+[4/4 in 85.430 s](../out/validation/linux-debug/included-module-independent-final-rereview.log):
+race rejection/renewal, runtime-only reuse with fresh execution, explicit/older
+broad requirements and module collection. Contextual naming/design/ownership,
+exact-byte exception safety and receipt freshness were reviewed. Native Windows
+execution is separate author evidence; publication authorization is recorded below.
+
+The first three-case repair run passed on Linux but failed the Windows runtime-only
+positive control: the environment-only `WindowsPaths.cmake` bootstrap module had
+not yet been classified. That [failure](../out/validation/windows-clang-debug/included-module-review-repair.log)
+remains retained; its complete source and native byte identities were inspected
+before the final correction. No task-time saving, product regression or product
+qualification is inferred. Hashing optimization stays separate.
+
+Final corrected-candidate author selection (Python 3.13, zero failures/skips):
+
+```text
+python -B -m unittest tests.quality.test_checkpoint -k runtime -k bootstrap -k invalid_request_preserves_pass -k documentation_changes_reuse_preparation -k production_evidence_survives -k preparation_binds -v
+```
+
+| Native | Result |
+| --- | --- |
+| Linux | [22/22 passed, 424.288 s](../out/validation/linux-debug/included-module-admission-final.log) |
+| Windows | [22/22 passed, 185.222 s](../out/validation/windows-clang-debug/included-module-admission-final.log) |
+
+These final results cover all runtime/exception checks, the newly admitted-input
+edit, unchanged original receipts, collection, invalid admission, generated
+configuration binding, documentation-only reuse and OFF-evidence preservation.
+Ruff 0.15.22 and whitespace/local-link checks pass. The final independent review
+has no remaining findings; its Linux verification and author native Windows
+verification retain their separate scopes. On **22 October 2026**, the owner
+authorized documentation/status updates, commit and publication of this reviewed
+candidate in a new draft PR from `rust-migration` into `testing`, base `5163a09`.
+Only publication prose changes after the final source review and native checks;
+the code/test identities and original results remain unchanged. This authorization
+preserves all migration/product acceptance limits. No product code/builds, broad
+qualification, evidence deletion/relocation or hashing optimization accompanies
+publication.
 
 The 22 October Windows host follow-up changes CTest scheduling only. Two native
 checkpoint cases spent 38.7 of 91.7 profiled seconds hashing inputs/tools; these
