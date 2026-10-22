@@ -1,4 +1,5 @@
 #include <stddef.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -1005,6 +1006,121 @@ static int balance_values(void) {
     return 0;
 }
 
+_Static_assert(_Generic(&fj_legacy_scanner_direct_correction_prepare, FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*): 1, default: 0), "OFF direct correction C11 signature");
+_Static_assert(_Generic(&fj_legacy_scanner_print_correction_prepare, FjStatus (*)(const FjScannerCorrectionParams*, const FjScannerPrintCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*): 1, default: 0), "OFF print correction C11 signature");
+_Static_assert(_Generic(&fj_legacy_scanner_correction_input_demand, FjStatus (*)(const FjScannerCorrectionParams*, uint32_t, uint32_t*, FjScannerCorrectionFailure*, FjErrorBuffer*): 1, default: 0), "OFF correction demand C11 signature");
+_Static_assert(sizeof(FjScannerCorrection) == 16 && sizeof(FjScannerCorrectionParams) == 16 && _Alignof(FjScannerCorrectionParams) == 4, "OFF permanent compact record and host params");
+_Static_assert(sizeof(FjScannerCorrectionTables) == 96 && _Alignof(FjScannerCorrectionTables) == 8, "OFF correction tables layout");
+_Static_assert(sizeof(FjScannerColorCorrection) == 56 && _Alignof(FjScannerColorCorrection) == 8 && offsetof(FjScannerColorCorrection, target_black_linear) == 16 && offsetof(FjScannerColorCorrection, schema_version) == 44 && offsetof(FjScannerColorCorrection, hash) == 48, "OFF complete correction layout");
+_Static_assert(sizeof(FjScannerCorrectionFailure) == 4 && sizeof(FjScannerCorrectionTrace) == 48 && _Alignof(FjScannerCorrectionTrace) == 8 && offsetof(FjScannerCorrectionTrace, hash) == 40, "OFF correction failure and trace layout");
+static int scanner_correction_values(void) {
+    for (size_t i = 0; i < 28; ++i) {
+        float c[1], m[1], y[1], ay[1], film_base[81], dyes[243], sensitivity[243], light[81], print_base[81];
+        float film_axis[3] = {0}, authored[9] = {0}, print_axis[3] = {0}, print_curves[9] = {0};
+        memcpy(c, correction_c[i], sizeof(c));
+        memcpy(m, correction_m[i], sizeof(m));
+        memcpy(y, correction_y[i], sizeof(y));
+        memcpy(ay, correction_ay[i], sizeof(ay));
+        memcpy(film_base, correction_film_base[i], sizeof(film_base));
+        memcpy(dyes, correction_film_dyes[i], sizeof(dyes));
+        memcpy(sensitivity, correction_sensitivity[i], sizeof(sensitivity));
+        memcpy(light, correction_light[i], sizeof(light));
+        if (correction_print[i][0])
+            memcpy(print_base, correction_print_base[i], sizeof(print_base));
+        memcpy(film_axis, correction_film_axis[i], correction_counts[i][0] * sizeof(float));
+        memcpy(authored, correction_authored_curves[i], correction_counts[i][1] * sizeof(float));
+        memcpy(print_axis, correction_print_axis[i], correction_counts[i][2] * sizeof(float));
+        memcpy(print_curves, correction_print_curves[i], correction_counts[i][3] * sizeof(float));
+        FjScannerCorrectionParams params = {correction_params[i][0], correction_params[i][1], 0, 0};
+        memcpy(&params.black_level, correction_levels[i], sizeof(float));
+        memcpy(&params.white_level, correction_levels[i] + 1, sizeof(float));
+        FjScannerCorrectionTables tables = {{c, 1}, {m, 1}, {y, 1}, {ay, 1}, {NULL, 0}, 1, 0, 0};
+        memcpy(&tables.inv_yn, correction_scalars[i], sizeof(float));
+        FjScannerDirectCorrectionInput direct = {0};
+        direct.tables = &tables;
+        direct.film_base_density = (FjFloatSpan){film_base, 81};
+        direct.film_log_exposure = (FjFloatSpan){film_axis, correction_counts[i][0]};
+        direct.film_authored_density_curves_cmy = (FjFloatSpan){authored, correction_counts[i][1]};
+        memcpy(direct.minimum_density_cmy, correction_minimum[i], 3 * sizeof(float));
+        memcpy(direct.maximum_density_cmy, correction_maximum[i], 3 * sizeof(float));
+        memcpy(direct.inverse_span_cmy, correction_inverse[i], 3 * sizeof(float));
+        memcpy(direct.baseline_density_cmy, correction_baseline_density[i], 3 * sizeof(float));
+        direct.reference_hash = correction_reference[i];
+        direct.medium = correction_medium[i][0];
+        FjScannerPrintCorrectionInput print = {0};
+        print.tables = &tables;
+        print.film_base_density = (FjFloatSpan){film_base, 81};
+        print.film_channel_density_cmy = (FjFloatSpan){dyes, 243};
+        print.print_sensitivity_cmy = (FjFloatSpan){sensitivity, 243};
+        print.filtered_main_illuminant = (FjFloatSpan){light, 81};
+        print.print_base_density = (FjFloatSpan){print_base, 81};
+        print.print_log_exposure = (FjFloatSpan){print_axis, correction_counts[i][2]};
+        print.print_density_curves_cmy = (FjFloatSpan){print_curves, correction_counts[i][3]};
+        memcpy(print.minimum_density_cmy, correction_minimum[i], 3 * sizeof(float));
+        memcpy(print.inverse_span_cmy, correction_inverse[i], 3 * sizeof(float));
+        memcpy(print.film_minimum_density_cmy, correction_film_minimum[i], 3 * sizeof(float));
+        memcpy(print.film_maximum_density_cmy, correction_film_maximum[i], 3 * sizeof(float));
+        memcpy(print.preflash_raw_cmy, correction_preflash[i], 3 * sizeof(float));
+        memcpy(&print.normalizer, correction_scalars[i] + 1, sizeof(float));
+        memcpy(&print.preflash_exposure, correction_scalars[i] + 2, sizeof(float));
+        print.medium = correction_medium[i][0];
+        const FjScannerCorrectionParams* requested = i == 21 ? NULL : &params;
+        if (i == 22)
+            tables.eps_c.count = 0;
+        if (i == 23)
+            params.flags |= 4U;
+        if (i == 24)
+            params.route = 256;
+        const int missing = (i >= 6 && i <= 9) || i >= 25;
+        char message[512];
+        memset(message, 'x', sizeof(message));
+        FjErrorBuffer error = {message, sizeof(message), 99};
+        FjScannerCorrectionFailure failure = {99};
+        uint32_t required = 99;
+        FjStatus demand = fj_legacy_scanner_correction_input_demand(requested, correction_print[i][0], &required, &failure, &error);
+        CHECK(status(demand, correction_demand[i][0]) && failure.reason == correction_demand[i][1] && required == correction_demand[i][2]);
+        CHECK(error.length < sizeof(message) && message[error.length] == '\0');
+        printf("SCANNER_DEMAND_CASE %s category=%u api=%u native_code=%d reason=%u fields=pass\n", correction_names[i], demand.category, demand.api, demand.native_code, failure.reason);
+        FjScannerColorCorrection out;
+        memset(&out, 0x55, sizeof(out));
+        FjScannerCorrectionTrace trace;
+        memset(&trace, 0x55, sizeof(trace));
+        failure.reason = 99;
+        error.length = 99;
+        memset(message, 'x', sizeof(message));
+        FjStatus actual = correction_print[i][0]
+                              ? fj_legacy_scanner_print_correction_prepare(requested, missing ? NULL : &print, &out, &failure, &trace, &error)
+                              : fj_legacy_scanner_direct_correction_prepare(requested, missing ? NULL : &direct, &out, &failure, &trace, &error);
+        CHECK(status(actual, correction_envelopes[i][0]) && failure.reason == correction_envelopes[i][1]);
+        CHECK(error.length == strlen(correction_diagnostics[i]) && error.length < sizeof(message) && !strcmp(message, correction_diagnostics[i]));
+        CHECK(out.route == correction_tags[i][0] && out.active == correction_tags[i][1] && out.black_correction == correction_tags[i][2] && out.white_correction == correction_tags[i][3] && out.schema_version == correction_tags[i][4] && out.hash == correction_hashes[i]);
+        const float scalars[7] = {out.target_black_linear, out.target_white_linear, out.reference_black_y, out.reference_white_y, out.xyz_slope, out.xyz_offset, out.exposure_scale};
+        CHECK(words(scalars, correction_words[i], 7));
+        CHECK(trace.outcome == correction_trace[i][0] && trace.hash == (out.active ? out.hash : 0));
+        const float trace_scalars[8] = {trace.reference_black_y, trace.reference_white_y, trace.target_black_linear, trace.target_white_linear, trace.xyz_slope, trace.xyz_offset, trace.corrected_midgray, trace.exposure_scale};
+        if (trace.outcome == FJ_SCANNER_CORRECTION_TRACE_NONE)
+            CHECK(grain_zero_words(trace_scalars, 8, 0));
+        if (out.active) {
+            const float projected[7] = {trace.target_black_linear, trace.target_white_linear, trace.reference_black_y, trace.reference_white_y, trace.xyz_slope, trace.xyz_offset, trace.exposure_scale};
+            CHECK(words(projected, correction_words[i], 7) && isfinite(trace.corrected_midgray) && trace.corrected_midgray > 0);
+        }
+        if (trace.outcome == FJ_SCANNER_CORRECTION_TRACE_MIDGRAY)
+            CHECK(isnan(trace.exposure_scale));
+        /* Optional trace and diagnostic records must not change the result. */
+        memset(&out, 0x55, sizeof(out));
+        failure.reason = 99;
+        FjStatus omitted = correction_print[i][0]
+                               ? fj_legacy_scanner_print_correction_prepare(requested, missing ? NULL : &print, &out, &failure, NULL, NULL)
+                               : fj_legacy_scanner_direct_correction_prepare(requested, missing ? NULL : &direct, &out, &failure, NULL, NULL);
+        CHECK(status(omitted, actual.category) && failure.reason == correction_envelopes[i][1]);
+        const float omitted_scalars[7] = {out.target_black_linear, out.target_white_linear, out.reference_black_y, out.reference_white_y, out.xyz_slope, out.xyz_offset, out.exposure_scale};
+        CHECK(words(omitted_scalars, correction_words[i], 7) && out.hash == correction_hashes[i] && out.schema_version == correction_tags[i][4]);
+        CHECK(out.route == correction_tags[i][0] && out.active == correction_tags[i][1] && out.black_correction == correction_tags[i][2] && out.white_correction == correction_tags[i][3]);
+        printf("SCANNER_CORRECTION_CASE %s category=%u api=%u native_code=%d reason=%u fields=pass\n", correction_names[i], actual.category, actual.api, actual.native_code, failure.reason);
+    }
+    return 0;
+}
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -1022,6 +1138,7 @@ int main(int argc, char** argv) {
     CHECK(print_illuminant_values() == 0);
     CHECK(preflash_values() == 0);
     CHECK(balance_values() == 0);
+    CHECK(scanner_correction_values() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

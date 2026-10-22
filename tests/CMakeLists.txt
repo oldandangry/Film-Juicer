@@ -196,15 +196,20 @@ set_tests_properties(Film.Host.InputProducts PROPERTIES LABELS "host" TIMEOUT 18
 
 add_library(juicer_film_development_test_objects OBJECT ../src/RustAssetBridge.cpp)
 add_library(juicer_film_recipe_test_objects OBJECT ../src/RustFilmRecipeBridge.cpp)
+add_library(juicer_scanner_test_objects OBJECT ../src/RustScannerBridge.cpp)
+target_link_libraries(juicer_scanner_test_objects PRIVATE juicer_settings)
+target_compile_definitions(juicer_scanner_test_objects PRIVATE JUICER_SCANNER_TEST_HOOK=1)
 add_library(juicer_film_recipe_state_test_objects OBJECT ../src/ResourceAssetLibrary.cpp)
 target_link_libraries(juicer_film_recipe_state_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_film_recipe_state_test_objects PRIVATE JUICER_FILM_RECIPE_STATE_TEST_HOOK=1)
 target_link_libraries(juicer_film_recipe_test_objects PRIVATE juicer_settings)
 target_compile_definitions(juicer_film_recipe_test_objects PRIVATE JUICER_FILM_RECIPE_TEST_HOOK=1)
 add_executable(JuicerFilmRecipeTests ffi/film_recipe_abi_c.c ffi/film_recipe_test.cpp ffi/spectral_allocation_probe.cpp
+    $<TARGET_OBJECTS:juicer_scanner_test_objects>
     $<TARGET_OBJECTS:juicer_film_recipe_test_objects>
     $<TARGET_OBJECTS:juicer_film_recipe_state_test_objects>)
 target_link_libraries(JuicerFilmRecipeTests PRIVATE juicer_core)
+target_compile_definitions(JuicerFilmRecipeTests PRIVATE JUICER_SCANNER_TEST_HOOK=1)
 set_target_properties(JuicerFilmRecipeTests PROPERTIES
     LINKER_LANGUAGE CXX C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
     RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
@@ -259,6 +264,14 @@ set_tests_properties(Ffi.Host.PrintBalance PROPERTIES LABELS "host" TIMEOUT 180)
 add_test(NAME Print.Host.BalanceProducts COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/print/balance-fixtures/manifest.json" print-balance-products "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Print.Host.BalanceProducts PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Ffi.Host.ScannerCorrection COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/correction-fixtures/manifest.json" scanner-correction "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Ffi.Host.ScannerCorrection PROPERTIES LABELS "host" TIMEOUT 180
+    ENVIRONMENT "JUICER_DIAGNOSTICS=2;JUICER_DIAGNOSTICS_PATH=${JUICER_TEST_ARTIFACT_ROOT}/scanner/correction-boundary-trace.log")
+add_test(NAME Scanner.Host.CorrectionProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/correction-fixtures/manifest.json" scanner-correction-products "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Scanner.Host.CorrectionProducts PROPERTIES LABELS "host" TIMEOUT 180
+    ENVIRONMENT "JUICER_DIAGNOSTICS=2;JUICER_DIAGNOSTICS_PATH=${JUICER_TEST_ARTIFACT_ROOT}/scanner/correction-product-trace.log")
 add_test(NAME Print.Gpu.BalanceCache COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/print/balance-fixtures/manifest.json" print-balance-cache "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Print.Gpu.BalanceCache PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
@@ -593,7 +606,7 @@ set_tests_properties(Profile.Gpu.NativeSafety PROPERTIES
     LABELS "gpu" TIMEOUT 60 RESOURCE_LOCK juicer_gpu)
 
 # These objects expose only the real private asset lookups and Hanatos formula.
-add_library(juicer_asset_lookup_test_objects OBJECT ../src/RenderRecipe.cpp ../src/Scanner.cpp)
+add_library(juicer_asset_lookup_test_objects OBJECT ../src/RenderRecipe.cpp)
 target_link_libraries(juicer_asset_lookup_test_objects PRIVATE juicer_settings)
 target_include_directories(juicer_asset_lookup_test_objects PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ffi")
 target_compile_definitions(juicer_asset_lookup_test_objects PRIVATE JUICER_ASSET_LOOKUP_TEST_HOOK=1)
@@ -948,7 +961,10 @@ add_dependencies(JuicerScannerOutputTests juicer_test_resources)
 if(UNIX)
     set_property(TARGET JuicerScannerOutputTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
-add_test(NAME Scanner.Gpu.OutputEncoding COMMAND JuicerScannerOutputTests)
+add_test(NAME Scanner.Gpu.OutputEncoding COMMAND JuicerScannerOutputTests --gtest_filter=-ScannerRoutes.CorrectionRoutes)
+add_test(NAME Scanner.Gpu.CorrectionRoutes COMMAND JuicerScannerOutputTests --gtest_filter=ScannerRoutes.CorrectionRoutes)
+set_tests_properties(Scanner.Gpu.CorrectionRoutes PROPERTIES
+    LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 set_tests_properties(Scanner.Gpu.OutputEncoding PROPERTIES
     LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 
@@ -1281,7 +1297,7 @@ set(juicer_tooling_tests Quality.Dispatcher Quality.ToolingLint Quality.Executio
     Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint Quality.PreparationRenewal
     Ctest.Host.Report Ctest.Host.Repetition Ffi.Host.RustBuild)
 set(juicer_boundary_tests
-    Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Quality.RustNaming Quality.RustBoundaries)
+    Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat
     Gamut.Host.Output.FixtureFormat)

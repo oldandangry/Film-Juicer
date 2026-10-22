@@ -3776,6 +3776,77 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                 }
             std::cout << "PASS adapter/DIR-conditional-capture-narrowing-polarity-and-recovery\n";
 
+            for (bool positive : {false, true})
+                for (bool print : {false, true}) {
+                    host.set_str_choice_value(JuicerParams::kFilmProfileKey, positive ? "fujifilm_provia_100f" : "kodak_portra_400");
+                    host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
+                    host.set_double_value(JuicerParams::kFilmGammaFactor, 1.0);
+                    host.set_double_value(JuicerParams::kPrintGammaFactor, 1.0);
+                    const auto capture = [&]() {
+                        const auto start = host.trace_size();
+                        host.dispatch_event(effect, JuicerParams::kScannerBlackCorrection, OFX::eChangeUserEdit);
+                        for (const char* name : {JuicerParams::kScannerBlackCorrection, JuicerParams::kScannerWhiteCorrection, JuicerParams::kScannerBlackLevel, JuicerParams::kScannerWhiteLevel}) {
+                            const std::string prefix = "GET_CURRENT name=" + std::string(name) + " ";
+                            require(std::count_if(host.trace().begin() + static_cast<std::ptrdiff_t>(start), host.trace().end(), [&](const std::string& row) {
+                                        return row.starts_with(prefix);
+                                    }) == 1,
+                                    "scanner control uses exactly one current-value getter");
+                        }
+                        const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
+                        require(print ? bool(admitted.printState) : bool(admitted.directState), "scanner controls admit complete route");
+                        return admitted;
+                    };
+                    const auto output = [&](const auto& admitted) -> const ScannerOutputRecipe& {
+                        return print ? admitted.printState->recipe.scannerOutput : admitted.directState->recipe.scannerOutput;
+                    };
+                    constexpr double black = 0.01234567890123;
+                    constexpr double white = 0.98765432109876;
+                    for (unsigned flags = 0; flags < 4; ++flags) {
+                        host.set_int_value(JuicerParams::kScannerBlackCorrection, int(flags & 1u));
+                        host.set_int_value(JuicerParams::kScannerWhiteCorrection, int((flags >> 1u) & 1u));
+                        host.set_double_value(JuicerParams::kScannerBlackLevel, black);
+                        host.set_double_value(JuicerParams::kScannerWhiteLevel, white);
+                        const auto admitted = capture();
+                        const auto& scanner = output(admitted);
+                        require(scanner.blackCorrection == bool(flags & 1u) && scanner.whiteCorrection == bool(flags & 2u) &&
+                                    scanner.blackLevel == static_cast<float>(black) && scanner.whiteLevel == static_cast<float>(white),
+                                "scanner bools and f64-to-f32 narrowing survive actual OFX capture");
+                    }
+                    const auto held = capture();
+                    const auto heldHash = print ? held.printState->recipe.hash : held.directState->recipe.hash;
+                    const auto active = host.render(effect, frame, "scanner-active");
+                    require(active.succeeded, "active scanner correction renders for selected polarity/route");
+
+                    host.set_double_value(JuicerParams::kScannerBlackLevel, -1.0);
+                    host.set_double_value(JuicerParams::kScannerWhiteLevel, 2.0);
+                    const auto clamped = capture();
+                    require(output(clamped).blackLevel == 0.0f && output(clamped).whiteLevel == 1.0f, "scanner encoded levels clamp to unit range");
+                    host.set_double_value(JuicerParams::kScannerBlackLevel, std::numeric_limits<double>::quiet_NaN());
+                    host.set_double_value(JuicerParams::kScannerWhiteLevel, std::numeric_limits<double>::infinity());
+                    const auto sanitized = capture();
+                    require(output(sanitized).blackLevel == 0.01f && output(sanitized).whiteLevel == 0.98f, "scanner nonfinite levels use control defaults");
+
+                    if (positive || print) {
+                        host.set_double_value(JuicerParams::kScannerBlackLevel, 0.0);
+                        host.set_double_value(JuicerParams::kScannerWhiteLevel, 0.0);
+                        const auto failedState = capture();
+                        require(output(failedState).whiteLevel == 0.0f, "computed correction failure is admitted before frame preparation");
+                        const auto failed = host.render(effect, frame, "scanner-computed-midgray-failure", true);
+                        require(failed.rejected && failed.state.pendingValid && failed.releasedImages == 2, "frame-stage correction failure releases both images after publication");
+                        require(output(held).blackLevel == static_cast<float>(black) && output(held).whiteLevel == static_cast<float>(white) &&
+                                    (print ? held.printState->recipe.hash : held.directState->recipe.hash) == heldHash,
+                                "held immutable scanner recipe survives a newer computed failure");
+                    }
+                    host.set_double_value(JuicerParams::kScannerBlackLevel, black);
+                    host.set_double_value(JuicerParams::kScannerWhiteLevel, white);
+                    const auto restored = capture();
+                    const auto recoveredScanner = host.render(effect, frame, "scanner-recovery");
+                    require(recoveredScanner.succeeded && recoveredScanner.outputSignature == active.outputSignature &&
+                                (print ? restored.printState->recipe.hash : restored.directState->recipe.hash) == heldHash,
+                            "scanner valid recovery restores recipe and output identity");
+                }
+            std::cout << "PASS adapter/scanner-current-capture-flags-sanitation-narrowing-active-routes-and-frame-recovery\n";
+
             require(host.current_get_count() != 0 &&
                         host.at_time_get_count() == 0,
                     "adapter getter selection was not current-value-only");

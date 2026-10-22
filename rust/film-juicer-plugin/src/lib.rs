@@ -92,3 +92,9 @@ mod optics_bridge;
     reason = "fixed print illumination transport admits foreign extents and copies complete synchronous values"
 )]
 mod print_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "scanner transport checks foreign extents and scopes synchronous immutable input borrows"
+)]
+mod scanner_bridge;

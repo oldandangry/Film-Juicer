@@ -262,6 +262,32 @@ namespace {
         EXPECT_FLOAT_EQ(actual.outputGamut.chromaKneeLimit, 1.125f);
     }
 
+    TEST(PreparedProjection, DisabledGamutKeepsRecipeIdentityWithoutActiveResources) {
+        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+            for (bool enabled : {false, true}) {
+                SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " enabled=" << enabled);
+                FjPreparedHostData input{};
+                input.output_color = make_fixed_input().output_color;
+                input.route = static_cast<std::uint32_t>(route);
+                input.capture_polarity = static_cast<std::uint32_t>(Spektrafilm::scan_route_metadata(route).capturePolarity);
+                if (!enabled) {
+                    input.output_color.flags &= ~FJ_COLOR_GAMUT_COMPRESSION;
+                }
+                JuicerCuda::PreparedDescriptors actual;
+                std::string diagnostic;
+                ASSERT_TRUE(JuicerCuda::decode_prepared_descriptors(input, actual, diagnostic)) << diagnostic;
+                EXPECT_EQ(actual.outputGamut.enabled, enabled);
+                EXPECT_EQ(actual.outputGamut.hash, 104u);
+                EXPECT_EQ(actual.color.outputGamutRecipeHash, enabled ? 104u : 0u);
+
+                FjPreparedHostData encoded{};
+                JuicerCudaTest::encode_prepared_descriptors(actual, encoded);
+                EXPECT_EQ(encoded.output_color.gamut_recipe_hash, input.output_color.gamut_recipe_hash);
+                EXPECT_EQ(encoded.output_color.flags, input.output_color.flags);
+            }
+        }
+    }
+
     TEST(PreparedProjection, OpticsKeepStageAndRgbChannelOrder) {
         const FjPreparedHostData input = make_fixed_input();
         JuicerCuda::PreparedDescriptors actual;

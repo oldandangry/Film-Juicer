@@ -117,3 +117,6 @@ tests/print/preflash-fixtures/** -text whitespace=cr-at-eol
 
 # Print balance characterization preserves exact native capture bytes.
 tests/print/balance-fixtures/** -text whitespace=cr-at-eol
+
+# Scanner correction native characterization preserves exact capture bytes.
+tests/scanner/correction-fixtures/** -text whitespace=cr-at-eol

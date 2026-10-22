@@ -1637,6 +1637,240 @@ unsafe extern "C" fn fj_test_film_recipe_abi_facts(count: *mut usize) -> *const 
         crate::print_bridge::FJ_PRINT_BALANCE_REASON_COMPENSATED_RAW as usize,
         crate::print_bridge::FJ_PRINT_BALANCE_REASON_BALANCE as usize,
         crate::print_bridge::FJ_PRINT_BALANCE_REASON_PANIC as usize,
+        size_of::<crate::scanner_bridge::FjScannerCorrectionParams>(),
+        align_of::<crate::scanner_bridge::FjScannerCorrectionParams>(),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerCorrectionParams, route),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerCorrectionParams, flags),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerCorrectionParams,
+            black_level
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerCorrectionParams,
+            white_level
+        ),
+        size_of::<crate::scanner_bridge::FjScannerCorrectionTables>(),
+        align_of::<crate::scanner_bridge::FjScannerCorrectionTables>(),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerCorrectionTables, eps_c),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerCorrectionTables, eps_m),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerCorrectionTables, eps_y),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerCorrectionTables, weighted_y),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerCorrectionTables,
+            baseline_min
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerCorrectionTables,
+            sample_count
+        ),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerCorrectionTables, inv_yn),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerCorrectionTables,
+            has_baseline
+        ),
+        size_of::<crate::scanner_bridge::FjScannerDirectCorrectionInput>(),
+        align_of::<crate::scanner_bridge::FjScannerDirectCorrectionInput>(),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerDirectCorrectionInput,
+            tables
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerDirectCorrectionInput,
+            film_base_density
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerDirectCorrectionInput,
+            film_log_exposure
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerDirectCorrectionInput,
+            film_authored_density_curves_cmy
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerDirectCorrectionInput,
+            minimum_density_cmy
+        ),
+        3,
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerDirectCorrectionInput,
+            maximum_density_cmy
+        ),
+        3,
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerDirectCorrectionInput,
+            inverse_span_cmy
+        ),
+        3,
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerDirectCorrectionInput,
+            baseline_density_cmy
+        ),
+        3,
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerDirectCorrectionInput,
+            reference_hash
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerDirectCorrectionInput,
+            medium
+        ),
+        size_of::<crate::scanner_bridge::FjScannerPrintCorrectionInput>(),
+        align_of::<crate::scanner_bridge::FjScannerPrintCorrectionInput>(),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerPrintCorrectionInput, tables),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            film_base_density
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            film_channel_density_cmy
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            print_sensitivity_cmy
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            filtered_main_illuminant
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            print_base_density
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            print_log_exposure
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            print_density_curves_cmy
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            minimum_density_cmy
+        ),
+        3,
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            inverse_span_cmy
+        ),
+        3,
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            film_minimum_density_cmy
+        ),
+        3,
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            film_maximum_density_cmy
+        ),
+        3,
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            preflash_raw_cmy
+        ),
+        3,
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            normalizer
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerPrintCorrectionInput,
+            preflash_exposure
+        ),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerPrintCorrectionInput, medium),
+        size_of::<crate::scanner_bridge::FjScannerColorCorrection>(),
+        align_of::<crate::scanner_bridge::FjScannerColorCorrection>(),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerColorCorrection, route),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerColorCorrection, active),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerColorCorrection,
+            black_correction
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerColorCorrection,
+            white_correction
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerColorCorrection,
+            target_black_linear
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerColorCorrection,
+            target_white_linear
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerColorCorrection,
+            reference_black_y
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerColorCorrection,
+            reference_white_y
+        ),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerColorCorrection, xyz_slope),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerColorCorrection, xyz_offset),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerColorCorrection,
+            exposure_scale
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerColorCorrection,
+            schema_version
+        ),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerColorCorrection, hash),
+        size_of::<crate::scanner_bridge::FjScannerCorrectionFailure>(),
+        align_of::<crate::scanner_bridge::FjScannerCorrectionFailure>(),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerCorrectionFailure, reason),
+        size_of::<crate::scanner_bridge::FjScannerCorrectionTrace>(),
+        align_of::<crate::scanner_bridge::FjScannerCorrectionTrace>(),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerCorrectionTrace, outcome),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerCorrectionTrace,
+            reference_black_y
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerCorrectionTrace,
+            reference_white_y
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerCorrectionTrace,
+            target_black_linear
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerCorrectionTrace,
+            target_white_linear
+        ),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerCorrectionTrace, xyz_slope),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerCorrectionTrace, xyz_offset),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerCorrectionTrace,
+            corrected_midgray
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerCorrectionTrace,
+            exposure_scale
+        ),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerCorrectionTrace, hash),
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_NONE as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_RAW as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_DIRECT_INPUTS as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_DIRECT_REFERENCE as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_DIRECT_SCAN as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_DIRECT_MIDGRAY as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_DIRECT_LOOKUP as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_PRINT_INPUTS as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_PRINT_REFERENCE_LOOKUP as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_PRINT_SCAN as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_PRINT_MIDGRAY as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_PRINT_LOOKUP as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_INVALID as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_IDENTITY as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_REASON_PANIC as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_TRACE_NONE as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_TRACE_ACCEPTED as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_TRACE_MIDGRAY as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_TRACE_MALFORMED as usize,
+        crate::scanner_bridge::FJ_SCANNER_CORRECTION_TRACE_ZERO_HASH as usize,
     ];
     if !count.is_null() {
         // SAFETY: Facade caller authorizes the exclusive count output.

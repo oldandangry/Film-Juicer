@@ -289,6 +289,26 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_scanner_correction_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("scanner_correction_complete", None),
+            ("scanner_correction_construction", {"E0451": ("scanner::Correction { ..correction }",)}),
+            ("scanner_correction_default", {"E0599": ("scanner::Correction::default()",)}),
+            ("scanner_correction_private", {"E0616": ("correction.route", "correction.storage")}),
+            ("scanner_correction_readonly", {"E0070": ("correction.exposure_scale() = 0.0",)}),
+            ("scanner_correction_owned", None),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_optics_are_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("optics_complete", None),

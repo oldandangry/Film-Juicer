@@ -18,6 +18,7 @@
 #include "gtest/gtest.h"
 
 #include "ColorTransforms.h"
+#include "CudaRenderProjection.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "juicer_cuda_owner.h"
@@ -747,9 +748,245 @@ namespace {
             require(frame.finish(nullptr, error), error.diagnostic);
             return result;
         }
+        struct CorrectionCapture {
+            LutCapture lut;
+            Scanner::ScannerColorCorrectionDescriptor correction;
+            std::array<std::uint64_t, 7> printHashes{};
+            std::array<std::uintptr_t, 15> printAddresses{};
+            std::array<std::uint32_t, 4> printValues{};
+        };
+        CorrectionCapture correction_resources(const RouteInputs& inputs, const Image& image, bool derive = true) {
+            auto frame = prepare_route(inputs, image);
+            CorrectionCapture result;
+            result.lut = capture_lut(*frame.focused_resources().scanLut);
+            const auto& recipe = inputs.product.recipe;
+            std::string diagnostic;
+            if (Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute)) {
+                const auto print = frame.print_resources();
+                require(print.active && print.mainIlluminantHost, "prepared print resources remain available for correction");
+                result.printHashes = {print.filmDensityTablesHash, print.profileTablesHash, print.mainIlluminantHash, print.preflashIlluminantHash, print.preflashRawHash, print.balanceHash, print.preparationHash};
+                std::size_t index = 0;
+                const auto address = [&](const float* value) {
+                    result.printAddresses[index++] = reinterpret_cast<std::uintptr_t>(value);
+                };
+                for (const auto& curve : {print.printSensC, print.printSensM, print.printSensY, print.printDcC, print.printDcM, print.printDcY}) {
+                    address(curve.x);
+                    address(curve.y);
+                }
+                address(print.mainIlluminant);
+                address(print.preflashIlluminant);
+                address(print.filmDensityTables.epsC);
+                result.printValues = {std::bit_cast<std::uint32_t>(print.preflashRawCmy[0]), std::bit_cast<std::uint32_t>(print.preflashRawCmy[1]), std::bit_cast<std::uint32_t>(print.preflashRawCmy[2]), std::bit_cast<std::uint32_t>(print.normalizer)};
+                if (derive)
+                    require(Scanner::build_print_scanner_color_correction_descriptor({&recipe, &inputs.product.payload.scannerTables, print.mainIlluminantHost, print.spectralSampleCount, print.preflashRawCmy, print.normalizer}, result.correction, diagnostic), diagnostic);
+            } else if (derive) {
+                require(Scanner::build_direct_scanner_color_correction_descriptor(recipe, inputs.product.payload.scannerTables, result.correction, diagnostic), diagnostic);
+            }
+            JuicerCuda::Failure failure;
+            require(frame.finish(nullptr, failure), failure.diagnostic);
+            return result;
+        }
+        FjStatus execute_correction(const RouteInputs& inputs, Image& image, bool projection, std::string& diagnostic) {
+            std::cout << "scanner correction caller route=" << static_cast<int>(inputs.product.recipe.profileRoute.scanRoute)
+                      << " projection=" << projection << " correction=" << inputs.product.recipe.scannerOutput.blackCorrection
+                      << "/" << inputs.product.recipe.scannerOutput.whiteCorrection << '\n';
+            image.clear_output();
+            auto preparation = JuicerProcess::root().begin_frame_preparation();
+            require(preparation.active(), "scanner actual-caller frame preparation admission");
+            const auto& recipe = inputs.product.recipe;
+            const auto& payload = inputs.product.payload;
+            const JuicerCuda::FrameRect bounds{0, 0, image.width, image.height};
+            const auto meter = JuicerCuda::make_auto_exposure_preview_descriptor(bounds, bounds, recipe.filmRaw.autoExposureMethod);
+            const std::optional<Spektrafilm::DiffusionFrameSetDescriptor> diffusion;
+            const std::optional<ScatterHalationFrameDescriptor> halation;
+            const Spektrafilm::FilmJuicerEffectsGeometry geometry{};
+            const auto rowBytes = static_cast<std::ptrdiff_t>(image.stride * sizeof(float));
+            const JuicerCuda::ExecutionFrame frame{bounds, bounds, bounds, reinterpret_cast<const unsigned char*>(image.input.get()), reinterpret_cast<const unsigned char*>(image.input.get()), reinterpret_cast<unsigned char*>(image.output.get()), rowBytes, rowBytes, image.components, nullptr, diffusion, halation, geometry, 100.0f, 0.0, 24.0, 0x534334, 0x5343414e, meter, false, false};
+            JuicerCuda::ResourceManager::SubmissionSnapshot snapshot;
+            snapshot.instanceToken.value = 0x5343414e4e4552ull;
+            snapshot.frameToken.value = 0; // floor(frame.timeFrames), independent of snapshot identity.
+            snapshot.snapshotId = nextIdentity++;
+            snapshot.deviceContextKey = key;
+            snapshot.keyDigests = JuicerCuda::ResourceManager::make_key_digests(payload.uploadCoreHash, recipe.dirCouplers.hash, payload.scannerHash, meter.hash);
+            JuicerCuda::PendingContextLossRecovery recovery;
+            FjStatus status{FJ_STATUS_SUCCESS, FJ_API_NONE, 0};
+            diagnostic.clear();
+            if (projection) {
+                FjFrame raw{};
+                raw.source = {reinterpret_cast<std::uintptr_t>(image.input.get()), {0, 0, image.width, image.height}, rowBytes, static_cast<std::uint32_t>(image.components), FJ_DEPTH_FLOAT32};
+                raw.destination = raw.source;
+                raw.destination.address = reinterpret_cast<std::uintptr_t>(image.output.get());
+                raw.render_window = raw.full_frame_extent = raw.source.bounds;
+                raw.flags = FJ_FRAME_STREAM_PRESENT;
+                JuicerCuda::NativeCall call(JuicerCuda::borrowed_owner());
+                FjCudaContext context{};
+                require(call.inspect(&raw, &context, nullptr).category == FJ_STATUS_SUCCESS && context.device_id == key.deviceId && reinterpret_cast<void*>(context.context) == key.contextOpaque, "scanner projection exact context");
+                const auto outcome = JuicerCuda::project_and_render(call, recipe, payload, frame, raw, snapshot, recovery, {}, nullptr, {}, diagnostic);
+                status = outcome.status;
+                EXPECT_EQ(outcome.flags, 0u);
+            } else {
+                try {
+                    if (Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute))
+                        JuicerCuda::execute_print({recipe, payload, frame, snapshot}, recovery);
+                    else
+                        JuicerCuda::execute_direct({recipe, payload, frame, snapshot}, recovery);
+                } catch (const JuicerCuda::ExecutionFailure& failure) {
+                    status = failure.failure.status;
+                    diagnostic = failure.failure.diagnostic;
+                }
+            }
+            EXPECT_FALSE(recovery.pending);
+            check_cuda(cudaDeviceSynchronize());
+            return status;
+        }
+        void check_correction_output(const Image& image, const std::vector<float>& output) {
+            for (int y = 0; y < image.height; ++y)
+                for (int x = 0; x < image.width; ++x) {
+                    const auto index = static_cast<std::size_t>(y) * image.stride + static_cast<std::size_t>(x) * image.components;
+                    for (int channel = 0; channel < 3; ++channel) {
+                        EXPECT_TRUE(std::isfinite(output[index + channel]));
+                        EXPECT_GE(output[index + channel], 0.0f);
+                        EXPECT_LE(output[index + channel], 1.0f);
+                    }
+                    EXPECT_EQ(std::bit_cast<std::uint32_t>(output[index + 3]), std::bit_cast<std::uint32_t>(image.source[index + 3]));
+                }
+        }
         JuicerCuda::ResourceManager::DeviceContextKey key;
         inline static std::uint64_t nextIdentity = 1;
     };
+
+    TEST_F(ScannerRoutes, CorrectionRoutes) {
+        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+            SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
+            auto controls = RouteInputs::controls_for_route(route);
+            controls.glareActive = false;
+            controls.scannerLutResolution = 17;
+            RouteInputs off(controls, 0, true);
+            controls.scannerBlackCorrection = controls.scannerWhiteCorrection = 1;
+            RouteInputs held(controls, 0, true);
+            const auto heldHash = held.product.recipe.hash;
+            const auto heldScannerHash = held.product.recipe.scannerOutput.hash;
+            Image image({31, 19}, 4);
+            const auto before = correction_resources(off, image);
+            const auto active = correction_resources(held, image);
+            EXPECT_EQ(before.lut.hash, active.lut.hash);
+            EXPECT_EQ(before.lut.addresses, active.lut.addresses);
+            EXPECT_EQ(before.lut.content, active.lut.content);
+            EXPECT_EQ(before.printHashes, active.printHashes);
+            EXPECT_EQ(before.printAddresses, active.printAddresses);
+            EXPECT_EQ(before.printValues, active.printValues);
+            const bool correctionActive = route != Spektrafilm::ScanRoute::NegativeDirectScan;
+            EXPECT_EQ(active.correction.active, correctionActive);
+            EXPECT_EQ(active.correction.hash != 0, correctionActive);
+            EXPECT_NE(off.product.recipe.hash, heldHash);
+            EXPECT_NE(off.product.recipe.scannerOutput.hash, heldScannerHash);
+            std::string diagnostic;
+            require(execute_correction(off, image, false, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+            const auto offWords = bit_patterns(image.output.download());
+            require(execute_correction(held, image, false, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+            const auto legacy = image.output.download();
+            check_correction_output(image, legacy);
+            require(execute_correction(held, image, true, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+            EXPECT_EQ(bit_patterns(legacy), bit_patterns(image.output.download()));
+            require(execute_correction(held, image, false, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+            EXPECT_EQ(bit_patterns(legacy), bit_patterns(image.output.download()));
+            if (correctionActive)
+                EXPECT_NE(offWords, bit_patterns(legacy));
+            else
+                EXPECT_EQ(offWords, bit_patterns(legacy));
+
+            if (correctionActive) {
+                controls.scannerBlackLevel = controls.scannerWhiteLevel = 0.0;
+                RouteInputs failed(controls, 0, true);
+                for (bool projection : {false, true}) {
+                    const auto status = execute_correction(failed, image, projection, diagnostic);
+                    EXPECT_EQ(status.category, FJ_STATUS_PREPARATION_FAILURE);
+                    EXPECT_EQ(status.api, FJ_API_NONE);
+                    EXPECT_EQ(status.native_code, 0);
+                    EXPECT_EQ(diagnostic, Spektrafilm::scan_route_is_print(route) ? "MalformedRequiredProfileData phase=8B print corrected midgray" : "MalformedRequiredProfileData phase=8B direct corrected midgray");
+                    for (const auto word : bit_patterns(image.output.download()))
+                        EXPECT_EQ(word, kPadding); // No output submission after the computed failure.
+                }
+                const auto operation = Spektrafilm::scan_route_is_print(route) ? 1u : 0u;
+                require(fj_test_scanner_correction_fault(operation, 1).category == FJ_STATUS_SUCCESS, "arm independent scanner constructor fault");
+                (void)correction_resources(held, image, false);
+                EXPECT_EQ(execute_correction(held, image, false, diagnostic).category, FJ_STATUS_INTERNAL_FAILURE);
+                EXPECT_EQ(diagnostic, "scanner correction contained panic");
+                for (const auto word : bit_patterns(image.output.download()))
+                    EXPECT_EQ(word, kPadding);
+            }
+            require(execute_correction(held, image, true, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+            EXPECT_EQ(bit_patterns(legacy), bit_patterns(image.output.download()));
+            const auto restored = correction_resources(held, image);
+            EXPECT_EQ(restored.correction.hash, active.correction.hash);
+            EXPECT_EQ(restored.lut.addresses, active.lut.addresses);
+            EXPECT_EQ(restored.lut.content, active.lut.content);
+            EXPECT_EQ(restored.printHashes, active.printHashes);
+            EXPECT_EQ(restored.printAddresses, active.printAddresses);
+            EXPECT_EQ(restored.printValues, active.printValues);
+            EXPECT_EQ(held.product.recipe.hash, heldHash);
+            EXPECT_EQ(held.product.recipe.scannerOutput.hash, heldScannerHash);
+        }
+    }
+
+    TEST_F(ScannerRoutes, GamutSwitchKeepsPreparedAndLegacyRenderingEquivalent) {
+        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+            auto controls = RouteInputs::controls_for_route(route);
+            controls.glareActive = false;
+            controls.scannerLutResolution = 17;
+            controls.scannerBlackCorrection = controls.scannerWhiteCorrection = 1;
+            RouteInputs disabled(controls, 0, false);
+            RouteInputs enabled(controls, 0, true);
+            const auto disabledHash = disabled.product.recipe.scannerOutput.outputGamut.hash;
+            const auto enabledHash = enabled.product.recipe.scannerOutput.outputGamut.hash;
+            ASSERT_NE(disabledHash, 0u);
+            ASSERT_NE(enabledHash, 0u);
+            EXPECT_NE(disabledHash, enabledHash);
+
+            Image image({31, 19}, 4);
+            const auto initial = correction_resources(disabled, image);
+            std::array<std::vector<std::uint32_t>, 2> expected;
+            for (const auto* inputs : {&disabled, &enabled, &disabled, &enabled}) {
+                const auto& gamut = inputs->product.recipe.scannerOutput.outputGamut;
+                SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route) << " gamut=" << gamut.enabled);
+                std::cout << "prepared gamut route=" << static_cast<int>(route) << " enabled=" << gamut.enabled << '\n';
+                {
+                    auto frame = prepare_route(*inputs, image);
+                    const auto view = frame.focused_resources();
+                    ASSERT_TRUE(view.active);
+                    ASSERT_NE(view.scannerColor, nullptr);
+                    EXPECT_EQ(view.scannerColor->outputGamutRecipeHash, gamut.enabled ? gamut.hash : 0);
+                    EXPECT_EQ(view.outputGamutTransform != nullptr, gamut.enabled);
+                    EXPECT_EQ(view.outputGamutCmax != nullptr, gamut.enabled);
+                    JuicerCuda::Failure failure;
+                    require(frame.finish(nullptr, failure), failure.diagnostic);
+                }
+                std::string diagnostic;
+                require(execute_correction(*inputs, image, false, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+                const auto legacy = image.output.download();
+                check_correction_output(image, legacy);
+                require(execute_correction(*inputs, image, true, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+                const auto projected = bit_patterns(image.output.download());
+                EXPECT_EQ(projected, bit_patterns(legacy));
+                auto& previous = expected[gamut.enabled ? 1u : 0u];
+                if (previous.empty()) {
+                    previous = projected;
+                } else {
+                    EXPECT_EQ(projected, previous);
+                }
+                const auto reused = correction_resources(*inputs, image);
+                EXPECT_EQ(reused.correction.hash, initial.correction.hash);
+                EXPECT_EQ(reused.lut.hash, initial.lut.hash);
+                EXPECT_EQ(reused.lut.addresses, initial.lut.addresses);
+                EXPECT_EQ(reused.lut.content, initial.lut.content);
+                EXPECT_EQ(reused.printHashes, initial.printHashes);
+                EXPECT_EQ(reused.printAddresses, initial.printAddresses);
+                EXPECT_EQ(reused.printValues, initial.printValues);
+            }
+            EXPECT_EQ(disabled.product.recipe.scannerOutput.outputGamut.hash, disabledHash);
+            EXPECT_EQ(enabled.product.recipe.scannerOutput.outputGamut.hash, enabledHash);
+        }
+    }
 
     TEST_F(ScannerRoutes, FusedAndSeparateOutputMatchOnAllFourRoutes) {
         for (auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {

@@ -28,7 +28,9 @@
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
+#include "Logging.h"
 #include "RustAssetBridge.h"
+#include "RustScannerBridge.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
 #include "print_illuminant_fixture.h"
@@ -38,6 +40,7 @@ static_assert(!std::is_copy_constructible_v<JuicerAssets::DevelopmentHold>);
 static_assert(!std::is_copy_constructible_v<JuicerAssets::FilmDevelopment>);
 static_assert(std::is_nothrow_move_constructible_v<JuicerAssets::DevelopmentHold>);
 extern "C" const std::size_t* fj_test_film_recipe_abi_c_facts(std::size_t* count);
+extern "C" int fj_test_scanner_correction_c_call(unsigned, const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, const FjScannerPrintCorrectionInput*, const FjScannerColorCorrection*, unsigned, unsigned);
 
 namespace {
     using Json = nlohmann::json;
@@ -281,7 +284,30 @@ namespace {
 #include "print_illuminant_test.inc"
 #include "print_preflash_test.inc"
 #include "print_balance_test.inc"
+#include "scanner_correction_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "scanner-correction" || std::string_view(argv[3]) == "scanner-correction-products")) {
+        const auto manifest = read(argv[2]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const auto captured = read(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        const auto checked = read(directory / manifest.at("normative").get<std::string>());
+        const auto tracePath = directory / manifest.at("presets").at(argv[4]).at("traces").get<std::string>();
+        if (std::string_view(argv[3]) == "scanner-correction-products")
+            ScannerCorrectionTest::check_products(argv[1], captured, read(tracePath));
+        else {
+            layouts();
+            ScannerCorrectionTest::values(captured, checked);
+            ScannerCorrectionTest::boundary(captured);
+            ScannerCorrectionTest::native(captured, checked);
+            ScannerCorrectionTest::callers(captured, checked, tracePath);
+        }
+        std::puts("PASS scanner correction exact values, checked demand, ABI, clearing and actual native binding");
+        return 0;
+    }
+    if (argc == 6 && std::string_view(argv[3]) == "scanner-correction-primitives") {
+        PrintPreflashTest::save(argv[5], {{"preset", argv[4]}, {"primitives", ScannerCorrectionTest::primitives()}});
+        return 0;
+    }
     if (argc == 5 && std::string_view(argv[3]) == "print-balance-cache") {
         PrintBalanceTest::cache(argv[1]);
         std::puts("PASS balance cache keys, resolved bindings, residency/accounting and no per-frame derivation");

@@ -826,6 +826,30 @@ isolates the subsequent blur/delta schedule and does not validate the sampler.
 
 ### Scanner output encoding
 
+`Ffi.Host.ScannerCorrection` checks complete direct/print correction construction,
+coordinated C11/C++20/Rust ABI facts, raw/facade/native failure and clearing rules,
+all byte/flag demand combinations, independent fault consumption, integrity and
+expired input ownership. `Scanner.Host.CorrectionProducts` checks 48 actual
+route/state/resource inputs and their enclosing identities against the separately
+adopted [native characterizations](scanner/correction-fixtures/manifest.json).
+Both groups run through `JuicerFilmRecipeTests <resources> <manifest>
+scanner-correction[-products] <preset>` and require no CUDA device at runtime.
+The early `scanner-correction-primitives` maintenance mode compares native/Rust
+math primitives; native whole-builder capture mode is retired after cutover.
+
+`Scanner.Gpu.CorrectionRoutes` uses actual legacy execution and prepared C
+projection on all four routes, including active positive direct and both print
+polarities. It checks correction-only LUT/print-resource reuse, exact repeated
+and projected output, frame-stage computed failure, fault consumption/recovery
+and held immutable recipes. `Ofx.Gpu.AdapterTrace` additionally checks actual
+current getters, all correction flag combinations, encoded-level sanitation and
+f64-to-f32 narrowing. These witnesses preserve the correction construction point
+after state publication and retain the ordinary finish/abort owners.
+
+The production C11 probe executes all 28 revision-1 correction cases and the
+shared Rust demand query against each native Release testing-OFF archive. The
+native exception captures and normative checked outcomes remain separate.
+
 `Scanner.Gpu.OutputEncoding` calls the production CUDA scanner launchers and
 checks all nine output spaces, CCTF on/off, optional output matrix, transfer
 breakpoint neighbors, negative/HDR/subnormal/nonfinite values, RGB/RGBA, odd

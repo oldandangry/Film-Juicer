@@ -2,6 +2,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -9,9 +10,33 @@
 #include <gtest/gtest.h>
 
 #include "asset_lookup_test.h"
+#include "juicer_test_api.h"
 #include "RenderRecipe.h"
 #include "Scanner.h"
 #include "SpectralData.h"
+
+namespace AssetLookupTest {
+    std::optional<float> interp_clamped_monotonic_for_test(float query, const std::vector<float>& axis, const std::vector<float>& values) {
+        float out = 0;
+        std::uint32_t present = 0;
+        const auto status = fj_test_scanner_lookup(query, {axis.data(), axis.size()}, {values.data(), values.size()}, &out, &present);
+        if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0 || present > 1)
+            throw std::runtime_error("scanner lookup fixture transport");
+        return present ? std::optional<float>{out} : std::nullopt;
+    }
+    std::optional<float> sample_density_curve_for_test(float query, const Profiles::FilmProfileSamples& data, std::size_t channel) {
+        std::vector<float> curves;
+        for (const auto& row : data.densityCurves)
+            for (float value : row)
+                curves.push_back(value);
+        float out = 0;
+        std::uint32_t present = 0;
+        const auto status = fj_test_scanner_density_curve(query, {data.logExposure.data(), data.logExposure.size()}, {curves.data(), curves.size()}, channel < 3 ? static_cast<std::uint32_t>(channel) : 3u, &out, &present);
+        if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0 || present > 1)
+            throw std::runtime_error("scanner density lookup fixture transport");
+        return present ? std::optional<float>{out} : std::nullopt;
+    }
+} // namespace AssetLookupTest
 
 namespace {
 

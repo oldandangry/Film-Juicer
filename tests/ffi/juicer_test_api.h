@@ -338,6 +338,8 @@ FjStatus fj_test_film_development_retain(const FjFilmDevelopmentOwner*, FjFilmDe
  * C/M/Y dye), raw three RGB values. out holds 12 doubles, narrowed two floats
  * (factor, ratio to denominator). Exclusive outputs expire at synchronous return. */
 void fj_test_print_balance_primitive(const float* density, const float* raw, float denominator, double* out, float* narrowed);
+/* Primitive-only scanner witness: six float and three double outputs. */
+void fj_test_scanner_correction_primitive(float value, float accumulator, float multiplier, float* out, double* out_double);
 void fj_test_print_preflash_primitive(double density, double illuminant, double sensitivity, double accumulator, double* out, float* narrowed);
 FjStatus fj_test_print_balance_prepare(
     const FjPrintBalanceInput* input, FjPrintBalance* out_balance, FjPrintBalanceFailure* out_failure, FjErrorBuffer* error);
@@ -352,6 +354,13 @@ FjStatus fj_test_print_illuminant_prepare(
 FjStatus fj_test_film_recipe_fault(uint32_t stage, uint32_t fault);
 size_t fj_test_film_dir_live_owners(void);
 const size_t* fj_test_film_recipe_abi_facts(size_t* count);
+FjStatus fj_test_scanner_direct_correction_prepare(
+    const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*);
+FjStatus fj_test_scanner_print_correction_prepare(
+    const FjScannerCorrectionParams*, const FjScannerPrintCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*);
+FjStatus fj_test_scanner_correction_fault(uint32_t operation, uint32_t fault);
+FjStatus fj_test_scanner_lookup(float query, FjFloatSpan axis, FjFloatSpan values, float* out, uint32_t* present);
+FjStatus fj_test_scanner_density_curve(float query, FjFloatSpan axis, FjFloatSpan curves_cmy, uint32_t channel, float* out, uint32_t* present);
 #ifdef __cplusplus
 }
 #endif

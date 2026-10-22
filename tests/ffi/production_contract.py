@@ -106,6 +106,7 @@ def execute(arguments):
         b"print illuminant fixture panic",
         b"print preflash fixture panic",
         b"print balance fixture panic",
+        b"scanner correction fixture panic",
         b"film DIR acquire fixture panic",
         b"film DIR view fixture panic",
         b"film DIR release fixture panic",
@@ -162,6 +163,8 @@ def execute(arguments):
     consumed_paths.extend([preflash_manifest, preflash_payload])
     balance_manifest, balance_payload, _, _, _ = balance_fixture(arguments.preset)
     consumed_paths.extend([balance_manifest, balance_payload])
+    correction_manifest, correction_payload, correction_checked, _, _, _ = scanner_correction_fixture(arguments.preset)
+    consumed_paths.extend([correction_manifest, correction_payload, correction_checked])
     consumed = {str(path): digest(path) for path in sorted(set(consumed_paths))}
 
     def check_consumed():
@@ -204,6 +207,9 @@ def execute(arguments):
         "fj_legacy_print_illuminant_prepare",
         "fj_legacy_print_preflash_prepare",
         "fj_legacy_print_balance_prepare",
+        "fj_legacy_scanner_direct_correction_prepare",
+        "fj_legacy_scanner_print_correction_prepare",
+        "fj_legacy_scanner_correction_input_demand",
         "fj_legacy_output_color",
         "fj_legacy_film_profile_acquire",
         "fj_legacy_print_profile_acquire",
@@ -237,6 +243,8 @@ def execute(arguments):
     print_illuminant_results = []
     preflash_results = []
     balance_results = []
+    scanner_correction_results = []
+    scanner_demand_results = []
     for name, source in probes:
         executable = out / (name + suffix)
         target_source = out / (name + ".c")
@@ -402,6 +410,19 @@ def execute(arguments):
                 balance_results.append({"case": case, "category": actual[0], "api": actual[1],
                                         "native_code": actual[2], "reason": actual[3],
                                         "channel": actual[4], "fields": "11-pass"})
+            _, _, _, names, rows, envelopes = scanner_correction_fixture(arguments.preset)
+            for prefix, results in (("SCANNER_CORRECTION_CASE", scanner_correction_results),
+                                    ("SCANNER_DEMAND_CASE", scanner_demand_results)):
+                lines = [line for line in output.splitlines() if line.startswith(prefix)]
+                assert len(lines) == 28, lines
+                for line, case, row, envelope in zip(lines, names, rows, envelopes, strict=True):
+                    match = re.fullmatch(prefix + r" (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) fields=pass", line)
+                    assert match is not None and match[1] == case, line
+                    actual = [int(value) for value in match.groups()[1:]]
+                    expected = envelope if prefix == "SCANNER_CORRECTION_CASE" else correction_demand(case, row)[0]
+                    assert actual == [expected[0], 0, 0, expected[1]], line
+                    results.append({"case": case, "category": actual[0], "api": actual[1],
+                                    "native_code": actual[2], "reason": actual[3], "fields": "pass"})
     check_build_inputs()
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     if windows:
@@ -446,6 +467,10 @@ def execute(arguments):
                 "print_illuminant_results": print_illuminant_results,
                 "preflash_results": preflash_results,
                 "balance_results": balance_results,
+                "scanner_correction_results": scanner_correction_results,
+                "scanner_demand_results": scanner_demand_results,
+                "scanner_correction_fixture": {"manifest": str(correction_manifest), "payload": str(correction_payload),
+                                               "normative": str(correction_checked), "logical_preset": arguments.preset},
                 "balance_fixture": {"manifest": str(balance_manifest), "payload": str(balance_payload), "logical_preset": arguments.preset},
                 "preflash_fixture": {"manifest": str(preflash_manifest), "payload": str(preflash_payload),
                                      "logical_preset": arguments.preset},
@@ -767,9 +792,109 @@ def expected_balance_header(out):
         stream.write("static const uint32_t balance_modes[16] = {" + ",".join(str(row["normalization_mode"]) + "U" for row in rows) + "};\n")
 
 
+def scanner_correction_fixture(preset):
+    directory = root / "tests/scanner/correction-fixtures"
+    manifest = directory / "manifest.json"
+    spec = json.loads(manifest.read_text())
+    payload = directory / spec["presets"][preset]["native"]
+    checked = directory / spec["normative"]
+    for path in (payload, checked):
+        assert digest(path) == spec["files"][path.name]["sha256"]
+    native = {row["id"]: row for row in json.loads(payload.read_text())["cases"]}
+    normative = json.loads(checked.read_text())["cases"]
+    # Exact revision-1 membership. Raw-only cases borrow the frozen bounded
+    # literal and change only the named wire admission in the C caller.
+    membership = [
+        ("direct-both", "direct-none"), ("direct-black", "direct-black"),
+        ("direct-white", "direct-white"), ("negative-print", "print-none"),
+        ("positive-print", "positive-print"), ("print-preflash", "print-preflash"),
+        ("direct-off", "direct-route-2-flags-0"), ("print-off", "print-route-1-flags-0"),
+        ("negative-direct", "direct-route-0-flags-3"), ("literal-off", "direct-route-255-flags-0"),
+        ("direct-route", "direct-route-1-flags-3"), ("print-route", "print-route-2-flags-3"),
+        ("direct-reference", "direct-reference"), ("direct-scan", "direct-scan"),
+        ("direct-midgray", "direct-midgray"), ("direct-lookup", "direct-direct-lookup"),
+        ("print-reference-lookup", "print-print-lookup"), ("print-scan", "print-scan"),
+        ("print-midgray", "print-midgray"), ("final-range", "direct-range"),
+        ("print-normalizer", "print-normalizer-nan"),
+        ("raw-params", "direct-none"), ("raw-span", "direct-none"),
+        ("raw-flags", "direct-none"), ("raw-route-width", "direct-none"),
+        ("print-literal-off", "print-route-255-flags-0"),
+        ("print-byte-route-4", "print-route-4-flags-3"),
+        ("print-byte-route-255", "print-route-255-flags-3"),
+    ]
+    assert len(membership) == 28 and len({name for name, _ in membership}) == 28
+    rows = [native[key] for _, key in membership]
+    envelopes = [[2, 1] if name.startswith("raw-") else
+                 [normative[key]["category"], normative[key]["reason"]]
+                 for name, key in membership]
+    for (_, key), row, envelope in zip(membership, rows, envelopes, strict=True):
+        if envelope[0] == 0:
+            assert row["native"]["native_outcome"] == "returned" and row["native"]["native_bool"]
+        elif normative[key]["intentional_exception_replacement"]:
+            assert row["native"]["native_outcome"] == "exception" and row["native"]["native_bool"] is None
+    return manifest, payload, checked, ["correction-" + name for name, _ in membership], rows, envelopes
+
+
+def correction_demand(name, row):
+    if name in {"correction-raw-params", "correction-raw-flags", "correction-raw-route-width"}:
+        return [2, 1], 0
+    params = row["input"]
+    route = params["route"]
+    if params["flags"] == 0 or not row["spec"]["print"] and route == 0:
+        return [0, 0], 0
+    if route in ((1, 3) if row["spec"]["print"] else (2,)):
+        return [0, 0], 1
+    return [3, 7 if row["spec"]["print"] else 2], 0
+
+
+def expected_scanner_correction_header(out):
+    _, _, _, names, rows, envelopes = scanner_correction_fixture(arguments.preset)
+    inputs = [row["input"] for row in rows]
+    assert all(row["tables"]["k"] == 1 and not row["tables"]["has_baseline"] for row in inputs)
+    results = [row["native"]["descriptor"] if envelope[0] == 0 else
+               {"route": 0, "active": 0, "black": 0, "white": 0, "schema": 0, "hash": 0, "words": [0] * 7}
+               for row, envelope in zip(rows, envelopes, strict=True)]
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write("static const char* correction_names[28] = {" + ",".join(json.dumps(name) for name in names) + "};\n")
+        diagnostics = ["scanner correction raw input" if envelope[0] == 2 else
+                       "ResourceDescriptorMismatch phase=8B print correction inputs" if envelope[1] == 7 else
+                       row["native"]["diagnostic"] for row, envelope in zip(rows, envelopes, strict=True)]
+        stream.write("static const char* correction_diagnostics[28] = {" + ",".join(json.dumps(text) for text in diagnostics) + "};\n")
+
+        def words(name, data):
+            width = max(1, max(len(row) for row in data))
+            assert len(data) == 28
+            stream.write("static const uint32_t correction_" + name + "[28][" + str(width) + "] = {" +
+                         ",".join("{" + ",".join(str(int(word)) + "U" for word in (row or [0])) + "}" for row in data) + "};\n")
+
+        words("params", [[row["route"], row["flags"]] for row in inputs])
+        words("levels", [row["levels"] for row in inputs])
+        for field in ("film_base", "film_dyes", "sensitivity", "light", "print_base", "film_axis", "authored_curves", "print_axis", "print_curves",
+                      "minimum", "maximum", "inverse", "baseline_density", "film_minimum", "film_maximum", "preflash"):
+            words(field, [row.get(field, []) for row in inputs])
+        for field in ("c", "m", "y", "ay"):
+            words(field, [row["tables"][field] for row in inputs])
+        words("scalars", [[row["tables"]["inv_yn"], row["normalizer"], row["preflash_exposure"]] for row in inputs])
+        words("counts", [[len(row.get("film_axis", [])), len(row["authored_curves"]), len(row.get("print_axis", [])), len(row.get("print_curves", []))] for row in inputs])
+        words("medium", [[row["medium"]] for row in inputs])
+        words("print", [[row["spec"]["print"]] for row in rows])
+        words("tags", [[row[key] for key in ("route", "active", "black", "white", "schema")] for row in results])
+        words("words", [row["words"] for row in results])
+        words("envelopes", envelopes)
+        words("demand", [envelope + [required] for envelope, required in (correction_demand(name, row) for name, row in zip(names, rows, strict=True))])
+        words("trace", [[1 if result["active"] else 0] if envelope[0] == 0 else
+                        [2 if envelope[1] in (5, 10) else 3 if envelope[1] == 12 else 0]
+                        for result, envelope in zip(results, envelopes, strict=True)])
+        for field, data in (("hashes", [row["hash"] for row in results]),
+                            ("reference", [row["reference_hash"] for row in inputs])):
+            stream.write("static const uint64_t correction_" + field + "[28] = {" +
+                         ",".join("UINT64_C(" + str(word) + ")" for word in data) + "};\n")
+
+
 if __name__ == "__main__":
     arguments.artifacts.mkdir(parents=True, exist_ok=True)
     expected_film_header(arguments.artifacts)
     expected_preflash_header(arguments.artifacts)
     expected_balance_header(arguments.artifacts)
+    expected_scanner_correction_header(arguments.artifacts)
     execute(arguments)
