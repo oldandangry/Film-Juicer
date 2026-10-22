@@ -498,11 +498,12 @@ namespace JuicerCuda {
         decoded.color.encoding.colorSpace = static_cast<OutputEncoding::ColorSpace>(color.color_space);
         decoded.color.encoding.applyCctfEncoding = (color.flags & FJ_COLOR_ENCODE_CCTF) != 0;
         decoded.color.encoding.inputIsOutputSpace = (color.flags & FJ_COLOR_INPUT_IS_OUTPUT_SPACE) != 0;
-        decoded.color.outputGamutRecipeHash = color.gamut_recipe_hash;
         OutputGamutRecipe& gamut = decoded.outputGamut;
         gamut.enabled = (color.flags & FJ_COLOR_GAMUT_COMPRESSION) != 0;
         gamut.outputColorSpace = static_cast<int>(color.color_space);
         gamut.hash = color.gamut_recipe_hash;
+        // The recipe keeps its identity when disabled; the color runtime names active resources.
+        decoded.color.outputGamutRecipeHash = gamut.enabled ? gamut.hash : 0;
         gamut.lightnessKneeThreshold = color.lightness_knee[0];
         gamut.lightnessKneeLimit = color.lightness_knee[1];
         gamut.lightnessKneePower = color.lightness_knee[2];

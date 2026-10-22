@@ -1049,6 +1049,125 @@ FjStatus fj_legacy_neutral_calibration_lookup(const FjAssets* assets, FjStringVi
 typedef struct FjIlluminant {
     float samples[81];
 } FjIlluminant;
+
+/* SF_TEMP_BRIDGE_PRINT_ILLUMINANT: complete fixed samples; remove S4.E.
+ * Edges are Y/M-lower/M-upper/C and transitions are in nm; cmy_cc is C/M/Y
+ * Kodak CC. Params, failure and present error records are initialized/live;
+ * source is exactly 81 initialized f32 elements. Records/source are aligned,
+ * and byte extents must not overflow PTRDIFF_MAX or address arithmetic.
+ * Writable outputs/error backing are exclusive and mutually disjoint from
+ * each other and all inputs; immutable input aliases are allowed. No pointer
+ * escapes synchronous return. Numerical address checks do not establish those
+ * allocation, lifetime or initialization obligations.
+ * Every independently writable result clears to +0 on failure. Sample errors
+ * identify the first index; all other outcomes use UINT32_MAX. Optional error
+ * NULL is status-only; capacity zero ignores backing; positive backing receives
+ * bounded text/NUL and length excluding NUL. Malformed diagnostics yield RAW.
+ */
+typedef struct FjPrintIlluminantParams {
+    float edges_nm[4];
+    float transitions_nm[4];
+    float cmy_cc[3];
+} FjPrintIlluminantParams;
+typedef struct FjPrintIlluminantFailure {
+    uint32_t reason;
+    uint32_t sample;
+} FjPrintIlluminantFailure;
+#define FJ_PRINT_ILLUMINANT_REASON_NONE UINT32_C(0)
+#define FJ_PRINT_ILLUMINANT_REASON_RAW UINT32_C(1)
+#define FJ_PRINT_ILLUMINANT_REASON_SAMPLE UINT32_C(2)
+#define FJ_PRINT_ILLUMINANT_REASON_ENERGY UINT32_C(3)
+#define FJ_PRINT_ILLUMINANT_REASON_PANIC UINT32_C(4)
+FjStatus fj_legacy_print_illuminant_prepare(
+    const FjPrintIlluminantParams* params,
+    FjFloatSpan source,
+    FjIlluminant* out_illuminant,
+    FjPrintIlluminantFailure* out_failure,
+    FjErrorBuffer* error);
+
+/* SF_TEMP_BRIDGE_PRINT_PREFLASH; remove S4.E. Synchronous borrowed f32 inputs:
+ * 81 film base-density samples, 81 already filtered light samples and 243 print
+ * sensitivities, sample-major C/M/Y. Rust print::PreflashRaw produces the owned
+ * triplet consumed by native print resource preparation before exposure scaling.
+ * Counts, alignment and address arithmetic are checked before access. Callers
+ * provide initialized live backing; immutable inputs may alias. All writable
+ * result/failure/error records and diagnostic backing are exclusive, mutually
+ * disjoint and disjoint from inputs. No pointer survives return.
+ * Independently writable output triplets clear to +0 on every failure. Channel
+ * is UINT32_MAX except CHANNEL (first failing f64 total, 0..2). Finite f64 totals
+ * may successfully narrow to f32 infinity; native payload admission is later.
+ * Error NULL is status-only; zero capacity ignores backing; positive backing
+ * receives bounded text/NUL with length excluding NUL. Invalid diagnostics are RAW.
+ */
+typedef struct FjPrintPreflashInput {
+    FjFloatSpan film_base_density;
+    FjFloatSpan filtered_illuminant;
+    FjFloatSpan print_sensitivity_cmy;
+} FjPrintPreflashInput;
+typedef struct FjPrintPreflashRaw {
+    float cmy[3];
+} FjPrintPreflashRaw;
+typedef struct FjPrintPreflashFailure {
+    uint32_t reason;
+    uint32_t channel;
+} FjPrintPreflashFailure;
+#define FJ_PRINT_PREFLASH_REASON_NONE UINT32_C(0)
+#define FJ_PRINT_PREFLASH_REASON_RAW UINT32_C(1)
+#define FJ_PRINT_PREFLASH_REASON_CHANNEL UINT32_C(2)
+#define FJ_PRINT_PREFLASH_REASON_PANIC UINT32_C(3)
+FjStatus fj_legacy_print_preflash_prepare(
+    const FjPrintPreflashInput* input,
+    FjPrintPreflashRaw* out_raw,
+    FjPrintPreflashFailure* out_failure,
+    FjErrorBuffer* error);
+
+/* SF_TEMP_BRIDGE_PRINT_BALANCE, retirement S4.E. Synchronous safe-core producer;
+ * native recipe completion consumes the finished copy. Four immutable spans of
+ * 81/243/243/81 f32 elements: film base density, sample-major C/M/Y dye density,
+ * sample-major RGB print sensitivity and filtered main light. Source allocations
+ * are initialized/aligned/live through return and may alias each other. No
+ * scientific admission scan; reference_hash is opaque, including zero.
+ * Mode wire 0..255 preserves native u8 behavior; wider values are malformed.
+ * Output/failure/error record and positive-capacity diagnostic backing are live,
+ * exclusive, mutually disjoint and disjoint from all input storage. Raw admission
+ * checks extents/alignment/arithmetic, not allocation/initialization/lifetime.
+ * Every independently writable result field clears to +0/0 on failure. Channel
+ * is UINT32_MAX except the first failed baseline/compensated raw channel 0..2.
+ * Optional error NULL is status-only; capacity zero never accesses backing;
+ * positive capacities write bounded NUL-terminated text, length excludes NUL.
+ */
+typedef struct FjPrintBalanceInput {
+    FjFloatSpan film_base_density;
+    FjFloatSpan film_channel_density_cmy;
+    FjFloatSpan print_sensitivity_rgb;
+    FjFloatSpan filtered_main_illuminant;
+    float baseline_density_cmy[3];
+    float compensated_density_cmy[3];
+    uint64_t reference_hash;
+    uint32_t normalization_mode;
+} FjPrintBalanceInput;
+typedef struct FjPrintBalance {
+    float baseline_raw_rgb[3];
+    float compensated_raw_rgb[3];
+    float factor_midgray;
+    float factor_midgray_comp;
+    float normalizer;
+    uint64_t filtered_main_illuminant_hash;
+    uint64_t hash;
+} FjPrintBalance;
+typedef struct FjPrintBalanceFailure {
+    uint32_t reason;
+    uint32_t channel;
+} FjPrintBalanceFailure;
+#define FJ_PRINT_BALANCE_REASON_NONE UINT32_C(0)
+#define FJ_PRINT_BALANCE_REASON_RAW UINT32_C(1)
+#define FJ_PRINT_BALANCE_REASON_BASELINE_RAW UINT32_C(2)
+#define FJ_PRINT_BALANCE_REASON_COMPENSATED_RAW UINT32_C(3)
+#define FJ_PRINT_BALANCE_REASON_BALANCE UINT32_C(4)
+#define FJ_PRINT_BALANCE_REASON_PANIC UINT32_C(5)
+FjStatus fj_legacy_print_balance_prepare(
+    const FjPrintBalanceInput* input, FjPrintBalance* out_balance, FjPrintBalanceFailure* out_failure, FjErrorBuffer* error);
+
 typedef struct FjIlluminantCoverage {
     uint32_t warnings;
     float min_nm;
@@ -1103,6 +1222,97 @@ typedef struct FjOwnedFilmTcLut {
 FjStatus fj_legacy_reconstruction_tc_lut(const FjFilmTcLutInput* input, FjOwnedFilmTcLut* out, FjErrorBuffer* error);
 FjStatus fj_legacy_reconstruction_sample_tc_lut(FjFloatSpan lut, const float projected_xyz[3], float out_rgb[3], FjErrorBuffer* error);
 FjStatus fj_legacy_reconstruction_release_tc_lut(FjOwnedFilmTcLut* owned);
+
+/* SF_TEMP_BRIDGE_SCANNER_CORRECTION: complete synchronous host values; remove S4.E.
+ * Immutable inputs may alias. Live initialized input allocations and exclusive,
+ * mutually disjoint writable records/backing are caller obligations. Writable
+ * storage must also be disjoint from inputs. No pointer escapes. Extent checks
+ * cannot establish these lifetime/allocation obligations. Required Params/result/
+ * failure records are admitted independently; every admitted result is cleared
+ * on failure. Optional trace/error may be NULL. Zero diagnostic capacity touches
+ * no backing; nonzero capacity reserves a terminating NUL. Input demand precedes
+ * all active-storage access. Route/medium preserve the full native u8 domain;
+ * medium 1 means print, every other admitted byte means film. Wire values above
+ * 255 and unknown flags are RAW. Curves are sample-major C/M/Y triples; empty or
+ * axis/row mismatch is left to the ordinary owning lookup. Spectral spans contain
+ * exactly K consumed floats; baseline is consumed only when has_baseline=1.
+ * Inactive success has canonical no-op values/schema 1/hash 0, distinct from the
+ * all-zero semantic failure result. This full host record does not change the
+ * compact permanent FjScannerCorrection CUDA execution record.
+ */
+typedef struct FjScannerCorrectionParams {
+    uint32_t route, flags; /* black=1, white=2 */
+    float black_level, white_level;
+} FjScannerCorrectionParams;
+typedef struct FjScannerCorrectionTables {
+    FjFloatSpan eps_c, eps_m, eps_y, weighted_y, baseline_min;
+    int32_t sample_count;
+    float inv_yn;
+    uint32_t has_baseline;
+} FjScannerCorrectionTables;
+typedef struct FjScannerDirectCorrectionInput {
+    const FjScannerCorrectionTables* tables;
+    FjFloatSpan film_base_density, film_log_exposure, film_authored_density_curves_cmy;
+    float minimum_density_cmy[3], maximum_density_cmy[3], inverse_span_cmy[3];
+    float baseline_density_cmy[3];
+    uint64_t reference_hash;
+    uint32_t medium;
+} FjScannerDirectCorrectionInput;
+typedef struct FjScannerPrintCorrectionInput {
+    const FjScannerCorrectionTables* tables;
+    FjFloatSpan film_base_density, film_channel_density_cmy;
+    FjFloatSpan print_sensitivity_cmy, filtered_main_illuminant;
+    FjFloatSpan print_base_density, print_log_exposure, print_density_curves_cmy;
+    float minimum_density_cmy[3], inverse_span_cmy[3];
+    float film_minimum_density_cmy[3], film_maximum_density_cmy[3];
+    float preflash_raw_cmy[3], normalizer, preflash_exposure;
+    uint32_t medium;
+} FjScannerPrintCorrectionInput;
+typedef struct FjScannerColorCorrection {
+    uint32_t route, active, black_correction, white_correction;
+    float target_black_linear, target_white_linear;
+    float reference_black_y, reference_white_y, xyz_slope, xyz_offset, exposure_scale;
+    uint32_t schema_version;
+    uint64_t hash;
+} FjScannerColorCorrection;
+typedef struct FjScannerCorrectionFailure {
+    uint32_t reason;
+} FjScannerCorrectionFailure;
+typedef struct FjScannerCorrectionTrace {
+    uint32_t outcome;
+    float reference_black_y, reference_white_y, target_black_linear, target_white_linear;
+    float xyz_slope, xyz_offset, corrected_midgray, exposure_scale;
+    uint64_t hash;
+} FjScannerCorrectionTrace;
+#define FJ_SCANNER_CORRECTION_REASON_NONE UINT32_C(0)
+#define FJ_SCANNER_CORRECTION_REASON_RAW UINT32_C(1)
+#define FJ_SCANNER_CORRECTION_REASON_DIRECT_INPUTS UINT32_C(2)
+#define FJ_SCANNER_CORRECTION_REASON_DIRECT_REFERENCE UINT32_C(3)
+#define FJ_SCANNER_CORRECTION_REASON_DIRECT_SCAN UINT32_C(4)
+#define FJ_SCANNER_CORRECTION_REASON_DIRECT_MIDGRAY UINT32_C(5)
+#define FJ_SCANNER_CORRECTION_REASON_DIRECT_LOOKUP UINT32_C(6)
+#define FJ_SCANNER_CORRECTION_REASON_PRINT_INPUTS UINT32_C(7)
+#define FJ_SCANNER_CORRECTION_REASON_PRINT_REFERENCE_LOOKUP UINT32_C(8)
+#define FJ_SCANNER_CORRECTION_REASON_PRINT_SCAN UINT32_C(9)
+#define FJ_SCANNER_CORRECTION_REASON_PRINT_MIDGRAY UINT32_C(10)
+#define FJ_SCANNER_CORRECTION_REASON_PRINT_LOOKUP UINT32_C(11)
+#define FJ_SCANNER_CORRECTION_REASON_INVALID UINT32_C(12)
+#define FJ_SCANNER_CORRECTION_REASON_IDENTITY UINT32_C(13)
+#define FJ_SCANNER_CORRECTION_REASON_PANIC UINT32_C(14)
+#define FJ_SCANNER_CORRECTION_TRACE_NONE UINT32_C(0)
+#define FJ_SCANNER_CORRECTION_TRACE_ACCEPTED UINT32_C(1)
+#define FJ_SCANNER_CORRECTION_TRACE_MIDGRAY UINT32_C(2)
+#define FJ_SCANNER_CORRECTION_TRACE_MALFORMED UINT32_C(3)
+#define FJ_SCANNER_CORRECTION_TRACE_ZERO_HASH UINT32_C(4)
+FjStatus fj_legacy_scanner_direct_correction_prepare(
+    const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*);
+FjStatus fj_legacy_scanner_print_correction_prepare(
+    const FjScannerCorrectionParams*, const FjScannerPrintCorrectionInput*, FjScannerColorCorrection*, FjScannerCorrectionFailure*, FjScannerCorrectionTrace*, FjErrorBuffer*);
+/* operation 0 direct / 1 print. Query does not consume the prepare fault selector.
+ * required/failure are required, independently cleared. No active input is read.
+ */
+FjStatus fj_legacy_scanner_correction_input_demand(
+    const FjScannerCorrectionParams*, uint32_t operation, uint32_t* required, FjScannerCorrectionFailure*, FjErrorBuffer*);
 
 #ifdef __cplusplus
 }

@@ -15,6 +15,7 @@
 #include "RustAssetBridge.h"
 #include "RustColorBridge.h"
 #include "RustExposureBridge.h"
+#include "RustFilmRecipeBridge.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Hash.h"
 #include "ColorTransforms.h"
@@ -1115,78 +1116,6 @@ namespace Spektrafilm {
         return result;
     }
 
-    float print_exposure_normalizer(
-        PrintNormalizationMode mode,
-        float factorMidgray,
-        float factorMidgrayComp) {
-        switch (mode) {
-            case PrintNormalizationMode::None:
-                return 1.0f;
-            case PrintNormalizationMode::CompensationOnly:
-                return factorMidgrayComp / factorMidgray;
-            case PrintNormalizationMode::NormalizeOnly:
-                return factorMidgray;
-            case PrintNormalizationMode::NormalizeAndCompensate:
-                return factorMidgrayComp;
-            default:
-                return std::numeric_limits<float>::quiet_NaN();
-        }
-    }
-
-    bool build_filtered_print_illuminant(
-        const PrintRecipe& recipe,
-        const std::array<float, 81>& sourceIlluminant,
-        const CmyCcTriplet& cmyCc,
-        std::array<float, 81>& out,
-        std::string& diagnostic) {
-        diagnostic.clear();
-        std::array<std::array<float, 81>, 3> filters{};
-        for (std::size_t sample = 0; sample < out.size(); ++sample) {
-            const float wavelength = 380.0f + 5.0f * static_cast<float>(sample);
-            const float y =
-                0.5f * std::erf((wavelength - recipe.filters.dichroic.customEdgesNm[0]) /
-                                recipe.filters.dichroic.customTransitionsNm[0]) +
-                0.5f;
-            const float mErf =
-                wavelength <= 550.0f
-                    ? -std::erf((wavelength - recipe.filters.dichroic.customEdgesNm[1]) /
-                                recipe.filters.dichroic.customTransitionsNm[1])
-                    : std::erf((wavelength - recipe.filters.dichroic.customEdgesNm[2]) /
-                               recipe.filters.dichroic.customTransitionsNm[2]);
-            const float c =
-                -0.5f * std::erf((wavelength - recipe.filters.dichroic.customEdgesNm[3]) /
-                                 recipe.filters.dichroic.customTransitionsNm[3]) +
-                0.5f;
-            filters[0][sample] = c;
-            filters[1][sample] = 0.5f * mErf + 0.5f;
-            filters[2][sample] = y;
-        }
-        const std::array<float, 3> transmittance{{std::pow(10.0f, -cmyCc.c / 100.0f),
-                                                  std::pow(10.0f, -cmyCc.m / 100.0f),
-                                                  std::pow(10.0f, -cmyCc.y / 100.0f)}};
-        float energy = 0.0f;
-        for (std::size_t sample = 0; sample < out.size(); ++sample) {
-            float total = sourceIlluminant[sample];
-            for (std::size_t channel = 0; channel < filters.size(); ++channel) {
-                total *= 1.0f - (1.0f - filters[channel][sample]) *
-                                    (1.0f - transmittance[channel]);
-            }
-            if (!(std::isfinite(total) && total >= 0.0f)) {
-                diagnostic =
-                    "MalformedRequiredResource phase=4B field=filtered_print_illuminant";
-                return false;
-            }
-            out[sample] = total;
-            energy += total;
-        }
-        if (!(std::isfinite(energy) && energy > 0.0f)) {
-            diagnostic =
-                "MalformedRequiredResource phase=4B field=filtered_print_illuminant";
-            return false;
-        }
-        return true;
-    }
-
     bool finish_synthetic_reference_recipes(
         RenderRecipe& recipe,
         const Spectral::FilmTcLut* filmTcLut,
@@ -1336,84 +1265,8 @@ namespace Spektrafilm {
                 recipe.profileRoute.filmProfile->data;
             const Profiles::PrintProfileSamples& print =
                 recipe.profileRoute.printProfile->data;
-            auto derive_print_raw = [&](
-                                        const std::array<float, 3>& densityCmy,
-                                        std::array<float, 3>& out) {
-                std::array<double, 3> accumulated{};
-                for (std::size_t sample = 0; sample < filteredMainIlluminant->size();
-                     ++sample) {
-                    double density = static_cast<double>(film.baseDensity[sample]);
-                    for (std::size_t channel = 0; channel < 3u; ++channel) {
-                        density += static_cast<double>(densityCmy[channel]) *
-                                   static_cast<double>(film.channelDensity[sample][channel]);
-                    }
-                    const double light =
-                        std::pow(10.0, -density) *
-                        static_cast<double>((*filteredMainIlluminant)[sample]);
-                    if (std::isnan(light)) {
-                        continue;
-                    }
-                    for (std::size_t channel = 0; channel < 3u; ++channel) {
-                        const float sensitivity = print.linearSensitivity[sample][channel];
-                        if (std::isfinite(sensitivity)) {
-                            accumulated[channel] +=
-                                light * static_cast<double>(sensitivity);
-                        }
-                    }
-                }
-                for (std::size_t channel = 0; channel < 3u; ++channel) {
-                    out[channel] = static_cast<float>(accumulated[channel]);
-                    if (!(std::isfinite(out[channel]) && out[channel] >= 0.0f)) {
-                        return false;
-                    }
-                }
-                return true;
-            };
-            auto factor = [](const std::array<float, 3>& raw) {
-                double meanLog = 0.0;
-                for (float value : raw) {
-                    meanLog += std::log(std::max(1.0e-10, static_cast<double>(value)));
-                }
-                return static_cast<float>(std::exp(-meanLog / 3.0));
-            };
             PrintBalanceRecipe balance{};
-            if (!derive_print_raw(
-                    reference.baselineDensityCmy,
-                    balance.baselinePrintRawRgb) ||
-                !derive_print_raw(
-                    reference.compensatedDensityCmy,
-                    balance.compensatedPrintRawRgb)) {
-                diagnostic =
-                    "MalformedRequiredResource phase=4A field=print_balance_raw";
-                return false;
-            }
-            balance.factorMidgray = factor(balance.baselinePrintRawRgb);
-            balance.factorMidgrayComp = factor(balance.compensatedPrintRawRgb);
-            balance.normalizer = print_exposure_normalizer(
-                recipe.print.exposure.normalizationMode,
-                balance.factorMidgray,
-                balance.factorMidgrayComp);
-            balance.filteredMainIlluminantHash =
-                Hash::hash_float_span(*filteredMainIlluminant);
-            balance.hash = Hash::hash_uint64_values(
-                {reference.hash,
-                 balance.filteredMainIlluminantHash,
-                 Hash::hash_float_span(balance.baselinePrintRawRgb),
-                 Hash::hash_float_span(balance.compensatedPrintRawRgb),
-                 static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(
-                     balance.factorMidgray)),
-                 static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(
-                     balance.factorMidgrayComp)),
-                 static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(
-                     balance.normalizer))});
-            if (!(std::isfinite(balance.factorMidgray) &&
-                  balance.factorMidgray > 0.0f &&
-                  std::isfinite(balance.factorMidgrayComp) &&
-                  balance.factorMidgrayComp > 0.0f &&
-                  std::isfinite(balance.normalizer) && balance.normalizer > 0.0f &&
-                  balance.filteredMainIlluminantHash != 0 && balance.hash != 0)) {
-                diagnostic =
-                    "MalformedRequiredResource phase=4A field=print_balance";
+            if (!JuicerAssets::prepare_print_balance(film, print, *filteredMainIlluminant, reference, recipe.print.exposure.normalizationMode, balance, diagnostic)) {
                 return false;
             }
             recipe.print.balance = balance;

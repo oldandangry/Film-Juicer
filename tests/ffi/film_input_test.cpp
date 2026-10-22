@@ -26,6 +26,7 @@
 #include "RustSpectralBridge.h"
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
+#include "print_illuminant_fixture.h"
 
 extern "C" const std::size_t* fj_test_film_input_abi_c_facts(std::size_t* count);
 extern "C" FjStatus fj_test_film_input_c_call(const FjFilmProfile*, const FjFilmInputParams*, const FjFilmInputResources*, FjFilmInput*, FjFilmInputFailure*, FjErrorBuffer*);
@@ -756,7 +757,7 @@ int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all 
     layouts();
     routing();
     std::ifstream stream(argv[2]);
-    const auto fixture = Json::parse(stream);
+    const auto fixture = PrintIlluminantFixtures::apply(argv[2], Json::parse(stream));
     require(fixture.at("rows").size() == 140, "exact nonempty native case membership");
     JuicerCuda::Owner owner;
     owner.create(std::filesystem::path(argv[1]));

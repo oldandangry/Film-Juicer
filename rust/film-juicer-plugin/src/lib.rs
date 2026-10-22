@@ -86,3 +86,15 @@ mod gamut_bridge;
     reason = "fixed optics transport admits foreign extents and commits complete synchronous stack values"
 )]
 mod optics_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "fixed print illumination transport admits foreign extents and copies complete synchronous values"
+)]
+mod print_bridge;
+
+#[allow(
+    unsafe_code,
+    reason = "scanner transport checks foreign extents and scopes synchronous immutable input borrows"
+)]
+mod scanner_bridge;

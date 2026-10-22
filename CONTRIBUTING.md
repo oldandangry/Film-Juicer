@@ -90,6 +90,13 @@ retain this assessment as their G-Names and contextual G-Quality result.
 
 ## Required checks
 
+The test guide's [validation cadence](tests/README.md#validation-cadence) is the
+common rule for selecting checks during editing, family cutover and broader
+integration/release checkpoints. Documentation-only work needs whitespace,
+link/reference checks and contextual review. A focused handoff does not require
+complete aggregate qualification. The commands below describe available checks;
+they are not a list to run for every change.
+
 Supporting-code checks need Python 3.13 and the pinned tools installed explicitly:
 
 ```sh
@@ -113,8 +120,10 @@ components. Native formatting and tidy use LLVM 22; on Windows the qualified
 tools are under
 `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin`.
 The commands below expose individual checks. Use the `scripts/verify.py` workflow
-below for source freshness, output ownership and receipt-backed development or
-qualification. Manual setup explicitly enables tests before CTest:
+below within its supported development or checkpoint scope. Other focused work
+uses explicit owning CMake targets, named CTest groups, native quality selections
+and Cargo package/profile/feature commands. This complete-preset example is for a
+designated broad checkpoint; setup explicitly enables tests before CTest:
 
 ```sh
 cmake --preset linux-debug -DBUILD_TESTING=ON
@@ -124,7 +133,13 @@ ctest --preset linux-debug --output-on-failure
 ```
 
 Use the corresponding Windows or Release preset when that is the affected
-target. `--files <paths...>` is the bounded package form; `--all-owned` is an
+target. Keep the [CTest worker accounting](tests/README.md#build-and-run) when
+reproducing CI timing failures: the default is four slots, `Rust.Core` reserves
+two and uses two libtest workers, and Windows `Quality.Checkpoint` reserves four.
+Internal race witnesses and all freshness checks remain active. Preserve the
+first failed log and use the reported slow-case timings before changing setup or
+scheduling; do not raise a deadline to hide contention.
+`--files <paths...>` is the bounded package form; `--all-owned` is an
 explicit audit. The dispatcher writes logs only under
 `out/validation/<preset>/quality/runs/<run-id>/`, leaves source unchanged, and treats missing
 tools or compiler/lint failures as incomplete work. Each fresh directory has a
@@ -227,6 +242,38 @@ scopes remain in the existing development record and can be reused independently
 when their inputs and current preparation still match; prior runtime selections
 are not unioned into a new run. Preparation is not test success.
 
+Explicit target preparation is also available on all four standard native
+Debug/Release trees, independently of the bounded development file selector:
+
+```sh
+python -B scripts/verify.py prepare --preset linux-debug --targets JuicerFilmRecipeTests
+python -B scripts/verify.py prepare --preset linux-release --targets juicer --testing OFF
+python -B scripts/verify.py prepare --preset linux-release --targets JuicerFilmRecipeTests --testing ON
+```
+
+Run through the qualified native environment at the configured source path.
+Maintained targets are `juicer`, `JuicerFilmRecipeTests`, `JuicerRouteBridgeTests`,
+`JuicerOutputColorTests`, and an explicit `all` alone. Testing defaults to ON;
+OFF requires a Release preset and `juicer` or `all`. Each invocation reconfigures
+the requested testing state and builds only those targets and their dependencies
+under the existing build-tree lease, supervisor, deadlines and freshness owner.
+It dispatches no quality or runtime-test selection. It preserves development
+pending state and never supplies product, boundary or production qualification.
+Other pending target scopes must first be resolved by their preparation owner;
+normal same-scope interruption recovery still requires sealed drainage proof.
+
+The one-time `retire-s4c1-pending --preset linux-debug|linux-release` command
+implements the owner's 21 October 2026 amendment for exactly two retained legacy
+markers. It requires the exact source/build paths, marker bytes, pinned retained
+command/log/process evidence, complete preparation-attempt membership and a
+healthy normal lease. Debug additionally requires the verified later Linux boot.
+It retains original markers and any superseded completed owner, records
+`retired-unqualified`, and removes only those active records. Fresh preparation
+is a separate command. It does not change historical results or authorize other
+legacy recovery; changed, unknown, undrained or active records and blocked or
+hard-death leases remain rejected. Remove this exceptional entry after the two
+dispositions have been reviewed and retained; it is not a force switch.
+
 Normal Rust edits use Cargo incrementally. A content edit with restored/stale
 timestamps uses supported Cargo cleaning only for affected packages, reverse
 consumers and the active target/profile; necessary host build-script/proc-macro
@@ -255,9 +302,26 @@ already prepared testing-OFF Release tree. It binds the inspected final artifact
 The legacy sealed-build adapters remain unsupported.
 
 Checkpoint stages reuse original successful command records across campaign
-names when relevant inputs, configuration, tools and commands match. Renaming a
-campaign cannot clear a failed gate. Relevant repairs invalidate affected stages;
-unrelated successes remain reusable. A diagnosed rerun uses `--repeat-reason`.
+names when their current declared inputs, configuration, tools and commands match.
+Renaming a campaign cannot clear a failed gate. Broad discovery excludes the
+repository prose defined in the [validation cadence](tests/README.md#validation-cadence),
+so those documentation-only edits preserve reusable build and test evidence.
+Explicitly consumed files, packaged documents and quality checks retain their
+freshness requirements. Other declarations can still be broader than a repair's
+actual consumers. Checkpoint preparation now omits only explicit registered runtime
+test files outside its proven build/configuration closure, as defined in the
+[validation cadence](tests/README.md#validation-cadence). Direct preparation inputs,
+compiled/embedded/generated/copied/staged dependencies and artifact/owner checks
+remain authoritative. Runtime changes still require fresh affected test execution;
+quality and product declarations are unchanged. Admission, refresh and collection
+share this scope while honoring every original receipt requirement. An older broad
+or cold-discovery receipt may need one fresh preparation; never rewrite it.
+General input-closure separation beyond this boundary is not yet implemented.
+Opaque configure file operations, subprocesses and dynamic evaluation retain broad
+input scope and require a real reconfigure when preparation dispatches;
+variable-built input paths or file-operation subcommands cannot be declared
+runtime-only from literal matching.
+Do not bypass that admission limit. A diagnosed rerun uses `--repeat-reason`.
 Checkpoint output prints exact membership and preserves outstanding failures.
 Each relevance group runs its exact host and GPU memberships in separate
 supervised CTest invocations under one build-tree lease and one common deadline.
@@ -273,9 +337,13 @@ Resolve and release acceptance remain separately required and are not establishe
 by this dispatcher implementation.
 
 The existing `execution.py` supervisor and build-tree lease cover preparation,
-analysis and test consumption. Unproved descendant drainage retains a blocked
-owner; inspect its process evidence before manual recovery. Do not remove a lock
-because its immediate parent exited.
+analysis and test consumption. A fresh preparation may recover a pending owner
+only under a healthy build-tree lease and with intact proof that every command
+from that attempt has drained. Recovery preserves the old pending marker and
+command receipts, then runs normal fresh preparation; it does not turn the
+interrupted attempt into a pass. Missing, damaged or legacy proof remains blocked,
+as do hard owner death and blocked leases. Do not remove a lock because its
+immediate parent exited.
 
 On Windows, supervised CMake configuration and builds identify `VCTIP.EXE` from
 the active `VCToolsInstallDir`. After a successful parent exit, the Job waits 30
@@ -285,18 +353,15 @@ after parent exit, and must drain before success. Parent failure or interruption
 keeps the ordinary failure and whole-Job drainage behavior. The process receipt
 records the selected executable, policy and any termination.
 
-During development, build the affected test targets and run the smallest owning
-CTest selection that proves the changed behavior. Exercise new compiled tests
-on both native platforms early, and check edited native sources before starting
-broader qualification. At final qualification, run each applicable unfiltered
-suite once for the stable candidate. Its JUnit report also supplies focused-domain
-evidence; see [the test guide](tests/README.md). Separate reference
-captures, transition checkpoints and production Release checks retain their
-own requirements.
-
-Complete any approved numerical-policy fixture replay and run its affected GPU
-reference/identity groups before the final unfiltered suite. Use that suite's
-JUnit for final domain evidence instead of repeating passing focused groups.
+Follow the [validation cadence](tests/README.md#validation-cadence) for the current
+change: owning checks while editing, prescribed affected family checks at cutover,
+and the complete matrix only at its designated integration/release checkpoint.
+Complete approved numerical-policy adoption and exercise every affected expectation
+reader, caller and GPU identity group before freezing for that checkpoint. Its
+JUnit reports supply final domain evidence; do not repeat passing groups solely
+for another receipt. Reference captures and new ABI/owner OFF gates retain their
+transition requirements. Collection remains subject to the current CLI's artifact
+and pending-owner checks; a focused result is not an aggregate pass.
 
 `--jobs` limits concurrent native and CUDA analysis commands; the default is 2
 and `--jobs 1` provides serial execution. Formatting, toolchain/CUDA preparation
@@ -344,9 +409,14 @@ checks and warnings-as-errors remain enabled.
 Changes to the runner or its tests also run the dispatcher regression tests
 and representative host, CUDA, and Rust checks.
 
-Any selected Rust change runs rustfmt and Clippy over both complete crates, with
-all targets in development and release profiles, followed by the Rust naming
-enforcement tests. The runner selects the repository's Clippy configuration.
+Outside the bounded development mode, selected Rust or qualification work runs
+workspace rustfmt and three Clippy checks in the preset's matching profile: core,
+plugin production and plugin `test-support`, each with all targets. Debug presets
+use the development profile; Release presets use `--release`. The four-preset
+matrix retains all 12 native platform/profile/package/feature combinations. Each
+native CI lane keeps its Debug quality selection and explicitly checks Release Rust
+with `--files Cargo.toml` after its Release build, including on documentation-only
+changes. The runner selects the repository's Clippy configuration.
 `Quality.RustNaming` also runs through CTest without a GPU; it compiles temporary
 workspace copies using the actual manifests and policy, verifies individual
 rejected identifiers by compiler diagnostic code and location, and exercises

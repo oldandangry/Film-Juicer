@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
@@ -10,8 +11,9 @@ import re
 import shutil
 import subprocess
 import time
+import uuid
 
-from execution import OutputLease, digest, snapshot, tool_snapshot, write_json
+from execution import Campaign, OutputLease, digest, snapshot, tool_snapshot, write_json
 from build_dependencies import (
     CompilationInputs,
     NinjaGraph,
@@ -657,8 +659,293 @@ def _admit_missing_scope(campaign, source, build, baseline, targets, inputs, con
     return (graph, before, admitted, output_identities) if admitted else None
 
 
-def _prepare_build_owned(campaign, stage, *, source, build, inputs, timeout,
-                         configure_args=(), targets=(), env=None, tools=(), resume=None, checkpoint=False):
+def _preparation_attempts(directory, stage):
+    return {str(path) for path in (directory / "attempts").glob(stage + "-*")}
+
+
+def _read_recovery_file(binding, expected):
+    if (not isinstance(binding, dict) or binding.get("file") != str(expected)
+            or expected.is_symlink() or not expected.is_file()
+            or digest(expected) != binding.get("sha256")):
+        raise ValueError("pending preparation recovery evidence is missing or changed")
+    return json.loads(expected.read_text(encoding="utf-8"))
+
+
+def _write_recovery_file(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = value if isinstance(value, bytes) else (json.dumps(value, indent=2) + "\n").encode()
+    with path.open("xb") as stream:
+        stream.write(content)
+    return {"file": str(path), "sha256": hashlib.sha256(content).hexdigest()}
+
+
+def _drained_preparation_attempt(root, directory, stage, path, number):
+    """A launch sentinel is not proof: bind the supervisor's terminal receipt too."""
+    path = Path(path)
+    if (path.parent != directory / "attempts" or not path.name.startswith(stage + "-")
+            or path.is_symlink() or not path.is_dir()):
+        raise ValueError("pending preparation attempt does not belong to its invocation")
+    result, process, output = (path / name for name in ("result.json", "process.json", "output.log"))
+    if any(item.is_symlink() or not item.is_file() for item in (result, process, output)):
+        raise ValueError("pending preparation attempt has incomplete process evidence")
+    record = json.loads(result.read_text(encoding="utf-8"))
+    tree = json.loads(process.read_text(encoding="utf-8"))
+    output_sha256 = digest(output)
+    if (not isinstance(record, dict) or not isinstance(tree, dict)
+            or record.get("stage") != stage or record.get("directory") != str(root)
+            or record.get("attempt_number") != number or record.get("status") not in {"passed", "failed"}
+            or not record.get("finished_at") or not record.get("identity", {}).get("command")
+            or record.get("output") != output.relative_to(root).as_posix()
+            or record.get("output_sha256") != output_sha256
+            or tree.get("drained") is not True
+            or tree.get("status") not in {"completed", "failed-parent", "timeout", "interrupted"}
+            or not tree.get("supervisor_pid") or not tree.get("creation")
+            or record.get("process_tree") != {**tree, "receipt": str(process)}):
+        raise ValueError("pending preparation command has no matching terminal drained proof")
+    return {"directory": str(path), "result_sha256": digest(result),
+            "process_sha256": digest(process), "output_sha256": output_sha256}
+
+
+def _check_pending_preparation(campaign, source, build, targets, pending):
+    try:
+        if (not isinstance(pending, dict) or pending.get("pending_protocol") != "drained-preparation-v1"
+                or pending.get("protocol") != SCOPED_PROTOCOL or pending.get("state") != "retryable"
+                or pending.get("root") != str(campaign.root) or pending.get("source") != str(source)
+                or pending.get("build") != str(build) or pending.get("targets") != targets):
+            raise ValueError("pending preparation has no sealed recovery proof")
+        invocation = str(uuid.UUID(pending["invocation"]))
+        directory = Path(pending["campaign"])
+        directory.relative_to(campaign.root / "out/validation")
+        stage = pending["stage"]
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", stage):
+            raise ValueError("invalid pending preparation stage")
+        contract = json.loads((directory / "campaign.json").read_text(encoding="utf-8"))
+        if contract["root"] != str(campaign.root) or stage not in contract["required"]:
+            raise ValueError("pending preparation campaign changed")
+        started = _read_recovery_file(pending["invocation_record"], directory / "preparation" / (invocation + ".started.json"))
+        if any(pending.get(key) != value for key, value in started.items()):
+            raise ValueError("pending preparation invocation changed")
+        failed = _read_recovery_file(pending["failure_proof"], directory / "preparation" / (invocation + ".failed.json"))
+        if failed["pending"] != {key: value for key, value in pending.items() if key != "failure_proof"}:
+            raise ValueError("pending preparation failure proof changed")
+        attempts = failed["attempts"]
+        if (not isinstance(attempts, list)
+                or failed["completion"] != ("commands-drained" if attempts else "no-command-started")
+                or (directory / "running.lock").exists() or (directory / "running.lock").is_symlink()):
+            raise ValueError("pending preparation still has an unproved command owner")
+        seen = set(started["attempts_before"])
+        for number, proof in enumerate(attempts, started["next_attempt"]):
+            if proof["directory"] in seen:
+                raise ValueError("pending preparation substituted a prior command attempt")
+            seen.add(proof["directory"])
+            if _drained_preparation_attempt(campaign.root, directory, stage, proof["directory"], number) != proof:
+                raise ValueError("pending preparation command evidence changed")
+        if seen != _preparation_attempts(directory, stage):
+            raise ValueError("pending preparation command attempt membership changed")
+    except (OSError, KeyError, TypeError, ValueError, AttributeError) as error:
+        raise ValueError("cannot recover pending preparation: " + str(error)) from error
+
+
+@contextmanager
+def _pending_preparation(campaign, stage, source, build, targets, pending_path, lease):
+    """Only this live, healthy lease owner may seal a failed invocation for retry."""
+    recovered = None
+    if pending_path.exists() or pending_path.is_symlink():
+        if pending_path.is_symlink() or not pending_path.is_file():
+            raise ValueError("cannot recover malformed pending preparation")
+        content = pending_path.read_bytes()
+        previous = json.loads(content)
+        _check_pending_preparation(campaign, source, build, targets, previous)
+        recovered = _write_recovery_file(
+            campaign.directory / "preparation" / (str(uuid.uuid4()) + ".pending.json"), content)
+    before = _preparation_attempts(campaign.directory, stage)
+    prior = campaign.attempts(stage)
+    invocation = str(uuid.uuid4())
+    started = {"protocol": SCOPED_PROTOCOL, "pending_protocol": "drained-preparation-v1",
+               "invocation": invocation, "root": str(campaign.root), "campaign": str(campaign.directory),
+               "stage": stage, "source": str(source), "build": str(build), "targets": targets,
+               "lease_token": lease.token, "attempts_before": sorted(before),
+               "next_attempt": max((item.get("attempt_number", 0) for item in prior), default=0) + 1}
+    invocation_record = _write_recovery_file(
+        campaign.directory / "preparation" / (invocation + ".started.json"), started)
+    pending = {**started, "invocation_record": invocation_record, "state": "running",
+               "recovered_pending": recovered}
+    lease.check_admission()
+    write_json(pending_path, pending)
+    try:
+        yield pending
+    except BaseException as error:
+        try:
+            lease.check_admission()
+            if (campaign.directory / "running.lock").exists() or (campaign.directory / "running.lock").is_symlink():
+                raise ValueError("campaign still has an unproved command owner")
+            created = _preparation_attempts(campaign.directory, stage) - before
+            records = []
+            for name in created:
+                record = json.loads((Path(name) / "result.json").read_text(encoding="utf-8"))
+                records.append((record["attempt_number"], Path(name), record))
+            records.sort(key=lambda item: item[0])
+            if records:
+                _, directory, record = records[-1]
+                if record["status"] == "passed" and "--build" in record["identity"]["command"]:
+                    record.update(status="failed", error="build provenance failed: " + str(error))
+                    write_json(directory / "result.json", record)
+            attempts = [_drained_preparation_attempt(campaign.root, campaign.directory, stage, path, number)
+                        for number, (_, path, _) in enumerate(records, started["next_attempt"])]
+            if json.loads(pending_path.read_text(encoding="utf-8")) != pending:
+                raise ValueError("pending preparation changed while owned")
+            sealed = {**pending, "state": "retryable"}
+            proof = {"pending": sealed, "completion": "commands-drained" if attempts else "no-command-started",
+                     "attempts": attempts, "error": {"type": type(error).__name__, "message": str(error)}}
+            lease.check_admission()
+            if before | created != _preparation_attempts(campaign.directory, stage):
+                raise ValueError("preparation command attempts changed while sealing")
+            binding = _write_recovery_file(
+                campaign.directory / "preparation" / (invocation + ".failed.json"), proof)
+            write_json(pending_path, {**sealed, "failure_proof": binding})
+        except BaseException as sealing_error:
+            error.add_note("preparation remains pending without retry proof: " + str(sealing_error))
+        raise
+
+
+# One-time owner amendment, 2026-10-21; no generic legacy admission.
+S4C1_PENDING = {'linux-debug': {'marker': 'verification-build-4a0c80d1e3a0698beeea82ac.pending.json',
+                 'source': '/mnt/c/Dev/Codex',
+                 'sha256': '6ac1fb8649dc35f6572313ba2a41db6eeef1e34ade881143bc6bfae952646662',
+                 'campaign': 'out/validation/linux-debug/s4-b-slice-5-core-gate-2026-10-18',
+                 'evidence': {'campaign.json': '418ee13c04267ef4c26c55b25eaf56f31a25301fe0f664a0cef854a7874d9430',
+                              'attempts/prepare-0qlifko3/output.log': '910a8c428b30c1ceadd3da1a2198e057d36c121b3d3b4e2c12843b3ba4b87c5e',
+                              'attempts/prepare-0qlifko3/process.json': '5a1084120b69820cf32c210297444e799f3e9605c4a2fc16a9f5fc2e6b403ab4',
+                              'attempts/prepare-0qlifko3/result.json': '0445b6e25951047125bb34fcd50b90632252477ba0dbe4f50f5a0577803e07f2',
+                              'attempts/prepare-6dyxysjf/output.log': '58d9ec2986c6b41c9062f0cf041fe43409eb4bdf749ee6d894efbed2b101878a',
+                              'attempts/prepare-6dyxysjf/process.json': 'ed3e61aee3de6779bb692925d5548ca25e24deeb11db7deeea7adc40f4e9dda3',
+                              'attempts/prepare-6dyxysjf/result.json': '30a78f5c7ab92c2f6af5cb4ba0ac3489fc7f2afd58f6362c6bcb830456342c1a',
+                              'attempts/prepare-h42d44bf/output.log': '5b9531c3850c50b6d548033d955317c66b790ecc688ef35ddc731ab91ffb0e88',
+                              'attempts/prepare-h42d44bf/process.json': '91c2f2dc9897dbb3fd5387a7b58050e4daa6fbac461a8546c64ee87ab9a5561b',
+                              'attempts/prepare-h42d44bf/result.json': 'bac9745278ece15d8ea7e5c6d8bea477260adfe0e285573f692aa82313314f99',
+                              'attempts/prepare-ls_e8bxk/output.log': 'ada22006c703769d454295bcd246e567c37e5902391f755970a95f9ce47a568a',
+                              'attempts/prepare-ls_e8bxk/process.json': 'cc9fc4b56a5851c51f72e284a84fe4fe7d094515b141337a0561cb3f406fad48',
+                              'attempts/prepare-ls_e8bxk/result.json': '5532c3082dd9ce3d55f64015a57c633381f111010832a51f939481c05794d0cc',
+                              'attempts/prepare-u24ootbo/output.log': '5c538a452900221f19ad2bff2436fc0a23156e508b6d1d38824e4eb788c40a9c',
+                              'attempts/prepare-u24ootbo/process.json': 'f1d507ea41d8eb042c57dc47383b469881e7f43bc0ab4b8aae3abbe9f9c02d23',
+                              'attempts/prepare-u24ootbo/result.json': '5ac017b3407463aa4c65f3f344f8efffc67ae00854049b90421824dd7e8da117',
+                              'attempts/prepare-ya1whx8o/output.log': '89811688036109a2adf32ab5502a4f48402e2415459a527339fa5a50507c3e87',
+                              'attempts/prepare-ya1whx8o/process.json': '83800362914ce64801d50a39134e22b63c9225d955e6643967a1833f6ee98143',
+                              'attempts/prepare-ya1whx8o/result.json': '40aa20b5363444a7fdd68868dd5dd67131deda430bf0505703972f031c7351ee'}},
+ 'linux-release': {'marker': 'verification-build-bea0e3ec4c32132ca0641ce9.pending.json',
+                   'source': '/mnt/c/Dev/Codex',
+                   'sha256': 'a5060139283fbf2f6f9443113f1e56988434ba62691fc7addfbc294b1da10a31',
+                   'campaign': 'out/validation/linux-release/s4-c-slice-1-final-restore-on-v3-2026-10-20',
+                   'evidence': {'campaign.json': '4110e5814b84cd67f68872abb4cc19d54f7eb2d0a5d140b13e8221d9382aa37c',
+                                'attempts/prepare-ja13lxlk/output.log': '15e9ba5aae39511d661edebe87488c0e1b98eb18e7624175f12dd55563a84ff1',
+                                'attempts/prepare-ja13lxlk/process.json': '753fdeda93eaae169636c26cddd0a4ee00b2fb661a94676893eb678d735d5a31',
+                                'attempts/prepare-ja13lxlk/result.json': 'b4e8dd2258c35675e412ebd01d42e1c744a26fb34fdb53a3a318a98f588650ed',
+                                'attempts/prepare-x7w2cr2h/output.log': 'ab91540258338d0cb42de3f21256cf5fdc4265c83910d61c3314770b53b82914',
+                                'attempts/prepare-x7w2cr2h/process.json': 'e5a414354cff33234e1088e3972f34a357353ff5decec61d630b4cebde0cebee',
+                                'attempts/prepare-x7w2cr2h/result.json': '6d019a78e52ecfacb6567df318b50213da3005633e3ba953fd041de94f129e30',
+                                'attempts/prepare-xy2t8kpz/output.log': '099b1b885e768be08c15d87c9d27ad8a4c61619ea89580069057c2516bf3bd38',
+                                'attempts/prepare-xy2t8kpz/process.json': '1aa769d4d4d686f8c34b6b4a51bacc9c8ecbc95770621f3119fea7c165de777f',
+                                'attempts/prepare-xy2t8kpz/result.json': '8b9358c4601b90da6c5c06795b2108280907cbc536b42f53d0f243caebf63bf9'}}}
+
+
+def retire_s4c1_pending(root, preset):
+    """Retire only the exact authorized records, without manufacturing recovery proof."""
+    if os.name == "nt" or preset not in S4C1_PENDING:
+        raise ValueError("legacy disposition is limited to the two named Linux trees")
+    root = root.resolve()
+    build = root / "out/build" / preset
+    expected = S4C1_PENDING[preset]
+    marker = build / expected["marker"]
+    directory = root / expected["campaign"]
+    with OutputLease(root, build) as lease:
+        if str(root) != expected["source"]:
+            raise ValueError("legacy disposition requires the exact authorized source/build path")
+        if marker.is_symlink() or not marker.is_file() or digest(marker) != expected["sha256"]:
+            raise ValueError("legacy marker is unknown, changed or already retired")
+        if {p.name for p in build.glob("*.pending.json")} != {marker.name}:
+            raise ValueError("additional pending owner blocks legacy disposition")
+        for name, checksum in expected["evidence"].items():
+            path = directory / name
+            if path.is_symlink() or not path.is_file() or digest(path) != checksum:
+                raise ValueError("legacy drainage evidence is missing or changed: " + str(path))
+        attempts = sorted((directory / "attempts").glob("prepare-*"))
+        if {p.name for p in attempts} != {Path(p).parts[1] for p in expected["evidence"] if p.startswith("attempts/")}:
+            raise ValueError("legacy preparation attempt membership changed")
+        if (directory / "running.lock").exists() or (directory / "running.lock").is_symlink():
+            raise ValueError("legacy command still has an active or unproved owner")
+        proofs = []
+        for attempt in attempts:
+            record = json.loads((attempt / "result.json").read_text(encoding="utf-8"))
+            proofs.append(_drained_preparation_attempt(root, directory, "prepare", attempt, record["attempt_number"]))
+        # The Debug marker predates these commands and has no invocation binding.
+        # The previous boot's retained drainage plus this boot boundary is required.
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        for attempt in attempts:
+            tree = json.loads((attempt / "process.json").read_text(encoding="utf-8"))
+            if preset == "linux-debug" and tree["creation"]["boot_id"] == boot:
+                raise ValueError("Debug legacy disposition requires the verified later boot")
+            if tree["creation"]["boot_id"] == boot:
+                stat = Path("/proc") / str(tree["supervisor_pid"]) / "stat"
+                if stat.exists() and stat.read_text().rsplit(")", 1)[1].split()[19] == tree["creation"]["linux_start_ticks"]:
+                    raise ValueError("legacy supervisor is still active")
+        campaign = Campaign(root, preset, "legacy-retirement-" + uuid.uuid4().hex, ["retire"])
+        original = _write_recovery_file(campaign.directory / marker.name, marker.read_bytes())
+        baseline = marker.with_name(marker.name.replace(".pending.json", ".json"))
+        retained_baseline = (_write_recovery_file(campaign.directory / baseline.name, baseline.read_bytes())
+                             if baseline.is_file() else None)
+        record = {"disposition": "retired-unqualified", "marker": str(marker), "original": original,
+                  "baseline": retained_baseline, "evidence": expected["evidence"], "campaign": str(directory),
+                  "drained_attempts": proofs, "current_boot_id": boot, "lease_token": lease.token,
+                  "fresh_preparation_required": True}
+        result = campaign.directory / "retirement.json"
+        _write_recovery_file(result, record)
+        lease.check_admission()
+        if digest(marker) != expected["sha256"]:
+            raise ValueError("legacy marker changed during disposition")
+        # Removing the old completed owner prevents reuse after marker retirement.
+        if retained_baseline:
+            if digest(baseline) != retained_baseline["sha256"]:
+                raise ValueError("legacy completed owner changed during disposition")
+            baseline.unlink()
+        marker.unlink()
+        return result
+
+
+PREPARATION_TARGETS = {"all", "juicer", "JuicerFilmRecipeTests", "JuicerRouteBridgeTests", "JuicerOutputColorTests"}
+
+
+def prepare_targets(root, preset, targets, testing="ON"):
+    """Prepare a bounded native target scope; never dispatch quality or runtime tests."""
+    from qualification import PRESETS
+
+    if (preset not in PRESETS or preset.startswith("windows") != (os.name == "nt")
+            or not targets or set(targets) - PREPARATION_TARGETS or testing not in {"ON", "OFF"}
+            or "all" in targets and len(targets) != 1):
+        raise ValueError("preparation requires a native preset and explicit maintained build targets")
+    if testing == "OFF" and (not preset.endswith("release") or set(targets) - {"all", "juicer"}):
+        raise ValueError("testing OFF preparation requires Release product targets")
+    root = root.resolve()
+    build = root / "out/build" / preset
+    cache = build / "CMakeCache.txt"
+    if cache.is_file():
+        home = re.search(r"^CMAKE_HOME_DIRECTORY:[^=]+=(.+)$", cache.read_text(encoding="utf-8"), re.M)
+        if not home or str(Path(home[1].strip())) != str(root):
+            raise ValueError("use the configured source path spelling for preparation")
+    with OutputLease(root, build):
+        own_pending = preparation_paths(build, targets)[1]
+        if any(path != own_pending for path in build.glob("*.pending.json")):
+            raise ValueError("another pending preparation must be resolved by its existing owner first")
+        campaign = Campaign(root, preset, "preparation-" + uuid.uuid4().hex, ["prepare"])
+        _, prepared = prepare_build(campaign, "prepare", source=root, build=build,
+                                    inputs=["scripts/verify.py", "scripts/build_evidence.py"], timeout=1200,
+                                    configure_args=["-DBUILD_TESTING=" + testing], targets=targets,
+                                    checkpoint=True, reconfigure=True)
+        check_scoped_preparation(campaign, build, prepared)
+        return prepared
+
+
+def prepare_build(campaign, stage, *, source, build, inputs, timeout,
+                  configure_args=(), targets=(), env=None, tools=(), resume=None, checkpoint=False, reconfigure=False):
     if not targets or resume is not None:
         raise ValueError(LEGACY_ADMISSION_UNSUPPORTED)
     source, build = source.resolve(), build.resolve()
@@ -670,11 +957,13 @@ def _prepare_build_owned(campaign, stage, *, source, build, inputs, timeout,
         if sorted(targets) != selected["targets"]:
             raise ValueError(LEGACY_ADMISSION_UNSUPPORTED)
     targets, inputs = sorted(set(targets)), sorted(set(inputs))
+    build_command = ["cmake", "--build", str(build), "--parallel", "2", "--target", *targets]
+    campaign.check_run_request(stage, build_command, inputs=inputs, timeout=timeout)
     environment = dict(os.environ if env is None else env)
-    with OutputLease(campaign.root, build):
+    with OutputLease(campaign.root, build) as lease, ExitStack() as preparation:
         configured = None
         baseline, pending_path = preparation_paths(build, targets)
-        interrupted = pending_path.is_file()
+        interrupted = pending_path.exists() or pending_path.is_symlink()
         old = None
         if baseline.is_file():
             candidate = json.loads(baseline.read_text(encoding="utf-8"))
@@ -691,13 +980,14 @@ def _prepare_build_owned(campaign, stage, *, source, build, inputs, timeout,
             if any(old["output_identities"].get(name) != identity for name, identity in previous_outputs.items()):
                 raise ValueError("completed preparation artifact bytes changed; refusing renewal")
         build.mkdir(parents=True, exist_ok=True)
-        write_json(pending_path, {"protocol": SCOPED_PROTOCOL, "targets": targets})
+        pending = preparation.enter_context(
+            _pending_preparation(campaign, stage, source, build, targets, pending_path, lease))
         cache = build / "CMakeCache.txt"
         admission_start = time.perf_counter()
         admission = (_admit_missing_scope(campaign, source, build, baseline, targets, inputs, configure_args, environment)
-                     if old is None and not interrupted and cache.is_file() else None)
+                     if old is None and not interrupted and cache.is_file() and not reconfigure else None)
         admission_seconds = time.perf_counter() - admission_start
-        configure = not cache.is_file() or (old is None and admission is None)
+        configure = reconfigure or not cache.is_file() or (old is None and admission is None)
         if old and old.get("configure_args") != list(configure_args):
             configure = True
         if cache.is_file():
@@ -771,11 +1061,11 @@ def _prepare_build_owned(campaign, stage, *, source, build, inputs, timeout,
         invalidate_preparation_owners(build, baseline, potential)
         rust_invalidated = invalidate_rust(campaign, stage, source, build, changed, old, environment, timeout)
         invalidated = graph.invalidate(affected)
-        command = ["cmake", "--build", str(build), "--parallel", "2", "--target", *targets]
-        write_json(pending_path, {"protocol": SCOPED_PROTOCOL, "targets": targets, "outputs": sorted(mutable)})
+        pending["outputs"] = sorted(mutable)
+        write_json(pending_path, pending)
         for attempt in range(2):
             local, external = split_inputs(campaign.root, [Path(name) for name in before["files"]])
-            built = campaign.run(stage, command, inputs=local, tools=[*tools, *external], env=environment,
+            built = campaign.run(stage, build_command, inputs=local, tools=[*tools, *external], env=environment,
                                  timeout=timeout, repeat_reason="build only explicit owning targets and dependencies",
                                  vctip_executable=windows_vctip(environment))
             fresh_graph = NinjaGraph(build, targets, environment)
@@ -829,7 +1119,8 @@ def _prepare_build_owned(campaign, stage, *, source, build, inputs, timeout,
         record = json.loads(built.read_text(encoding="utf-8"))
         record["preparation_admission"] = {"scope_missing": old is None, "artifact_owners": admission[2] if admission else {},
                                            "archive_owners": {proof["producer"]: proof["producer_sha256"] for _, proof, _ in archive_owners},
-                                           "configured": configured is not None, "seconds": admission_seconds}
+                                           "configured": configured is not None, "seconds": admission_seconds,
+                                           "recovered_pending": pending["recovered_pending"]}
         record["scoped_preparation"] = proof
         write_json(built, record)
         # The writer just established this post-build context. Only its owned
@@ -879,25 +1170,3 @@ def run_ctest(campaign, stage, *, build, prepared, inputs, timeout, env=None,
             raise ValueError("selected CTest did not execute a nonempty successful result")
         check_scoped_preparation(campaign, build, prepared, env)
         return result
-
-
-def prepare_build(campaign, stage, **arguments):
-    before = len(campaign.attempts(stage))
-    try:
-        return _prepare_build_owned(campaign, stage, **arguments)
-    except BaseException as error:
-        records = campaign.attempts(stage)
-        if len(records) > before:
-            record = records[-1]
-            if (
-                record["status"] == "passed"
-                and "--build" in record["identity"]["command"]
-            ):
-                record.update(
-                    status="failed", error="build provenance failed: " + str(error)
-                )
-                write_json(
-                    campaign.root / Path(record["output"]).with_name("result.json"),
-                    record,
-                )
-        raise

@@ -1,0 +1,318 @@
+{
+  "schema": 1,
+  "contract": "Film-Juicer print balance characterization; exact native f32 words, statuses/diagnostics and identities; C/M/Y densities and RGB print sensitivities retain positional order.",
+  "typed_metadata_authority": "Normative new checked ABI contract; native captures observe bool and diagnostic only. Failure results clear all fields; this is not a claim about native unpublished carriers.",
+  "reference_head": "302050bdaa65ce536a2a43e663dbbed3fdd76c8b",
+  "spektrafilm_revision": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+  "metric": "Exact successful nine f32 words and both hashes; exact native diagnostic and normative typed envelope; no tolerance or numerical amendment.",
+  "outcomes": {
+    "balance-none": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "balance-compensation": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "balance-normalize": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "balance-both": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "balance-zero": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "balance-signed-zero": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "balance-sensitivity-skip": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "balance-baseline-failure": {
+      "category": 3,
+      "reason": 2,
+      "channel": 1
+    },
+    "balance-compensated-overflow": {
+      "category": 3,
+      "reason": 3,
+      "channel": 0
+    },
+    "balance-unknown-mode": {
+      "category": 3,
+      "reason": 4,
+      "channel": 4294967295
+    },
+    "balance-main-hash-failure": {
+      "category": 3,
+      "reason": 4,
+      "channel": 4294967295
+    },
+    "balance-normalizer-overflow": {
+      "category": 3,
+      "reason": 4,
+      "channel": 4294967295
+    },
+    "balance-normalizer-underflow": {
+      "category": 3,
+      "reason": 4,
+      "channel": 4294967295
+    },
+    "unsupported-mode-4": {
+      "category": 3,
+      "reason": 4,
+      "channel": 4294967295
+    },
+    "unsupported-mode-127": {
+      "category": 3,
+      "reason": 4,
+      "channel": 4294967295
+    },
+    "unsupported-mode-254": {
+      "category": 3,
+      "reason": 4,
+      "channel": 4294967295
+    },
+    "film_base_density-nan": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "film_base_density-inf": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "film_base_density-negative-inf": {
+      "category": 3,
+      "reason": 2,
+      "channel": 0
+    },
+    "film_channel_density_cmy-nan": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "film_channel_density_cmy-inf": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "film_channel_density_cmy-negative-inf": {
+      "category": 3,
+      "reason": 3,
+      "channel": 0
+    },
+    "baseline_density_cmy-nan": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "baseline_density_cmy-inf": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "baseline_density_cmy-negative-inf": {
+      "category": 3,
+      "reason": 2,
+      "channel": 0
+    },
+    "compensated_density_cmy-nan": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "compensated_density_cmy-inf": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "compensated_density_cmy-negative-inf": {
+      "category": 3,
+      "reason": 3,
+      "channel": 0
+    },
+    "zero-reference-hash": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "equal-densities": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "negative-cancellation": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "baseline-channel-0": {
+      "category": 3,
+      "reason": 2,
+      "channel": 0
+    },
+    "baseline-channel-1": {
+      "category": 3,
+      "reason": 2,
+      "channel": 1
+    },
+    "baseline-channel-2": {
+      "category": 3,
+      "reason": 2,
+      "channel": 2
+    },
+    "raw-narrowing-overflow": {
+      "category": 3,
+      "reason": 2,
+      "channel": 0
+    },
+    "floor-neighbors": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "compensated-channel-1": {
+      "category": 3,
+      "reason": 3,
+      "channel": 1
+    },
+    "compensated-channel-2": {
+      "category": 3,
+      "reason": 3,
+      "channel": 2
+    },
+    "negative-double-narrows-zero": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "main-mixed-nan-hash": {
+      "category": 3,
+      "reason": 4,
+      "channel": 4294967295
+    },
+    "reference-hash-contribution": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    },
+    "all-negative-zero-light": {
+      "category": 0,
+      "reason": 0,
+      "channel": 4294967295
+    }
+  },
+  "presets": {
+    "linux-debug": {
+      "native": "linux-debug.json",
+      "sha256": "37eed4e595d09a73f050ebb65c724a3ae9a9f5497bcbf74b37c0aa5f1f6b3d29",
+      "capture": "out/validation/linux-debug/s4-c-slice-3-native-2026-10-21/native.json",
+      "producer": "/mnt/c/Dev/Codex/out/validation/linux-debug/s4-c-slice-3-native-2026-10-21/capture-process.json",
+      "extraction_parity": [
+        {
+          "path": "out/validation/linux-debug/s4-c-slice-3-native-2026-10-21/extraction.xml",
+          "sha256": "a84b1a67ec043aa8027a79320497094f1843311571d81894560eae0a43301449",
+          "passed_cases": [
+            "Print.Host.IlluminantProducts",
+            "Ffi.Host.PrintPreflash",
+            "Print.Host.PreflashProducts"
+          ]
+        },
+        {
+          "path": "out/validation/linux-debug/s4-c-slice-3-native-2026-10-21/extraction-spectral.xml",
+          "sha256": "e590f33a7cb8ea3596643fe0a09ba7f40b1a5df0241b0cbba175335ee947eec6",
+          "passed_cases": [
+            "Spectral.Host.Products"
+          ]
+        }
+      ]
+    },
+    "linux-release": {
+      "native": "linux-release.json",
+      "sha256": "40ee8491f2eb48493b02416564a94c640caf561aa8a271c9a765aa3e0663c105",
+      "capture": "out/validation/linux-release/s4-c-slice-3-native-2026-10-21/native.json",
+      "producer": "/mnt/c/Dev/Codex/out/validation/linux-release/s4-c-slice-3-native-2026-10-21/capture-process.json",
+      "extraction_parity": [
+        {
+          "path": "out/validation/linux-release/s4-c-slice-3-native-2026-10-21/extraction.xml",
+          "sha256": "f21f9b58a6ead9b34601f87149cb96c6dce4e0a5a9e4e94c99196a376ea1ed0e",
+          "passed_cases": [
+            "Print.Host.IlluminantProducts",
+            "Ffi.Host.PrintPreflash",
+            "Print.Host.PreflashProducts"
+          ]
+        },
+        {
+          "path": "out/validation/linux-release/s4-c-slice-3-native-2026-10-21/extraction-spectral.xml",
+          "sha256": "33f0887477051cf7bb8e693011304ab3a37a13a3251500a823be365f7be68995",
+          "passed_cases": [
+            "Spectral.Host.Products"
+          ]
+        }
+      ]
+    },
+    "windows-clang-debug": {
+      "native": "windows-clang-debug.json",
+      "sha256": "eeb997a26aa1daf3f18ec6327910a0d5d25a1a66b3d72d22af7e7f19725e6b6d",
+      "capture": "out/validation/windows-clang-debug/s4-c-slice-3-native-2026-10-21/native.json",
+      "producer": "/mnt/c/Dev/Codex/out/validation/windows-clang-debug/s4-c-slice-3-native-2026-10-21/capture-process.json",
+      "extraction_parity": [
+        {
+          "path": "out/validation/windows-clang-debug/s4-c-slice-3-native-2026-10-21/extraction.xml",
+          "sha256": "ec1d29cd6fbf98047d481ddac849cbd0c410027f8633bc0d6c26efb08f6352c3",
+          "passed_cases": [
+            "Print.Host.IlluminantProducts",
+            "Ffi.Host.PrintPreflash",
+            "Print.Host.PreflashProducts"
+          ]
+        },
+        {
+          "path": "out/validation/windows-clang-debug/s4-c-slice-3-native-2026-10-21/extraction-spectral.xml",
+          "sha256": "a10c22e72236027a9ad956f5785618efc055d5cc42d230225e1fcb234fc68460",
+          "passed_cases": [
+            "Spectral.Host.Products"
+          ]
+        }
+      ]
+    },
+    "windows-clang-release": {
+      "native": "windows-clang-release.json",
+      "sha256": "7d375c75d494a6268f59ed3a9af5bc6e969afa435b0f5c34d7c816978e69414e",
+      "capture": "out/validation/windows-clang-release/s4-c-slice-3-native-2026-10-21/native.json",
+      "producer": "/mnt/c/Dev/Codex/out/validation/windows-clang-release/s4-c-slice-3-native-2026-10-21/capture-process.json",
+      "extraction_parity": [
+        {
+          "path": "out/validation/windows-clang-release/s4-c-slice-3-native-2026-10-21/extraction.xml",
+          "sha256": "4d53758bfd32efaba007c24fce46e4b0cd096d74934f0498dbc6c62c3f887c97",
+          "passed_cases": [
+            "Print.Host.IlluminantProducts",
+            "Ffi.Host.PrintPreflash",
+            "Print.Host.PreflashProducts"
+          ]
+        },
+        {
+          "path": "out/validation/windows-clang-release/s4-c-slice-3-native-2026-10-21/extraction-spectral.xml",
+          "sha256": "11ef8c73d4928b6e98ab88dd509a87513bba6243731c729659d4d31d43a066e8",
+          "passed_cases": [
+            "Spectral.Host.Products"
+          ]
+        }
+      ]
+    }
+  }
+}

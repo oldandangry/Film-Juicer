@@ -6,16 +6,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <optional>
 #include <sstream>
 #include <string>
-#include <vector>
 
 #include "ColorTransforms.h"
 #include "GaussianSciPy.h"
 #include "Logging.h"
 #include "RenderRecipe.h"
 #include "RustColorBridge.h"
+#include "RustScannerBridge.h"
 
 namespace {
 
@@ -75,123 +74,6 @@ namespace {
         return scanner_gaussian_radius_or_zero(sigma) > 0 ? sigma : 0.0f;
     }
 
-    float remove_srgb_cctf(float value) {
-        const float clamped = std::clamp(value, 0.0f, 1.0f);
-        return clamped <= 0.04045f
-                   ? clamped / 12.92f
-                   : std::pow((clamped + 0.055f) / 1.055f, 2.4f);
-    }
-
-    float density_to_light_sample_spektrafilm(float density, float illuminant) {
-        const float transmitted = std::pow(10.0f, -density) * illuminant;
-        return std::isnan(transmitted) ? 0.0f : transmitted;
-    }
-
-    Scanner::ScannerMediumRuntime make_scanner_medium(
-        const DensityBoundsRecipe& bounds,
-        const Spectral::SpectralTables& tables) {
-        Scanner::ScannerMediumRuntime medium{};
-        medium.medium = bounds.medium == Spektrafilm::DensityMedium::Print
-                            ? Scanner::ScannerMedium::Print
-                            : Scanner::ScannerMedium::Negative;
-        medium.tables = &tables;
-        for (std::size_t channel = 0; channel < 3; ++channel) {
-            medium.range.min_cmy[channel] =
-                medium.medium == Scanner::ScannerMedium::Negative
-                    ? -bounds.dataMinCmy[channel]
-                    : bounds.dataMinCmy[channel];
-            medium.range.max_cmy[channel] =
-                bounds.invSpanCmy[channel] > 0.0f ? 1.0f / bounds.invSpanCmy[channel] : 0.0f;
-            medium.range.inv_max_cmy[channel] = bounds.invSpanCmy[channel];
-        }
-        medium.range.digest = bounds.hash;
-        return medium;
-    }
-
-    bool scan_reference_y(
-        const Scanner::ScannerMediumRuntime& medium,
-        const std::array<float, 3>& densityCmy,
-        float& outY) {
-        double normalized[3]{};
-        double logXyz[3]{};
-        Scanner::normalize_density(medium, densityCmy.data(), normalized);
-        Scanner::spectral_to_log_xyz(medium, normalized, logXyz);
-        const double y = std::pow(10.0, logXyz[1]);
-        if (!std::isfinite(y)) {
-            return false;
-        }
-        outY = static_cast<float>(y);
-        return true;
-    }
-
-    float finite_average(const float* values, std::size_t count) {
-        double sum = 0.0;
-        std::size_t finiteCount = 0;
-        for (std::size_t i = 0; i < count; ++i) {
-            if (std::isfinite(values[i])) {
-                sum += values[i];
-                ++finiteCount;
-            }
-        }
-        return finiteCount > 0 ? static_cast<float>(sum / static_cast<double>(finiteCount)) : 0.0f;
-    }
-
-    std::vector<float> average_density_curves(
-        const std::vector<std::array<float, 3>>& curves) {
-        std::vector<float> average;
-        average.reserve(curves.size());
-        for (const std::array<float, 3>& row : curves) {
-            average.push_back(finite_average(row.data(), row.size()));
-        }
-        return average;
-    }
-
-    std::optional<float> interp_clamped_monotonic(
-        float query,
-        const std::vector<float>& x,
-        const std::vector<float>& y) {
-        if (std::isnan(query) || x.empty() || x.size() != y.size()) {
-            return std::nullopt;
-        }
-        const bool ascending = x.size() < 2 || x.back() >= x.front();
-        const auto at = [&](std::size_t index) {
-            return ascending ? index : x.size() - 1u - index;
-        };
-        if (query <= x[at(0)]) {
-            return y[at(0)];
-        }
-        if (query >= x[at(x.size() - 1u)]) {
-            return y[at(y.size() - 1u)];
-        }
-        for (std::size_t i = 1; i < x.size(); ++i) {
-            const std::size_t hi = at(i);
-            const std::size_t lo = at(i - 1u);
-            if (query >= x[lo] && query <= x[hi]) {
-                const float span = x[hi] - x[lo];
-                const float t = span > 0.0f ? (query - x[lo]) / span : 0.0f;
-                return y[lo] + t * (y[hi] - y[lo]);
-            }
-        }
-        return std::nullopt;
-    }
-
-    template <typename Samples>
-    std::optional<float> sample_density_curve(
-        float logExposure,
-        const Samples& data,
-        std::size_t channel) {
-        if (std::isnan(logExposure) || data.logExposure.empty() ||
-            data.logExposure.size() != data.densityCurves.size() || channel >= 3u) {
-            return std::nullopt;
-        }
-        std::vector<float> values;
-        values.reserve(data.densityCurves.size());
-        for (const std::array<float, 3>& row : data.densityCurves) {
-            values.push_back(row[channel]);
-        }
-        return interp_clamped_monotonic(logExposure, data.logExposure, values);
-    }
-
     const char* bool_text(bool value) {
         return value ? "true" : "false";
     }
@@ -237,109 +119,34 @@ namespace {
         JTRACE_LEVEL(2, "SCAN", oss.str());
     }
 
-    bool finish_correction_descriptor(
-        const ScannerOutputRecipe& output,
-        float referenceBlackY,
-        float referenceWhiteY,
-        float exposureScale,
-        Scanner::ScannerColorCorrectionDescriptor& descriptor,
-        std::string& outDiagnostic) {
-        const float targetBlack = output.blackCorrection
-                                      ? remove_srgb_cctf(output.blackLevel)
-                                      : referenceBlackY;
-        const float targetWhite = output.whiteCorrection
-                                      ? remove_srgb_cctf(output.whiteLevel)
-                                      : referenceWhiteY;
-        const float slope =
-            (targetWhite - targetBlack) / (referenceWhiteY - referenceBlackY + 1e-10f);
-        const float offset = targetBlack - slope * referenceBlackY;
-        const float correctedMidgray = slope != 0.0f
-                                           ? (0.184f - offset) / slope
-                                           : std::numeric_limits<float>::quiet_NaN();
-        const float referenceDeltaY = referenceWhiteY - referenceBlackY;
-        if (!std::isfinite(referenceBlackY) || !std::isfinite(referenceWhiteY) ||
-            !(referenceDeltaY > 1.0e-6f) ||
-            !std::isfinite(slope) || !std::isfinite(offset) ||
-            !std::isfinite(exposureScale) || exposureScale <= 0.0f) {
-            outDiagnostic = "MalformedRequiredProfileData phase=8B scanner correction";
-            trace_scanner_correction_descriptor(
-                "rejected_malformed",
-                descriptor.route,
-                output,
-                referenceBlackY,
-                referenceWhiteY,
-                targetBlack,
-                targetWhite,
-                slope,
-                offset,
-                correctedMidgray,
-                exposureScale,
-                0,
-                outDiagnostic.c_str());
-            return false;
+    void trace_prepared_scanner_correction(
+        const RenderRecipe& recipe,
+        const FjScannerCorrectionTrace& trace,
+        const std::string& diagnostic) {
+        const char* outcome = nullptr;
+        switch (trace.outcome) {
+            case FJ_SCANNER_CORRECTION_TRACE_NONE:
+                return;
+            case FJ_SCANNER_CORRECTION_TRACE_ACCEPTED:
+                outcome = "accepted";
+                break;
+            case FJ_SCANNER_CORRECTION_TRACE_MIDGRAY:
+                outcome = "rejected_corrected_midgray";
+                break;
+            case FJ_SCANNER_CORRECTION_TRACE_MALFORMED:
+                outcome = "rejected_malformed";
+                break;
+            case FJ_SCANNER_CORRECTION_TRACE_ZERO_HASH:
+                outcome = "rejected_zero_hash";
+                break;
+            default:
+                return; // The transport adapter rejects unknown outcomes.
         }
-        descriptor.active = true;
-        descriptor.blackCorrection = output.blackCorrection;
-        descriptor.whiteCorrection = output.whiteCorrection;
-        descriptor.targetBlackLinear = targetBlack;
-        descriptor.targetWhiteLinear = targetWhite;
-        descriptor.referenceBlackY = referenceBlackY;
-        descriptor.referenceWhiteY = referenceWhiteY;
-        descriptor.xyzSlope = slope;
-        descriptor.xyzOffset = offset;
-        descriptor.exposureScale = exposureScale;
-        std::uint64_t hash = Hash::kFnvOffset;
-        hash_value(hash, descriptor.route);
-        hash_value(hash, descriptor.blackCorrection);
-        hash_value(hash, descriptor.whiteCorrection);
-        hash_value(hash, descriptor.targetBlackLinear);
-        hash_value(hash, descriptor.targetWhiteLinear);
-        hash_value(hash, descriptor.referenceBlackY);
-        hash_value(hash, descriptor.referenceWhiteY);
-        hash_value(hash, descriptor.xyzSlope);
-        hash_value(hash, descriptor.xyzOffset);
-        hash_value(hash, descriptor.exposureScale);
-        hash_value(hash, descriptor.schemaVersion);
-        descriptor.hash = hash;
-        const bool accepted = descriptor.hash != 0;
         trace_scanner_correction_descriptor(
-            accepted ? "accepted" : "rejected_zero_hash",
-            descriptor.route,
-            output,
-            referenceBlackY,
-            referenceWhiteY,
-            targetBlack,
-            targetWhite,
-            slope,
-            offset,
-            correctedMidgray,
-            exposureScale,
-            descriptor.hash,
-            accepted ? "" : "ResourceDescriptorMismatch phase=8B scanner correction hash");
-        return accepted;
+            outcome, recipe.profileRoute.scanRoute, recipe.scannerOutput, trace.reference_black_y, trace.reference_white_y, trace.target_black_linear, trace.target_white_linear, trace.xyz_slope, trace.xyz_offset, trace.corrected_midgray, trace.exposure_scale, trace.hash, trace.outcome == FJ_SCANNER_CORRECTION_TRACE_ZERO_HASH ? "ResourceDescriptorMismatch phase=8B scanner correction hash" : diagnostic.c_str());
     }
 
 } // namespace
-
-#ifdef JUICER_ASSET_LOOKUP_TEST_HOOK
-namespace AssetLookupTest {
-
-    std::optional<float> interp_clamped_monotonic_for_test(
-        float query,
-        const std::vector<float>& axis,
-        const std::vector<float>& values) {
-        return interp_clamped_monotonic(query, axis, values);
-    }
-
-    std::optional<float> sample_density_curve_for_test(
-        float query,
-        const Profiles::FilmProfileSamples& data,
-        std::size_t channel) {
-        return sample_density_curve(query, data, channel);
-    }
-
-} // namespace AssetLookupTest
-#endif
 
 namespace Scanner {
 
@@ -666,244 +473,21 @@ namespace Scanner {
         const Spectral::SpectralTables& scannerTables,
         ScannerColorCorrectionDescriptor& outDescriptor,
         std::string& outDiagnostic) {
-        outDescriptor = ScannerColorCorrectionDescriptor{};
-        outDescriptor.route = recipe.profileRoute.scanRoute;
-        outDiagnostic.clear();
-        const ScannerOutputRecipe& output = recipe.scannerOutput;
-        if (!output.blackCorrection && !output.whiteCorrection) {
-            return true;
-        }
-        if (recipe.profileRoute.scanRoute == Spektrafilm::ScanRoute::NegativeDirectScan) {
-            return true;
-        }
-        if (recipe.profileRoute.scanRoute != Spektrafilm::ScanRoute::PositiveDirectScan ||
-            !recipe.profileRoute.filmProfile || scannerTables.K <= 0) {
-            outDiagnostic = "ResourceDescriptorMismatch phase=8B direct correction inputs";
-            return false;
-        }
-
-        const Profiles::FilmProfileSamples& data =
-            recipe.profileRoute.filmProfile->data;
-        const SyntheticFilmReferenceRecipe& syntheticReference =
-            output.syntheticFilmReference;
-        if (syntheticReference.hash == 0) {
-            outDiagnostic =
-                "ResourceDescriptorMismatch phase=8B direct synthetic reference";
-            return false;
-        }
-        const ScannerMediumRuntime medium = make_scanner_medium(recipe.densityBounds, scannerTables);
-        std::array<float, 3> black = recipe.densityBounds.dataMaxCmy;
-        std::array<float, 3> white{};
-        float referenceBlackY = 0.0f;
-        float referenceWhiteY = 0.0f;
-        if (!scan_reference_y(medium, black, referenceBlackY) ||
-            !scan_reference_y(medium, white, referenceWhiteY)) {
-            outDiagnostic = "MalformedRequiredProfileData phase=8B direct reference scan";
-            return false;
-        }
-
-        const float targetBlack = output.blackCorrection
-                                      ? remove_srgb_cctf(output.blackLevel)
-                                      : referenceBlackY;
-        const float targetWhite = output.whiteCorrection
-                                      ? remove_srgb_cctf(output.whiteLevel)
-                                      : referenceWhiteY;
-        const float slope =
-            (targetWhite - targetBlack) / (referenceWhiteY - referenceBlackY + 1e-10f);
-        const float offset = targetBlack - slope * referenceBlackY;
-        const float correctedMidgray = (0.184f - offset) / slope;
-        if (!(std::isfinite(correctedMidgray) && correctedMidgray > 0.0f)) {
-            outDiagnostic = "MalformedRequiredProfileData phase=8B direct corrected midgray";
-            trace_scanner_correction_descriptor(
-                "rejected_corrected_midgray",
-                recipe.profileRoute.scanRoute,
-                output,
-                referenceBlackY,
-                referenceWhiteY,
-                targetBlack,
-                targetWhite,
-                slope,
-                offset,
-                correctedMidgray,
-                std::numeric_limits<float>::quiet_NaN(),
-                0,
-                outDiagnostic.c_str());
-            return false;
-        }
-        const float baseAverage =
-            finite_average(data.baseDensity.data(), data.baseDensity.size());
-        const float densityMidgray =
-            baseAverage + finite_average(
-                              syntheticReference.baselineDensityCmy.data(),
-                              syntheticReference.baselineDensityCmy.size());
-        const float correctedDensityMidgray =
-            densityMidgray - std::log10(correctedMidgray) + std::log10(0.184f);
-        std::vector<float> average =
-            average_density_curves(recipe.filmDevelop.authoredDensityCurves);
-        std::vector<float> negativeAverage = average;
-        for (float& value : negativeAverage) {
-            value = -value;
-        }
-        const auto correctedSample = interp_clamped_monotonic(
-            -(correctedDensityMidgray - baseAverage),
-            negativeAverage,
-            data.logExposure);
-        const auto sample = interp_clamped_monotonic(
-            -(densityMidgray - baseAverage),
-            negativeAverage,
-            data.logExposure);
-        if (!correctedSample || !sample) {
-            outDiagnostic = "ResourceDescriptorMismatch phase=8B direct density lookup";
-            return false;
-        }
-        const float correctedLogExposure = -*correctedSample;
-        const float logExposure = -*sample;
-        const float exposureScale = std::pow(10.0f, logExposure - correctedLogExposure);
-        return finish_correction_descriptor(
-            output,
-            referenceBlackY,
-            referenceWhiteY,
-            exposureScale,
-            outDescriptor,
-            outDiagnostic);
+        FjScannerCorrectionTrace trace{};
+        const bool success = JuicerScanner::prepare_direct(recipe, scannerTables, outDescriptor, trace, outDiagnostic);
+        trace_prepared_scanner_correction(recipe, trace, outDiagnostic);
+        return success;
     }
 
     bool build_print_scanner_color_correction_descriptor(
         const PrintCorrectionDerivationInput& input,
         ScannerColorCorrectionDescriptor& outDescriptor,
         std::string& outDiagnostic) {
-        outDescriptor = ScannerColorCorrectionDescriptor{};
-        outDiagnostic.clear();
-        if (!input.recipe) {
-            outDiagnostic = "ResourceDescriptorMismatch phase=8B print correction recipe";
-            return false;
-        }
-        const RenderRecipe& recipe = *input.recipe;
-        outDescriptor.route = recipe.profileRoute.scanRoute;
-        const ScannerOutputRecipe& output = recipe.scannerOutput;
-        if (!output.blackCorrection && !output.whiteCorrection) {
-            return true;
-        }
-        if (!Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ||
-            !recipe.profileRoute.filmProfile || !recipe.profileRoute.printProfile ||
-            !input.scannerTables || !input.mainIlluminant || !input.preflashRawCmy ||
-            input.spectralSampleCount != Spectral::kNumSamples ||
-            input.scannerTables->K <= 0 || !std::isfinite(input.normalizer)) {
-            outDiagnostic = "ResourceDescriptorMismatch phase=8B print correction inputs";
-            return false;
-        }
-
-        const Profiles::FilmProfileSamples& film =
-            recipe.profileRoute.filmProfile->data;
-        const Profiles::PrintProfileSamples& print =
-            recipe.profileRoute.printProfile->data;
-        const auto film_to_print_density = [&](const std::array<float, 3>& filmDensity)
-            -> std::optional<std::array<float, 3>> {
-            std::array<float, 3> raw{};
-            for (int sample = 0; sample < input.spectralSampleCount; ++sample) {
-                const std::size_t k = static_cast<std::size_t>(sample);
-                const float spectralDensity =
-                    film.baseDensity[k] +
-                    filmDensity[0] * film.channelDensity[k][0] +
-                    filmDensity[1] * film.channelDensity[k][1] +
-                    filmDensity[2] * film.channelDensity[k][2];
-                const float light =
-                    density_to_light_sample_spektrafilm(spectralDensity, input.mainIlluminant[k]);
-                for (std::size_t channel = 0; channel < 3; ++channel) {
-                    const float sensitivity = print.linearSensitivity[k][channel];
-                    if (std::isfinite(sensitivity)) {
-                        raw[channel] += light * sensitivity;
-                    }
-                }
-            }
-            std::array<float, 3> density{};
-            for (std::size_t channel = 0; channel < 3; ++channel) {
-                raw[channel] =
-                    raw[channel] * input.normalizer +
-                    input.preflashRawCmy[channel] * recipe.print.exposure.preflashExposure;
-                const auto sample = sample_density_curve(
-                    std::log10(std::fmax(raw[channel], 0.0f) + 1e-10f),
-                    print,
-                    channel);
-                if (!sample) {
-                    return std::nullopt;
-                }
-                density[channel] = *sample;
-            }
-            return density;
-        };
-
-        const auto printBlack =
-            film_to_print_density(recipe.enlargerFilmBounds.dataMinCmy);
-        const auto printWhite =
-            film_to_print_density(recipe.enlargerFilmBounds.dataMaxCmy);
-        if (!printBlack || !printWhite) {
-            outDiagnostic = "ResourceDescriptorMismatch phase=8B print reference density lookup";
-            return false;
-        }
-        const ScannerMediumRuntime medium = make_scanner_medium(
-            recipe.densityBounds,
-            *input.scannerTables);
-        float referenceBlackY = 0.0f;
-        float referenceWhiteY = 0.0f;
-        if (!scan_reference_y(medium, *printBlack, referenceBlackY) ||
-            !scan_reference_y(medium, *printWhite, referenceWhiteY)) {
-            outDiagnostic = "MalformedRequiredProfileData phase=8B print reference scan";
-            return false;
-        }
-
-        const float targetBlack = output.blackCorrection
-                                      ? remove_srgb_cctf(output.blackLevel)
-                                      : referenceBlackY;
-        const float targetWhite = output.whiteCorrection
-                                      ? remove_srgb_cctf(output.whiteLevel)
-                                      : referenceWhiteY;
-        const float slope =
-            (targetWhite - targetBlack) / (referenceWhiteY - referenceBlackY + 1e-10f);
-        const float offset = targetBlack - slope * referenceBlackY;
-        const float correctedMidgray = (0.184f - offset) / slope;
-        if (!(std::isfinite(correctedMidgray) && correctedMidgray > 0.0f)) {
-            outDiagnostic = "MalformedRequiredProfileData phase=8B print corrected midgray";
-            trace_scanner_correction_descriptor(
-                "rejected_corrected_midgray",
-                recipe.profileRoute.scanRoute,
-                output,
-                referenceBlackY,
-                referenceWhiteY,
-                targetBlack,
-                targetWhite,
-                slope,
-                offset,
-                correctedMidgray,
-                std::numeric_limits<float>::quiet_NaN(),
-                0,
-                outDiagnostic.c_str());
-            return false;
-        }
-        const float densityMidgray = -std::log10(0.184f);
-        const float correctedDensityMidgray = -std::log10(correctedMidgray);
-        const std::vector<float> average = average_density_curves(print.densityCurves);
-        const float baseAverage = finite_average(print.baseDensity.data(), print.baseDensity.size());
-        const auto correctedLogExposure = interp_clamped_monotonic(
-            correctedDensityMidgray - baseAverage,
-            average,
-            print.logExposure);
-        const auto logExposure = interp_clamped_monotonic(
-            densityMidgray - baseAverage,
-            average,
-            print.logExposure);
-        if (!correctedLogExposure || !logExposure) {
-            outDiagnostic = "ResourceDescriptorMismatch phase=8B print density lookup";
-            return false;
-        }
-        const float exposureScale = std::pow(10.0f, *correctedLogExposure - *logExposure);
-        return finish_correction_descriptor(
-            output,
-            referenceBlackY,
-            referenceWhiteY,
-            exposureScale,
-            outDescriptor,
-            outDiagnostic);
+        FjScannerCorrectionTrace trace{};
+        const bool success = JuicerScanner::prepare_print(input, outDescriptor, trace, outDiagnostic);
+        if (input.recipe)
+            trace_prepared_scanner_correction(*input.recipe, trace, outDiagnostic);
+        return success;
     }
 
     bool build_scanner_post_effects_descriptor(

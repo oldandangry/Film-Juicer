@@ -27,6 +27,7 @@
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
+#include "print_illuminant_fixture.h"
 template <typename T>
 concept RvalueCsvView = requires(T&& value) { std::move(value).view(); };
 static_assert(!std::is_default_constructible_v<JuicerAssets::CsvRows> && !std::is_copy_constructible_v<JuicerAssets::CsvRows> && std::is_move_constructible_v<JuicerAssets::CsvRows> && !RvalueCsvView<JuicerAssets::CsvRows>);
@@ -231,7 +232,8 @@ namespace IlluminantConstruction {
 #else
         const std::string profile = "debug";
 #endif
-        static const Json decoded = load_shared_fixture(fixtures / ("construction-" + platform + "-" + profile + ".json"), "construction-manifest.json");
+        static const auto path = fixtures / ("construction-" + platform + "-" + profile + ".json");
+        static const Json decoded = PrintIlluminantFixtures::apply(path, load_shared_fixture(path, "construction-manifest.json"));
         return decoded;
     }
     struct Diagnostic {

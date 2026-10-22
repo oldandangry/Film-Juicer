@@ -22,9 +22,11 @@ GROUPS = {"product", "boundary", "tooling", "corpus", "production"}
 
 
 def require_checkpoint(record):
+    # A completed selection can coexist with unrelated pending work. The collector
+    # checks current owners before admitting a complete aggregate.
     selected = set(record.get("selection", ()))
     expected = selected | ({"prepare", "quality"} if "product" in selected else set())
-    if (record.get("mode") != "checkpoint" or record.get("status") != "passed"
+    if (record.get("mode") != "checkpoint" or record.get("status") not in {"passed", "incomplete"}
             or record.get("scope_status") != "passed" or not record.get("reason")
             or not selected or selected - GROUPS or set(record.get("required", ())) != expected
             or set(record.get("stages", {})) != expected
@@ -137,10 +139,110 @@ def run_ctest_parts(campaign, group, commands, roles, *, inputs, tools, environm
     return paths
 
 
+def production_manifest_identity(receipt, *, root, resolve=Path):
+    """Read the identity emitted by the successful production process."""
+    record = json.loads(resolve(str(receipt)).read_text())
+    command = record["identity"]["command"]
+    if command.count("--artifacts") != 1:
+        raise ValueError("production command does not declare retained execution evidence")
+    output = resolve(str(root / record["output"]))
+    identities = re.findall(r"^PRODUCTION_MANIFEST_SHA256 ([0-9a-f]{64})$", output.read_text(), re.M)
+    if len(identities) != 1:
+        raise ValueError("production manifest lacks its execution-time identity; fresh execution required")
+    return resolve(command[command.index("--artifacts") + 1]) / "production.json", identities[0]
+
+
+def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, resolve=Path, retained=None):
+    """Recheck retained OFF execution files independently of the current ON tree."""
+    manifest = resolve(str(manifest))
+    if not manifest.is_file() or digest(manifest) != expected_manifest_sha256:
+        raise ValueError("production manifest execution identity changed")
+    document = json.loads(manifest.read_text())
+    probes = document.get("probes", [])
+    expected_names = {"film", "accepted-output-color"}
+    if len(probes) != 2 or {row["name"] for row in probes} != expected_names:
+        raise ValueError("production retained probe membership is incomplete or duplicated")
+    suffix = ".exe" if resolve(probes[0]["executable"]).suffix == ".exe" else ""
+    expected = {str(manifest): expected_manifest_sha256}
+
+    def admit(name, checksum):
+        path = resolve(name)
+        key = str(path)
+        if key in expected and expected[key] != checksum:
+            raise ValueError("production execution identities disagree: " + key)
+        if not path.is_file() or digest(path) != checksum:
+            raise ValueError("production execution payload missing or changed: " + key)
+        expected[key] = checksum
+
+    build = root / "out/build" / document["preset"]
+    declared = {str(resolve(str(root / name))): checksum for name, checksum in inputs.items()
+                if name.startswith("out/build/")}
+    copies = {str(resolve(name)): row for name, row in document.get("build_inputs", {}).items()}
+    if (not declared or set(copies) != set(declared)
+            or str(build / "CMakeCache.txt") not in declared
+            or not any(Path(name).suffix.lower() in {".a", ".lib", ".ofx", ".pdb"} for name in declared)):
+        raise ValueError("production retained build-input membership is incomplete; fresh OFF execution required")
+    for name, checksum in declared.items():
+        row = copies[name]
+        destination = manifest.parent / "build" / Path(name).relative_to(build)
+        if resolve(row["file"]) != destination or row["sha256"] != checksum:
+            raise ValueError("production retained build-input execution identities disagree")
+        admit(row["file"], checksum)
+    cache = manifest.parent / "build/CMakeCache.txt"
+    if document.get("build_testing") != "OFF" or not re.search(r"^BUILD_TESTING:BOOL=OFF$", cache.read_text(), re.M):
+        raise ValueError("production retained configuration is not testing-OFF")
+
+    for row in probes:
+        name = row["name"]
+        executable = resolve(row["executable"])
+        source = resolve(row["source"])
+        if (executable != manifest.parent / (name + suffix)
+                or source != manifest.parent / (name + ".c")
+                or len({row["linked_sha256"], row["before_run_sha256"], row["after_run_sha256"]}) != 1):
+            raise ValueError("production probe execution identities disagree: " + name)
+        admit(row["executable"], row["after_run_sha256"])
+        admit(row["source"], row["source_sha256"])
+    consumed = document.get("consumed_inputs", {})
+    headers = {name: checksum for name, checksum in consumed.items()
+               if resolve(name).parent == manifest.parent and resolve(name).suffix == ".h"}
+    if str(manifest.parent / "production-film-expected.h") not in {str(resolve(name)) for name in headers}:
+        raise ValueError("production retained expectation header membership is incomplete")
+    for name, checksum in headers.items():
+        admit(name, checksum)
+    command_record = document["commands"]
+    if resolve(command_record["file"]) != manifest.parent / "commands.json":
+        raise ValueError("production retained command record is not the declared run")
+    admit(command_record["file"], command_record["sha256"])
+    commands = json.loads(resolve(command_record["file"]).read_text())
+    names = [row["name"] for row in commands]
+    if len(names) != len(set(names)) or not {name + role for name in expected_names for role in ("-compile", "-values")} <= set(names):
+        raise ValueError("production retained command membership is incomplete or duplicated")
+    outputs = {}
+    for row in commands:
+        if row["returncode"] != 0:
+            raise ValueError("production retained command did not succeed")
+        for extension in ("stdout", "stderr"):
+            name = str(manifest.parent / (row["name"] + "." + extension))
+            outputs[name] = row[extension + "_sha256"]
+        if row["name"] in {name + "-values" for name in expected_names}:
+            name = row["name"].removesuffix("-values")
+            if resolve(row["command"][0]) != manifest.parent / (name + suffix):
+                raise ValueError("production command did not execute the linked probe")
+    recorded_outputs = {str(resolve(name)): checksum for name, checksum in document.get("command_outputs", {}).items()}
+    if recorded_outputs != outputs:
+        raise ValueError("production retained detailed output membership is incomplete")
+    for name, checksum in outputs.items():
+        admit(name, checksum)
+    if retained is not None and {str(resolve(name)): checksum for name, checksum in retained.items()} != expected:
+        raise ValueError("production retained payload membership or execution identities disagree; fresh execution required")
+    return expected
+
+
 def run_stage(campaign, state_path, state, name, command, *, inputs, tools, environment,
           timeout, semantic_command=None, action=None, validate=None, payloads=(),
           dependencies=(), repeat_reason="", refresh_inputs=None):
     """Reuse the latest gate across attempt names; pending work is never a pass."""
+    campaign.check_run_request(name, command, inputs=inputs, timeout=timeout)
     identity = {"command": list(semantic_command or command),
                 "inputs": snapshot(campaign.root, inputs), "tools": tool_snapshot(tools, allow_missing=True), "tool_paths": list(tools),
                 "environment": hashlib.sha256(json.dumps({k: v for k, v in environment.items()
@@ -158,6 +260,10 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
                     raise ValueError("checkpoint command receipt changed")
                 check_receipt_payloads(campaign.root, path)
             path = paths[0]
+            if name == "production" and payloads:
+                production_payloads(*production_manifest_identity(path, root=campaign.root),
+                                    root=campaign.root, inputs=previous["identity"]["inputs"],
+                                    retained=previous.get("payloads", {}))
             if any(digest(Path(p)) != value for p, value in previous.get("payloads", {}).items()):
                 raise ValueError("checkpoint result payload changed")
             if validate:
@@ -190,9 +296,12 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
                 or tool_snapshot(tools, allow_missing=True) != identity["tools"]):
             raise ValueError("checkpoint relevant inputs changed")
         identity["inputs"] = snapshot(campaign.root, refresh_inputs()) if refresh_inputs else actual
+        retained = (production_payloads(*production_manifest_identity(paths[0], root=campaign.root),
+                                       root=campaign.root, inputs=identity["inputs"])
+                    if name == "production" and payloads else {str(p): digest(Path(p)) for p in payloads})
         result = {"status": "passed", "identity": identity, "receipt": str(paths[0]),
                   "sha256": digest(paths[0]),
-                  "additional_receipts": {str(p): digest(p) for p in paths[1:]}, "payloads": {str(p): digest(Path(p)) for p in payloads}}
+                  "additional_receipts": {str(p): digest(p) for p in paths[1:]}, "payloads": retained}
         state[name] = result
         write_json(state_path, state)
         return result
@@ -202,11 +311,15 @@ def run_stage(campaign, state_path, state, name, command, *, inputs, tools, envi
         raise
 
 
-def checkpoint_inputs(root, build, group, *, source_files=None):
+def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None, resolve=Path):
+    from verify import is_documentation, source_snapshot
+
     paths = {root / name for name in ("CMakeLists.txt", "CMakePresets.json", "tests/CMakeLists.txt",
              "scripts/qualification.py", "scripts/execution.py", "scripts/process_tree.py")}
     paths.add(build / "CMakeCache.txt")
-    if group != "production":
+    if group == "production":
+        paths.update(build / name for name in ("build.ninja", "compile_commands.json", "cargo-features.txt"))
+    else:
         paths.update(registration_files(build, allow_missing=True))
     if group in {"boundary", "tooling"}:
         paths.update(root / name for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "clippy.toml", "rustfmt.toml", "cmake/JuicerRust.cmake"))
@@ -217,6 +330,13 @@ def checkpoint_inputs(root, build, group, *, source_files=None):
             for directory in ("src", "native"):
                 paths.update(p for p in (root / directory).rglob("*") if p.is_file() and p.suffix in {".h", ".cpp", ".cu", ".cuh"})
             paths.add(root / "tests/ffi/color_preparation_test.cpp")
+            paths.update(root / "tests/ffi" / name for name in (
+                "film_recipe_test.cpp", "film_recipe_abi_c.c", "film_recipe_abi_cpp.inc",
+                "film_recipe_abi_facts.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc"))
+            paths.update((root / "tests/print/illuminant-fixtures").glob("*.json"))
+            paths.update((root / "tests/print/preflash-fixtures").glob("*.json"))
+            paths.update((root / "tests/print/balance-fixtures").glob("*.json"))
+            paths.update((root / "tests/scanner/correction-fixtures").glob("*.json"))
             paths.update((root / "tests/quality").glob("test_rust_*.py"))
             paths.update(p for p in (root / "tests/quality/fixtures").rglob("*.rs"))
         else:
@@ -224,11 +344,75 @@ def checkpoint_inputs(root, build, group, *, source_files=None):
                 paths.update(p for p in (root / directory).rglob("*.py") if "__pycache__" not in p.parts)
             paths.add(root / "tests/ffi/run_rust_build_contract.py")
     else:
-        from verify import source_snapshot
         paths.update(root / name for name in (source_files if source_files is not None else source_snapshot(root)))
         for directory in ("Resources", "tests"):
-            paths.update(p for p in (root / directory).rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+            paths.update(p for p in (root / directory).rglob("*")
+                         if p.is_file() and "__pycache__" not in p.parts
+                         and not is_documentation(p.relative_to(root).as_posix()))
+    if group == "prepare":
+        paths = preparation_inputs(root, build, {p for p in paths if p.is_file()}, context=preparation, resolve=resolve)
     return sorted(p.relative_to(root).as_posix() for p in paths if p.is_file())
+
+
+def has_opaque_configure_commands(paths):
+    """File operations, processes and dynamic evaluation have no declared closure."""
+    return any(re.search(r"\b(?:file|execute_process|cmake_language)\s*\(", path.read_text(encoding="utf-8"), re.I)
+               for path in paths if path.name == "CMakeLists.txt" or path.suffix == ".cmake")
+
+
+def preparation_inputs(root, build, paths, *, context=None, resolve=Path):
+    """Exclude only registered runtime files outside the owning build closure.
+
+    Collection uses the producer's sealed closure after validating its original
+    requirements. It never runs a foreign native tool or projects an old receipt.
+    """
+    from build_dependencies import NinjaGraph
+    from build_evidence import scoped_context
+
+    if not (build / "CTestTestfile.cmake").is_file():
+        return paths
+    runtime = set()
+    for registration in registration_files(build):
+        for line in registration.read_text(encoding="utf-8").splitlines():
+            # Generated CTest command operands are explicit runtime owners. Do
+            # not infer directory contents, manifest payloads or Python imports.
+            if not line.startswith("add_test("):
+                continue
+            for operand in re.findall(r'"([^"\\$;]+)"', line):
+                path = resolve(operand)
+                if path.is_absolute() and path.is_file() and path.is_relative_to(root / "tests"):
+                    runtime.add(path)
+    if not runtime or has_opaque_configure_commands(paths):
+        return paths
+    if context is None:
+        graph = NinjaGraph(build, ["all"])
+        context = scoped_context(root, root, build, graph, [], dict(os.environ))
+    # A custom build command may consume a script/file without a DEPENDS
+    # edge. Such operands are not proven runtime-only.
+    commands = context["commands"].replace("\\", "/").casefold()
+    runtime = {p for p in runtime if p.name.casefold() not in commands
+               and not any(re.search(re.escape(parent.as_posix().casefold()) + r'(?=["\s;]|$)', commands)
+                           for parent in p.parents if parent.is_relative_to(root / "tests"))}
+    protected = {resolve(name).resolve() for name in context["files"]}
+    protected.update((root / name).resolve() for name in context["configuration"]["inputs"])
+    # Cargo test embeddings/build scripts and configure-time file operations
+    # can escape Ninja's dependency graph. Unresolved consumers keep broad scope.
+    for path in paths:
+        if path.suffix == ".rs":
+            if path.name == "build.rs" or re.search(r"\binclude(?:_str|_bytes)?\s*!", path.read_text(encoding="utf-8")):
+                return paths
+            runtime.discard(path)
+        if path.name == "Cargo.toml":
+            if tomllib.loads(path.read_text(encoding="utf-8")).get("package", {}).get("build"):
+                return paths
+        if path.name != "CMakeLists.txt" and path.suffix != ".cmake":
+            continue
+        content = path.read_text(encoding="utf-8")
+        # A source-side configure/tool operand may be absent from Ninja. Only
+        # recognize ordinary add_test syntax; anything else stays conservative.
+        consumers = re.sub(r'\badd_test\s*\((?:"(?:[^"\\]|\\.)*"|[^()"])*\)', "", content, flags=re.I)
+        runtime = {p for p in runtime if p.name.casefold() not in consumers.casefold()}
+    return {p for p in paths if p not in runtime or p.resolve() in protected}
 
 
 def checkpoint_tools(build, environment, group=None):
@@ -301,8 +485,9 @@ def qualify(root, args):
 
 def prepare_checkpoint(campaign, build, state_path, state, environment, *, repeat_reason="", timeout=1800, source_files=None):
     """Preparation repair and ordinary admission share the same producer and artifacts."""
-    inputs = checkpoint_inputs(campaign.root, build, "product", source_files=source_files)
+    inputs = checkpoint_inputs(campaign.root, build, "prepare", source_files=source_files)
     outputs = []
+    prepared_context = None
     previous = state.get("prepare")
     def prepare():
         if previous and previous.get("payloads"):
@@ -331,15 +516,19 @@ def prepare_checkpoint(campaign, build, state_path, state, environment, *, repea
                 raise
         return prepare_build(campaign, "prepare", source=campaign.root, build=build,
             inputs=[p for p in inputs if not p.startswith("out/build/")], timeout=timeout,
-            targets=["all"], configure_args=["-DBUILD_TESTING=ON"], env=environment, checkpoint=True)[1]
+            targets=["all"], configure_args=["-DBUILD_TESTING=ON"], env=environment, checkpoint=True,
+            reconfigure=has_opaque_configure_commands(campaign.root / name for name in inputs))[1]
     def validate(path):
+        nonlocal prepared_context
         record = check_scoped_preparation(campaign, build, path, environment)
         outputs[:] = record["scoped_preparation"]["outputs"]
+        prepared_context = record["scoped_preparation"]["context"]
     return run_stage(campaign, state_path, state, "prepare", ["cmake", "--build", str(build)],
         inputs=inputs, tools=checkpoint_tools(build, environment, "product"), environment=environment,
         timeout=timeout, repeat_reason=repeat_reason,
         action=prepare,
-        refresh_inputs=lambda: checkpoint_inputs(campaign.root, build, "product", source_files=source_files),
+        refresh_inputs=lambda: checkpoint_inputs(campaign.root, build, "prepare", source_files=source_files,
+                                                 preparation=prepared_context),
         validate=validate, payloads=outputs)
 
 
@@ -532,7 +721,7 @@ def _collect_owned(root, paths):
     # The terminal scan seals content and lexical-to-resolved path bindings.
     bindings, tools = observe_tools()
     inputs = snapshot(root, source_paths)
-    members = {}
+    members, preparations = {}, {}
     for record in records:
         owner = root / "out/build" / record["preset"] / "verification-checkpoint.json"
         state = json.loads(owner.read_text())
@@ -553,6 +742,10 @@ def _collect_owned(root, paths):
                         or not process.get("drained") or any(command["process_tree"].get(k) != v for k, v in process.items())
                         or digest(root / command["output"]) != command["output_sha256"]):
                     raise ValueError("checkpoint terminal evidence is invalid")
+            if name == "production":
+                production_payloads(*production_manifest_identity(raw_paths[0], root=root, resolve=local),
+                                    root=root, inputs=result["identity"]["inputs"],
+                                    resolve=local, retained=result.get("payloads", {}))
             for path, expected in result.get("payloads", {}).items():
                 if digest(local(path)) != expected:
                     raise ValueError("checkpoint result payload changed")
@@ -563,12 +756,18 @@ def _collect_owned(root, paths):
             source_inputs = {path: checksum for path, checksum in declared.items() if not path.startswith("out/build/")}
             if {p: inputs[p] for p in source_inputs} != source_inputs:
                 raise ValueError("checkpoint declared source/data inputs changed")
-            group = name if name in GROUPS else "product"
+            group = name if name in GROUPS | {"prepare"} else "product"
+            if name == "prepare":
+                preparation_identity(root / "out/build" / record["preset"], result, resolve=local)
+                preparations[record["preset"]] = json.loads(raw_paths[0].read_text())["scoped_preparation"]["context"]
             expected_members = {path for path in declared if not path.startswith("out/build/")}
             key = record["preset"], group
             if key not in members:
+                discovery = {"source_files": observed_source}
+                if group == "prepare":
+                    discovery.update(preparation=preparations[record["preset"]], resolve=local)
                 members[key] = {path for path in checkpoint_inputs(root, root / "out/build" / record["preset"], group,
-                                                                  source_files=observed_source)
+                                                                  **discovery)
                                 if not path.startswith("out/build/")}
             actual_members = members[key]
             if expected_members != actual_members:
@@ -578,11 +777,7 @@ def _collect_owned(root, paths):
                             for p in result["identity"]["tool_paths"]}
             if actual_tools != expected_tools:
                 raise ValueError("checkpoint toolchain/configuration changed")
-            if name == "production":
-                artifacts = {path: checksum for path, checksum in result["identity"]["inputs"].items()
-                             if Path(path).suffix.lower() in {".a", ".lib", ".ofx", ".pdb"}}
-                if not artifacts or any(digest(root / path) != checksum for path, checksum in artifacts.items()):
-                    raise ValueError("final inspected production artifacts changed")
+
         if "product" in record["selection"]:
             identity = preparation_identity(root / "out/build" / record["preset"], record["stages"]["prepare"], resolve=local)
             if any(record["stages"][name]["identity"]["dependencies"] != [identity] for name in ("quality", "product")):
@@ -597,8 +792,11 @@ def _collect_owned(root, paths):
     # Git selection omits ignored test/resource inputs that checkpoint_inputs owns.
     # Seal each shared membership observation independently of that selection.
     for (preset, group), expected in members.items():
+        discovery = {"source_files": current}
+        if group == "prepare":
+            discovery.update(preparation=preparations[preset], resolve=local)
         actual_members = {path for path in checkpoint_inputs(root, root / "out/build" / preset, group,
-                                                            source_files=current)
+                                                            **discovery)
                           if not path.startswith("out/build/")}
         if actual_members != expected:
             raise ValueError("checkpoint source/data membership changed during collection")

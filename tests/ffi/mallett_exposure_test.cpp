@@ -22,6 +22,7 @@
 #include "RustAssetBridge.h"
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
+#include "print_illuminant_fixture.h"
 
 #define FJ_MALLETT_SIZE(type, size, alignment) static_assert(sizeof(type) == size && alignof(type) == alignment);
 #define FJ_MALLETT_FIELD(type, field, offset) static_assert(offsetof(type, field) == offset);
@@ -442,7 +443,7 @@ int main(int argc, char** argv) {
         const auto fixture = Json::parse(values);
         if ((std::string(argv[3]) == "products" || std::string(argv[3]) == "admission") && argc == 5) {
             std::ifstream productFile(manifestPath.parent_path() / manifest.at("presets").at(argv[2]).at("products").get<std::string>());
-            const auto products = Json::parse(productFile);
+            const auto products = PrintIlluminantFixtures::apply(manifestPath.parent_path() / manifest.at("presets").at(argv[2]).at("products").get<std::string>(), Json::parse(productFile));
             fj_test_mallett_callers(argv[4], products, manifestPath.parent_path() / "mallett-failure-contract.json", std::string(argv[3]) == "admission");
         } else if (std::string(argv[3]) == "numerical")
             numerical(fixture);

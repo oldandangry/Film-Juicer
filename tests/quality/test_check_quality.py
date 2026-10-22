@@ -183,6 +183,33 @@ class CheckQualityTests(IsolatedOwnerTests):
                 self.assertEqual(native.call_count, int("native/juicer_cuda_api.h" in files))
                 self.assertNotIn("Quality checks passed", output.getvalue())
 
+    def test_release_cargo_manifest_dispatches_full_rust_only(self) -> None:
+        root = SCRIPT_PATH.parent.parent
+        policy = check_quality.load_policy(root)
+        for preset, target in (
+            ("linux-release", "x86_64-unknown-linux-gnu"),
+            ("windows-clang-release", "x86_64-pc-windows-msvc"),
+        ):
+            with (
+                self.subTest(preset=preset),
+                patch.object(sys, "argv", [str(SCRIPT_PATH), "--preset", preset, "--files", "Cargo.toml"]),
+                patch.object(check_quality, "check_source_hygiene"),
+                patch.object(check_quality, "check_rust") as rust,
+                patch.object(check_quality, "prepare_native_analysis") as native,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                arguments = check_quality.parse_arguments()
+                runner = Mock(log_dir=root / "logs")
+                self.assertEqual(check_quality.run_checks(root, arguments, policy, arguments.files, [], runner), 0)
+                rust.assert_called_once_with(root, runner, arguments, target)
+                self.assertFalse(arguments.development)
+                self.assertIsNone(arguments.rust_packages)
+                self.assertIsNone(arguments.rust_test_filters)
+                native.assert_not_called()
+                runner.run_analysis.assert_not_called()
+                self.assertEqual([call.kwargs["label"] for call in runner.run.call_args_list],
+                                 ["git-diff-check", "native-boundary-enforcement"])
+
     def test_policy_changes_cannot_skip_required_checks(self) -> None:
         for path in ("Cargo.toml", "rust/film-juicer-core/Cargo.toml", "tests/quality/test_rust_boundaries.py", "scripts/check-quality.py"):
             with (
@@ -709,7 +736,15 @@ class DependencyContractTests(unittest.TestCase):
         with self.assertRaisesRegex(check_quality.QualityError, "only the core and plugin"):
             check_quality.check_dependency_contract(self.root, self.metadata)
 
-    def run_metadata(self) -> Mock:
+    def run_metadata(
+        self,
+        preset: str = "linux-debug",
+        target: str = "x86_64-unknown-linux-gnu",
+        *,
+        development: bool = False,
+        rust_packages: list[str] | None = None,
+        rust_test_filters: list[str] | None = None,
+    ) -> Mock:
         runner = Mock(log_dir=self.root / "logs")
         for package in self.metadata["packages"]:
             if package.get("source"):
@@ -721,42 +756,134 @@ class DependencyContractTests(unittest.TestCase):
             "clippy-version": "clippy 0.1.98 qualified",
             "rust-dependency-contract": json.dumps(self.metadata),
         }
-        runner.run.side_effect = lambda *args, **kwargs: versions.get(kwargs["label"], "")
-        arguments = argparse.Namespace(cargo=sys.executable, rustc=sys.executable, preset="linux-debug")
+        runner.run.side_effect = lambda *args, **kwargs: (
+            "running 1 test\ntest result: ok" if kwargs["label"].startswith("test-")
+            else versions.get(kwargs["label"], "")
+        )
+        arguments = argparse.Namespace(
+            cargo=sys.executable, rustc=sys.executable, preset=preset,
+            development=development, rust_packages=rust_packages, rust_test_filters=rust_test_filters,
+        )
         with patch.object(check_quality, "resolve_tool", return_value=sys.executable), \
                 patch.object(check_quality.shutil, "which", return_value=None), \
                 patch.object(check_quality, "check_workspace_contract"):
-            check_quality.check_rust(self.root, runner, arguments, "x86_64-unknown-linux-gnu")
+            check_quality.check_rust(self.root, runner, arguments, target)
         return runner
 
-    def test_metadata_consumer_requests_stdout_and_keeps_complete_quality_dispatch(self) -> None:
-        runner = self.run_metadata()
-        calls = {call.kwargs["label"]: call for call in runner.run.call_args_list}
-        self.assertTrue(calls["rust-dependency-contract"].kwargs["stdout_only"])
-        self.assertEqual(calls["rust-dependency-contract"].args[0][1:],
-                         ["metadata", "--locked", "--offline", "--format-version", "1"])
-        self.assertIn("rustfmt", calls)
-        self.assertNotIn("rust-naming-enforcement", calls)
-        self.assertNotIn("rust-boundary-enforcement", calls)
-        clippy = [label for label in calls if label.startswith("clippy-film-juicer-")]
-        self.assertEqual(len(clippy), 6)
+    def test_clippy_matches_preset_and_preserves_quality_checks(self) -> None:
+        for preset, target, profile, profile_flags in (
+            ("linux-debug", "x86_64-unknown-linux-gnu", "dev", []),
+            ("linux-release", "x86_64-unknown-linux-gnu", "release", ["--release"]),
+            ("windows-clang-debug", "x86_64-pc-windows-msvc", "dev", []),
+            ("windows-clang-release", "x86_64-pc-windows-msvc", "release", ["--release"]),
+        ):
+            with self.subTest(preset=preset):
+                runner = self.run_metadata(preset, target)
+                common = [sys.executable, "clippy", "--locked", "--target", target,
+                          "--target-dir", str(self.root / "out/build" / preset / "cargo")]
+                expected = [
+                    ("cargo-version", [sys.executable, "--version"]),
+                    ("rustc-version", [sys.executable, "--version", "--verbose"]),
+                    ("rustfmt-version", [sys.executable, "fmt", "--version"]),
+                    ("clippy-version", [sys.executable, "clippy", "--version"]),
+                    ("rust-dependency-contract", [sys.executable, "metadata", "--locked",
+                                                  "--offline", "--format-version", "1"]),
+                    ("rustfmt", [sys.executable, "fmt", "--all", "--", "--check"]),
+                    (f"clippy-film-juicer-core-{profile}",
+                     [*common, "-p", "film-juicer-core", "--all-targets", *profile_flags,
+                      "--", "-D", "warnings"]),
+                    (f"clippy-film-juicer-plugin-{profile}",
+                     [*common, "-p", "film-juicer-plugin", "--all-targets", *profile_flags,
+                      "--", "-D", "warnings"]),
+                    (f"clippy-film-juicer-plugin-test-support-{profile}",
+                     [*common, "-p", "film-juicer-plugin", "--all-targets", "--features",
+                      "test-support", *profile_flags, "--", "-D", "warnings"]),
+                ]
+                calls = runner.run.call_args_list
+                self.assertEqual([(call.kwargs["label"], call.args[0]) for call in calls], expected)
+                self.assertTrue(calls[4].kwargs["stdout_only"])
+                self.assertFalse(calls[4].kwargs["display_output"])
+                for call in calls:
+                    self.assertEqual(call.kwargs["env"]["CLIPPY_CONF_DIR"], str(self.root))
 
-    def test_development_core_checks_name_package_and_filter(self) -> None:
+    def test_development_preserves_packages_and_filters_with_matching_clippy_profile(self) -> None:
+        for preset, profile, profile_flags in (
+            ("linux-debug", "dev", []),
+            ("linux-release", "release", ["--release"]),
+        ):
+            for packages in (
+                ["film-juicer-core"],
+                ["film-juicer-plugin"],
+                ["film-juicer-core", "film-juicer-plugin"],
+            ):
+                with self.subTest(preset=preset, packages=packages):
+                    runner = self.run_metadata(
+                        preset, development=True, rust_packages=packages,
+                        rust_test_filters=["route::", "profile::"],
+                    )
+                    target_flags = ["--target", "x86_64-unknown-linux-gnu", "--target-dir",
+                                    str(self.root / "out/build" / preset / "cargo")]
+                    expected_clippy = []
+                    expected_tests = []
+                    for package in packages:
+                        variants = [([], "production")]
+                        if package == "film-juicer-plugin":
+                            variants.append((["--features", "test-support"], "test-support"))
+                        for features, variant in variants:
+                            label = f"clippy-{package}-"
+                            if variant == "test-support":
+                                label += "test-support-"
+                            expected_clippy.append((label + profile, [sys.executable, "clippy", "--locked",
+                                *target_flags, "-p", package, "--all-targets", *features, *profile_flags,
+                                "--", "-D", "warnings"]))
+                        filters = ["route::", "profile::"] if package == "film-juicer-core" else [""]
+                        for index, test_filter in enumerate(filters):
+                            for features, variant in variants:
+                                expected_tests.append((f"test-{package}-{index}-{variant}",
+                                    [sys.executable, "test", "--locked", "--package", package,
+                                     "--no-default-features", *features, *target_flags, "--lib", test_filter]))
+                    calls = runner.run.call_args_list
+                    clippy = [(call.kwargs["label"], call.args[0]) for call in calls
+                              if call.kwargs["label"].startswith("clippy-film-juicer-")]
+                    tests = [(call.kwargs["label"], call.args[0]) for call in calls
+                             if call.kwargs["label"].startswith("test-")]
+                    self.assertEqual(clippy, expected_clippy)
+                    self.assertEqual(tests, expected_tests)
+                    format_calls = [call.args[0] for call in calls if call.kwargs["label"] == "rustfmt"]
+                    format_packages = [item for package in packages for item in ("--package", package)]
+                    self.assertEqual(format_calls, [[sys.executable, "fmt", *format_packages, "--", "--check"]])
+
+    def test_selected_clippy_failure_stops_dispatch(self) -> None:
         original = check_quality.check_rust
-        def development(root, runner, arguments, target):
-            arguments.development = True
-            arguments.rust_packages = ["film-juicer-core"]
-            arguments.rust_test_filters = ["route::"]
-            run = runner.run.side_effect
-            runner.run.side_effect = lambda *args, **kwargs: "running 1 test\ntest result: ok" if kwargs["label"].startswith("test-") else run(*args, **kwargs)
-            return original(root, runner, arguments, target)
-        with patch.object(check_quality, "check_rust", side_effect=development):
-            runner = self.run_metadata()
-        commands = [call.args[0] for call in runner.run.call_args_list]
-        self.assertFalse(any("film-juicer-plugin" in command or "--release" in command for command in commands))
-        tests = [command for command in commands if len(command) > 1 and command[1] == "test"]
-        self.assertEqual(len(tests), 1)
-        self.assertEqual(tests[0][-1], "route::")
+        for preset, profile in (("linux-debug", "dev"), ("linux-release", "release")):
+            labels = [f"clippy-film-juicer-core-{profile}", f"clippy-film-juicer-plugin-{profile}",
+                      f"clippy-film-juicer-plugin-test-support-{profile}"]
+            for index, failed_label in enumerate(labels):
+                with self.subTest(preset=preset, failed_label=failed_label):
+                    failure = check_quality.QualityError("selected Clippy failed")
+                    captured = []
+
+                    def failing_clippy(root, runner, arguments, target):
+                        captured.append(runner)
+                        run = runner.run.side_effect
+
+                        def fail_selected(*args, **kwargs):
+                            if kwargs["label"] == failed_label:
+                                raise failure
+                            return run(*args, **kwargs)
+
+                        runner.run.side_effect = fail_selected
+                        return original(root, runner, arguments, target)
+
+                    with patch.object(check_quality, "check_rust", side_effect=failing_clippy), \
+                            self.assertRaises(check_quality.QualityError) as raised:
+                        self.run_metadata(preset, development=True)
+                    self.assertIs(raised.exception, failure)
+                    calls = captured[0].run.call_args_list
+                    self.assertEqual(calls[-1].kwargs["label"], failed_label)
+                    self.assertEqual([call.kwargs["label"] for call in calls
+                                      if call.kwargs["label"].startswith("clippy-film-juicer-")],
+                                     labels[:index + 1])
 
     def test_development_rejects_zero_tests_from_selected_filter(self) -> None:
         original = check_quality.check_rust

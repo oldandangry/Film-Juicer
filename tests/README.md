@@ -35,6 +35,114 @@ diagnostics are retained. These hosted host checks do not establish GPU or Resol
 acceptance. See [the contributor workflow](../CONTRIBUTING.md#required-checks)
 for the supported local inputs and explicit checkpoint commands.
 
+## Validation cadence
+
+Choose checks from the changed contract and the checkpoint being completed.
+Record the affected test names, native/CUDA/Rust compilation contexts and required
+platform/profile/feature combinations in the existing change description or
+handoff before running them. A focused handoff does not require complete aggregate
+qualification and must not be described as full product acceptance.
+
+| Change or checkpoint | Required checks |
+| --- | --- |
+| Documentation or status only | Whitespace, link/reference consistency and contextual review. No native build, product test or compiler gate solely for prose. |
+| Editing a mathematical leaf or other bounded implementation | Touched formatting, compile/type checks, owning mathematical or behavioral cases and the nearest real consumer. Exercise new compiled cases on both native platforms early. |
+| Stable family cutover or source deletion | The affected family's prescribed numerical cases in Linux/Windows Debug/Release; affected ABI, complete-construction, failure, identity, cache, caller and downstream GPU route cases; scoped native/CUDA/Rust quality and independent contextual naming/ownership review. Replacement fixture consumers and real caller evidence must pass before deleting their producer. |
+| New or changed ABI, exports, feature isolation or ownership boundary | Both native Release testing-OFF probes once on the stable boundary, plus relevant testing-ON boundary/lifetime checks. Changes to consumed probe inputs require fresh evidence. |
+| Broad shared build/lifetime change, designated prepared-state integration, instance-state stage exit, OFX cutover, or final release qualification | Complete product and boundary selections in all four presets, tooling once per native platform in Debug, corpus once in Linux Debug, and the applicable OFF, installed-host and package gates. |
+| Publication or merge | Existing required hosted checks on the actual candidate, plus local gates selected by the preceding rows. Hosted host-only results do not establish GPU or Resolve acceptance. |
+
+Run each necessary platform/profile/package/feature combination once per stable
+relevant source, tool and configuration context. During editing, use the smallest
+owning checks; a stable leaf alone does not trigger the whole-product matrix.
+Unknown dependencies justify broader affected checks with the uncertainty stated.
+Keep reference provenance, exact identities/seeds, approved numerical exceptions,
+operation order, ABI, immutable ownership and asynchronous lifetime obligations.
+No tolerance widening, fixture regeneration during ordinary tests or omission of
+required cases follows from this cadence.
+
+Before a designated broad checkpoint, finish expectation adoption and inspect all
+readers and downstream identity/seed consumers, including their later assertions.
+Freeze source, then run the required selections once. Use that run's exact JUnit
+membership for final domain evidence instead of repeating passing groups. Keep
+separately required reference captures and transition checks. Do not edit public
+inputs while their checks are running. Quality checks still bind the prose they
+inspect; build leases do not exclude source writers.
+
+The development dispatcher's supported inputs remain limited to those documented
+in [CONTRIBUTING.md](../CONTRIBUTING.md#required-checks). For other work, use existing
+explicit CMake targets, named CTest groups, native quality selections and Cargo
+package/profile/feature commands. A nonempty focused pass can support its stated
+handoff scope without manufacturing an aggregate pass. Use the existing wrappers
+and domain capture modes; do not add per-change launchers, retry variants, matrix
+drivers or collectors, including equivalent long inline scripts.
+
+For preparation without a runtime selection, `scripts/verify.py prepare --preset
+<preset> --targets <maintained-targets...> --testing ON|OFF` supports the four
+standard native trees. See [target preparation](../CONTRIBUTING.md#required-checks)
+for the bounded target list and Release OFF restrictions. This uses the existing
+preparation/freshness and process owners; it does not supply product or boundary
+test evidence. Retained interruption proof is still required for normal recovery.
+
+This cadence does not change the current CLI or its admission rules. The separately
+implemented Clippy correction checks only the preset's matching profile, with both
+packages and plugin production/test-support forms retained across all four presets.
+OFF execution now retains its inspected build files and configuration for collection
+after ON restoration. Candidate snapshots and broad checkpoint discovery now omit
+repository prose: root `README.md`/`CONTRIBUTING.md`, Markdown under `docs/` and
+`tests/`, and explanatory `README.md`/`*-README.md` inside fixture directories.
+Other fixture files, including Markdown payloads, stay relevant. Packaged documents
+under `third_party/`, Resources, source/configuration metadata and unknown Markdown
+locations stay relevant too. Documentation edits, additions, deletions and commits
+within that prose scope do not invalidate reusable build/test evidence. Explicit
+inputs and compiler/build-graph dependencies remain bound regardless of filename.
+Quality runs still check and bind their selected prose; build/test reuse does not
+qualify changed documentation. Older receipts retain their original recorded inputs
+and may require fresh evidence; they are never rewritten or projected into this policy.
+
+Checkpoint preparation now separates a bounded set of proven runtime-only test
+files from build inputs. Exact, absolute file operands under `tests/` in generated
+CTest registrations are candidates; directories, manifest children and Python
+imports are not inferred. The existing Ninja/compiler and ordered-include closure,
+configuration inputs and build-command operands take precedence. Configure-time
+copies, unresolved file reads and Cargo build scripts/embeddings retain conservative
+scope. Compiled/embedded fixtures, generated inputs, copied/staged resources, tools
+and artifact freshness remain preparation obligations. No directory or extension
+is broadly excluded. Direct `prepare_build` explicit inputs remain authoritative.
+
+Opaque configure file operations (`file`), subprocesses (`execute_process`) and
+dynamic evaluation (`cmake_language`) keep preparation discovery broad. When that
+scope needs fresh preparation, the checkpoint requests reconfiguration through the existing
+producer and lease, so variable-built configure inputs refresh copied/staged output.
+Literal filenames or subcommands are not proof of these operations' input closure.
+Projects without these unresolved consumers retain runtime-only preparation reuse.
+
+The same discovery serves preparation admission, refreshed membership and
+collection. Refresh and collection honor the producer's original dependencies;
+older broad receipts and cold preparation without test registration may need one
+fresh preparation to establish the narrower scope. Original receipts are never
+rewritten or projected. Product, quality and runtime selections still bind runtime
+files and require fresh execution after changes; complete aggregate membership,
+pending-owner rejection and process drainage are unchanged. Avoid claiming native
+recompilation merely because preparation redispatched or invalidated evidence.
+
+General compilation/analysis/runtime separation beyond this boundary remains future
+work, and collection still requires its current owners and artifacts. Do not claim those
+remaining fixes are delivered or bypass rejection,
+pending state or artifact checks. A prose edit requires only the prose checks above,
+but does not make an older rejected receipt current. Record that limitation without
+launching a broad run solely to repair its status. Keep actual ON and OFF execution
+evidence and necessary artifacts distinct from cache restoration; rebuilt ON bytes
+are not evidence that those bytes executed the earlier tests.
+
+On failure, retain the diagnostic, identify its cause category and state the changed
+hypothesis and smallest discriminating check before retrying. One identical retry
+is permitted for an explicitly suspected transient; a second unchanged failure
+requires diagnosis before another broad run. Do not raise deadlines, clean Cargo,
+delete outputs or restart every preset without a concrete cause. Passing a repeat
+establishes non-reproduction, not a root-cause fix. Preserve unrelated successful
+work only through its existing admission rules, and leave unresolved work explicit.
+
 ## Prerequisites
 
 - CMake 4.3 or newer and Ninja.
@@ -157,6 +265,14 @@ alone. Keep GPU suites from separate Windows/WSL invocations serialized on a
 shared device; CTest resource locks apply within one invocation. Override the
 worker count with `--parallel <count>` when the machine needs a smaller limit.
 
+`Rust.Core` uses two libtest workers and reserves two CTest slots. Tests that
+spawn threads still exercise their internal concurrent publication and lifetime
+witnesses. On Windows, `Quality.Checkpoint` reserves four slots so its repeated
+tool-byte validation runs alone at the preset's four-worker limit. A larger
+explicit worker count can allow overlap again. Verification control logs include
+the ten slowest unittest cases. These scheduling choices preserve complete test
+membership, tool/input checks and the existing deadlines.
+
 `Ffi.Host.InputColorPreparation` uses two worker slots. Its admission hooks and
 asset caches belong to its process, and its resources and parity fixtures are
 read-only. It can overlap other eligible groups after the full build completes.
@@ -178,9 +294,10 @@ ctest --preset linux-debug -R Gamma
 ctest --preset linux-debug --rerun-failed --output-on-failure
 ```
 
-On a normal GPU development machine, prefer the single unfiltered command.
-Labels are for CI, machines without a GPU, and focused diagnosis; they are not
-additional passes that must be run after the full suite.
+Use the [validation cadence](#validation-cadence) to choose focused work or a
+designated complete checkpoint. An unfiltered command is one way to execute a
+complete preset; labels also select the exact checkpoint groups. Do not run label
+selections again after a complete successful run merely to obtain another report.
 
 For the bounded output-gamut/owner determinism investigation, use CTest's
 `until-fail` repetition after the complete build. This is an explicit maintenance
@@ -269,6 +386,41 @@ natural-drain grace, other-child wait and cap, and failed-parent behavior;
 `Quality.BuildEvidence` covers generated-header reconfiguration and unowned
 shadow headers. Both run in the normal Debug tooling selection in Windows CI.
 
+Build-evidence fault variants that start from the same prepared state share a
+fixture within one test method and report each fault as a named subtest. Between
+variants, the test restores its owned inputs, artifacts and provenance at the
+original configured path, then checks preparation again before the next fault.
+Each variant still runs the real build/publication path and checks rejection,
+pending state and owner preservation. Cold preparation, renewal, missing-scope
+admission and recovery remain separate scenarios. File-identity and lease tests
+use lightweight fixtures without Cargo setup. Production freshness checks and
+CTest deadlines are unchanged.
+
+Preparation and checkpoint entry points validate stage names, declared membership,
+nonempty commands/inputs and finite positive timeouts before creating pending
+owners or reusing results. Invalid requests leave prior receipts, artifacts and
+absent/pending owners unchanged. Focused build-evidence and checkpoint regressions
+exercise rejection and subsequent valid reuse; actual execution or evidence
+validation failures still block reuse until repaired through the owning path.
+
+Interrupted preparation recovery requires a healthy normal build-tree lease and
+the original attempt's sealed drainage proof. Every started configure, Cargo clean
+and build command must have matching terminal process, result and output receipts.
+Only the original live owner may attest that a failed attempt started no command.
+A retry preserves the old pending marker and failed receipts before fresh
+preparation; the scope's successful baseline remains until replacement succeeds.
+Unproved, damaged or legacy owners remain blocked. This does not recover a hard
+owner death or take over a blocked lease. Focused compiler-free fixtures exercise
+real descendant interruption, successful fresh recovery and proof rejection before
+outputs or ownership mutate.
+
+Native build fixtures start with the C stub. Rust cases explicitly construct
+their two-crate workspace once when enabling Rust, before any source mutation;
+later preparation does not recreate edited or missing inputs. Initial sanity
+checks in artifact/fallback/fresh-scope cases execute the native value witness
+directly. Their selected/final CTest runs and failure/recovery executions still
+exercise the real verification path.
+
 During implementation, build the affected test targets and run only the owning
 cases needed to check the current edit. Run new compiled cases on Linux and
 Windows early so platform-specific compilation, lifetime or diagnostic issues
@@ -280,9 +432,10 @@ python -m unittest discover -s tests/quality -p test_check_quality.py -v
 python -m unittest discover -s tests/ctest -p test_report.py -v
 ```
 
-Once the candidate is stable, run one unfiltered suite per applicable preset.
-Do not precede it with another broad focused pass solely to produce a separate
-receipt. Record focused-domain results from that same full-suite JUnit report:
+At a designated complete checkpoint, run the required preset selections once.
+When using an unfiltered suite, do not precede it with another broad focused pass
+solely to produce a separate receipt. Record focused-domain results from that same
+full-suite JUnit report:
 
 ```sh
 ctest --preset linux-debug --parallel 4 --output-junit out/validation/linux-debug/ctest.xml
@@ -348,12 +501,18 @@ cmake --build --preset linux-debug
 | `ofx/processor_reference_test.cpp` | Native OFX image/property seam driving the current CUDA processor for four routes, a combined optics/grain/print case, and signed-zero print transitions | `gpu` |
 | `ofx/adapter_trace_test.cpp` | Genuine native OFX parameter/image fixture driving the actual `JuicerEffect` event and render callbacks through time, seek, preset/reset, undo/redo-like, and invalid/recovery sequences | `gpu` |
 
+The quality dispatcher's three Clippy checks cover core, plugin production and
+plugin `test-support` with all targets in the preset's matching profile. Across
+all four presets these retain the required 12 native platform/profile/package/feature
+combinations. Each native CI lane adds an explicit Release Rust selection
+(`--files Cargo.toml`) after its Release build, alongside the existing Debug
+quality selection.
+
 `Quality.RustNaming` uses the current workspace manifests and Clippy configuration
 in temporary copies under `out/validation/<preset>/quality/rust-naming/`.
 The checked-in `quality/fixtures/rust_naming/*.rs` files are product naming-policy
 contracts, not external references. Both crates are checked in the preset's
-profile, including test targets; the complete quality dispatcher checks both
-development and release profiles. Expected failures must produce the specific
+profile, including test targets. Expected failures must produce the specific
 error code and primary source span for every rejected identifier; a compiler
 setup failure is not a passing negative test. Valid names and a reasoned raw
 binding exception must compile successfully. Cargo runs offline and locked;
@@ -388,6 +547,15 @@ product and boundary groups for Debug and Release. Tooling executes once per nat
 platform in Debug; corpus executes once in Linux Debug. The focused checkpoint
 controls cover exact execution membership, input/configuration invalidation,
 cross-campaign reuse, retained failures and inspected final-artifact binding.
+Successful production OFF scopes retain their inspected archives/module/PDB and
+consumed build configuration under the original production evidence directory.
+Collection verifies those execution-bound copies, source/fixture membership,
+tools, logs and process drainage without requiring the restored ON tree to match
+OFF bytes. A receipt with `scope_status=passed` and `status=incomplete` remains
+eligible after unrelated pending work is repaired; unresolved work and newer
+failed production owners still prevent aggregate completion. Fresh production
+execution remains restricted to a testing-OFF Release tree. Older receipts without
+retained build inputs require fresh OFF execution; never backfill or rewrite them.
 `Quality.Checkpoint` replaces retired publication/sealing protocol controls.
 Its control module keeps its 600-second limit. `Quality.PreparationRenewal` owns
 the complete native miniature repair/checkpoint/collection replay separately,
@@ -666,6 +834,30 @@ isolates the subsequent blur/delta schedule and does not validate the sampler.
 
 ### Scanner output encoding
 
+`Ffi.Host.ScannerCorrection` checks complete direct/print correction construction,
+coordinated C11/C++20/Rust ABI facts, raw/facade/native failure and clearing rules,
+all byte/flag demand combinations, independent fault consumption, integrity and
+expired input ownership. `Scanner.Host.CorrectionProducts` checks 48 actual
+route/state/resource inputs and their enclosing identities against the separately
+adopted [native characterizations](scanner/correction-fixtures/manifest.json).
+Both groups run through `JuicerFilmRecipeTests <resources> <manifest>
+scanner-correction[-products] <preset>` and require no CUDA device at runtime.
+The early `scanner-correction-primitives` maintenance mode compares native/Rust
+math primitives; native whole-builder capture mode is retired after cutover.
+
+`Scanner.Gpu.CorrectionRoutes` uses actual legacy execution and prepared C
+projection on all four routes, including active positive direct and both print
+polarities. It checks correction-only LUT/print-resource reuse, exact repeated
+and projected output, frame-stage computed failure, fault consumption/recovery
+and held immutable recipes. `Ofx.Gpu.AdapterTrace` additionally checks actual
+current getters, all correction flag combinations, encoded-level sanitation and
+f64-to-f32 narrowing. These witnesses preserve the correction construction point
+after state publication and retain the ordinary finish/abort owners.
+
+The production C11 probe executes all 28 revision-1 correction cases and the
+shared Rust demand query against each native Release testing-OFF archive. The
+native exception captures and normative checked outcomes remain separate.
+
 `Scanner.Gpu.OutputEncoding` calls the production CUDA scanner launchers and
 checks all nine output spaces, CCTF on/off, optional output matrix, transfer
 breakpoint neighbors, negative/HDR/subnormal/nonfinite values, RGB/RGBA, odd
@@ -772,6 +964,19 @@ synchronous C/native bindings against four frozen native-parent captures, with
 exact products/identities, scoped source/lens lifetimes, cache and failure
 contracts. The separate negative-print C render contract checks the later native
 preflash unwind/completion terminal. See [the illuminant guide](ffi/README.md#illuminant-construction).
+
+`Ffi.Host.PrintPreflash` checks the fixed preflash integral, compiled C11/C++20/Rust
+ABI, raw/facade/native agreement, independent failure clearing, diagnostics and
+stage-11 recovery. `Print.Host.PreflashProducts` checks frozen native caller
+products for both capture polarities and all three reconstruction methods, direct/
+disabled omission, the unconditional builder and later executable-payload admission.
+`Print.Gpu.PreflashCache` checks actual request/input preparation, full/partial hits,
+descriptor dependencies, fault nonconsumption, failed commits and resource release.
+The immutable `print/preflash-fixtures/manifest.json` binds native provenance and
+exact words; ordinary tests never regenerate them. Finite double totals may narrow
+successfully to float infinity here; the later active-preflash payload guard rejects
+it. Both Release testing-OFF witnesses execute twelve explicit preflash C11 cases
+alongside every older production probe.
 
 `Spectral.Host.{Tables,White,SInverse,Products,Admission}` and
 `Ffi.Host.SpectralPreparation` qualify fixed spectral math, synchronous C11/native
@@ -966,3 +1171,49 @@ archive, including complete seeded semantic clearing. Compiler privacy retains
 the existing 60-second individual and 240-second boundary deadlines and two
 isolated workers. These checks do not establish installed Resolve or visual
 acceptance.
+
+
+`Ffi.Host.PrintIlluminant` checks the fixed print illumination constructor through
+production and facade entries, compiled C11/C++20/Rust facts, exact approved sample
+words, actual Sample/Energy failures, independent clearing, optional diagnostics,
+stage-10 panic recovery/thread isolation, owned lifetime and native projection.
+It has explicit boundary relevance. `Print.Host.IlluminantProducts` checks 72
+actual route/reconstruction/control products against immutable
+[print illuminant fixtures](print/illuminant-fixtures/README.md), including direct
+omission, main/preflash samples and consumed descriptor/balance/final identities.
+Both are host groups with a 180-second deadline and an exact preset argument.
+The six `print_illuminant_*` compiler fixtures enforce construction, privacy,
+read-only access and source-independent ownership under existing deadlines.
+The Release production probe includes twelve print illuminant calls, with frozen
+approved pinned-erff words and exact typed failure envelopes; successful OFF execution on each
+platform is required separately. Test registration does not establish a pass or
+numerical/caller/installed-host acceptance.
+
+The owner-approved 20 October print numerical exception selects the existing
+`libm::erff` 0.2.15 evaluator and accepts its characterized small native differences
+and honest downstream content identities. Native captures and original failed
+exact comparisons remain preserved; separate approved-Rust fixtures supply exact
+expectations. No general floating-point tolerance or wider numerical exception is
+used. This policy does not claim a new visual/scopes comparison for this slice.
+Existing product fixtures retain their bytes; exact ordered supplements in the
+print fixture directory align their dependent recipe/upload identities with the
+selected evaluator. Unrelated product fields remain exact. Existing glare seed
+composition follows the actual recipe hash, so identical pixels are not claimed.
+
+The same supplement layer aligns older OFX, parameter-identity and processor
+pixel expectations affected by the existing glare seed dependency. Original
+fixtures and pixel bounds remain unchanged. See the print fixture README for
+logical pixel-row aliases and measured changes; spectral ULP maxima must not be
+used as image-pixel bounds.
+
+`Ffi.Host.PrintBalance` compares all nine completed values and both identities
+against independently adopted native words in all four presets. It checks raw
+structure/diagnostics, first-failure order, u8 mode behavior, one-shot stage-12
+panic consumption, thread isolation, native transport integrity and ownership.
+`Print.Host.BalanceProducts` retains actual route/mode/dependency and immutable
+publication/recovery cases. `Print.Gpu.BalanceCache` checks resolved binding,
+source/normalization dependencies, unchanged-family residency/accounting and
+absence of balance construction during resource preparation. These are bounded
+Film-Juicer characterization/product contracts; ordinary tests never capture or
+modify their frozen fixtures. Both Release OFF C11 probes retain sixteen frozen
+balance cases and all earlier boundary/feature-isolation checks.

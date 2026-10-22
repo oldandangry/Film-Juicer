@@ -30,6 +30,7 @@ set(JUICER_HOST_SOURCES
     src/RustReconstructionBridge.cpp
     src/RustFilmInputBridge.cpp
     src/RustFilmRecipeBridge.cpp
+    src/RustScannerBridge.cpp
     src/RustExposureBridge.cpp
     src/RustGamutBridge.cpp
     src/RustColorBridge.cpp

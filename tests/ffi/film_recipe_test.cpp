@@ -15,23 +15,32 @@
 #include <string>
 #include <type_traits>
 #include <cstring>
+#include <vector>
+#include <utility>
 
 #include <nlohmann/json.hpp>
+#include <cuda_runtime.h>
 
 #include "juicer_test_api.h"
 #include "Cuda/JuicerCudaExecutor.h"
+#include "Cuda/JuicerCudaDriver.h"
+#include "Cuda/JuicerCudaResources.h"
 #include "JuicerState.h"
 #include "ProcessRoot.h"
 #include "ResourceAssetLibrary.h"
+#include "Logging.h"
 #include "RustAssetBridge.h"
+#include "RustScannerBridge.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
+#include "print_illuminant_fixture.h"
 
 #include "film_recipe_abi_cpp.inc"
 static_assert(!std::is_copy_constructible_v<JuicerAssets::DevelopmentHold>);
 static_assert(!std::is_copy_constructible_v<JuicerAssets::FilmDevelopment>);
 static_assert(std::is_nothrow_move_constructible_v<JuicerAssets::DevelopmentHold>);
 extern "C" const std::size_t* fj_test_film_recipe_abi_c_facts(std::size_t* count);
+extern "C" int fj_test_scanner_correction_c_call(unsigned, const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, const FjScannerPrintCorrectionInput*, const FjScannerColorCorrection*, unsigned, unsigned);
 
 namespace {
     using Json = nlohmann::json;
@@ -51,7 +60,7 @@ namespace {
     Json read(const std::filesystem::path& path) {
         std::ifstream stream(path);
         require(bool(stream), "fixture open");
-        return Json::parse(stream);
+        return PrintIlluminantFixtures::apply(path, Json::parse(stream));
     }
     template <std::size_t N>
     void copy_words(const Json& value, float (&out)[N]) {
@@ -272,7 +281,106 @@ namespace {
 #include "visual_grain_test.inc"
 #include "physical_effects_test.inc"
 #include "spatial_optics_test.inc"
+#include "print_illuminant_test.inc"
+#include "print_preflash_test.inc"
+#include "print_balance_test.inc"
+#include "scanner_correction_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "scanner-correction" || std::string_view(argv[3]) == "scanner-correction-products")) {
+        const auto manifest = read(argv[2]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const auto captured = read(directory / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        const auto checked = read(directory / manifest.at("normative").get<std::string>());
+        const auto tracePath = directory / manifest.at("presets").at(argv[4]).at("traces").get<std::string>();
+        if (std::string_view(argv[3]) == "scanner-correction-products")
+            ScannerCorrectionTest::check_products(argv[1], captured, read(tracePath));
+        else {
+            layouts();
+            ScannerCorrectionTest::values(captured, checked);
+            ScannerCorrectionTest::boundary(captured);
+            ScannerCorrectionTest::native(captured, checked);
+            ScannerCorrectionTest::callers(captured, checked, tracePath);
+        }
+        std::puts("PASS scanner correction exact values, checked demand, ABI, clearing and actual native binding");
+        return 0;
+    }
+    if (argc == 6 && std::string_view(argv[3]) == "scanner-correction-primitives") {
+        PrintPreflashTest::save(argv[5], {{"preset", argv[4]}, {"primitives", ScannerCorrectionTest::primitives()}});
+        return 0;
+    }
+    if (argc == 5 && std::string_view(argv[3]) == "print-balance-cache") {
+        PrintBalanceTest::cache(argv[1]);
+        std::puts("PASS balance cache keys, resolved bindings, residency/accounting and no per-frame derivation");
+        return 0;
+    }
+    if (argc == 5 && (std::string_view(argv[3]) == "print-balance" || std::string_view(argv[3]) == "print-balance-products")) {
+        const auto manifest = read(argv[2]);
+        const auto captured = read(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        if (std::string_view(argv[3]) == "print-balance-products")
+            PrintBalanceTest::products(argv[1], captured);
+        else {
+            layouts();
+            PrintBalanceTest::values(captured, argv[2]);
+            PrintBalanceTest::transport(captured);
+        }
+        std::puts("PASS balance complete values, closed boundary, integrity and actual caller");
+        return 0;
+    }
+    if (argc == 6 && std::string_view(argv[3]) == "balance-primitives") {
+        PrintPreflashTest::save(argv[5], {{"preset", argv[4]}, {"cases", PrintBalanceTest::primitives()}});
+        return 0;
+    }
+
+
+    if (argc == 5 && (std::string_view(argv[3]) == "print-preflash" || std::string_view(argv[3]) == "print-preflash-products")) {
+        const auto manifest = read(argv[2]);
+        const auto path = std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>();
+        const auto captured = read(path);
+        if (std::string_view(argv[3]) == "print-preflash-products")
+            PrintPreflashTest::products(argv[1], captured);
+        else {
+            layouts();
+            PrintPreflashTest::values(captured, argv[2]);
+            PrintPreflashTest::transport(captured);
+            PrintPreflashTest::native(captured);
+        }
+        std::puts("PASS preflash exact adopted values, closed transport, native projection and selected caller contracts");
+        return 0;
+    }
+    if (argc == 5 && std::string_view(argv[3]) == "print-preflash-cache") {
+        const auto manifest = read(argv[2]);
+        const auto captured = read(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        PrintPreflashTest::cache(argv[1], captured);
+        std::puts("PASS actual request/input preflash cache, fault nonconsumption, failure commit and recovery");
+        return 0;
+    }
+    if (argc == 6 && std::string_view(argv[3]) == "preflash-primitives") {
+        PrintPreflashTest::save(argv[5], {{"preset", argv[4]}, {"cases", PrintPreflashTest::primitives(argv[1])}});
+        std::puts("PASS preflash primitive observations recorded; independent analysis required");
+        return 0;
+    }
+    if (argc == 5 && std::string_view(argv[3]) == "print-illuminant-products") {
+        const auto manifest = read(argv[2]);
+        const auto selected = manifest.at("presets").at(argv[4]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        PrintIlluminantTest::products(argv[1], read(directory / selected.at("products").get<std::string>()));
+        std::puts("PASS 72 genuine print illuminant products, direct omission and downstream identities");
+        return 0;
+    }
+    if (argc == 5 && (std::string_view(argv[3]) == "print-illuminant" || std::string_view(argv[3]) == "print-illuminant-transport")) {
+        const auto manifest = read(argv[2]);
+        const auto selected = manifest.at("presets").at(argv[4]);
+        const auto directory = std::filesystem::path(argv[2]).parent_path();
+        const auto captured = read(directory / selected.at("literal").get<std::string>());
+        layouts();
+        PrintIlluminantTest::transport(captured);
+        PrintIlluminantTest::native(captured);
+        if (std::string_view(argv[3]) == "print-illuminant")
+            PrintIlluminantTest::values(captured);
+        std::puts("PASS print illuminant selected ABI/transport/projection/value cohort");
+        return 0;
+    }
+
     if (argc == 5 && std::string_view(argv[3]) == "optics-products") {
         const auto manifest = read(argv[2]);
         const auto selected = manifest.at("presets").at(argv[4]);

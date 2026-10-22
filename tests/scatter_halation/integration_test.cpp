@@ -1,3 +1,4 @@
+#include "../ffi/print_illuminant_fixture.h"
 #include "integration_test.h"
 #include "../ofx/render_assertions.h"
 
@@ -1470,7 +1471,7 @@ namespace {
         if (!fixture) {
             throw std::runtime_error("Rust parameter identity fixture unavailable");
         }
-        const auto identities = nlohmann::json::parse(fixture);
+        const auto identities = PrintIlluminantFixtures::apply(JUICER_PARAMETER_IDENTITY_PATH, nlohmann::json::parse(fixture));
         const auto pair = [&](const char* name) {
             std::array<FreshIdentity, 2> expected{};
             for (std::size_t i = 0; i < expected.size(); ++i) {

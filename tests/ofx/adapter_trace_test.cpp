@@ -1,3 +1,4 @@
+#include "../ffi/print_illuminant_fixture.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -2751,9 +2752,10 @@ namespace {
         std::ifstream manifestStream(path);
         require(bool(manifestStream), "optics manifest open");
         const auto manifest = Json::parse(manifestStream);
-        std::ifstream stream(path.parent_path() / manifest.at("presets").at(preset).at("ofx").get<std::string>());
+        const auto capturePath = path.parent_path() / manifest.at("presets").at(preset).at("ofx").get<std::string>();
+        std::ifstream stream(capturePath);
         require(bool(stream), "optics capture payload open");
-        const auto frozen = Json::parse(stream).at("ofx");
+        const auto frozen = PrintIlluminantFixtures::apply(capturePath, Json::parse(stream)).at("ofx");
         require(frozen.size() == 96, "complete frozen optics capture membership");
         for (unsigned route = 0; route < 4; ++route) {
             NativeHost host;
@@ -2815,9 +2817,10 @@ namespace {
         std::ifstream manifestStream(manifestPath);
         require(bool(manifestStream), "effects capture manifest open");
         const auto manifest = nlohmann::json::parse(manifestStream);
-        std::ifstream stream(manifestPath.parent_path() / manifest.at("presets").at(preset).at("ofx").get<std::string>());
+        const auto capturePath = manifestPath.parent_path() / manifest.at("presets").at(preset).at("ofx").get<std::string>();
+        std::ifstream stream(capturePath);
         require(bool(stream), "effects capture fixture open");
-        const auto captured = nlohmann::json::parse(stream);
+        const auto captured = PrintIlluminantFixtures::apply(capturePath, nlohmann::json::parse(stream));
         require(captured.at("ofx").size() == 608, "complete frozen effects capture membership");
         JuicerEffect effect(host.effect_handle());
         host.bind_effect(effect);
@@ -3683,9 +3686,13 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                 std::ifstream expected(expectedPath);
                 require(bool(expected), "independent native OFX grain words open");
                 std::istringstream actual(grainWords);
-                std::string expectedWord, actualWord;
-                while (expected >> expectedWord)
-                    require(bool(actual >> actualWord) && expectedWord == actualWord, "exact native authored/captured/recipe/final grain words");
+                std::vector<std::string> originalWords;
+                for (std::string word; expected >> word;)
+                    originalWords.push_back(word);
+                const auto selectedWords = PrintIlluminantFixtures::apply(expectedPath, originalWords);
+                std::string actualWord;
+                for (const auto& word : selectedWords)
+                    require(bool(actual >> actualWord) && word.get<std::string>() == actualWord, "exact native authored/captured/recipe/final grain words");
                 require(!(actual >> actualWord), "no extra grain capture records");
             }
             std::cout << grainWords;
@@ -3768,6 +3775,77 @@ int main(int argc, char** argv) { // NOLINT(bugprone-exception-escape): top-leve
                     host.set_double_value(JuicerParams::kDirCouplersDiffusionTailUm, 200);
                 }
             std::cout << "PASS adapter/DIR-conditional-capture-narrowing-polarity-and-recovery\n";
+
+            for (bool positive : {false, true})
+                for (bool print : {false, true}) {
+                    host.set_str_choice_value(JuicerParams::kFilmProfileKey, positive ? "fujifilm_provia_100f" : "kodak_portra_400");
+                    host.set_str_choice_value(JuicerParams::kParamScanRoute, Spektrafilm::scan_route_key(print ? Spektrafilm::ScanRoute::NegativePrintScan : Spektrafilm::ScanRoute::NegativeDirectScan));
+                    host.set_double_value(JuicerParams::kFilmGammaFactor, 1.0);
+                    host.set_double_value(JuicerParams::kPrintGammaFactor, 1.0);
+                    const auto capture = [&]() {
+                        const auto start = host.trace_size();
+                        host.dispatch_event(effect, JuicerParams::kScannerBlackCorrection, OFX::eChangeUserEdit);
+                        for (const char* name : {JuicerParams::kScannerBlackCorrection, JuicerParams::kScannerWhiteCorrection, JuicerParams::kScannerBlackLevel, JuicerParams::kScannerWhiteLevel}) {
+                            const std::string prefix = "GET_CURRENT name=" + std::string(name) + " ";
+                            require(std::count_if(host.trace().begin() + static_cast<std::ptrdiff_t>(start), host.trace().end(), [&](const std::string& row) {
+                                        return row.starts_with(prefix);
+                                    }) == 1,
+                                    "scanner control uses exactly one current-value getter");
+                        }
+                        const auto admitted = JuicerTestSupport::EffectTraceObserver::admit(effect);
+                        require(print ? bool(admitted.printState) : bool(admitted.directState), "scanner controls admit complete route");
+                        return admitted;
+                    };
+                    const auto output = [&](const auto& admitted) -> const ScannerOutputRecipe& {
+                        return print ? admitted.printState->recipe.scannerOutput : admitted.directState->recipe.scannerOutput;
+                    };
+                    constexpr double black = 0.01234567890123;
+                    constexpr double white = 0.98765432109876;
+                    for (unsigned flags = 0; flags < 4; ++flags) {
+                        host.set_int_value(JuicerParams::kScannerBlackCorrection, int(flags & 1u));
+                        host.set_int_value(JuicerParams::kScannerWhiteCorrection, int((flags >> 1u) & 1u));
+                        host.set_double_value(JuicerParams::kScannerBlackLevel, black);
+                        host.set_double_value(JuicerParams::kScannerWhiteLevel, white);
+                        const auto admitted = capture();
+                        const auto& scanner = output(admitted);
+                        require(scanner.blackCorrection == bool(flags & 1u) && scanner.whiteCorrection == bool(flags & 2u) &&
+                                    scanner.blackLevel == static_cast<float>(black) && scanner.whiteLevel == static_cast<float>(white),
+                                "scanner bools and f64-to-f32 narrowing survive actual OFX capture");
+                    }
+                    const auto held = capture();
+                    const auto heldHash = print ? held.printState->recipe.hash : held.directState->recipe.hash;
+                    const auto active = host.render(effect, frame, "scanner-active");
+                    require(active.succeeded, "active scanner correction renders for selected polarity/route");
+
+                    host.set_double_value(JuicerParams::kScannerBlackLevel, -1.0);
+                    host.set_double_value(JuicerParams::kScannerWhiteLevel, 2.0);
+                    const auto clamped = capture();
+                    require(output(clamped).blackLevel == 0.0f && output(clamped).whiteLevel == 1.0f, "scanner encoded levels clamp to unit range");
+                    host.set_double_value(JuicerParams::kScannerBlackLevel, std::numeric_limits<double>::quiet_NaN());
+                    host.set_double_value(JuicerParams::kScannerWhiteLevel, std::numeric_limits<double>::infinity());
+                    const auto sanitized = capture();
+                    require(output(sanitized).blackLevel == 0.01f && output(sanitized).whiteLevel == 0.98f, "scanner nonfinite levels use control defaults");
+
+                    if (positive || print) {
+                        host.set_double_value(JuicerParams::kScannerBlackLevel, 0.0);
+                        host.set_double_value(JuicerParams::kScannerWhiteLevel, 0.0);
+                        const auto failedState = capture();
+                        require(output(failedState).whiteLevel == 0.0f, "computed correction failure is admitted before frame preparation");
+                        const auto failed = host.render(effect, frame, "scanner-computed-midgray-failure", true);
+                        require(failed.rejected && failed.state.pendingValid && failed.releasedImages == 2, "frame-stage correction failure releases both images after publication");
+                        require(output(held).blackLevel == static_cast<float>(black) && output(held).whiteLevel == static_cast<float>(white) &&
+                                    (print ? held.printState->recipe.hash : held.directState->recipe.hash) == heldHash,
+                                "held immutable scanner recipe survives a newer computed failure");
+                    }
+                    host.set_double_value(JuicerParams::kScannerBlackLevel, black);
+                    host.set_double_value(JuicerParams::kScannerWhiteLevel, white);
+                    const auto restored = capture();
+                    const auto recoveredScanner = host.render(effect, frame, "scanner-recovery");
+                    require(recoveredScanner.succeeded && recoveredScanner.outputSignature == active.outputSignature &&
+                                (print ? restored.printState->recipe.hash : restored.directState->recipe.hash) == heldHash,
+                            "scanner valid recovery restores recipe and output identity");
+                }
+            std::cout << "PASS adapter/scanner-current-capture-flags-sanitation-narrowing-active-routes-and-frame-recovery\n";
 
             require(host.current_get_count() != 0 &&
                         host.at_time_get_count() == 0,

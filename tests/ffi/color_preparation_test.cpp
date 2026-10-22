@@ -33,6 +33,7 @@
 #include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
 #include "exposure_fixture.h"
+#include "print_illuminant_fixture.h"
 #include "juicer_cuda_owner.h"
 
 static_assert(sizeof(float) == 4 && sizeof(std::array<float, 3>) == 12 && sizeof(std::array<float, 9>) == 36);
@@ -2145,7 +2146,7 @@ int main(int argc, char** argv) {
         }
         owner.create(argv[1]);
         JuicerProcess::root().ensure_bootstrap();
-        const auto fixture = load_exposure_qualified_fixture(argv[2]);
+        const auto fixture = PrintIlluminantFixtures::apply(argv[2], load_exposure_qualified_fixture(argv[2]));
         if (group == "leaf") {
             leaf_tests(fixture);
         } else if (group == "preparation") {

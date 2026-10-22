@@ -86,6 +86,74 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(result["sha256"], digest(Path(first["receipt"])))
         self.assertFalse((self.campaign("renamed").directory / "attempts").exists())
 
+    def test_invalid_request_preserves_pass_before_reuse_or_input_change(self):
+        first = self.run_stage("boundary")
+        original_state = self.state_path.read_bytes()
+        producer = Path(first["receipt"])
+        evidence = {path: path.read_bytes() for path in producer.parent.iterdir() if path.is_file()}
+        original_source = self.source.read_bytes()
+        command = [self.python, "-c", "print('checked')"]
+        cases = [
+            ("undeclared", "boundary", command, ["input.txt"], 10, ["tooling"], "declared stage"),
+            ("unsafe", "../boundary", command, ["input.txt"], 10, ["boundary"], "lowercase directory name"),
+            ("command", "boundary", [], ["input.txt"], 10, ["boundary"], "command"),
+            ("inputs", "boundary", command, [], 10, ["boundary"], "input files"),
+            *[(f"timeout-{index}", "boundary", command, ["input.txt"], timeout, ["boundary"], "finite positive timeout")
+              for index, timeout in enumerate((0, -1, float("nan"), float("inf"), -float("inf")))],
+        ]
+        for changed in (False, True):
+            self.source.write_bytes(b"changed" if changed else original_source)
+            for case, stage, selected_command, inputs, timeout, required, message in cases:
+                with self.subTest(changed=changed, case=case):
+                    campaign = Campaign(self.root, self.preset, f"rejected-{int(changed)}-{case}", required)
+                    with patch.object(campaign, "run", side_effect=AssertionError("invalid request dispatched")) as run:
+                        with self.assertRaisesRegex(ValueError, message):
+                            qualification.run_stage(campaign, self.state_path, self.state, stage, selected_command,
+                                inputs=inputs, tools=[self.python], environment=self.environment, timeout=timeout,
+                                semantic_command=command, action=lambda: self.fail("invalid request invoked action"))
+                        run.assert_not_called()
+                    self.assertEqual(self.state_path.read_bytes(), original_state)
+                    self.assertEqual(self.state, json.loads(original_state))
+                    self.assertFalse((campaign.directory / "attempts").exists())
+                    self.assertTrue(all(path.read_bytes() == content for path, content in evidence.items()))
+        self.source.write_bytes(original_source)
+        campaign = self.campaign("valid-after-rejection")
+        with patch.object(campaign, "run", side_effect=AssertionError("reusable pass dispatched")):
+            reused = qualification.run_stage(campaign, self.state_path, self.state, "boundary", command,
+                inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10,
+                action=lambda: self.fail("reusable pass invoked action"))
+        self.assertEqual(reused["reused_from"], first["receipt"])
+        self.assertEqual(self.state_path.read_bytes(), original_state)
+        self.assertTrue(all(path.read_bytes() == content for path, content in evidence.items()))
+
+    def test_invalid_request_preserves_cold_and_failed_checkpoint(self):
+        command = [self.python, "-c", "raise SystemExit(7)"]
+        rejected = Campaign(self.root, self.preset, "undeclared", ["tooling"])
+        with self.assertRaisesRegex(ValueError, "declared stage"):
+            qualification.run_stage(rejected, self.state_path, self.state, "boundary", command,
+                inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10,
+                action=lambda: self.fail("cold invalid request invoked action"))
+        self.assertEqual(self.state, {})
+        self.assertFalse(self.state_path.exists())
+        self.assertFalse((rejected.directory / "attempts").exists())
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_stage("boundary", command=command)
+        original_state = self.state_path.read_bytes()
+        self.assertEqual(self.state["boundary"]["status"], "failed")
+        attempts = self.campaign("first").directory / "attempts"
+        evidence = {path: path.read_bytes() for path in attempts.rglob("*") if path.is_file()}
+        with self.assertRaisesRegex(ValueError, "declared stage"):
+            qualification.run_stage(rejected, self.state_path, self.state, "boundary", command,
+                inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10,
+                action=lambda: self.fail("invalid request replaced failed gate"))
+        self.assertEqual(self.state_path.read_bytes(), original_state)
+        self.assertEqual(self.state, json.loads(original_state))
+        self.assertFalse((rejected.directory / "attempts").exists())
+        self.assertTrue(all(path.read_bytes() == content for path, content in evidence.items()))
+        with self.assertRaisesRegex(ValueError, "pending checkpoint"):
+            self.run_stage("boundary", campaign="valid-still-pending", command=command)
+
     def test_known_output_destinations_do_not_change_gate_identity(self):
         first = self.run_stage("boundary", semantic_command=[self.python, "same", "<junit>"])
         result = self.run_stage("boundary", campaign="renamed", command=[self.python, "unused-output-path"],
@@ -174,7 +242,14 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(first["receipt"], reused["reused_from"])
 
     def test_boundary_inputs_bind_native_membership_and_foreign_fixture(self):
-        for name in ("src/RenderRecipe.cpp", "src/JuicerState.cpp", "tests/ffi/color_preparation_test.cpp"):
+        for name in ("src/RenderRecipe.cpp", "src/JuicerState.cpp", "tests/ffi/color_preparation_test.cpp",
+                     "tests/ffi/print_illuminant_test.inc", "tests/ffi/print_illuminant_fixture.h",
+                     "tests/print/illuminant-fixtures/rust-manifest.json", "tests/ffi/print_preflash_test.inc",
+                     "tests/print/preflash-fixtures/manifest.json", "tests/print/preflash-fixtures/linux-debug.json",
+                     "tests/ffi/print_balance_test.inc", "tests/print/balance-fixtures/manifest.json",
+                     "tests/print/balance-fixtures/linux-debug.json", "tests/ffi/scanner_correction_test.inc",
+                     "tests/scanner/correction-fixtures/manifest.json", "tests/scanner/correction-fixtures/checked-expectations.json",
+                     "tests/scanner/correction-fixtures/linux-debug.json"):
             p = self.root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("source")
@@ -183,10 +258,28 @@ class CheckpointTests(unittest.TestCase):
         first = qualification.checkpoint_inputs(self.root, self.build, "boundary")
         self.assertIn("src/RenderRecipe.cpp", first)
         self.assertIn("tests/ffi/color_preparation_test.cpp", first)
+        self.assertIn("tests/ffi/print_illuminant_test.inc", first)
+        self.assertIn("tests/ffi/print_illuminant_fixture.h", first)
+        self.assertIn("tests/print/illuminant-fixtures/rust-manifest.json", first)
+        self.assertIn("tests/ffi/print_preflash_test.inc", first)
+        self.assertIn("tests/print/preflash-fixtures/manifest.json", first)
+        self.assertIn("tests/print/preflash-fixtures/linux-debug.json", first)
+        self.assertIn("tests/ffi/print_balance_test.inc", first)
+        self.assertIn("tests/print/balance-fixtures/manifest.json", first)
+        self.assertIn("tests/print/balance-fixtures/linux-debug.json", first)
+        self.assertIn("tests/ffi/scanner_correction_test.inc", first)
+        self.assertIn("tests/scanner/correction-fixtures/manifest.json", first)
+        self.assertIn("tests/scanner/correction-fixtures/checked-expectations.json", first)
+        self.assertIn("tests/scanner/correction-fixtures/linux-debug.json", first)
         added = self.root / "src/SpectralProcessing.h"
         added.write_text("new member")
         self.assertIn("src/SpectralProcessing.h", qualification.checkpoint_inputs(self.root, self.build, "boundary"))
         self.assertNotIn("src/SpectralProcessing.h", first)
+        fixture = self.root / "tests/print/illuminant-fixtures/product-updates.json"
+        fixture.write_text("new selected expectation member")
+        self.assertIn(str(fixture.relative_to(self.root)).replace("\\", "/"),
+                      qualification.checkpoint_inputs(self.root, self.build, "boundary"))
+        self.assertNotIn("tests/print/illuminant-fixtures/product-updates.json", first)
 
     def test_cargo_configuration_content_and_membership_are_tool_inputs(self):
         (self.build / "CMakeCache.txt").write_text("")
@@ -239,6 +332,754 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(second["stages"]["boundary"]["reused_from"], first["stages"]["boundary"]["receipt"])
         self.assertFalse((self.root / "out/validation" / self.preset / "caller-two/attempts").exists())
 
+    def test_documentation_changes_reuse_preparation_and_ctest_after_commit(self):
+        from verify import source_snapshot
+        self.retain = True
+        self.native_project()
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text().replace('"host;boundary"', '"host;corpus"'))
+        documents = [self.root / name for name in (
+            "README.md", "CONTRIBUTING.md", "docs/workflow.md", "tests/README.md",
+            "tests/film/fixtures/README.md")]
+        for path in documents:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("Initial documentation.\n")
+
+        def commit(message):
+            subprocess.run(["git", "add", "--all"], cwd=self.root, check=True, capture_output=True, timeout=10)
+            subprocess.run(["git", "-c", "user.name=Checkpoint fixture", "-c", "user.email=checkpoint@example.invalid",
+                            "-c", "commit.gpgsign=false", "commit", "-qm", message],
+                           cwd=self.root, check=True, capture_output=True, timeout=10)
+
+        commit("Initial miniature source and documentation")
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, timeout=10)
+        prepared = qualification.prepare_checkpoint(self.campaign("documentation-preparation"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        args = SimpleNamespace(reason="documentation discovery and retained native evidence", selection=["corpus"],
+                               preset=self.preset, runtime="host", campaign="documentation-baseline", repeat_reason="", base=None)
+        baseline = qualification.qualify(self.root, args)
+        record = json.loads(baseline.read_text())
+        stage = record["stages"]["corpus"]
+        self.assertEqual(record["membership"], {"corpus": ["boundary"]})
+        protected = {path: digest(path) for path in (baseline, Path(prepared["receipt"]), Path(stage["receipt"]))}
+        state_bytes = self.state_path.read_bytes()
+        source = source_snapshot(self.root)
+
+        for operation in ("edit", "add", "delete", "commit"):
+            with self.subTest(operation=operation):
+                if operation == "edit":
+                    for path in documents:
+                        path.write_text("Revised documentation.\n")
+                elif operation == "add":
+                    for name in ("docs/new-guide.md", "tests/new-domain/README.md"):
+                        path = self.root / name
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text("New documentation.\n")
+                elif operation == "delete":
+                    for path in documents:
+                        path.unlink()
+                else:
+                    commit("Documentation only")
+                    self.assertNotEqual(subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, timeout=10), head)
+                self.assertEqual(source_snapshot(self.root), source)
+                with patch.object(Campaign, "run", side_effect=AssertionError("documentation reran a gate")), \
+                        patch.object(qualification, "prepare_build", side_effect=AssertionError("documentation rebuilt the fixture")):
+                    current_state = json.loads(self.state_path.read_text())
+                    reused = qualification.prepare_checkpoint(self.campaign("documentation-prepare-" + operation),
+                        self.build, self.state_path, current_state, self.environment, timeout=60)
+                    self.assertEqual(reused["reused_from"], prepared["receipt"])
+                    args.campaign = "documentation-" + operation
+                    current = json.loads(qualification.qualify(self.root, args).read_text())
+                    self.assertEqual(current["stages"]["corpus"]["reused_from"], stage["receipt"])
+                    with self.assertRaisesRegex(ValueError, "full checkpoint membership is incomplete"):
+                        qualification.collect_qualification(self.root, [baseline])
+                self.assertEqual(self.state_path.read_bytes(), state_bytes)
+                self.assertEqual(protected, {path: digest(path) for path in protected})
+                self.assertEqual(prepared["payloads"], {name: digest(Path(name)) for name in prepared["payloads"]})
+                self.assertEqual(stage["payloads"], {name: digest(Path(name)) for name in stage["payloads"]})
+
+    def runtime_project(self):
+        self.native_project()
+        fixture = self.root / "tests/fixtures/runtime.json"
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text('{"value": 1}\n')
+        loader = self.root / "tests/runtime_loader.py"
+        loader.write_text("import json, pathlib, sys\n"
+                          "value = json.loads(pathlib.Path(sys.argv[1]).read_text())['value']\n"
+                          "pathlib.Path(sys.argv[2]).write_text(str(value))\n"
+                          "assert value > 0\n")
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() +
+            f'add_test(NAME runtime COMMAND "{Path(self.python).as_posix()}" '
+            '"${CMAKE_SOURCE_DIR}/tests/runtime_loader.py" "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json" '
+            '"${CMAKE_BINARY_DIR}/observed.txt")\n'
+            'set_tests_properties(runtime PROPERTIES LABELS "host;corpus")\n')
+        self.configure_fixture(self.preset, True, "runtime-on")
+        return fixture, loader
+
+    def test_runtime_edit_reuses_preparation_but_executes_changed_test_input(self):
+        import build_evidence
+        self.retain = True
+        fixture, loader = self.runtime_project()
+        first = qualification.prepare_checkpoint(self.campaign("runtime-prepare"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        args = SimpleNamespace(reason="runtime preparation boundary", selection=["corpus"], preset=self.preset,
+                               runtime="host", campaign="runtime-first", repeat_reason="", base=None)
+        original = json.loads(qualification.qualify(self.root, args).read_text())["stages"]["corpus"]
+        protected = {p: p.read_bytes() for p in (
+            Path(first["receipt"]), *build_evidence.preparation_paths(self.build, ["all"])[:1],
+            *(Path(name) for name in first["payloads"]))}
+        for index, path in enumerate((fixture, loader), start=2):
+            with self.subTest(path=path.name):
+                if path == fixture:
+                    path.write_text('{"value": 2}\n')
+                else:
+                    path.write_text(path.read_text().replace("str(value)", "str(value + 1)"))
+                with patch.object(qualification, "prepare_build", side_effect=AssertionError("preparation redispatched")), \
+                        patch.object(Campaign, "run", side_effect=AssertionError("configure/build/clean dispatched")):
+                    reused = qualification.prepare_checkpoint(self.campaign("runtime-reuse-" + str(index)), self.build,
+                        self.state_path, json.loads(self.state_path.read_text()), self.environment, timeout=60)
+                self.assertEqual(reused["reused_from"], first["receipt"])
+                self.assertTrue(all(p.read_bytes() == value for p, value in protected.items()))
+                args.campaign = "runtime-changed-" + str(index)
+                record_path = qualification.qualify(self.root, args)
+                current = json.loads(record_path.read_text())["stages"]["corpus"]
+                self.assertNotIn("reused_from", current)
+                self.assertNotEqual(current["receipt"], original["receipt"])
+                self.assertEqual((self.build / "observed.txt").read_text(), str(index))
+                original = current
+
+    def test_runtime_variable_configure_copy_requires_fresh_preparation(self):
+        self.assert_configure_copy_reprepared(
+            'set(stem runtime)\n'
+            'execute_process(COMMAND "${CMAKE_COMMAND}" -E copy '
+            '"${CMAKE_SOURCE_DIR}/tests/fixtures/${stem}.json" "${CMAKE_BINARY_DIR}/configured.json" '
+            'COMMAND_ERROR_IS_FATAL ANY)\n')
+
+    def test_runtime_variable_file_read_requires_fresh_preparation(self):
+        self.assert_configure_copy_reprepared(
+            'set(operation READ)\nset(stem runtime)\n'
+            'file(${operation} "${CMAKE_SOURCE_DIR}/tests/fixtures/${stem}.json" payload)\n'
+            'file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/configured.json" CONTENT "${payload}")\n')
+
+    def test_runtime_literal_file_read_requires_fresh_preparation(self):
+        self.assert_configure_copy_reprepared(
+            'file(READ "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json" payload)\n'
+            'file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/configured.json" CONTENT "${payload}")\n')
+
+    def assert_configure_copy_reprepared(self, configure_commands):
+        self.retain = True
+        fixture, _ = self.runtime_project()
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() + configure_commands +
+            'add_custom_target(staged ALL COMMAND "${CMAKE_COMMAND}" -E copy_if_different '
+            '"${CMAKE_BINARY_DIR}/configured.json" "${CMAKE_BINARY_DIR}/staged.json" '
+            'DEPENDS "${CMAKE_BINARY_DIR}/configured.json" BYPRODUCTS "${CMAKE_BINARY_DIR}/staged.json")\n')
+        first = qualification.prepare_checkpoint(self.campaign("variable-copy-first"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        producer = Path(first["receipt"])
+        original_receipt = producer.read_bytes()
+        configured, staged = (self.build / name for name in ("configured.json", "staged.json"))
+        self.assertEqual(json.loads(staged.read_text())["value"], 1)
+        self.assertIn(str(staged), first["payloads"])
+        (producer.parent / "original-staged.json").write_bytes(staged.read_bytes())
+        with patch.object(qualification, "prepare_build", side_effect=AssertionError("unchanged opaque scope redispatched")), \
+                patch.object(Campaign, "run", side_effect=AssertionError("unchanged opaque scope executed")):
+            unchanged = qualification.prepare_checkpoint(self.campaign("variable-copy-unchanged"), self.build,
+                self.state_path, self.state, self.environment, timeout=60)
+        self.assertEqual(unchanged["reused_from"], first["receipt"])
+        fixture.write_text('{"value": 2}\n')
+        commands = []
+        run = Campaign.run
+
+        def observe(campaign, stage, command, **kwargs):
+            commands.append(list(command))
+            return run(campaign, stage, command, **kwargs)
+
+        with patch.object(Campaign, "run", new=observe):
+            second = qualification.prepare_checkpoint(self.campaign("variable-copy-changed"), self.build,
+                self.state_path, self.state, self.environment, timeout=60)
+        write_json(self.build / "variable-copy-control.json", {
+            "first_receipt": first["receipt"], "second_receipt": second["receipt"],
+            "commands": commands, "runtime": json.loads(fixture.read_text()),
+            "configured": json.loads(configured.read_text()), "staged": json.loads(staged.read_text())})
+        self.assertEqual(json.loads(configured.read_text())["value"], 2)
+        self.assertEqual(json.loads(staged.read_text())["value"], 2)
+        self.assertNotIn("reused_from", second)
+        self.assertNotEqual(second["receipt"], first["receipt"])
+        self.assertIn("tests/fixtures/runtime.json", second["identity"]["inputs"])
+        self.assertTrue(any("--preset" in command or "-S" in command for command in commands))
+        self.assertEqual(producer.read_bytes(), original_receipt)
+
+    def test_runtime_preparation_keeps_build_consumers_and_unknown_inputs(self):
+        import build_evidence
+        self.retain = True
+        fixture, loader = self.runtime_project()
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() +
+            'configure_file(tests/fixtures/runtime.json generated.json COPYONLY)\n'
+            'add_custom_target(staged ALL COMMAND "${CMAKE_COMMAND}" -E copy '
+            '"${CMAKE_SOURCE_DIR}/tests/runtime_loader.py" "${CMAKE_BINARY_DIR}/staged.py" '
+            'DEPENDS "${CMAKE_SOURCE_DIR}/tests/runtime_loader.py" BYPRODUCTS "${CMAKE_BINARY_DIR}/staged.py")\n')
+        unknown = self.root / "tests/fixtures/unknown.json"
+        unknown.write_text("unknown dependency")
+        resources = self.root / "Resources/source.json"
+        resources.parent.mkdir()
+        resources.write_text("resource")
+        tool = self.root / "generator.py"
+        tool.write_text("# build generator\n")
+        cmake.write_text(cmake.read_text() +
+            'add_custom_target(generator ALL COMMAND "${CMAKE_COMMAND}" -E true '
+            'DEPENDS "${CMAKE_SOURCE_DIR}/generator.py")\n')
+        first = qualification.prepare_checkpoint(self.campaign("build-consumers"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        preparation = qualification.checkpoint_inputs(self.root, self.build, "prepare")
+        for path in (fixture, loader, unknown, resources, cmake, tool):
+            self.assertIn(path.relative_to(self.root).as_posix(), preparation)
+            before = path.read_bytes()
+            path.write_bytes(before + b" ")
+            self.assertNotEqual(snapshot(self.root, preparation), first["identity"]["inputs"])
+            with self.assertRaises(ValueError):
+                build_evidence.check_scoped_preparation(self.campaign("build-consumers"), self.build, first["receipt"])
+            path.write_bytes(before)
+
+    def test_runtime_preparation_retains_configure_copies_and_opaque_cargo_inputs(self):
+        self.retain = True
+        fixture, _ = self.runtime_project()
+        cmake = self.root / "CMakeLists.txt"
+        original = cmake.read_text()
+        for operation in (
+            'file(COPY "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json" DESTINATION "${CMAKE_BINARY_DIR}/copied")\n',
+            'file(READ "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json" fixture_text)\n',
+            'set(fixture "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json")\nfile(READ "${fixture}" fixture_text)\n',
+            'execute_process(COMMAND "${CMAKE_COMMAND}" -E cat "${CMAKE_SOURCE_DIR}/tests/fixtures/runtime.json")\n',
+            'set(operation execute_process)\ncmake_language(CALL ${operation} COMMAND "${CMAKE_COMMAND}" -E true)\n',
+        ):
+            with self.subTest(operation=operation):
+                cmake.write_text(original + operation)
+                self.assertIn("tests/fixtures/runtime.json", qualification.checkpoint_inputs(self.root, self.build, "prepare"))
+        cmake.write_text(original)
+        cmake.write_text(original +
+            'add_custom_target(copy_directory ALL COMMAND "${CMAKE_COMMAND}" -E copy_directory '
+            '"${CMAKE_SOURCE_DIR}/tests/fixtures" "${CMAKE_BINARY_DIR}/staged-fixtures")\n')
+        self.configure_fixture(self.preset, True, "runtime-directory-copy")
+        self.assertIn("tests/fixtures/runtime.json", qualification.checkpoint_inputs(self.root, self.build, "prepare"))
+        cmake.write_text(original)
+        self.configure_fixture(self.preset, True, "runtime-directory-copy-restored")
+        for name, content in (("rust/src/lib.rs", 'const DATA: &str = include_str!("data.json");\n'),
+                              ("rust/src/lib.rs", 'const DATA: &[u8] = include_bytes!("data.json");\n'),
+                              ("rust/src/lib.rs", 'include!("data.json");\n'),
+                              ("Cargo.toml", '[package]\nbuild = "custom_build.rs"\n'),
+                              ("rust/build.rs", "fn main() {}\n")):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            self.assertIn(fixture.relative_to(self.root).as_posix(),
+                          qualification.checkpoint_inputs(self.root, self.build, "prepare"))
+            path.unlink()
+
+    def test_runtime_preparation_preserves_explicit_and_older_broad_requirements(self):
+        import build_evidence
+        self.retain = True
+        fixture, _ = self.runtime_project()
+        with patch.object(qualification, "preparation_inputs", side_effect=lambda root, build, paths, **kwargs: paths):
+            first = qualification.prepare_checkpoint(self.campaign("broad"), self.build,
+                self.state_path, self.state, self.environment, timeout=60)
+        receipt = Path(first["receipt"])
+        original = receipt.read_bytes()
+        fixture.write_text('{"value": 2}\n')
+        with self.assertRaisesRegex(ValueError, "dependency contents or membership changed"):
+            build_evidence.check_scoped_preparation(self.campaign("broad"), self.build, receipt)
+        renewed = qualification.prepare_checkpoint(self.campaign("narrow"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        self.assertNotEqual(renewed["receipt"], first["receipt"])
+        self.assertEqual(receipt.read_bytes(), original)
+        # Direct prepare_build inputs remain authoritative even for a file the
+        # checkpoint can prove is runtime-only.
+        explicit = build_evidence.prepare_build(self.campaign("explicit"), "prepare", source=self.root,
+            build=self.build, inputs=["input.txt", "tests/fixtures/runtime.json"], timeout=60,
+            targets=["all"], configure_args=["-DBUILD_TESTING=ON"], checkpoint=True)[1]
+        original_explicit = explicit.read_bytes()
+        fixture.write_text('{"value": 3}\n')
+        with self.assertRaisesRegex(ValueError, "dependency contents or membership changed"):
+            build_evidence.check_scoped_preparation(self.campaign("explicit"), self.build, explicit)
+        self.assertEqual(explicit.read_bytes(), original_explicit)
+
+    def test_runtime_preparation_does_not_admit_tampered_or_unproved_owners(self):
+        import build_evidence
+        self.retain = True
+        fixture, _ = self.runtime_project()
+        first = qualification.prepare_checkpoint(self.campaign("owned"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        baseline, pending = build_evidence.preparation_paths(self.build, ["all"])
+        original_owner = baseline.read_bytes()
+        original_receipt = Path(first["receipt"]).read_bytes()
+        artifact = next(Path(name) for name in first["payloads"] if Path(name).name == "material.txt")
+        original_artifact = artifact.read_bytes()
+        fixture.write_text('{"value": 2}\n')
+        for fault in ("artifact", "pending", "unproved"):
+            with self.subTest(fault=fault):
+                if fault == "artifact":
+                    artifact.write_bytes(b"tampered")
+                elif fault == "pending":
+                    pending.write_text('{"status": "unproved"}')
+                else:
+                    baseline.unlink()
+                with patch.object(Campaign, "run", side_effect=AssertionError("unsafe owner dispatched")):
+                    with self.assertRaises((ValueError, FileNotFoundError)):
+                        qualification.prepare_checkpoint(self.campaign("rejected-" + fault), self.build,
+                            self.state_path, json.loads(self.state_path.read_text()), self.environment, timeout=60)
+                self.assertEqual(Path(first["receipt"]).read_bytes(), original_receipt)
+                # Faults are isolated in this miniature, never shared owners.
+                artifact.write_bytes(original_artifact)
+                if pending.exists():
+                    pending.rename(self.build / "unproved-pending-retained.json")
+                if not baseline.exists():
+                    baseline.write_bytes(original_owner)
+                write_json(self.state_path, {"prepare": first})
+
+    def test_runtime_preparation_collection_uses_its_own_membership(self):
+        self.retain = True
+        fixture, _ = self.runtime_project()
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text().replace('"host;corpus"', '"host;product"'))
+        quality = self.root / "scripts/check-quality.py"
+        quality.parent.mkdir()
+        quality.write_text("print('miniature quality scheduling witness')\n")
+        args = SimpleNamespace(reason="miniature preparation collection", selection=["product"], preset=self.preset,
+                               runtime="all", campaign="collection-first", repeat_reason="", base="fixture")
+        path = qualification.qualify(self.root, args)
+        record = json.loads(path.read_text())
+        self.assertNotIn("tests/fixtures/runtime.json", record["stages"]["prepare"]["identity"]["inputs"])
+        self.assertIn("tests/fixtures/runtime.json", record["stages"]["product"]["identity"]["inputs"])
+        original = path.read_bytes()
+        with patch.object(Campaign, "run", side_effect=AssertionError("collector dispatched")):
+            with self.assertRaisesRegex(ValueError, "full checkpoint membership is incomplete"):
+                qualification.collect_qualification(self.root, [path])
+        fixture.write_text('{"value": 2}\n')
+        args.campaign = "collection-changed"
+        refreshed = qualification.qualify(self.root, args)
+        result = json.loads(refreshed.read_text())
+        self.assertEqual(result["stages"]["prepare"]["reused_from"], record["stages"]["prepare"]["receipt"])
+        self.assertNotIn("reused_from", result["stages"]["product"])
+        with self.assertRaisesRegex(ValueError, "full checkpoint membership is incomplete"):
+            qualification.collect_qualification(self.root, [refreshed])
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_runtime_preparation_cold_discovery_preserves_producer_requirements(self):
+        self.retain = True
+        self.native_project()
+        self.assertFalse((self.build / "CTestTestfile.cmake").exists())
+        fixture = self.root / "tests/runtime.txt"
+        fixture.parent.mkdir()
+        fixture.write_text("runtime input")
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() +
+            'add_test(NAME runtime COMMAND "${CMAKE_COMMAND}" -E cat "${CMAKE_SOURCE_DIR}/tests/runtime.txt")\n')
+        first = qualification.prepare_checkpoint(self.campaign("cold-discovery"), self.build,
+            self.state_path, self.state, self.environment, timeout=60)
+        proof = json.loads(Path(first["receipt"]).read_text())["scoped_preparation"]
+        declared = {name for name in first["identity"]["inputs"] if not name.startswith("out/build/")}
+        self.assertEqual(declared, set(proof["inputs"]))
+        self.assertIn("tests/runtime.txt", declared)
+        self.assertIn("tests/runtime.txt", qualification.checkpoint_inputs(self.root, self.build, "prepare",
+            preparation=proof["context"]))
+        self.assertNotIn("tests/runtime.txt", qualification.checkpoint_inputs(self.root, self.build, "prepare"))
+
+    def test_explicitly_consumed_markdown_remains_a_freshness_input(self):
+        self.retain = True
+        name = "docs/runtime-contract.md"
+        document = self.root / name
+        document.parent.mkdir(parents=True)
+        document.write_text("first")
+        self.assertIn(name, qualification.checkpoint_inputs(self.root, self.build, "corpus", source_files=[name]))
+        command = [self.python, "-c", "from pathlib import Path; assert Path('docs/runtime-contract.md').read_text() == 'first'"]
+        first = self.run_stage("boundary", command=command, inputs=[name])
+        receipt = Path(first["receipt"])
+        original = receipt.read_bytes()
+        document.write_text("changed consumed content")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_stage("boundary", campaign="changed-markdown", command=command, inputs=[name])
+        self.assertEqual(self.state["boundary"]["status"], "failed")
+        self.assertEqual(receipt.read_bytes(), original)
+
+    def production_fixture(self):
+        """Native tiny probes exercise retained proof, not product mathematics."""
+        return r'''
+import json, sys, subprocess, hashlib, shutil
+preset=sys.argv[sys.argv.index("--preset")+1]
+out=out.resolve()
+def checksum(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+build=(Path('out/build')/preset).resolve()
+build_sources=[build/name for name in ('CMakeCache.txt','build.ninja','compile_commands.json','cargo-features.txt',
+                                     'libjuicer.a','juicer.lib','juicer.ofx','juicer.pdb') if (build/name).is_file()]
+assert 'BUILD_TESTING:BOOL=OFF' in (build/'CMakeCache.txt').read_text().splitlines()
+build_inputs={}
+for source in build_sources:
+    before=checksum(source)
+    target=out/'build'/source.relative_to(build)
+    target.parent.mkdir(parents=True,exist_ok=True)
+    shutil.copy2(source,target)
+    assert checksum(source)==checksum(target)==before
+    build_inputs[str(source)]={'file':str(target),'sha256':before}
+commands=[]
+def execute(name, command):
+    result=subprocess.run(command,capture_output=True,timeout=30,check=False)
+    for extension,data in [('stdout',result.stdout),('stderr',result.stderr)]:
+        (out/(name+'.'+extension)).write_bytes(data)
+    commands.append({'name':name,'command':command,'returncode':result.returncode,
+                     'stdout_sha256':checksum(out/(name+'.stdout')),
+                     'stderr_sha256':checksum(out/(name+'.stderr'))})
+    result.check_returncode()
+header=out/'production-film-expected.h'
+header.write_text('#define EXPECTED 10\n')
+consumed={str(header):checksum(header)}
+probes=[]
+for name in ['film','accepted-output-color']:
+    source=out/(name+'.c')
+    source.write_text('#include "production-film-expected.h"\n#include <stdio.h>\n'
+                      'typedef struct Pair {int first; int second;} Pair;\n'
+                      '_Static_assert(sizeof(Pair)==8,"ABI");\n'
+                      'int main(void){printf("value=%d abi=%zu\\n",EXPECTED,sizeof(Pair));return EXPECTED!=10;}\n')
+    executable=out/(name+('.exe' if sys.platform=='win32' else ''))
+    if sys.platform=='win32':
+        command=[shutil.which('clang-cl.exe'),'/nologo','/TC','/std:c11','/MD','/W4','/WX',
+                 '/clang:-fuse-ld=lld',str(source),'/Fe:'+str(executable),'/Fo:'+str(out/(name+'.obj'))]
+    else:
+        command=['gcc-13','-std=c11','-Wall','-Wextra','-Werror',str(source),'-o',str(executable)]
+    source_hash=checksum(source)
+    execute(name+'-compile',command)
+    linked=checksum(executable)
+    before=checksum(executable)
+    execute(name+'-values',[str(executable)])
+    after=checksum(executable)
+    assert linked==before==after and checksum(source)==source_hash
+    probes.append({'name':name,'executable':str(executable),'linked_sha256':linked,
+                   'before_run_sha256':before,'after_run_sha256':after,
+                   'source':str(source),'source_sha256':source_hash})
+for name,value in consumed.items():assert checksum(Path(name))==value
+for name,row in build_inputs.items():assert checksum(Path(name))==checksum(Path(row['file']))==row['sha256']
+record=out/'commands.json'
+record.write_text(json.dumps(commands))
+(out/'production.json').write_text(json.dumps({'scope':'native miniature retained-payload protocol only',
+    'preset':preset,'build_testing':'OFF','build_inputs':build_inputs,'probes':probes,'consumed_inputs':consumed,
+    'commands':{'file':str(record),'sha256':checksum(record)},
+    'command_outputs':{str(out/(row['name']+'.'+extension)):row[extension+'_sha256']
+                       for row in commands for extension in ['stdout','stderr']}}))
+print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
+'''
+
+    def production_protected(self, stage):
+        receipt = Path(stage["receipt"])
+        command = json.loads(receipt.read_text())
+        manifest = qualification.production_manifest_identity(receipt, root=self.root)[0]
+        paths = [receipt, self.root / command["output"], Path(command["process_tree"]["receipt"]), manifest]
+        paths += [self.root / name for name in stage["identity"]["inputs"]
+                  if Path(name).suffix.lower() in {".a", ".lib", ".ofx", ".pdb"}]
+        return {str(path): digest(path) for path in paths}
+
+    def production_mutations(self, stage):
+        manifest = qualification.production_manifest_identity(stage["receipt"], root=self.root)[0]
+        document = json.loads(manifest.read_text())
+        artifact = next(Path(row["file"]) for name, row in document["build_inputs"].items()
+                        if Path(name).suffix.lower() in {".a", ".lib", ".ofx"})
+        return [Path(row["executable"]) for row in document["probes"]] + [
+            manifest.parent / "production-film-expected.h", manifest.parent / "film-values.stdout", artifact]
+
+    def assert_production_reuse_controls(self, path, checkpoint, calls):
+        record = json.loads(path.read_text())
+        stage = record["stages"]["production"]
+        owner = self.root / "out/build" / record["preset"] / "verification-checkpoint.json"
+        owner_bytes = owner.read_bytes()
+        protected = self.production_protected(stage)
+        before = len(calls)
+        reused = json.loads(checkpoint("retained-unchanged").read_text())["stages"]["production"]
+        self.assertEqual(reused["reused_from"], stage["receipt"])
+        self.assertEqual(len(calls), before, "unchanged retained evidence executed probes again")
+        outcomes = [{"operation": "reuse", "case": "unchanged", "status": "passed", "commands": 0}]
+        for target in self.production_mutations(stage):
+            data, stamp = target.read_bytes(), target.stat()
+            for mutation in ("replace", "remove"):
+                with self.subTest(operation="reuse", file=target.name, mutation=mutation):
+                    try:
+                        target.write_bytes(b"changed after execution") if mutation == "replace" else target.unlink()
+                        with self.assertRaisesRegex(ValueError, "production execution payload missing or changed"):
+                            checkpoint("retained-" + target.name.replace(".", "-") + "-" + mutation)
+                        self.assertEqual(json.loads(owner.read_text())["production"]["status"], "failed")
+                        self.assertEqual(len(calls), before, "rejected reuse executed probes")
+                        self.assertEqual(protected, {name: digest(Path(name)) for name in protected})
+                        outcomes.append({"operation": "reuse", "case": target.name, "mutation": mutation,
+                                         "rejected": "production execution payload missing or changed"})
+                    finally:
+                        target.write_bytes(data)
+                        os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                        owner.write_bytes(owner_bytes)
+        try:
+            state = json.loads(owner_bytes)
+            header = next(name for name in stage["payloads"] if Path(name).name == "production-film-expected.h")
+            state["production"]["payloads"].pop(header)
+            write_json(owner, state)
+            with self.assertRaisesRegex(ValueError, "production retained payload membership"):
+                checkpoint("retained-omitted-member")
+            self.assertEqual(len(calls), before)
+            outcomes.append({"operation": "reuse", "case": "omitted-member", "rejected": "production retained payload membership"})
+        finally:
+            owner.write_bytes(owner_bytes)
+        for target_kind, cause in [("probe", "production execution payload missing or changed"),
+                                   ("manifest", "production manifest execution identity changed")]:
+            prior = Campaign.run
+            def drift(campaign, name, command, **kwargs):
+                receipt = prior(campaign, name, command, **kwargs)
+                if name == "production":
+                    raw = json.loads(receipt.read_text())
+                    self.assertTrue(raw["process_tree"]["drained"])
+                    manifest = qualification.production_manifest_identity(receipt, root=self.root)[0]
+                    document = json.loads(manifest.read_text())
+                    if target_kind == "probe":
+                        Path(document["probes"][0]["executable"]).write_bytes(b"drift after drained execution")
+                    else:
+                        document["scope"] = "manifest replaced after drained execution"
+                        manifest.write_text(json.dumps(document))
+                return receipt
+            try:
+                with patch.object(Campaign, "run", new=drift):
+                    with self.assertRaisesRegex(ValueError, cause):
+                        checkpoint("retained-registration-drift-" + target_kind,
+                                   "intentional post-execution retained-payload drift control")
+                self.assertEqual(json.loads(owner.read_text())["production"]["status"], "failed")
+                self.assertEqual(protected, {name: digest(Path(name)) for name in protected})
+                outcomes.append({"operation": "registration", "case": "post-drain-drift-" + target_kind,
+                                 "rejected": cause})
+            finally:
+                owner.write_bytes(owner_bytes)
+        return outcomes
+
+    def assert_production_collection_controls(self, paths):
+        preset = "windows-clang-release" if os.name == "nt" else "linux-release"
+        path = next(path for path in paths if json.loads(path.read_text())["preset"] == preset
+                    and json.loads(path.read_text())["selection"] == ["production"])
+        record = json.loads(path.read_text())
+        stage = record["stages"]["production"]
+        owner = self.root / "out/build" / preset / "verification-checkpoint.json"
+        owner_bytes = owner.read_bytes()
+        protected = self.production_protected(stage)
+        protected[str(path)] = digest(path)
+        outcomes = [{"operation": "collection", "case": "unchanged", "status": "passed"}]
+        for target in self.production_mutations(stage):
+            data, stamp = target.read_bytes(), target.stat()
+            for mutation in ("replace", "remove"):
+                with self.subTest(operation="collection", file=target.name, mutation=mutation):
+                    try:
+                        target.write_bytes(b"changed after execution") if mutation == "replace" else target.unlink()
+                        with self.assertRaisesRegex(ValueError, "production execution payload missing or changed"):
+                            qualification.collect_qualification(self.root, paths)
+                        self.assertEqual(protected, {name: digest(Path(name)) for name in protected})
+                        outcomes.append({"operation": "collection", "case": target.name, "mutation": mutation,
+                                         "rejected": "production execution payload missing or changed"})
+                    finally:
+                        target.write_bytes(data)
+                        os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        try:
+            header = next(name for name in stage["payloads"] if Path(name).name == "production-film-expected.h")
+            state = json.loads(owner_bytes)
+            state["production"]["payloads"].pop(header)
+            record["stages"]["production"]["payloads"].pop(header)
+            write_json(owner, state)
+            omitted = path.parent / "omitted-membership.json"
+            write_json(omitted, record)
+            with self.assertRaisesRegex(ValueError, "production retained payload membership"):
+                qualification.collect_qualification(self.root, [omitted if other == path else other for other in paths])
+            self.assertEqual(protected, {name: digest(Path(name)) for name in protected})
+            outcomes.append({"operation": "collection", "case": "omitted-member",
+                             "rejected": "production retained payload membership"})
+        finally:
+            owner.write_bytes(owner_bytes)
+        self.assertEqual(qualification.collect_qualification(self.root, paths)["status"], "passed")
+        return outcomes
+
+    def test_collection_rejects_prepare_without_scoped_proof(self):
+        self.retain = True
+        self.native_project()
+        from verify import source_snapshot
+        required = ["prepare", "quality", "product"]
+        campaign = Campaign(self.root, self.preset, "unproved-preparation", required)
+        stages = {name: qualification.run_stage(campaign, self.state_path, self.state, name,
+            [self.python, "-c", "print('ordinary command without preparation proof')"],
+            inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10)
+            for name in required}
+        record = {"mode": "checkpoint", "status": "passed", "scope_status": "passed",
+                  "reason": "ordinary command cannot supply scoped preparation", "preset": self.preset,
+                  "runtime": "all", "selection": ["product"], "required": required,
+                  "stages": stages, "source": source_snapshot(self.root)}
+        path = campaign.directory / "qualification.json"
+        write_json(path, record)
+        protected = {p: p.read_bytes() for p in
+                     [path, self.state_path, *(Path(stage["receipt"]) for stage in stages.values())]}
+        with patch.object(Campaign, "run", side_effect=AssertionError("collection dispatched")):
+            with self.assertRaisesRegex(ValueError, "legacy sealed-build preparation"):
+                qualification.collect_qualification(self.root, [path])
+        self.assertEqual(protected, {p: p.read_bytes() for p in protected})
+
+    def test_production_retained_execution_payloads(self):
+        """Real OFF owners and preparations; unrelated execution uses unit scaffolds."""
+        self.retain = True
+        started = time.monotonic()
+        files = self.compiled_project()
+        from verify import source_snapshot
+        paths, outcomes, commands = [], [], []
+        actual_run = Campaign.run
+        def counted(campaign, stage, command, **kwargs):
+            commands.append({"stage": stage, "command": list(command)})
+            return actual_run(campaign, stage, command, **kwargs)
+        def checkpoint(preset, name, repeat_reason=""):
+            args = SimpleNamespace(reason="native retained OFF payload controls", selection=["production"],
+                                   preset=preset, runtime="all", campaign=name,
+                                   repeat_reason=repeat_reason, base=None)
+            if preset == ("windows-clang-release" if os.name == "nt" else "linux-release"):
+                return qualification.qualify(self.root, args)
+            with OutputLease(self.root, self.root / "out/build" / preset):
+                return qualification._qualify_owned(self.root, self.root / "out/build" / preset, args)
+        with patch.object(Campaign, "run", autospec=True, side_effect=counted):
+            for preset in ("linux-release", "windows-clang-release"):
+                build = self.root / "out/build" / preset
+                campaign = Campaign(self.root, preset, "retained-off-prepare", ["prepare"])
+                qualification.prepare_build(campaign, "prepare", source=self.root, build=build,
+                    inputs=list(files), timeout=60, targets=["all"],
+                    configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
+                path = checkpoint(preset, "retained-off")
+                paths.append(path)
+                if preset == ("windows-clang-release" if os.name == "nt" else "linux-release"):
+                    outcomes += self.assert_production_reuse_controls(path,
+                        lambda name, repeat_reason="": checkpoint(preset, name, repeat_reason), commands)
+            # Real miniature preparations supply the collector's context and
+            # artifact identity. Only unrelated relevance execution is scaffolded;
+            # no preparation or production validation is mocked.
+            for preset in qualification.PRESETS:
+                build = self.root / "out/build" / preset
+                self.configure_fixture(preset, True, "retained-prerequisite-on", timeout=60)
+                state_path = build / "verification-checkpoint.json"
+                state = json.loads(state_path.read_text()) if state_path.exists() else {}
+                groups = ["boundary", "product"]
+                if preset.endswith("debug"):
+                    groups.append("tooling")
+                if preset == "linux-debug":
+                    groups.append("corpus")
+                required = ["prepare", "quality", *groups]
+                campaign = Campaign(self.root, preset, "retained-unrelated-scaffold", required)
+                stages = {"prepare": qualification.prepare_checkpoint(campaign, build, state_path, state,
+                    self.environment, timeout=60)}
+                dependency = qualification.preparation_identity(build, stages["prepare"])
+                for name in required[1:]:
+                    stages[name] = qualification.run_stage(campaign, state_path, state, name,
+                        [self.python, "-c", "print('unrelated collection prerequisite scaffold')"],
+                        inputs=qualification.checkpoint_inputs(self.root, build, name if name in qualification.GROUPS else "product"),
+                        tools=[self.python], environment=self.environment, timeout=10,
+                        dependencies=[dependency] if name in {"quality", "product"} else [])
+                record = {"mode": "checkpoint", "status": "passed", "scope_status": "passed",
+                          "reason": "synthetic unrelated prerequisites for isolated production collector controls",
+                          "preset": preset, "runtime": "all", "selection": groups, "required": required,
+                          "stages": stages, "source": source_snapshot(self.root)}
+                path = campaign.directory / "qualification.json"
+                write_json(path, record)
+                paths.append(path)
+            self.assertEqual(qualification.collect_qualification(self.root, paths)["status"], "passed")
+            outcomes += self.assert_production_collection_controls(paths)
+        destination = self.root / "out/validation" / self.preset / "retained-production-controls.json"
+        write_json(destination, {"scope": "real production checkpoint/reuse/collector controls with explicit unrelated product scaffolds; no product qualification",
+            "native": os.name, "controls": outcomes, "commands": commands,
+            "seconds": time.monotonic() - started})
+
+    def test_production_evidence_survives_on_restoration_and_unrelated_failure(self):
+        self.retain = True
+        files = self.compiled_project()
+        cmake = self.root / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() +
+                         "target_compile_definitions(juicer PRIVATE MINI_TESTING=$<BOOL:${BUILD_TESTING}>)\n")
+        native = self.root / "src/native.cpp"
+        native.write_text(native.read_text() + "int testing_feature(){return MINI_TESTING;}\n")
+        preset = "windows-clang-release" if os.name == "nt" else "linux-release"
+        build = self.root / "out/build" / preset
+        state_path = build / "verification-checkpoint.json"
+        campaign = Campaign(self.root, preset, "off-preparation", ["prepare"])
+        qualification.prepare_build(campaign, "prepare", source=self.root, build=build,
+            inputs=list(files), timeout=60, targets=["all"], configure_args=["-DBUILD_TESTING=OFF"], checkpoint=True)
+        state = {}
+        with OutputLease(self.root, build):
+            with self.assertRaises(subprocess.CalledProcessError):
+                qualification.run_stage(Campaign(self.root, preset, "unrelated-failure", ["boundary"]),
+                    state_path, state, "boundary", [self.python, "-c", "raise SystemExit(7)"],
+                    inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10)
+        args = SimpleNamespace(reason="retained OFF evidence across ON restoration", selection=["production"],
+                               preset=preset, runtime="all", campaign="original-off", repeat_reason="", base=None)
+        path = qualification.qualify(self.root, args)
+        original_record = path.read_bytes()
+        record = json.loads(original_record)
+        self.assertEqual(record["status"], "incomplete")
+        self.assertEqual(record["scope_status"], "passed")
+        self.assertEqual(record["pending"], ["boundary"])
+        stage = record["stages"]["production"]
+        manifest = qualification.production_manifest_identity(stage["receipt"], root=self.root)[0]
+        document = json.loads(manifest.read_text())
+        artifact = build / ("juicer.lib" if os.name == "nt" else "libjuicer.a")
+        retained = Path(document["build_inputs"][str(artifact)]["file"])
+        off_hash = stage["identity"]["inputs"][artifact.relative_to(self.root).as_posix()]
+        self.assertEqual(digest(artifact), off_hash)
+        self.assertEqual(digest(retained), off_hash)
+        evidence = {name: checksum for name, checksum in self.production_protected(stage).items()
+                    if not Path(name).is_relative_to(build)}
+        payloads = {name: digest(Path(name)) for name in stage["payloads"]}
+        legacy = manifest.with_name("without-retained-build-inputs.json")
+        write_json(legacy, {key: value for key, value in document.items() if key != "build_inputs"})
+        with self.assertRaisesRegex(ValueError, "fresh OFF execution required"):
+            qualification.production_payloads(legacy, digest(legacy), root=self.root,
+                inputs=stage["identity"]["inputs"])
+
+        qualification.prepare_build(Campaign(self.root, preset, "restore-on", ["prepare"]), "prepare",
+            source=self.root, build=build, inputs=list(files), timeout=60, targets=["all"],
+            configure_args=["-DBUILD_TESTING=ON"], checkpoint=True)
+        self.assertIn("BUILD_TESTING:BOOL=ON", (build / "CMakeCache.txt").read_text())
+        self.assertNotEqual(digest(artifact), off_hash)
+        self.assertEqual(payloads, {name: digest(Path(name)) for name in payloads})
+
+        def rejected_collection(message):
+            with patch.object(Campaign, "run", side_effect=AssertionError("collection executed a command")):
+                with self.assertRaisesRegex(ValueError, message):
+                    qualification.collect_qualification(self.root, [path])
+
+        rejected_collection("pending checkpoint work")
+        state = json.loads(state_path.read_text())
+        with OutputLease(self.root, build):
+            qualification.run_stage(Campaign(self.root, preset, "unrelated-repair", ["boundary"]),
+                state_path, state, "boundary", [self.python, "-c", "print('repaired')"],
+                inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10)
+        rejected_collection("full checkpoint membership is incomplete")
+        data, stamp = retained.read_bytes(), retained.stat()
+        on_hash = digest(artifact)
+        for mutation in ("replace", "remove"):
+            with self.subTest(retained_artifact=mutation):
+                try:
+                    retained.write_bytes(b"changed retained OFF archive") if mutation == "replace" else retained.unlink()
+                    rejected_collection("production execution payload missing or changed")
+                    self.assertEqual(digest(artifact), on_hash)
+                finally:
+                    retained.write_bytes(data)
+                    os.utime(retained, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        rejected_collection("full checkpoint membership is incomplete")
+        self.assertEqual(path.read_bytes(), original_record)
+        self.assertEqual(evidence, {name: digest(Path(name)) for name in evidence})
+        self.assertEqual(payloads, {name: digest(Path(name)) for name in payloads})
+
+        with OutputLease(self.root, build):
+            with self.assertRaises(subprocess.CalledProcessError):
+                qualification.run_stage(Campaign(self.root, preset, "later-production-failure", ["production"]),
+                    state_path, state, "production", [self.python, "-c", "raise SystemExit(9)"],
+                    inputs=["input.txt"], tools=[self.python], environment=self.environment, timeout=10)
+        rejected_collection("pending checkpoint work")
+        self.assertEqual(json.loads(state_path.read_text())["production"]["status"], "failed")
+        self.assertEqual(path.read_bytes(), original_record)
+        self.assertEqual(evidence, {name: digest(Path(name)) for name in evidence})
+
     def compiled_project(self):
         self.native_project()
         files = {
@@ -271,7 +1112,7 @@ class CheckpointTests(unittest.TestCase):
                 'build=Path("out/build")/preset\nexe=build/("behavior.exe" if sys.platform=="win32" else "behavior")\n'
                 'value=subprocess.check_output([str(exe.resolve()),"10"],text=True,timeout=10)\n'
                 'assert "value=10 abi=8 offset=4" in value\nout.mkdir(parents=True)\n'
-                '(out/"production.json").write_text(json.dumps({"scope":"miniature protocol only","behavior":value}))\n',
+                + self.production_fixture(),
         }
         for name, content in files.items():
             path = self.root / name
@@ -824,7 +1665,7 @@ class CheckpointTests(unittest.TestCase):
             "count=root/'out/production-count.txt'\n"
             "count.write_text(str(int(count.read_text())+1) if count.exists() else '1')\n"
             "assert (root/'out/build'/a.preset/'juicer.pdb').is_file()\n"
-            "(out/'production.json').write_text('{}')\n")
+            + self.production_fixture())
         args = SimpleNamespace(reason="production PDB identity regression", selection=["production"],
                                preset=self.preset, runtime="host", campaign="first", repeat_reason="", base=None)
         count = self.root / "out/production-count.txt"
@@ -1077,7 +1918,7 @@ class CheckpointTests(unittest.TestCase):
                    "scope": "real collector; incomplete lane membership remains rejected",
                    "original_receipts": originals, "tool_reads_per_collection": 2})
 
-    def test_collection_binds_actual_final_production_artifact(self):
+    def test_collection_rejects_production_without_execution_bound_manifest(self):
         artifact = self.build / "plugin.a"
         artifact.write_bytes(b"inspected final artifact")
         inputs = ["input.txt", artifact.relative_to(self.root).as_posix()]
@@ -1087,9 +1928,8 @@ class CheckpointTests(unittest.TestCase):
                   "stages": {"production": stage}}
         path = self.root / "production-checkpoint.json"
         path.write_text(json.dumps(record))
-        artifact.write_bytes(b"different final artifact")
         with patch.object(qualification, "checkpoint_inputs", return_value=inputs):
-            with self.assertRaisesRegex(ValueError, "final inspected production artifacts changed"):
+            with self.assertRaisesRegex(ValueError, "production command does not declare retained execution evidence"):
                 qualification.collect_qualification(self.root, [path])
 
     def test_probe_artifact_ancestor_configuration_invalidates_checkpoint(self):
@@ -1243,6 +2083,25 @@ class MembershipTests(unittest.TestCase):
             self.assertIn('product|boundary" -LE gpu', text)
             self.assertIn(f"out/validation/{family}-release/quality/**/*.log", text)
         self.assertIn('product|boundary|tooling|corpus', (ROOT / ".github/workflows/tests-linux-host.yml").read_text())
+
+    def test_both_native_ci_callers_run_matching_debug_and_release_quality(self):
+        for family in ("linux", "windows-clang"):
+            with self.subTest(family=family):
+                path = ROOT / ".github/workflows" / ("tests-linux-host.yml" if family == "linux" else "tests-windows-host.yml")
+                text = path.read_text().replace("\\\n", " ").replace("`\n", " ")
+                lines = [" ".join(line.split()) for line in text.splitlines()]
+                commands = [line for line in lines if line.startswith("python -u scripts/check-quality.py ")]
+                self.assertEqual(len(commands), 2)
+                debug, release = commands
+                self.assertIn("--base ", debug)
+                self.assertIn(f"--preset {family}-debug", debug)
+                self.assertNotIn("--files", debug)
+                self.assertEqual(release,
+                                 f"python -u scripts/check-quality.py --files Cargo.toml --preset {family}-release --jobs 2")
+                for profile, command in (("debug", debug), ("release", release)):
+                    build = f"cmake --build --preset {family}-{profile}"
+                    self.assertIn(build, lines)
+                    self.assertLess(lines.index(build), lines.index(command))
 
     def test_malformed_checkpoint_selection_and_empty_collection_schedule_no_work(self):
         import verify

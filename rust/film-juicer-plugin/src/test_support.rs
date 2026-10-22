@@ -2,6 +2,7 @@
 
 use crate::asset_illuminant::{self, FjIlluminant, FjIlluminantCoverage};
 use film_juicer_core::illuminant;
+use crate::scanner_bridge;
 
 thread_local! { static ILLUMINANT_FACADE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 #[unsafe(no_mangle)]
@@ -1828,3 +1829,259 @@ const _: unsafe extern "C" fn(
     *mut crate::optics_bridge::FjSpatialOpticsFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_spatial_optics_prepare;
+
+/// # Safety
+/// Same initialized, aligned, live and disjoint records/source as the checked operation.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_print_illuminant_prepare(
+    params: *const crate::print_bridge::FjPrintIlluminantParams,
+    source: FjFloatSpan,
+    out: *mut crate::asset_illuminant::FjIlluminant,
+    failure: *mut crate::print_bridge::FjPrintIlluminantFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade uses the common checked implementation, not its legacy export.
+    unsafe { crate::print_bridge::prepare(params, source, out, failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const crate::print_bridge::FjPrintIlluminantParams,
+    FjFloatSpan,
+    *mut crate::asset_illuminant::FjIlluminant,
+    *mut crate::print_bridge::FjPrintIlluminantFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_print_illuminant_prepare;
+
+/// Scalar primitive witness for the owning preflash domain comparison.
+/// # Safety
+/// out contains five exclusive writable doubles; narrowed contains one exclusive
+/// writable float. Both are aligned, live and disjoint through return.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_print_preflash_primitive(
+    density: f64,
+    illuminant: f64,
+    sensitivity: f64,
+    accumulator: f64,
+    out: *mut f64,
+    narrowed: *mut f32,
+) {
+    let power = 10.0_f64.powf(-density);
+    let transmitted = power * illuminant;
+    let light = if transmitted.is_nan() {
+        0.0
+    } else {
+        transmitted
+    };
+    let product = light * sensitivity;
+    let sum = accumulator + product;
+    // SAFETY: The fixture authorizes the complete fixed, disjoint outputs.
+    unsafe {
+        std::ptr::copy_nonoverlapping([power, transmitted, light, product, sum].as_ptr(), out, 5);
+        narrowed.write(sum as f32);
+    }
+}
+
+/// Checked preflash fixture facade shares construction without invoking the legacy export.
+/// # Safety
+/// The same live, initialized, aligned and disjoint synchronous raw contract as
+/// print_bridge::prepare_preflash; inputs contain exactly 81/81/243 f32 elements.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_print_preflash_prepare(
+    input: *const crate::print_bridge::FjPrintPreflashInput,
+    out: *mut crate::print_bridge::FjPrintPreflashRaw,
+    failure: *mut crate::print_bridge::FjPrintPreflashFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Identical checked operation, not a call through the legacy export.
+    unsafe { crate::print_bridge::prepare_preflash(input, out, failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const crate::print_bridge::FjPrintPreflashInput,
+    *mut crate::print_bridge::FjPrintPreflashRaw,
+    *mut crate::print_bridge::FjPrintPreflashFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_print_preflash_prepare;
+
+/// Primitive-only witness for early balance feasibility; no balance construction.
+/// # Safety
+/// density/raw contain seven/three initialized floats. out/narrowed contain
+/// twelve/two exclusive writable elements, disjoint from all input storage.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_print_balance_primitive(
+    density: *const f32,
+    raw: *const f32,
+    denominator: f32,
+    out: *mut f64,
+    narrowed: *mut f32,
+) {
+    // SAFETY: The domain fixture provides the documented fixed live extents.
+    let (density, raw) = unsafe {
+        (
+            std::slice::from_raw_parts(density, 7),
+            std::slice::from_raw_parts(raw, 3),
+        )
+    };
+    let mut observed = [0.0_f64; 12];
+    let mut d = f64::from(density[0]);
+    for c in 0..3 {
+        d += f64::from(density[c + 1]) * f64::from(density[c + 4]);
+        observed[c] = d;
+    }
+    observed[3] = 10.0_f64.powf(-d);
+    let mut mean_log = 0.0_f64;
+    for c in 0..3 {
+        observed[4 + c] = f64::from(raw[c]).max(1.0e-10).ln();
+        mean_log += observed[4 + c];
+        observed[7 + c] = mean_log;
+    }
+    observed[10] = -mean_log / 3.0;
+    observed[11] = observed[10].exp();
+    let factor = observed[11] as f32;
+    // SAFETY: Caller supplies fixed writable extents, exclusive through return.
+    unsafe {
+        std::ptr::copy_nonoverlapping(observed.as_ptr(), out, 12);
+        std::ptr::copy_nonoverlapping([factor, factor / denominator].as_ptr(), narrowed, 2);
+    }
+}
+
+/// Scalar feasibility witness; no complete correction constructor.
+/// # Safety
+/// out/out_double contain six/three exclusive initialized writable elements,
+/// disjoint from each other and live through synchronous return.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_scanner_correction_primitive(
+    value: f32,
+    accumulator: f32,
+    multiplier: f32,
+    out: *mut f32,
+    out_double: *mut f64,
+) {
+    let clamped = value.clamp(0.0, 1.0);
+    let observed = [
+        10.0_f32.powf(-value),
+        value.log10(),
+        value.max(0.0),
+        clamped,
+        accumulator + value * multiplier,
+        if clamped <= 0.04045 {
+            clamped / 12.92
+        } else {
+            ((clamped + 0.055) / 1.055).powf(2.4)
+        },
+    ];
+    let double = f64::from(value);
+    let observed_double = [10.0_f64.powf(-double), double.log10(), double.max(0.0)];
+    // SAFETY: The fixture supplies the documented disjoint fixed writable extents.
+    unsafe {
+        std::ptr::copy_nonoverlapping(observed.as_ptr(), out, 6);
+        std::ptr::copy_nonoverlapping(observed_double.as_ptr(), out_double, 3);
+    }
+}
+
+/// Direct fixture facade invokes the checked operation, not the legacy export.
+/// # Safety
+/// The same initialized live input and exclusive/disjoint writable contract as
+/// scanner_bridge::prepare_direct; all borrows expire at synchronous return.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_scanner_direct_correction_prepare(
+    params: *const scanner_bridge::FjScannerCorrectionParams,
+    input: *const scanner_bridge::FjScannerDirectCorrectionInput,
+    out: *mut scanner_bridge::FjScannerColorCorrection,
+    failure: *mut scanner_bridge::FjScannerCorrectionFailure,
+    trace: *mut scanner_bridge::FjScannerCorrectionTrace,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked operation admits consumed records and retains none.
+    unsafe { scanner_bridge::prepare_direct(params, input, out, failure, trace, error) }
+}
+
+/// Print fixture facade invokes the checked operation, not the legacy export.
+/// # Safety
+/// Same synchronous live/disjoint contract as scanner_bridge::prepare_print.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_scanner_print_correction_prepare(
+    params: *const scanner_bridge::FjScannerCorrectionParams,
+    input: *const scanner_bridge::FjScannerPrintCorrectionInput,
+    out: *mut scanner_bridge::FjScannerColorCorrection,
+    failure: *mut scanner_bridge::FjScannerCorrectionFailure,
+    trace: *mut scanner_bridge::FjScannerCorrectionTrace,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked operation admits consumed records and retains none.
+    unsafe { scanner_bridge::prepare_print(params, input, out, failure, trace, error) }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_scanner_correction_fault(operation: u32, fault: u32) -> FjStatus {
+    scanner_bridge::faults::arm(operation, fault)
+}
+
+/// # Safety
+/// Live immutable spans and two exclusive/disjoint writable output elements.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_scanner_lookup(
+    query: f32,
+    axis: FjFloatSpan,
+    values: FjFloatSpan,
+    out: *mut f32,
+    present: *mut u32,
+) -> FjStatus {
+    // SAFETY: The same checked scanner primitive preserves optional NaN values.
+    unsafe { scanner_bridge::lookup(query, axis, values, None, out, present) }
+}
+
+/// # Safety
+/// Live immutable axis/packed C/M/Y spans and exclusive/disjoint scalar outputs.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_scanner_density_curve(
+    query: f32,
+    axis: FjFloatSpan,
+    curves: FjFloatSpan,
+    channel: u32,
+    out: *mut f32,
+    present: *mut u32,
+) -> FjStatus {
+    // SAFETY: The checked scanner primitive admits consumed rows before borrowing.
+    unsafe { scanner_bridge::lookup(query, axis, curves, Some(channel), out, present) }
+}
+
+const _: unsafe extern "C" fn(
+    *const scanner_bridge::FjScannerCorrectionParams,
+    *const scanner_bridge::FjScannerDirectCorrectionInput,
+    *mut scanner_bridge::FjScannerColorCorrection,
+    *mut scanner_bridge::FjScannerCorrectionFailure,
+    *mut scanner_bridge::FjScannerCorrectionTrace,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_scanner_direct_correction_prepare;
+const _: unsafe extern "C" fn(
+    *const scanner_bridge::FjScannerCorrectionParams,
+    *const scanner_bridge::FjScannerPrintCorrectionInput,
+    *mut scanner_bridge::FjScannerColorCorrection,
+    *mut scanner_bridge::FjScannerCorrectionFailure,
+    *mut scanner_bridge::FjScannerCorrectionTrace,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_scanner_print_correction_prepare;
+const _: extern "C" fn(u32, u32) -> FjStatus = fj_test_scanner_correction_fault;
+const _: unsafe extern "C" fn(f32, FjFloatSpan, FjFloatSpan, *mut f32, *mut u32) -> FjStatus =
+    fj_test_scanner_lookup;
+const _: unsafe extern "C" fn(f32, FjFloatSpan, FjFloatSpan, u32, *mut f32, *mut u32) -> FjStatus =
+    fj_test_scanner_density_curve;
+
+/// Checked balance fixture facade shares construction without calling the export.
+/// # Safety
+/// The same fixed live input/output and disjoint synchronous contract as prepare_balance.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_print_balance_prepare(
+    input: *const crate::print_bridge::FjPrintBalanceInput,
+    out: *mut crate::print_bridge::FjPrintBalance,
+    failure: *mut crate::print_bridge::FjPrintBalanceFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Identical checked operation with independent output admission.
+    unsafe { crate::print_bridge::prepare_balance(input, out, failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const crate::print_bridge::FjPrintBalanceInput,
+    *mut crate::print_bridge::FjPrintBalance,
+    *mut crate::print_bridge::FjPrintBalanceFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_print_balance_prepare;

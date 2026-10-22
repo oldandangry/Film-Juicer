@@ -1,0 +1,469 @@
+{
+  "schema": 1,
+  "authority": "Film-Juicer unchanged-native characterization; not an external-reference pixel fixture",
+  "source_revision": "3569afe49bd3778437aa3c567ef4831bb29c4a23",
+  "source_tree": "4e13d482bf00a3b4ca067fdd709af552b92d2aa9",
+  "native_producer": {
+    "path": "src/RenderRecipe.cpp",
+    "sha256": "4b2e10f71c0d5eed92796f383e586c904693a3ec51935a10d0f5cf305438fe90",
+    "symbol": "Spektrafilm::build_filtered_print_illuminant"
+  },
+  "reference_checkout": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+  "sample_layout": "81 positional f32 samples, 380\u2013780 nm in 5 nm steps; channels C/M/Y, Kodak CC; edges Y/M-lower/M-upper/C in nm",
+  "comparison": "Exact native f32 words and exact diagnostics; per-preset differences retained; no numerical exception",
+  "failure_transport": "Native failure arrays are partial unpublished characterization. New cleared outputs and typed failure metadata are normative checked-transport requirements, not old native export observations.",
+  "presets": {
+    "linux-debug": {
+      "literal": "linux-debug-literal.json",
+      "products": "linux-debug-products.json",
+      "ofx": "linux-debug-ofx.json",
+      "cache": "linux-debug-cache.json"
+    },
+    "linux-release": {
+      "literal": "linux-release-literal.json",
+      "products": "linux-release-products.json",
+      "ofx": "linux-release-ofx.json",
+      "cache": "linux-release-cache.json"
+    },
+    "windows-clang-debug": {
+      "literal": "windows-clang-debug-literal.json",
+      "products": "windows-clang-debug-products.json",
+      "ofx": "windows-clang-debug-ofx.json",
+      "cache": "windows-clang-debug-cache.json"
+    },
+    "windows-clang-release": {
+      "literal": "windows-clang-release-literal.json",
+      "products": "windows-clang-release-products.json",
+      "ofx": "windows-clang-release-ofx.json",
+      "cache": "windows-clang-release-cache.json"
+    }
+  },
+  "files": {
+    "linux-debug-cache.json": {
+      "sha256": "213bc20754a88d69478c6871c9d5087ab152813696262e4008656f9d248a453f",
+      "bytes": 61626
+    },
+    "linux-debug-literal.json": {
+      "sha256": "d105d03962a3ddad7cf358a57a790e4f068ca0caffd553b924a95772c58ae62d",
+      "bytes": 470784
+    },
+    "linux-debug-ofx.json": {
+      "sha256": "4136e9e9c04445877d7499fecfa9ba71655b5640ff025788bec0ae2c43b2526c",
+      "bytes": 192808
+    },
+    "linux-debug-products.json": {
+      "sha256": "5b733bacab5d3e9a588c710e5efadd94e4f701a2c808f3a8dfb814ff8f209c06",
+      "bytes": 151349
+    },
+    "linux-release-cache.json": {
+      "sha256": "213bc20754a88d69478c6871c9d5087ab152813696262e4008656f9d248a453f",
+      "bytes": 61626
+    },
+    "linux-release-literal.json": {
+      "sha256": "d105d03962a3ddad7cf358a57a790e4f068ca0caffd553b924a95772c58ae62d",
+      "bytes": 470784
+    },
+    "linux-release-ofx.json": {
+      "sha256": "4136e9e9c04445877d7499fecfa9ba71655b5640ff025788bec0ae2c43b2526c",
+      "bytes": 192808
+    },
+    "linux-release-products.json": {
+      "sha256": "5b733bacab5d3e9a588c710e5efadd94e4f701a2c808f3a8dfb814ff8f209c06",
+      "bytes": 151349
+    },
+    "windows-clang-debug-cache.json": {
+      "sha256": "c8b3cc3cf912844db0163b2ebd865cfdcb35b56e74df39c1321fdf91db07aab9",
+      "bytes": 64793
+    },
+    "windows-clang-debug-literal.json": {
+      "sha256": "9cba1081f46cedb9870fb4e3a3c5f0187887b9cf6e2722532fcef58d8f6f3090",
+      "bytes": 494664
+    },
+    "windows-clang-debug-ofx.json": {
+      "sha256": "9b84d760198d44302c5e77938af9412939973d7ba2db528f99be0f38bba74b64",
+      "bytes": 197465
+    },
+    "windows-clang-debug-products.json": {
+      "sha256": "149ba08d73bc5e77a605ae2ba4e9fc8779aa1e030d4c1052627eeb1575a2725f",
+      "bytes": 159010
+    },
+    "windows-clang-release-cache.json": {
+      "sha256": "c8b3cc3cf912844db0163b2ebd865cfdcb35b56e74df39c1321fdf91db07aab9",
+      "bytes": 64793
+    },
+    "windows-clang-release-literal.json": {
+      "sha256": "9cba1081f46cedb9870fb4e3a3c5f0187887b9cf6e2722532fcef58d8f6f3090",
+      "bytes": 494664
+    },
+    "windows-clang-release-ofx.json": {
+      "sha256": "a5c36cb586c3041d1e7226a223f05feb040f9f6fabe928ad785233bcb50f192b",
+      "bytes": 197473
+    },
+    "windows-clang-release-products.json": {
+      "sha256": "149ba08d73bc5e77a605ae2ba4e9fc8779aa1e030d4c1052627eeb1575a2725f",
+      "bytes": 159010
+    }
+  },
+  "provenance": {
+    "linux-debug": {
+      "native_collection": {
+        "path": "out/validation/linux-debug/s4-c-slice-1-native-baseline-v2-2026-10-20/capture/collection.json",
+        "sha256": "2e31f1257c011ac7a01a85f4b2e3097d711668b0a6dfb0e6acb656135a0fa336"
+      },
+      "cache_collection": {
+        "path": "out/validation/linux-debug/s4-c-slice-1-native-cache-v3-2026-10-20/capture/collection.json",
+        "sha256": "51e61c76c694f3d48a72611b830abcbade6f0ca2399bafea28fd6d2b05828e98"
+      },
+      "executables": {
+        "literal": "eff23f443ae6ea0e1a4b63f8be053ed4081f9d9785f79ac4cadd433d41d8a57b",
+        "products": "fbe9ff3726367bbb1d1776227a3a1776f87825c64a2fd20af2c45814d5628cf0",
+        "ofx": "8414777a4bed92728834786cc3df7e5d796d07391cda6a08f445e40f9bf14947"
+      },
+      "cache_executable": {
+        "path": "/mnt/c/Dev/Codex/out/validation/linux-debug/s4-c-slice-1-native-cache-v3-2026-10-20/capture/cache",
+        "sha256": "79f81285928a31327f1417f62b8493b4753550fc328239df08c36a2a6df7e1b0"
+      },
+      "artifact_identities": {
+        "out/build/linux-debug/CMakeFiles/juicer.dir/cmake_device_link.o": "1870d81fb8862ab0d21697caa19db4a5e12c9c29ab6e46e73514d9ba0855a8a2",
+        "out/build/linux-debug/CMakeFiles/juicer.dir/src/main.cpp.o": "103343d548bf86567c14d7eff7939f7a43b08f8393e7b08eeae5fcf71737a66e",
+        "out/build/linux-debug/CMakeFiles/juicer_adapter.dir/src/JuicerEffect.cpp.o": "d2952828c72d2629f088245177374725be2b82aa32bf20c42137f950c2c8e66a",
+        "out/build/linux-debug/CMakeFiles/juicer_adapter.dir/src/mainProcessing.cpp.o": "4e1ae39d91a9380c776a94905ca27ab8fccee593e63f84052599e1a7b17d7e3f",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/CudaRenderProjection.cpp.o": "e57b28d76604a2d34d5780308f94d3545ba4e2d62584ba7d097b379ce0d9540c",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/DiffusionHostBehavior.cpp.o": "8eed841c436fac22fe84459451aa52a6c70fddd917623e181e582b5dd0a947d4",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/FilmEffectsFrameDescriptors.cpp.o": "d5ffaf9c0c2c4a52f0dda6bb42bc941c3cf26fa30cef55d287875e128285db00",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/Illuminants.cpp.o": "ebc3cf17c33eefc51cd72c1180a54dcdce8ca3849f0870b0ac4a6083db1d0a3d",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/JuicerState.cpp.o": "0f7675d698b1a5b8d6a07bae95f3f26c971bbae0e3835e2d74be02f7f0484004",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/RenderRecipe.cpp.o": "89b782c051e81f687c48df0c777262f9d46f4e4895c370e9b7f26b5b9eb58e43",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/ResourceAssetLibrary.cpp.o": "40ddf880468aa152225349179d65e377e070f9c6c949ffb9a6c3ebd3ab67958c",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/RustAssetBridge.cpp.o": "d2ff8639ea4c02db1d135f8ddccef7990a5752f3787abac445cb46bb250c5d3a",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/RustColorBridge.cpp.o": "4fc6029140f4cb80a61acd65072cece693057625ea4b31809146e0a02ae91a91",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/RustExposureBridge.cpp.o": "9cf739a9ccf79f1a87afd3d591e8453e8a81f6832266ea47f1e779f037e1eb4f",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/RustFilmInputBridge.cpp.o": "03b8a4c2ad1fd8125144db6ab159b13201cde75281ee29ed64a1f3a85e7adb7c",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/RustFilmRecipeBridge.cpp.o": "92d7f2b0f4a05e36e6496aea552d9604c64fcba180390f3e1b230e629d516074",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/RustGamutBridge.cpp.o": "f1810264692e81fdfb197b0f86f165cd74159bd8f2ade7ab5b31334923a606a8",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/RustReconstructionBridge.cpp.o": "1ffec679ead97dbb8b25117b0efa3fb4c6556a5e1c71e5c42f8c1bd86da1d90b",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/RustSpectralBridge.cpp.o": "51932b1f5eb021fb0776a637c725e9258df905f75f19b7984cd921128004bcc7",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/ScanRoute.cpp.o": "b9d51b561c4dd4327de96fe33c1a5906f742f8ec40014831bbce8ea96b7eec5a",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/Scanner.cpp.o": "2f0a3dc67d37c75f766242e58048165edf51a018d56dcf457b053a98b4cbdc54",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/ScatterHalation.cpp.o": "88706c70904253424e3505fc9d0fa05ff593e33c24bd42f91f3c13b391502dd6",
+        "out/build/linux-debug/CMakeFiles/juicer_host.dir/src/SpectralProcessing.cpp.o": "c6fd9eadc8d0966feea67330d60abe37db41f6cb58afae40829dfaa22c58e9ff",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/native/juicer_cuda_api.cpp.o": "49d3a1b8d460ca6bd92f2b8333259abf6a718c369b102ccd122f2521aae51ca5",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/native/juicer_cuda_descriptors.cpp.o": "6c7e804cef8738eead172da23c71e4d038f79e2042f51f57248b861c612fec6e",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/native/juicer_cuda_prepared.cpp.o": "1b519a158f9fe4251f2ee577389b08bd1c77a6b1e5fe10771406794b661c8c4b",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/Diffusion/JuicerCudaDiffusion.cu.o": "45c8ca3cd0e306c84125d15b039874675638640413b785166e40cf35c85624fd",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp.o": "29fe3f635cf826ea183e70c262ed324b2dc774bc3606182ccb4a68c3ab266720",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/Film/JuicerCudaFilmPipeline.cu.o": "b14b22fe14fa11695b91ad6235c0f2180550005b5e6e9c226ea7cbafa38f57ff",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/Film/JuicerCudaScatterHalation.cu.o": "877dc18b5e2a17140b14e06839876523fb77b6421febc94aa64638896543ad66",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaAutoExposure.cu.o": "c41b0014793d93d8588edb81fcfb482e97c0d34939f12fa98002c751c3c8862a",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaDeviceLedger.cpp.o": "4d25bfb7476e91e104eff2956e14fb1ddb6e907bb068f7cb0ec353383f68233b",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaDriver.cpp.o": "28446b479882efe55e48cf44a619acfde39be33f36280659d88558a1611dcedb",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaExecutor.cpp.o": "708000fd7f215f20a2f144237b0a2a9800e2bd7addd781a25bf808468edba7ce",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaFailure.cpp.o": "6f5f209f598341d33b3d7d54418b05673818346b6fb3741d95f83c103777a75f",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaFilmPayloads.cpp.o": "374d14539228f65da55dbe04a60a9a60d369a82167e65056659e1288a841058b",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaResources.cpp.o": "80ad1f0211f3b40dac1c32e6baf82a8c2b1798cf94d6582dca157b086e2dc311",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/ResourceManager/JuicerCudaManagerRegistry.cpp.o": "72296f16c1e4d1cce437b392b02917fa7868e27b5310729bdb8425e2a4bf0ed0",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/ResourceManager/JuicerCudaResourceCore.cpp.o": "3a1e68edab541297d3c253f12038720b744556ff950073fa247b436d0c7c52c3",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/ResourceManager/JuicerCudaResourceManager.cpp.o": "45e5404db1374fbb55fd0a84b1aefbc47ad0bb1a3db02e6839da71473277a5ef",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/Cuda/Scan/JuicerCudaScanPipeline.cu.o": "3aca5c50c1e193ad54fe79e3107cf5357dd7a6d10abd820ceb4a8efd79680710",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/DiffusionExecution.cpp.o": "35111d2c9a67c340995710cc7402f9e4ecac8355f1247a994a263cac7f57c74c",
+        "out/build/linux-debug/CMakeFiles/juicer_native.dir/src/ProcessRoot.cpp.o": "5e3ce54c7edaef742adb326c143d60f727a58ea5c450caf2665d3f9beb006cbe",
+        "out/build/linux-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsCore.cpp.o": "0958c4f6c383ee958eb0473d4abf88608e7ed6a3dcfde8db2c8935eb8aaa45ee",
+        "out/build/linux-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsImageEffect.cpp.o": "090e4a9d2395d4058831df82fb021b43e4292bda87f3c8876afcfa839e092c56",
+        "out/build/linux-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsInteract.cpp.o": "704c3a4ecc342ee1fb3a8c0a9d3bbf63dc6409278a68e02e0e9beb54c34c91e2",
+        "out/build/linux-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsLog.cpp.o": "7d4491bc4b0fd0771b97fa48663b25775c6ffe323d6d0bd37ff672d59cefa999",
+        "out/build/linux-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsMultiThread.cpp.o": "52d83a75a2eba6ea9f2d59aab67fc68edad0576bafb5dfefa06da271bc57561e",
+        "out/build/linux-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsParams.cpp.o": "898a6270198849af87b408b3e87e22dc6dce74ac6f715e5225d78a4378174655",
+        "out/build/linux-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsProperty.cpp.o": "2a28db4fb5effb0e9913815f17b2b4c9fc38f893a90dba114e8dc676a3005f85",
+        "out/build/linux-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsPropertyValidation.cpp.o": "69b8fb687df1d94a51585e45dcdb94173e840eac3a55fc0be3ec093c334a1c0e",
+        "out/build/linux-debug/cargo-build.stamp": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "out/build/linux-debug/cargo/x86_64-unknown-linux-gnu/debug/libfilm_juicer_plugin.a": "aed9ea876deb94b65b24730fed19ac4184072d63763c10c22b4e7e9e28b0eec9",
+        "out/build/linux-debug/juicer.ofx": "0c178bce05d0612a4bb447293840bf5689b0704d98439ed025d725ed0f70c313",
+        "out/build/linux-debug/libjuicer_core.a": "26d0034d6f525c05161aae95ca6a99836515fa661e1ef530af6fd4ccbd56c524",
+        "out/build/linux-debug/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/__/src/JuicerEffect.cpp.o": "f68a4253a3b22651ae16a64f4f51ef82eb058ffc851a7b87e2fab260924fe29e",
+        "out/build/linux-debug/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/cmake_device_link.o": "b59ab315ae5646740d7e1362841a959f641acb53c97a37e795159a731df431cb",
+        "out/build/linux-debug/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/ofx/adapter_trace_test.cpp.o": "6406bb337ccd8065b22775cb774c5f34badc309ea24aa3478fdd5a925cacc570",
+        "out/build/linux-debug/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/route/route_failure_adapter.cpp.o": "999344664bce178f8041ad68afb36d2a4513ed1e01a196d61956d982aa4c0bf6",
+        "out/build/linux-debug/tests/CMakeFiles/JuicerFilmRecipeTests.dir/cmake_device_link.o": "1b6e103c3118a6d74fb1b968090fe5bbbe6835dd8f2d6d6ae769eea7440a94ce",
+        "out/build/linux-debug/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_abi_c.c.o": "49c881026ef59ca16baf3999e5ad986dad5ac4fabb044549f1eb6b22741a171c",
+        "out/build/linux-debug/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_test.cpp.o": "893c8f14a84c2754992deb9728c9d841d9b16cc9949ec12b6bfc46c34d3b60bc",
+        "out/build/linux-debug/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/spectral_allocation_probe.cpp.o": "44a1118d089cfea87aa364f986df71b578e05903ee1c39ba2f8f965b7eeceb26",
+        "out/build/linux-debug/tests/CMakeFiles/juicer_film_recipe_state_test_objects.dir/__/src/ResourceAssetLibrary.cpp.o": "50f28a3cf0ecfa3887ac1d4f70fed146e5dcd4301f2bc2e91a76f30873220d69",
+        "out/build/linux-debug/tests/CMakeFiles/juicer_film_recipe_test_objects.dir/__/src/RustFilmRecipeBridge.cpp.o": "9cef03abbec45d163e10923b6526b1dec0de72b28349dbaa0d4763ea7bebc0ed",
+        "out/build/linux-debug/tests/bin/JuicerAdapterTraceProbe": "ded1a7a5a32c97bc1386d41de955f528439cdfbd215ea5bfea1b9c3f09aeea0d",
+        "out/build/linux-debug/tests/bin/JuicerFilmRecipeTests": "6fe1e64bfc7f231b6201e73924750fc704547bfb28a403058e4c9a6c821a0fed",
+        "out/build/linux-debug/tests/resources.stamp": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "baseline_preservation": {
+        "path": "out/validation/linux-debug/s4-c-slice-1-native-cache-v3-2026-10-20/BASELINE-ARTIFACT-PRESERVATION.json",
+        "sha256": "4249a5c0e48070b988836fa3324b5932bd60e72eb2027e2264880c91f813af91"
+      }
+    },
+    "linux-release": {
+      "native_collection": {
+        "path": "out/validation/linux-release/s4-c-slice-1-native-baseline-v2-2026-10-20/capture/collection.json",
+        "sha256": "f1f3bb81ca2f06685fdc045558f5d8f14e9e5e4919be88757a7db79e6dbef0a3"
+      },
+      "cache_collection": {
+        "path": "out/validation/linux-release/s4-c-slice-1-native-cache-v3-2026-10-20/capture/collection.json",
+        "sha256": "1cc5e08b30ab6fabb251d6e4678c419eaf4f47009146d8432c038d7dd8088662"
+      },
+      "executables": {
+        "literal": "e9ae488f3b344e27ea66fd526dea078ac1de5c5d7d929a603db6b3dd623d6679",
+        "products": "08ddace1c8352db0d2b1a8e10234840c743400e0e017a4eb3a758f8e97645ec0",
+        "ofx": "1b68296992b114725416923d1e6478ca5e622c2f24774f626abbc397bfc76120"
+      },
+      "cache_executable": {
+        "path": "/mnt/c/Dev/Codex/out/validation/linux-release/s4-c-slice-1-native-cache-v3-2026-10-20/capture/cache",
+        "sha256": "269d27f2f36ee9967d3740f2dcd0762909bbda974153f518f2167aa76cdad551"
+      },
+      "artifact_identities": {
+        "out/build/linux-release/CMakeFiles/juicer.dir/cmake_device_link.o": "5717780a5bb7e3a0bec270df3bf032ec698348b9de441207679dee79152122d4",
+        "out/build/linux-release/CMakeFiles/juicer.dir/src/main.cpp.o": "f3aee7fa59b9827d103afd0850126b855b254536f5f4fc21533976f5a83fd56a",
+        "out/build/linux-release/CMakeFiles/juicer_adapter.dir/src/JuicerEffect.cpp.o": "fcafb855fe20f4bec45392a04ef2c2e8410fcba1f841abd6738d3b6c1864362f",
+        "out/build/linux-release/CMakeFiles/juicer_adapter.dir/src/mainProcessing.cpp.o": "0ba62ed0d4f339243bf17ba57a20d0ea422a800d25a158a8d3f33ecad13a28c8",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/CudaRenderProjection.cpp.o": "d1fbb9cc9026ba306e57e13367e1196c1d80b9fa9117884ca03fcd8c4c428871",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/DiffusionHostBehavior.cpp.o": "996b0cb678421e77b8cef2b4a1450be522f9301c0bf8f658d01f5c5f447e44c5",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/FilmEffectsFrameDescriptors.cpp.o": "3fd5b2e96d4b972c4d1426702866d9fc35547d232f1929e2ece8a2ad26465370",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/Illuminants.cpp.o": "5ee8f3c28a8a5b0a8128caf077d15758d23feb74114ea18b86b0e7e8e080074d",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/JuicerState.cpp.o": "8fa40f5b707b9e4cea1b5aa5ddef82650232272795a70a4991b70c88bf3f86d9",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/RenderRecipe.cpp.o": "50a23c662edd9081d717d62d714df03678abbee18f82ad4e782f057443c3e2a6",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/ResourceAssetLibrary.cpp.o": "0da22849251cacbe49e93533b855e0ec5e2e124aa86111854733c42265fa6ebf",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/RustAssetBridge.cpp.o": "a56888c6cb9e695e1967f1d7742daa25a14e1ba6c5a4723bc19c3bcd87357e8a",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/RustColorBridge.cpp.o": "b7526d29ba3c583699246b62045735e3e20bf42e551f493f07df91d7bd0ce3d3",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/RustExposureBridge.cpp.o": "419b1a6e49888689d6850b3cf8c565332b55af118ab45419b5ce5c0712f9ee76",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/RustFilmInputBridge.cpp.o": "c6092cacf9968c0298ecefecae6ea837e5b78775c9c64c233daf4e00eeb42d03",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/RustFilmRecipeBridge.cpp.o": "69f3cc03eaf3716a73c536b203d1ff6c76649825b31b4309b94924271121d684",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/RustGamutBridge.cpp.o": "38cbd9871f3b2740158618f00c076c713e22e2a12fc8f1129ccb6bb4a8b1215e",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/RustReconstructionBridge.cpp.o": "f3649a286edbc543913a9a2514ed777beecdde556d13f7d9eedc4e9ec87286c9",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/RustSpectralBridge.cpp.o": "a32efbe148634784d44b38ba6d24c9df7d092f4fe8392c2b7ea569856f971f3a",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/ScanRoute.cpp.o": "2686ad920ee9d24a94b4c2f79bd07e536214f79f7feb9178440cddeb71f5dd4e",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/Scanner.cpp.o": "65f6200c13817a87dbe9ff3916bf937200f7ba533a0148478446380e1ea01f53",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/ScatterHalation.cpp.o": "18257fae08ea696c2bf1cd34b6c0981d8faa89d70398930e02c6ff5c092ca637",
+        "out/build/linux-release/CMakeFiles/juicer_host.dir/src/SpectralProcessing.cpp.o": "ded677704122f1540ceaee456e23ae9fe0eadf385050286c6170ed44a97b8c15",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/native/juicer_cuda_api.cpp.o": "9183f7a4b3f56850bd7ff668ba3b6bf5fbca31f9a3451c19772a4474c9132214",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/native/juicer_cuda_descriptors.cpp.o": "d5486993feb3a91284d326ca0d8873535cad7901ce3cff4b89c561d16c119542",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/native/juicer_cuda_prepared.cpp.o": "af854aa0a5947479b0ce6f5e4eebbc0bab37d7b8c992bd435bee058f5eb54046",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/Diffusion/JuicerCudaDiffusion.cu.o": "7f80f8d3e57fc7bbdd431e199e08392479bff73a359216e281372b61a8155735",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp.o": "f60ffb2ffee93f6dd03c7530ddb06ad7a177263e54c28c8fe7b70f54758c3814",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/Film/JuicerCudaFilmPipeline.cu.o": "1a6c1467de886259866fa54a7e153f26db0b496e034a0568e5dd70945bb2be4f",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/Film/JuicerCudaScatterHalation.cu.o": "1f427227d74fde9e618e18616d4adb0d6c12f18cb8476a0e88d08adf4b37bd57",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaAutoExposure.cu.o": "ea4eae020683276022a53d450465ab29d05c096f29c382abd2e7ec0b103a077d",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaDeviceLedger.cpp.o": "a6ac60cdf17f416ce66bc53985051261740e9ad0695cf0545a5ebd26ab1d3a61",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaDriver.cpp.o": "4a0c0196385ef933808323550a7c9b0a55767358c1d558ca7d067d4b62b01908",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaExecutor.cpp.o": "fcd15de3ec8c3cf991797cba9747bc0dd443846930c59fb6de3f9520116f0938",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaFailure.cpp.o": "11c4eb9835038955c95ca000790776dbacc624622aff0c0755e4ff7b91233723",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaFilmPayloads.cpp.o": "43530173d3db33204168449fea987b209948f0fb0c9043fefcd6e18903edb9ac",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaResources.cpp.o": "a2ada61d1802eece6f64c1534018e2a94fa8fa40f178691bf4625daf0232121f",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/ResourceManager/JuicerCudaManagerRegistry.cpp.o": "32b9a034040cc3494c4f50da1f7f3848c6011a4f552af2545550de725fcfe7bd",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/ResourceManager/JuicerCudaResourceCore.cpp.o": "e15018a180b2a8ced07bc88739baede5ba3ed72d7e4572616b09dee31cd29283",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/ResourceManager/JuicerCudaResourceManager.cpp.o": "c7d1d58d8e58de88564eac268cbd7c9d8ce042471e4ff61e54d8098d12bb79d5",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/Cuda/Scan/JuicerCudaScanPipeline.cu.o": "4dfed44b5cfa0f85125b519b1126b62ab893d2c36214eff1c1bc3cb385ae6b47",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/DiffusionExecution.cpp.o": "86497329c9f60f336077e21991f7943df7e606fa6c565adfddd05393ecaf1bc0",
+        "out/build/linux-release/CMakeFiles/juicer_native.dir/src/ProcessRoot.cpp.o": "1bb22245b75304c83ecc6f0e8fea987a88c63cc226c10647a9e4a29a47e95fd7",
+        "out/build/linux-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsCore.cpp.o": "c64495797d4f8a46b9211d24a3930fe1e922770773a72db38feeed35ec46f1c2",
+        "out/build/linux-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsImageEffect.cpp.o": "e2880d5add6615c69c5b98a4ac4882fc6a1bf6dff3e604c98ab50fc0a3d8f8a5",
+        "out/build/linux-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsInteract.cpp.o": "9633d05fae175c8509e701078d4f5eb18c78b6216d787f9244832e0f4ce5225f",
+        "out/build/linux-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsLog.cpp.o": "7de063edfc957fb558496f231892c8a5425a2540260ff4e7a8a344da6c1787f9",
+        "out/build/linux-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsMultiThread.cpp.o": "bd43406e6c1f8735c285d02e30c0062a5f55da71809b7965032407e98e90d18d",
+        "out/build/linux-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsParams.cpp.o": "bedb0b081ba719a5079c48be633c714ba2be651126ff726849daa98dc6ce99ab",
+        "out/build/linux-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsProperty.cpp.o": "f7d51015f83309bd65e297d0619fdee422809dddd1d67ee6d1cb5867aab81ca8",
+        "out/build/linux-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsPropertyValidation.cpp.o": "07bc726e2565c99d032306977bbb128a87292bf34ea303d876764aab515457fa",
+        "out/build/linux-release/cargo-build.stamp": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "out/build/linux-release/cargo/x86_64-unknown-linux-gnu/release/libfilm_juicer_plugin.a": "4800e421cd08841142a2d5f8e4ea224ca3534a285e205962a18d9c4a619adf2c",
+        "out/build/linux-release/juicer.ofx": "ca97da59f553a3f166737c4606d23ec8c7ad51abab33e1a599119f63cde063f4",
+        "out/build/linux-release/libjuicer_core.a": "e0f0a6c40b856d9a5c846d74a614713b04ff9cca587f5dc3eeeb3d2a2ac78aea",
+        "out/build/linux-release/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/__/src/JuicerEffect.cpp.o": "9fc2697178470e88523265d8b465e0f3b3362b6a7d34e2f955284e0d3f4d9e83",
+        "out/build/linux-release/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/cmake_device_link.o": "5717780a5bb7e3a0bec270df3bf032ec698348b9de441207679dee79152122d4",
+        "out/build/linux-release/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/ofx/adapter_trace_test.cpp.o": "27414b949c56b52ffbd8d2274976d677fc4f8d0688bf6f35b6b29c176234e600",
+        "out/build/linux-release/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/route/route_failure_adapter.cpp.o": "0424711f0472331b937103747953a3a9b34223648252a7fa51e52b6c4a2b469e",
+        "out/build/linux-release/tests/CMakeFiles/JuicerFilmRecipeTests.dir/cmake_device_link.o": "4856651b87b7c0c6fed4eb4879ed0ba14ea07ba71997d212599d80b631e340d9",
+        "out/build/linux-release/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_abi_c.c.o": "d47c0e86de8059d632ffff2d7252d6f65d9deeed3975c4df7c0a0eb086d0b16c",
+        "out/build/linux-release/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_test.cpp.o": "af263da57e9c9fe1b1b99db2be1bf319949ca49e02e11846f132fbc5056766f4",
+        "out/build/linux-release/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/spectral_allocation_probe.cpp.o": "d77b9a24222ac1bcb75cef452272fab9e2081e2b6863e9ee0cdeea3a60c37f79",
+        "out/build/linux-release/tests/CMakeFiles/juicer_film_recipe_state_test_objects.dir/__/src/ResourceAssetLibrary.cpp.o": "4752f9013ee0cfbec74b1d433760a52cade22819fbc2d6e3b52cb297ab3d58d1",
+        "out/build/linux-release/tests/CMakeFiles/juicer_film_recipe_test_objects.dir/__/src/RustFilmRecipeBridge.cpp.o": "8c8f8d25994c7c30582fcd1e0cc546d30ba9a06eb2cec4fd50e56fe1a0b30e56",
+        "out/build/linux-release/tests/bin/JuicerAdapterTraceProbe": "df8c067c9782512c6ff79622bd0c602dd54984fcf3a1cab4f7165d1cb96f4ca8",
+        "out/build/linux-release/tests/bin/JuicerFilmRecipeTests": "21aef481abf927341c1a076d874920473afaddfa2f097243190f97b3a4125b56",
+        "out/build/linux-release/tests/resources.stamp": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "baseline_preservation": {
+        "path": "out/validation/linux-release/s4-c-slice-1-native-cache-v3-2026-10-20/BASELINE-ARTIFACT-PRESERVATION.json",
+        "sha256": "41e87f3082353cdd5e656c7036eb5dd6a02999d92866d57c2573f8ff4b077f32"
+      }
+    },
+    "windows-clang-debug": {
+      "native_collection": {
+        "path": "out/validation/windows-clang-debug/s4-c-slice-1-native-baseline-2026-10-20/capture/collection.json",
+        "sha256": "11e48d09635f8e635e80adf350bc812a54f139b35f1b9930843ff50bad2728c1"
+      },
+      "cache_collection": {
+        "path": "out/validation/windows-clang-debug/s4-c-slice-1-native-cache-2026-10-20/capture-v2/collection.json",
+        "sha256": "60ed82d83110abc4b8aac711b710237a2cbe4a907b960369947e400e1eee1b14"
+      },
+      "executables": {
+        "literal": "658938d8229431983167b970f6a76d4aff3b105e9e59583ddf8ca861ad2fc80e",
+        "products": "c9fb9ff78fdecc8ce2d1fbbbac1c8788bf88fa0266da4bd4b6b25b66c5daaa8a",
+        "ofx": "5465b1813fb455840e623422f2bd7671730f216462d1f7f2713839cc2bb3c419"
+      },
+      "cache_executable": {
+        "path": "C:\\Dev\\Codex\\out\\validation\\windows-clang-debug\\s4-c-slice-1-native-cache-2026-10-20\\capture-v2\\cache.exe",
+        "sha256": "d8a93beef516c57e1452a119307005b1a079cfe7667d405c95ce427b7d42f1f1"
+      },
+      "artifact_identities": {
+        "out/build/windows-clang-debug/CMakeFiles/juicer.dir/src/main.cpp.obj": "4514a7c42418755cf80f946eb5f4de2fa49c0731b4243c4594262d86b7fd0eb8",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_adapter.dir/src/JuicerEffect.cpp.obj": "49dae2f84d1a8d371f250e4500745e13da9589dbaed67e5fa17bfbf4f26fc234",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_adapter.dir/src/mainProcessing.cpp.obj": "9e72b5754ed3307ff878d1d5c5021d804ab2562b432185504db60ddc8aef9323",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/CudaRenderProjection.cpp.obj": "346cd6fd2632a0d249de98db444810d6b3255b520dc6e24c964c751d038938a6",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/DiffusionHostBehavior.cpp.obj": "d4705a62235ec3a28d4aab0400b2192e3aaa5fcb9632efb52335b7723b2a7630",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/FilmEffectsFrameDescriptors.cpp.obj": "ce8da62bf7e699f991c0b93d5cddc1d37aee1424ca1c23573b2872085a963b5a",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/Illuminants.cpp.obj": "e6cda89577c8fdd6648c22da75548fd895ca271493d44c9f70026f101ae50234",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/JuicerState.cpp.obj": "bddc03d585be821fe158660239776ad6691f845b2332a7d657c17ada3ac56ec3",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/RenderRecipe.cpp.obj": "8d6f1e2f90498681526ded74a8ef78f140ea231cfb8784a320045f048761dd90",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/ResourceAssetLibrary.cpp.obj": "09e34cc3cac92ac9630b53aa28838ec7deb4f0b6d9101a1c4ebbe77236f41b49",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/RustAssetBridge.cpp.obj": "c1f742b683137dc076018a5879ae2e4910f66f4245ac48ebb5a1acfd651854bb",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/RustColorBridge.cpp.obj": "4f024abbcba3dd294edeef0b159f0dc2258d0dd27ee5ebdd4a7e132b3ea601ca",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/RustExposureBridge.cpp.obj": "7a289f18b043581572dd8dc3ceb634cde38ac2a9af75be35076fa725889895da",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/RustFilmInputBridge.cpp.obj": "a06ad06579f07649d82c7f44e75d3191f0c707a060d320568526c51607fa8a54",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/RustFilmRecipeBridge.cpp.obj": "eb08d91157339eb5d2b6edacd50ba7d32d979bd9960f8dee1010a367792eba41",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/RustGamutBridge.cpp.obj": "325b7685a230c0737e954b1a43f1209b5e0d0a3f6550f117b26d7be32da26b4e",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/RustReconstructionBridge.cpp.obj": "602c0155ce8d073cf364aadc4fdb6fcfb3b6a5083f771336b185046e5b503b6c",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/RustSpectralBridge.cpp.obj": "2fc3b31469c00451f14253475433641c250fdef253a3d83b2350d1372ce404ed",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/ScanRoute.cpp.obj": "7d3bbac309ead6d36ab9a2a001cb47effba161fcb666aa4e7055d076caf1b82e",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/Scanner.cpp.obj": "d79afc8957b8d99b1853d91f7cef0ecac338e711742d6976b64163559bf271d8",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/ScatterHalation.cpp.obj": "8bbd9255dfa8321ca7b873de2f71a396be5bfd9e9cda09932f1ee45ba2f4a950",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_host.dir/src/SpectralProcessing.cpp.obj": "5aa0472e7c42331436660c3a2970afea25b00675af29391ed30b4a0b0bd10e98",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/native/juicer_cuda_api.cpp.obj": "fc55a373e4700d6b63db87bad8cb9d991d2da43eab13c84a10c32e0d486ce860",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/native/juicer_cuda_descriptors.cpp.obj": "1fb45db8135f68c2e9105f3d699076551f2bab217f06ffd8d9b1aef7d36dac3f",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/native/juicer_cuda_prepared.cpp.obj": "d30e21224cf4424a49c1e14d648a54356a4b01737ebf1797944386657ca09057",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/Diffusion/JuicerCudaDiffusion.cu.obj": "17c56ce47f94aee8a5cfa5435ca61fb8964b367a3f72ca98383da426afc1d873",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp.obj": "67d5161753e3f5243ff251893625e38f3866e91145d6c1e7dbc701d5166f4337",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/Film/JuicerCudaFilmPipeline.cu.obj": "d845bf8c0029668603fba43ce0927b3ffab759d9b7ea6b86a76c8e230075ca5a",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/Film/JuicerCudaScatterHalation.cu.obj": "66a279df15ee9d0547eee9816aab0680e5b3e8fd25bbd479508980dc8b9a447e",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaAutoExposure.cu.obj": "283e449073eb50907cd32cdc30581be4c17e23d5c8e38eafd01782bf959cee3c",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaDeviceLedger.cpp.obj": "d5d723376360196255154bdc865d649875d585c13f06c2c0b4365da0164ef426",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaDriver.cpp.obj": "6e576cd916eaf6a4de07a8d8c21127567b3e2f274122c080c32bc81aab8506ec",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaExecutor.cpp.obj": "8e7ca96efb0af913eec48ae097e0f4ea0a50435069d1bb5f6bfe9354a8ac87ad",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaFailure.cpp.obj": "54a8a490a37b89170626775ca94f7f612994348a3d448c7c04e65ad26bca82af",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaFilmPayloads.cpp.obj": "3508de6733bdebde3c9b5fe41e5dd1c399ede35ea6a61589566043d4da7eb47e",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaResources.cpp.obj": "8126e8a77cb45a0e207288f326737a15cded862f8a31c366e32e84fe9d6cca64",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/ResourceManager/JuicerCudaManagerRegistry.cpp.obj": "dd2a01aae84dfcf212a483baae2ac220917601f005568e4e6ce1620896ec9fc8",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/ResourceManager/JuicerCudaResourceCore.cpp.obj": "8515c18ddd7655643dba34b668248bd99c8254c477d30bbffb6fd3743ac4b710",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/ResourceManager/JuicerCudaResourceManager.cpp.obj": "0cf550b0123516ab5a42bfdec93bc840cacf38c135e3a0a251cd31655d16fb9f",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/Cuda/Scan/JuicerCudaScanPipeline.cu.obj": "ca3c07aab667ff6bf4393217a4fb86643c5e50fd4d758e5dfb7ce6ac25d96a06",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/DiffusionExecution.cpp.obj": "be351322f5209bd437c7cdc18ca6c3b8f9a9de6da061a67a5af97296e361d2ef",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_native.dir/src/ProcessRoot.cpp.obj": "738e7edb185a8c63489f2adbd70b891ac3ddb5dc9e415969401683a445064d84",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsCore.cpp.obj": "60782272bdb681e6ed67ecb72ef73b0beac5e0eacb79842af215288f45c327b7",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsImageEffect.cpp.obj": "d20cdceba1a0bafd54112bc3ec1c50b7c9dc0de4a8bfef51693a3d865e5a1900",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsInteract.cpp.obj": "7c80c9ed237e1beed0eb291366d9cdd0a5f80432a323771cebe0486e763424cf",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsLog.cpp.obj": "78cf32fb4f612df4a7419a00c1f57b885ddd3a0163ab9185eee0c7e119d85a09",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsMultiThread.cpp.obj": "69a59cf81d6da6f4a6383549e38bea56a2a419849316b76b5dfbb55d7eb4684a",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsParams.cpp.obj": "92b4562e2e3620e03d7b262d58499416afcf5497f86522684967a1c1eb9f3f98",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsProperty.cpp.obj": "d21c7af26561dc5ae70941275e076729edf568e8dbd603efeab990b8e6d44473",
+        "out/build/windows-clang-debug/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsPropertyValidation.cpp.obj": "14eaaca2ae026b0511072e9d84df73788f50a3b8bc1fd47e5d2a1134de358cd9",
+        "out/build/windows-clang-debug/cargo-build.stamp": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "out/build/windows-clang-debug/cargo/x86_64-pc-windows-msvc/debug/film_juicer_plugin.lib": "7764d58ad658ecc54a4552e065d86d16d4f7b3fe37bb27a808e8ffc35e91d67f",
+        "out/build/windows-clang-debug/juicer.ofx": "587a66a6deb01c6f2c9f6f277b05eebb7b2bc3373d21b038b84d022d4550ad5d",
+        "out/build/windows-clang-debug/juicer_core.lib": "3b03e12f6805489b6942a78b0fd602141dde1e13fa559af068c8da80f26dc0d8",
+        "out/build/windows-clang-debug/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/__/src/JuicerEffect.cpp.obj": "664c1d6152bf58980a1e0ffd1ce23e3816347df248ac8ab54d3af11069a6eb58",
+        "out/build/windows-clang-debug/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/ofx/adapter_trace_test.cpp.obj": "98bbc3fce011fed190b4d59890f503978f5d24c3cb277a5a39630f64c06f6cbc",
+        "out/build/windows-clang-debug/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/route/route_failure_adapter.cpp.obj": "20f6bbbb4f2f2c5a3a5b12ee52d36c5868176561da584df1f9c4641f4a4e56ee",
+        "out/build/windows-clang-debug/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_abi_c.c.obj": "80bd4817c8da0db2bbcb8ae7ed24c412a3432329528af619e0ddb2d015efde61",
+        "out/build/windows-clang-debug/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_test.cpp.obj": "300f1ae3c5add3d44d0539c5bea5e149791132cce2dd0e9e286b4789e5348f15",
+        "out/build/windows-clang-debug/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/spectral_allocation_probe.cpp.obj": "3d37f1f721a74ebd6b088031a964378b37b02f794dc4925294ecb25a5a626892",
+        "out/build/windows-clang-debug/tests/CMakeFiles/juicer_film_recipe_state_test_objects.dir/__/src/ResourceAssetLibrary.cpp.obj": "7a4b3383c2190051b62f3deb05cadd26b7d17972a18a1a7fbf73fe78ee01d701",
+        "out/build/windows-clang-debug/tests/CMakeFiles/juicer_film_recipe_test_objects.dir/__/src/RustFilmRecipeBridge.cpp.obj": "1464b0c2ae76ba36b5ea81041180d0725b32be4bd1ca72bc79e0c8a34e2effea",
+        "out/build/windows-clang-debug/tests/bin/JuicerAdapterTraceProbe.exe": "747f42b276826afcd1c59c85a5990bec28b378ccdbe8707562b3a39481e51e7c",
+        "out/build/windows-clang-debug/tests/bin/JuicerFilmRecipeTests.exe": "0b32364a4004c27c47fa351c08af489b3e867783b95397031d35ea2047dcf090",
+        "out/build/windows-clang-debug/tests/resources.stamp": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "baseline_preservation": null
+    },
+    "windows-clang-release": {
+      "native_collection": {
+        "path": "out/validation/windows-clang-release/s4-c-slice-1-native-baseline-2026-10-20/capture/collection.json",
+        "sha256": "9e0659bba3ab380e98a783a5bd95d5fba0cc1b882c8366929c4d923f2fccb743"
+      },
+      "cache_collection": {
+        "path": "out/validation/windows-clang-release/s4-c-slice-1-native-cache-2026-10-20/capture-v2/collection.json",
+        "sha256": "9e779517f1784294ed7713c53772d5f577490de86990ad2d9651db040e6e03d0"
+      },
+      "executables": {
+        "literal": "56b33a38f34028e67c1a1f4e55a1d3f5b35af44c5da92a1b4959baf2b8ddc943",
+        "products": "59416ace64fd7e7b04f81aa1166d42065d360e803f925e870cedb285e91d710e",
+        "ofx": "3b642c40d231d093b39db09a165eaa4700656b91755a3148d1d14ed63fd8ae45"
+      },
+      "cache_executable": {
+        "path": "C:\\Dev\\Codex\\out\\validation\\windows-clang-release\\s4-c-slice-1-native-cache-2026-10-20\\capture-v2\\cache.exe",
+        "sha256": "ab0124c58dc64ffa691c48a6543d5309e208e4b09f8b472384cd2abc4d4247fe"
+      },
+      "artifact_identities": {
+        "out/build/windows-clang-release/CMakeFiles/juicer.dir/src/main.cpp.obj": "76f411705da1d0a90e8397f617dc41a7b3d27da51d55de965dbd8c21957a702d",
+        "out/build/windows-clang-release/CMakeFiles/juicer_adapter.dir/src/JuicerEffect.cpp.obj": "5966c1057f6d7c1c04fe29533ea671f98bd5f03b2355ced391f286a0acb4e30a",
+        "out/build/windows-clang-release/CMakeFiles/juicer_adapter.dir/src/mainProcessing.cpp.obj": "b08897f1eb2020e30498bb7efd8c1aed033d3e92b1f589e44ae2069a1747c429",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/CudaRenderProjection.cpp.obj": "839934b7f28267a816f65b9bd613b0ad4c6f2da8226b692b3696ec0c693b4596",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/DiffusionHostBehavior.cpp.obj": "f76a0581a307dfaa66ce8a890c06948557d49783e3a02a1fbb57f81d0972fcfc",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/FilmEffectsFrameDescriptors.cpp.obj": "6d604353b3ddcbd5a18cd3b2f970fe762af4a20da0f9db7ac92a0af2f89e8ec2",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/Illuminants.cpp.obj": "10be6a4ca6971032d12edfa58b947b67bdbad03bd8f40bcbef6d8543110e5818",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/JuicerState.cpp.obj": "8ac80cd2f61d8971ced88c27d65e7ffe1c30d8f60771fb272c661ec23f2972c9",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/RenderRecipe.cpp.obj": "4931af60c0f7d900d4a7e5bf5b50a644c3a4df8bd7d1a526fc76589ca756c217",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/ResourceAssetLibrary.cpp.obj": "bb7a5169c07793a53550b649dc8c5def3e4bcce2fd5df95b1b5f534b6f378ce1",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/RustAssetBridge.cpp.obj": "1217e8f930ae8d18909872925993658bed37a5b2daf13bc6449ec0d08390e532",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/RustColorBridge.cpp.obj": "a9f9b8e83b810baafb98f43e5e4d49fb3f4e76ae20eaec4e133c7e03da4e7f2e",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/RustExposureBridge.cpp.obj": "5f42b2f3706f84d5d574cbfa3e291619c17bfc827bb291a23002c41bb022e92a",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/RustFilmInputBridge.cpp.obj": "e71ace1d8bf9490329bd80b03961cb90e06e4d578e21bd44627521acb7947011",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/RustFilmRecipeBridge.cpp.obj": "715d1dc3f6b6b68200ab2009d6e6f0d9a4d8914983340453fabd459e08b2c545",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/RustGamutBridge.cpp.obj": "15d89d4495bee6012da773dd3e88024ce0ebdc41f121badcc1e32139a9ee74eb",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/RustReconstructionBridge.cpp.obj": "8a2499bed02e33b42b96c2f2945d260c7446a60483447c4997b268306cd625bd",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/RustSpectralBridge.cpp.obj": "406c9091fd173e776510418ce8cf9a39487bcb3904a839c387a500194b709453",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/ScanRoute.cpp.obj": "5b41dcf0dfaa1e942681ed8eefd959930a114104ef77b16325c1113629ef7a4c",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/Scanner.cpp.obj": "c991cf99026292108f9469811e700baf669b8e8d4848eb5cf3c09f4fef2bd7f3",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/ScatterHalation.cpp.obj": "d061e2a0d07be3d3ec636b733f45e874eaf3514110c7e7037d8eb760c2cb82b9",
+        "out/build/windows-clang-release/CMakeFiles/juicer_host.dir/src/SpectralProcessing.cpp.obj": "fc96a4958fa1476a838e197dab4916b66f0c9fe5e38d2e3b04509a056be6b525",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/native/juicer_cuda_api.cpp.obj": "c28c65eeee3719f4f0b63247c1dfde429bbd5a4f030387b5dfea8ee8ab643448",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/native/juicer_cuda_descriptors.cpp.obj": "9e77ada6ae5a199b72d1b76f19ece41460e3c3d873c95e01fd42f47210d465bf",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/native/juicer_cuda_prepared.cpp.obj": "57b370f803b94103f2cb961cedc65a0133c3b7850da1c617c3568126a5276553",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/Diffusion/JuicerCudaDiffusion.cu.obj": "a6d41c2b3065af43261349137feefcba0325aa39730063c6c20bec29767a9836",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/Diffusion/JuicerCudaDiffusionResources.cpp.obj": "ee4cfd491ed3baaeaad6d88da2c54e9adf226de104c3cc5284f66b255fca9198",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/Film/JuicerCudaFilmPipeline.cu.obj": "7714ce7f5fc0d9391d0e4ee4ed5f85b6922061541db5691a5cb84c79dfc9a1db",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/Film/JuicerCudaScatterHalation.cu.obj": "e82ccd08b6b066847316c78492a4dd0f53250983565f7a290f898215a2837f8b",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaAutoExposure.cu.obj": "758400ac4335df7ee01859991fe3ac9e1781dc4118fa7229d46023a5ace5ace9",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaDeviceLedger.cpp.obj": "02a2dd917c26f63cc78f7796e0b6b7e2620cbd6bef7ea6cce22b6e29bfc0cc42",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaDriver.cpp.obj": "735c37560781ebbcb2694486990e2aba24847c483c9ba101179f703b653e6f0d",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaExecutor.cpp.obj": "26945724d741f0018c60aaed2727008a3dbb9264ce8de0e5e70146a973cddbc3",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaFailure.cpp.obj": "5c75fb6de1a31e2b1ab0d2f87098a30895d697d58ed18e8f60b48bfafafdeac4",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaFilmPayloads.cpp.obj": "d2a93827daeb6dacdfad6b6be1d683e1f6e5798e7891c22d69ca8aa1b826a00d",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/JuicerCudaResources.cpp.obj": "888ee72a35ddb3f13edae6d3110db010660aedf4647fb6729fa6ab4c93a23408",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/ResourceManager/JuicerCudaManagerRegistry.cpp.obj": "ae389304b681a796a4c90534993e415333749cc6a059ad07f2e7139e73101dd3",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/ResourceManager/JuicerCudaResourceCore.cpp.obj": "37542d9c82fc8e8b518579c63b3a7265d8b53573467f1c40e02685342e022ead",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/ResourceManager/JuicerCudaResourceManager.cpp.obj": "77b969114945c28b97325cc2cfd526bf8239bd78e857c54a23bab98076c90e2e",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/Cuda/Scan/JuicerCudaScanPipeline.cu.obj": "856ca578b0ff70fca520c7bb3d1bab0909334fe0ebda40de99cf26a39c966a21",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/DiffusionExecution.cpp.obj": "89791d6217f78fc7dadf620190aae84c02afedee2766cd67387c2483d902168b",
+        "out/build/windows-clang-release/CMakeFiles/juicer_native.dir/src/ProcessRoot.cpp.obj": "977a02e6bcd3391c347f363ac6dd4aaea2d28337ccde7de1c95f6928fa733422",
+        "out/build/windows-clang-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsCore.cpp.obj": "8104216eff8805227585812d639ab827de2d702444078d4dafd6dde4a986c76a",
+        "out/build/windows-clang-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsImageEffect.cpp.obj": "0f9f3fc97824422ea39c686b2b3454629be9404ce1d188a20da74ca0ac969eb0",
+        "out/build/windows-clang-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsInteract.cpp.obj": "55a3659ac6dfd5be2b10295eb9c29088d47080a454e231ae09786beebadc324b",
+        "out/build/windows-clang-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsLog.cpp.obj": "92bd80216839d86a449a29dd1a084933f79202fc60bdf9bfd1b39fbf2020e15d",
+        "out/build/windows-clang-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsMultiThread.cpp.obj": "0af10201ad1c9368cbd46d7b6d471b3203b60e33ccdc6d40699e9d1a14718aad",
+        "out/build/windows-clang-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsParams.cpp.obj": "7fa53e8dbab0d41099dc738e475343bbcab2876577d05e0d0ee53119f724246e",
+        "out/build/windows-clang-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsProperty.cpp.obj": "5e5b7804028a739718cfece00f996194252b3874bce382368470c06d2775b7ee",
+        "out/build/windows-clang-release/CMakeFiles/juicer_ofxs.dir/third_party/ofxs/Support/Library/ofxsPropertyValidation.cpp.obj": "6eebf43418b04c614c54a54be65d23c79463a08f424a6e90e647bc5736a5ca2e",
+        "out/build/windows-clang-release/cargo-build.stamp": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "out/build/windows-clang-release/cargo/x86_64-pc-windows-msvc/release/film_juicer_plugin.lib": "9a30d657b1805c2895342dc53e022bdf8d6d7312ff504f346e15d39410f9e235",
+        "out/build/windows-clang-release/juicer.ofx": "30ad8b5b5266e3fdf0b7efcd8209a123ee5ad86a4c621fbca99506b688d2084c",
+        "out/build/windows-clang-release/juicer_core.lib": "77c3e1ee4fb15a3b3c86b3384d4c6e7d83c5c57c745b3edc44aa8fdc40aaaf3e",
+        "out/build/windows-clang-release/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/__/src/JuicerEffect.cpp.obj": "010c08cfe156d5cef9ba52eb114b264dfde03a1bd1f61e183b9de3906f48c2b4",
+        "out/build/windows-clang-release/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/ofx/adapter_trace_test.cpp.obj": "312360fae5806c8d019ec16b9d596d093cc89a30a07ddbc7a983d990c4557b9d",
+        "out/build/windows-clang-release/tests/CMakeFiles/JuicerAdapterTraceProbe.dir/route/route_failure_adapter.cpp.obj": "8bd381316bca07ef14cde6ace833f4810548e71cff23c5485e6274f119d82acf",
+        "out/build/windows-clang-release/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_abi_c.c.obj": "c2a5f0951273ce0109c792bfc42fe889784cff04b7ed65fe7842ce06ac718f6f",
+        "out/build/windows-clang-release/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/film_recipe_test.cpp.obj": "cb19f413469356fa753fff1e0ffa21b04506faa840f05c69ec21361a609321a5",
+        "out/build/windows-clang-release/tests/CMakeFiles/JuicerFilmRecipeTests.dir/ffi/spectral_allocation_probe.cpp.obj": "eb839919925eded33081f45b4dd98d6fedd8a65a841b0cb6c511f2183ce2a609",
+        "out/build/windows-clang-release/tests/CMakeFiles/juicer_film_recipe_state_test_objects.dir/__/src/ResourceAssetLibrary.cpp.obj": "44107fc3656256e3b00cf22243c5916a60aaa6f5ee3efe493a0633ca23f4df9e",
+        "out/build/windows-clang-release/tests/CMakeFiles/juicer_film_recipe_test_objects.dir/__/src/RustFilmRecipeBridge.cpp.obj": "7facbae661ea8b918a8bee0e5fa1501c65ed4804c09c07f4299fd1216c401282",
+        "out/build/windows-clang-release/tests/bin/JuicerAdapterTraceProbe.exe": "dad5fc38b63d4e2a7bb57215613f6d7d9f516772c69c08753c561496e3a05f3e",
+        "out/build/windows-clang-release/tests/bin/JuicerFilmRecipeTests.exe": "3ce2f8df7da054226d6e61bc058855a7cb4da79fdd4bf4972a4d7fc64fb3c043",
+        "out/build/windows-clang-release/tests/resources.stamp": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "baseline_preservation": null
+    }
+  }
+}

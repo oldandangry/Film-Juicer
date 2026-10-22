@@ -1,0 +1,1209 @@
+{
+  "schema": 1,
+  "authority": "revision 1 plus owner implementation authorization; intentional checked SC4-PRE-01 outcomes are not native bool/status captures",
+  "cases": {
+    "direct-route-0-flags-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-0-flags-1": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-0-flags-2": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-0-flags-3": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-1-flags-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-1-flags-1": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-1-flags-2": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-1-flags-3": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-2-flags-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-2-flags-1": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-2-flags-2": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-2-flags-3": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-3-flags-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-3-flags-1": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-3-flags-2": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-3-flags-3": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-4-flags-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-4-flags-1": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-4-flags-2": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-4-flags-3": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-255-flags-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-255-flags-1": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-255-flags-2": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-route-255-flags-3": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-0-flags-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-0-flags-1": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-0-flags-2": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-0-flags-3": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-1-flags-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-1-flags-1": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-1-flags-2": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-1-flags-3": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-2-flags-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-2-flags-1": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-2-flags-2": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-2-flags-3": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-3-flags-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-3-flags-1": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-3-flags-2": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-3-flags-3": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-4-flags-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-4-flags-1": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": true
+    },
+    "print-route-4-flags-2": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": true
+    },
+    "print-route-4-flags-3": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": true
+    },
+    "print-route-255-flags-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-route-255-flags-1": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": true
+    },
+    "print-route-255-flags-2": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": true
+    },
+    "print-route-255-flags-3": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": true
+    },
+    "direct-none": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-scan": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 4,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-midgray": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 5,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-range": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-zero-inverse": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-infinite-inverse": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-narrow-overflow": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 5,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-baseline-nan": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-negative-ay": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-nan-ay": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-none": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-scan": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 9,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-midgray": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 10,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-range": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-zero-inverse": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-infinite-inverse": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-narrow-overflow": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 10,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-baseline-nan": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-negative-ay": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-nan-ay": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-reference": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 3,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-direct-lookup": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 6,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-provenance": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-print-lookup": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 8,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-normalizer-nan": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-normalizer-zero": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-normalizer-negative": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-preflash": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-finite-negative-sensitivity": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-nan-light": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-null-recipe": {
+      "category": null,
+      "api": 0,
+      "native_code": 0,
+      "reason": null,
+      "native_only": true,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-1-0-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-1-2147483648-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-1-1025879789-1065353215": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-1-2143289344-1065353216": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 5,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-1-0-2143289344": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-1-1065353216-0": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 5,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-2-0-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-2-2147483648-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-2-1025879789-1065353215": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-2-2143289344-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-2-0-2143289344": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 5,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-2-1065353216-0": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 5,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-3-0-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-3-2147483648-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-3-1025879789-1065353215": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-3-2143289344-1065353216": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 5,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-3-0-2143289344": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 5,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-levels-3-1065353216-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-1-0-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-1-2147483648-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-1-1025879789-1065353215": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-1-2143289344-1065353216": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 10,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-1-0-2143289344": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-1-1065353216-0": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 10,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-2-0-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-2-2147483648-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-2-1025879789-1065353215": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-2-2143289344-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-2-0-2143289344": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 10,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-2-1065353216-0": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 10,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-3-0-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-3-2147483648-1065353216": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-3-1025879789-1065353215": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-3-2143289344-1065353216": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 10,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-3-0-2143289344": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 10,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-levels-3-1065353216-0": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-baseline": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-baseline-infinite": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-nonfinite-eps": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-k-zero": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 2,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-k-81": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-medium-literal": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-medium-opposite": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-base-nonfinite": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-mean-nonfinite": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-mean-zero": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-singleton": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-duplicate": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-descending": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-mismatch": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 6,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-axis-nan": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-axis-infinite": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-baseline": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-baseline-infinite": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-nonfinite-eps": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-k-zero": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 7,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-k-81": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-medium-literal": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-medium-opposite": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-base-nonfinite": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-mean-nonfinite": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-mean-zero": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-singleton": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-duplicate": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-descending": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-mismatch": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 8,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-axis-nan": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 8,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "print-axis-infinite": {
+      "category": 3,
+      "api": 0,
+      "native_code": 0,
+      "reason": 12,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-black": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "direct-white": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    },
+    "positive-print": {
+      "category": 0,
+      "api": 0,
+      "native_code": 0,
+      "reason": 0,
+      "native_only": false,
+      "intentional_exception_replacement": false
+    }
+  },
+  "raw_failure_result": "all semantic fields +0/0 including route/schema/hash; optional trace NONE and zero context",
+  "native_failure_result": "native defaults and requested route; null recipe retains default route",
+  "print_byte_diagnostic": "ResourceDescriptorMismatch phase=8B print correction inputs"
+}

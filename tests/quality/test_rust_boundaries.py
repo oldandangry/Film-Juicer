@@ -229,6 +229,86 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_print_illuminant_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("print_illuminant_complete", None),
+            ("print_illuminant_construction", {"E0451": ("print::Illuminant { ..illuminant }",)}),
+            ("print_illuminant_default", {"E0599": ("print::Illuminant::default()",)}),
+            ("print_illuminant_private", {"E0616": ("illuminant.samples",)}),
+            ("print_illuminant_readonly", {"E0594": ("illuminant.samples()[0] = 0.0",)}),
+            ("print_illuminant_owned", None),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
+    def test_print_preflash_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("print_preflash_complete", None),
+            ("print_preflash_construction", {"E0451": ("print::PreflashRaw { ..raw }",)}),
+            ("print_preflash_default", {"E0599": ("print::PreflashRaw::default()",)}),
+            ("print_preflash_private", {"E0616": ("raw.cmy",)}),
+            ("print_preflash_readonly", {"E0594": ("raw.cmy()[0] = 0.0",)}),
+            ("print_preflash_owned", None),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
+    def test_print_balance_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("print_balance_complete", None),
+            ("print_balance_construction", {"E0451": ("print::Balance { ..balance }",)}),
+            ("print_balance_default", {"E0599": ("print::Balance::default()",)}),
+            ("print_balance_private", {"E0616": ("balance.baseline_raw_rgb",)}),
+            ("print_balance_readonly", {"E0594": ("balance.baseline_raw_rgb()[0] = 0.0",)}),
+            ("print_balance_owned", None),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
+    def test_scanner_correction_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("scanner_correction_complete", None),
+            ("scanner_correction_construction", {"E0451": ("scanner::Correction { ..correction }",)}),
+            ("scanner_correction_default", {"E0599": ("scanner::Correction::default()",)}),
+            ("scanner_correction_private", {"E0616": ("correction.route", "correction.storage")}),
+            ("scanner_correction_readonly", {"E0070": ("correction.exposure_scale() = 0.0",)}),
+            ("scanner_correction_owned", None),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_optics_are_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("optics_complete", None),

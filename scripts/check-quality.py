@@ -668,30 +668,25 @@ def check_rust(
         str(target_dir),
     ]
     development = getattr(arguments, "development", False)
+    profile = "release" if arguments.preset.endswith("-release") else "dev"
+    profile_args = ["--release"] if profile == "release" else []
     selected_packages = getattr(arguments, "rust_packages", None) or ["film-juicer-core", "film-juicer-plugin"]
     format_packages = [item for package in selected_packages for item in ("--package", package)] if development else ["--all"]
     runner.run([cargo, "fmt", *format_packages, "--", "--check"], env=environment, label="rustfmt")
     for package in selected_packages:
         features = ["--features", "test-support"] if package == "film-juicer-plugin" else []
         runner.run(
-            [*common, "-p", package, "--all-targets", "--", "-D", "warnings"],
+            [*common, "-p", package, "--all-targets", *profile_args, "--", "-D", "warnings"],
             env=environment,
-            label=f"clippy-{package}-dev",
+            label=f"clippy-{package}-{profile}",
         )
-        if not getattr(arguments, 'development', False):
-            runner.run(
-                [*common, "-p", package, "--all-targets", "--release", "--", "-D", "warnings"],
-                env=environment,
-                label=f"clippy-{package}-release",
-            )
         if features:
-            for profile in ([[]] if getattr(arguments, "development", False) else [[], ["--release"]]):
-                runner.run(
-                    [*common, "-p", package, "--all-targets", *features, *profile,
-                     "--", "-D", "warnings"],
-                    env=environment,
-                    label=f"clippy-{package}-test-support-{'release' if profile else 'dev'}",
-                )
+            runner.run(
+                [*common, "-p", package, "--all-targets", *features, *profile_args,
+                 "--", "-D", "warnings"],
+                env=environment,
+                label=f"clippy-{package}-test-support-{profile}",
+            )
 
     if development:
         for package in selected_packages:

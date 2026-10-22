@@ -108,3 +108,15 @@ tests/film/effects-fixtures/** -text whitespace=cr-at-eol
 
 # Spatial-optics native characterization preserves exact words and provenance bytes.
 tests/film/optics-fixtures/** -text whitespace=cr-at-eol
+
+# Filtered print illuminant characterization preserves exact native capture bytes.
+tests/print/illuminant-fixtures/** -text whitespace=cr-at-eol
+
+# Preflash native characterization preserves exact input/output and provenance bytes.
+tests/print/preflash-fixtures/** -text whitespace=cr-at-eol
+
+# Print balance characterization preserves exact native capture bytes.
+tests/print/balance-fixtures/** -text whitespace=cr-at-eol
+
+# Scanner correction native characterization preserves exact capture bytes.
+tests/scanner/correction-fixtures/** -text whitespace=cr-at-eol

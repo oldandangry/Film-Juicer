@@ -1,0 +1,2396 @@
+{
+  "schema": 1,
+  "authority": "Owner-approved pinned libm 0.2.15 erff policy, 20 October 2026; exact Rust observations retained from failed native comparisons, with unchanged native inputs/failures. Native characterization remains immutable; no numerical tolerance.",
+  "native_manifest": {
+    "path": "manifest.json",
+    "sha256": "abd688c5cf2f09a7ddda9b2cce82e33254c885e445368c711ecb6f66a50548c8"
+  },
+  "comparison": "Exact selected f32 words and exact failure outcomes; no ULP/epsilon allowance",
+  "dependency": "libm = \"=0.2.15\" erff; ordinary f32 pow; unchanged f32 order",
+  "presets": {
+    "linux-debug": {
+      "literal": "linux-debug-rust-literal.json",
+      "products": "linux-debug-rust-products.json",
+      "ofx": "linux-debug-ofx.json",
+      "cache": "linux-debug-rust-cache.json"
+    },
+    "linux-release": {
+      "literal": "linux-release-rust-literal.json",
+      "products": "linux-release-rust-products.json",
+      "ofx": "linux-release-ofx.json",
+      "cache": "linux-release-rust-cache.json"
+    },
+    "windows-clang-debug": {
+      "literal": "windows-clang-debug-rust-literal.json",
+      "products": "windows-clang-debug-rust-products.json",
+      "ofx": "windows-clang-debug-ofx.json",
+      "cache": "windows-clang-debug-rust-cache.json"
+    },
+    "windows-clang-release": {
+      "literal": "windows-clang-release-rust-literal.json",
+      "products": "windows-clang-release-rust-products.json",
+      "ofx": "windows-clang-release-ofx.json",
+      "cache": "windows-clang-release-rust-cache.json"
+    }
+  },
+  "files": {
+    "linux-debug-rust-literal.json": {
+      "sha256": "ed261e2a037a51d78a0a78ae1f6f297598b0352b328f80c82bb9ef512d83ec97",
+      "bytes": 470784
+    },
+    "linux-debug-products.json": {
+      "sha256": "5b733bacab5d3e9a588c710e5efadd94e4f701a2c808f3a8dfb814ff8f209c06",
+      "bytes": 151349
+    },
+    "linux-debug-ofx.json": {
+      "sha256": "4136e9e9c04445877d7499fecfa9ba71655b5640ff025788bec0ae2c43b2526c",
+      "bytes": 192808
+    },
+    "linux-debug-cache.json": {
+      "sha256": "213bc20754a88d69478c6871c9d5087ab152813696262e4008656f9d248a453f",
+      "bytes": 61626
+    },
+    "linux-release-rust-literal.json": {
+      "sha256": "ed261e2a037a51d78a0a78ae1f6f297598b0352b328f80c82bb9ef512d83ec97",
+      "bytes": 470784
+    },
+    "linux-release-products.json": {
+      "sha256": "5b733bacab5d3e9a588c710e5efadd94e4f701a2c808f3a8dfb814ff8f209c06",
+      "bytes": 151349
+    },
+    "linux-release-ofx.json": {
+      "sha256": "4136e9e9c04445877d7499fecfa9ba71655b5640ff025788bec0ae2c43b2526c",
+      "bytes": 192808
+    },
+    "linux-release-cache.json": {
+      "sha256": "213bc20754a88d69478c6871c9d5087ab152813696262e4008656f9d248a453f",
+      "bytes": 61626
+    },
+    "windows-clang-debug-rust-literal.json": {
+      "sha256": "ed261e2a037a51d78a0a78ae1f6f297598b0352b328f80c82bb9ef512d83ec97",
+      "bytes": 470784
+    },
+    "windows-clang-debug-products.json": {
+      "sha256": "149ba08d73bc5e77a605ae2ba4e9fc8779aa1e030d4c1052627eeb1575a2725f",
+      "bytes": 159010
+    },
+    "windows-clang-debug-ofx.json": {
+      "sha256": "9b84d760198d44302c5e77938af9412939973d7ba2db528f99be0f38bba74b64",
+      "bytes": 197465
+    },
+    "windows-clang-debug-cache.json": {
+      "sha256": "c8b3cc3cf912844db0163b2ebd865cfdcb35b56e74df39c1321fdf91db07aab9",
+      "bytes": 64793
+    },
+    "windows-clang-release-rust-literal.json": {
+      "sha256": "ed261e2a037a51d78a0a78ae1f6f297598b0352b328f80c82bb9ef512d83ec97",
+      "bytes": 470784
+    },
+    "windows-clang-release-products.json": {
+      "sha256": "149ba08d73bc5e77a605ae2ba4e9fc8779aa1e030d4c1052627eeb1575a2725f",
+      "bytes": 159010
+    },
+    "windows-clang-release-ofx.json": {
+      "sha256": "a5c36cb586c3041d1e7226a223f05feb040f9f6fabe928ad785233bcb50f192b",
+      "bytes": 197473
+    },
+    "windows-clang-release-cache.json": {
+      "sha256": "c8b3cc3cf912844db0163b2ebd865cfdcb35b56e74df39c1321fdf91db07aab9",
+      "bytes": 64793
+    },
+    "linux-debug-rust-products.json": {
+      "sha256": "5b733bacab5d3e9a588c710e5efadd94e4f701a2c808f3a8dfb814ff8f209c06",
+      "bytes": 151349
+    },
+    "linux-debug-rust-cache.json": {
+      "sha256": "213bc20754a88d69478c6871c9d5087ab152813696262e4008656f9d248a453f",
+      "bytes": 61626
+    },
+    "linux-release-rust-products.json": {
+      "sha256": "5b733bacab5d3e9a588c710e5efadd94e4f701a2c808f3a8dfb814ff8f209c06",
+      "bytes": 151349
+    },
+    "linux-release-rust-cache.json": {
+      "sha256": "213bc20754a88d69478c6871c9d5087ab152813696262e4008656f9d248a453f",
+      "bytes": 61626
+    },
+    "windows-clang-debug-rust-products.json": {
+      "sha256": "d6a4b778f75aaf9eee4d29754cdb2ddf37f00409e36b60800e884ee14e998b5a",
+      "bytes": 151330
+    },
+    "windows-clang-debug-rust-cache.json": {
+      "sha256": "312c50c5283ef977360d9d3d420510a44f4f67d978c1b66454909cfd5fab32bb",
+      "bytes": 61626
+    },
+    "windows-clang-release-rust-products.json": {
+      "sha256": "d6a4b778f75aaf9eee4d29754cdb2ddf37f00409e36b60800e884ee14e998b5a",
+      "bytes": 151330
+    },
+    "windows-clang-release-rust-cache.json": {
+      "sha256": "312c50c5283ef977360d9d3d420510a44f4f67d978c1b66454909cfd5fab32bb",
+      "bytes": 61626
+    },
+    "product-updates.json": {
+      "sha256": "9a2b9d01413b6d6d9a780028af6eb402900ee2ffaec004f6f87b8d251de58059",
+      "bytes": 897344
+    }
+  },
+  "observations": {
+    "linux-debug": {
+      "log": "out/validation/linux-debug/s4-c-slice-1-core-exact-v2-2026-10-20/attempts/compare-e9fs0sy_/output.log",
+      "log_sha256": "2a76ccbfbddbd17936071717e3940ddf2426e34490ab43f32319e8b968c2abb6",
+      "failed_executable": {
+        "path": "/mnt/c/Dev/Codex/out/build/linux-debug/cargo/x86_64-unknown-linux-gnu/debug/deps/film_juicer_core-d207fcfc1f71bcb6",
+        "sha256": "93d23ae565894e3409f04716b8255454d043699868ca2dab64c0d8da90c9a6c8",
+        "preserved": "/mnt/c/Dev/Codex/out/validation/linux-debug/s4-c-slice-1-core-exact-v2-2026-10-20/frozen-executable/film_juicer_core-d207fcfc1f71bcb6"
+      },
+      "changed_words": 2,
+      "changed_cases": 2,
+      "changes": [
+        {
+          "case": "finite-cohort-5",
+          "sample": 24,
+          "native_word": 1047064613,
+          "approved_word": 1047064611
+        },
+        {
+          "case": "finite-cohort-24",
+          "sample": 25,
+          "native_word": 1020106413,
+          "approved_word": 1020106419
+        }
+      ]
+    },
+    "linux-release": {
+      "log": "out/validation/linux-release/s4-c-slice-1-core-exact-v2-2026-10-20/attempts/compare-yddjyvbu/output.log",
+      "log_sha256": "707dab61c0da3e21a4328d960dc11662010abfce1b0f0fbfd3c0158ac87f36ca",
+      "failed_executable": {
+        "path": "/mnt/c/Dev/Codex/out/build/linux-release/cargo/x86_64-unknown-linux-gnu/release/deps/film_juicer_core-f88a61ebca7afa38",
+        "sha256": "967bc3b54d2791c941135e50fbaa9468e3e3a4dbc6ddee30af72b68886dbb208",
+        "preserved": "/mnt/c/Dev/Codex/out/validation/linux-release/s4-c-slice-1-core-exact-v2-2026-10-20/frozen-executable/film_juicer_core-f88a61ebca7afa38"
+      },
+      "changed_words": 2,
+      "changed_cases": 2,
+      "changes": [
+        {
+          "case": "finite-cohort-5",
+          "sample": 24,
+          "native_word": 1047064613,
+          "approved_word": 1047064611
+        },
+        {
+          "case": "finite-cohort-24",
+          "sample": 25,
+          "native_word": 1020106413,
+          "approved_word": 1020106419
+        }
+      ]
+    },
+    "windows-clang-debug": {
+      "log": "out/validation/windows-clang-debug/s4-c-slice-1-core-exact-v2-2026-10-20/attempts/compare-emuyvcrm/output.log",
+      "log_sha256": "127fc1dab1b8506ad189f8fbfb172380434937f55ffd3fbf3fa3a0bf8581f306",
+      "failed_executable": {
+        "path": "C:\\Dev\\Codex\\out\\build\\windows-clang-debug\\cargo\\x86_64-pc-windows-msvc\\debug\\deps\\film_juicer_core-2ad8eaf8507e3628.exe",
+        "sha256": "afe8ffb46339377b426c266f5f396786da5ba981f6771f00f976c28931815a8e",
+        "preserved": "C:\\Dev\\Codex\\out\\validation\\windows-clang-debug\\s4-c-slice-1-core-exact-v2-2026-10-20\\frozen-executable\\film_juicer_core-2ad8eaf8507e3628.exe"
+      },
+      "changed_words": 78,
+      "changed_cases": 34,
+      "changes": [
+        {
+          "case": "print-illum-preflash",
+          "sample": 24,
+          "native_word": 1044787562,
+          "approved_word": 1044787564
+        },
+        {
+          "case": "negative-cc",
+          "sample": 47,
+          "native_word": 1068520000,
+          "approved_word": 1068519999
+        },
+        {
+          "case": "large-cc",
+          "sample": 24,
+          "native_word": 1014182992,
+          "approved_word": 1014183024
+        },
+        {
+          "case": "large-cc",
+          "sample": 47,
+          "native_word": 1031978781,
+          "approved_word": 1031978788
+        },
+        {
+          "case": "nondefault-coefficients",
+          "sample": 26,
+          "native_word": 1034645013,
+          "approved_word": 1034645015
+        },
+        {
+          "case": "nondefault-coefficients",
+          "sample": 43,
+          "native_word": 1049841303,
+          "approved_word": 1049841302
+        },
+        {
+          "case": "nondefault-coefficients",
+          "sample": 45,
+          "native_word": 1052481263,
+          "approved_word": 1052481265
+        },
+        {
+          "case": "finite-cohort-0",
+          "sample": 43,
+          "native_word": 1058503844,
+          "approved_word": 1058503843
+        },
+        {
+          "case": "finite-cohort-1",
+          "sample": 27,
+          "native_word": 1053995746,
+          "approved_word": 1053995747
+        },
+        {
+          "case": "finite-cohort-3",
+          "sample": 43,
+          "native_word": 1056963703,
+          "approved_word": 1056963701
+        },
+        {
+          "case": "finite-cohort-4",
+          "sample": 43,
+          "native_word": 1056051347,
+          "approved_word": 1056051345
+        },
+        {
+          "case": "finite-cohort-5",
+          "sample": 24,
+          "native_word": 1047064613,
+          "approved_word": 1047064611
+        },
+        {
+          "case": "finite-cohort-5",
+          "sample": 29,
+          "native_word": 1051491528,
+          "approved_word": 1051491527
+        },
+        {
+          "case": "finite-cohort-6",
+          "sample": 31,
+          "native_word": 1051976895,
+          "approved_word": 1051976894
+        },
+        {
+          "case": "finite-cohort-7",
+          "sample": 31,
+          "native_word": 1051331358,
+          "approved_word": 1051331359
+        },
+        {
+          "case": "finite-cohort-8",
+          "sample": 26,
+          "native_word": 1042660699,
+          "approved_word": 1042660701
+        },
+        {
+          "case": "finite-cohort-9",
+          "sample": 24,
+          "native_word": 1041036857,
+          "approved_word": 1041036859
+        },
+        {
+          "case": "finite-cohort-10",
+          "sample": 28,
+          "native_word": 1045417938,
+          "approved_word": 1045417936
+        },
+        {
+          "case": "finite-cohort-11",
+          "sample": 28,
+          "native_word": 1044395559,
+          "approved_word": 1044395558
+        },
+        {
+          "case": "finite-cohort-11",
+          "sample": 29,
+          "native_word": 1046899374,
+          "approved_word": 1046899373
+        },
+        {
+          "case": "finite-cohort-11",
+          "sample": 30,
+          "native_word": 1048596835,
+          "approved_word": 1048596834
+        },
+        {
+          "case": "finite-cohort-11",
+          "sample": 47,
+          "native_word": 1054214357,
+          "approved_word": 1054214358
+        },
+        {
+          "case": "finite-cohort-12",
+          "sample": 47,
+          "native_word": 1053264944,
+          "approved_word": 1053264945
+        },
+        {
+          "case": "finite-cohort-13",
+          "sample": 25,
+          "native_word": 1034051284,
+          "approved_word": 1034051286
+        },
+        {
+          "case": "finite-cohort-13",
+          "sample": 43,
+          "native_word": 1049822523,
+          "approved_word": 1049822524
+        },
+        {
+          "case": "finite-cohort-14",
+          "sample": 27,
+          "native_word": 1038298528,
+          "approved_word": 1038298529
+        },
+        {
+          "case": "finite-cohort-15",
+          "sample": 25,
+          "native_word": 1031828237,
+          "approved_word": 1031828238
+        },
+        {
+          "case": "finite-cohort-15",
+          "sample": 26,
+          "native_word": 1033264026,
+          "approved_word": 1033264028
+        },
+        {
+          "case": "finite-cohort-17",
+          "sample": 24,
+          "native_word": 1029498044,
+          "approved_word": 1029498049
+        },
+        {
+          "case": "finite-cohort-17",
+          "sample": 28,
+          "native_word": 1039451050,
+          "approved_word": 1039451049
+        },
+        {
+          "case": "finite-cohort-17",
+          "sample": 30,
+          "native_word": 1043553007,
+          "approved_word": 1043553006
+        },
+        {
+          "case": "finite-cohort-17",
+          "sample": 43,
+          "native_word": 1047272521,
+          "approved_word": 1047272522
+        },
+        {
+          "case": "finite-cohort-17",
+          "sample": 47,
+          "native_word": 1049514714,
+          "approved_word": 1049514715
+        },
+        {
+          "case": "finite-cohort-18",
+          "sample": 26,
+          "native_word": 1029564558,
+          "approved_word": 1029564561
+        },
+        {
+          "case": "finite-cohort-18",
+          "sample": 47,
+          "native_word": 1048928113,
+          "approved_word": 1048928115
+        },
+        {
+          "case": "finite-cohort-19",
+          "sample": 43,
+          "native_word": 1045670706,
+          "approved_word": 1045670708
+        },
+        {
+          "case": "finite-cohort-20",
+          "sample": 24,
+          "native_word": 1025498331,
+          "approved_word": 1025498336
+        },
+        {
+          "case": "finite-cohort-20",
+          "sample": 31,
+          "native_word": 1042478572,
+          "approved_word": 1042478571
+        },
+        {
+          "case": "finite-cohort-20",
+          "sample": 43,
+          "native_word": 1044934458,
+          "approved_word": 1044934459
+        },
+        {
+          "case": "finite-cohort-21",
+          "sample": 24,
+          "native_word": 1024465302,
+          "approved_word": 1024465307
+        },
+        {
+          "case": "finite-cohort-21",
+          "sample": 27,
+          "native_word": 1031464584,
+          "approved_word": 1031464586
+        },
+        {
+          "case": "finite-cohort-21",
+          "sample": 43,
+          "native_word": 1044238134,
+          "approved_word": 1044238135
+        },
+        {
+          "case": "finite-cohort-22",
+          "sample": 24,
+          "native_word": 1023552256,
+          "approved_word": 1023552260
+        },
+        {
+          "case": "finite-cohort-22",
+          "sample": 47,
+          "native_word": 1045409795,
+          "approved_word": 1045409798
+        },
+        {
+          "case": "finite-cohort-23",
+          "sample": 25,
+          "native_word": 1021372018,
+          "approved_word": 1021372024
+        },
+        {
+          "case": "finite-cohort-23",
+          "sample": 43,
+          "native_word": 1042956534,
+          "approved_word": 1042956535
+        },
+        {
+          "case": "finite-cohort-23",
+          "sample": 47,
+          "native_word": 1044616568,
+          "approved_word": 1044616571
+        },
+        {
+          "case": "finite-cohort-24",
+          "sample": 25,
+          "native_word": 1020106413,
+          "approved_word": 1020106419
+        },
+        {
+          "case": "finite-cohort-24",
+          "sample": 26,
+          "native_word": 1023441161,
+          "approved_word": 1023441163
+        },
+        {
+          "case": "finite-cohort-24",
+          "sample": 27,
+          "native_word": 1028002315,
+          "approved_word": 1028002313
+        },
+        {
+          "case": "finite-cohort-24",
+          "sample": 47,
+          "native_word": 1043882393,
+          "approved_word": 1043882395
+        },
+        {
+          "case": "finite-cohort-25",
+          "sample": 26,
+          "native_word": 1022121190,
+          "approved_word": 1022121194
+        },
+        {
+          "case": "finite-cohort-25",
+          "sample": 30,
+          "native_word": 1037988007,
+          "approved_word": 1037988006
+        },
+        {
+          "case": "finite-cohort-25",
+          "sample": 47,
+          "native_word": 1043202685,
+          "approved_word": 1043202687
+        },
+        {
+          "case": "finite-cohort-26",
+          "sample": 26,
+          "native_word": 1020906989,
+          "approved_word": 1020906992
+        },
+        {
+          "case": "finite-cohort-26",
+          "sample": 27,
+          "native_word": 1026163384,
+          "approved_word": 1026163386
+        },
+        {
+          "case": "finite-cohort-26",
+          "sample": 43,
+          "native_word": 1041282249,
+          "approved_word": 1041282250
+        },
+        {
+          "case": "finite-cohort-26",
+          "sample": 47,
+          "native_word": 1042573238,
+          "approved_word": 1042573239
+        },
+        {
+          "case": "finite-cohort-27",
+          "sample": 24,
+          "native_word": 1017257935,
+          "approved_word": 1017257926
+        },
+        {
+          "case": "finite-cohort-27",
+          "sample": 29,
+          "native_word": 1034136010,
+          "approved_word": 1034136009
+        },
+        {
+          "case": "finite-cohort-27",
+          "sample": 30,
+          "native_word": 1036344334,
+          "approved_word": 1036344333
+        },
+        {
+          "case": "finite-cohort-27",
+          "sample": 31,
+          "native_word": 1037739028,
+          "approved_word": 1037739027
+        },
+        {
+          "case": "finite-cohort-27",
+          "sample": 43,
+          "native_word": 1040783216,
+          "approved_word": 1040783217
+        },
+        {
+          "case": "finite-cohort-27",
+          "sample": 47,
+          "native_word": 1041990187,
+          "approved_word": 1041990189
+        },
+        {
+          "case": "finite-cohort-28",
+          "sample": 27,
+          "native_word": 1024617513,
+          "approved_word": 1024617512
+        },
+        {
+          "case": "finite-cohort-28",
+          "sample": 30,
+          "native_word": 1035592910,
+          "approved_word": 1035592908
+        },
+        {
+          "case": "finite-cohort-28",
+          "sample": 32,
+          "native_word": 1037681889,
+          "approved_word": 1037681888
+        },
+        {
+          "case": "finite-cohort-29",
+          "sample": 26,
+          "native_word": 1017933723,
+          "approved_word": 1017933727
+        },
+        {
+          "case": "finite-cohort-29",
+          "sample": 43,
+          "native_word": 1039541166,
+          "approved_word": 1039541167
+        },
+        {
+          "case": "finite-cohort-29",
+          "sample": 47,
+          "native_word": 1040949360,
+          "approved_word": 1040949361
+        },
+        {
+          "case": "finite-cohort-30",
+          "sample": 24,
+          "native_word": 1014735885,
+          "approved_word": 1014735869
+        },
+        {
+          "case": "finite-cohort-30",
+          "sample": 29,
+          "native_word": 1032274641,
+          "approved_word": 1032274639
+        },
+        {
+          "case": "finite-cohort-30",
+          "sample": 30,
+          "native_word": 1034217597,
+          "approved_word": 1034217595
+        },
+        {
+          "case": "finite-cohort-30",
+          "sample": 47,
+          "native_word": 1040485313,
+          "approved_word": 1040485315
+        },
+        {
+          "case": "finite-cohort-31",
+          "sample": 25,
+          "native_word": 1013904704,
+          "approved_word": 1013904714
+        },
+        {
+          "case": "finite-cohort-31",
+          "sample": 26,
+          "native_word": 1016390209,
+          "approved_word": 1016390212
+        },
+        {
+          "case": "finite-cohort-31",
+          "sample": 29,
+          "native_word": 1031661136,
+          "approved_word": 1031661135
+        },
+        {
+          "case": "finite-cohort-31",
+          "sample": 47,
+          "native_word": 1039922773,
+          "approved_word": 1039922778
+        }
+      ]
+    },
+    "windows-clang-release": {
+      "log": "out/validation/windows-clang-release/s4-c-slice-1-core-exact-v2-2026-10-20/attempts/compare-xn7x9jxb/output.log",
+      "log_sha256": "c940d7c3d3320f557600ac2d5ff009d22c449ca6b4abf8a552b06440ae594ec8",
+      "failed_executable": {
+        "path": "C:\\Dev\\Codex\\out\\build\\windows-clang-release\\cargo\\x86_64-pc-windows-msvc\\release\\deps\\film_juicer_core-9568e77d29b8c64e.exe",
+        "sha256": "ecd20cb7485ba92cc17b7f43a56049fd46c29690f8074f773c0f037a531e6537",
+        "preserved": "C:\\Dev\\Codex\\out\\validation\\windows-clang-release\\s4-c-slice-1-core-exact-v2-2026-10-20\\frozen-executable\\film_juicer_core-9568e77d29b8c64e.exe"
+      },
+      "changed_words": 78,
+      "changed_cases": 34,
+      "changes": [
+        {
+          "case": "print-illum-preflash",
+          "sample": 24,
+          "native_word": 1044787562,
+          "approved_word": 1044787564
+        },
+        {
+          "case": "negative-cc",
+          "sample": 47,
+          "native_word": 1068520000,
+          "approved_word": 1068519999
+        },
+        {
+          "case": "large-cc",
+          "sample": 24,
+          "native_word": 1014182992,
+          "approved_word": 1014183024
+        },
+        {
+          "case": "large-cc",
+          "sample": 47,
+          "native_word": 1031978781,
+          "approved_word": 1031978788
+        },
+        {
+          "case": "nondefault-coefficients",
+          "sample": 26,
+          "native_word": 1034645013,
+          "approved_word": 1034645015
+        },
+        {
+          "case": "nondefault-coefficients",
+          "sample": 43,
+          "native_word": 1049841303,
+          "approved_word": 1049841302
+        },
+        {
+          "case": "nondefault-coefficients",
+          "sample": 45,
+          "native_word": 1052481263,
+          "approved_word": 1052481265
+        },
+        {
+          "case": "finite-cohort-0",
+          "sample": 43,
+          "native_word": 1058503844,
+          "approved_word": 1058503843
+        },
+        {
+          "case": "finite-cohort-1",
+          "sample": 27,
+          "native_word": 1053995746,
+          "approved_word": 1053995747
+        },
+        {
+          "case": "finite-cohort-3",
+          "sample": 43,
+          "native_word": 1056963703,
+          "approved_word": 1056963701
+        },
+        {
+          "case": "finite-cohort-4",
+          "sample": 43,
+          "native_word": 1056051347,
+          "approved_word": 1056051345
+        },
+        {
+          "case": "finite-cohort-5",
+          "sample": 24,
+          "native_word": 1047064613,
+          "approved_word": 1047064611
+        },
+        {
+          "case": "finite-cohort-5",
+          "sample": 29,
+          "native_word": 1051491528,
+          "approved_word": 1051491527
+        },
+        {
+          "case": "finite-cohort-6",
+          "sample": 31,
+          "native_word": 1051976895,
+          "approved_word": 1051976894
+        },
+        {
+          "case": "finite-cohort-7",
+          "sample": 31,
+          "native_word": 1051331358,
+          "approved_word": 1051331359
+        },
+        {
+          "case": "finite-cohort-8",
+          "sample": 26,
+          "native_word": 1042660699,
+          "approved_word": 1042660701
+        },
+        {
+          "case": "finite-cohort-9",
+          "sample": 24,
+          "native_word": 1041036857,
+          "approved_word": 1041036859
+        },
+        {
+          "case": "finite-cohort-10",
+          "sample": 28,
+          "native_word": 1045417938,
+          "approved_word": 1045417936
+        },
+        {
+          "case": "finite-cohort-11",
+          "sample": 28,
+          "native_word": 1044395559,
+          "approved_word": 1044395558
+        },
+        {
+          "case": "finite-cohort-11",
+          "sample": 29,
+          "native_word": 1046899374,
+          "approved_word": 1046899373
+        },
+        {
+          "case": "finite-cohort-11",
+          "sample": 30,
+          "native_word": 1048596835,
+          "approved_word": 1048596834
+        },
+        {
+          "case": "finite-cohort-11",
+          "sample": 47,
+          "native_word": 1054214357,
+          "approved_word": 1054214358
+        },
+        {
+          "case": "finite-cohort-12",
+          "sample": 47,
+          "native_word": 1053264944,
+          "approved_word": 1053264945
+        },
+        {
+          "case": "finite-cohort-13",
+          "sample": 25,
+          "native_word": 1034051284,
+          "approved_word": 1034051286
+        },
+        {
+          "case": "finite-cohort-13",
+          "sample": 43,
+          "native_word": 1049822523,
+          "approved_word": 1049822524
+        },
+        {
+          "case": "finite-cohort-14",
+          "sample": 27,
+          "native_word": 1038298528,
+          "approved_word": 1038298529
+        },
+        {
+          "case": "finite-cohort-15",
+          "sample": 25,
+          "native_word": 1031828237,
+          "approved_word": 1031828238
+        },
+        {
+          "case": "finite-cohort-15",
+          "sample": 26,
+          "native_word": 1033264026,
+          "approved_word": 1033264028
+        },
+        {
+          "case": "finite-cohort-17",
+          "sample": 24,
+          "native_word": 1029498044,
+          "approved_word": 1029498049
+        },
+        {
+          "case": "finite-cohort-17",
+          "sample": 28,
+          "native_word": 1039451050,
+          "approved_word": 1039451049
+        },
+        {
+          "case": "finite-cohort-17",
+          "sample": 30,
+          "native_word": 1043553007,
+          "approved_word": 1043553006
+        },
+        {
+          "case": "finite-cohort-17",
+          "sample": 43,
+          "native_word": 1047272521,
+          "approved_word": 1047272522
+        },
+        {
+          "case": "finite-cohort-17",
+          "sample": 47,
+          "native_word": 1049514714,
+          "approved_word": 1049514715
+        },
+        {
+          "case": "finite-cohort-18",
+          "sample": 26,
+          "native_word": 1029564558,
+          "approved_word": 1029564561
+        },
+        {
+          "case": "finite-cohort-18",
+          "sample": 47,
+          "native_word": 1048928113,
+          "approved_word": 1048928115
+        },
+        {
+          "case": "finite-cohort-19",
+          "sample": 43,
+          "native_word": 1045670706,
+          "approved_word": 1045670708
+        },
+        {
+          "case": "finite-cohort-20",
+          "sample": 24,
+          "native_word": 1025498331,
+          "approved_word": 1025498336
+        },
+        {
+          "case": "finite-cohort-20",
+          "sample": 31,
+          "native_word": 1042478572,
+          "approved_word": 1042478571
+        },
+        {
+          "case": "finite-cohort-20",
+          "sample": 43,
+          "native_word": 1044934458,
+          "approved_word": 1044934459
+        },
+        {
+          "case": "finite-cohort-21",
+          "sample": 24,
+          "native_word": 1024465302,
+          "approved_word": 1024465307
+        },
+        {
+          "case": "finite-cohort-21",
+          "sample": 27,
+          "native_word": 1031464584,
+          "approved_word": 1031464586
+        },
+        {
+          "case": "finite-cohort-21",
+          "sample": 43,
+          "native_word": 1044238134,
+          "approved_word": 1044238135
+        },
+        {
+          "case": "finite-cohort-22",
+          "sample": 24,
+          "native_word": 1023552256,
+          "approved_word": 1023552260
+        },
+        {
+          "case": "finite-cohort-22",
+          "sample": 47,
+          "native_word": 1045409795,
+          "approved_word": 1045409798
+        },
+        {
+          "case": "finite-cohort-23",
+          "sample": 25,
+          "native_word": 1021372018,
+          "approved_word": 1021372024
+        },
+        {
+          "case": "finite-cohort-23",
+          "sample": 43,
+          "native_word": 1042956534,
+          "approved_word": 1042956535
+        },
+        {
+          "case": "finite-cohort-23",
+          "sample": 47,
+          "native_word": 1044616568,
+          "approved_word": 1044616571
+        },
+        {
+          "case": "finite-cohort-24",
+          "sample": 25,
+          "native_word": 1020106413,
+          "approved_word": 1020106419
+        },
+        {
+          "case": "finite-cohort-24",
+          "sample": 26,
+          "native_word": 1023441161,
+          "approved_word": 1023441163
+        },
+        {
+          "case": "finite-cohort-24",
+          "sample": 27,
+          "native_word": 1028002315,
+          "approved_word": 1028002313
+        },
+        {
+          "case": "finite-cohort-24",
+          "sample": 47,
+          "native_word": 1043882393,
+          "approved_word": 1043882395
+        },
+        {
+          "case": "finite-cohort-25",
+          "sample": 26,
+          "native_word": 1022121190,
+          "approved_word": 1022121194
+        },
+        {
+          "case": "finite-cohort-25",
+          "sample": 30,
+          "native_word": 1037988007,
+          "approved_word": 1037988006
+        },
+        {
+          "case": "finite-cohort-25",
+          "sample": 47,
+          "native_word": 1043202685,
+          "approved_word": 1043202687
+        },
+        {
+          "case": "finite-cohort-26",
+          "sample": 26,
+          "native_word": 1020906989,
+          "approved_word": 1020906992
+        },
+        {
+          "case": "finite-cohort-26",
+          "sample": 27,
+          "native_word": 1026163384,
+          "approved_word": 1026163386
+        },
+        {
+          "case": "finite-cohort-26",
+          "sample": 43,
+          "native_word": 1041282249,
+          "approved_word": 1041282250
+        },
+        {
+          "case": "finite-cohort-26",
+          "sample": 47,
+          "native_word": 1042573238,
+          "approved_word": 1042573239
+        },
+        {
+          "case": "finite-cohort-27",
+          "sample": 24,
+          "native_word": 1017257935,
+          "approved_word": 1017257926
+        },
+        {
+          "case": "finite-cohort-27",
+          "sample": 29,
+          "native_word": 1034136010,
+          "approved_word": 1034136009
+        },
+        {
+          "case": "finite-cohort-27",
+          "sample": 30,
+          "native_word": 1036344334,
+          "approved_word": 1036344333
+        },
+        {
+          "case": "finite-cohort-27",
+          "sample": 31,
+          "native_word": 1037739028,
+          "approved_word": 1037739027
+        },
+        {
+          "case": "finite-cohort-27",
+          "sample": 43,
+          "native_word": 1040783216,
+          "approved_word": 1040783217
+        },
+        {
+          "case": "finite-cohort-27",
+          "sample": 47,
+          "native_word": 1041990187,
+          "approved_word": 1041990189
+        },
+        {
+          "case": "finite-cohort-28",
+          "sample": 27,
+          "native_word": 1024617513,
+          "approved_word": 1024617512
+        },
+        {
+          "case": "finite-cohort-28",
+          "sample": 30,
+          "native_word": 1035592910,
+          "approved_word": 1035592908
+        },
+        {
+          "case": "finite-cohort-28",
+          "sample": 32,
+          "native_word": 1037681889,
+          "approved_word": 1037681888
+        },
+        {
+          "case": "finite-cohort-29",
+          "sample": 26,
+          "native_word": 1017933723,
+          "approved_word": 1017933727
+        },
+        {
+          "case": "finite-cohort-29",
+          "sample": 43,
+          "native_word": 1039541166,
+          "approved_word": 1039541167
+        },
+        {
+          "case": "finite-cohort-29",
+          "sample": 47,
+          "native_word": 1040949360,
+          "approved_word": 1040949361
+        },
+        {
+          "case": "finite-cohort-30",
+          "sample": 24,
+          "native_word": 1014735885,
+          "approved_word": 1014735869
+        },
+        {
+          "case": "finite-cohort-30",
+          "sample": 29,
+          "native_word": 1032274641,
+          "approved_word": 1032274639
+        },
+        {
+          "case": "finite-cohort-30",
+          "sample": 30,
+          "native_word": 1034217597,
+          "approved_word": 1034217595
+        },
+        {
+          "case": "finite-cohort-30",
+          "sample": 47,
+          "native_word": 1040485313,
+          "approved_word": 1040485315
+        },
+        {
+          "case": "finite-cohort-31",
+          "sample": 25,
+          "native_word": 1013904704,
+          "approved_word": 1013904714
+        },
+        {
+          "case": "finite-cohort-31",
+          "sample": 26,
+          "native_word": 1016390209,
+          "approved_word": 1016390212
+        },
+        {
+          "case": "finite-cohort-31",
+          "sample": 29,
+          "native_word": 1031661136,
+          "approved_word": 1031661135
+        },
+        {
+          "case": "finite-cohort-31",
+          "sample": 47,
+          "native_word": 1039922773,
+          "approved_word": 1039922778
+        }
+      ]
+    }
+  },
+  "caller_adoption": {
+    "policy": "Owner-approved pinned erff; exact selected real products and honest current identities; no native fixture rewrite",
+    "presets": {
+      "linux-debug": {
+        "products": {
+          "collection": "out/validation/linux-debug/s4-c-slice-1-approved-products-2026-10-20/capture/collection.json",
+          "collection_sha256": "100fe5f302a540ae44d31cdc9fae64199a819f0743b7ba1e40c55a69912a049b",
+          "payload_sha256": "5b733bacab5d3e9a588c710e5efadd94e4f701a2c808f3a8dfb814ff8f209c06",
+          "selected": "linux-debug-rust-products.json",
+          "changed_rows": [],
+          "executable": {
+            "path": "/mnt/c/Dev/Codex/out/validation/linux-debug/s4-c-slice-1-approved-products-2026-10-20/capture/products",
+            "sha256": "4dfc9ed3ca7abf4e08c429f9fdb0b40fd357de5f1839c944ba50c792aded27e3"
+          }
+        },
+        "cache": {
+          "collection": "out/validation/linux-debug/s4-c-slice-1-approved-cache-2026-10-20/capture/collection.json",
+          "collection_sha256": "cdce8ecc529e111ff2422e4b5723c6532050272380ded00f2a4eea270ebbbb28",
+          "payload_sha256": "213bc20754a88d69478c6871c9d5087ab152813696262e4008656f9d248a453f",
+          "selected": "linux-debug-rust-cache.json",
+          "changed_rows": [],
+          "executable": {
+            "path": "/mnt/c/Dev/Codex/out/validation/linux-debug/s4-c-slice-1-approved-cache-2026-10-20/capture/cache",
+            "sha256": "cb286d87de75da10b77335b92b1efb06400185a48b3f7d4bf3174c803659e704"
+          }
+        }
+      },
+      "linux-release": {
+        "products": {
+          "collection": "out/validation/linux-release/s4-c-slice-1-approved-products-2026-10-20/capture/collection.json",
+          "collection_sha256": "dfbc956cc182eafafc7cc89eb7f20161a3b3eb762ec7b563206f8229180c990e",
+          "payload_sha256": "5b733bacab5d3e9a588c710e5efadd94e4f701a2c808f3a8dfb814ff8f209c06",
+          "selected": "linux-release-rust-products.json",
+          "changed_rows": [],
+          "executable": {
+            "path": "/mnt/c/Dev/Codex/out/validation/linux-release/s4-c-slice-1-approved-products-2026-10-20/capture/products",
+            "sha256": "cf9873e0fee8a7b0f6beef8967e9861fb21869f29ee9dc9479363515aeebcb5d"
+          }
+        },
+        "cache": {
+          "collection": "out/validation/linux-release/s4-c-slice-1-approved-cache-2026-10-20/capture/collection.json",
+          "collection_sha256": "3561917faa3ba0e93f4e8a50eebd61b918686f0366e77cffc6caf103d6d5b337",
+          "payload_sha256": "213bc20754a88d69478c6871c9d5087ab152813696262e4008656f9d248a453f",
+          "selected": "linux-release-rust-cache.json",
+          "changed_rows": [],
+          "executable": {
+            "path": "/mnt/c/Dev/Codex/out/validation/linux-release/s4-c-slice-1-approved-cache-2026-10-20/capture/cache",
+            "sha256": "870c35af52a0dacbff90cd9200c77d2e3eeaf90efa77806b7d48d86876e3ec63"
+          }
+        }
+      },
+      "windows-clang-debug": {
+        "products": {
+          "collection": "out/validation/windows-clang-debug/s4-c-slice-1-approved-products-2026-10-20/capture/collection.json",
+          "collection_sha256": "e8d356fa68bb6f88d69458b925bab5bbae22a28441dd8c948e536645768e870c",
+          "payload_sha256": "67487afbca579c9b90ac2de864835165f9fab66be3912bef50b075ceab2fc7a8",
+          "selected": "windows-clang-debug-rust-products.json",
+          "changed_rows": [
+            {
+              "route": 1,
+              "mode": 0,
+              "variant": 0,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 0,
+              "variant": 1,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 0,
+              "variant": 2,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 0,
+              "variant": 3,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 0,
+              "variant": 4,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 0,
+              "variant": 5,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 1,
+              "variant": 0,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 1,
+              "variant": 1,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 1,
+              "variant": 2,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 1,
+              "variant": 3,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 1,
+              "variant": 4,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 1,
+              "variant": 5,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 2,
+              "variant": 0,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 2,
+              "variant": 1,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 2,
+              "variant": 2,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 2,
+              "variant": 3,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 2,
+              "variant": 4,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 2,
+              "variant": 5,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 0,
+              "variant": 0,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 0,
+              "variant": 1,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 0,
+              "variant": 2,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 0,
+              "variant": 3,
+              "fields": [
+                "preflash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 0,
+              "variant": 4,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 0,
+              "variant": 5,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 1,
+              "variant": 0,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 1,
+              "variant": 1,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 1,
+              "variant": 2,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 1,
+              "variant": 3,
+              "fields": [
+                "preflash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 1,
+              "variant": 4,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 1,
+              "variant": 5,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 2,
+              "variant": 0,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 2,
+              "variant": 1,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 2,
+              "variant": 2,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 2,
+              "variant": 3,
+              "fields": [
+                "preflash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 2,
+              "variant": 4,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 2,
+              "variant": 5,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            }
+          ],
+          "executable": {
+            "path": "C:\\Dev\\Codex\\out\\validation\\windows-clang-debug\\s4-c-slice-1-approved-products-2026-10-20\\capture\\products.exe",
+            "sha256": "856250590da555bd68dfd66760d4f9f42d285ac24aa17637939d5f30eb2b7561"
+          }
+        },
+        "cache": {
+          "collection": "out/validation/windows-clang-debug/s4-c-slice-1-approved-cache-2026-10-20/capture/collection.json",
+          "collection_sha256": "d40228c5fada00cff88bbd2b8625fcfa38b1108a0a57edd284632d0d249994a8",
+          "payload_sha256": "1fc26246263f207320af8c89a94c97932fe18c0a3ab64b0b4e8091b075777a4d",
+          "selected": "windows-clang-debug-rust-cache.json",
+          "changed_rows": [
+            {
+              "variant": 0,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content"
+              ]
+            },
+            {
+              "variant": 0,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content"
+              ]
+            },
+            {
+              "variant": 1,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 1,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 2,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 2,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 3,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 3,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 4,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 4,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 5,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 5,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 6,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content"
+              ]
+            },
+            {
+              "variant": 6,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content"
+              ]
+            }
+          ],
+          "executable": {
+            "path": "C:\\Dev\\Codex\\out\\validation\\windows-clang-debug\\s4-c-slice-1-approved-cache-2026-10-20\\capture\\cache.exe",
+            "sha256": "cc0d28933d14d84229c9912f86edfde86e731e0555220003f06787447e3a54d7"
+          }
+        }
+      },
+      "windows-clang-release": {
+        "products": {
+          "collection": "out/validation/windows-clang-release/s4-c-slice-1-approved-products-2026-10-20/capture/collection.json",
+          "collection_sha256": "4e2fae922382a7dbfcc70f55d840737377949e0e1290a49a43c53404853bd6fe",
+          "payload_sha256": "67487afbca579c9b90ac2de864835165f9fab66be3912bef50b075ceab2fc7a8",
+          "selected": "windows-clang-release-rust-products.json",
+          "changed_rows": [
+            {
+              "route": 1,
+              "mode": 0,
+              "variant": 0,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 0,
+              "variant": 1,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 0,
+              "variant": 2,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 0,
+              "variant": 3,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 0,
+              "variant": 4,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 0,
+              "variant": 5,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 1,
+              "variant": 0,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 1,
+              "variant": 1,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 1,
+              "variant": 2,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 1,
+              "variant": 3,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 1,
+              "variant": 4,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 1,
+              "variant": 5,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 2,
+              "variant": 0,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 2,
+              "variant": 1,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 2,
+              "variant": 2,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 2,
+              "variant": 3,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 2,
+              "variant": 4,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 1,
+              "mode": 2,
+              "variant": 5,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 0,
+              "variant": 0,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 0,
+              "variant": 1,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 0,
+              "variant": 2,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 0,
+              "variant": 3,
+              "fields": [
+                "preflash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 0,
+              "variant": 4,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 0,
+              "variant": 5,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 1,
+              "variant": 0,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 1,
+              "variant": 1,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 1,
+              "variant": 2,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 1,
+              "variant": 3,
+              "fields": [
+                "preflash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 1,
+              "variant": 4,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 1,
+              "variant": 5,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 2,
+              "variant": 0,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 2,
+              "variant": 1,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 2,
+              "variant": 2,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 2,
+              "variant": 3,
+              "fields": [
+                "preflash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 2,
+              "variant": 4,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            },
+            {
+              "route": 3,
+              "mode": 2,
+              "variant": 5,
+              "fields": [
+                "balance_hash",
+                "descriptors",
+                "final_hash",
+                "main",
+                "preflash",
+                "print_hash"
+              ]
+            }
+          ],
+          "executable": {
+            "path": "C:\\Dev\\Codex\\out\\validation\\windows-clang-release\\s4-c-slice-1-approved-products-2026-10-20\\capture\\products.exe",
+            "sha256": "f3231952630c4788e872ec5cc99e993d10a98511b573f2c03d5de3c9ed788f96"
+          }
+        },
+        "cache": {
+          "collection": "out/validation/windows-clang-release/s4-c-slice-1-approved-cache-2026-10-20/capture/collection.json",
+          "collection_sha256": "127ed91cf41203ba2dfac42a7a40573c1b235afaa6e864b35d4be8983acb6271",
+          "payload_sha256": "1fc26246263f207320af8c89a94c97932fe18c0a3ab64b0b4e8091b075777a4d",
+          "selected": "windows-clang-release-rust-cache.json",
+          "changed_rows": [
+            {
+              "variant": 0,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content"
+              ]
+            },
+            {
+              "variant": 0,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content"
+              ]
+            },
+            {
+              "variant": 1,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 1,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 2,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 2,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 3,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 3,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 4,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 4,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 5,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 5,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content",
+                "preflash"
+              ]
+            },
+            {
+              "variant": 6,
+              "repeat": 0,
+              "fields": [
+                "main",
+                "main_content"
+              ]
+            },
+            {
+              "variant": 6,
+              "repeat": 1,
+              "fields": [
+                "main",
+                "main_content"
+              ]
+            }
+          ],
+          "executable": {
+            "path": "C:\\Dev\\Codex\\out\\validation\\windows-clang-release\\s4-c-slice-1-approved-cache-2026-10-20\\capture\\cache.exe",
+            "sha256": "e9e40ca1bb19414b3dead3626d275392df8219d4a285d3ec173a5af0f40a4d4f"
+          }
+        }
+      }
+    }
+  },
+  "downstream_expectations": "product-updates.json"
+}

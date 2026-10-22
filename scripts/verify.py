@@ -20,6 +20,8 @@ from build_evidence import (
     SCOPED_PROTOCOL,
     check_scoped_preparation,
     prepare_build,
+    prepare_targets,
+    retire_s4c1_pending,
     run_ctest,
 )
 from execution import Campaign, OutputLease, UnresolvedScope, digest, write_json
@@ -46,6 +48,21 @@ def dirty_paths(root, staged=None):
     return set(staged) | {name for command in commands for name in subprocess.check_output(command, cwd=root).decode().split("\0") if name}
 
 
+def is_documentation(name):
+    """Identify repository prose for broad discovery, never declared inputs."""
+    path = Path(name)
+    if path.suffix != ".md":
+        return False
+    if len(path.parts) == 1:
+        return name in {"README.md", "CONTRIBUTING.md"}
+    if path.parts[0] == "docs":
+        return True
+    if path.parts[0] != "tests":
+        return False
+    fixture = any(part == "fixtures" or part.endswith("-fixtures") for part in path.parts[:-1])
+    return not fixture or path.name == "README.md" or path.name.endswith("-README.md")
+
+
 def source_snapshot(root):
     """Observe owned source/configuration content without reading the fixture corpus."""
     names = subprocess.check_output(
@@ -56,7 +73,8 @@ def source_snapshot(root):
     names += ["rust/film-juicer-plugin/src/cuda/sys.rs", "src/GeneratedColorSpaces.cpp", "src/GeneratedColorSpaces.h"]
     observed = {}
     for name in sorted(set(names) | dirty):
-        if not name or name.startswith((".juicer-local/", "out/")) or "__pycache__" in Path(name).parts:
+        if (not name or name.startswith((".juicer-local/", "out/"))
+                or "__pycache__" in Path(name).parts or is_documentation(name)):
             continue
         path = root / name
         payload = (name.startswith(("Resources/", "external/")) or "/fixtures/" in name
@@ -77,7 +95,9 @@ def source_snapshot(root):
 
 def edit_selection(current, previous, explicit=()):
     old = previous["observed"]
-    changed = {name for name in old.keys() | current.keys() if old.get(name) != current.get(name) or (name in old) != (name in current)}
+    changed = {name for name in old.keys() | current.keys()
+               if not is_documentation(name)
+               and (old.get(name) != current.get(name) or (name in old) != (name in current))}
     return sorted(set(previous.get("pending", ())) | changed)
 
 
@@ -180,14 +200,17 @@ def load_development_state(root, build, previous_path, explicit):
     if not previous_path:
         current = source_snapshot(root)
         # Observation alone is never a successful verification baseline.
-        return {"observed": current, "pending": sorted(dirty_paths(root)), "established": True}
+        return {"observed": current,
+                "pending": sorted(name for name in dirty_paths(root) if not is_documentation(name)),
+                "established": True}
     previous = json.loads(Path(previous_path).read_text(encoding="utf-8"))
     if previous.get("preset") != build.name or previous.get("mode") not in {"development", "preparation", "qualification"}:
         raise ValueError("previous receipt must be development evidence for this preset")
     if previous.get("protocol") != SCOPED_PROTOCOL:
         current = source_snapshot(root)
         # Retain failures, but never import a legacy preparation/qualification pass.
-        return {"observed": current, "pending": sorted(set(previous.get("pending", ())) | dirty_paths(root)), "established": True}
+        pending = set(previous.get("pending", ())) | {name for name in dirty_paths(root) if not is_documentation(name)}
+        return {"observed": current, "pending": sorted(pending), "established": True}
     return previous
 
 
@@ -372,7 +395,12 @@ def main():
     modes = parser.add_subparsers(dest="mode", required=True)
     preparation = modes.add_parser("prepare", help="prepare explicit owning targets and dependencies only")
     preparation.add_argument("--preset", required=True)
-    preparation.add_argument("--files", nargs="+", required=True)
+    preparation_scope = preparation.add_mutually_exclusive_group(required=True)
+    preparation_scope.add_argument("--files", nargs="+")
+    preparation_scope.add_argument("--targets", nargs="+")
+    preparation.add_argument("--testing", choices=("ON", "OFF"), default="ON")
+    retirement = modes.add_parser("retire-s4c1-pending", help="one-time disposition of the two owner-authorized Linux legacy markers")
+    retirement.add_argument("--preset", required=True, choices=("linux-debug", "linux-release"))
     dev = modes.add_parser("development")
     dev.add_argument("--preset", required=True)
     choice = dev.add_mutually_exclusive_group(required=True)
@@ -391,6 +419,9 @@ def main():
     collection.add_argument("--receipts", nargs="+", type=Path, required=True)
     collection.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.mode == "retire-s4c1-pending":
+        print("Legacy retirement only; fresh preparation still required:", retire_s4c1_pending(ROOT, args.preset))
+        return 0
     if args.mode == "collect-qualification":
         from qualification import collect_qualification
         result = collect_qualification(ROOT, args.receipts)
@@ -404,6 +435,12 @@ def main():
         result = qualify(ROOT, args)
         return 2 if json.loads(result.read_text())["status"] == "incomplete" else 0
     if args.mode == "prepare":
+        if args.targets:
+            print("Target preparation only; no runtime qualification:",
+                  prepare_targets(ROOT, args.preset, args.targets, args.testing))
+            return 0
+        if args.testing != "ON":
+            raise ValueError("file-selected development preparation requires testing ON")
         if args.preset != "linux-debug":
             raise ValueError("preparation supports linux-debug only")
         build = ROOT / "out/build" / args.preset
