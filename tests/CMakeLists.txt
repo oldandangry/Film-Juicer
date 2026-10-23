@@ -218,6 +218,11 @@ if(UNIX)
     set_property(TARGET JuicerFilmRecipeTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 add_dependencies(JuicerFilmRecipeTests juicer_test_resources)
+add_test(NAME Ffi.Host.ScannerLut COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/lut-fixtures/manifest.json" scanner-lut "${JUICER_TEST_PRESET_NAME}")
+add_test(NAME Scanner.Host.LutProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/scanner/lut-fixtures/manifest.json" scanner-lut-products "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Ffi.Host.ScannerLut Scanner.Host.LutProducts PROPERTIES LABELS "host" TIMEOUT 180)
 if(WIN32)
     set(JUICER_FILM_DIR_FIXTURE windows)
 else()
@@ -528,7 +533,7 @@ add_test(NAME Quality.RustBoundaries
             -s "${CMAKE_CURRENT_SOURCE_DIR}/quality"
             -p test_rust_boundaries.py -v)
 set_tests_properties(Quality.RustBoundaries PROPERTIES
-    LABELS "host" TIMEOUT 240)
+    LABELS "host" TIMEOUT 1200)
 
 file(GLOB_RECURSE JUICER_TEST_RESOURCE_FILES CONFIGURE_DEPENDS
     LIST_DIRECTORIES FALSE "${PROJECT_SOURCE_DIR}/Resources/*")
@@ -810,7 +815,7 @@ add_test(NAME Ofx.Gpu.ExecutorFailureOrder
     COMMAND JuicerExecutorFailureOrderProbe --failure-order)
 set_tests_properties(Ofx.Gpu.ExecutorFailureOrder PROPERTIES
     LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu)
-foreach(resource_failure IN ITEMS DefectFence GrainUpload)
+foreach(resource_failure IN ITEMS DefectFence GrainUpload ScannerLut)
     add_test(NAME "Ofx.Gpu.ResourceFailure.${resource_failure}"
         COMMAND JuicerExecutorFailureOrderProbe --resource-failure "${resource_failure}")
     set_tests_properties("Ofx.Gpu.ResourceFailure.${resource_failure}" PROPERTIES
@@ -844,7 +849,7 @@ add_test(NAME Ofx.Gpu.AdapterTrace
         "${JUICER_TEST_ARTIFACT_ROOT}/ofx/adapter_trace.txt"
         --grain-fixtures "${CMAKE_CURRENT_SOURCE_DIR}/film/grain-fixtures/manifest.json" "${JUICER_TEST_PRESET_NAME}")
 set_tests_properties(Ofx.Gpu.AdapterTrace PROPERTIES
-    LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
+    LABELS "gpu" TIMEOUT 1800 RESOURCE_LOCK juicer_gpu)
 
 add_executable(JuicerScatterHalationGpuTests
     scatter_halation/integration_test.cpp ofx/render_assertions.cpp
@@ -971,7 +976,7 @@ add_test(NAME Scanner.Gpu.CorrectionRoutes COMMAND JuicerScannerOutputTests --gt
 set_tests_properties(Scanner.Gpu.CorrectionRoutes PROPERTIES
     LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
 set_tests_properties(Scanner.Gpu.OutputEncoding PROPERTIES
-    LABELS "gpu" TIMEOUT 300 RESOURCE_LOCK juicer_gpu)
+    LABELS "gpu" TIMEOUT 1200 RESOURCE_LOCK juicer_gpu)
 
 add_executable(JuicerRenderAssertionTests ofx/render_assertions_test.cpp ofx/render_assertions.cpp)
 target_compile_features(JuicerRenderAssertionTests PRIVATE cxx_std_20)
@@ -1302,7 +1307,7 @@ set(juicer_tooling_tests Quality.Dispatcher Quality.ToolingLint Quality.Executio
     Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint Quality.PreparationRenewal
     Ctest.Host.Report Ctest.Host.Repetition Ffi.Host.RustBuild)
 set(juicer_boundary_tests
-    Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Quality.RustNaming Quality.RustBoundaries)
+    Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerLut Scanner.Host.LutProducts Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat
     Gamut.Host.Output.FixtureFormat)

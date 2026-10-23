@@ -1121,6 +1121,123 @@ static int scanner_correction_values(void) {
     return 0;
 }
 
+typedef FjStatus (*ScannerLutAcquire)(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*);
+typedef FjStatus (*ScannerLutView)(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
+typedef FjStatus (*ScannerLutRelease)(FjScannerLutOwner*, FjErrorBuffer*);
+_Static_assert(_Generic(&fj_legacy_scanner_lut_acquire, ScannerLutAcquire: 1, default: 0), "LUT acquire C11 signature");
+_Static_assert(_Generic(&fj_legacy_scanner_lut_view, ScannerLutView: 1, default: 0), "LUT view C11 signature");
+_Static_assert(_Generic(&fj_legacy_scanner_lut_release, ScannerLutRelease: 1, default: 0), "LUT release C11 signature");
+_Static_assert(sizeof(FjScannerLutInput)==160 && _Alignof(FjScannerLutInput)==8, "LUT input layout");
+_Static_assert(sizeof(FjScannerLutView)==104 && _Alignof(FjScannerLutView)==8, "LUT view layout");
+_Static_assert(sizeof(FjScannerLutFailure)==24 && _Alignof(FjScannerLutFailure)==8, "LUT failure layout");
+static int lut_fields(FjScannerLutFailure f, uint32_t reason, uint32_t buffer, uint64_t index, uint32_t channel) {
+    return f.reason==reason && f.buffer==buffer && f.index==index && f.channel==channel;
+}
+static void lut_report(const char* name, FjStatus s, FjScannerLutFailure f) {
+    printf("SCANNER_LUT_CASE %s category=%u api=%u native_code=%lld reason=%u channel=%u index=%llu buffer=%u fields=pass\n", name,s.category,s.api,(long long)s.native_code,f.reason,f.channel,(unsigned long long)f.index,f.buffer);
+}
+static FjScannerLutInput lut_input(float spectra[7][3], uint32_t resolution) {
+    FjScannerLutInput in={0};
+    memcpy(spectra[0],lut_input_eps_c,12);memcpy(spectra[1],lut_input_eps_m,12);memcpy(spectra[2],lut_input_eps_y,12);
+    memcpy(spectra[3],lut_input_weighted_x,12);memcpy(spectra[4],lut_input_weighted_y,12);memcpy(spectra[5],lut_input_weighted_z,12);memcpy(spectra[6],lut_input_baseline,12);
+    in.eps_c=(FjFloatSpan){spectra[0],3};in.eps_m=(FjFloatSpan){spectra[1],3};in.eps_y=(FjFloatSpan){spectra[2],3};
+    in.weighted_x=(FjFloatSpan){spectra[3],3};in.weighted_y=(FjFloatSpan){spectra[4],3};in.weighted_z=(FjFloatSpan){spectra[5],3};in.baseline_min=(FjFloatSpan){spectra[6],3};
+    memcpy(in.range_min_cmy,lut_input_range_min_cmy,12);memcpy(in.inverse_span_cmy,lut_input_inverse_span_cmy,12);memcpy(&in.inv_yn,lut_input_inv_yn,4);
+    in.sample_count=3;in.has_baseline=1;in.medium=0;in.resolution=resolution;
+    return in;
+}
+static FjStatus lut_expiring_acquire(uint32_t resolution,FjScannerLutOwner** owner,FjScannerLutFailure* failure,FjErrorBuffer* error) {
+    float spectra[7][3];FjScannerLutInput in=lut_input(spectra,resolution);
+    FjStatus result=fj_legacy_scanner_lut_acquire(&in,owner,failure,error);
+    memset(spectra,0x55,sizeof(spectra));memset(&in,0x55,sizeof(in));
+    return result;
+}
+static int lut_view_words(FjScannerLutView v,uint32_t r) {
+    const FjFloatSpan arrays[]={v.log2_xyz,v.slope_c,v.slope_m,v.slope_y,v.cell_min,v.cell_max};
+    const uint32_t* expected2[]={lut_2_log2_xyz,lut_2_slope_c,lut_2_slope_m,lut_2_slope_y,lut_2_cell_min,lut_2_cell_max};
+    const uint32_t* expected3[]={lut_3_log2_xyz,lut_3_slope_c,lut_3_slope_m,lut_3_slope_y,lut_3_cell_min,lut_3_cell_max};
+    CHECK(v.resolution==r);
+    for(size_t i=0;i<6;++i) {size_t side=i<4?r:r-1;size_t count=3*side*side*side;CHECK(arrays[i].data && arrays[i].count==count && words(arrays[i].data,(r==2?expected2:expected3)[i],count));}
+    return 0;
+}
+static int lut_empty(FjScannerLutView v) {
+    const FjFloatSpan arrays[]={v.log2_xyz,v.slope_c,v.slope_m,v.slope_y,v.cell_min,v.cell_max};
+    if(v.resolution) return 0;
+    for(size_t i=0;i<6;++i) if(arrays[i].data || arrays[i].count) return 0;
+    return 1;
+}
+static int lut_reject(const char* name,FjScannerLutInput in,uint32_t category,uint32_t reason,uint32_t buffer,uint64_t index,uint32_t channel) {
+    FjScannerLutOwner* owner=(FjScannerLutOwner*)(uintptr_t)0x5555;FjScannerLutFailure f={99,99,99,99};
+    char text[256];FjErrorBuffer error={text,sizeof(text),99};
+    FjStatus result=fj_legacy_scanner_lut_acquire(&in,&owner,&f,&error);
+    CHECK(status(result,category) && !owner && lut_fields(f,reason,buffer,index,channel));
+    CHECK(error.length<sizeof(text) && text[error.length]==0);
+    CHECK(strcmp(text,reason==1?"invalid scanner LUT arguments":reason==2?"canonical scan LUT resolution must be at least two":reason==3?"scanner LUT dimensions exceed addressable capacity":"canonical scan LUT build produced non-finite log2 XYZ")==0);
+    lut_report(name,result,f);return 0;
+}
+static int scanner_lut_values(void) {
+    for(uint32_t r=2;r<=3;++r) {
+        FjScannerLutOwner* owner=NULL;FjScannerLutFailure f={99,99,99,99};char text[256];FjErrorBuffer error={text,sizeof(text),99};
+        FjStatus result=lut_expiring_acquire(r,&owner,&f,&error);
+        CHECK(status(result,0) && owner && lut_fields(f,0,0,UINT64_MAX,UINT32_MAX) && error.length==0 && text[0]==0);
+        FjScannerLutView v;CHECK(status(fj_legacy_scanner_lut_view(owner,&v,&f,&error),0));CHECK(lut_view_words(v,r)==0 && lut_fields(f,0,0,UINT64_MAX,UINT32_MAX));
+        FjScannerLutView repeated;CHECK(status(fj_legacy_scanner_lut_view(owner,&repeated,&f,NULL),0) && repeated.log2_xyz.data==v.log2_xyz.data);CHECK(lut_view_words(repeated,r)==0);
+        CHECK(status(fj_legacy_scanner_lut_release(owner,NULL),0));owner=NULL;
+        lut_report(r==2?"LUT-A2":"LUT-A3",result,f);
+    }
+    float spectra[7][3];FjScannerLutInput base=lut_input(spectra,2),in=base;
+    in.resolution=1;CHECK(lut_reject("LUT-FAIL-RESOLUTION-1",in,3,2,0,UINT64_MAX,UINT32_MAX)==0);
+    in=base;in.resolution=UINT32_MAX;CHECK(lut_reject("LUT-FAIL-CAPACITY",in,4,3,1,UINT64_MAX,UINT32_MAX)==0);
+    in=base;in.eps_c.data=NULL;CHECK(lut_reject("LUT-FAIL-MISSING-SPAN",in,2,1,0,UINT64_MAX,UINT32_MAX)==0);
+    in=base;in.weighted_z.count=2;CHECK(lut_reject("LUT-FAIL-MISMATCHED-SPAN",in,2,1,0,UINT64_MAX,UINT32_MAX)==0);
+    in=base;in.medium=256;CHECK(lut_reject("LUT-FAIL-MEDIUM-256",in,2,1,0,UINT64_MAX,UINT32_MAX)==0);
+    in=base;in.has_baseline=2;CHECK(lut_reject("LUT-FAIL-BOOLEAN-2",in,2,1,0,UINT64_MAX,UINT32_MAX)==0);
+    in=base;in.sample_count=0;in.eps_c=in.eps_m=in.eps_y=in.weighted_x=in.weighted_y=in.weighted_z=in.baseline_min=(FjFloatSpan){(const float*)(uintptr_t)1,SIZE_MAX};
+    CHECK(lut_reject("LUT-MEDIUM-K0",in,3,5,0,0,0)==0);
+    for(uint32_t channel=0;channel<3;++channel) {
+        float zero=0,one=1,baseline=-1024;
+        in=(FjScannerLutInput){0};in.eps_c=in.eps_m=in.eps_y=(FjFloatSpan){&zero,1};
+        in.weighted_x=(FjFloatSpan){channel==0?&one:&zero,1};in.weighted_y=(FjFloatSpan){channel==1?&one:&zero,1};in.weighted_z=(FjFloatSpan){channel==2?&one:&zero,1};
+        in.baseline_min=(FjFloatSpan){&baseline,1};in.sample_count=1;in.inv_yn=1;in.has_baseline=1;in.medium=1;in.resolution=2;
+        in.inverse_span_cmy[0]=in.inverse_span_cmy[1]=in.inverse_span_cmy[2]=1;
+        const char* names[]={"LUT-SPECTRAL-EARLY-X","LUT-SPECTRAL-EARLY-Y","LUT-SPECTRAL-EARLY-Z"};CHECK(lut_reject(names[channel],in,3,5,0,0,channel)==0);
+    }
+    FjScannerLutView v;memset(&v,0x55,sizeof(v));FjScannerLutFailure f={99,99,99,99};
+    FjStatus result=fj_legacy_scanner_lut_view(NULL,&v,&f,NULL);CHECK(status(result,2)&&lut_empty(v)&&lut_fields(f,1,0,UINT64_MAX,UINT32_MAX));lut_report("LUT-FAIL-NULL-VIEW",result,f);
+    f=(FjScannerLutFailure){99,99,99,99};result=fj_legacy_scanner_lut_acquire(&base,(FjScannerLutOwner**)(uintptr_t)1,&f,NULL);CHECK(status(result,2)&&lut_fields(f,1,0,UINT64_MAX,UINT32_MAX));lut_report("LUT-FAIL-INDEPENDENT-OUTPUT-CLEAR",result,f);
+    FjErrorBuffer malformed={NULL,1,99};FjScannerLutOwner* owner=(FjScannerLutOwner*)(uintptr_t)0x5555;
+    result=fj_legacy_scanner_lut_acquire(&base,&owner,&f,&malformed);CHECK(status(result,2)&&!owner&&malformed.length==0&&lut_fields(f,1,0,UINT64_MAX,UINT32_MAX));lut_report("LUT-FAIL-MALFORMED-DIAGNOSTIC",result,f);
+    /* Release has no failure output; neutral metadata columns are sentinels. */
+    f=(FjScannerLutFailure){0,UINT32_MAX,UINT64_MAX,0};result=fj_legacy_scanner_lut_release(NULL,NULL);CHECK(status(result,0));lut_report("LUT-LIFE-NULL-RELEASE",result,f);
+    CHECK(status(fj_legacy_scanner_lut_acquire(&base,&owner,&f,NULL),0));result=fj_legacy_scanner_lut_release(owner,&malformed);owner=NULL;CHECK(status(result,2)&&malformed.length==0);lut_report("LUT-LIFE-CONSUMED-INVALID-DIAGNOSTIC",result,f);
+    return 0;
+}
+_Static_assert(offsetof(FjScannerLutInput,eps_c)==0, "FjScannerLutInput.eps_c offset");
+_Static_assert(offsetof(FjScannerLutInput,eps_m)==16, "FjScannerLutInput.eps_m offset");
+_Static_assert(offsetof(FjScannerLutInput,eps_y)==32, "FjScannerLutInput.eps_y offset");
+_Static_assert(offsetof(FjScannerLutInput,weighted_x)==48, "FjScannerLutInput.weighted_x offset");
+_Static_assert(offsetof(FjScannerLutInput,weighted_y)==64, "FjScannerLutInput.weighted_y offset");
+_Static_assert(offsetof(FjScannerLutInput,weighted_z)==80, "FjScannerLutInput.weighted_z offset");
+_Static_assert(offsetof(FjScannerLutInput,baseline_min)==96, "FjScannerLutInput.baseline_min offset");
+_Static_assert(offsetof(FjScannerLutInput,range_min_cmy)==112, "FjScannerLutInput.range_min_cmy offset");
+_Static_assert(offsetof(FjScannerLutInput,inverse_span_cmy)==124, "FjScannerLutInput.inverse_span_cmy offset");
+_Static_assert(offsetof(FjScannerLutInput,sample_count)==136, "FjScannerLutInput.sample_count offset");
+_Static_assert(offsetof(FjScannerLutInput,inv_yn)==140, "FjScannerLutInput.inv_yn offset");
+_Static_assert(offsetof(FjScannerLutInput,has_baseline)==144, "FjScannerLutInput.has_baseline offset");
+_Static_assert(offsetof(FjScannerLutInput,medium)==148, "FjScannerLutInput.medium offset");
+_Static_assert(offsetof(FjScannerLutInput,resolution)==152, "FjScannerLutInput.resolution offset");
+_Static_assert(offsetof(FjScannerLutView,resolution)==0, "FjScannerLutView.resolution offset");
+_Static_assert(offsetof(FjScannerLutView,log2_xyz)==8, "FjScannerLutView.log2_xyz offset");
+_Static_assert(offsetof(FjScannerLutView,slope_c)==24, "FjScannerLutView.slope_c offset");
+_Static_assert(offsetof(FjScannerLutView,slope_m)==40, "FjScannerLutView.slope_m offset");
+_Static_assert(offsetof(FjScannerLutView,slope_y)==56, "FjScannerLutView.slope_y offset");
+_Static_assert(offsetof(FjScannerLutView,cell_min)==72, "FjScannerLutView.cell_min offset");
+_Static_assert(offsetof(FjScannerLutView,cell_max)==88, "FjScannerLutView.cell_max offset");
+_Static_assert(offsetof(FjScannerLutFailure,reason)==0, "FjScannerLutFailure.reason offset");
+_Static_assert(offsetof(FjScannerLutFailure,channel)==4, "FjScannerLutFailure.channel offset");
+_Static_assert(offsetof(FjScannerLutFailure,index)==8, "FjScannerLutFailure.index offset");
+_Static_assert(offsetof(FjScannerLutFailure,buffer)==16, "FjScannerLutFailure.buffer offset");
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -1139,6 +1256,7 @@ int main(int argc, char** argv) {
     CHECK(preflash_values() == 0);
     CHECK(balance_values() == 0);
     CHECK(scanner_correction_values() == 0);
+    CHECK(scanner_lut_values() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

@@ -5,7 +5,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <sstream>
 #include <string>
 
@@ -150,148 +149,8 @@ namespace {
 
 namespace Scanner {
 
-    void normalize_density(
-        const ScannerMediumRuntime& medium,
-        const float D_cmy[3],
-        double D_norm[3]) {
-        if (!D_cmy || !D_norm) {
-            return;
-        }
-
-        if (medium.medium == ScannerMedium::Negative) {
-            D_norm[0] =
-                (static_cast<double>(D_cmy[0]) + static_cast<double>(medium.range.min_cmy[0])) *
-                static_cast<double>(medium.range.inv_max_cmy[0]);
-            D_norm[1] =
-                (static_cast<double>(D_cmy[1]) + static_cast<double>(medium.range.min_cmy[1])) *
-                static_cast<double>(medium.range.inv_max_cmy[1]);
-            D_norm[2] =
-                (static_cast<double>(D_cmy[2]) + static_cast<double>(medium.range.min_cmy[2])) *
-                static_cast<double>(medium.range.inv_max_cmy[2]);
-        } else {
-            D_norm[0] =
-                (static_cast<double>(D_cmy[0]) - static_cast<double>(medium.range.min_cmy[0])) *
-                static_cast<double>(medium.range.inv_max_cmy[0]);
-            D_norm[1] =
-                (static_cast<double>(D_cmy[1]) - static_cast<double>(medium.range.min_cmy[1])) *
-                static_cast<double>(medium.range.inv_max_cmy[1]);
-            D_norm[2] =
-                (static_cast<double>(D_cmy[2]) - static_cast<double>(medium.range.min_cmy[2])) *
-                static_cast<double>(medium.range.inv_max_cmy[2]);
-        }
-    }
-
     SpectralTablesView spectral_tables_view(const Spectral::SpectralTables& tables) {
         return {tables.epsC, tables.epsM, tables.epsY, tables.Ax, tables.Ay, tables.Az, tables.baseDensityMin, tables.K, tables.invYn, tables.hasBaseline};
-    }
-
-    void spectral_to_log_xyz(
-        const ScannerMediumRuntime& medium,
-        const double D_norm[3],
-        double logXYZ[3]) {
-        if (!D_norm || !logXYZ) {
-            return;
-        }
-        const MediumView view{
-            medium.medium,
-            medium.tables ? spectral_tables_view(*medium.tables) : SpectralTablesView{},
-            medium.range};
-        spectral_to_log_xyz(view, D_norm, logXYZ);
-    }
-
-    void spectral_to_log_xyz(
-        const MediumView& medium,
-        const double D_norm[3],
-        double logXYZ[3]) {
-        if (!D_norm || !logXYZ) {
-            return;
-        }
-
-        const SpectralTablesView* tables = &medium.tables;
-        if (tables->K <= 0) {
-            logXYZ[0] = logXYZ[1] = logXYZ[2] = std::numeric_limits<double>::quiet_NaN();
-            return;
-        }
-
-        double D_denorm[3];
-        if (medium.medium == ScannerMedium::Negative) {
-            D_denorm[0] =
-                D_norm[0] / static_cast<double>(medium.range.inv_max_cmy[0]) -
-                static_cast<double>(medium.range.min_cmy[0]);
-            D_denorm[1] =
-                D_norm[1] / static_cast<double>(medium.range.inv_max_cmy[1]) -
-                static_cast<double>(medium.range.min_cmy[1]);
-            D_denorm[2] =
-                D_norm[2] / static_cast<double>(medium.range.inv_max_cmy[2]) -
-                static_cast<double>(medium.range.min_cmy[2]);
-        } else {
-            D_denorm[0] =
-                D_norm[0] / static_cast<double>(medium.range.inv_max_cmy[0]) +
-                static_cast<double>(medium.range.min_cmy[0]);
-            D_denorm[1] =
-                D_norm[1] / static_cast<double>(medium.range.inv_max_cmy[1]) +
-                static_cast<double>(medium.range.min_cmy[1]);
-            D_denorm[2] =
-                D_norm[2] / static_cast<double>(medium.range.inv_max_cmy[2]) +
-                static_cast<double>(medium.range.min_cmy[2]);
-        }
-
-        const int K = tables->K;
-        const float* epsC = tables->epsC.data();
-        const float* epsM = tables->epsM.data();
-        const float* epsY = tables->epsY.data();
-        const float* Ax = tables->Ax.data();
-        const float* Ay = tables->Ay.data();
-        const float* Az = tables->Az.data();
-        const float* baseDensityMin = tables->baseDensityMin.data();
-
-        const bool useBaseline = tables->hasBaseline;
-
-        double X = 0.0;
-        double Y = 0.0;
-        double Z = 0.0;
-        for (int i = 0; i < K; ++i) {
-            const double baseSpectral =
-                useBaseline ? static_cast<double>(baseDensityMin[i]) : 0.0;
-            const double Dlambda =
-                D_denorm[0] * static_cast<double>(epsC[i]) +
-                D_denorm[1] * static_cast<double>(epsM[i]) +
-                D_denorm[2] * static_cast<double>(epsY[i]) + baseSpectral;
-
-            const double transmittance = std::pow(10.0, -Dlambda);
-            const double ax = static_cast<double>(Ax[i]);
-            const double ay = static_cast<double>(Ay[i]);
-            const double az = static_cast<double>(Az[i]);
-            if (std::isfinite(ax)) {
-                const double out = transmittance * ax;
-                if (!std::isnan(out)) {
-                    X += out;
-                }
-            }
-            if (std::isfinite(ay)) {
-                const double out = transmittance * ay;
-                if (!std::isnan(out)) {
-                    Y += out;
-                }
-            }
-            if (std::isfinite(az)) {
-                const double out = transmittance * az;
-                if (!std::isnan(out)) {
-                    Z += out;
-                }
-            }
-        }
-
-        const double invNormalization = static_cast<double>(tables->invYn);
-        const double XYZ[3] = {
-            X * invNormalization,
-            Y * invNormalization,
-            Z * invNormalization};
-
-        constexpr double kEps = 1e-10;
-        logXYZ[0] = std::log10(std::fmax(XYZ[0], 0.0) + kEps);
-        logXYZ[1] = std::log10(std::fmax(XYZ[1], 0.0) + kEps);
-        logXYZ[2] = std::log10(std::fmax(XYZ[2], 0.0) + kEps);
     }
 
     ColorRuntime build_color_runtime(

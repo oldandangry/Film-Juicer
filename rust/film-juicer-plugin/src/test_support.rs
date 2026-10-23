@@ -2085,3 +2085,46 @@ const _: unsafe extern "C" fn(
     *mut crate::print_bridge::FjPrintBalanceFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_print_balance_prepare;
+
+/// # Safety
+/// Same checked, disjoint synchronous contract as scanner_bridge::lut_acquire.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_scanner_lut_acquire(
+    input: *const scanner_bridge::FjScannerLutInput,
+    out: *mut *mut scanner_bridge::FjScannerLutOwner,
+    failure: *mut scanner_bridge::FjScannerLutFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked operation scopes every foreign projection.
+    unsafe { scanner_bridge::lut_acquire(input, out, failure, error) }
+}
+/// # Safety
+/// Same live unique-owner and disjoint output contract as scanner_bridge::lut_view.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_scanner_lut_view(
+    owner: *const scanner_bridge::FjScannerLutOwner,
+    out: *mut scanner_bridge::FjScannerLutView,
+    failure: *mut scanner_bridge::FjScannerLutFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The shared checked operation scopes the immutable owner borrow.
+    unsafe { scanner_bridge::lut_view(owner, out, failure, error) }
+}
+/// # Safety
+/// Same consuming unique-owner contract as scanner_bridge::lut_release.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_scanner_lut_release(
+    owner: *mut scanner_bridge::FjScannerLutOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Ownership transfers into the shared consuming checked release.
+    unsafe { scanner_bridge::lut_release(owner, error) }
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_scanner_lut_fault(operation: u32, fault: u32) -> FjStatus {
+    scanner_bridge::lut_faults::arm(operation, fault)
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_scanner_lut_live_owners() -> usize {
+    scanner_bridge::lut_faults::live()
+}

@@ -15,6 +15,7 @@
 #include "GamutCompression.h"
 #include "Scanner.h"
 #include "RustFilmRecipeBridge.h"
+#include "RustScannerBridge.h"
 
 #include "Logging.h"
 #include "Hash.h"
@@ -90,187 +91,6 @@ namespace JuicerCuda {
         return result;
     }
 
-    namespace Precompute {
-
-        struct CanonicalScanLutCpu {
-            std::vector<float> log2XYZ;
-            std::vector<float> slopeC;
-            std::vector<float> slopeM;
-            std::vector<float> slopeY;
-            std::vector<float> cellMin;
-            std::vector<float> cellMax;
-        };
-
-        namespace {
-
-            size_t scan_lut_index(std::uint32_t res, std::uint32_t c, std::uint32_t m, std::uint32_t y, std::uint32_t out) {
-                return (((static_cast<size_t>(c) * res + m) * res + y) * 3u) + out;
-            }
-
-            size_t scan_lut_cell_index(std::uint32_t cellRes, std::uint32_t c, std::uint32_t m, std::uint32_t y, std::uint32_t out) {
-                return (((static_cast<size_t>(c) * cellRes + m) * cellRes + y) * 3u) + out;
-            }
-
-            void fill_monotone_slopes_1d(const std::vector<double>& values, std::vector<double>& slopes) {
-                const size_t size = values.size();
-                slopes.assign(size, 0.0);
-                if (size <= 1u) {
-                    return;
-                }
-
-                std::vector<double> deltas(size - 1u);
-                for (size_t index = 0; index + 1u < size; ++index) {
-                    deltas[index] = values[index + 1u] - values[index];
-                }
-                if (size == 2u) {
-                    slopes[0] = deltas[0];
-                    slopes[1] = deltas[0];
-                    return;
-                }
-
-                double left = 0.5 * (3.0 * deltas[0] - deltas[1]);
-                if (left * deltas[0] <= 0.0) {
-                    left = 0.0;
-                } else if (deltas[0] * deltas[1] < 0.0 && std::abs(left) > std::abs(3.0 * deltas[0])) {
-                    left = 3.0 * deltas[0];
-                }
-                slopes[0] = left;
-
-                for (size_t index = 1u; index + 1u < size; ++index) {
-                    const double previous = deltas[index - 1u];
-                    const double next = deltas[index];
-                    slopes[index] =
-                        previous == 0.0 || next == 0.0 || previous * next <= 0.0
-                            ? 0.0
-                            : 2.0 * previous * next / (previous + next);
-                }
-
-                double right = 0.5 * (3.0 * deltas[size - 2u] - deltas[size - 3u]);
-                if (right * deltas[size - 2u] <= 0.0) {
-                    right = 0.0;
-                } else if (deltas[size - 2u] * deltas[size - 3u] < 0.0 &&
-                           std::abs(right) > std::abs(3.0 * deltas[size - 2u])) {
-                    right = 3.0 * deltas[size - 2u];
-                }
-                slopes[size - 1u] = right;
-            }
-
-        } // namespace
-
-        bool build_canonical_scan_lut_cpu(
-            const Scanner::MediumView& medium,
-            std::uint32_t res,
-            CanonicalScanLutCpu& out,
-            std::string& outError) {
-            if (res < 2u) {
-                outError = "canonical scan LUT resolution must be at least two";
-                return false;
-            }
-
-            const size_t voxelValues = static_cast<size_t>(res) * res * res * 3u;
-            const std::uint32_t cellRes = res - 1u;
-            const size_t cellValues = static_cast<size_t>(cellRes) * cellRes * cellRes * 3u;
-            std::vector<double> log2XYZ(voxelValues, 0.0);
-            out.log2XYZ.assign(voxelValues, 0.0f);
-            out.slopeC.assign(voxelValues, 0.0f);
-            out.slopeM.assign(voxelValues, 0.0f);
-            out.slopeY.assign(voxelValues, 0.0f);
-            out.cellMin.assign(cellValues, 0.0f);
-            out.cellMax.assign(cellValues, 0.0f);
-
-            constexpr double kLog2_10 = 3.32192809488736234787;
-
-            for (std::uint32_t c = 0; c < res; ++c) {
-                const double nc = static_cast<double>(c) / static_cast<double>(res - 1u);
-                for (std::uint32_t m = 0; m < res; ++m) {
-                    const double nm = static_cast<double>(m) / static_cast<double>(res - 1u);
-                    for (std::uint32_t y = 0; y < res; ++y) {
-                        const double ny = static_cast<double>(y) / static_cast<double>(res - 1u);
-                        const double normalizedCmy[3] = {nc, nm, ny};
-                        double logXYZ[3] = {0.0, 0.0, 0.0};
-                        Scanner::spectral_to_log_xyz(medium, normalizedCmy, logXYZ);
-                        for (std::uint32_t output = 0; output < 3u; ++output) {
-                            if (!std::isfinite(logXYZ[output])) {
-                                outError = "canonical scan LUT build produced non-finite log2 XYZ";
-                                return false;
-                            }
-                            const size_t index = scan_lut_index(res, c, m, y, output);
-                            log2XYZ[index] = logXYZ[output] * kLog2_10;
-                            out.log2XYZ[index] = static_cast<float>(log2XYZ[index]);
-                        }
-                    }
-                }
-            }
-
-            std::vector<double> line(res);
-            std::vector<double> slopes;
-            for (std::uint32_t m = 0; m < res; ++m) {
-                for (std::uint32_t y = 0; y < res; ++y) {
-                    for (std::uint32_t output = 0; output < 3u; ++output) {
-                        for (std::uint32_t c = 0; c < res; ++c) {
-                            line[c] = log2XYZ[scan_lut_index(res, c, m, y, output)];
-                        }
-                        fill_monotone_slopes_1d(line, slopes);
-                        for (std::uint32_t c = 0; c < res; ++c) {
-                            out.slopeC[scan_lut_index(res, c, m, y, output)] = static_cast<float>(slopes[c]);
-                        }
-                    }
-                }
-            }
-            for (std::uint32_t c = 0; c < res; ++c) {
-                for (std::uint32_t y = 0; y < res; ++y) {
-                    for (std::uint32_t output = 0; output < 3u; ++output) {
-                        for (std::uint32_t m = 0; m < res; ++m) {
-                            line[m] = log2XYZ[scan_lut_index(res, c, m, y, output)];
-                        }
-                        fill_monotone_slopes_1d(line, slopes);
-                        for (std::uint32_t m = 0; m < res; ++m) {
-                            out.slopeM[scan_lut_index(res, c, m, y, output)] = static_cast<float>(slopes[m]);
-                        }
-                    }
-                }
-            }
-            for (std::uint32_t c = 0; c < res; ++c) {
-                for (std::uint32_t m = 0; m < res; ++m) {
-                    for (std::uint32_t output = 0; output < 3u; ++output) {
-                        for (std::uint32_t y = 0; y < res; ++y) {
-                            line[y] = log2XYZ[scan_lut_index(res, c, m, y, output)];
-                        }
-                        fill_monotone_slopes_1d(line, slopes);
-                        for (std::uint32_t y = 0; y < res; ++y) {
-                            out.slopeY[scan_lut_index(res, c, m, y, output)] = static_cast<float>(slopes[y]);
-                        }
-                    }
-                }
-            }
-
-            for (std::uint32_t c = 0; c < cellRes; ++c) {
-                for (std::uint32_t m = 0; m < cellRes; ++m) {
-                    for (std::uint32_t y = 0; y < cellRes; ++y) {
-                        for (std::uint32_t output = 0; output < 3u; ++output) {
-                            double minimum = log2XYZ[scan_lut_index(res, c, m, y, output)];
-                            double maximum = minimum;
-                            for (std::uint32_t dc = 0; dc < 2u; ++dc) {
-                                for (std::uint32_t dm = 0; dm < 2u; ++dm) {
-                                    for (std::uint32_t dy = 0; dy < 2u; ++dy) {
-                                        const double sample =
-                                            log2XYZ[scan_lut_index(res, c + dc, m + dm, y + dy, output)];
-                                        minimum = std::min(minimum, sample);
-                                        maximum = std::max(maximum, sample);
-                                    }
-                                }
-                            }
-                            const size_t cellIndex = scan_lut_cell_index(cellRes, c, m, y, output);
-                            out.cellMin[cellIndex] = static_cast<float>(minimum);
-                            out.cellMax[cellIndex] = static_cast<float>(maximum);
-                        }
-                    }
-                }
-            }
-            return true;
-        }
-
-    } // namespace Precompute
 } // namespace JuicerCuda
 
 namespace JuicerCuda {
@@ -3912,15 +3732,21 @@ namespace JuicerCuda {
         }
 
         if (!routeLutAlreadyPrepared) {
-            Precompute::CanonicalScanLutCpu lutCpu;
+            // SF_TEMP_BRIDGE_SCANNER_LUT: scoped host owner; remove at S4.E.
+            Failure constructionFailure;
             lock.unlock();
-            const bool lutBuilt = Precompute::build_canonical_scan_lut_cpu(
+            auto lut = JuicerScanner::Lut::acquire(
                 medium,
                 scannerDescriptor.lutResolution,
-                lutCpu,
-                outError.diagnostic);
+                constructionFailure);
             lock.lock();
-            if (!validate_resource_owner_locked(resources, outError, false) || !lutBuilt) {
+            if (!validate_resource_owner_locked(resources, outError, false)) {
+                lock.unlock();
+                lut.reset();
+                return false;
+            }
+            if (!lut) {
+                outError = std::move(constructionFailure);
                 return false;
             }
             struct NextCanonicalScanLut {
@@ -3940,7 +3766,7 @@ namespace JuicerCuda {
                 free_owned_device_noexcept(resources, next.cellMax);
                 next = {};
             };
-            auto upload_next = [&](float*& destination, const std::vector<float>& source, const char* label) {
+            auto upload_next = [&](float*& destination, std::span<const float> source, const char* label) {
                 void* raw = nullptr;
                 if (!alloc_and_upload_bytes(
                         resources,
@@ -3958,12 +3784,15 @@ namespace JuicerCuda {
 
             lock.unlock();
             const bool canonicalUploaded =
-                upload_next(next.log2PchipXYZ, lutCpu.log2XYZ, "focused scan PCHIP log2 XYZ") &&
-                upload_next(next.slopeC, lutCpu.slopeC, "focused scan PCHIP C slopes") &&
-                upload_next(next.slopeM, lutCpu.slopeM, "focused scan PCHIP M slopes") &&
-                upload_next(next.slopeY, lutCpu.slopeY, "focused scan PCHIP Y slopes") &&
-                upload_next(next.cellMin, lutCpu.cellMin, "focused scan PCHIP cell minima") &&
-                upload_next(next.cellMax, lutCpu.cellMax, "focused scan PCHIP cell maxima");
+                upload_next(next.log2PchipXYZ, lut->log2_xyz(), "focused scan PCHIP log2 XYZ") &&
+                upload_next(next.slopeC, lut->slope_c(), "focused scan PCHIP C slopes") &&
+                upload_next(next.slopeM, lut->slope_m(), "focused scan PCHIP M slopes") &&
+                upload_next(next.slopeY, lut->slope_y(), "focused scan PCHIP Y slopes") &&
+                upload_next(next.cellMin, lut->cell_min(), "focused scan PCHIP cell minima") &&
+                upload_next(next.cellMax, lut->cell_max(), "focused scan PCHIP cell maxima");
+            // Native pinned staging owns every enqueued source byte at return.
+            // Release the large host buffers while the resource lock is open.
+            lut.reset();
             lock.lock();
             if (!validate_resource_owner_locked(resources, outError, false) || !canonicalUploaded) {
                 free_next();

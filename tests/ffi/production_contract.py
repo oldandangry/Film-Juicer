@@ -107,6 +107,7 @@ def execute(arguments):
         b"print preflash fixture panic",
         b"print balance fixture panic",
         b"scanner correction fixture panic",
+        b"scanner LUT fixture panic",
         b"film DIR acquire fixture panic",
         b"film DIR view fixture panic",
         b"film DIR release fixture panic",
@@ -163,6 +164,8 @@ def execute(arguments):
     consumed_paths.extend([preflash_manifest, preflash_payload])
     balance_manifest, balance_payload, _, _, _ = balance_fixture(arguments.preset)
     consumed_paths.extend([balance_manifest, balance_payload])
+    lut_manifest, lut_payload, lut_checked, _ = scanner_lut_fixture(arguments.preset)
+    consumed_paths.extend([lut_manifest, lut_payload, lut_checked])
     correction_manifest, correction_payload, correction_checked, _, _, _ = scanner_correction_fixture(arguments.preset)
     consumed_paths.extend([correction_manifest, correction_payload, correction_checked])
     consumed = {str(path): digest(path) for path in sorted(set(consumed_paths))}
@@ -210,6 +213,9 @@ def execute(arguments):
         "fj_legacy_scanner_direct_correction_prepare",
         "fj_legacy_scanner_print_correction_prepare",
         "fj_legacy_scanner_correction_input_demand",
+        "fj_legacy_scanner_lut_acquire",
+        "fj_legacy_scanner_lut_view",
+        "fj_legacy_scanner_lut_release",
         "fj_legacy_output_color",
         "fj_legacy_film_profile_acquire",
         "fj_legacy_print_profile_acquire",
@@ -245,6 +251,7 @@ def execute(arguments):
     balance_results = []
     scanner_correction_results = []
     scanner_demand_results = []
+    scanner_lut_results = []
     for name, source in probes:
         executable = out / (name + suffix)
         target_source = out / (name + ".c")
@@ -423,6 +430,16 @@ def execute(arguments):
                     assert actual == [expected[0], 0, 0, expected[1]], line
                     results.append({"case": case, "category": actual[0], "api": actual[1],
                                     "native_code": actual[2], "reason": actual[3], "fields": "pass"})
+            lut_names = ["LUT-A2", "LUT-A3", "LUT-FAIL-RESOLUTION-1", "LUT-FAIL-CAPACITY", "LUT-FAIL-MISSING-SPAN", "LUT-FAIL-MISMATCHED-SPAN", "LUT-FAIL-MEDIUM-256", "LUT-FAIL-BOOLEAN-2", "LUT-MEDIUM-K0", "LUT-SPECTRAL-EARLY-X", "LUT-SPECTRAL-EARLY-Y", "LUT-SPECTRAL-EARLY-Z", "LUT-FAIL-NULL-VIEW", "LUT-FAIL-INDEPENDENT-OUTPUT-CLEAR", "LUT-FAIL-MALFORMED-DIAGNOSTIC", "LUT-LIFE-NULL-RELEASE", "LUT-LIFE-CONSUMED-INVALID-DIAGNOSTIC"]
+            lines = [line for line in output.splitlines() if line.startswith("SCANNER_LUT_CASE ")]
+            assert len(lines) == len(lut_names)
+            envelopes = [(0, 0, 2**32-1, 2**64-1, 0)] * 2 + [(3, 2, 2**32-1, 2**64-1, 0), (4, 3, 2**32-1, 2**64-1, 1)] + [(2, 1, 2**32-1, 2**64-1, 0)] * 4 + [(3, 5, 0, 0, 0)] + [(3, 5, channel, 0, 0) for channel in range(3)] + [(2, 1, 2**32-1, 2**64-1, 0)] * 3 + [(0, 0, 2**32-1, 2**64-1, 0), (2, 0, 2**32-1, 2**64-1, 0)]
+            for line, name, envelope in zip(lines, lut_names, envelopes, strict=True):
+                match = re.fullmatch(r"SCANNER_LUT_CASE (\S+) category=(\d+) api=(\d+) native_code=(-?\d+) reason=(\d+) channel=(\d+) index=(\d+) buffer=(\d+) fields=pass", line)
+                assert match and match[1] == name, line
+                actual = [int(x) for x in match.groups()[1:]]
+                assert actual == [envelope[0], 0, 0, *envelope[1:]], line
+                scanner_lut_results.append({"case": name, "fields": actual})
     check_build_inputs()
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     if windows:
@@ -469,6 +486,8 @@ def execute(arguments):
                 "balance_results": balance_results,
                 "scanner_correction_results": scanner_correction_results,
                 "scanner_demand_results": scanner_demand_results,
+                "scanner_lut_results": scanner_lut_results,
+                "scanner_lut_fixture": {"manifest": str(lut_manifest), "payload": str(lut_payload), "normative": str(lut_checked), "logical_preset": arguments.preset},
                 "scanner_correction_fixture": {"manifest": str(correction_manifest), "payload": str(correction_payload),
                                                "normative": str(correction_checked), "logical_preset": arguments.preset},
                 "balance_fixture": {"manifest": str(balance_manifest), "payload": str(balance_payload), "logical_preset": arguments.preset},
@@ -847,6 +866,46 @@ def correction_demand(name, row):
     return [3, 7 if row["spec"]["print"] else 2], 0
 
 
+def scanner_lut_fixture(preset):
+    directory = root / "tests/scanner/lut-fixtures"
+    manifest = directory / "manifest.json"
+    spec = json.loads(manifest.read_text())
+    entry = spec["presets"][preset]
+    payload = directory / entry["native"]
+    assert digest(payload) == entry["sha256"]
+    checked = directory / "checked.json"
+    normative = json.loads(checked.read_text())
+    assert normative["failure_defaults"] == {"reason": 0, "channel": 2**32 - 1, "index": 2**64 - 1, "buffer": 0}
+    assert normative["reasons"] == {"RAW": [2, 0, 0], "RESOLUTION": [3, 0, 0], "SIZE": [4, 0, 0], "ALLOCATION": [4, 0, 0], "NONFINITE": [3, 0, 0], "PANIC": [8, 0, 0]}
+    native = json.loads(payload.read_text())
+    rows = [next(row for row in native["cases"] if row["id"] == name) for name in ("LUT-A2", "LUT-A3")]
+    for row in rows:
+        r = row["input"]["resolution"]
+        assert row["native"]["success"] and row["native"]["resolution"] == r
+        for i, name in enumerate(("log2_xyz", "slope_c", "slope_m", "slope_y", "cell_min", "cell_max")):
+            side = r if i < 4 else r - 1
+            words = row["native"][name]
+            assert len(words) == 3 * side ** 3 and all(type(word) is int and 0 <= word < 2**32 for word in words)
+        assert row["native"]["diagnostic"] == ""
+        assert row["native"]["failed_voxel"] == 2**64 - 1 and row["native"]["failed_channel"] == 2**32 - 1
+    return manifest, payload, checked, rows
+
+
+def expected_scanner_lut_header(out):
+    _, _, _, rows = scanner_lut_fixture(arguments.preset)
+    first = rows[0]["input"]
+    assert {k: val for k, val in first.items() if k != "resolution"} == {k: val for k, val in rows[1]["input"].items() if k != "resolution"}
+    with (out / "production-film-expected.h").open("a") as stream:
+        def words(name, values):
+            stream.write("static const uint32_t " + name + "[] = {" + ",".join(str(word) + "U" for word in values) + "};\n")
+        for field in ("eps_c", "eps_m", "eps_y", "weighted_x", "weighted_y", "weighted_z", "baseline", "range_min_cmy", "inverse_span_cmy"):
+            words("lut_input_" + field, first[field])
+        words("lut_input_inv_yn", [first["inv_yn"]])
+        for row in rows:
+            for field in ("log2_xyz", "slope_c", "slope_m", "slope_y", "cell_min", "cell_max"):
+                words("lut_" + str(row["input"]["resolution"]) + "_" + field, row["native"][field])
+
+
 def expected_scanner_correction_header(out):
     _, _, _, names, rows, envelopes = scanner_correction_fixture(arguments.preset)
     inputs = [row["input"] for row in rows]
@@ -897,4 +956,5 @@ if __name__ == "__main__":
     expected_preflash_header(arguments.artifacts)
     expected_balance_header(arguments.artifacts)
     expected_scanner_correction_header(arguments.artifacts)
+    expected_scanner_lut_header(arguments.artifacts)
     execute(arguments)

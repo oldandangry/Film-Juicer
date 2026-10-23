@@ -4,6 +4,10 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <filesystem>
+#include <fstream>
+
+#include "nlohmann/json.hpp"
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -1058,42 +1062,45 @@ namespace {
     }
 
     TEST_F(ScannerRoutes, ResolutionTransitionRestoresLutContentAndOutput) {
-        ParamSnapshot controls17 = RouteInputs::controls_for_route(
-            Spektrafilm::ScanRoute::NegativeDirectScan);
-        controls17.scannerLutResolution = 17;
-        ParamSnapshot controls33 = controls17;
-        controls33.scannerLutResolution = 33;
-        RouteInputs inputs17(controls17, 0, false);
-        RouteInputs inputs33(controls33, 0, false);
+        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+            SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
+            const bool print = Spektrafilm::scan_route_is_print(route);
+            ParamSnapshot controls17 = RouteInputs::controls_for_route(route);
+            controls17.scannerLutResolution = 17;
+            ParamSnapshot controls33 = controls17;
+            controls33.scannerLutResolution = 33;
+            RouteInputs inputs17(controls17, 0, false);
+            RouteInputs inputs33(controls33, 0, false);
 
-        ASSERT_EQ(inputs17.scanner.lutResolution, 17u);
-        ASSERT_EQ(inputs33.scanner.lutResolution, 33u);
-        ASSERT_NE(inputs17.scanner.hash, 0u);
-        ASSERT_NE(inputs33.scanner.hash, 0u);
-        EXPECT_NE(inputs17.scanner.hash, inputs33.scanner.hash);
+            ASSERT_EQ(inputs17.scanner.lutResolution, 17u);
+            ASSERT_EQ(inputs33.scanner.lutResolution, 33u);
+            ASSERT_NE(inputs17.scanner.hash, 0u);
+            ASSERT_NE(inputs33.scanner.hash, 0u);
+            EXPECT_NE(inputs17.scanner.hash, inputs33.scanner.hash);
 
-        const RouteCapture initial =
-            capture_route<JuicerCuda::DirectPipelineRunParams>(inputs17);
-        const RouteCapture retained =
-            capture_route<JuicerCuda::DirectPipelineRunParams>(inputs17);
-        const RouteCapture changed =
-            capture_route<JuicerCuda::DirectPipelineRunParams>(inputs33);
-        const RouteCapture restored =
-            capture_route<JuicerCuda::DirectPipelineRunParams>(inputs17);
+            const RouteCapture initial =
+                (print ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs17) : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs17));
+            const RouteCapture retained =
+                (print ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs17) : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs17));
+            const RouteCapture changed =
+                (print ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs33) : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs33));
+            const RouteCapture restored =
+                (print ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs17) : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs17));
 
-        EXPECT_EQ(initial.lut.resolution, 17u);
-        EXPECT_EQ(changed.lut.resolution, 33u);
-        EXPECT_EQ(restored.lut.resolution, 17u);
-        EXPECT_EQ(initial.lut.hash, inputs17.scanner.hash);
-        EXPECT_EQ(changed.lut.hash, inputs33.scanner.hash);
-        EXPECT_EQ(restored.lut.hash, inputs17.scanner.hash);
-        EXPECT_EQ(initial.lut.addresses, retained.lut.addresses);
-        EXPECT_EQ(initial.lut.content, retained.lut.content);
-        EXPECT_GT(changed.lut.bytes, initial.lut.bytes);
-        EXPECT_EQ(initial.lut.bytes, restored.lut.bytes);
-        EXPECT_EQ(initial.lut.content, restored.lut.content);
-        EXPECT_EQ(initial.output, retained.output);
-        EXPECT_EQ(initial.output, restored.output);
+            EXPECT_EQ(initial.lut.resolution, 17u);
+            EXPECT_EQ(changed.lut.resolution, 33u);
+            EXPECT_EQ(restored.lut.resolution, 17u);
+            EXPECT_EQ(initial.lut.hash, inputs17.scanner.hash);
+            EXPECT_EQ(changed.lut.hash, inputs33.scanner.hash);
+            EXPECT_EQ(restored.lut.hash, inputs17.scanner.hash);
+            EXPECT_EQ(initial.lut.addresses, retained.lut.addresses);
+            EXPECT_EQ(initial.lut.content, retained.lut.content);
+            EXPECT_GT(changed.lut.bytes, initial.lut.bytes);
+            EXPECT_EQ(initial.lut.bytes, restored.lut.bytes);
+            EXPECT_EQ(initial.lut.content, restored.lut.content);
+            EXPECT_EQ(initial.output, retained.output);
+            EXPECT_EQ(initial.output, restored.output);
+        }
     }
 
     TEST_F(ScannerRoutes, PrintResourceCacheAcceptsPublishedValuesAcrossDescriptorChanges) {
@@ -1143,6 +1150,131 @@ namespace {
         ParamSnapshot profileControls = defaultControls;
         profileControls.printProfileKey = "kodak_supra_endura";
         check_print("print profile change", profileControls);
+    }
+    TEST_F(ScannerRoutes, LutConstructionFailuresPreserveCategoryAndCache) {
+        for (const bool projection : {false, true}) {
+            SCOPED_TRACE(testing::Message() << "projection=" << projection);
+            for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositiveDirectScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+                SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
+                auto controls = RouteInputs::controls_for_route(route);
+                controls.scannerLutResolution = 17;
+                RouteInputs inputs(controls, 0, false);
+                Image image({31, 19}, 4);
+                std::string diagnostic;
+                const auto reject = [&](const RouteInputs& selected, std::uint32_t category, const char* message) {
+                    const auto result = execute_correction(selected, image, projection, diagnostic);
+                    EXPECT_EQ(result.category, category);
+                    EXPECT_EQ(result.api, FJ_API_NONE);
+                    EXPECT_EQ(result.native_code, 0);
+                    EXPECT_EQ(diagnostic, std::string(message) + " route=" + Spektrafilm::scan_route_metadata(route).key);
+                    EXPECT_EQ(fj_test_scanner_lut_live_owners(), 0u);
+                    for (const auto word : bit_patterns(image.output.download()))
+                        EXPECT_EQ(word, kPadding);
+                };
+                for (unsigned buffer = 1; buffer <= 10; ++buffer) {
+                    SCOPED_TRACE(testing::Message() << "buffer=" << buffer);
+                    ASSERT_EQ(fj_test_scanner_lut_fault(0, buffer + 1).category, FJ_STATUS_SUCCESS);
+                    reject(inputs, FJ_STATUS_ALLOCATION_FAILURE, "scanner LUT host allocation failed");
+                }
+                require(execute_correction(inputs, image, projection, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+                const auto original = bit_patterns(image.output.download());
+                ASSERT_EQ(fj_test_scanner_lut_fault(0, 2).category, FJ_STATUS_SUCCESS);
+                require(execute_correction(inputs, image, projection, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+                EXPECT_EQ(bit_patterns(image.output.download()), original);
+                controls.scannerLutResolution = 33;
+                RouteInputs replacement(controls, 0, false);
+                // A cache hit must leave the armed constructor fault for this miss.
+                reject(replacement, FJ_STATUS_ALLOCATION_FAILURE, "scanner LUT host allocation failed");
+                for (unsigned operation : {0u, 1u}) {
+                    ASSERT_EQ(fj_test_scanner_lut_fault(operation, 1).category, FJ_STATUS_SUCCESS);
+                    reject(replacement, FJ_STATUS_INTERNAL_FAILURE, "scanner LUT preparation panicked");
+                }
+                require(execute_correction(inputs, image, projection, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+                EXPECT_EQ(bit_patterns(image.output.download()), original);
+                require(execute_correction(replacement, image, projection, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+                require(execute_correction(inputs, image, projection, diagnostic).category == FJ_STATUS_SUCCESS, diagnostic);
+                EXPECT_EQ(bit_patterns(image.output.download()), original);
+                EXPECT_EQ(fj_test_scanner_lut_live_owners(), 0u);
+            }
+        }
+    }
+
+    TEST_F(ScannerRoutes, LutIdentityTracksSelectedProfileBoundsAndIlluminant) {
+        for (const auto route : {Spektrafilm::ScanRoute::NegativeDirectScan, Spektrafilm::ScanRoute::NegativePrintScan, Spektrafilm::ScanRoute::PositivePrintScan}) {
+            SCOPED_TRACE(testing::Message() << "route=" << static_cast<int>(route));
+            auto controls = RouteInputs::controls_for_route(route);
+            controls.filmProfileKey = "kodak_portra_400";
+            controls.printProfileKey = "kodak_portra_endura";
+            controls.scannerLutResolution = 17;
+            RouteInputs original(controls, 0, false);
+            const bool print = Spektrafilm::scan_route_is_print(route);
+            if (print)
+                controls.printProfileKey = "kodak_2383";
+            else
+                controls.filmProfileKey = "kodak_portra_800";
+            RouteInputs changed(controls, 0, false);
+            EXPECT_NE(original.scanner.channelDensityHash, changed.scanner.channelDensityHash);
+            EXPECT_NE(original.scanner.densityBoundsHash, changed.scanner.densityBoundsHash);
+            if (print) {
+                EXPECT_NE(original.scanner.scanIlluminantHash, changed.scanner.scanIlluminantHash);
+            }
+            EXPECT_NE(original.scanner.hash, changed.scanner.hash);
+            const auto before = print ? capture_route<JuicerCuda::PrintPipelineRunParams>(original) : capture_route<JuicerCuda::DirectPipelineRunParams>(original);
+            const auto after = print ? capture_route<JuicerCuda::PrintPipelineRunParams>(changed) : capture_route<JuicerCuda::DirectPipelineRunParams>(changed);
+            const auto restored = print ? capture_route<JuicerCuda::PrintPipelineRunParams>(original) : capture_route<JuicerCuda::DirectPipelineRunParams>(original);
+            EXPECT_EQ(before.lut.hash, original.scanner.hash);
+            EXPECT_EQ(after.lut.hash, changed.scanner.hash);
+            EXPECT_NE(before.lut.content, after.lut.content);
+            EXPECT_EQ(restored.lut.hash, before.lut.hash);
+            EXPECT_EQ(restored.lut.content, before.lut.content);
+            EXPECT_EQ(restored.output, before.output);
+        }
+    }
+
+    TEST_F(ScannerRoutes, WholeNativeLutProductsSurviveActualPreparedUpload) {
+#if defined(_WIN32)
+        const std::string platform = "windows-clang-";
+#else
+        const std::string platform = "linux-";
+#endif
+#if defined(NDEBUG)
+        const auto preset = platform + "release";
+#else
+        const auto preset = platform + "debug";
+#endif
+        const auto directory = std::filesystem::path(__FILE__).parent_path() / "lut-fixtures";
+        std::ifstream stream(directory / (preset + ".json"));
+        const auto frozen = nlohmann::json::parse(stream);
+        for (const auto& row : frozen.at("products")) {
+            const auto route = static_cast<Spektrafilm::ScanRoute>(row.at("route").get<unsigned>());
+            ParamSnapshot controls;
+            controls.scanRoute = route;
+            controls.filmProfileKey = row.at("route").get<unsigned>() < 2 ? "kodak_portra_400" : "fujifilm_provia_100f";
+            controls.printProfileKey = "kodak_portra_endura";
+            controls.cameraAutoExposureEnabled = 0;
+            controls.inputCompressionEnabled = 0;
+            controls.outputGamutCompressionEnabled = 0;
+            controls.printPreflashExposure = 0.125;
+            controls.scannerLutResolution = 17;
+            RouteInputs inputs(controls, 0, false);
+            std::string diagnostic;
+            const bool print = Spektrafilm::scan_route_is_print(route);
+            require(print ? build_print_render_state_product(controls, inputs.product, diagnostic)
+                          : build_direct_render_state_product(controls, inputs.product, diagnostic),
+                    diagnostic);
+            const auto& recipe = inputs.product.recipe;
+            require(print ? Scanner::build_print_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, inputs.scanner, diagnostic)
+                          : Scanner::build_direct_scanner_spectral_lut_descriptor({&recipe.profileRoute, &recipe.densityBounds, &recipe.scannerOutput}, inputs.scanner, diagnostic),
+                    diagnostic);
+            ASSERT_EQ(inputs.scanner.hash, row.at("descriptor_hash").get<std::uint64_t>());
+            const auto capture = print ? capture_route<JuicerCuda::PrintPipelineRunParams>(inputs) : capture_route<JuicerCuda::DirectPipelineRunParams>(inputs);
+            std::vector<std::uint32_t> expected;
+            for (const auto* name : {"log2_xyz", "slope_c", "slope_m", "slope_y", "cell_min", "cell_max"})
+                for (const auto& word : row.at("native").at(name))
+                    expected.push_back(word.get<std::uint32_t>());
+            EXPECT_EQ(capture.lut.content, expected);
+            EXPECT_EQ(capture.lut.bytes, expected.size() * sizeof(float));
+        }
     }
 } // namespace
 

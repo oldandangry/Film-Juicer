@@ -1,7 +1,10 @@
-//! Completed scanner black/white correction. Inputs are synchronous borrows.
+//! Completed scanner correction and host spectral LUTs. Inputs are synchronous borrows.
 
 use crate::hash;
 use std::fmt;
+
+mod lut;
+pub use lut::{Lut, LutError, LutInput, LutTables};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Params {
@@ -626,6 +629,14 @@ fn print_reference_density(input: PrintInput<'_>, film_density: [f32; 3]) -> Opt
 
 #[cfg(feature = "test-support")]
 pub mod test_support {
+    use std::cell::Cell;
+    thread_local! { static RESERVATION: Cell<u32> = const { Cell::new(0) }; }
+    pub fn reject_lut_reservation(buffer: u32) {
+        RESERVATION.set(buffer);
+    }
+    pub(super) fn take_lut_reservation() -> u32 {
+        RESERVATION.replace(0)
+    }
     pub fn lookup(query: f32, axis: &[f32], values: &[f32]) -> Option<f32> {
         super::interpolate(query, axis.len(), values.len(), |i| axis[i], |i| values[i])
     }

@@ -1,0 +1,53 @@
+{
+  "authority": "revision-1 LUT safety/transport contract, separate from native boolean/error observations",
+  "failure_defaults": {
+    "reason": 0,
+    "channel": 4294967295,
+    "index": 18446744073709551615,
+    "buffer": 0
+  },
+  "reasons": {
+    "RAW": [
+      2,
+      0,
+      0
+    ],
+    "RESOLUTION": [
+      3,
+      0,
+      0
+    ],
+    "SIZE": [
+      4,
+      0,
+      0
+    ],
+    "ALLOCATION": [
+      4,
+      0,
+      0
+    ],
+    "NONFINITE": [
+      3,
+      0,
+      0
+    ],
+    "PANIC": [
+      8,
+      0,
+      0
+    ]
+  },
+  "reservations": [
+    "f64 nodes",
+    "f32 log2 XYZ",
+    "C slopes",
+    "M slopes",
+    "Y slopes",
+    "cell minima",
+    "cell maxima",
+    "f64 line",
+    "f64 line slopes",
+    "f64 deltas"
+  ]
+}

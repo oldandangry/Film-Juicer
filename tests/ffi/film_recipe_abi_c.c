@@ -730,3 +730,35 @@ int fj_test_scanner_correction_c_call(unsigned operation, const FjScannerCorrect
         return 0;
     return scanner_words_equal(&out, category == FJ_STATUS_SUCCESS ? expected : &zero);
 }
+
+_Static_assert(_Generic(((FjScannerLutInput*)0)->eps_c, FjFloatSpan: 1, default: 0), "FjScannerLutInput.eps_c type");
+_Static_assert(_Generic(((FjScannerLutInput*)0)->eps_m, FjFloatSpan: 1, default: 0), "FjScannerLutInput.eps_m type");
+_Static_assert(_Generic(((FjScannerLutInput*)0)->eps_y, FjFloatSpan: 1, default: 0), "FjScannerLutInput.eps_y type");
+_Static_assert(_Generic(((FjScannerLutInput*)0)->weighted_x, FjFloatSpan: 1, default: 0), "FjScannerLutInput.weighted_x type");
+_Static_assert(_Generic(((FjScannerLutInput*)0)->weighted_y, FjFloatSpan: 1, default: 0), "FjScannerLutInput.weighted_y type");
+_Static_assert(_Generic(((FjScannerLutInput*)0)->weighted_z, FjFloatSpan: 1, default: 0), "FjScannerLutInput.weighted_z type");
+_Static_assert(_Generic(((FjScannerLutInput*)0)->baseline_min, FjFloatSpan: 1, default: 0), "FjScannerLutInput.baseline_min type");
+_Static_assert(_Generic(((FjScannerLutInput*)0)->range_min_cmy, float*: 1, default: 0), "FjScannerLutInput.range_min_cmy type");
+_Static_assert(_Generic(((FjScannerLutInput*)0)->inverse_span_cmy, float*: 1, default: 0), "FjScannerLutInput.inverse_span_cmy type");
+_Static_assert(_Generic(((FjScannerLutInput*)0)->sample_count, int32_t: 1, default: 0), "FjScannerLutInput.sample_count type");
+_Static_assert(_Generic(((FjScannerLutInput*)0)->inv_yn, float: 1, default: 0), "FjScannerLutInput.inv_yn type");
+_Static_assert(_Generic(((FjScannerLutInput*)0)->has_baseline, uint32_t: 1, default: 0), "FjScannerLutInput.has_baseline type");
+_Static_assert(_Generic(((FjScannerLutInput*)0)->medium, uint32_t: 1, default: 0), "FjScannerLutInput.medium type");
+_Static_assert(_Generic(((FjScannerLutInput*)0)->resolution, uint32_t: 1, default: 0), "FjScannerLutInput.resolution type");
+_Static_assert(_Generic(((FjScannerLutView*)0)->resolution, uint32_t: 1, default: 0), "FjScannerLutView.resolution type");
+_Static_assert(_Generic(((FjScannerLutView*)0)->log2_xyz, FjFloatSpan: 1, default: 0), "FjScannerLutView.log2_xyz type");
+_Static_assert(_Generic(((FjScannerLutView*)0)->slope_c, FjFloatSpan: 1, default: 0), "FjScannerLutView.slope_c type");
+_Static_assert(_Generic(((FjScannerLutView*)0)->slope_m, FjFloatSpan: 1, default: 0), "FjScannerLutView.slope_m type");
+_Static_assert(_Generic(((FjScannerLutView*)0)->slope_y, FjFloatSpan: 1, default: 0), "FjScannerLutView.slope_y type");
+_Static_assert(_Generic(((FjScannerLutView*)0)->cell_min, FjFloatSpan: 1, default: 0), "FjScannerLutView.cell_min type");
+_Static_assert(_Generic(((FjScannerLutView*)0)->cell_max, FjFloatSpan: 1, default: 0), "FjScannerLutView.cell_max type");
+_Static_assert(_Generic(((FjScannerLutFailure*)0)->reason, uint32_t: 1, default: 0), "FjScannerLutFailure.reason type");
+_Static_assert(_Generic(((FjScannerLutFailure*)0)->channel, uint32_t: 1, default: 0), "FjScannerLutFailure.channel type");
+_Static_assert(_Generic(((FjScannerLutFailure*)0)->index, uint64_t: 1, default: 0), "FjScannerLutFailure.index type");
+_Static_assert(_Generic(((FjScannerLutFailure*)0)->buffer, uint32_t: 1, default: 0), "FjScannerLutFailure.buffer type");
+_Static_assert(_Generic(&fj_legacy_scanner_lut_acquire, FjStatus (*)(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_scanner_lut_acquire signature");
+_Static_assert(_Generic(&fj_legacy_scanner_lut_view, FjStatus (*)(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_scanner_lut_view signature");
+_Static_assert(_Generic(&fj_legacy_scanner_lut_release, FjStatus (*)(FjScannerLutOwner*, FjErrorBuffer*): 1, default: 0), "fj_legacy_scanner_lut_release signature");
+_Static_assert(_Generic(&fj_test_scanner_lut_acquire, FjStatus (*)(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_lut_acquire signature");
+_Static_assert(_Generic(&fj_test_scanner_lut_view, FjStatus (*)(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_lut_view signature");
+_Static_assert(_Generic(&fj_test_scanner_lut_release, FjStatus (*)(FjScannerLutOwner*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_lut_release signature");

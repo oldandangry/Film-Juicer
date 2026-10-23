@@ -958,3 +958,408 @@ const _: fn(FjScannerCorrectionTrace) = |value| {
     let _: f32 = value.exposure_scale;
     let _: u64 = value.hash;
 };
+
+// SF_TEMP_BRIDGE_SCANNER_LUT: immutable owner/view transport; remove S4.E.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjScannerLutInput {
+    pub(crate) eps_c: FjFloatSpan,
+    pub(crate) eps_m: FjFloatSpan,
+    pub(crate) eps_y: FjFloatSpan,
+    pub(crate) weighted_x: FjFloatSpan,
+    pub(crate) weighted_y: FjFloatSpan,
+    pub(crate) weighted_z: FjFloatSpan,
+    pub(crate) baseline_min: FjFloatSpan,
+    pub(crate) range_min_cmy: [f32; 3],
+    pub(crate) inverse_span_cmy: [f32; 3],
+    pub(crate) sample_count: i32,
+    pub(crate) inv_yn: f32,
+    pub(crate) has_baseline: u32,
+    pub(crate) medium: u32,
+    pub(crate) resolution: u32,
+}
+#[repr(C)]
+pub(crate) struct FjScannerLutOwner {
+    _private: [u8; 0],
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjScannerLutView {
+    pub(crate) resolution: u32,
+    pub(crate) log2_xyz: FjFloatSpan,
+    pub(crate) slope_c: FjFloatSpan,
+    pub(crate) slope_m: FjFloatSpan,
+    pub(crate) slope_y: FjFloatSpan,
+    pub(crate) cell_min: FjFloatSpan,
+    pub(crate) cell_max: FjFloatSpan,
+}
+impl FjScannerLutView {
+    fn empty() -> Self {
+        let empty = FjFloatSpan {
+            data: std::ptr::null(),
+            count: 0,
+        };
+        Self {
+            resolution: 0,
+            log2_xyz: empty,
+            slope_c: empty,
+            slope_m: empty,
+            slope_y: empty,
+            cell_min: empty,
+            cell_max: empty,
+        }
+    }
+    fn new(lut: &scanner::Lut) -> Self {
+        let span = |v: &[f32]| FjFloatSpan {
+            data: v.as_ptr(),
+            count: v.len(),
+        };
+        Self {
+            resolution: lut.resolution(),
+            log2_xyz: span(lut.log2_xyz()),
+            slope_c: span(lut.slope_c()),
+            slope_m: span(lut.slope_m()),
+            slope_y: span(lut.slope_y()),
+            cell_min: span(lut.cell_min()),
+            cell_max: span(lut.cell_max()),
+        }
+    }
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjScannerLutFailure {
+    pub(crate) reason: u32,
+    pub(crate) channel: u32,
+    pub(crate) index: u64,
+    pub(crate) buffer: u32,
+}
+impl FjScannerLutFailure {
+    fn empty() -> Self {
+        Self {
+            reason: 0,
+            channel: u32::MAX,
+            index: u64::MAX,
+            buffer: 0,
+        }
+    }
+}
+enum LutRejection {
+    Core(scanner::LutError),
+    Panic,
+}
+impl LutRejection {
+    fn fields(&self) -> (FjStatus, FjScannerLutFailure) {
+        use scanner::LutError;
+        let mut fields = FjScannerLutFailure::empty();
+        let category;
+        (fields.reason, category) = match self {
+            Self::Core(LutError::Raw) => (1, FJ_STATUS_UNSUPPORTED_INPUT),
+            Self::Core(LutError::Resolution) => (2, FJ_STATUS_PREPARATION_FAILURE),
+            Self::Core(LutError::Size { buffer }) => {
+                fields.buffer = *buffer;
+                (3, crate::cuda::sys::FJ_STATUS_ALLOCATION_FAILURE)
+            }
+            Self::Core(LutError::Allocation { buffer }) => {
+                fields.buffer = *buffer;
+                (4, crate::cuda::sys::FJ_STATUS_ALLOCATION_FAILURE)
+            }
+            Self::Core(LutError::Nonfinite { index, channel }) => {
+                fields.index = *index;
+                fields.channel = *channel;
+                (5, FJ_STATUS_PREPARATION_FAILURE)
+            }
+            Self::Panic => (6, FJ_STATUS_INTERNAL_FAILURE),
+        };
+        (status(category), fields)
+    }
+}
+impl fmt::Display for LutRejection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Core(e) => e.fmt(f),
+            Self::Panic => f.write_str("scanner LUT preparation panicked"),
+        }
+    }
+}
+fn lut_raw() -> LutRejection {
+    LutRejection::Core(scanner::LutError::Raw)
+}
+
+/// # Safety
+/// Live initialized input and consumed backing are immutable through return.
+/// No projected reference escapes the immediate complete construction.
+unsafe fn lut_input<'a>(
+    pointer: *const FjScannerLutInput,
+) -> Result<scanner::LutInput<'a>, LutRejection> {
+    if !valid_extent(pointer, 1) {
+        return Err(lut_raw());
+    }
+    // SAFETY: The caller guarantees initialized record storage, admitted above.
+    let input = unsafe { &*pointer };
+    if input.has_baseline > 1 || input.medium > 255 {
+        return Err(lut_raw());
+    }
+    scanner::Lut::check_capacity(input.resolution).map_err(LutRejection::Core)?;
+    let bind = |wire: FjFloatSpan| -> Result<&'a [f32], LutRejection> {
+        if input.sample_count <= 0 {
+            return Ok(&[]);
+        }
+        if wire.count != input.sample_count as usize || !valid_extent(wire.data, wire.count) {
+            return Err(lut_raw());
+        }
+        // SAFETY: Exact positive length, alignment and addressability are checked;
+        // the caller supplies live immutable backing through synchronous return.
+        Ok(unsafe { std::slice::from_raw_parts(wire.data, wire.count) })
+    };
+    Ok(scanner::LutInput {
+        resolution: input.resolution,
+        medium: input.medium as u8,
+        range_min_cmy: input.range_min_cmy,
+        inverse_span_cmy: input.inverse_span_cmy,
+        tables: scanner::LutTables {
+            eps_c: bind(input.eps_c)?,
+            eps_m: bind(input.eps_m)?,
+            eps_y: bind(input.eps_y)?,
+            weighted_x: bind(input.weighted_x)?,
+            weighted_y: bind(input.weighted_y)?,
+            weighted_z: bind(input.weighted_z)?,
+            baseline_min: if input.has_baseline == 1 {
+                Some(bind(input.baseline_min)?)
+            } else {
+                None
+            },
+            sample_count: input.sample_count,
+            inv_yn: input.inv_yn,
+        },
+    })
+}
+
+/// # Safety
+/// Each admitted output and diagnostic record/backing is initialized, writable,
+/// exclusive and disjoint from peers and consumed inputs until synchronous return.
+unsafe fn lut_call<T: Copy>(
+    out: *mut T,
+    cleared: T,
+    failure: *mut FjScannerLutFailure,
+    error: *mut FjErrorBuffer,
+    body: impl FnOnce() -> Result<T, LutRejection>,
+) -> FjStatus {
+    let valid_out = valid_extent(out, 1);
+    let valid_failure = valid_extent(failure, 1);
+    // SAFETY: Independent numeric admission precedes each exclusive output write.
+    unsafe {
+        if valid_out {
+            out.write(cleared);
+        }
+        if valid_failure {
+            failure.write(FjScannerLutFailure::empty());
+        }
+    }
+    // SAFETY: Diagnostic admission follows independent output clearing.
+    let mut diagnostic = unsafe { Diagnostic::admit(error) };
+    let result = if !valid_out || !valid_failure || diagnostic.is_err() {
+        Err(lut_raw())
+    } else {
+        catch_unwind(AssertUnwindSafe(body)).unwrap_or(Err(LutRejection::Panic))
+    };
+    match result {
+        Ok(value) => {
+            // SAFETY: Successful admission established exclusive live output storage.
+            unsafe {
+                out.write(value);
+            }
+            status(FJ_STATUS_SUCCESS)
+        }
+        Err(rejection) => {
+            let (status, fields) = rejection.fields();
+            if valid_failure {
+                // SAFETY: Failure storage was independently admitted above.
+                unsafe {
+                    failure.write(fields);
+                }
+            }
+            if let Ok(writer) = &mut diagnostic {
+                let _ = write!(writer, "{rejection}");
+            }
+            status
+        }
+    }
+}
+fn lut_fault(operation: u32) -> u32 {
+    #[cfg(feature = "test-support")]
+    {
+        lut_faults::take(operation)
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = operation;
+        0
+    }
+}
+fn lut_panic(fault: u32) {
+    #[cfg(feature = "test-support")]
+    if fault == 1 {
+        panic!("scanner LUT fixture panic");
+    }
+    #[cfg(not(feature = "test-support"))]
+    let _ = fault;
+}
+/// # Safety
+/// Same live/disjoint synchronous contract as lut_call; input backing expires
+/// on return. A successful unique handle transfers to its matching release.
+pub(crate) unsafe fn lut_acquire(
+    input: *const FjScannerLutInput,
+    out: *mut *mut FjScannerLutOwner,
+    failure: *mut FjScannerLutFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let fault = lut_fault(0);
+    // SAFETY: Common admission clears each output before accessing foreign inputs.
+    unsafe {
+        lut_call(out, std::ptr::null_mut(), failure, error, || {
+            lut_panic(fault);
+            let input = lut_input(input)?;
+            #[cfg(feature = "test-support")]
+            scanner::test_support::reject_lut_reservation(if fault >= 2 { fault - 1 } else { 0 });
+            let lut = Box::new(scanner::Lut::new(input).map_err(LutRejection::Core)?);
+            #[cfg(feature = "test-support")]
+            lut_faults::LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(Box::into_raw(lut).cast())
+        })
+    }
+}
+/// # Safety
+/// The caller holds a legitimate live unique owner, excludes release and owns
+/// the disjoint output records. Borrowed view storage expires at release.
+pub(crate) unsafe fn lut_view(
+    owner: *const FjScannerLutOwner,
+    out: *mut FjScannerLutView,
+    failure: *mut FjScannerLutFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let fault = lut_fault(1);
+    // SAFETY: The caller guarantees owner provenance; numeric checks precede borrow.
+    unsafe {
+        lut_call(out, FjScannerLutView::empty(), failure, error, || {
+            if !valid_extent(owner.cast::<scanner::Lut>(), 1) {
+                return Err(lut_raw());
+            }
+            lut_panic(fault);
+            Ok(FjScannerLutView::new(&*owner.cast::<scanner::Lut>()))
+        })
+    }
+}
+/// # Safety
+/// NULL or one legitimate live matching owner transfers exactly once, excluding
+/// all views. Invalid diagnostics still consume an admitted nonnull owner.
+pub(crate) unsafe fn lut_release(
+    owner: *mut FjScannerLutOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let fault = lut_fault(2);
+    if !owner.is_null() && !valid_extent(owner.cast::<scanner::Lut>(), 1) {
+        let mut fields = FjScannerLutFailure::empty();
+        let mut out = 0u32;
+        // SAFETY: Local outputs and the caller's diagnostics follow common admission.
+        return unsafe { lut_call(&mut out, 0, &mut fields, error, || Err(lut_raw())) };
+    }
+    let owned = if owner.is_null() {
+        None
+    } else {
+        #[cfg(feature = "test-support")]
+        lut_faults::LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: The caller transfers one matching Box before diagnostic admission.
+        Some(unsafe { Box::from_raw(owner.cast::<scanner::Lut>()) })
+    };
+    let mut fields = FjScannerLutFailure::empty();
+    let mut out = 0u32;
+    // SAFETY: The closure owns and drops the admitted handle even when diagnostic
+    // admission rejects before invocation or an injected unwind occurs.
+    unsafe {
+        lut_call(&mut out, 0, &mut fields, error, move || {
+            lut_panic(fault);
+            drop(owned);
+            Ok(0)
+        })
+    }
+}
+
+/// # Safety
+/// Same acquire contract as lut_acquire.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_scanner_lut_acquire(
+    input: *const FjScannerLutInput,
+    out: *mut *mut FjScannerLutOwner,
+    failure: *mut FjScannerLutFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The checked owner operation scopes all raw access.
+    unsafe { lut_acquire(input, out, failure, error) }
+}
+/// # Safety
+/// Same live-owner/view exclusion contract as lut_view.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_scanner_lut_view(
+    owner: *const FjScannerLutOwner,
+    out: *mut FjScannerLutView,
+    failure: *mut FjScannerLutFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The checked view operation scopes all raw access.
+    unsafe { lut_view(owner, out, failure, error) }
+}
+/// # Safety
+/// Same consuming live-owner contract as lut_release.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_scanner_lut_release(
+    owner: *mut FjScannerLutOwner,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The checked release consumes matching ownership on every outcome.
+    unsafe { lut_release(owner, error) }
+}
+const _: unsafe extern "C" fn(
+    *const FjScannerLutInput,
+    *mut *mut FjScannerLutOwner,
+    *mut FjScannerLutFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_legacy_scanner_lut_acquire;
+const _: unsafe extern "C" fn(
+    *const FjScannerLutOwner,
+    *mut FjScannerLutView,
+    *mut FjScannerLutFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_legacy_scanner_lut_view;
+const _: unsafe extern "C" fn(*mut FjScannerLutOwner, *mut FjErrorBuffer) -> FjStatus =
+    fj_legacy_scanner_lut_release;
+
+#[cfg(feature = "test-support")]
+pub(crate) mod lut_faults {
+    use super::*;
+    use std::cell::Cell;
+    pub(super) static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    thread_local! { static FAULTS: Cell<[u32;3]> = const { Cell::new([0;3]) }; }
+    pub(crate) fn arm(operation: u32, fault: u32) -> FjStatus {
+        if operation > 2 || fault > if operation == 0 { 11 } else { 1 } {
+            return status(FJ_STATUS_UNSUPPORTED_INPUT);
+        }
+        FAULTS.with(|v| {
+            let mut slots = v.get();
+            slots[operation as usize] = fault;
+            v.set(slots);
+        });
+        status(FJ_STATUS_SUCCESS)
+    }
+    pub(super) fn take(operation: u32) -> u32 {
+        FAULTS.with(|v| {
+            let mut slots = v.get();
+            let fault = slots[operation as usize];
+            slots[operation as usize] = 0;
+            v.set(slots);
+            fault
+        })
+    }
+    pub(crate) fn live() -> usize {
+        LIVE.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}

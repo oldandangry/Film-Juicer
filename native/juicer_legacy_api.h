@@ -1314,6 +1314,44 @@ FjStatus fj_legacy_scanner_print_correction_prepare(
 FjStatus fj_legacy_scanner_correction_input_demand(
     const FjScannerCorrectionParams*, uint32_t operation, uint32_t* required, FjScannerCorrectionFailure*, FjErrorBuffer*);
 
+/* SF_TEMP_BRIDGE_SCANNER_LUT: remove S4.E after the last native preparation consumer.
+ * A successful acquire owns all six immutable arrays; inputs expire at return.
+ * Every aligned writable output clears independently before peer admission.
+ * Records/backing must be live, initialized and disjoint; view excludes release.
+ * Handles have unique live provenance. Release consumes a nonnull admitted owner
+ * even on diagnostic rejection or contained panic; NULL release is a no-op.
+ * Empty consumed spans are (NULL,0); ignored backing is never dereferenced.
+ * Counts are elements, never bytes. No retained input, retain call or CUDA owner.
+ */
+typedef struct FjScannerLutOwner FjScannerLutOwner;
+typedef struct FjScannerLutInput {
+    FjFloatSpan eps_c, eps_m, eps_y;
+    FjFloatSpan weighted_x, weighted_y, weighted_z, baseline_min;
+    float range_min_cmy[3], inverse_span_cmy[3];
+    int32_t sample_count;
+    float inv_yn;
+    uint32_t has_baseline, medium, resolution;
+} FjScannerLutInput;
+typedef struct FjScannerLutView {
+    uint32_t resolution;
+    FjFloatSpan log2_xyz, slope_c, slope_m, slope_y, cell_min, cell_max;
+} FjScannerLutView;
+typedef struct FjScannerLutFailure {
+    uint32_t reason, channel;
+    uint64_t index;
+    uint32_t buffer;
+} FjScannerLutFailure;
+#define FJ_SCANNER_LUT_REASON_NONE UINT32_C(0)
+#define FJ_SCANNER_LUT_REASON_RAW UINT32_C(1)
+#define FJ_SCANNER_LUT_REASON_RESOLUTION UINT32_C(2)
+#define FJ_SCANNER_LUT_REASON_SIZE UINT32_C(3)
+#define FJ_SCANNER_LUT_REASON_ALLOCATION UINT32_C(4)
+#define FJ_SCANNER_LUT_REASON_NONFINITE UINT32_C(5)
+#define FJ_SCANNER_LUT_REASON_PANIC UINT32_C(6)
+FjStatus fj_legacy_scanner_lut_acquire(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*);
+FjStatus fj_legacy_scanner_lut_view(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
+FjStatus fj_legacy_scanner_lut_release(FjScannerLutOwner*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

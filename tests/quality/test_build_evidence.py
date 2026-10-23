@@ -91,6 +91,7 @@ class BuildEvidenceTests(unittest.TestCase):
     def setUp(self):
         preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
         artifact_root = os.environ.get("JUICER_TEST_ARTIFACT_DIR")
+        retain_fixtures = bool(os.environ.get("JUICER_TEST_RETAIN_FIXTURES"))
         parent = ((Path(artifact_root) if artifact_root else ROOT / "out/validation" / preset)
                   / "build-evidence-controls")
         parent.mkdir(parents=True, exist_ok=True)
@@ -99,12 +100,12 @@ class BuildEvidenceTests(unittest.TestCase):
 
         def finish_fixture():
             result = self._outcome.result if self._outcome else None
-            failed = result and any(
+            failed = result is None or any(
                 test is self or getattr(test, "test_case", None) is self
                 for test, _ in [*result.errors, *result.failures]
             )
             blocked = list(self.root.glob("out/verification-locks/*/owner.json"))
-            if failed or blocked or artifact_root:
+            if failed or blocked or retain_fixtures:
                 # Keep configured paths and unproved owners in place for diagnosis.
                 retained = self.root / ("retained-failure.json" if failed or blocked else "retained-fixture.json")
                 retained.write_text(json.dumps({"test": self.id(), "fixture": str(self.root), "blocked_owners": [str(path) for path in blocked]}, indent=2) + "\n")
@@ -1881,6 +1882,69 @@ class BuildEvidenceTests(unittest.TestCase):
         self.prepare(targets=["behavior"])
         with self.assertRaisesRegex(ValueError, "legacy sealed-build"):
             self.execute(tests=[])
+
+
+class FixtureLifetimeTests(unittest.TestCase):
+    def run_fixture(self, artifact_root, retain, body):
+        environment = {
+            "JUICER_TEST_ARTIFACT_DIR": str(artifact_root),
+            "JUICER_TEST_RETAIN_FIXTURES": "1" if retain else "",
+        }
+        case = BuildEvidenceTests("test_unchanged_reconfigure_preserves_registry_and_artifacts")
+        case.test_unchanged_reconfigure_preserves_registry_and_artifacts = lambda: body(case)
+        with patch.dict(os.environ, environment):
+            result = case.run(unittest.TestResult())
+        self.addCleanup(case.temporary.cleanup)
+        return case, result
+
+    def test_artifact_routing_cleans_successful_build_fixture(self):
+        with tempfile.TemporaryDirectory() as artifact_root:
+            case, result = self.run_fixture(artifact_root, False, lambda case: None)
+            self.assertTrue(result.wasSuccessful())
+            self.assertFalse(case.root.exists())
+
+    def test_diagnostic_opt_in_retains_successful_build_fixture(self):
+        with tempfile.TemporaryDirectory() as artifact_root:
+            case, result = self.run_fixture(artifact_root, True, lambda case: None)
+            self.assertTrue(result.wasSuccessful())
+            self.assertTrue((case.root / "retained-fixture.json").is_file())
+
+    def test_missing_result_retains_build_fixture(self):
+        case = BuildEvidenceTests("test_unchanged_reconfigure_preserves_registry_and_artifacts")
+        case.setUp()
+        self.addCleanup(case.temporary.cleanup)
+        case.doCleanups()
+        self.assertTrue((case.root / "retained-failure.json").is_file())
+
+    def test_test_failures_and_blocked_owner_retain_build_fixtures(self):
+        with tempfile.TemporaryDirectory() as artifact_root:
+            def fail_test(case):
+                case.fail("fixture lifecycle control")
+
+            failed_case, result = self.run_fixture(artifact_root, False, fail_test)
+            self.assertEqual(len(result.failures), 1)
+            failure_marker = json.loads((failed_case.root / "retained-failure.json").read_text())
+            self.assertEqual(failure_marker["test"], failed_case.id())
+
+            def fail_subtest(case):
+                with case.subTest(control="failure"):
+                    case.fail("fixture lifecycle control")
+
+            failed_case, result = self.run_fixture(artifact_root, False, fail_subtest)
+            self.assertEqual(len(result.failures), 1)
+            failure_marker = json.loads((failed_case.root / "retained-failure.json").read_text())
+            self.assertEqual(failure_marker["test"], failed_case.id())
+
+            def leave_blocked_owner(case):
+                owner = case.root / "out/verification-locks/control/owner.json"
+                owner.parent.mkdir(parents=True)
+                owner.write_text('{"status":"blocked"}\n')
+
+            blocked_case, result = self.run_fixture(artifact_root, False, leave_blocked_owner)
+            self.assertTrue(result.wasSuccessful())
+            marker = json.loads((blocked_case.root / "retained-failure.json").read_text())
+            owner = blocked_case.root / "out/verification-locks/control/owner.json"
+            self.assertEqual(marker["blocked_owners"], [str(owner)])
 
 
 class FileEvidenceTests(unittest.TestCase):

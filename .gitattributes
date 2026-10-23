@@ -120,3 +120,6 @@ tests/print/balance-fixtures/** -text whitespace=cr-at-eol
 
 # Scanner correction native characterization preserves exact capture bytes.
 tests/scanner/correction-fixtures/** -text whitespace=cr-at-eol
+
+# Scanner LUT characterization preserves complete independent native words.
+tests/scanner/lut-fixtures/** -text whitespace=cr-at-eol

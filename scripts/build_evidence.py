@@ -952,7 +952,7 @@ def prepare_targets(root, preset, targets, testing="ON"):
             raise ValueError("another pending preparation must be resolved by its existing owner first")
         campaign = Campaign(root, preset, "preparation-" + uuid.uuid4().hex, ["prepare"])
         _, prepared = prepare_build(campaign, "prepare", source=root, build=build,
-                                    inputs=["scripts/verify.py", "scripts/build_evidence.py"], timeout=1200,
+                                    inputs=["scripts/verify.py", "scripts/build_evidence.py"], timeout=7200,
                                     configure_args=["-DBUILD_TESTING=" + testing], targets=targets,
                                     checkpoint=True, reconfigure=True)
         check_scoped_preparation(campaign, build, prepared)

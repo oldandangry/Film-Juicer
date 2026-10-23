@@ -180,6 +180,8 @@ namespace JuicerCuda::ExecutorTest {
         std::optional<Failure> wang;
         cudaError_t eventCreate = cudaSuccess;
         cudaError_t eventRecord = cudaSuccess;
+        unsigned lutPosition = 0;
+        unsigned lutAttempts = 0;
         int stbnAttempts = 0;
         int wangAttempts = 0;
         int injections = 0;
@@ -195,6 +197,13 @@ namespace JuicerCuda::ExecutorTest {
     bool inject_grain_upload_failure(const char* label, Failure& failure) {
         if (!resourceFailures) {
             return false;
+        }
+        if (resourceFailures->lutPosition && std::string_view(label).starts_with("focused scan PCHIP")) {
+            if (++resourceFailures->lutAttempts == resourceFailures->lutPosition) {
+                failure = {{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "scanner LUT upload fixture failure"};
+                resourceFailures->record_injection();
+                return true;
+            }
         }
         const std::optional<Failure>* injected = nullptr;
         if (std::strcmp(label, "STBN") == 0) {
@@ -1330,6 +1339,26 @@ namespace {
                   << "/recovery/fatal order passed\n";
     }
 
+    void run_scanner_lut_upload_failure_cases() {
+        const std::array cases{Case{"lut-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
+                               Case{"lut-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0},
+                               Case{"lut-positive-direct", Spektrafilm::ScanRoute::PositiveDirectScan, 0, 3, 0, 0},
+                               Case{"lut-positive-print", Spektrafilm::ScanRoute::PositivePrintScan, 0, 4, 0, 0}};
+        for (const auto& test : cases) {
+            InstanceState state;
+            auto parameters = parameters_for(test);
+            parameters.grainControls.active = false;
+            for (unsigned position = 1; position <= 6; ++position) {
+                JuicerCuda::ExecutorTest::ResourceFailures failures;
+                failures.lutPosition = position;
+                const std::string diagnostic = std::string("scanner LUT upload fixture failure route=") + Spektrafilm::scan_route_metadata(test.route).key;
+                check_resource_failure(test, parameters, state, failures, {{FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, diagnostic}, "prepare_focused_route_resources", true);
+                if (failures.lutAttempts != position || failures.injections != 1 || fj_test_scanner_lut_live_owners() != 0)
+                    throw std::runtime_error("scanner LUT upload short circuit or host-owner cleanup changed");
+            }
+            (void)render_case(test, parameters, state);
+        }
+    }
     void run_defect_fence_failure_cases() {
         const std::array<Case, 2> cases{{{"defect-direct", Spektrafilm::ScanRoute::NegativeDirectScan, 0, 3, 0, 0},
                                          {"defect-print", Spektrafilm::ScanRoute::NegativePrintScan, 0, 4, 0, 0}}};
@@ -1673,6 +1702,8 @@ int main(int argc, char** argv) {
             const std::string resourceFailure = argv[2];
             if (resourceFailure == "DefectFence") {
                 run_defect_fence_failure_cases();
+            } else if (resourceFailure == "ScannerLut") {
+                run_scanner_lut_upload_failure_cases();
             } else if (resourceFailure == "GrainUpload") {
                 run_grain_upload_failure_cases();
             } else {

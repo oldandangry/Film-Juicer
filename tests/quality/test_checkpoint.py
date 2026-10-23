@@ -37,7 +37,7 @@ class CheckpointTests(unittest.TestCase):
         parent.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(dir=parent, delete=False)
         self.root = Path(self.temporary.name).resolve()
-        self.retain = bool(os.environ.get("JUICER_TEST_ARTIFACT_DIR"))
+        self.retain = bool(os.environ.get("JUICER_TEST_RETAIN_FIXTURES"))
         if self.retain:
             print("Checkpoint fixture:", self.root, file=sys.stderr, flush=True)
         self.build = self.root / "out/build" / preset
@@ -56,8 +56,11 @@ class CheckpointTests(unittest.TestCase):
         def finish():
             self.lease.__exit__(None, None, None)
             result = self._outcome.result if self._outcome else None
-            if (self.lease.blocked or getattr(self, "retain", False) or result is None
-                    or any(test is self for test, _ in [*result.errors, *result.failures])):
+            failed = result is not None and any(
+                test is self or getattr(test, "test_case", None) is self
+                for test, _ in [*result.errors, *result.failures]
+            )
+            if self.lease.blocked or self.retain or result is None or failed:
                 print("Retained checkpoint fixture:", self.root, file=sys.stderr)
             else:
                 self.temporary.cleanup()
@@ -249,7 +252,9 @@ class CheckpointTests(unittest.TestCase):
                      "tests/ffi/print_balance_test.inc", "tests/print/balance-fixtures/manifest.json",
                      "tests/print/balance-fixtures/linux-debug.json", "tests/ffi/scanner_correction_test.inc",
                      "tests/scanner/correction-fixtures/manifest.json", "tests/scanner/correction-fixtures/checked-expectations.json",
-                     "tests/scanner/correction-fixtures/linux-debug.json"):
+                     "tests/scanner/correction-fixtures/linux-debug.json", "tests/ffi/scanner_lut_test.inc",
+                     "tests/scanner/lut-fixtures/manifest.json", "tests/scanner/lut-fixtures/checked.json",
+                     "tests/scanner/lut-fixtures/linux-debug.json"):
             p = self.root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("source")
@@ -271,6 +276,10 @@ class CheckpointTests(unittest.TestCase):
         self.assertIn("tests/scanner/correction-fixtures/manifest.json", first)
         self.assertIn("tests/scanner/correction-fixtures/checked-expectations.json", first)
         self.assertIn("tests/scanner/correction-fixtures/linux-debug.json", first)
+        self.assertIn("tests/ffi/scanner_lut_test.inc", first)
+        self.assertIn("tests/scanner/lut-fixtures/manifest.json", first)
+        self.assertIn("tests/scanner/lut-fixtures/checked.json", first)
+        self.assertIn("tests/scanner/lut-fixtures/linux-debug.json", first)
         added = self.root / "src/SpectralProcessing.h"
         added.write_text("new member")
         self.assertIn("src/SpectralProcessing.h", qualification.checkpoint_inputs(self.root, self.build, "boundary"))
@@ -334,7 +343,6 @@ class CheckpointTests(unittest.TestCase):
 
     def test_documentation_changes_reuse_preparation_and_ctest_after_commit(self):
         from verify import source_snapshot
-        self.retain = True
         self.native_project()
         cmake = self.root / "CMakeLists.txt"
         cmake.write_text(cmake.read_text().replace('"host;boundary"', '"host;corpus"'))
@@ -419,7 +427,6 @@ class CheckpointTests(unittest.TestCase):
 
     def test_runtime_edit_reuses_preparation_but_executes_changed_test_input(self):
         import build_evidence
-        self.retain = True
         fixture, loader = self.runtime_project()
         first = qualification.prepare_checkpoint(self.campaign("runtime-prepare"), self.build,
             self.state_path, self.state, self.environment, timeout=60)
@@ -497,7 +504,6 @@ class CheckpointTests(unittest.TestCase):
             module=self.build / "consumer.inc")
 
     def test_bootstrap_exceptions_require_exact_location_and_bytes(self):
-        self.retain = True
         self.native_project()
         cache = self.build / "CMakeCache.txt"
         cmake_root = Path(next(line.partition("=")[2] for line in cache.read_text().splitlines()
@@ -527,7 +533,6 @@ class CheckpointTests(unittest.TestCase):
 
     def test_runtime_new_configure_membership_rejects_mid_preparation_edit(self):
         import build_evidence
-        self.retain = True
         fixture, _ = self.runtime_project()
         module = self.build / "consumer.inc"
         module.write_text('set(stem runtime)\n'
@@ -570,7 +575,6 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(original.read_bytes(), original_receipt)
 
     def assert_configure_copy_reprepared(self, configure_commands, *, module=None, bundled_module=None):
-        self.retain = True
         fixture, _ = self.runtime_project()
         cmake = self.root / "CMakeLists.txt"
         if module:
@@ -636,7 +640,6 @@ class CheckpointTests(unittest.TestCase):
 
     def test_runtime_preparation_keeps_build_consumers_and_unknown_inputs(self):
         import build_evidence
-        self.retain = True
         fixture, loader = self.runtime_project()
         cmake = self.root / "CMakeLists.txt"
         cmake.write_text(cmake.read_text() +
@@ -667,7 +670,6 @@ class CheckpointTests(unittest.TestCase):
             path.write_bytes(before)
 
     def test_runtime_preparation_retains_configure_copies_and_opaque_cargo_inputs(self):
-        self.retain = True
         fixture, _ = self.runtime_project()
         cmake = self.root / "CMakeLists.txt"
         original = cmake.read_text()
@@ -703,7 +705,6 @@ class CheckpointTests(unittest.TestCase):
 
     def test_runtime_preparation_preserves_explicit_and_older_broad_requirements(self):
         import build_evidence
-        self.retain = True
         fixture, _ = self.runtime_project()
         with patch.object(qualification, "preparation_inputs", side_effect=lambda root, build, paths, **kwargs: paths):
             first = qualification.prepare_checkpoint(self.campaign("broad"), self.build,
@@ -730,7 +731,6 @@ class CheckpointTests(unittest.TestCase):
 
     def test_runtime_preparation_does_not_admit_tampered_or_unproved_owners(self):
         import build_evidence
-        self.retain = True
         fixture, _ = self.runtime_project()
         first = qualification.prepare_checkpoint(self.campaign("owned"), self.build,
             self.state_path, self.state, self.environment, timeout=60)
@@ -768,7 +768,6 @@ class CheckpointTests(unittest.TestCase):
         self.assert_runtime_preparation_collection(module=self.build / "consumer.cmake")
 
     def assert_runtime_preparation_collection(self, *, module=None):
-        self.retain = True
         fixture, _ = self.runtime_project()
         cmake = self.root / "CMakeLists.txt"
         cmake.write_text(cmake.read_text().replace('"host;corpus"', '"host;product"'))
@@ -809,7 +808,6 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), original)
 
     def test_runtime_preparation_cold_discovery_preserves_producer_requirements(self):
-        self.retain = True
         self.native_project()
         self.assertFalse((self.build / "CTestTestfile.cmake").exists())
         fixture = self.root / "tests/runtime.txt"
@@ -829,7 +827,6 @@ class CheckpointTests(unittest.TestCase):
         self.assertNotIn("tests/runtime.txt", qualification.checkpoint_inputs(self.root, self.build, "prepare"))
 
     def test_explicitly_consumed_markdown_remains_a_freshness_input(self):
-        self.retain = True
         name = "docs/runtime-contract.md"
         document = self.root / name
         document.parent.mkdir(parents=True)
@@ -1041,7 +1038,6 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         return outcomes
 
     def test_collection_rejects_prepare_without_scoped_proof(self):
-        self.retain = True
         self.native_project()
         from verify import source_snapshot
         required = ["prepare", "quality", "product"]
@@ -1065,7 +1061,6 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
 
     def test_production_retained_execution_payloads(self):
         """Real OFF owners and preparations; unrelated execution uses unit scaffolds."""
-        self.retain = True
         started = time.monotonic()
         files = self.compiled_project()
         from verify import source_snapshot
@@ -1133,7 +1128,6 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             "seconds": time.monotonic() - started})
 
     def test_production_evidence_survives_on_restoration_and_unrelated_failure(self):
-        self.retain = True
         files = self.compiled_project()
         cmake = self.root / "CMakeLists.txt"
         cmake.write_text(cmake.read_text() +
@@ -1271,7 +1265,6 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
 
     def replay_preparation_renewal(self):
         """Four protocol lanes use this OS's tiny binaries, never product qualification."""
-        self.retain = True
         calls, deletions, artifact_reads, input_checks, tool_checks = [], [], [], [], []
         started = time.monotonic()
         progress = {"scope": "native miniature protocol only", "complete": False, "phases": []}
@@ -1448,7 +1441,6 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
             write_json(progress_path, progress)
 
     def prepare_compiled_project(self):
-        self.retain = True
         self.compiled_project()
         self.configure_fixture(self.preset, True, "fixture-on", timeout=60)
         return qualification.prepare_checkpoint(self.campaign("compiled"), self.build, self.state_path, self.state,
@@ -1518,7 +1510,6 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         write_json(path.parent / "collection-controls.json", outcomes)
 
     def test_consumed_environment_change_cannot_reuse_product(self):
-        self.retain = True
         files = self.compiled_project()
         self.configure_fixture(self.preset, True, "fixture-on", timeout=60)
         args = SimpleNamespace(reason="consumed runtime environment control", selection=["product"], preset=self.preset,
@@ -1937,7 +1928,6 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
 
     def test_collection_rechecks_source_membership_at_completion(self):
         import verify
-        self.retain = True
         self.native_project()
         inputs = qualification.checkpoint_inputs(self.root, self.build, "corpus")
         stage = self.run_stage("corpus", inputs=inputs)
@@ -1962,7 +1952,6 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
 
     def test_collection_rechecks_ignored_input_membership_at_completion(self):
         import verify
-        self.retain = True
         self.native_project()
         added = self.root / "tests/ffi/out/added.bin"
         added.parent.mkdir(parents=True)
@@ -2005,7 +1994,6 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         self.assert_collection_tool_seal("binding")
 
     def assert_collection_tool_seal(self, change):
-        self.retain = True
         directory = self.root / "out/validation" / self.preset / "tool-seal"
         first, second, alias = (directory / name for name in ("first", "second", "alias"))
         for target in (first, second):
@@ -2115,6 +2103,65 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
 
 
 class FixtureLifetimeTests(unittest.TestCase):
+    def run_checkpoint_fixture(self, environment, body):
+        case = CheckpointTests("test_new_campaign_reuses_original_success_without_execution")
+        case.test_new_campaign_reuses_original_success_without_execution = lambda: body(case)
+        with patch.dict(os.environ, environment):
+            result = case.run(unittest.TestResult())
+        self.addCleanup(case.temporary.cleanup)
+        return case, result
+
+    def test_artifact_routing_cleans_successful_checkpoint_fixture(self):
+        with tempfile.TemporaryDirectory() as artifact_root:
+            case, result = self.run_checkpoint_fixture({
+                "JUICER_TEST_ARTIFACT_DIR": artifact_root,
+                "JUICER_TEST_RETAIN_FIXTURES": "",
+            }, lambda case: None)
+        self.assertTrue(result.wasSuccessful())
+        self.assertFalse(case.root.exists())
+
+    def test_diagnostic_opt_in_and_test_failures_retain_checkpoint_fixture(self):
+        with tempfile.TemporaryDirectory() as artifact_root:
+            case, result = self.run_checkpoint_fixture({
+                "JUICER_TEST_ARTIFACT_DIR": artifact_root,
+                "JUICER_TEST_RETAIN_FIXTURES": "1",
+            }, lambda case: None)
+            self.assertTrue(result.wasSuccessful())
+            self.assertTrue(case.root.exists())
+            self.assertFalse((case.lease.path / "owner.json").exists())
+            case.temporary.cleanup()
+
+            def fail_test(case):
+                case.fail("fixture lifecycle control")
+
+            failed_case, failed_result = self.run_checkpoint_fixture({
+                "JUICER_TEST_ARTIFACT_DIR": artifact_root,
+                "JUICER_TEST_RETAIN_FIXTURES": "",
+            }, fail_test)
+            self.assertEqual(len(failed_result.failures), 1)
+            self.assertTrue(failed_case.root.exists())
+            failed_case.temporary.cleanup()
+
+            def fail_subtest(case):
+                with case.subTest(control="failure"):
+                    case.fail("fixture lifecycle control")
+
+            failed_case, failed_result = self.run_checkpoint_fixture({
+                "JUICER_TEST_ARTIFACT_DIR": artifact_root,
+                "JUICER_TEST_RETAIN_FIXTURES": "",
+            }, fail_subtest)
+            self.assertEqual(len(failed_result.failures), 1)
+            self.assertTrue(failed_case.root.exists())
+            self.assertFalse((failed_case.lease.path / "owner.json").exists())
+            failed_case.temporary.cleanup()
+
+    def test_missing_result_retains_checkpoint_fixture(self):
+        case = CheckpointTests("test_new_campaign_reuses_original_success_without_execution")
+        case.setUp()
+        self.addCleanup(case.temporary.cleanup)
+        case.doCleanups()
+        self.assertTrue(case.root.exists())
+
     def test_cancellation_keeps_fixture_owner_after_completed_or_unproved_command(self):
         for drained in (True, False):
             with self.subTest(drained=drained):
@@ -2134,6 +2181,7 @@ class FixtureLifetimeTests(unittest.TestCase):
                 setattr(case, case._testMethodName, cancel)
                 with self.assertRaises(KeyboardInterrupt):
                     case.run(unittest.TestResult())
+                self.addCleanup(case.temporary.cleanup)
                 self.assertNotIn(case.lease.path, OutputLease.held)
                 self.assertEqual(os.environ.get("JUICER_OUTPUT_LEASES"), previous)
                 receipt = next((case.root / "out/validation").glob("*/first/attempts/*/result.json"))

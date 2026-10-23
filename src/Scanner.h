@@ -50,12 +50,6 @@ namespace Scanner {
         std::uint64_t hash = 0;
     };
 
-    struct ScannerMediumRuntime {
-        ScannerMedium medium = ScannerMedium::Negative;
-        const Spectral::SpectralTables* tables = nullptr;
-        ScannerDensityRange range;
-    };
-
     struct SpectralTablesView {
         std::span<const float> epsC;
         std::span<const float> epsM;
@@ -192,16 +186,6 @@ namespace Scanner {
         const ::ScannerOutputRecipe& recipe,
         ScannerPostEffectsDescriptor& outDescriptor,
         std::string& outDiagnostic);
-
-    // Canonical scanner spectral core (agx-emulsion parity):
-    // - Accepts normalized density (0..1), denormalizes per medium range
-    // - Converts dyes -> XYZ under the medium's spectral tables
-    // - Applies log10(max(xyz, 0) + 1e-10)
-    void spectral_to_log_xyz(const ScannerMediumRuntime& medium, const double D_norm[3], double logXYZ[3]);
-    void spectral_to_log_xyz(const MediumView& medium, const double D_norm[3], double logXYZ[3]);
-
-    // Canonical normalization for LUT coordinates (mirrors agx _normalize_* semantics).
-    void normalize_density(const ScannerMediumRuntime& medium, const float D_cmy[3], double D_norm[3]);
 
     ColorRuntime build_color_runtime(
         ScannerMedium medium,

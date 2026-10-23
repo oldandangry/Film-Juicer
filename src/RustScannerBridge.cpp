@@ -289,3 +289,108 @@ namespace JuicerScanner {
         }
     }
 } // namespace JuicerScanner
+
+namespace JuicerScanner {
+    void Lut::Release::operator()(FjScannerLutOwner* owner) const noexcept {
+        (void)fj_legacy_scanner_lut_release(owner, nullptr);
+    }
+    Lut::Lut(std::unique_ptr<FjScannerLutOwner, Release> owner, FjScannerLutView view) noexcept
+        : _owner(std::move(owner)), _view(view) {}
+    Lut::Lut(Lut&& other) noexcept
+        : _owner(std::move(other._owner)), _view(std::exchange(other._view, {})) {}
+    Lut& Lut::operator=(Lut&& other) noexcept {
+        if (this != &other) {
+            _owner = std::move(other._owner);
+            _view = std::exchange(other._view, {});
+        }
+        return *this;
+    }
+
+    std::optional<Lut> Lut::acquire(const Scanner::MediumView& medium, std::uint32_t resolution, JuicerCuda::Failure& failure) {
+        const auto span = [](std::span<const float> values) -> FjFloatSpan {
+            return {values.empty() ? nullptr : values.data(), values.size()};
+        };
+        const auto& t = medium.tables;
+        FjScannerLutInput input{span(t.epsC), span(t.epsM), span(t.epsY), span(t.Ax), span(t.Ay), span(t.Az), span(t.baseDensityMin), {}, {}, t.K, t.invYn, t.hasBaseline ? 1u : 0u, static_cast<std::uint32_t>(medium.medium), resolution};
+        std::copy_n(medium.range.min_cmy, 3, input.range_min_cmy);
+        std::copy_n(medium.range.inv_max_cmy, 3, input.inverse_span_cmy);
+        std::array<char, 256> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        FjScannerLutOwner* raw = nullptr;
+        FjScannerLutFailure fields{};
+        const FjStatus status = fj_legacy_scanner_lut_acquire(&input, &raw, &fields, &error);
+        std::unique_ptr<FjScannerLutOwner, Release> owner(raw);
+        const auto contract = [&]() {
+            fail({FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "Scanner LUT preparation: invalid transport contract");
+        };
+        if (error.data != text.data() || error.capacity != text.size() || error.length >= text.size() || text[error.length] != '\0' || status.api != FJ_API_NONE || status.native_code != 0)
+            contract();
+        if (status.category != FJ_STATUS_SUCCESS) {
+            std::uint32_t category = FJ_STATUS_PREPARATION_FAILURE;
+            switch (fields.reason) {
+                case FJ_SCANNER_LUT_REASON_RAW:
+                    category = FJ_STATUS_UNSUPPORTED_INPUT;
+                    break;
+                case FJ_SCANNER_LUT_REASON_SIZE:
+                case FJ_SCANNER_LUT_REASON_ALLOCATION:
+                    category = FJ_STATUS_ALLOCATION_FAILURE;
+                    break;
+                case FJ_SCANNER_LUT_REASON_PANIC:
+                    category = FJ_STATUS_INTERNAL_FAILURE;
+                    break;
+                default:
+                    break;
+            }
+            if (owner || fields.reason < 1 || fields.reason > 6 || status.category != category ||
+                (fields.reason == FJ_SCANNER_LUT_REASON_NONFINITE ? fields.channel > 2 || fields.index == UINT64_MAX : fields.channel != UINT32_MAX || fields.index != UINT64_MAX) ||
+                ((fields.reason == FJ_SCANNER_LUT_REASON_SIZE || fields.reason == FJ_SCANNER_LUT_REASON_ALLOCATION) ? fields.buffer < 1 || fields.buffer > 10 : fields.buffer != 0))
+                contract();
+            JuicerCuda::set_failure(failure, status, std::string_view(text.data(), error.length));
+            return std::nullopt;
+        }
+        if (!owner || error.length || fields.reason || fields.channel != UINT32_MAX || fields.index != UINT64_MAX || fields.buffer)
+            contract();
+        FjScannerLutView view{};
+        const FjStatus viewed = fj_legacy_scanner_lut_view(owner.get(), &view, &fields, &error);
+        if (viewed.api != FJ_API_NONE || viewed.native_code != 0 || error.data != text.data() || error.capacity != text.size() || error.length >= text.size() || text[error.length] != '\0')
+            contract();
+        const std::array arrays{view.log2_xyz, view.slope_c, view.slope_m, view.slope_y, view.cell_min, view.cell_max};
+        if (viewed.category != FJ_STATUS_SUCCESS) {
+            if (viewed.category != FJ_STATUS_INTERNAL_FAILURE || fields.reason != FJ_SCANNER_LUT_REASON_PANIC || fields.channel != UINT32_MAX || fields.index != UINT64_MAX || fields.buffer || view.resolution ||
+                std::any_of(arrays.begin(), arrays.end(), [](FjFloatSpan span) {
+                    return span.data || span.count;
+                }))
+                contract();
+            JuicerCuda::set_failure(failure, viewed, std::string_view(text.data(), error.length));
+            return std::nullopt;
+        }
+        if (error.length || fields.reason || fields.channel != UINT32_MAX || fields.index != UINT64_MAX || fields.buffer || view.resolution != resolution || resolution < 2)
+            contract();
+        const auto r = static_cast<std::size_t>(resolution);
+        const auto nodes = r * r * r * 3u;
+        const auto cells = (r - 1u) * (r - 1u) * (r - 1u) * 3u;
+        for (std::size_t i = 0; i < arrays.size(); ++i)
+            if (!arrays[i].data || reinterpret_cast<std::uintptr_t>(arrays[i].data) % alignof(float) || arrays[i].count != (i < 4 ? nodes : cells))
+                contract();
+        failure = {};
+        return Lut{std::move(owner), view};
+    }
+    std::span<const float> Lut::log2_xyz() const noexcept {
+        return {_view.log2_xyz.data, _view.log2_xyz.count};
+    }
+    std::span<const float> Lut::slope_c() const noexcept {
+        return {_view.slope_c.data, _view.slope_c.count};
+    }
+    std::span<const float> Lut::slope_m() const noexcept {
+        return {_view.slope_m.data, _view.slope_m.count};
+    }
+    std::span<const float> Lut::slope_y() const noexcept {
+        return {_view.slope_y.data, _view.slope_y.count};
+    }
+    std::span<const float> Lut::cell_min() const noexcept {
+        return {_view.cell_min.data, _view.cell_min.count};
+    }
+    std::span<const float> Lut::cell_max() const noexcept {
+        return {_view.cell_max.data, _view.cell_max.count};
+    }
+} // namespace JuicerScanner
