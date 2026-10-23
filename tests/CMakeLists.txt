@@ -231,6 +231,11 @@ endif()
 add_test(NAME Ffi.Host.FilmRecipes COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/dir-fixtures/${JUICER_FILM_DIR_FIXTURE}.json")
 set_tests_properties(Ffi.Host.FilmRecipes PROPERTIES LABELS "host" TIMEOUT 180)
+add_test(NAME Ffi.Host.FilmReference COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/reference-fixtures/manifest.json" film-reference "${JUICER_TEST_PRESET_NAME}")
+add_test(NAME Film.Host.ReferenceProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/reference-fixtures/manifest.json" film-reference-products "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Ffi.Host.FilmReference Film.Host.ReferenceProducts PROPERTIES LABELS "host" TIMEOUT 180)
 add_test(NAME Film.Host.DirDensityProducts COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/film/dir-fixtures/${JUICER_FILM_DIR_FIXTURE}.json" products)
 set_tests_properties(Film.Host.DirDensityProducts PROPERTIES LABELS "host" TIMEOUT 180)
@@ -624,6 +629,8 @@ add_executable(JuicerAssetLookupTests
     ffi/asset_lookup_test.cpp $<TARGET_OBJECTS:juicer_asset_lookup_test_objects>)
 target_link_libraries(JuicerAssetLookupTests PRIVATE juicer_core GTest::gtest_main)
 target_compile_definitions(JuicerAssetLookupTests PRIVATE JUICER_ASSET_LOOKUP_TEST_HOOK=1)
+target_compile_definitions(JuicerAssetLookupTests PRIVATE JUICER_LOOKUP_RESOURCE_DIR="${JUICER_TEST_RESOURCE_DIR}")
+add_dependencies(JuicerAssetLookupTests juicer_test_resources)
 set_target_properties(JuicerAssetLookupTests PROPERTIES
     LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${JUICER_TEST_BINARY_DIR}")
 if(UNIX)
@@ -1314,7 +1321,7 @@ target_link_libraries(JuicerOutputColorTests PRIVATE juicer_output_encoding_orac
 set(juicer_tooling_tests Quality.Dispatcher Quality.ToolingLint Quality.Execution
     Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint Quality.PreparationRenewal
     Ctest.Host.Report Ctest.Host.Repetition Ffi.Host.RustBuild)
-set(juicer_boundary_tests
+set(juicer_boundary_tests Ffi.Host.FilmReference
     Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat

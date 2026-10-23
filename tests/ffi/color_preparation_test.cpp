@@ -393,7 +393,12 @@ namespace {
         std::uint32_t callIndex;
         std::uint32_t fault;
     };
-    void failed(const PendingRenderAdmissionResult& result, const FaultCase& selected, const std::string& film = "kodak_portra_400", bool scannerStage = false) {
+    enum class FailureStage : std::uint8_t {
+        Leaf,
+        FilmReference,
+        ScannerColor
+    };
+    void failed(const PendingRenderAdmissionResult& result, const FaultCase& selected, const std::string& film = "kodak_portra_400", FailureStage stage = FailureStage::Leaf) {
         require(result.status == PendingRenderAdmissionStatus::RebuildFailed && !result.directState && !result.printState, "current exceptional attempt fails with empty result owners");
         require(result.diagnostic.find(selected.fault == 1 ? "UnsupportedInput" : "InternalFailure") != std::string::npos, "original category diagnostic");
         const char* operation = nullptr;
@@ -431,8 +436,12 @@ namespace {
             default:
                 throw std::runtime_error("unknown failure operation");
         }
-        if (scannerStage && selected.fault == FJ_TEST_COLOR_PANIC)
-            operation = "scanner color preparation panicked";
+        if (selected.fault == FJ_TEST_COLOR_PANIC) {
+            if (stage == FailureStage::ScannerColor)
+                operation = "scanner color preparation panicked";
+            else if (stage == FailureStage::FilmReference)
+                operation = "film reference preparation panicked";
+        }
         require(result.diagnostic.find(operation) != std::string::npos, "stage-specific operation diagnostic");
         require(result.diagnostic.find("film=" + film) != std::string::npos && result.diagnostic.find("route=") != std::string::npos, "attempted selection diagnostic");
     }
@@ -479,7 +488,7 @@ namespace {
                             pending(state, changed);
                             expect_status(arm_color_fault(selected.operation, selected.callIndex, selected.fault), FJ_STATUS_SUCCESS);
                             const auto result = admit_pending_render_state(state);
-                            failed(result, selected);
+                            failed(result, selected, controls.filmProfileKey, operation == FJ_TEST_CAT16_ADAPT ? FailureStage::FilmReference : FailureStage::Leaf);
                             unchanged(state, old, hash, counter);
                             pending(state, controls);
                             const auto reused = admit_pending_render_state(state);
@@ -1100,7 +1109,7 @@ namespace {
                         pending(state, changed);
                         expect_status(arm_color_fault(selected.operation, index, fault), FJ_STATUS_SUCCESS);
                         const auto result = admit_pending_render_state(state);
-                        failed(result, selected, controls.filmProfileKey, index == calls);
+                        failed(result, selected, controls.filmProfileKey, index == calls ? FailureStage::ScannerColor : FailureStage::Leaf);
                         unchanged(state, old, hash, counter);
                         require_retained_values(old, oldValues);
                         for (std::uint32_t call = 0; call < index; ++call) {
@@ -1785,12 +1794,13 @@ namespace {
                         for (std::uint32_t index = 1; index <= calls; ++index) {
                             for (std::uint32_t fault : {FJ_TEST_COLOR_UNSUPPORTED_INPUT, FJ_TEST_COLOR_PANIC}) {
                                 const FaultCase selected{operation, index, fault};
+                                const auto stage = operation == FJ_TEST_LINEAR_SRGB_TO_XYZ || (operation == FJ_TEST_INPUT_MATRICES && index > 1) ? FailureStage::FilmReference : FailureStage::Leaf;
                                 FaultScope cleanup;
                                 InstanceState cold;
                                 pending(cold, controls);
                                 expect_status(arm_color_fault(operation, index, fault), FJ_STATUS_SUCCESS);
                                 const auto coldFailure = admit_pending_render_state(cold);
-                                failed(coldFailure, selected, controls.filmProfileKey);
+                                failed(coldFailure, selected, controls.filmProfileKey, stage);
                                 require(!JuicerAtomic::load_shared_ptr(&cold.activeDirectState) && !JuicerAtomic::load_shared_ptr(&cold.activePrintState) && cold.lastHash.load() == 0 && cold.buildCounterNext.load() == 0, "cold failed construction publishes no owner/hash/counter");
                                 for (std::uint32_t call = 0; call < index; ++call) {
                                     expect_status(raw_call(operation), FJ_STATUS_SUCCESS);
@@ -1808,7 +1818,7 @@ namespace {
                                 pending(state, changed);
                                 expect_status(arm_color_fault(operation, index, fault), FJ_STATUS_SUCCESS);
                                 const auto result = admit_pending_render_state(state);
-                                failed(result, selected, controls.filmProfileKey);
+                                failed(result, selected, controls.filmProfileKey, stage);
                                 unchanged(state, old, hash, counter);
                                 require(input_values(old) == oldValues, "retained input-color fields/identities remain exact");
                                 // Same matching raw export, original count, admission thread, before cleanup.

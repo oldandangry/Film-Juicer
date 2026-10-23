@@ -38,8 +38,11 @@
 #include "film_recipe_abi_cpp.inc"
 static_assert(!std::is_copy_constructible_v<JuicerAssets::DevelopmentHold>);
 static_assert(!std::is_copy_constructible_v<JuicerAssets::FilmDevelopment>);
+static_assert(!std::is_copy_constructible_v<Spektrafilm::DirectRecipeBuildResult>);
+static_assert(!std::is_copy_constructible_v<Spektrafilm::PrintRecipeBuildResult>);
 static_assert(std::is_nothrow_move_constructible_v<JuicerAssets::DevelopmentHold>);
 extern "C" const std::size_t* fj_test_film_recipe_abi_c_facts(std::size_t* count);
+extern "C" FjStatus fj_test_film_reference_c_prepare(const FjFilmDevelopmentOwner*, const FjFilmReferenceInput*, FjFilmReference*, FjFilmReferenceFailure*, FjErrorBuffer*);
 extern "C" int fj_test_scanner_correction_c_call(unsigned, const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, const FjScannerPrintCorrectionInput*, const FjScannerColorCorrection*, unsigned, unsigned);
 
 namespace {
@@ -286,7 +289,30 @@ namespace {
 #include "print_balance_test.inc"
 #include "scanner_correction_test.inc"
 #include "scanner_lut_test.inc"
+#include "film_reference_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 6 && std::string_view(argv[3]) == "reference-capture") {
+        PrintPreflashTest::save(argv[5], {{"schema", 1}, {"preset", argv[4]}, {"products", FilmReferenceTest::products(argv[1])}, {"numerical_failures", FilmReferenceTest::numerical_failures(argv[1])}});
+        std::puts("PASS native film reference observations recorded; independent analysis required");
+        return 0;
+    }
+    if (argc == 4 && std::string_view(argv[3]) == "reference-primitives") {
+        FilmReferenceTest::check_primitives(read(argv[2]));
+        std::puts("PASS exact native/Rust film reference log10 words");
+        return 0;
+    }
+    if (argc == 5 && (std::string_view(argv[3]) == "film-reference" || std::string_view(argv[3]) == "film-reference-products")) {
+        layouts();
+        const auto manifest = read(argv[2]);
+        const auto captured = read(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).get<std::string>());
+        if (std::string_view(argv[3]) == "film-reference")
+            FilmReferenceTest::boundary(argv[1], captured);
+        else {
+            require(FilmReferenceTest::products(argv[1]) == captured.at("products") && FilmReferenceTest::numerical_failures(argv[1]) == captured.at("numerical_failures"), "complete frozen reference products, failures and downstream identities");
+            FilmReferenceTest::callers(argv[1]);
+        }
+        return 0;
+    }
     if (argc == 5 && (std::string_view(argv[3]) == "scanner-lut" || std::string_view(argv[3]) == "scanner-lut-products")) {
         const auto manifest = read(argv[2]);
         const auto captured = read(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>());

@@ -4,6 +4,7 @@ pub mod input;
 pub mod dir;
 pub mod density;
 pub mod grain;
+pub mod reference;
 
 use std::fmt;
 use std::mem::size_of;

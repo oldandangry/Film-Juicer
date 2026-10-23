@@ -5,6 +5,7 @@ use std::mem::{align_of, size_of};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use film_juicer_core::effects;
 use film_juicer_core::film::{Development, density, dir, grain};
+use film_juicer_core::film::reference;
 use film_juicer_core::profile::Polarity;
 use film_juicer_core::route::ScanRoute;
 use crate::film_bridge::FjFilmDevelopmentOwner;
@@ -379,12 +380,382 @@ fn status(category: u32) -> FjStatus {
         native_code: 0,
     }
 }
+// SF_TEMP_BRIDGE_FILM_REFERENCE: fixed borrowed preparation; remove S4.E.
+#[repr(C)]
+pub(crate) struct FjFilmReferenceInput {
+    pub(crate) method: u32,
+    pub(crate) auto_exposure_enabled: u32,
+    pub(crate) manual_exposure_ev: f32,
+    pub(crate) mallett_green_scale: f32,
+    pub(crate) projection_white_xyz: [f32; 3],
+    pub(crate) basis_rgb: FjFloatSpan,
+    pub(crate) film_illuminant: FjFloatSpan,
+    pub(crate) sensitivity_rgb: FjFloatSpan,
+    pub(crate) tc_lut: FjFloatSpan,
+}
+#[repr(C)]
+pub(crate) struct FjFilmReference {
+    pub(crate) baseline_raw_rgb: [f32; 3],
+    pub(crate) compensated_raw_rgb: [f32; 3],
+    pub(crate) baseline_density_cmy: [f32; 3],
+    pub(crate) compensated_density_cmy: [f32; 3],
+    pub(crate) meter_scale: f32,
+    pub(crate) hash: u64,
+}
+#[repr(C)]
+pub(crate) struct FjFilmReferenceFailure {
+    pub(crate) reason: u32,
+    pub(crate) exposure: u32,
+    pub(crate) operation: u32,
+    pub(crate) channel: u32,
+}
+
+fn reference_error(error: reference::Error) -> (u32, FjFilmReferenceFailure, &'static str) {
+    use reference::Error;
+    #[cfg(feature = "test-support")]
+    use reference::{Category, Operation};
+    let mut failure = FjFilmReferenceFailure {
+        reason: 0,
+        exposure: 0,
+        operation: 0,
+        channel: 0,
+    };
+    let (category, message) = match error {
+        Error::Reconstruction {
+            exposure,
+            operation,
+        } => {
+            failure.reason = 2;
+            failure.exposure = exposure as u32;
+            failure.operation = operation.map_or(0, |value| value as u32);
+            (
+                FJ_STATUS_PREPARATION_FAILURE,
+                "MalformedRequiredResource phase=3B field=synthetic_reference_raw",
+            )
+        }
+        Error::Meter => {
+            failure.reason = 3;
+            failure.operation = 7;
+            (
+                FJ_STATUS_PREPARATION_FAILURE,
+                "MalformedRequiredResource phase=3B field=synthetic_reference_meter",
+            )
+        }
+        Error::DensityLookup { exposure, channel } => {
+            failure.reason = 4;
+            failure.exposure = exposure as u32;
+            failure.operation = 8;
+            failure.channel = channel as u32 + 1;
+            (
+                FJ_STATUS_PREPARATION_FAILURE,
+                "ResourceDescriptorMismatch phase=3B field=synthetic_reference_density_lookup",
+            )
+        }
+        #[cfg(feature = "test-support")]
+        Error::Dependency {
+            exposure,
+            operation,
+            category,
+        } => {
+            failure.reason = 5;
+            failure.exposure = exposure as u32;
+            failure.operation = operation as u32;
+            if category == Category::Allocation {
+                (
+                    FJ_STATUS_ALLOCATION_FAILURE,
+                    "film reference dependency allocation failed",
+                )
+            } else {
+                let message = match operation {
+                    Operation::Source => {
+                        "Reference source preparation: exposure production boundary fault"
+                    }
+                    Operation::InputMatrices => "Input matrix preparation failed",
+                    Operation::LinearSrgb => "Linear sRGB to XYZ conversion failed",
+                    Operation::Cat16 => "CAT16 scalar adaptation failed",
+                    Operation::TcSample => "Film TC sampling: TC production boundary fault",
+                    Operation::MallettRaw => {
+                        "Mallett reference preparation: exposure production boundary fault"
+                    }
+                };
+                (FJ_STATUS_UNSUPPORTED_INPUT, message)
+            }
+        }
+    };
+    (category, failure, message)
+}
+
+fn reference_span(span: FjFloatSpan, count: usize) -> bool {
+    (span.data.is_null() && span.count == 0)
+        || (span.count == count && valid_extent(span.data, count))
+}
+fn empty_reference_span(span: FjFloatSpan) -> bool {
+    span.data.is_null() && span.count == 0
+}
+
+/// # Safety
+/// Admitted spans are initialized immutable float storage held through return.
+unsafe fn reference_reconstruction(
+    input: &FjFilmReferenceInput,
+) -> Result<Option<reference::Reconstruction<'_>>, ()> {
+    if input.method > 2 || input.auto_exposure_enabled > 1 {
+        return Err(());
+    }
+    if input.method == 1 {
+        if !reference_span(input.basis_rgb, 243)
+            || !reference_span(input.film_illuminant, 81)
+            || !reference_span(input.sensitivity_rgb, 243)
+            || !empty_reference_span(input.tc_lut)
+        {
+            return Err(());
+        }
+        if input.basis_rgb.count == 0
+            || input.film_illuminant.count == 0
+            || input.sensitivity_rgb.count == 0
+        {
+            return Ok(None);
+        }
+        // SAFETY: Every present active span has its complete fixed aligned extent;
+        // caller keeps the initialized backing immutable until synchronous return.
+        Ok(Some(unsafe {
+            reference::Reconstruction::Mallett {
+                basis_rgb: &*input.basis_rgb.data.cast::<[[f32; 3]; 81]>(),
+                illuminant: &*input.film_illuminant.data.cast::<[f32; 81]>(),
+                sensitivity_rgb: &*input.sensitivity_rgb.data.cast::<[[f32; 3]; 81]>(),
+                green_scale: input.mallett_green_scale,
+            }
+        }))
+    } else {
+        if !reference_span(
+            input.tc_lut,
+            film_juicer_core::reconstruction::TC_LUT_SAMPLE_COUNT,
+        ) || !empty_reference_span(input.basis_rgb)
+            || !empty_reference_span(input.film_illuminant)
+            || !empty_reference_span(input.sensitivity_rgb)
+        {
+            return Err(());
+        }
+        if input.tc_lut.count == 0 {
+            return Ok(None);
+        }
+        // SAFETY: The admitted complete TC array remains borrowed from its live owner.
+        Ok(Some(unsafe {
+            reference::Reconstruction::Tc {
+                samples: &*input
+                    .tc_lut
+                    .data
+                    .cast::<[f32; film_juicer_core::reconstruction::TC_LUT_SAMPLE_COUNT]>(),
+                projection_white_xyz: input.projection_white_xyz,
+            }
+        }))
+    }
+}
+
+/// # Safety
+/// Development is a live matching immutable owner. Records and consumed spans
+/// are initialized, aligned and addressable. Writable records/error backing are
+/// exclusive, mutually disjoint and disjoint from all inputs until return.
+pub(crate) unsafe fn prepare_reference(
+    development: *const FjFilmDevelopmentOwner,
+    input: *const FjFilmReferenceInput,
+    out: *mut FjFilmReference,
+    failure: *mut FjFilmReferenceFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let out_valid = valid_extent(out, 1);
+    let failure_valid = valid_extent(failure, 1);
+    // SAFETY: Each independently admitted writable peer satisfies the caller's
+    // initialized/exclusive storage obligation even when another argument fails.
+    unsafe {
+        if out_valid {
+            out.write_bytes(0, 1);
+        }
+        if failure_valid {
+            failure.write_bytes(0, 1);
+        }
+    }
+    // SAFETY: The optional diagnostic envelope has the same exclusive contract.
+    let mut diagnostic = unsafe { Diagnostic::admit(error) };
+    let prepared = catch_unwind(AssertUnwindSafe(|| {
+        if !out_valid
+            || !failure_valid
+            || diagnostic.is_err()
+            || !valid_extent(development.cast::<Development>(), 1)
+            || !valid_extent(input, 1)
+        {
+            return Err((
+                FJ_STATUS_UNSUPPORTED_INPUT,
+                FjFilmReferenceFailure {
+                    reason: 1,
+                    exposure: 0,
+                    operation: 0,
+                    channel: 0,
+                },
+                "invalid film reference arguments",
+            ));
+        }
+        // SAFETY: Admission checks record extents before reads; all pointees
+        // satisfy the caller's live initialized owner/storage obligation.
+        let (development, input) = unsafe { (&*development.cast::<Development>(), &*input) };
+        // SAFETY: The input spans remain live, immutable and call-bounded.
+        let reconstruction = unsafe { reference_reconstruction(input) }.map_err(|()| {
+            (
+                FJ_STATUS_UNSUPPORTED_INPUT,
+                FjFilmReferenceFailure {
+                    reason: 1,
+                    exposure: 0,
+                    operation: 0,
+                    channel: 0,
+                },
+                "invalid film reference arguments",
+            )
+        })?;
+        reference::Reference::new(
+            development,
+            reference::Params {
+                manual_exposure_ev: input.manual_exposure_ev,
+                auto_exposure_enabled: input.auto_exposure_enabled != 0,
+            },
+            reconstruction,
+        )
+        .map_err(reference_error)
+    }));
+    let rejected = match prepared {
+        Ok(Ok(reference)) => {
+            // SAFETY: Success requires the exclusively writable full result.
+            unsafe {
+                out.write(FjFilmReference {
+                    baseline_raw_rgb: *reference.baseline_raw_rgb(),
+                    compensated_raw_rgb: *reference.compensated_raw_rgb(),
+                    baseline_density_cmy: *reference.baseline_density_cmy(),
+                    compensated_density_cmy: *reference.compensated_density_cmy(),
+                    meter_scale: reference.meter_scale(),
+                    hash: reference.hash(),
+                });
+            }
+            return FjStatus {
+                category: FJ_STATUS_SUCCESS,
+                api: FJ_API_NONE,
+                native_code: 0,
+            };
+        }
+        Ok(Err(rejected)) => rejected,
+        Err(_) => (
+            FJ_STATUS_INTERNAL_FAILURE,
+            FjFilmReferenceFailure {
+                reason: 6,
+                exposure: 0,
+                operation: 0,
+                channel: 0,
+            },
+            "film reference preparation panicked",
+        ),
+    };
+    if failure_valid {
+        // SAFETY: This independently admitted peer is exclusively writable.
+        unsafe {
+            failure.write(rejected.1);
+        }
+    }
+    if let Ok(ref mut diagnostic) = diagnostic {
+        let _ = diagnostic.write_str(rejected.2);
+    }
+    FjStatus {
+        category: rejected.0,
+        api: FJ_API_NONE,
+        native_code: 0,
+    }
+}
+
+/// # Safety
+/// Same live-owner, initialized storage and exclusive call-bounded borrow
+/// contract as prepare_reference and the temporary legacy header.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_legacy_film_reference_prepare(
+    development: *const FjFilmDevelopmentOwner,
+    input: *const FjFilmReferenceInput,
+    out: *mut FjFilmReference,
+    failure: *mut FjFilmReferenceFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Forward the identical immediate caller contract.
+    unsafe { prepare_reference(development, input, out, failure, error) }
+}
+
 fn valid_extent<T>(pointer: *const T, count: usize) -> bool {
     !pointer.is_null()
         && (pointer as usize).is_multiple_of(align_of::<T>())
         && count.checked_mul(size_of::<T>()).is_some_and(|bytes| {
             bytes <= isize::MAX as usize && (pointer as usize).checked_add(bytes).is_some()
         })
+}
+
+#[cfg(feature = "test-support")]
+/// # Safety
+/// Initialized readonly spans and exclusive disjoint writable outputs remain
+/// live until return. Supplied axes have the complete-profile ordering contract.
+pub(crate) unsafe fn reference_density_lookup(
+    query: f32,
+    axis: FjFloatSpan,
+    curves: FjFloatSpan,
+    channel: u32,
+    out: *mut f32,
+    present: *mut u32,
+) -> FjStatus {
+    let valid_out = valid_extent(out, 1);
+    let valid_present = valid_extent(present, 1);
+    // SAFETY: Each independently admitted output satisfies caller storage obligations.
+    unsafe {
+        if valid_out {
+            out.write(0.0);
+        }
+        if valid_present {
+            present.write(0);
+        }
+    }
+    let valid_span = |span: FjFloatSpan| {
+        empty_reference_span(span) || (span.count != 0 && valid_extent(span.data, span.count))
+    };
+    if !valid_out
+        || !valid_present
+        || !valid_span(axis)
+        || !valid_span(curves)
+        || !curves.count.is_multiple_of(3)
+    {
+        return FjStatus {
+            category: FJ_STATUS_UNSUPPORTED_INPUT,
+            api: FJ_API_NONE,
+            native_code: 0,
+        };
+    }
+    // SAFETY: Every span is admitted before these call-bounded borrows. Empty
+    // spans have no backing to borrow. Float rows have the same float alignment.
+    let (axis, curves) = unsafe {
+        (
+            if axis.count == 0 {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts(axis.data, axis.count)
+            },
+            if curves.count == 0 {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts(curves.data.cast::<[f32; 3]>(), curves.count / 3)
+            },
+        )
+    };
+    if let Some(value) = reference::testing::sample_density(query, axis, curves, channel as usize) {
+        // SAFETY: Both admitted outputs are exclusively writable through return.
+        unsafe {
+            out.write(value);
+            present.write(1);
+        }
+    }
+    FjStatus {
+        category: FJ_STATUS_SUCCESS,
+        api: FJ_API_NONE,
+        native_code: 0,
+    }
 }
 struct Diagnostic {
     record: *mut FjErrorBuffer,
@@ -1139,6 +1510,36 @@ const _: () = assert!(FJ_FILM_RECIPE_INTEGRITY == 15);
 /// facts have immutable static lifetime and cannot be freed by the caller.
 unsafe extern "C" fn fj_test_film_recipe_abi_facts(count: *mut usize) -> *const usize {
     const FACTS: &[usize] = &[
+        size_of::<FjFilmReferenceInput>(),
+        align_of::<FjFilmReferenceInput>(),
+        std::mem::offset_of!(FjFilmReferenceInput, method),
+        std::mem::offset_of!(FjFilmReferenceInput, auto_exposure_enabled),
+        std::mem::offset_of!(FjFilmReferenceInput, manual_exposure_ev),
+        std::mem::offset_of!(FjFilmReferenceInput, mallett_green_scale),
+        std::mem::offset_of!(FjFilmReferenceInput, projection_white_xyz),
+        3,
+        std::mem::offset_of!(FjFilmReferenceInput, basis_rgb),
+        std::mem::offset_of!(FjFilmReferenceInput, film_illuminant),
+        std::mem::offset_of!(FjFilmReferenceInput, sensitivity_rgb),
+        std::mem::offset_of!(FjFilmReferenceInput, tc_lut),
+        size_of::<FjFilmReference>(),
+        align_of::<FjFilmReference>(),
+        std::mem::offset_of!(FjFilmReference, baseline_raw_rgb),
+        3,
+        std::mem::offset_of!(FjFilmReference, compensated_raw_rgb),
+        3,
+        std::mem::offset_of!(FjFilmReference, baseline_density_cmy),
+        3,
+        std::mem::offset_of!(FjFilmReference, compensated_density_cmy),
+        3,
+        std::mem::offset_of!(FjFilmReference, meter_scale),
+        std::mem::offset_of!(FjFilmReference, hash),
+        size_of::<FjFilmReferenceFailure>(),
+        align_of::<FjFilmReferenceFailure>(),
+        std::mem::offset_of!(FjFilmReferenceFailure, reason),
+        std::mem::offset_of!(FjFilmReferenceFailure, exposure),
+        std::mem::offset_of!(FjFilmReferenceFailure, operation),
+        std::mem::offset_of!(FjFilmReferenceFailure, channel),
         std::mem::size_of::<FjFilmRecipeFailure>(),
         std::mem::align_of::<FjFilmRecipeFailure>(),
         std::mem::offset_of!(FjFilmRecipeFailure, reason),

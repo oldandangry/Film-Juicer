@@ -1128,6 +1128,18 @@ with unchanged maximum/mean error bounds, nonfinite and alpha/padding checks.
 
 ## Film development and route binding
 
+`Ffi.Host.FilmReference` checks the complete borrowed film-reference boundary,
+compiled C11/C++ layouts, exact frozen values/hash, independent output clearing,
+raw admission, dependency faults and native envelope integrity.
+`Film.Host.ReferenceProducts` compares all 36 method/route/EV-auto products and
+nine numerical observations per native profile, then exercises actual admission,
+failure/recovery, supersession and temporary Development hold release. Frozen
+native provenance is under `film/reference-fixtures/`; capture maintenance uses
+the existing `JuicerFilmRecipeTests <resources> unused reference-capture <preset> <new-output>`
+entry and cannot overwrite an existing candidate. Replacement captures never
+establish expectations. `reference-primitives` compares the actual native/Rust
+log10 words before qualification. These are host construction checks.
+
 `Ffi.Host.FilmDevelopment` compares the safe completed development family, raw
 legacy transport, gated fixture facade and native source projection against
 [the native characterization](film/fixtures/manifest.json). It checks coordinated

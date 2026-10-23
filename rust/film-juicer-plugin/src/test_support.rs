@@ -2087,6 +2087,47 @@ const _: unsafe extern "C" fn(
 ) -> FjStatus = fj_test_print_balance_prepare;
 
 /// # Safety
+/// Identical live Development, initialized spans and disjoint synchronous
+/// output/diagnostic storage contract as the production reference entry.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_reference_prepare(
+    development: *const crate::film_bridge::FjFilmDevelopmentOwner,
+    input: *const crate::film_recipe_bridge::FjFilmReferenceInput,
+    out: *mut crate::film_recipe_bridge::FjFilmReference,
+    failure: *mut crate::film_recipe_bridge::FjFilmReferenceFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Both entries share this checked immediate call; no export nesting.
+    unsafe { crate::film_recipe_bridge::prepare_reference(development, input, out, failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const crate::film_bridge::FjFilmDevelopmentOwner,
+    *const crate::film_recipe_bridge::FjFilmReferenceInput,
+    *mut crate::film_recipe_bridge::FjFilmReference,
+    *mut crate::film_recipe_bridge::FjFilmReferenceFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_film_reference_prepare;
+
+/// # Safety
+/// Same fixed borrow and disjoint output contract as reference_density_lookup.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_film_reference_density_lookup(
+    query: f32,
+    axis: FjFloatSpan,
+    curves: FjFloatSpan,
+    channel: u32,
+    out: *mut f32,
+    present: *mut u32,
+) -> FjStatus {
+    // SAFETY: Forward the identical admitted, synchronous test-ingress contract.
+    unsafe {
+        crate::film_recipe_bridge::reference_density_lookup(
+            query, axis, curves, channel, out, present,
+        )
+    }
+}
+
+/// # Safety
 /// Same checked, disjoint synchronous contract as scanner_bridge::lut_acquire.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn fj_test_scanner_lut_acquire(

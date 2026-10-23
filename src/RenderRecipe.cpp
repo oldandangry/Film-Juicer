@@ -13,8 +13,6 @@
 #include "GamutCompression.h"
 #include "RustGamutBridge.h"
 #include "RustAssetBridge.h"
-#include "RustColorBridge.h"
-#include "RustExposureBridge.h"
 #include "RustFilmRecipeBridge.h"
 #include "Cuda/JuicerCudaExecutor.h"
 #include "Hash.h"
@@ -76,33 +74,6 @@ namespace {
             hash_value(hash, route.printProfileAssetVersionToken);
         }
         return hash;
-    }
-
-
-    std::optional<float> sample_synthetic_density(
-        float query,
-        const std::vector<float>& axis,
-        const std::vector<std::array<float, 3>>& curves,
-        std::size_t channel) {
-        if (std::isnan(query) || axis.empty() || axis.size() != curves.size() || channel >= 3u) {
-            return std::nullopt;
-        }
-        if (query <= axis.front()) {
-            return curves.front()[channel];
-        }
-        if (query >= axis.back()) {
-            return curves.back()[channel];
-        }
-        // Complete profiles supply a nondecreasing axis; do not rescan or repair it here.
-        const auto upper = std::upper_bound(axis.begin(), axis.end(), query);
-        if (upper == axis.begin() || upper == axis.end()) {
-            return std::nullopt;
-        }
-        const std::size_t hi = static_cast<std::size_t>(upper - axis.begin());
-        const std::size_t lo = hi - 1u;
-        const float span = axis[hi] - axis[lo];
-        const float t = span > 0.0f ? (query - axis[lo]) / span : 0.0f;
-        return curves[lo][channel] + t * (curves[hi][channel] - curves[lo][channel]);
     }
 
 
@@ -671,13 +642,6 @@ namespace {
 #ifdef JUICER_ASSET_LOOKUP_TEST_HOOK
 namespace AssetLookupTest {
 
-    std::optional<float> sample_synthetic_density_for_test(
-        float query,
-        const std::vector<float>& axis,
-        const std::vector<std::array<float, 3>>& curves,
-        std::size_t channel) {
-        return sample_synthetic_density(query, axis, curves, channel);
-    }
 
     float hanatos_window_sample_for_test(float wavelength, const std::array<float, 4>& params) {
         float result = 0.0f;
@@ -937,6 +901,9 @@ namespace Spektrafilm {
             result.diagnostic =
                 "ResourceDescriptorMismatch phase=3A field=render_recipe_hash";
         }
+        if (result.valid) {
+            result.developmentHold = std::move(film.developmentHold);
+        }
         return result;
     }
     PrintRecipeBuildResult build_print_render_recipe(
@@ -1113,170 +1080,53 @@ namespace Spektrafilm {
             result.diagnostic =
                 "ResourceDescriptorMismatch phase=4A field=print_recipe_hash";
         }
+        if (result.valid) {
+            result.developmentHold = std::move(film.developmentHold);
+        }
         return result;
     }
 
     bool finish_synthetic_reference_recipes(
         RenderRecipe& recipe,
+        const JuicerAssets::DevelopmentHold& development,
         const Spectral::FilmTcLut* filmTcLut,
         const std::array<float, 81>& filmIlluminant,
         const std::array<float, 81>* filteredMainIlluminant,
         std::string& diagnostic) {
         diagnostic.clear();
-        if (!recipe.profileRoute.filmProfile ||
-            recipe.filmDevelop.logExposure.empty() ||
-            recipe.filmDevelop.logExposure.size() !=
-                recipe.filmDevelop.authoredDensityCurves.size()) {
-            diagnostic =
-                "ResourceDescriptorMismatch phase=3B field=synthetic_reference_inputs";
+        if (!recipe.profileRoute.filmProfile || !development.get()) {
+            diagnostic = "ResourceDescriptorMismatch phase=3B field=synthetic_reference_inputs";
             return false;
         }
-
-        auto reconstruct = [&](float exposureEv, std::array<float, 3>& out) {
-            out = {};
-            float source = 0.0f;
-            std::string exposureDiagnostic;
-            if (!JuicerExposure::reference_source(
-                    exposureEv, source, exposureDiagnostic)) {
-                return false;
-            }
-            if (recipe.filmRaw.rgbToRawMethod == RgbToRawMethod::Mallett2019) {
-                const Spectral::MallettBasis& basis = Spectral::context().mallettBasis;
-                if (basis.rows != 81 || basis.cols != 3 || basis.data.size() != 243u) {
-                    return false;
-                }
-                return JuicerExposure::mallett_reference_raw(
-                    basis,
-                    filmIlluminant,
-                    recipe.filmRaw.finalSensitivity,
-                    source,
-                    recipe.filmRaw.mallettGreenMidgrayScale,
-                    out,
-                    exposureDiagnostic);
-            } else if (
-                recipe.filmRaw.rgbToRawMethod == RgbToRawMethod::Hanatos2025 ||
-                recipe.filmRaw.rgbToRawMethod == RgbToRawMethod::Arctic2026beta04) {
-                if (!filmTcLut) {
-                    return false;
-                }
-                const auto inputMatrices = JuicerColor::input_matrices(Spectral::InputColorSpace::SRGB_Rec709);
-                const auto sourceXyz = JuicerColor::linear_srgb_to_xyz({source, source, source});
-                const auto projectedXyz = JuicerColor::adapt_cat16(
-                    sourceXyz,
-                    Spectral::ChromaticAdaptationWhites{
-                        inputMatrices.d65WhiteXYZ.data(),
-                        recipe.filmRaw.projectionWhiteXYZ.data()});
-                std::string samplingDiagnostic;
-                if (!Spectral::sample_film_tc_lut(
-                        *filmTcLut,
-                        {projectedXyz[0], projectedXyz[1], projectedXyz[2]},
-                        out,
-                        samplingDiagnostic)) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-            return std::all_of(out.begin(), out.end(), [](float raw) {
-                return std::isfinite(raw) && raw >= 0.0f;
-            });
-        };
-
         SyntheticFilmReferenceRecipe reference{};
-        if (!reconstruct(0.0f, reference.baselineRawRgb) ||
-            !reconstruct(
-                recipe.filmRaw.manualExposureCompensationEv,
-                reference.compensatedRawRgb)) {
-            diagnostic =
-                "MalformedRequiredResource phase=3B field=synthetic_reference_raw";
+        if (!JuicerAssets::prepare_film_reference(development, recipe.filmRaw, filmTcLut, filmIlluminant, reference, diagnostic)) {
             return false;
         }
-        if (recipe.filmRaw.autoExposureEnabled) {
-            const float mean =
-                (reference.baselineRawRgb[0] + reference.baselineRawRgb[1] +
-                 reference.baselineRawRgb[2]) /
-                3.0f;
-            if (!(std::isfinite(mean) && mean > 0.0f)) {
-                diagnostic =
-                    "MalformedRequiredResource phase=3B field=synthetic_reference_meter";
-                return false;
-            }
-            reference.baselineMeterScale = 1.0f / mean;
-        }
-        for (std::size_t channel = 0; channel < 3u; ++channel) {
-            const float gamma = recipe.filmDevelop.densityCurveGamma[channel];
-            if (!(std::isfinite(gamma) && gamma > 0.0f)) {
-                diagnostic =
-                    "ResourceDescriptorMismatch phase=3B field=film_density_curve_gamma";
-                return false;
-            }
-            const float baselineLog = std::log10(
-                reference.baselineRawRgb[channel] * reference.baselineMeterScale +
-                1.0e-10f);
-            const float compensatedLog = std::log10(
-                reference.compensatedRawRgb[channel] * reference.baselineMeterScale +
-                1.0e-10f);
-            const auto baselineDensity = sample_synthetic_density(
-                baselineLog * gamma,
-                recipe.filmDevelop.logExposure,
-                recipe.filmDevelop.authoredDensityCurves,
-                channel);
-            const auto compensatedDensity = sample_synthetic_density(
-                compensatedLog * gamma,
-                recipe.filmDevelop.logExposure,
-                recipe.filmDevelop.authoredDensityCurves,
-                channel);
-            if (!baselineDensity || !compensatedDensity) {
-                diagnostic =
-                    "ResourceDescriptorMismatch phase=3B field=synthetic_reference_density_lookup";
-                return false;
-            }
-            reference.baselineDensityCmy[channel] = *baselineDensity;
-            reference.compensatedDensityCmy[channel] = *compensatedDensity;
-        }
-        reference.hash = Hash::kFnvOffset;
-        Hash::hash_bytes_update(
-            reference.hash,
-            reference.baselineRawRgb.data(),
-            sizeof(reference.baselineRawRgb));
-        Hash::hash_bytes_update(
-            reference.hash,
-            reference.compensatedRawRgb.data(),
-            sizeof(reference.compensatedRawRgb));
-        Hash::hash_bytes_update(
-            reference.hash,
-            reference.baselineDensityCmy.data(),
-            sizeof(reference.baselineDensityCmy));
-        Hash::hash_bytes_update(
-            reference.hash,
-            reference.compensatedDensityCmy.data(),
-            sizeof(reference.compensatedDensityCmy));
-        hash_value(reference.hash, reference.baselineMeterScale);
         recipe.scannerOutput.syntheticFilmReference = reference;
         recipe.scannerOutput.hash = hash_scanner_output_recipe(recipe.scannerOutput);
-
         if (scan_route_is_print(recipe.profileRoute.scanRoute)) {
             if (!recipe.profileRoute.printProfile || !filteredMainIlluminant) {
-                diagnostic =
-                    "MissingRequiredResource phase=4A field=filtered_print_illuminant";
+                diagnostic = "MissingRequiredResource phase=4A field=filtered_print_illuminant";
                 return false;
             }
-            const Profiles::FilmProfileSamples& film =
-                recipe.profileRoute.filmProfile->data;
-            const Profiles::PrintProfileSamples& print =
-                recipe.profileRoute.printProfile->data;
             PrintBalanceRecipe balance{};
-            if (!JuicerAssets::prepare_print_balance(film, print, *filteredMainIlluminant, reference, recipe.print.exposure.normalizationMode, balance, diagnostic)) {
+            if (!JuicerAssets::prepare_print_balance(
+                    recipe.profileRoute.filmProfile->data,
+                    recipe.profileRoute.printProfile->data,
+                    *filteredMainIlluminant,
+                    reference,
+                    recipe.print.exposure.normalizationMode,
+                    balance,
+                    diagnostic)) {
                 return false;
             }
             recipe.print.balance = balance;
             recipe.print.hash = hash_print_recipe(recipe.print);
         }
-
         recipe.hash = hash_final_render_recipe(recipe);
-        return reference.hash != 0 && recipe.scannerOutput.hash != 0 &&
-               recipe.hash != 0;
+        return reference.hash != 0 && recipe.scannerOutput.hash != 0 && recipe.hash != 0;
     }
+
 
     bool build_diffusion_frame_set_descriptor(
         const SpatialOptics& optics,

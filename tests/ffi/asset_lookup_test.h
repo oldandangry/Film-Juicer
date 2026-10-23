@@ -15,11 +15,6 @@ namespace Profiles {
 
 namespace AssetLookupTest {
 
-    std::optional<float> sample_synthetic_density_for_test(
-        float query,
-        const std::vector<float>& axis,
-        const std::vector<std::array<float, 3>>& curves,
-        std::size_t channel);
     std::optional<float> interp_clamped_monotonic_for_test(
         float query,
         const std::vector<float>& axis,

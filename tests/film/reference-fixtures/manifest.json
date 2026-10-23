@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "contract": "Film-Juicer migration characterization; exact IEEE words and content identities",
+  "baseline_head": "a8e462b5bd308b37895e1911626b873fc9c87239",
+  "native_producer": "src/RenderRecipe.cpp",
+  "native_producer_sha256": "7165bec2a1a7fd3211d23f248ca76b74228ae0a023cd576456e2dc02d152291f",
+  "state_caller_sha256": "e0b6f0d4bcbac938a90946624732b7f68193604eca83256a6bb1c44eacbe1cf4",
+  "product_count": 36,
+  "failure_count": 9,
+  "presets": {
+    "linux-debug": "linux-debug.json",
+    "linux-release": "linux-release.json",
+    "windows-clang-debug": "windows-clang-debug.json",
+    "windows-clang-release": "windows-clang-release.json"
+  },
+  "payload_sha256": {
+    "linux-debug.json": "2c76f4e25151a0d652221184f53e9fa5bdd33a1adde94c928968e34669320ed3",
+    "linux-release.json": "3a9381cb5426ca510b85e7d5badb8cf1b872891881cf57fe2e40d0fc0ac448ea",
+    "windows-clang-debug.json": "3405032c982c086377ba2f563afb0b42633c60af6dd3b0e5bab2d64d4be6f590",
+    "windows-clang-release.json": "bce6dfde9da7ee78961b0da6cd02aee808f9091d79918b1f011240995112fa78"
+  },
+  "captures": {
+    "linux-debug": {
+      "root": "out/validation/linux-debug/s4-c-slice-7-2026-10-23",
+      "preparation": "out/validation/linux-debug/preparation-973f38245e6e4a3dbe6fe484d063f371/attempts/prepare-m16w2fp8/result.json"
+    },
+    "linux-release": {
+      "root": "out/validation/linux-release/s4-c-slice-7-2026-10-23",
+      "preparation": "out/validation/linux-release/preparation-e69446ed24f64af3970e0b064d32d879/attempts/prepare-t0xjlnfb/result.json"
+    },
+    "windows-clang-debug": {
+      "root": "out/validation/windows-clang-debug/s4-c-slice-7-2026-10-23",
+      "preparation": "out/validation/windows-clang-debug/preparation-118de0e836f44efba54514f4103e8c0c/attempts/prepare-kt_w73h9/result.json"
+    },
+    "windows-clang-release": {
+      "root": "out/validation/windows-clang-release/s4-c-slice-7-2026-10-23",
+      "preparation": "out/validation/windows-clang-release/preparation-b1f5ade72e3644ea8f39294107a1f5f8/attempts/prepare-1eoo140i/result.json"
+    }
+  },
+  "outstanding": [],
+  "numerical_policy": "No new tolerance, exception, hash remapping or expected-value regeneration"
+}

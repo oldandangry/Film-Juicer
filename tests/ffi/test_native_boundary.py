@@ -83,6 +83,24 @@ RETIRED_FILM_INPUT_DEFINITIONS = (
 
 
 class NativeBoundary(unittest.TestCase):
+    def test_synthetic_reference_has_one_safe_owner_and_native_completion_only(self):
+        native = [path for directory in (ROOT / "src", ROOT / "native")
+                  for path in directory.rglob("*")
+                  if path.is_file() and path.suffix.lower() in SOURCE_SUFFIXES]
+        self.assertEqual(forbidden_uses(native, r"\bsample_synthetic_density(?:_for_test)?\s*\("), [])
+        source = (ROOT / "src/RenderRecipe.cpp").read_text()
+        start = source.index("    bool finish_synthetic_reference_recipes(")
+        completion = source[start:source.index("    bool build_diffusion_frame_set_descriptor(", start)]
+        self.assertNotRegex(completion, r"log10|reference_source|mallett_reference_raw|sample_film_tc_lut|hash_bytes_update")
+        sequence = ["prepare_film_reference(", "syntheticFilmReference = reference", "hash_scanner_output_recipe(", "filtered_print_illuminant", "prepare_print_balance(", "recipe.print.balance = balance", "hash_print_recipe(", "hash_final_render_recipe(", "return reference.hash != 0"]
+        positions = [completion.index(value) for value in sequence]
+        self.assertEqual(positions, sorted(positions))
+        state = (ROOT / "src/JuicerState.cpp").read_text()
+        self.assertEqual(state.count("std::move(built.developmentHold)"), 2)
+        self.assertIn("JuicerAssets::DevelopmentHold development,", state)
+        self.assertNotIn("DevelopmentHold", (ROOT / "src/JuicerState.h").read_text())
+        self.assertEqual(source.count("result.developmentHold = std::move(film.developmentHold)"), 2)
+
     def test_film_input_construction_and_hash_definitions_stay_deleted(self):
         paths = [path for directory in (ROOT / "src", ROOT / "native")
                  for path in directory.rglob("*")

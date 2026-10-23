@@ -2,6 +2,31 @@
 #include <string.h>
 #include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
+_Static_assert(_Generic(((FjFilmReferenceInput*)0)->method, uint32_t: 1, default: 0), "reference method type");
+_Static_assert(_Generic(((FjFilmReferenceInput*)0)->auto_exposure_enabled, uint32_t: 1, default: 0), "reference auto type");
+_Static_assert(_Generic(((FjFilmReferenceInput*)0)->manual_exposure_ev, float: 1, default: 0), "reference EV type");
+_Static_assert(_Generic(((FjFilmReferenceInput*)0)->mallett_green_scale, float: 1, default: 0), "reference green type");
+_Static_assert(_Generic(((FjFilmReferenceInput*)0)->projection_white_xyz, float*: 1, default: 0), "reference white type");
+_Static_assert(_Generic(((FjFilmReferenceInput*)0)->basis_rgb, FjFloatSpan: 1, default: 0), "reference basis type");
+_Static_assert(_Generic(((FjFilmReferenceInput*)0)->film_illuminant, FjFloatSpan: 1, default: 0), "reference light type");
+_Static_assert(_Generic(((FjFilmReferenceInput*)0)->sensitivity_rgb, FjFloatSpan: 1, default: 0), "reference sensitivity type");
+_Static_assert(_Generic(((FjFilmReferenceInput*)0)->tc_lut, FjFloatSpan: 1, default: 0), "reference TC type");
+_Static_assert(_Generic(((FjFilmReference*)0)->baseline_raw_rgb, float*: 1, default: 0), "reference baseline raw type");
+_Static_assert(_Generic(((FjFilmReference*)0)->compensated_raw_rgb, float*: 1, default: 0), "reference compensated raw type");
+_Static_assert(_Generic(((FjFilmReference*)0)->baseline_density_cmy, float*: 1, default: 0), "reference baseline density type");
+_Static_assert(_Generic(((FjFilmReference*)0)->compensated_density_cmy, float*: 1, default: 0), "reference compensated density type");
+_Static_assert(_Generic(((FjFilmReference*)0)->meter_scale, float: 1, default: 0), "reference meter type");
+_Static_assert(_Generic(((FjFilmReference*)0)->hash, uint64_t: 1, default: 0), "reference hash type");
+_Static_assert(_Generic(((FjFilmReferenceFailure*)0)->reason, uint32_t: 1, default: 0), "reference reason type");
+_Static_assert(_Generic(((FjFilmReferenceFailure*)0)->exposure, uint32_t: 1, default: 0), "reference exposure type");
+_Static_assert(_Generic(((FjFilmReferenceFailure*)0)->operation, uint32_t: 1, default: 0), "reference operation type");
+_Static_assert(_Generic(((FjFilmReferenceFailure*)0)->channel, uint32_t: 1, default: 0), "reference channel type");
+typedef FjStatus (*FilmReferencePrepare)(const FjFilmDevelopmentOwner*, const FjFilmReferenceInput*, FjFilmReference*, FjFilmReferenceFailure*, FjErrorBuffer*);
+_Static_assert(_Generic(&fj_legacy_film_reference_prepare, FilmReferencePrepare: 1, default: 0), "reference production signature");
+_Static_assert(_Generic(&fj_test_film_reference_prepare, FilmReferencePrepare: 1, default: 0), "reference facade signature");
+FjStatus fj_test_film_reference_c_prepare(const FjFilmDevelopmentOwner* development, const FjFilmReferenceInput* input, FjFilmReference* out, FjFilmReferenceFailure* failure, FjErrorBuffer* error) {
+    return fj_legacy_film_reference_prepare(development, input, out, failure, error);
+}
 _Static_assert(_Generic(((FjVisualGrainParams*)0)->active, uint32_t: 1, default: 0), "FjVisualGrainParams.active type");
 _Static_assert(_Generic(((FjVisualGrainParams*)0)->sublayers_active, uint32_t: 1, default: 0), "FjVisualGrainParams.sublayers_active type");
 _Static_assert(_Generic(((FjVisualGrainParams*)0)->particle_area_um2, float: 1, default: 0), "FjVisualGrainParams.particle_area_um2 type");
