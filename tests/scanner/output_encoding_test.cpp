@@ -28,6 +28,7 @@
 #include "juicer_cuda_owner.h"
 #include "juicer_test_api.h"
 #include "output_encoding_oracle.h"
+#include "../ffi/exposure_fixture.h"
 
 extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(const JuicerCuda::DirectPipelineRunParams*, void*);
 extern "C" cudaError_t juicer_cuda_print_focused_pipeline(const JuicerCuda::PrintPipelineRunParams*, void*);
@@ -1243,8 +1244,8 @@ namespace {
         const auto preset = platform + "debug";
 #endif
         const auto directory = std::filesystem::path(__FILE__).parent_path() / "lut-fixtures";
-        std::ifstream stream(directory / (preset + ".json"));
-        const auto frozen = nlohmann::json::parse(stream);
+        const auto frozen = load_shared_fixture(directory / (preset + ".json"), "manifest.json");
+        ASSERT_EQ(frozen.at("preset"), preset);
         for (const auto& row : frozen.at("products")) {
             const auto route = static_cast<Spektrafilm::ScanRoute>(row.at("route").get<unsigned>());
             ParamSnapshot controls;

@@ -330,7 +330,12 @@ group once. The exact cohort and preservation rules are in
 [the FFI guide](ffi/README.md#bounded-cache-and-owner-repetition).
 `Ctest.Host.Repetition` checks real CTest fresh-process repetition, a deliberate
 second-attempt failure with no later retry, and rejection of empty selections.
-Control artifacts are retained under the preset's `ctest-repetition-controls/`.
+Its synthetic CTest commands use the existing process-tree supervisor and output
+lease. Successful outer controls, including expected failing children, dispose
+their workspace after assertions and proven drainage. Failure, interruption,
+unproved drainage or `JUICER_TEST_RETAIN_FIXTURES=1` retains and prints the path
+under the preset's `ctest-repetition-controls/`. `JUICER_TEST_ARTIFACT_DIR` routes
+output; it does not request retention.
 
 The bounded Mallett-basis NPY pilot runs inside `Rust.Core` through the test-only
 `data_io::npy_fuzz` module. Four fixed seeds (`4e505901`, `8103`, `deadbeef`,
@@ -352,10 +357,29 @@ The explicit failing control sets `JUICER_NPY_FUZZ_CONTROL=nonfinite-clamp` for
 that command. It simulates forbidden clamping inside the test and must fail the
 sample oracle at seed `4e505901`, case 0. Keep the original nonzero exit and log;
 clear the variable before ordinary tests. On a panic, the original input is saved
-with seed/case in its filename under `JUICER_TEST_ARTIFACT_DIR` (or
-`out/validation/rust-core/`). Existing failure files are never overwritten.
+with seed/case in its filename. CTest sets `JUICER_TEST_ARTIFACT_DIR` to
+`out/validation/<preset>/rust-core/`; direct Cargo uses an explicit override or
+the `out/validation/rust-core/` fallback. An existing sample is reused only after
+byte equality; different bytes get a new attempt filename. Save or diagnostic
+write errors preserve the original panic, and an unsuccessful save is reported.
+A partial write removes only the newly created incomplete file, with any removal
+error included in the save diagnostic; existing samples remain intact.
 This finite corpus provides structural regression evidence; it does not establish
 general fuzz coverage, allocation-failure recovery or Rust sanitizer coverage.
+
+Native CI uploads failed control evidence selected by
+`tests/ctest/control_artifacts.py`. Existing checkpoint, build-evidence,
+registration and repetition fixtures record their outer outcome in
+`out/control-fixture.json` inside each synthetic workspace. Failed, interrupted
+or unfinished controls retain their reproduction workspace, command receipts and
+process diagnostics. Missing or malformed outcome markers remain unproved and
+are selected within those four family directories. Successful expected-negative controls, blocked simulations
+and explicit successful retention are excluded from automatic uploads. NPY
+failure samples in each preset's `rust-core/` directory are included separately.
+Selected workspaces include hidden reproduction inputs such as Cargo configuration.
+JUnit and `LastTest.log` uploads remain unconditional. Local selection tests do
+not establish hosted delivery; verify the uploaded artifact after download from
+an authorized CI run.
 
 A1/A2 are accepted only for the four inputs in
 [the contributor workflow](../CONTRIBUTING.md). Timing targets, general ownership
@@ -405,6 +429,12 @@ generated-input, shadow-header and partial-build controls. It does not dispatch 
 entire build-evidence group or change product fixtures. Control artifacts remain
 under the selected preset's validation directory. No full product/platform
 qualification is claimed by this scope.
+`Quality.BuildRegistration` uses the same outer-outcome retention rules, including
+subtest/setup/cleanup errors and blocked owners. Its fixtures live under
+`JUICER_TEST_ARTIFACT_DIR/registration-controls/`, or the native Debug preset's
+`registration-controls/` when run directly without an artifact root. Completed
+commands do not authorize releasing an interrupted fixture owner. Both fixture
+families include focused lifecycle controls in their existing discovery groups.
 Windows `Quality.Execution` covers the exact-path, Job-owned VCTIP cleanup,
 natural-drain grace, other-child wait and cap, and failed-parent behavior;
 `Quality.BuildEvidence` covers generated-header reconfiguration and unowned
@@ -558,6 +588,13 @@ external numerical references. Valid use runs with and without `test-support`;
 CTest selects the preset's profile; native CI/checkpoints retain both
 development and release contracts. The probes compile without
 linking or executing native CUDA calls.
+
+At compiler-probe closeout, the owning change selects the runs still needed for
+reusable evidence, active diagnosis or rollback. Ordinary superseded success logs
+follow the seven-day retention window in [failure diagnosis](#diagnosing-a-failure);
+their mere presence does not require indefinite retention. Preserve original
+receipts and required raw closure; prove outer outcome, consumers and drainage
+before disposal. There is no background expiry or separate retention collector.
 
 CTest directly owns compiler execution for both probe groups. Ordinary quality
 checks retain formatting, Clippy and native/CUDA analysis; they do not dispatch
@@ -892,6 +929,13 @@ exercises all six upload failure positions through actual render preparation.
 The frozen `scanner/lut-fixtures/manifest.json` distinguishes native numerical
 characterization from the safety/transport contract in `checked.json`.
 Successful stored words are exact in each matching native platform/profile.
+The four logical native captures share `lut-fixtures/native.json`; the manifest's
+`contexts` map selects each preset's label and primitive results. Shared payload
+and context fields must be disjoint. `storage_files` hashes the physical files;
+the original per-preset hashes and capture/compiler/resource provenance remain
+unchanged. `Ffi.Host.SharedFixtureFormat` reconstructs every original capture byte
+for byte, including its line endings. Rust, ABI/native, prepared-upload and Release
+testing-OFF readers expand the same logical capture before their existing checks.
 
 ### Scanner color construction
 

@@ -62,6 +62,7 @@ set_tests_properties(Rust.Core PROPERTIES
     TIMEOUT 120
     PROCESSORS 2
     RESOURCE_LOCK juicer_cargo
+    ENVIRONMENT "JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/rust-core"
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 
 add_test(NAME Rust.Bridge

@@ -34,6 +34,7 @@
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
 #include "print_illuminant_fixture.h"
+#include "exposure_fixture.h"
 
 #include "film_recipe_abi_cpp.inc"
 static_assert(!std::is_copy_constructible_v<JuicerAssets::DevelopmentHold>);
@@ -315,7 +316,8 @@ int main(int argc, char** argv) try {
     }
     if (argc == 5 && (std::string_view(argv[3]) == "scanner-lut" || std::string_view(argv[3]) == "scanner-lut-products")) {
         const auto manifest = read(argv[2]);
-        const auto captured = read(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        const auto captured = load_shared_fixture(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>(), "manifest.json");
+        require(captured.at("preset") == argv[4], "scanner LUT fixture preset context");
         layouts();
         const bool products = std::string_view(argv[3]) == "scanner-lut-products";
         ScannerLutTest::values(captured.at(products ? "products" : "cases"));

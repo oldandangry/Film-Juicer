@@ -18,6 +18,15 @@ inline nlohmann::json load_shared_fixture(const std::filesystem::path& logicalPa
     const auto payload = manifest.at("payloads").at(name).get<std::string>();
     std::ifstream source(logicalPath.parent_path() / payload);
     auto fixture = nlohmann::json::parse(source);
+    if (manifest.contains("contexts")) {
+        std::ifstream contextFile(logicalPath.parent_path() / manifest.at("contexts").at(name).get<std::string>());
+        const auto context = nlohmann::json::parse(contextFile);
+        for (const auto& [key, value] : context.items()) {
+            if (fixture.contains(key))
+                throw std::runtime_error("shared fixture context overlaps payload");
+            fixture[key] = value;
+        }
+    }
     if (fixture.contains("expected_blocks")) {
         std::ifstream blocksFile(logicalPath.parent_path() / fixture.at("expected_blocks").get<std::string>());
         const auto blocks = nlohmann::json::parse(blocksFile);

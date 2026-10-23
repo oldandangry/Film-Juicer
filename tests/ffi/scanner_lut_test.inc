@@ -224,11 +224,15 @@ namespace ScannerLutTest {
         static_assert(std::is_nothrow_move_constructible_v<JuicerScanner::Lut>);
         for (const auto& row : rows) {
             const Literal literal(row.at("input"));
-            JuicerCuda::Failure failure;
+            // Distinct prior values make dropped error forwarding observable.
+            JuicerCuda::Failure failure{{FJ_STATUS_CUDA_FAILURE, FJ_API_CUDA_RUNTIME, 1}, "previous failure"};
             auto owner = JuicerScanner::Lut::acquire(literal.medium, literal.resolution, failure);
             require(owner.has_value() == row.at("native").at("success").get<bool>(), "native adapter success/failure");
-            if (!owner)
+            if (!owner) {
+                status(failure.status, FJ_STATUS_PREPARATION_FAILURE);
+                require(failure.diagnostic == row.at("native").at("diagnostic").get<std::string>(), "native adapter preserves scanner LUT failure diagnostic");
                 continue;
+            }
             auto moved = std::move(*owner);
             owner.reset();
             const auto span = [](std::span<const float> v) -> FjFloatSpan {

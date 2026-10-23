@@ -3,9 +3,11 @@
 import hashlib
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 from compact_exposure_fixtures import compact_expected_blocks, expand_expected_blocks
+from shared_fixture import load_shared_fixture, original_capture_bytes
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -13,6 +15,52 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_scanner_lut_original_capture_integrity(self):
+        root = Path(__file__).parents[1] / "scanner/lut-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        logical_names = {preset + ".json" for preset in PRESETS}
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        for field in ("payloads", "contexts", "original_line_endings"):
+            self.assertEqual(set(manifest[field]), logical_names)
+        self.assertEqual(set(manifest["payloads"].values()), {"native.json"})
+        physical = set(manifest["payloads"].values()) | set(manifest["contexts"].values())
+        self.assertEqual(physical, set(manifest["storage_files"]))
+        for name, expected in manifest["storage_files"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), expected, name)
+        for preset in PRESETS:
+            with self.subTest(preset=preset):
+                entry = manifest["presets"][preset]
+                logical = entry["native"]
+                self.assertEqual(logical, preset + ".json")
+                context = json.loads((root / manifest["contexts"][logical]).read_bytes())
+                self.assertEqual(set(context), {"preset", "primitives"})
+                capture = load_shared_fixture(root / logical)
+                self.assertEqual(capture["preset"], preset)
+                self.assertEqual({key: len(capture[key]) for key in ("cases", "products", "slopes", "primitives")},
+                                 {"cases": 30, "products": 4, "slopes": 15, "primitives": 63})
+                raw = original_capture_bytes(capture, manifest["original_line_endings"][logical])
+                self.assertEqual(hashlib.sha256(raw).hexdigest(), entry["sha256"],
+                                 "every original ordered record, integer word and capture field must reconstruct exactly")
+
+    def test_shared_context_is_required_disjoint_and_independently_owned(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = {"payloads": {"debug.json": "native.json", "release.json": "native.json"},
+                        "contexts": {"debug.json": "debug-context.json"}}
+            (root / "manifest.json").write_text(json.dumps(manifest))
+            words = [0, 0x80000000, 0x7FC00123, 0xFFFFFFFF]
+            (root / "native.json").write_text(json.dumps({"words": words}))
+            (root / "debug-context.json").write_text(json.dumps({"preset": "debug", "primitives": [1]}))
+            first = load_shared_fixture(root / "debug.json")
+            self.assertEqual(first, {"words": words, "preset": "debug", "primitives": [1]})
+            first["words"][0] = 17
+            self.assertEqual(load_shared_fixture(root / "debug.json")["words"], words)
+            with self.assertRaises(KeyError):
+                load_shared_fixture(root / "release.json")
+            (root / "debug-context.json").write_text(json.dumps({"words": words}))
+            with self.assertRaisesRegex(ValueError, "context overlaps payload"):
+                load_shared_fixture(root / "debug.json")
+
     def test_preflash_native_integrity_inputs_and_caller_membership(self):
         root = Path(__file__).parents[1] / "print/preflash-fixtures"
         manifest = json.loads((root / "manifest.json").read_bytes())
