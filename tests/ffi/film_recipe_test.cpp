@@ -285,7 +285,24 @@ namespace {
 #include "print_preflash_test.inc"
 #include "print_balance_test.inc"
 #include "scanner_correction_test.inc"
+#include "scanner_lut_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "scanner-lut" || std::string_view(argv[3]) == "scanner-lut-products")) {
+        const auto manifest = read(argv[2]);
+        const auto captured = read(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>());
+        layouts();
+        const bool products = std::string_view(argv[3]) == "scanner-lut-products";
+        ScannerLutTest::values(captured.at(products ? "products" : "cases"));
+        ScannerLutTest::native_values(captured.at(products ? "products" : "cases"));
+        if (!products) {
+            ScannerLutTest::boundary(captured);
+            ScannerLutTest::native_failures(captured);
+        } else {
+            ScannerLutTest::check_products(argv[1], captured);
+        }
+        std::puts("PASS scanner LUT complete words/counts, ABI, raw/facade, failures, reservation/panic and expiry");
+        return 0;
+    }
     if (argc == 5 && (std::string_view(argv[3]) == "scanner-correction" || std::string_view(argv[3]) == "scanner-correction-products")) {
         const auto manifest = read(argv[2]);
         const auto directory = std::filesystem::path(argv[2]).parent_path();

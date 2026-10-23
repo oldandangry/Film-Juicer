@@ -1,0 +1,686 @@
+{
+  "schema": 1,
+  "authority": "Film-Juicer unchanged native six-array scanner LUT characterization; spektrafilm only establishes selected-medium spectral meaning",
+  "created_utc": "2026-10-22T21:50:27.014333+00:00",
+  "source_head": "d15892b2e0a267f0bd22880d6bb4e3574e9fc205",
+  "upstream": "3bb2c2d2801ff68b92019cf1dbcbb133d60832bc",
+  "comparison": "exact stored f32 words in each matching native platform/profile, including signed zero; no tolerance",
+  "layout": {
+    "log2_xyz": "3*r^3 interleaved XYZ; C outer, M middle, Y inner",
+    "slope_c": "3*r^3; derivative per grid step from f64 nodes",
+    "slope_m": "3*r^3; derivative per grid step from f64 nodes",
+    "slope_y": "3*r^3; derivative per grid step from f64 nodes",
+    "cell_min": "3*(r-1)^3; C/M/Y/XYZ",
+    "cell_max": "3*(r-1)^3; C/M/Y/XYZ"
+  },
+  "capture_sources": [
+    {
+      "path": "src/Cuda/JuicerCudaResources.cpp",
+      "bytes": 314171,
+      "sha256": "70fcb5a021a55a8c4b658cef2608d5000b600951189f2fa9f44090e9dd69f95b"
+    },
+    {
+      "path": "src/Scanner.cpp",
+      "bytes": 23661,
+      "sha256": "f58a7baaf96bea36ca8b1e2ad04d857a8489854cf83dbf50e52a0c14937ceaf4"
+    },
+    {
+      "path": "src/Scanner.h",
+      "bytes": 7645,
+      "sha256": "e7f2329e86c866ee8ca6a8137df9a0f73aae010c81c4d1c2778b352c74fa3044"
+    },
+    {
+      "path": "tests/CMakeLists.txt",
+      "bytes": 80809,
+      "sha256": "21c9ca728c9cda92c22258ef5e8daf6267b2fce370f80b91fdfb3b5dff8b7398"
+    },
+    {
+      "path": "tests/ffi/film_recipe_test.cpp",
+      "bytes": 26428,
+      "sha256": "8331f51b093f0d4d02c021acea5d77f9a665bf9e9564731511e03ee3100171b3"
+    },
+    {
+      "path": "tests/ffi/scanner_lut_capture.h",
+      "bytes": 674,
+      "sha256": "9a203df7da8ec21b139302a43e5ecaabeacb907e4d752c9f64d95ba35a7cdff8"
+    },
+    {
+      "path": "tests/ffi/scanner_lut_test.inc",
+      "bytes": 8587,
+      "sha256": "bc94b89583bd66983e9178beee9571edacbdb49fe14d68dec9c384529b413eba"
+    },
+    {
+      "path": "tests/scanner/lut-fixtures/case-spec.json",
+      "bytes": 31528,
+      "sha256": "89536395b8c2190622ceb2661f6d06649e08abe43517a29da7a0c5605b8f1b6d"
+    },
+    {
+      "path": "tests/ffi/scanner_correction_test.inc",
+      "bytes": 54415,
+      "sha256": "d170aea99e15a62444f4106c0dff86fc9d327bcf9402fe736d6b305dc47d21b8"
+    },
+    {
+      "path": "tests/ffi/print_preflash_test.inc",
+      "bytes": 35408,
+      "sha256": "e92b8695cc3fbb18439d1025f0f7a35ff783895b7dffab6ad6c098e18917159b"
+    },
+    {
+      "path": "tests/ffi/print_illuminant_fixture.h",
+      "bytes": 1598,
+      "sha256": "ff325fc1441b5984ee38313ab3edcc178a399e6778b925f4d8fcf678fe99a5b9"
+    },
+    {
+      "path": "tests/print/illuminant-fixtures/product-updates.json",
+      "bytes": 897344,
+      "sha256": "9a2b9d01413b6d6d9a780028af6eb402900ee2ffaec004f6f87b8d251de58059"
+    }
+  ],
+  "presets": {
+    "linux-debug": {
+      "native": "linux-debug.json",
+      "sha256": "c209673e26f0199ffe8a799dc6c83301203c84761ff7b59d36fd44c8179bbff2",
+      "capture": {
+        "path": "out/validation/linux-debug/s4-c-slice-5/native-01.json",
+        "bytes": 7530099,
+        "sha256": "c209673e26f0199ffe8a799dc6c83301203c84761ff7b59d36fd44c8179bbff2"
+      },
+      "log": {
+        "path": "out/validation/linux-debug/s4-c-slice-5/native-01.log",
+        "bytes": 344,
+        "sha256": "7a85150e3d2a7bb5e3b075327d7bfa729b944bb3c08e4bb282f30d70af58f989"
+      },
+      "junit": {
+        "path": "out/validation/linux-debug/s4-c-slice-5/native-01.xml",
+        "bytes": 436,
+        "sha256": "01a9b8b0d960e1003600c2f1b4d62ad4f4da55f9d58eba3e0b20cbf99dc2ab9c"
+      },
+      "executable": {
+        "path": "out/validation/linux-debug/s4-c-slice-5/native-artifact/JuicerFilmRecipeTests",
+        "bytes": 340861104,
+        "sha256": "2c99d498a2d821417d2fdcc839231dc763970a92c6bd3d85e2f2ac0376e619ac"
+      },
+      "compile_context": {
+        "path": "out/validation/linux-debug/s4-c-slice-5/native-compile-context.json",
+        "bytes": 4977,
+        "sha256": "9ae38544ef87ca7c01d910d0950eba7ee07c1153ac3e285ae758ef67717bb919"
+      },
+      "membership": {
+        "literal": 30,
+        "slope": 15,
+        "product": 4
+      },
+      "staged_resources": [
+        {
+          "path": "out/build/linux-debug/tests/Resources/profiles/kodak_portra_400.json",
+          "bytes": 161683,
+          "sha256": "eb8b733fd8f79223b93ee389f1f32774378ea1905364ed658e4ce1d46ec1c069"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/profiles/fujifilm_provia_100f.json",
+          "bytes": 159325,
+          "sha256": "fed3f45ae581996b2a5b826b8b5d19ccd1a6f7854fff475aa64d2755940b9c20"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/profiles/kodak_portra_endura.json",
+          "bytes": 158722,
+          "sha256": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/cie1931_2deg.csv",
+          "bytes": 4374,
+          "sha256": "3b65a413ec998011608dbbe87ebcb180d93b38d533c80f1ceabff7de71178cbf"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/luts/spectral_upsampling/irradiance_xy_tc.npy",
+          "bytes": 5972096,
+          "sha256": "52f90c724811f5fab80769f8548bf24d08a521eb09e65ab6e016893258d2a783"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/luts/spectral_upsampling/arctic2026beta04_reflectance_xy_tc.npy",
+          "bytes": 5972096,
+          "sha256": "cf5b3dafad6470cdd3981038149374c967820654b94142332808681d364083a6"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/luts/spectral_upsampling/mallett2019_basis.npy",
+          "bytes": 1100,
+          "sha256": "433903731e217538251266f67c9d8e8c6026b6b957d11eee35a29ae7adc2eba7"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/illuminants/D65.csv",
+          "bytes": 1620,
+          "sha256": "9ed98cf4eba0fafa77ca04f5e927f05b29a76f2b91b420153000ca0ef10ca022"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/illuminants/D55.csv",
+          "bytes": 1620,
+          "sha256": "8d914ed6d9a522aca8c1ced434e6d4b3e7ee63a40f200b60f8ef3f7efad74875"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/illuminants/D50.csv",
+          "bytes": 1620,
+          "sha256": "e73612a79beb3fb4eb985f14032e68b077ae4d03cadee0ac8a2d7651f09ab378"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/illuminants/T.csv",
+          "bytes": 1620,
+          "sha256": "03486278730d6154d289d43cd940a328a080de316e3b07d4548f2d9dd1e1d9e2"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/illuminants/K75P.csv",
+          "bytes": 1620,
+          "sha256": "f1fc4d42463fc021d894ecf158fcd1b64d03c6e998c5fc9b2db2527b03748652"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/filters/heat_absorbing/schott/KG3.csv",
+          "bytes": 5609,
+          "sha256": "7654aa57fa8e42ae280e8d679ae9ebf8cef48ed5cbe6c2ab43eba1c6608f3d1f"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/filters/lens_transmission/canon/canon_24_f28_is.csv",
+          "bytes": 3969,
+          "sha256": "6edc1be37bc22ef4e36b98981c09c45ff0e9b3a3ce80e00c62906d8ec941df3a"
+        },
+        {
+          "path": "out/build/linux-debug/tests/Resources/filters/neutral_print_filters.json",
+          "bytes": 19597,
+          "sha256": "f18bb2cc44a97a8b27c3d592d7bcf2d2658a6e81b6aaf16ff6a81da763f57bdf"
+        }
+      ],
+      "compiler_tools": [
+        {
+          "cache_key": "CMAKE_CXX_COMPILER",
+          "configured_path": "/usr/bin/g++-13",
+          "observed_path": "/usr/bin/g++-13",
+          "sha256": "1353e9bdd29a7295c7226bf6c63abccce056d8cac31f112e5cdbecc3f28c2769"
+        },
+        {
+          "cache_key": "CMAKE_CUDA_COMPILER",
+          "configured_path": "/usr/local/cuda-13.2/bin/nvcc",
+          "observed_path": "/usr/local/cuda-13.2/bin/nvcc",
+          "sha256": "e0341e832da4c4c9c412c0722ac1a9e6944d0c0fcb36f3cd51d2fe11435f46e5"
+        },
+        {
+          "cache_key": "CMAKE_LINKER",
+          "configured_path": "/usr/bin/ld",
+          "observed_path": "/usr/bin/ld",
+          "sha256": "e9ceb054c12207970f2726dfc07e9a66b411602748628baf27399f02a9bbb31b"
+        }
+      ]
+    },
+    "linux-release": {
+      "native": "linux-release.json",
+      "sha256": "dafc8c8e411854a99216c0c9cd0e50d722d7dca6ee1b980cba7b8217d231faf4",
+      "capture": {
+        "path": "out/validation/linux-release/s4-c-slice-5/native-01.json",
+        "bytes": 7530101,
+        "sha256": "dafc8c8e411854a99216c0c9cd0e50d722d7dca6ee1b980cba7b8217d231faf4"
+      },
+      "log": {
+        "path": "out/validation/linux-release/s4-c-slice-5/native-01.log",
+        "bytes": 346,
+        "sha256": "ad89c4dc9843a67fc4d70578f618764650c4020d09284b1fe01afae7279865b0"
+      },
+      "junit": {
+        "path": "out/validation/linux-release/s4-c-slice-5/native-01.xml",
+        "bytes": 437,
+        "sha256": "e98a5a1dc6c3eb4b00a1d4e92d30898da76f5e0239b9aa0f5a891ad26d935a78"
+      },
+      "executable": {
+        "path": "out/validation/linux-release/s4-c-slice-5/native-artifact/JuicerFilmRecipeTests",
+        "bytes": 319849096,
+        "sha256": "c36fe1c6825d05ac6d839bc4d7ed2327589753d08502b32f2680e9edda900d27"
+      },
+      "compile_context": {
+        "path": "out/validation/linux-release/s4-c-slice-5/native-compile-context.json",
+        "bytes": 4999,
+        "sha256": "8a38e2991d63349c636ad9dc33932b79049a951bb99486c95e2e5eda249dc9e7"
+      },
+      "membership": {
+        "literal": 30,
+        "slope": 15,
+        "product": 4
+      },
+      "staged_resources": [
+        {
+          "path": "out/build/linux-release/tests/Resources/profiles/kodak_portra_400.json",
+          "bytes": 161683,
+          "sha256": "eb8b733fd8f79223b93ee389f1f32774378ea1905364ed658e4ce1d46ec1c069"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/profiles/fujifilm_provia_100f.json",
+          "bytes": 159325,
+          "sha256": "fed3f45ae581996b2a5b826b8b5d19ccd1a6f7854fff475aa64d2755940b9c20"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/profiles/kodak_portra_endura.json",
+          "bytes": 158722,
+          "sha256": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/cie1931_2deg.csv",
+          "bytes": 4374,
+          "sha256": "3b65a413ec998011608dbbe87ebcb180d93b38d533c80f1ceabff7de71178cbf"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/luts/spectral_upsampling/irradiance_xy_tc.npy",
+          "bytes": 5972096,
+          "sha256": "52f90c724811f5fab80769f8548bf24d08a521eb09e65ab6e016893258d2a783"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/luts/spectral_upsampling/arctic2026beta04_reflectance_xy_tc.npy",
+          "bytes": 5972096,
+          "sha256": "cf5b3dafad6470cdd3981038149374c967820654b94142332808681d364083a6"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/luts/spectral_upsampling/mallett2019_basis.npy",
+          "bytes": 1100,
+          "sha256": "433903731e217538251266f67c9d8e8c6026b6b957d11eee35a29ae7adc2eba7"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/illuminants/D65.csv",
+          "bytes": 1620,
+          "sha256": "9ed98cf4eba0fafa77ca04f5e927f05b29a76f2b91b420153000ca0ef10ca022"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/illuminants/D55.csv",
+          "bytes": 1620,
+          "sha256": "8d914ed6d9a522aca8c1ced434e6d4b3e7ee63a40f200b60f8ef3f7efad74875"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/illuminants/D50.csv",
+          "bytes": 1620,
+          "sha256": "e73612a79beb3fb4eb985f14032e68b077ae4d03cadee0ac8a2d7651f09ab378"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/illuminants/T.csv",
+          "bytes": 1620,
+          "sha256": "03486278730d6154d289d43cd940a328a080de316e3b07d4548f2d9dd1e1d9e2"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/illuminants/K75P.csv",
+          "bytes": 1620,
+          "sha256": "f1fc4d42463fc021d894ecf158fcd1b64d03c6e998c5fc9b2db2527b03748652"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/filters/heat_absorbing/schott/KG3.csv",
+          "bytes": 5609,
+          "sha256": "7654aa57fa8e42ae280e8d679ae9ebf8cef48ed5cbe6c2ab43eba1c6608f3d1f"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/filters/lens_transmission/canon/canon_24_f28_is.csv",
+          "bytes": 3969,
+          "sha256": "6edc1be37bc22ef4e36b98981c09c45ff0e9b3a3ce80e00c62906d8ec941df3a"
+        },
+        {
+          "path": "out/build/linux-release/tests/Resources/filters/neutral_print_filters.json",
+          "bytes": 19597,
+          "sha256": "f18bb2cc44a97a8b27c3d592d7bcf2d2658a6e81b6aaf16ff6a81da763f57bdf"
+        }
+      ],
+      "compiler_tools": [
+        {
+          "cache_key": "CMAKE_CXX_COMPILER",
+          "configured_path": "/usr/bin/g++-13",
+          "observed_path": "/usr/bin/g++-13",
+          "sha256": "1353e9bdd29a7295c7226bf6c63abccce056d8cac31f112e5cdbecc3f28c2769"
+        },
+        {
+          "cache_key": "CMAKE_CUDA_COMPILER",
+          "configured_path": "/usr/local/cuda-13.2/bin/nvcc",
+          "observed_path": "/usr/local/cuda-13.2/bin/nvcc",
+          "sha256": "e0341e832da4c4c9c412c0722ac1a9e6944d0c0fcb36f3cd51d2fe11435f46e5"
+        },
+        {
+          "cache_key": "CMAKE_LINKER",
+          "configured_path": "/usr/bin/ld",
+          "observed_path": "/usr/bin/ld",
+          "sha256": "e9ceb054c12207970f2726dfc07e9a66b411602748628baf27399f02a9bbb31b"
+        }
+      ]
+    },
+    "windows-clang-debug": {
+      "native": "windows-clang-debug.json",
+      "sha256": "683cdc8c2ce92d72264ecf0d7e152b1a383f2a9db54e6590dd32d1f7504fa94f",
+      "capture": {
+        "path": "out/validation/windows-clang-debug/s4-c-slice-5/native-01.json",
+        "bytes": 7873064,
+        "sha256": "683cdc8c2ce92d72264ecf0d7e152b1a383f2a9db54e6590dd32d1f7504fa94f"
+      },
+      "log": {
+        "path": "out/validation/windows-clang-debug/s4-c-slice-5/native-01.log",
+        "bytes": 348,
+        "sha256": "e7dfcaf245ca07a54811b118306fdc436536c137e7f287db6cd452c5f908f2bd"
+      },
+      "junit": {
+        "path": "out/validation/windows-clang-debug/s4-c-slice-5/native-01.xml",
+        "bytes": 453,
+        "sha256": "2a1deda48f57a881d0d3fb38ef579ed4574c0e920861196a48db0b1b385c2e85"
+      },
+      "executable": {
+        "path": "out/validation/windows-clang-debug/s4-c-slice-5/native-artifact/JuicerFilmRecipeTests.exe",
+        "bytes": 10910208,
+        "sha256": "116ce94fd997486869d7d20bddbe44fcf94ace155a032b17f040c0bcd5b61dcc"
+      },
+      "compile_context": {
+        "path": "out/validation/windows-clang-debug/s4-c-slice-5/native-compile-context.json",
+        "bytes": 5750,
+        "sha256": "9b48afadeb9a311c7cf97932caf0971866966272a1f656ea165a17c1dd9f2330"
+      },
+      "membership": {
+        "literal": 30,
+        "slope": 15,
+        "product": 4
+      },
+      "staged_resources": [
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/profiles/kodak_portra_400.json",
+          "bytes": 161683,
+          "sha256": "eb8b733fd8f79223b93ee389f1f32774378ea1905364ed658e4ce1d46ec1c069"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/profiles/fujifilm_provia_100f.json",
+          "bytes": 159325,
+          "sha256": "fed3f45ae581996b2a5b826b8b5d19ccd1a6f7854fff475aa64d2755940b9c20"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/profiles/kodak_portra_endura.json",
+          "bytes": 158722,
+          "sha256": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/cie1931_2deg.csv",
+          "bytes": 4374,
+          "sha256": "3b65a413ec998011608dbbe87ebcb180d93b38d533c80f1ceabff7de71178cbf"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/luts/spectral_upsampling/irradiance_xy_tc.npy",
+          "bytes": 5972096,
+          "sha256": "52f90c724811f5fab80769f8548bf24d08a521eb09e65ab6e016893258d2a783"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/luts/spectral_upsampling/arctic2026beta04_reflectance_xy_tc.npy",
+          "bytes": 5972096,
+          "sha256": "cf5b3dafad6470cdd3981038149374c967820654b94142332808681d364083a6"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/luts/spectral_upsampling/mallett2019_basis.npy",
+          "bytes": 1100,
+          "sha256": "433903731e217538251266f67c9d8e8c6026b6b957d11eee35a29ae7adc2eba7"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/illuminants/D65.csv",
+          "bytes": 1620,
+          "sha256": "9ed98cf4eba0fafa77ca04f5e927f05b29a76f2b91b420153000ca0ef10ca022"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/illuminants/D55.csv",
+          "bytes": 1620,
+          "sha256": "8d914ed6d9a522aca8c1ced434e6d4b3e7ee63a40f200b60f8ef3f7efad74875"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/illuminants/D50.csv",
+          "bytes": 1620,
+          "sha256": "e73612a79beb3fb4eb985f14032e68b077ae4d03cadee0ac8a2d7651f09ab378"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/illuminants/T.csv",
+          "bytes": 1620,
+          "sha256": "03486278730d6154d289d43cd940a328a080de316e3b07d4548f2d9dd1e1d9e2"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/illuminants/K75P.csv",
+          "bytes": 1620,
+          "sha256": "f1fc4d42463fc021d894ecf158fcd1b64d03c6e998c5fc9b2db2527b03748652"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/filters/heat_absorbing/schott/KG3.csv",
+          "bytes": 5609,
+          "sha256": "7654aa57fa8e42ae280e8d679ae9ebf8cef48ed5cbe6c2ab43eba1c6608f3d1f"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/filters/lens_transmission/canon/canon_24_f28_is.csv",
+          "bytes": 3969,
+          "sha256": "6edc1be37bc22ef4e36b98981c09c45ff0e9b3a3ce80e00c62906d8ec941df3a"
+        },
+        {
+          "path": "out/build/windows-clang-debug/tests/Resources/filters/neutral_print_filters.json",
+          "bytes": 19597,
+          "sha256": "f18bb2cc44a97a8b27c3d592d7bcf2d2658a6e81b6aaf16ff6a81da763f57bdf"
+        }
+      ],
+      "compiler_tools": [
+        {
+          "cache_key": "CMAKE_CXX_COMPILER",
+          "configured_path": "clang-cl.exe",
+          "observed_path": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe",
+          "sha256": "ec094d5f8f37c106eefcfc47c9997c261a06e3bd8eaaa7255835983a58524156"
+        },
+        {
+          "cache_key": "CMAKE_CUDA_COMPILER",
+          "configured_path": "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2/bin/nvcc.exe",
+          "observed_path": "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2/bin/nvcc.exe",
+          "sha256": "430604193efd2123a019254d81989ecc25ba5f100356914fe4c427665fdda4b2"
+        },
+        {
+          "cache_key": "CMAKE_LINKER",
+          "configured_path": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/lld-link.exe",
+          "observed_path": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/lld-link.exe",
+          "sha256": "631a02cecb87f9f7f2270713d6c7f84e54a0fabce6c6638d21d3a0caea78204d"
+        }
+      ]
+    },
+    "windows-clang-release": {
+      "native": "windows-clang-release.json",
+      "sha256": "f3ef493a1429e7ec31451f9fd53590a671f21604380ce435e464741f3c819eee",
+      "capture": {
+        "path": "out/validation/windows-clang-release/s4-c-slice-5/native-01.json",
+        "bytes": 7873039,
+        "sha256": "f3ef493a1429e7ec31451f9fd53590a671f21604380ce435e464741f3c819eee"
+      },
+      "log": {
+        "path": "out/validation/windows-clang-release/s4-c-slice-5/native-01.log",
+        "bytes": 350,
+        "sha256": "d73be314532d027c4e274ac4adb990bfe8dea550c6c9d20d34274e18e956fb62"
+      },
+      "junit": {
+        "path": "out/validation/windows-clang-release/s4-c-slice-5/native-01.xml",
+        "bytes": 454,
+        "sha256": "500ca2ca2341c083eb7c2692fe57f2d9de85922e49be18a6d9b6f57c92b3ec03"
+      },
+      "executable": {
+        "path": "out/validation/windows-clang-release/s4-c-slice-5/native-artifact/JuicerFilmRecipeTests.exe",
+        "bytes": 7124480,
+        "sha256": "0ea6a8fa3cc5bae1a72045d9c6fda350e65954085172efea809ce6b22945798a"
+      },
+      "compile_context": {
+        "path": "out/validation/windows-clang-release/s4-c-slice-5/native-compile-context.json",
+        "bytes": 5820,
+        "sha256": "d8170d3c744069921452b25ad1f6373693a0e2b8b1bcf3c8f30af19bcb53bb6b"
+      },
+      "membership": {
+        "literal": 30,
+        "slope": 15,
+        "product": 4
+      },
+      "staged_resources": [
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/profiles/kodak_portra_400.json",
+          "bytes": 161683,
+          "sha256": "eb8b733fd8f79223b93ee389f1f32774378ea1905364ed658e4ce1d46ec1c069"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/profiles/fujifilm_provia_100f.json",
+          "bytes": 159325,
+          "sha256": "fed3f45ae581996b2a5b826b8b5d19ccd1a6f7854fff475aa64d2755940b9c20"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/profiles/kodak_portra_endura.json",
+          "bytes": 158722,
+          "sha256": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/cie1931_2deg.csv",
+          "bytes": 4374,
+          "sha256": "3b65a413ec998011608dbbe87ebcb180d93b38d533c80f1ceabff7de71178cbf"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/luts/spectral_upsampling/irradiance_xy_tc.npy",
+          "bytes": 5972096,
+          "sha256": "52f90c724811f5fab80769f8548bf24d08a521eb09e65ab6e016893258d2a783"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/luts/spectral_upsampling/arctic2026beta04_reflectance_xy_tc.npy",
+          "bytes": 5972096,
+          "sha256": "cf5b3dafad6470cdd3981038149374c967820654b94142332808681d364083a6"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/luts/spectral_upsampling/mallett2019_basis.npy",
+          "bytes": 1100,
+          "sha256": "433903731e217538251266f67c9d8e8c6026b6b957d11eee35a29ae7adc2eba7"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/illuminants/D65.csv",
+          "bytes": 1620,
+          "sha256": "9ed98cf4eba0fafa77ca04f5e927f05b29a76f2b91b420153000ca0ef10ca022"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/illuminants/D55.csv",
+          "bytes": 1620,
+          "sha256": "8d914ed6d9a522aca8c1ced434e6d4b3e7ee63a40f200b60f8ef3f7efad74875"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/illuminants/D50.csv",
+          "bytes": 1620,
+          "sha256": "e73612a79beb3fb4eb985f14032e68b077ae4d03cadee0ac8a2d7651f09ab378"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/illuminants/T.csv",
+          "bytes": 1620,
+          "sha256": "03486278730d6154d289d43cd940a328a080de316e3b07d4548f2d9dd1e1d9e2"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/illuminants/K75P.csv",
+          "bytes": 1620,
+          "sha256": "f1fc4d42463fc021d894ecf158fcd1b64d03c6e998c5fc9b2db2527b03748652"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/filters/heat_absorbing/schott/KG3.csv",
+          "bytes": 5609,
+          "sha256": "7654aa57fa8e42ae280e8d679ae9ebf8cef48ed5cbe6c2ab43eba1c6608f3d1f"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/filters/lens_transmission/canon/canon_24_f28_is.csv",
+          "bytes": 3969,
+          "sha256": "6edc1be37bc22ef4e36b98981c09c45ff0e9b3a3ce80e00c62906d8ec941df3a"
+        },
+        {
+          "path": "out/build/windows-clang-release/tests/Resources/filters/neutral_print_filters.json",
+          "bytes": 19597,
+          "sha256": "f18bb2cc44a97a8b27c3d592d7bcf2d2658a6e81b6aaf16ff6a81da763f57bdf"
+        }
+      ],
+      "compiler_tools": [
+        {
+          "cache_key": "CMAKE_CXX_COMPILER",
+          "configured_path": "clang-cl.exe",
+          "observed_path": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe",
+          "sha256": "ec094d5f8f37c106eefcfc47c9997c261a06e3bd8eaaa7255835983a58524156"
+        },
+        {
+          "cache_key": "CMAKE_CUDA_COMPILER",
+          "configured_path": "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2/bin/nvcc.exe",
+          "observed_path": "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2/bin/nvcc.exe",
+          "sha256": "430604193efd2123a019254d81989ecc25ba5f100356914fe4c427665fdda4b2"
+        },
+        {
+          "cache_key": "CMAKE_LINKER",
+          "configured_path": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/lld-link.exe",
+          "observed_path": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/lld-link.exe",
+          "sha256": "631a02cecb87f9f7f2270713d6c7f84e54a0fabce6c6638d21d3a0caea78204d"
+        }
+      ]
+    }
+  },
+  "readers": {
+    "native_capture": "ScannerLutTest::compare and reader_controls execute full six-array/count/metadata assertions, with deliberate corruption rejection before writing capture",
+    "replacement": "core scanner tests, raw/facade/native adapter and OFF C11 readers pending implementation; no replacement-generated expectation"
+  },
+  "resources": [
+    {
+      "path": "Resources/profiles/kodak_portra_400.json",
+      "bytes": 161683,
+      "sha256": "eb8b733fd8f79223b93ee389f1f32774378ea1905364ed658e4ce1d46ec1c069"
+    },
+    {
+      "path": "Resources/profiles/fujifilm_provia_100f.json",
+      "bytes": 159325,
+      "sha256": "fed3f45ae581996b2a5b826b8b5d19ccd1a6f7854fff475aa64d2755940b9c20"
+    },
+    {
+      "path": "Resources/profiles/kodak_portra_endura.json",
+      "bytes": 158722,
+      "sha256": "e3450fd941155c88e63060dcf202542ccb6da151e9ab6c56c295d7b2d4837969"
+    },
+    {
+      "path": "Resources/cie1931_2deg.csv",
+      "bytes": 4374,
+      "sha256": "3b65a413ec998011608dbbe87ebcb180d93b38d533c80f1ceabff7de71178cbf"
+    },
+    {
+      "path": "Resources/luts/spectral_upsampling/irradiance_xy_tc.npy",
+      "bytes": 5972096,
+      "sha256": "52f90c724811f5fab80769f8548bf24d08a521eb09e65ab6e016893258d2a783"
+    },
+    {
+      "path": "Resources/luts/spectral_upsampling/arctic2026beta04_reflectance_xy_tc.npy",
+      "bytes": 5972096,
+      "sha256": "cf5b3dafad6470cdd3981038149374c967820654b94142332808681d364083a6"
+    },
+    {
+      "path": "Resources/luts/spectral_upsampling/mallett2019_basis.npy",
+      "bytes": 1100,
+      "sha256": "433903731e217538251266f67c9d8e8c6026b6b957d11eee35a29ae7adc2eba7"
+    },
+    {
+      "path": "Resources/illuminants/D65.csv",
+      "bytes": 1620,
+      "sha256": "9ed98cf4eba0fafa77ca04f5e927f05b29a76f2b91b420153000ca0ef10ca022"
+    },
+    {
+      "path": "Resources/illuminants/D55.csv",
+      "bytes": 1620,
+      "sha256": "8d914ed6d9a522aca8c1ced434e6d4b3e7ee63a40f200b60f8ef3f7efad74875"
+    },
+    {
+      "path": "Resources/illuminants/D50.csv",
+      "bytes": 1620,
+      "sha256": "e73612a79beb3fb4eb985f14032e68b077ae4d03cadee0ac8a2d7651f09ab378"
+    },
+    {
+      "path": "Resources/illuminants/T.csv",
+      "bytes": 1620,
+      "sha256": "03486278730d6154d289d43cd940a328a080de316e3b07d4548f2d9dd1e1d9e2"
+    },
+    {
+      "path": "Resources/illuminants/K75P.csv",
+      "bytes": 1620,
+      "sha256": "f1fc4d42463fc021d894ecf158fcd1b64d03c6e998c5fc9b2db2527b03748652"
+    },
+    {
+      "path": "Resources/filters/heat_absorbing/schott/KG3.csv",
+      "bytes": 5609,
+      "sha256": "7654aa57fa8e42ae280e8d679ae9ebf8cef48ed5cbe6c2ab43eba1c6608f3d1f"
+    },
+    {
+      "path": "Resources/filters/lens_transmission/canon/canon_24_f28_is.csv",
+      "bytes": 3969,
+      "sha256": "6edc1be37bc22ef4e36b98981c09c45ff0e9b3a3ce80e00c62906d8ec941df3a"
+    },
+    {
+      "path": "Resources/filters/neutral_print_filters.json",
+      "bytes": 19597,
+      "sha256": "f18bb2cc44a97a8b27c3d592d7bcf2d2658a6e81b6aaf16ff6a81da763f57bdf"
+    }
+  ],
+  "resource_scope": "Selected profiles, CMF/reconstruction bootstrap, illuminant/filter set and neutral print calibration; no static noise pixels."
+}

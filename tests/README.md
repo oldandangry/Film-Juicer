@@ -586,8 +586,13 @@ the complete native miniature repair/checkpoint/collection replay separately,
 with a 600-second limit on Linux/WSL and a 300-second limit on Windows.
 Both are required host/tooling tests in Debug. The
 miniature replay does not establish real product, GPU or OFX qualification.
-With `JUICER_TEST_ARTIFACT_DIR` supplied by CTest, checkpoint fixtures and their
-receipts remain under the native preset's `checkpoint-controls` directory.
+`JUICER_TEST_ARTIFACT_DIR` supplied by CTest selects artifact output without
+requesting whole-fixture retention. Checkpoint fixtures use the native preset's
+`checkpoint-controls`; BuildEvidence routes its fixtures below the artifact root.
+Successful, fully drained synthetic workspaces clean up after the outer test
+consumes their receipts. Set `JUICER_TEST_RETAIN_FIXTURES=1` for deliberate diagnostic
+capture. Outer failures (including subtests), interrupted/undrained work and
+unproved owners retain their diagnostics and configured paths.
 
 Add construction/lifetime probes as the corresponding real API lands. Put
 identity, reuse, conversion and failure-transition cases in the owning domain's
@@ -723,6 +728,25 @@ The real parallel analyzer control retains its complete failure directory under
 Standalone controls use the native Debug preset. Successful controls clean their
 scratch directory; CI uploads retained command logs and raw process diagnostics.
 
+At closeout retain maintained scientific fixtures/provenance, active work and
+required reproductions, real unresolved failures, and a small named set of reusable
+executions with complete original receipt/log/process/payload closure. Historical
+acceptance needs exact source identity or a reconstructible patch, final case
+membership/outcomes, review/decision and limits. An old link or receipt alone does
+not retain every intermediate attempt. Retire obsolete scopes from reuse in a new
+disposition; never rewrite original hashes or replace collector-required raw proof
+with a summary.
+
+Ordinary raw success and redundant resolved-failure diagnostics without a continuing
+consumer have a seven-day post-acceptance/resolution rollback window. Superseded
+synthetic contents and verified redundant copies may go at closeout after checking
+actual processes, descendants, leases, registered worktrees, path boundaries and
+consumers. Expected-negative child receipts follow their outer test's outcome.
+Preserve scientific exceptions and mandatory reproductions according to their
+obligations. Review ordinary closed-slice narrative above 10 MiB, with scientific
+data and required reusable closure separately justified; this is not a deletion
+quota. No automatic cleanup service is implied.
+
 CTest can write JUnit output without a project-specific report layer:
 
 ```sh
@@ -855,6 +879,19 @@ dye radii, simple grain, single-pixel and partial-block extents, integer/fractio
 time, zero and signed-zero bias, non-finite density, and extreme blur weights.
 The oracle's particle generation intentionally shares production code; this test
 isolates the subsequent blur/delta schedule and does not validate the sampler.
+
+### Scanner spectral LUT construction
+
+`Ffi.Host.ScannerLut` checks the complete immutable host owner, full six-array
+native words, C11/C++/Rust ABI, raw/facade failure clearing, ten reservation
+stages, panic containment and input expiry. `Scanner.Host.LutProducts` checks
+matching native profile/route products and the native move-only adapter.
+`Scanner.Gpu.OutputEncoding` includes whole-array prepared upload comparisons,
+cache reuse and resolution transitions; `Ofx.Gpu.ResourceFailure.ScannerLut`
+exercises all six upload failure positions through actual render preparation.
+The frozen `scanner/lut-fixtures/manifest.json` distinguishes native numerical
+characterization from the safety/transport contract in `checked.json`.
+Successful stored words are exact in each matching native platform/profile.
 
 ### Scanner output encoding
 

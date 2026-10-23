@@ -249,7 +249,9 @@ class CheckpointTests(unittest.TestCase):
                      "tests/ffi/print_balance_test.inc", "tests/print/balance-fixtures/manifest.json",
                      "tests/print/balance-fixtures/linux-debug.json", "tests/ffi/scanner_correction_test.inc",
                      "tests/scanner/correction-fixtures/manifest.json", "tests/scanner/correction-fixtures/checked-expectations.json",
-                     "tests/scanner/correction-fixtures/linux-debug.json"):
+                     "tests/scanner/correction-fixtures/linux-debug.json", "tests/ffi/scanner_lut_test.inc",
+                     "tests/scanner/lut-fixtures/manifest.json", "tests/scanner/lut-fixtures/checked.json",
+                     "tests/scanner/lut-fixtures/linux-debug.json"):
             p = self.root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("source")
@@ -271,6 +273,10 @@ class CheckpointTests(unittest.TestCase):
         self.assertIn("tests/scanner/correction-fixtures/manifest.json", first)
         self.assertIn("tests/scanner/correction-fixtures/checked-expectations.json", first)
         self.assertIn("tests/scanner/correction-fixtures/linux-debug.json", first)
+        self.assertIn("tests/ffi/scanner_lut_test.inc", first)
+        self.assertIn("tests/scanner/lut-fixtures/manifest.json", first)
+        self.assertIn("tests/scanner/lut-fixtures/checked.json", first)
+        self.assertIn("tests/scanner/lut-fixtures/linux-debug.json", first)
         added = self.root / "src/SpectralProcessing.h"
         added.write_text("new member")
         self.assertIn("src/SpectralProcessing.h", qualification.checkpoint_inputs(self.root, self.build, "boundary"))
