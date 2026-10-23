@@ -94,6 +94,7 @@ def execute(arguments):
     forbidden = re.compile(
         "fj_test_|::test_support::|film_bridge::faults::|film::input::testing::|film_input_bridge::(?:BOUNDARY_FAULT|boundary_fault|arm_boundary_fault)|film::test_support::|\\b(?:FAULT|[A-Z_]+_FAULT|FAULT_[A-Z_]+|[A-Z_]+_FAULT_[A-Z_]+)\\b|\\b[A-Z_]+_FACADE(?:_[A-Z_]+)?\\b|ContextDrainTestFailure|TestSupport::|(?:Profile|Catalog|Terminal|ContextDrain|HostAdmission|ExecutorFailure|PinnedUpload|Illuminant|Render|Spectral|TcLut|Color|OutputGamut|Development|Noise)Test::|\\b\\w*Test::|::fixtures::|::output_fixtures::|::faults::|TC_CONSUMED|TC_TRANSFERS|TC_RELEASES|EXPOSURE_CONSUMED|TC_FACADE_CONSUMED|TC_FACADE_RELEASES|ScannerOracle::|pendingCaptureTest|set_pending_capture_test_hook|COPY_METRICS|SCRATCH_CAPACITIES|gamut_bridge::(?:output_)?fixtures::|exposure_bridge::fixtures::|spectral_bridge::(?:inject|arm_fault|clear_fault)"
     )
+    forbidden = re.compile(forbidden.pattern + r"|reconstruction::testing::|film::reference::testing::")
     strings = [
         b"film input boundary fixture panic",
         b"film development acquire fixture panic",
@@ -113,6 +114,8 @@ def execute(arguments):
         b"film DIR release fixture panic",
         b"film density bounds fixture panic",
         b"film recipe diagnostic fixture panic",
+        b"film reference dependency boundary fault",
+        b"film reference dependency allocation failed",
         b"output gamut boundary fault",
         b"closed operation-specific output gamut fault",
         b"input hull boundary fault",
@@ -152,6 +155,8 @@ def execute(arguments):
     optics_payload = optics_directory / optics_spec["presets"][arguments.preset]["literal"]
     assert digest(optics_payload) == optics_spec["payload_sha256"][optics_payload.name]
     consumed_paths.extend([optics_manifest, optics_payload])
+    reference_manifest, reference_payload, _ = reference_fixture(arguments.preset)
+    consumed_paths.extend([reference_manifest, reference_payload])
     print_directory = root / "tests/print/illuminant-fixtures"
     print_manifest = print_directory / "rust-manifest.json"
     print_spec = json.loads(print_manifest.read_text())
@@ -202,6 +207,7 @@ def execute(arguments):
         "fj_legacy_film_development_release",
         "fj_legacy_film_development_retain",
         "fj_legacy_film_density_minimum_prepare",
+        "fj_legacy_film_reference_prepare",
         "fj_legacy_film_dir_acquire",
         "fj_legacy_film_dir_view",
         "fj_legacy_film_dir_release",
@@ -256,6 +262,7 @@ def execute(arguments):
     scanner_demand_results = []
     scanner_lut_results = []
     scanner_color_results = []
+    reference_results = []
     for name, source in probes:
         executable = out / (name + suffix)
         target_source = out / (name + ".c")
@@ -331,6 +338,28 @@ def execute(arguments):
                               "source_sha256": source_sha256, "archive": str(archive),
                               "archive_sha256": digest(archive)})
         if name == "film":
+            _, _, reference_rows = reference_fixture(arguments.preset)
+            expected = []
+            for row in reference_rows:
+                method = row["method"]
+                for case in range(8 if method == 1 else 7):
+                    envelope = ([0, 0, 0, 0, 0, 0, 0] if case in (0, 5) else
+                                [2, 0, 0, 1, 0, 0, 0] if case in (1, 4) else
+                                [3, 0, 0, 2, 1, 0, 0] if case == 2 else
+                                [3, 0, 0, 2, 2, 1, 0] if case == 3 else
+                                [3, 0, 0, 3, 0, 7, 0] if case == 6 else
+                                [3, 0, 0, 4, 1, 8, 1])
+                    expected.append((f"reference-{method}-{case}", envelope,
+                                     row["reference"]["hash"] if case in (0, 5) else 0))
+            lines = [line for line in output.splitlines() if line.startswith("REFERENCE_CASE")]
+            assert len(lines) == len(expected), lines
+            for line, (case, envelope, identity) in zip(lines, expected):
+                match = re.fullmatch(r"REFERENCE_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) exposure=(\d+) operation=(\d+) channel=(\d+) fields=13-pass hash=(\d+)", line)
+                assert match and match[1] == case, line
+                actual = [int(value) for value in match.groups()[1:]]
+                assert actual == [*envelope, identity], line
+                reference_results.append({"case": case, "envelope": envelope,
+                                          "hash": identity, "fields": "13-pass"})
             pattern = r"^GRAIN_CASE (\S+) category=(\d+) api=(\d+) native_code=(\d+) reason=(\d+) channel=(\d+) sample=(\d+) fields=pass$"
             expected = [("grain-active-layers", 0, 0), ("grain-inactive", 0, 0),
                         ("grain-raw-boolean", 2, 1), ("grain-raw-owner", 2, 1),
@@ -501,6 +530,8 @@ def execute(arguments):
                 "scanner_demand_results": scanner_demand_results,
                 "scanner_lut_results": scanner_lut_results,
                 "scanner_color_results": scanner_color_results,
+                "reference_results": reference_results,
+                "reference_fixture": {"manifest": str(reference_manifest), "payload": str(reference_payload), "logical_preset": arguments.preset},
                 "scanner_color_fixture": {"manifest": str(color_manifest), "payload": str(color_payload), "normative": str(color_checked), "logical_preset": arguments.preset},
                 "scanner_lut_fixture": {"manifest": str(lut_manifest), "payload": str(lut_payload), "normative": str(lut_checked), "logical_preset": arguments.preset},
                 "scanner_correction_fixture": {"manifest": str(correction_manifest), "payload": str(correction_payload),
@@ -531,6 +562,40 @@ def execute(arguments):
         "PASS complete OFF film and retained output-color gate, archive/module/PDB isolation, two exports and hidden-device loading",
         flush=True,
     )
+
+
+def reference_fixture(preset):
+    directory = root / "tests/film/reference-fixtures"
+    manifest = directory / "manifest.json"
+    spec = json.loads(manifest.read_text())
+    payload = directory / spec["presets"][preset]
+    assert digest(payload) == spec["payload_sha256"][payload.name]
+    rows = [row for row in json.loads(payload.read_text())["products"] if "input" in row]
+    assert len(rows) == 2 and [row["method"] for row in rows] == [0, 1]
+    return manifest, payload, rows
+
+
+def expected_reference_header(out):
+    _, _, rows = reference_fixture(arguments.preset)
+    header = []
+    for index, row in enumerate(rows):
+        source = row["input"]
+        assert source["key"] == "kodak_portra_400" and row["route"] == 0
+        for name in ("basis", "illuminant", "sensitivity", "tc", "white", "gamma"):
+            values = source[name]
+            header.append(f"static const uint32_t reference_{index}_{name}[] = {{"
+                          + ",".join(str(word) + "U" for word in values or [0]) + "};")
+        reference = row["reference"]
+        values = [word for name in ("baseline_raw_rgb", "compensated_raw_rgb", "baseline_density_cmy", "compensated_density_cmy") for word in reference[name]]
+        values.append(reference["meter_scale"])
+        header.append(f"static const uint32_t reference_{index}_expected[] = {{"
+                      + ",".join(str(word) + "U" for word in values) + "};")
+        for name, value in (("method", row["method"]), ("auto", int(source["auto"])),
+                            ("ev", source["manual_ev"]), ("green", source["green_scale"]),
+                            ("hash", reference["hash"])):
+            header.append(f"#define REFERENCE_{index}_{name.upper()} UINT64_C({value})")
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write("\n".join(header) + "\n")
 
 
 def expected_film_header(out):
@@ -593,6 +658,7 @@ def expected_film_header(out):
     for name in ("hash", "sensitivity_hash"):
         header.append("#define FILM_INPUT_" + name.upper() + " UINT64_C(" + str(raw[name]) + ")")
     (out / "production-film-expected.h").write_text("\n".join(header) + "\n")
+    expected_reference_header(out)
     directory = root / "tests/film/dir-fixtures"
     manifest = json.loads((directory / "manifest.json").read_text())
     payload = directory / manifest["presets"][arguments.preset]["values"]

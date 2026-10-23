@@ -20,6 +20,10 @@ struct SpatialOptics;
 struct DichroicFilterRecipe;
 struct SyntheticFilmReferenceRecipe;
 struct PrintBalanceRecipe;
+struct FilmRawRecipe;
+namespace Spectral {
+    struct FilmTcLut;
+}
 struct CmyCcTriplet;
 namespace Spektrafilm {
     struct SpatialOpticsControls;
@@ -65,6 +69,9 @@ namespace JuicerAssets {
     private:
         FjFilmDevelopmentOwner* _owner = nullptr;
     };
+
+    // SF_TEMP_BRIDGE_FILM_REFERENCE: synchronous fixed completed value; remove S4.E.
+    bool prepare_film_reference(const DevelopmentHold& development, const FilmRawRecipe& raw, const Spectral::FilmTcLut* tc, const std::array<float, 81>& illuminant, SyntheticFilmReferenceRecipe& out, std::string& diagnostic);
 
     // SF_TEMP_BRIDGE_VISUAL_GRAIN: copy one completed fixed Rust value; remove S4.E.
     bool prepare_visual_grain(const DevelopmentHold& development, const VisualGrainControls& controls, VisualGrainRecipe& out, std::string& diagnostic);

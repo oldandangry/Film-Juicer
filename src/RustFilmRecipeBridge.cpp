@@ -28,6 +28,7 @@ namespace JuicerAssets {
         void print_illuminant(FjStatus& status, FjPrintIlluminantFailure& failure, FjIlluminant& illuminant, FjErrorBuffer& error);
         void print_balance(FjStatus& status, FjPrintBalanceFailure& failure, FjPrintBalance& balance, FjErrorBuffer& error);
         void print_preflash(FjStatus& status, FjPrintPreflashFailure& failure, FjPrintPreflashRaw& raw, FjErrorBuffer& error);
+        void film_reference(FjStatus& status, FjFilmReferenceFailure& failure, FjFilmReference& reference, FjErrorBuffer& error);
     } // namespace RecipeTest
 #endif
     namespace {
@@ -863,6 +864,110 @@ namespace JuicerAssets {
             throw JuicerCuda::ExecutionFailure{std::move(rejected)};
         }
         std::copy_n(wire.samples, out.size(), out.begin());
+        return true;
+    }
+
+    // SF_TEMP_BRIDGE_FILM_REFERENCE: bind resolved inputs; remove S4.E.
+    bool prepare_film_reference(const DevelopmentHold& development, const FilmRawRecipe& raw, const Spectral::FilmTcLut* tc, const std::array<float, 81>& illuminant, SyntheticFilmReferenceRecipe& out, std::string& diagnostic) {
+        diagnostic.clear();
+        if (!development.get()) {
+            diagnostic = "ResourceDescriptorMismatch phase=3B field=synthetic_reference_inputs";
+            return false;
+        }
+        FjFilmReferenceInput input{};
+        input.method = static_cast<std::uint32_t>(raw.rgbToRawMethod);
+        input.auto_exposure_enabled = raw.autoExposureEnabled ? 1u : 0u;
+        input.manual_exposure_ev = raw.manualExposureCompensationEv;
+        std::array<float, 243> sensitivity{};
+        if (raw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019) {
+            const auto& basis = Spectral::context().mallettBasis;
+            if (basis.rows == 81 && basis.cols == 3 && basis.data.size() == 243) {
+                input.basis_rgb = {basis.data.data(), basis.data.size()};
+                input.film_illuminant = {illuminant.data(), illuminant.size()};
+                for (std::size_t sample = 0; sample < 81; ++sample)
+                    for (std::size_t channel = 0; channel < 3; ++channel)
+                        sensitivity[3 * sample + channel] = raw.finalSensitivity[sample][channel];
+                input.sensitivity_rgb = {sensitivity.data(), sensitivity.size()};
+            }
+            input.mallett_green_scale = raw.mallettGreenMidgrayScale;
+        } else {
+            if (tc) {
+                const auto samples = tc->samples();
+                input.tc_lut = {samples.data(), samples.size()};
+            }
+            std::copy(raw.projectionWhiteXYZ.begin(), raw.projectionWhiteXYZ.end(), input.projection_white_xyz);
+        }
+        FjFilmReference wire{};
+        FjFilmReferenceFailure failure{};
+        std::array<char, 512> text{};
+        FjErrorBuffer error{text.data(), text.size(), 0};
+        FjStatus status = fj_legacy_film_reference_prepare(development.get(), &input, &wire, &failure, &error);
+#if defined(JUICER_FILM_RECIPE_TEST_HOOK)
+        RecipeTest::film_reference(status, failure, wire, error);
+#endif
+        const bool noDetails = failure.exposure == 0 && failure.operation == 0 && failure.channel == 0;
+        const bool exposure = failure.exposure == 1 || failure.exposure == 2;
+        bool valid = status.api == FJ_API_NONE && status.native_code == 0;
+        switch (failure.reason) {
+            case FJ_FILM_REFERENCE_REASON_NONE:
+                valid = valid && status.category == FJ_STATUS_SUCCESS && noDetails && error.length == 0;
+                break;
+            case FJ_FILM_REFERENCE_RAW:
+                valid = valid && status.category == FJ_STATUS_UNSUPPORTED_INPUT && noDetails;
+                break;
+            case FJ_FILM_REFERENCE_RECONSTRUCTION:
+                valid = valid && status.category == FJ_STATUS_PREPARATION_FAILURE && exposure && failure.channel == 0 &&
+                        (failure.operation == 0 || failure.operation == 1 || failure.operation == 5 || failure.operation == 6);
+                break;
+            case FJ_FILM_REFERENCE_METER:
+                valid = valid && status.category == FJ_STATUS_PREPARATION_FAILURE && failure.exposure == 0 && failure.operation == 7 && failure.channel == 0;
+                break;
+            case FJ_FILM_REFERENCE_DENSITY_LOOKUP:
+                valid = valid && status.category == FJ_STATUS_PREPARATION_FAILURE && exposure && failure.operation == 8 && failure.channel >= 1 && failure.channel <= 3;
+                break;
+            case FJ_FILM_REFERENCE_DEPENDENCY:
+                valid = valid && exposure && failure.channel == 0 && failure.operation >= 1 && failure.operation <= 6 &&
+                        (status.category == FJ_STATUS_UNSUPPORTED_INPUT || (status.category == FJ_STATUS_ALLOCATION_FAILURE && (failure.operation == 1 || failure.operation == 5 || failure.operation == 6)));
+                break;
+            case FJ_FILM_REFERENCE_PANIC:
+                valid = valid && status.category == FJ_STATUS_INTERNAL_FAILURE && noDetails;
+                break;
+            default:
+                valid = false;
+                break;
+        }
+        if (status.category != FJ_STATUS_SUCCESS) {
+            for (const auto* triplet : {wire.baseline_raw_rgb, wire.compensated_raw_rgb, wire.baseline_density_cmy, wire.compensated_density_cmy})
+                for (unsigned channel = 0; channel < 3; ++channel)
+                    valid = valid && std::bit_cast<std::uint32_t>(triplet[channel]) == 0;
+            valid = valid && std::bit_cast<std::uint32_t>(wire.meter_scale) == 0 && wire.hash == 0;
+        }
+        valid = valid && error.data == text.data() && error.capacity == text.size() && error.length < text.size();
+        if (valid)
+            valid = text[error.length] == '\0';
+        if (!valid) {
+            JuicerCuda::Failure rejected;
+            JuicerCuda::set_failure(rejected, {FJ_STATUS_INTERNAL_FAILURE, FJ_API_NONE, 0}, "film reference projection invalid");
+            throw JuicerCuda::ExecutionFailure{std::move(rejected)};
+        }
+        if (status.category == FJ_STATUS_ALLOCATION_FAILURE)
+            throw std::bad_alloc{};
+        if (status.category != FJ_STATUS_SUCCESS) {
+            diagnostic.assign(text.data(), error.length);
+            if (failure.reason >= FJ_FILM_REFERENCE_RECONSTRUCTION && failure.reason <= FJ_FILM_REFERENCE_DENSITY_LOOKUP)
+                return false;
+            JuicerCuda::Failure rejected;
+            JuicerCuda::set_failure(rejected, status, diagnostic);
+            throw JuicerCuda::ExecutionFailure{std::move(rejected)};
+        }
+        SyntheticFilmReferenceRecipe reference{};
+        std::copy_n(wire.baseline_raw_rgb, 3, reference.baselineRawRgb.begin());
+        std::copy_n(wire.compensated_raw_rgb, 3, reference.compensatedRawRgb.begin());
+        std::copy_n(wire.baseline_density_cmy, 3, reference.baselineDensityCmy.begin());
+        std::copy_n(wire.compensated_density_cmy, 3, reference.compensatedDensityCmy.begin());
+        reference.baselineMeterScale = wire.meter_scale;
+        reference.hash = wire.hash;
+        out = reference;
         return true;
     }
 

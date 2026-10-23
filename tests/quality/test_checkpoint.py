@@ -256,7 +256,8 @@ class CheckpointTests(unittest.TestCase):
                      "tests/scanner/lut-fixtures/manifest.json", "tests/scanner/lut-fixtures/checked.json",
                      "tests/scanner/lut-fixtures/linux-debug.json", "tests/ffi/scanner_color_test.inc",
                      "tests/scanner/color-fixtures/manifest.json", "tests/scanner/color-fixtures/native.json",
-                     "tests/scanner/color-fixtures/checked.json"):
+                     "tests/scanner/color-fixtures/checked.json", "tests/ffi/film_reference_test.inc",
+                     "tests/film/reference-fixtures/manifest.json", "tests/film/reference-fixtures/linux-debug.json"):
             p = self.root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("source")
@@ -264,6 +265,9 @@ class CheckpointTests(unittest.TestCase):
         (self.build / "CTestTestfile.cmake").write_text("")
         first = qualification.checkpoint_inputs(self.root, self.build, "boundary")
         self.assertIn("src/RenderRecipe.cpp", first)
+        self.assertIn("tests/ffi/film_reference_test.inc", first)
+        self.assertIn("tests/film/reference-fixtures/manifest.json", first)
+        self.assertIn("tests/film/reference-fixtures/linux-debug.json", first)
         self.assertIn("tests/ffi/color_preparation_test.cpp", first)
         self.assertIn("tests/ffi/print_illuminant_test.inc", first)
         self.assertIn("tests/ffi/print_illuminant_fixture.h", first)
@@ -850,6 +854,14 @@ class CheckpointTests(unittest.TestCase):
 
     def production_fixture(self):
         """Native tiny probes exercise retained proof, not product mathematics."""
+        directory = self.root / "tests/film/reference-fixtures"
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = directory / "mini.json"
+        write_json(payload, {"scope": "fixture membership protocol only", "products": [
+            {"method": method, "input": {}, "reference": {"hash": 10}} for method in (0, 1)]})
+        write_json(directory / "manifest.json", {"presets": {
+            preset: payload.name for preset in qualification.PRESETS},
+            "payload_sha256": {payload.name: digest(payload)}})
         return r'''
 import json, sys, subprocess, hashlib, shutil
 preset=sys.argv[sys.argv.index("--preset")+1]
@@ -880,6 +892,18 @@ def execute(name, command):
 header=out/'production-film-expected.h'
 header.write_text('#define EXPECTED 10\n')
 consumed={str(header):checksum(header)}
+reference_manifest=(Path('tests/film/reference-fixtures')/'manifest.json').resolve()
+reference_spec=json.loads(reference_manifest.read_text())
+reference_payload=reference_manifest.parent/reference_spec['presets'][preset]
+consumed.update({str(path):checksum(path) for path in (reference_manifest,reference_payload)})
+reference_results=[]
+for row in json.loads(reference_payload.read_text())['products']:
+    for case in range(8 if row['method']==1 else 7):
+        envelope=([0,0,0,0,0,0,0] if case in (0,5) else [2,0,0,1,0,0,0] if case in (1,4) else
+                  [3,0,0,2,1,0,0] if case==2 else [3,0,0,2,2,1,0] if case==3 else
+                  [3,0,0,3,0,7,0] if case==6 else [3,0,0,4,1,8,1])
+        reference_results.append({'case':f"reference-{row['method']}-{case}",'envelope':envelope,
+                                  'hash':row['reference']['hash'] if case in (0,5) else 0,'fields':'13-pass'})
 probes=[]
 for name in ['film','accepted-output-color']:
     source=out/(name+'.c')
@@ -909,6 +933,8 @@ record=out/'commands.json'
 record.write_text(json.dumps(commands))
 (out/'production.json').write_text(json.dumps({'scope':'native miniature retained-payload protocol only',
     'preset':preset,'build_testing':'OFF','build_inputs':build_inputs,'probes':probes,'consumed_inputs':consumed,
+    'reference_fixture':{'manifest':str(reference_manifest),'payload':str(reference_payload),'logical_preset':preset},
+    'reference_results':reference_results,
     'commands':{'file':str(record),'sha256':checksum(record)},
     'command_outputs':{str(out/(row['name']+'.'+extension)):row[extension+'_sha256']
                        for row in commands for extension in ['stdout','stderr']}}))
@@ -1163,6 +1189,13 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         stage = record["stages"]["production"]
         manifest = qualification.production_manifest_identity(stage["receipt"], root=self.root)[0]
         document = json.loads(manifest.read_text())
+        self.assertEqual(len(document["reference_results"]), 15)
+        for field in ("reference_results", "reference_fixture"):
+            missing = manifest.with_name("without-" + field + ".json")
+            write_json(missing, {key: value for key, value in document.items() if key != field})
+            with self.assertRaisesRegex(ValueError, "film-reference"):
+                qualification.production_payloads(missing, digest(missing), root=self.root,
+                    inputs=stage["identity"]["inputs"])
         artifact = build / ("juicer.lib" if os.name == "nt" else "libjuicer.a")
         retained = Path(document["build_inputs"][str(artifact)]["file"])
         off_hash = stage["identity"]["inputs"][artifact.relative_to(self.root).as_posix()]

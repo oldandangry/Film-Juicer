@@ -607,6 +607,38 @@ FjStatus fj_legacy_film_development_release(FjFilmDevelopmentOwner* development,
 #define FJ_FILM_DIR_NEGATIVE_DONOR_LANGMUIR UINT32_C(1)
 #define FJ_FILM_DIR_POSITIVE_RECEIVER_LANGMUIR UINT32_C(2)
 #define FJ_FILM_RECIPE_REASON_NONE UINT32_C(0)
+
+/* SF_TEMP_BRIDGE_FILM_REFERENCE: synchronous complete value; remove S4.E.
+ * Inputs borrow completed Development and fixed float spans until return.
+ * Active spans: Mallett wavelength-major RGB basis243, illuminant81,
+ * sensitivity RGB243; TC192*192*4. Missing active spans and every unused
+ * span are canonical {NULL,0}. No ownership or pointer escapes.
+ * Initialized live storage is required. Result/failure/error and diagnostic
+ * backing are exclusive and disjoint from each other and all input storage.
+ * Each valid writable result/failure is independently cleared on failure. */
+typedef struct FjFilmReferenceInput {
+    uint32_t method, auto_exposure_enabled;
+    float manual_exposure_ev, mallett_green_scale;
+    float projection_white_xyz[3];
+    FjFloatSpan basis_rgb, film_illuminant, sensitivity_rgb, tc_lut;
+} FjFilmReferenceInput;
+typedef struct FjFilmReference {
+    float baseline_raw_rgb[3], compensated_raw_rgb[3];
+    float baseline_density_cmy[3], compensated_density_cmy[3];
+    float meter_scale;
+    uint64_t hash;
+} FjFilmReference;
+typedef struct FjFilmReferenceFailure {
+    uint32_t reason, exposure, operation, channel;
+} FjFilmReferenceFailure;
+#define FJ_FILM_REFERENCE_REASON_NONE UINT32_C(0)
+#define FJ_FILM_REFERENCE_RAW UINT32_C(1)
+#define FJ_FILM_REFERENCE_RECONSTRUCTION UINT32_C(2)
+#define FJ_FILM_REFERENCE_METER UINT32_C(3)
+#define FJ_FILM_REFERENCE_DENSITY_LOOKUP UINT32_C(4)
+#define FJ_FILM_REFERENCE_DEPENDENCY UINT32_C(5)
+#define FJ_FILM_REFERENCE_PANIC UINT32_C(6)
+FjStatus fj_legacy_film_reference_prepare(const FjFilmDevelopmentOwner*, const FjFilmReferenceInput*, FjFilmReference*, FjFilmReferenceFailure*, FjErrorBuffer*);
 #define FJ_FILM_RECIPE_RAW UINT32_C(1)
 #define FJ_FILM_RECIPE_MINIMUM UINT32_C(2)
 #define FJ_FILM_RECIPE_MATRIX UINT32_C(3)

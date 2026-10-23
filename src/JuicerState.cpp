@@ -762,6 +762,7 @@ namespace {
     bool finish_state_reference_recipes(
         RenderRecipe& recipe,
         FocusedRenderPayload& payload,
+        JuicerAssets::DevelopmentHold development,
         std::string& diagnostic) {
         std::array<float, Spectral::kNumSamples> filmIlluminant{};
         if (!recipe.profileRoute.filmProfile || !copy_profile_illuminant_samples(
@@ -776,6 +777,7 @@ namespace {
         if (!Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute)) {
             return Spektrafilm::finish_synthetic_reference_recipes(
                 recipe,
+                development,
                 filmTcLut,
                 filmIlluminant,
                 nullptr,
@@ -799,6 +801,7 @@ namespace {
                 diagnostic) ||
             !Spektrafilm::finish_synthetic_reference_recipes(
                 recipe,
+                development,
                 filmTcLut,
                 filmIlluminant,
                 &*payload.printMainIlluminant,
@@ -1048,6 +1051,7 @@ namespace {
             !finish_state_reference_recipes(
                 out.recipe,
                 out.payload,
+                std::move(built.developmentHold),
                 payloadDiagnostic) ||
             !build_direct_scanner_payload(out.recipe, out.payload) ||
             !finish_output_gamut_payload(
@@ -1170,6 +1174,7 @@ namespace {
             !finish_state_reference_recipes(
                 out.recipe,
                 out.payload,
+                std::move(built.developmentHold),
                 payloadDiagnostic) ||
             !build_print_scanner_payload(out.recipe, out.payload) ||
             !finish_output_gamut_payload(

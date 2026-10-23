@@ -222,6 +222,37 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
         admit(row["executable"], row["after_run_sha256"])
         admit(row["source"], row["source_sha256"])
     consumed = document.get("consumed_inputs", {})
+    reference = document.get("reference_fixture", {})
+    reference_manifest = root / "tests/film/reference-fixtures/manifest.json"
+    spec = json.loads(reference_manifest.read_text())
+    reference_payload = reference_manifest.parent / spec["presets"][document["preset"]]
+    reference_consumed = {str(resolve(name)): checksum for name, checksum in consumed.items()}
+    if (reference.get("logical_preset") != document["preset"]
+            or resolve(reference.get("manifest", "")) != reference_manifest
+            or resolve(reference.get("payload", "")) != reference_payload):
+        raise ValueError("production film-reference fixture membership is incomplete")
+    for path in (reference_manifest, reference_payload):
+        checksum = digest(path)
+        if inputs.get(path.relative_to(root).as_posix()) != checksum or reference_consumed.get(str(path)) != checksum:
+            raise ValueError("production film-reference consumed fixture identity changed")
+    if digest(reference_payload) != spec["payload_sha256"][reference_payload.name]:
+        raise ValueError("production film-reference frozen payload changed")
+    expected_reference = []
+    for row in json.loads(reference_payload.read_text())["products"]:
+        if "input" not in row:
+            continue
+        for case in range(8 if row["method"] == 1 else 7):
+            envelope = ([0, 0, 0, 0, 0, 0, 0] if case in (0, 5) else
+                        [2, 0, 0, 1, 0, 0, 0] if case in (1, 4) else
+                        [3, 0, 0, 2, 1, 0, 0] if case == 2 else
+                        [3, 0, 0, 2, 2, 1, 0] if case == 3 else
+                        [3, 0, 0, 3, 0, 7, 0] if case == 6 else
+                        [3, 0, 0, 4, 1, 8, 1])
+            expected_reference.append({"case": f"reference-{row['method']}-{case}",
+                                       "envelope": envelope, "hash": row["reference"]["hash"] if case in (0, 5) else 0,
+                                       "fields": "13-pass"})
+    if len(expected_reference) != 15 or document.get("reference_results") != expected_reference:
+        raise ValueError("production film-reference value/failure results are incomplete")
     headers = {name: checksum for name, checksum in consumed.items()
                if resolve(name).parent == manifest.parent and resolve(name).suffix == ".h"}
     if str(manifest.parent / "production-film-expected.h") not in {str(resolve(name)) for name in headers}:
@@ -358,7 +389,8 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.add(root / "tests/ffi/color_preparation_test.cpp")
             paths.update(root / "tests/ffi" / name for name in (
                 "film_recipe_test.cpp", "film_recipe_abi_c.c", "film_recipe_abi_cpp.inc",
-                "film_recipe_abi_facts.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
+                "film_recipe_abi_facts.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
+            paths.update((root / "tests/film/reference-fixtures").glob("*.json"))
             paths.update((root / "tests/print/illuminant-fixtures").glob("*.json"))
             paths.update((root / "tests/print/preflash-fixtures").glob("*.json"))
             paths.update((root / "tests/print/balance-fixtures").glob("*.json"))

@@ -12,10 +12,22 @@
 #include "asset_lookup_test.h"
 #include "juicer_test_api.h"
 #include "RenderRecipe.h"
+#include "RustAssetBridge.h"
 #include "Scanner.h"
 #include "SpectralData.h"
 
 namespace AssetLookupTest {
+    std::optional<float> sample_reference_density(float query, const std::vector<float>& axis, const std::vector<std::array<float, 3>>& curves, std::size_t channel) {
+        std::vector<float> flat;
+        for (const auto& row : curves)
+            flat.insert(flat.end(), row.begin(), row.end());
+        float out = 0;
+        std::uint32_t present = 0;
+        const auto status = fj_test_film_reference_density_lookup(query, {axis.data(), axis.size()}, {flat.data(), flat.size()}, channel < 3 ? static_cast<std::uint32_t>(channel) : 3u, &out, &present);
+        if (status.category != FJ_STATUS_SUCCESS || status.api != FJ_API_NONE || status.native_code != 0 || present > 1)
+            throw std::runtime_error("film reference lookup fixture transport");
+        return present ? std::optional<float>{out} : std::nullopt;
+    }
     std::optional<float> interp_clamped_monotonic_for_test(float query, const std::vector<float>& axis, const std::vector<float>& values) {
         float out = 0;
         std::uint32_t present = 0;
@@ -48,12 +60,12 @@ namespace {
         const std::vector<std::array<float, 3>> curves{{0.0f, 4.0f, 8.0f}, {4.0f, 8.0f, 12.0f}, {8.0f, 12.0f, 16.0f}};
         for (std::size_t channel = 0; channel < 3u; ++channel) {
             const float offset = 4.0f * static_cast<float>(channel);
-            EXPECT_EQ(AssetLookupTest::sample_synthetic_density_for_test(1.0f, axis, curves, channel), 2.0f + offset);
+            EXPECT_EQ(AssetLookupTest::sample_reference_density(1.0f, axis, curves, channel), 2.0f + offset);
             for (float query : {-1.0f, 0.0f}) {
-                EXPECT_EQ(AssetLookupTest::sample_synthetic_density_for_test(query, axis, curves, channel), offset);
+                EXPECT_EQ(AssetLookupTest::sample_reference_density(query, axis, curves, channel), offset);
             }
             for (float query : {4.0f, 5.0f}) {
-                EXPECT_EQ(AssetLookupTest::sample_synthetic_density_for_test(query, axis, curves, channel), 8.0f + offset);
+                EXPECT_EQ(AssetLookupTest::sample_reference_density(query, axis, curves, channel), 8.0f + offset);
             }
         }
     }
@@ -68,18 +80,22 @@ namespace {
 
     TEST(AssetLookup, SingletonAndDistinctDuplicateSelection) {
         for (float query : {-kInfinity, 1.0f, 2.0f, 3.0f, kInfinity}) {
-            EXPECT_EQ(AssetLookupTest::sample_synthetic_density_for_test(query, {2.0f}, {{7.0f, 8.0f, 9.0f}}, 0u), 7.0f);
+            EXPECT_EQ(AssetLookupTest::sample_reference_density(query, {2.0f}, {{7.0f, 8.0f, 9.0f}}, 0u), 7.0f);
             EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(query, {2.0f}, {7.0f}), 7.0f);
         }
         const std::vector<float> axis{0.0f, 2.0f, 2.0f, 4.0f};
         const std::vector<std::array<float, 3>> curves{{0.0f, 0.0f, 0.0f}, {4.0f, 4.0f, 4.0f}, {8.0f, 8.0f, 8.0f}, {12.0f, 12.0f, 12.0f}};
-        EXPECT_EQ(AssetLookupTest::sample_synthetic_density_for_test(2.0f, axis, curves, 0u), 8.0f);
-        EXPECT_EQ(AssetLookupTest::sample_synthetic_density_for_test(3.0f, axis, curves, 0u), 10.0f);
+        EXPECT_EQ(AssetLookupTest::sample_reference_density(2.0f, axis, curves, 0u), 8.0f);
+        EXPECT_EQ(AssetLookupTest::sample_reference_density(3.0f, axis, curves, 0u), 10.0f);
         EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(2.0f, axis, {0.0f, 4.0f, 8.0f, 12.0f}), 4.0f);
         EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(3.0f, axis, {0.0f, 4.0f, 8.0f, 12.0f}), 10.0f);
         EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(2.0f, {4.0f, 2.0f, 2.0f, 0.0f}, {12.0f, 8.0f, 4.0f, 0.0f}), 4.0f);
         EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(3.0f, {4.0f, 2.0f, 2.0f, 0.0f}, {12.0f, 8.0f, 4.0f, 0.0f}), 10.0f);
-        EXPECT_EQ(AssetLookupTest::sample_synthetic_density_for_test(2.0f, {2.0f, 2.0f}, {{7.0f, 7.0f, 7.0f}, {9.0f, 9.0f, 9.0f}}, 0u), 7.0f);
+        EXPECT_EQ(AssetLookupTest::sample_reference_density(2.0f, {2.0f, 2.0f}, {{7.0f, 7.0f, 7.0f}, {9.0f, 9.0f, 9.0f}}, 0u), 7.0f);
+        for (float query : {-0.0f, 0.0f}) {
+            EXPECT_EQ(AssetLookupTest::sample_reference_density(query, {-0.0f, 0.0f}, {{7.0f, 7.0f, 7.0f}, {9.0f, 9.0f, 9.0f}}, 0u), 7.0f);
+            EXPECT_EQ(AssetLookupTest::sample_reference_density(query, {-1.0f, -0.0f, 0.0f, 1.0f}, curves, 0u), 8.0f);
+        }
     }
 
     TEST(AssetLookup, OrderedInfinitiesDoNotImplyFiniteOutput) {
@@ -87,11 +103,11 @@ namespace {
         const std::vector<std::array<float, 3>> curves{{1.0f, 1.0f, 1.0f}, {2.0f, 2.0f, 2.0f}, {3.0f, 3.0f, 3.0f}};
         for (float query : {-kInfinity, 1.0f, kInfinity}) {
             const float expected = query == -kInfinity ? 1.0f : (query == kInfinity ? 3.0f : 2.0f);
-            EXPECT_EQ(AssetLookupTest::sample_synthetic_density_for_test(query, axis, curves, 0u), expected);
+            EXPECT_EQ(AssetLookupTest::sample_reference_density(query, axis, curves, 0u), expected);
             EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(query, axis, {1.0f, 2.0f, 3.0f}), expected);
             EXPECT_EQ(AssetLookupTest::interp_clamped_monotonic_for_test(query, {kInfinity, 0.0f, -kInfinity}, {3.0f, 2.0f, 1.0f}), expected);
         }
-        const auto synthetic = AssetLookupTest::sample_synthetic_density_for_test(-1.0f, axis, curves, 0u);
+        const auto synthetic = AssetLookupTest::sample_reference_density(-1.0f, axis, curves, 0u);
         const auto scanner = AssetLookupTest::interp_clamped_monotonic_for_test(-1.0f, axis, {1.0f, 2.0f, 3.0f});
         ASSERT_TRUE(synthetic);
         ASSERT_TRUE(scanner);
@@ -101,10 +117,10 @@ namespace {
 
     TEST(AssetLookup, RejectsQueryShapeAndChannelBeforeAccess) {
         const std::vector<std::array<float, 3>> curves{{1.0f, 2.0f, 3.0f}};
-        EXPECT_FALSE(AssetLookupTest::sample_synthetic_density_for_test(kNan, {0.0f}, curves, 0u));
-        EXPECT_FALSE(AssetLookupTest::sample_synthetic_density_for_test(0.0f, {}, {}, 0u));
-        EXPECT_FALSE(AssetLookupTest::sample_synthetic_density_for_test(0.0f, {0.0f, 1.0f}, curves, 0u));
-        EXPECT_FALSE(AssetLookupTest::sample_synthetic_density_for_test(0.0f, {0.0f}, curves, 3u));
+        EXPECT_FALSE(AssetLookupTest::sample_reference_density(kNan, {0.0f}, curves, 0u));
+        EXPECT_FALSE(AssetLookupTest::sample_reference_density(0.0f, {}, {}, 0u));
+        EXPECT_FALSE(AssetLookupTest::sample_reference_density(0.0f, {0.0f, 1.0f}, curves, 0u));
+        EXPECT_FALSE(AssetLookupTest::sample_reference_density(0.0f, {0.0f}, curves, 3u));
         EXPECT_FALSE(AssetLookupTest::interp_clamped_monotonic_for_test(kNan, {0.0f}, {1.0f}));
         EXPECT_FALSE(AssetLookupTest::interp_clamped_monotonic_for_test(0.0f, {}, {}));
         EXPECT_FALSE(AssetLookupTest::interp_clamped_monotonic_for_test(0.0f, {0.0f}, {}));
@@ -210,21 +226,23 @@ namespace {
 
     TEST(AssetLookup, SyntheticBuilderRejectsNaNQueryBeforePublication) {
         const ScopedMallettBasis basis;
+        JuicerAssets::AssetBridge assets(JUICER_LOOKUP_RESOURCE_DIR);
+        ASSERT_TRUE(assets.load_catalog().valid);
+        const auto source = assets.film_source("kodak_portra_400");
+        auto development = source->prepare_development(Spektrafilm::ScanRoute::NegativeDirectScan, 1.0f, false);
         RenderRecipe recipe;
-        recipe.profileRoute.filmProfile = std::make_shared<Profiles::FilmProfile>();
+        recipe.profileRoute.filmProfile = source->profile();
         recipe.profileRoute.scanRoute = Spektrafilm::ScanRoute::NegativeDirectScan;
         recipe.filmRaw.rgbToRawMethod = Spektrafilm::RgbToRawMethod::Mallett2019;
         recipe.filmRaw.mallettGreenMidgrayScale = 1.0f;
-        recipe.filmDevelop.logExposure = {0.0f};
-        recipe.filmDevelop.authoredDensityCurves = {{2.0f, 4.0f, 6.0f}};
+        recipe.filmDevelop = std::move(development.recipe);
         std::array<float, 81> illuminant{};
         illuminant.fill(1.0f);
         for (auto& sensitivity : recipe.filmRaw.finalSensitivity) {
             sensitivity = {1.0f, 1.0f, 1.0f};
         }
         std::string diagnostic;
-        ASSERT_TRUE(Spektrafilm::finish_synthetic_reference_recipes(recipe, nullptr, illuminant, nullptr, diagnostic)) << diagnostic;
-        EXPECT_EQ(recipe.scannerOutput.syntheticFilmReference.baselineDensityCmy, (std::array<float, 3>{2.0f, 4.0f, 6.0f}));
+        ASSERT_TRUE(Spektrafilm::finish_synthetic_reference_recipes(recipe, development.hold, nullptr, illuminant, nullptr, diagnostic)) << diagnostic;
         const auto referenceHash = recipe.scannerOutput.syntheticFilmReference.hash;
         const auto scannerHash = recipe.scannerOutput.hash;
         const auto recipeHash = recipe.hash;
@@ -235,7 +253,7 @@ namespace {
         for (auto& sensitivity : recipe.filmRaw.finalSensitivity) {
             sensitivity = {0.0f, 1.0e-40f, 0.0f};
         }
-        EXPECT_FALSE(Spektrafilm::finish_synthetic_reference_recipes(recipe, nullptr, illuminant, nullptr, diagnostic));
+        EXPECT_FALSE(Spektrafilm::finish_synthetic_reference_recipes(recipe, development.hold, nullptr, illuminant, nullptr, diagnostic));
         EXPECT_EQ(diagnostic, "ResourceDescriptorMismatch phase=3B field=synthetic_reference_density_lookup");
         EXPECT_EQ(recipe.scannerOutput.syntheticFilmReference.hash, referenceHash);
         EXPECT_EQ(recipe.scannerOutput.hash, scannerHash);

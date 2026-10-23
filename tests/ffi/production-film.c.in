@@ -28,6 +28,113 @@ static int words(const float* data, const uint32_t* expected, size_t count) {
 static int status(FjStatus value, uint32_t category) {
     return value.category == category && value.api == FJ_API_NONE && value.native_code == 0;
 }
+typedef FjStatus (*FilmReferencePrepare)(const FjFilmDevelopmentOwner*, const FjFilmReferenceInput*, FjFilmReference*, FjFilmReferenceFailure*, FjErrorBuffer*);
+_Static_assert(_Generic(&fj_legacy_film_reference_prepare, FilmReferencePrepare: 1, default: 0), "OFF reference C11 signature");
+_Static_assert(sizeof(FjFilmReferenceInput) == 96 && _Alignof(FjFilmReferenceInput) == 8, "OFF reference input layout");
+_Static_assert(offsetof(FjFilmReferenceInput, method) == 0 && offsetof(FjFilmReferenceInput, auto_exposure_enabled) == 4 && offsetof(FjFilmReferenceInput, manual_exposure_ev) == 8 && offsetof(FjFilmReferenceInput, mallett_green_scale) == 12 && offsetof(FjFilmReferenceInput, projection_white_xyz) == 16 && offsetof(FjFilmReferenceInput, basis_rgb) == 32 && offsetof(FjFilmReferenceInput, film_illuminant) == 48 && offsetof(FjFilmReferenceInput, sensitivity_rgb) == 64 && offsetof(FjFilmReferenceInput, tc_lut) == 80, "OFF reference input offsets");
+_Static_assert(sizeof(FjFilmReference) == 64 && _Alignof(FjFilmReference) == 8 && offsetof(FjFilmReference, baseline_raw_rgb) == 0 && offsetof(FjFilmReference, compensated_raw_rgb) == 12 && offsetof(FjFilmReference, baseline_density_cmy) == 24 && offsetof(FjFilmReference, compensated_density_cmy) == 36 && offsetof(FjFilmReference, meter_scale) == 48 && offsetof(FjFilmReference, hash) == 56, "OFF reference result layout");
+_Static_assert(sizeof(FjFilmReferenceFailure) == 16 && _Alignof(FjFilmReferenceFailure) == 4 && offsetof(FjFilmReferenceFailure, reason) == 0 && offsetof(FjFilmReferenceFailure, exposure) == 4 && offsetof(FjFilmReferenceFailure, operation) == 8 && offsetof(FjFilmReferenceFailure, channel) == 12, "OFF reference failure layout");
+static int reference_values(FjFilmProfile* profile) {
+    const struct {
+        uint32_t method, automatic, ev, green;
+        uint64_t hash;
+        const uint32_t *basis, *light, *sensitivity, *tc, *white, *gamma, *expected;
+    } rows[] = {
+        {REFERENCE_0_METHOD, REFERENCE_0_AUTO, REFERENCE_0_EV, REFERENCE_0_GREEN, REFERENCE_0_HASH, reference_0_basis, reference_0_illuminant, reference_0_sensitivity, reference_0_tc, reference_0_white, reference_0_gamma, reference_0_expected},
+        {REFERENCE_1_METHOD, REFERENCE_1_AUTO, REFERENCE_1_EV, REFERENCE_1_GREEN, REFERENCE_1_HASH, reference_1_basis, reference_1_illuminant, reference_1_sensitivity, reference_1_tc, reference_1_white, reference_1_gamma, reference_1_expected}
+    };
+    static float basis[243], light[81], sensitivity[243], tc[147456];
+    static const uint32_t zero[13] = {0};
+    for (size_t index = 0; index < 2; ++index) {
+        FjFilmReferenceInput input = {0};
+        input.method = rows[index].method;
+        input.auto_exposure_enabled = rows[index].automatic;
+        memcpy(&input.manual_exposure_ev, &rows[index].ev, sizeof(float));
+        memcpy(&input.mallett_green_scale, &rows[index].green, sizeof(float));
+        memcpy(input.projection_white_xyz, rows[index].white, 3 * sizeof(float));
+        if (input.method == 1) {
+            memcpy(basis, rows[index].basis, sizeof(basis));
+            memcpy(light, rows[index].light, sizeof(light));
+            memcpy(sensitivity, rows[index].sensitivity, sizeof(sensitivity));
+            input.basis_rgb = (FjFloatSpan){basis, 243};
+            input.film_illuminant = (FjFloatSpan){light, 81};
+            input.sensitivity_rgb = (FjFloatSpan){sensitivity, 243};
+        } else {
+            memcpy(tc, rows[index].tc, sizeof(tc));
+            input.tc_lut = (FjFloatSpan){tc, 147456};
+        }
+        float gamma;
+        memcpy(&gamma, rows[index].gamma, sizeof(gamma));
+        FjFilmDevelopmentOwner* owner = NULL;
+        CHECK(status(fj_legacy_film_development_acquire(profile, 0, gamma, 0, &owner, NULL), FJ_STATUS_SUCCESS));
+        for (unsigned mutation = 0; mutation < (input.method == 1 ? 8u : 7u); ++mutation) {
+            FjFilmReferenceInput probe = input;
+            FjFilmReference out;
+            memset(&out, 0x55, sizeof(out));
+            FjFilmReferenceFailure failure = {99, 98, 97, 96};
+            char text[512] = {0};
+            FjErrorBuffer error = {text, sizeof(text), 99};
+            if (mutation == 1) probe.method = 99;
+            if (mutation == 2) {
+                if (probe.method == 1) probe.basis_rgb = (FjFloatSpan){NULL, 0};
+                else probe.tc_lut = (FjFloatSpan){NULL, 0};
+            }
+            if (mutation == 3) probe.manual_exposure_ev = INFINITY;
+            if (mutation == 4) error = (FjErrorBuffer){NULL, 1, 99};
+            if (mutation == 5) error = (FjErrorBuffer){NULL, 0, 99};
+            if (mutation == 6 || mutation == 7) {
+                probe.auto_exposure_enabled = 1;
+                probe.manual_exposure_ev = 0;
+                probe.mallett_green_scale = 1;
+                if (probe.method == 1) {
+                    for (size_t sample = 0; sample < 81; ++sample) {
+                        light[sample] = 1;
+                        for (size_t channel = 0; channel < 3; ++channel) {
+                            basis[sample * 3 + channel] = 1;
+                            sensitivity[sample * 3 + channel] = mutation == 7 && channel == 1 ? 1.0e-40f : 0;
+                        }
+                    }
+                } else memset(tc, 0, sizeof(tc));
+            }
+            const FjStatus result = fj_legacy_film_reference_prepare(owner, &probe, &out, &failure, &error);
+            const uint32_t category = mutation == 0 || mutation == 5 ? 0 : mutation == 1 || mutation == 4 ? 2 : 3;
+            CHECK(status(result, category));
+            CHECK(words(out.baseline_raw_rgb, category == 0 ? rows[index].expected : zero, 3));
+            CHECK(words(out.compensated_raw_rgb, category == 0 ? rows[index].expected + 3 : zero, 3));
+            CHECK(words(out.baseline_density_cmy, category == 0 ? rows[index].expected + 6 : zero, 3));
+            CHECK(words(out.compensated_density_cmy, category == 0 ? rows[index].expected + 9 : zero, 3));
+            CHECK(words(&out.meter_scale, category == 0 ? rows[index].expected + 12 : zero, 1));
+            CHECK(out.hash == (category == 0 ? rows[index].hash : 0));
+            CHECK(failure.reason == (category == 0 ? 0u : category == 2 ? 1u : mutation == 6 ? 3u : mutation == 7 ? 4u : 2u));
+            CHECK(failure.exposure == (mutation == 2 || mutation == 7 ? 1u : mutation == 3 ? 2u : 0u));
+            CHECK(failure.operation == (mutation == 3 ? 1u : mutation == 6 ? 7u : mutation == 7 ? 8u : 0u) && failure.channel == (mutation == 7 ? 1u : 0u));
+            if (mutation != 4 && mutation != 5) {
+                CHECK(error.length < sizeof(text) && text[error.length] == 0);
+                CHECK(strcmp(text, category == 0 ? "" : category == 2 ? "invalid film reference arguments" : mutation == 6 ? "MalformedRequiredResource phase=3B field=synthetic_reference_meter" : mutation == 7 ? "ResourceDescriptorMismatch phase=3B field=synthetic_reference_density_lookup" : "MalformedRequiredResource phase=3B field=synthetic_reference_raw") == 0);
+            } else CHECK(error.length == 0);
+            printf("REFERENCE_CASE reference-%u-%u category=%u api=%u native_code=%d reason=%u exposure=%u operation=%u channel=%u fields=13-pass hash=%llu\n", input.method, mutation, result.category, result.api, result.native_code, failure.reason, failure.exposure, failure.operation, failure.channel, (unsigned long long)out.hash);
+        }
+        for (unsigned mutation = 0; mutation < 6; ++mutation) {
+            FjFilmReferenceInput probe = input;
+            FjFilmReference out;
+            memset(&out, 0x55, sizeof(out));
+            FjFilmReferenceFailure failure = {99, 98, 97, 96};
+            if (mutation == 0) probe.auto_exposure_enabled = 2;
+            if (mutation == 1) {
+                if (probe.method == 1) --probe.basis_rgb.count;
+                else --probe.tc_lut.count;
+            }
+            const FjStatus result = fj_legacy_film_reference_prepare(mutation == 5 ? NULL : owner, mutation == 4 ? NULL : &probe, mutation == 2 ? NULL : &out, mutation == 3 ? NULL : &failure, NULL);
+            CHECK(status(result, FJ_STATUS_UNSUPPORTED_INPUT));
+            if (mutation != 2) {
+                CHECK(words(out.baseline_raw_rgb, zero, 3) && words(out.compensated_raw_rgb, zero, 3) && words(out.baseline_density_cmy, zero, 3) && words(out.compensated_density_cmy, zero, 3) && words(&out.meter_scale, zero, 1) && out.hash == 0);
+            }
+            if (mutation != 3) CHECK(failure.reason == 1 && failure.exposure == 0 && failure.operation == 0 && failure.channel == 0);
+        }
+        CHECK(status(fj_legacy_film_development_release(owner, NULL), FJ_STATUS_SUCCESS));
+    }
+    return 0;
+}
 typedef FjStatus (*VisualGrainPrepare)(const FjFilmDevelopmentOwner*, const FjVisualGrainParams*, FjVisualGrainRecipe*, FjFilmRecipeFailure*, FjErrorBuffer*);
 _Static_assert(_Generic(&fj_legacy_visual_grain_prepare, VisualGrainPrepare: 1, default: 0), "OFF visual-grain C11 signature");
 _Static_assert(sizeof(FjVisualGrainParams) == 120 && _Alignof(FjVisualGrainParams) == 4, "OFF grain params layout");
@@ -1351,6 +1458,7 @@ int main(int argc, char** argv) {
     FjStringView selected = {key, sizeof(key) - 1};
     CHECK(status(fj_legacy_film_profile_acquire(assets, selected, &profile, NULL), FJ_STATUS_SUCCESS));
     CHECK(input_values(assets, profile) == 0);
+    CHECK(reference_values(profile) == 0);
     for (uint32_t route = 0; route < 2; ++route) {
         CHECK(status(fj_legacy_film_development_acquire(profile, route, 1.0f, 1, &owner, NULL), FJ_STATUS_SUCCESS));
         FjFilmDevelopmentView view = {0};

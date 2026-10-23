@@ -269,6 +269,27 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_film_reference_is_complete_private_readonly_and_borrowed(self) -> None:
+        for fixture, expected in (
+            ("film_reference_complete", None),
+            ("film_reference_construction", {"E0451": ("reference::Reference { ..value }",)}),
+            ("film_reference_default", {"E0599": ("reference::Reference::default()",)}),
+            ("film_reference_private", {"E0616": ("value.baseline_raw_rgb", "value.hash")}),
+            ("film_reference_readonly", {"E0594": ("value.baseline_density_cmy()[0] = 0.0",)}),
+            ("film_reference_owned", None),
+            ("film_reference_borrow", {"E0515": ("basis_rgb: &basis", "illuminant: &light", "sensitivity_rgb: &sensitivity")}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_print_balance_is_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("print_balance_complete", None),

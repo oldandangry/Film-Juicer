@@ -137,16 +137,11 @@ unsafe fn input<'a>(
     }
 }
 #[cfg(feature = "test-support")]
-thread_local! {
-    static TC_FAULT:std::cell::Cell<Option<(u32,u32,u32)>>=const{std::cell::Cell::new(None)};
-    static TC_CONSUMED:std::cell::Cell<Option<(u32,u32)>>=const{std::cell::Cell::new(None)};
-}
-#[cfg(feature = "test-support")]
 pub(crate) fn arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
     clear_fault();
     let valid = (1..=2).contains(&operation) && index != 0 && (1..=4).contains(&fault);
     if valid {
-        TC_FAULT.set(Some((operation, index, fault)));
+        reconstruction::testing::arm(operation, index, fault);
     }
     FjStatus {
         category: if valid {
@@ -160,25 +155,15 @@ pub(crate) fn arm_fault(operation: u32, index: u32, fault: u32) -> FjStatus {
 }
 #[cfg(feature = "test-support")]
 pub(crate) fn clear_fault() {
-    TC_FAULT.set(None);
-    TC_CONSUMED.set(None);
+    reconstruction::testing::clear();
 }
 #[cfg(feature = "test-support")]
 pub(crate) fn take_consumed() -> Option<(u32, u32)> {
-    TC_CONSUMED.take()
+    reconstruction::testing::take_consumed()
 }
 pub(crate) fn fault(operation: u32) -> Result<(), Failure> {
     #[cfg(feature = "test-support")]
-    if let Some((armed, index, fault)) = TC_FAULT.get() {
-        if armed != operation {
-            return Ok(());
-        }
-        if index > 1 {
-            TC_FAULT.set(Some((armed, index - 1, fault)));
-            return Ok(());
-        }
-        TC_FAULT.set(None);
-        TC_CONSUMED.set(Some((operation, fault)));
+    if let Some(fault) = reconstruction::testing::take(operation) {
         return injected(fault);
     }
     #[cfg(not(feature = "test-support"))]

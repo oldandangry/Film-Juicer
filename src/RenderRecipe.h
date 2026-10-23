@@ -842,6 +842,7 @@ namespace Spektrafilm {
 
     struct DirectRecipeBuildResult {
         RenderRecipe recipe;
+        JuicerAssets::DevelopmentHold developmentHold;
         std::string diagnostic;
         bool valid = false;
     };
@@ -882,6 +883,7 @@ namespace Spektrafilm {
 
     struct PrintRecipeBuildResult {
         RenderRecipe recipe;
+        JuicerAssets::DevelopmentHold developmentHold;
         std::string diagnostic;
         bool valid = false;
     };
@@ -907,6 +909,7 @@ namespace Spektrafilm {
     PrintRecipeBuildResult build_print_render_recipe(PrintRecipeBuildInput input);
     bool finish_synthetic_reference_recipes(
         RenderRecipe& recipe,
+        const JuicerAssets::DevelopmentHold& development,
         const Spectral::FilmTcLut* filmTcLut,
         const std::array<float, 81>& filmIlluminant,
         const std::array<float, 81>* filteredMainIlluminant,

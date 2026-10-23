@@ -4,6 +4,40 @@ use std::fmt;
 
 pub const SPECTRA_SAMPLE_COUNT: usize = 192 * 192 * 81;
 
+#[cfg(feature = "test-support")]
+pub mod testing {
+    use std::cell::Cell;
+    thread_local! {
+        static FAULT: Cell<Option<(u32, u32, u32)>> = const { Cell::new(None) };
+        static CONSUMED: Cell<Option<(u32, u32)>> = const { Cell::new(None) };
+    }
+    pub fn arm(operation: u32, index: u32, fault: u32) {
+        FAULT.set(Some((operation, index, fault)));
+    }
+    pub fn clear() {
+        FAULT.set(None);
+        CONSUMED.set(None);
+    }
+    pub fn take_consumed() -> Option<(u32, u32)> {
+        CONSUMED.take()
+    }
+    pub fn take(operation: u32) -> Option<u32> {
+        if let Some((armed, index, fault)) = FAULT.get() {
+            if armed != operation {
+                return None;
+            }
+            if index > 1 {
+                FAULT.set(Some((armed, index - 1, fault)));
+                return None;
+            }
+            FAULT.set(None);
+            CONSUMED.set(Some((operation, fault)));
+            return Some(fault);
+        }
+        None
+    }
+}
+
 pub struct ReferenceWhite {
     samples: [f32; 81],
 }

@@ -340,6 +340,8 @@ FjStatus fj_test_film_development_retain(const FjFilmDevelopmentOwner*, FjFilmDe
 void fj_test_print_balance_primitive(const float* density, const float* raw, float denominator, double* out, float* narrowed);
 /* Primitive-only scanner witness: six float and three double outputs. */
 void fj_test_scanner_correction_primitive(float value, float accumulator, float multiplier, float* out, double* out_double);
+FjStatus fj_test_film_reference_prepare(const FjFilmDevelopmentOwner*, const FjFilmReferenceInput*, FjFilmReference*, FjFilmReferenceFailure*, FjErrorBuffer*);
+FjStatus fj_test_film_reference_density_lookup(float, FjFloatSpan, FjFloatSpan, uint32_t, float*, uint32_t*);
 void fj_test_print_preflash_primitive(double density, double illuminant, double sensitivity, double accumulator, double* out, float* narrowed);
 FjStatus fj_test_print_balance_prepare(
     const FjPrintBalanceInput* input, FjPrintBalance* out_balance, FjPrintBalanceFailure* out_failure, FjErrorBuffer* error);
