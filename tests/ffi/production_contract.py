@@ -168,6 +168,8 @@ def execute(arguments):
     consumed_paths.extend([lut_manifest, lut_payload, lut_checked])
     correction_manifest, correction_payload, correction_checked, _, _, _ = scanner_correction_fixture(arguments.preset)
     consumed_paths.extend([correction_manifest, correction_payload, correction_checked])
+    color_manifest, color_payload, color_checked, _, _ = scanner_color_fixture(arguments.preset)
+    consumed_paths.extend([color_manifest, color_payload, color_checked])
     consumed = {str(path): digest(path) for path in sorted(set(consumed_paths))}
 
     def check_consumed():
@@ -213,6 +215,7 @@ def execute(arguments):
         "fj_legacy_scanner_direct_correction_prepare",
         "fj_legacy_scanner_print_correction_prepare",
         "fj_legacy_scanner_correction_input_demand",
+        "fj_legacy_scanner_color_prepare",
         "fj_legacy_scanner_lut_acquire",
         "fj_legacy_scanner_lut_view",
         "fj_legacy_scanner_lut_release",
@@ -252,6 +255,7 @@ def execute(arguments):
     scanner_correction_results = []
     scanner_demand_results = []
     scanner_lut_results = []
+    scanner_color_results = []
     for name, source in probes:
         executable = out / (name + suffix)
         target_source = out / (name + ".c")
@@ -440,6 +444,15 @@ def execute(arguments):
                 actual = [int(x) for x in match.groups()[1:]]
                 assert actual == [envelope[0], 0, 0, *envelope[1:]], line
                 scanner_lut_results.append({"case": name, "fields": actual})
+            _, _, _, _, color_cases = scanner_color_fixture(arguments.preset)
+            lines = [line for line in output.splitlines() if line.startswith("SCANNER_COLOR_CASE ")]
+            assert len(lines) == len(color_cases)
+            for line, expected in zip(lines, color_cases, strict=True):
+                match = re.fullmatch(r"SCANNER_COLOR_CASE (\S+) category=(\d+) api=(\d+) native_code=(-?\d+) reason=(\d+) stage=(\d+) fields=pass", line)
+                assert match and match[1] == expected["id"], line
+                actual = [int(x) for x in match.groups()[1:]]
+                assert actual == expected["envelope"], line
+                scanner_color_results.append({"case": expected["id"], "fields": actual})
     check_build_inputs()
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     if windows:
@@ -487,6 +500,8 @@ def execute(arguments):
                 "scanner_correction_results": scanner_correction_results,
                 "scanner_demand_results": scanner_demand_results,
                 "scanner_lut_results": scanner_lut_results,
+                "scanner_color_results": scanner_color_results,
+                "scanner_color_fixture": {"manifest": str(color_manifest), "payload": str(color_payload), "normative": str(color_checked), "logical_preset": arguments.preset},
                 "scanner_lut_fixture": {"manifest": str(lut_manifest), "payload": str(lut_payload), "normative": str(lut_checked), "logical_preset": arguments.preset},
                 "scanner_correction_fixture": {"manifest": str(correction_manifest), "payload": str(correction_payload),
                                                "normative": str(correction_checked), "logical_preset": arguments.preset},
@@ -891,6 +906,44 @@ def scanner_lut_fixture(preset):
     return manifest, payload, checked, rows
 
 
+def scanner_color_fixture(preset):
+    directory = root / "tests/scanner/color-fixtures"
+    manifest = directory / "manifest.json"
+    spec = json.loads(manifest.read_text())
+    entry = spec["presets"][preset]
+    payload = directory / entry["native"]
+    assert digest(payload) == entry["sha256"]
+    checked = directory / "checked.json"
+    cases = json.loads(checked.read_text())["production_cases"]
+    native = json.loads(payload.read_text())
+    rows = [next(row for row in native["cases"] if row["id"] == case["id"]) for case in cases[:4]]
+    for row in rows:
+        expected = row["expected"]
+        assert expected["params"][2] is True and expected["encoding"]["schema"] == 1
+        assert len(expected["cat02"]) == 9 and len(expected["xyz_to_rgb"]) == 9
+        assert len(expected["illuminant_xyz"]) == 3 and len(expected["encoding"]["coefficients"]) == 6
+        assert len(expected["encoding"]["dwg_to_output"]) == 9
+    return manifest, payload, checked, rows, cases
+
+
+def expected_scanner_color_header(out):
+    _, _, _, rows, _ = scanner_color_fixture(arguments.preset)
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write("static const FjScannerColorInput scanner_color_inputs[] = {\n")
+        for row in rows:
+            i = row["input"]
+            stream.write("{%dU,%dU,%dU,{0,0,0},UINT64_C(%d),UINT64_C(%d)},\n" % (i["medium"], i["output_space"], i["apply_cctf"], i["illuminant_hash"], i["active_gamut_recipe_hash"]))
+        stream.write("};\nstatic const char* const scanner_color_names[] = {" + ",".join(json.dumps(row["id"]) for row in rows) + "};\n")
+        stream.write("static const uint32_t scanner_color_words[][36] = {\n")
+        for row in rows:
+            e = row["expected"]
+            words = e["cat02"] + e["xyz_to_rgb"] + e["illuminant_xyz"] + e["encoding"]["coefficients"] + e["encoding"]["dwg_to_output"]
+            assert len(words) == 36
+            stream.write("{" + ",".join(str(w) + "U" for w in words) + "},\n")
+        stream.write("};\nstatic const uint32_t scanner_color_kinds[] = {" + ",".join(str(row["expected"]["encoding"]["kind"]) + "U" for row in rows) + "};\n")
+        stream.write("static const uint64_t scanner_color_hashes[] = {" + ",".join("UINT64_C(%d)" % row["expected"]["hash"] for row in rows) + "};\n")
+
+
 def expected_scanner_lut_header(out):
     _, _, _, rows = scanner_lut_fixture(arguments.preset)
     first = rows[0]["input"]
@@ -957,4 +1010,5 @@ if __name__ == "__main__":
     expected_balance_header(arguments.artifacts)
     expected_scanner_correction_header(arguments.artifacts)
     expected_scanner_lut_header(arguments.artifacts)
+    expected_scanner_color_header(arguments.artifacts)
     execute(arguments)

@@ -1352,6 +1352,36 @@ FjStatus fj_legacy_scanner_lut_acquire(const FjScannerLutInput*, FjScannerLutOwn
 FjStatus fj_legacy_scanner_lut_view(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*);
 FjStatus fj_legacy_scanner_lut_release(FjScannerLutOwner*, FjErrorBuffer*);
 
+/* SF_TEMP_BRIDGE_SCANNER_COLOR: complete synchronous copied value; remove S4.E.
+ * Input/result/failure/error and nonempty error backing are live, aligned,
+ * addressable and disjoint; writable records are exclusive through return.
+ * No pointer is retained. White words are supplied XYZ, matrices row-major.
+ * Every present valid result/failure clears independently before admission.
+ * Raw output bytes 0..255 retain identity; bytes 9..255 select sRGB constants.
+ * This does not widen the permanent executor or strict catalogue export.
+ */
+typedef struct FjScannerColorInput {
+    uint32_t medium, output_space, apply_cctf;
+    float illuminant_xyz[3];
+    uint64_t illuminant_hash, active_gamut_recipe_hash;
+} FjScannerColorInput;
+typedef struct FjScannerColor {
+    float cat02[9], xyz_to_rgb[9], illuminant_xyz[3];
+    uint32_t output_space, flags;
+    FjOutputEncoding encoding;
+    uint64_t active_gamut_recipe_hash, hash;
+} FjScannerColor;
+typedef struct FjScannerColorFailure {
+    uint32_t reason, stage;
+} FjScannerColorFailure;
+#define FJ_SCANNER_COLOR_REASON_NONE UINT32_C(0)
+#define FJ_SCANNER_COLOR_REASON_RAW UINT32_C(1)
+#define FJ_SCANNER_COLOR_REASON_ILLUMINANT UINT32_C(2)
+#define FJ_SCANNER_COLOR_REASON_OUTPUT UINT32_C(3)
+#define FJ_SCANNER_COLOR_REASON_BOUNDARY UINT32_C(4)
+#define FJ_SCANNER_COLOR_REASON_PANIC UINT32_C(5)
+FjStatus fj_legacy_scanner_color_prepare(const FjScannerColorInput*, FjScannerColor*, FjScannerColorFailure*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

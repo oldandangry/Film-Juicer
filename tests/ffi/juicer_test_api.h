@@ -366,6 +366,8 @@ FjStatus fj_test_scanner_lut_view(const FjScannerLutOwner*, FjScannerLutView*, F
 FjStatus fj_test_scanner_lut_release(FjScannerLutOwner*, FjErrorBuffer*);
 FjStatus fj_test_scanner_lut_fault(uint32_t operation, uint32_t fault);
 size_t fj_test_scanner_lut_live_owners(void);
+FjStatus fj_test_scanner_color_prepare(const FjScannerColorInput*, FjScannerColor*, FjScannerColorFailure*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

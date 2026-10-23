@@ -358,12 +358,13 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.add(root / "tests/ffi/color_preparation_test.cpp")
             paths.update(root / "tests/ffi" / name for name in (
                 "film_recipe_test.cpp", "film_recipe_abi_c.c", "film_recipe_abi_cpp.inc",
-                "film_recipe_abi_facts.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc"))
+                "film_recipe_abi_facts.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
             paths.update((root / "tests/print/illuminant-fixtures").glob("*.json"))
             paths.update((root / "tests/print/preflash-fixtures").glob("*.json"))
             paths.update((root / "tests/print/balance-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/correction-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/lut-fixtures").glob("*.json"))
+            paths.update((root / "tests/scanner/color-fixtures").glob("*.json"))
             paths.update((root / "tests/quality").glob("test_rust_*.py"))
             paths.update(p for p in (root / "tests/quality/fixtures").rglob("*.rs"))
         else:

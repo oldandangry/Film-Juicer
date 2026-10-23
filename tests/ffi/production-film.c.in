@@ -1238,6 +1238,76 @@ _Static_assert(offsetof(FjScannerLutFailure,channel)==4, "FjScannerLutFailure.ch
 _Static_assert(offsetof(FjScannerLutFailure,index)==8, "FjScannerLutFailure.index offset");
 _Static_assert(offsetof(FjScannerLutFailure,buffer)==16, "FjScannerLutFailure.buffer offset");
 
+_Static_assert(_Generic(&fj_legacy_scanner_color_prepare, FjStatus (*)(const FjScannerColorInput*, FjScannerColor*, FjScannerColorFailure*, FjErrorBuffer*): 1, default: 0), "OFF scanner color signature");
+_Static_assert(sizeof(FjScannerColorInput) == 40 && _Alignof(FjScannerColorInput) == 8, "OFF scanner color input");
+_Static_assert(offsetof(FjScannerColorInput, medium) == 0 && offsetof(FjScannerColorInput, output_space) == 4 && offsetof(FjScannerColorInput, apply_cctf) == 8 && offsetof(FjScannerColorInput, illuminant_xyz) == 12 && offsetof(FjScannerColorInput, illuminant_hash) == 24 && offsetof(FjScannerColorInput, active_gamut_recipe_hash) == 32, "OFF scanner color input offsets");
+_Static_assert(sizeof(FjScannerColor) == 176 && _Alignof(FjScannerColor) == 8, "OFF scanner color result");
+_Static_assert(offsetof(FjScannerColor, cat02) == 0 && offsetof(FjScannerColor, xyz_to_rgb) == 36 && offsetof(FjScannerColor, illuminant_xyz) == 72 && offsetof(FjScannerColor, output_space) == 84 && offsetof(FjScannerColor, flags) == 88 && offsetof(FjScannerColor, encoding) == 92 && offsetof(FjScannerColor, active_gamut_recipe_hash) == 160 && offsetof(FjScannerColor, hash) == 168, "OFF scanner color result offsets");
+_Static_assert(sizeof(FjScannerColorFailure) == 8 && _Alignof(FjScannerColorFailure) == 4 && offsetof(FjScannerColorFailure, reason) == 0 && offsetof(FjScannerColorFailure, stage) == 4, "OFF scanner color failure");
+static void scanner_color_report(const char* name, FjStatus s, FjScannerColorFailure f) {
+    printf("SCANNER_COLOR_CASE %s category=%u api=%u native_code=%lld reason=%u stage=%u fields=pass\n", name, s.category, s.api, (long long)s.native_code, f.reason, f.stage);
+}
+static int scanner_color_values(void) {
+    char text[128]; FjErrorBuffer error = {text, sizeof(text), 99};
+    FjScannerColorInput in;
+    FjScannerColorFailure f;
+    struct ScannerColorGuard { uint64_t before; FjScannerColor out; uint64_t after; } g;
+    g.before = UINT64_C(0x1122334455667788); g.after = UINT64_C(0x8877665544332211);
+    const unsigned char zero[sizeof(FjScannerColor)] = {0};
+    for (size_t i = 0; i < 4; ++i) {
+        in = scanner_color_inputs[i];
+        memcpy(in.illuminant_xyz, scanner_color_words[i] + 18, sizeof(in.illuminant_xyz));
+        f = (FjScannerColorFailure){99,99};
+        FjStatus s = fj_legacy_scanner_color_prepare(&in, &g.out, &f, &error);
+        CHECK(status(s,0) && f.reason == 0 && f.stage == 0 && error.length == 0 && text[0] == 0);
+        CHECK(words(g.out.cat02, scanner_color_words[i], 9) && words(g.out.xyz_to_rgb, scanner_color_words[i] + 9, 9) && words(g.out.illuminant_xyz, scanner_color_words[i] + 18, 3));
+        const FjOutputEncoding e = g.out.encoding;
+        const float coefficients[] = {e.gamma,e.a,e.b,e.c,e.d,e.linear_cutoff};
+        CHECK(e.schema == 1 && e.cctf_kind == scanner_color_kinds[i] && words(coefficients,scanner_color_words[i]+21,6) && words(e.dwg_to_output,scanner_color_words[i]+27,9));
+        CHECK(g.out.output_space == in.output_space && g.out.flags == (2U | in.apply_cctf) && g.out.active_gamut_recipe_hash == in.active_gamut_recipe_hash && g.out.hash == scanner_color_hashes[i]);
+        CHECK(g.before == UINT64_C(0x1122334455667788) && g.after == UINT64_C(0x8877665544332211));
+        scanner_color_report(scanner_color_names[i],s,f);
+    }
+    const char* names[] = {"SC6-FAIL-ILLUMINANT","SC6-RAW-MEDIUM","SC6-RAW-OUTPUT","SC6-RAW-APPLY","SC6-RAW-NULL-INPUT","SC6-RAW-NULL-OUTPUT","SC6-RAW-NULL-FAILURE","SC6-RAW-OUTPUT-ALIGNMENT","SC6-RAW-FAILURE-ALIGNMENT","SC6-RAW-ERROR-BACKING","SC6-RAW-NULL-ERROR"};
+    for (size_t i = 0; i < 11; ++i) {
+        in = scanner_color_inputs[0];
+        memcpy(in.illuminant_xyz,scanner_color_words[0]+18,sizeof(in.illuminant_xyz));
+        const FjScannerColorInput* input = &in;
+        FjScannerColor* out = &g.out;
+        FjScannerColorFailure* failure = &f;
+        FjErrorBuffer* diagnostic = &error;
+        _Alignas(8) unsigned char unaligned[sizeof(FjScannerColor)+8];
+        memset(unaligned,0xa5,sizeof(unaligned));
+        memset(&g.out,0xa5,sizeof(g.out)); f = (FjScannerColorFailure){0,0};
+        error.data = text; error.capacity = sizeof(text); error.length = 99;
+        switch(i) {
+            case 0: in.illuminant_hash=0;break;
+            case 1: in.medium=UINT32_MAX; in.illuminant_hash=0;break;
+            case 2: in.output_space=256;break;
+            case 3: in.apply_cctf=2;break;
+            case 4: input=NULL;break;
+            case 5: out=NULL;break;
+            case 6: failure=NULL;break;
+            case 7: out=(FjScannerColor*)(void*)(unaligned+1);break;
+            case 8: failure=(FjScannerColorFailure*)(void*)(unaligned+1);break;
+            case 9: error.data=NULL;error.capacity=1;break;
+            case 10: diagnostic=NULL;break;
+        }
+        FjStatus s=fj_legacy_scanner_color_prepare(input,out,failure,diagnostic);
+        CHECK(status(s,i==0?3:2));
+        if(failure==&f) CHECK(f.reason==(i==0?2U:1U) && f.stage==0);
+        if(out==&g.out) CHECK(memcmp(&g.out,zero,sizeof(g.out))==0);
+        if(i==7 || i==8) for(size_t j=0;j<sizeof(unaligned);++j) CHECK(unaligned[j]==0xa5);
+        if(i<9) CHECK(strcmp(text,i==0?"scanner illuminant hash invalid for color runtime":"invalid scanner color arguments")==0);
+        if(i==9) CHECK(error.length==0);
+        CHECK(g.before==UINT64_C(0x1122334455667788) && g.after==UINT64_C(0x8877665544332211));
+        scanner_color_report(names[i],s,f);
+    }
+    FjErrorBuffer empty={NULL,0,99};
+    CHECK(status(fj_legacy_scanner_color_prepare(&in,&g.out,&f,&empty),0) && empty.length==0 && f.reason==0 && f.stage==0);
+    return 0;
+}
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -1257,6 +1327,7 @@ int main(int argc, char** argv) {
     CHECK(balance_values() == 0);
     CHECK(scanner_correction_values() == 0);
     CHECK(scanner_lut_values() == 0);
+    CHECK(scanner_color_values() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

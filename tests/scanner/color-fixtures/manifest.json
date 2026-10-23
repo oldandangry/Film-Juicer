@@ -1,0 +1,55 @@
+{
+  "authority": "Film-Juicer characterization: unchanged native Scanner::build_color_runtime and hash_color_runtime at 1754446a19832638ac4435a3f62a30d2f7055bc1; safe replacement is not expectation authority.",
+  "source_tree": "03a2afbcaa548606f4f2d67e342d159c88ed8899",
+  "source": {
+    "src/Scanner.cpp": "220d0040015fcb581b436ba249c55cb615d6750318ab6dcb2c242b6192f271ff",
+    "src/RustColorBridge.cpp": "26242bd195b16b4dd2de1d505f8a3d18e46d7e248970349f29ba889ec6ec41be",
+    "rust/film-juicer-core/src/color.rs": "c004a3f39e07fafed588a3412121baf1ceaf5d81b63ce6856ca49152f05a567c",
+    "rust/film-juicer-core/src/color/output.rs": "7ebc3772a0d0f1247a3e3c06bea4a370a2ebbc700e8401874438e39fca4cf7da",
+    "tests/ffi/output_color_test.cpp": "f24282fa7882e789156f053c8906236d548f0a76e2e23083c31998910c45912d",
+    "tests/scanner/color-fixtures/case-spec.json": "faeb43e675a2cdd55eb7fa88873c67e842c36de5b899a5979ef11c9ab1ce2a4c"
+  },
+  "comparison": "All finite and signed-zero fields and integer identities exact. No new numerical tolerance or exception.",
+  "presets": {
+    "linux-debug": {
+      "native": "native.json",
+      "sha256": "d729bd23041a367a24652b40f9d2123238d8343fc25a22b8ab221fe31c862cb2",
+      "original_capture": "out/validation/linux-debug/s4-c-slice-6/native-supplement.json",
+      "capture_sha256": "ac9c71e163c5404b05b927db81cb312193b8cc06f7dc5751cc86be4a02d37c7e",
+      "producer_executable": "out/build/linux-debug/tests/bin/JuicerOutputColorTests",
+      "producer_executable_sha256": "09d17e0f4c6ff3e829c679a8a927f52b3d40285f2a87a9f0f573a262bfbbd293",
+      "reader_pass": "native supplement reader passed before cutover",
+      "cmake_cache_sha256": "a7f286592ed67758e7283396d1f517b0387ea8d66a81fdb3a6ae8f9f4002cac2"
+    },
+    "linux-release": {
+      "native": "native.json",
+      "sha256": "d729bd23041a367a24652b40f9d2123238d8343fc25a22b8ab221fe31c862cb2",
+      "original_capture": "out/validation/linux-release/s4-c-slice-6/native-supplement.json",
+      "capture_sha256": "e32be96138117edc54d3a2717e2afcae3ebea817adb04256d3fb13d35b18e430",
+      "producer_executable": "out/build/linux-release/tests/bin/JuicerOutputColorTests",
+      "producer_executable_sha256": "e91c6b33a2ed0702a50dad40f025949f3b84b8fc30d6eb0724d15494b536e76a",
+      "reader_pass": "native supplement reader passed before cutover",
+      "cmake_cache_sha256": "a43e98af3f5ef05cb6c125aae6393a2b215e816b1d60b57273176a432794bdd2"
+    },
+    "windows-clang-debug": {
+      "native": "native.json",
+      "sha256": "d729bd23041a367a24652b40f9d2123238d8343fc25a22b8ab221fe31c862cb2",
+      "original_capture": "out/validation/windows-clang-debug/s4-c-slice-6/native-supplement.json",
+      "capture_sha256": "7f989b35e13da4ef3c050030da6d7a7776a42af773f7baaad0b0596eeec59e91",
+      "producer_executable": "out/build/windows-clang-debug/tests/bin/JuicerOutputColorTests.exe",
+      "producer_executable_sha256": "048641fcd919a8c5c82afd6ad94fdb1144077143cda4884993436ef9855ec1f5",
+      "reader_pass": "native supplement reader passed before cutover",
+      "cmake_cache_sha256": "39fb7f1f2b4f91e77cad8cc2d98aa60019da5b9f51a2e99cfc80656df8786ea1"
+    },
+    "windows-clang-release": {
+      "native": "native.json",
+      "sha256": "d729bd23041a367a24652b40f9d2123238d8343fc25a22b8ab221fe31c862cb2",
+      "original_capture": "out/validation/windows-clang-release/s4-c-slice-6/native-supplement.json",
+      "capture_sha256": "2577c56ac041c5329ef105e8282b85d0424d49befb610a37d67dfebd84c64b8f",
+      "producer_executable": "out/build/windows-clang-release/tests/bin/JuicerOutputColorTests.exe",
+      "producer_executable_sha256": "6184d22d539ef2f8021142c9492c4094755ee264ba9605d7b05c9459e464b9da",
+      "reader_pass": "native supplement reader passed before cutover",
+      "cmake_cache_sha256": "bc0dd3f7ab3f396268a1708b3cb5d7e1339b53e53f9563928af947c5b5a309bc"
+    }
+  }
+}

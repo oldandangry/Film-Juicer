@@ -289,6 +289,26 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_scanner_color_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("scanner_color_complete", None),
+            ("scanner_color_construction", {"E0451": ("scanner::Color { ..color }",)}),
+            ("scanner_color_default", {"E0599": ("scanner::Color::default()",)}),
+            ("scanner_color_private", {"E0616": ("color.cat02", "color.hash")}),
+            ("scanner_color_readonly", {"E0594": ("color.cat02()[0] = 0.0",)}),
+            ("scanner_color_owned", None),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_scanner_lut_is_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("scanner_lut_complete", None),
@@ -590,7 +610,10 @@ class RustBoundaryTests(unittest.TestCase):
         self.assertIn("SF_TEMP_BRIDGE_SCANNER_LUT", resources)
         scanner = (ROOT / "src/Scanner.cpp").read_text(encoding="utf-8")
         self.assertIn("SpectralTablesView spectral_tables_view(", scanner)
-        self.assertIn("ColorRuntime build_color_runtime(", scanner)
+        self.assertNotIn("ColorRuntime build_color_runtime(", scanner)
+        bridge = (ROOT / "src/RustScannerBridge.cpp").read_text(encoding="utf-8")
+        self.assertIn("ColorRuntime build_color_runtime(", bridge)
+        self.assertIn("SF_TEMP_BRIDGE_SCANNER_COLOR", bridge)
 
     def test_deleted_spectral_producers_and_white_loop(self) -> None:
         import re

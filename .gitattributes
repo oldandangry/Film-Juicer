@@ -123,3 +123,6 @@ tests/scanner/correction-fixtures/** -text whitespace=cr-at-eol
 
 # Scanner LUT characterization preserves complete independent native words.
 tests/scanner/lut-fixtures/** -text whitespace=cr-at-eol
+
+# Scanner color characterization preserves independent complete field words.
+tests/scanner/color-fixtures/*.json -text whitespace=cr-at-eol

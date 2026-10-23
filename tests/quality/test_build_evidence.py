@@ -913,6 +913,77 @@ class BuildEvidenceTests(unittest.TestCase):
         self.prepare()
         self.execute()
 
+    def assert_changed_source_rebuilds_intervening_archive(self, *, new_scope=False, interrupted=False):
+        self.enable_rust()
+        cmake = self.source / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() +
+            "add_custom_target(overlap DEPENDS behavior)\nadd_test(NAME selected COMMAND behavior 15)\n")
+        producer = self.prepare()
+        original = producer.read_bytes()
+        proof = json.loads(original)["scoped_preparation"]
+        archive = next(Path(name) for name in proof["outputs"]
+                       if Path(name).name in {"libfilm_juicer_plugin.a", "film_juicer_plugin.lib"})
+        source = self.source / "rust/film-juicer-core/src/lib.rs"
+        source.write_bytes(source.read_bytes().replace(b"{3}", b"{8}"))
+        with OutputLease(self.root, self.build):
+            external = self.campaign.run("prepare", ["cmake", "--build", str(self.build), "--parallel", "2", "--target", "behavior"],
+                inputs=self.inputs(), timeout=120, repeat_reason="changed-source direct build before fresh preparation",
+                vctip_executable=build_evidence.windows_vctip(os.environ))
+        self.assertNotEqual(digest(archive), proof["output_identities"][str(archive)]["sha256"])
+        # Prove fresh preparation does not trust Cargo's timestamps or these bytes.
+        archive.write_bytes(b"unusable intervening archive")
+        timestamp = max(time.time_ns(), (self.build / "cargo-build.stamp").stat().st_mtime_ns) + 2_000_000_000
+        os.utime(source, ns=(timestamp, timestamp))
+        targets = ["overlap"] if new_scope else ["behavior"]
+        failed = None
+        if interrupted:
+            with patch.object(build_evidence, "invalidate_preparation_owners", side_effect=ValueError("stop before fresh build")):
+                with self.assertRaisesRegex(ValueError, "stop before fresh build"):
+                    self.prepare(targets=targets)
+            _, pending = build_evidence.preparation_paths(self.build, targets)
+            failed = json.loads(pending.read_text())["failure_proof"]
+            self.assertEqual(json.loads(Path(failed["file"]).read_text())["completion"], "commands-drained")
+        self.prepare(targets=targets)
+        record = json.loads(self.prepared.read_text())
+        self.assertEqual(record["preparation_admission"]["archive_owners"], {})
+        self.assertEqual(record["preparation_admission"]["artifact_owners"], {})
+        self.assertEqual(record["preparation_admission"]["superseded_producers"], {str(producer): digest(producer)})
+        self.assertIn(str(archive), record["preparation_admission"]["superseded_artifacts"][str(producer)])
+        self.assertEqual(record["scoped_preparation"]["rust_invalidated_packages"], ["film-juicer-core", "film-juicer-plugin"])
+        self.assertEqual(producer.read_bytes(), original)
+        self.assertTrue(external.is_file())
+        if failed:
+            self.assertEqual(digest(Path(failed["file"])), failed["sha256"])
+            self.assertIsNotNone(record["preparation_admission"]["recovered_pending"])
+        self.execute(tests=["selected"], junit=self.campaign.directory / "fresh-source.xml")
+
+    def test_changed_source_renewal_rebuilds_intervening_archive(self):
+        self.assert_changed_source_rebuilds_intervening_archive()
+
+    def test_changed_source_new_scope_rebuilds_intervening_archive(self):
+        self.assert_changed_source_rebuilds_intervening_archive(new_scope=True)
+
+    def test_changed_source_retry_rebuilds_intervening_archive(self):
+        self.assert_changed_source_rebuilds_intervening_archive(new_scope=True, interrupted=True)
+
+    def test_changed_native_source_rebuilds_intervening_executable(self):
+        cmake = self.source / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text() + "add_test(NAME selected COMMAND behavior 17)\n")
+        producer = self.prepare()
+        source = self.source / "native.cpp"
+        source.write_bytes(source.read_bytes().replace(b"return 1", b"return 8"))
+        with OutputLease(self.root, self.build):
+            self.campaign.run("prepare", ["cmake", "--build", str(self.build), "--parallel", "2", "--target", "behavior"],
+                inputs=self.inputs(), timeout=120, repeat_reason="changed native source before renewal",
+                vctip_executable=build_evidence.windows_vctip(os.environ))
+        binary = self.build / ("behavior.exe" if os.name == "nt" else "behavior")
+        binary.write_bytes(b"unusable intervening executable")
+        self.prepare()
+        record = json.loads(self.prepared.read_text())
+        self.assertEqual(record["preparation_admission"]["superseded_producers"], {str(producer): digest(producer)})
+        self.assertIn(str(binary), record["scoped_preparation"]["invalidated"])
+        self.execute(tests=["selected"], junit=self.campaign.directory / "fresh-native.xml")
+
     def assert_renewal_rejects_restored_artifact(self, artifact_kind, *, unbound=False, new_scope=False):
         rust = artifact_kind == "archive"
         cmake = self.source / "CMakeLists.txt"

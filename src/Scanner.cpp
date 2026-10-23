@@ -8,11 +8,9 @@
 #include <sstream>
 #include <string>
 
-#include "ColorTransforms.h"
 #include "GaussianSciPy.h"
 #include "Logging.h"
 #include "RenderRecipe.h"
-#include "RustColorBridge.h"
 #include "RustScannerBridge.h"
 
 namespace {
@@ -32,24 +30,6 @@ namespace {
     std::uint64_t hash_nan_preserving_floats(const float* values, std::size_t count) {
         const Hash::FloatSpanHash hashes = Hash::hash_float_span_with_nan_mask(values, count);
         return Hash::hash_uint64_values({hashes.valueHash, hashes.nanMaskHash});
-    }
-
-    std::uint64_t hash_color_runtime(
-        Scanner::ScannerMedium medium,
-        const Scanner::ScannerIlluminant& illuminant,
-        const OutputEncoding::Params& encoding,
-        std::uint64_t entryHash,
-        std::uint64_t activeOutputGamutRecipeHash) {
-        const std::uint64_t encHash = Hash::hash_uint64_values(
-            {static_cast<std::uint64_t>(OutputEncoding::toIndex(encoding.colorSpace)),
-             static_cast<std::uint64_t>(encoding.applyCctfEncoding),
-             static_cast<std::uint64_t>(encoding.inputIsOutputSpace)});
-        return Hash::hash_uint64_values(
-            {entryHash,
-             illuminant.hash,
-             static_cast<std::uint64_t>(medium),
-             encHash,
-             activeOutputGamutRecipeHash});
     }
 
     int scanner_gaussian_radius_or_zero(float sigma) noexcept {
@@ -151,46 +131,6 @@ namespace Scanner {
 
     SpectralTablesView spectral_tables_view(const Spectral::SpectralTables& tables) {
         return {tables.epsC, tables.epsM, tables.epsY, tables.Ax, tables.Ay, tables.Az, tables.baseDensityMin, tables.K, tables.invYn, tables.hasBaseline};
-    }
-
-    ColorRuntime build_color_runtime(
-        ScannerMedium medium,
-        const ScannerIlluminant& illuminant,
-        const OutputEncoding::Params& outputEncoding,
-        std::uint64_t activeOutputGamutRecipeHash) {
-        ColorRuntime rt{};
-        if (illuminant.hash == 0) {
-            JTRACE("HASH", "FATAL: scanner illuminant hash invalid for color runtime");
-            return rt;
-        }
-        const auto outSpace = JuicerColor::output_color(outputEncoding.colorSpace);
-        if (outSpace.entry_hash == 0) {
-            JTRACE("HASH", "FATAL: generated color space hash invalid");
-            return rt;
-        }
-        Spectral::ChromaticAdaptationWhites whites{};
-        whites.source = illuminant.whiteXYZ;
-        whites.destination = outSpace.white_xyz;
-        const auto adapt = JuicerColor::cat02_matrix(whites);
-        std::copy(adapt.begin(), adapt.end(), rt.cat02);
-
-        for (int i = 0; i < 9; ++i) {
-            rt.xyzToRgb[i] = outSpace.xyz_to_rgb[i];
-        }
-        rt.preparedEncoding = outSpace.encoding;
-        rt.encoding = outputEncoding;
-        rt.encoding.inputIsOutputSpace = true;
-        rt.illuminantXYZ[0] = illuminant.whiteXYZ[0];
-        rt.illuminantXYZ[1] = illuminant.whiteXYZ[1];
-        rt.illuminantXYZ[2] = illuminant.whiteXYZ[2];
-        rt.outputGamutRecipeHash = activeOutputGamutRecipeHash;
-        rt.hash = hash_color_runtime(
-            medium,
-            illuminant,
-            rt.encoding,
-            outSpace.entry_hash,
-            activeOutputGamutRecipeHash);
-        return rt;
     }
 
     std::uint64_t hash_scanner_spectral_lut_descriptor(
