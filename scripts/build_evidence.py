@@ -537,14 +537,14 @@ def invalidate_preparation_owners(build, baseline, outputs):
             path.unlink()
 
 
-def invalidate_rust(campaign, stage, source, build, changed, old, environment, timeout):
+def invalidate_rust(campaign, stage, source, build, changed, old, environment, timeout, *, force=False):
     """Use Cargo incrementally except for content edits its timestamps could miss."""
     changed = {name for name in changed if name.endswith(".rs") and Path(name).is_relative_to(source / "rust")}
     if not changed:
         return []
     stamp = build / "cargo-build.stamp"
     previous_times = old.get("context", {}).get("rust_timestamps", {}) if old else {}
-    stale = {name for name in changed if Path(name).stat().st_mtime_ns <= previous_times.get(name, 0)
+    stale = {name for name in changed if force or Path(name).stat().st_mtime_ns <= previous_times.get(name, 0)
              or stamp.is_file() and Path(name).stat().st_mtime_ns <= stamp.stat().st_mtime_ns}
     if not stale:
         return []
@@ -985,6 +985,9 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
             if candidate.get("protocol") == SCOPED_PROTOCOL:
                 old = candidate
         previous_outputs = {}
+        superseded_artifacts = {}
+        superseded_producers = {}
+        force_rust = False
         unbound = bool(old and (not old.get("producer_sha256")
                                or not old.get("output_identities")
                                or set(old["output_identities"]) != set(old["outputs"])))
@@ -993,7 +996,16 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
             _check_preparation_command(campaign, build, old["producer"])
             previous_outputs = file_identities([Path(name) for name in old["outputs"]])
             if any(old["output_identities"].get(name) != identity for name, identity in previous_outputs.items()):
-                raise ValueError("completed preparation artifact bytes changed; refusing renewal")
+                # A direct build may have replaced outputs after an authored edit.
+                # Rebuild the whole scope; these bytes cannot establish any reuse.
+                files = old["context"]["files"]
+                if (file_identities([Path(name) for name in files]) == files
+                        and old.get("configure_args") == list(configure_args)):
+                    raise ValueError("completed preparation artifact bytes changed; refusing renewal")
+                superseded_artifacts[old["producer"]] = previous_outputs
+                superseded_producers[old["producer"]] = old["producer_sha256"]
+                previous_outputs = {}
+                force_rust = True
         build.mkdir(parents=True, exist_ok=True)
         pending = preparation.enter_context(
             _pending_preparation(campaign, stage, source, build, targets, pending_path, lease))
@@ -1024,7 +1036,7 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
         if old:
             previous, actual = old["context"]["files"], before["files"]
             changed = {name for name in previous.keys() | actual.keys() if previous.get(name) != actual.get(name)}
-        broad = interrupted or unbound or (old is None and admission is None)
+        broad = interrupted or unbound or force_rust or (old is None and admission is None)
         if old and any(old["context"].get(name) != before.get(name) for name in ("configuration", "include_membership", "commands", "environment_sha256", "rust_configuration")):
             broad = True
         rust_files = {name: identity for name, identity in before["files"].items() if name.endswith(".rs") and Path(name).is_relative_to(source / "rust")}
@@ -1033,6 +1045,8 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
         current_rust = rust_context(source, build, before)
         if old:
             changed.update(rust_changes(current_rust, rust_context(source, build, old["context"])))
+        if force_rust:
+            changed.update(rust_files)
         archive_owners = []
         if (old is None or interrupted) and admission is None:
             archive_names = {name for name in graph.outputs if Path(name).name in {"libfilm_juicer_plugin.a", "film_juicer_plugin.lib"}}
@@ -1054,13 +1068,21 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
                     check_preparation_owner(build, Path(proof["producer"]))
                     _check_preparation_command(campaign, build, proof["producer"])
                     identities = {name: proof["output_identities"][name] for name in retained}
-                    if file_identities([Path(name) for name in retained]) != identities:
-                        raise ValueError("completed preparation artifact bytes changed; refusing archive reuse")
+                    actual = file_identities([Path(name) for name in retained])
+                    if actual != identities:
+                        if current_rust == rust_context(source, build, proof["context"]):
+                            raise ValueError("completed preparation artifact bytes changed; refusing archive reuse")
+                        # Changed Cargo inputs require a fresh active-package build,
+                        # even if an intervening build left misleading timestamps.
+                        superseded_artifacts[proof["producer"]] = actual
+                        superseded_producers[proof["producer"]] = proof["producer_sha256"]
+                        force_rust = True
+                        continue
                     shared.append((owner, proof, identities))
             # All valid overlapping owners must describe the same archive inputs.
             # No owner (or an interrupted write) is unknown, even for clean HEAD.
             contexts = [rust_context(source, build, proof["context"]) for _, proof, _ in shared]
-            if not interrupted and contexts and all(value == contexts[0] for value in contexts):
+            if not force_rust and not interrupted and contexts and all(value == contexts[0] for value in contexts):
                 changed.update(rust_changes(current_rust, contexts[0]))
                 if current_rust == contexts[0]:
                     archive_owners = shared
@@ -1074,7 +1096,7 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
         retained_names = previous_outputs.keys() & graph.outputs - graph.affected(potential | changed)
         retained_outputs = {name: previous_outputs[name] for name in retained_names}
         invalidate_preparation_owners(build, baseline, potential)
-        rust_invalidated = invalidate_rust(campaign, stage, source, build, changed, old, environment, timeout)
+        rust_invalidated = invalidate_rust(campaign, stage, source, build, changed, old, environment, timeout, force=force_rust)
         invalidated = graph.invalidate(affected)
         pending["outputs"] = sorted(mutable)
         write_json(pending_path, pending)
@@ -1127,6 +1149,10 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
             elif not owner.is_file() or json.loads(owner.read_text(encoding="utf-8")) != previous:
                 raise ValueError("retained shared Rust preparation owner changed")
             _check_preparation_command(campaign, build, previous["producer"])
+        for producer, checksum in superseded_producers.items():
+            if digest(Path(producer)) != checksum:
+                raise ValueError("superseded preparation command receipt changed")
+            _check_preparation_command(campaign, build, producer)
         proof = {"protocol": SCOPED_PROTOCOL, "producer": str(built.resolve()), "source": str(source), "build": str(build),
                  "targets": targets, "inputs": inputs, "configure_args": list(configure_args), "context": after,
                  "output_identities": output_identities,
@@ -1134,6 +1160,8 @@ def prepare_build(campaign, stage, *, source, build, inputs, timeout,
         record = json.loads(built.read_text(encoding="utf-8"))
         record["preparation_admission"] = {"scope_missing": old is None, "artifact_owners": admission[2] if admission else {},
                                            "archive_owners": {proof["producer"]: proof["producer_sha256"] for _, proof, _ in archive_owners},
+                                           "superseded_artifacts": superseded_artifacts,
+                                           "superseded_producers": superseded_producers,
                                            "configured": configured is not None, "seconds": admission_seconds,
                                            "recovered_pending": pending["recovered_pending"]}
         record["scoped_preparation"] = proof

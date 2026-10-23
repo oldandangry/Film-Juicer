@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <array>
+#include <type_traits>
 #include <barrier>
 #include <bit>
 #include <cstdint>
@@ -7,18 +9,23 @@
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "exposure_fixture.h"
 #include "OutputColor.h"
 #include "RustColorBridge.h"
+#include "RustScannerBridge.h"
+#include "Cuda/JuicerCudaExecutor.h"
 #include "Scanner.h"
 #include "output_encoding_oracle.h"
 #include "juicer_test_api.h"
 
 extern "C" int output_color_abi_c(void);
+extern "C" int scanner_color_abi_c(void);
 namespace {
     using Json = nlohmann::json;
     void require(bool condition, const char* message) {
@@ -41,9 +48,43 @@ namespace {
         require(encoding.schema == 1 && encoding.cctf_kind == row.at("kind"), "complete encoding schema/kind");
         require(words(coefficients.data(), 6) == row.at("cctf") && words(encoding.dwg_to_output, 9) == row.at("dwg_to_output"), "native CCTF/DWG words");
     }
+    Json scanner_color_result(const Scanner::ColorRuntime& runtime) {
+        const auto& e = runtime.preparedEncoding;
+        const std::array coefficients{e.gamma, e.a, e.b, e.c, e.d, e.linear_cutoff};
+        return {{"cat02", words(runtime.cat02, 9)}, {"xyz_to_rgb", words(runtime.xyzToRgb, 9)}, {"illuminant_xyz", words(runtime.illuminantXYZ, 3)}, {"params", {OutputEncoding::toIndex(runtime.encoding.colorSpace), runtime.encoding.applyCctfEncoding, runtime.encoding.inputIsOutputSpace}}, {"encoding", {{"schema", e.schema}, {"kind", e.cctf_kind}, {"coefficients", words(coefficients.data(), 6)}, {"dwg_to_output", words(e.dwg_to_output, 9)}}}, {"active_gamut_recipe_hash", runtime.outputGamutRecipeHash}, {"hash", runtime.hash}};
+    }
+    Scanner::ColorRuntime scanner_color_case(const Json& input) {
+        Scanner::ScannerIlluminant illuminant{};
+        for (int c = 0; c < 3; ++c)
+            illuminant.whiteXYZ[c] = std::bit_cast<float>(input.at("illuminant_xyz")[c].get<std::uint32_t>());
+        illuminant.hash = input.at("illuminant_hash");
+        return Scanner::build_color_runtime(static_cast<Scanner::ScannerMedium>(input.at("medium").get<int>()), illuminant, {static_cast<OutputEncoding::ColorSpace>(input.at("output_space").get<int>()), input.at("apply_cctf").get<bool>(), input.at("input_is_output_space").get<bool>()}, input.at("active_gamut_recipe_hash"));
+    }
+    int verify_scanner_color(const char* fixture) {
+        std::ifstream stream{std::filesystem::path(fixture)};
+        Json rows;
+        stream >> rows;
+        for (const auto& row : rows.at("cases"))
+            require(scanner_color_result(scanner_color_case(row.at("input"))) == row.at("expected"), "independent complete scanner supplement");
+        std::cout << "Complete scanner supplement passed\n";
+        return 0;
+    }
 } // namespace
+#include "scanner_color_test.inc"
 // VS LLVM 22 reports the JSON parser's internal type_error despite both handlers below.
 int main(int argc, char** argv) try { // NOLINT(bugprone-exception-escape): all fixture exceptions become a failing exit status.
+    if (argc == 5 && std::string_view(argv[1]) == "scanner-color") {
+        std::ifstream a{std::filesystem::path(argv[2])}, b{std::filesystem::path(argv[3])};
+        Json supplement, catalogue;
+        a >> supplement;
+        b >> catalogue;
+        const auto cat02 = load_exposure_qualified_fixture(argv[4]);
+        ScannerColorTests::cold_first_access(supplement);
+        (void)verify_scanner_color(argv[2]);
+        ScannerColorTests::run({.supplement = supplement, .catalogue = catalogue, .cat02 = cat02});
+        require(scanner_color_abi_c() == 0, "scanner C11 clearing/fault/width/layout");
+        return 0;
+    }
     require(argc == 2, "immutable native fixture required");
     // First access in this fresh process is concurrent across both actual exports.
     std::barrier barrier(16);

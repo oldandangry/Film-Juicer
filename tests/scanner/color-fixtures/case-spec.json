@@ -1,0 +1,261 @@
+{
+  "authority": "Pinned inputs before unchanged native whole-builder capture; outputs are not specified here.",
+  "cases": [
+    {
+      "id": "SC6-GAMUT-0",
+      "input": {
+        "medium": 0,
+        "output_space": 0,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-GAMUT-ACTIVE",
+      "input": {
+        "medium": 0,
+        "output_space": 0,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 7654321
+      }
+    },
+    {
+      "id": "SC6-BYTES-2-0",
+      "input": {
+        "medium": 2,
+        "output_space": 0,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-BYTES-2-9",
+      "input": {
+        "medium": 2,
+        "output_space": 9,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-BYTES-2-254",
+      "input": {
+        "medium": 2,
+        "output_space": 254,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-BYTES-2-255",
+      "input": {
+        "medium": 2,
+        "output_space": 255,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-BYTES-255-0",
+      "input": {
+        "medium": 255,
+        "output_space": 0,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-BYTES-255-9",
+      "input": {
+        "medium": 255,
+        "output_space": 9,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-BYTES-255-254",
+      "input": {
+        "medium": 255,
+        "output_space": 254,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-BYTES-255-255",
+      "input": {
+        "medium": 255,
+        "output_space": 255,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-INPUT-TRUE",
+      "input": {
+        "medium": 0,
+        "output_space": 0,
+        "apply_cctf": true,
+        "input_is_output_space": true,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-WHITE-ZERO",
+      "input": {
+        "medium": 0,
+        "output_space": 0,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          0,
+          0,
+          0
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-WHITE-SIGNED-ZERO",
+      "input": {
+        "medium": 0,
+        "output_space": 0,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          2147483648,
+          0,
+          2147483648
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-NON-SRGB",
+      "input": {
+        "medium": 0,
+        "output_space": 1,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-CCTF-OFF",
+      "input": {
+        "medium": 0,
+        "output_space": 0,
+        "apply_cctf": false,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 1234567,
+        "active_gamut_recipe_hash": 0
+      }
+    },
+    {
+      "id": "SC6-FAIL-ILLUMINANT",
+      "input": {
+        "medium": 0,
+        "output_space": 0,
+        "apply_cctf": true,
+        "input_is_output_space": false,
+        "illuminant_xyz": [
+          1064521989,
+          1065353216,
+          1066100289
+        ],
+        "illuminant_hash": 0,
+        "active_gamut_recipe_hash": 0
+      }
+    }
+  ]
+}

@@ -1363,3 +1363,196 @@ pub(crate) mod lut_faults {
         LIVE.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
+
+// SF_TEMP_BRIDGE_SCANNER_COLOR: fixed completed value; remove with native callers in S4.E.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjScannerColorInput {
+    pub(crate) medium: u32,
+    pub(crate) output_space: u32,
+    pub(crate) apply_cctf: u32,
+    pub(crate) illuminant_xyz: [f32; 3],
+    pub(crate) illuminant_hash: u64,
+    pub(crate) active_gamut_recipe_hash: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjScannerColor {
+    pub(crate) cat02: [f32; 9],
+    pub(crate) xyz_to_rgb: [f32; 9],
+    pub(crate) illuminant_xyz: [f32; 3],
+    pub(crate) output_space: u32,
+    pub(crate) flags: u32,
+    pub(crate) encoding: crate::cuda::sys::FjOutputEncoding,
+    pub(crate) active_gamut_recipe_hash: u64,
+    pub(crate) hash: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjScannerColorFailure {
+    pub(crate) reason: u32,
+    pub(crate) stage: u32,
+}
+
+enum ColorFailure {
+    Raw,
+    Panic,
+    Core(scanner::ColorError),
+}
+impl ColorFailure {
+    fn envelope(&self) -> (u32, u32, u32) {
+        use scanner::ColorError;
+        match self {
+            Self::Raw => (1, 0, FJ_STATUS_UNSUPPORTED_INPUT),
+            Self::Panic => (5, 0, FJ_STATUS_INTERNAL_FAILURE),
+            Self::Core(ColorError::Illuminant) => (2, 0, FJ_STATUS_PREPARATION_FAILURE),
+            Self::Core(ColorError::Output) => (3, 1, FJ_STATUS_PREPARATION_FAILURE),
+            #[cfg(feature = "test-support")]
+            Self::Core(ColorError::OutputBoundary) => (4, 1, FJ_STATUS_UNSUPPORTED_INPUT),
+            #[cfg(feature = "test-support")]
+            Self::Core(ColorError::Cat02Boundary) => (4, 2, FJ_STATUS_UNSUPPORTED_INPUT),
+        }
+    }
+}
+impl fmt::Display for ColorFailure {
+    fn fmt(&self, writer: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Raw => writer.write_str("invalid scanner color arguments"),
+            Self::Panic => writer.write_str("scanner color preparation panicked"),
+            Self::Core(error) => error.fmt(writer),
+        }
+    }
+}
+fn project_color(value: scanner::Color) -> FjScannerColor {
+    let c = value.cctf();
+    FjScannerColor {
+        cat02: *value.cat02(),
+        xyz_to_rgb: *value.xyz_to_rgb(),
+        illuminant_xyz: *value.illuminant_xyz(),
+        output_space: u32::from(value.output_space()),
+        flags: 2 | u32::from(value.apply_cctf()),
+        encoding: crate::cuda::sys::FjOutputEncoding {
+            schema: crate::cuda::sys::FJ_OUTPUT_ENCODING_SCHEMA,
+            cctf_kind: c.kind as u32,
+            gamma: c.gamma,
+            a: c.a,
+            b: c.b,
+            c: c.c,
+            d: c.d,
+            linear_cutoff: c.linear_cutoff,
+            dwg_to_output: *value.dwg_to_output(),
+        },
+        active_gamut_recipe_hash: value.active_gamut_recipe_hash(),
+        hash: value.hash(),
+    }
+}
+
+/// # Safety
+/// Each present record/backing is live, aligned, addressable and disjoint;
+/// outputs/error are exclusive through synchronous return. No pointer is retained.
+pub(crate) unsafe fn color_prepare(
+    input: *const FjScannerColorInput,
+    out: *mut FjScannerColor,
+    failure: *mut FjScannerColorFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let valid_out = valid_extent(out, 1);
+    let valid_failure = valid_extent(failure, 1);
+    // SAFETY: Independently admitted complete writable extents; clear peers even
+    // when another envelope is malformed. Caller guarantees disjoint storage.
+    unsafe {
+        if valid_out {
+            out.write_bytes(0, 1);
+        }
+        if valid_failure {
+            failure.write_bytes(0, 1);
+        }
+    }
+    let mut diagnostic = None;
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if !valid_extent(error, 1) {
+            return Err(ColorFailure::Raw);
+        }
+        // SAFETY: Valid error record and exclusive backing by caller contract.
+        diagnostic = Some(unsafe { Diagnostic::admit(error) }.map_err(|_| ColorFailure::Raw)?);
+        if !valid_out || !valid_failure || !valid_extent(input, 1) {
+            return Err(ColorFailure::Raw);
+        }
+        // SAFETY: Extent/alignment admitted; caller supplies initialized readable input.
+        let input = unsafe { &*input };
+        if input.medium > 255 || input.output_space > 255 || input.apply_cctf > 1 {
+            return Err(ColorFailure::Raw);
+        }
+        scanner::Color::new(scanner::ColorInput {
+            medium: input.medium as u8,
+            output_space: input.output_space as u8,
+            apply_cctf: input.apply_cctf != 0,
+            illuminant_xyz: input.illuminant_xyz,
+            illuminant_hash: input.illuminant_hash,
+            active_gamut_recipe_hash: input.active_gamut_recipe_hash,
+        })
+        .map(project_color)
+        .map_err(ColorFailure::Core)
+    }))
+    .unwrap_or(Err(ColorFailure::Panic));
+    match result {
+        Ok(value) => {
+            // SAFETY: Admitted exclusive result extent receives only a complete value.
+            unsafe { out.write(value) };
+            status(FJ_STATUS_SUCCESS)
+        }
+        Err(rejection) => {
+            let (reason, stage, category) = rejection.envelope();
+            if valid_failure {
+                // SAFETY: Independently admitted writable failure record.
+                unsafe { failure.write(FjScannerColorFailure { reason, stage }) };
+            }
+            if let Some(writer) = &mut diagnostic {
+                let _ = write!(writer, "{rejection}");
+            }
+            status(category)
+        }
+    }
+}
+/// # Safety
+/// Same live/readable/exclusive/disjoint contract as `color_prepare`.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_scanner_color_prepare(
+    input: *const FjScannerColorInput,
+    out: *mut FjScannerColor,
+    failure: *mut FjScannerColorFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The foreign caller supplies the complete checked synchronous contract.
+    unsafe { color_prepare(input, out, failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const FjScannerColorInput,
+    *mut FjScannerColor,
+    *mut FjScannerColorFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_legacy_scanner_color_prepare;
+const _: () = {
+    use std::mem::offset_of;
+    assert!(size_of::<FjScannerColorInput>() == 40 && align_of::<FjScannerColorInput>() == 8);
+    assert!(offset_of!(FjScannerColorInput, medium) == 0);
+    assert!(offset_of!(FjScannerColorInput, output_space) == 4);
+    assert!(offset_of!(FjScannerColorInput, apply_cctf) == 8);
+    assert!(offset_of!(FjScannerColorInput, illuminant_xyz) == 12);
+    assert!(offset_of!(FjScannerColorInput, illuminant_hash) == 24);
+    assert!(offset_of!(FjScannerColorInput, active_gamut_recipe_hash) == 32);
+    assert!(size_of::<FjScannerColor>() == 176 && align_of::<FjScannerColor>() == 8);
+    assert!(offset_of!(FjScannerColor, cat02) == 0);
+    assert!(offset_of!(FjScannerColor, xyz_to_rgb) == 36);
+    assert!(offset_of!(FjScannerColor, illuminant_xyz) == 72);
+    assert!(offset_of!(FjScannerColor, output_space) == 84);
+    assert!(offset_of!(FjScannerColor, flags) == 88);
+    assert!(offset_of!(FjScannerColor, encoding) == 92);
+    assert!(offset_of!(FjScannerColor, active_gamut_recipe_hash) == 160);
+    assert!(offset_of!(FjScannerColor, hash) == 168);
+    assert!(size_of::<FjScannerColorFailure>() == 8 && align_of::<FjScannerColorFailure>() == 4);
+    assert!(
+        offset_of!(FjScannerColorFailure, reason) == 0
+            && offset_of!(FjScannerColorFailure, stage) == 4
+    );
+};

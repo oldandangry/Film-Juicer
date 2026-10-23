@@ -1284,7 +1284,9 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/ffi/output-color-development.json" output
 string(JSON output_color_development_target GET "${output_color_development}" target)
 string(JSON output_color_development_test GET "${output_color_development}" test)
 string(JSON output_color_development_fixture GET "${output_color_development}" fixture)
-add_executable(${output_color_development_target} ffi/output_color_abi_c.c ffi/output_color_test.cpp)
+add_executable(${output_color_development_target} ffi/output_color_abi_c.c ffi/output_color_test.cpp
+    $<TARGET_OBJECTS:juicer_scanner_test_objects>)
+target_compile_definitions(JuicerOutputColorTests PRIVATE JUICER_SCANNER_TEST_HOOK=1)
 target_link_libraries(JuicerOutputColorTests PRIVATE juicer_core)
 set_target_properties(JuicerOutputColorTests PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
@@ -1295,6 +1297,12 @@ endif()
 add_test(NAME ${output_color_development_test} COMMAND ${output_color_development_target}
     "${PROJECT_SOURCE_DIR}/${output_color_development_fixture}")
 set_tests_properties(Ffi.Host.OutputColor PROPERTIES LABELS "host" TIMEOUT 60)
+add_test(NAME Ffi.Host.ScannerColor COMMAND JuicerOutputColorTests scanner-color
+    "${CMAKE_CURRENT_SOURCE_DIR}/scanner/color-fixtures/native.json"
+    "${PROJECT_SOURCE_DIR}/${output_color_development_fixture}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ffi/fixtures/color/cat02-${JUICER_TEST_PRESET_NAME}.json")
+set_tests_properties(Ffi.Host.ScannerColor PROPERTIES LABELS "host" TIMEOUT 60)
+
 
 add_library(juicer_output_encoding_oracle STATIC scanner/output_encoding_oracle.cpp)
 target_include_directories(juicer_output_encoding_oracle PUBLIC scanner "${PROJECT_SOURCE_DIR}/src")
@@ -1307,7 +1315,7 @@ set(juicer_tooling_tests Quality.Dispatcher Quality.ToolingLint Quality.Executio
     Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint Quality.PreparationRenewal
     Ctest.Host.Report Ctest.Host.Repetition Ffi.Host.RustBuild)
 set(juicer_boundary_tests
-    Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerLut Scanner.Host.LutProducts Quality.RustNaming Quality.RustBoundaries)
+    Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat
     Gamut.Host.Output.FixtureFormat)

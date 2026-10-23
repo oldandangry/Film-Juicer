@@ -893,6 +893,17 @@ The frozen `scanner/lut-fixtures/manifest.json` distinguishes native numerical
 characterization from the safety/transport contract in `checked.json`.
 Successful stored words are exact in each matching native platform/profile.
 
+### Scanner color construction
+
+`Ffi.Host.ScannerColor` checks complete scanner output construction through the
+Rust boundary and retained native adapter, with fixed-value C11/C++/Rust ABI,
+full encoding even when CCTF is off, original-byte fallback identity, independent
+failure clearing, staged faults, immutable copies and transport integrity. Its
+[fixture guide](scanner/color-fixtures/README.md) identifies the unchanged native
+supplement and reused output-colour/CAT02 expectations. `Ffi.Host.Cat02Preparation`
+retains real route/publication/reuse and complete-product checks; the scanner
+GPU output/reuse/correction and prepared-boundary cases remain downstream evidence.
+
 ### Scanner output encoding
 
 `Ffi.Host.ScannerCorrection` checks complete direct/print correction construction,

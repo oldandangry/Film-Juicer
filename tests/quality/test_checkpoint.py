@@ -254,7 +254,9 @@ class CheckpointTests(unittest.TestCase):
                      "tests/scanner/correction-fixtures/manifest.json", "tests/scanner/correction-fixtures/checked-expectations.json",
                      "tests/scanner/correction-fixtures/linux-debug.json", "tests/ffi/scanner_lut_test.inc",
                      "tests/scanner/lut-fixtures/manifest.json", "tests/scanner/lut-fixtures/checked.json",
-                     "tests/scanner/lut-fixtures/linux-debug.json"):
+                     "tests/scanner/lut-fixtures/linux-debug.json", "tests/ffi/scanner_color_test.inc",
+                     "tests/scanner/color-fixtures/manifest.json", "tests/scanner/color-fixtures/native.json",
+                     "tests/scanner/color-fixtures/checked.json"):
             p = self.root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("source")
@@ -276,6 +278,10 @@ class CheckpointTests(unittest.TestCase):
         self.assertIn("tests/scanner/correction-fixtures/manifest.json", first)
         self.assertIn("tests/scanner/correction-fixtures/checked-expectations.json", first)
         self.assertIn("tests/scanner/correction-fixtures/linux-debug.json", first)
+        self.assertIn("tests/ffi/scanner_color_test.inc", first)
+        self.assertIn("tests/scanner/color-fixtures/manifest.json", first)
+        self.assertIn("tests/scanner/color-fixtures/native.json", first)
+        self.assertIn("tests/scanner/color-fixtures/checked.json", first)
         self.assertIn("tests/ffi/scanner_lut_test.inc", first)
         self.assertIn("tests/scanner/lut-fixtures/manifest.json", first)
         self.assertIn("tests/scanner/lut-fixtures/checked.json", first)

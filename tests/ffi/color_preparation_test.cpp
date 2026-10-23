@@ -393,7 +393,7 @@ namespace {
         std::uint32_t callIndex;
         std::uint32_t fault;
     };
-    void failed(const PendingRenderAdmissionResult& result, const FaultCase& selected, const std::string& film = "kodak_portra_400") {
+    void failed(const PendingRenderAdmissionResult& result, const FaultCase& selected, const std::string& film = "kodak_portra_400", bool scannerStage = false) {
         require(result.status == PendingRenderAdmissionStatus::RebuildFailed && !result.directState && !result.printState, "current exceptional attempt fails with empty result owners");
         require(result.diagnostic.find(selected.fault == 1 ? "UnsupportedInput" : "InternalFailure") != std::string::npos, "original category diagnostic");
         const char* operation = nullptr;
@@ -431,7 +431,9 @@ namespace {
             default:
                 throw std::runtime_error("unknown failure operation");
         }
-        require(result.diagnostic.find(operation) != std::string::npos, "original operation diagnostic");
+        if (scannerStage && selected.fault == FJ_TEST_COLOR_PANIC)
+            operation = "scanner color preparation panicked";
+        require(result.diagnostic.find(operation) != std::string::npos, "stage-specific operation diagnostic");
         require(result.diagnostic.find("film=" + film) != std::string::npos && result.diagnostic.find("route=") != std::string::npos, "attempted selection diagnostic");
     }
     struct Supersession {
@@ -1098,7 +1100,7 @@ namespace {
                         pending(state, changed);
                         expect_status(arm_color_fault(selected.operation, index, fault), FJ_STATUS_SUCCESS);
                         const auto result = admit_pending_render_state(state);
-                        failed(result, selected, controls.filmProfileKey);
+                        failed(result, selected, controls.filmProfileKey, index == calls);
                         unchanged(state, old, hash, counter);
                         require_retained_values(old, oldValues);
                         for (std::uint32_t call = 0; call < index; ++call) {
@@ -1291,7 +1293,16 @@ namespace {
         }
     }
 
+    void require_scanner_encoding(const Scanner::ColorRuntime& color, const Json& catalogue) {
+        const auto& entry = catalogue.at("entries").at(OutputEncoding::toIndex(color.encoding.colorSpace));
+        const auto& e = color.preparedEncoding;
+        const std::array coefficients{e.gamma, e.a, e.b, e.c, e.d, e.linear_cutoff};
+        require(e.schema == 1 && e.cctf_kind == entry.at("kind") && bits(coefficients) == entry.at("cctf") && bits(e.dwg_to_output) == entry.at("dwg_to_output"), "every scanner prepared encoding field matches independent catalogue, also CCTF off");
+    }
     void cat02_preparation_tests(const Json& fixture, const std::filesystem::path& fixturePath) {
+        std::ifstream catalogueInput{fixturePath.parent_path().parent_path() / "output-color/native.json"};
+        Json catalogue;
+        catalogueInput >> catalogue;
         cat02_admission_tests();
         const auto cases = Cat02Fixtures::scenarios();
         require(cases.size() == fixture.at("recipes").size(), "frozen CAT02 recipe case membership");
@@ -1304,6 +1315,7 @@ namespace {
             const auto& settings = row.at("controls");
             require(settings.at("filmProfileKey") == controls.filmProfileKey && settings.at("printProfileKey") == controls.printProfileKey && settings.at("scanRoute") == static_cast<int>(controls.scanRoute) && settings.at("spectralUpsamplingMode") == controls.spectralUpsamplingMode && settings.at("inputColorSpace") == controls.inputColorSpace && settings.at("inputCctfDecoding") == controls.inputCctfDecoding && settings.at("outputColorSpace") == controls.outputColorSpace && settings.at("outputCctfEncoding") == controls.outputCctfEncoding && settings.at("cameraAutoExposureEnabled") == controls.cameraAutoExposureEnabled && settings.at("inputCompressionEnabled") == controls.inputCompressionEnabled && settings.at("cameraExposureCompensationEv").at("f64_bits") == std::bit_cast<std::uint64_t>(controls.cameraExposureCompensationEv), "frozen CAT02 selected controls");
             const auto product = Cat02Fixtures::build(controls);
+            require_scanner_encoding(product.payload.scannerColor, catalogue);
             const auto actual = Cat02Fixtures::complete_result(product);
             require(actual == row.at("expected"), id + " independent complete film/raw-midgray/scanner/tables/descriptors/identities");
             if (id == witness.at("recipe_id").get<std::string>()) {
@@ -1329,6 +1341,7 @@ namespace {
             const OutputEncoding::Params encoding{static_cast<OutputEncoding::ColorSpace>(row.at("space").get<int>()), row.at("encoding").get<int>() != 0, true};
             const auto color = Scanner::build_color_runtime(static_cast<Scanner::ScannerMedium>(row.at("medium").get<int>()), illuminants[row.at("route").get<int>()], encoding, row.at("gamut_recipe_hash").get<std::uint64_t>());
             require(Cat02Fixtures::color_result(color) == row.at("expected"), row.at("id").get<std::string>() + " real scanner color exact arrays/encoding/hash");
+            require_scanner_encoding(color, catalogue);
         }
         for (const auto& row : fixture.at("scanner_invalid_cases")) {
             auto invalid = illuminants[0];

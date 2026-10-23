@@ -3,6 +3,9 @@
 use crate::hash;
 use std::fmt;
 
+mod color;
+pub use color::{Color, ColorError, ColorInput};
+
 mod lut;
 pub use lut::{Lut, LutError, LutInput, LutTables};
 

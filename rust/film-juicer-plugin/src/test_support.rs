@@ -2128,3 +2128,22 @@ extern "C" fn fj_test_scanner_lut_fault(operation: u32, fault: u32) -> FjStatus 
 extern "C" fn fj_test_scanner_lut_live_owners() -> usize {
     scanner_bridge::lut_faults::live()
 }
+
+/// # Safety
+/// Same complete synchronous live/disjoint contract as scanner_bridge::color_prepare.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_scanner_color_prepare(
+    input: *const scanner_bridge::FjScannerColorInput,
+    out: *mut scanner_bridge::FjScannerColor,
+    failure: *mut scanner_bridge::FjScannerColorFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: Test caller provides the identical checked transport contract.
+    unsafe { scanner_bridge::color_prepare(input, out, failure, error) }
+}
+const _: unsafe extern "C" fn(
+    *const scanner_bridge::FjScannerColorInput,
+    *mut scanner_bridge::FjScannerColor,
+    *mut scanner_bridge::FjScannerColorFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_scanner_color_prepare;
