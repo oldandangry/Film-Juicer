@@ -9,6 +9,7 @@ import subprocess
 import re
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE_SUFFIXES = set(json.loads(
@@ -84,6 +85,11 @@ RETIRED_FILM_INPUT_DEFINITIONS = (
     r"Spektrafilm::AutoExposureMethod\s+auto_exposure_method_from_index)"
     r"\s*\([^;{}]*\)\s*\{"
 )
+
+
+def find_llvm_nm():
+    return (shutil.which("llvm-nm") if os.name == "nt"
+            else shutil.which("llvm-nm-22") or shutil.which("llvm-nm"))
 
 
 class NativeBoundary(unittest.TestCase):
@@ -310,8 +316,7 @@ class NativeBoundary(unittest.TestCase):
         ordinary = [row for row in compdb if "juicer_native.dir" in row["command"] or "juicer_host.dir" in row["command"]]
         self.assertTrue(ordinary)
         self.assertFalse(any("JUICER_GAUSSIAN_TEST_HOOK" in row["command"] for row in ordinary))
-        nm = ("C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/llvm-nm.exe"
-              if os.name == "nt" else shutil.which("llvm-nm-22") or shutil.which("llvm-nm"))
+        nm = find_llvm_nm()
         self.assertTrue(nm, "qualified LLVM nm required for ordinary-object isolation")
         for owner, source in (("juicer_native", "Cuda/JuicerCudaResources.cpp"), ("juicer_host", "RustGaussianBridge.cpp")):
             path = build / "CMakeFiles" / (owner + ".dir") / "src" / (source + (".obj" if os.name == "nt" else ".o"))
@@ -390,6 +395,22 @@ class NativeBoundary(unittest.TestCase):
 
 
 class NativeBoundaryControls(unittest.TestCase):
+    def test_llvm_nm_uses_active_toolchain_path(self):
+        names = ("llvm-nm.exe",) if os.name == "nt" else ("llvm-nm-22", "llvm-nm")
+        for name in names:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                toolchain = Path(directory) / "Microsoft Visual Studio/18/Enterprise/VC/Tools/Llvm/x64/bin"
+                toolchain.mkdir(parents=True)
+                executable = toolchain / name
+                executable.write_bytes(b"")
+                executable.chmod(0o700)
+                with patch.dict(os.environ, {"PATH": str(toolchain)}):
+                    self.assertEqual(Path(find_llvm_nm()), executable)
+
+    def test_missing_llvm_nm_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"PATH": directory}):
+            self.assertIsNone(find_llvm_nm())
+
     def test_illuminant_deletion_guard_rejects_each_retired_definition(self):
         symbols = ("PlanckBlackbodySample", "planck_blackbody", "build_blackbody_curve", "build_illuminant_curve", "build_tungsten_kg3_curve", "prepare_tungsten_kg3_lens_input", "build_tungsten_kg3_lens_curve", "TungstenKg3LensInput", "build_curve_equal_energy_pinned", "SpectralResampleDetail", "scalar_akima_resample", "akima_resample_agx", "resample_pairs_akima_to_reference_axis", "mean_power_normalize")
         with tempfile.TemporaryDirectory() as directory:
