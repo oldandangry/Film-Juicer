@@ -1,5 +1,9 @@
 //! SF_TEMP_BRIDGE_FILM_DIR_DENSITY: synchronous family owners and fixed projections; remove S4.E.
 
+#[cfg(feature = "test-support")]
+use crate::frame_bridge::{FjFrameGeometryInput, FjFrameGeometry, FjFrameGeometryFailure};
+#[cfg(feature = "test-support")]
+use crate::cuda::sys::{FjRect, FjExtent};
 use std::fmt::{self, Write};
 use std::mem::{align_of, size_of};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -1510,6 +1514,29 @@ const _: () = assert!(FJ_FILM_RECIPE_INTEGRITY == 15);
 /// facts have immutable static lifetime and cannot be freed by the caller.
 unsafe extern "C" fn fj_test_film_recipe_abi_facts(count: *mut usize) -> *const usize {
     const FACTS: &[usize] = &[
+        size_of::<FjRect>(),
+        align_of::<FjRect>(),
+        std::mem::offset_of!(FjRect, x1),
+        std::mem::offset_of!(FjRect, y1),
+        std::mem::offset_of!(FjRect, x2),
+        std::mem::offset_of!(FjRect, y2),
+        size_of::<FjExtent>(),
+        align_of::<FjExtent>(),
+        std::mem::offset_of!(FjExtent, x),
+        std::mem::offset_of!(FjExtent, y),
+        std::mem::offset_of!(FjExtent, width),
+        std::mem::offset_of!(FjExtent, height),
+        size_of::<FjFrameGeometryInput>(),
+        align_of::<FjFrameGeometryInput>(),
+        std::mem::offset_of!(FjFrameGeometryInput, full_frame),
+        std::mem::offset_of!(FjFrameGeometryInput, film_format_long_edge_mm),
+        size_of::<FjFrameGeometry>(),
+        align_of::<FjFrameGeometry>(),
+        std::mem::offset_of!(FjFrameGeometry, full_frame),
+        std::mem::offset_of!(FjFrameGeometry, pixel_size_um),
+        size_of::<FjFrameGeometryFailure>(),
+        align_of::<FjFrameGeometryFailure>(),
+        std::mem::offset_of!(FjFrameGeometryFailure, reason),
         size_of::<FjFilmReferenceInput>(),
         align_of::<FjFilmReferenceInput>(),
         std::mem::offset_of!(FjFilmReferenceInput, method),

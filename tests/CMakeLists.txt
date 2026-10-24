@@ -222,6 +222,11 @@ if(UNIX)
     set_property(TARGET JuicerFilmRecipeTests PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 add_dependencies(JuicerFilmRecipeTests juicer_test_resources)
+add_test(NAME Ffi.Host.FrameGeometry COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/frame/geometry-fixtures/manifest.json" frame "${JUICER_TEST_PRESET_NAME}")
+add_test(NAME Frame.Host.GeometryProducts COMMAND JuicerFilmRecipeTests
+    "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/frame/geometry-fixtures/manifest.json" frame-products "${JUICER_TEST_PRESET_NAME}")
+set_tests_properties(Ffi.Host.FrameGeometry Frame.Host.GeometryProducts PROPERTIES LABELS "host" TIMEOUT 180)
 add_test(NAME Ffi.Host.GaussianKernel COMMAND JuicerFilmRecipeTests
     "${JUICER_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/optics/gaussian-fixtures/manifest.json" gaussian "${JUICER_TEST_PRESET_NAME}")
 add_test(NAME Optics.Host.GaussianKernelProducts COMMAND JuicerFilmRecipeTests
@@ -868,8 +873,11 @@ add_custom_target(juicer_test_module
     DEPENDS juicer juicer_test_resources)
 
 add_executable(JuicerAdapterTraceProbe
+    ofx/frame_geometry_test_hooks.cpp
     ofx/adapter_trace_test.cpp route/route_failure_adapter.cpp ../src/JuicerEffect.cpp)
 # Isolate the fixture replacement while linking the real route metadata/resolver.
+set_property(SOURCE ../src/JuicerEffect.cpp ofx/adapter_trace_test.cpp ofx/frame_geometry_test_hooks.cpp
+    APPEND PROPERTY COMPILE_DEFINITIONS JUICER_FRAME_GEOMETRY_TEST_HOOK=1)
 target_compile_definitions(JuicerAdapterTraceProbe PRIVATE
     resolve_scan_route=resolve_scan_route_with_fault)
 target_include_directories(JuicerAdapterTraceProbe PRIVATE "${PROJECT_SOURCE_DIR}/native")
@@ -883,6 +891,11 @@ if(UNIX)
     set_property(TARGET JuicerAdapterTraceProbe
         PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
+add_test(NAME Ofx.Gpu.FrameGeometry COMMAND JuicerAdapterTraceProbe --frame-geometry
+    "${CMAKE_CURRENT_SOURCE_DIR}/frame/geometry-fixtures/manifest.json" "${JUICER_TEST_PRESET_NAME}"
+    "${JUICER_TEST_ARTIFACT_ROOT}/ofx/frame-geometry.log")
+set_tests_properties(Ofx.Gpu.FrameGeometry PROPERTIES LABELS "gpu" TIMEOUT 180 RESOURCE_LOCK juicer_gpu
+    ENVIRONMENT "JUICER_DIAGNOSTICS=3;JUICER_DIAGNOSTICS_PATH=${JUICER_TEST_ARTIFACT_ROOT}/ofx/frame-geometry-diagnostic.log")
 add_test(NAME Ofx.Gpu.AdapterTrace
     COMMAND JuicerAdapterTraceProbe
         --trace-output
@@ -1358,7 +1371,7 @@ target_link_libraries(JuicerOutputColorTests PRIVATE juicer_output_encoding_orac
 set(juicer_tooling_tests Quality.Dispatcher Quality.ToolingLint Quality.Execution
     Quality.BuildEvidence Quality.BuildRegistration Quality.Verify Quality.Checkpoint Quality.PreparationRenewal
     Ctest.Host.Report Ctest.Host.Repetition Ffi.Host.RustBuild)
-set(juicer_boundary_tests Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
+set(juicer_boundary_tests Ffi.Host.FrameGeometry Ffi.Host.GaussianKernel Ffi.Host.ScannerPostEffects Ffi.Host.FilmReference
     Ffi.Host.VisualGrain Ffi.Host.PrintIlluminant Ffi.Host.PrintPreflash Ffi.Host.PrintBalance Ffi.Host.ScannerCorrection Ffi.Host.ScannerColor Ffi.Host.ScannerLut Scanner.Host.LutProducts Ffi.Host.ScannerLutDescriptor Quality.RustNaming Quality.RustBoundaries)
 set(juicer_corpus_tests Ffi.Host.SharedFixtureFormat Exposure.Host.FixtureFormat Exposure.Host.Mallett.FixtureFormat
     Reconstruction.Host.TcLut.FixtureFormat Gamut.Host.InputHull.FixtureFormat

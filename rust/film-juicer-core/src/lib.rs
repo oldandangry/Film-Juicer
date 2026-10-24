@@ -23,3 +23,5 @@ pub mod optics;
 
 pub mod print;
 pub mod scanner;
+
+pub mod frame;

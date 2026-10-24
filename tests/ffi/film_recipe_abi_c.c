@@ -2,6 +2,36 @@
 #include <string.h>
 #include "juicer_legacy_api.h"
 #include "juicer_test_api.h"
+_Static_assert(_Generic(((FjRect*)0)->x1, int32_t: 1, default: 0), "FjRect.x1 type");
+_Static_assert(_Generic(((FjRect*)0)->y1, int32_t: 1, default: 0), "FjRect.y1 type");
+_Static_assert(_Generic(((FjRect*)0)->x2, int32_t: 1, default: 0), "FjRect.x2 type");
+_Static_assert(_Generic(((FjRect*)0)->y2, int32_t: 1, default: 0), "FjRect.y2 type");
+_Static_assert(sizeof(FjRect) == 16 && _Alignof(FjRect) == 4, "FjRect layout");
+_Static_assert(_Generic(((FjExtent*)0)->x, int32_t: 1, default: 0), "FjExtent.x type");
+_Static_assert(_Generic(((FjExtent*)0)->y, int32_t: 1, default: 0), "FjExtent.y type");
+_Static_assert(_Generic(((FjExtent*)0)->width, int32_t: 1, default: 0), "FjExtent.width type");
+_Static_assert(_Generic(((FjExtent*)0)->height, int32_t: 1, default: 0), "FjExtent.height type");
+_Static_assert(sizeof(FjExtent) == 16 && _Alignof(FjExtent) == 4, "FjExtent layout");
+_Static_assert(_Generic(((FjFrameGeometryInput*)0)->full_frame, FjExtent: 1, default: 0), "FjFrameGeometryInput.full_frame type");
+_Static_assert(_Generic(((FjFrameGeometryInput*)0)->film_format_long_edge_mm, float: 1, default: 0), "FjFrameGeometryInput.film_format_long_edge_mm type");
+_Static_assert(sizeof(FjFrameGeometryInput) == 20 && _Alignof(FjFrameGeometryInput) == 4, "FjFrameGeometryInput layout");
+_Static_assert(_Generic(((FjFrameGeometry*)0)->full_frame, FjExtent: 1, default: 0), "FjFrameGeometry.full_frame type");
+_Static_assert(_Generic(((FjFrameGeometry*)0)->pixel_size_um, float: 1, default: 0), "FjFrameGeometry.pixel_size_um type");
+_Static_assert(sizeof(FjFrameGeometry) == 20 && _Alignof(FjFrameGeometry) == 4, "FjFrameGeometry layout");
+_Static_assert(_Generic(((FjFrameGeometryFailure*)0)->reason, uint32_t: 1, default: 0), "FjFrameGeometryFailure.reason type");
+_Static_assert(sizeof(FjFrameGeometryFailure) == 4 && _Alignof(FjFrameGeometryFailure) == 4, "FjFrameGeometryFailure layout");
+typedef FjStatus (*FrameDomainPrepare)(const FjRect*, FjExtent*, FjFrameGeometryFailure*, FjErrorBuffer*);
+_Static_assert(_Generic(&fj_legacy_frame_domain_prepare, FrameDomainPrepare: 1, default: 0), "frame domain legacy signature");
+_Static_assert(_Generic(&fj_test_frame_domain_prepare, FrameDomainPrepare: 1, default: 0), "frame domain test signature");
+FjStatus fj_test_frame_domain_c_prepare(const FjRect* input, FjExtent* out, FjFrameGeometryFailure* failure, FjErrorBuffer* error) {
+    return fj_legacy_frame_domain_prepare(input, out, failure, error);
+}
+typedef FjStatus (*FrameGeometryPrepare)(const FjFrameGeometryInput*, FjFrameGeometry*, FjFrameGeometryFailure*, FjErrorBuffer*);
+_Static_assert(_Generic(&fj_legacy_frame_geometry_prepare, FrameGeometryPrepare: 1, default: 0), "frame geometry legacy signature");
+_Static_assert(_Generic(&fj_test_frame_geometry_prepare, FrameGeometryPrepare: 1, default: 0), "frame geometry test signature");
+FjStatus fj_test_frame_geometry_c_prepare(const FjFrameGeometryInput* input, FjFrameGeometry* out, FjFrameGeometryFailure* failure, FjErrorBuffer* error) {
+    return fj_legacy_frame_geometry_prepare(input, out, failure, error);
+}
 _Static_assert(_Generic(((FjFilmReferenceInput*)0)->method, uint32_t: 1, default: 0), "reference method type");
 _Static_assert(_Generic(((FjFilmReferenceInput*)0)->auto_exposure_enabled, uint32_t: 1, default: 0), "reference auto type");
 _Static_assert(_Generic(((FjFilmReferenceInput*)0)->manual_exposure_ev, float: 1, default: 0), "reference EV type");

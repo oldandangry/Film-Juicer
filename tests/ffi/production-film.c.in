@@ -17,6 +17,28 @@
 _Static_assert(_Generic(&fj_legacy_film_development_acquire, FjStatus (*)(const FjFilmProfile*, uint32_t, float, uint32_t, FjFilmDevelopmentOwner**, FjErrorBuffer*): 1, default: 0), "acquire C11 type");
 _Static_assert(_Generic(&fj_legacy_film_development_view, FjStatus (*)(const FjFilmDevelopmentOwner*, FjFilmDevelopmentView*, FjErrorBuffer*): 1, default: 0), "view C11 type");
 _Static_assert(_Generic(&fj_legacy_film_development_release, FjStatus (*)(FjFilmDevelopmentOwner*, FjErrorBuffer*): 1, default: 0), "release C11 type");
+_Static_assert(_Generic(((FjRect*)0)->x1, int32_t: 1, default: 0), "FjRect.x1 type");
+_Static_assert(_Generic(((FjRect*)0)->y1, int32_t: 1, default: 0), "FjRect.y1 type");
+_Static_assert(_Generic(((FjRect*)0)->x2, int32_t: 1, default: 0), "FjRect.x2 type");
+_Static_assert(_Generic(((FjRect*)0)->y2, int32_t: 1, default: 0), "FjRect.y2 type");
+_Static_assert(sizeof(FjRect) == 16 && _Alignof(FjRect) == 4, "FjRect layout");
+_Static_assert(_Generic(((FjExtent*)0)->x, int32_t: 1, default: 0), "FjExtent.x type");
+_Static_assert(_Generic(((FjExtent*)0)->y, int32_t: 1, default: 0), "FjExtent.y type");
+_Static_assert(_Generic(((FjExtent*)0)->width, int32_t: 1, default: 0), "FjExtent.width type");
+_Static_assert(_Generic(((FjExtent*)0)->height, int32_t: 1, default: 0), "FjExtent.height type");
+_Static_assert(sizeof(FjExtent) == 16 && _Alignof(FjExtent) == 4, "FjExtent layout");
+_Static_assert(_Generic(((FjFrameGeometryInput*)0)->full_frame, FjExtent: 1, default: 0), "FjFrameGeometryInput.full_frame type");
+_Static_assert(_Generic(((FjFrameGeometryInput*)0)->film_format_long_edge_mm, float: 1, default: 0), "FjFrameGeometryInput.film_format_long_edge_mm type");
+_Static_assert(sizeof(FjFrameGeometryInput) == 20 && _Alignof(FjFrameGeometryInput) == 4, "FjFrameGeometryInput layout");
+_Static_assert(_Generic(((FjFrameGeometry*)0)->full_frame, FjExtent: 1, default: 0), "FjFrameGeometry.full_frame type");
+_Static_assert(_Generic(((FjFrameGeometry*)0)->pixel_size_um, float: 1, default: 0), "FjFrameGeometry.pixel_size_um type");
+_Static_assert(sizeof(FjFrameGeometry) == 20 && _Alignof(FjFrameGeometry) == 4, "FjFrameGeometry layout");
+_Static_assert(_Generic(((FjFrameGeometryFailure*)0)->reason, uint32_t: 1, default: 0), "FjFrameGeometryFailure.reason type");
+_Static_assert(sizeof(FjFrameGeometryFailure) == 4 && _Alignof(FjFrameGeometryFailure) == 4, "FjFrameGeometryFailure layout");
+typedef FjStatus (*FrameDomainPrepare)(const FjRect*, FjExtent*, FjFrameGeometryFailure*, FjErrorBuffer*);
+_Static_assert(_Generic(&fj_legacy_frame_domain_prepare, FrameDomainPrepare: 1, default: 0), "frame domain legacy signature");
+typedef FjStatus (*FrameGeometryPrepare)(const FjFrameGeometryInput*, FjFrameGeometry*, FjFrameGeometryFailure*, FjErrorBuffer*);
+_Static_assert(_Generic(&fj_legacy_frame_geometry_prepare, FrameGeometryPrepare: 1, default: 0), "frame geometry legacy signature");
 static int words(const float* data, const uint32_t* expected, size_t count) {
     for (size_t i = 0; i < count; ++i) {
         uint32_t word;
@@ -1705,6 +1727,82 @@ static int gaussian_values(void) {
 }
 
 
+static uint32_t frame_pixel_word(float pixel) {
+    uint32_t word;
+    memcpy(&word, &pixel, sizeof(word));
+    return word;
+}
+static uint64_t frame_diffusion_word(float pixel) {
+    const double widened = (double)pixel;
+    uint64_t word;
+    memcpy(&word, &widened, sizeof(word));
+    return word;
+}
+static int frame_values(void) {
+    for (size_t i = 0; i < sizeof(frame_rows)/sizeof(frame_rows[0]); ++i) {
+        const int op = frame_rows[i].operation, kind = frame_rows[i].kind;
+        FjRect bounds = {frame_rows[i].input[0],frame_rows[i].input[1],frame_rows[i].input[2],frame_rows[i].input[3]};
+        FjFrameGeometryInput input = {{bounds.x1,bounds.y1,bounds.x2,bounds.y2},0};
+        memcpy(&input.film_format_long_edge_mm,&frame_rows[i].film,sizeof(float));
+        FjExtent domain = {7,8,9,10};
+        FjFrameGeometry geometry = {{7,8,9,10},-9};
+        FjFrameGeometryFailure failure = {99};
+        const void* in = op ? (const void*)&input : (const void*)&bounds;
+        void* out = op ? (void*)&geometry : (void*)&domain;
+        FjFrameGeometryFailure* rejected = &failure;
+        char text[128]; memset(text,'!',sizeof(text));
+        FjErrorBuffer error = {text,sizeof(text),99};
+        FjErrorBuffer* diagnostic = &error;
+        switch (kind) {
+            case 0: case 14: case 15: in=NULL; break;
+            case 1: out=NULL; break;
+            case 2: rejected=NULL; break;
+            case 3: in=(const void*)(uintptr_t)1; break;
+            case 4: out=(void*)(uintptr_t)1; break;
+            case 5: rejected=(FjFrameGeometryFailure*)(uintptr_t)1; break;
+            case 6: in=(const void*)(UINTPTR_MAX-3); break;
+            case 7: out=(void*)(UINTPTR_MAX-3); break;
+            case 8: rejected=(FjFrameGeometryFailure*)(UINTPTR_MAX-3); break;
+            case 9: error.data=NULL; error.capacity=1; break;
+            case 10: diagnostic=(FjErrorBuffer*)(uintptr_t)1; break;
+            case 11: error.data=(char*)(UINTPTR_MAX-1); error.capacity=8; break;
+            case 12: diagnostic=NULL; break;
+            case 13: error.data=(char*)(uintptr_t)1; error.capacity=0; break;
+            default: break;
+        }
+        if (kind==14) error.capacity=1;
+        if (kind==15) error.capacity=8;
+        const FjStatus result = op
+            ? fj_legacy_frame_geometry_prepare((const FjFrameGeometryInput*)in,(FjFrameGeometry*)out,rejected,diagnostic)
+            : fj_legacy_frame_domain_prepare((const FjRect*)in,(FjExtent*)out,rejected,diagnostic);
+        CHECK(status(result,frame_rows[i].category));
+        CHECK(!frame_rows[i].failure_valid || failure.reason==frame_rows[i].reason);
+        const FjExtent actual = op ? geometry.full_frame : domain;
+        if (frame_rows[i].output_valid) {
+            CHECK(actual.x==frame_rows[i].expected[0] && actual.y==frame_rows[i].expected[1] && actual.width==frame_rows[i].expected[2] && actual.height==frame_rows[i].expected[3]);
+            CHECK(!op || (frame_pixel_word(geometry.pixel_size_um)==frame_rows[i].pixel && frame_diffusion_word(geometry.pixel_size_um)==frame_rows[i].wide));
+        }
+        if (frame_rows[i].diagnostic) {
+            CHECK(error.length==strlen(frame_rows[i].diagnostic));
+            if (error.capacity) CHECK(strcmp(text,frame_rows[i].diagnostic)==0);
+            if (kind==14 || kind==15) CHECK(text[error.capacity]=='!');
+        }
+        printf("FRAME_CASE {\"case\":\"%s\",\"envelope\":[%u,%u,%d,",frame_rows[i].name,result.category,result.api,result.native_code);
+        if (frame_rows[i].failure_valid) printf("%u",failure.reason); else printf("null");
+        printf("],\"domain\":");
+        if (frame_rows[i].output_valid) printf("[%d,%d,%d,%d]",actual.x,actual.y,actual.width,actual.height); else printf("null");
+        printf(",\"pixel_bits\":");
+        if (op && frame_rows[i].output_valid) printf("%" PRIu32,frame_pixel_word(geometry.pixel_size_um)); else printf("null");
+        printf(",\"diffusion_bits\":");
+        if (op && frame_rows[i].output_valid) printf("%" PRIu64,frame_diffusion_word(geometry.pixel_size_um)); else printf("null");
+        printf(",\"diagnostic\":");
+        if (frame_rows[i].diagnostic) printf("\"%s\"",error.capacity?text:""); else printf("null");
+        printf("}\n");
+    }
+    return 0;
+}
+
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     _Static_assert(sizeof(wchar_t) == 2, "Windows UTF16 path");
@@ -1730,6 +1828,7 @@ int main(int argc, char** argv) {
     CHECK(scanner_descriptor_values() == 0);
     CHECK(post_cases() == 0);
     CHECK(gaussian_values() == 0);
+    CHECK(frame_values() == 0);
     static const size_t facts[] = {
 #define FJ_DEVELOPMENT_TYPE(t) sizeof(t), _Alignof(t),
 #define FJ_DEVELOPMENT_FIELD(t, f) offsetof(t, f),

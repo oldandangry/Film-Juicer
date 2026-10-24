@@ -100,6 +100,10 @@ def execute(arguments):
     forbidden = re.compile(forbidden.pattern + r"|reconstruction::testing::|film::reference::testing::")
     forbidden = re.compile(forbidden.pattern + r"|SpectralAllocationProbe::|gaussian_faults::|rejectNativeAllocation|rejectedNativeBytes")
     strings = [
+        b"frame geometry fixture panic",
+        b"FrameGeometryTest",
+        b"--capture-frame-geometry",
+        b"--frame-geometry",
         b"film input boundary fixture panic",
         b"film development acquire fixture panic",
         b"film development view fixture panic",
@@ -179,6 +183,8 @@ def execute(arguments):
     consumed_paths.extend([balance_manifest, balance_payload])
     descriptor_manifest, descriptor_payload, descriptor_context, _, _ = scanner_descriptor_fixture(arguments.preset)
     post_manifest, post_payload, post_context, _, _ = scanner_post_fixture(arguments.preset)
+    frame_manifest, frame_payload, frame_context, _ = frame_fixture(arguments.preset)
+    consumed_paths.extend([frame_manifest, frame_payload, frame_context, frame_manifest.parent / "inputs.json"])
     gaussian_manifest, gaussian_payload, gaussian_context, _, _ = gaussian_fixture(arguments.preset)
     consumed_paths.extend([gaussian_manifest, gaussian_payload, gaussian_context])
     consumed_paths.extend([post_manifest, post_payload, post_context])
@@ -239,6 +245,8 @@ def execute(arguments):
         "fj_legacy_scanner_color_prepare",
         "fj_legacy_scanner_lut_describe",
         "fj_legacy_scanner_post_describe",
+        "fj_legacy_frame_domain_prepare",
+        "fj_legacy_frame_geometry_prepare",
         "fj_legacy_gaussian_kernel_acquire",
         "fj_legacy_gaussian_kernel_view",
         "fj_legacy_gaussian_kernel_release",
@@ -285,6 +293,7 @@ def execute(arguments):
     scanner_descriptor_results = []
     scanner_post_results = []
     gaussian_results = []
+    frame_results = []
     reference_results = []
     for name, source in probes:
         executable = out / (name + suffix)
@@ -522,6 +531,13 @@ def execute(arguments):
                 assert match and match[1] == expected["case"], line
                 assert [int(x) for x in match.groups()[1:]] == [*expected["envelope"], expected["hash"]], line
                 scanner_post_results.append(expected)
+            _, _, _, frame_spec = frame_fixture(arguments.preset)
+            lines = [line for line in output.splitlines() if line.startswith("FRAME_CASE ")]
+            assert len(lines) == len(frame_spec["production_cases"])
+            for line, expected in zip(lines, frame_spec["production_cases"], strict=True):
+                actual = json.loads(line.removeprefix("FRAME_CASE "))
+                assert actual == expected, actual["case"]
+                frame_results.append(actual)
             _, _, _, _, gaussian_cases = gaussian_fixture(arguments.preset)
             lines = [line for line in output.splitlines() if line.startswith("GAUSSIAN_CASE ")]
             assert len(lines) == len(gaussian_cases)
@@ -579,6 +595,8 @@ def execute(arguments):
                 "scanner_color_results": scanner_color_results,
                 "scanner_descriptor_results": scanner_descriptor_results,
                 "scanner_post_results": scanner_post_results,
+                "frame_results": frame_results,
+                "frame_fixture": {"manifest": str(frame_manifest), "payload": str(frame_payload), "context": str(frame_context), "logical_preset": arguments.preset},
                 "gaussian_results": gaussian_results,
                 "gaussian_fixture": {"manifest": str(gaussian_manifest), "payload": str(gaussian_payload), "context": str(gaussian_context), "logical_preset": arguments.preset},
                 "scanner_post_fixture": {"manifest": str(post_manifest), "payload": str(post_payload), "context": str(post_context), "logical_preset": arguments.preset},
@@ -1068,6 +1086,40 @@ def expected_scanner_color_header(out):
         stream.write("static const uint64_t scanner_color_hashes[] = {" + ",".join("UINT64_C(%d)" % row["expected"]["hash"] for row in rows) + "};\n")
 
 
+def frame_fixture(preset):
+    directory = root / "tests/frame/geometry-fixtures"
+    manifest = directory / "manifest.json"
+    spec = json.loads(manifest.read_bytes())
+    logical = spec["presets"][preset]["native"]
+    payload = directory / spec["payloads"][logical]
+    context = directory / spec["contexts"][logical]
+    for path in (payload, context, directory / "inputs.json"):
+        assert digest(path) == spec["sha256"][path.name]
+    captured = load_shared_fixture(directory / logical)
+    assert captured["preset"] == preset
+    assert len(captured["domains"]) == 15 and len(captured["geometry"]) == 22
+    assert len(spec["production_cases"]) == len(spec["production_inputs"]) == 69
+    return manifest, payload, context, spec
+
+
+def expected_frame_header(out):
+    _, _, _, spec = frame_fixture(arguments.preset)
+    with (out / "production-film-expected.h").open("a") as stream:
+        stream.write("static const struct { const char* name; int operation, kind; int32_t input[4], expected[4]; uint32_t film, pixel, category, reason; uint64_t wide; int output_valid, failure_valid; const char* diagnostic; } frame_rows[] = {\n")
+        for source, expected in zip(spec["production_inputs"], spec["production_cases"], strict=True):
+            assert source["case"] == expected["case"]
+            fields = [json.dumps(source["case"]), str(source["operation"]), str(source["kind"]),
+                      "{" + ",".join(map(str, source["input"])) + "}",
+                      "{" + ",".join(map(str, expected["domain"] or [0]*4)) + "}",
+                      str(source["film_bits"]) + "U", str(expected["pixel_bits"] or 0) + "U",
+                      str(expected["envelope"][0]) + "U", str(expected["envelope"][3] or 0) + "U",
+                      "UINT64_C(" + str(expected["diffusion_bits"] or 0) + ")",
+                      str(int(expected["domain"] is not None)), str(int(expected["envelope"][3] is not None)),
+                      "NULL" if expected["diagnostic"] is None else json.dumps(expected["diagnostic"])]
+            stream.write("{" + ",".join(fields) + "},\n")
+        stream.write("};\n")
+
+
 def gaussian_fixture(preset):
     directory = root / "tests/optics/gaussian-fixtures"
     manifest = directory / "manifest.json"
@@ -1258,4 +1310,5 @@ if __name__ == "__main__":
     expected_scanner_descriptor_header(arguments.artifacts)
     expected_scanner_post_header(arguments.artifacts)
     expected_gaussian_header(arguments.artifacts)
+    expected_frame_header(arguments.artifacts)
     execute(arguments)

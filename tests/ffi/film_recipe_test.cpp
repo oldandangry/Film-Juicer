@@ -32,6 +32,7 @@
 #include "RustAssetBridge.h"
 #include "RustScannerBridge.h"
 #include "RustGaussianBridge.h"
+#include "RustFrameBridge.h"
 #include "juicer_cuda_owner.h"
 #include "spectral_allocation_probe.h"
 #include "print_illuminant_fixture.h"
@@ -298,7 +299,18 @@ namespace {
 #include "scanner_lut_descriptor_test.inc"
 #include "scanner_post_effects_test.inc"
 #include "gaussian_kernel_test.inc"
+#include "frame_geometry_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "frame" || std::string_view(argv[3]) == "frame-products")) {
+        layouts();
+        const auto manifest = read(argv[2]);
+        const auto captured = load_shared_fixture(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>(), "manifest.json");
+        require(captured.at("preset") == argv[4], "frame fixture native context");
+        FrameGeometryTest::values(captured, std::string_view(argv[3]) == "frame-products");
+        if (std::string_view(argv[3]) == "frame")
+            FrameGeometryTest::boundary();
+        return 0;
+    }
     if (argc == 5 && (std::string_view(argv[3]) == "gaussian" || std::string_view(argv[3]) == "gaussian-products")) {
         layouts();
         const auto manifest = read(argv[2]);

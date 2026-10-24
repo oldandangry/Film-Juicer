@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "JuicerState.h"
+#include "RustFrameBridge.h"
 #include "ColorTransforms.h"
 #include "DiffusionHostBehavior.h"
 #include "Illuminants.h"
@@ -28,6 +29,22 @@
 #include "mainProcessing.h"
 
 namespace {
+    Spektrafilm::DiffusionFrameDomain frame_domain(const OfxRectI& bounds) {
+        JuicerFrame::Domain domain{};
+        JuicerFrame::Failure failure;
+        if (!JuicerFrame::domain_from_bounds({bounds.x1, bounds.y1, bounds.x2, bounds.y2}, domain, failure)) {
+#if JUICER_DIAGNOSTICS_COMPILED
+            if (failure.reason == JuicerFrame::FailureReason::DomainRange) {
+                JTRACE("CUDA", "FATAL: frame descriptor dimensions exceed signed integer range");
+            } else {
+                JTRACE("CUDA", failure.delivery.diagnostic);
+            }
+#endif
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        return {domain.x, domain.y, domain.width, domain.height};
+    }
+
     inline const char* cstr_or_default_if_null(const char* value, const char* fallback);
 
     struct RenderFatalTrace {
@@ -1689,6 +1706,14 @@ JuicerEffect::~JuicerEffect() {
     throw OFX::Exception::Suite(kOfxStatErrFatal);
 }
 
+#if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
+namespace JuicerFrame::FrameGeometryTest {
+    void full_domain(const Spektrafilm::DiffusionFrameDomain&);
+    void scalar_pixel(float);
+    void effects_domain(const Spektrafilm::FilmJuicerEffectsGeometry&);
+} // namespace JuicerFrame::FrameGeometryTest
+#endif
+
 void JuicerEffect::render(const OFX::RenderArguments& args) {
     const bool cudaRoute = args.isEnabledCudaRender;
     if (!cudaRoute) {
@@ -1728,18 +1753,10 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     }
     if (roi.x2 <= roi.x1 || roi.y2 <= roi.y1)
         return;
-    const auto frame_domain = [](const OfxRectI& bounds) {
-        const auto width = static_cast<std::int64_t>(bounds.x2) - bounds.x1;
-        const auto height = static_cast<std::int64_t>(bounds.y2) - bounds.y1;
-        // Descriptors use signed int dimensions before the raw CUDA inspection.
-        if (width > std::numeric_limits<int>::max() || width < std::numeric_limits<int>::min() ||
-            height > std::numeric_limits<int>::max() || height < std::numeric_limits<int>::min()) {
-            JTRACE("CUDA", "FATAL: frame descriptor dimensions exceed signed integer range");
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-        }
-        return Spektrafilm::DiffusionFrameDomain{bounds.x1, bounds.y1, static_cast<int>(width), static_cast<int>(height)};
-    };
     const auto fullDomain = frame_domain(fullBounds);
+#if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
+    JuicerFrame::FrameGeometryTest::full_domain(fullDomain);
+#endif
     const bool fullFrame = (roi.x1 == fullBounds.x1 && roi.y1 == fullBounds.y1 &&
                             roi.x2 == fullBounds.x2 && roi.y2 == fullBounds.y2);
 
@@ -1791,15 +1808,19 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
-    const double longEdgePx = static_cast<double>(std::max(fullDomain.width, fullDomain.height));
     const std::shared_ptr<const DirectRenderState> directState = admission.directState;
     const std::shared_ptr<const PrintRenderState> printState = admission.printState;
     const RenderRecipe& focusedRecipe = printRoute ? printState->recipe : directState->recipe;
-    const double filmFormatMm = focusedRecipe.filmRaw.filmFormatLongEdgeMm;
-    const float pixelSizeUm =
-        (filmFormatMm > 0.0 && longEdgePx > 0.0)
-            ? static_cast<float>((filmFormatMm * 1000.0) / longEdgePx)
-            : 0.0f;
+    JuicerFrame::Geometry geometry{};
+    JuicerFrame::Failure geometryFailure;
+    if (!JuicerFrame::prepare_geometry({fullDomain.originX, fullDomain.originY, fullDomain.width, fullDomain.height}, focusedRecipe.filmRaw.filmFormatLongEdgeMm, geometry, geometryFailure)) {
+        JTRACE("CUDA", geometryFailure.delivery.diagnostic);
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    const float pixelSizeUm = geometry.pixelSizeUm;
+#if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
+    JuicerFrame::FrameGeometryTest::scalar_pixel(pixelSizeUm);
+#endif
     if (traceVerbose) {
         std::string msg = printRoute ? "render print state build=" : "render direct state build=";
         msg += std::to_string(printRoute ? printState->buildCounter : directState->buildCounter);
@@ -1846,6 +1867,9 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         effectsGeometry.scaleX = scale.x;
         effectsGeometry.scaleY = scale.y;
         effectsGeometry.pixelAspectRatio = srcImg->getPixelAspectRatio();
+#if defined(JUICER_FRAME_GEOMETRY_TEST_HOOK)
+        JuicerFrame::FrameGeometryTest::effects_domain(effectsGeometry);
+#endif
     }
 
     // The callback retains image leases through inspection and CUDA submission.

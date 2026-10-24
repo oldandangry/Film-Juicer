@@ -2290,3 +2290,33 @@ extern "C" fn fj_test_gaussian_kernel_acquires() -> usize {
 extern "C" fn fj_test_gaussian_kernel_live_owners() -> usize {
     crate::optics_bridge::gaussian_faults::counts()[1]
 }
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// Live aligned required input; exclusive/disjoint initialized writable peers and
+/// optional bounded diagnostic backing, all borrowed through synchronous return.
+unsafe extern "C" fn fj_test_frame_domain_prepare(
+    input: *const crate::cuda::sys::FjRect,
+    out: *mut crate::cuda::sys::FjExtent,
+    failure: *mut crate::frame_bridge::FjFrameGeometryFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade shares the production checked body and foreign contract.
+    unsafe { crate::frame_bridge::prepare_domain(input, out, failure, error) }
+}
+#[unsafe(no_mangle)]
+/// # Safety
+/// Same fixed-record obligations as the frame-domain facade.
+unsafe extern "C" fn fj_test_frame_geometry_prepare(
+    input: *const crate::frame_bridge::FjFrameGeometryInput,
+    out: *mut crate::frame_bridge::FjFrameGeometry,
+    failure: *mut crate::frame_bridge::FjFrameGeometryFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The facade shares the production checked body and foreign contract.
+    unsafe { crate::frame_bridge::prepare_geometry(input, out, failure, error) }
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_frame_geometry_fault(operation: u32, fault: u32) -> FjStatus {
+    crate::frame_bridge::faults::arm(operation, fault)
+}

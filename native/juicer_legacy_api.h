@@ -1548,6 +1548,34 @@ FjStatus fj_legacy_gaussian_kernel_acquire(const FjGaussianKernelInput*, FjGauss
 FjStatus fj_legacy_gaussian_kernel_view(const FjGaussianKernelOwner*, FjGaussianKernelView*, FjGaussianKernelFailure*, FjErrorBuffer*);
 FjStatus fj_legacy_gaussian_kernel_release(FjGaussianKernelOwner*, FjErrorBuffer*);
 
+/* SF_TEMP_BRIDGE_FRAME_GEOMETRY: synchronous callback values, remove with the
+ * final native OFX consumer, no later than S6.D. Signed dimensions admit neither
+ * positive physical dimensions nor allocation coverage. Required records are
+ * initialized/live/aligned; writable peers and optional diagnostic backing are
+ * exclusive and disjoint. No pointer escapes return. Each valid output/failure
+ * is cleared before peer admission. Null optional/zero-capacity diagnostics work.
+ * NONE/RAW/DOMAIN_RANGE/PANIC map to status categories 0/2/3/8 (api/code zero).
+ * DOMAIN_RANGE applies only to endpoint conversion. Geometry always completes
+ * the scalar expression, including successful +zero or +infinity. No heap owner.
+ */
+#define FJ_FRAME_GEOMETRY_NONE UINT32_C(0)
+#define FJ_FRAME_GEOMETRY_RAW UINT32_C(1)
+#define FJ_FRAME_GEOMETRY_DOMAIN_RANGE UINT32_C(2)
+#define FJ_FRAME_GEOMETRY_PANIC UINT32_C(3)
+typedef struct FjFrameGeometryInput {
+    FjExtent full_frame;
+    float film_format_long_edge_mm;
+} FjFrameGeometryInput;
+typedef struct FjFrameGeometry {
+    FjExtent full_frame;
+    float pixel_size_um;
+} FjFrameGeometry;
+typedef struct FjFrameGeometryFailure {
+    uint32_t reason;
+} FjFrameGeometryFailure;
+FjStatus fj_legacy_frame_domain_prepare(const FjRect*, FjExtent*, FjFrameGeometryFailure*, FjErrorBuffer*);
+FjStatus fj_legacy_frame_geometry_prepare(const FjFrameGeometryInput*, FjFrameGeometry*, FjFrameGeometryFailure*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

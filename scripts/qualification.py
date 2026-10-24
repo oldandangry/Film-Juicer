@@ -319,6 +319,26 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
     if len(expected_gaussian) != 201 or document.get("gaussian_results") != expected_gaussian:
         raise ValueError("production Gaussian full arrays/metadata/failure results are incomplete")
 
+    frame_manifest = root / "tests/frame/geometry-fixtures/manifest.json"
+    frame_spec = json.loads(frame_manifest.read_bytes())
+    frame_logical = frame_spec["presets"][document["preset"]]["native"]
+    frame_payload = frame_manifest.parent / frame_spec["payloads"][frame_logical]
+    frame_context = frame_manifest.parent / frame_spec["contexts"][frame_logical]
+    frame = document.get("frame_fixture", {})
+    if frame.get("logical_preset") != document["preset"] or any(
+            resolve(frame.get(key, "")) != path for key, path in
+            (("manifest", frame_manifest), ("payload", frame_payload), ("context", frame_context))):
+        raise ValueError("production frame geometry fixture membership is incomplete")
+    for path in (frame_manifest, frame_payload, frame_context, frame_manifest.parent / "inputs.json"):
+        checksum = digest(path)
+        if (inputs.get(path.relative_to(root).as_posix()) != checksum
+                or reference_consumed.get(str(path)) != checksum
+                or (path != frame_manifest and checksum != frame_spec["sha256"][path.name])):
+            raise ValueError("production frame geometry consumed fixture identity changed")
+    frame_expected = frame_spec["production_cases"]
+    if len(frame_expected) != 69 or len({row["case"] for row in frame_expected}) != 69 or document.get("frame_results") != frame_expected:
+        raise ValueError("production frame geometry full fields/words/failure results are incomplete")
+
     headers = {name: checksum for name, checksum in consumed.items()
                if resolve(name).parent == manifest.parent and resolve(name).suffix == ".h"}
     if str(manifest.parent / "production-film-expected.h") not in {str(resolve(name)) for name in headers}:
@@ -455,7 +475,7 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.add(root / "tests/ffi/color_preparation_test.cpp")
             paths.update(root / "tests/ffi" / name for name in (
                 "film_recipe_test.cpp", "exposure_fixture.h", "film_recipe_abi_c.c", "film_recipe_abi_cpp.inc",
-                "film_recipe_abi_facts.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
+                "film_recipe_abi_facts.inc", "frame_geometry_test.inc", "gaussian_kernel_test.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
             paths.update((root / "tests/film/reference-fixtures").glob("*.json"))
             paths.update((root / "tests/print/illuminant-fixtures").glob("*.json"))
             paths.update((root / "tests/print/preflash-fixtures").glob("*.json"))
@@ -465,6 +485,7 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.update((root / "tests/scanner/descriptor-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/post-effects-fixtures").glob("*.json"))
             paths.update((root / "tests/optics/gaussian-fixtures").glob("*.json"))
+            paths.update((root / "tests/frame/geometry-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/color-fixtures").glob("*.json"))
             paths.update((root / "tests/quality").glob("test_rust_*.py"))
             paths.update(p for p in (root / "tests/quality/fixtures").rglob("*.rs"))

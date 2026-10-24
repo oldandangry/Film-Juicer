@@ -310,6 +310,24 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_frame_geometry_is_complete_private_and_readonly(self) -> None:
+        for fixture, expected in (
+            ("frame_complete", None),
+            ("frame_construction", {"E0451": ("Geometry { ..geometry }",)}),
+            ("frame_private", {"E0616": ("geometry.domain", "geometry.pixel_size_um")}),
+            ("frame_default", {"E0599": ("Geometry::default()",)}),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_gaussian_is_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("gaussian_complete", None),

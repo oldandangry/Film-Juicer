@@ -387,6 +387,12 @@ FjStatus fj_test_gaussian_kernel_fault(uint32_t operation, uint32_t fault);
 size_t fj_test_gaussian_kernel_acquires(void);
 size_t fj_test_gaussian_kernel_live_owners(void);
 
+FjStatus fj_test_frame_domain_prepare(const FjRect*, FjExtent*, FjFrameGeometryFailure*, FjErrorBuffer*);
+FjStatus fj_test_frame_geometry_prepare(const FjFrameGeometryInput*, FjFrameGeometry*, FjFrameGeometryFailure*, FjErrorBuffer*);
+FjStatus fj_test_frame_geometry_fault(uint32_t operation, uint32_t fault);
+FjStatus fj_test_frame_domain_c_prepare(const FjRect*, FjExtent*, FjFrameGeometryFailure*, FjErrorBuffer*);
+FjStatus fj_test_frame_geometry_c_prepare(const FjFrameGeometryInput*, FjFrameGeometry*, FjFrameGeometryFailure*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

@@ -308,6 +308,44 @@ class NativeBoundary(unittest.TestCase):
         self.assertNotIn("std::exp", bridge)
         self.assertNotIn("Hash::", bridge)
 
+    def test_retired_frame_geometry_mathematics_and_capture_access_stay_deleted(self):
+        source = (ROOT / "src/JuicerEffect.cpp").read_text()
+        hooks = "".join((ROOT / "tests/ofx" / name).read_text() for name in ("frame_geometry_test_hooks.h", "frame_geometry_test_hooks.cpp", "adapter_trace_test.cpp"))
+        pattern = r"\b(?:native_frame_domain|native_pixel_size|capture_domain|capture_pixel_size)\s*\(|filmFormatMm\s*\*\s*1000\.0|static_cast<std::int64_t>\(bounds\.x2\)"
+        self.assertNotRegex(source + hooks, pattern)
+        self.assertNotIn("--capture-frame-geometry", hooks)
+        for retired in ("float native_pixel_size() {}", "auto capture_domain() {}", "filmFormatMm * 1000.0", "static_cast<std::int64_t>(bounds.x2)"):
+            self.assertRegex(source + retired, pattern)
+        bridge = (ROOT / "src/RustFrameBridge.cpp").read_text()
+        for formula in ("std::max", "1000.0", "bounds.x2 -", "static_cast<float>"):
+            self.assertNotIn(formula, bridge)
+        header = (ROOT / "src/RustFrameBridge.h").read_text()
+        self.assertIn("SF_TEMP_BRIDGE_FRAME_GEOMETRY", header)
+        self.assertIn("S6.D", header)
+
+    def test_frame_geometry_hooks_are_absent_from_ordinary_objects(self):
+        build = Path.cwd().parent
+        if not (build / "CMakeCache.txt").is_file():
+            build = ROOT / "out/build" / ("windows-clang-debug" if os.name == "nt" else "linux-debug")
+        compdb = json.loads((build / "compile_commands.json").read_bytes())
+        nm = find_llvm_nm()
+        self.assertTrue(nm, "qualified LLVM nm required for ordinary-object isolation")
+        for owner, source in (("juicer_adapter", "JuicerEffect.cpp"), ("juicer_host", "RustFrameBridge.cpp")):
+            rows = [row for row in compdb if owner + ".dir" in row["command"] and row["file"].endswith(source)]
+            self.assertEqual(len(rows), 1)
+            self.assertNotIn("JUICER_FRAME_GEOMETRY_TEST_HOOK", rows[0]["command"])
+            path = build / "CMakeFiles" / (owner + ".dir") / "src" / (source + (".obj" if os.name == "nt" else ".o"))
+            data = path.read_bytes()
+            symbols = subprocess.check_output([nm, "--demangle", str(path)], timeout=10).decode(errors="replace")
+            self.assertNotRegex(symbols, r"FrameGeometryTest::|frame_bridge::faults::|fj_test_frame|native_frame_domain|native_pixel_size")
+            for text in ("FrameGeometryTest", "frame geometry fixture panic", "--capture-frame-geometry", "--frame-geometry", "fj_test_frame"):
+                for encoding in ("utf-8", "utf-16-le"):
+                    pattern = text.encode(encoding)
+                    self.assertNotIn(pattern, data)
+                    with self.assertRaises(AssertionError):
+                        self.assertNotIn(pattern, data + pattern)
+            print("Frame geometry ordinary-object isolation", path, hashlib.sha256(data).hexdigest())
+
     def test_gaussian_hooks_and_allocator_are_absent_from_ordinary_objects(self):
         build = Path.cwd().parent
         if not (build / "CMakeCache.txt").is_file():

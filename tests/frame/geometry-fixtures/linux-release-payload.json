@@ -1,0 +1,480 @@
+{
+  "domains": [
+    {
+      "bounds": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "domain": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "name": "landscape",
+      "range": false
+    },
+    {
+      "bounds": [
+        -11,
+        17,
+        -6,
+        24
+      ],
+      "domain": [
+        -11,
+        17,
+        5,
+        7
+      ],
+      "name": "portrait",
+      "range": false
+    },
+    {
+      "bounds": [
+        3,
+        -4,
+        10,
+        3
+      ],
+      "domain": [
+        3,
+        -4,
+        7,
+        7
+      ],
+      "name": "square",
+      "range": false
+    },
+    {
+      "bounds": [
+        9,
+        -8,
+        9,
+        -8
+      ],
+      "domain": [
+        9,
+        -8,
+        0,
+        0
+      ],
+      "name": "empty",
+      "range": false
+    },
+    {
+      "bounds": [
+        10,
+        20,
+        -3,
+        -8
+      ],
+      "domain": [
+        10,
+        20,
+        -13,
+        -28
+      ],
+      "name": "reversed",
+      "range": false
+    },
+    {
+      "bounds": [
+        0,
+        1,
+        2147483647,
+        2
+      ],
+      "domain": [
+        0,
+        1,
+        2147483647,
+        1
+      ],
+      "name": "max-width",
+      "range": false
+    },
+    {
+      "bounds": [
+        0,
+        0,
+        -2147483648,
+        1
+      ],
+      "domain": [
+        0,
+        0,
+        -2147483648,
+        1
+      ],
+      "name": "min-width",
+      "range": false
+    },
+    {
+      "bounds": [
+        -2147483648,
+        -4,
+        -1,
+        2
+      ],
+      "domain": [
+        -2147483648,
+        -4,
+        2147483647,
+        6
+      ],
+      "name": "positive-limit",
+      "range": false
+    },
+    {
+      "bounds": [
+        2147483647,
+        0,
+        -1,
+        1
+      ],
+      "domain": [
+        2147483647,
+        0,
+        -2147483648,
+        1
+      ],
+      "name": "negative-limit",
+      "range": false
+    },
+    {
+      "bounds": [
+        -1,
+        0,
+        2147483647,
+        1
+      ],
+      "name": "width-over",
+      "range": true
+    },
+    {
+      "bounds": [
+        1,
+        0,
+        -2147483648,
+        1
+      ],
+      "name": "width-under",
+      "range": true
+    },
+    {
+      "bounds": [
+        0,
+        -1,
+        1,
+        2147483647
+      ],
+      "name": "height-over",
+      "range": true
+    },
+    {
+      "bounds": [
+        0,
+        1,
+        1,
+        -2147483648
+      ],
+      "name": "height-under",
+      "range": true
+    },
+    {
+      "bounds": [
+        -2147483648,
+        -2147483648,
+        2147483647,
+        2147483647
+      ],
+      "name": "both-over",
+      "range": true
+    },
+    {
+      "bounds": [
+        0,
+        0,
+        -2147483648,
+        -2147483648
+      ],
+      "domain": [
+        0,
+        0,
+        -2147483648,
+        -2147483648
+      ],
+      "name": "both-min",
+      "range": false
+    }
+  ],
+  "geometry": [
+    {
+      "diffusion_bits": 4662376645699567616,
+      "domain": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832,
+      "name": "landscape",
+      "pixel_bits": 1168160475
+    },
+    {
+      "diffusion_bits": 4662376645699567616,
+      "domain": [
+        -11,
+        17,
+        5,
+        7
+      ],
+      "film_bits": 1108344832,
+      "name": "portrait",
+      "pixel_bits": 1168160475
+    },
+    {
+      "diffusion_bits": 4661014508095930368,
+      "domain": [
+        3,
+        -4,
+        9,
+        9
+      ],
+      "film_bits": 1108344832,
+      "name": "square",
+      "pixel_bits": 1165623296
+    },
+    {
+      "diffusion_bits": 0,
+      "domain": [
+        1,
+        -2,
+        0,
+        0
+      ],
+      "film_bits": 1108344832,
+      "name": "zero",
+      "pixel_bits": 0
+    },
+    {
+      "diffusion_bits": 0,
+      "domain": [
+        2,
+        3,
+        -7,
+        -5
+      ],
+      "film_bits": 1108344832,
+      "name": "negative",
+      "pixel_bits": 0
+    },
+    {
+      "diffusion_bits": 4664638498421080064,
+      "domain": [
+        9,
+        10,
+        -7,
+        5
+      ],
+      "film_bits": 1108344832,
+      "name": "mixed",
+      "pixel_bits": 1172373504
+    },
+    {
+      "diffusion_bits": 4535569027459710976,
+      "domain": [
+        0,
+        0,
+        2147483647,
+        1
+      ],
+      "film_bits": 1108344832,
+      "name": "max",
+      "pixel_bits": 931962880
+    },
+    {
+      "diffusion_bits": 0,
+      "domain": [
+        0,
+        0,
+        -2147483648,
+        -2147483648
+      ],
+      "film_bits": 1108344832,
+      "name": "min",
+      "pixel_bits": 0
+    },
+    {
+      "diffusion_bits": 4652741154469576704,
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 1090519040,
+      "name": "film-lower",
+      "pixel_bits": 1150212974
+    },
+    {
+      "diffusion_bits": 4670441406722998272,
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 1123024896,
+      "name": "film-upper",
+      "pixel_bits": 1183182263
+    },
+    {
+      "diffusion_bits": 4662337377887322112,
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 1108279296,
+      "name": "film-fractional",
+      "pixel_bits": 1168087333
+    },
+    {
+      "diffusion_bits": 0,
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 0,
+      "name": "film-positive-zero",
+      "pixel_bits": 0
+    },
+    {
+      "diffusion_bits": 0,
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 2147483648,
+      "name": "film-negative-zero",
+      "pixel_bits": 0
+    },
+    {
+      "diffusion_bits": 0,
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 3212836864,
+      "name": "film-negative",
+      "pixel_bits": 0
+    },
+    {
+      "diffusion_bits": 9218868437227405312,
+      "domain": [
+        5,
+        -9,
+        7,
+        5
+      ],
+      "film_bits": 2139095040,
+      "name": "film-infinity",
+      "pixel_bits": 2139095040
+    },
+    {
+      "diffusion_bits": 3980970964362985472,
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 1,
+      "name": "film-subnormal",
+      "pixel_bits": 1000
+    },
+    {
+      "diffusion_bits": 4084553755792506880,
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 8388608,
+      "name": "film-normal",
+      "pixel_bits": 91881472
+    },
+    {
+      "diffusion_bits": 9218868437227405312,
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 2139095039,
+      "name": "film-max",
+      "pixel_bits": 2139095040
+    },
+    {
+      "diffusion_bits": 0,
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 2143294004,
+      "name": "film-nan",
+      "pixel_bits": 0
+    },
+    {
+      "diffusion_bits": 0,
+      "domain": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "film_bits": 4290777652,
+      "name": "film-negative-nan",
+      "pixel_bits": 0
+    },
+    {
+      "diffusion_bits": 4630263366890291200,
+      "domain": [
+        0,
+        0,
+        1000,
+        500
+      ],
+      "film_bits": 1108344832,
+      "name": "exact-quotient",
+      "pixel_bits": 1108344832
+    },
+    {
+      "diffusion_bits": 4662376645699567616,
+      "domain": [
+        0,
+        0,
+        7,
+        5
+      ],
+      "film_bits": 1108344832,
+      "name": "roi-scale-par-independent",
+      "pixel_bits": 1168160475
+    }
+  ]
+}

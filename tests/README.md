@@ -1413,3 +1413,26 @@ identities, FIR/YVV separation, scratch and context-lifetime cases remain active
 Both Release OFF C11 probes execute 201 Gaussian value/failure cases, preserving
 all earlier probe memberships, including 410 post-effects and 41 LUT descriptor
 rows. The local Box allocation still has the established allocator-abort limit.
+
+### Frame domains and physical pixel size
+
+`Ffi.Host.FrameGeometry` checks fixed C11/C++20/Rust layouts and signatures,
+complete frozen values, independent clearing, raw admission, bounded diagnostics
+and contained panic. `Frame.Host.GeometryProducts` checks the native projection's
+complete signed fields, final f32 pixel word and its f64 diffusion widening.
+Both are host groups with 180-second deadlines. The immutable
+[frame fixtures](frame/geometry-fixtures/README.md) retain four native contexts.
+
+`Ofx.Gpu.FrameGeometry` calls the real render callback in the existing isolated
+adapter target, with valid pitched allocations for successful renders. It checks
+same-state geometry changes, source/destination/window distinctions, cached source
+pixel RoD/scale/PAR, live canonical RoD at the callback time, four routes, existing
+full-domain restrictions, early failure order and image leases. Acquisition reads
+metadata even with effects off; conditional effects consumption is proved by
+three bounded completed-phase observations. Failed effects-domain conversion
+retains the preceding canonical query and has no completed effects phase.
+
+Both final native Release testing-OFF gates link the existing C11 film probe
+against the exact Rust archive and check all 69 frame rows, plus all older probes.
+The temporary callback bridge retires with its actual last native OFX consumer,
+no later than S6.D; prepared-state integration remains separate.
