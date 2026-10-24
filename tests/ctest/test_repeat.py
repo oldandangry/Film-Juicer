@@ -252,7 +252,7 @@ class ArtifactSelectionTests(unittest.TestCase):
                    (CtestRepetitionTests, "test_empty_selection_cannot_qualify"))
         preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
         with tempfile.TemporaryDirectory(prefix="CI control evidence ") as temporary:
-            preset_root = Path(temporary) / "out/validation" / preset
+            preset_root = Path(temporary).resolve()
             for cls, method in classes:
                 with self.subTest(family=cls.__name__):
                     case = cls(method)
@@ -260,27 +260,30 @@ class ArtifactSelectionTests(unittest.TestCase):
                     fixture = None
                     def fail_command():
                         nonlocal fixture
-                        fixture = case.directory if cls is CtestRepetitionTests else case.root
-                        (fixture / "failure.py").write_text("raise SystemExit(17)\n")
-                        campaign = execution.Campaign(fixture, preset, "ci-failure-control", ["control"])
+                        fixture = case.directory if cls in (CheckpointTests, CtestRepetitionTests) else case.root
+                        workspace = case.root if cls is CheckpointTests else fixture
+                        (workspace / "failure.py").write_text("raise SystemExit(17)\n")
+                        campaign = execution.Campaign(workspace, preset, "ci-failure-control", ["control"])
                         campaign.run("control", [sys.executable, "failure.py"], inputs=["failure.py"], timeout=10)
                     setattr(case, method, fail_command)
                     with patch.dict(os.environ, {"JUICER_TEST_ARTIFACT_DIR": str(artifact_root), "JUICER_TEST_RETAIN_FIXTURES": ""}):
                         result = case.run(unittest.TestResult())
                     self.assertEqual(len(result.errors), 1, result.errors)
+                    self.assertIsNotNone(fixture, result.errors)
                     record = json.loads((fixture / MARKER).read_bytes())
                     self.assertEqual(record["outcome"], "failed")
                     self.assertEqual(record["test"], case.id())
                     self.assertTrue(record["errors"])
                     self.assertEqual(selected_paths(preset_root), [fixture])
-                    receipts = list((fixture / "out/validation" / preset / "ci-failure-control/attempts").glob("*/result.json"))
-                    self.assertEqual(len(receipts), 1)
+                    workspace = case.root if cls is CheckpointTests else fixture
+                    receipts = list((workspace / "out/validation" / preset / "ci-failure-control/attempts").glob("*/result.json"))
+                    self.assertEqual(len(receipts), 1, result.errors)
                     command = json.loads(receipts[0].read_bytes())
                     self.assertEqual(command["returncode"], 17)
                     self.assertTrue(command["process_tree"]["drained"])
                     self.assertTrue((receipts[0].parent / "process.json").is_file())
                     self.assertTrue((receipts[0].parent / "output.log").is_file())
-                    self.assertEqual((fixture / "failure.py").read_text(), "raise SystemExit(17)\n")
+                    self.assertEqual((workspace / "failure.py").read_text(), "raise SystemExit(17)\n")
                     # The controlled failure was consumed and its process tree drained.
                     case.temporary.cleanup()
 
@@ -300,7 +303,7 @@ class ArtifactSelectionTests(unittest.TestCase):
     def test_cli_selects_only_failed_families_and_npy_samples(self):
         family = "windows-clang" if os.name == "nt" else "linux"
         with tempfile.TemporaryDirectory(prefix="artifact paths ü ") as temporary:
-            workspace = Path(temporary)
+            workspace = Path(temporary).resolve()
             script = workspace / "tests/ctest/control_artifacts.py"
             script.parent.mkdir(parents=True)
             shutil.copyfile(ROOT / "tests/ctest/control_artifacts.py", script)

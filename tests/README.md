@@ -376,6 +376,9 @@ process diagnostics. Missing or malformed outcome markers remain unproved and
 are selected within those four family directories. Successful expected-negative controls, blocked simulations
 and explicit successful retention are excluded from automatic uploads. NPY
 failure samples in each preset's `rust-core/` directory are included separately.
+Each checkpoint fixture encloses its `project/` repository and any sibling
+external inputs in one directory. Its outer outcome governs retention of the
+whole directory, including external modules needed to reproduce a failed check.
 Selected workspaces include hidden reproduction inputs such as Cargo configuration.
 JUnit and `LastTest.log` uploads remain unconditional. Local selection tests do
 not establish hosted delivery; verify the uploaded artifact after download from

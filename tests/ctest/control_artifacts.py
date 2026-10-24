@@ -12,7 +12,7 @@ MARKER = Path("out/control-fixture.json")
 FAMILIES = ("checkpoint-controls", "build-evidence-controls", "registration-controls", "ctest-repetition-controls")
 
 
-def record_fixture(root, test, outcome=None):
+def record_fixture(root, test, outcome=None, *, owner_root=None):
     result = test._outcome.result if test._outcome else None
     messages = {
         kind: [trace for owner, trace in getattr(result, kind, ())
@@ -25,7 +25,7 @@ def record_fixture(root, test, outcome=None):
                    "failed" if any(messages.values()) else "passed")
     record = {
         "test": test.id(), "fixture": str(root), "outcome": outcome, **messages,
-        "blocked_owners": [str(p) for p in root.glob("out/verification-locks/*/owner.json")],
+        "blocked_owners": [str(p) for p in (owner_root or root).glob("out/verification-locks/*/owner.json")],
     }
     if sys.exception() is not None:
         record["cleanup_exception"] = traceback.format_exc()
