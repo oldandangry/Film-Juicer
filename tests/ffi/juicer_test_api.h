@@ -370,6 +370,9 @@ FjStatus fj_test_scanner_lut_fault(uint32_t operation, uint32_t fault);
 size_t fj_test_scanner_lut_live_owners(void);
 FjStatus fj_test_scanner_color_prepare(const FjScannerColorInput*, FjScannerColor*, FjScannerColorFailure*, FjErrorBuffer*);
 
+FjStatus fj_test_scanner_lut_describe(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*);
+FjStatus fj_test_scanner_lut_descriptor_fault(uint32_t fault);
+
 #ifdef __cplusplus
 }
 #endif

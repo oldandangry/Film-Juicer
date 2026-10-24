@@ -940,6 +940,21 @@ unchanged. `Ffi.Host.SharedFixtureFormat` reconstructs every original capture by
 for byte, including its line endings. Rust, ABI/native, prepared-upload and Release
 testing-OFF readers expand the same logical capture before their existing checks.
 
+`Ffi.Host.ScannerLutDescriptor` and `Scanner.Host.LutDescriptorProducts` check
+complete scanner spectral-LUT metadata through the safe Rust family, synchronous
+legacy transport, gated facade and same-signature native adapters. The independent
+[descriptor fixtures](scanner/descriptor-fixtures/README.md) preserve 520 literal
+cases and four products in four native contexts. Exact byte labels, NaN masks,
+signed-zero equivalence, unrestricted native polarity/resolution lanes, admission
+asymmetries, native defaults versus raw zero clearing, closed failure envelopes,
+C11/C++20/Rust ABI, projection integrity, expiry and direct-state early failure
+are covered. Existing scanner routes own the actual frame/cache/upload witnesses.
+Compiler probes enforce private complete construction, readonly getters and owned
+results. Both Release production gates execute 41 descriptor C11 cases alongside
+every older probe, with fixture/fault code excluded from normal artifacts.
+These are bounded characterization and construction checks; installed Resolve,
+visual acceptance, S4.D/E and parent closure remain separate.
+
 ### Scanner color construction
 
 `Ffi.Host.ScannerColor` checks complete scanner output construction through the

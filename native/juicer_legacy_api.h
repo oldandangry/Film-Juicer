@@ -1414,6 +1414,57 @@ typedef struct FjScannerColorFailure {
 #define FJ_SCANNER_COLOR_REASON_PANIC UINT32_C(5)
 FjStatus fj_legacy_scanner_color_prepare(const FjScannerColorInput*, FjScannerColor*, FjScannerColorFailure*, FjErrorBuffer*);
 
+/* SF_TEMP_BRIDGE_SCANNER_LUT_DESCRIPTOR: synchronous metadata; remove S4.E.
+ * Native selected-profile spectra/labels are borrowed by Rust scanner::describe_lut;
+ * native state/frame adapters consume the complete copied descriptor on success.
+ * Float counts are elements: channel_density_cmy is exactly 243 wavelength-major
+ * C/M/Y f32 samples (81 x 3); base_density is 81 positional f32 samples on the
+ * canonical 380..780 nm, 5 nm grid. Both spans are ignored when profile_present=0.
+ * Labels/key are exact length-delimited bytes, without terminators, UTF-8 checks
+ * or normalization. Empty byte spans permit any pointer and never read backing.
+ * mode=0 (Direct) ignores bounds_source, output_medium, print_profile_token,
+ * profile_viewing_illuminant and print_profile_key. mode=1 (Print) consumes the
+ * key, and consumes profile_viewing_illuminant only when profile_present=1.
+ * Input records/consumed backing must be initialized, readable and immutable.
+ * Records and consumed extents must be aligned, addressable and live until
+ * return. Read-only inputs may alias; writable result/failure/error records and
+ * nonempty diagnostic backing are exclusive, mutually disjoint and disjoint
+ * from inputs. Address checks do not prove actual allocation extent or lifetime.
+ * No input pointer survives return. Each present valid writable result/failure
+ * record clears independently before peer/input/diagnostic admission; failures
+ * leave the raw result entirely zero, distinct from the native adapter defaults.
+ * Both result/failure records are required. Optional error=NULL omits diagnostics;
+ * capacity=0 never accesses backing. Positive capacity requires writable backing;
+ * text truncates with a final NUL and length excluding that NUL.
+ */
+typedef struct FjScannerLutDescriptorInput {
+    uint32_t mode, route, capture_polarity, bounds_medium;
+    uint32_t bounds_source, output_medium, profile_present, resolution;
+    uint64_t density_bounds_hash, print_profile_token;
+    FjFloatSpan channel_density_cmy, base_density;
+    FjByteSpan viewing_illuminant, profile_viewing_illuminant;
+    FjByteSpan observer_identity, print_profile_key;
+} FjScannerLutDescriptorInput;
+typedef struct FjScannerLutDescriptor {
+    uint32_t route, medium, capture_polarity, resolution;
+    uint64_t density_bounds_hash, channel_density_hash, base_density_hash;
+    uint64_t viewing_illuminant_hash, observer_hash, hash;
+} FjScannerLutDescriptor;
+typedef struct FjScannerLutDescriptorFailure {
+    uint32_t reason, lane;
+} FjScannerLutDescriptorFailure;
+#define FJ_SCANNER_LUT_DESCRIPTOR_NONE UINT32_C(0)
+#define FJ_SCANNER_LUT_DESCRIPTOR_RAW UINT32_C(1)
+#define FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_RECIPE UINT32_C(2)
+#define FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_BOUNDS UINT32_C(3)
+#define FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_OBSERVER UINT32_C(4)
+#define FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_ILLUMINANT UINT32_C(5)
+#define FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_HASH UINT32_C(6)
+#define FJ_SCANNER_LUT_DESCRIPTOR_PRINT_RECIPE UINT32_C(7)
+#define FJ_SCANNER_LUT_DESCRIPTOR_PRINT_HASH UINT32_C(8)
+#define FJ_SCANNER_LUT_DESCRIPTOR_PANIC UINT32_C(9)
+FjStatus fj_legacy_scanner_lut_describe(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*);
+
 #ifdef __cplusplus
 }
 #endif

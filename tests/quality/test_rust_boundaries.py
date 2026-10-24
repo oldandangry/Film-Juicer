@@ -310,6 +310,26 @@ class RustBoundaryTests(unittest.TestCase):
             finally:
                 self.doCleanups()
 
+    def test_scanner_descriptor_is_complete_private_readonly_and_owned(self) -> None:
+        for fixture, expected in (
+            ("scanner_descriptor_complete", None),
+            ("scanner_descriptor_construction", {"E0451": ("scanner::LutDescriptor { ..descriptor }",)}),
+            ("scanner_descriptor_default", {"E0599": ("scanner::LutDescriptor::default()",)}),
+            ("scanner_descriptor_private", {"E0616": ("descriptor.route", "descriptor.hash")}),
+            ("scanner_descriptor_readonly", {"E0308": ("let _: &mut u64 = descriptor.hash()",)}),
+            ("scanner_descriptor_owned", None),
+        ):
+            self.attach("film-juicer-plugin/src/lib.rs", fixture)
+            try:
+                for release in self.profiles:
+                    for status, diagnostics in self.check_features("film-juicer-plugin", release):
+                        if expected is None:
+                            self.assertEqual(status, 0, diagnostics)
+                        else:
+                            self.assert_rejected(status, diagnostics, expected)
+            finally:
+                self.doCleanups()
+
     def test_scanner_color_is_complete_private_readonly_and_owned(self) -> None:
         for fixture, expected in (
             ("scanner_color_complete", None),

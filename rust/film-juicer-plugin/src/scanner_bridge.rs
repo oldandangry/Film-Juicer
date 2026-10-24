@@ -1556,3 +1556,249 @@ const _: () = {
             && offset_of!(FjScannerColorFailure, stage) == 4
     );
 };
+
+// SF_TEMP_BRIDGE_SCANNER_LUT_DESCRIPTOR: synchronous values; remove S4.E.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct FjScannerLutDescriptorInput {
+    pub(crate) mode: u32,
+    pub(crate) route: u32,
+    pub(crate) capture_polarity: u32,
+    pub(crate) bounds_medium: u32,
+    pub(crate) bounds_source: u32,
+    pub(crate) output_medium: u32,
+    pub(crate) profile_present: u32,
+    pub(crate) resolution: u32,
+    pub(crate) density_bounds_hash: u64,
+    pub(crate) print_profile_token: u64,
+    pub(crate) channel_density_cmy: FjFloatSpan,
+    pub(crate) base_density: FjFloatSpan,
+    pub(crate) viewing_illuminant: crate::cuda::sys::FjByteSpan,
+    pub(crate) profile_viewing_illuminant: crate::cuda::sys::FjByteSpan,
+    pub(crate) observer_identity: crate::cuda::sys::FjByteSpan,
+    pub(crate) print_profile_key: crate::cuda::sys::FjByteSpan,
+}
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct FjScannerLutDescriptor {
+    pub(crate) route: u32,
+    pub(crate) medium: u32,
+    pub(crate) capture_polarity: u32,
+    pub(crate) resolution: u32,
+    pub(crate) density_bounds_hash: u64,
+    pub(crate) channel_density_hash: u64,
+    pub(crate) base_density_hash: u64,
+    pub(crate) viewing_illuminant_hash: u64,
+    pub(crate) observer_hash: u64,
+    pub(crate) hash: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct FjScannerLutDescriptorFailure {
+    pub(crate) reason: u32,
+    pub(crate) lane: u32,
+}
+
+enum DescriptorFailure {
+    Raw,
+    Core(scanner::LutDescriptorError),
+    Panic,
+}
+impl DescriptorFailure {
+    fn envelope(&self) -> (u32, u32, u32) {
+        use scanner::LutDescriptorError as E;
+        match self {
+            Self::Raw => (1, 0, FJ_STATUS_UNSUPPORTED_INPUT),
+            Self::Core(E::DirectRecipe) => (2, 0, FJ_STATUS_PREPARATION_FAILURE),
+            Self::Core(E::DirectBounds) => (3, 0, FJ_STATUS_PREPARATION_FAILURE),
+            Self::Core(E::DirectObserver) => (4, 0, FJ_STATUS_PREPARATION_FAILURE),
+            Self::Core(E::DirectIlluminant) => (5, 0, FJ_STATUS_PREPARATION_FAILURE),
+            Self::Core(E::DirectHash(lane)) => (6, *lane, FJ_STATUS_PREPARATION_FAILURE),
+            Self::Core(E::PrintRecipe) => (7, 0, FJ_STATUS_PREPARATION_FAILURE),
+            Self::Core(E::PrintHash(lane)) => (8, *lane, FJ_STATUS_PREPARATION_FAILURE),
+            Self::Panic => (9, 0, FJ_STATUS_INTERNAL_FAILURE),
+        }
+    }
+}
+impl fmt::Display for DescriptorFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Raw => f.write_str("invalid scanner LUT descriptor arguments"),
+            Self::Core(error) => error.fmt(f),
+            Self::Panic => f.write_str("scanner LUT descriptor preparation panicked"),
+        }
+    }
+}
+
+/// # Safety
+/// Nonempty bytes are initialized, live, read-only and disjoint from writable
+/// storage for this synchronous operation. No input borrow escapes.
+unsafe fn descriptor_bytes<'a>(
+    span: crate::cuda::sys::FjByteSpan,
+) -> Result<&'a [u8], DescriptorFailure> {
+    if span.count == 0 {
+        return Ok(&[]);
+    }
+    if !valid_extent(span.data, span.count) {
+        return Err(DescriptorFailure::Raw);
+    }
+    // SAFETY: Extent admission and the caller's live backing obligation precede access.
+    Ok(unsafe { std::slice::from_raw_parts(span.data, span.count) })
+}
+
+/// # Safety
+/// Input and consumed backing are initialized and readable. Each present writable
+/// record/backing is exclusive and disjoint from every input and other writable
+/// region. All storage stays live until return; address admission does not prove
+/// arbitrary foreign pointer readability.
+pub(crate) unsafe fn describe_lut(
+    input: *const FjScannerLutDescriptorInput,
+    out: *mut FjScannerLutDescriptor,
+    failure: *mut FjScannerLutDescriptorFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    let valid_out = valid_extent(out, 1);
+    let valid_failure = valid_extent(failure, 1);
+    // SAFETY: Independently admitted exclusive records are cleared before peers.
+    unsafe {
+        if valid_out {
+            out.write_bytes(0, 1);
+        }
+        if valid_failure {
+            failure.write_bytes(0, 1);
+        }
+    }
+    let mut diagnostic = None;
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: Optional record/backing obey the exclusive storage contract.
+        diagnostic = Some(unsafe { Diagnostic::admit(error) }.map_err(|_| DescriptorFailure::Raw)?);
+        if !valid_out || !valid_failure || !valid_extent(input, 1) {
+            return Err(DescriptorFailure::Raw);
+        }
+        // SAFETY: Admitted initialized input record is borrowed only in this call.
+        let input = unsafe { &*input };
+        if input.mode > 1
+            || input.route > 3
+            || input.capture_polarity > 255
+            || input.bounds_medium > 255
+            || input.profile_present > 1
+            || input.mode == 1 && (input.bounds_source > 255 || input.output_medium > 255)
+        {
+            return Err(DescriptorFailure::Raw);
+        }
+        let route = match input.route {
+            0 => film_juicer_core::route::ScanRoute::NegativeDirect,
+            1 => film_juicer_core::route::ScanRoute::NegativePrint,
+            2 => film_juicer_core::route::ScanRoute::PositiveDirect,
+            3 => film_juicer_core::route::ScanRoute::PositivePrint,
+            _ => return Err(DescriptorFailure::Raw),
+        };
+        // SAFETY: Only consumed, admitted spans are borrowed; absent spectra and
+        // direct print-only storage are never inspected or referenced.
+        let (spectra, viewing, observer, key, profile_viewing) = unsafe {
+            let spectra = if input.profile_present == 1 {
+                Some(scanner::LutSpectra {
+                    channel_density_cmy: fixed_rows(input.channel_density_cmy)
+                        .map_err(|_| DescriptorFailure::Raw)?,
+                    base_density: fixed(input.base_density).map_err(|_| DescriptorFailure::Raw)?,
+                })
+            } else {
+                None
+            };
+            let viewing = descriptor_bytes(input.viewing_illuminant)?;
+            let observer = descriptor_bytes(input.observer_identity)?;
+            let key = if input.mode == 1 {
+                descriptor_bytes(input.print_profile_key)?
+            } else {
+                &[]
+            };
+            let profile_viewing = if input.mode == 1 && input.profile_present == 1 {
+                descriptor_bytes(input.profile_viewing_illuminant)?
+            } else {
+                &[]
+            };
+            (spectra, viewing, observer, key, profile_viewing)
+        };
+        let params = scanner::LutDescriptorParams {
+            route,
+            capture_polarity: input.capture_polarity as u8,
+            bounds_medium: input.bounds_medium as u8,
+            density_bounds_hash: input.density_bounds_hash,
+            viewing_illuminant: viewing,
+            observer_identity: observer,
+            resolution: input.resolution,
+        };
+        let selected = if input.mode == 0 {
+            scanner::LutDescriptorInput::Direct {
+                params,
+                film: spectra,
+            }
+        } else {
+            scanner::LutDescriptorInput::Print {
+                params,
+                print: spectra,
+                profile_key: key,
+                profile_token: input.print_profile_token,
+                bounds_source: input.bounds_source as u8,
+                output_medium: input.output_medium as u8,
+                profile_viewing_illuminant: profile_viewing,
+            }
+        };
+        scanner::describe_lut(selected).map_err(DescriptorFailure::Core)
+    }))
+    .unwrap_or(Err(DescriptorFailure::Panic));
+    match result {
+        Ok(value) => {
+            let value = FjScannerLutDescriptor {
+                route: value.route() as u32,
+                medium: u32::from(value.medium()),
+                capture_polarity: u32::from(value.capture_polarity()),
+                resolution: value.resolution(),
+                density_bounds_hash: value.density_bounds_hash(),
+                channel_density_hash: value.channel_density_hash(),
+                base_density_hash: value.base_density_hash(),
+                viewing_illuminant_hash: value.viewing_illuminant_hash(),
+                observer_hash: value.observer_hash(),
+                hash: value.hash(),
+            };
+            // SAFETY: Complete success is written only into the admitted exclusive result.
+            unsafe {
+                out.write(value);
+            }
+            status(FJ_STATUS_SUCCESS)
+        }
+        Err(rejection) => {
+            let (reason, lane, category) = rejection.envelope();
+            if valid_failure {
+                // SAFETY: Independently admitted writable failure record.
+                unsafe {
+                    failure.write(FjScannerLutDescriptorFailure { reason, lane });
+                }
+            }
+            if let Some(writer) = &mut diagnostic {
+                let _ = write!(writer, "{rejection}");
+            }
+            status(category)
+        }
+    }
+}
+
+/// # Safety
+/// Same synchronous live/readable/exclusive/disjoint contract as `describe_lut`.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn fj_legacy_scanner_lut_describe(
+    input: *const FjScannerLutDescriptorInput,
+    out: *mut FjScannerLutDescriptor,
+    failure: *mut FjScannerLutDescriptorFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The caller satisfies the checked operation's storage contract.
+    unsafe { describe_lut(input, out, failure, error) }
+}
+
+const _: unsafe extern "C" fn(
+    *const FjScannerLutDescriptorInput,
+    *mut FjScannerLutDescriptor,
+    *mut FjScannerLutDescriptorFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_legacy_scanner_lut_describe;

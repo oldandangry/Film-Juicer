@@ -112,6 +112,7 @@ def execute(arguments):
         b"print balance fixture panic",
         b"scanner correction fixture panic",
         b"scanner LUT fixture panic",
+        b"scanner LUT descriptor fixture panic",
         b"film DIR acquire fixture panic",
         b"film DIR view fixture panic",
         b"film DIR release fixture panic",
@@ -172,6 +173,8 @@ def execute(arguments):
     consumed_paths.extend([preflash_manifest, preflash_payload])
     balance_manifest, balance_payload, _, _, _ = balance_fixture(arguments.preset)
     consumed_paths.extend([balance_manifest, balance_payload])
+    descriptor_manifest, descriptor_payload, descriptor_context, _, _ = scanner_descriptor_fixture(arguments.preset)
+    consumed_paths.extend([descriptor_manifest, descriptor_payload, descriptor_context])
     lut_manifest, lut_payload, lut_context, lut_checked, _ = scanner_lut_fixture(arguments.preset)
     consumed_paths.extend([lut_manifest, lut_payload, lut_context, lut_checked, fixtures / "shared_fixture.py",
                            fixtures / "compact_exposure_fixtures.py"])
@@ -226,6 +229,7 @@ def execute(arguments):
         "fj_legacy_scanner_print_correction_prepare",
         "fj_legacy_scanner_correction_input_demand",
         "fj_legacy_scanner_color_prepare",
+        "fj_legacy_scanner_lut_describe",
         "fj_legacy_scanner_lut_acquire",
         "fj_legacy_scanner_lut_view",
         "fj_legacy_scanner_lut_release",
@@ -266,6 +270,7 @@ def execute(arguments):
     scanner_demand_results = []
     scanner_lut_results = []
     scanner_color_results = []
+    scanner_descriptor_results = []
     reference_results = []
     for name, source in probes:
         executable = out / (name + suffix)
@@ -486,6 +491,15 @@ def execute(arguments):
                 actual = [int(x) for x in match.groups()[1:]]
                 assert actual == expected["envelope"], line
                 scanner_color_results.append({"case": expected["id"], "fields": actual})
+            _, _, _, _, descriptor_cases = scanner_descriptor_fixture(arguments.preset)
+            lines = [line for line in output.splitlines() if line.startswith("SCANNER_DESCRIPTOR_CASE ")]
+            assert len(lines) == len(descriptor_cases)
+            for line, expected in zip(lines, descriptor_cases, strict=True):
+                match = re.fullmatch(r"SCANNER_DESCRIPTOR_CASE (\S+) category=(\d+) api=(\d+) native_code=(-?\d+) reason=(\d+) lane=(\d+) fields=10-pass hash=(\d+)", line)
+                assert match and match[1] == expected["case"], line
+                actual = [int(x) for x in match.groups()[1:]]
+                assert actual == [*expected["envelope"], expected["hash"]], line
+                scanner_descriptor_results.append(expected)
     check_build_inputs()
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     if windows:
@@ -534,6 +548,8 @@ def execute(arguments):
                 "scanner_demand_results": scanner_demand_results,
                 "scanner_lut_results": scanner_lut_results,
                 "scanner_color_results": scanner_color_results,
+                "scanner_descriptor_results": scanner_descriptor_results,
+                "scanner_descriptor_fixture": {"manifest": str(descriptor_manifest), "payload": str(descriptor_payload), "context": str(descriptor_context), "logical_preset": arguments.preset},
                 "reference_results": reference_results,
                 "reference_fixture": {"manifest": str(reference_manifest), "payload": str(reference_payload), "logical_preset": arguments.preset},
                 "scanner_color_fixture": {"manifest": str(color_manifest), "payload": str(color_payload), "normative": str(color_checked), "logical_preset": arguments.preset},
@@ -1019,6 +1035,55 @@ def expected_scanner_color_header(out):
         stream.write("static const uint64_t scanner_color_hashes[] = {" + ",".join("UINT64_C(%d)" % row["expected"]["hash"] for row in rows) + "};\n")
 
 
+def scanner_descriptor_fixture(preset):
+    directory = root / "tests/scanner/descriptor-fixtures"
+    manifest = directory / "manifest.json"
+    spec = json.loads(manifest.read_bytes())
+    logical = spec["presets"][preset]["native"]
+    payload = directory / spec["payloads"][logical]
+    context = directory / spec["contexts"][logical]
+    assert all(digest(path) == spec["sha256"][path.name] for path in (payload, context))
+    captured = load_shared_fixture(directory / logical)
+    assert captured["preset"] == preset and len(captured["cases"]) == 520 and len(captured["products"]) == 4
+    cases = spec["production_cases"] + spec["production_malformed"]
+    assert len(cases) == 41 and len({v["case"] for v in cases}) == len(cases)
+    return manifest, payload, context, captured, cases
+
+
+def expected_scanner_descriptor_header(out):
+    _, _, _, captured, cases = scanner_descriptor_fixture(arguments.preset)
+    by_id = {row["id"]: row for row in captured["cases"]}
+    selected = [by_id[row["case"]] for row in cases[:24]]
+    with (out / "production-film-expected.h").open("a") as stream:
+        def array(name, rows):
+            stream.write("static const uint32_t " + name + "[][" + str(len(rows[0])) + "] = {\n")
+            for row in rows:
+                stream.write("{" + ",".join(str(v) + "U" for v in row) + "},\n")
+            stream.write("};\n")
+        array("descriptor_channel_words", [row["input"]["channel_density_cmy"] for row in selected])
+        array("descriptor_base_words", [row["input"]["base_density"] for row in selected])
+        for i, row in enumerate(selected):
+            for key in ("viewing_illuminant", "profile_viewing_illuminant", "observer_identity", "print_profile_key"):
+                stream.write(f"static const uint8_t descriptor_{i}_{key}[] = {{" + ",".join(str(v) for v in row["input"][key] or [0]) + "};\n")
+        stream.write("static const FjScannerLutDescriptorInput descriptor_inputs[] = {\n")
+        for i, row in enumerate(selected):
+            v = row["input"]
+            prefix = [str(int(v[k])) + "U" for k in ("mode", "route", "capture_polarity", "bounds_medium", "bounds_source", "output_medium", "profile_present", "resolution")]
+            prefix += ["UINT64_C(%d)" % v[k] for k in ("density_bounds_hash", "print_profile_token")]
+            prefix += ["{NULL,243}", "{NULL,81}"]
+            prefix += [f"{{descriptor_{i}_{key},{len(v[key])}}}" for key in ("viewing_illuminant", "profile_viewing_illuminant", "observer_identity", "print_profile_key")]
+            stream.write("{" + ",".join(prefix) + "},\n")
+        stream.write("};\nstatic const FjScannerLutDescriptor descriptor_expected[] = {\n")
+        for row in selected:
+            d = row["native"]["descriptor"] if row["native"]["success"] else dict.fromkeys(row["native"]["descriptor"], 0)
+            values = [str(d[k]) + "U" for k in ("route", "medium", "capture_polarity", "resolution")]
+            values += ["UINT64_C(%d)" % d[k] for k in ("density_bounds_hash", "channel_density_hash", "base_density_hash", "viewing_illuminant_hash", "observer_hash", "hash")]
+            stream.write("{" + ",".join(values) + "},\n")
+        stream.write("};\nstatic const char* const descriptor_names[] = {" + ",".join(json.dumps(v["case"]) for v in cases) + "};\n")
+        stream.write("static const char* const descriptor_diagnostics[] = {" + ",".join(json.dumps(v["native"]["diagnostic"]) for v in selected) + "};\n")
+        array("descriptor_envelopes", [v["envelope"] for v in cases])
+
+
 def expected_scanner_lut_header(out):
     _, _, _, _, rows = scanner_lut_fixture(arguments.preset)
     first = rows[0]["input"]
@@ -1086,4 +1151,5 @@ if __name__ == "__main__":
     expected_scanner_correction_header(arguments.artifacts)
     expected_scanner_lut_header(arguments.artifacts)
     expected_scanner_color_header(arguments.artifacts)
+    expected_scanner_descriptor_header(arguments.artifacts)
     execute(arguments)

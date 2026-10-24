@@ -1,0 +1,22 @@
+{
+  "preset": "windows-clang-debug",
+  "provenance": {
+    "original_capture": "out/validation/windows-clang-debug/s4-c-slice-8-descriptor-native.json",
+    "original_sha256": "2f515e719ac991192be037e0e6929e3d078c5a689caa395b52ca0fb8284d936e",
+    "producer": "out/build/windows-clang-debug/tests/bin/JuicerFilmRecipeTests.exe",
+    "producer_sha256": "d3d31a7ac8bfe1f4ecfdfae6d3291a9175d877e1de74e6a6e824180e035a55d8",
+    "native_source": "src/Scanner.cpp",
+    "native_source_sha256": "b65ca149abaa83686d10821a88817c291a65483e40b22975257b897f826a8722",
+    "command": "out/build/windows-clang-debug/tests/bin/JuicerFilmRecipeTests.exe out/build/windows-clang-debug/tests/Resources unused capture-scanner-descriptors windows-clang-debug out/validation/windows-clang-debug/s4-c-slice-8-descriptor-native.json",
+    "result": 0,
+    "compiler_context": "windows-clang-debug",
+    "reference_role": "Film-Juicer characterization; no new external numerical authority",
+    "retained_native_reobservation": {
+      "capture": "out/validation/windows-clang-debug/s4-c-slice-8-descriptor-native-retained.json",
+      "sha256": "2f515e719ac991192be037e0e6929e3d078c5a689caa395b52ca0fb8284d936e",
+      "producer_sha256": "d61b6a2f0719f4d20646ae2423da379c7785b4bb1cca1770ad669e3b1c7bb752",
+      "result": 0,
+      "reason": "Initial producer binary was superseded by the early boundary build before retention; re-observation uses the unchanged whole native constructors and agrees in every field. Original capture and producer hash remain preserved."
+    }
+  }
+}

@@ -15,6 +15,32 @@ PRESETS = ("linux-debug", "linux-release", "windows-clang-debug", "windows-clang
 
 
 class SharedFixtureTests(unittest.TestCase):
+    def test_scanner_descriptor_complete_frozen_contexts(self):
+        root = Path(__file__).parents[1] / "scanner/descriptor-fixtures"
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        self.assertEqual(set(manifest["presets"]), set(PRESETS))
+        self.assertEqual(set(manifest["payloads"].values()), {"native.json"})
+        self.assertEqual(len(set(manifest["contexts"].values())), 4)
+        for name, expected in manifest["sha256"].items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), expected)
+        payloads = []
+        for preset in PRESETS:
+            captured = load_shared_fixture(root / manifest["presets"][preset]["native"])
+            self.assertEqual(captured["preset"], preset)
+            self.assertEqual(len(captured["cases"]), 520)
+            self.assertEqual(len(captured["products"]), 4)
+            self.assertEqual({row["route"] for row in captured["products"]}, {0, 1, 2, 3})
+            self.assertEqual(len({row["id"] for row in captured["cases"]}), 520)
+            for row in captured["cases"] + captured["products"]:
+                self.assertEqual(len(row["input"]["channel_density_cmy"]), 243)
+                self.assertEqual(len(row["input"]["base_density"]), 81)
+                self.assertEqual(len(row["native"]["descriptor"]), 10)
+            payloads.append((captured["cases"], captured["products"]))
+        self.assertTrue(all(value == payloads[0] for value in payloads))
+        results = manifest["production_cases"] + manifest["production_malformed"]
+        self.assertEqual(len(results), 41)
+        self.assertEqual(len({row["case"] for row in results}), 41)
+
     def test_scanner_lut_original_capture_integrity(self):
         root = Path(__file__).parents[1] / "scanner/lut-fixtures"
         manifest = json.loads((root / "manifest.json").read_bytes())
