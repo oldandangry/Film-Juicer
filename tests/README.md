@@ -291,9 +291,11 @@ worker count with `--parallel <count>` when the machine needs a smaller limit.
 
 `Rust.Core` uses two libtest workers and reserves two CTest slots. Tests that
 spawn threads still exercise their internal concurrent publication and lifetime
-witnesses. On Windows, `Quality.Checkpoint` reserves four slots so its repeated
-tool-byte validation runs alone at the preset's four-worker limit. A larger
-explicit worker count can allow overlap again. Verification control logs include
+witnesses. On Windows, `Quality.Checkpoint` and `Quality.PreparationRenewal` each
+reserve four slots so their repeated tool-byte validation runs alone at the
+preset's four-worker limit. Their 600-second and 300-second deadlines remain
+unchanged. A larger explicit worker count can allow overlap again. Verification
+control logs include
 the ten slowest unittest cases. These scheduling choices preserve complete test
 membership, tool/input checks and the existing deadlines.
 

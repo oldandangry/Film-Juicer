@@ -531,9 +531,9 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         endif()
         set_tests_properties("Quality.${verification_group}" PROPERTIES LABELS "host" TIMEOUT ${verification_timeout}
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;JUICER_TEST_ARTIFACT_DIR=${JUICER_TEST_ARTIFACT_ROOT}/verification-controls")
-        if(verification_group STREQUAL "Checkpoint" AND CMAKE_HOST_WIN32)
+        if(CMAKE_HOST_WIN32 AND (verification_group STREQUAL "Checkpoint" OR verification_group STREQUAL "PreparationRenewal"))
             # Full tool-byte validation is I/O heavy; avoid overlap at the four-worker preset limit.
-            set_tests_properties(Quality.Checkpoint PROPERTIES PROCESSORS 4)
+            set_tests_properties("Quality.${verification_group}" PROPERTIES PROCESSORS 4)
         endif()
     endforeach()
 endif()
