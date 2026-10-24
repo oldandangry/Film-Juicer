@@ -76,10 +76,8 @@ namespace Scanner {
         Print
     };
 
-    inline constexpr std::uint32_t kScannerSpectralLutSchemaVersion = 2;
-
     // ScannerSpectralLutDescriptor family contract:
-    // Producer: focused direct or print-medium builder from selected recipe payloads.
+    // Producer: safe Rust scanner::describe_lut through the synchronous S4.E bridge.
     // Consumer: focused scanner LUT preparation behind PreparedCudaFrame.
     // Identity: route, medium/polarity, DensityBoundsRecipe hash, selected channel/base density,
     // viewing illuminant, observer, LUT resolution, and the fixed LUT representation schema.
@@ -112,9 +110,6 @@ namespace Scanner {
         const ::ScannerOutputRecipe* scannerOutput = nullptr;
         std::string_view observerIdentity = "CIE1931_2deg_380_780_5nm";
     };
-
-    std::uint64_t hash_scanner_spectral_lut_descriptor(
-        const ScannerSpectralLutDescriptor& descriptor);
 
     bool build_direct_scanner_spectral_lut_descriptor(
         const DirectScannerSpectralLutDescriptorInput& input,

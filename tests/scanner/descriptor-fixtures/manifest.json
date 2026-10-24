@@ -1,0 +1,534 @@
+{
+  "schema": 1,
+  "kind": "Film-Juicer native migration characterization",
+  "source_revision": "f74fb0340af3417d120a0e7dbb34f7e0c2993607",
+  "presets": {
+    "linux-debug": {
+      "native": "linux-debug.json"
+    },
+    "linux-release": {
+      "native": "linux-release.json"
+    },
+    "windows-clang-debug": {
+      "native": "windows-clang-debug.json"
+    },
+    "windows-clang-release": {
+      "native": "windows-clang-release.json"
+    }
+  },
+  "payloads": {
+    "linux-debug.json": "native.json",
+    "linux-release.json": "native.json",
+    "windows-clang-debug.json": "native.json",
+    "windows-clang-release.json": "native.json"
+  },
+  "contexts": {
+    "linux-debug.json": "context-linux-debug.json",
+    "linux-release.json": "context-linux-release.json",
+    "windows-clang-debug.json": "context-windows-clang-debug.json",
+    "windows-clang-release.json": "context-windows-clang-release.json"
+  },
+  "sha256": {
+    "context-linux-debug.json": "81375977c1e4755679a24b84a234c83089655ab4f41e5c308e1c3a09c92a7a96",
+    "context-linux-release.json": "95317284f2bb2fc28631fb05a774d09ac716a8350422a5fda3e207e61d283caa",
+    "context-windows-clang-debug.json": "f0288517211e7bc34350a440944a60d9b0545e78946ea546da2f4afa4ad9146f",
+    "context-windows-clang-release.json": "5c261dfb1cb450407ea202236e817fc014a13cea6549d4f9406e4dcd0d8e6f4d",
+    "native.json": "f82b9de7db63839698e3888f9f0acf7222deed3cc17fee79b6e87803e4935435"
+  },
+  "production_cases": [
+    {
+      "case": "0/normal",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "hash": 17248502363039147381,
+      "fields": "10-pass"
+    },
+    {
+      "case": "1/normal",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "hash": 9091498839094919803,
+      "fields": "10-pass"
+    },
+    {
+      "case": "1/both-empty",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "hash": 3438813879795483086,
+      "fields": "10-pass"
+    },
+    {
+      "case": "0/polarity-255",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "hash": 3724082196369582496,
+      "fields": "10-pass"
+    },
+    {
+      "case": "0/channel_density_cmy-63-0",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "hash": 5937769632014349442,
+      "fields": "10-pass"
+    },
+    {
+      "case": "0/channel_density_cmy-63-2147483648",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "hash": 5937769632014349442,
+      "fields": "10-pass"
+    },
+    {
+      "case": "0/channel_density_cmy-63-2143289345",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "hash": 16698490149582380526,
+      "fields": "10-pass"
+    },
+    {
+      "case": "0/channel_density_cmy-63-4290773283",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "hash": 16698490149582380526,
+      "fields": "10-pass"
+    },
+    {
+      "case": "0/predicate-route",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "0/missing-4",
+      "envelope": [
+        3,
+        0,
+        0,
+        2,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "0/predicate-density_bounds_hash",
+      "envelope": [
+        3,
+        0,
+        0,
+        3,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "0/predicate-bounds_medium",
+      "envelope": [
+        3,
+        0,
+        0,
+        3,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "0/empty-observer_identity",
+      "envelope": [
+        3,
+        0,
+        0,
+        4,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "0/empty-viewing_illuminant",
+      "envelope": [
+        3,
+        0,
+        0,
+        5,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "1/predicate-route",
+      "envelope": [
+        3,
+        0,
+        0,
+        7,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "1/missing-4",
+      "envelope": [
+        3,
+        0,
+        0,
+        7,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "1/empty-print_profile_key",
+      "envelope": [
+        3,
+        0,
+        0,
+        7,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "1/predicate-print_profile_token",
+      "envelope": [
+        3,
+        0,
+        0,
+        7,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "1/predicate-density_bounds_hash",
+      "envelope": [
+        3,
+        0,
+        0,
+        7,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "1/predicate-bounds_medium",
+      "envelope": [
+        3,
+        0,
+        0,
+        7,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "1/predicate-bounds_source",
+      "envelope": [
+        3,
+        0,
+        0,
+        7,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "1/predicate-output_medium",
+      "envelope": [
+        3,
+        0,
+        0,
+        7,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "1/empty-profile_viewing_illuminant",
+      "envelope": [
+        3,
+        0,
+        0,
+        7,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "1/empty-observer_identity",
+      "envelope": [
+        3,
+        0,
+        0,
+        7,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    }
+  ],
+  "production_malformed": [
+    {
+      "case": "raw-0",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-1",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-2",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-3",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-4",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-5",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-6",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-7",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-8",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-9",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-10",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-11",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-12",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-13",
+      "envelope": [
+        2,
+        0,
+        0,
+        0,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-14",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "raw-15",
+      "envelope": [
+        2,
+        0,
+        0,
+        1,
+        0
+      ],
+      "hash": 0,
+      "fields": "10-pass"
+    },
+    {
+      "case": "zero-capacity",
+      "envelope": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "hash": 17248502363039147381,
+      "fields": "10-pass"
+    }
+  ]
+}

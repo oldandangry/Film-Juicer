@@ -263,7 +263,9 @@ class CheckpointTests(unittest.TestCase):
                      "tests/ffi/print_balance_test.inc", "tests/print/balance-fixtures/manifest.json",
                      "tests/print/balance-fixtures/linux-debug.json", "tests/ffi/scanner_correction_test.inc",
                      "tests/scanner/correction-fixtures/manifest.json", "tests/scanner/correction-fixtures/checked-expectations.json",
-                     "tests/scanner/correction-fixtures/linux-debug.json", "tests/ffi/scanner_lut_test.inc",
+                     "tests/scanner/correction-fixtures/linux-debug.json", "tests/ffi/scanner_lut_test.inc", "tests/ffi/scanner_lut_descriptor_test.inc",
+                     "tests/scanner/descriptor-fixtures/manifest.json", "tests/scanner/descriptor-fixtures/native.json",
+                     "tests/scanner/descriptor-fixtures/context-linux-debug.json",
                      "tests/scanner/lut-fixtures/manifest.json", "tests/scanner/lut-fixtures/checked.json",
                      "tests/scanner/lut-fixtures/native.json", "tests/scanner/lut-fixtures/context-linux-debug.json",
                      "tests/ffi/exposure_fixture.h", "tests/ffi/scanner_color_test.inc",
@@ -298,6 +300,10 @@ class CheckpointTests(unittest.TestCase):
         self.assertIn("tests/scanner/color-fixtures/manifest.json", first)
         self.assertIn("tests/scanner/color-fixtures/native.json", first)
         self.assertIn("tests/scanner/color-fixtures/checked.json", first)
+        self.assertIn("tests/ffi/scanner_lut_descriptor_test.inc", first)
+        self.assertIn("tests/scanner/descriptor-fixtures/manifest.json", first)
+        self.assertIn("tests/scanner/descriptor-fixtures/native.json", first)
+        self.assertIn("tests/scanner/descriptor-fixtures/context-linux-debug.json", first)
         self.assertIn("tests/ffi/scanner_lut_test.inc", first)
         self.assertIn("tests/scanner/lut-fixtures/manifest.json", first)
         self.assertIn("tests/scanner/lut-fixtures/checked.json", first)
@@ -876,6 +882,17 @@ class CheckpointTests(unittest.TestCase):
         write_json(directory / "manifest.json", {"presets": {
             preset: payload.name for preset in qualification.PRESETS},
             "payload_sha256": {payload.name: digest(payload)}})
+        directory = self.root / "tests/scanner/descriptor-fixtures"
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = directory / "native.json"
+        context = directory / "context.json"
+        write_json(payload, {"scope": "fixture membership protocol only"})
+        write_json(context, {"scope": "distinct native context protocol"})
+        write_json(directory / "manifest.json", {"presets": {preset: {"native": "logical.json"} for preset in qualification.PRESETS},
+            "payloads": {"logical.json": payload.name}, "contexts": {"logical.json": context.name},
+            "sha256": {payload.name: digest(payload), context.name: digest(context)},
+            "production_cases": [{"case": str(i), "envelope": [0, 0, 0, 0, 0], "hash": 10, "fields": "10-pass"} for i in range(24)],
+            "production_malformed": [{"case": str(i), "envelope": [2, 0, 0, 1, 0], "hash": 0, "fields": "10-pass"} for i in range(17)]})
         return r'''
 import json, sys, subprocess, hashlib, shutil
 preset=sys.argv[sys.argv.index("--preset")+1]
@@ -910,6 +927,12 @@ reference_manifest=(Path('tests/film/reference-fixtures')/'manifest.json').resol
 reference_spec=json.loads(reference_manifest.read_text())
 reference_payload=reference_manifest.parent/reference_spec['presets'][preset]
 consumed.update({str(path):checksum(path) for path in (reference_manifest,reference_payload)})
+descriptor_manifest=(Path('tests/scanner/descriptor-fixtures')/'manifest.json').resolve()
+descriptor_spec=json.loads(descriptor_manifest.read_text())
+descriptor_payload=descriptor_manifest.parent/'native.json'
+descriptor_context=descriptor_manifest.parent/'context.json'
+consumed.update({str(path):checksum(path) for path in (descriptor_manifest,descriptor_payload,descriptor_context)})
+descriptor_results=descriptor_spec['production_cases']+descriptor_spec['production_malformed']
 reference_results=[]
 for row in json.loads(reference_payload.read_text())['products']:
     for case in range(8 if row['method']==1 else 7):
@@ -948,6 +971,8 @@ record.write_text(json.dumps(commands))
 (out/'production.json').write_text(json.dumps({'scope':'native miniature retained-payload protocol only',
     'preset':preset,'build_testing':'OFF','build_inputs':build_inputs,'probes':probes,'consumed_inputs':consumed,
     'reference_fixture':{'manifest':str(reference_manifest),'payload':str(reference_payload),'logical_preset':preset},
+    'scanner_descriptor_fixture':{'manifest':str(descriptor_manifest),'payload':str(descriptor_payload),'context':str(descriptor_context),'logical_preset':preset},
+    'scanner_descriptor_results':descriptor_results,
     'reference_results':reference_results,
     'commands':{'file':str(record),'sha256':checksum(record)},
     'command_outputs':{str(out/(row['name']+'.'+extension)):row[extension+'_sha256']
@@ -1204,10 +1229,10 @@ print("PRODUCTION_MANIFEST_SHA256",checksum(out/"production.json"),flush=True)
         manifest = qualification.production_manifest_identity(stage["receipt"], root=self.root)[0]
         document = json.loads(manifest.read_text())
         self.assertEqual(len(document["reference_results"]), 15)
-        for field in ("reference_results", "reference_fixture"):
+        for field in ("reference_results", "reference_fixture", "scanner_descriptor_results", "scanner_descriptor_fixture"):
             missing = manifest.with_name("without-" + field + ".json")
             write_json(missing, {key: value for key, value in document.items() if key != field})
-            with self.assertRaisesRegex(ValueError, "film-reference"):
+            with self.assertRaisesRegex(ValueError, "scanner descriptor" if field.startswith("scanner_descriptor") else "film-reference"):
                 qualification.production_payloads(missing, digest(missing), root=self.root,
                     inputs=stage["identity"]["inputs"])
         artifact = build / ("juicer.lib" if os.name == "nt" else "libjuicer.a")

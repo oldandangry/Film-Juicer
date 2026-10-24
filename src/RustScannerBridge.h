@@ -56,6 +56,8 @@ namespace JuicerScanner {
     namespace Test {
         using Projection = void (*)(FjStatus&, FjScannerColorCorrection&, FjScannerCorrectionFailure&, FjScannerCorrectionTrace&);
         void set_projection(Projection value);
+        using DescriptorProjection = void (*)(FjStatus&, FjScannerLutDescriptor&, FjScannerLutDescriptorFailure&, FjErrorBuffer&);
+        void set_descriptor_projection(DescriptorProjection value);
         using ColorProjection = void (*)(FjStatus&, FjScannerColor&, FjScannerColorFailure&);
         void set_color_projection(ColorProjection value);
     } // namespace Test

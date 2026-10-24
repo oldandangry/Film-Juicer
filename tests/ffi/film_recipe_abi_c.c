@@ -787,3 +787,41 @@ _Static_assert(_Generic(&fj_legacy_scanner_lut_release, FjStatus (*)(FjScannerLu
 _Static_assert(_Generic(&fj_test_scanner_lut_acquire, FjStatus (*)(const FjScannerLutInput*, FjScannerLutOwner**, FjScannerLutFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_lut_acquire signature");
 _Static_assert(_Generic(&fj_test_scanner_lut_view, FjStatus (*)(const FjScannerLutOwner*, FjScannerLutView*, FjScannerLutFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_lut_view signature");
 _Static_assert(_Generic(&fj_test_scanner_lut_release, FjStatus (*)(FjScannerLutOwner*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_lut_release signature");
+
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->mode, uint32_t: 1, default: 0), "FjScannerLutDescriptorInput.mode type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->route, uint32_t: 1, default: 0), "FjScannerLutDescriptorInput.route type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->capture_polarity, uint32_t: 1, default: 0), "FjScannerLutDescriptorInput.capture_polarity type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->bounds_medium, uint32_t: 1, default: 0), "FjScannerLutDescriptorInput.bounds_medium type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->bounds_source, uint32_t: 1, default: 0), "FjScannerLutDescriptorInput.bounds_source type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->output_medium, uint32_t: 1, default: 0), "FjScannerLutDescriptorInput.output_medium type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->profile_present, uint32_t: 1, default: 0), "FjScannerLutDescriptorInput.profile_present type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->resolution, uint32_t: 1, default: 0), "FjScannerLutDescriptorInput.resolution type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->density_bounds_hash, uint64_t: 1, default: 0), "FjScannerLutDescriptorInput.density_bounds_hash type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->print_profile_token, uint64_t: 1, default: 0), "FjScannerLutDescriptorInput.print_profile_token type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->channel_density_cmy, FjFloatSpan: 1, default: 0), "FjScannerLutDescriptorInput.channel_density_cmy type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->base_density, FjFloatSpan: 1, default: 0), "FjScannerLutDescriptorInput.base_density type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->viewing_illuminant, FjByteSpan: 1, default: 0), "FjScannerLutDescriptorInput.viewing_illuminant type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->profile_viewing_illuminant, FjByteSpan: 1, default: 0), "FjScannerLutDescriptorInput.profile_viewing_illuminant type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->observer_identity, FjByteSpan: 1, default: 0), "FjScannerLutDescriptorInput.observer_identity type");
+_Static_assert(_Generic(((FjScannerLutDescriptorInput*)0)->print_profile_key, FjByteSpan: 1, default: 0), "FjScannerLutDescriptorInput.print_profile_key type");
+_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->route, uint32_t: 1, default: 0), "FjScannerLutDescriptor.route type");
+_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->medium, uint32_t: 1, default: 0), "FjScannerLutDescriptor.medium type");
+_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->capture_polarity, uint32_t: 1, default: 0), "FjScannerLutDescriptor.capture_polarity type");
+_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->resolution, uint32_t: 1, default: 0), "FjScannerLutDescriptor.resolution type");
+_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->density_bounds_hash, uint64_t: 1, default: 0), "FjScannerLutDescriptor.density_bounds_hash type");
+_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->channel_density_hash, uint64_t: 1, default: 0), "FjScannerLutDescriptor.channel_density_hash type");
+_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->base_density_hash, uint64_t: 1, default: 0), "FjScannerLutDescriptor.base_density_hash type");
+_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->viewing_illuminant_hash, uint64_t: 1, default: 0), "FjScannerLutDescriptor.viewing_illuminant_hash type");
+_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->observer_hash, uint64_t: 1, default: 0), "FjScannerLutDescriptor.observer_hash type");
+_Static_assert(_Generic(((FjScannerLutDescriptor*)0)->hash, uint64_t: 1, default: 0), "FjScannerLutDescriptor.hash type");
+_Static_assert(_Generic(((FjScannerLutDescriptorFailure*)0)->reason, uint32_t: 1, default: 0), "FjScannerLutDescriptorFailure.reason type");
+_Static_assert(_Generic(((FjScannerLutDescriptorFailure*)0)->lane, uint32_t: 1, default: 0), "FjScannerLutDescriptorFailure.lane type");
+_Static_assert(_Generic(&fj_legacy_scanner_lut_describe, FjStatus (*)(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*): 1, default: 0), "fj_legacy_scanner_lut_describe signature");
+_Static_assert(_Generic(&fj_test_scanner_lut_describe, FjStatus (*)(const FjScannerLutDescriptorInput*, FjScannerLutDescriptor*, FjScannerLutDescriptorFailure*, FjErrorBuffer*): 1, default: 0), "fj_test_scanner_lut_describe signature");
+
+int fj_test_scanner_descriptor_c_call(const FjScannerLutDescriptorInput* input, const FjScannerLutDescriptor* expected) {
+    FjScannerLutDescriptor result;
+    FjScannerLutDescriptorFailure failure;
+    FjStatus status = fj_legacy_scanner_lut_describe(input, &result, &failure, NULL);
+    return status.category == 0 && status.api == 0 && status.native_code == 0 && failure.reason == 0 && failure.lane == 0 && memcmp(&result, expected, sizeof result) == 0;
+}

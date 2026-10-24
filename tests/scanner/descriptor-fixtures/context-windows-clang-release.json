@@ -1,0 +1,15 @@
+{
+  "preset": "windows-clang-release",
+  "provenance": {
+    "original_capture": "out/validation/windows-clang-release/s4-c-slice-8-descriptor-native.json",
+    "original_sha256": "f830825cf233bc8ad1408f96d5a7a3e5322b6482c9224eba9a878561143bcaa9",
+    "producer": "out/build/windows-clang-release/tests/bin/JuicerFilmRecipeTests.exe",
+    "producer_sha256": "c572e6c270ced9fbe88287e76474a9088f22516a36f38ac8989420c8f385e9bd",
+    "native_source": "src/Scanner.cpp",
+    "native_source_sha256": "b65ca149abaa83686d10821a88817c291a65483e40b22975257b897f826a8722",
+    "command": "out/build/windows-clang-release/tests/bin/JuicerFilmRecipeTests.exe out/build/windows-clang-release/tests/Resources unused capture-scanner-descriptors windows-clang-release out/validation/windows-clang-release/s4-c-slice-8-descriptor-native.json",
+    "result": 0,
+    "compiler_context": "windows-clang-release",
+    "reference_role": "Film-Juicer characterization; no new external numerical authority"
+  }
+}

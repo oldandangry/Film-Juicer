@@ -271,6 +271,21 @@ class NativeBoundary(unittest.TestCase):
         self.assertNotIn("SF_TEMP_BRIDGE_release_cuda_owner", source)
         self.assertNotIn("shutdown_if_initialized", source)
 
+    def test_retired_scanner_descriptor_producers_stay_deleted(self):
+        scanner = (ROOT / "src/Scanner.cpp").read_text(encoding="utf-8")
+        header = (ROOT / "src/Scanner.h").read_text(encoding="utf-8")
+        for name in ("hash_scanner_spectral_lut_descriptor", "hash_nan_preserving_floats", "kScannerSpectralLutSchemaVersion", "_native_baseline"):
+            self.assertNotIn(name, scanner + header)
+        for name in ("build_direct_scanner_spectral_lut_descriptor", "build_print_scanner_spectral_lut_descriptor"):
+            self.assertNotIn(name, scanner)
+            self.assertIn(name, header)
+        bridge = (ROOT / "src/RustScannerBridge.cpp").read_text(encoding="utf-8")
+        self.assertIn("SF_TEMP_BRIDGE_SCANNER_LUT_DESCRIPTOR", bridge)
+        self.assertIn("fj_legacy_scanner_lut_describe", bridge)
+        self.assertNotIn("Hash::", bridge)
+        self.assertIn("struct ScannerSpectralLutDescriptor", header)
+        self.assertIn("decoded.scanner.hash = source.scanner_lut.hash", (ROOT / "native/juicer_cuda_descriptors.cpp").read_text(encoding="utf-8"))
+
     def test_native_code_does_not_reset_host_contexts(self):
         paths = native_sources(ROOT)
         paths.append(ROOT / "src/ProcessRoot.cpp")

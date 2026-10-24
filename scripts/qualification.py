@@ -253,6 +253,25 @@ def production_payloads(manifest, expected_manifest_sha256, *, root, inputs, res
                                        "fields": "13-pass"})
     if len(expected_reference) != 15 or document.get("reference_results") != expected_reference:
         raise ValueError("production film-reference value/failure results are incomplete")
+    descriptor_manifest = root / "tests/scanner/descriptor-fixtures/manifest.json"
+    descriptor_spec = json.loads(descriptor_manifest.read_bytes())
+    logical = descriptor_spec["presets"][document["preset"]]["native"]
+    descriptor_payload = descriptor_manifest.parent / descriptor_spec["payloads"][logical]
+    descriptor_context = descriptor_manifest.parent / descriptor_spec["contexts"][logical]
+    descriptor = document.get("scanner_descriptor_fixture", {})
+    if (descriptor.get("logical_preset") != document["preset"] or
+            any(resolve(descriptor.get(key, "")) != path for key, path in
+                (("manifest", descriptor_manifest), ("payload", descriptor_payload), ("context", descriptor_context)))):
+        raise ValueError("production scanner descriptor fixture membership is incomplete")
+    for path in (descriptor_manifest, descriptor_payload, descriptor_context):
+        checksum = digest(path)
+        if inputs.get(path.relative_to(root).as_posix()) != checksum or reference_consumed.get(str(path)) != checksum:
+            raise ValueError("production scanner descriptor consumed fixture identity changed")
+        if path != descriptor_manifest and checksum != descriptor_spec["sha256"][path.name]:
+            raise ValueError("production scanner descriptor frozen payload/context changed")
+    expected_descriptors = descriptor_spec["production_cases"] + descriptor_spec["production_malformed"]
+    if len(expected_descriptors) != 41 or document.get("scanner_descriptor_results") != expected_descriptors:
+        raise ValueError("production scanner descriptor value/failure results are incomplete")
     headers = {name: checksum for name, checksum in consumed.items()
                if resolve(name).parent == manifest.parent and resolve(name).suffix == ".h"}
     if str(manifest.parent / "production-film-expected.h") not in {str(resolve(name)) for name in headers}:
@@ -389,13 +408,14 @@ def checkpoint_inputs(root, build, group, *, source_files=None, preparation=None
             paths.add(root / "tests/ffi/color_preparation_test.cpp")
             paths.update(root / "tests/ffi" / name for name in (
                 "film_recipe_test.cpp", "exposure_fixture.h", "film_recipe_abi_c.c", "film_recipe_abi_cpp.inc",
-                "film_recipe_abi_facts.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
+                "film_recipe_abi_facts.inc", "film_reference_test.inc", "print_illuminant_test.inc", "print_illuminant_fixture.h", "print_preflash_test.inc", "print_balance_test.inc", "scanner_correction_test.inc", "scanner_lut_test.inc", "scanner_lut_descriptor_test.inc", "output_color_test.cpp", "output_color_abi_c.c", "scanner_color_test.inc"))
             paths.update((root / "tests/film/reference-fixtures").glob("*.json"))
             paths.update((root / "tests/print/illuminant-fixtures").glob("*.json"))
             paths.update((root / "tests/print/preflash-fixtures").glob("*.json"))
             paths.update((root / "tests/print/balance-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/correction-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/lut-fixtures").glob("*.json"))
+            paths.update((root / "tests/scanner/descriptor-fixtures").glob("*.json"))
             paths.update((root / "tests/scanner/color-fixtures").glob("*.json"))
             paths.update((root / "tests/quality").glob("test_rust_*.py"))
             paths.update(p for p in (root / "tests/quality/fixtures").rglob("*.rs"))

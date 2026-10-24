@@ -46,6 +46,8 @@ extern "C" const std::size_t* fj_test_film_recipe_abi_c_facts(std::size_t* count
 extern "C" FjStatus fj_test_film_reference_c_prepare(const FjFilmDevelopmentOwner*, const FjFilmReferenceInput*, FjFilmReference*, FjFilmReferenceFailure*, FjErrorBuffer*);
 extern "C" int fj_test_scanner_correction_c_call(unsigned, const FjScannerCorrectionParams*, const FjScannerDirectCorrectionInput*, const FjScannerPrintCorrectionInput*, const FjScannerColorCorrection*, unsigned, unsigned);
 
+extern "C" int fj_test_scanner_descriptor_c_call(const FjScannerLutDescriptorInput*, const FjScannerLutDescriptor*);
+
 namespace {
     using Json = nlohmann::json;
     void require(bool condition, const char* message) {
@@ -291,7 +293,30 @@ namespace {
 #include "scanner_correction_test.inc"
 #include "scanner_lut_test.inc"
 #include "film_reference_test.inc"
+#include "scanner_lut_descriptor_test.inc"
 int main(int argc, char** argv) try {
+    if (argc == 5 && (std::string_view(argv[3]) == "scanner-descriptor" || std::string_view(argv[3]) == "scanner-descriptor-products")) {
+        layouts();
+        const auto manifest = read(argv[2]);
+        const auto captured = load_shared_fixture(std::filesystem::path(argv[2]).parent_path() / manifest.at("presets").at(argv[4]).at("native").get<std::string>(), "manifest.json");
+        require(captured.at("preset") == argv[4], "descriptor native preset context");
+        const bool products = std::string_view(argv[3]) == "scanner-descriptor-products";
+        ScannerDescriptorTest::values(captured.at(products ? "products" : "cases"));
+        if (products)
+            require(ScannerDescriptorTest::products(argv[1]) == captured.at("products"), "complete actual descriptor products and enclosing identities");
+        else {
+            ScannerDescriptorTest::boundary(captured.at("cases"));
+            ScannerDescriptorTest::adapters(captured.at("cases"));
+            ScannerDescriptorTest::admitted_token_change_preserves_identity_and_viewing_label_mismatch_is_rejected(captured.at("cases"));
+        }
+        if (products)
+            ScannerDescriptorTest::callers(argv[1]);
+        return 0;
+    }
+    if (argc == 6 && std::string_view(argv[3]) == "capture-scanner-descriptors") {
+        PrintPreflashTest::save(argv[5], {{"schema", 1}, {"preset", argv[4]}, {"cases", ScannerDescriptorTest::cases()}, {"products", ScannerDescriptorTest::products(argv[1])}});
+        return 0;
+    }
     if (argc == 6 && std::string_view(argv[3]) == "reference-capture") {
         PrintPreflashTest::save(argv[5], {{"schema", 1}, {"preset", argv[4]}, {"products", FilmReferenceTest::products(argv[1])}, {"numerical_failures", FilmReferenceTest::numerical_failures(argv[1])}});
         std::puts("PASS native film reference observations recorded; independent analysis required");

@@ -22,6 +22,10 @@ namespace JuicerScanner {
     namespace Test {
         thread_local Projection projection = nullptr;
         thread_local ColorProjection colorProjection = nullptr;
+        thread_local DescriptorProjection descriptorProjection = nullptr;
+        void set_descriptor_projection(DescriptorProjection value) {
+            descriptorProjection = value;
+        }
         void set_color_projection(ColorProjection value) {
             colorProjection = value;
         }
@@ -473,5 +477,127 @@ namespace Scanner {
         out.outputGamutRecipeHash = wire.active_gamut_recipe_hash;
         out.hash = wire.hash;
         return out;
+    }
+} // namespace Scanner
+
+namespace {
+    [[noreturn]] void descriptor_projection_failure() {
+        JuicerCuda::Failure failure;
+        JuicerCuda::set_failure(failure, {FJ_STATUS_PREPARATION_FAILURE, FJ_API_NONE, 0}, "scanner LUT descriptor projection invalid");
+        throw JuicerCuda::ExecutionFailure{std::move(failure)};
+    }
+
+    bool describe_scanner_lut(const ProfileRoute& route, const DensityBoundsRecipe& bounds, const ScannerOutputRecipe& output, std::string_view observer, bool print, Scanner::ScannerSpectralLutDescriptor& descriptor, std::string& diagnostic) {
+        const auto bytes = [](std::string_view value) -> FjByteSpan {
+            return {reinterpret_cast<const std::uint8_t*>(value.data()), value.size()};
+        };
+        // Preserve the old native invalid-route exception after top-pointer admission.
+        if (static_cast<unsigned>(route.scanRoute) > 3)
+            static_cast<void>(Spektrafilm::scan_route_metadata(route.scanRoute));
+        FjScannerLutDescriptorInput input{};
+        input.mode = print ? 1u : 0u;
+        input.route = static_cast<std::uint32_t>(route.scanRoute);
+        input.capture_polarity = static_cast<std::uint32_t>(route.capturePolarity);
+        input.bounds_medium = static_cast<std::uint32_t>(bounds.medium);
+        input.resolution = output.lutResolution;
+        input.density_bounds_hash = bounds.hash;
+        input.viewing_illuminant = bytes(output.viewingIlluminant);
+        input.observer_identity = bytes(observer);
+        if (print) {
+            input.bounds_source = static_cast<std::uint32_t>(bounds.source);
+            input.output_medium = static_cast<std::uint32_t>(output.medium);
+            input.print_profile_token = route.printProfileAssetVersionToken;
+            input.print_profile_key = bytes(route.printProfileKey);
+            if (route.printProfile) {
+                input.profile_present = 1;
+                input.channel_density_cmy = {&route.printProfile->data.channelDensity[0][0], 243};
+                input.base_density = {route.printProfile->data.baseDensity.data(), 81};
+                input.profile_viewing_illuminant = bytes(route.printProfile->info.viewingIlluminant.value);
+            }
+        } else if (route.filmProfile) {
+            input.profile_present = 1;
+            input.channel_density_cmy = {&route.filmProfile->data.channelDensity[0][0], 243};
+            input.base_density = {route.filmProfile->data.baseDensity.data(), 81};
+        }
+        FjScannerLutDescriptor wire{};
+        FjScannerLutDescriptorFailure failure{};
+        std::array<char, 256> message{};
+        FjErrorBuffer error{message.data(), message.size(), 0};
+        FjStatus status = fj_legacy_scanner_lut_describe(&input, &wire, &failure, &error);
+#if defined(JUICER_SCANNER_TEST_HOOK)
+        if (JuicerScanner::Test::descriptorProjection)
+            JuicerScanner::Test::descriptorProjection(status, wire, failure, error);
+#endif
+        if (status.api != FJ_API_NONE || status.native_code != 0 ||
+            error.data != message.data() || error.capacity != message.size() ||
+            error.length >= message.size() || message[error.length] != '\0')
+            descriptor_projection_failure();
+        const auto reason = failure.reason;
+        const bool hashFailure = reason == (print ? FJ_SCANNER_LUT_DESCRIPTOR_PRINT_HASH : FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_HASH);
+        const bool ordinary = print ? reason == FJ_SCANNER_LUT_DESCRIPTOR_PRINT_RECIPE || hashFailure
+                                    : (reason >= FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_RECIPE && reason <= FJ_SCANNER_LUT_DESCRIPTOR_DIRECT_ILLUMINANT) || hashFailure;
+        const auto expectedCategory = reason == 0                                 ? FJ_STATUS_SUCCESS
+                                      : reason == FJ_SCANNER_LUT_DESCRIPTOR_RAW   ? FJ_STATUS_UNSUPPORTED_INPUT
+                                      : reason == FJ_SCANNER_LUT_DESCRIPTOR_PANIC ? FJ_STATUS_INTERNAL_FAILURE
+                                      : ordinary                                  ? FJ_STATUS_PREPARATION_FAILURE
+                                                                                  : UINT32_MAX;
+        if (status.category != expectedCategory ||
+            (hashFailure ? failure.lane < 1 || failure.lane > 5 : failure.lane != 0))
+            descriptor_projection_failure();
+        if (status.category != FJ_STATUS_SUCCESS) {
+            const FjScannerLutDescriptor zero{};
+            constexpr std::array messages{
+                "", "invalid scanner LUT descriptor arguments", "ResourceDescriptorMismatch phase=3A scanner direct recipe unavailable", "ResourceDescriptorMismatch phase=3A scanner density bounds unavailable", "ResourceDescriptorMismatch phase=3A scanner observer identity unavailable", "ResourceDescriptorMismatch phase=3A scanner illuminant identity unavailable", "ResourceDescriptorMismatch phase=3A scanner descriptor hash invalid", "ResourceDescriptorMismatch phase=4C scanner print recipe", "ResourceDescriptorMismatch phase=4C scanner print descriptor hash", "scanner LUT descriptor preparation panicked"};
+            if (std::memcmp(&wire, &zero, sizeof wire) != 0 || reason >= messages.size() ||
+                std::string_view(message.data(), error.length) != messages[reason])
+                descriptor_projection_failure();
+            if (ordinary) {
+                diagnostic.assign(message.data(), error.length);
+                return false;
+            }
+            JuicerCuda::Failure rejected;
+            JuicerCuda::set_failure(rejected, status, message.data());
+            throw JuicerCuda::ExecutionFailure{std::move(rejected)};
+        }
+        if (reason != 0 || error.length != 0 || wire.route != input.route ||
+            wire.medium != input.mode || wire.capture_polarity != input.capture_polarity ||
+            wire.resolution != input.resolution || wire.density_bounds_hash != input.density_bounds_hash ||
+            !wire.density_bounds_hash || !wire.channel_density_hash || !wire.base_density_hash ||
+            !wire.viewing_illuminant_hash || !wire.observer_hash || !wire.hash)
+            descriptor_projection_failure();
+        descriptor.route = static_cast<Spektrafilm::ScanRoute>(wire.route);
+        descriptor.medium = static_cast<Scanner::ScannedMediumKind>(wire.medium);
+        descriptor.polarity = static_cast<Spektrafilm::ProfilePolarity>(wire.capture_polarity);
+        descriptor.lutResolution = wire.resolution;
+        descriptor.densityBoundsHash = wire.density_bounds_hash;
+        descriptor.channelDensityHash = wire.channel_density_hash;
+        descriptor.baseDensityHash = wire.base_density_hash;
+        descriptor.scanIlluminantHash = wire.viewing_illuminant_hash;
+        descriptor.observerHash = wire.observer_hash;
+        descriptor.hash = wire.hash;
+        return true;
+    }
+} // namespace
+
+namespace Scanner {
+    // SF_TEMP_BRIDGE_SCANNER_LUT_DESCRIPTOR: mechanical synchronous binding; remove S4.E.
+    bool build_direct_scanner_spectral_lut_descriptor(const DirectScannerSpectralLutDescriptorInput& input, ScannerSpectralLutDescriptor& descriptor, std::string& diagnostic) {
+        descriptor = ScannerSpectralLutDescriptor{};
+        diagnostic.clear();
+        if (!input.profileRoute || !input.densityBounds || !input.scannerOutput) {
+            diagnostic = "ResourceDescriptorMismatch phase=3A scanner direct inputs unavailable";
+            return false;
+        }
+        return describe_scanner_lut(*input.profileRoute, *input.densityBounds, *input.scannerOutput, input.observerIdentity, false, descriptor, diagnostic);
+    }
+    // SF_TEMP_BRIDGE_SCANNER_LUT_DESCRIPTOR: mechanical synchronous binding; remove S4.E.
+    bool build_print_scanner_spectral_lut_descriptor(const PrintScannerSpectralLutDescriptorInput& input, ScannerSpectralLutDescriptor& descriptor, std::string& diagnostic) {
+        descriptor = ScannerSpectralLutDescriptor{};
+        diagnostic.clear();
+        if (!input.profileRoute || !input.densityBounds || !input.scannerOutput) {
+            diagnostic = "ResourceDescriptorMismatch phase=4C scanner print inputs unavailable";
+            return false;
+        }
+        return describe_scanner_lut(*input.profileRoute, *input.densityBounds, *input.scannerOutput, input.observerIdentity, true, descriptor, diagnostic);
     }
 } // namespace Scanner

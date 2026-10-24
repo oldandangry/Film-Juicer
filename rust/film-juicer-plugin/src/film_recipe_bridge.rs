@@ -2310,6 +2310,97 @@ unsafe extern "C" fn fj_test_film_recipe_abi_facts(count: *mut usize) -> *const 
         4,
         5,
         6,
+        size_of::<crate::scanner_bridge::FjScannerLutDescriptorInput>(),
+        align_of::<crate::scanner_bridge::FjScannerLutDescriptorInput>(),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerLutDescriptorInput, mode),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerLutDescriptorInput, route),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            capture_polarity
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            bounds_medium
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            bounds_source
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            output_medium
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            profile_present
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            resolution
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            density_bounds_hash
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            print_profile_token
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            channel_density_cmy
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            base_density
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            viewing_illuminant
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            profile_viewing_illuminant
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            observer_identity
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptorInput,
+            print_profile_key
+        ),
+        size_of::<crate::scanner_bridge::FjScannerLutDescriptor>(),
+        align_of::<crate::scanner_bridge::FjScannerLutDescriptor>(),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerLutDescriptor, route),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerLutDescriptor, medium),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptor,
+            capture_polarity
+        ),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerLutDescriptor, resolution),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptor,
+            density_bounds_hash
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptor,
+            channel_density_hash
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptor,
+            base_density_hash
+        ),
+        std::mem::offset_of!(
+            crate::scanner_bridge::FjScannerLutDescriptor,
+            viewing_illuminant_hash
+        ),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerLutDescriptor, observer_hash),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerLutDescriptor, hash),
+        size_of::<crate::scanner_bridge::FjScannerLutDescriptorFailure>(),
+        align_of::<crate::scanner_bridge::FjScannerLutDescriptorFailure>(),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerLutDescriptorFailure, reason),
+        std::mem::offset_of!(crate::scanner_bridge::FjScannerLutDescriptorFailure, lane),
     ];
     if !count.is_null() {
         // SAFETY: Facade caller authorizes the exclusive count output.

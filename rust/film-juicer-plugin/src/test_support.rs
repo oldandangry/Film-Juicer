@@ -2188,3 +2188,31 @@ const _: unsafe extern "C" fn(
     *mut scanner_bridge::FjScannerColorFailure,
     *mut FjErrorBuffer,
 ) -> FjStatus = fj_test_scanner_color_prepare;
+
+/// # Safety
+/// Identical synchronous storage contract to the production descriptor entry.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fj_test_scanner_lut_describe(
+    input: *const scanner_bridge::FjScannerLutDescriptorInput,
+    out: *mut scanner_bridge::FjScannerLutDescriptor,
+    failure: *mut scanner_bridge::FjScannerLutDescriptorFailure,
+    error: *mut FjErrorBuffer,
+) -> FjStatus {
+    // SAFETY: The foreign caller provides live, disjoint input/output storage.
+    unsafe { scanner_bridge::describe_lut(input, out, failure, error) }
+}
+#[unsafe(no_mangle)]
+extern "C" fn fj_test_scanner_lut_descriptor_fault(fault: u32) -> FjStatus {
+    if fault > 6 {
+        return status(FJ_STATUS_UNSUPPORTED_INPUT);
+    }
+    film_juicer_core::scanner::test_support::arm_descriptor_fault(fault);
+    status(FJ_STATUS_SUCCESS)
+}
+
+const _: unsafe extern "C" fn(
+    *const scanner_bridge::FjScannerLutDescriptorInput,
+    *mut scanner_bridge::FjScannerLutDescriptor,
+    *mut scanner_bridge::FjScannerLutDescriptorFailure,
+    *mut FjErrorBuffer,
+) -> FjStatus = fj_test_scanner_lut_describe;
