@@ -603,7 +603,7 @@
   },
   "readers": {
     "native_capture": "ScannerLutTest::compare and reader_controls execute full six-array/count/metadata assertions, with deliberate corruption rejection before writing capture",
-    "replacement": "core scanner tests, raw/facade/native adapter and OFF C11 readers pending implementation; no replacement-generated expectation"
+    "replacement": "core scanner tests, raw/facade/native adapter, prepared GPU upload, corpus-integrity and OFF C11 readers expand shared payload plus matching preset context; no replacement-generated expectation"
   },
   "resources": [
     {
@@ -682,5 +682,31 @@
       "sha256": "f18bb2cc44a97a8b27c3d592d7bcf2d2658a6e81b6aaf16ff6a81da763f57bdf"
     }
   ],
-  "resource_scope": "Selected profiles, CMF/reconstruction bootstrap, illuminant/filter set and neutral print calibration; no static noise pixels."
+  "resource_scope": "Selected profiles, CMF/reconstruction bootstrap, illuminant/filter set and neutral print calibration; no static noise pixels.",
+  "payloads": {
+    "linux-debug.json": "native.json",
+    "linux-release.json": "native.json",
+    "windows-clang-debug.json": "native.json",
+    "windows-clang-release.json": "native.json"
+  },
+  "contexts": {
+    "linux-debug.json": "context-linux-debug.json",
+    "linux-release.json": "context-linux-release.json",
+    "windows-clang-debug.json": "context-windows-clang-debug.json",
+    "windows-clang-release.json": "context-windows-clang-release.json"
+  },
+  "original_line_endings": {
+    "linux-debug.json": "LF",
+    "linux-release.json": "LF",
+    "windows-clang-debug.json": "CRLF",
+    "windows-clang-release.json": "CRLF"
+  },
+  "storage_files": {
+    "native.json": "8e8b98c226adfa600b746c3a14bd25b10a42120d050d44392c7050e435db4b56",
+    "context-linux-debug.json": "deeaf14bbf272441484222fda32792ee8cda30b0677fe7da7ca60822aa5cf86d",
+    "context-linux-release.json": "1917cf9461a086df0e03474eeb34d1143fbf5f86b0138136571326f796eea97f",
+    "context-windows-clang-debug.json": "cd9139abd095c4c16d1541e60f88a404b8018dd6fadd94a7c8d9bdb8dc4d1b74",
+    "context-windows-clang-release.json": "b359b4ad1bafdbdd9f5c0a474e8d815c812d22fe3e33536e018c8b0db4f0fd0a"
+  },
+  "storage_note": "Logical native names and preset sha256 fields identify the original full captures. payloads plus disjoint contexts reconstruct those captures; storage_files hashes the current physical files. Original Windows captures use CRLF, Linux LF; original_line_endings preserves byte-for-byte reconstruction with sorted, two-space JSON and a final newline."
 }

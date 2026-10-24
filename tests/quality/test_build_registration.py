@@ -1,15 +1,19 @@
 """Real selected CTest admission and launcher contracts, without runtime sealing."""
 from __future__ import annotations
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import traceback
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/ctest"))
+from control_artifacts import MARKER, record_fixture
 import build_evidence
 import execution
 
@@ -17,12 +21,50 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class BuildTests(unittest.TestCase):
+    def run(self, result=None):
+        try:
+            return super().run(result)
+        except KeyboardInterrupt:
+            self.interrupted = True
+            self.retain = True
+            if hasattr(self, "lease") and self.lease.path in execution.OutputLease.held:
+                self.lease.blocked = True
+            while self._cleanups:
+                try:
+                    self.doCleanups()
+                except BaseException:
+                    # Cancellation clears unittest's outcome; keep draining callbacks
+                    # if its error reporter cannot attach a cleanup failure.
+                    traceback.print_exc(file=sys.stderr)
+            raise
+
     def setUp(self):
         preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
-        parent = ROOT / "out/validation" / preset / "registration-controls"
+        artifact_root = os.environ.get("JUICER_TEST_ARTIFACT_DIR")
+        parent = (Path(artifact_root) if artifact_root else ROOT / "out/validation" / preset) / "registration-controls"
         parent.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(dir=parent, delete=False)
         self.root = Path(self.temporary.name).resolve()
+        self.retain = bool(os.environ.get("JUICER_TEST_RETAIN_FIXTURES"))
+
+        def finish_fixture():
+            outcome = record_fixture(self.root, self)
+            failed = outcome != "passed"
+            owners = list(self.root.glob("out/verification-locks/*/owner.json"))
+            if failed or self.retain or owners:
+                print(f"Retained registration fixture: {self.root} test={self.id()}", file=sys.stderr, flush=True)
+            else:
+                try:
+                    self.temporary.cleanup()
+                except BaseException:
+                    record_fixture(self.root, self, "failed")
+                    print(f"Registration cleanup failed; remaining fixture: {self.root}", file=sys.stderr, flush=True)
+                    raise
+
+        self.addCleanup(finish_fixture)
+        record_fixture(self.root, self, "running")
+        if self.retain:
+            print("Registration fixture:", self.root, file=sys.stderr, flush=True)
         self.source = self.root / "source"
         self.source.mkdir()
         self.build = self.root / "build"
@@ -40,14 +82,7 @@ class BuildTests(unittest.TestCase):
         self.campaign = execution.Campaign(self.root, preset, "admission", ["prepare", "tests"])
         self.lease = execution.OutputLease(self.root, self.build)
         self.lease.__enter__()
-        def finish():
-            self.lease.__exit__(None, None, None)
-            result = self._outcome.result
-            if any(test is self for test, _ in [*result.errors, *result.failures]):
-                print("Retained registration fixture:", self.root, file=sys.stderr)
-            else:
-                self.temporary.cleanup()
-        self.addCleanup(finish)
+        self.addCleanup(self.lease.__exit__, None, None, None)
 
     def prepare(self):
         _, self.prepared = build_evidence.prepare_build(self.campaign, "prepare", source=self.source,
@@ -153,6 +188,95 @@ class BuildTests(unittest.TestCase):
             execution.rustc_command(["-Clinker=other"])
         with self.assertRaisesRegex(ValueError, "qualified linker is missing"):
             execution.rustc_command(["--version"], env={})
+
+
+class FixtureLifetimeTests(unittest.TestCase):
+    def run_fixture(self, body, *, retain=False):
+        case = BuildTests("test_selected_membership_executes_without_recursive_runtime_inventory")
+        setattr(case, case._testMethodName, lambda: body(case))
+        result = unittest.TestResult()
+        interrupted = False
+        with patch.dict(os.environ, {"JUICER_TEST_RETAIN_FIXTURES": "1" if retain else ""}):
+            try:
+                case.run(result)
+            except KeyboardInterrupt:
+                interrupted = True
+        return case, result, interrupted
+
+    def test_routing_cleans_success_and_opt_in_retains(self):
+        for retain in (False, True):
+            with self.subTest(retain=retain):
+                case, result, interrupted = self.run_fixture(lambda case: None, retain=retain)
+                self.assertTrue(result.wasSuccessful(), result.errors)
+                self.assertFalse(interrupted)
+                self.assertEqual(case.root.exists(), retain)
+                self.assertNotIn(case.lease.path, execution.OutputLease.held)
+                case.temporary.cleanup()
+
+    def test_failures_setup_cleanup_errors_and_missing_result_retain(self):
+        def fail(case):
+            case.fail("outer lifecycle failure")
+
+        def subtest(case):
+            with case.subTest(control="outer failure"):
+                case.fail("outer subtest failure")
+
+        def cleanup(case):
+            def error():
+                raise RuntimeError("cleanup lifecycle error")
+            case.addCleanup(error)
+
+        def failure_and_cleanup(case):
+            cleanup(case)
+            fail(case)
+
+        for name, body, failures, errors in (("assertion", fail, 1, 0), ("subtest", subtest, 1, 0),
+                                             ("cleanup", cleanup, 0, 1), ("both", failure_and_cleanup, 1, 1),
+                                             ("setup", lambda case: None, 0, 1), ("disposal", lambda case: None, 0, 1)):
+            with self.subTest(outcome=name):
+                fault = nullcontext()
+                if name == "setup":
+                    fault = patch.object(execution, "Campaign", side_effect=RuntimeError("setup lifecycle error"))
+                elif name == "disposal":
+                    fault = patch.object(tempfile.TemporaryDirectory, "cleanup", side_effect=OSError("disposal lifecycle error"))
+                with fault:
+                    case, result, _ = self.run_fixture(body)
+                self.assertEqual(len(result.failures), failures)
+                self.assertEqual(len(result.errors), errors)
+                self.assertTrue(case.root.exists())
+                self.assertEqual(json.loads((case.root / MARKER).read_text())["outcome"], "failed")
+                case.temporary.cleanup()
+        case = BuildTests("test_selected_membership_executes_without_recursive_runtime_inventory")
+        case.setUp()
+        case.doCleanups()
+        self.assertTrue(case.root.exists())
+        case.temporary.cleanup()
+
+    def test_interruption_and_blocked_owner_retain_fixture(self):
+        previous = os.environ.get("JUICER_OUTPUT_LEASES")
+        for mode in ("before-command", "after-command", "blocked", "cleanup-error"):
+            with self.subTest(mode=mode):
+                def body(case):
+                    if mode == "cleanup-error":
+                        def error():
+                            raise OSError("cancelled fixture cleanup error")
+                        case.addCleanup(error)
+                    if mode == "after-command":
+                        case.prepare()
+                    if mode == "blocked":
+                        # No child is launched: this is the existing owner's unproved state.
+                        case.lease.blocked = True
+                    else:
+                        raise KeyboardInterrupt
+                case, result, interrupted = self.run_fixture(body)
+                self.assertEqual(interrupted, mode != "blocked")
+                self.assertTrue(result.wasSuccessful(), result.errors)
+                self.assertTrue(case.root.exists())
+                self.assertEqual(json.loads((case.lease.path / "owner.json").read_text())["status"], "blocked")
+                self.assertNotIn(case.lease.path, execution.OutputLease.held)
+                self.assertEqual(os.environ.get("JUICER_OUTPUT_LEASES"), previous)
+                # Any real prepare command has drained before the synthetic cancellation.
+                case.temporary.cleanup()
 
 
 if __name__ == "__main__":

@@ -148,6 +148,21 @@ jobs:
             --no-tests=error --output-on-failure \
             --output-junit "$GITHUB_WORKSPACE/out/validation/linux-release/host-junit.xml"
 
+      - name: Select failed control evidence
+        if: always()
+        id: failed-controls
+        shell: bash
+        run: python -B tests/ctest/control_artifacts.py --preset linux-debug linux-release --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload failed controls and NPY samples
+        if: always() && steps.failed-controls.outputs.paths != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: linux-failed-controls
+          path: ${{ steps.failed-controls.outputs.paths }}
+          include-hidden-files: true
+          if-no-files-found: warn
+
       - name: Upload host test report
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

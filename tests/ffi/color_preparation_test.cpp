@@ -86,6 +86,27 @@ namespace {
             require(referenceRejected, "expected block references require a bounded nonnegative integer");
         }
         write(color / "shared.json", {{"recipes", Json::array()}});
+        const auto contextManifest = Json{{"payloads", {{"linux-debug.json", "shared.json"}, {"linux-release.json", "shared.json"}}}, {"contexts", {{"linux-debug.json", "context.json"}}}};
+        write(color / "manifest.json", contextManifest);
+        write(color / "context.json", {{"preset", "linux-debug"}, {"primitives", {0, 0x80000000u, 0x7fc00123u}}});
+        const auto contextual = load_shared_fixture(color / "linux-debug.json", "manifest.json");
+        require(contextual.at("preset") == "linux-debug" && contextual.at("primitives") == Json::array({0, 0x80000000u, 0x7fc00123u}) && contextual.at("recipes").empty(), "shared payload retains exact preset context");
+        bool missingContextRejected = false;
+        try {
+            (void)load_shared_fixture(color / "linux-release.json", "manifest.json");
+        } catch (const Json::out_of_range&) {
+            missingContextRejected = true;
+        }
+        require(missingContextRejected, "registered logical preset requires its context");
+        write(color / "context.json", {{"recipes", Json::array()}});
+        bool overlapRejected = false;
+        try {
+            (void)load_shared_fixture(color / "linux-debug.json", "manifest.json");
+        } catch (const std::runtime_error& error) {
+            overlapRejected = std::string(error.what()) == "shared fixture context overlaps payload";
+        }
+        require(overlapRejected, "context cannot overwrite shared expectations");
+        write(color / "manifest.json", {{"payloads", {{"linux-debug.json", "shared.json"}}}});
         write(updates / "linux-debug.json", {{"original_fixture", "linux-release.json"}, {"patch", Json::array()}});
         bool identityRejected = false;
         try {

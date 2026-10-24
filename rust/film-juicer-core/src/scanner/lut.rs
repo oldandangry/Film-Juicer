@@ -332,10 +332,24 @@ mod tests {
             (true, true) => "windows-clang-debug",
             (true, false) => "windows-clang-release",
         };
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/scanner/lut-fixtures")
-            .join(format!("{preset}.json"));
-        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/scanner/lut-fixtures");
+        let read = |name: &str| -> Value {
+            serde_json::from_slice(&std::fs::read(directory.join(name)).unwrap()).unwrap()
+        };
+        let manifest = read("manifest.json");
+        let logical = manifest["presets"][preset]["native"].as_str().unwrap();
+        let mut fixture = read(manifest["payloads"][logical].as_str().unwrap());
+        let context = read(manifest["contexts"][logical].as_str().unwrap());
+        for (key, value) in context.as_object().unwrap() {
+            assert!(
+                fixture.get(key).is_none(),
+                "shared fixture context overlaps payload"
+            );
+            fixture[key] = value.clone();
+        }
+        assert_eq!(fixture["preset"], preset);
+        fixture
     }
     fn floats(value: &Value) -> Vec<f32> {
         value

@@ -12,6 +12,8 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/ctest"))
+from control_artifacts import MARKER, record_fixture, selected_paths
 import qualification
 from execution import Campaign, OutputLease, digest, snapshot, tool_snapshot, write_json
 
@@ -23,6 +25,7 @@ class CheckpointTests(unittest.TestCase):
         try:
             return super().run(result)
         except KeyboardInterrupt:
+            self.interrupted = True
             # unittest skips its cleanup callbacks when cancellation escapes.
             self.retain = True
             if hasattr(self, "lease") and self.lease.path in OutputLease.held:
@@ -33,13 +36,33 @@ class CheckpointTests(unittest.TestCase):
 
     def setUp(self):
         preset = "windows-clang-debug" if os.name == "nt" else "linux-debug"
-        parent = ROOT / "out/validation" / preset / "checkpoint-controls"
+        artifact_root = os.environ.get("JUICER_TEST_ARTIFACT_DIR")
+        parent = (Path(artifact_root) if artifact_root else ROOT / "out/validation" / preset) / "checkpoint-controls"
         parent.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(dir=parent, delete=False)
-        self.root = Path(self.temporary.name).resolve()
+        self.directory = Path(self.temporary.name).resolve()
+        self.root = self.directory / "project"
         self.retain = bool(os.environ.get("JUICER_TEST_RETAIN_FIXTURES"))
         if self.retain:
-            print("Checkpoint fixture:", self.root, file=sys.stderr, flush=True)
+            print("Checkpoint fixture:", self.directory, file=sys.stderr, flush=True)
+        def finish():
+            if hasattr(self, "lease") and self.lease.path in OutputLease.held:
+                self.lease.__exit__(None, None, None)
+            outcome = record_fixture(self.directory, self, owner_root=self.root)
+            failed = outcome != "passed"
+            owners = list(self.root.glob("out/verification-locks/*/owner.json"))
+            if owners or self.retain or failed:
+                print("Retained checkpoint fixture:", self.directory, file=sys.stderr)
+            else:
+                try:
+                    self.temporary.cleanup()
+                except BaseException:
+                    record_fixture(self.directory, self, "failed", owner_root=self.root)
+                    raise
+        self.addCleanup(finish)
+        record_fixture(self.directory, self, "running", owner_root=self.root)
+
+        self.root.mkdir()
         self.build = self.root / "out/build" / preset
         self.build.mkdir(parents=True)
         self.state_path = self.build / "verification-checkpoint.json"
@@ -53,18 +76,6 @@ class CheckpointTests(unittest.TestCase):
         self.other.write_text("unrelated")
         self.lease = OutputLease(self.root, self.build)
         self.lease.__enter__()
-        def finish():
-            self.lease.__exit__(None, None, None)
-            result = self._outcome.result if self._outcome else None
-            failed = result is not None and any(
-                test is self or getattr(test, "test_case", None) is self
-                for test, _ in [*result.errors, *result.failures]
-            )
-            if self.lease.blocked or self.retain or result is None or failed:
-                print("Retained checkpoint fixture:", self.root, file=sys.stderr)
-            else:
-                self.temporary.cleanup()
-        self.addCleanup(finish)
 
     def campaign(self, name):
         return Campaign(self.root, self.preset, name, ["boundary", "tooling", "prepare", "corpus", "production"])
@@ -254,7 +265,8 @@ class CheckpointTests(unittest.TestCase):
                      "tests/scanner/correction-fixtures/manifest.json", "tests/scanner/correction-fixtures/checked-expectations.json",
                      "tests/scanner/correction-fixtures/linux-debug.json", "tests/ffi/scanner_lut_test.inc",
                      "tests/scanner/lut-fixtures/manifest.json", "tests/scanner/lut-fixtures/checked.json",
-                     "tests/scanner/lut-fixtures/linux-debug.json", "tests/ffi/scanner_color_test.inc",
+                     "tests/scanner/lut-fixtures/native.json", "tests/scanner/lut-fixtures/context-linux-debug.json",
+                     "tests/ffi/exposure_fixture.h", "tests/ffi/scanner_color_test.inc",
                      "tests/scanner/color-fixtures/manifest.json", "tests/scanner/color-fixtures/native.json",
                      "tests/scanner/color-fixtures/checked.json", "tests/ffi/film_reference_test.inc",
                      "tests/film/reference-fixtures/manifest.json", "tests/film/reference-fixtures/linux-debug.json"):
@@ -289,7 +301,9 @@ class CheckpointTests(unittest.TestCase):
         self.assertIn("tests/ffi/scanner_lut_test.inc", first)
         self.assertIn("tests/scanner/lut-fixtures/manifest.json", first)
         self.assertIn("tests/scanner/lut-fixtures/checked.json", first)
-        self.assertIn("tests/scanner/lut-fixtures/linux-debug.json", first)
+        self.assertIn("tests/scanner/lut-fixtures/native.json", first)
+        self.assertIn("tests/scanner/lut-fixtures/context-linux-debug.json", first)
+        self.assertIn("tests/ffi/exposure_fixture.h", first)
         added = self.root / "src/SpectralProcessing.h"
         added.write_text("new member")
         self.assertIn("src/SpectralProcessing.h", qualification.checkpoint_inputs(self.root, self.build, "boundary"))
@@ -497,7 +511,7 @@ class CheckpointTests(unittest.TestCase):
             'execute_process(COMMAND "${CMAKE_COMMAND}" -E copy '
             '"${CMAKE_SOURCE_DIR}/tests/fixtures/${stem}.json" "${CMAKE_BINARY_DIR}/configured.json" '
             'COMMAND_ERROR_IS_FATAL ANY)\n',
-            module=self.root.parent / (self.root.name + "-external") / "consumer.cmake")
+            module=self.directory / "external/consumer.cmake")
 
     def test_runtime_bundled_module_copy_requires_fresh_preparation(self):
         self.assert_configure_copy_reprepared(
@@ -2152,12 +2166,40 @@ class FixtureLifetimeTests(unittest.TestCase):
 
     def test_artifact_routing_cleans_successful_checkpoint_fixture(self):
         with tempfile.TemporaryDirectory() as artifact_root:
+            artifact_root = Path(artifact_root).resolve()
             case, result = self.run_checkpoint_fixture({
-                "JUICER_TEST_ARTIFACT_DIR": artifact_root,
+                "JUICER_TEST_ARTIFACT_DIR": str(artifact_root),
                 "JUICER_TEST_RETAIN_FIXTURES": "",
             }, lambda case: None)
         self.assertTrue(result.wasSuccessful())
-        self.assertFalse(case.root.exists())
+        self.assertFalse(case.directory.exists())
+        self.assertTrue(case.directory.is_relative_to(artifact_root))
+
+    def test_external_inputs_follow_checkpoint_fixture_outcome(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact_root = Path(temporary).resolve()
+            for outcome in ("passed", "failed", "retained"):
+                with self.subTest(outcome=outcome):
+                    def body(case):
+                        module = case.directory / "external/consumer.cmake"
+                        module.parent.mkdir()
+                        module.write_bytes(b"# original external input\n")
+                        self.assertFalse(module.is_relative_to(case.root))
+                        if outcome == "failed":
+                            case.fail("external input retention control")
+                    case, result = self.run_checkpoint_fixture({
+                        "JUICER_TEST_ARTIFACT_DIR": str(artifact_root),
+                        "JUICER_TEST_RETAIN_FIXTURES": "1" if outcome == "retained" else "",
+                    }, body)
+                    self.assertEqual(result.wasSuccessful(), outcome != "failed")
+                    self.assertEqual(case.directory.exists(), outcome != "passed")
+                    self.assertEqual(selected_paths(artifact_root), [case.directory] if outcome == "failed" else [])
+                    if outcome != "passed":
+                        self.assertEqual((case.directory / "external/consumer.cmake").read_bytes(), b"# original external input\n")
+                        record = json.loads((case.directory / MARKER).read_text())
+                        self.assertEqual(record["outcome"], "failed" if outcome == "failed" else "passed")
+                        self.assertEqual(record["blocked_owners"], [])
+                    case.temporary.cleanup()
 
     def test_diagnostic_opt_in_and_test_failures_retain_checkpoint_fixture(self):
         with tempfile.TemporaryDirectory() as artifact_root:
@@ -2167,6 +2209,7 @@ class FixtureLifetimeTests(unittest.TestCase):
             }, lambda case: None)
             self.assertTrue(result.wasSuccessful())
             self.assertTrue(case.root.exists())
+            self.assertEqual(json.loads((case.directory / MARKER).read_text())["outcome"], "passed")
             self.assertFalse((case.lease.path / "owner.json").exists())
             case.temporary.cleanup()
 
@@ -2179,6 +2222,7 @@ class FixtureLifetimeTests(unittest.TestCase):
             }, fail_test)
             self.assertEqual(len(failed_result.failures), 1)
             self.assertTrue(failed_case.root.exists())
+            self.assertEqual(json.loads((failed_case.directory / MARKER).read_text())["outcome"], "failed")
             failed_case.temporary.cleanup()
 
             def fail_subtest(case):
@@ -2208,6 +2252,9 @@ class FixtureLifetimeTests(unittest.TestCase):
                 previous = os.environ.get("JUICER_OUTPUT_LEASES")
                 def cancel():
                     case.retain = True
+                    module = case.directory / "external/consumer.cmake"
+                    module.parent.mkdir()
+                    module.write_bytes(b"# interrupted external input\n")
                     if drained:
                         case.run_stage("boundary")
                         raise KeyboardInterrupt
@@ -2229,6 +2276,11 @@ class FixtureLifetimeTests(unittest.TestCase):
                 self.assertEqual(record["process_tree"]["drained"], drained)
                 self.assertTrue(owner.exists())
                 self.assertEqual(json.loads(owner.read_text())["status"], "blocked")
+                self.assertEqual((case.directory / "external/consumer.cmake").read_bytes(), b"# interrupted external input\n")
+                marker = json.loads((case.directory / MARKER).read_text())
+                self.assertEqual(marker["outcome"], "interrupted")
+                self.assertEqual(marker["blocked_owners"], [str(owner)])
+                self.assertIn(case.directory, selected_paths(case.directory.parent.parent))
                 if drained:
                     self.assertEqual(record["status"], "passed")
                     process = json.loads(Path(record["process_tree"]["receipt"]).read_text())

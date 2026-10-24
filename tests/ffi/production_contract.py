@@ -3,12 +3,15 @@
 from pathlib import Path
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+
+from shared_fixture import load_shared_fixture, original_capture_bytes
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from execution import digest
@@ -169,8 +172,9 @@ def execute(arguments):
     consumed_paths.extend([preflash_manifest, preflash_payload])
     balance_manifest, balance_payload, _, _, _ = balance_fixture(arguments.preset)
     consumed_paths.extend([balance_manifest, balance_payload])
-    lut_manifest, lut_payload, lut_checked, _ = scanner_lut_fixture(arguments.preset)
-    consumed_paths.extend([lut_manifest, lut_payload, lut_checked])
+    lut_manifest, lut_payload, lut_context, lut_checked, _ = scanner_lut_fixture(arguments.preset)
+    consumed_paths.extend([lut_manifest, lut_payload, lut_context, lut_checked, fixtures / "shared_fixture.py",
+                           fixtures / "compact_exposure_fixtures.py"])
     correction_manifest, correction_payload, correction_checked, _, _, _ = scanner_correction_fixture(arguments.preset)
     consumed_paths.extend([correction_manifest, correction_payload, correction_checked])
     color_manifest, color_payload, color_checked, _, _ = scanner_color_fixture(arguments.preset)
@@ -533,7 +537,7 @@ def execute(arguments):
                 "reference_results": reference_results,
                 "reference_fixture": {"manifest": str(reference_manifest), "payload": str(reference_payload), "logical_preset": arguments.preset},
                 "scanner_color_fixture": {"manifest": str(color_manifest), "payload": str(color_payload), "normative": str(color_checked), "logical_preset": arguments.preset},
-                "scanner_lut_fixture": {"manifest": str(lut_manifest), "payload": str(lut_payload), "normative": str(lut_checked), "logical_preset": arguments.preset},
+                "scanner_lut_fixture": {"manifest": str(lut_manifest), "payload": str(lut_payload), "context": str(lut_context), "normative": str(lut_checked), "logical_preset": arguments.preset},
                 "scanner_correction_fixture": {"manifest": str(correction_manifest), "payload": str(correction_payload),
                                                "normative": str(correction_checked), "logical_preset": arguments.preset},
                 "balance_fixture": {"manifest": str(balance_manifest), "payload": str(balance_payload), "logical_preset": arguments.preset},
@@ -952,13 +956,18 @@ def scanner_lut_fixture(preset):
     manifest = directory / "manifest.json"
     spec = json.loads(manifest.read_text())
     entry = spec["presets"][preset]
-    payload = directory / entry["native"]
-    assert digest(payload) == entry["sha256"]
+    logical = entry["native"]
+    payload = directory / spec["payloads"][logical]
+    context = directory / spec["contexts"][logical]
+    for path in (payload, context):
+        assert digest(path) == spec["storage_files"][path.name]
+    native = load_shared_fixture(directory / logical)
+    assert native["preset"] == preset
+    assert hashlib.sha256(original_capture_bytes(native, spec["original_line_endings"][logical])).hexdigest() == entry["sha256"]
     checked = directory / "checked.json"
     normative = json.loads(checked.read_text())
     assert normative["failure_defaults"] == {"reason": 0, "channel": 2**32 - 1, "index": 2**64 - 1, "buffer": 0}
     assert normative["reasons"] == {"RAW": [2, 0, 0], "RESOLUTION": [3, 0, 0], "SIZE": [4, 0, 0], "ALLOCATION": [4, 0, 0], "NONFINITE": [3, 0, 0], "PANIC": [8, 0, 0]}
-    native = json.loads(payload.read_text())
     rows = [next(row for row in native["cases"] if row["id"] == name) for name in ("LUT-A2", "LUT-A3")]
     for row in rows:
         r = row["input"]["resolution"]
@@ -969,7 +978,7 @@ def scanner_lut_fixture(preset):
             assert len(words) == 3 * side ** 3 and all(type(word) is int and 0 <= word < 2**32 for word in words)
         assert row["native"]["diagnostic"] == ""
         assert row["native"]["failed_voxel"] == 2**64 - 1 and row["native"]["failed_channel"] == 2**32 - 1
-    return manifest, payload, checked, rows
+    return manifest, payload, context, checked, rows
 
 
 def scanner_color_fixture(preset):
@@ -1011,7 +1020,7 @@ def expected_scanner_color_header(out):
 
 
 def expected_scanner_lut_header(out):
-    _, _, _, rows = scanner_lut_fixture(arguments.preset)
+    _, _, _, _, rows = scanner_lut_fixture(arguments.preset)
     first = rows[0]["input"]
     assert {k: val for k, val in first.items() if k != "resolution"} == {k: val for k, val in rows[1]["input"].items() if k != "resolution"}
     with (out / "production-film-expected.h").open("a") as stream:

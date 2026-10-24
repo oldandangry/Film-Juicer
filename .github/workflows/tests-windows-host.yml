@@ -242,6 +242,21 @@ jobs:
             Write-Host "Loaded $module and resolved both standard OFX discovery exports"
           }
 
+      - name: Select failed control evidence
+        if: always()
+        id: failed-controls
+        shell: pwsh
+        run: python -B tests/ctest/control_artifacts.py --preset windows-clang-debug windows-clang-release --github-output "$env:GITHUB_OUTPUT"
+
+      - name: Upload failed controls and NPY samples
+        if: always() && steps.failed-controls.outputs.paths != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: windows-failed-controls
+          path: ${{ steps.failed-controls.outputs.paths }}
+          include-hidden-files: true
+          if-no-files-found: warn
+
       - name: Upload host test report
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
